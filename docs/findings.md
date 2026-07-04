@@ -151,3 +151,6 @@ Verification:
 - Runtime test proves dirty worktrees fail with typed `GitWorktreeDirty`.
 - `gh auth status` confirms the local environment can authenticate when live
   publish smoke is intentionally run.
+- Live smoke opened draft PR
+  [`#1`](https://github.com/cill-i-am/gaia/pull/1) from
+  `gaia/run-oOQuNPaFbQ` to `main`, then restored the local checkout to `main`.
