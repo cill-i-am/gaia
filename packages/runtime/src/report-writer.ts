@@ -1,6 +1,10 @@
 import { RunReport, type RunId, type RunSpec } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 import type { RunPaths } from "./paths.js";
+import {
+  selectedSkillNames,
+  type SkillManifest,
+} from "./skill-manifest.js";
 
 const RunReportJson = Schema.toCodecJson(RunReport);
 const encodeRunReport = Schema.encodeSync(RunReportJson);
@@ -8,6 +12,7 @@ const encodeRunReport = Schema.encodeSync(RunReportJson);
 export function writeReport(input: {
   readonly paths: RunPaths;
   readonly runId: RunId;
+  readonly skillManifest: SkillManifest;
   readonly spec: RunSpec;
 }) {
   return Effect.gen(function* () {
@@ -15,6 +20,8 @@ export function writeReport(input: {
     const report = RunReport.make({
       artifacts: [
         "workspace-manifest.json",
+        "skill-manifest.json",
+        "browser-evidence.json",
         "worker-plan.md",
         "worker-plan.json",
         "plan-review.md",
@@ -29,7 +36,7 @@ export function writeReport(input: {
       ],
       reportPath: "report.md",
       runId: input.runId,
-      selectedSkills: [],
+      selectedSkills: [...selectedSkillNames(input.skillManifest)],
       status: "completed",
       summary: `Gaia completed, reviewed, and verified "${input.spec.title}".`,
     });
@@ -48,6 +55,10 @@ function markdownReport(report: RunReport): string {
   const artifacts = report.artifacts
     .map((artifact) => `- ${artifact}`)
     .join("\n");
+  const selectedSkills =
+    report.selectedSkills.length === 0
+      ? "No skills selected for this run."
+      : report.selectedSkills.map((skill) => `- ${skill}`).join("\n");
 
   return `# Gaia Run ${report.runId}
 
@@ -59,7 +70,7 @@ ${report.summary}
 
 ## Selected Skills
 
-Prototype 1 does not install or select skills yet.
+${selectedSkills}
 
 ## Evidence
 

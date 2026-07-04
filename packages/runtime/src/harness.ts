@@ -1,8 +1,10 @@
 import { RunIdSchema } from "@gaia/core";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, FileSystem, Path, Schema } from "effect";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import process from "node:process";
 import { promisify } from "node:util";
+import type { PlatformError } from "effect/PlatformError";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 
 export const HarnessNameSchema = Schema.NonEmptyString.pipe(
@@ -17,6 +19,7 @@ export const defaultHarnessName = parseHarnessName("fake");
 export const processHarnessName = parseHarnessName("process");
 
 const processHarnessMaxBufferBytes = 10 * 1024 * 1024;
+const harnessContractVersion = "1";
 
 export const ProcessHarnessCommandSchema = Schema.NonEmptyString.pipe(
   Schema.brand("ProcessHarnessCommand"),
@@ -57,6 +60,10 @@ export class HarnessRunRequest extends Schema.Class<HarnessRunRequest>(
 export class HarnessRunResult extends Schema.Class<HarnessRunResult>(
   "HarnessRunResult",
 )({
+  changedWorkspacePaths: Schema.Array(Schema.NonEmptyString),
+  exitCode: Schema.Number.pipe(
+    Schema.check(Schema.isInt({ identifier: "ProcessExitCode" })),
+  ),
   harnessName: HarnessNameSchema,
   outputArtifacts: Schema.Array(Schema.NonEmptyString),
   resultPath: Schema.NonEmptyString,
@@ -72,7 +79,7 @@ export type GaiaHarness = {
   ) => Effect.Effect<
     HarnessRunResult,
     GaiaRuntimeError,
-    FileSystem.FileSystem
+    FileSystem.FileSystem | Path.Path
   >;
 };
 
@@ -86,14 +93,6 @@ const fakeHarness: GaiaHarness = {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const output = `Gaia fake harness completed ${request.runId}.\n`;
-      const result = HarnessRunResult.make({
-        harnessName: request.harnessName,
-        outputArtifacts: ["workspace/output.txt"],
-        resultPath: "worker-result.json",
-        runId: request.runId,
-        status: "completed",
-        summary: `Fake harness completed "${request.specTitle}".`,
-      });
 
       yield* fs.writeFileString(
         request.workerLogPath,
@@ -101,6 +100,17 @@ const fakeHarness: GaiaHarness = {
         { flag: "a" },
       );
       yield* fs.writeFileString(request.workspaceOutputPath, output);
+      const result = HarnessRunResult.make({
+        changedWorkspacePaths: ["output.txt"],
+        exitCode: 0,
+        harnessName: request.harnessName,
+        outputArtifacts: ["workspace/output.txt"],
+        resultPath: "worker-result.json",
+        runId: request.runId,
+        status: "completed",
+        summary: `Fake harness completed "${request.specTitle}".`,
+      });
+      yield* requireDeclaredOutputArtifacts(request, result);
       yield* fs.writeFileString(
         request.workerResultPath,
         `${JSON.stringify(encodeHarnessRunResult(result), null, 2)}\n`,
@@ -138,7 +148,13 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
           { flag: "a" },
         );
 
+        const beforeWorkspace = yield* snapshotWorkspace(request.workspacePath);
         const execution = yield* runProcessHarnessCommand(config, request);
+        const afterWorkspace = yield* snapshotWorkspace(request.workspacePath);
+        const changedWorkspacePaths = changedPaths(
+          beforeWorkspace,
+          afterWorkspace,
+        );
         yield* fs.writeFileString(
           request.workerLogPath,
           formatProcessOutput(execution),
@@ -146,6 +162,8 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
         );
 
         const result = HarnessRunResult.make({
+          changedWorkspacePaths,
+          exitCode: execution.exitCode,
           harnessName: request.harnessName,
           outputArtifacts: ["workspace/output.txt"],
           resultPath: "worker-result.json",
@@ -154,6 +172,7 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
           summary: `Process harness completed "${request.specTitle}".`,
         });
 
+        yield* requireDeclaredOutputArtifacts(request, result);
         yield* writeHarnessRunResult(request, result);
         yield* fs.writeFileString(
           request.workerLogPath,
@@ -185,7 +204,11 @@ export const availableHarnessNames: ReadonlyArray<HarnessName> = [
 export function runHarness(
   request: HarnessRunRequest,
   options: HarnessRunOptions = {},
-): Effect.Effect<HarnessRunResult, GaiaRuntimeError, FileSystem.FileSystem> {
+): Effect.Effect<
+  HarnessRunResult,
+  GaiaRuntimeError,
+  FileSystem.FileSystem | Path.Path
+> {
   return Effect.gen(function* () {
     const harness = yield* selectHarness(request.harnessName, options);
     return yield* harness.run(request);
@@ -229,6 +252,7 @@ function selectHarness(
 }
 
 type ProcessExecutionResult = {
+  readonly exitCode: number;
   readonly stderr: string;
   readonly stdout: string;
 };
@@ -244,6 +268,7 @@ function runProcessHarnessCommand(
         env: {
           ...process.env,
           GAIA_RUN_ID: request.runId,
+          GAIA_HARNESS_CONTRACT_VERSION: harnessContractVersion,
           GAIA_SPEC_BODY: request.specBody,
           GAIA_SPEC_TITLE: request.specTitle,
           GAIA_WORKER_LOG_PATH: request.workerLogPath,
@@ -262,6 +287,7 @@ function runProcessHarnessCommand(
       }),
   }).pipe(
     Effect.map((result) => ({
+      exitCode: 0,
       stderr: String(result.stderr),
       stdout: String(result.stdout),
     })),
@@ -280,6 +306,106 @@ function formatProcessOutput(execution: ProcessExecutionResult) {
   }
 
   return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
+}
+
+function requireDeclaredOutputArtifacts(
+  request: HarnessRunRequest,
+  result: HarnessRunResult,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+
+    for (const artifact of result.outputArtifacts) {
+      if (!artifact.startsWith("workspace/")) {
+        continue;
+      }
+
+      const relativePath = artifact.slice("workspace/".length);
+      const exists = yield* fs.exists(
+        path.join(request.workspacePath, relativePath),
+      );
+      if (!exists) {
+        return yield* Effect.fail(
+          makeRuntimeError({
+            code: "HarnessOutputArtifactMissing",
+            message: `Harness '${request.harnessName}' declared missing output artifact '${artifact}'.`,
+            recoverable: true,
+          }),
+        );
+      }
+    }
+  });
+}
+
+function snapshotWorkspace(workspacePath: string) {
+  return snapshotDirectory(workspacePath, "");
+}
+
+function snapshotDirectory(
+  directoryPath: string,
+  relativePrefix: string,
+): Effect.Effect<
+  ReadonlyMap<string, string>,
+  PlatformError,
+  FileSystem.FileSystem | Path.Path
+> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const entries = (yield* fs.readDirectory(directoryPath)).toSorted();
+    const digestByPath = new Map<string, string>();
+
+    for (const entry of entries) {
+      const absolutePath = path.join(directoryPath, entry);
+      const relativePath =
+        relativePrefix.length === 0 ? entry : `${relativePrefix}/${entry}`;
+      const info = yield* fs.stat(absolutePath);
+
+      switch (info.type) {
+        case "Directory": {
+          const childDigest = yield* snapshotDirectory(
+            absolutePath,
+            relativePath,
+          );
+          for (const [childPath, digest] of childDigest) {
+            digestByPath.set(childPath, digest);
+          }
+          break;
+        }
+        case "File": {
+          const bytes = yield* fs.readFile(absolutePath);
+          digestByPath.set(relativePath, hashBytes(bytes));
+          break;
+        }
+        default: {
+          break;
+        }
+      }
+    }
+
+    return digestByPath;
+  });
+}
+
+function changedPaths(
+  before: ReadonlyMap<string, string>,
+  after: ReadonlyMap<string, string>,
+) {
+  const paths = new Set([...before.keys(), ...after.keys()]);
+  const changed: Array<string> = [];
+
+  for (const path of paths) {
+    if (before.get(path) !== after.get(path)) {
+      changed.push(path);
+    }
+  }
+
+  return changed.toSorted();
+}
+
+function hashBytes(bytes: Uint8Array) {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function writeHarnessRunResult(

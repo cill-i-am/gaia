@@ -10,6 +10,7 @@ import {
   type RunPaths,
   type RunStorageOptions,
 } from "./paths.js";
+import { withRunStoreLock } from "./run-store-lock.js";
 import { copyWorkspaceDirectoryContents } from "./workspace.js";
 import { statusRun } from "./workflows.js";
 
@@ -19,6 +20,31 @@ const defaultBaseBranch = "main";
 const defaultGitHubCheckPollAttempts = 30;
 const defaultGitHubCheckPollInterval = "5 seconds";
 const workspaceArtifactPrefix = "workspace/";
+
+export const GitHubPreflightCheckNameSchema = Schema.Literals([
+  "run-completed",
+  "git-repository",
+  "clean-worktree",
+  "current-branch",
+  "remote-configured",
+  "base-branch",
+  "github-auth",
+] as const);
+
+export type GitHubPreflightCheckName =
+  typeof GitHubPreflightCheckNameSchema.Type;
+
+export const GitHubPublishModeSchema = Schema.Literals([
+  "evidence",
+  "workspace",
+] as const);
+
+export type GitHubPublishMode = typeof GitHubPublishModeSchema.Type;
+
+const GitHubPublishSourceChangeClaimSchema = Schema.Literals([
+  "evidence-only",
+  "workspace-required",
+] as const);
 
 const GitHubCheckPollAttemptCountSchema = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(1),
@@ -91,6 +117,26 @@ export class GitHubChecksRecord extends Schema.Class<GitHubChecksRecord>(
   snapshotPath: Schema.NonEmptyString,
   status: GitHubChecksStatusSchema,
   terminal: Schema.Boolean,
+  watchStatePath: Schema.NonEmptyString,
+}) {}
+
+export const GitHubCiWatchNextActionSchema = Schema.Literals([
+  "complete",
+  "poll-again",
+] as const);
+
+export class GitHubCiWatchState extends Schema.Class<GitHubCiWatchState>(
+  "GitHubCiWatchState",
+)({
+  attempts: GitHubCheckPollAttemptCountSchema,
+  lastSnapshotPath: Schema.NonEmptyString,
+  lastStatus: GitHubChecksStatusSchema,
+  nextAction: GitHubCiWatchNextActionSchema,
+  pr: GitHubPullRequestSelectorSchema,
+  runId: RunIdSchema,
+  terminal: Schema.Boolean,
+  updatedAt: Schema.NonEmptyString,
+  version: Schema.Literal(1),
 }) {}
 
 export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
@@ -104,10 +150,54 @@ export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
   status: Schema.Literal("opened"),
 }) {}
 
+export class GitHubPreflightCheck extends Schema.Class<GitHubPreflightCheck>(
+  "GitHubPreflightCheck",
+)({
+  name: GitHubPreflightCheckNameSchema,
+  status: Schema.Literal("passed"),
+}) {}
+
+export class GitHubPublishPreflightSummary extends Schema.Class<GitHubPublishPreflightSummary>(
+  "GitHubPublishPreflightSummary",
+)({
+  baseBranch: Schema.NonEmptyString,
+  checks: Schema.Array(GitHubPreflightCheck),
+  currentBranch: Schema.NonEmptyString,
+  remoteName: Schema.NonEmptyString,
+  runId: RunIdSchema,
+  status: Schema.Literal("passed"),
+}) {}
+
+export class GitHubPublishPreviewCommand extends Schema.Class<GitHubPublishPreviewCommand>(
+  "GitHubPublishPreviewCommand",
+)({
+  args: Schema.Array(Schema.String),
+  command: Schema.NonEmptyString,
+}) {}
+
+export class GitHubPublishPreview extends Schema.Class<GitHubPublishPreview>(
+  "GitHubPublishPreview",
+)({
+  baseBranch: Schema.NonEmptyString,
+  branchName: Schema.NonEmptyString,
+  commands: Schema.Array(GitHubPublishPreviewCommand),
+  currentBranch: Schema.NonEmptyString,
+  evidencePath: Schema.NonEmptyString,
+  mode: GitHubPublishModeSchema,
+  remoteName: Schema.NonEmptyString,
+  runId: RunIdSchema,
+  sourceChanges: GitHubPublishSourceChangeClaimSchema,
+  status: Schema.Literal("preview"),
+}) {}
+
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const parseHarnessRunResultJson = Schema.decodeUnknownSync(
   HarnessRunResultJson,
 );
+const GitHubCiWatchStateJson = Schema.toCodecJson(GitHubCiWatchState);
+const encodeGitHubCiWatchStateJson = Schema.encodeSync(GitHubCiWatchStateJson);
+export const parseGitHubCiWatchStateJson =
+  Schema.decodeUnknownSync(GitHubCiWatchStateJson);
 
 export type CommandExecutionResult = {
   readonly exitCode: number;
@@ -129,6 +219,10 @@ export type GitHubPublishOptions = RunStorageOptions & {
   readonly baseBranch?: string;
   readonly commandRunner?: GitHubCommandRunner;
   readonly remoteName?: string;
+};
+
+export type GitHubPublishPreviewOptions = GitHubPublishOptions & {
+  readonly mode?: GitHubPublishMode;
 };
 
 export type GitHubCheckRecordOptions = RunStorageOptions & {
@@ -175,7 +269,8 @@ const nodeCommandRunner: GitHubCommandRunner = (input) =>
       }),
   });
 
-export function publishRunToGitHub(
+/** Verify that a completed run can be published to GitHub without mutating git. */
+export function preflightGitHubPublish(
   runIdInput: string,
   options: GitHubPublishOptions = {},
 ) {
@@ -184,54 +279,126 @@ export function publishRunToGitHub(
     const baseBranch = options.baseBranch ?? defaultBaseBranch;
     const remoteName = options.remoteName ?? defaultRemoteName;
     const runner = options.commandRunner ?? nodeCommandRunner;
-    const summary = yield* statusRun(runIdInput, { rootDirectory });
+    const run = yield* statusRun(runIdInput, { rootDirectory });
 
-    if (summary.status !== "completed") {
+    if (run.status !== "completed") {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "RunNotCompleted",
-          message: `Run ${summary.runId} must be completed before opening a PR.`,
+          message: `Run ${run.runId} must be completed before GitHub publish preflight can pass.`,
           recoverable: false,
         }),
       );
     }
 
+    yield* requireGitRepository(runner, rootDirectory);
     yield* requireCleanWorktree(runner, rootDirectory);
     const currentBranch = yield* currentGitBranch(runner, rootDirectory);
-    const branchName = `gaia/${summary.runId}`;
-    const paths = yield* makeRunPaths(summary.runId, { rootDirectory });
+    yield* requireRemote(runner, rootDirectory, remoteName);
+    yield* requireRemoteBaseBranch(
+      runner,
+      rootDirectory,
+      remoteName,
+      baseBranch,
+    );
+    yield* requireGitHubAuth(runner, rootDirectory);
+
+    return GitHubPublishPreflightSummary.make({
+      baseBranch,
+      checks: [
+        preflightCheck("run-completed"),
+        preflightCheck("git-repository"),
+        preflightCheck("clean-worktree"),
+        preflightCheck("current-branch"),
+        preflightCheck("remote-configured"),
+        preflightCheck("base-branch"),
+        preflightCheck("github-auth"),
+      ],
+      currentBranch,
+      remoteName,
+      runId: run.runId,
+      status: "passed",
+    });
+  });
+}
+
+/** Build a read-only preview of the GitHub PR commands Gaia would run. */
+export function previewGitHubPublish(
+  runIdInput: string,
+  options: GitHubPublishPreviewOptions = {},
+) {
+  return Effect.gen(function* () {
+    const mode = options.mode ?? "evidence";
+    const preflight = yield* preflightGitHubPublish(runIdInput, options);
+    const branchName =
+      mode === "workspace"
+        ? `gaia/${preflight.runId}-workspace`
+        : `gaia/${preflight.runId}`;
+    const evidencePath = `gaia-runs/${preflight.runId}`;
+
+    return GitHubPublishPreview.make({
+      baseBranch: preflight.baseBranch,
+      branchName,
+      commands: publishPreviewCommands({
+        branchName,
+        evidencePath,
+        mode,
+        preflight,
+      }),
+      currentBranch: preflight.currentBranch,
+      evidencePath,
+      mode,
+      remoteName: preflight.remoteName,
+      runId: preflight.runId,
+      sourceChanges:
+        mode === "workspace" ? "workspace-required" : "evidence-only",
+      status: "preview",
+    });
+  });
+}
+
+export function publishRunToGitHub(
+  runIdInput: string,
+  options: GitHubPublishOptions = {},
+) {
+  return Effect.gen(function* () {
+    const rootDirectory = options.rootDirectory ?? ".";
+    const runner = options.commandRunner ?? nodeCommandRunner;
+    const preflight = yield* preflightGitHubPublish(runIdInput, options);
+    const branchName = `gaia/${preflight.runId}`;
+    const paths = yield* makeRunPaths(preflight.runId, { rootDirectory });
 
     const prUrl = yield* Effect.gen(function* () {
       yield* runRequiredCommand(runner, rootDirectory, "git", [
         "fetch",
-        remoteName,
-        baseBranch,
+        preflight.remoteName,
+        preflight.baseBranch,
       ]);
       yield* runRequiredCommand(runner, rootDirectory, "git", [
         "checkout",
         "-B",
         branchName,
-        `${remoteName}/${baseBranch}`,
+        `${preflight.remoteName}/${preflight.baseBranch}`,
       ]);
       const evidencePath = yield* writePullRequestEvidence(
-        summary.runId,
+        preflight.runId,
         rootDirectory,
       );
       yield* copyRunArtifacts(paths, evidencePath);
       yield* runRequiredCommand(runner, rootDirectory, "git", [
         "add",
-        `gaia-runs/${summary.runId}`,
+        `gaia-runs/${preflight.runId}`,
       ]);
       yield* runRequiredCommand(runner, rootDirectory, "git", [
         "commit",
         "-m",
-        `chore: add gaia evidence for ${summary.runId}`,
+        `chore: add gaia evidence for ${preflight.runId}`,
       ]);
       yield* runRequiredCommand(runner, rootDirectory, "git", [
         "push",
         "--force-with-lease",
         "-u",
-        remoteName,
+        preflight.remoteName,
         branchName,
       ]);
       const pr = yield* runRequiredCommand(runner, rootDirectory, "gh", [
@@ -239,11 +406,11 @@ export function publishRunToGitHub(
         "create",
         "--draft",
         "--base",
-        baseBranch,
+        preflight.baseBranch,
         "--head",
         branchName,
         "--title",
-        `Gaia run ${summary.runId}`,
+        `Gaia run ${preflight.runId}`,
         "--body-file",
         `${evidencePath}/README.md`,
       ]);
@@ -253,20 +420,101 @@ export function publishRunToGitHub(
       Effect.ensuring(
         runRequiredCommand(runner, rootDirectory, "git", [
           "checkout",
-          currentBranch,
+          preflight.currentBranch,
         ]).pipe(Effect.ignore),
       ),
     );
 
     return GitHubPrSummary.make({
-      baseBranch,
+      baseBranch: preflight.baseBranch,
       branchName,
-      evidencePath: `gaia-runs/${summary.runId}`,
+      evidencePath: `gaia-runs/${preflight.runId}`,
       prUrl,
-      runId: summary.runId,
+      runId: preflight.runId,
       status: "opened",
     });
   });
+}
+
+function publishPreviewCommands(input: Readonly<{
+  branchName: string;
+  evidencePath: string;
+  mode: GitHubPublishMode;
+  preflight: GitHubPublishPreflightSummary;
+}>): ReadonlyArray<GitHubPublishPreviewCommand> {
+  const commitMessage =
+    input.mode === "workspace"
+      ? `feat: apply gaia workspace for ${input.preflight.runId}`
+      : `chore: add gaia evidence for ${input.preflight.runId}`;
+  const prTitle =
+    input.mode === "workspace"
+      ? `Gaia workspace run ${input.preflight.runId}`
+      : `Gaia run ${input.preflight.runId}`;
+
+  return [
+    previewCommand("git", [
+      "fetch",
+      input.preflight.remoteName,
+      input.preflight.baseBranch,
+    ]),
+    previewCommand("git", [
+      "checkout",
+      "-B",
+      input.branchName,
+      `${input.preflight.remoteName}/${input.preflight.baseBranch}`,
+    ]),
+    ...(input.mode === "workspace"
+      ? [
+          previewCommand("git", [
+            "add",
+            "--all",
+            "--",
+            ".",
+            ":!.gaia",
+            `:!${input.evidencePath}`,
+          ]),
+          previewCommand("git", [
+            "diff",
+            "--cached",
+            "--quiet",
+            "--",
+            ".",
+            ":!.gaia",
+            `:!${input.evidencePath}`,
+          ]),
+        ]
+      : []),
+    previewCommand("git", ["add", input.evidencePath]),
+    previewCommand("git", ["commit", "-m", commitMessage]),
+    previewCommand("git", [
+      "push",
+      "--force-with-lease",
+      "-u",
+      input.preflight.remoteName,
+      input.branchName,
+    ]),
+    previewCommand("gh", [
+      "pr",
+      "create",
+      "--draft",
+      "--base",
+      input.preflight.baseBranch,
+      "--head",
+      input.branchName,
+      "--title",
+      prTitle,
+      "--body-file",
+      `${input.evidencePath}/README.md`,
+    ]),
+    previewCommand("git", ["checkout", input.preflight.currentBranch]),
+  ];
+}
+
+function previewCommand(
+  command: string,
+  args: ReadonlyArray<string>,
+): GitHubPublishPreviewCommand {
+  return GitHubPublishPreviewCommand.make({ args, command });
 }
 
 /** Publish a completed Gaia run workspace as a draft GitHub pull request. */
@@ -276,61 +524,46 @@ export function publishWorkspaceRunToGitHub(
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
-    const baseBranch = options.baseBranch ?? defaultBaseBranch;
-    const remoteName = options.remoteName ?? defaultRemoteName;
     const runner = options.commandRunner ?? nodeCommandRunner;
-    const summary = yield* statusRun(runIdInput, { rootDirectory });
-
-    if (summary.status !== "completed") {
-      return yield* Effect.fail(
-        makeRuntimeError({
-          code: "RunNotCompleted",
-          message: `Run ${summary.runId} must be completed before opening a workspace PR.`,
-          recoverable: false,
-        }),
-      );
-    }
-
-    yield* requireCleanWorktree(runner, rootDirectory);
-    const currentBranch = yield* currentGitBranch(runner, rootDirectory);
-    const branchName = `gaia/${summary.runId}-workspace`;
-    const paths = yield* makeRunPaths(summary.runId, { rootDirectory });
+    const preflight = yield* preflightGitHubPublish(runIdInput, options);
+    const branchName = `gaia/${preflight.runId}-workspace`;
+    const paths = yield* makeRunPaths(preflight.runId, { rootDirectory });
 
     const prUrl = yield* Effect.gen(function* () {
       yield* runRequiredCommand(runner, rootDirectory, "git", [
         "fetch",
-        remoteName,
-        baseBranch,
+        preflight.remoteName,
+        preflight.baseBranch,
       ]);
       yield* runRequiredCommand(runner, rootDirectory, "git", [
         "checkout",
         "-B",
         branchName,
-        `${remoteName}/${baseBranch}`,
+        `${preflight.remoteName}/${preflight.baseBranch}`,
       ]);
 
       yield* applyRunWorkspace(paths, rootDirectory);
-      yield* stageWorkspaceChanges(runner, rootDirectory, summary.runId);
+      yield* stageWorkspaceChanges(runner, rootDirectory, preflight.runId);
 
       const evidencePath = yield* writePullRequestEvidence(
-        summary.runId,
+        preflight.runId,
         rootDirectory,
       );
       yield* copyRunArtifacts(paths, evidencePath);
       yield* runRequiredCommand(runner, rootDirectory, "git", [
         "add",
-        `gaia-runs/${summary.runId}`,
+        `gaia-runs/${preflight.runId}`,
       ]);
       yield* runRequiredCommand(runner, rootDirectory, "git", [
         "commit",
         "-m",
-        `feat: apply gaia workspace for ${summary.runId}`,
+        `feat: apply gaia workspace for ${preflight.runId}`,
       ]);
       yield* runRequiredCommand(runner, rootDirectory, "git", [
         "push",
         "--force-with-lease",
         "-u",
-        remoteName,
+        preflight.remoteName,
         branchName,
       ]);
       const pr = yield* runRequiredCommand(runner, rootDirectory, "gh", [
@@ -338,11 +571,11 @@ export function publishWorkspaceRunToGitHub(
         "create",
         "--draft",
         "--base",
-        baseBranch,
+        preflight.baseBranch,
         "--head",
         branchName,
         "--title",
-        `Gaia workspace run ${summary.runId}`,
+        `Gaia workspace run ${preflight.runId}`,
         "--body-file",
         `${evidencePath}/README.md`,
       ]);
@@ -352,17 +585,17 @@ export function publishWorkspaceRunToGitHub(
       Effect.ensuring(
         runRequiredCommand(runner, rootDirectory, "git", [
           "checkout",
-          currentBranch,
+          preflight.currentBranch,
         ]).pipe(Effect.ignore),
       ),
     );
 
     return GitHubPrSummary.make({
-      baseBranch,
+      baseBranch: preflight.baseBranch,
       branchName,
-      evidencePath: `gaia-runs/${summary.runId}`,
+      evidencePath: `gaia-runs/${preflight.runId}`,
       prUrl,
-      runId: summary.runId,
+      runId: preflight.runId,
       status: "opened",
     });
   });
@@ -406,6 +639,17 @@ export function recordGitHubChecks(
   prInput: string,
   options: GitHubCheckRecordOptions = {},
 ) {
+  return withRunStoreLock(
+    options,
+    recordGitHubChecksUnlocked(runIdInput, prInput, options),
+  );
+}
+
+function recordGitHubChecksUnlocked(
+  runIdInput: string,
+  prInput: string,
+  options: GitHubCheckRecordOptions,
+) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
     const runner = options.commandRunner ?? nodeCommandRunner;
@@ -444,7 +688,9 @@ export function recordGitHubChecks(
       runId: run.runId,
       summary: observed.summary,
     });
+    const watchState = yield* writeGitHubCiWatchState(paths, recorded);
     const checksPath = runRelative(paths, recorded.snapshotPath);
+    const watchStatePath = runRelative(paths, paths.ciWatchState);
 
     yield* appendEvent(run.runId, paths, {
       payload: {
@@ -453,11 +699,22 @@ export function recordGitHubChecks(
         pullRequest: recorded.pr,
         status: recorded.status,
         terminal: recorded.terminal,
+        watchStatePath,
       },
       type: "GITHUB_CHECKS_RECORDED",
     });
 
-    return recorded;
+    return GitHubChecksRecord.make({
+      attempts: recorded.attempts,
+      checks: recorded.checks,
+      observedAt: recorded.observedAt,
+      pr: recorded.pr,
+      runId: recorded.runId,
+      snapshotPath: recorded.snapshotPath,
+      status: recorded.status,
+      terminal: recorded.terminal,
+      watchStatePath: watchState.path,
+    });
   });
 }
 
@@ -615,6 +872,67 @@ function runRequiredCommand(
   });
 }
 
+function runRequiredPreflightCommand(
+  runner: GitHubCommandRunner,
+  cwd: string,
+  command: string,
+  args: ReadonlyArray<string>,
+  error: Readonly<{
+    code: string;
+    message: string;
+  }>,
+) {
+  return Effect.gen(function* () {
+    const result = yield* runCommand(runner, cwd, command, args);
+
+    if (result.exitCode !== 0) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: error.code,
+          message: error.message,
+          recoverable: true,
+        }),
+      );
+    }
+
+    return result;
+  });
+}
+
+function preflightCheck(
+  name: GitHubPreflightCheckName,
+): GitHubPreflightCheck {
+  return GitHubPreflightCheck.make({ name, status: "passed" });
+}
+
+function requireGitRepository(
+  runner: GitHubCommandRunner,
+  rootDirectory: string,
+) {
+  return Effect.gen(function* () {
+    const result = yield* runRequiredPreflightCommand(
+      runner,
+      rootDirectory,
+      "git",
+      ["rev-parse", "--is-inside-work-tree"],
+      {
+        code: "GitRepositoryUnavailable",
+        message: "Gaia GitHub publishing must run inside a git worktree.",
+      },
+    );
+
+    if (result.stdout.trim() !== "true") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "GitRepositoryUnavailable",
+          message: "Gaia GitHub publishing must run inside a git worktree.",
+          recoverable: true,
+        }),
+      );
+    }
+  });
+}
+
 function requireCleanWorktree(
   runner: GitHubCommandRunner,
   rootDirectory: string,
@@ -635,6 +953,57 @@ function requireCleanWorktree(
       );
     }
   });
+}
+
+function requireRemote(
+  runner: GitHubCommandRunner,
+  rootDirectory: string,
+  remoteName: string,
+) {
+  return runRequiredPreflightCommand(
+    runner,
+    rootDirectory,
+    "git",
+    ["remote", "get-url", remoteName],
+    {
+      code: "GitRemoteUnavailable",
+      message: `Git remote '${remoteName}' is not configured.`,
+    },
+  );
+}
+
+function requireRemoteBaseBranch(
+  runner: GitHubCommandRunner,
+  rootDirectory: string,
+  remoteName: string,
+  baseBranch: string,
+) {
+  return runRequiredPreflightCommand(
+    runner,
+    rootDirectory,
+    "git",
+    ["ls-remote", "--exit-code", remoteName, `refs/heads/${baseBranch}`],
+    {
+      code: "GitBaseBranchUnavailable",
+      message: `Git remote '${remoteName}' does not expose base branch '${baseBranch}'.`,
+    },
+  );
+}
+
+function requireGitHubAuth(
+  runner: GitHubCommandRunner,
+  rootDirectory: string,
+) {
+  return runRequiredPreflightCommand(
+    runner,
+    rootDirectory,
+    "gh",
+    ["auth", "status"],
+    {
+      code: "GitHubAuthUnavailable",
+      message: "GitHub CLI authentication is not available.",
+    },
+  );
 }
 
 function currentGitBranch(
@@ -697,6 +1066,8 @@ function copyRunArtifacts(
     ["input.md", "input.md"],
     ["report.md", "README.md"],
     ["report.json", "report.json"],
+    ["browser-evidence.json", "browser-evidence.json"],
+    ["skill-manifest.json", "skill-manifest.json"],
     ["worker-plan.md", "worker-plan.md"],
     ["plan-review.md", "plan-review.md"],
     ["worker-result.json", "worker-result.json"],
@@ -854,6 +1225,7 @@ function writeGitHubChecksSnapshot(
       snapshotPath,
       status: snapshot.status,
       terminal: snapshot.terminal,
+      watchStatePath: paths.ciWatchState,
     });
   }).pipe(
     Effect.catchTag("PlatformError", (cause) =>
@@ -862,6 +1234,44 @@ function writeGitHubChecksSnapshot(
           cause,
           code: "GitHubChecksSnapshotWriteFailed",
           message: "Gaia could not write GitHub check evidence.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
+function writeGitHubCiWatchState(
+  paths: RunPaths,
+  record: GitHubChecksRecord,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const state = GitHubCiWatchState.make({
+      attempts: record.attempts,
+      lastSnapshotPath: runRelative(paths, record.snapshotPath),
+      lastStatus: record.status,
+      nextAction: record.terminal ? "complete" : "poll-again",
+      pr: record.pr,
+      runId: record.runId,
+      terminal: record.terminal,
+      updatedAt: record.observedAt,
+      version: 1,
+    });
+
+    yield* fs.writeFileString(
+      paths.ciWatchState,
+      `${JSON.stringify(encodeGitHubCiWatchStateJson(state), null, 2)}\n`,
+    );
+
+    return { path: paths.ciWatchState, state };
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "GitHubCiWatchStateWriteFailed",
+          message: "Gaia could not write GitHub CI watch state.",
           recoverable: true,
         }),
       ),

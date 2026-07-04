@@ -13,21 +13,24 @@ before any real coding harness or external integration is introduced.
 3. Stores all run state under `.gaia/runs/<run-id>/`.
 4. Prepares an isolated workspace, optionally copied from a local source
    directory.
-5. Appends lifecycle events to `events.jsonl`.
-6. Writes derived snapshots to `snapshots.jsonl`.
-7. Writes a worker plan artifact.
-8. Records deterministic read-only plan review evidence.
-9. Runs a deterministic fake harness through the harness port.
-10. Verifies the fake harness's output artifact.
-11. Records deterministic read-only evidence review output.
-12. Writes `report.md` and `report.json`.
-13. Resumes completed runs by replaying the event log.
-14. Can publish completed run evidence as a draft GitHub PR.
-15. Can publish completed run workspace changes as a draft GitHub PR.
-16. Can inspect GitHub PR checks as `no-checks`, `pending`, `passed`, or
+5. Records a pinned portable-skill manifest when provided.
+6. Writes a typed browser evidence placeholder.
+7. Appends lifecycle events to `events.jsonl`.
+8. Writes derived snapshots to `snapshots.jsonl`.
+9. Writes a worker plan artifact.
+10. Records deterministic read-only plan review evidence.
+11. Runs a deterministic fake harness through the harness port.
+12. Verifies the fake harness's output artifact.
+13. Records deterministic read-only evidence review output.
+14. Writes `report.md` and `report.json`.
+15. Resumes completed runs by replaying the event log.
+16. Can publish completed run evidence as a draft GitHub PR.
+17. Can publish completed run workspace changes as a draft GitHub PR.
+18. Can inspect GitHub PR checks as `no-checks`, `pending`, `passed`, or
     `failed`.
-17. Can record a GitHub check snapshot against a completed run, optionally
+19. Can record a GitHub check snapshot against a completed run, optionally
     polling until checks are no longer pending.
+20. Writes resumable CI watch state whenever GitHub checks are recorded.
 
 ## What It Does Not Do Yet
 
@@ -35,7 +38,7 @@ Prototype 1 intentionally excludes:
 
 - real Codex, Claude, OpenCode, or AI SDK HarnessAgent workers;
 - target repository checkout or worktree management;
-- skill bundle installation/selection;
+- skill bundle installation;
 - live reviewer/spec worker threads;
 - background GitHub check watching attached to runs or merges;
 - Linear issue intake or blocker graphs;
@@ -87,9 +90,13 @@ Run the local loop:
 pnpm gaia run examples/specs/smoke.md
 pnpm gaia run examples/specs/smoke.md --harness fake
 pnpm gaia run examples/specs/smoke.md --workspace-source .
+pnpm gaia run examples/specs/smoke.md --skill-manifest ./skills.json
 pnpm gaia status
 pnpm gaia list
 pnpm gaia resume <run-id>
+pnpm gaia preflight-github <run-id>
+pnpm gaia preview-pr <run-id>
+pnpm gaia preview-pr <run-id> --workspace
 pnpm gaia publish-pr <run-id>
 pnpm gaia publish-workspace-pr <run-id>
 pnpm gaia pr-checks <pr-number-or-url>
@@ -114,6 +121,22 @@ pnpm gaia run examples/specs/smoke.md \
   --harness-arg "$PWD/examples/harnesses/process-harness.mjs"
 ```
 
+Gaia passes a small environment contract to the process:
+
+- `GAIA_HARNESS_CONTRACT_VERSION`
+- `GAIA_RUN_ID`
+- `GAIA_SPEC_BODY`
+- `GAIA_SPEC_TITLE`
+- `GAIA_WORKER_LOG_PATH`
+- `GAIA_WORKER_RESULT_PATH`
+- `GAIA_WORKSPACE_OUTPUT_PATH`
+- `GAIA_WORKSPACE_PATH`
+
+The normalized worker result records the harness exit code, declared output
+artifacts, and changed workspace paths. Gaia validates declared `workspace/*`
+artifacts before verification so a harness cannot claim output it did not
+produce.
+
 When invoked through `pnpm gaia`, paths are resolved from the directory where the
 user ran the command, not from `apps/cli`. Gaia uses `INIT_CWD` for that pnpm
 case and falls back to `process.cwd()` when run directly.
@@ -131,6 +154,8 @@ A completed run looks like this:
       events.jsonl
       snapshots.jsonl
       workspace-manifest.json
+      skill-manifest.json
+      browser-evidence.json
       worker-plan.md
       worker-plan.json
       plan-review.md
@@ -158,16 +183,71 @@ not match, the run is treated as corrupt.
 `.gaia/latest` stores the latest run id. This avoids pretending random Nano IDs
 have chronological ordering.
 
+`.gaia/lock` is a local mutation lock. Gaia creates it before starting a new run
+or recording GitHub check evidence, then removes it when the mutation finishes.
+If it already exists, the mutating command fails with `RunStoreLocked`. This is
+intentionally simple: it prevents local run-store races before Gaia has a
+persistent index or live worker scheduler.
+
 `workspace-manifest.json` records the workspace source, copied file count,
 skipped entries, and run-local workspace path. By default Gaia prepares an empty
 workspace. With `--workspace-source <dir>`, Gaia copies a local directory into
 the run workspace while excluding generated or heavy directories such as `.git`,
 `.gaia`, `.turbo`, `coverage`, `dist`, and `node_modules`.
 
+`skill-manifest.json` records the portable skills selected for a run. Without
+`--skill-manifest`, Gaia writes an empty manifest. With `--skill-manifest`, Gaia
+normalizes this shape:
+
+```json
+{
+  "skills": [
+    {
+      "name": "coding-standards",
+      "sourceRepository": "github.com/example/skills",
+      "sourcePath": "skills/coding-standards",
+      "commit": "abc123"
+    }
+  ]
+}
+```
+
+Every skill must include a `sourceRepository`, `sourcePath`, and either
+`version` or `commit`. Gaia records the manifest and report selected skills; it
+does not install or resolve the bundle yet.
+
+`browser-evidence.json` defines the future browser automation contract. Current
+runs write:
+
+```json
+{
+  "notes": ["Browser automation is not collected for this run yet."],
+  "pages": [],
+  "status": "not-collected",
+  "version": 1
+}
+```
+
+Future browser capture should append page entries with URL, screenshots, and
+console messages without changing the report or PR evidence layout.
+
 `publish-pr` copies selected evidence into `gaia-runs/<run-id>/` on a new
 `gaia/<run-id>` branch, commits it, pushes it, opens a draft GitHub PR, and
 restores the original local branch. The command refuses to run with a dirty
 worktree.
+
+`preflight-github` checks whether a completed run can publish to GitHub without
+mutating local git state or GitHub. It verifies the run is completed, the current
+directory is a git repository, the worktree is clean, the checkout is on a
+branch, the remote exists, the remote exposes the base branch, and `gh auth
+status` succeeds. Both PR publishing commands run the same preflight before
+mutating git.
+
+`preview-pr` runs GitHub preflight and returns a read-only command preview. The
+default mode previews an evidence-only PR. `--workspace` previews a
+workspace-change PR, including the source staging and cached-diff commands Gaia
+would run before committing. Preview output is evidence, not execution: it does
+not fetch, checkout, stage, commit, push, or open a PR.
 
 `publish-workspace-pr` applies the run workspace to a new
 `gaia/<run-id>-workspace` branch before copying the same selected evidence into
@@ -187,6 +267,27 @@ written to `github-checks/checks-<event-sequence>.json`, then appended to
 GitHub state once. With `--wait`, it polls on a bounded fixed interval until the
 state is no longer `pending`, then records the final observed state. It is still
 not a background watcher.
+
+Each `checks` recording also writes `ci-watch-state.json`:
+
+```json
+{
+  "attempts": 2,
+  "lastSnapshotPath": "github-checks/checks-12.json",
+  "lastStatus": "pending",
+  "nextAction": "poll-again",
+  "pr": "1",
+  "runId": "run-V7kP9sQ2xY",
+  "terminal": false,
+  "updatedAt": "2026-07-04T00:00:00.000Z",
+  "version": 1
+}
+```
+
+`nextAction` is `complete` for terminal states and `poll-again` when bounded
+waiting ends while checks are still pending. Future background CI watching
+should resume from this artifact and the append-only event log rather than keep
+hidden process memory as the source of truth.
 
 ## Lifecycle
 

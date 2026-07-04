@@ -1,3 +1,13 @@
+export {
+  BrowserConsoleLevelSchema,
+  BrowserConsoleMessage,
+  BrowserEvidence,
+  BrowserEvidenceStatusSchema,
+  BrowserPageEvidence,
+  BrowserScreenshotEvidence,
+  parseBrowserEvidenceJson,
+  writeEmptyBrowserEvidence,
+} from "./browser-evidence.js";
 export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 export { appendEvent, loadRun, readEvents, type AppendEventInput } from "./event-store.js";
 export {
@@ -6,10 +16,21 @@ export {
   GitHubChecksSnapshot,
   GitHubChecksStatusSchema,
   GitHubChecksSummary,
+  GitHubCiWatchNextActionSchema,
+  GitHubCiWatchState,
+  GitHubPreflightCheck,
+  GitHubPreflightCheckNameSchema,
   GitHubPrSummary,
+  GitHubPublishModeSchema,
+  GitHubPublishPreflightSummary,
+  GitHubPublishPreview,
+  GitHubPublishPreviewCommand,
   GitHubPullRequestSelectorSchema,
   inspectGitHubChecks,
+  parseGitHubCiWatchStateJson,
   parseGitHubPullRequestSelector,
+  preflightGitHubPublish,
+  previewGitHubPublish,
   publishRunToGitHub,
   publishWorkspaceRunToGitHub,
   recordGitHubChecks,
@@ -18,7 +39,10 @@ export {
   type GitHubChecksStatus,
   type GitHubCommandInput,
   type GitHubCommandRunner,
+  type GitHubPreflightCheckName,
+  type GitHubPublishMode,
   type GitHubPublishOptions,
+  type GitHubPublishPreviewOptions,
   type GitHubPullRequestSelector,
 } from "./github-publisher.js";
 export {
@@ -49,6 +73,16 @@ export {
   type ReviewerName,
 } from "./reviewer.js";
 export { writeReport } from "./report-writer.js";
+export {
+  SkillManifest,
+  SkillManifestEntry,
+  SkillNameSchema,
+  localSkillManifestSource,
+  selectedSkillNames,
+  writeSkillManifest,
+  type SkillManifestSource,
+  type SkillName,
+} from "./skill-manifest.js";
 export { VerificationResult, verifyHarnessOutput } from "./verifier.js";
 export {
   WorkerPlan,

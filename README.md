@@ -40,10 +40,14 @@ pnpm gaia run examples/specs/smoke.md
 pnpm gaia run examples/specs/smoke.md --harness fake
 pnpm gaia run examples/specs/smoke.md --harness process --harness-command node --harness-arg "$PWD/examples/harnesses/process-harness.mjs"
 pnpm gaia run examples/specs/smoke.md --workspace-source .
+pnpm gaia run examples/specs/smoke.md --skill-manifest ./skills.json
 pnpm gaia run examples/specs/smoke.md --json
 pnpm gaia status
 pnpm gaia list
 pnpm gaia resume <run-id>
+pnpm gaia preflight-github <run-id>
+pnpm gaia preview-pr <run-id>
+pnpm gaia preview-pr <run-id> --workspace
 pnpm gaia publish-pr <run-id>
 pnpm gaia publish-workspace-pr <run-id>
 pnpm gaia pr-checks <pr-number-or-url>
@@ -53,6 +57,23 @@ pnpm gaia checks <run-id> <pr-number-or-url> --wait
 
 `pnpm gaia` resolves paths from the directory where the command was invoked and
 stores generated run state in that directory's `.gaia/` folder.
+Gaia uses `.gaia/lock` to serialize local run-store mutations such as new runs
+and check snapshot recording. Read-only commands can still inspect existing
+runs, but mutating commands fail fast while another mutation is in progress.
+`pnpm gaia preflight-github <run-id>` verifies that a completed run is ready
+for GitHub publishing without mutating git or GitHub: git repo, clean worktree,
+current branch, remote, base branch, and GitHub CLI auth.
+`pnpm gaia preview-pr <run-id>` runs the same read-only preflight and prints the
+branch, evidence path, source-change claim, and external commands Gaia would run
+for an evidence-only PR. Add `--workspace` to preview the workspace-change PR
+path.
+Harness results include the harness exit code and the workspace files that
+changed during execution. Gaia also validates harness-declared `workspace/*`
+output artifacts before the run can move into verification.
+`pnpm gaia run --skill-manifest <path>` records a pinned portable-skill
+manifest as `skill-manifest.json` evidence. Gaia validates that every selected
+skill has a source repository, source path, and either a version or commit. It
+does not install skills yet.
 `pnpm gaia publish-pr <run-id>` intentionally mutates GitHub state: it creates
 an evidence branch, commits selected run evidence under `gaia-runs/<run-id>/`,
 pushes it, opens a draft PR, and restores the original local branch.
@@ -67,6 +88,9 @@ of `no-checks`, `pending`, `passed`, or `failed`.
 `pnpm gaia checks <run-id> <pr-number-or-url>` records that check state under
 the run's `github-checks/` evidence directory and appends it to the event log.
 Use `--wait` to poll until checks are no longer pending before recording.
+Each recording also writes `ci-watch-state.json` with the latest status,
+terminal flag, last snapshot path, and next action (`complete` or
+`poll-again`). This is the resumable model future background watching will use.
 
 ## Run Directory
 
@@ -78,6 +102,8 @@ Each run is stored relative to the current working directory:
   events.jsonl
   snapshots.jsonl
   workspace-manifest.json
+  skill-manifest.json
+  browser-evidence.json
   worker-plan.md
   worker-plan.json
   plan-review.md
@@ -94,10 +120,19 @@ Each run is stored relative to the current working directory:
   report.json
   github-checks/
     checks-<event-sequence>.json
+  ci-watch-state.json
 ```
 
 `events.jsonl` is the source of truth. `snapshots.jsonl` is derived from replay
 and exists for status/debugging.
+
+`worker-result.json` is normalized harness evidence. It records the selected
+harness, declared output artifacts, process exit code, and changed workspace
+paths so future harness adapters can be compared through the same contract.
+
+`browser-evidence.json` is a typed placeholder for future Browser/Chrome
+automation. Prototype runs write `not-collected` evidence so reports and PRs
+already have a stable artifact path before live capture is added.
 
 `.gaia/latest` stores the latest run id so `gaia status` does not infer
 chronology from random run ids.

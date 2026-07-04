@@ -4,8 +4,12 @@ import { Effect, FileSystem } from "effect";
 import { execPath } from "node:process";
 import { parseRunId } from "@gaia/core";
 import { GaiaRuntimeError } from "./errors.js";
+import { parseBrowserEvidenceJson } from "./browser-evidence.js";
 import {
   inspectGitHubChecks,
+  parseGitHubCiWatchStateJson,
+  preflightGitHubPublish,
+  previewGitHubPublish,
   publishRunToGitHub,
   publishWorkspaceRunToGitHub,
   recordGitHubChecks,
@@ -14,8 +18,9 @@ import {
   type GitHubCommandRunner,
 } from "./github-publisher.js";
 import { makeProcessHarnessConfig, parseHarnessName } from "./harness.js";
-import { makeRunPaths } from "./paths.js";
-import { resumeRun, runSpecFile, statusRun } from "./workflows.js";
+import { makeRunPaths, makeRunStorePaths } from "./paths.js";
+import { localSkillManifestSource } from "./skill-manifest.js";
+import { listRuns, resumeRun, runSpecFile, statusRun } from "./workflows.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
 import { verifyHarnessOutput } from "./verifier.js";
 
@@ -82,6 +87,62 @@ describe("runtime workflows", () => {
 
         assert.strictEqual(status.runId, summary.runId);
         assert.strictEqual(status.state, "completed");
+      }),
+    );
+
+    it.effect("skips empty run directories when listing runs", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "List around local debris.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        yield* fs.makeDirectory(`${store.runsRoot}/run-L84-kMhLY8`);
+
+        const runs = yield* listRuns({ rootDirectory: cwd });
+
+        assert.deepEqual(
+          runs.map((run) => run.runId),
+          [summary.runId],
+        );
+      }),
+    );
+
+    it.effect("releases the run store lock after a completed run", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Run with a lock.\n");
+
+        yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        const lockExists = yield* fs.exists(store.lock);
+
+        assert.isFalse(lockExists);
+      }),
+    );
+
+    it.effect("refuses to start a run while the run store is locked", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        yield* fs.writeFileString(specPath, "Run while locked.\n");
+        yield* fs.makeDirectory(store.gaiaRoot, { recursive: true });
+        yield* fs.makeDirectory(store.lock);
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, { rootDirectory: cwd }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "RunStoreLocked");
+          assert.isTrue(error.recoverable);
+        }
       }),
     );
 
@@ -154,7 +215,115 @@ describe("runtime workflows", () => {
         assert.include(events, '"harnessName":"fake"');
         assert.include(events, '"outputArtifacts":["workspace/output.txt"]');
         assert.include(harnessResult, '"harnessName": "fake"');
+        assert.include(harnessResult, '"changedWorkspacePaths": [');
+        assert.include(harnessResult, '"output.txt"');
+        assert.include(harnessResult, '"exitCode": 0');
         assert.include(harnessResult, '"summary":');
+      }),
+    );
+
+    it.effect("records selected skills from a pinned skill manifest", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const manifestPath = `${cwd}/skills.json`;
+        yield* fs.writeFileString(specPath, "Run with selected skills.\n");
+        yield* fs.writeFileString(
+          manifestPath,
+          `${JSON.stringify(
+            {
+              skills: [
+                {
+                  commit: "abc123",
+                  name: "coding-standards",
+                  sourcePath: "skills/coding-standards",
+                  sourceRepository: "github.com/cillianbarron/skills",
+                },
+              ],
+            },
+            null,
+            2,
+          )}\n`,
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          rootDirectory: cwd,
+          skillManifestSource: localSkillManifestSource(manifestPath),
+        });
+
+        const skillManifest = yield* fs.readFileString(
+          `${summary.runDirectory}/skill-manifest.json`,
+        );
+        const reportJson = yield* fs.readFileString(
+          `${summary.runDirectory}/report.json`,
+        );
+        const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+
+        assert.include(skillManifest, '"name": "coding-standards"');
+        assert.include(reportJson, '"selectedSkills": [');
+        assert.include(reportJson, '"coding-standards"');
+        assert.include(reportMarkdown, "- coding-standards");
+        assert.include(reportMarkdown, "skill-manifest.json");
+      }),
+    );
+
+    it.effect("writes a typed empty browser evidence contract", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Run with browser evidence shape.\n");
+
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const browserEvidence = yield* fs.readFileString(
+          `${summary.runDirectory}/browser-evidence.json`,
+        );
+        const parsed = parseBrowserEvidenceJson(JSON.parse(browserEvidence));
+        const report = yield* fs.readFileString(
+          `${summary.runDirectory}/report.md`,
+        );
+
+        assert.strictEqual(parsed.status, "not-collected");
+        assert.deepEqual(parsed.pages, []);
+        assert.include(report, "browser-evidence.json");
+      }),
+    );
+
+    it.effect("rejects unpinned skill manifest entries", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const manifestPath = `${cwd}/skills.json`;
+        yield* fs.writeFileString(specPath, "Run with unpinned skills.\n");
+        yield* fs.writeFileString(
+          manifestPath,
+          `${JSON.stringify({
+            skills: [
+              {
+                name: "coding-standards",
+                sourcePath: "skills/coding-standards",
+                sourceRepository: "github.com/cillianbarron/skills",
+              },
+            ],
+          })}\n`,
+        );
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            rootDirectory: cwd,
+            skillManifestSource: localSkillManifestSource(manifestPath),
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "SkillManifestEntryUnpinned");
+        }
+
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        assert.strictEqual(status.state, "failed");
       }),
     );
 
@@ -189,7 +358,9 @@ describe("runtime workflows", () => {
           scriptPath,
           [
             "import { writeFileSync } from 'node:fs';",
+            "if (process.env.GAIA_HARNESS_CONTRACT_VERSION !== '1') process.exit(8);",
             "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness ${process.env.GAIA_RUN_ID}\\n`);",
+            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/changed.txt`, 'changed by process harness\\n');",
             "console.log(`process harness saw ${process.env.GAIA_SPEC_TITLE}`);",
           ].join("\n"),
         );
@@ -214,6 +385,10 @@ describe("runtime workflows", () => {
         assert.include(output, summary.runId);
         assert.include(workerLog, "process harness saw spec");
         assert.include(harnessResult, '"harnessName": "process"');
+        assert.include(harnessResult, '"changedWorkspacePaths": [');
+        assert.include(harnessResult, '"changed.txt"');
+        assert.include(harnessResult, '"output.txt"');
+        assert.include(harnessResult, '"exitCode": 0');
       }),
     );
 
@@ -266,6 +441,154 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("preflights GitHub publishing through the command seam", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Preflight this run.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const commands: Array<GitHubCommandInput> = [];
+
+        const preflight = yield* preflightGitHubPublish(summary.runId, {
+          commandRunner: githubPublishingRunner(commands),
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(preflight.status, "passed");
+        assert.strictEqual(preflight.runId, summary.runId);
+        assert.strictEqual(preflight.currentBranch, "main");
+        assert.strictEqual(preflight.remoteName, "origin");
+        assert.deepEqual(
+          preflight.checks.map((check) => check.name),
+          [
+            "run-completed",
+            "git-repository",
+            "clean-worktree",
+            "current-branch",
+            "remote-configured",
+            "base-branch",
+            "github-auth",
+          ],
+        );
+        assert.deepEqual(
+          commands.map((command) => [command.command, command.args[0]]),
+          [
+            ["git", "rev-parse"],
+            ["git", "status"],
+            ["git", "rev-parse"],
+            ["git", "remote"],
+            ["git", "ls-remote"],
+            ["gh", "auth"],
+          ],
+        );
+      }),
+    );
+
+    it.effect("fails GitHub preflight when the base branch is unavailable", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Preflight missing base.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const error = yield* Effect.flip(
+          preflightGitHubPublish(summary.runId, {
+            commandRunner: githubPublishingRunner([], {
+              respond: (input) =>
+                input.command === "git" && input.args[0] === "ls-remote"
+                  ? { exitCode: 2, stderr: "not found\n", stdout: "" }
+                  : undefined,
+            }),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "GitBaseBranchUnavailable");
+          assert.isTrue(error.recoverable);
+        }
+      }),
+    );
+
+    it.effect("previews an evidence-only GitHub PR without mutating commands", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Preview evidence PR.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const preview = yield* previewGitHubPublish(summary.runId, {
+          commandRunner: githubPublishingRunner([]),
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(preview.status, "preview");
+        assert.strictEqual(preview.mode, "evidence");
+        assert.strictEqual(preview.sourceChanges, "evidence-only");
+        assert.strictEqual(preview.branchName, `gaia/${summary.runId}`);
+        assert.strictEqual(preview.evidencePath, `gaia-runs/${summary.runId}`);
+        assert.deepEqual(
+          preview.commands.map((command) => [
+            command.command,
+            command.args[0],
+          ]),
+          [
+            ["git", "fetch"],
+            ["git", "checkout"],
+            ["git", "add"],
+            ["git", "commit"],
+            ["git", "push"],
+            ["gh", "pr"],
+            ["git", "checkout"],
+          ],
+        );
+      }),
+    );
+
+    it.effect("previews a workspace GitHub PR with source-staging commands", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Preview workspace PR.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const preview = yield* previewGitHubPublish(summary.runId, {
+          commandRunner: githubPublishingRunner([]),
+          mode: "workspace",
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(preview.mode, "workspace");
+        assert.strictEqual(preview.sourceChanges, "workspace-required");
+        assert.strictEqual(
+          preview.branchName,
+          `gaia/${summary.runId}-workspace`,
+        );
+        assert.deepEqual(
+          preview.commands.map((command) => [
+            command.command,
+            command.args[0],
+          ]),
+          [
+            ["git", "fetch"],
+            ["git", "checkout"],
+            ["git", "add"],
+            ["git", "diff"],
+            ["git", "add"],
+            ["git", "commit"],
+            ["git", "push"],
+            ["gh", "pr"],
+            ["git", "checkout"],
+          ],
+        );
+      }),
+    );
+
     it.effect("publishes a completed run through the GitHub command seam", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -274,22 +597,8 @@ describe("runtime workflows", () => {
         yield* fs.writeFileString(specPath, "Publish this run.\n");
         const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
         const commands: Array<GitHubCommandInput> = [];
-        const runner = recordingGitHubRunner(commands, (input) => {
-          if (
-            input.command === "git" &&
-            input.args.join(" ") === "rev-parse --abbrev-ref HEAD"
-          ) {
-            return { exitCode: 0, stderr: "", stdout: "main\n" };
-          }
-          if (input.command === "gh") {
-            return {
-              exitCode: 0,
-              stderr: "",
-              stdout: "https://github.com/cill-i-am/gaia/pull/123\n",
-            };
-          }
-
-          return { exitCode: 0, stderr: "", stdout: "" };
+        const runner = githubPublishingRunner(commands, {
+          prUrl: "https://github.com/cill-i-am/gaia/pull/123\n",
         });
 
         const pr = yield* publishRunToGitHub(summary.runId, {
@@ -310,8 +619,12 @@ describe("runtime workflows", () => {
         assert.deepEqual(
           commands.map((command) => [command.command, command.args[0]]),
           [
+            ["git", "rev-parse"],
             ["git", "status"],
             ["git", "rev-parse"],
+            ["git", "remote"],
+            ["git", "ls-remote"],
+            ["gh", "auth"],
             ["git", "fetch"],
             ["git", "checkout"],
             ["git", "add"],
@@ -333,11 +646,12 @@ describe("runtime workflows", () => {
         const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
         const error = yield* Effect.flip(
           publishRunToGitHub(summary.runId, {
-            commandRunner: recordingGitHubRunner([], (input) =>
-              input.command === "git" && input.args[0] === "status"
-                ? { exitCode: 0, stderr: "", stdout: "M README.md\n" }
-                : { exitCode: 0, stderr: "", stdout: "" },
-            ),
+            commandRunner: githubPublishingRunner([], {
+              respond: (input) =>
+                input.command === "git" && input.args[0] === "status"
+                  ? { exitCode: 0, stderr: "", stdout: "M README.md\n" }
+                  : undefined,
+            }),
             rootDirectory: cwd,
           }),
         );
@@ -376,28 +690,8 @@ describe("runtime workflows", () => {
         yield* fs.remove(`${paths.workspace}/src/removed.ts`);
 
         const commands: Array<GitHubCommandInput> = [];
-        const runner = recordingGitHubRunner(commands, (input) => {
-          if (
-            input.command === "git" &&
-            input.args.join(" ") === "rev-parse --abbrev-ref HEAD"
-          ) {
-            return { exitCode: 0, stderr: "", stdout: "main\n" };
-          }
-          if (
-            input.command === "git" &&
-            input.args.join(" ").startsWith("diff --cached --quiet")
-          ) {
-            return { exitCode: 1, stderr: "", stdout: "" };
-          }
-          if (input.command === "gh") {
-            return {
-              exitCode: 0,
-              stderr: "",
-              stdout: "https://github.com/cill-i-am/gaia/pull/456\n",
-            };
-          }
-
-          return { exitCode: 0, stderr: "", stdout: "" };
+        const runner = githubPublishingRunner(commands, {
+          prUrl: "https://github.com/cill-i-am/gaia/pull/456\n",
         });
 
         const pr = yield* publishWorkspaceRunToGitHub(summary.runId, {
@@ -429,8 +723,12 @@ describe("runtime workflows", () => {
         assert.deepEqual(
           commands.map((command) => [command.command, command.args[0]]),
           [
+            ["git", "rev-parse"],
             ["git", "status"],
             ["git", "rev-parse"],
+            ["git", "remote"],
+            ["git", "ls-remote"],
+            ["gh", "auth"],
             ["git", "fetch"],
             ["git", "checkout"],
             ["git", "add"],
@@ -461,21 +759,17 @@ describe("runtime workflows", () => {
         });
         const error = yield* Effect.flip(
           publishWorkspaceRunToGitHub(summary.runId, {
-            commandRunner: recordingGitHubRunner([], (input) => {
-              if (
-                input.command === "git" &&
-                input.args.join(" ") === "rev-parse --abbrev-ref HEAD"
-              ) {
-                return { exitCode: 0, stderr: "", stdout: "main\n" };
-              }
-              if (
-                input.command === "git" &&
-                input.args.join(" ").startsWith("diff --cached --quiet")
-              ) {
-                return { exitCode: 0, stderr: "", stdout: "" };
-              }
+            commandRunner: githubPublishingRunner([], {
+              respond: (input) => {
+                if (
+                  input.command === "git" &&
+                  input.args.join(" ").startsWith("diff --cached --quiet")
+                ) {
+                  return { exitCode: 0, stderr: "", stdout: "" };
+                }
 
-              return { exitCode: 0, stderr: "", stdout: "" };
+                return undefined;
+              },
             }),
             rootDirectory: source,
           }),
@@ -592,6 +886,9 @@ describe("runtime workflows", () => {
         });
 
         const snapshot = yield* fs.readFileString(recorded.snapshotPath);
+        const watchState = parseGitHubCiWatchStateJson(
+          JSON.parse(yield* fs.readFileString(recorded.watchStatePath)),
+        );
         const events = yield* fs.readFileString(`${run.runDirectory}/events.jsonl`);
         const relativeSnapshotPath = recorded.snapshotPath.slice(
           run.runDirectory.length + 1,
@@ -602,8 +899,39 @@ describe("runtime workflows", () => {
         assert.isTrue(recorded.terminal);
         assert.include(snapshot, '"status": "passed"');
         assert.include(snapshot, '"attempts": 1');
+        assert.strictEqual(watchState.nextAction, "complete");
+        assert.strictEqual(watchState.lastSnapshotPath, relativeSnapshotPath);
         assert.include(events, '"type":"GITHUB_CHECKS_RECORDED"');
         assert.include(events, `"checksPath":"${relativeSnapshotPath}"`);
+        assert.include(events, '"watchStatePath":"ci-watch-state.json"');
+      }),
+    );
+
+    it.effect("refuses to record GitHub checks while the run store is locked", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Record checks while locked.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        yield* fs.makeDirectory(store.lock);
+
+        const error = yield* Effect.flip(
+          recordGitHubChecks(run.runId, "1", {
+            commandRunner: recordingGitHubRunner([], () => ({
+              exitCode: 0,
+              stderr: "",
+              stdout: "[]",
+            })),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "RunStoreLocked");
+        }
       }),
     );
 
@@ -679,6 +1007,12 @@ describe("runtime workflows", () => {
         assert.strictEqual(recorded.attempts, 2);
         assert.isFalse(recorded.terminal);
         assert.strictEqual(checksCalls, 2);
+
+        const watchState = parseGitHubCiWatchStateJson(
+          JSON.parse(yield* fs.readFileString(recorded.watchStatePath)),
+        );
+        assert.strictEqual(watchState.nextAction, "poll-again");
+        assert.strictEqual(watchState.lastStatus, "pending");
       }),
     );
 
@@ -711,4 +1045,62 @@ function recordingGitHubRunner(
       commands.push(input);
       return respond(input);
     });
+}
+
+function githubPublishingRunner(
+  commands: Array<GitHubCommandInput>,
+  options: Readonly<{
+    prUrl?: string;
+    respond?: (
+      input: GitHubCommandInput,
+    ) => CommandExecutionResult | undefined;
+  }> = {},
+): GitHubCommandRunner {
+  return recordingGitHubRunner(commands, (input) => {
+    const response = options.respond?.(input);
+    if (response !== undefined) {
+      return response;
+    }
+
+    if (input.command === "git") {
+      const args = input.args.join(" ");
+      if (args === "rev-parse --is-inside-work-tree") {
+        return { exitCode: 0, stderr: "", stdout: "true\n" };
+      }
+      if (args === "rev-parse --abbrev-ref HEAD") {
+        return { exitCode: 0, stderr: "", stdout: "main\n" };
+      }
+      if (input.args[0] === "remote") {
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout: "https://github.com/cill-i-am/gaia.git\n",
+        };
+      }
+      if (input.args[0] === "ls-remote") {
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/main\n",
+        };
+      }
+      if (args.startsWith("diff --cached --quiet")) {
+        return { exitCode: 1, stderr: "", stdout: "" };
+      }
+    }
+
+    if (input.command === "gh" && input.args[0] === "auth") {
+      return { exitCode: 0, stderr: "", stdout: "Logged in to github.com\n" };
+    }
+
+    if (input.command === "gh" && input.args[0] === "pr") {
+      return {
+        exitCode: 0,
+        stderr: "",
+        stdout: options.prUrl ?? "https://github.com/cill-i-am/gaia/pull/1\n",
+      };
+    }
+
+    return { exitCode: 0, stderr: "", stdout: "" };
+  });
 }

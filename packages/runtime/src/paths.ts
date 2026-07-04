@@ -8,10 +8,13 @@ export type RunStorageOptions = {
 export type RunStorePaths = {
   readonly gaiaRoot: string;
   readonly latest: string;
+  readonly lock: string;
   readonly runsRoot: string;
 };
 
 export type RunPaths = {
+  readonly browserEvidence: string;
+  readonly ciWatchState: string;
   readonly evidenceReviewMarkdown: string;
   readonly evidenceReviewResult: string;
   readonly events: string;
@@ -26,6 +29,7 @@ export type RunPaths = {
   readonly root: string;
   readonly runsRoot: string;
   readonly snapshots: string;
+  readonly skillManifest: string;
   readonly verificationLog: string;
   readonly verificationResult: string;
   readonly workerLog: string;
@@ -49,6 +53,7 @@ export function makeRunStorePaths(options: RunStorageOptions = {}) {
     return {
       gaiaRoot,
       latest: path.join(gaiaRoot, "latest"),
+      lock: path.join(gaiaRoot, "lock"),
       runsRoot: path.join(gaiaRoot, "runs"),
     } satisfies RunStorePaths;
   });
@@ -62,6 +67,8 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
     const workspace = path.join(root, "workspace");
 
     return {
+      browserEvidence: path.join(root, "browser-evidence.json"),
+      ciWatchState: path.join(root, "ci-watch-state.json"),
       evidenceReviewMarkdown: path.join(root, "evidence-review.md"),
       evidenceReviewResult: path.join(root, "evidence-review.json"),
       events: path.join(root, "events.jsonl"),
@@ -76,6 +83,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       root,
       runsRoot: store.runsRoot,
       snapshots: path.join(root, "snapshots.jsonl"),
+      skillManifest: path.join(root, "skill-manifest.json"),
       verificationLog: path.join(root, "verification.log"),
       verificationResult: path.join(root, "verification-result.json"),
       workerLog: path.join(root, "worker.log"),

@@ -10,6 +10,7 @@ import {
 import { customAlphabet } from "nanoid";
 import { Effect, FileSystem, Path, type Schema } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
+import { writeEmptyBrowserEvidence } from "./browser-evidence.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
   HarnessRunRequest,
@@ -31,6 +32,11 @@ import {
   runReviewer,
 } from "./reviewer.js";
 import { writeReport } from "./report-writer.js";
+import { withRunStoreLock } from "./run-store-lock.js";
+import {
+  writeSkillManifest,
+  type SkillManifestSource,
+} from "./skill-manifest.js";
 import { verifyHarnessOutput } from "./verifier.js";
 import { writeWorkerPlan } from "./worker-plan.js";
 import {
@@ -55,10 +61,15 @@ export type CommandSummary = {
 export type WorkflowOptions = RunStorageOptions & {
   readonly harnessName?: HarnessName;
   readonly processHarness?: ProcessHarnessConfig;
+  readonly skillManifestSource?: SkillManifestSource;
   readonly workspaceSource?: WorkspaceSource;
 };
 
 export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
+  return withRunStoreLock(options, runSpecFileUnlocked(specPath, options));
+}
+
+function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
   return Effect.gen(function* () {
     const runId = yield* generateRunId;
     const paths = yield* makeRunPaths(runId, options);
@@ -89,6 +100,21 @@ export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
       },
       type: "WORKSPACE_PREPARED",
     });
+    const skillManifest = yield* writeSkillManifest({
+      paths,
+      ...(options.skillManifestSource === undefined
+        ? {}
+        : { source: options.skillManifestSource }),
+    }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "preparingWorkspace", error),
+      ),
+    );
+    yield* writeEmptyBrowserEvidence({ paths }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "preparingWorkspace", error),
+      ),
+    );
     const harnessName = options.harnessName ?? defaultHarnessName;
     yield* writeWorkerPlan({ harnessName, paths, runId, spec }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
@@ -141,7 +167,7 @@ export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
     });
     yield* runReviewPhase(runId, paths, spec, "evidence");
     yield* appendEvent(runId, paths, { type: "REPORT_STARTED" });
-    yield* writeReport({ paths, runId, spec });
+    yield* writeReport({ paths, runId, skillManifest, spec });
     const { snapshot } = yield* appendEvent(runId, paths, {
       payload: { reportPath: "report.md" },
       type: "REPORT_COMPLETED",
@@ -247,7 +273,11 @@ export function listRuns(options: WorkflowOptions = {}) {
 
     const summaries: Array<CommandSummary> = [];
     for (const runId of runIds) {
-      summaries.push(yield* statusRun(runId, options));
+      const paths = yield* makeRunPaths(runId, options);
+      const hasEvents = yield* fs.exists(paths.events);
+      if (hasEvents) {
+        summaries.push(yield* statusRun(runId, options));
+      }
     }
 
     return summaries;

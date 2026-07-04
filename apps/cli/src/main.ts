@@ -5,6 +5,8 @@ import type {
   CommandSummary,
   GitHubChecksRecord,
   GitHubChecksSummary,
+  GitHubPublishPreflightSummary,
+  GitHubPublishPreview,
   GitHubPrSummary,
 } from "@gaia/runtime";
 import {
@@ -12,8 +14,11 @@ import {
   inspectGitHubChecks,
   listRuns,
   localDirectoryWorkspaceSource,
+  localSkillManifestSource,
   makeProcessHarnessConfig,
   parseHarnessName,
+  preflightGitHubPublish,
+  previewGitHubPublish,
   publishRunToGitHub,
   publishWorkspaceRunToGitHub,
   recordGitHubChecks,
@@ -47,9 +52,16 @@ const workspaceSource = Flag.string("workspace-source").pipe(
   Flag.withDescription("Copy a local directory into the run workspace."),
   Flag.optional,
 );
+const skillManifest = Flag.string("skill-manifest").pipe(
+  Flag.withDescription("Record a JSON skill manifest as run evidence."),
+  Flag.optional,
+);
 const baseBranch = Flag.string("base").pipe(
   Flag.withDescription("Base branch for a Gaia GitHub pull request."),
   Flag.optional,
+);
+const workspacePreview = Flag.boolean("workspace").pipe(
+  Flag.withDescription("Preview a workspace-change PR instead of evidence-only PR."),
 );
 const waitForTerminal = Flag.boolean("wait").pipe(
   Flag.withDescription("Poll until GitHub checks are no longer pending."),
@@ -72,12 +84,21 @@ const run = Command.make("run", {
   harnessArg,
   harnessCommand,
   json,
+  skillManifest,
   specFile,
   workspaceSource,
 }).pipe(
   Command.withDescription("Start a new Gaia run from a Markdown spec."),
   Command.withHandler(
-    ({ harness, harnessArg, harnessCommand, json, specFile, workspaceSource }) =>
+    ({
+      harness,
+      harnessArg,
+      harnessCommand,
+      json,
+      skillManifest,
+      specFile,
+      workspaceSource,
+    }) =>
       renderEffect(
         runSpecFile(
           resolveInvocationPath(specFile),
@@ -85,6 +106,7 @@ const run = Command.make("run", {
             harness,
             harnessArgs: harnessArg,
             harnessCommand,
+            skillManifest,
             workspaceSource,
           }),
         ),
@@ -126,6 +148,40 @@ const publishPr = Command.make("publish-pr", { baseBranch, json, runId }).pipe(
       publishRunToGitHub(runId, githubPublishOptions({ baseBranch })),
       json,
       renderGitHubPrSummary,
+    ),
+  ),
+);
+
+const preflightGithub = Command.make("preflight-github", {
+  baseBranch,
+  json,
+  runId,
+}).pipe(
+  Command.withDescription("Check whether a completed Gaia run can publish to GitHub."),
+  Command.withHandler(({ baseBranch, json, runId }) =>
+    renderEffect(
+      preflightGitHubPublish(runId, githubPublishOptions({ baseBranch })),
+      json,
+      renderGitHubPreflightSummary,
+    ),
+  ),
+);
+
+const previewPr = Command.make("preview-pr", {
+  baseBranch,
+  json,
+  runId,
+  workspacePreview,
+}).pipe(
+  Command.withDescription("Preview the GitHub PR commands Gaia would run."),
+  Command.withHandler(({ baseBranch, json, runId, workspacePreview }) =>
+    renderEffect(
+      previewGitHubPublish(runId, {
+        ...githubPublishOptions({ baseBranch }),
+        mode: workspacePreview ? "workspace" : "evidence",
+      }),
+      json,
+      renderGitHubPublishPreview,
     ),
   ),
 );
@@ -184,6 +240,8 @@ const cli = Command.make("gaia").pipe(
     resume,
     status,
     list,
+    preflightGithub,
+    previewPr,
     publishPr,
     publishWorkspacePr,
     prChecks,
@@ -202,6 +260,7 @@ function workflowOptions(
     harness?: Option.Option<string>;
     harnessArgs?: ReadonlyArray<string>;
     harnessCommand?: Option.Option<string>;
+    skillManifest?: Option.Option<string>;
     workspaceSource?: Option.Option<string>;
   }> = {},
 ) {
@@ -218,6 +277,10 @@ function workflowOptions(
     input.harnessCommand ?? Option.none(),
     (command) => makeProcessHarnessConfig(command, input.harnessArgs ?? []),
   );
+  const skillManifestSource = Option.map(
+    input.skillManifest ?? Option.none(),
+    (source) => localSkillManifestSource(resolveInvocationPath(source)),
+  );
 
   return {
     rootDirectory,
@@ -227,6 +290,9 @@ function workflowOptions(
     ...(Option.isSome(harnessName) ? { harnessName: harnessName.value } : {}),
     ...(Option.isSome(processHarness)
       ? { processHarness: processHarness.value }
+      : {}),
+    ...(Option.isSome(skillManifestSource)
+      ? { skillManifestSource: skillManifestSource.value }
       : {}),
   };
 }
@@ -343,6 +409,32 @@ function renderGitHubPrSummary(summary: GitHubPrSummary) {
   ].join("\n");
 }
 
+function renderGitHubPreflightSummary(summary: GitHubPublishPreflightSummary) {
+  return [
+    "preflight: passed",
+    `run: ${summary.runId}`,
+    `remote: ${summary.remoteName}`,
+    `base: ${summary.baseBranch}`,
+    `current branch: ${summary.currentBranch}`,
+    ...summary.checks.map((check) => `- ${check.name}: ${check.status}`),
+  ].join("\n");
+}
+
+function renderGitHubPublishPreview(summary: GitHubPublishPreview) {
+  return [
+    "preview: github-pr",
+    `mode: ${summary.mode}`,
+    `run: ${summary.runId}`,
+    `branch: ${summary.branchName}`,
+    `base: ${summary.baseBranch}`,
+    `remote: ${summary.remoteName}`,
+    `source changes: ${summary.sourceChanges}`,
+    `evidence: ${summary.evidencePath}`,
+    "commands:",
+    ...summary.commands.map((command) => `- ${formatCommand(command)}`),
+  ].join("\n");
+}
+
 function renderGitHubChecksSummary(summary: GitHubChecksSummary) {
   const lines = [
     `checks: ${summary.status}`,
@@ -370,6 +462,7 @@ function renderGitHubChecksRecord(record: GitHubChecksRecord) {
     `attempts: ${record.attempts}`,
     `terminal: ${record.terminal}`,
     `snapshot: ${record.snapshotPath}`,
+    `watch state: ${record.watchStatePath}`,
   ];
 
   if (record.checks.length === 0) {
@@ -382,6 +475,18 @@ function renderGitHubChecksRecord(record: GitHubChecksRecord) {
       (check) => `- ${check.name}: ${check.state}`,
     ),
   ].join("\n");
+}
+
+function formatCommand(
+  command: GitHubPublishPreview["commands"][number],
+) {
+  return [command.command, ...command.args.map(formatCommandArgument)].join(" ");
+}
+
+function formatCommandArgument(argument: string) {
+  return /^[A-Za-z0-9_./:=@-]+$/u.test(argument)
+    ? argument
+    : JSON.stringify(argument);
 }
 
 command.pipe(Effect.provide(NodeServices.layer), NodeRuntime.runMain);

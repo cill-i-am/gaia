@@ -17,6 +17,7 @@ export type RunMachineContext = {
   readonly githubChecksPath: string | undefined;
   readonly githubChecksStatus: string | undefined;
   readonly githubPullRequest: string | undefined;
+  readonly githubWatchStatePath: string | undefined;
   readonly lastEventSequence: number;
   readonly planReviewPath: string | undefined;
   readonly reportPath: string | undefined;
@@ -50,6 +51,7 @@ export type RunMachineEvent =
       readonly checksPath: string;
       readonly pullRequest: string;
       readonly status: string;
+      readonly watchStatePath?: string;
     }
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
@@ -59,6 +61,7 @@ const initialContext: RunMachineContext = {
   githubChecksPath: undefined,
   githubChecksStatus: undefined,
   githubPullRequest: undefined,
+  githubWatchStatePath: undefined,
   lastEventSequence: 0,
   planReviewPath: undefined,
   reportPath: undefined,
@@ -179,6 +182,11 @@ export const runMachine = createMachine({
         event.type === "GITHUB_CHECKS_RECORDED"
           ? event.pullRequest
           : undefined,
+      githubWatchStatePath: ({ context, event }) =>
+        event.type === "GITHUB_CHECKS_RECORDED" &&
+        event.watchStatePath !== undefined
+          ? event.watchStatePath
+          : context.githubWatchStatePath,
     }),
     recordReportCompleted: assign({
       reportPath: ({ event }) =>
@@ -256,11 +264,16 @@ export function snapshotFromReplay(events: ReadonlyArray<RunEvent>): RunSnapshot
 function toMachineEvent(event: RunEvent): RunMachineEvent {
   switch (event.type) {
     case "GITHUB_CHECKS_RECORDED":
+      const watchStatePath = getOptionalStringPayload(
+        event,
+        "watchStatePath",
+      );
       return {
         checksPath: getStringPayload(event, "checksPath"),
         pullRequest: getStringPayload(event, "pullRequest"),
         status: getStringPayload(event, "status"),
         type: event.type,
+        ...(watchStatePath === undefined ? {} : { watchStatePath }),
       };
     case "REPORT_COMPLETED":
       return {
@@ -333,6 +346,22 @@ function getBooleanPayload(event: RunEvent, key: string): boolean {
   throw new Error(`Event ${event.type} is missing boolean payload '${key}'.`);
 }
 
+function getOptionalStringPayload(
+  event: RunEvent,
+  key: string,
+): string | undefined {
+  const value = event.payload[key];
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  throw new Error(`Event ${event.type} has invalid string payload '${key}'.`);
+}
+
 function getFailureStagePayload(event: RunEvent, key: string) {
   const value = getStringPayload(event, key);
   return Schema.decodeUnknownSync(FailureStageSchema)(value);
@@ -359,6 +388,9 @@ function snapshotContext(
   }
   if (context.githubPullRequest !== undefined) {
     output.githubPullRequest = context.githubPullRequest;
+  }
+  if (context.githubWatchStatePath !== undefined) {
+    output.githubWatchStatePath = context.githubWatchStatePath;
   }
   if (context.planReviewPath !== undefined) {
     output.planReviewPath = context.planReviewPath;

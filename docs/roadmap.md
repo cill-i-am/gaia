@@ -190,24 +190,26 @@ Non-goals:
 Prioritize no-harness slices in this order until a real Codex harness is
 available:
 
-1. **Run store concurrency policy**: decide whether local runs take a lock,
-   stop updating `.gaia/latest` concurrently, or move latest/listing onto an
-   append-only run index before live worker parallelism.
-2. **Repository preflight checks**: verify clean worktree, `git`, `gh`, remote,
-   base branch, auth status, and Gaia run readiness before any mutating command.
-3. **Dry-run PR previews**: show the branch name, base branch, evidence path,
-   staged-source claim, and exact commands Gaia would run without mutating git
-   or GitHub.
-4. **Process harness contract enrichment**: make the current local harness
-   adapter stricter about declared output artifacts, changed workspace files,
-   exit evidence, and environment contract before swapping in Codex.
-5. **Skill bundle manifest**: record which portable skills a run should load,
-   their source repo/path, and their version or commit, without installing them
-   automatically yet.
-6. **Read-only browser evidence shape**: define the artifact contract for future
-   browser screenshots/logs before live browser automation is wired in.
-7. **CI watcher model**: extend the existing check snapshot command into a
-   resumable model before adding a background daemon.
+1. **Run store concurrency policy**: completed. Gaia now uses `.gaia/lock` to
+   serialize local run-store mutations.
+2. **Repository preflight checks**: completed. `preflight-github` verifies clean
+   worktree, git repository, current branch, remote, base branch, auth status,
+   and completed-run readiness before PR publishing.
+3. **Dry-run PR previews**: completed. `preview-pr` shows branch, base,
+   evidence path, source-change claim, and exact external commands without
+   mutating git or GitHub.
+4. **Process harness contract enrichment**: completed. The process harness now
+   has a versioned environment contract, validates declared workspace output
+   artifacts, records changed workspace files, and persists exit evidence.
+5. **Skill bundle manifest**: completed. `gaia run --skill-manifest <path>`
+   records a normalized pinned manifest with source repo/path and version or
+   commit, without installing skills automatically.
+6. **Read-only browser evidence shape**: completed. Runs now write typed
+   `browser-evidence.json` with `not-collected` status so future browser
+   screenshots/logs have a stable artifact contract.
+7. **CI watcher model**: completed. GitHub check recording now writes
+   `ci-watch-state.json` with latest snapshot, status, terminal flag, and next
+   action before any background daemon exists.
 
 - multi-harness support through AI SDK HarnessAgent;
 - skill bundle installation and versioning;

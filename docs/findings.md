@@ -242,3 +242,185 @@ Verification:
   application, and still preserves it in PR evidence.
 - Runtime test proves unchanged workspaces fail with typed
   `WorkspacePrNoChanges`.
+
+## Slice 6A: Run Store Concurrency Policy
+
+Outcome: Gaia serializes local run-store mutations with `.gaia/lock`. New runs
+and GitHub check snapshot recording acquire the lock before mutating `.gaia/`
+and release it when the mutation finishes. If the lock already exists, Gaia
+fails fast with recoverable `RunStoreLocked`.
+
+Findings:
+
+- This is intentionally smaller than SQLite, a durable scheduler, or a run
+  index. The only current correctness problem is concurrent local mutation of
+  `.gaia/latest` and event/check evidence.
+- Read-only commands remain unlocked. They can inspect completed or partially
+  written runs without becoming part of mutation sequencing.
+- The lock is a local directory, so acquisition uses the filesystem's atomic
+  directory creation behavior and stays portable enough for the current local
+  prototype.
+- Stale-lock recovery is deferred. If a process is killed while holding the
+  lock, the user can inspect/remove `.gaia/lock`; Gaia should grow a safer
+  recovery policy before background workers or daemons exist.
+
+Verification:
+
+- Runtime test proves successful runs remove `.gaia/lock`.
+- Runtime test proves a pre-existing lock rejects new runs with
+  `RunStoreLocked`.
+- Runtime test proves GitHub check recording also respects the lock.
+
+## Slice 6B: GitHub Publish Preflight
+
+Outcome: Gaia can run `gaia preflight-github <run-id>` to verify GitHub publish
+readiness without mutating local git state or GitHub. The same preflight now
+runs before both `publish-pr` and `publish-workspace-pr`.
+
+Findings:
+
+- Preflight remains read-only. It does not fetch, checkout, commit, push, or
+  open a PR.
+- The checks are intentionally concrete: completed run, git repository, clean
+  worktree, current branch, configured remote, remote base branch, and GitHub
+  CLI authentication.
+- Specific failure codes are more useful than a generic command failure for
+  setup problems: for example `GitBaseBranchUnavailable`,
+  `GitRemoteUnavailable`, and `GitHubAuthUnavailable`.
+- Publish commands still run their mutating commands after preflight. Preflight
+  is a safety gate, not a replacement for command error handling.
+
+Verification:
+
+- Runtime test proves successful preflight command sequencing through the
+  recording GitHub command seam.
+- Runtime test proves a missing remote base branch fails with
+  `GitBaseBranchUnavailable`.
+- Existing publish tests now prove preflight runs before mutating Git commands.
+
+## Slice 6C: GitHub PR Dry-Run Preview
+
+Outcome: Gaia can run `gaia preview-pr <run-id>` for evidence-only PRs and
+`gaia preview-pr <run-id> --workspace` for workspace-change PRs. The command
+runs GitHub preflight, then prints a typed preview with branch, base, remote,
+evidence path, source-change claim, and the external commands Gaia would run.
+
+Findings:
+
+- Preview reuses preflight, so it catches setup issues while remaining
+  read-only.
+- Evidence-only previews claim `evidence-only` source changes and omit
+  workspace staging commands.
+- Workspace previews claim `workspace-required` and include the same source
+  staging and `git diff --cached --quiet` commands Gaia uses to reject empty
+  workspace PRs.
+- The preview lists external `git`/`gh` commands. Filesystem operations such as
+  copying evidence and applying a workspace are Gaia runtime behavior, not shell
+  commands, so they are described by mode/source/evidence fields instead.
+
+Verification:
+
+- Runtime test proves evidence-only preview command shape.
+- Runtime test proves workspace preview command shape includes source staging
+  and cached diff checks.
+- Runtime/CLI type checks passed after adding the command.
+
+## Slice 6D: Process Harness Contract Enrichment
+
+Outcome: Gaia now treats the local process harness as a stricter adapter
+contract. Process runs receive `GAIA_HARNESS_CONTRACT_VERSION`, normalized
+results include `exitCode` and `changedWorkspacePaths`, and Gaia validates
+declared `workspace/*` output artifacts before verification.
+
+Findings:
+
+- The process harness is still a bridge, but it should fail like a real adapter.
+  Missing declared artifacts now become typed Gaia runtime failures instead of
+  later verifier surprises.
+- Changed workspace paths are computed by hashing the isolated workspace before
+  and after harness execution. This keeps the claim local and deterministic
+  without parsing git output.
+- The environment contract gives future Codex, Claude, OpenCode, or AI SDK
+  adapters a clear minimum shape without coupling Gaia to one vendor yet.
+
+Verification:
+
+- Runtime test proves fake harness evidence includes changed workspace paths and
+  exit evidence.
+- Runtime test proves process harness evidence includes a generated workspace
+  file, `output.txt`, and exit code `0`.
+- Runtime/CLI type checks passed after adding the contract fields.
+
+## Slice 6E: Skill Bundle Manifest
+
+Outcome: Gaia can record a portable skill bundle manifest for a run with
+`gaia run --skill-manifest <path>`. The manifest is normalized into
+`skill-manifest.json`, selected skill names are surfaced in `report.json` and
+`report.md`, and GitHub PR evidence copies the manifest with the rest of the
+run artifacts.
+
+Findings:
+
+- This slice should record intent, not install tools. Automatic skill
+  installation would add network, auth, and registry behavior before Gaia has a
+  real worker harness to consume it.
+- Pinned skills are part of reproducibility. Gaia rejects manifest entries that
+  do not include either a `version` or `commit`.
+- The manifest stays outside the lifecycle state machine for now. It is run
+  evidence consumed by planning/reporting, not a new run state.
+
+Verification:
+
+- Runtime test proves a pinned skill manifest is written into run evidence and
+  reflected in both report formats.
+- Runtime test proves unpinned entries fail with typed
+  `SkillManifestEntryUnpinned` and leave the run failed.
+- Runtime/CLI type checks passed after adding the command flag and schema.
+
+## Slice 6F: Browser Evidence Shape
+
+Outcome: Gaia now writes a typed `browser-evidence.json` artifact for every
+run. The current status is `not-collected`; the shape already reserves page
+URLs, screenshot evidence, and console messages for future Browser/Chrome
+automation.
+
+Findings:
+
+- Browser evidence should be a stable artifact before it is live automation.
+  This keeps report and PR evidence layout stable when capture is introduced.
+- Empty evidence is explicit, not absent. A missing browser artifact would make
+  it hard to distinguish "not collected yet" from "Gaia failed to write the
+  contract."
+- Live browser control remains deferred. This slice adds no browser dependency,
+  no screenshots, and no web navigation.
+
+Verification:
+
+- Runtime test parses `browser-evidence.json` through the exported Effect Schema
+  codec and proves it records `not-collected` with no pages.
+- Runtime test proves the report includes `browser-evidence.json`.
+- Runtime/CLI type checks passed after adding the artifact.
+
+## Slice 6G: CI Watcher Model
+
+Outcome: Gaia now writes `ci-watch-state.json` whenever GitHub checks are
+recorded. The state captures the latest check snapshot, status, terminal flag,
+attempt count, and next action: `complete` for terminal states or `poll-again`
+for pending checks after bounded waiting.
+
+Findings:
+
+- A background daemon should not invent its own memory-only truth. It should
+  resume from event log plus `ci-watch-state.json`.
+- `checks --wait` remains bounded and explicit. The new state model does not
+  add daemon behavior, merge authority, or hidden polling.
+- The event log now records the watch state path when available, while replay
+  remains compatible with older `GITHUB_CHECKS_RECORDED` events that do not have
+  that payload.
+
+Verification:
+
+- Core tests pass with optional watch-state replay payloads.
+- Runtime test proves passed checks write `nextAction: "complete"`.
+- Runtime test proves exhausted pending checks write `nextAction: "poll-again"`.
+- Core/runtime/CLI type checks passed after adding the model.
