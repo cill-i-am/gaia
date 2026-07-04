@@ -7,6 +7,7 @@ import { GaiaRuntimeError } from "./errors.js";
 import {
   inspectGitHubChecks,
   publishRunToGitHub,
+  recordGitHubChecks,
   type CommandExecutionResult,
   type GitHubCommandInput,
   type GitHubCommandRunner,
@@ -423,6 +424,121 @@ describe("runtime workflows", () => {
 
         assert.strictEqual(passed.status, "passed");
         assert.strictEqual(failed.status, "failed");
+      }),
+    );
+
+    it.effect("records a GitHub check snapshot against a completed run", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Record checks for this run.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const recorded = yield* recordGitHubChecks(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify([
+              {
+                link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                name: "check",
+                state: "SUCCESS",
+                workflow: "CI",
+              },
+            ]),
+          })),
+          rootDirectory: cwd,
+        });
+
+        const snapshot = yield* fs.readFileString(recorded.snapshotPath);
+        const events = yield* fs.readFileString(`${run.runDirectory}/events.jsonl`);
+        const relativeSnapshotPath = recorded.snapshotPath.slice(
+          run.runDirectory.length + 1,
+        );
+
+        assert.strictEqual(recorded.status, "passed");
+        assert.strictEqual(recorded.attempts, 1);
+        assert.isTrue(recorded.terminal);
+        assert.include(snapshot, '"status": "passed"');
+        assert.include(snapshot, '"attempts": 1');
+        assert.include(events, '"type":"GITHUB_CHECKS_RECORDED"');
+        assert.include(events, `"checksPath":"${relativeSnapshotPath}"`);
+      }),
+    );
+
+    it.effect("waits for pending GitHub checks before recording", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Wait for checks for this run.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        let checksCalls = 0;
+
+        const recorded = yield* recordGitHubChecks(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], () => {
+            checksCalls += 1;
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify([
+                {
+                  link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                  name: "check",
+                  state: checksCalls === 1 ? "PENDING" : "SUCCESS",
+                  workflow: "CI",
+                },
+              ]),
+            };
+          }),
+          pollInterval: "0 millis",
+          rootDirectory: cwd,
+          waitForTerminal: true,
+        });
+
+        assert.strictEqual(recorded.status, "passed");
+        assert.strictEqual(recorded.attempts, 2);
+        assert.isTrue(recorded.terminal);
+        assert.strictEqual(checksCalls, 2);
+      }),
+    );
+
+    it.effect("records pending checks when bounded waiting is exhausted", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Bound waiting for checks.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        let checksCalls = 0;
+
+        const recorded = yield* recordGitHubChecks(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], () => {
+            checksCalls += 1;
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify([
+                {
+                  link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                  name: "check",
+                  state: "PENDING",
+                  workflow: "CI",
+                },
+              ]),
+            };
+          }),
+          maxAttempts: 2,
+          pollInterval: "0 millis",
+          rootDirectory: cwd,
+          waitForTerminal: true,
+        });
+
+        assert.strictEqual(recorded.status, "pending");
+        assert.strictEqual(recorded.attempts, 2);
+        assert.isFalse(recorded.terminal);
+        assert.strictEqual(checksCalls, 2);
       }),
     );
 

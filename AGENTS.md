@@ -11,7 +11,7 @@ and one-off package execution. Do not use npm, yarn, or Bun unless the user asks
 - `packages/runtime` owns the Effect filesystem runtime: durable run storage,
   event append/read, worker planning, harness execution, read-only review
   evidence, verification, reporting, GitHub evidence publishing/check
-  inspection, and command workflows.
+  inspection/check snapshot recording, and command workflows.
 - `docs/*` contains human and agent-facing design notes for the prototype.
 - `.gaia/*` is generated local run state and must not be committed.
 
@@ -55,6 +55,7 @@ pnpm gaia list
 pnpm gaia resume <run-id>
 pnpm gaia run examples/specs/smoke.md --json
 pnpm gaia pr-checks 1 --json
+pnpm gaia checks <run-id> 1 --json
 ```
 
 Delete generated `.gaia/` run state after smoke testing unless the user asks to
@@ -70,6 +71,6 @@ creates a durable run directory, writes a worker plan, runs a harness, records
 read-only review evidence, verifies one artifact, writes reports, and can replay
 completed runs from the event log.
 
-Anything involving real coding agents, worktrees, external services, browser
-testing, live reviewer threads, CI check watching, or merge/deploy automation is
-a future slice.
+Anything involving real coding agents, worktrees, browser testing, live reviewer
+threads, background CI check watching, or merge/deploy automation is a future
+slice.

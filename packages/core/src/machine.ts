@@ -14,6 +14,9 @@ import type { RunId } from "./run-id.js";
 export type RunMachineContext = {
   readonly evidenceReviewPath: string | undefined;
   readonly failure: GaiaFailure | undefined;
+  readonly githubChecksPath: string | undefined;
+  readonly githubChecksStatus: string | undefined;
+  readonly githubPullRequest: string | undefined;
   readonly lastEventSequence: number;
   readonly planReviewPath: string | undefined;
   readonly reportPath: string | undefined;
@@ -42,11 +45,20 @@ export type RunMachineEvent =
     }
   | { readonly type: "REPORT_STARTED" }
   | { readonly type: "REPORT_COMPLETED"; readonly reportPath: string }
+  | {
+      readonly type: "GITHUB_CHECKS_RECORDED";
+      readonly checksPath: string;
+      readonly pullRequest: string;
+      readonly status: string;
+    }
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
   evidenceReviewPath: undefined,
   failure: undefined,
+  githubChecksPath: undefined,
+  githubChecksStatus: undefined,
+  githubPullRequest: undefined,
   lastEventSequence: 0,
   planReviewPath: undefined,
   reportPath: undefined,
@@ -68,6 +80,9 @@ export const runMachine = createMachine({
   states: {
     completed: {
       on: {
+        GITHUB_CHECKS_RECORDED: {
+          actions: "recordGitHubChecks",
+        },
         RUN_FAILED: {
           actions: "recordFailure",
           target: "failed",
@@ -153,6 +168,18 @@ export const runMachine = createMachine({
       failure: ({ event }) =>
         event.type === "RUN_FAILED" ? event.failure : undefined,
     }),
+    recordGitHubChecks: assign({
+      githubChecksPath: ({ event }) =>
+        event.type === "GITHUB_CHECKS_RECORDED"
+          ? event.checksPath
+          : undefined,
+      githubChecksStatus: ({ event }) =>
+        event.type === "GITHUB_CHECKS_RECORDED" ? event.status : undefined,
+      githubPullRequest: ({ event }) =>
+        event.type === "GITHUB_CHECKS_RECORDED"
+          ? event.pullRequest
+          : undefined,
+    }),
     recordReportCompleted: assign({
       reportPath: ({ event }) =>
         event.type === "REPORT_COMPLETED" ? event.reportPath : undefined,
@@ -228,6 +255,13 @@ export function snapshotFromReplay(events: ReadonlyArray<RunEvent>): RunSnapshot
 
 function toMachineEvent(event: RunEvent): RunMachineEvent {
   switch (event.type) {
+    case "GITHUB_CHECKS_RECORDED":
+      return {
+        checksPath: getStringPayload(event, "checksPath"),
+        pullRequest: getStringPayload(event, "pullRequest"),
+        status: getStringPayload(event, "status"),
+        type: event.type,
+      };
     case "REPORT_COMPLETED":
       return {
         reportPath: getStringPayload(event, "reportPath"),
@@ -316,6 +350,15 @@ function snapshotContext(
 
   if (context.evidenceReviewPath !== undefined) {
     output.evidenceReviewPath = context.evidenceReviewPath;
+  }
+  if (context.githubChecksPath !== undefined) {
+    output.githubChecksPath = context.githubChecksPath;
+  }
+  if (context.githubChecksStatus !== undefined) {
+    output.githubChecksStatus = context.githubChecksStatus;
+  }
+  if (context.githubPullRequest !== undefined) {
+    output.githubPullRequest = context.githubPullRequest;
   }
   if (context.planReviewPath !== undefined) {
     output.planReviewPath = context.planReviewPath;

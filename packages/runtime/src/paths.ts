@@ -16,6 +16,7 @@ export type RunPaths = {
   readonly evidenceReviewResult: string;
   readonly events: string;
   readonly gaiaRoot: string;
+  readonly githubChecks: string;
   readonly input: string;
   readonly latest: string;
   readonly planReviewMarkdown: string;
@@ -65,6 +66,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       evidenceReviewResult: path.join(root, "evidence-review.json"),
       events: path.join(root, "events.jsonl"),
       gaiaRoot: store.gaiaRoot,
+      githubChecks: path.join(root, "github-checks"),
       input: path.join(root, "input.md"),
       latest: store.latest,
       planReviewMarkdown: path.join(root, "plan-review.md"),

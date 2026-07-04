@@ -132,12 +132,14 @@ Completed behavior:
 - open a draft PR with the Gaia report as the body;
 - restore the original local branch;
 - inspect PR checks and normalize them to `no-checks`, `pending`, `passed`, or
-  `failed`.
+  `failed`;
+- attach GitHub check-state snapshots to completed Gaia runs;
+- poll GitHub checks on demand until they leave `pending`, with a bounded fixed
+  interval.
 
 Remaining behavior:
 
-- attach check-state evidence to Gaia runs;
-- poll/watch GitHub checks over time when the target repo has checks to watch;
+- background check watching over time when the target repo has checks to watch;
 - attach richer report/evidence comments once PR comments are needed;
 - apply real worker output to a target repository instead of evidence-only
   branches.

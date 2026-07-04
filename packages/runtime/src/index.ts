@@ -2,6 +2,8 @@ export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 export { appendEvent, loadRun, readEvents, type AppendEventInput } from "./event-store.js";
 export {
   GitHubCheckRun,
+  GitHubChecksRecord,
+  GitHubChecksSnapshot,
   GitHubChecksStatusSchema,
   GitHubChecksSummary,
   GitHubPrSummary,
@@ -9,7 +11,9 @@ export {
   inspectGitHubChecks,
   parseGitHubPullRequestSelector,
   publishRunToGitHub,
+  recordGitHubChecks,
   type CommandExecutionResult,
+  type GitHubCheckRecordOptions,
   type GitHubChecksStatus,
   type GitHubCommandInput,
   type GitHubCommandRunner,

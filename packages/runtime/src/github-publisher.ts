@@ -1,13 +1,32 @@
 import { RunIdSchema, type RunId } from "@gaia/core";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Duration, Effect, FileSystem, Path, Schedule, Schema } from "effect";
 import { execFile } from "node:child_process";
+import { appendEvent, readEvents } from "./event-store.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
-import { makeRunPaths, type RunPaths, type RunStorageOptions } from "./paths.js";
+import {
+  makeRunPaths,
+  runRelative,
+  type RunPaths,
+  type RunStorageOptions,
+} from "./paths.js";
 import { statusRun } from "./workflows.js";
 
 const commandMaxBufferBytes = 10 * 1024 * 1024;
 const defaultRemoteName = "origin";
 const defaultBaseBranch = "main";
+const defaultGitHubCheckPollAttempts = 30;
+const defaultGitHubCheckPollInterval = "5 seconds";
+
+const GitHubCheckPollAttemptCountSchema = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(1),
+).pipe(Schema.brand("GitHubCheckPollAttemptCount"));
+
+type GitHubCheckPollAttemptCount =
+  typeof GitHubCheckPollAttemptCountSchema.Type;
+
+const parseGitHubCheckPollAttemptCount = Schema.decodeUnknownSync(
+  GitHubCheckPollAttemptCountSchema,
+);
 
 export const GitHubPullRequestSelectorSchema = Schema.NonEmptyString.pipe(
   Schema.brand("GitHubPullRequestSelector"),
@@ -46,6 +65,31 @@ export class GitHubChecksSummary extends Schema.Class<GitHubChecksSummary>(
   status: GitHubChecksStatusSchema,
 }) {}
 
+export class GitHubChecksSnapshot extends Schema.Class<GitHubChecksSnapshot>(
+  "GitHubChecksSnapshot",
+)({
+  attempts: GitHubCheckPollAttemptCountSchema,
+  checks: Schema.Array(GitHubCheckRun),
+  observedAt: Schema.NonEmptyString,
+  pr: GitHubPullRequestSelectorSchema,
+  runId: RunIdSchema,
+  status: GitHubChecksStatusSchema,
+  terminal: Schema.Boolean,
+}) {}
+
+export class GitHubChecksRecord extends Schema.Class<GitHubChecksRecord>(
+  "GitHubChecksRecord",
+)({
+  attempts: GitHubCheckPollAttemptCountSchema,
+  checks: Schema.Array(GitHubCheckRun),
+  observedAt: Schema.NonEmptyString,
+  pr: GitHubPullRequestSelectorSchema,
+  runId: RunIdSchema,
+  snapshotPath: Schema.NonEmptyString,
+  status: GitHubChecksStatusSchema,
+  terminal: Schema.Boolean,
+}) {}
+
 export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
   "GitHubPrSummary",
 )({
@@ -78,6 +122,21 @@ export type GitHubPublishOptions = RunStorageOptions & {
   readonly commandRunner?: GitHubCommandRunner;
   readonly remoteName?: string;
 };
+
+export type GitHubCheckRecordOptions = RunStorageOptions & {
+  readonly commandRunner?: GitHubCommandRunner;
+  readonly maxAttempts?: number;
+  readonly pollInterval?: Duration.Input;
+  readonly waitForTerminal?: boolean;
+};
+
+class GitHubChecksPending extends Schema.TaggedErrorClass<GitHubChecksPending>()(
+  "GitHubChecksPending",
+  {
+    attempts: GitHubCheckPollAttemptCountSchema,
+    summary: GitHubChecksSummary,
+  },
+) {}
 
 const nodeCommandRunner: GitHubCommandRunner = (input) =>
   Effect.tryPromise({
@@ -232,6 +291,66 @@ export function inspectGitHubChecks(
       pr,
       status: classifyChecks(checks),
     });
+  });
+}
+
+export function recordGitHubChecks(
+  runIdInput: string,
+  prInput: string,
+  options: GitHubCheckRecordOptions = {},
+) {
+  return Effect.gen(function* () {
+    const rootDirectory = options.rootDirectory ?? ".";
+    const runner = options.commandRunner ?? nodeCommandRunner;
+    const run = yield* statusRun(runIdInput, { rootDirectory });
+
+    if (run.status !== "completed") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "RunNotCompleted",
+          message: `Run ${run.runId} must be completed before recording GitHub checks.`,
+          recoverable: false,
+        }),
+      );
+    }
+
+    const attempts = yield* parseGitHubCheckPollAttemptCountEffect(
+      options.maxAttempts ?? defaultGitHubCheckPollAttempts,
+    );
+    const observed = options.waitForTerminal === true
+      ? yield* waitForTerminalGitHubChecks(prInput, {
+          attempts,
+          pollInterval: options.pollInterval ?? defaultGitHubCheckPollInterval,
+          rootDirectory,
+          runner,
+        })
+      : {
+          attempts: parseGitHubCheckPollAttemptCount(1),
+          summary: yield* inspectGitHubChecks(prInput, {
+            commandRunner: runner,
+            rootDirectory,
+          }),
+        };
+    const paths = yield* makeRunPaths(run.runId, { rootDirectory });
+    const recorded = yield* writeGitHubChecksSnapshot(paths, {
+      attempts: observed.attempts,
+      runId: run.runId,
+      summary: observed.summary,
+    });
+    const checksPath = runRelative(paths, recorded.snapshotPath);
+
+    yield* appendEvent(run.runId, paths, {
+      payload: {
+        attempts: recorded.attempts,
+        checksPath,
+        pullRequest: recorded.pr,
+        status: recorded.status,
+        terminal: recorded.terminal,
+      },
+      type: "GITHUB_CHECKS_RECORDED",
+    });
+
+    return recorded;
   });
 }
 
@@ -409,6 +528,118 @@ function parseGitHubPullRequestSelectorEffect(input: string) {
   });
 }
 
+function parseGitHubCheckPollAttemptCountEffect(input: number) {
+  return Effect.try({
+    try: () => parseGitHubCheckPollAttemptCount(input),
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "InvalidGitHubCheckPollAttempts",
+        message: "GitHub check polling attempts must be a positive integer.",
+        recoverable: false,
+      }),
+  });
+}
+
+function waitForTerminalGitHubChecks(
+  prInput: string,
+  input: Readonly<{
+    attempts: GitHubCheckPollAttemptCount;
+    pollInterval: Duration.Input;
+    rootDirectory: string;
+    runner: GitHubCommandRunner;
+  }>,
+) {
+  let attempt = 0;
+  const inspectTerminal = Effect.gen(function* () {
+    attempt += 1;
+    const attempts = parseGitHubCheckPollAttemptCount(attempt);
+    const summary = yield* inspectGitHubChecks(prInput, {
+      commandRunner: input.runner,
+      rootDirectory: input.rootDirectory,
+    });
+
+    if (isTerminalGitHubChecksStatus(summary.status)) {
+      return { attempts, summary };
+    }
+
+    return yield* Effect.fail(
+      GitHubChecksPending.make({ attempts, summary }),
+    );
+  });
+
+  return inspectTerminal.pipe(
+    Effect.retry({
+      schedule: Schedule.spaced(input.pollInterval),
+      times: input.attempts - 1,
+    }),
+    Effect.catchTag("GitHubChecksPending", (pending) =>
+      Effect.succeed({
+        attempts: pending.attempts,
+        summary: pending.summary,
+      }),
+    ),
+  );
+}
+
+function writeGitHubChecksSnapshot(
+  paths: RunPaths,
+  input: Readonly<{
+    attempts: GitHubCheckPollAttemptCount;
+    runId: RunId;
+    summary: GitHubChecksSummary;
+  }>,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const events = yield* readEvents(paths);
+    const nextSequence = events.length + 1;
+    const snapshotPath = path.join(
+      paths.githubChecks,
+      `checks-${nextSequence}.json`,
+    );
+    const observedAt = new Date().toISOString();
+    const snapshot = GitHubChecksSnapshot.make({
+      attempts: input.attempts,
+      checks: input.summary.checks,
+      observedAt,
+      pr: input.summary.pr,
+      runId: input.runId,
+      status: input.summary.status,
+      terminal: isTerminalGitHubChecksStatus(input.summary.status),
+    });
+
+    yield* fs.makeDirectory(paths.githubChecks, { recursive: true });
+    yield* fs.writeFileString(
+      snapshotPath,
+      `${JSON.stringify(Schema.encodeSync(GitHubChecksSnapshot)(snapshot), null, 2)}\n`,
+    );
+
+    return GitHubChecksRecord.make({
+      attempts: snapshot.attempts,
+      checks: snapshot.checks,
+      observedAt: snapshot.observedAt,
+      pr: snapshot.pr,
+      runId: snapshot.runId,
+      snapshotPath,
+      status: snapshot.status,
+      terminal: snapshot.terminal,
+    });
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "GitHubChecksSnapshotWriteFailed",
+          message: "Gaia could not write GitHub check evidence.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
 function isNoChecksOutput(result: CommandExecutionResult) {
   const output = `${result.stdout}\n${result.stderr}`;
   return output.includes("no checks reported");
@@ -458,6 +689,10 @@ function classifyChecks(
   }
 
   return "failed";
+}
+
+function isTerminalGitHubChecksStatus(status: GitHubChecksStatus) {
+  return status !== "pending";
 }
 
 function isPendingCheckState(state: string) {

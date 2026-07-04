@@ -25,6 +25,8 @@ before any real coding harness or external integration is introduced.
 14. Can publish completed run evidence as a draft GitHub PR.
 15. Can inspect GitHub PR checks as `no-checks`, `pending`, `passed`, or
     `failed`.
+16. Can record a GitHub check snapshot against a completed run, optionally
+    polling until checks are no longer pending.
 
 ## What It Does Not Do Yet
 
@@ -34,7 +36,7 @@ Prototype 1 intentionally excludes:
 - target repository checkout or worktree management;
 - skill bundle installation/selection;
 - live reviewer/spec worker threads;
-- durable GitHub check watching attached to runs or merges;
+- background GitHub check watching attached to runs or merges;
 - Linear issue intake or blocker graphs;
 - browser or deployment evidence;
 - SQLite run indexing;
@@ -89,6 +91,8 @@ pnpm gaia list
 pnpm gaia resume <run-id>
 pnpm gaia publish-pr <run-id>
 pnpm gaia pr-checks <pr-number-or-url>
+pnpm gaia checks <run-id> <pr-number-or-url>
+pnpm gaia checks <run-id> <pr-number-or-url> --wait
 ```
 
 Machine-readable output:
@@ -139,6 +143,8 @@ A completed run looks like this:
       evidence-review.json
       report.md
       report.json
+      github-checks/
+        checks-<event-sequence>.json
 ```
 
 `events.jsonl` is the source of truth. Every line is a parsed `RunEvent`.
@@ -163,7 +169,14 @@ worktree.
 
 `pr-checks` queries GitHub for a pull request's reported checks and normalizes
 the result to one of four states: `no-checks`, `pending`, `passed`, or `failed`.
-It is read-only and does not mutate the run log yet.
+It is read-only and does not mutate the run log.
+
+`checks` records a check snapshot against a completed Gaia run. Each snapshot is
+written to `github-checks/checks-<event-sequence>.json`, then appended to
+`events.jsonl` as `GITHUB_CHECKS_RECORDED`. By default it records the current
+GitHub state once. With `--wait`, it polls on a bounded fixed interval until the
+state is no longer `pending`, then records the final observed state. It is still
+not a background watcher.
 
 ## Lifecycle
 
@@ -181,6 +194,7 @@ Prototype 1 uses an XState machine in `@gaia/core`.
 | `VERIFICATION_COMPLETED` | Record verification evidence and move to reporting. |
 | `REPORT_STARTED` | Mark that report writing began. |
 | `REPORT_COMPLETED` | Record report evidence and complete the run. |
+| `GITHUB_CHECKS_RECORDED` | Attach GitHub check evidence to an already completed run. |
 | `RUN_FAILED` | Record a typed failure and move to failed. |
 
 Resume is intentionally conservative. It replays completed runs and validates the
@@ -237,6 +251,7 @@ Boundary values are parsed before use:
 - worker plans are emitted through `WorkerPlan`;
 - reviewer output is emitted through `ReviewResult`;
 - reports are emitted through `RunReport`.
+- GitHub check snapshots are emitted through `GitHubChecksSnapshot`.
 
 The runtime persists plain JSON values. It does not serialize rich errors,
 functions, XState actors, Effect fibers, or platform services.
@@ -260,6 +275,7 @@ Runtime tests cover:
 - normalized harness evidence and unknown harness failures;
 - GitHub publishing command sequencing through a recording command runner;
 - GitHub check-state classification through a recording command runner;
+- run-scoped GitHub check snapshot recording and bounded wait polling;
 - verification failure when a worker artifact is missing.
 
 Tests use temp run roots instead of the repository `.gaia/` directory.

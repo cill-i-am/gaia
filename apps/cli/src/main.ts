@@ -3,6 +3,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type {
   CommandSummary,
+  GitHubChecksRecord,
   GitHubChecksSummary,
   GitHubPrSummary,
 } from "@gaia/runtime";
@@ -14,6 +15,7 @@ import {
   makeProcessHarnessConfig,
   parseHarnessName,
   publishRunToGitHub,
+  recordGitHubChecks,
   resumeRun,
   runSpecFile,
   statusRun,
@@ -47,6 +49,9 @@ const workspaceSource = Flag.string("workspace-source").pipe(
 const baseBranch = Flag.string("base").pipe(
   Flag.withDescription("Base branch for a Gaia GitHub pull request."),
   Flag.optional,
+);
+const waitForTerminal = Flag.boolean("wait").pipe(
+  Flag.withDescription("Poll until GitHub checks are no longer pending."),
 );
 const harness = Flag.string("harness").pipe(
   Flag.withDescription("Select the worker harness adapter."),
@@ -135,9 +140,36 @@ const prChecks = Command.make("pr-checks", { json, pullRequest }).pipe(
   ),
 );
 
+const checks = Command.make("checks", {
+  runId,
+  pullRequest,
+  json,
+  waitForTerminal,
+}).pipe(
+  Command.withDescription("Record GitHub check evidence against a Gaia run."),
+  Command.withHandler(({ json, pullRequest, runId, waitForTerminal }) =>
+    renderEffect(
+      recordGitHubChecks(runId, pullRequest, {
+        rootDirectory: invocationRoot(),
+        waitForTerminal,
+      }),
+      json,
+      renderGitHubChecksRecord,
+    ),
+  ),
+);
+
 const cli = Command.make("gaia").pipe(
   Command.withDescription("Gaia software-factory control plane prototype."),
-  Command.withSubcommands([run, resume, status, list, publishPr, prChecks]),
+  Command.withSubcommands([
+    run,
+    resume,
+    status,
+    list,
+    publishPr,
+    prChecks,
+    checks,
+  ]),
 );
 
 const command = Command.run(cli, { version: "0.1.0" });
@@ -306,6 +338,28 @@ function renderGitHubChecksSummary(summary: GitHubChecksSummary) {
   return [
     ...lines,
     ...summary.checks.map(
+      (check) => `- ${check.name}: ${check.state}`,
+    ),
+  ].join("\n");
+}
+
+function renderGitHubChecksRecord(record: GitHubChecksRecord) {
+  const lines = [
+    `checks: ${record.status}`,
+    `run: ${record.runId}`,
+    `pr: ${record.pr}`,
+    `attempts: ${record.attempts}`,
+    `terminal: ${record.terminal}`,
+    `snapshot: ${record.snapshotPath}`,
+  ];
+
+  if (record.checks.length === 0) {
+    return lines.join("\n");
+  }
+
+  return [
+    ...lines,
+    ...record.checks.map(
       (check) => `- ${check.name}: ${check.state}`,
     ),
   ].join("\n");

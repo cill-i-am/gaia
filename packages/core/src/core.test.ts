@@ -134,6 +134,68 @@ describe("core contracts", () => {
     );
   });
 
+  it("replays GitHub check evidence without leaving completed state", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const events = [
+      makeRunEvent({
+        payload: { specPath: "input.md" },
+        runId,
+        sequence: 1,
+        timestamp: "2026-07-04T10:00:00.000Z",
+        type: "RUN_CREATED",
+      }),
+      makeRunEvent({
+        payload: { workspacePath: "workspace" },
+        runId,
+        sequence: 2,
+        timestamp: "2026-07-04T10:00:01.000Z",
+        type: "WORKSPACE_PREPARED",
+      }),
+      makeRunEvent({
+        payload: { workerResultPath: "worker-result.json" },
+        runId,
+        sequence: 3,
+        timestamp: "2026-07-04T10:00:02.000Z",
+        type: "WORKER_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: { verificationResultPath: "verification-result.json" },
+        runId,
+        sequence: 4,
+        timestamp: "2026-07-04T10:00:03.000Z",
+        type: "VERIFICATION_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: { reportPath: "report.md" },
+        runId,
+        sequence: 5,
+        timestamp: "2026-07-04T10:00:04.000Z",
+        type: "REPORT_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: {
+          checksPath: "github-checks/checks-6.json",
+          pullRequest: "1",
+          status: "passed",
+        },
+        runId,
+        sequence: 6,
+        timestamp: "2026-07-04T10:00:05.000Z",
+        type: "GITHUB_CHECKS_RECORDED",
+      }),
+    ];
+
+    const durableSnapshot = snapshotFromReplay(events);
+    assert.strictEqual(durableSnapshot.state, "completed");
+    assert.strictEqual(durableSnapshot.eventSequence, 6);
+    assert.strictEqual(
+      durableSnapshot.context.githubChecksPath,
+      "github-checks/checks-6.json",
+    );
+    assert.strictEqual(durableSnapshot.context.githubChecksStatus, "passed");
+    assert.strictEqual(durableSnapshot.context.githubPullRequest, "1");
+  });
+
   it("rejects out-of-order event logs", () => {
     const runId = parseRunId("run-V7kP9sQ2xY");
     const events = [

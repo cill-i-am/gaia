@@ -181,3 +181,27 @@ Verification:
 - Live smoke against draft PR
   [`#1`](https://github.com/cill-i-am/gaia/pull/1) returned
   `{"status":"no-checks"}`.
+
+## Slice 5B: Run-Scoped GitHub Check Evidence
+
+Outcome: Gaia can attach GitHub check evidence to a completed run with
+`gaia checks <run-id> <pr>`, and can poll with `--wait` until checks are no
+longer pending before recording the snapshot.
+
+Findings:
+
+- Check snapshots are evidence, not lifecycle work. `GITHUB_CHECKS_RECORDED`
+  appends after completion and leaves the run state as `completed`.
+- `events.jsonl` stays authoritative. Gaia writes the check snapshot file under
+  `github-checks/checks-<event-sequence>.json` and records the relative path,
+  PR selector, status, attempt count, and terminal flag in the event payload.
+- `pr-checks` remains a read-only inspector. `checks` is the run-attaching
+  command.
+- `--wait` is bounded and command-driven. It is not a daemon, merge gate, or
+  long-lived CI watcher.
+
+Verification:
+
+- Core tests cover replaying `GITHUB_CHECKS_RECORDED` after completion.
+- Runtime tests cover writing a check snapshot, appending the event, and polling
+  from `pending` to `passed` through the recording GitHub command seam.
