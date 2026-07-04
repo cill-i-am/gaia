@@ -17,6 +17,8 @@ export type RunState = typeof RunStateSchema.Type;
 export const EventTypeSchema = Schema.Literals([
   "RUN_CREATED",
   "WORKSPACE_PREPARED",
+  "REVIEW_STARTED",
+  "REVIEW_COMPLETED",
   "WORKER_STARTED",
   "WORKER_COMPLETED",
   "VERIFICATION_STARTED",
@@ -32,6 +34,7 @@ export type EventType = typeof EventTypeSchema.Type;
 export const FailureStageSchema = Schema.Literals([
   "creating",
   "preparingWorkspace",
+  "reviewing",
   "runningWorker",
   "verifying",
   "reporting",
@@ -40,6 +43,11 @@ export const FailureStageSchema = Schema.Literals([
 
 /** Lifecycle stage where a typed failure occurred. */
 export type FailureStage = typeof FailureStageSchema.Type;
+
+export const ReviewPhaseSchema = Schema.Literals(["plan", "evidence"] as const);
+
+/** Read-only reviewer phase within a Gaia run. */
+export type ReviewPhase = typeof ReviewPhaseSchema.Type;
 
 export class GaiaFailure extends Schema.Class<GaiaFailure>("GaiaFailure")({
   code: Schema.NonEmptyString,

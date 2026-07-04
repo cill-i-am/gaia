@@ -91,3 +91,33 @@ Verification:
   state.
 - CLI smoke runs the checked-in example process harness.
 - Unknown harness and missing process-command failures remain typed.
+
+## Slice 4: Reviewer Spectrum
+
+Outcome: Gaia now writes a `worker-plan` artifact, runs deterministic read-only
+plan and evidence reviews, persists `plan-review.*` and `evidence-review.*`, and
+records review events in the append-only lifecycle log.
+
+Findings:
+
+- A plan review should inspect an actual plan artifact. The first pass writes a
+  small Gaia-owned `WorkerPlan` before worker execution so the review contract is
+  real without requiring a live coding agent yet.
+- Reviewers are evidence producers, not lifecycle owners. `REVIEW_STARTED` and
+  `REVIEW_COMPLETED` replay without adding a new top-level run state.
+- The evidence review parses Gaia's own structured artifacts instead of scanning
+  arbitrary text. That keeps the boundary typed and makes future reviewer agents
+  replaceable.
+- The deterministic reviewer is intentionally not the final reviewer spectrum.
+  Real Codex/Claude/OpenCode reviewer threads still need visible sessions,
+  cancellation, read-only workspace enforcement, and reviewer/orchestrator
+  authority rules.
+
+Verification:
+
+- Core test proves review events replay and expose plan/evidence review paths in
+  snapshots.
+- Runtime test proves normal runs produce worker-plan, plan-review, and
+  evidence-review artifacts.
+- Runtime reviewer parses workspace, worker, verification, and worker-plan JSON
+  through schemas before approving.

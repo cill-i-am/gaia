@@ -98,16 +98,19 @@ Non-goals:
 
 ## Slice 4: Reviewer Spectrum
 
-Status: **Next**
+Status: **Done**
 
 Add read-only spec/review worker threads that keep implementation workers honest.
 
-Target behavior:
+Completed behavior:
 
-- reviewer can inspect worker plan before implementation;
-- reviewer can inspect diff/evidence after implementation;
-- reviewer output is persisted as evidence;
-- reviewer never edits files.
+- Gaia writes a worker plan artifact before harness execution;
+- deterministic plan review parses the worker plan and workspace manifest before
+  implementation;
+- deterministic evidence review parses worker and verification artifacts after
+  implementation;
+- reviewer output is persisted as `plan-review.*` and `evidence-review.*`;
+- reviewers only write review artifacts, not workspace files.
 
 Non-goals:
 
@@ -116,6 +119,8 @@ Non-goals:
 - hidden subagent-only review.
 
 ## Slice 5: GitHub Pull Request Loop
+
+Status: **Next**
 
 Connect local runs to GitHub once workspaces and worker evidence are stable.
 

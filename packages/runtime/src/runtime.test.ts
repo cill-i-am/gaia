@@ -28,12 +28,32 @@ describe("runtime workflows", () => {
         const eventsExists = yield* fs.exists(`${summary.runDirectory}/events.jsonl`);
         assert.isDefined(summary.reportPath);
         const reportExists = yield* fs.exists(summary.reportPath);
+        const workerPlanExists = yield* fs.exists(
+          `${summary.runDirectory}/worker-plan.md`,
+        );
+        const planReviewExists = yield* fs.exists(
+          `${summary.runDirectory}/plan-review.md`,
+        );
+        const evidenceReviewExists = yield* fs.exists(
+          `${summary.runDirectory}/evidence-review.md`,
+        );
         const output = yield* fs.readFileString(
           `${summary.runDirectory}/workspace/output.txt`,
         );
+        const events = yield* fs.readFileString(
+          `${summary.runDirectory}/events.jsonl`,
+        );
+        const report = yield* fs.readFileString(summary.reportPath);
 
         assert.isTrue(eventsExists);
         assert.isTrue(reportExists);
+        assert.isTrue(workerPlanExists);
+        assert.isTrue(planReviewExists);
+        assert.isTrue(evidenceReviewExists);
+        assert.include(events, '"type":"REVIEW_COMPLETED"');
+        assert.include(report, "worker-plan.md");
+        assert.include(report, "plan-review.md");
+        assert.include(report, "evidence-review.md");
         assert.include(output, summary.runId);
 
         const resumed = yield* resumeRun(summary.runId, { rootDirectory: cwd });

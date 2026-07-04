@@ -8,16 +8,19 @@ Prototype 1 proves the smallest useful loop:
 1. read a local Markdown spec;
 2. create a durable run under `.gaia/runs/<run-id>/`;
 3. replay and snapshot an explicit XState lifecycle;
-4. execute a deterministic fake harness in an isolated workspace;
-5. verify the worker artifact;
-6. write human and machine evidence reports;
-7. resume from the authoritative event log.
+4. write a worker plan and deterministic plan review;
+5. execute a harness in an isolated workspace;
+6. verify the worker artifact;
+7. write deterministic evidence review;
+8. write human and machine evidence reports;
+9. resume from the authoritative event log.
 
 ## Scope
 
-Prototype 1 deliberately excludes real coding harnesses, Linear, GitHub PRs,
-worktrees, reviewers, CI, browser evidence, dashboards, and merge automation.
-Those are future slices once the lifecycle contract is boring and inspectable.
+Prototype 1 deliberately excludes dedicated Codex/Claude/OpenCode workers,
+Linear, GitHub PRs, worktrees, live reviewer threads, CI, browser evidence,
+dashboards, and merge automation. It does include deterministic local review
+evidence so the reviewer contract exists before real reviewer agents arrive.
 
 See [`docs/prototype-1.md`](docs/prototype-1.md) for the detailed prototype
 contract, event lifecycle, artifact format, and deferred work.
@@ -55,12 +58,18 @@ Each run is stored relative to the current working directory:
   events.jsonl
   snapshots.jsonl
   workspace-manifest.json
+  worker-plan.md
+  worker-plan.json
+  plan-review.md
+  plan-review.json
   workspace/
     output.txt
   worker.log
   worker-result.json
   verification.log
   verification-result.json
+  evidence-review.md
+  evidence-review.json
   report.md
   report.json
 ```
@@ -83,7 +92,8 @@ packages/core
 
 packages/runtime
   Effect-powered filesystem runtime: run creation, event store, harness port,
-  verifier, report writer, and command workflows.
+  worker planning, read-only review evidence, verifier, report writer, and
+  command workflows.
 ```
 
 ## Deferred Roadmap
@@ -92,7 +102,7 @@ packages/runtime
 - real target repo and git worktree execution;
 - GitHub branch and PR creation;
 - Linear issue intake and status sync;
-- reviewer/spec agent;
+- live reviewer/spec agent threads;
 - skill bundle install and selection;
 - CI watching;
 - browser/e2e evidence capture;

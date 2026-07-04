@@ -9,8 +9,8 @@ and one-off package execution. Do not use npm, yarn, or Bun unless the user asks
 - `packages/core` owns pure Gaia contracts: schemas, branded values, spec
   parsing, XState lifecycle, event replay, snapshots, and report models.
 - `packages/runtime` owns the Effect filesystem runtime: durable run storage,
-  event append/read, harness execution, verification, reporting, and command
-  workflows.
+  event append/read, worker planning, harness execution, read-only review
+  evidence, verification, reporting, and command workflows.
 - `docs/*` contains human and agent-facing design notes for the prototype.
 - `.gaia/*` is generated local run state and must not be committed.
 
@@ -18,8 +18,9 @@ and one-off package execution. Do not use npm, yarn, or Bun unless the user asks
 
 - Keep the control plane boring, inspectable, and resumable.
 - Prefer the smallest implementation that proves the current factory loop.
-- Do not add real harnesses, GitHub, Linear, reviewers, dashboards, SQLite,
-  auth, or merge automation unless the current task explicitly asks.
+- Do not add dedicated agent harnesses, GitHub, Linear, live reviewer threads,
+  dashboards, SQLite, auth, or merge automation unless the current task
+  explicitly asks.
 - Parse boundary input immediately with Effect Schema or the owning parser.
 - Carry branded/domain values inward after parsing. Do not use casts to create
   brands.
@@ -60,8 +61,10 @@ keep it for inspection.
 ## Current Prototype Boundary
 
 Prototype 1 is deliberately local and deterministic. It reads a Markdown spec,
-creates a durable run directory, runs a fake harness, verifies one artifact,
-writes reports, and can replay completed runs from the event log.
+creates a durable run directory, writes a worker plan, runs a harness, records
+read-only review evidence, verifies one artifact, writes reports, and can replay
+completed runs from the event log.
 
 Anything involving real coding agents, worktrees, external services, browser
-testing, reviewers, PRs, CI, or merge/deploy automation is a future slice.
+testing, live reviewer threads, PRs, CI, or merge/deploy automation is a future
+slice.

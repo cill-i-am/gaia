@@ -3,6 +3,7 @@ import {
   parseMarkdownSpec,
   parseRunId,
   snapshotFromReplay,
+  type ReviewPhase,
   type RunId,
   type RunState,
 } from "@gaia/core";
@@ -20,11 +21,18 @@ import {
 import {
   makeRunPaths,
   makeRunStorePaths,
+  runRelative,
   type RunPaths,
   type RunStorageOptions,
 } from "./paths.js";
+import {
+  ReviewRunRequest,
+  defaultReviewerName,
+  runReviewer,
+} from "./reviewer.js";
 import { writeReport } from "./report-writer.js";
 import { verifyHarnessOutput } from "./verifier.js";
+import { writeWorkerPlan } from "./worker-plan.js";
 import {
   emptyWorkspaceSource,
   prepareWorkspace,
@@ -82,6 +90,12 @@ export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
       type: "WORKSPACE_PREPARED",
     });
     const harnessName = options.harnessName ?? defaultHarnessName;
+    yield* writeWorkerPlan({ harnessName, paths, runId, spec }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "reviewing", error),
+      ),
+    );
+    yield* runReviewPhase(runId, paths, spec, "plan");
     yield* appendEvent(runId, paths, {
       payload: { harnessName },
       type: "WORKER_STARTED",
@@ -125,6 +139,7 @@ export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
       payload: { verificationResultPath: "verification-result.json" },
       type: "VERIFICATION_COMPLETED",
     });
+    yield* runReviewPhase(runId, paths, spec, "evidence");
     yield* appendEvent(runId, paths, { type: "REPORT_STARTED" });
     yield* writeReport({ paths, runId, spec });
     const { snapshot } = yield* appendEvent(runId, paths, {
@@ -301,6 +316,70 @@ function recordRunFailure(
 
     return yield* Effect.fail(error);
   });
+}
+
+function runReviewPhase(
+  runId: RunId,
+  paths: RunPaths,
+  spec: ReturnType<typeof parseMarkdownSpec>,
+  phase: ReviewPhase,
+) {
+  return Effect.gen(function* () {
+    const reviewPaths = reviewPathsForPhase(paths, phase);
+    yield* appendEvent(runId, paths, {
+      payload: {
+        phase,
+        reviewerName: defaultReviewerName,
+      },
+      type: "REVIEW_STARTED",
+    });
+    const review = yield* runReviewer(
+      ReviewRunRequest.make({
+        markdownPath: reviewPaths.markdown,
+        phase,
+        resultPath: reviewPaths.result,
+        runId,
+        specBody: spec.body,
+        specTitle: spec.title,
+        verificationResultPath: paths.verificationResult,
+        workerPlanPath: paths.workerPlanResult,
+        workerResultPath: paths.workerResult,
+        workspaceManifestPath: paths.workspaceManifest,
+      }),
+    ).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "reviewing", error),
+      ),
+    );
+
+    yield* appendEvent(runId, paths, {
+      payload: {
+        phase: review.phase,
+        resultPath: review.resultPath,
+        reviewPath: runRelative(paths, reviewPaths.markdown),
+        reviewerName: review.reviewerName,
+        status: review.status,
+      },
+      type: "REVIEW_COMPLETED",
+    });
+
+    return review;
+  });
+}
+
+function reviewPathsForPhase(paths: RunPaths, phase: ReviewPhase) {
+  switch (phase) {
+    case "plan":
+      return {
+        markdown: paths.planReviewMarkdown,
+        result: paths.planReviewResult,
+      };
+    case "evidence":
+      return {
+        markdown: paths.evidenceReviewMarkdown,
+        result: paths.evidenceReviewResult,
+      };
+  }
 }
 
 function statusFromState(state: RunState): CommandSummary["status"] {

@@ -15,10 +15,13 @@ before any real coding harness or external integration is introduced.
    directory.
 5. Appends lifecycle events to `events.jsonl`.
 6. Writes derived snapshots to `snapshots.jsonl`.
-7. Runs a deterministic fake harness through the harness port.
-8. Verifies the fake harness's output artifact.
-9. Writes `report.md` and `report.json`.
-10. Resumes completed runs by replaying the event log.
+7. Writes a worker plan artifact.
+8. Records deterministic read-only plan review evidence.
+9. Runs a deterministic fake harness through the harness port.
+10. Verifies the fake harness's output artifact.
+11. Records deterministic read-only evidence review output.
+12. Writes `report.md` and `report.json`.
+13. Resumes completed runs by replaying the event log.
 
 ## What It Does Not Do Yet
 
@@ -27,7 +30,7 @@ Prototype 1 intentionally excludes:
 - real Codex, Claude, OpenCode, or AI SDK HarnessAgent workers;
 - target repository checkout or worktree management;
 - skill bundle installation/selection;
-- reviewer/spec worker threads;
+- live reviewer/spec worker threads;
 - GitHub branches, commits, pull requests, checks, or merges;
 - Linear issue intake or blocker graphs;
 - browser or deployment evidence;
@@ -51,7 +54,8 @@ packages/core
 
 packages/runtime
   Effect filesystem runtime: path construction, event store, harness port,
-  verifier, report writer, latest-run pointer, and command workflows.
+  worker planning, read-only reviews, verifier, report writer, latest-run
+  pointer, and command workflows.
 ```
 
 The package boundary is intentional:
@@ -116,12 +120,18 @@ A completed run looks like this:
       events.jsonl
       snapshots.jsonl
       workspace-manifest.json
+      worker-plan.md
+      worker-plan.json
+      plan-review.md
+      plan-review.json
       workspace/
         output.txt
       worker.log
       worker-result.json
       verification.log
       verification-result.json
+      evidence-review.md
+      evidence-review.json
       report.md
       report.json
 ```
@@ -149,6 +159,8 @@ Prototype 1 uses an XState machine in `@gaia/core`.
 | --- | --- |
 | `RUN_CREATED` | Record the parsed spec location and move into workspace prep. |
 | `WORKSPACE_PREPARED` | Record the run workspace path. |
+| `REVIEW_STARTED` | Mark a read-only review phase as started. |
+| `REVIEW_COMPLETED` | Record plan or evidence review output. |
 | `WORKER_STARTED` | Mark that harness-backed worker execution began. |
 | `WORKER_COMPLETED` | Record the normalized harness result path and move to verification. |
 | `VERIFICATION_STARTED` | Mark that verification began. |
@@ -204,9 +216,12 @@ Boundary values are parsed before use:
 
 - run ids are branded by `RunIdSchema`;
 - harness names are branded by `HarnessNameSchema`;
+- review phases are parsed by `ReviewPhaseSchema`;
 - Markdown specs are parsed into `RunSpec`;
 - event log lines are parsed as `RunEvent`;
 - snapshots are parsed as `RunSnapshot`;
+- worker plans are emitted through `WorkerPlan`;
+- reviewer output is emitted through `ReviewResult`;
 - reports are emitted through `RunReport`.
 
 The runtime persists plain JSON values. It does not serialize rich errors,
@@ -219,6 +234,7 @@ Core tests cover:
 - branded run id parsing;
 - Markdown spec frontmatter parsing;
 - lifecycle replay;
+- review-event replay;
 - out-of-order event rejection.
 
 Runtime tests cover:
@@ -226,6 +242,7 @@ Runtime tests cover:
 - creating a durable run with evidence;
 - latest-run status through `.gaia/latest`;
 - copying a local workspace source while excluding generated directories;
+- worker plan, plan review, and evidence review artifacts;
 - normalized harness evidence and unknown harness failures;
 - verification failure when a worker artifact is missing.
 

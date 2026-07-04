@@ -2,6 +2,7 @@ export {
   EventTypeSchema,
   FailureStageSchema,
   GaiaFailure,
+  ReviewPhaseSchema,
   RunEvent,
   RunSnapshot,
   RunStateSchema,
@@ -10,6 +11,7 @@ export {
   parseRunSnapshot,
   type EventType,
   type FailureStage,
+  type ReviewPhase,
   type RunState,
 } from "./events.js";
 export {
@@ -22,4 +24,3 @@ export {
 export { RunReport, ReportStatusSchema, parseRunReport } from "./report.js";
 export { RunIdSchema, parseRunId, type RunId } from "./run-id.js";
 export { RunSpec, SpecFrontmatter, parseMarkdownSpec } from "./spec.js";
-

@@ -3,6 +3,7 @@ import { assign, createActor, createMachine } from "xstate";
 import {
   FailureStageSchema,
   GaiaFailure,
+  ReviewPhaseSchema,
   type RunEvent,
   RunSnapshot,
   type RunState,
@@ -11,8 +12,10 @@ import {
 import type { RunId } from "./run-id.js";
 
 export type RunMachineContext = {
+  readonly evidenceReviewPath: string | undefined;
   readonly failure: GaiaFailure | undefined;
   readonly lastEventSequence: number;
+  readonly planReviewPath: string | undefined;
   readonly reportPath: string | undefined;
   readonly runId: RunId | undefined;
   readonly specPath: string | undefined;
@@ -24,6 +27,12 @@ export type RunMachineContext = {
 export type RunMachineEvent =
   | { readonly type: "RUN_CREATED"; readonly runId: RunId; readonly specPath: string }
   | { readonly type: "WORKSPACE_PREPARED"; readonly workspacePath: string }
+  | { readonly type: "REVIEW_STARTED" }
+  | {
+      readonly type: "REVIEW_COMPLETED";
+      readonly phase: typeof ReviewPhaseSchema.Type;
+      readonly reviewPath: string;
+    }
   | { readonly type: "WORKER_STARTED" }
   | { readonly type: "WORKER_COMPLETED"; readonly workerResultPath: string }
   | { readonly type: "VERIFICATION_STARTED" }
@@ -36,8 +45,10 @@ export type RunMachineEvent =
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
+  evidenceReviewPath: undefined,
   failure: undefined,
   lastEventSequence: 0,
+  planReviewPath: undefined,
   reportPath: undefined,
   runId: undefined,
   specPath: undefined,
@@ -95,6 +106,10 @@ export const runMachine = createMachine({
           actions: "recordReportCompleted",
           target: "completed",
         },
+        REVIEW_COMPLETED: {
+          actions: "recordReviewCompleted",
+        },
+        REVIEW_STARTED: {},
         RUN_FAILED: {
           actions: "recordFailure",
           target: "failed",
@@ -107,6 +122,10 @@ export const runMachine = createMachine({
           actions: "recordFailure",
           target: "failed",
         },
+        REVIEW_COMPLETED: {
+          actions: "recordReviewCompleted",
+        },
+        REVIEW_STARTED: {},
         WORKER_COMPLETED: {
           actions: "recordWorkerCompleted",
           target: "verifying",
@@ -143,6 +162,16 @@ export const runMachine = createMachine({
         event.type === "RUN_CREATED" ? event.runId : undefined,
       specPath: ({ event }) =>
         event.type === "RUN_CREATED" ? event.specPath : undefined,
+    }),
+    recordReviewCompleted: assign({
+      evidenceReviewPath: ({ context, event }) =>
+        event.type === "REVIEW_COMPLETED" && event.phase === "evidence"
+          ? event.reviewPath
+          : context.evidenceReviewPath,
+      planReviewPath: ({ context, event }) =>
+        event.type === "REVIEW_COMPLETED" && event.phase === "plan"
+          ? event.reviewPath
+          : context.planReviewPath,
     }),
     recordVerificationCompleted: assign({
       verificationResultPath: ({ event }) =>
@@ -205,9 +234,16 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         type: event.type,
       };
     case "REPORT_STARTED":
+    case "REVIEW_STARTED":
     case "VERIFICATION_STARTED":
     case "WORKER_STARTED":
       return { type: event.type };
+    case "REVIEW_COMPLETED":
+      return {
+        phase: getReviewPhasePayload(event, "phase"),
+        reviewPath: getStringPayload(event, "reviewPath"),
+        type: event.type,
+      };
     case "RUN_CREATED":
       return {
         runId: event.runId,
@@ -268,11 +304,22 @@ function getFailureStagePayload(event: RunEvent, key: string) {
   return Schema.decodeUnknownSync(FailureStageSchema)(value);
 }
 
+function getReviewPhasePayload(event: RunEvent, key: string) {
+  const value = getStringPayload(event, key);
+  return Schema.decodeUnknownSync(ReviewPhaseSchema)(value);
+}
+
 function snapshotContext(
   context: RunMachineContext,
 ): Readonly<Record<string, string | boolean>> {
   const output: Record<string, string | boolean> = {};
 
+  if (context.evidenceReviewPath !== undefined) {
+    output.evidenceReviewPath = context.evidenceReviewPath;
+  }
+  if (context.planReviewPath !== undefined) {
+    output.planReviewPath = context.planReviewPath;
+  }
   if (context.reportPath !== undefined) {
     output.reportPath = context.reportPath;
   }

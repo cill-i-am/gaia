@@ -12,10 +12,14 @@ export type RunStorePaths = {
 };
 
 export type RunPaths = {
+  readonly evidenceReviewMarkdown: string;
+  readonly evidenceReviewResult: string;
   readonly events: string;
   readonly gaiaRoot: string;
   readonly input: string;
   readonly latest: string;
+  readonly planReviewMarkdown: string;
+  readonly planReviewResult: string;
   readonly reportJson: string;
   readonly reportMarkdown: string;
   readonly root: string;
@@ -24,6 +28,8 @@ export type RunPaths = {
   readonly verificationLog: string;
   readonly verificationResult: string;
   readonly workerLog: string;
+  readonly workerPlanMarkdown: string;
+  readonly workerPlanResult: string;
   readonly workerResult: string;
   readonly workspace: string;
   readonly workspaceManifest: string;
@@ -55,10 +61,14 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
     const workspace = path.join(root, "workspace");
 
     return {
+      evidenceReviewMarkdown: path.join(root, "evidence-review.md"),
+      evidenceReviewResult: path.join(root, "evidence-review.json"),
       events: path.join(root, "events.jsonl"),
       gaiaRoot: store.gaiaRoot,
       input: path.join(root, "input.md"),
       latest: store.latest,
+      planReviewMarkdown: path.join(root, "plan-review.md"),
+      planReviewResult: path.join(root, "plan-review.json"),
       reportJson: path.join(root, "report.json"),
       reportMarkdown: path.join(root, "report.md"),
       root,
@@ -67,6 +77,8 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       verificationLog: path.join(root, "verification.log"),
       verificationResult: path.join(root, "verification-result.json"),
       workerLog: path.join(root, "worker.log"),
+      workerPlanMarkdown: path.join(root, "worker-plan.md"),
+      workerPlanResult: path.join(root, "worker-plan.json"),
       workerResult: path.join(root, "worker-result.json"),
       workspace,
       workspaceManifest: path.join(root, "workspace-manifest.json"),

@@ -18,8 +18,22 @@ export {
   type ProcessHarnessCommand,
 } from "./harness.js";
 export { makeRunPaths, runRelative, runRootDirectory, type RunPaths } from "./paths.js";
+export {
+  ReviewFinding,
+  ReviewResult,
+  ReviewRunRequest,
+  ReviewerNameSchema,
+  defaultReviewerName,
+  runReviewer,
+  type ReviewerName,
+} from "./reviewer.js";
 export { writeReport } from "./report-writer.js";
 export { VerificationResult, verifyHarnessOutput } from "./verifier.js";
+export {
+  WorkerPlan,
+  parseWorkerPlanJson,
+  writeWorkerPlan,
+} from "./worker-plan.js";
 export {
   WorkspacePreparationResult,
   emptyWorkspaceSource,

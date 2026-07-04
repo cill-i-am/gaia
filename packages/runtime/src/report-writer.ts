@@ -15,17 +15,23 @@ export function writeReport(input: {
     const report = RunReport.make({
       artifacts: [
         "workspace-manifest.json",
+        "worker-plan.md",
+        "worker-plan.json",
+        "plan-review.md",
+        "plan-review.json",
         "worker.log",
         "verification.log",
         "workspace/output.txt",
         "worker-result.json",
         "verification-result.json",
+        "evidence-review.md",
+        "evidence-review.json",
       ],
       reportPath: "report.md",
       runId: input.runId,
       selectedSkills: [],
       status: "completed",
-      summary: `Fake harness completed and verified "${input.spec.title}".`,
+      summary: `Gaia completed, reviewed, and verified "${input.spec.title}".`,
     });
 
     yield* fs.writeFileString(input.paths.reportMarkdown, markdownReport(report));
