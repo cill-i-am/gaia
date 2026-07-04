@@ -1,0 +1,10 @@
+{
+  "harnessName": "fake",
+  "outputArtifacts": [
+    "workspace/output.txt"
+  ],
+  "resultPath": "worker-result.json",
+  "runId": "run-oOQuNPaFbQ",
+  "status": "completed",
+  "summary": "Fake harness completed \"Smoke test worker\"."
+}
