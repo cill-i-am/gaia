@@ -21,6 +21,8 @@ Those are future slices once the lifecycle contract is boring and inspectable.
 
 See [`docs/prototype-1.md`](docs/prototype-1.md) for the detailed prototype
 contract, event lifecycle, artifact format, and deferred work.
+See [`docs/roadmap.md`](docs/roadmap.md) for the planned software-factory
+slices.
 
 ## Commands
 
@@ -31,6 +33,7 @@ pnpm test
 pnpm build
 
 pnpm gaia run examples/specs/smoke.md
+pnpm gaia run examples/specs/smoke.md --workspace-source .
 pnpm gaia run examples/specs/smoke.md --json
 pnpm gaia status
 pnpm gaia list
@@ -49,6 +52,7 @@ Each run is stored relative to the current working directory:
   input.md
   events.jsonl
   snapshots.jsonl
+  workspace-manifest.json
   workspace/
     output.txt
   worker.log

@@ -5,10 +5,18 @@ export { makeRunPaths, runRelative, runRootDirectory, type RunPaths } from "./pa
 export { writeReport } from "./report-writer.js";
 export { VerificationResult, verifyFakeWorkerOutput } from "./verifier.js";
 export {
+  WorkspacePreparationResult,
+  emptyWorkspaceSource,
+  localDirectoryWorkspaceSource,
+  parseWorkspaceSourcePath,
+  prepareWorkspace,
+  type WorkspaceSource,
+  type WorkspaceSourcePath,
+} from "./workspace.js";
+export {
   listRuns,
   resumeRun,
   runSpecFile,
   statusRun,
   type CommandSummary,
 } from "./workflows.js";
-

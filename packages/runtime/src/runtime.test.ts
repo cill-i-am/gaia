@@ -4,6 +4,7 @@ import { Effect, FileSystem } from "effect";
 import { parseRunId } from "@gaia/core";
 import { makeRunPaths } from "./paths.js";
 import { resumeRun, runSpecFile, statusRun } from "./workflows.js";
+import { localDirectoryWorkspaceSource } from "./workspace.js";
 import { verifyFakeWorkerOutput } from "./verifier.js";
 
 describe("runtime workflows", () => {
@@ -49,6 +50,53 @@ describe("runtime workflows", () => {
 
         assert.strictEqual(status.runId, summary.runId);
         assert.strictEqual(status.state, "completed");
+      }),
+    );
+
+    it.effect("copies a local workspace source into the isolated run workspace", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const source = `${cwd}/source`;
+        const specPath = `${cwd}/spec.md`;
+
+        yield* fs.makeDirectory(`${source}/src`, { recursive: true });
+        yield* fs.makeDirectory(`${source}/.git`, { recursive: true });
+        yield* fs.makeDirectory(`${source}/node_modules/pkg`, {
+          recursive: true,
+        });
+        yield* fs.writeFileString(`${source}/README.md`, "# Target\n");
+        yield* fs.writeFileString(`${source}/src/index.ts`, "export {};\n");
+        yield* fs.writeFileString(`${source}/.git/config`, "[core]\n");
+        yield* fs.writeFileString(`${source}/node_modules/pkg/index.js`, "");
+        yield* fs.writeFileString(specPath, "Run against a source workspace.\n");
+
+        const summary = yield* runSpecFile(specPath, {
+          rootDirectory: cwd,
+          workspaceSource: localDirectoryWorkspaceSource(source),
+        });
+
+        const copiedReadme = yield* fs.exists(
+          `${summary.runDirectory}/workspace/README.md`,
+        );
+        const copiedSourceFile = yield* fs.exists(
+          `${summary.runDirectory}/workspace/src/index.ts`,
+        );
+        const copiedGitConfig = yield* fs.exists(
+          `${summary.runDirectory}/workspace/.git/config`,
+        );
+        const copiedNodeModule = yield* fs.exists(
+          `${summary.runDirectory}/workspace/node_modules/pkg/index.js`,
+        );
+        const manifest = yield* fs.readFileString(
+          `${summary.runDirectory}/workspace-manifest.json`,
+        );
+
+        assert.isTrue(copiedReadme);
+        assert.isTrue(copiedSourceFile);
+        assert.isFalse(copiedGitConfig);
+        assert.isFalse(copiedNodeModule);
+        assert.include(manifest, '"source": "local-directory"');
       }),
     );
 

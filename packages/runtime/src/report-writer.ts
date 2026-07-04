@@ -14,6 +14,7 @@ export function writeReport(input: {
     const fs = yield* FileSystem.FileSystem;
     const report = RunReport.make({
       artifacts: [
+        "workspace-manifest.json",
         "worker.log",
         "verification.log",
         "workspace/output.txt",

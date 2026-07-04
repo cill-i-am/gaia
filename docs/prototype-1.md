@@ -11,12 +11,14 @@ before any real coding harness or external integration is introduced.
 1. Reads a local Markdown spec.
 2. Creates a run id with the format `run-<10 url-safe chars>`.
 3. Stores all run state under `.gaia/runs/<run-id>/`.
-4. Appends lifecycle events to `events.jsonl`.
-5. Writes derived snapshots to `snapshots.jsonl`.
-6. Runs a deterministic fake worker.
-7. Verifies the fake worker's output artifact.
-8. Writes `report.md` and `report.json`.
-9. Resumes completed runs by replaying the event log.
+4. Prepares an isolated workspace, optionally copied from a local source
+   directory.
+5. Appends lifecycle events to `events.jsonl`.
+6. Writes derived snapshots to `snapshots.jsonl`.
+7. Runs a deterministic fake worker.
+8. Verifies the fake worker's output artifact.
+9. Writes `report.md` and `report.json`.
+10. Resumes completed runs by replaying the event log.
 
 ## What It Does Not Do Yet
 
@@ -73,6 +75,7 @@ Run the local loop:
 
 ```sh
 pnpm gaia run examples/specs/smoke.md
+pnpm gaia run examples/specs/smoke.md --workspace-source .
 pnpm gaia status
 pnpm gaia list
 pnpm gaia resume <run-id>
@@ -102,6 +105,7 @@ A completed run looks like this:
       input.md
       events.jsonl
       snapshots.jsonl
+      workspace-manifest.json
       workspace/
         output.txt
       worker.log
@@ -120,6 +124,12 @@ not match, the run is treated as corrupt.
 
 `.gaia/latest` stores the latest run id. This avoids pretending random Nano IDs
 have chronological ordering.
+
+`workspace-manifest.json` records the workspace source, copied file count,
+skipped entries, and run-local workspace path. By default Gaia prepares an empty
+workspace. With `--workspace-source <dir>`, Gaia copies a local directory into
+the run workspace while excluding generated or heavy directories such as `.git`,
+`.gaia`, `.turbo`, `coverage`, `dist`, and `node_modules`.
 
 ## Lifecycle
 
@@ -204,6 +214,7 @@ Runtime tests cover:
 
 - creating a durable run with evidence;
 - latest-run status through `.gaia/latest`;
+- copying a local workspace source while excluding generated directories;
 - verification failure when a worker artifact is missing.
 
 Tests use temp run roots instead of the repository `.gaia/` directory.

@@ -45,6 +45,7 @@ For CLI behavior, also run a smoke pass:
 
 ```sh
 pnpm gaia run examples/specs/smoke.md
+pnpm gaia run examples/specs/smoke.md --workspace-source .
 pnpm gaia status
 pnpm gaia list
 pnpm gaia resume <run-id>

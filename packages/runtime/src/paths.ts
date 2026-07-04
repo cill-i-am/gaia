@@ -26,6 +26,7 @@ export type RunPaths = {
   readonly workerLog: string;
   readonly workerResult: string;
   readonly workspace: string;
+  readonly workspaceManifest: string;
   readonly workspaceOutput: string;
 };
 
@@ -68,6 +69,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       workerLog: path.join(root, "worker.log"),
       workerResult: path.join(root, "worker-result.json"),
       workspace,
+      workspaceManifest: path.join(root, "workspace-manifest.json"),
       workspaceOutput: path.join(workspace, "output.txt"),
     } satisfies RunPaths;
   });

@@ -2,7 +2,14 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { CommandSummary } from "@gaia/runtime";
-import { GaiaRuntimeError, listRuns, resumeRun, runSpecFile, statusRun } from "@gaia/runtime";
+import {
+  GaiaRuntimeError,
+  listRuns,
+  localDirectoryWorkspaceSource,
+  resumeRun,
+  runSpecFile,
+  statusRun,
+} from "@gaia/runtime";
 import path from "node:path";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -24,12 +31,19 @@ const optionalRunId = runId.pipe(Argument.optional);
 const json = Flag.boolean("json").pipe(
   Flag.withDescription("Write a machine-readable JSON response."),
 );
+const workspaceSource = Flag.string("workspace-source").pipe(
+  Flag.withDescription("Copy a local directory into the run workspace."),
+  Flag.optional,
+);
 
-const run = Command.make("run", { json, specFile }).pipe(
+const run = Command.make("run", { json, specFile, workspaceSource }).pipe(
   Command.withDescription("Start a new Gaia run from a Markdown spec."),
-  Command.withHandler(({ json, specFile }) =>
+  Command.withHandler(({ json, specFile, workspaceSource }) =>
     renderEffect(
-      runSpecFile(resolveInvocationPath(specFile), workflowOptions()),
+      runSpecFile(
+        resolveInvocationPath(specFile),
+        workflowOptions(workspaceSource),
+      ),
       json,
       renderSummary,
     ),
@@ -72,8 +86,14 @@ function invocationRoot() {
   return process.env["INIT_CWD"] ?? process.cwd();
 }
 
-function workflowOptions() {
-  return { rootDirectory: invocationRoot() };
+function workflowOptions(workspaceSource: Option.Option<string> = Option.none()) {
+  return Option.match(workspaceSource, {
+    onNone: () => ({ rootDirectory: invocationRoot() }),
+    onSome: (source) => ({
+      rootDirectory: invocationRoot(),
+      workspaceSource: localDirectoryWorkspaceSource(resolveInvocationPath(source)),
+    }),
+  });
 }
 
 function resolveInvocationPath(input: string) {

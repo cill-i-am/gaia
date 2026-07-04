@@ -19,6 +19,11 @@ import {
 } from "./paths.js";
 import { writeReport } from "./report-writer.js";
 import { verifyFakeWorkerOutput } from "./verifier.js";
+import {
+  emptyWorkspaceSource,
+  prepareWorkspace,
+  type WorkspaceSource,
+} from "./workspace.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -33,7 +38,9 @@ export type CommandSummary = {
   readonly status: "completed" | "failed" | "running";
 };
 
-export type WorkflowOptions = RunStorageOptions;
+export type WorkflowOptions = RunStorageOptions & {
+  readonly workspaceSource?: WorkspaceSource;
+};
 
 export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
   return Effect.gen(function* () {
@@ -42,10 +49,10 @@ export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
 
-    yield* fs.makeDirectory(paths.workspace, { recursive: true });
     const input = yield* fs.readFileString(specPath);
     const fallbackTitle = path.basename(specPath, path.extname(specPath));
     const spec = yield* parseSpec(input, fallbackTitle);
+    yield* fs.makeDirectory(paths.root, { recursive: true });
     yield* fs.writeFileString(paths.input, input);
     yield* fs.writeFileString(paths.latest, runId);
 
@@ -53,8 +60,17 @@ export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
       payload: { specPath: "input.md" },
       type: "RUN_CREATED",
     });
+    const workspace = yield* prepareWorkspace(
+      paths,
+      options.workspaceSource ?? emptyWorkspaceSource(),
+    );
     yield* appendEvent(runId, paths, {
-      payload: { workspacePath: "workspace" },
+      payload: {
+        copiedFiles: workspace.copiedFiles,
+        workspaceManifestPath: workspace.manifestPath,
+        workspacePath: workspace.workspacePath,
+        workspaceSource: workspace.source,
+      },
       type: "WORKSPACE_PREPARED",
     });
     yield* appendEvent(runId, paths, { type: "WORKER_STARTED" });
