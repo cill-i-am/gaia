@@ -15,8 +15,8 @@ before any real coding harness or external integration is introduced.
    directory.
 5. Appends lifecycle events to `events.jsonl`.
 6. Writes derived snapshots to `snapshots.jsonl`.
-7. Runs a deterministic fake worker.
-8. Verifies the fake worker's output artifact.
+7. Runs a deterministic fake harness through the harness port.
+8. Verifies the fake harness's output artifact.
 9. Writes `report.md` and `report.json`.
 10. Resumes completed runs by replaying the event log.
 
@@ -24,7 +24,7 @@ before any real coding harness or external integration is introduced.
 
 Prototype 1 intentionally excludes:
 
-- real Codex or HarnessAgent workers;
+- real Codex, Claude, OpenCode, or AI SDK HarnessAgent workers;
 - target repository checkout or worktree management;
 - skill bundle installation/selection;
 - reviewer/spec worker threads;
@@ -50,7 +50,7 @@ packages/core
   XState lifecycle, replay, snapshots, and report schemas.
 
 packages/runtime
-  Effect filesystem runtime: path construction, event store, fake worker,
+  Effect filesystem runtime: path construction, event store, harness port,
   verifier, report writer, latest-run pointer, and command workflows.
 ```
 
@@ -75,6 +75,7 @@ Run the local loop:
 
 ```sh
 pnpm gaia run examples/specs/smoke.md
+pnpm gaia run examples/specs/smoke.md --harness fake
 pnpm gaia run examples/specs/smoke.md --workspace-source .
 pnpm gaia status
 pnpm gaia list
@@ -139,8 +140,8 @@ Prototype 1 uses an XState machine in `@gaia/core`.
 | --- | --- |
 | `RUN_CREATED` | Record the parsed spec location and move into workspace prep. |
 | `WORKSPACE_PREPARED` | Record the run workspace path. |
-| `WORKER_STARTED` | Mark that worker execution began. |
-| `WORKER_COMPLETED` | Record the fake worker result path and move to verification. |
+| `WORKER_STARTED` | Mark that harness-backed worker execution began. |
+| `WORKER_COMPLETED` | Record the normalized harness result path and move to verification. |
 | `VERIFICATION_STARTED` | Mark that verification began. |
 | `VERIFICATION_COMPLETED` | Record verification evidence and move to reporting. |
 | `REPORT_STARTED` | Mark that report writing began. |
@@ -193,6 +194,7 @@ matters for machine orchestration.
 Boundary values are parsed before use:
 
 - run ids are branded by `RunIdSchema`;
+- harness names are branded by `HarnessNameSchema`;
 - Markdown specs are parsed into `RunSpec`;
 - event log lines are parsed as `RunEvent`;
 - snapshots are parsed as `RunSnapshot`;
@@ -215,6 +217,7 @@ Runtime tests cover:
 - creating a durable run with evidence;
 - latest-run status through `.gaia/latest`;
 - copying a local workspace source while excluding generated directories;
+- normalized harness evidence and unknown harness failures;
 - verification failure when a worker artifact is missing.
 
 Tests use temp run roots instead of the repository `.gaia/` directory.

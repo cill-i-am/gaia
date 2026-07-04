@@ -23,14 +23,14 @@ Prove the smallest local loop:
 - create `.gaia/runs/run-<id>/`;
 - append `events.jsonl`;
 - derive `snapshots.jsonl`;
-- run a deterministic fake worker;
+- run a deterministic fake harness;
 - verify one artifact;
 - write `report.md` and `report.json`;
 - resume completed runs by replaying events.
 
 ## Slice 2: Workspace Preparation
 
-Status: **Current**
+Status: **Done**
 
 Add isolated run workspaces before real coding workers exist.
 
@@ -55,21 +55,47 @@ Non-goals:
 
 ## Slice 3: Harness Port
 
-Introduce a tiny worker/harness seam while keeping the fake worker as one
+Status: **Done**
+
+Introduce a tiny worker/harness seam while keeping the fake harness as one
 adapter.
 
-Target behavior:
+Completed behavior:
 
 - define the worker input/output contract;
 - keep run events independent of a specific harness vendor;
-- add one deterministic adapter and one real experimental adapter;
+- add one deterministic adapter;
 - persist worker logs and result artifacts consistently.
+
+Non-goals:
+
+- real external harness execution;
+- reviewer workers;
+- pull requests;
+- multi-agent scheduling.
+
+See [`harness-port.md`](harness-port.md) for the adapter contract and future
+popular-harness integration rules.
+
+## Slice 3b: First Real Harness Adapter
+
+Status: **Next**
+
+Add one real experimental adapter behind the harness port.
+
+Target behavior:
+
+- choose the first real harness path, such as Codex, Claude, OpenCode, or AI SDK
+  HarnessAgent;
+- keep the fake harness as the deterministic test adapter;
+- persist native logs and normalized `HarnessRunResult` evidence;
+- prove the adapter against a throwaway local workspace.
 
 Non-goals:
 
 - reviewer workers;
 - pull requests;
-- multi-agent scheduling.
+- merge/deploy automation;
 
 ## Slice 4: Reviewer Spectrum
 

@@ -14,7 +14,7 @@ export class VerificationResult extends Schema.Class<VerificationResult>(
 const VerificationResultJson = Schema.toCodecJson(VerificationResult);
 const encodeVerificationResult = Schema.encodeSync(VerificationResultJson);
 
-export function verifyFakeWorkerOutput(
+export function verifyHarnessOutput(
   runId: typeof RunIdSchema.Type,
   paths: RunPaths,
 ) {
@@ -22,7 +22,7 @@ export function verifyFakeWorkerOutput(
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(
       paths.verificationLog,
-      "Verifying fake worker output.\n",
+      "Verifying harness output.\n",
       { flag: "a" },
     );
 

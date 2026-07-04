@@ -9,7 +9,7 @@ and one-off package execution. Do not use npm, yarn, or Bun unless the user asks
 - `packages/core` owns pure Gaia contracts: schemas, branded values, spec
   parsing, XState lifecycle, event replay, snapshots, and report models.
 - `packages/runtime` owns the Effect filesystem runtime: durable run storage,
-  event append/read, fake worker execution, verification, reporting, and command
+  event append/read, harness execution, verification, reporting, and command
   workflows.
 - `docs/*` contains human and agent-facing design notes for the prototype.
 - `.gaia/*` is generated local run state and must not be committed.
@@ -45,6 +45,7 @@ For CLI behavior, also run a smoke pass:
 
 ```sh
 pnpm gaia run examples/specs/smoke.md
+pnpm gaia run examples/specs/smoke.md --harness fake
 pnpm gaia run examples/specs/smoke.md --workspace-source .
 pnpm gaia status
 pnpm gaia list
@@ -58,7 +59,7 @@ keep it for inspection.
 ## Current Prototype Boundary
 
 Prototype 1 is deliberately local and deterministic. It reads a Markdown spec,
-creates a durable run directory, runs a fake worker, verifies one artifact,
+creates a durable run directory, runs a fake harness, verifies one artifact,
 writes reports, and can replay completed runs from the event log.
 
 Anything involving real coding agents, worktrees, external services, browser

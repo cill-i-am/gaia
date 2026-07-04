@@ -25,7 +25,7 @@ export function writeReport(input: {
       runId: input.runId,
       selectedSkills: [],
       status: "completed",
-      summary: `Fake worker completed and verified "${input.spec.title}".`,
+      summary: `Fake harness completed and verified "${input.spec.title}".`,
     });
 
     yield* fs.writeFileString(input.paths.reportMarkdown, markdownReport(report));

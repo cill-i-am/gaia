@@ -2,10 +2,12 @@ import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import { Effect, FileSystem } from "effect";
 import { parseRunId } from "@gaia/core";
+import { GaiaRuntimeError } from "./errors.js";
+import { parseHarnessName } from "./harness.js";
 import { makeRunPaths } from "./paths.js";
 import { resumeRun, runSpecFile, statusRun } from "./workflows.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
-import { verifyFakeWorkerOutput } from "./verifier.js";
+import { verifyHarnessOutput } from "./verifier.js";
 
 describe("runtime workflows", () => {
   layer(NodeServices.layer)((it) => {
@@ -100,6 +102,53 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("records normalized harness evidence for the selected harness", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Run through the fake harness.\n");
+
+        const summary = yield* runSpecFile(specPath, {
+          harnessName: parseHarnessName("fake"),
+          rootDirectory: cwd,
+        });
+
+        const events = yield* fs.readFileString(
+          `${summary.runDirectory}/events.jsonl`,
+        );
+        const harnessResult = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-result.json`,
+        );
+
+        assert.include(events, '"harnessName":"fake"');
+        assert.include(events, '"outputArtifacts":["workspace/output.txt"]');
+        assert.include(harnessResult, '"harnessName": "fake"');
+        assert.include(harnessResult, '"summary":');
+      }),
+    );
+
+    it.effect("fails fast when a requested harness is not registered", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Run through a missing harness.\n");
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            harnessName: parseHarnessName("codex"),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "UnknownHarness");
+        }
+      }),
+    );
+
     it.effect("fails verification when the worker artifact is missing", () =>
       Effect.gen(function* () {
         const runId = parseRunId("run-V7kP9sQ2xY");
@@ -108,7 +157,7 @@ describe("runtime workflows", () => {
         const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
         yield* fs.makeDirectory(paths.workspace, { recursive: true });
 
-        const exit = yield* Effect.exit(verifyFakeWorkerOutput(runId, paths));
+        const exit = yield* Effect.exit(verifyHarnessOutput(runId, paths));
         assert.isTrue(exit._tag === "Failure");
       }),
     );

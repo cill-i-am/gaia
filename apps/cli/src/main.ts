@@ -6,6 +6,7 @@ import {
   GaiaRuntimeError,
   listRuns,
   localDirectoryWorkspaceSource,
+  parseHarnessName,
   resumeRun,
   runSpecFile,
   statusRun,
@@ -35,14 +36,18 @@ const workspaceSource = Flag.string("workspace-source").pipe(
   Flag.withDescription("Copy a local directory into the run workspace."),
   Flag.optional,
 );
+const harness = Flag.string("harness").pipe(
+  Flag.withDescription("Select the worker harness adapter."),
+  Flag.optional,
+);
 
-const run = Command.make("run", { json, specFile, workspaceSource }).pipe(
+const run = Command.make("run", { harness, json, specFile, workspaceSource }).pipe(
   Command.withDescription("Start a new Gaia run from a Markdown spec."),
-  Command.withHandler(({ json, specFile, workspaceSource }) =>
+  Command.withHandler(({ harness, json, specFile, workspaceSource }) =>
     renderEffect(
       runSpecFile(
         resolveInvocationPath(specFile),
-        workflowOptions(workspaceSource),
+        workflowOptions({ harness, workspaceSource }),
       ),
       json,
       renderSummary,
@@ -86,14 +91,29 @@ function invocationRoot() {
   return process.env["INIT_CWD"] ?? process.cwd();
 }
 
-function workflowOptions(workspaceSource: Option.Option<string> = Option.none()) {
-  return Option.match(workspaceSource, {
-    onNone: () => ({ rootDirectory: invocationRoot() }),
-    onSome: (source) => ({
-      rootDirectory: invocationRoot(),
-      workspaceSource: localDirectoryWorkspaceSource(resolveInvocationPath(source)),
-    }),
-  });
+function workflowOptions(
+  input: Readonly<{
+    harness?: Option.Option<string>;
+    workspaceSource?: Option.Option<string>;
+  }> = {},
+) {
+  const rootDirectory = invocationRoot();
+  const workspaceSource = Option.map(
+    input.workspaceSource ?? Option.none(),
+    (source) => localDirectoryWorkspaceSource(resolveInvocationPath(source)),
+  );
+  const harnessName = Option.map(
+    input.harness ?? Option.none(),
+    parseHarnessName,
+  );
+
+  return {
+    rootDirectory,
+    ...(Option.isSome(workspaceSource)
+      ? { workspaceSource: workspaceSource.value }
+      : {}),
+    ...(Option.isSome(harnessName) ? { harnessName: harnessName.value } : {}),
+  };
 }
 
 function resolveInvocationPath(input: string) {

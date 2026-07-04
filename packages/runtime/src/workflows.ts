@@ -10,7 +10,12 @@ import { customAlphabet } from "nanoid";
 import { Effect, FileSystem, Path, type Schema } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
-import { runFakeWorker } from "./fake-worker.js";
+import {
+  HarnessRunRequest,
+  defaultHarnessName,
+  runHarness,
+  type HarnessName,
+} from "./harness.js";
 import {
   makeRunPaths,
   makeRunStorePaths,
@@ -18,7 +23,7 @@ import {
   type RunStorageOptions,
 } from "./paths.js";
 import { writeReport } from "./report-writer.js";
-import { verifyFakeWorkerOutput } from "./verifier.js";
+import { verifyHarnessOutput } from "./verifier.js";
 import {
   emptyWorkspaceSource,
   prepareWorkspace,
@@ -39,6 +44,7 @@ export type CommandSummary = {
 };
 
 export type WorkflowOptions = RunStorageOptions & {
+  readonly harnessName?: HarnessName;
   readonly workspaceSource?: WorkspaceSource;
 };
 
@@ -73,14 +79,33 @@ export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
       },
       type: "WORKSPACE_PREPARED",
     });
-    yield* appendEvent(runId, paths, { type: "WORKER_STARTED" });
-    yield* runFakeWorker(runId, paths);
+    const harnessName = options.harnessName ?? defaultHarnessName;
     yield* appendEvent(runId, paths, {
-      payload: { workerResultPath: "worker-result.json" },
+      payload: { harnessName },
+      type: "WORKER_STARTED",
+    });
+    const harnessResult = yield* runHarness(
+      HarnessRunRequest.make({
+        harnessName,
+        runId,
+        specBody: spec.body,
+        specTitle: spec.title,
+        workerLogPath: paths.workerLog,
+        workerResultPath: paths.workerResult,
+        workspaceOutputPath: paths.workspaceOutput,
+        workspacePath: paths.workspace,
+      }),
+    );
+    yield* appendEvent(runId, paths, {
+      payload: {
+        harnessName: harnessResult.harnessName,
+        outputArtifacts: harnessResult.outputArtifacts,
+        workerResultPath: harnessResult.resultPath,
+      },
       type: "WORKER_COMPLETED",
     });
     yield* appendEvent(runId, paths, { type: "VERIFICATION_STARTED" });
-    yield* verifyFakeWorkerOutput(runId, paths).pipe(
+    yield* verifyHarnessOutput(runId, paths).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
         recordRunFailure(runId, paths, "verifying", error),
       ),

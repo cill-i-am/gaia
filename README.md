@@ -8,7 +8,7 @@ Prototype 1 proves the smallest useful loop:
 1. read a local Markdown spec;
 2. create a durable run under `.gaia/runs/<run-id>/`;
 3. replay and snapshot an explicit XState lifecycle;
-4. execute a deterministic fake worker in an isolated workspace;
+4. execute a deterministic fake harness in an isolated workspace;
 5. verify the worker artifact;
 6. write human and machine evidence reports;
 7. resume from the authoritative event log.
@@ -33,6 +33,7 @@ pnpm test
 pnpm build
 
 pnpm gaia run examples/specs/smoke.md
+pnpm gaia run examples/specs/smoke.md --harness fake
 pnpm gaia run examples/specs/smoke.md --workspace-source .
 pnpm gaia run examples/specs/smoke.md --json
 pnpm gaia status
@@ -80,13 +81,13 @@ packages/core
   machine, replay rules, report models.
 
 packages/runtime
-  Effect-powered filesystem runtime: run creation, event store, fake worker,
+  Effect-powered filesystem runtime: run creation, event store, harness port,
   verifier, report writer, and command workflows.
 ```
 
 ## Deferred Roadmap
 
-- real Codex HarnessAgent adapter;
+- real Codex, Claude, OpenCode, or AI SDK HarnessAgent adapter;
 - real target repo and git worktree execution;
 - GitHub branch and PR creation;
 - Linear issue intake and status sync;
