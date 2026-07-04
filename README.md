@@ -18,9 +18,9 @@ Prototype 1 proves the smallest useful loop:
 ## Scope
 
 Prototype 1 deliberately excludes dedicated Codex/Claude/OpenCode workers,
-Linear, GitHub PRs, worktrees, live reviewer threads, CI, browser evidence,
+Linear, worktrees, live reviewer threads, CI check watching, browser evidence,
 dashboards, and merge automation. It does include deterministic local review
-evidence so the reviewer contract exists before real reviewer agents arrive.
+evidence and can publish completed run evidence as a draft GitHub PR.
 
 See [`docs/prototype-1.md`](docs/prototype-1.md) for the detailed prototype
 contract, event lifecycle, artifact format, and deferred work.
@@ -43,10 +43,14 @@ pnpm gaia run examples/specs/smoke.md --json
 pnpm gaia status
 pnpm gaia list
 pnpm gaia resume <run-id>
+pnpm gaia publish-pr <run-id>
 ```
 
 `pnpm gaia` resolves paths from the directory where the command was invoked and
 stores generated run state in that directory's `.gaia/` folder.
+`pnpm gaia publish-pr <run-id>` intentionally mutates GitHub state: it creates
+an evidence branch, commits selected run evidence under `gaia-runs/<run-id>/`,
+pushes it, opens a draft PR, and restores the original local branch.
 
 ## Run Directory
 
@@ -100,7 +104,7 @@ packages/runtime
 
 - dedicated Codex, Claude, OpenCode, or AI SDK HarnessAgent adapter;
 - real target repo and git worktree execution;
-- GitHub branch and PR creation;
+- GitHub Actions/check watching;
 - Linear issue intake and status sync;
 - live reviewer/spec agent threads;
 - skill bundle install and selection;

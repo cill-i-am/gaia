@@ -22,6 +22,7 @@ before any real coding harness or external integration is introduced.
 11. Records deterministic read-only evidence review output.
 12. Writes `report.md` and `report.json`.
 13. Resumes completed runs by replaying the event log.
+14. Can publish completed run evidence as a draft GitHub PR.
 
 ## What It Does Not Do Yet
 
@@ -31,7 +32,7 @@ Prototype 1 intentionally excludes:
 - target repository checkout or worktree management;
 - skill bundle installation/selection;
 - live reviewer/spec worker threads;
-- GitHub branches, commits, pull requests, checks, or merges;
+- GitHub check watching or merges;
 - Linear issue intake or blocker graphs;
 - browser or deployment evidence;
 - SQLite run indexing;
@@ -84,6 +85,7 @@ pnpm gaia run examples/specs/smoke.md --workspace-source .
 pnpm gaia status
 pnpm gaia list
 pnpm gaia resume <run-id>
+pnpm gaia publish-pr <run-id>
 ```
 
 Machine-readable output:
@@ -150,6 +152,11 @@ skipped entries, and run-local workspace path. By default Gaia prepares an empty
 workspace. With `--workspace-source <dir>`, Gaia copies a local directory into
 the run workspace while excluding generated or heavy directories such as `.git`,
 `.gaia`, `.turbo`, `coverage`, `dist`, and `node_modules`.
+
+`publish-pr` copies selected evidence into `gaia-runs/<run-id>/` on a new
+`gaia/<run-id>` branch, commits it, pushes it, opens a draft GitHub PR, and
+restores the original local branch. The command refuses to run with a dirty
+worktree.
 
 ## Lifecycle
 
@@ -244,6 +251,7 @@ Runtime tests cover:
 - copying a local workspace source while excluding generated directories;
 - worker plan, plan review, and evidence review artifacts;
 - normalized harness evidence and unknown harness failures;
+- GitHub publishing command sequencing through a recording command runner;
 - verification failure when a worker artifact is missing.
 
 Tests use temp run roots instead of the repository `.gaia/` directory.

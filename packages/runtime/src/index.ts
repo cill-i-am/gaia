@@ -1,6 +1,14 @@
 export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 export { appendEvent, loadRun, readEvents, type AppendEventInput } from "./event-store.js";
 export {
+  GitHubPrSummary,
+  publishRunToGitHub,
+  type CommandExecutionResult,
+  type GitHubCommandInput,
+  type GitHubCommandRunner,
+  type GitHubPublishOptions,
+} from "./github-publisher.js";
+export {
   HarnessNameSchema,
   HarnessRunRequest,
   HarnessRunResult,

@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { CommandSummary } from "@gaia/runtime";
+import type { CommandSummary, GitHubPrSummary } from "@gaia/runtime";
 import {
   GaiaRuntimeError,
   listRuns,
   localDirectoryWorkspaceSource,
   makeProcessHarnessConfig,
   parseHarnessName,
+  publishRunToGitHub,
   resumeRun,
   runSpecFile,
   statusRun,
@@ -35,6 +36,10 @@ const json = Flag.boolean("json").pipe(
 );
 const workspaceSource = Flag.string("workspace-source").pipe(
   Flag.withDescription("Copy a local directory into the run workspace."),
+  Flag.optional,
+);
+const baseBranch = Flag.string("base").pipe(
+  Flag.withDescription("Base branch for a Gaia GitHub pull request."),
   Flag.optional,
 );
 const harness = Flag.string("harness").pipe(
@@ -102,9 +107,20 @@ const list = Command.make("list", { json }).pipe(
   ),
 );
 
+const publishPr = Command.make("publish-pr", { baseBranch, json, runId }).pipe(
+  Command.withDescription("Publish a completed Gaia run as a draft GitHub PR."),
+  Command.withHandler(({ baseBranch, json, runId }) =>
+    renderEffect(
+      publishRunToGitHub(runId, githubPublishOptions({ baseBranch })),
+      json,
+      renderGitHubPrSummary,
+    ),
+  ),
+);
+
 const cli = Command.make("gaia").pipe(
   Command.withDescription("Gaia software-factory control plane prototype."),
-  Command.withSubcommands([run, resume, status, list]),
+  Command.withSubcommands([run, resume, status, list, publishPr]),
 );
 
 const command = Command.run(cli, { version: "0.1.0" });
@@ -144,6 +160,22 @@ function workflowOptions(
     ...(Option.isSome(processHarness)
       ? { processHarness: processHarness.value }
       : {}),
+  };
+}
+
+function githubPublishOptions(
+  input: Readonly<{
+    baseBranch?: Option.Option<string>;
+  }> = {},
+) {
+  const rootDirectory = invocationRoot();
+  const baseBranch = Option.map(input.baseBranch ?? Option.none(), (branch) =>
+    branch.trim(),
+  );
+
+  return {
+    rootDirectory,
+    ...(Option.isSome(baseBranch) ? { baseBranch: baseBranch.value } : {}),
   };
 }
 
@@ -231,6 +263,16 @@ function renderRunList(summaries: ReadonlyArray<CommandSummary>) {
   return summaries
     .map((summary) => `${summary.runId} ${summary.status} ${summary.state}`)
     .join("\n");
+}
+
+function renderGitHubPrSummary(summary: GitHubPrSummary) {
+  return [
+    `opened: ${summary.prUrl}`,
+    `run: ${summary.runId}`,
+    `branch: ${summary.branchName}`,
+    `base: ${summary.baseBranch}`,
+    `evidence: ${summary.evidencePath}`,
+  ].join("\n");
 }
 
 command.pipe(Effect.provide(NodeServices.layer), NodeRuntime.runMain);

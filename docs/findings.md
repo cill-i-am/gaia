@@ -121,3 +121,33 @@ Verification:
   evidence-review artifacts.
 - Runtime reviewer parses workspace, worker, verification, and worker-plan JSON
   through schemas before approving.
+
+## Slice 5: GitHub Pull Request Loop, First Pass
+
+Outcome: Gaia can publish a completed run as a draft GitHub PR. It creates a
+`gaia/<run-id>` branch, copies selected run evidence into `gaia-runs/<run-id>/`,
+commits, pushes, opens a draft PR with the Gaia report as the body, and restores
+the original local branch.
+
+Findings:
+
+- GitHub publishing is the first intentionally remote-mutating Gaia command, so
+  it must be explicit. It is not part of ordinary smoke testing.
+- The first implementation should publish evidence, not pretend the fake worker
+  changed a real product repo. Real target-repo patch application belongs with
+  worktree support.
+- A clean-worktree guard is non-negotiable. Gaia refuses to create PR branches
+  if local tracked changes are already present.
+- The implementation uses a narrow command-runner seam around explicit `git` and
+  `gh` commands. Tests use a recording runner instead of touching GitHub.
+- Check watching remains deferred. The Gaia repo currently has no meaningful
+  Actions checks to watch, and the check watcher should be a separate
+  resumable/status-aware behavior.
+
+Verification:
+
+- Runtime test proves successful publish command sequencing through the command
+  seam and checks copied evidence.
+- Runtime test proves dirty worktrees fail with typed `GitWorktreeDirty`.
+- `gh auth status` confirms the local environment can authenticate when live
+  publish smoke is intentionally run.

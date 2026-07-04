@@ -4,6 +4,12 @@ import { Effect, FileSystem } from "effect";
 import { execPath } from "node:process";
 import { parseRunId } from "@gaia/core";
 import { GaiaRuntimeError } from "./errors.js";
+import {
+  publishRunToGitHub,
+  type CommandExecutionResult,
+  type GitHubCommandInput,
+  type GitHubCommandRunner,
+} from "./github-publisher.js";
 import { makeProcessHarnessConfig, parseHarnessName } from "./harness.js";
 import { makeRunPaths } from "./paths.js";
 import { resumeRun, runSpecFile, statusRun } from "./workflows.js";
@@ -257,6 +263,88 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("publishes a completed run through the GitHub command seam", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Publish this run.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const commands: Array<GitHubCommandInput> = [];
+        const runner = recordingGitHubRunner(commands, (input) => {
+          if (
+            input.command === "git" &&
+            input.args.join(" ") === "rev-parse --abbrev-ref HEAD"
+          ) {
+            return { stderr: "", stdout: "main\n" };
+          }
+          if (input.command === "gh") {
+            return {
+              stderr: "",
+              stdout: "https://github.com/cill-i-am/gaia/pull/123\n",
+            };
+          }
+
+          return { stderr: "", stdout: "" };
+        });
+
+        const pr = yield* publishRunToGitHub(summary.runId, {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+
+        const evidenceReadme = yield* fs.readFileString(
+          `${cwd}/gaia-runs/${summary.runId}/README.md`,
+        );
+        assert.strictEqual(pr.status, "opened");
+        assert.strictEqual(pr.branchName, `gaia/${summary.runId}`);
+        assert.strictEqual(
+          pr.prUrl,
+          "https://github.com/cill-i-am/gaia/pull/123",
+        );
+        assert.include(evidenceReadme, "Gaia Run");
+        assert.deepEqual(
+          commands.map((command) => [command.command, command.args[0]]),
+          [
+            ["git", "status"],
+            ["git", "rev-parse"],
+            ["git", "fetch"],
+            ["git", "checkout"],
+            ["git", "add"],
+            ["git", "commit"],
+            ["git", "push"],
+            ["gh", "pr"],
+            ["git", "checkout"],
+          ],
+        );
+      }),
+    );
+
+    it.effect("refuses to publish a run from a dirty worktree", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Publish this dirty run.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const error = yield* Effect.flip(
+          publishRunToGitHub(summary.runId, {
+            commandRunner: recordingGitHubRunner([], (input) =>
+              input.command === "git" && input.args[0] === "status"
+                ? { stderr: "", stdout: "M README.md\n" }
+                : { stderr: "", stdout: "" },
+            ),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "GitWorktreeDirty");
+        }
+      }),
+    );
+
     it.effect("fails verification when the worker artifact is missing", () =>
       Effect.gen(function* () {
         const runId = parseRunId("run-V7kP9sQ2xY");
@@ -271,3 +359,14 @@ describe("runtime workflows", () => {
     );
   });
 });
+
+function recordingGitHubRunner(
+  commands: Array<GitHubCommandInput>,
+  respond: (input: GitHubCommandInput) => CommandExecutionResult,
+): GitHubCommandRunner {
+  return (input) =>
+    Effect.sync(() => {
+      commands.push(input);
+      return respond(input);
+    });
+}

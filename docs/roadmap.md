@@ -120,18 +120,24 @@ Non-goals:
 
 ## Slice 5: GitHub Pull Request Loop
 
-Status: **Next**
+Status: **In Progress**
 
 Connect local runs to GitHub once workspaces and worker evidence are stable.
 
-Target behavior:
+Completed behavior:
 
-- create branch;
-- commit worker output;
-- push;
-- open PR;
-- watch checks;
-- attach Gaia report/evidence.
+- create a `gaia/<run-id>` branch from the configured base;
+- copy selected run evidence into `gaia-runs/<run-id>/`;
+- commit and push the evidence branch;
+- open a draft PR with the Gaia report as the body;
+- restore the original local branch.
+
+Remaining behavior:
+
+- watch GitHub checks when the target repo has checks to watch;
+- attach richer report/evidence comments once PR comments are needed;
+- apply real worker output to a target repository instead of evidence-only
+  branches.
 
 Non-goals:
 
