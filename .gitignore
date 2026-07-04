@@ -1,0 +1,6 @@
+.DS_Store
+.gaia/
+.turbo/
+coverage/
+dist/
+node_modules/

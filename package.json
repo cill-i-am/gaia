@@ -1,0 +1,19 @@
+{
+  "name": "gaia",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "build": "turbo run build",
+    "check": "turbo run check",
+    "dev": "turbo run dev",
+    "gaia": "pnpm --filter @gaia/cli gaia",
+    "opensrc:effect": "opensrc path --cwd . effect",
+    "postinstall": "./scripts/ensure-effect-source.sh",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "opensrc": "^0.7.3",
+    "turbo": "^2.10.3"
+  }
+}
