@@ -7,6 +7,7 @@ import { GaiaRuntimeError } from "./errors.js";
 import {
   inspectGitHubChecks,
   publishRunToGitHub,
+  publishWorkspaceRunToGitHub,
   recordGitHubChecks,
   type CommandExecutionResult,
   type GitHubCommandInput,
@@ -344,6 +345,145 @@ describe("runtime workflows", () => {
         assert.isTrue(error instanceof GaiaRuntimeError);
         if (error instanceof GaiaRuntimeError) {
           assert.strictEqual(error.code, "GitWorktreeDirty");
+        }
+      }),
+    );
+
+    it.effect("publishes workspace changes through the GitHub command seam", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const source = `${cwd}/repo`;
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.makeDirectory(`${source}/src`, { recursive: true });
+        yield* fs.writeFileString(`${source}/README.md`, "# Original\n");
+        yield* fs.writeFileString(`${source}/src/index.ts`, "export {};\n");
+        yield* fs.writeFileString(`${source}/src/removed.ts`, "export {};\n");
+        yield* fs.writeFileString(specPath, "Publish workspace changes.\n");
+
+        const summary = yield* runSpecFile(specPath, {
+          rootDirectory: source,
+          workspaceSource: localDirectoryWorkspaceSource(source),
+        });
+        const paths = yield* makeRunPaths(summary.runId, {
+          rootDirectory: source,
+        });
+        yield* fs.writeFileString(`${paths.workspace}/README.md`, "# Changed\n");
+        yield* fs.writeFileString(
+          `${paths.workspace}/src/new-feature.ts`,
+          "export const enabled = true;\n",
+        );
+        yield* fs.remove(`${paths.workspace}/src/removed.ts`);
+
+        const commands: Array<GitHubCommandInput> = [];
+        const runner = recordingGitHubRunner(commands, (input) => {
+          if (
+            input.command === "git" &&
+            input.args.join(" ") === "rev-parse --abbrev-ref HEAD"
+          ) {
+            return { exitCode: 0, stderr: "", stdout: "main\n" };
+          }
+          if (
+            input.command === "git" &&
+            input.args.join(" ").startsWith("diff --cached --quiet")
+          ) {
+            return { exitCode: 1, stderr: "", stdout: "" };
+          }
+          if (input.command === "gh") {
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: "https://github.com/cill-i-am/gaia/pull/456\n",
+            };
+          }
+
+          return { exitCode: 0, stderr: "", stdout: "" };
+        });
+
+        const pr = yield* publishWorkspaceRunToGitHub(summary.runId, {
+          commandRunner: runner,
+          rootDirectory: source,
+        });
+
+        const readme = yield* fs.readFileString(`${source}/README.md`);
+        const newFeatureExists = yield* fs.exists(
+          `${source}/src/new-feature.ts`,
+        );
+        const outputArtifactExists = yield* fs.exists(`${source}/output.txt`);
+        const removedFileExists = yield* fs.exists(`${source}/src/removed.ts`);
+        const evidenceOutput = yield* fs.readFileString(
+          `${source}/gaia-runs/${summary.runId}/workspace-output.txt`,
+        );
+
+        assert.strictEqual(pr.status, "opened");
+        assert.strictEqual(pr.branchName, `gaia/${summary.runId}-workspace`);
+        assert.strictEqual(
+          pr.prUrl,
+          "https://github.com/cill-i-am/gaia/pull/456",
+        );
+        assert.strictEqual(readme, "# Changed\n");
+        assert.isTrue(newFeatureExists);
+        assert.isFalse(removedFileExists);
+        assert.isFalse(outputArtifactExists);
+        assert.include(evidenceOutput, summary.runId);
+        assert.deepEqual(
+          commands.map((command) => [command.command, command.args[0]]),
+          [
+            ["git", "status"],
+            ["git", "rev-parse"],
+            ["git", "fetch"],
+            ["git", "checkout"],
+            ["git", "add"],
+            ["git", "diff"],
+            ["git", "add"],
+            ["git", "commit"],
+            ["git", "push"],
+            ["gh", "pr"],
+            ["git", "checkout"],
+          ],
+        );
+      }),
+    );
+
+    it.effect("refuses a workspace PR when the workspace has no source changes", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const source = `${cwd}/repo`;
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.makeDirectory(source, { recursive: true });
+        yield* fs.writeFileString(`${source}/README.md`, "# Same\n");
+        yield* fs.writeFileString(specPath, "Publish unchanged workspace.\n");
+
+        const summary = yield* runSpecFile(specPath, {
+          rootDirectory: source,
+          workspaceSource: localDirectoryWorkspaceSource(source),
+        });
+        const error = yield* Effect.flip(
+          publishWorkspaceRunToGitHub(summary.runId, {
+            commandRunner: recordingGitHubRunner([], (input) => {
+              if (
+                input.command === "git" &&
+                input.args.join(" ") === "rev-parse --abbrev-ref HEAD"
+              ) {
+                return { exitCode: 0, stderr: "", stdout: "main\n" };
+              }
+              if (
+                input.command === "git" &&
+                input.args.join(" ").startsWith("diff --cached --quiet")
+              ) {
+                return { exitCode: 0, stderr: "", stdout: "" };
+              }
+
+              return { exitCode: 0, stderr: "", stdout: "" };
+            }),
+            rootDirectory: source,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "WorkspacePrNoChanges");
         }
       }),
     );

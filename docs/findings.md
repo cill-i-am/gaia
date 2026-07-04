@@ -205,3 +205,40 @@ Verification:
 - Core tests cover replaying `GITHUB_CHECKS_RECORDED` after completion.
 - Runtime tests cover writing a check snapshot, appending the event, and polling
   from `pending` to `passed` through the recording GitHub command seam.
+
+## Slice 5C: Workspace Pull Request Publishing
+
+Outcome: Gaia can publish a completed run workspace as a draft GitHub PR with
+`gaia publish-workspace-pr <run-id>`. It creates a
+`gaia/<run-id>-workspace` branch from the configured base, applies the run
+workspace, mirrors source additions/edits/deletions outside `.gaia/` and
+`gaia-runs/`, adds the same selected run evidence under `gaia-runs/<run-id>/`,
+pushes the branch, opens a draft PR, and restores the original local branch.
+
+Findings:
+
+- The evidence-only `publish-pr` command remains useful and separate. A
+  workspace PR has a stronger claim: it must contain source changes.
+- Harness-owned workspace artifacts are not source changes. Gaia reads the
+  harness result schema and skips artifacts declared under `workspace/*`, such
+  as the current fake/process `workspace/output.txt` artifact.
+- Git already owns source-diff truth. Gaia stages with pathspec exclusions and
+  uses `git diff --cached --quiet` to distinguish "has source changes" from "no
+  source changes" without parsing porcelain output.
+- `gaia-runs/` is now excluded from workspace source copying so prior evidence
+  PR artifacts do not become future worker input.
+- This slice still uses the local run workspace. Real Codex/worktree execution
+  remains the next major integration, not part of this no-harness pass.
+- Parallel local runs can race on `.gaia/latest`. Run directories remain
+  isolated, but latest-run convenience should get an explicit concurrency
+  policy before Gaia drives multiple live workers at once.
+
+Verification:
+
+- Runtime test proves workspace PR command sequencing through the recording
+  GitHub command seam.
+- Runtime test proves Gaia applies changed workspace files, propagates deleted
+  workspace files, skips the harness-owned output artifact from source
+  application, and still preserves it in PR evidence.
+- Runtime test proves unchanged workspaces fail with typed
+  `WorkspacePrNoChanges`.

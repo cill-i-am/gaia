@@ -1,4 +1,5 @@
 import { Effect, FileSystem, Path, Schema } from "effect";
+import type { PlatformError } from "effect/PlatformError";
 import { makeRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
 
@@ -8,6 +9,7 @@ const ignoredWorkspaceEntries = new Set([
   ".turbo",
   "coverage",
   "dist",
+  "gaia-runs",
   "node_modules",
 ]);
 
@@ -119,7 +121,7 @@ function prepareLocalDirectoryWorkspace(
       );
     }
 
-    const copied = yield* copyDirectoryContents(sourcePath, paths.workspace);
+    const copied = yield* copyWorkspaceDirectoryContents(sourcePath, paths.workspace);
 
     return WorkspacePreparationResult.make({
       copiedFiles: copied.copiedFiles,
@@ -137,24 +139,85 @@ type CopyDirectoryResult = {
   readonly skippedEntries: ReadonlyArray<string>;
 };
 
+export type WorkspaceCopyOptions = {
+  readonly deleteExtraneous?: boolean;
+  readonly skippedRelativePaths?: ReadonlySet<string>;
+};
+
+/** Copy source files while skipping generated workspace entries and owned artifacts. */
+export function copyWorkspaceDirectoryContents(
+  sourceDirectory: string,
+  destinationDirectory: string,
+  options: WorkspaceCopyOptions = {},
+): Effect.Effect<
+  CopyDirectoryResult,
+  PlatformError,
+  FileSystem.FileSystem | Path.Path
+> {
+  return copyDirectoryContents(sourceDirectory, destinationDirectory, {
+    deleteExtraneous: options.deleteExtraneous ?? false,
+    relativePrefix: "",
+    skippedRelativePaths: options.skippedRelativePaths ?? new Set<string>(),
+  });
+}
+
 function copyDirectoryContents(
   sourceDirectory: string,
   destinationDirectory: string,
+  input: Readonly<{
+    deleteExtraneous: boolean;
+    relativePrefix: string;
+    skippedRelativePaths: ReadonlySet<string>;
+  }>,
 ): Effect.Effect<
   CopyDirectoryResult,
-  unknown,
+  PlatformError,
   FileSystem.FileSystem | Path.Path
 > {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const entries = (yield* fs.readDirectory(sourceDirectory)).toSorted();
+    const entrySet = new Set(entries);
     const skippedEntries: Array<string> = [];
     let copiedFiles = 0;
 
+    if (input.deleteExtraneous && (yield* fs.exists(destinationDirectory))) {
+      const destinationEntries = (
+        yield* fs.readDirectory(destinationDirectory)
+      ).toSorted();
+
+      for (const entry of destinationEntries) {
+        const relativePath =
+          input.relativePrefix.length === 0
+            ? entry
+            : `${input.relativePrefix}/${entry}`;
+
+        if (
+          ignoredWorkspaceEntries.has(entry) ||
+          input.skippedRelativePaths.has(relativePath) ||
+          entrySet.has(entry)
+        ) {
+          continue;
+        }
+
+        yield* fs.remove(path.join(destinationDirectory, entry), {
+          recursive: true,
+        });
+      }
+    }
+
     for (const entry of entries) {
-      if (ignoredWorkspaceEntries.has(entry)) {
-        skippedEntries.push(entry);
+      const relativePath =
+        input.relativePrefix.length === 0
+          ? entry
+          : `${input.relativePrefix}/${entry}`;
+
+      if (
+        ignoredWorkspaceEntries.has(entry) ||
+        input.skippedRelativePaths.has(relativePath)
+      ) {
+        skippedEntries.push(relativePath);
         continue;
       }
 
@@ -168,13 +231,14 @@ function copyDirectoryContents(
           const childResult = yield* copyDirectoryContents(
             sourcePath,
             destinationPath,
+            {
+              deleteExtraneous: input.deleteExtraneous,
+              relativePrefix: relativePath,
+              skippedRelativePaths: input.skippedRelativePaths,
+            },
           );
           copiedFiles += childResult.copiedFiles;
-          skippedEntries.push(
-            ...childResult.skippedEntries.map(
-              (skippedEntry) => `${entry}/${skippedEntry}`,
-            ),
-          );
+          skippedEntries.push(...childResult.skippedEntries);
           break;
         }
         case "File": {
@@ -186,7 +250,7 @@ function copyDirectoryContents(
           break;
         }
         default: {
-          skippedEntries.push(entry);
+          skippedEntries.push(relativePath);
         }
       }
     }

@@ -23,9 +23,10 @@ before any real coding harness or external integration is introduced.
 12. Writes `report.md` and `report.json`.
 13. Resumes completed runs by replaying the event log.
 14. Can publish completed run evidence as a draft GitHub PR.
-15. Can inspect GitHub PR checks as `no-checks`, `pending`, `passed`, or
+15. Can publish completed run workspace changes as a draft GitHub PR.
+16. Can inspect GitHub PR checks as `no-checks`, `pending`, `passed`, or
     `failed`.
-16. Can record a GitHub check snapshot against a completed run, optionally
+17. Can record a GitHub check snapshot against a completed run, optionally
     polling until checks are no longer pending.
 
 ## What It Does Not Do Yet
@@ -90,6 +91,7 @@ pnpm gaia status
 pnpm gaia list
 pnpm gaia resume <run-id>
 pnpm gaia publish-pr <run-id>
+pnpm gaia publish-workspace-pr <run-id>
 pnpm gaia pr-checks <pr-number-or-url>
 pnpm gaia checks <run-id> <pr-number-or-url>
 pnpm gaia checks <run-id> <pr-number-or-url> --wait
@@ -166,6 +168,14 @@ the run workspace while excluding generated or heavy directories such as `.git`,
 `gaia/<run-id>` branch, commits it, pushes it, opens a draft GitHub PR, and
 restores the original local branch. The command refuses to run with a dirty
 worktree.
+
+`publish-workspace-pr` applies the run workspace to a new
+`gaia/<run-id>-workspace` branch before copying the same selected evidence into
+`gaia-runs/<run-id>/`. It skips harness-declared workspace artifacts such as
+`workspace/output.txt`, mirrors source additions/edits/deletions outside
+`.gaia/` and `gaia-runs/`, and fails with `WorkspacePrNoChanges` when the run
+workspace does not differ from the base branch. Use `publish-pr` for
+evidence-only PRs.
 
 `pr-checks` queries GitHub for a pull request's reported checks and normalizes
 the result to one of four states: `no-checks`, `pending`, `passed`, or `failed`.

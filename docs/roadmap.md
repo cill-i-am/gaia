@@ -120,7 +120,7 @@ Non-goals:
 
 ## Slice 5: GitHub Pull Request Loop
 
-Status: **In Progress**
+Status: **Mostly Complete**
 
 Connect local runs to GitHub once workspaces and worker evidence are stable.
 
@@ -135,14 +135,16 @@ Completed behavior:
   `failed`;
 - attach GitHub check-state snapshots to completed Gaia runs;
 - poll GitHub checks on demand until they leave `pending`, with a bounded fixed
-  interval.
+  interval;
+- mirror a completed run workspace to a `gaia/<run-id>-workspace` branch;
+- skip harness-declared workspace artifacts during source PR application;
+- refuse workspace PRs when there are no source changes.
 
 Remaining behavior:
 
 - background check watching over time when the target repo has checks to watch;
 - attach richer report/evidence comments once PR comments are needed;
-- apply real worker output to a target repository instead of evidence-only
-  branches.
+- connect a real Codex worker harness to the workspace loop.
 
 Non-goals:
 
@@ -185,11 +187,33 @@ Non-goals:
 
 ## Future Slices
 
-- persistent SQLite run index;
-- dashboard or TUI;
-- browser evidence capture;
-- CI watcher;
+Prioritize no-harness slices in this order until a real Codex harness is
+available:
+
+1. **Run store concurrency policy**: decide whether local runs take a lock,
+   stop updating `.gaia/latest` concurrently, or move latest/listing onto an
+   append-only run index before live worker parallelism.
+2. **Repository preflight checks**: verify clean worktree, `git`, `gh`, remote,
+   base branch, auth status, and Gaia run readiness before any mutating command.
+3. **Dry-run PR previews**: show the branch name, base branch, evidence path,
+   staged-source claim, and exact commands Gaia would run without mutating git
+   or GitHub.
+4. **Process harness contract enrichment**: make the current local harness
+   adapter stricter about declared output artifacts, changed workspace files,
+   exit evidence, and environment contract before swapping in Codex.
+5. **Skill bundle manifest**: record which portable skills a run should load,
+   their source repo/path, and their version or commit, without installing them
+   automatically yet.
+6. **Read-only browser evidence shape**: define the artifact contract for future
+   browser screenshots/logs before live browser automation is wired in.
+7. **CI watcher model**: extend the existing check snapshot command into a
+   resumable model before adding a background daemon.
+
 - multi-harness support through AI SDK HarnessAgent;
 - skill bundle installation and versioning;
+- persistent SQLite run index;
+- browser evidence capture;
+- CI watcher;
+- dashboard or TUI;
 - cancellation and cleanup for live workers;
 - reusable factory templates for new products.

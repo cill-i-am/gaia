@@ -3,12 +3,14 @@ import { Duration, Effect, FileSystem, Path, Schedule, Schema } from "effect";
 import { execFile } from "node:child_process";
 import { appendEvent, readEvents } from "./event-store.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import { HarnessRunResult } from "./harness.js";
 import {
   makeRunPaths,
   runRelative,
   type RunPaths,
   type RunStorageOptions,
 } from "./paths.js";
+import { copyWorkspaceDirectoryContents } from "./workspace.js";
 import { statusRun } from "./workflows.js";
 
 const commandMaxBufferBytes = 10 * 1024 * 1024;
@@ -16,6 +18,7 @@ const defaultRemoteName = "origin";
 const defaultBaseBranch = "main";
 const defaultGitHubCheckPollAttempts = 30;
 const defaultGitHubCheckPollInterval = "5 seconds";
+const workspaceArtifactPrefix = "workspace/";
 
 const GitHubCheckPollAttemptCountSchema = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(1),
@@ -100,6 +103,11 @@ export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
   runId: RunIdSchema,
   status: Schema.Literal("opened"),
 }) {}
+
+const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
+const parseHarnessRunResultJson = Schema.decodeUnknownSync(
+  HarnessRunResultJson,
+);
 
 export type CommandExecutionResult = {
   readonly exitCode: number;
@@ -261,6 +269,105 @@ export function publishRunToGitHub(
   });
 }
 
+/** Publish a completed Gaia run workspace as a draft GitHub pull request. */
+export function publishWorkspaceRunToGitHub(
+  runIdInput: string,
+  options: GitHubPublishOptions = {},
+) {
+  return Effect.gen(function* () {
+    const rootDirectory = options.rootDirectory ?? ".";
+    const baseBranch = options.baseBranch ?? defaultBaseBranch;
+    const remoteName = options.remoteName ?? defaultRemoteName;
+    const runner = options.commandRunner ?? nodeCommandRunner;
+    const summary = yield* statusRun(runIdInput, { rootDirectory });
+
+    if (summary.status !== "completed") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "RunNotCompleted",
+          message: `Run ${summary.runId} must be completed before opening a workspace PR.`,
+          recoverable: false,
+        }),
+      );
+    }
+
+    yield* requireCleanWorktree(runner, rootDirectory);
+    const currentBranch = yield* currentGitBranch(runner, rootDirectory);
+    const branchName = `gaia/${summary.runId}-workspace`;
+    const paths = yield* makeRunPaths(summary.runId, { rootDirectory });
+
+    const prUrl = yield* Effect.gen(function* () {
+      yield* runRequiredCommand(runner, rootDirectory, "git", [
+        "fetch",
+        remoteName,
+        baseBranch,
+      ]);
+      yield* runRequiredCommand(runner, rootDirectory, "git", [
+        "checkout",
+        "-B",
+        branchName,
+        `${remoteName}/${baseBranch}`,
+      ]);
+
+      yield* applyRunWorkspace(paths, rootDirectory);
+      yield* stageWorkspaceChanges(runner, rootDirectory, summary.runId);
+
+      const evidencePath = yield* writePullRequestEvidence(
+        summary.runId,
+        rootDirectory,
+      );
+      yield* copyRunArtifacts(paths, evidencePath);
+      yield* runRequiredCommand(runner, rootDirectory, "git", [
+        "add",
+        `gaia-runs/${summary.runId}`,
+      ]);
+      yield* runRequiredCommand(runner, rootDirectory, "git", [
+        "commit",
+        "-m",
+        `feat: apply gaia workspace for ${summary.runId}`,
+      ]);
+      yield* runRequiredCommand(runner, rootDirectory, "git", [
+        "push",
+        "--force-with-lease",
+        "-u",
+        remoteName,
+        branchName,
+      ]);
+      const pr = yield* runRequiredCommand(runner, rootDirectory, "gh", [
+        "pr",
+        "create",
+        "--draft",
+        "--base",
+        baseBranch,
+        "--head",
+        branchName,
+        "--title",
+        `Gaia workspace run ${summary.runId}`,
+        "--body-file",
+        `${evidencePath}/README.md`,
+      ]);
+
+      return yield* parsePullRequestUrl(pr.stdout);
+    }).pipe(
+      Effect.ensuring(
+        runRequiredCommand(runner, rootDirectory, "git", [
+          "checkout",
+          currentBranch,
+        ]).pipe(Effect.ignore),
+      ),
+    );
+
+    return GitHubPrSummary.make({
+      baseBranch,
+      branchName,
+      evidencePath: `gaia-runs/${summary.runId}`,
+      prUrl,
+      runId: summary.runId,
+      status: "opened",
+    });
+  });
+}
+
 export function inspectGitHubChecks(
   prInput: string,
   options: GitHubPublishOptions = {},
@@ -351,6 +458,128 @@ export function recordGitHubChecks(
     });
 
     return recorded;
+  });
+}
+
+function applyRunWorkspace(paths: RunPaths, rootDirectory: string) {
+  return Effect.gen(function* () {
+    const skippedRelativePaths = yield* readWorkspaceArtifactRelativePaths(paths);
+    yield* copyWorkspaceDirectoryContents(paths.workspace, rootDirectory, {
+      deleteExtraneous: true,
+      skippedRelativePaths,
+    });
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "WorkspacePrApplyFailed",
+          message: "Gaia could not apply the run workspace to the PR branch.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
+function readWorkspaceArtifactRelativePaths(paths: RunPaths) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const rawResult = yield* fs.readFileString(paths.workerResult).pipe(
+      Effect.catchTag("PlatformError", (cause) =>
+        Effect.fail(
+          makeRuntimeError({
+            cause,
+            code: "WorkspaceArtifactReadFailed",
+            message: "Gaia could not read the harness artifact manifest.",
+            recoverable: true,
+          }),
+        ),
+      ),
+    );
+    const parsedJson = yield* Effect.try({
+      try: (): unknown => JSON.parse(rawResult),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "WorkspaceArtifactJsonInvalid",
+          message: "Harness artifact manifest was not valid JSON.",
+          recoverable: true,
+        }),
+    });
+    const result = yield* Effect.try({
+      try: () => parseHarnessRunResultJson(parsedJson),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "WorkspaceArtifactManifestInvalid",
+          message:
+            "Harness artifact manifest did not match Gaia's run result schema.",
+          recoverable: true,
+        }),
+    });
+    const relativePaths = new Set<string>();
+
+    for (const artifact of result.outputArtifacts) {
+      if (!artifact.startsWith(workspaceArtifactPrefix)) {
+        continue;
+      }
+
+      const relativePath = artifact.slice(workspaceArtifactPrefix.length);
+      if (relativePath.length > 0) {
+        relativePaths.add(relativePath);
+      }
+    }
+
+    return relativePaths;
+  });
+}
+
+function stageWorkspaceChanges(
+  runner: GitHubCommandRunner,
+  rootDirectory: string,
+  runId: RunId,
+) {
+  return Effect.gen(function* () {
+    const excludedEvidencePath = `:!gaia-runs/${runId}`;
+    yield* runRequiredCommand(runner, rootDirectory, "git", [
+      "add",
+      "--all",
+      "--",
+      ".",
+      ":!.gaia",
+      excludedEvidencePath,
+    ]);
+    const diff = yield* runCommand(runner, rootDirectory, "git", [
+      "diff",
+      "--cached",
+      "--quiet",
+      "--",
+      ".",
+      ":!.gaia",
+      excludedEvidencePath,
+    ]);
+
+    if (diff.exitCode === 0) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "WorkspacePrNoChanges",
+          message:
+            "Gaia run workspace has no source changes to publish. Use publish-pr for evidence-only PRs.",
+          recoverable: false,
+        }),
+      );
+    }
+
+    if (diff.exitCode !== 1) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "GitHubCommandFailed",
+          message: "git diff --cached --quiet failed.",
+          recoverable: true,
+        }),
+      );
+    }
   });
 }
 

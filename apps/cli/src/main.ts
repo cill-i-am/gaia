@@ -15,6 +15,7 @@ import {
   makeProcessHarnessConfig,
   parseHarnessName,
   publishRunToGitHub,
+  publishWorkspaceRunToGitHub,
   recordGitHubChecks,
   resumeRun,
   runSpecFile,
@@ -129,6 +130,23 @@ const publishPr = Command.make("publish-pr", { baseBranch, json, runId }).pipe(
   ),
 );
 
+const publishWorkspacePr = Command.make("publish-workspace-pr", {
+  baseBranch,
+  json,
+  runId,
+}).pipe(
+  Command.withDescription(
+    "Publish completed Gaia workspace changes as a draft GitHub PR.",
+  ),
+  Command.withHandler(({ baseBranch, json, runId }) =>
+    renderEffect(
+      publishWorkspaceRunToGitHub(runId, githubPublishOptions({ baseBranch })),
+      json,
+      renderGitHubPrSummary,
+    ),
+  ),
+);
+
 const prChecks = Command.make("pr-checks", { json, pullRequest }).pipe(
   Command.withDescription("Inspect GitHub checks for a pull request."),
   Command.withHandler(({ json, pullRequest }) =>
@@ -167,6 +185,7 @@ const cli = Command.make("gaia").pipe(
     status,
     list,
     publishPr,
+    publishWorkspacePr,
     prChecks,
     checks,
   ]),

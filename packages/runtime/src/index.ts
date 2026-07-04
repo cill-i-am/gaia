@@ -11,6 +11,7 @@ export {
   inspectGitHubChecks,
   parseGitHubPullRequestSelector,
   publishRunToGitHub,
+  publishWorkspaceRunToGitHub,
   recordGitHubChecks,
   type CommandExecutionResult,
   type GitHubCheckRecordOptions,

@@ -61,8 +61,10 @@ pnpm gaia checks <run-id> 1 --json
 Delete generated `.gaia/` run state after smoke testing unless the user asks to
 keep it for inspection.
 
-`pnpm gaia publish-pr <run-id>` creates a real branch, commit, push, and draft
-GitHub PR. Run it only when the task explicitly includes GitHub publishing.
+`pnpm gaia publish-pr <run-id>` and
+`pnpm gaia publish-workspace-pr <run-id>` create a real branch, commit, push,
+and draft GitHub PR. Run them only when the task explicitly includes GitHub
+publishing.
 
 ## Current Prototype Boundary
 

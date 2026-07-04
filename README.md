@@ -20,8 +20,8 @@ Prototype 1 proves the smallest useful loop:
 Prototype 1 deliberately excludes dedicated Codex/Claude/OpenCode workers,
 Linear, worktrees, live reviewer threads, browser evidence,
 dashboards, and merge automation. It does include deterministic local review
-evidence, can publish completed run evidence as a draft GitHub PR, and can
-inspect or record PR check state.
+evidence, evidence-only GitHub PR publishing, workspace-change GitHub PR
+publishing, and GitHub PR check inspection/recording.
 
 See [`docs/prototype-1.md`](docs/prototype-1.md) for the detailed prototype
 contract, event lifecycle, artifact format, and deferred work.
@@ -45,6 +45,7 @@ pnpm gaia status
 pnpm gaia list
 pnpm gaia resume <run-id>
 pnpm gaia publish-pr <run-id>
+pnpm gaia publish-workspace-pr <run-id>
 pnpm gaia pr-checks <pr-number-or-url>
 pnpm gaia checks <run-id> <pr-number-or-url>
 pnpm gaia checks <run-id> <pr-number-or-url> --wait
@@ -55,6 +56,12 @@ stores generated run state in that directory's `.gaia/` folder.
 `pnpm gaia publish-pr <run-id>` intentionally mutates GitHub state: it creates
 an evidence branch, commits selected run evidence under `gaia-runs/<run-id>/`,
 pushes it, opens a draft PR, and restores the original local branch.
+`pnpm gaia publish-workspace-pr <run-id>` intentionally mutates GitHub state in
+the same way, but first applies the run workspace to a
+`gaia/<run-id>-workspace` branch. Gaia skips harness-declared workspace
+artifacts such as `workspace/output.txt`, stages only source changes outside
+`.gaia/` and `gaia-runs/`, then refuses to open the PR when the workspace has no
+source changes.
 `pnpm gaia pr-checks <pr-number-or-url>` reads GitHub PR checks and reports one
 of `no-checks`, `pending`, `passed`, or `failed`.
 `pnpm gaia checks <run-id> <pr-number-or-url>` records that check state under
