@@ -154,3 +154,30 @@ Verification:
 - Live smoke opened draft PR
   [`#1`](https://github.com/cill-i-am/gaia/pull/1) from
   `gaia/run-oOQuNPaFbQ` to `main`, then restored the local checkout to `main`.
+
+## Slice 5: GitHub Check Inspection
+
+Outcome: Gaia can inspect GitHub PR checks with `gaia pr-checks` and normalize
+GitHub output to `no-checks`, `pending`, `passed`, or `failed`.
+
+Findings:
+
+- `gh pr checks` treats "no checks reported" as a nonzero command result. Gaia
+  now models command `exitCode` explicitly so that expected GitHub states do not
+  have to masquerade as command defects.
+- Publishing still requires zero-exit `git` and `gh` commands. Check inspection
+  is the only current GitHub command path that intentionally interprets nonzero
+  output as data.
+- Unknown or non-passing check states are conservative: they become `failed`
+  unless they are recognized pending or passing states.
+- Durable polling is still separate from read-only inspection. The next check
+  slice should attach check snapshots to a run and optionally poll until a
+  terminal state.
+
+Verification:
+
+- Runtime tests cover `no-checks`, `pending`, `passed`, and `failed` through the
+  recording GitHub command seam.
+- Live smoke against draft PR
+  [`#1`](https://github.com/cill-i-am/gaia/pull/1) returned
+  `{"status":"no-checks"}`.

@@ -5,6 +5,7 @@ import { execPath } from "node:process";
 import { parseRunId } from "@gaia/core";
 import { GaiaRuntimeError } from "./errors.js";
 import {
+  inspectGitHubChecks,
   publishRunToGitHub,
   type CommandExecutionResult,
   type GitHubCommandInput,
@@ -276,16 +277,17 @@ describe("runtime workflows", () => {
             input.command === "git" &&
             input.args.join(" ") === "rev-parse --abbrev-ref HEAD"
           ) {
-            return { stderr: "", stdout: "main\n" };
+            return { exitCode: 0, stderr: "", stdout: "main\n" };
           }
           if (input.command === "gh") {
             return {
+              exitCode: 0,
               stderr: "",
               stdout: "https://github.com/cill-i-am/gaia/pull/123\n",
             };
           }
 
-          return { stderr: "", stdout: "" };
+          return { exitCode: 0, stderr: "", stdout: "" };
         });
 
         const pr = yield* publishRunToGitHub(summary.runId, {
@@ -331,8 +333,8 @@ describe("runtime workflows", () => {
           publishRunToGitHub(summary.runId, {
             commandRunner: recordingGitHubRunner([], (input) =>
               input.command === "git" && input.args[0] === "status"
-                ? { stderr: "", stdout: "M README.md\n" }
-                : { stderr: "", stdout: "" },
+                ? { exitCode: 0, stderr: "", stdout: "M README.md\n" }
+                : { exitCode: 0, stderr: "", stdout: "" },
             ),
             rootDirectory: cwd,
           }),
@@ -342,6 +344,85 @@ describe("runtime workflows", () => {
         if (error instanceof GaiaRuntimeError) {
           assert.strictEqual(error.code, "GitWorktreeDirty");
         }
+      }),
+    );
+
+    it.effect("reports no GitHub checks as an explicit state", () =>
+      Effect.gen(function* () {
+        const cwd = yield* tempDirectory;
+        const summary = yield* inspectGitHubChecks("1", {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 1,
+            stderr: "no checks reported on the 'gaia/example' branch\n",
+            stdout: "",
+          })),
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(summary.status, "no-checks");
+        assert.strictEqual(summary.checks.length, 0);
+      }),
+    );
+
+    it.effect("classifies pending GitHub checks", () =>
+      Effect.gen(function* () {
+        const cwd = yield* tempDirectory;
+        const summary = yield* inspectGitHubChecks("1", {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify([
+              {
+                link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                name: "test",
+                state: "PENDING",
+                workflow: "CI",
+              },
+            ]),
+          })),
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(summary.status, "pending");
+      }),
+    );
+
+    it.effect("classifies passing and failing GitHub checks", () =>
+      Effect.gen(function* () {
+        const cwd = yield* tempDirectory;
+        const passed = yield* inspectGitHubChecks("1", {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify([
+              {
+                link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                name: "check",
+                state: "SUCCESS",
+                workflow: "CI",
+              },
+            ]),
+          })),
+          rootDirectory: cwd,
+        });
+        const failed = yield* inspectGitHubChecks("1", {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify([
+              {
+                link: "https://github.com/cill-i-am/gaia/actions/runs/2",
+                name: "check",
+                state: "FAILURE",
+                workflow: "CI",
+              },
+            ]),
+          })),
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(passed.status, "passed");
+        assert.strictEqual(failed.status, "failed");
       }),
     );
 
@@ -358,6 +439,11 @@ describe("runtime workflows", () => {
       }),
     );
   });
+});
+
+const tempDirectory = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
 });
 
 function recordingGitHubRunner(

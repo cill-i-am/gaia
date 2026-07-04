@@ -10,8 +10,8 @@ and one-off package execution. Do not use npm, yarn, or Bun unless the user asks
   parsing, XState lifecycle, event replay, snapshots, and report models.
 - `packages/runtime` owns the Effect filesystem runtime: durable run storage,
   event append/read, worker planning, harness execution, read-only review
-  evidence, verification, reporting, GitHub evidence publishing, and command
-  workflows.
+  evidence, verification, reporting, GitHub evidence publishing/check
+  inspection, and command workflows.
 - `docs/*` contains human and agent-facing design notes for the prototype.
 - `.gaia/*` is generated local run state and must not be committed.
 
@@ -19,10 +19,9 @@ and one-off package execution. Do not use npm, yarn, or Bun unless the user asks
 
 - Keep the control plane boring, inspectable, and resumable.
 - Prefer the smallest implementation that proves the current factory loop.
-- Do not add dedicated agent harnesses, GitHub, Linear, live reviewer threads,
 - Do not add dedicated agent harnesses, Linear, live reviewer threads,
-  dashboards, SQLite, auth, check-watching, or merge automation unless the
-  current task explicitly asks.
+  dashboards, SQLite, auth, durable check-watching, or merge automation unless
+  the current task explicitly asks.
 - Parse boundary input immediately with Effect Schema or the owning parser.
 - Carry branded/domain values inward after parsing. Do not use casts to create
   brands.
@@ -55,6 +54,7 @@ pnpm gaia status
 pnpm gaia list
 pnpm gaia resume <run-id>
 pnpm gaia run examples/specs/smoke.md --json
+pnpm gaia pr-checks 1 --json
 ```
 
 Delete generated `.gaia/` run state after smoke testing unless the user asks to

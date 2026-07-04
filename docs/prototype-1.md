@@ -23,6 +23,8 @@ before any real coding harness or external integration is introduced.
 12. Writes `report.md` and `report.json`.
 13. Resumes completed runs by replaying the event log.
 14. Can publish completed run evidence as a draft GitHub PR.
+15. Can inspect GitHub PR checks as `no-checks`, `pending`, `passed`, or
+    `failed`.
 
 ## What It Does Not Do Yet
 
@@ -32,7 +34,7 @@ Prototype 1 intentionally excludes:
 - target repository checkout or worktree management;
 - skill bundle installation/selection;
 - live reviewer/spec worker threads;
-- GitHub check watching or merges;
+- durable GitHub check watching attached to runs or merges;
 - Linear issue intake or blocker graphs;
 - browser or deployment evidence;
 - SQLite run indexing;
@@ -86,6 +88,7 @@ pnpm gaia status
 pnpm gaia list
 pnpm gaia resume <run-id>
 pnpm gaia publish-pr <run-id>
+pnpm gaia pr-checks <pr-number-or-url>
 ```
 
 Machine-readable output:
@@ -157,6 +160,10 @@ the run workspace while excluding generated or heavy directories such as `.git`,
 `gaia/<run-id>` branch, commits it, pushes it, opens a draft GitHub PR, and
 restores the original local branch. The command refuses to run with a dirty
 worktree.
+
+`pr-checks` queries GitHub for a pull request's reported checks and normalizes
+the result to one of four states: `no-checks`, `pending`, `passed`, or `failed`.
+It is read-only and does not mutate the run log yet.
 
 ## Lifecycle
 
@@ -252,6 +259,7 @@ Runtime tests cover:
 - worker plan, plan review, and evidence review artifacts;
 - normalized harness evidence and unknown harness failures;
 - GitHub publishing command sequencing through a recording command runner;
+- GitHub check-state classification through a recording command runner;
 - verification failure when a worker artifact is missing.
 
 Tests use temp run roots instead of the repository `.gaia/` directory.

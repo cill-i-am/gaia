@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { CommandSummary, GitHubPrSummary } from "@gaia/runtime";
+import type {
+  CommandSummary,
+  GitHubChecksSummary,
+  GitHubPrSummary,
+} from "@gaia/runtime";
 import {
   GaiaRuntimeError,
+  inspectGitHubChecks,
   listRuns,
   localDirectoryWorkspaceSource,
   makeProcessHarnessConfig,
@@ -30,6 +35,7 @@ type FailureOutput = {
 
 const specFile = Argument.string("spec-file");
 const runId = Argument.string("run-id");
+const pullRequest = Argument.string("pull-request");
 const optionalRunId = runId.pipe(Argument.optional);
 const json = Flag.boolean("json").pipe(
   Flag.withDescription("Write a machine-readable JSON response."),
@@ -118,9 +124,20 @@ const publishPr = Command.make("publish-pr", { baseBranch, json, runId }).pipe(
   ),
 );
 
+const prChecks = Command.make("pr-checks", { json, pullRequest }).pipe(
+  Command.withDescription("Inspect GitHub checks for a pull request."),
+  Command.withHandler(({ json, pullRequest }) =>
+    renderEffect(
+      inspectGitHubChecks(pullRequest, { rootDirectory: invocationRoot() }),
+      json,
+      renderGitHubChecksSummary,
+    ),
+  ),
+);
+
 const cli = Command.make("gaia").pipe(
   Command.withDescription("Gaia software-factory control plane prototype."),
-  Command.withSubcommands([run, resume, status, list, publishPr]),
+  Command.withSubcommands([run, resume, status, list, publishPr, prChecks]),
 );
 
 const command = Command.run(cli, { version: "0.1.0" });
@@ -272,6 +289,25 @@ function renderGitHubPrSummary(summary: GitHubPrSummary) {
     `branch: ${summary.branchName}`,
     `base: ${summary.baseBranch}`,
     `evidence: ${summary.evidencePath}`,
+  ].join("\n");
+}
+
+function renderGitHubChecksSummary(summary: GitHubChecksSummary) {
+  const lines = [
+    `checks: ${summary.status}`,
+    `pr: ${summary.pr}`,
+    `count: ${summary.checks.length}`,
+  ];
+
+  if (summary.checks.length === 0) {
+    return lines.join("\n");
+  }
+
+  return [
+    ...lines,
+    ...summary.checks.map(
+      (check) => `- ${check.name}: ${check.state}`,
+    ),
   ].join("\n");
 }
 
