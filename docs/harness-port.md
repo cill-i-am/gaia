@@ -12,8 +12,10 @@ The runtime owns one normalized harness port:
   `worker-result.json`.
 - `GaiaHarness` is the adapter interface.
 
-The currently registered adapter is `fake`. It is deterministic and local. Its
-job is to prove the contract before Gaia talks to real agent systems.
+The currently registered adapters are:
+
+- `fake`, a deterministic in-process adapter for lifecycle tests;
+- `process`, a subprocess adapter for wrapper scripts around real harness CLIs.
 
 ## Adapter Boundary
 
@@ -46,9 +48,35 @@ run lifecycle. Each adapter translates its native execution model into:
 - Keep adapter failures typed and safe to report.
 - Add one adapter module per real harness once that harness is needed.
 
-## Deferred Real Harness Work
+## Process Harness
 
-The next slice should add the first real experimental adapter. That work should
-decide whether Gaia talks to a harness through a local CLI process, a Codex
-thread, AI SDK HarnessAgent, or another API. This document intentionally does
-not choose that vendor yet.
+The process harness is the first real external boundary. It runs one executable
+with explicit repeated args, never through a shell string.
+
+Use it like:
+
+```sh
+pnpm gaia run examples/specs/smoke.md \
+  --harness process \
+  --harness-command node \
+  --harness-arg "$PWD/examples/harnesses/process-harness.mjs"
+```
+
+Gaia passes context through environment variables:
+
+- `GAIA_RUN_ID`
+- `GAIA_SPEC_BODY`
+- `GAIA_SPEC_TITLE`
+- `GAIA_WORKER_LOG_PATH`
+- `GAIA_WORKER_RESULT_PATH`
+- `GAIA_WORKSPACE_OUTPUT_PATH`
+- `GAIA_WORKSPACE_PATH`
+
+The process writes workspace artifacts. Gaia captures stdout/stderr into
+`worker.log`, then writes normalized `worker-result.json`.
+
+## Deferred Dedicated Harness Work
+
+Dedicated Codex, Claude, OpenCode, or AI SDK HarnessAgent adapters should be
+added only once Gaia owns the relevant session, cancellation, log streaming, and
+credential semantics.

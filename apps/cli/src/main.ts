@@ -6,6 +6,7 @@ import {
   GaiaRuntimeError,
   listRuns,
   localDirectoryWorkspaceSource,
+  makeProcessHarnessConfig,
   parseHarnessName,
   resumeRun,
   runSpecFile,
@@ -40,18 +41,39 @@ const harness = Flag.string("harness").pipe(
   Flag.withDescription("Select the worker harness adapter."),
   Flag.optional,
 );
+const harnessCommand = Flag.string("harness-command").pipe(
+  Flag.withDescription("Executable command for the process harness."),
+  Flag.optional,
+);
+const harnessArg = Flag.string("harness-arg").pipe(
+  Flag.withDescription("Argument for the process harness command. Repeatable."),
+  Flag.atLeast(0),
+);
 
-const run = Command.make("run", { harness, json, specFile, workspaceSource }).pipe(
+const run = Command.make("run", {
+  harness,
+  harnessArg,
+  harnessCommand,
+  json,
+  specFile,
+  workspaceSource,
+}).pipe(
   Command.withDescription("Start a new Gaia run from a Markdown spec."),
-  Command.withHandler(({ harness, json, specFile, workspaceSource }) =>
-    renderEffect(
-      runSpecFile(
-        resolveInvocationPath(specFile),
-        workflowOptions({ harness, workspaceSource }),
+  Command.withHandler(
+    ({ harness, harnessArg, harnessCommand, json, specFile, workspaceSource }) =>
+      renderEffect(
+        runSpecFile(
+          resolveInvocationPath(specFile),
+          workflowOptions({
+            harness,
+            harnessArgs: harnessArg,
+            harnessCommand,
+            workspaceSource,
+          }),
+        ),
+        json,
+        renderSummary,
       ),
-      json,
-      renderSummary,
-    ),
   ),
 );
 
@@ -94,6 +116,8 @@ function invocationRoot() {
 function workflowOptions(
   input: Readonly<{
     harness?: Option.Option<string>;
+    harnessArgs?: ReadonlyArray<string>;
+    harnessCommand?: Option.Option<string>;
     workspaceSource?: Option.Option<string>;
   }> = {},
 ) {
@@ -106,6 +130,10 @@ function workflowOptions(
     input.harness ?? Option.none(),
     parseHarnessName,
   );
+  const processHarness = Option.map(
+    input.harnessCommand ?? Option.none(),
+    (command) => makeProcessHarnessConfig(command, input.harnessArgs ?? []),
+  );
 
   return {
     rootDirectory,
@@ -113,6 +141,9 @@ function workflowOptions(
       ? { workspaceSource: workspaceSource.value }
       : {}),
     ...(Option.isSome(harnessName) ? { harnessName: harnessName.value } : {}),
+    ...(Option.isSome(processHarness)
+      ? { processHarness: processHarness.value }
+      : {}),
   };
 }
 

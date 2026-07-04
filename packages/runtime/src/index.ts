@@ -4,12 +4,18 @@ export {
   HarnessNameSchema,
   HarnessRunRequest,
   HarnessRunResult,
+  ProcessHarnessConfig,
+  ProcessHarnessCommandSchema,
   availableHarnessNames,
   defaultHarnessName,
+  makeProcessHarnessConfig,
   parseHarnessName,
+  parseProcessHarnessConfig,
+  processHarnessName,
   runHarness,
   type GaiaHarness,
   type HarnessName,
+  type ProcessHarnessCommand,
 } from "./harness.js";
 export { makeRunPaths, runRelative, runRootDirectory, type RunPaths } from "./paths.js";
 export { writeReport } from "./report-writer.js";

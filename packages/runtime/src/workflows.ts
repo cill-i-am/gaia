@@ -15,6 +15,7 @@ import {
   defaultHarnessName,
   runHarness,
   type HarnessName,
+  type ProcessHarnessConfig,
 } from "./harness.js";
 import {
   makeRunPaths,
@@ -45,6 +46,7 @@ export type CommandSummary = {
 
 export type WorkflowOptions = RunStorageOptions & {
   readonly harnessName?: HarnessName;
+  readonly processHarness?: ProcessHarnessConfig;
   readonly workspaceSource?: WorkspaceSource;
 };
 
@@ -84,6 +86,10 @@ export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
       payload: { harnessName },
       type: "WORKER_STARTED",
     });
+    const harnessOptions =
+      options.processHarness === undefined
+        ? {}
+        : { processHarness: options.processHarness };
     const harnessResult = yield* runHarness(
       HarnessRunRequest.make({
         harnessName,
@@ -95,6 +101,11 @@ export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
         workspaceOutputPath: paths.workspaceOutput,
         workspacePath: paths.workspace,
       }),
+      harnessOptions,
+    ).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "runningWorker", error),
+      ),
     );
     yield* appendEvent(runId, paths, {
       payload: {

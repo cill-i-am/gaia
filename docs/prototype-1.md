@@ -90,6 +90,15 @@ pnpm gaia status <run-id> --json
 pnpm gaia list --json
 ```
 
+The `process` harness runs an external command without shell parsing:
+
+```sh
+pnpm gaia run examples/specs/smoke.md \
+  --harness process \
+  --harness-command node \
+  --harness-arg "$PWD/examples/harnesses/process-harness.mjs"
+```
+
 When invoked through `pnpm gaia`, paths are resolved from the directory where the
 user ran the command, not from `apps/cli`. Gaia uses `INIT_CWD` for that pnpm
 case and falls back to `process.cwd()` when run directly.

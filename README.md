@@ -34,6 +34,7 @@ pnpm build
 
 pnpm gaia run examples/specs/smoke.md
 pnpm gaia run examples/specs/smoke.md --harness fake
+pnpm gaia run examples/specs/smoke.md --harness process --harness-command node --harness-arg "$PWD/examples/harnesses/process-harness.mjs"
 pnpm gaia run examples/specs/smoke.md --workspace-source .
 pnpm gaia run examples/specs/smoke.md --json
 pnpm gaia status
@@ -87,7 +88,7 @@ packages/runtime
 
 ## Deferred Roadmap
 
-- real Codex, Claude, OpenCode, or AI SDK HarnessAgent adapter;
+- dedicated Codex, Claude, OpenCode, or AI SDK HarnessAgent adapter;
 - real target repo and git worktree execution;
 - GitHub branch and PR creation;
 - Linear issue intake and status sync;

@@ -1,9 +1,10 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import { Effect, FileSystem } from "effect";
+import { execPath } from "node:process";
 import { parseRunId } from "@gaia/core";
 import { GaiaRuntimeError } from "./errors.js";
-import { parseHarnessName } from "./harness.js";
+import { makeProcessHarnessConfig, parseHarnessName } from "./harness.js";
 import { makeRunPaths } from "./paths.js";
 import { resumeRun, runSpecFile, statusRun } from "./workflows.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
@@ -146,6 +147,93 @@ describe("runtime workflows", () => {
         if (error instanceof GaiaRuntimeError) {
           assert.strictEqual(error.code, "UnknownHarness");
         }
+      }),
+    );
+
+    it.effect("runs the process harness through the workflow seam", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const scriptPath = `${cwd}/process-harness.mjs`;
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          scriptPath,
+          [
+            "import { writeFileSync } from 'node:fs';",
+            "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness ${process.env.GAIA_RUN_ID}\\n`);",
+            "console.log(`process harness saw ${process.env.GAIA_SPEC_TITLE}`);",
+          ].join("\n"),
+        );
+        yield* fs.writeFileString(specPath, "Run through process.\n");
+
+        const summary = yield* runSpecFile(specPath, {
+          harnessName: parseHarnessName("process"),
+          processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+          rootDirectory: cwd,
+        });
+
+        const output = yield* fs.readFileString(
+          `${summary.runDirectory}/workspace/output.txt`,
+        );
+        const workerLog = yield* fs.readFileString(
+          `${summary.runDirectory}/worker.log`,
+        );
+        const harnessResult = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-result.json`,
+        );
+
+        assert.include(output, summary.runId);
+        assert.include(workerLog, "process harness saw spec");
+        assert.include(harnessResult, '"harnessName": "process"');
+      }),
+    );
+
+    it.effect("fails fast when the process harness command is missing", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Run through missing process.\n");
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            harnessName: parseHarnessName("process"),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "ProcessHarnessCommandMissing");
+        }
+      }),
+    );
+
+    it.effect("fails with a typed error when the process exits non-zero", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const scriptPath = `${cwd}/process-harness-fails.mjs`;
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(scriptPath, "process.exit(7);\n");
+        yield* fs.writeFileString(specPath, "Run through failing process.\n");
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            harnessName: parseHarnessName("process"),
+            processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "ProcessHarnessCommandFailed");
+        }
+
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        assert.strictEqual(status.state, "failed");
+        assert.strictEqual(status.status, "failed");
       }),
     );
 

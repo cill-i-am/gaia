@@ -79,14 +79,13 @@ popular-harness integration rules.
 
 ## Slice 3b: First Real Harness Adapter
 
-Status: **Next**
+Status: **Done**
 
 Add one real experimental adapter behind the harness port.
 
-Target behavior:
+Completed behavior:
 
-- choose the first real harness path, such as Codex, Claude, OpenCode, or AI SDK
-  HarnessAgent;
+- add the `process` harness for local CLI/wrapper execution;
 - keep the fake harness as the deterministic test adapter;
 - persist native logs and normalized `HarnessRunResult` evidence;
 - prove the adapter against a throwaway local workspace.
@@ -95,9 +94,11 @@ Non-goals:
 
 - reviewer workers;
 - pull requests;
-- merge/deploy automation;
+- merge/deploy automation.
 
 ## Slice 4: Reviewer Spectrum
+
+Status: **Next**
 
 Add read-only spec/review worker threads that keep implementation workers honest.
 
