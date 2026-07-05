@@ -17,16 +17,21 @@ Prototype 1 proves the smallest useful loop:
 
 ## Scope
 
-Prototype 1 deliberately excludes dedicated Codex/Claude/OpenCode workers,
-Linear, worktrees, live reviewer threads, browser evidence,
-dashboards, and merge automation. It does include deterministic local review
-evidence, evidence-only GitHub PR publishing, workspace-change GitHub PR
-publishing, and GitHub PR check inspection/recording.
+Prototype 1 deliberately excludes visible Codex/Claude/OpenCode worker
+threads, Linear, worktrees, live reviewer threads, browser evidence,
+dashboards, and merge automation. It does include a non-interactive Codex CLI
+harness, deterministic local review evidence, evidence-only GitHub PR
+publishing, workspace-change GitHub PR publishing, and GitHub PR check
+inspection/recording.
 
 See [`docs/prototype-1.md`](docs/prototype-1.md) for the detailed prototype
 contract, event lifecycle, artifact format, and deferred work.
 See [`docs/roadmap.md`](docs/roadmap.md) for the planned software-factory
 slices.
+See [`docs/codex-harness-adapter.md`](docs/codex-harness-adapter.md) for the
+implemented Codex harness spec and
+[`docs/post-harness-roadmap.md`](docs/post-harness-roadmap.md) for the ordered
+post-harness roadmap.
 
 ## Commands
 
@@ -38,6 +43,7 @@ pnpm build
 
 pnpm gaia run examples/specs/smoke.md
 pnpm gaia run examples/specs/smoke.md --harness fake
+pnpm gaia run examples/specs/smoke.md --harness codex
 pnpm gaia run examples/specs/smoke.md --harness process --harness-command node --harness-arg "$PWD/examples/harnesses/process-harness.mjs"
 pnpm gaia run examples/specs/smoke.md --workspace-source .
 pnpm gaia run examples/specs/smoke.md --skill-manifest ./skills.json
@@ -70,6 +76,14 @@ path.
 Harness results include the harness exit code and the workspace files that
 changed during execution. Gaia also validates harness-declared `workspace/*`
 output artifacts before the run can move into verification.
+`pnpm gaia run --harness codex` executes `codex exec` against the isolated run
+workspace with `--json`, `--skip-git-repo-check`, `--ephemeral`,
+`--ignore-user-config`, `--sandbox workspace-write`, and
+`--output-last-message <run>/codex-last-message.md`. Gaia asks Codex to write
+the declared `workspace/output.txt` artifact as `./output.txt` from inside the
+workspace. Use `--codex-command`, repeated `--codex-arg`, `--codex-model`,
+`--codex-profile`, and `--codex-sandbox` only when you need to override those
+defaults.
 `pnpm gaia run --skill-manifest <path>` records a pinned portable-skill
 manifest as `skill-manifest.json` evidence. Gaia validates that every selected
 skill has a source repository, source path, and either a version or commit. It
@@ -110,6 +124,7 @@ Each run is stored relative to the current working directory:
   plan-review.json
   workspace/
     output.txt
+  codex-last-message.md  # Codex harness runs
   worker.log
   worker-result.json
   verification.log
@@ -155,7 +170,8 @@ packages/runtime
 
 ## Deferred Roadmap
 
-- dedicated Codex, Claude, OpenCode, or AI SDK HarnessAgent adapter;
+- dedicated Claude, OpenCode, or AI SDK HarnessAgent adapters;
+- visible Codex/Claude/OpenCode worker threads;
 - real target repo and git worktree execution;
 - background GitHub check watching attached to Gaia runs;
 - Linear issue intake and status sync;

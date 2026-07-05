@@ -5,6 +5,13 @@ import { createHash } from "node:crypto";
 import process from "node:process";
 import { promisify } from "node:util";
 import type { PlatformError } from "effect/PlatformError";
+import {
+  makeCodexCommandArgs,
+  makeCodexHarnessPrompt,
+  nodeCodexCommandRunner,
+  type CodexCommandResult,
+  type CodexHarnessOptions,
+} from "./codex-harness.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 
 export const HarnessNameSchema = Schema.NonEmptyString.pipe(
@@ -17,6 +24,7 @@ export const parseHarnessName = Schema.decodeUnknownSync(HarnessNameSchema);
 
 export const defaultHarnessName = parseHarnessName("fake");
 export const processHarnessName = parseHarnessName("process");
+export const codexHarnessName = parseHarnessName("codex");
 
 const processHarnessMaxBufferBytes = 10 * 1024 * 1024;
 const harnessContractVersion = "1";
@@ -196,9 +204,114 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
   };
 }
 
+function codexHarness(options: CodexHarnessOptions): GaiaHarness {
+  return {
+    name: codexHarnessName,
+    run: (request) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const runner = options.commandRunner ?? nodeCodexCommandRunner;
+        const lastMessagePath = path.join(
+          path.dirname(request.workerResultPath),
+          "codex-last-message.md",
+        );
+
+        yield* fs.writeFileString(
+          request.workerLogPath,
+          `Codex harness started: ${options.config.command}\n`,
+          { flag: "a" },
+        );
+
+        const beforeWorkspace = yield* snapshotWorkspace(request.workspacePath);
+        const execution = yield* runner({
+          args: makeCodexCommandArgs({
+            config: options.config,
+            lastMessagePath,
+            workspacePath: request.workspacePath,
+          }),
+          command: options.config.command,
+          cwd: request.workspacePath,
+          stdin: makeCodexHarnessPrompt({
+            runId: request.runId,
+            specBody: request.specBody,
+            specTitle: request.specTitle,
+            workspaceOutputPath: request.workspaceOutputPath,
+            workspacePath: request.workspacePath,
+          }),
+        });
+        yield* fs.writeFileString(
+          request.workerLogPath,
+          formatCodexOutput(execution),
+          { flag: "a" },
+        );
+
+        if (execution.exitCode !== 0) {
+          return yield* Effect.fail(
+            makeRuntimeError({
+              code: "CodexCommandFailed",
+              message: `Codex command '${options.config.command}' exited with code ${execution.exitCode}.`,
+              recoverable: true,
+            }),
+          );
+        }
+
+        const lastMessageExists = yield* fs.exists(lastMessagePath);
+        if (!lastMessageExists) {
+          return yield* Effect.fail(
+            makeRuntimeError({
+              code: "CodexLastMessageMissing",
+              message:
+                "Codex completed without writing its last-message artifact.",
+              recoverable: true,
+            }),
+          );
+        }
+
+        const afterWorkspace = yield* snapshotWorkspace(request.workspacePath);
+        const changedWorkspacePaths = changedPaths(
+          beforeWorkspace,
+          afterWorkspace,
+        );
+        const result = HarnessRunResult.make({
+          changedWorkspacePaths,
+          exitCode: execution.exitCode,
+          harnessName: request.harnessName,
+          outputArtifacts: ["workspace/output.txt"],
+          resultPath: "worker-result.json",
+          runId: request.runId,
+          status: "completed",
+          summary: `Codex harness completed "${request.specTitle}".`,
+        });
+
+        yield* requireDeclaredOutputArtifacts(request, result);
+        yield* writeHarnessRunResult(request, result);
+        yield* fs.writeFileString(
+          request.workerLogPath,
+          "Codex harness completed.\n",
+          { flag: "a" },
+        );
+
+        return result;
+      }).pipe(
+        Effect.catchTag("PlatformError", (cause) =>
+          Effect.fail(
+            makeRuntimeError({
+              cause,
+              code: "HarnessArtifactWriteFailed",
+              message: `Harness '${request.harnessName}' could not write its artifacts.`,
+              recoverable: true,
+            }),
+          ),
+        ),
+      ),
+  };
+}
+
 export const availableHarnessNames: ReadonlyArray<HarnessName> = [
   fakeHarness.name,
   processHarnessName,
+  codexHarnessName,
 ];
 
 export function runHarness(
@@ -216,6 +329,7 @@ export function runHarness(
 }
 
 export type HarnessRunOptions = {
+  readonly codexHarness?: CodexHarnessOptions;
   readonly processHarness?: ProcessHarnessConfig;
 };
 
@@ -240,6 +354,20 @@ function selectHarness(
     }
 
     return Effect.succeed(processHarness(options.processHarness));
+  }
+
+  if (harnessName === codexHarnessName) {
+    if (options.codexHarness === undefined) {
+      return Effect.fail(
+        makeRuntimeError({
+          code: "CodexHarnessConfigMissing",
+          message: "Harness 'codex' requires Codex harness config.",
+          recoverable: false,
+        }),
+      );
+    }
+
+    return Effect.succeed(codexHarness(options.codexHarness));
   }
 
   return Effect.fail(
@@ -303,6 +431,20 @@ function formatProcessOutput(execution: ProcessExecutionResult) {
 
   if (execution.stderr.length > 0) {
     lines.push("stderr:", execution.stderr.trimEnd());
+  }
+
+  return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
+}
+
+function formatCodexOutput(execution: CodexCommandResult) {
+  const lines: Array<string> = [];
+
+  if (execution.stdout.length > 0) {
+    lines.push("Codex stdout:", execution.stdout.trimEnd());
+  }
+
+  if (execution.stderr.length > 0) {
+    lines.push("Codex stderr:", execution.stderr.trimEnd());
   }
 
   return lines.length === 0 ? "" : `${lines.join("\n")}\n`;

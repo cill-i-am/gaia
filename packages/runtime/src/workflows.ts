@@ -11,6 +11,7 @@ import { customAlphabet } from "nanoid";
 import { Effect, FileSystem, Path, type Schema } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
 import { writeEmptyBrowserEvidence } from "./browser-evidence.js";
+import type { CodexHarnessOptions } from "./codex-harness.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
   HarnessRunRequest,
@@ -59,6 +60,7 @@ export type CommandSummary = {
 };
 
 export type WorkflowOptions = RunStorageOptions & {
+  readonly codexHarness?: CodexHarnessOptions;
   readonly harnessName?: HarnessName;
   readonly processHarness?: ProcessHarnessConfig;
   readonly skillManifestSource?: SkillManifestSource;
@@ -126,10 +128,14 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
       payload: { harnessName },
       type: "WORKER_STARTED",
     });
-    const harnessOptions =
-      options.processHarness === undefined
+    const harnessOptions = {
+      ...(options.codexHarness === undefined
         ? {}
-        : { processHarness: options.processHarness };
+        : { codexHarness: options.codexHarness }),
+      ...(options.processHarness === undefined
+        ? {}
+        : { processHarness: options.processHarness }),
+    };
     const harnessResult = yield* runHarness(
       HarnessRunRequest.make({
         harnessName,

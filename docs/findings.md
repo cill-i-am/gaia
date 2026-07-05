@@ -424,3 +424,46 @@ Verification:
 - Runtime test proves passed checks write `nextAction: "complete"`.
 - Runtime test proves exhausted pending checks write `nextAction: "poll-again"`.
 - Core/runtime/CLI type checks passed after adding the model.
+
+## Slice 7: Codex Harness MVP
+
+Outcome: Gaia now has a dedicated `codex` harness adapter behind the same
+`GaiaHarness` port as `fake` and `process`. The adapter runs `codex exec
+--json` against the isolated workspace, sends the Gaia worker prompt on stdin,
+stores the final Codex response as `codex-last-message.md`, captures command
+output in `worker.log`, snapshots changed workspace paths, and writes normalized
+`worker-result.json`.
+
+Findings:
+
+- A dedicated adapter is cleaner than asking users to compose Codex through the
+  generic process harness. Gaia owns the prompt, default sandbox policy,
+  final-message path, and typed failure classification.
+- The command-runner seam mirrors the GitHub publisher seam. Tests can verify
+  command shape and artifacts without mocking modules or requiring a logged-in
+  Codex binary in CI.
+- The MVP should stay non-interactive. Visible Codex worker sessions, reviewer
+  sessions, cancellation, and transcript/event parsing are still separate
+  slices.
+- The real Codex smoke exposed two contract issues tests alone did not catch:
+  the installed Codex CLI no longer accepts `--ask-for-approval`, and agents can
+  misread `workspace/output.txt` as a nested path when their cwd is already the
+  workspace. Gaia now passes the current CLI flags and tells Codex to write
+  `./output.txt`.
+- Gaia should not inherit the operator's full Codex user config by default.
+  The first real smoke loaded unrelated plugins/MCP servers and consumed a huge
+  prompt context. The adapter now uses `--ignore-user-config` so Gaia owns the
+  worker context deliberately.
+
+Verification:
+
+- Runtime test proves selecting `codex` without config fails with
+  `CodexHarnessConfigMissing`.
+- Runtime test proves a recording Codex runner receives the expected
+  `codex exec --json --cd <workspace> ... -` command shape and completes a run.
+- Runtime test proves non-zero Codex exit fails with `CodexCommandFailed` and
+  leaves the run failed.
+- Real local smoke against the installed Codex CLI completed a Gaia run,
+  produced `workspace/output.txt`, stored `codex-last-message.md`, and verified
+  normalized `worker-result.json`.
+- Runtime/CLI type checks passed after adding the adapter and flags.

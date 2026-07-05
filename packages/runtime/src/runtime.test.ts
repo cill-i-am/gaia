@@ -3,8 +3,13 @@ import { assert, describe, it, layer } from "@effect/vitest";
 import { Effect, FileSystem } from "effect";
 import { execPath } from "node:process";
 import { parseRunId } from "@gaia/core";
-import { GaiaRuntimeError } from "./errors.js";
+import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import { parseBrowserEvidenceJson } from "./browser-evidence.js";
+import {
+  makeCodexHarnessConfig,
+  type CodexCommandInput,
+  type CodexCommandRunner,
+} from "./codex-harness.js";
 import {
   inspectGitHubChecks,
   parseGitHubCiWatchStateJson,
@@ -17,7 +22,11 @@ import {
   type GitHubCommandInput,
   type GitHubCommandRunner,
 } from "./github-publisher.js";
-import { makeProcessHarnessConfig, parseHarnessName } from "./harness.js";
+import {
+  codexHarnessName,
+  makeProcessHarnessConfig,
+  parseHarnessName,
+} from "./harness.js";
 import { makeRunPaths, makeRunStorePaths } from "./paths.js";
 import { localSkillManifestSource } from "./skill-manifest.js";
 import { listRuns, resumeRun, runSpecFile, statusRun } from "./workflows.js";
@@ -327,23 +336,125 @@ describe("runtime workflows", () => {
       }),
     );
 
-    it.effect("fails fast when a requested harness is not registered", () =>
+    it.effect("fails fast when the Codex harness config is missing", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
         const specPath = `${cwd}/spec.md`;
-        yield* fs.writeFileString(specPath, "Run through a missing harness.\n");
+        yield* fs.writeFileString(specPath, "Run through Codex.\n");
 
         const error = yield* Effect.flip(
           runSpecFile(specPath, {
-            harnessName: parseHarnessName("codex"),
+            harnessName: codexHarnessName,
             rootDirectory: cwd,
           }),
         );
 
         assert.isTrue(error instanceof GaiaRuntimeError);
         if (error instanceof GaiaRuntimeError) {
-          assert.strictEqual(error.code, "UnknownHarness");
+          assert.strictEqual(error.code, "CodexHarnessConfigMissing");
+        }
+      }),
+    );
+
+    it.effect("runs the Codex harness through the workflow seam", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const commands: Array<CodexCommandInput> = [];
+        const commandRunner: CodexCommandRunner = (input) =>
+          Effect.gen(function* () {
+            commands.push(input);
+            const outputLastMessageIndex = input.args.indexOf(
+              "--output-last-message",
+            );
+            const outputLastMessagePath =
+              input.args[outputLastMessageIndex + 1];
+
+            if (outputLastMessagePath === undefined) {
+              return yield* Effect.fail(
+                makeRuntimeError({
+                  code: "TestCodexLastMessagePathMissing",
+                  message: "Test Codex command did not receive a last message path.",
+                  recoverable: false,
+                }),
+              );
+            }
+
+            yield* fs.writeFileString(
+              `${input.cwd}/output.txt`,
+              `codex harness ${runIdFromCodexPrompt(input.stdin)} saw ${input.stdin.includes("Run through Codex")}\n`,
+            );
+            yield* fs.writeFileString(
+              `${input.cwd}/changed.txt`,
+              "changed by codex harness\n",
+            );
+            yield* fs.writeFileString(
+              outputLastMessagePath,
+              "Codex completed the run.\n",
+            );
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: '{"type":"turn.completed"}\n',
+            };
+          });
+        yield* fs.writeFileString(specPath, "Run through Codex.\n");
+
+        const summary = yield* runSpecFile(specPath, {
+          codexHarness: {
+            commandRunner,
+            config: makeCodexHarnessConfig({ command: "codex-test" }),
+          },
+          harnessName: codexHarnessName,
+          rootDirectory: cwd,
+        });
+
+        const output = yield* fs.readFileString(
+          `${summary.runDirectory}/workspace/output.txt`,
+        );
+        const workerLog = yield* fs.readFileString(
+          `${summary.runDirectory}/worker.log`,
+        );
+        const lastMessage = yield* fs.readFileString(
+          `${summary.runDirectory}/codex-last-message.md`,
+        );
+        const harnessResult = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-result.json`,
+        );
+        const command = commands[0];
+
+        assert.include(output, "true");
+        assert.include(workerLog, "Codex stdout:");
+        assert.include(lastMessage, "Codex completed");
+        assert.include(harnessResult, '"harnessName": "codex"');
+        assert.include(harnessResult, '"changedWorkspacePaths": [');
+        assert.include(harnessResult, '"changed.txt"');
+        assert.include(harnessResult, '"output.txt"');
+        assert.include(harnessResult, '"exitCode": 0');
+        assert.isDefined(command);
+
+        if (command !== undefined) {
+          assert.strictEqual(command.command, "codex-test");
+          assert.strictEqual(command.cwd, `${summary.runDirectory}/workspace`);
+          assert.deepEqual(command.args, [
+            "exec",
+            "--json",
+            "--cd",
+            `${summary.runDirectory}/workspace`,
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--sandbox",
+            "workspace-write",
+            "--output-last-message",
+            `${summary.runDirectory}/codex-last-message.md`,
+            "-",
+          ]);
+          assert.include(command.stdin, "Run through Codex.");
+          assert.include(command.stdin, "that artifact is ./output.txt");
         }
       }),
     );
@@ -433,6 +544,41 @@ describe("runtime workflows", () => {
         assert.isTrue(error instanceof GaiaRuntimeError);
         if (error instanceof GaiaRuntimeError) {
           assert.strictEqual(error.code, "ProcessHarnessCommandFailed");
+        }
+
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        assert.strictEqual(status.state, "failed");
+        assert.strictEqual(status.status, "failed");
+      }),
+    );
+
+    it.effect("fails with a typed error when Codex exits non-zero", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const commandRunner: CodexCommandRunner = () =>
+          Effect.succeed({
+            exitCode: 13,
+            stderr: "Codex failed.\n",
+            stdout: "",
+          });
+        yield* fs.writeFileString(specPath, "Run through failing Codex.\n");
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            codexHarness: {
+              commandRunner,
+              config: makeCodexHarnessConfig({ command: "codex-test" }),
+            },
+            harnessName: codexHarnessName,
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "CodexCommandFailed");
         }
 
         const status = yield* statusRun(undefined, { rootDirectory: cwd });
@@ -1035,6 +1181,10 @@ const tempDirectory = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   return yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
 });
+
+function runIdFromCodexPrompt(prompt: string) {
+  return prompt.match(/^Run ID: (.+)$/mu)?.[1] ?? "missing-run-id";
+}
 
 function recordingGitHubRunner(
   commands: Array<GitHubCommandInput>,

@@ -9,6 +9,23 @@ export {
   writeEmptyBrowserEvidence,
 } from "./browser-evidence.js";
 export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
+export {
+  CodexCommandSchema,
+  CodexHarnessConfig,
+  CodexSandboxModeSchema,
+  makeCodexHarnessConfig,
+  makeCodexCommandArgs,
+  makeCodexHarnessPrompt,
+  nodeCodexCommandRunner,
+  parseCodexHarnessConfig,
+  type CodexCommand,
+  type CodexCommandInput,
+  type CodexCommandResult,
+  type CodexCommandRunner,
+  type CodexHarnessConfigInput,
+  type CodexHarnessOptions,
+  type CodexSandboxMode,
+} from "./codex-harness.js";
 export { appendEvent, loadRun, readEvents, type AppendEventInput } from "./event-store.js";
 export {
   GitHubCheckRun,
@@ -52,6 +69,7 @@ export {
   ProcessHarnessConfig,
   ProcessHarnessCommandSchema,
   availableHarnessNames,
+  codexHarnessName,
   defaultHarnessName,
   makeProcessHarnessConfig,
   parseHarnessName,

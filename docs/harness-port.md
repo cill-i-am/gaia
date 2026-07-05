@@ -15,6 +15,7 @@ The runtime owns one normalized harness port:
 The currently registered adapters are:
 
 - `fake`, a deterministic in-process adapter for lifecycle tests;
+- `codex`, a dedicated non-interactive Codex CLI adapter;
 - `process`, a subprocess adapter for wrapper scripts around real harness CLIs.
 
 ## Adapter Boundary
@@ -28,6 +29,10 @@ Candidate adapters include:
 - OpenCode;
 - AI SDK HarnessAgent;
 - any future best-in-class harness.
+
+The Codex CLI adapter is specified in
+[`codex-harness-adapter.md`](codex-harness-adapter.md). The minimum viable CLI
+adapter exists; the heavier visible-session version remains deferred.
 
 Adapters may use different SDKs, event streams, process models, auth, logs, and
 native output formats internally. Those details must not leak into Gaia's core
@@ -75,8 +80,32 @@ Gaia passes context through environment variables:
 The process writes workspace artifacts. Gaia captures stdout/stderr into
 `worker.log`, then writes normalized `worker-result.json`.
 
+## Codex Harness
+
+The Codex harness owns the stable non-interactive local Codex path:
+
+```sh
+pnpm gaia run examples/specs/smoke.md --harness codex
+```
+
+Gaia runs `codex exec --json` against the isolated workspace with
+`--skip-git-repo-check`, `--ephemeral`, and `--ignore-user-config`. It sends the
+worker prompt on stdin, asks Codex to write Gaia's declared
+`workspace/output.txt` artifact as `./output.txt` from inside the workspace,
+requires that file to include the run id, captures stdout/stderr into
+`worker.log`, stores the final Codex response in `codex-last-message.md`,
+snapshots changed workspace files, and writes normalized `worker-result.json`.
+
+Codex-specific flags are intentionally narrow:
+
+- `--codex-command` overrides the executable command.
+- `--codex-arg` passes repeated extra args to `codex exec`.
+- `--codex-model` maps to `--model`.
+- `--codex-profile` maps to `--profile`.
+- `--codex-sandbox` supports `read-only` or `workspace-write`.
+
 ## Deferred Dedicated Harness Work
 
-Dedicated Codex, Claude, OpenCode, or AI SDK HarnessAgent adapters should be
-added only once Gaia owns the relevant session, cancellation, log streaming, and
-credential semantics.
+Visible Codex sessions, Claude, OpenCode, or AI SDK HarnessAgent adapters
+should be added only once Gaia owns the relevant session, cancellation, log
+streaming, and credential semantics.

@@ -211,11 +211,24 @@ available:
    `ci-watch-state.json` with latest snapshot, status, terminal flag, and next
    action before any background daemon exists.
 
-- multi-harness support through AI SDK HarnessAgent;
-- skill bundle installation and versioning;
-- persistent SQLite run index;
-- browser evidence capture;
-- CI watcher;
-- dashboard or TUI;
-- cancellation and cleanup for live workers;
-- reusable factory templates for new products.
+## Harness Slice
+
+The Codex harness MVP is implemented. See
+[`codex-harness-adapter.md`](codex-harness-adapter.md) for the implemented
+minimum viable adapter and heavier visible-session design.
+
+## Post-Harness Roadmap
+
+The steps after harness integration are documented in
+[`post-harness-roadmap.md`](post-harness-roadmap.md). In order, they are:
+
+1. real workspace PR loop;
+2. visible reviewer spectrum;
+3. skill bundle installation and versioning;
+4. live browser evidence capture;
+5. CI watcher daemon;
+6. Linear issue graph;
+7. merge and deployment authority;
+8. persistent run index and operator UI;
+9. multi-harness support;
+10. reusable factory templates.

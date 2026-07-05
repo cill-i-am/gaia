@@ -15,6 +15,7 @@ import {
   listRuns,
   localDirectoryWorkspaceSource,
   localSkillManifestSource,
+  makeCodexHarnessConfig,
   makeProcessHarnessConfig,
   parseHarnessName,
   preflightGitHubPublish,
@@ -78,8 +79,35 @@ const harnessArg = Flag.string("harness-arg").pipe(
   Flag.withDescription("Argument for the process harness command. Repeatable."),
   Flag.atLeast(0),
 );
+const codexCommand = Flag.string("codex-command").pipe(
+  Flag.withDescription("Codex executable command for the Codex harness."),
+  Flag.optional,
+);
+const codexArg = Flag.string("codex-arg").pipe(
+  Flag.withDescription("Extra argument for `codex exec`. Repeatable."),
+  Flag.atLeast(0),
+);
+const codexModel = Flag.string("codex-model").pipe(
+  Flag.withDescription("Model passed to `codex exec --model`."),
+  Flag.optional,
+);
+const codexProfile = Flag.string("codex-profile").pipe(
+  Flag.withDescription("Codex profile passed to `codex exec --profile`."),
+  Flag.optional,
+);
+const codexSandbox = Flag.string("codex-sandbox").pipe(
+  Flag.withDescription(
+    "Codex sandbox mode. Supported values: read-only, workspace-write.",
+  ),
+  Flag.optional,
+);
 
 const run = Command.make("run", {
+  codexArg,
+  codexCommand,
+  codexModel,
+  codexProfile,
+  codexSandbox,
   harness,
   harnessArg,
   harnessCommand,
@@ -98,6 +126,11 @@ const run = Command.make("run", {
       skillManifest,
       specFile,
       workspaceSource,
+      codexArg,
+      codexCommand,
+      codexModel,
+      codexProfile,
+      codexSandbox,
     }) =>
       renderEffect(
         runSpecFile(
@@ -106,6 +139,11 @@ const run = Command.make("run", {
             harness,
             harnessArgs: harnessArg,
             harnessCommand,
+            codexArgs: codexArg,
+            codexCommand,
+            codexModel,
+            codexProfile,
+            codexSandbox,
             skillManifest,
             workspaceSource,
           }),
@@ -257,6 +295,11 @@ function invocationRoot() {
 
 function workflowOptions(
   input: Readonly<{
+    codexArgs?: ReadonlyArray<string>;
+    codexCommand?: Option.Option<string>;
+    codexModel?: Option.Option<string>;
+    codexProfile?: Option.Option<string>;
+    codexSandbox?: Option.Option<string>;
     harness?: Option.Option<string>;
     harnessArgs?: ReadonlyArray<string>;
     harnessCommand?: Option.Option<string>;
@@ -273,6 +316,19 @@ function workflowOptions(
     input.harness ?? Option.none(),
     parseHarnessName,
   );
+  const harnessNameValue = Option.getOrUndefined(input.harness ?? Option.none());
+  const codexHarness =
+    harnessNameValue === "codex"
+      ? {
+          config: makeCodexHarnessConfig({
+            command: Option.getOrUndefined(input.codexCommand ?? Option.none()),
+            extraArgs: input.codexArgs ?? [],
+            model: Option.getOrUndefined(input.codexModel ?? Option.none()),
+            profile: Option.getOrUndefined(input.codexProfile ?? Option.none()),
+            sandbox: Option.getOrUndefined(input.codexSandbox ?? Option.none()),
+          }),
+        }
+      : undefined;
   const processHarness = Option.map(
     input.harnessCommand ?? Option.none(),
     (command) => makeProcessHarnessConfig(command, input.harnessArgs ?? []),
@@ -288,6 +344,7 @@ function workflowOptions(
       ? { workspaceSource: workspaceSource.value }
       : {}),
     ...(Option.isSome(harnessName) ? { harnessName: harnessName.value } : {}),
+    ...(codexHarness === undefined ? {} : { codexHarness }),
     ...(Option.isSome(processHarness)
       ? { processHarness: processHarness.value }
       : {}),
