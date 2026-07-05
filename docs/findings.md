@@ -644,3 +644,30 @@ Verification:
   produce a `ready` bundle.
 - Runtime test proves missing local skill sources fail with typed
   `SkillBundleSourceUnavailable` before worker execution.
+
+## Slice 14: Worker Skill Context
+
+Outcome: Gaia now carries skill context into worker harness execution.
+`HarnessRunRequest` includes the run's `skill-bundle.json` path and any resolved
+local skill paths. Codex receives those values in its prompt, and process
+harnesses receive `GAIA_SKILL_BUNDLE_PATH` plus
+`GAIA_RESOLVED_SKILL_PATHS_JSON`.
+
+Findings:
+
+- Passing resolved paths through the harness request keeps `runSpecFile` from
+  becoming Codex-specific. The runtime computes skill context once, then every
+  adapter can translate it into its native prompt/env shape.
+- The bundle path remains useful even when no local skills are resolved. It
+  lets future workers and reviewers inspect whether a run had no skills or had
+  external skills that still require installation.
+- The prompt should be honest about availability. Local resolved skill paths
+  are available now; external entries stay in `skill-bundle.json` until the
+  installer/fetcher slice exists.
+
+Verification:
+
+- Runtime test proves Codex worker prompts include the skill bundle path and a
+  resolved local skill path.
+- Runtime test proves process harnesses receive the skill bundle environment
+  contract.

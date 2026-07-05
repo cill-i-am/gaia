@@ -70,6 +70,8 @@ pnpm gaia run examples/specs/smoke.md \
 Gaia passes context through environment variables:
 
 - `GAIA_RUN_ID`
+- `GAIA_RESOLVED_SKILL_PATHS_JSON`
+- `GAIA_SKILL_BUNDLE_PATH`
 - `GAIA_SPEC_BODY`
 - `GAIA_SPEC_TITLE`
 - `GAIA_WORKER_LOG_PATH`
@@ -95,6 +97,9 @@ worker prompt on stdin, asks Codex to write Gaia's declared
 requires that file to include the run id, captures stdout/stderr into
 `worker.log`, stores the final Codex response in `codex-last-message.md`,
 snapshots changed workspace files, and writes normalized `worker-result.json`.
+The prompt includes `skill-bundle.json` plus any resolved local skill paths, so
+the worker can load the available skill instructions without guessing where
+they live.
 
 Codex-specific flags are intentionally narrow:
 

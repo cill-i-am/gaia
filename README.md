@@ -89,7 +89,9 @@ need to override those defaults.
 manifest as `skill-manifest.json` evidence. Gaia validates that every selected
 skill has a source repository, source path, and either a version or commit. It
 also writes `skill-bundle.json`: local skill sources are resolved and checked
-for `SKILL.md`; external sources are marked as requiring installation.
+for `SKILL.md`; external sources are marked as requiring installation. Worker
+harnesses receive the bundle path and resolved local skill paths as part of
+their execution context.
 `pnpm gaia publish-pr <run-id>` intentionally mutates GitHub state: it creates
 an evidence branch, commits selected run evidence under `gaia-runs/<run-id>/`,
 pushes it, opens a draft PR, and restores the original local branch.

@@ -88,6 +88,14 @@ export function writeSkillBundle(input: {
   );
 }
 
+export function resolvedSkillPaths(
+  bundle: SkillBundle,
+): ReadonlyArray<string> {
+  return bundle.skills.flatMap((skill) =>
+    skill.resolvedPath === undefined ? [] : [skill.resolvedPath],
+  );
+}
+
 function resolveSkillBundleEntry(
   skill: SkillManifestEntry,
   source: SkillManifestSource | undefined,

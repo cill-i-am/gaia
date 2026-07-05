@@ -627,6 +627,8 @@ describe("runtime workflows", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
         const specPath = `${cwd}/spec.md`;
+        const manifestPath = `${cwd}/skills.json`;
+        const skillDirectory = `${cwd}/skills/coding-standards`;
         const commands: Array<CodexCommandInput> = [];
         const commandRunner: CodexCommandRunner = (input) =>
           Effect.gen(function* () {
@@ -666,6 +668,21 @@ describe("runtime workflows", () => {
               stdout: '{"type":"turn.completed"}\n',
             };
           });
+        yield* fs.makeDirectory(skillDirectory, { recursive: true });
+        yield* fs.writeFileString(`${skillDirectory}/SKILL.md`, "# Skill\n");
+        yield* fs.writeFileString(
+          manifestPath,
+          `${JSON.stringify({
+            skills: [
+              {
+                commit: "abc123",
+                name: "coding-standards",
+                sourcePath: "skills/coding-standards",
+                sourceRepository: "local",
+              },
+            ],
+          })}\n`,
+        );
         yield* fs.writeFileString(specPath, "Run through Codex.\n");
 
         const summary = yield* runSpecFile(specPath, {
@@ -678,6 +695,7 @@ describe("runtime workflows", () => {
           },
           harnessName: codexHarnessName,
           rootDirectory: cwd,
+          skillManifestSource: localSkillManifestSource(manifestPath),
         });
 
         const output = yield* fs.readFileString(
@@ -724,6 +742,8 @@ describe("runtime workflows", () => {
           ]);
           assert.include(command.stdin, "Run through Codex.");
           assert.include(command.stdin, "that artifact is ./output.txt");
+          assert.include(command.stdin, "Skill bundle JSON:");
+          assert.include(command.stdin, skillDirectory);
         }
       }),
     );
@@ -904,6 +924,8 @@ describe("runtime workflows", () => {
           [
             "import { writeFileSync } from 'node:fs';",
             "if (process.env.GAIA_HARNESS_CONTRACT_VERSION !== '1') process.exit(8);",
+            "if (process.env.GAIA_SKILL_BUNDLE_PATH === undefined) process.exit(9);",
+            "if (process.env.GAIA_RESOLVED_SKILL_PATHS_JSON !== '[]') process.exit(10);",
             "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness ${process.env.GAIA_RUN_ID}\\n`);",
             "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/changed.txt`, 'changed by process harness\\n');",
             "console.log(`process harness saw ${process.env.GAIA_SPEC_TITLE}`);",

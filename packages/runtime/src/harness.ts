@@ -56,6 +56,8 @@ export class HarnessRunRequest extends Schema.Class<HarnessRunRequest>(
 )({
   harnessName: HarnessNameSchema,
   runId: RunIdSchema,
+  resolvedSkillPaths: Schema.Array(Schema.NonEmptyString),
+  skillBundlePath: Schema.NonEmptyString,
   specBody: Schema.NonEmptyString,
   specTitle: Schema.NonEmptyString,
   workerLogPath: Schema.NonEmptyString,
@@ -232,7 +234,9 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
           command: options.config.command,
           cwd: request.workspacePath,
           stdin: makeCodexHarnessPrompt({
+            resolvedSkillPaths: request.resolvedSkillPaths,
             runId: request.runId,
+            skillBundlePath: request.skillBundlePath,
             specBody: request.specBody,
             specTitle: request.specTitle,
             workspaceOutputPath: request.workspaceOutputPath,
@@ -397,6 +401,10 @@ function runProcessHarnessCommand(
           ...process.env,
           GAIA_RUN_ID: request.runId,
           GAIA_HARNESS_CONTRACT_VERSION: harnessContractVersion,
+          GAIA_RESOLVED_SKILL_PATHS_JSON: JSON.stringify(
+            request.resolvedSkillPaths,
+          ),
+          GAIA_SKILL_BUNDLE_PATH: request.skillBundlePath,
           GAIA_SPEC_BODY: request.specBody,
           GAIA_SPEC_TITLE: request.specTitle,
           GAIA_WORKER_LOG_PATH: request.workerLogPath,

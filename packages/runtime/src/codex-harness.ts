@@ -99,7 +99,9 @@ export type CodexHarnessOptions = {
 };
 
 export type CodexHarnessPromptInput = {
+  readonly resolvedSkillPaths: ReadonlyArray<string>;
   readonly runId: string;
+  readonly skillBundlePath: string;
   readonly specBody: string;
   readonly specTitle: string;
   readonly workspaceOutputPath: string;
@@ -166,6 +168,9 @@ export function makeCodexHarnessPrompt(input: CodexHarnessPromptInput) {
     `Spec title: ${input.specTitle}`,
     "Spec body:",
     input.specBody,
+    "Skill context:",
+    `- Skill bundle JSON: ${input.skillBundlePath}`,
+    ...formatResolvedSkillPaths(input.resolvedSkillPaths),
     "Required output contract:",
     "- Make the smallest useful workspace change needed for the spec.",
     `- Write a concise final worker result to ${input.workspaceOutputPath}.`,
@@ -174,6 +179,19 @@ export function makeCodexHarnessPrompt(input: CodexHarnessPromptInput) {
     "- Include the run id in ./output.txt.",
     "- Do not write outside the workspace.",
   ].join("\n\n");
+}
+
+function formatResolvedSkillPaths(
+  resolvedSkillPaths: ReadonlyArray<string>,
+) {
+  if (resolvedSkillPaths.length === 0) {
+    return ["- No local resolved skill paths are available for this run."];
+  }
+
+  return [
+    "- Local resolved skill paths:",
+    ...resolvedSkillPaths.map((skillPath) => `  - ${skillPath}`),
+  ];
 }
 
 export function makeCodexCommandArgs(input: CodexCommandArgsInput) {

@@ -141,7 +141,7 @@ Non-goals:
 
 ## Phase 3: Skill Bundle Installation and Versioning
 
-Status: **In progress: local skill bundle resolution completed; external installation remains**
+Status: **In progress: local skill bundle resolution and worker context completed; external installation remains**
 
 Goal:
 
@@ -166,11 +166,11 @@ Completed foundation:
 - External manifest entries are marked `requires-install` instead of being
   silently treated as available.
 - Missing local skill sources fail before worker execution.
+- Worker harnesses receive the skill bundle path and resolved local skill paths.
 
 Remaining:
 
 - Install or fetch external pinned skill sources.
-- Point the worker prompt at resolved skill paths.
 
 Non-goals:
 

@@ -39,7 +39,7 @@ import {
   writeSkillManifest,
   type SkillManifestSource,
 } from "./skill-manifest.js";
-import { writeSkillBundle } from "./skill-bundle.js";
+import { resolvedSkillPaths, writeSkillBundle } from "./skill-bundle.js";
 import { verifyHarnessOutput } from "./verifier.js";
 import { writeWorkerPlan } from "./worker-plan.js";
 import {
@@ -114,7 +114,7 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
         recordRunFailure(runId, paths, "preparingWorkspace", error),
       ),
     );
-    yield* writeSkillBundle({
+    const skillBundle = yield* writeSkillBundle({
       manifest: skillManifest,
       paths,
       ...(options.skillManifestSource === undefined
@@ -152,7 +152,9 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
     const harnessResult = yield* runHarness(
       HarnessRunRequest.make({
         harnessName,
+        resolvedSkillPaths: [...resolvedSkillPaths(skillBundle)],
         runId,
+        skillBundlePath: paths.skillBundle,
         specBody: spec.body,
         specTitle: spec.title,
         workerLogPath: paths.workerLog,

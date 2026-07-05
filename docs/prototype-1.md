@@ -125,6 +125,8 @@ Gaia passes a small environment contract to the process:
 
 - `GAIA_HARNESS_CONTRACT_VERSION`
 - `GAIA_RUN_ID`
+- `GAIA_RESOLVED_SKILL_PATHS_JSON`
+- `GAIA_SKILL_BUNDLE_PATH`
 - `GAIA_SPEC_BODY`
 - `GAIA_SPEC_TITLE`
 - `GAIA_WORKER_LOG_PATH`
@@ -219,7 +221,9 @@ Every skill must include a `sourceRepository`, `sourcePath`, and either
 `version` or `commit`. Gaia records the manifest and report selected skills.
 It also writes `skill-bundle.json`: local entries with `sourceRepository:
 "local"` or `"file"` are resolved relative to the manifest and must contain
-`SKILL.md`; external entries are preserved as requiring installation.
+`SKILL.md`; external entries are preserved as requiring installation. Worker
+harnesses receive the bundle path and resolved local skill paths in their
+execution context.
 
 `browser-evidence.json` defines the future browser automation contract. Current
 runs write:
