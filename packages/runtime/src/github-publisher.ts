@@ -28,6 +28,7 @@ export const GitHubPreflightCheckNameSchema = Schema.Literals([
   "current-branch",
   "remote-configured",
   "base-branch",
+  "base-synchronized",
   "github-auth",
 ] as const);
 
@@ -295,12 +296,19 @@ export function preflightGitHubPublish(
     yield* requireCleanWorktree(runner, rootDirectory);
     const currentBranch = yield* currentGitBranch(runner, rootDirectory);
     yield* requireRemote(runner, rootDirectory, remoteName);
-    yield* requireRemoteBaseBranch(
+    const remoteBaseHead = yield* remoteBaseBranchHead(
       runner,
       rootDirectory,
       remoteName,
       baseBranch,
     );
+    const localHead = yield* currentGitHead(runner, rootDirectory);
+    yield* requireLocalHeadMatchesRemoteBase({
+      baseBranch,
+      localHead,
+      remoteBaseHead,
+      remoteName,
+    });
     yield* requireGitHubAuth(runner, rootDirectory);
 
     return GitHubPublishPreflightSummary.make({
@@ -312,6 +320,7 @@ export function preflightGitHubPublish(
         preflightCheck("current-branch"),
         preflightCheck("remote-configured"),
         preflightCheck("base-branch"),
+        preflightCheck("base-synchronized"),
         preflightCheck("github-auth"),
       ],
       currentBranch,
@@ -972,22 +981,37 @@ function requireRemote(
   );
 }
 
-function requireRemoteBaseBranch(
+function remoteBaseBranchHead(
   runner: GitHubCommandRunner,
   rootDirectory: string,
   remoteName: string,
   baseBranch: string,
 ) {
-  return runRequiredPreflightCommand(
-    runner,
-    rootDirectory,
-    "git",
-    ["ls-remote", "--exit-code", remoteName, `refs/heads/${baseBranch}`],
-    {
-      code: "GitBaseBranchUnavailable",
-      message: `Git remote '${remoteName}' does not expose base branch '${baseBranch}'.`,
-    },
-  );
+  return Effect.gen(function* () {
+    const result = yield* runRequiredPreflightCommand(
+      runner,
+      rootDirectory,
+      "git",
+      ["ls-remote", "--exit-code", remoteName, `refs/heads/${baseBranch}`],
+      {
+        code: "GitBaseBranchUnavailable",
+        message: `Git remote '${remoteName}' does not expose base branch '${baseBranch}'.`,
+      },
+    );
+    const head = result.stdout.trim().split(/\s+/u)[0];
+
+    if (head === undefined || head.length === 0) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "GitBaseBranchUnavailable",
+          message: `Git remote '${remoteName}' did not report a commit for base branch '${baseBranch}'.`,
+          recoverable: true,
+        }),
+      );
+    }
+
+    return head;
+  });
 }
 
 function requireGitHubAuth(
@@ -1030,6 +1054,50 @@ function currentGitBranch(
 
     return branch;
   });
+}
+
+function currentGitHead(
+  runner: GitHubCommandRunner,
+  rootDirectory: string,
+) {
+  return Effect.gen(function* () {
+    const result = yield* runRequiredCommand(runner, rootDirectory, "git", [
+      "rev-parse",
+      "HEAD",
+    ]);
+    const head = result.stdout.trim();
+
+    if (head.length === 0) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "GitHeadUnavailable",
+          message: "Gaia cannot identify the current git HEAD.",
+          recoverable: false,
+        }),
+      );
+    }
+
+    return head;
+  });
+}
+
+function requireLocalHeadMatchesRemoteBase(input: {
+  readonly baseBranch: string;
+  readonly localHead: string;
+  readonly remoteBaseHead: string;
+  readonly remoteName: string;
+}) {
+  if (input.localHead === input.remoteBaseHead) {
+    return Effect.void;
+  }
+
+  return Effect.fail(
+    makeRuntimeError({
+      code: "GitBaseBranchOutOfSync",
+      message: `Local HEAD must match '${input.remoteName}/${input.baseBranch}' before Gaia opens a PR.`,
+      recoverable: false,
+    }),
+  );
 }
 
 function writePullRequestEvidence(runId: RunId, rootDirectory: string) {

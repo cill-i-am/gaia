@@ -467,3 +467,30 @@ Verification:
   produced `workspace/output.txt`, stored `codex-last-message.md`, and verified
   normalized `worker-result.json`.
 - Runtime/CLI type checks passed after adding the adapter and flags.
+
+## Slice 8: Workspace PR Base Synchronization
+
+Outcome: Gaia now refuses GitHub publish and preview preflight when local
+`HEAD` does not match the configured remote base branch. This protects
+workspace PRs from accidentally bundling local commits that have not landed on
+trunk.
+
+Findings:
+
+- A clean worktree is not enough for a software-factory PR loop. During the
+  real Codex workspace proof, local `main` was clean but ahead of
+  `origin/main`. Publishing a workspace branch from `origin/main` would have
+  included both the intended Codex workspace change and the unpushed local
+  commits copied into the run workspace.
+- The preflight remains read-only. Gaia uses `git ls-remote` for the remote
+  base commit and `git rev-parse HEAD` for the local commit, then fails with
+  `GitBaseBranchOutOfSync` when they differ.
+
+Verification:
+
+- Runtime test proves normal GitHub preflight includes the
+  `base-synchronized` check.
+- Runtime test proves divergent local/remote base state fails with
+  `GitBaseBranchOutOfSync`.
+- Real Codex workspace proof produced a source change in an isolated workspace;
+  publishing is intentionally deferred until trunk synchronization is explicit.

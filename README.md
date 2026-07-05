@@ -68,7 +68,8 @@ and check snapshot recording. Read-only commands can still inspect existing
 runs, but mutating commands fail fast while another mutation is in progress.
 `pnpm gaia preflight-github <run-id>` verifies that a completed run is ready
 for GitHub publishing without mutating git or GitHub: git repo, clean worktree,
-current branch, remote, base branch, and GitHub CLI auth.
+current branch, remote, base branch, local `HEAD` matching the remote base, and
+GitHub CLI auth.
 `pnpm gaia preview-pr <run-id>` runs the same read-only preflight and prints the
 branch, evidence path, source-change claim, and external commands Gaia would run
 for an evidence-only PR. Add `--workspace` to preview the workspace-change PR

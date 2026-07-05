@@ -614,6 +614,7 @@ describe("runtime workflows", () => {
             "current-branch",
             "remote-configured",
             "base-branch",
+            "base-synchronized",
             "github-auth",
           ],
         );
@@ -625,6 +626,7 @@ describe("runtime workflows", () => {
             ["git", "rev-parse"],
             ["git", "remote"],
             ["git", "ls-remote"],
+            ["git", "rev-parse"],
             ["gh", "auth"],
           ],
         );
@@ -655,6 +657,39 @@ describe("runtime workflows", () => {
         if (error instanceof GaiaRuntimeError) {
           assert.strictEqual(error.code, "GitBaseBranchUnavailable");
           assert.isTrue(error.recoverable);
+        }
+      }),
+    );
+
+    it.effect("fails GitHub preflight when local HEAD is not the remote base", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Preflight out-of-sync base.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const error = yield* Effect.flip(
+          preflightGitHubPublish(summary.runId, {
+            commandRunner: githubPublishingRunner([], {
+              respond: (input) =>
+                input.command === "git" &&
+                input.args.join(" ") === "rev-parse HEAD"
+                  ? {
+                      exitCode: 0,
+                      stderr: "",
+                      stdout: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+                    }
+                  : undefined,
+            }),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "GitBaseBranchOutOfSync");
+          assert.isFalse(error.recoverable);
         }
       }),
     );
@@ -770,6 +805,7 @@ describe("runtime workflows", () => {
             ["git", "rev-parse"],
             ["git", "remote"],
             ["git", "ls-remote"],
+            ["git", "rev-parse"],
             ["gh", "auth"],
             ["git", "fetch"],
             ["git", "checkout"],
@@ -874,6 +910,7 @@ describe("runtime workflows", () => {
             ["git", "rev-parse"],
             ["git", "remote"],
             ["git", "ls-remote"],
+            ["git", "rev-parse"],
             ["gh", "auth"],
             ["git", "fetch"],
             ["git", "checkout"],
@@ -1219,6 +1256,13 @@ function githubPublishingRunner(
       }
       if (args === "rev-parse --abbrev-ref HEAD") {
         return { exitCode: 0, stderr: "", stdout: "main\n" };
+      }
+      if (args === "rev-parse HEAD") {
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        };
       }
       if (input.args[0] === "remote") {
         return {
