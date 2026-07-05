@@ -17,6 +17,7 @@ export type RunPaths = {
   readonly ciWatchState: string;
   readonly evidenceReviewMarkdown: string;
   readonly evidenceReviewResult: string;
+  readonly evidenceReviewerSession: string;
   readonly events: string;
   readonly gaiaRoot: string;
   readonly githubChecks: string;
@@ -24,6 +25,7 @@ export type RunPaths = {
   readonly latest: string;
   readonly planReviewMarkdown: string;
   readonly planReviewResult: string;
+  readonly planReviewerSession: string;
   readonly reportJson: string;
   readonly reportMarkdown: string;
   readonly root: string;
@@ -71,6 +73,10 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       ciWatchState: path.join(root, "ci-watch-state.json"),
       evidenceReviewMarkdown: path.join(root, "evidence-review.md"),
       evidenceReviewResult: path.join(root, "evidence-review.json"),
+      evidenceReviewerSession: path.join(
+        root,
+        "evidence-reviewer-session.json",
+      ),
       events: path.join(root, "events.jsonl"),
       gaiaRoot: store.gaiaRoot,
       githubChecks: path.join(root, "github-checks"),
@@ -78,6 +84,10 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       latest: store.latest,
       planReviewMarkdown: path.join(root, "plan-review.md"),
       planReviewResult: path.join(root, "plan-review.json"),
+      planReviewerSession: path.join(
+        root,
+        "plan-reviewer-session.json",
+      ),
       reportJson: path.join(root, "report.json"),
       reportMarkdown: path.join(root, "report.md"),
       root,

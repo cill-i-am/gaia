@@ -16,6 +16,7 @@ import {
   type GaiaReviewer,
   type ReviewRunRequest,
 } from "./reviewer.js";
+import { ReviewerSessionEvidence } from "./reviewer-session-evidence.js";
 
 /** Stable reviewer name for the read-only Codex reviewer adapter. */
 export const codexReviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
@@ -61,8 +62,10 @@ export function makeCodexReviewerConfig(
 /** Build a read-only Gaia reviewer backed by `codex exec`. */
 export function makeCodexReviewer(options: CodexReviewerOptions): GaiaReviewer {
   return {
+    adapterKind: "codex-cli",
     name: codexReviewerName,
     run: (request) => runCodexReviewer(request, options),
+    sessionKind: "cli",
   };
 }
 
@@ -150,6 +153,24 @@ function runCodexReviewer(
 
     const lastMessage = yield* fs.readFileString(lastMessagePath);
     const decision = yield* parseCodexReviewDecision(lastMessage);
+    const resultPath =
+      request.phase === "plan" ? "plan-review.json" : "evidence-review.json";
+    const sessionEvidence = ReviewerSessionEvidence.make({
+      adapterKind: "codex-cli",
+      command: options.config.command,
+      cwd: runRoot,
+      decisionStatus: decision.status,
+      evidencePath: path.basename(request.sessionEvidencePath),
+      logPath: path.basename(reviewerLogPath),
+      phase: request.phase,
+      resultPath,
+      reviewPath: path.basename(request.markdownPath),
+      reviewerName: codexReviewerName,
+      runId: request.runId,
+      sessionKind: "cli",
+      transcriptPath: path.basename(lastMessagePath),
+      version: 1,
+    });
 
     return ReviewResult.make({
       findings: [
@@ -163,12 +184,10 @@ function runCodexReviewer(
         }),
       ],
       phase: request.phase,
-      resultPath:
-        request.phase === "plan"
-          ? "plan-review.json"
-          : "evidence-review.json",
+      resultPath,
       reviewerName: codexReviewerName,
       runId: request.runId,
+      sessionEvidence,
       status: decision.status,
       summary: decision.summary,
     });

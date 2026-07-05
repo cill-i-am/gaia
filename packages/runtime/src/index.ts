@@ -103,6 +103,17 @@ export {
   type ReviewerName,
   type ReviewerRunOptions,
 } from "./reviewer.js";
+export {
+  ReviewerSessionAdapterKindSchema,
+  ReviewerSessionDecisionStatusSchema,
+  ReviewerSessionEvidence,
+  ReviewerSessionKindSchema,
+  parseReviewerSessionEvidenceJson,
+  writeReviewerSessionEvidence,
+  type ReviewerSessionAdapterKind,
+  type ReviewerSessionDecisionStatus,
+  type ReviewerSessionKind,
+} from "./reviewer-session-evidence.js";
 export { writeReport } from "./report-writer.js";
 export {
   SkillManifest,

@@ -93,7 +93,7 @@ Non-goals:
 
 ## Phase 2: Visible Reviewer Spectrum
 
-Status: **In progress: Codex CLI reviewer adapter completed; visible sessions remain**
+Status: **In progress: Codex CLI reviewer adapter and typed session evidence completed; visible sessions remain**
 
 Goal:
 
@@ -122,13 +122,15 @@ Completed foundation:
 - Workspace mutation by a reviewer fails the run with a typed Gaia error.
 - `gaia run --reviewer codex` can run a Codex CLI reviewer in read-only mode.
 - Codex reviewer transcripts and logs are persisted as run evidence.
+- Reviewer session evidence is persisted as `plan-reviewer-session.json` and
+  `evidence-reviewer-session.json`.
 - A blocked plan review stops the run before worker execution.
 
 Remaining:
 
 - Visible Codex reviewer sessions with session/thread identifiers.
-- Structured reviewer transcript capture beyond CLI stdout/stderr and
-  last-message artifacts.
+- Structured reviewer transcript capture beyond CLI stdout/stderr,
+  last-message artifacts, and typed session metadata.
 - Side-chat/resume semantics for reviewer sessions.
 
 Non-goals:

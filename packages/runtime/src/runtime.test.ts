@@ -39,6 +39,7 @@ import {
   ReviewerNameSchema,
   type GaiaReviewer,
 } from "./reviewer.js";
+import { parseReviewerSessionEvidenceJson } from "./reviewer-session-evidence.js";
 import { listRuns, resumeRun, runSpecFile, statusRun } from "./workflows.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
 import { verifyHarnessOutput } from "./verifier.js";
@@ -67,8 +68,14 @@ describe("runtime workflows", () => {
         const planReviewExists = yield* fs.exists(
           `${summary.runDirectory}/plan-review.md`,
         );
+        const planReviewerSessionExists = yield* fs.exists(
+          `${summary.runDirectory}/plan-reviewer-session.json`,
+        );
         const evidenceReviewExists = yield* fs.exists(
           `${summary.runDirectory}/evidence-review.md`,
+        );
+        const evidenceReviewerSessionExists = yield* fs.exists(
+          `${summary.runDirectory}/evidence-reviewer-session.json`,
         );
         const output = yield* fs.readFileString(
           `${summary.runDirectory}/workspace/output.txt`,
@@ -82,12 +89,29 @@ describe("runtime workflows", () => {
         assert.isTrue(reportExists);
         assert.isTrue(workerPlanExists);
         assert.isTrue(planReviewExists);
+        assert.isTrue(planReviewerSessionExists);
         assert.isTrue(evidenceReviewExists);
+        assert.isTrue(evidenceReviewerSessionExists);
         assert.include(events, '"type":"REVIEW_COMPLETED"');
+        assert.include(events, '"reviewerSessionEvidencePath"');
         assert.include(report, "worker-plan.md");
         assert.include(report, "plan-review.md");
+        assert.include(report, "plan-reviewer-session.json");
         assert.include(report, "evidence-review.md");
+        assert.include(report, "evidence-reviewer-session.json");
         assert.include(output, summary.runId);
+
+        const planReviewerSession = parseReviewerSessionEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/plan-reviewer-session.json`,
+            ),
+          ),
+        );
+        assert.strictEqual(planReviewerSession.adapterKind, "deterministic");
+        assert.strictEqual(planReviewerSession.sessionKind, "local");
+        assert.strictEqual(planReviewerSession.phase, "plan");
+        assert.strictEqual(planReviewerSession.decisionStatus, "approved");
 
         const resumed = yield* resumeRun(summary.runId, { rootDirectory: cwd });
         assert.strictEqual(resumed.status, "completed");
@@ -656,6 +680,13 @@ describe("runtime workflows", () => {
         const planReviewerLog = yield* fs.readFileString(
           `${summary.runDirectory}/plan-codex-reviewer.log`,
         );
+        const planReviewerSession = parseReviewerSessionEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/plan-reviewer-session.json`,
+            ),
+          ),
+        );
 
         assert.lengthOf(commands, 2);
         for (const command of commands) {
@@ -684,9 +715,25 @@ describe("runtime workflows", () => {
           assert.include(command.stdin, "Summary: ");
         }
         assert.include(planReview, "Reviewer: codex-reviewer");
+        assert.include(
+          planReview,
+          "Session Evidence: plan-reviewer-session.json",
+        );
         assert.include(planReview, "Codex reviewer approved plan.");
         assert.include(evidenceReview, "Codex reviewer approved evidence.");
         assert.include(planReviewerLog, "Codex reviewer stdout:");
+        assert.strictEqual(planReviewerSession.adapterKind, "codex-cli");
+        assert.strictEqual(planReviewerSession.command, "codex-review-test");
+        assert.strictEqual(planReviewerSession.cwd, summary.runDirectory);
+        assert.strictEqual(planReviewerSession.decisionStatus, "approved");
+        assert.strictEqual(
+          planReviewerSession.transcriptPath,
+          "plan-codex-reviewer-last-message.md",
+        );
+        assert.strictEqual(
+          planReviewerSession.logPath,
+          "plan-codex-reviewer.log",
+        );
       }),
     );
 
@@ -735,9 +782,17 @@ describe("runtime workflows", () => {
         const events = yield* fs.readFileString(
           `${status.runDirectory}/events.jsonl`,
         );
+        const planReviewerSession = parseReviewerSessionEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${status.runDirectory}/plan-reviewer-session.json`,
+            ),
+          ),
+        );
         assert.lengthOf(commands, 1);
         assert.strictEqual(status.state, "failed");
         assert.include(events, '"status":"blocked"');
+        assert.strictEqual(planReviewerSession.decisionStatus, "blocked");
         assert.notInclude(events, '"type":"WORKER_STARTED"');
       }),
     );

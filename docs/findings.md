@@ -583,3 +583,36 @@ Verification:
   `codex exec --sandbox read-only`, writes logs/transcripts, and records
   review evidence.
 - Runtime test proves a blocked plan review fails before `WORKER_STARTED`.
+
+## Slice 12: Reviewer Session Evidence
+
+Outcome: Gaia now writes typed reviewer session evidence for every review phase.
+Each run records `plan-reviewer-session.json` and
+`evidence-reviewer-session.json` alongside the normal review Markdown/JSON.
+The artifact captures the reviewer adapter kind, session kind, decision status,
+phase, reviewer name, and supporting paths such as Codex reviewer logs and
+transcripts when available.
+
+Findings:
+
+- The CLI Codex reviewer is not the final visible reviewer thread, but it can
+  still produce a stable session-shaped artifact. That gives visible sessions a
+  contract to extend instead of forcing reports and event replay to learn a new
+  shape later.
+- Session evidence belongs at the reviewer port boundary. The workflow only
+  knows where the artifact lives; deterministic, custom, and Codex reviewers
+  can attach richer evidence without adding reviewer-specific branches to the
+  run lifecycle.
+- Durable events now include `reviewerSessionEvidencePath`, and replay exposes
+  `planReviewerSessionPath` / `evidenceReviewerSessionPath` when present. The
+  payload is optional so older run logs still replay cleanly.
+
+Verification:
+
+- Runtime test proves deterministic runs write typed reviewer session evidence
+  and include it in the final report.
+- Runtime test proves the Codex reviewer records command, cwd, log, transcript,
+  and approved decision metadata.
+- Runtime test proves blocked Codex plan reviews still write blocked session
+  evidence before the run fails.
+- Core replay test proves reviewer session paths are preserved in snapshots.

@@ -6,6 +6,12 @@ import {
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { HarnessRunResult } from "./harness.js";
+import {
+  ReviewerSessionEvidence,
+  writeReviewerSessionEvidence,
+  type ReviewerSessionAdapterKind,
+  type ReviewerSessionKind,
+} from "./reviewer-session-evidence.js";
 import { VerificationResult } from "./verifier.js";
 import { parseWorkerPlanJson } from "./worker-plan.js";
 import { WorkspacePreparationResult } from "./workspace.js";
@@ -34,6 +40,7 @@ export class ReviewResult extends Schema.Class<ReviewResult>("ReviewResult")({
   resultPath: Schema.NonEmptyString,
   reviewerName: ReviewerNameSchema,
   runId: RunIdSchema,
+  sessionEvidence: Schema.optionalKey(ReviewerSessionEvidence),
   status: Schema.Literals(["approved", "blocked"] as const),
   summary: Schema.NonEmptyString,
 }) {}
@@ -45,6 +52,7 @@ export class ReviewRunRequest extends Schema.Class<ReviewRunRequest>(
   phase: ReviewPhaseSchema,
   resultPath: Schema.NonEmptyString,
   runId: RunIdSchema,
+  sessionEvidencePath: Schema.NonEmptyString,
   specBody: Schema.NonEmptyString,
   specTitle: Schema.NonEmptyString,
   verificationResultPath: Schema.NonEmptyString,
@@ -55,6 +63,7 @@ export class ReviewRunRequest extends Schema.Class<ReviewRunRequest>(
 }) {}
 
 export type GaiaReviewer = {
+  readonly adapterKind?: ReviewerSessionAdapterKind;
   readonly name: ReviewerName;
   readonly run: (
     request: ReviewRunRequest,
@@ -63,6 +72,7 @@ export type GaiaReviewer = {
     GaiaRuntimeError,
     FileSystem.FileSystem | Path.Path
   >;
+  readonly sessionKind?: ReviewerSessionKind;
 };
 
 export type ReviewerRunOptions = {
@@ -93,6 +103,7 @@ export function runReviewer(
   FileSystem.FileSystem | Path.Path
 > {
   return Effect.gen(function* () {
+    const path = yield* Path.Path;
     const reviewer = options.reviewer ?? deterministicReviewer;
     const beforeWorkspace = yield* snapshotWorkspace(request.workspacePath).pipe(
       Effect.mapError((cause) =>
@@ -122,15 +133,29 @@ export function runReviewer(
       reviewer,
     );
 
-    yield* writeReviewArtifacts(request, result);
-    return result;
+    const sessionEvidence =
+      result.sessionEvidence ??
+      makeDefaultReviewerSessionEvidence(request, result, reviewer, path);
+    const resultWithSessionEvidence = withSessionEvidence(
+      result,
+      sessionEvidence,
+    );
+
+    yield* writeReviewerSessionEvidence({
+      evidence: sessionEvidence,
+      path: request.sessionEvidencePath,
+    });
+    yield* writeReviewArtifacts(request, resultWithSessionEvidence);
+    return resultWithSessionEvidence;
   });
 }
 
 const deterministicReviewer: GaiaReviewer = {
+  adapterKind: "deterministic",
   name: defaultReviewerName,
   run: (request) =>
     request.phase === "plan" ? reviewPlan(request) : reviewEvidence(request),
+  sessionKind: "local",
 };
 
 function requireReviewerDidNotMutateWorkspace(
@@ -289,15 +314,56 @@ function writeReviewArtifacts(
   );
 }
 
+function makeDefaultReviewerSessionEvidence(
+  request: ReviewRunRequest,
+  result: ReviewResult,
+  reviewer: GaiaReviewer,
+  path: Path.Path,
+) {
+  return ReviewerSessionEvidence.make({
+    adapterKind: reviewer.adapterKind ?? "custom",
+    decisionStatus: result.status,
+    evidencePath: path.basename(request.sessionEvidencePath),
+    phase: result.phase,
+    resultPath: result.resultPath,
+    reviewPath: path.basename(request.markdownPath),
+    reviewerName: reviewer.name,
+    runId: result.runId,
+    sessionKind: reviewer.sessionKind ?? "local",
+    version: 1,
+  });
+}
+
+function withSessionEvidence(
+  result: ReviewResult,
+  sessionEvidence: ReviewerSessionEvidence,
+) {
+  return ReviewResult.make({
+    findings: result.findings,
+    phase: result.phase,
+    resultPath: result.resultPath,
+    reviewerName: result.reviewerName,
+    runId: result.runId,
+    sessionEvidence,
+    status: result.status,
+    summary: result.summary,
+  });
+}
+
 function markdownReview(result: ReviewResult) {
   const findings = result.findings
     .map((finding) => `- ${finding.severity}: ${finding.message}`)
     .join("\n");
+  const sessionEvidence =
+    result.sessionEvidence === undefined
+      ? "Session Evidence: not recorded"
+      : `Session Evidence: ${result.sessionEvidence.evidencePath}`;
 
   return `# Gaia ${reviewPhaseLabel(result.phase)} Review
 
 Status: ${result.status}
 Reviewer: ${result.reviewerName}
+${sessionEvidence}
 
 ## Summary
 

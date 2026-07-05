@@ -378,6 +378,7 @@ function runReviewPhase(
         phase,
         resultPath: reviewPaths.result,
         runId,
+        sessionEvidencePath: reviewPaths.sessionEvidence,
         specBody: spec.body,
         specTitle: spec.title,
         verificationResultPath: paths.verificationResult,
@@ -398,6 +399,10 @@ function runReviewPhase(
         phase: review.phase,
         resultPath: review.resultPath,
         reviewPath: runRelative(paths, reviewPaths.markdown),
+        reviewerSessionEvidencePath: runRelative(
+          paths,
+          reviewPaths.sessionEvidence,
+        ),
         reviewerName: review.reviewerName,
         status: review.status,
       },
@@ -431,11 +436,13 @@ function reviewPathsForPhase(paths: RunPaths, phase: ReviewPhase) {
       return {
         markdown: paths.planReviewMarkdown,
         result: paths.planReviewResult,
+        sessionEvidence: paths.planReviewerSession,
       };
     case "evidence":
       return {
         markdown: paths.evidenceReviewMarkdown,
         result: paths.evidenceReviewResult,
+        sessionEvidence: paths.evidenceReviewerSession,
       };
   }
 }

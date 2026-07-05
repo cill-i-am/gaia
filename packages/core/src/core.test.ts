@@ -89,7 +89,11 @@ describe("core contracts", () => {
         type: "WORKSPACE_PREPARED",
       }),
       makeRunEvent({
-        payload: { phase: "plan", reviewPath: "plan-review.md" },
+        payload: {
+          phase: "plan",
+          reviewPath: "plan-review.md",
+          reviewerSessionEvidencePath: "plan-reviewer-session.json",
+        },
         runId,
         sequence: 3,
         timestamp: "2026-07-04T10:00:02.000Z",
@@ -110,7 +114,11 @@ describe("core contracts", () => {
         type: "VERIFICATION_COMPLETED",
       }),
       makeRunEvent({
-        payload: { phase: "evidence", reviewPath: "evidence-review.md" },
+        payload: {
+          phase: "evidence",
+          reviewPath: "evidence-review.md",
+          reviewerSessionEvidencePath: "evidence-reviewer-session.json",
+        },
         runId,
         sequence: 6,
         timestamp: "2026-07-04T10:00:05.000Z",
@@ -131,6 +139,14 @@ describe("core contracts", () => {
     assert.strictEqual(
       durableSnapshot.context.evidenceReviewPath,
       "evidence-review.md",
+    );
+    assert.strictEqual(
+      durableSnapshot.context.planReviewerSessionPath,
+      "plan-reviewer-session.json",
+    );
+    assert.strictEqual(
+      durableSnapshot.context.evidenceReviewerSessionPath,
+      "evidence-reviewer-session.json",
     );
   });
 

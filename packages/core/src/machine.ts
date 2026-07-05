@@ -19,7 +19,9 @@ export type RunMachineContext = {
   readonly githubPullRequest: string | undefined;
   readonly githubWatchStatePath: string | undefined;
   readonly lastEventSequence: number;
+  readonly evidenceReviewerSessionPath: string | undefined;
   readonly planReviewPath: string | undefined;
+  readonly planReviewerSessionPath: string | undefined;
   readonly reportPath: string | undefined;
   readonly runId: RunId | undefined;
   readonly specPath: string | undefined;
@@ -36,6 +38,7 @@ export type RunMachineEvent =
       readonly type: "REVIEW_COMPLETED";
       readonly phase: typeof ReviewPhaseSchema.Type;
       readonly reviewPath: string;
+      readonly reviewerSessionEvidencePath?: string;
     }
   | { readonly type: "WORKER_STARTED" }
   | { readonly type: "WORKER_COMPLETED"; readonly workerResultPath: string }
@@ -63,7 +66,9 @@ const initialContext: RunMachineContext = {
   githubPullRequest: undefined,
   githubWatchStatePath: undefined,
   lastEventSequence: 0,
+  evidenceReviewerSessionPath: undefined,
   planReviewPath: undefined,
+  planReviewerSessionPath: undefined,
   reportPath: undefined,
   runId: undefined,
   specPath: undefined,
@@ -203,10 +208,22 @@ export const runMachine = createMachine({
         event.type === "REVIEW_COMPLETED" && event.phase === "evidence"
           ? event.reviewPath
           : context.evidenceReviewPath,
+      evidenceReviewerSessionPath: ({ context, event }) =>
+        event.type === "REVIEW_COMPLETED" &&
+        event.phase === "evidence" &&
+        event.reviewerSessionEvidencePath !== undefined
+          ? event.reviewerSessionEvidencePath
+          : context.evidenceReviewerSessionPath,
       planReviewPath: ({ context, event }) =>
         event.type === "REVIEW_COMPLETED" && event.phase === "plan"
           ? event.reviewPath
           : context.planReviewPath,
+      planReviewerSessionPath: ({ context, event }) =>
+        event.type === "REVIEW_COMPLETED" &&
+        event.phase === "plan" &&
+        event.reviewerSessionEvidencePath !== undefined
+          ? event.reviewerSessionEvidencePath
+          : context.planReviewerSessionPath,
     }),
     recordVerificationCompleted: assign({
       verificationResultPath: ({ event }) =>
@@ -286,10 +303,17 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
     case "WORKER_STARTED":
       return { type: event.type };
     case "REVIEW_COMPLETED":
+      const reviewerSessionEvidencePath = getOptionalStringPayload(
+        event,
+        "reviewerSessionEvidencePath",
+      );
       return {
         phase: getReviewPhasePayload(event, "phase"),
         reviewPath: getStringPayload(event, "reviewPath"),
         type: event.type,
+        ...(reviewerSessionEvidencePath === undefined
+          ? {}
+          : { reviewerSessionEvidencePath }),
       };
     case "RUN_CREATED":
       return {
@@ -394,6 +418,14 @@ function snapshotContext(
   }
   if (context.planReviewPath !== undefined) {
     output.planReviewPath = context.planReviewPath;
+  }
+  if (context.evidenceReviewerSessionPath !== undefined) {
+    output.evidenceReviewerSessionPath =
+      context.evidenceReviewerSessionPath;
+  }
+  if (context.planReviewerSessionPath !== undefined) {
+    output.planReviewerSessionPath =
+      context.planReviewerSessionPath;
   }
   if (context.reportPath !== undefined) {
     output.reportPath = context.reportPath;
