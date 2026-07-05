@@ -1,0 +1,27 @@
+{
+  "name": "@gaia/server",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "gaia-server": "./dist/main.mjs"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "check": "tsc --noEmit",
+    "dev": "tsx src/main.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@effect/platform-node": "^4.0.0-beta.93",
+    "@gaia/runtime": "workspace:*",
+    "effect": "^4.0.0-beta.93"
+  },
+  "devDependencies": {
+    "@effect/vitest": "^4.0.0-beta.93",
+    "@types/node": "^24.0.14",
+    "tsdown": "^0.22.3",
+    "tsx": "^4.20.6",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  }
+}
