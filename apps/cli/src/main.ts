@@ -18,6 +18,9 @@ import type {
   GitHubPublishPreflightSummary,
   GitHubPublishPreview,
   GitHubPrSummary,
+  LocalRunArtifact,
+  LocalRunEvents,
+  LocalRunReadDiagnostic,
 } from "@gaia/runtime";
 import {
   GaiaRuntimeError,
@@ -44,11 +47,19 @@ import {
   recordMergeDecision,
   recordGitHubChecks,
   resumeRun,
+  readLocalRunArtifact,
+  readLocalRunEvents,
   runSpecFile,
   statusRun,
   watchGitHubChecks,
   watchGitHubFeedback,
 } from "@gaia/runtime";
+import {
+  readLocalRunArtifactFromServer,
+  readLocalRunEventsFromServer,
+  listRunsFromServer,
+  statusRunFromServer,
+} from "./server-read-client.js";
 import path from "node:path";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -68,6 +79,7 @@ const specFile = Argument.string("spec-file");
 const linearIssueGraphFile = Argument.string("linear-issue-graph-file");
 const runId = Argument.string("run-id");
 const pullRequest = Argument.string("pull-request");
+const artifactName = Argument.string("artifact-name");
 const optionalRunId = runId.pipe(Argument.optional);
 const optionalPullRequest = pullRequest.pipe(Argument.optional);
 const browserTargetUrl = Flag.string("url").pipe(
@@ -86,6 +98,12 @@ const requireBrowserEvidence = Flag.boolean("require-browser-evidence").pipe(
 );
 const json = Flag.boolean("json").pipe(
   Flag.withDescription("Write a machine-readable JSON response."),
+);
+const serverUrl = Flag.string("server-url").pipe(
+  Flag.withDescription(
+    "Opt into read-only CLI reads through an already-running local Gaia API server.",
+  ),
+  Flag.optional,
 );
 const workspaceSource = Flag.string("workspace-source").pipe(
   Flag.withDescription("Copy a local directory into the run workspace."),
@@ -232,11 +250,18 @@ const resume = Command.make("resume", { json, runId }).pipe(
   ),
 );
 
-const status = Command.make("status", { json, runId: optionalRunId }).pipe(
+const status = Command.make("status", {
+  json,
+  runId: optionalRunId,
+  serverUrl,
+}).pipe(
   Command.withDescription("Show the latest run status or a specific run status."),
-  Command.withHandler(({ json, runId }) =>
+  Command.withHandler(({ json, runId, serverUrl }) =>
     renderEffect(
-      statusRun(Option.getOrUndefined(runId), workflowOptions()),
+      readStatus({
+        ...serverUrlInput(Option.getOrUndefined(serverUrl)),
+        ...(Option.isSome(runId) ? { runId: runId.value } : {}),
+      }),
       json,
       renderSummary,
     ),
@@ -254,10 +279,48 @@ const doctorCommand = Command.make("doctor", { json }).pipe(
   ),
 );
 
-const list = Command.make("list", { json }).pipe(
+const list = Command.make("list", { json, serverUrl }).pipe(
   Command.withDescription("List known Gaia runs."),
-  Command.withHandler(({ json }) =>
-    renderEffect(listRuns(workflowOptions()), json, renderRunList),
+  Command.withHandler(({ json, serverUrl }) =>
+    renderEffect(
+      readList(serverUrlInput(Option.getOrUndefined(serverUrl))),
+      json,
+      renderRunList,
+    ),
+  ),
+);
+
+const events = Command.make("events", { json, runId, serverUrl }).pipe(
+  Command.withDescription("Read a Gaia run's event log."),
+  Command.withHandler(({ json, runId, serverUrl }) =>
+    renderEffect(
+      readEvents({
+        ...serverUrlInput(Option.getOrUndefined(serverUrl)),
+        runId,
+      }),
+      json,
+      renderRunEvents,
+    ),
+  ),
+);
+
+const artifact = Command.make("artifact", {
+  runId,
+  artifactName,
+  json,
+  serverUrl,
+}).pipe(
+  Command.withDescription("Read an allowlisted Gaia run artifact."),
+  Command.withHandler(({ artifactName, json, runId, serverUrl }) =>
+    renderEffect(
+      readArtifact({
+        ...serverUrlInput(Option.getOrUndefined(serverUrl)),
+        artifactName,
+        runId,
+      }),
+      json,
+      renderRunArtifact,
+    ),
   ),
 );
 
@@ -516,6 +579,8 @@ const cli = Command.make("gaia").pipe(
     resume,
     status,
     list,
+    events,
+    artifact,
     collectBrowserEvidenceCommand,
     preflightGithub,
     previewPr,
@@ -687,6 +752,70 @@ function resolveRunProfilePath(input: string) {
     : resolveInvocationPath(input);
 }
 
+function serverUrlInput(serverUrl: string | undefined) {
+  return serverUrl === undefined ? {} : { serverUrl };
+}
+
+function readStatus(input: {
+  readonly runId?: string;
+  readonly serverUrl?: string;
+}) {
+  if (input.serverUrl === undefined) {
+    return statusRun(input.runId, workflowOptions());
+  }
+
+  return statusRunFromServer({
+    rootDirectory: invocationRoot(),
+    serverUrl: input.serverUrl,
+    ...(input.runId === undefined ? {} : { runId: input.runId }),
+  });
+}
+
+function readList(input: { readonly serverUrl?: string }) {
+  if (input.serverUrl === undefined) {
+    return listRuns(workflowOptions());
+  }
+
+  return listRunsFromServer({
+    rootDirectory: invocationRoot(),
+    serverUrl: input.serverUrl,
+  });
+}
+
+function readEvents(input: {
+  readonly runId: string;
+  readonly serverUrl?: string;
+}) {
+  if (input.serverUrl === undefined) {
+    return readLocalRunEvents(input.runId, workflowOptions());
+  }
+
+  return readLocalRunEventsFromServer({
+    runId: input.runId,
+    serverUrl: input.serverUrl,
+  });
+}
+
+function readArtifact(input: {
+  readonly artifactName: string;
+  readonly runId: string;
+  readonly serverUrl?: string;
+}) {
+  if (input.serverUrl === undefined) {
+    return readLocalRunArtifact(
+      input.runId,
+      input.artifactName,
+      workflowOptions(),
+    );
+  }
+
+  return readLocalRunArtifactFromServer({
+    artifactName: input.artifactName,
+    runId: input.runId,
+    serverUrl: input.serverUrl,
+  });
+}
+
 function renderEffect<A>(
   effect: Effect.Effect<A, unknown, NodeServices.NodeServices>,
   json: boolean,
@@ -731,12 +860,36 @@ function failureOutput(error: unknown): FailureOutput {
     };
   }
 
+  if (isLocalRunReadDiagnostic(error)) {
+    return {
+      code: error.code,
+      message: error.message,
+      recoverable: error.recoverable,
+      status: "failed",
+    };
+  }
+
   return {
     code: "UnexpectedFailure",
     message: "Gaia command failed.",
     recoverable: false,
     status: "failed",
   };
+}
+
+function isLocalRunReadDiagnostic(
+  input: unknown,
+): input is LocalRunReadDiagnostic {
+  return (
+    typeof input === "object" &&
+    input !== null &&
+    "code" in input &&
+    typeof input.code === "string" &&
+    "message" in input &&
+    typeof input.message === "string" &&
+    "recoverable" in input &&
+    typeof input.recoverable === "boolean"
+  );
 }
 
 function renderFailure(failure: FailureOutput) {
@@ -767,6 +920,22 @@ function renderRunList(summaries: ReadonlyArray<CommandSummary>) {
   return summaries
     .map((summary) => `${summary.runId} ${summary.status} ${summary.state}`)
     .join("\n");
+}
+
+function renderRunEvents(events: LocalRunEvents) {
+  if (events.events.length === 0) {
+    return `events: ${events.runId}\ncount: 0`;
+  }
+
+  return [
+    `events: ${events.runId}`,
+    `count: ${events.events.length}`,
+    ...events.events.map((event) => `${event.timestamp} ${event.type}`),
+  ].join("\n");
+}
+
+function renderRunArtifact(artifact: LocalRunArtifact) {
+  return artifact.body;
 }
 
 function renderDoctorSummary(summary: DoctorSummary) {
