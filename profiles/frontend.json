@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "frontend",
+  "browser": {
+    "targetUrl": "http://localhost:3000"
+  },
+  "checks": {
+    "browserEvidence": "required"
+  }
+}

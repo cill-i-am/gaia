@@ -19,12 +19,21 @@ export type RunMachineContext = {
   readonly failure: GaiaFailure | undefined;
   readonly githubChecksPath: string | undefined;
   readonly githubChecksStatus: string | undefined;
+  readonly githubFeedbackCommentCount: number | undefined;
+  readonly githubFeedbackNextAction: string | undefined;
+  readonly githubFeedbackPath: string | undefined;
+  readonly githubFeedbackReviewCount: number | undefined;
+  readonly githubFeedbackReviewRequestCount: number | undefined;
+  readonly githubFeedbackStatus: string | undefined;
   readonly githubPullRequest: string | undefined;
   readonly githubWatchStatePath: string | undefined;
   readonly lastEventSequence: number;
   readonly evidenceReviewerSessionPath: string | undefined;
   readonly planReviewPath: string | undefined;
   readonly planReviewerSessionPath: string | undefined;
+  readonly previewDeploymentPath: string | undefined;
+  readonly previewDeploymentStatus: string | undefined;
+  readonly previewDeploymentUrl: string | undefined;
   readonly reportPath: string | undefined;
   readonly runId: RunId | undefined;
   readonly specPath: string | undefined;
@@ -45,6 +54,12 @@ export type RunMachineEvent =
     }
   | { readonly type: "WORKER_STARTED" }
   | { readonly type: "WORKER_COMPLETED"; readonly workerResultPath: string }
+  | {
+      readonly type: "PREVIEW_DEPLOYMENT_RECORDED";
+      readonly deploymentPath: string;
+      readonly status: string;
+      readonly url?: string;
+    }
   | { readonly type: "VERIFICATION_STARTED" }
   | {
       readonly type: "VERIFICATION_COMPLETED";
@@ -65,6 +80,16 @@ export type RunMachineEvent =
       readonly status: string;
       readonly watchStatePath?: string;
     }
+  | {
+      readonly type: "GITHUB_FEEDBACK_RECORDED";
+      readonly commentCount: number;
+      readonly feedbackPath: string;
+      readonly nextAction: string;
+      readonly pullRequest: string;
+      readonly reviewCount: number;
+      readonly reviewRequestCount: number;
+      readonly status: string;
+    }
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
@@ -75,12 +100,21 @@ const initialContext: RunMachineContext = {
   failure: undefined,
   githubChecksPath: undefined,
   githubChecksStatus: undefined,
+  githubFeedbackCommentCount: undefined,
+  githubFeedbackNextAction: undefined,
+  githubFeedbackPath: undefined,
+  githubFeedbackReviewCount: undefined,
+  githubFeedbackReviewRequestCount: undefined,
+  githubFeedbackStatus: undefined,
   githubPullRequest: undefined,
   githubWatchStatePath: undefined,
   lastEventSequence: 0,
   evidenceReviewerSessionPath: undefined,
   planReviewPath: undefined,
   planReviewerSessionPath: undefined,
+  previewDeploymentPath: undefined,
+  previewDeploymentStatus: undefined,
+  previewDeploymentUrl: undefined,
   reportPath: undefined,
   runId: undefined,
   specPath: undefined,
@@ -105,6 +139,12 @@ export const runMachine = createMachine({
         },
         GITHUB_CHECKS_RECORDED: {
           actions: "recordGitHubChecks",
+        },
+        GITHUB_FEEDBACK_RECORDED: {
+          actions: "recordGitHubFeedback",
+        },
+        PREVIEW_DEPLOYMENT_RECORDED: {
+          actions: "recordPreviewDeployment",
         },
         RUN_FAILED: {
           actions: "recordFailure",
@@ -142,6 +182,9 @@ export const runMachine = createMachine({
         BROWSER_EVIDENCE_RECORDED: {
           actions: "recordBrowserEvidence",
         },
+        PREVIEW_DEPLOYMENT_RECORDED: {
+          actions: "recordPreviewDeployment",
+        },
         REPORT_STARTED: {},
         REPORT_COMPLETED: {
           actions: "recordReportCompleted",
@@ -167,6 +210,9 @@ export const runMachine = createMachine({
           actions: "recordReviewCompleted",
         },
         REVIEW_STARTED: {},
+        PREVIEW_DEPLOYMENT_RECORDED: {
+          actions: "recordPreviewDeployment",
+        },
         WORKER_COMPLETED: {
           actions: "recordWorkerCompleted",
           target: "verifying",
@@ -176,6 +222,9 @@ export const runMachine = createMachine({
     },
     verifying: {
       on: {
+        PREVIEW_DEPLOYMENT_RECORDED: {
+          actions: "recordPreviewDeployment",
+        },
         RUN_FAILED: {
           actions: "recordFailure",
           target: "failed",
@@ -222,6 +271,50 @@ export const runMachine = createMachine({
         event.watchStatePath !== undefined
           ? event.watchStatePath
           : context.githubWatchStatePath,
+    }),
+    recordGitHubFeedback: assign({
+      githubFeedbackCommentCount: ({ event }) =>
+        event.type === "GITHUB_FEEDBACK_RECORDED"
+          ? event.commentCount
+          : undefined,
+      githubFeedbackNextAction: ({ event }) =>
+        event.type === "GITHUB_FEEDBACK_RECORDED"
+          ? event.nextAction
+          : undefined,
+      githubFeedbackPath: ({ event }) =>
+        event.type === "GITHUB_FEEDBACK_RECORDED"
+          ? event.feedbackPath
+          : undefined,
+      githubFeedbackReviewCount: ({ event }) =>
+        event.type === "GITHUB_FEEDBACK_RECORDED"
+          ? event.reviewCount
+          : undefined,
+      githubFeedbackReviewRequestCount: ({ event }) =>
+        event.type === "GITHUB_FEEDBACK_RECORDED"
+          ? event.reviewRequestCount
+          : undefined,
+      githubFeedbackStatus: ({ event }) =>
+        event.type === "GITHUB_FEEDBACK_RECORDED"
+          ? event.status
+          : undefined,
+      githubPullRequest: ({ event }) =>
+        event.type === "GITHUB_FEEDBACK_RECORDED"
+          ? event.pullRequest
+          : undefined,
+    }),
+    recordPreviewDeployment: assign({
+      previewDeploymentPath: ({ event }) =>
+        event.type === "PREVIEW_DEPLOYMENT_RECORDED"
+          ? event.deploymentPath
+          : undefined,
+      previewDeploymentStatus: ({ event }) =>
+        event.type === "PREVIEW_DEPLOYMENT_RECORDED"
+          ? event.status
+          : undefined,
+      previewDeploymentUrl: ({ event }) =>
+        event.type === "PREVIEW_DEPLOYMENT_RECORDED"
+          ? event.url
+          : undefined,
     }),
     recordReportCompleted: assign({
       reportPath: ({ event }) =>
@@ -329,6 +422,25 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         type: event.type,
         ...(watchStatePath === undefined ? {} : { watchStatePath }),
       };
+    case "GITHUB_FEEDBACK_RECORDED":
+      return {
+        commentCount: getNumberPayload(event, "commentCount"),
+        feedbackPath: getStringPayload(event, "feedbackPath"),
+        nextAction: getStringPayload(event, "nextAction"),
+        pullRequest: getStringPayload(event, "pullRequest"),
+        reviewCount: getNumberPayload(event, "reviewCount"),
+        reviewRequestCount: getNumberPayload(event, "reviewRequestCount"),
+        status: getStringPayload(event, "status"),
+        type: event.type,
+      };
+    case "PREVIEW_DEPLOYMENT_RECORDED":
+      const url = getOptionalStringPayload(event, "url");
+      return {
+        deploymentPath: getStringPayload(event, "deploymentPath"),
+        status: getStringPayload(event, "status"),
+        type: event.type,
+        ...(url === undefined ? {} : { url }),
+      };
     case "REPORT_COMPLETED":
       return {
         reportPath: getStringPayload(event, "reportPath"),
@@ -407,6 +519,15 @@ function getBooleanPayload(event: RunEvent, key: string): boolean {
   throw new Error(`Event ${event.type} is missing boolean payload '${key}'.`);
 }
 
+function getNumberPayload(event: RunEvent, key: string): number {
+  const value = event.payload[key];
+  if (typeof value === "number") {
+    return value;
+  }
+
+  throw new Error(`Event ${event.type} is missing number payload '${key}'.`);
+}
+
 function getOptionalStringPayload(
   event: RunEvent,
   key: string,
@@ -435,8 +556,8 @@ function getReviewPhasePayload(event: RunEvent, key: string) {
 
 function snapshotContext(
   context: RunMachineContext,
-): Readonly<Record<string, string | boolean>> {
-  const output: Record<string, string | boolean> = {};
+): Readonly<Record<string, string | boolean | number>> {
+  const output: Record<string, string | boolean | number> = {};
 
   if (context.browserEvidencePath !== undefined) {
     output.browserEvidencePath = context.browserEvidencePath;
@@ -456,6 +577,25 @@ function snapshotContext(
   if (context.githubChecksStatus !== undefined) {
     output.githubChecksStatus = context.githubChecksStatus;
   }
+  if (context.githubFeedbackCommentCount !== undefined) {
+    output.githubFeedbackCommentCount = context.githubFeedbackCommentCount;
+  }
+  if (context.githubFeedbackNextAction !== undefined) {
+    output.githubFeedbackNextAction = context.githubFeedbackNextAction;
+  }
+  if (context.githubFeedbackPath !== undefined) {
+    output.githubFeedbackPath = context.githubFeedbackPath;
+  }
+  if (context.githubFeedbackReviewCount !== undefined) {
+    output.githubFeedbackReviewCount = context.githubFeedbackReviewCount;
+  }
+  if (context.githubFeedbackReviewRequestCount !== undefined) {
+    output.githubFeedbackReviewRequestCount =
+      context.githubFeedbackReviewRequestCount;
+  }
+  if (context.githubFeedbackStatus !== undefined) {
+    output.githubFeedbackStatus = context.githubFeedbackStatus;
+  }
   if (context.githubPullRequest !== undefined) {
     output.githubPullRequest = context.githubPullRequest;
   }
@@ -464,6 +604,15 @@ function snapshotContext(
   }
   if (context.planReviewPath !== undefined) {
     output.planReviewPath = context.planReviewPath;
+  }
+  if (context.previewDeploymentPath !== undefined) {
+    output.previewDeploymentPath = context.previewDeploymentPath;
+  }
+  if (context.previewDeploymentStatus !== undefined) {
+    output.previewDeploymentStatus = context.previewDeploymentStatus;
+  }
+  if (context.previewDeploymentUrl !== undefined) {
+    output.previewDeploymentUrl = context.previewDeploymentUrl;
   }
   if (context.evidenceReviewerSessionPath !== undefined) {
     output.evidenceReviewerSessionPath =

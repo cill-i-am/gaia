@@ -14,25 +14,31 @@ before any real coding harness or external integration is introduced.
 4. Prepares an isolated workspace, optionally copied from a local source
    directory.
 5. Records a pinned portable-skill manifest when provided.
-6. Writes typed browser evidence, starting as `not-collected`.
-7. Appends lifecycle events to `events.jsonl`.
-8. Writes derived snapshots to `snapshots.jsonl`.
-9. Writes a worker plan artifact.
-10. Records deterministic read-only plan review evidence.
-11. Runs a deterministic fake harness through the harness port.
-12. Verifies the fake harness's output artifact.
-13. Records deterministic read-only evidence review output.
-14. Writes `report.md` and `report.json`.
-15. Resumes completed runs by replaying the event log.
-16. Can publish completed run evidence as a draft GitHub PR.
-17. Can publish completed run workspace changes as a draft GitHub PR.
-18. Can inspect GitHub PR checks as `no-checks`, `pending`, `passed`, or
+6. Resolves and records a typed run profile.
+7. Writes typed browser evidence, starting as `not-collected`.
+8. Writes typed preview deployment evidence, starting as `not-created`.
+9. Appends lifecycle events to `events.jsonl`.
+10. Writes derived snapshots to `snapshots.jsonl`.
+11. Writes a worker plan artifact.
+12. Records deterministic read-only plan review evidence.
+13. Runs a deterministic fake harness through the harness port.
+14. Verifies the fake harness's output artifact.
+15. Records deterministic read-only evidence review output.
+16. Writes `report.md` and `report.json`.
+17. Resumes completed runs by replaying the event log.
+18. Can publish completed run evidence as a draft GitHub PR.
+19. Can publish completed run workspace changes as a draft GitHub PR.
+20. Can inspect GitHub PR checks as `no-checks`, `pending`, `passed`, or
     `failed`.
-19. Can record a GitHub check snapshot against a completed run, optionally
+21. Can record a GitHub check snapshot against a completed run, optionally
     polling until checks are no longer pending.
-20. Writes resumable CI watch state whenever GitHub checks are recorded.
-21. Can collect browser screenshot and console evidence for a completed run, or
+22. Writes resumable CI watch state whenever GitHub checks are recorded.
+23. Can resume a bounded GitHub CI watch from stored `ci-watch-state.json`.
+24. Can record GitHub PR feedback and recommend the next review-response action.
+25. Can collect browser screenshot and console evidence for a completed run, or
     during a run when given a target URL.
+26. Can record a worker-declared preview deployment URL and use it as the
+    browser evidence target when no explicit or profile target is set.
 
 ## What It Does Not Do Yet
 
@@ -43,8 +49,9 @@ Prototype 1 intentionally excludes:
 - skill bundle installation;
 - live reviewer/spec worker threads;
 - background GitHub check watching attached to runs or merges;
+- unresolved GitHub review-thread tracking;
 - Linear issue intake or blocker graphs;
-- deployment evidence;
+- real deployment creation;
 - SQLite run indexing;
 - dashboard or TUI;
 - cancellation of live external work;
@@ -92,6 +99,8 @@ Run the local loop:
 pnpm gaia run examples/specs/smoke.md
 pnpm gaia run examples/specs/smoke.md --harness fake
 pnpm gaia run examples/specs/smoke.md --browser-url http://localhost:3000
+pnpm gaia run examples/specs/smoke.md --browser-url http://localhost:3000 --require-browser-evidence
+pnpm gaia run examples/specs/smoke.md --profile frontend
 pnpm gaia run examples/specs/smoke.md --workspace-source .
 pnpm gaia run examples/specs/smoke.md --skill-manifest ./skills.json
 pnpm gaia status
@@ -105,6 +114,9 @@ pnpm gaia publish-workspace-pr <run-id>
 pnpm gaia pr-checks <pr-number-or-url>
 pnpm gaia checks <run-id> <pr-number-or-url>
 pnpm gaia checks <run-id> <pr-number-or-url> --wait
+pnpm gaia watch-ci <run-id> <pr-number-or-url>
+pnpm gaia watch-ci <run-id>
+pnpm gaia watch-pr-feedback <run-id> <pr-number-or-url>
 pnpm gaia collect-browser-evidence <run-id> --url http://localhost:3000
 ```
 
@@ -160,9 +172,11 @@ A completed run looks like this:
       events.jsonl
       snapshots.jsonl
       workspace-manifest.json
+      run-profile.json
       skill-manifest.json
       skill-bundle.json
       browser-evidence.json
+      preview-deployment.json
       worker-plan.md
       worker-plan.json
       plan-review.md
@@ -181,6 +195,7 @@ A completed run looks like this:
       report.json
       github-checks/
         checks-<event-sequence>.json
+      github-feedback.json
 ```
 
 `events.jsonl` is the source of truth. Every line is a parsed `RunEvent`.
@@ -203,6 +218,25 @@ skipped entries, and run-local workspace path. By default Gaia prepares an empty
 workspace. With `--workspace-source <dir>`, Gaia copies a local directory into
 the run workspace while excluding generated or heavy directories such as `.git`,
 `.gaia`, `.turbo`, `coverage`, `dist`, and `node_modules`.
+
+`run-profile.json` records the resolved profile for a run. Without `--profile`,
+Gaia writes the default profile:
+
+```json
+{
+  "version": 1,
+  "name": "default",
+  "checks": {
+    "browserEvidence": "optional"
+  }
+}
+```
+
+`--profile frontend` resolves `profiles/frontend.json`; any profile value with a
+path separator or `.json` extension is treated as a file path. The checked-in
+`frontend` profile requires browser evidence and carries a default browser
+target URL. `--browser-url` still wins when a run needs to inspect a different
+target.
 
 `skill-manifest.json` records the portable skills selected for a run. Without
 `--skill-manifest`, Gaia writes an empty manifest. With `--skill-manifest`, Gaia
@@ -248,9 +282,33 @@ and appends a `BROWSER_EVIDENCE_RECORDED` event so the evidence reviewer sees
 the browser artifact. `collect-browser-evidence` can do the same for an already
 completed run. If capture is requested but the browser pass cannot run, Gaia
 writes `status: "failed"` evidence instead of pretending the page was verified.
-Failed browser capture does not fail the run by default; future evidence gates
-can choose to make that stricter. Publishing run evidence copies the `browser/`
-directory when screenshots exist.
+Failed browser capture does not fail the run by default. Add
+`--require-browser-evidence` when the run should fail unless browser evidence is
+captured successfully. Gaia resolves the target URL from explicit
+`--browser-url`, then the run profile, then a worker-declared preview
+deployment URL, then a worker-declared direct browser target. If required
+browser evidence still has no target after the worker finishes, Gaia fails the
+run before evidence review. Prefer a profile, such as `--profile frontend`,
+when a whole class of runs should carry that requirement without relying on a
+remembered flag. Publishing run evidence copies the `browser/` directory when
+screenshots exist.
+
+`preview-deployment.json` records deployment target evidence. New runs start
+with:
+
+```json
+{
+  "notes": ["Preview deployment is not created for this run yet."],
+  "status": "not-created",
+  "version": 1
+}
+```
+
+Gaia does not create deployments yet. A harness that creates or discovers a
+preview target can declare `previewDeploymentUrl` through the process harness
+declaration contract. Gaia validates the URL, rewrites
+`preview-deployment.json`, appends `PREVIEW_DEPLOYMENT_RECORDED`, and prefers
+that URL over lower-level direct harness browser targets for evidence capture.
 
 `publish-pr` copies selected evidence into `gaia-runs/<run-id>/` on a new
 `gaia/<run-id>` branch, commits it, pushes it, opens a draft GitHub PR, and
@@ -305,10 +363,43 @@ Each `checks` recording also writes `ci-watch-state.json`:
 }
 ```
 
-`nextAction` is `complete` for terminal states and `poll-again` when bounded
-waiting ends while checks are still pending. Future background CI watching
-should resume from this artifact and the append-only event log rather than keep
-hidden process memory as the source of truth.
+`nextAction` is `complete` for passing or no-check terminal states,
+`fix-failed-checks` for failed terminal states, and `poll-again` when bounded
+waiting ends while checks are still pending.
+
+`watch-ci` is the resumable watcher command. With a pull request selector it
+starts or continues a bounded watch:
+
+```sh
+pnpm gaia watch-ci <run-id> <pr-number-or-url>
+```
+
+Without a pull request selector it resumes from `ci-watch-state.json`:
+
+```sh
+pnpm gaia watch-ci <run-id>
+```
+
+If the stored state is already terminal, Gaia returns the stored snapshot
+without polling GitHub again. If checks fail, the returned summary and watch
+state say `nextAction: "fix-failed-checks"` so an implementation agent has a
+clear next move. The watcher is still an explicit bounded command, not hidden
+global daemon state.
+
+`watch-pr-feedback` records human GitHub PR feedback for a completed run:
+
+```sh
+pnpm gaia watch-pr-feedback <run-id> <pr-number-or-url>
+```
+
+It writes `github-feedback.json`, appends `GITHUB_FEEDBACK_RECORDED`, and
+returns a `nextAction`: `address-review-comments` for changes requested,
+`respond-to-comments` for PR comments without changes requested, `await-review`
+for draft/review-required/requested-reviewer states, or `complete` when the
+feedback is clear. The command reads `gh pr view --json` fields available to
+the GitHub CLI today: comments, latest reviews, review decision, requested
+reviewers, title, and URL. It does not claim unresolved review-thread support;
+the artifact records that limitation explicitly.
 
 ## Lifecycle
 
@@ -322,11 +413,14 @@ Prototype 1 uses an XState machine in `@gaia/core`.
 | `REVIEW_COMPLETED` | Record plan or evidence review output. |
 | `WORKER_STARTED` | Mark that harness-backed worker execution began. |
 | `WORKER_COMPLETED` | Record the normalized harness result path and move to verification. |
+| `PREVIEW_DEPLOYMENT_RECORDED` | Attach a discovered preview deployment URL to the run. |
 | `VERIFICATION_STARTED` | Mark that verification began. |
 | `VERIFICATION_COMPLETED` | Record verification evidence and move to reporting. |
+| `BROWSER_EVIDENCE_RECORDED` | Attach browser screenshot and console evidence to reporting or completed runs. |
 | `REPORT_STARTED` | Mark that report writing began. |
 | `REPORT_COMPLETED` | Record report evidence and complete the run. |
 | `GITHUB_CHECKS_RECORDED` | Attach GitHub check evidence to an already completed run. |
+| `GITHUB_FEEDBACK_RECORDED` | Attach GitHub PR feedback evidence to an already completed run. |
 | `RUN_FAILED` | Record a typed failure and move to failed. |
 
 Resume is intentionally conservative. It replays completed runs and validates the
@@ -384,6 +478,9 @@ Boundary values are parsed before use:
 - reviewer output is emitted through `ReviewResult`;
 - reports are emitted through `RunReport`.
 - GitHub check snapshots are emitted through `GitHubChecksSnapshot`.
+- GitHub PR feedback artifacts are emitted through `GitHubPrFeedback`.
+- browser evidence target URLs are parsed as branded HTTP/HTTPS URLs.
+- preview deployment artifacts are emitted through `PreviewDeployment`.
 
 The runtime persists plain JSON values. It does not serialize rich errors,
 functions, XState actors, Effect fibers, or platform services.
@@ -405,9 +502,12 @@ Runtime tests cover:
 - copying a local workspace source while excluding generated directories;
 - worker plan, plan review, and evidence review artifacts;
 - normalized harness evidence and unknown harness failures;
+- process harness browser and preview target declarations;
+- preview deployment artifacts and event replay;
 - GitHub publishing command sequencing through a recording command runner;
 - GitHub check-state classification through a recording command runner;
 - run-scoped GitHub check snapshot recording and bounded wait polling;
+- run-scoped GitHub PR feedback recording and next-action classification;
 - verification failure when a worker artifact is missing.
 
 Tests use temp run roots instead of the repository `.gaia/` directory.

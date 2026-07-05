@@ -10,6 +10,7 @@ import {
   type CodexCommandResult,
   type CodexHarnessOptions,
 } from "./codex-harness.js";
+import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import { changedPaths, snapshotWorkspace } from "./workspace-snapshot.js";
 
@@ -69,16 +70,25 @@ export class HarnessRunRequest extends Schema.Class<HarnessRunRequest>(
 export class HarnessRunResult extends Schema.Class<HarnessRunResult>(
   "HarnessRunResult",
 )({
+  browserTargetUrl: Schema.optionalKey(BrowserEvidenceTargetUrlSchema),
   changedWorkspacePaths: Schema.Array(Schema.NonEmptyString),
   exitCode: Schema.Number.pipe(
     Schema.check(Schema.isInt({ identifier: "ProcessExitCode" })),
   ),
   harnessName: HarnessNameSchema,
   outputArtifacts: Schema.Array(Schema.NonEmptyString),
+  previewDeploymentUrl: Schema.optionalKey(BrowserEvidenceTargetUrlSchema),
   resultPath: Schema.NonEmptyString,
   runId: RunIdSchema,
   status: Schema.Literal("completed"),
   summary: Schema.NonEmptyString,
+}) {}
+
+class ProcessHarnessDeclaration extends Schema.Class<ProcessHarnessDeclaration>(
+  "ProcessHarnessDeclaration",
+)({
+  browserTargetUrl: Schema.optionalKey(BrowserEvidenceTargetUrlSchema),
+  previewDeploymentUrl: Schema.optionalKey(BrowserEvidenceTargetUrlSchema),
 }) {}
 
 export type GaiaHarness = {
@@ -94,6 +104,12 @@ export type GaiaHarness = {
 
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const encodeHarnessRunResult = Schema.encodeSync(HarnessRunResultJson);
+const ProcessHarnessDeclarationJson = Schema.toCodecJson(
+  ProcessHarnessDeclaration,
+);
+const decodeProcessHarnessDeclaration = Schema.decodeUnknownSync(
+  ProcessHarnessDeclarationJson,
+);
 const execFileAsync = promisify(execFile);
 
 const fakeHarness: GaiaHarness = {
@@ -159,6 +175,7 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
 
         const beforeWorkspace = yield* snapshotWorkspace(request.workspacePath);
         const execution = yield* runProcessHarnessCommand(config, request);
+        const declaration = yield* readProcessHarnessDeclaration(request);
         const afterWorkspace = yield* snapshotWorkspace(request.workspacePath);
         const changedWorkspacePaths = changedPaths(
           beforeWorkspace,
@@ -171,6 +188,12 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
         );
 
         const result = HarnessRunResult.make({
+          ...(declaration.browserTargetUrl === undefined
+            ? {}
+            : { browserTargetUrl: declaration.browserTargetUrl }),
+          ...(declaration.previewDeploymentUrl === undefined
+            ? {}
+            : { previewDeploymentUrl: declaration.previewDeploymentUrl }),
           changedWorkspacePaths,
           exitCode: execution.exitCode,
           harnessName: request.harnessName,
@@ -498,5 +521,48 @@ function writeHarnessRunResult(
       request.workerResultPath,
       `${JSON.stringify(encodeHarnessRunResult(result), null, 2)}\n`,
     );
+  });
+}
+
+function readProcessHarnessDeclaration(
+  request: HarnessRunRequest,
+): Effect.Effect<ProcessHarnessDeclaration, GaiaRuntimeError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const exists = yield* fs.exists(request.workerResultPath);
+    if (!exists) {
+      return ProcessHarnessDeclaration.make({});
+    }
+
+    const contents = yield* fs.readFileString(request.workerResultPath);
+    return yield* parseProcessHarnessDeclaration(contents, request);
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "ProcessHarnessDeclarationReadFailed",
+          message:
+            "Process harness completed, but Gaia could not read its worker result declaration.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
+function parseProcessHarnessDeclaration(
+  contents: string,
+  request: HarnessRunRequest,
+) {
+  return Effect.try({
+    try: () => decodeProcessHarnessDeclaration(JSON.parse(contents)),
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "ProcessHarnessDeclarationInvalid",
+        message: `Process harness '${request.harnessName}' wrote an invalid worker result declaration.`,
+        recoverable: true,
+      }),
   });
 }

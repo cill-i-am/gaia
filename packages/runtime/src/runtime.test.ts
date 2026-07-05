@@ -29,11 +29,14 @@ import {
 import {
   inspectGitHubChecks,
   parseGitHubCiWatchStateJson,
+  parseGitHubPrFeedbackJson,
   preflightGitHubPublish,
   previewGitHubPublish,
   publishRunToGitHub,
   publishWorkspaceRunToGitHub,
   recordGitHubChecks,
+  watchGitHubChecks,
+  watchGitHubFeedback,
   type CommandExecutionResult,
   type GitHubCommandInput,
   type GitHubCommandRunner,
@@ -44,6 +47,7 @@ import {
   parseHarnessName,
 } from "./harness.js";
 import { makeRunPaths, makeRunStorePaths } from "./paths.js";
+import { parsePreviewDeploymentJson } from "./preview-deployment.js";
 import { localSkillManifestSource } from "./skill-manifest.js";
 import {
   ReviewResult,
@@ -51,6 +55,10 @@ import {
   type GaiaReviewer,
 } from "./reviewer.js";
 import { parseReviewerSessionEvidenceJson } from "./reviewer-session-evidence.js";
+import {
+  localRunProfileSource,
+  parseRunProfileJson,
+} from "./run-profile.js";
 import {
   collectBrowserEvidence,
   listRuns,
@@ -628,6 +636,30 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("writes the default run profile as run evidence", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Run with default profile.\n");
+
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const profile = parseRunProfileJson(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/run-profile.json`),
+          ),
+        );
+        const report = yield* fs.readFileString(
+          `${summary.runDirectory}/report.md`,
+        );
+
+        assert.strictEqual(summary.status, "completed");
+        assert.strictEqual(profile.name, "default");
+        assert.strictEqual(profile.checks.browserEvidence, "optional");
+        assert.include(report, "run-profile.json");
+      }),
+    );
+
     it.effect("collects browser evidence for a completed run", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -788,6 +820,497 @@ describe("runtime workflows", () => {
           evidenceReview,
           "warning: Browser evidence failed for 0 page(s).",
         );
+      }),
+    );
+
+    it.effect("completes when required browser evidence is collected", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          specPath,
+          "Run with required browser evidence.\n",
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          browserEvidenceCollector: collectedBrowserEvidenceCollector,
+          browserEvidenceRequirement: "required",
+          browserEvidenceTargetUrl: "http://localhost:3000",
+          rootDirectory: cwd,
+        });
+        const browserEvidence = parseBrowserEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/browser-evidence.json`,
+            ),
+          ),
+        );
+
+        assert.strictEqual(summary.status, "completed");
+        assert.strictEqual(browserEvidence.status, "collected");
+      }),
+    );
+
+    it.effect("uses a run profile browser target URL", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const profilePath = yield* writeFrontendRunProfile(fs, cwd);
+        yield* fs.writeFileString(
+          specPath,
+          "Run with profile-required browser evidence.\n",
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          browserEvidenceCollector: collectedBrowserEvidenceCollector,
+          rootDirectory: cwd,
+          runProfileSource: localRunProfileSource(profilePath),
+        });
+        const profile = parseRunProfileJson(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/run-profile.json`),
+          ),
+        );
+        const browserEvidence = parseBrowserEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/browser-evidence.json`,
+            ),
+          ),
+        );
+
+        assert.strictEqual(summary.status, "completed");
+        assert.strictEqual(profile.name, "frontend");
+        assert.strictEqual(profile.browser?.targetUrl, "http://localhost:3000");
+        assert.strictEqual(profile.checks.browserEvidence, "required");
+        assert.strictEqual(browserEvidence.status, "collected");
+        assert.strictEqual(browserEvidence.pages[0]?.url, "http://localhost:3000/");
+      }),
+    );
+
+    it.effect("uses an explicit browser target URL before a profile target URL", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const profilePath = yield* writeFrontendRunProfile(fs, cwd);
+        yield* fs.writeFileString(
+          specPath,
+          "Run with explicit browser evidence URL.\n",
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          browserEvidenceCollector: collectedBrowserEvidenceCollector,
+          browserEvidenceTargetUrl: "http://localhost:4000",
+          rootDirectory: cwd,
+          runProfileSource: localRunProfileSource(profilePath),
+        });
+        const browserEvidence = parseBrowserEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/browser-evidence.json`,
+            ),
+          ),
+        );
+        const events = yield* fs.readFileString(
+          `${summary.runDirectory}/events.jsonl`,
+        );
+
+        assert.strictEqual(summary.status, "completed");
+        assert.strictEqual(browserEvidence.status, "collected");
+        assert.strictEqual(browserEvidence.pages[0]?.url, "http://localhost:4000/");
+        assert.include(events, '"targetUrl":"http://localhost:4000"');
+      }),
+    );
+
+    it.effect("uses a browser target URL declared by the process harness", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const scriptPath = `${cwd}/process-harness.mjs`;
+        yield* fs.writeFileString(
+          specPath,
+          "Run with process-discovered browser evidence URL.\n",
+        );
+        yield* fs.writeFileString(
+          scriptPath,
+          [
+            "import { writeFileSync } from 'node:fs';",
+            "if (process.env.GAIA_RUN_ID === undefined) { throw new Error('missing run id'); }",
+            "if (process.env.GAIA_WORKSPACE_OUTPUT_PATH === undefined) { throw new Error('missing output'); }",
+            "if (process.env.GAIA_WORKER_RESULT_PATH === undefined) { throw new Error('missing result'); }",
+            "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness output ${process.env.GAIA_RUN_ID}\\n`);",
+            "writeFileSync(process.env.GAIA_WORKER_RESULT_PATH, JSON.stringify({ browserTargetUrl: 'http://localhost:4100' }));",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          browserEvidenceCollector: collectedBrowserEvidenceCollector,
+          browserEvidenceRequirement: "required",
+          harnessName: parseHarnessName("process"),
+          processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+          rootDirectory: cwd,
+        });
+        const browserEvidence = parseBrowserEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/browser-evidence.json`,
+            ),
+          ),
+        );
+        const harnessResult = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-result.json`,
+        );
+        const events = yield* fs.readFileString(
+          `${summary.runDirectory}/events.jsonl`,
+        );
+
+        assert.strictEqual(summary.status, "completed");
+        assert.strictEqual(browserEvidence.status, "collected");
+        assert.strictEqual(browserEvidence.pages[0]?.url, "http://localhost:4100/");
+        assert.include(harnessResult, '"browserTargetUrl": "http://localhost:4100"');
+        assert.include(events, '"browserTargetUrl":"http://localhost:4100"');
+        assert.include(events, '"targetUrl":"http://localhost:4100"');
+      }),
+    );
+
+    it.effect("uses a preview deployment URL before a direct harness browser target", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const scriptPath = `${cwd}/process-harness.mjs`;
+        yield* fs.writeFileString(
+          specPath,
+          "Run with process-discovered preview deployment URL.\n",
+        );
+        yield* fs.writeFileString(
+          scriptPath,
+          [
+            "import { writeFileSync } from 'node:fs';",
+            "if (process.env.GAIA_RUN_ID === undefined) { throw new Error('missing run id'); }",
+            "if (process.env.GAIA_WORKSPACE_OUTPUT_PATH === undefined) { throw new Error('missing output'); }",
+            "if (process.env.GAIA_WORKER_RESULT_PATH === undefined) { throw new Error('missing result'); }",
+            "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness output ${process.env.GAIA_RUN_ID}\\n`);",
+            "writeFileSync(process.env.GAIA_WORKER_RESULT_PATH, JSON.stringify({ browserTargetUrl: 'http://localhost:4100', previewDeploymentUrl: 'http://localhost:4200' }));",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          browserEvidenceCollector: collectedBrowserEvidenceCollector,
+          browserEvidenceRequirement: "required",
+          harnessName: parseHarnessName("process"),
+          processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+          rootDirectory: cwd,
+        });
+        const browserEvidence = parseBrowserEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/browser-evidence.json`,
+            ),
+          ),
+        );
+        const previewDeployment = parsePreviewDeploymentJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/preview-deployment.json`,
+            ),
+          ),
+        );
+        const harnessResult = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-result.json`,
+        );
+        const report = yield* fs.readFileString(
+          `${summary.runDirectory}/report.md`,
+        );
+        const events = yield* fs.readFileString(
+          `${summary.runDirectory}/events.jsonl`,
+        );
+
+        assert.strictEqual(summary.status, "completed");
+        assert.strictEqual(browserEvidence.status, "collected");
+        assert.strictEqual(browserEvidence.pages[0]?.url, "http://localhost:4200/");
+        assert.strictEqual(previewDeployment.status, "available");
+        assert.strictEqual(previewDeployment.url, "http://localhost:4200");
+        assert.include(harnessResult, '"previewDeploymentUrl": "http://localhost:4200"');
+        assert.include(report, "preview-deployment.json");
+        assert.include(events, '"type":"PREVIEW_DEPLOYMENT_RECORDED"');
+        assert.include(events, '"url":"http://localhost:4200"');
+        assert.include(events, '"targetUrl":"http://localhost:4200"');
+      }),
+    );
+
+    it.effect("uses an explicit browser target URL before a preview deployment URL", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const scriptPath = `${cwd}/process-harness.mjs`;
+        yield* fs.writeFileString(
+          specPath,
+          "Run with explicit URL and preview deployment URL.\n",
+        );
+        yield* fs.writeFileString(
+          scriptPath,
+          [
+            "import { writeFileSync } from 'node:fs';",
+            "if (process.env.GAIA_RUN_ID === undefined) { throw new Error('missing run id'); }",
+            "if (process.env.GAIA_WORKSPACE_OUTPUT_PATH === undefined) { throw new Error('missing output'); }",
+            "if (process.env.GAIA_WORKER_RESULT_PATH === undefined) { throw new Error('missing result'); }",
+            "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness output ${process.env.GAIA_RUN_ID}\\n`);",
+            "writeFileSync(process.env.GAIA_WORKER_RESULT_PATH, JSON.stringify({ previewDeploymentUrl: 'http://localhost:4200' }));",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          browserEvidenceCollector: collectedBrowserEvidenceCollector,
+          browserEvidenceRequirement: "required",
+          browserEvidenceTargetUrl: "http://localhost:4300",
+          harnessName: parseHarnessName("process"),
+          processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+          rootDirectory: cwd,
+        });
+        const browserEvidence = parseBrowserEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/browser-evidence.json`,
+            ),
+          ),
+        );
+        const previewDeployment = parsePreviewDeploymentJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/preview-deployment.json`,
+            ),
+          ),
+        );
+        const events = yield* fs.readFileString(
+          `${summary.runDirectory}/events.jsonl`,
+        );
+
+        assert.strictEqual(summary.status, "completed");
+        assert.strictEqual(browserEvidence.pages[0]?.url, "http://localhost:4300/");
+        assert.strictEqual(previewDeployment.status, "available");
+        assert.strictEqual(previewDeployment.url, "http://localhost:4200");
+        assert.include(events, '"targetUrl":"http://localhost:4300"');
+      }),
+    );
+
+    it.effect("rejects invalid preview deployment URLs from the process harness", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const scriptPath = `${cwd}/process-harness.mjs`;
+        yield* fs.writeFileString(
+          specPath,
+          "Run with an invalid preview deployment URL.\n",
+        );
+        yield* fs.writeFileString(
+          scriptPath,
+          [
+            "import { writeFileSync } from 'node:fs';",
+            "if (process.env.GAIA_RUN_ID === undefined) { throw new Error('missing run id'); }",
+            "if (process.env.GAIA_WORKSPACE_OUTPUT_PATH === undefined) { throw new Error('missing output'); }",
+            "if (process.env.GAIA_WORKER_RESULT_PATH === undefined) { throw new Error('missing result'); }",
+            "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness output ${process.env.GAIA_RUN_ID}\\n`);",
+            "writeFileSync(process.env.GAIA_WORKER_RESULT_PATH, JSON.stringify({ previewDeploymentUrl: 'not-a-url' }));",
+          ].join("\n"),
+        );
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            browserEvidenceRequirement: "required",
+            harnessName: parseHarnessName("process"),
+            processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+            rootDirectory: cwd,
+          }),
+        );
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "ProcessHarnessDeclarationInvalid");
+          assert.isTrue(error.recoverable);
+        }
+        assert.strictEqual(status.state, "failed");
+      }),
+    );
+
+    it.effect("fails a required browser evidence run after worker completion when no target is found", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const profilePath = yield* writeFrontendRunProfile(fs, cwd, {
+          targetUrl: undefined,
+        });
+        yield* fs.writeFileString(
+          specPath,
+          "Run with missing profile-required browser URL.\n",
+        );
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            rootDirectory: cwd,
+            runProfileSource: localRunProfileSource(profilePath),
+          }),
+        );
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        const events = yield* readRunEvents(fs, status.runDirectory);
+        const workerCompletedIndex = events.findIndex(
+          (event) => event.type === "WORKER_COMPLETED",
+        );
+        const verificationCompletedIndex = events.findIndex(
+          (event) => event.type === "VERIFICATION_COMPLETED",
+        );
+        const runFailedIndex = events.findIndex(
+          (event) => event.type === "RUN_FAILED",
+        );
+        const evidenceReviewStartedIndex = events.findIndex(
+          (event) =>
+            event.type === "REVIEW_STARTED" &&
+            event.payload["phase"] === "evidence",
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "BrowserEvidenceTargetRequired");
+          assert.isFalse(error.recoverable);
+        }
+        assert.strictEqual(status.state, "failed");
+        assert.isTrue(workerCompletedIndex >= 0);
+        assert.isTrue(verificationCompletedIndex >= 0);
+        assert.isTrue(runFailedIndex >= 0);
+        assert.isTrue(verificationCompletedIndex < runFailedIndex);
+        assert.strictEqual(evidenceReviewStartedIndex, -1);
+      }),
+    );
+
+    it.effect("rejects invalid run profiles before worker execution", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const profilePath = `${cwd}/invalid-profile.json`;
+        yield* fs.writeFileString(specPath, "Run with invalid profile.\n");
+        yield* fs.writeFileString(
+          profilePath,
+          `${JSON.stringify({
+            checks: { browserEvidence: "sometimes" },
+            name: "frontend",
+            version: 1,
+          })}\n`,
+        );
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            rootDirectory: cwd,
+            runProfileSource: localRunProfileSource(profilePath),
+          }),
+        );
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        const lockExists = yield* fs.exists(store.lock);
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "RunProfileInvalid");
+          assert.isFalse(error.recoverable);
+        }
+        assert.isFalse(lockExists);
+      }),
+    );
+
+    it.effect("fails a required browser evidence run after worker completion without a target URL", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          specPath,
+          "Run without required browser URL.\n",
+        );
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            browserEvidenceRequirement: "required",
+            rootDirectory: cwd,
+          }),
+        );
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        const events = yield* readRunEvents(fs, status.runDirectory);
+        const workerCompletedIndex = events.findIndex(
+          (event) => event.type === "WORKER_COMPLETED",
+        );
+        const runFailedIndex = events.findIndex(
+          (event) => event.type === "RUN_FAILED",
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "BrowserEvidenceTargetRequired");
+          assert.isFalse(error.recoverable);
+        }
+        assert.strictEqual(status.state, "failed");
+        assert.isTrue(workerCompletedIndex >= 0);
+        assert.isTrue(runFailedIndex > workerCompletedIndex);
+      }),
+    );
+
+    it.effect("fails the run when required browser capture fails", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          specPath,
+          "Run with required failed browser evidence.\n",
+        );
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            browserEvidenceCollector: failedBrowserEvidenceCollector,
+            browserEvidenceRequirement: "required",
+            browserEvidenceTargetUrl: "http://localhost:3000",
+            rootDirectory: cwd,
+          }),
+        );
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        const browserEvidence = parseBrowserEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${status.runDirectory}/browser-evidence.json`,
+            ),
+          ),
+        );
+        const events = yield* readRunEvents(fs, status.runDirectory);
+        const browserEventIndex = events.findIndex(
+          (event) => event.type === "BROWSER_EVIDENCE_RECORDED",
+        );
+        const runFailedIndex = events.findIndex(
+          (event) => event.type === "RUN_FAILED",
+        );
+        const evidenceReviewStartedIndex = events.findIndex(
+          (event) =>
+            event.type === "REVIEW_STARTED" &&
+            event.payload["phase"] === "evidence",
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "RequiredBrowserEvidenceFailed");
+          assert.isTrue(error.recoverable);
+        }
+        assert.strictEqual(status.state, "failed");
+        assert.strictEqual(status.status, "failed");
+        assert.strictEqual(browserEvidence.status, "failed");
+        assert.isTrue(browserEventIndex >= 0);
+        assert.isTrue(runFailedIndex >= 0);
+        assert.isTrue(browserEventIndex < runFailedIndex);
+        assert.strictEqual(evidenceReviewStartedIndex, -1);
       }),
     );
 
@@ -1944,6 +2467,330 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("starts a CI watch and points failed checks at the fix action", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Watch failed checks.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const watched = yield* watchGitHubChecks(run.runId, {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify([
+              {
+                link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                name: "test",
+                state: "FAILURE",
+                workflow: "CI",
+              },
+            ]),
+          })),
+          pullRequest: "1",
+          rootDirectory: cwd,
+        });
+        const watchState = parseGitHubCiWatchStateJson(
+          JSON.parse(yield* fs.readFileString(watched.watchStatePath)),
+        );
+
+        assert.strictEqual(watched.status, "failed");
+        assert.strictEqual(watched.source, "recorded");
+        assert.isTrue(watched.terminal);
+        assert.strictEqual(watched.nextAction, "fix-failed-checks");
+        assert.strictEqual(watched.failedChecks.length, 1);
+        assert.strictEqual(watched.failedChecks[0]?.name, "test");
+        assert.strictEqual(watchState.nextAction, "fix-failed-checks");
+        assert.strictEqual(watchState.lastStatus, "failed");
+      }),
+    );
+
+    it.effect("resumes a pending CI watch from stored state", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Resume pending checks.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        yield* recordGitHubChecks(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify([
+              {
+                link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                name: "test",
+                state: "PENDING",
+                workflow: "CI",
+              },
+            ]),
+          })),
+          maxAttempts: 1,
+          pollInterval: "0 millis",
+          rootDirectory: cwd,
+          waitForTerminal: true,
+        });
+
+        const watched = yield* watchGitHubChecks(run.runId, {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify([
+              {
+                link: "https://github.com/cill-i-am/gaia/actions/runs/2",
+                name: "test",
+                state: "SUCCESS",
+                workflow: "CI",
+              },
+            ]),
+          })),
+          rootDirectory: cwd,
+        });
+        const events = yield* readRunEvents(fs, run.runDirectory);
+        const checkEvents = events.filter(
+          (event) => event.type === "GITHUB_CHECKS_RECORDED",
+        );
+
+        assert.strictEqual(watched.status, "passed");
+        assert.strictEqual(watched.source, "recorded");
+        assert.strictEqual(watched.pr, "1");
+        assert.strictEqual(watched.nextAction, "complete");
+        assert.strictEqual(checkEvents.length, 2);
+      }),
+    );
+
+    it.effect("does not poll GitHub again for terminal CI watch state", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Do not rewatch terminal checks.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        yield* recordGitHubChecks(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify([
+              {
+                link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                name: "test",
+                state: "SUCCESS",
+                workflow: "CI",
+              },
+            ]),
+          })),
+          rootDirectory: cwd,
+        });
+        let calls = 0;
+
+        const watched = yield* watchGitHubChecks(run.runId, {
+          commandRunner: recordingGitHubRunner([], () => {
+            calls += 1;
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: "[]",
+            };
+          }),
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(watched.status, "passed");
+        assert.strictEqual(watched.source, "already-terminal");
+        assert.strictEqual(watched.nextAction, "complete");
+        assert.strictEqual(calls, 0);
+      }),
+    );
+
+    it.effect("records PR feedback and points changes requested at review fixes", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Record PR feedback.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const feedback = yield* watchGitHubFeedback(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify(
+              prFeedbackView({
+                comments: [
+                  {
+                    author: { login: "reviewer" },
+                    body: "Could you simplify this?",
+                    createdAt: "2026-07-05T10:00:00Z",
+                    url: "https://github.com/cill-i-am/gaia/pull/1#issuecomment-1",
+                  },
+                ],
+                latestReviews: [
+                  {
+                    author: { login: "reviewer" },
+                    body: "Needs work.",
+                    state: "CHANGES_REQUESTED",
+                    submittedAt: "2026-07-05T10:01:00Z",
+                    url: "https://github.com/cill-i-am/gaia/pull/1#pullrequestreview-1",
+                  },
+                ],
+                reviewDecision: "CHANGES_REQUESTED",
+              }),
+            ),
+          })),
+          rootDirectory: cwd,
+        });
+
+        const recorded = parseGitHubPrFeedbackJson(
+          JSON.parse(yield* fs.readFileString(feedback.feedbackPath)),
+        );
+        const events = yield* fs.readFileString(`${run.runDirectory}/events.jsonl`);
+
+        assert.strictEqual(feedback.status, "changes-requested");
+        assert.strictEqual(feedback.nextAction, "address-review-comments");
+        assert.strictEqual(feedback.commentCount, 1);
+        assert.strictEqual(feedback.reviewCount, 1);
+        assert.strictEqual(recorded.status, "changes-requested");
+        assert.include(
+          recorded.notes.join("\n"),
+          "does not expose unresolved review-thread state",
+        );
+        assert.include(events, '"type":"GITHUB_FEEDBACK_RECORDED"');
+        assert.include(events, '"feedbackPath":"github-feedback.json"');
+        assert.include(events, '"nextAction":"address-review-comments"');
+      }),
+    );
+
+    it.effect("classifies PR comments without changes requested as response work", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Record PR comments.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const feedback = yield* watchGitHubFeedback(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify(
+              prFeedbackView({
+                comments: [
+                  {
+                    author: { login: "reviewer" },
+                    body: "Question on naming.",
+                  },
+                ],
+              }),
+            ),
+          })),
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(feedback.status, "comments");
+        assert.strictEqual(feedback.nextAction, "respond-to-comments");
+      }),
+    );
+
+    it.effect("classifies required reviews as awaiting review", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Record awaiting review.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const feedback = yield* watchGitHubFeedback(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify(
+              prFeedbackView({
+                reviewDecision: "REVIEW_REQUIRED",
+                reviewRequests: [{ requestedReviewer: "team" }],
+              }),
+            ),
+          })),
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(feedback.status, "awaiting-review");
+        assert.strictEqual(feedback.nextAction, "await-review");
+        assert.strictEqual(feedback.reviewRequestCount, 1);
+      }),
+    );
+
+    it.effect("classifies approved PR feedback as clear", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Record clear feedback.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const feedback = yield* watchGitHubFeedback(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify(
+              prFeedbackView({ reviewDecision: "APPROVED" }),
+            ),
+          })),
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(feedback.status, "clear");
+        assert.strictEqual(feedback.nextAction, "complete");
+      }),
+    );
+
+    it.effect("reports invalid PR feedback JSON as a typed failure", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Invalid PR feedback.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const error = yield* Effect.flip(
+          watchGitHubFeedback(run.runId, "1", {
+            commandRunner: recordingGitHubRunner([], () => ({
+              exitCode: 0,
+              stderr: "",
+              stdout: "not json",
+            })),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "GitHubFeedbackJsonInvalid");
+          assert.isTrue(error.recoverable);
+        }
+      }),
+    );
+
+    it.effect("requires a pull request before a CI watch state exists", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Missing watch state.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const error = yield* Effect.flip(
+          watchGitHubChecks(run.runId, { rootDirectory: cwd }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "GitHubCiWatchStateMissing");
+          assert.isFalse(error.recoverable);
+        }
+      }),
+    );
+
     it.effect("fails verification when the worker artifact is missing", () =>
       Effect.gen(function* () {
         const runId = parseRunId("run-V7kP9sQ2xY");
@@ -2051,8 +2898,8 @@ function installingSkillRunner(
     });
 }
 
-const collectedBrowserEvidenceCollector: BrowserEvidenceCollector = () =>
-  Effect.succeed(
+const collectedBrowserEvidenceCollector: BrowserEvidenceCollector = (input) =>
+  Effect.sync(() =>
     BrowserEvidence.make({
       notes: ["Browser evidence captured by test collector."],
       pages: [
@@ -2064,7 +2911,7 @@ const collectedBrowserEvidenceCollector: BrowserEvidenceCollector = () =>
               path: "browser/page-1.png",
             }),
           ],
-          url: "http://localhost:3000/",
+          url: new URL(input.targetUrl).toString(),
         }),
       ],
       status: "collected",
@@ -2080,6 +2927,51 @@ const failedBrowserEvidenceCollector: BrowserEvidenceCollector = () =>
       recoverable: true,
     }),
   );
+
+function writeFrontendRunProfile(
+  fs: FileSystem.FileSystem,
+  directory: string,
+  input: Readonly<{ targetUrl?: string | undefined }> = {
+    targetUrl: "http://localhost:3000",
+  },
+) {
+  return Effect.gen(function* () {
+    const profilePath = `${directory}/frontend-profile.json`;
+    yield* fs.writeFileString(
+      profilePath,
+      `${JSON.stringify({
+        ...(input.targetUrl === undefined
+          ? {}
+          : { browser: { targetUrl: input.targetUrl } }),
+        checks: { browserEvidence: "required" },
+        name: "frontend",
+        version: 1,
+      })}\n`,
+    );
+
+    return profilePath;
+  });
+}
+
+function prFeedbackView(
+  input: Readonly<{
+    comments?: ReadonlyArray<unknown>;
+    isDraft?: boolean;
+    latestReviews?: ReadonlyArray<unknown>;
+    reviewDecision?: string | null;
+    reviewRequests?: ReadonlyArray<unknown>;
+  }> = {},
+) {
+  return {
+    comments: input.comments ?? [],
+    isDraft: input.isDraft ?? false,
+    latestReviews: input.latestReviews ?? [],
+    reviewDecision: input.reviewDecision ?? null,
+    reviewRequests: input.reviewRequests ?? [],
+    title: "Gaia run",
+    url: "https://github.com/cill-i-am/gaia/pull/1",
+  };
+}
 
 function recordingGitHubRunner(
   commands: Array<GitHubCommandInput>,

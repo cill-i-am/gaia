@@ -209,10 +209,21 @@ available:
    explicit `collect-browser-evidence` command can populate screenshots,
    console messages, or failed-capture evidence for completed runs. `gaia run
    --browser-url <url>` can also collect browser evidence before the evidence
-   reviewer runs.
-7. **CI watcher model**: completed. GitHub check recording now writes
-   `ci-watch-state.json` with latest snapshot, status, terminal flag, and next
-   action before any background daemon exists.
+   reviewer runs, and `--require-browser-evidence` turns failed browser capture
+   into a run-blocking check. `gaia run --profile frontend` now applies that
+   requirement and profile target through a checked-in profile, process
+   harnesses can declare typed preview deployment targets, and explicit
+   `--browser-url` can override the target for one-off runs.
+7. **CI watcher model**: completed and extended. GitHub check recording now
+   writes `ci-watch-state.json` with latest snapshot, status, terminal flag,
+   and next action. `gaia watch-ci <run-id> [pr]` can start or resume bounded
+   CI watching, appends snapshots over time, short-circuits terminal stored
+   state, and marks failed checks with `nextAction: "fix-failed-checks"`.
+8. **GitHub PR feedback watcher**: completed. `gaia watch-pr-feedback
+   <run-id> <pr>` records PR comments, latest reviews, review decision, and
+   requested-reviewer count in `github-feedback.json`, then recommends
+   `address-review-comments`, `respond-to-comments`, `await-review`, or
+   `complete`.
 
 ## Harness Slice
 
@@ -231,8 +242,9 @@ The steps after harness integration are documented in
 4. skill bundle installation and versioning;
 5. live browser evidence capture;
 6. CI watcher daemon;
-7. Linear issue graph;
-8. merge and deployment authority;
-9. persistent run index and operator UI;
-10. multi-harness support;
-11. reusable factory templates.
+7. GitHub PR feedback watcher;
+8. Linear issue graph;
+9. merge and deployment authority;
+10. persistent run index and operator UI;
+11. multi-harness support;
+12. reusable factory templates.

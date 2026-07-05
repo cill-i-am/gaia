@@ -54,6 +54,16 @@ const GitHubCheckPollAttemptCountSchema = Schema.Int.check(
 type GitHubCheckPollAttemptCount =
   typeof GitHubCheckPollAttemptCountSchema.Type;
 
+const GitHubFeedbackCountSchema = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(0),
+).pipe(Schema.brand("GitHubFeedbackCount"));
+
+type GitHubFeedbackCount = typeof GitHubFeedbackCountSchema.Type;
+
+const parseGitHubFeedbackCount = Schema.decodeUnknownSync(
+  GitHubFeedbackCountSchema,
+);
+
 const parseGitHubCheckPollAttemptCount = Schema.decodeUnknownSync(
   GitHubCheckPollAttemptCountSchema,
 );
@@ -78,6 +88,28 @@ export const GitHubChecksStatusSchema = Schema.Literals([
 
 export type GitHubChecksStatus = typeof GitHubChecksStatusSchema.Type;
 
+export const GitHubPrFeedbackStatusSchema = Schema.Literals([
+  "awaiting-review",
+  "changes-requested",
+  "clear",
+  "comments",
+] as const);
+
+/** GitHub PR human-feedback status recorded for a Gaia run. */
+export type GitHubPrFeedbackStatus =
+  typeof GitHubPrFeedbackStatusSchema.Type;
+
+export const GitHubPrFeedbackNextActionSchema = Schema.Literals([
+  "address-review-comments",
+  "await-review",
+  "complete",
+  "respond-to-comments",
+] as const);
+
+/** Next operator or agent action recommended by the PR feedback watcher. */
+export type GitHubPrFeedbackNextAction =
+  typeof GitHubPrFeedbackNextActionSchema.Type;
+
 export class GitHubCheckRun extends Schema.Class<GitHubCheckRun>(
   "GitHubCheckRun",
 )({
@@ -85,6 +117,62 @@ export class GitHubCheckRun extends Schema.Class<GitHubCheckRun>(
   name: Schema.NonEmptyString,
   state: Schema.NonEmptyString,
   workflow: Schema.optionalKey(Schema.String),
+}) {}
+
+export class GitHubPrFeedbackComment extends Schema.Class<GitHubPrFeedbackComment>(
+  "GitHubPrFeedbackComment",
+)({
+  authorLogin: Schema.optionalKey(Schema.String),
+  body: Schema.String,
+  createdAt: Schema.optionalKey(Schema.String),
+  url: Schema.optionalKey(Schema.String),
+}) {}
+
+export class GitHubPrFeedbackReview extends Schema.Class<GitHubPrFeedbackReview>(
+  "GitHubPrFeedbackReview",
+)({
+  authorLogin: Schema.optionalKey(Schema.String),
+  body: Schema.optionalKey(Schema.String),
+  state: Schema.NonEmptyString,
+  submittedAt: Schema.optionalKey(Schema.String),
+  url: Schema.optionalKey(Schema.String),
+}) {}
+
+export class GitHubPrFeedback extends Schema.Class<GitHubPrFeedback>(
+  "GitHubPrFeedback",
+)({
+  commentCount: GitHubFeedbackCountSchema,
+  comments: Schema.Array(GitHubPrFeedbackComment),
+  latestReviews: Schema.Array(GitHubPrFeedbackReview),
+  nextAction: GitHubPrFeedbackNextActionSchema,
+  notes: Schema.Array(Schema.String),
+  pr: GitHubPullRequestSelectorSchema,
+  reviewCount: GitHubFeedbackCountSchema,
+  reviewDecision: Schema.optionalKey(Schema.String),
+  reviewRequestCount: GitHubFeedbackCountSchema,
+  status: GitHubPrFeedbackStatusSchema,
+  title: Schema.optionalKey(Schema.String),
+  url: Schema.optionalKey(Schema.String),
+  version: Schema.Literal(1),
+}) {}
+
+export class GitHubPrFeedbackSummary extends Schema.Class<GitHubPrFeedbackSummary>(
+  "GitHubPrFeedbackSummary",
+)({
+  commentCount: GitHubFeedbackCountSchema,
+  comments: Schema.Array(GitHubPrFeedbackComment),
+  feedbackPath: Schema.NonEmptyString,
+  latestReviews: Schema.Array(GitHubPrFeedbackReview),
+  nextAction: GitHubPrFeedbackNextActionSchema,
+  notes: Schema.Array(Schema.String),
+  pr: GitHubPullRequestSelectorSchema,
+  reviewCount: GitHubFeedbackCountSchema,
+  reviewDecision: Schema.optionalKey(Schema.String),
+  reviewRequestCount: GitHubFeedbackCountSchema,
+  runId: RunIdSchema,
+  status: GitHubPrFeedbackStatusSchema,
+  title: Schema.optionalKey(Schema.String),
+  url: Schema.optionalKey(Schema.String),
 }) {}
 
 export class GitHubChecksSummary extends Schema.Class<GitHubChecksSummary>(
@@ -123,8 +211,13 @@ export class GitHubChecksRecord extends Schema.Class<GitHubChecksRecord>(
 
 export const GitHubCiWatchNextActionSchema = Schema.Literals([
   "complete",
+  "fix-failed-checks",
   "poll-again",
 ] as const);
+
+/** Next operator or agent action recommended by the CI watcher. */
+export type GitHubCiWatchNextAction =
+  typeof GitHubCiWatchNextActionSchema.Type;
 
 export class GitHubCiWatchState extends Schema.Class<GitHubCiWatchState>(
   "GitHubCiWatchState",
@@ -138,6 +231,33 @@ export class GitHubCiWatchState extends Schema.Class<GitHubCiWatchState>(
   terminal: Schema.Boolean,
   updatedAt: Schema.NonEmptyString,
   version: Schema.Literal(1),
+}) {}
+
+export const GitHubCiWatchResultSourceSchema = Schema.Literals([
+  "already-terminal",
+  "recorded",
+] as const);
+
+/** Whether a CI watch summary came from a new snapshot or stored terminal state. */
+export type GitHubCiWatchResultSource =
+  typeof GitHubCiWatchResultSourceSchema.Type;
+
+/** Agent-facing summary returned by the resumable GitHub CI watcher. */
+export class GitHubCiWatchSummary extends Schema.Class<GitHubCiWatchSummary>(
+  "GitHubCiWatchSummary",
+)({
+  attempts: GitHubCheckPollAttemptCountSchema,
+  checks: Schema.Array(GitHubCheckRun),
+  failedChecks: Schema.Array(GitHubCheckRun),
+  nextAction: GitHubCiWatchNextActionSchema,
+  pendingChecks: Schema.Array(GitHubCheckRun),
+  pr: GitHubPullRequestSelectorSchema,
+  runId: RunIdSchema,
+  snapshotPath: Schema.NonEmptyString,
+  source: GitHubCiWatchResultSourceSchema,
+  status: GitHubChecksStatusSchema,
+  terminal: Schema.Boolean,
+  watchStatePath: Schema.NonEmptyString,
 }) {}
 
 export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
@@ -191,9 +311,57 @@ export class GitHubPublishPreview extends Schema.Class<GitHubPublishPreview>(
   status: Schema.Literal("preview"),
 }) {}
 
+class GitHubPrViewAuthor extends Schema.Class<GitHubPrViewAuthor>(
+  "GitHubPrViewAuthor",
+)({
+  login: Schema.optionalKey(Schema.String),
+}) {}
+
+class GitHubPrViewComment extends Schema.Class<GitHubPrViewComment>(
+  "GitHubPrViewComment",
+)({
+  author: Schema.optionalKey(Schema.NullOr(GitHubPrViewAuthor)),
+  body: Schema.String,
+  createdAt: Schema.optionalKey(Schema.String),
+  url: Schema.optionalKey(Schema.String),
+}) {}
+
+class GitHubPrViewReview extends Schema.Class<GitHubPrViewReview>(
+  "GitHubPrViewReview",
+)({
+  author: Schema.optionalKey(Schema.NullOr(GitHubPrViewAuthor)),
+  body: Schema.optionalKey(Schema.String),
+  state: Schema.NonEmptyString,
+  submittedAt: Schema.optionalKey(Schema.String),
+  url: Schema.optionalKey(Schema.String),
+}) {}
+
+class GitHubPrFeedbackView extends Schema.Class<GitHubPrFeedbackView>(
+  "GitHubPrFeedbackView",
+)({
+  comments: Schema.Array(GitHubPrViewComment),
+  isDraft: Schema.Boolean,
+  latestReviews: Schema.Array(GitHubPrViewReview),
+  reviewDecision: Schema.NullOr(Schema.String),
+  reviewRequests: Schema.Array(Schema.Unknown),
+  title: Schema.String,
+  url: Schema.String,
+}) {}
+
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const parseHarnessRunResultJson = Schema.decodeUnknownSync(
   HarnessRunResultJson,
+);
+const GitHubPrFeedbackJson = Schema.toCodecJson(GitHubPrFeedback);
+const encodeGitHubPrFeedbackJson = Schema.encodeSync(GitHubPrFeedbackJson);
+export const parseGitHubPrFeedbackJson =
+  Schema.decodeUnknownSync(GitHubPrFeedbackJson);
+const GitHubChecksSnapshotJson = Schema.toCodecJson(GitHubChecksSnapshot);
+const encodeGitHubChecksSnapshotJson = Schema.encodeSync(
+  GitHubChecksSnapshotJson,
+);
+const parseGitHubChecksSnapshotJson = Schema.decodeUnknownSync(
+  GitHubChecksSnapshotJson,
 );
 const GitHubCiWatchStateJson = Schema.toCodecJson(GitHubCiWatchState);
 const encodeGitHubCiWatchStateJson = Schema.encodeSync(GitHubCiWatchStateJson);
@@ -231,6 +399,16 @@ export type GitHubCheckRecordOptions = RunStorageOptions & {
   readonly maxAttempts?: number;
   readonly pollInterval?: Duration.Input;
   readonly waitForTerminal?: boolean;
+};
+
+/** Options for starting or resuming a bounded GitHub CI watch. */
+export type GitHubCiWatchOptions = GitHubCheckRecordOptions & {
+  readonly pullRequest?: string;
+};
+
+/** Options for recording human GitHub PR feedback for a completed run. */
+export type GitHubPrFeedbackOptions = RunStorageOptions & {
+  readonly commandRunner?: GitHubCommandRunner;
 };
 
 class GitHubChecksPending extends Schema.TaggedErrorClass<GitHubChecksPending>()(
@@ -650,6 +828,29 @@ export function recordGitHubChecks(
   );
 }
 
+/** Resume or start a bounded CI watch for a completed Gaia run. */
+export function watchGitHubChecks(
+  runIdInput: string,
+  options: GitHubCiWatchOptions = {},
+) {
+  return withRunStoreLock(
+    options,
+    watchGitHubChecksUnlocked(runIdInput, options),
+  );
+}
+
+/** Record human GitHub PR feedback for a completed Gaia run. */
+export function watchGitHubFeedback(
+  runIdInput: string,
+  prInput: string,
+  options: GitHubPrFeedbackOptions = {},
+) {
+  return withRunStoreLock(
+    options,
+    watchGitHubFeedbackUnlocked(runIdInput, prInput, options),
+  );
+}
+
 function recordGitHubChecksUnlocked(
   runIdInput: string,
   prInput: string,
@@ -721,6 +922,329 @@ function recordGitHubChecksUnlocked(
       watchStatePath: watchState.path,
     });
   });
+}
+
+function watchGitHubFeedbackUnlocked(
+  runIdInput: string,
+  prInput: string,
+  options: GitHubPrFeedbackOptions,
+) {
+  return Effect.gen(function* () {
+    const rootDirectory = options.rootDirectory ?? ".";
+    const runner = options.commandRunner ?? nodeCommandRunner;
+    const run = yield* statusRun(runIdInput, { rootDirectory });
+
+    if (run.status !== "completed") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "RunNotCompleted",
+          message: `Run ${run.runId} must be completed before watching GitHub PR feedback.`,
+          recoverable: false,
+        }),
+      );
+    }
+
+    const pr = yield* parseGitHubPullRequestSelectorEffect(prInput);
+    const view = yield* inspectGitHubFeedback(pr, {
+      commandRunner: runner,
+      rootDirectory,
+    });
+    const paths = yield* makeRunPaths(run.runId, { rootDirectory });
+    const feedback = makeGitHubPrFeedback(pr, view);
+
+    yield* writeGitHubPrFeedback(paths, feedback);
+
+    const feedbackPath = runRelative(paths, paths.githubFeedback);
+
+    yield* appendEvent(run.runId, paths, {
+      payload: {
+        commentCount: feedback.commentCount,
+        feedbackPath,
+        nextAction: feedback.nextAction,
+        pullRequest: feedback.pr,
+        reviewCount: feedback.reviewCount,
+        reviewRequestCount: feedback.reviewRequestCount,
+        status: feedback.status,
+      },
+      type: "GITHUB_FEEDBACK_RECORDED",
+    });
+
+    return GitHubPrFeedbackSummary.make({
+      commentCount: feedback.commentCount,
+      comments: feedback.comments,
+      feedbackPath: paths.githubFeedback,
+      latestReviews: feedback.latestReviews,
+      nextAction: feedback.nextAction,
+      notes: feedback.notes,
+      pr: feedback.pr,
+      reviewCount: feedback.reviewCount,
+      ...(feedback.reviewDecision === undefined
+        ? {}
+        : { reviewDecision: feedback.reviewDecision }),
+      reviewRequestCount: feedback.reviewRequestCount,
+      runId: run.runId,
+      status: feedback.status,
+      ...(feedback.title === undefined ? {} : { title: feedback.title }),
+      ...(feedback.url === undefined ? {} : { url: feedback.url }),
+    });
+  });
+}
+
+function inspectGitHubFeedback(
+  pr: GitHubPullRequestSelector,
+  options: Readonly<{
+    commandRunner: GitHubCommandRunner;
+    rootDirectory: string;
+  }>,
+) {
+  return Effect.gen(function* () {
+    const result = yield* runRequiredCommand(
+      options.commandRunner,
+      options.rootDirectory,
+      "gh",
+      [
+        "pr",
+        "view",
+        pr,
+        "--json",
+        "comments,isDraft,latestReviews,reviewDecision,reviewRequests,title,url",
+      ],
+    );
+
+    const parsed = yield* Effect.try({
+      try: (): unknown => JSON.parse(result.stdout),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubFeedbackJsonInvalid",
+          message: "GitHub PR feedback output was not valid JSON.",
+          recoverable: true,
+        }),
+    });
+
+    return yield* Effect.try({
+      try: () => Schema.decodeUnknownSync(GitHubPrFeedbackView)(parsed),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubFeedbackInvalid",
+          message: "GitHub PR feedback output did not match Gaia's schema.",
+          recoverable: true,
+        }),
+    });
+  });
+}
+
+function watchGitHubChecksUnlocked(
+  runIdInput: string,
+  options: GitHubCiWatchOptions,
+) {
+  return Effect.gen(function* () {
+    const rootDirectory = options.rootDirectory ?? ".";
+    const run = yield* statusRun(runIdInput, { rootDirectory });
+
+    if (run.status !== "completed") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "RunNotCompleted",
+          message: `Run ${run.runId} must be completed before watching GitHub checks.`,
+          recoverable: false,
+        }),
+      );
+    }
+
+    const paths = yield* makeRunPaths(run.runId, { rootDirectory });
+    const storedWatchState = yield* readOptionalGitHubCiWatchState(paths);
+
+    if (
+      options.pullRequest === undefined &&
+      storedWatchState !== undefined &&
+      storedWatchState.terminal
+    ) {
+      const snapshot = yield* readGitHubChecksSnapshot(
+        paths,
+        storedWatchState.lastSnapshotPath,
+      );
+
+      return ciWatchSummaryFromSnapshot({
+        paths,
+        snapshot,
+        source: "already-terminal",
+        state: storedWatchState,
+      });
+    }
+
+    const pr = options.pullRequest ?? storedWatchState?.pr;
+
+    if (pr === undefined) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "GitHubCiWatchStateMissing",
+          message:
+            "Gaia cannot resume CI watching because this run has no ci-watch-state.json yet. Pass a pull request selector to start the watch.",
+          recoverable: false,
+        }),
+      );
+    }
+
+    const record = yield* recordGitHubChecksUnlocked(
+      run.runId,
+      pr,
+      gitHubCheckRecordOptionsForWatch(rootDirectory, options),
+    );
+
+    return ciWatchSummaryFromRecord(record, "recorded");
+  });
+}
+
+function gitHubCheckRecordOptionsForWatch(
+  rootDirectory: string,
+  options: GitHubCiWatchOptions,
+): GitHubCheckRecordOptions {
+  return {
+    rootDirectory,
+    waitForTerminal: true,
+    ...(options.commandRunner === undefined
+      ? {}
+      : { commandRunner: options.commandRunner }),
+    ...(options.maxAttempts === undefined
+      ? {}
+      : { maxAttempts: options.maxAttempts }),
+    ...(options.pollInterval === undefined
+      ? {}
+      : { pollInterval: options.pollInterval }),
+  };
+}
+
+function makeGitHubPrFeedback(
+  pr: GitHubPullRequestSelector,
+  view: GitHubPrFeedbackView,
+) {
+  const comments = view.comments.map(normalizeGitHubComment);
+  const latestReviews = view.latestReviews.map(normalizeGitHubReview);
+  const status = classifyGitHubFeedback(view);
+  const nextAction = nextActionForGitHubFeedbackStatus(status);
+
+  return GitHubPrFeedback.make({
+    commentCount: parseGitHubFeedbackCount(comments.length),
+    comments,
+    latestReviews,
+    nextAction,
+    notes: [
+      "GitHub CLI pr view does not expose unresolved review-thread state. Gaia records latest reviews, PR comments, and requested-reviewer count.",
+    ],
+    pr,
+    reviewCount: parseGitHubFeedbackCount(latestReviews.length),
+    ...(view.reviewDecision === null
+      ? {}
+      : { reviewDecision: view.reviewDecision }),
+    reviewRequestCount: parseGitHubFeedbackCount(view.reviewRequests.length),
+    status,
+    title: view.title,
+    url: view.url,
+    version: 1,
+  });
+}
+
+function normalizeGitHubComment(
+  comment: GitHubPrViewComment,
+): GitHubPrFeedbackComment {
+  return GitHubPrFeedbackComment.make({
+    ...(comment.author?.login === undefined
+      ? {}
+      : { authorLogin: comment.author.login }),
+    body: comment.body,
+    ...(comment.createdAt === undefined ? {} : { createdAt: comment.createdAt }),
+    ...(comment.url === undefined ? {} : { url: comment.url }),
+  });
+}
+
+function normalizeGitHubReview(
+  review: GitHubPrViewReview,
+): GitHubPrFeedbackReview {
+  return GitHubPrFeedbackReview.make({
+    ...(review.author?.login === undefined
+      ? {}
+      : { authorLogin: review.author.login }),
+    ...(review.body === undefined ? {} : { body: review.body }),
+    state: review.state,
+    ...(review.submittedAt === undefined
+      ? {}
+      : { submittedAt: review.submittedAt }),
+    ...(review.url === undefined ? {} : { url: review.url }),
+  });
+}
+
+function writeGitHubPrFeedback(
+  paths: RunPaths,
+  feedback: GitHubPrFeedback,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(
+      paths.githubFeedback,
+      `${JSON.stringify(encodeGitHubPrFeedbackJson(feedback), null, 2)}\n`,
+    );
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "GitHubFeedbackWriteFailed",
+          message: "Gaia could not write GitHub PR feedback evidence.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
+function classifyGitHubFeedback(
+  view: GitHubPrFeedbackView,
+): GitHubPrFeedbackStatus {
+  if (
+    view.reviewDecision === "CHANGES_REQUESTED" ||
+    view.latestReviews.some((review) => isChangesRequestedReview(review.state))
+  ) {
+    return "changes-requested";
+  }
+
+  if (view.comments.length > 0) {
+    return "comments";
+  }
+
+  if (
+    view.isDraft ||
+    view.reviewDecision === "REVIEW_REQUIRED" ||
+    view.reviewRequests.length > 0
+  ) {
+    return "awaiting-review";
+  }
+
+  return "clear";
+}
+
+function nextActionForGitHubFeedbackStatus(
+  status: GitHubPrFeedbackStatus,
+): GitHubPrFeedbackNextAction {
+  switch (status) {
+    case "awaiting-review":
+      return "await-review";
+    case "changes-requested":
+      return "address-review-comments";
+    case "comments":
+      return "respond-to-comments";
+    case "clear":
+      return "complete";
+  }
+}
+
+function isChangesRequestedReview(state: string) {
+  return normalizeGitHubReviewState(state) === "changes-requested";
+}
+
+function normalizeGitHubReviewState(state: string) {
+  return state.trim().toLowerCase().replaceAll("_", "-");
 }
 
 function applyRunWorkspace(paths: RunPaths, rootDirectory: string) {
@@ -1124,7 +1648,9 @@ function copyRunArtifacts(
     ["input.md", "input.md"],
     ["report.md", "README.md"],
     ["report.json", "report.json"],
+    ["run-profile.json", "run-profile.json"],
     ["browser-evidence.json", "browser-evidence.json"],
+    ["preview-deployment.json", "preview-deployment.json"],
     ["skill-manifest.json", "skill-manifest.json"],
     ["skill-bundle.json", "skill-bundle.json"],
     ["worker-plan.md", "worker-plan.md"],
@@ -1151,6 +1677,14 @@ function copyRunArtifacts(
       yield* copyWorkspaceDirectoryContents(
         paths.browserScreenshots,
         path.join(evidencePath, "browser"),
+      );
+    }
+
+    const hasGitHubFeedback = yield* fs.exists(paths.githubFeedback);
+    if (hasGitHubFeedback) {
+      yield* fs.copyFile(
+        paths.githubFeedback,
+        path.join(evidencePath, "github-feedback.json"),
       );
     }
   }).pipe(
@@ -1280,7 +1814,7 @@ function writeGitHubChecksSnapshot(
     yield* fs.makeDirectory(paths.githubChecks, { recursive: true });
     yield* fs.writeFileString(
       snapshotPath,
-      `${JSON.stringify(Schema.encodeSync(GitHubChecksSnapshot)(snapshot), null, 2)}\n`,
+      `${JSON.stringify(encodeGitHubChecksSnapshotJson(snapshot), null, 2)}\n`,
     );
 
     return GitHubChecksRecord.make({
@@ -1308,6 +1842,49 @@ function writeGitHubChecksSnapshot(
   );
 }
 
+function readGitHubChecksSnapshot(
+  paths: RunPaths,
+  snapshotPath: string,
+): Effect.Effect<GitHubChecksSnapshot, GaiaRuntimeError, FileSystem.FileSystem | Path.Path> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const contents = yield* fs.readFileString(path.join(paths.root, snapshotPath));
+    const parsed = yield* Effect.try({
+      try: (): unknown => JSON.parse(contents),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubChecksSnapshotJsonInvalid",
+          message: "GitHub check snapshot was not valid JSON.",
+          recoverable: true,
+        }),
+    });
+
+    return yield* Effect.try({
+      try: () => parseGitHubChecksSnapshotJson(parsed),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubChecksSnapshotInvalid",
+          message: "GitHub check snapshot did not match Gaia's schema.",
+          recoverable: true,
+        }),
+    });
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "GitHubChecksSnapshotReadFailed",
+          message: "Gaia could not read GitHub check snapshot evidence.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
 function writeGitHubCiWatchState(
   paths: RunPaths,
   record: GitHubChecksRecord,
@@ -1318,7 +1895,7 @@ function writeGitHubCiWatchState(
       attempts: record.attempts,
       lastSnapshotPath: runRelative(paths, record.snapshotPath),
       lastStatus: record.status,
-      nextAction: record.terminal ? "complete" : "poll-again",
+      nextAction: nextActionForGitHubChecksStatus(record.status),
       pr: record.pr,
       runId: record.runId,
       terminal: record.terminal,
@@ -1344,6 +1921,94 @@ function writeGitHubCiWatchState(
       ),
     ),
   );
+}
+
+function readOptionalGitHubCiWatchState(
+  paths: RunPaths,
+): Effect.Effect<GitHubCiWatchState | undefined, GaiaRuntimeError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const exists = yield* fs.exists(paths.ciWatchState);
+    if (!exists) {
+      return undefined;
+    }
+
+    const contents = yield* fs.readFileString(paths.ciWatchState);
+    const parsed = yield* Effect.try({
+      try: (): unknown => JSON.parse(contents),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubCiWatchStateJsonInvalid",
+          message: "GitHub CI watch state was not valid JSON.",
+          recoverable: true,
+        }),
+    });
+
+    return yield* Effect.try({
+      try: () => parseGitHubCiWatchStateJson(parsed),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubCiWatchStateInvalid",
+          message: "GitHub CI watch state did not match Gaia's schema.",
+          recoverable: true,
+        }),
+    });
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "GitHubCiWatchStateReadFailed",
+          message: "Gaia could not read GitHub CI watch state.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
+function ciWatchSummaryFromRecord(
+  record: GitHubChecksRecord,
+  source: GitHubCiWatchResultSource,
+) {
+  return GitHubCiWatchSummary.make({
+    attempts: record.attempts,
+    checks: record.checks,
+    failedChecks: failedChecks(record.checks),
+    nextAction: nextActionForGitHubChecksStatus(record.status),
+    pendingChecks: pendingChecks(record.checks),
+    pr: record.pr,
+    runId: record.runId,
+    snapshotPath: record.snapshotPath,
+    source,
+    status: record.status,
+    terminal: record.terminal,
+    watchStatePath: record.watchStatePath,
+  });
+}
+
+function ciWatchSummaryFromSnapshot(input: Readonly<{
+  paths: RunPaths;
+  snapshot: GitHubChecksSnapshot;
+  source: GitHubCiWatchResultSource;
+  state: GitHubCiWatchState;
+}>) {
+  return GitHubCiWatchSummary.make({
+    attempts: input.snapshot.attempts,
+    checks: input.snapshot.checks,
+    failedChecks: failedChecks(input.snapshot.checks),
+    nextAction: input.state.nextAction,
+    pendingChecks: pendingChecks(input.snapshot.checks),
+    pr: input.snapshot.pr,
+    runId: input.snapshot.runId,
+    snapshotPath: input.state.lastSnapshotPath,
+    source: input.source,
+    status: input.snapshot.status,
+    terminal: input.snapshot.terminal,
+    watchStatePath: runRelative(input.paths, input.paths.ciWatchState),
+  });
 }
 
 function isNoChecksOutput(result: CommandExecutionResult) {
@@ -1399,6 +2064,31 @@ function classifyChecks(
 
 function isTerminalGitHubChecksStatus(status: GitHubChecksStatus) {
   return status !== "pending";
+}
+
+function nextActionForGitHubChecksStatus(
+  status: GitHubChecksStatus,
+): GitHubCiWatchNextAction {
+  switch (status) {
+    case "failed":
+      return "fix-failed-checks";
+    case "pending":
+      return "poll-again";
+    case "no-checks":
+    case "passed":
+      return "complete";
+  }
+}
+
+function failedChecks(checks: ReadonlyArray<GitHubCheckRun>) {
+  return checks.filter(
+    (check) =>
+      !isPendingCheckState(check.state) && !isPassingCheckState(check.state),
+  );
+}
+
+function pendingChecks(checks: ReadonlyArray<GitHubCheckRun>) {
+  return checks.filter((check) => isPendingCheckState(check.state));
 }
 
 function isPendingCheckState(state: string) {

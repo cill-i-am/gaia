@@ -8,7 +8,7 @@ import {
   type RunState,
 } from "@gaia/core";
 import { customAlphabet } from "nanoid";
-import { Effect, FileSystem, Path, type Schema } from "effect";
+import { Effect, FileSystem, Path, Schema } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
 import {
   browserEvidenceRecord,
@@ -18,6 +18,7 @@ import {
   writeBrowserEvidence,
   writeEmptyBrowserEvidence,
   type BrowserEvidenceCollector,
+  type BrowserEvidenceRecord,
   type BrowserEvidenceTargetUrl,
 } from "./browser-evidence.js";
 import type { CodexHarnessOptions } from "./codex-harness.js";
@@ -43,6 +44,18 @@ import {
   type ReviewerRunOptions,
 } from "./reviewer.js";
 import { writeReport } from "./report-writer.js";
+import {
+  resolveRunProfile,
+  writeRunProfile,
+  type BrowserEvidenceRequirement,
+  type RunProfileSource,
+} from "./run-profile.js";
+import {
+  availablePreviewDeployment,
+  previewDeploymentRecord,
+  writeEmptyPreviewDeployment,
+  writePreviewDeployment,
+} from "./preview-deployment.js";
 import { withRunStoreLock } from "./run-store-lock.js";
 import {
   writeSkillManifest,
@@ -76,12 +89,14 @@ export type CommandSummary = {
 
 export type WorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly browserEvidenceCollector?: BrowserEvidenceCollector;
+  readonly browserEvidenceRequirement?: BrowserEvidenceRequirement;
   readonly browserEvidenceTargetUrl?: string;
   readonly codexHarness?: CodexHarnessOptions;
   readonly harnessName?: HarnessName;
   readonly processHarness?: ProcessHarnessConfig;
   readonly skillInstaller?: SkillInstallerOptions;
   readonly skillManifestSource?: SkillManifestSource;
+  readonly runProfileSource?: RunProfileSource;
   readonly workspaceSource?: WorkspaceSource;
 };
 
@@ -103,7 +118,11 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
     const input = yield* fs.readFileString(specPath);
     const fallbackTitle = path.basename(specPath, path.extname(specPath));
     const spec = yield* parseSpec(input, fallbackTitle);
-    const browserEvidenceTargetUrl =
+    const runProfile = yield* resolveRunProfile(options.runProfileSource);
+    const browserEvidenceRequirement =
+      options.browserEvidenceRequirement ??
+      runProfile.checks.browserEvidence;
+    const explicitBrowserEvidenceTargetUrl =
       options.browserEvidenceTargetUrl === undefined
         ? undefined
         : yield* parseBrowserEvidenceTargetUrlEffect(
@@ -112,6 +131,11 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
     yield* fs.makeDirectory(paths.root, { recursive: true });
     yield* fs.writeFileString(paths.input, input);
     yield* fs.writeFileString(paths.latest, runId);
+    yield* writeRunProfile({ paths, profile: runProfile }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "creating", error),
+      ),
+    );
 
     yield* appendEvent(runId, paths, {
       payload: { specPath: "input.md" },
@@ -159,6 +183,11 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
         recordRunFailure(runId, paths, "preparingWorkspace", error),
       ),
     );
+    yield* writeEmptyPreviewDeployment({ paths }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "preparingWorkspace", error),
+      ),
+    );
     const harnessName = options.harnessName ?? defaultHarnessName;
     yield* writeWorkerPlan({ harnessName, paths, runId, spec }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
@@ -197,14 +226,32 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
         recordRunFailure(runId, paths, "runningWorker", error),
       ),
     );
+    const previewDeploymentTargetUrl = harnessResult.previewDeploymentUrl;
     yield* appendEvent(runId, paths, {
       payload: {
+        ...(harnessResult.browserTargetUrl === undefined
+          ? {}
+          : { browserTargetUrl: harnessResult.browserTargetUrl }),
         harnessName: harnessResult.harnessName,
         outputArtifacts: harnessResult.outputArtifacts,
+        ...(previewDeploymentTargetUrl === undefined
+          ? {}
+          : { previewDeploymentUrl: previewDeploymentTargetUrl }),
         workerResultPath: harnessResult.resultPath,
       },
       type: "WORKER_COMPLETED",
     });
+    if (previewDeploymentTargetUrl !== undefined) {
+      yield* recordPreviewDeployment(
+        runId,
+        paths,
+        previewDeploymentTargetUrl,
+      ).pipe(
+        Effect.catchTag("GaiaRuntimeError", (error) =>
+          recordRunFailure(runId, paths, "runningWorker", error),
+        ),
+      );
+    }
     yield* appendEvent(runId, paths, { type: "VERIFICATION_STARTED" });
     yield* verifyHarnessOutput(runId, paths).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
@@ -215,12 +262,37 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
       payload: { verificationResultPath: "verification-result.json" },
       type: "VERIFICATION_COMPLETED",
     });
+    const browserEvidenceTargetUrl = selectBrowserEvidenceTargetUrl({
+      explicitTargetUrl: explicitBrowserEvidenceTargetUrl,
+      harnessTargetUrl: harnessResult.browserTargetUrl,
+      previewDeploymentTargetUrl,
+      profileTargetUrl: runProfile.browser?.targetUrl,
+    });
+    if (
+      browserEvidenceRequirement === "required" &&
+      browserEvidenceTargetUrl === undefined
+    ) {
+      return yield* recordRunFailure(
+        runId,
+        paths,
+        "reporting",
+        browserEvidenceTargetRequiredError(),
+      );
+    }
     if (browserEvidenceTargetUrl !== undefined) {
-      yield* recordBrowserEvidence(
+      const browserEvidenceRecord = yield* recordBrowserEvidence(
         runId,
         paths,
         browserEvidenceTargetUrl,
         options,
+      ).pipe(
+        Effect.catchTag("GaiaRuntimeError", (error) =>
+          recordRunFailure(runId, paths, "reporting", error),
+        ),
+      );
+      yield* requireBrowserEvidencePolicy(
+        browserEvidenceRecord,
+        browserEvidenceRequirement,
       ).pipe(
         Effect.catchTag("GaiaRuntimeError", (error) =>
           recordRunFailure(runId, paths, "reporting", error),
@@ -243,6 +315,20 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
       status: "completed",
     } satisfies CommandSummary;
   });
+}
+
+function selectBrowserEvidenceTargetUrl(input: {
+  readonly explicitTargetUrl?: BrowserEvidenceTargetUrl | undefined;
+  readonly harnessTargetUrl?: BrowserEvidenceTargetUrl | undefined;
+  readonly previewDeploymentTargetUrl?: BrowserEvidenceTargetUrl | undefined;
+  readonly profileTargetUrl?: BrowserEvidenceTargetUrl | undefined;
+}) {
+  return (
+    input.explicitTargetUrl ??
+    input.profileTargetUrl ??
+    input.previewDeploymentTargetUrl ??
+    input.harnessTargetUrl
+  );
 }
 
 export function resumeRun(runIdInput: string, options: WorkflowOptions = {}) {
@@ -472,6 +558,52 @@ function recordBrowserEvidence(
   });
 }
 
+function recordPreviewDeployment(
+  runId: RunId,
+  paths: RunPaths,
+  targetUrl: BrowserEvidenceTargetUrl,
+) {
+  return Effect.gen(function* () {
+    const deployment = yield* writePreviewDeployment({
+      deployment: availablePreviewDeployment({ url: targetUrl }),
+      paths,
+    });
+    const record = previewDeploymentRecord({
+      deployment,
+      paths,
+      runId,
+    });
+
+    yield* appendEvent(runId, paths, {
+      payload: {
+        deploymentPath: record.deploymentPath,
+        status: record.status,
+        ...(record.url === undefined ? {} : { url: record.url }),
+      },
+      type: "PREVIEW_DEPLOYMENT_RECORDED",
+    });
+
+    return record;
+  });
+}
+
+function requireBrowserEvidencePolicy(
+  record: BrowserEvidenceRecord,
+  requirement: BrowserEvidenceRequirement,
+): Effect.Effect<void, GaiaRuntimeError> {
+  if (requirement === "optional" || record.status === "collected") {
+    return Effect.void;
+  }
+
+  return Effect.fail(
+    makeRuntimeError({
+      code: "RequiredBrowserEvidenceFailed",
+      message: `Browser evidence is required for this run, but capture status was '${record.status}'.`,
+      recoverable: true,
+    }),
+  );
+}
+
 function recordRunFailure(
   runId: RunId,
   paths: RunPaths,
@@ -591,6 +723,15 @@ function parseBrowserEvidenceTargetUrlEffect(input: string) {
         message: `Browser evidence target URL '${input}' must be a valid HTTP or HTTPS URL.`,
         recoverable: false,
       }),
+  });
+}
+
+function browserEvidenceTargetRequiredError() {
+  return makeRuntimeError({
+    code: "BrowserEvidenceTargetRequired",
+    message:
+      "Browser evidence is required for this run, but no browser target URL was provided or discovered.",
+    recoverable: false,
   });
 }
 

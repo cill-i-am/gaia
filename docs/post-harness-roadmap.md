@@ -181,7 +181,7 @@ Non-goals:
 
 ## Phase 4: Live Browser Evidence Capture
 
-Status: **Completed for explicit and run-integrated target URL capture; gates remain**
+Status: **Completed for explicit capture, run-integrated capture, required-evidence policy, profile-backed checks, and preview-deployment target discovery**
 
 Goal:
 
@@ -211,25 +211,35 @@ Completed foundation:
 - A `BROWSER_EVIDENCE_RECORDED` event enriches completed runs without changing
   their completed state, and can also be replayed while a run is still in the
   reporting phase.
+- `gaia run --require-browser-evidence --browser-url <http-url>` fails the run
+  if browser capture records anything other than `status: "collected"`.
+- Run profiles are resolved into `run-profile.json`; `--profile frontend`
+  requires browser evidence without relying on the one-off CLI flag and can
+  provide a default browser target URL.
+- Gaia resolves run-integrated browser targets from explicit `--browser-url`,
+  then profile defaults, then preview deployment URLs, then worker-declared
+  direct browser targets.
+- Required browser evidence without any resolved target fails after worker
+  completion and verification, before evidence review.
 - Evidence publishing copies the `browser/` folder when screenshots exist.
-
-Remaining:
-
-- Define profile/check policy for when failed browser evidence blocks a run.
-- Add target URL discovery from worker output, preview deploys, or future
-  profiles.
+- Process harnesses can declare a `previewDeploymentUrl` through
+  `GAIA_WORKER_RESULT_PATH`; Gaia records it as `preview-deployment.json` and a
+  `PREVIEW_DEPLOYMENT_RECORDED` event before browser evidence capture.
 
 Non-goals:
 
 - synthetic monitoring;
 - visual diff infrastructure;
+- creating real preview deployments;
 - treating frontend route guards as security proof.
 
-## Phase 5: CI Watcher Daemon
+## Phase 5: CI Watcher
+
+Status: **Completed for bounded resumable CLI watching**
 
 Goal:
 
-- Extend `ci-watch-state.json` into a resumable background watcher.
+- Extend `ci-watch-state.json` into a resumable CI watcher.
 
 Build after:
 
@@ -242,11 +252,55 @@ Done when:
 - It stops when checks reach `no-checks`, `passed`, or `failed`.
 - It never treats pending checks as passed.
 
+Completed foundation:
+
+- `gaia watch-ci <run-id> <pr>` starts a bounded check watch and records
+  snapshots into the run.
+- `gaia watch-ci <run-id>` resumes from `ci-watch-state.json`.
+- Terminal stored state returns without polling GitHub again.
+- Failed checks set `nextAction: "fix-failed-checks"` so the next agent move is
+  explicit.
+
 Non-goals:
 
 - merge authority;
 - unbounded polling;
 - hidden global daemon state.
+- PR review/comment watching. That belongs in a separate GitHub feedback
+  watcher so CI state and human review state do not blur together.
+
+## Phase 5.5: GitHub PR Feedback Watcher
+
+Status: **Completed for bounded single-shot feedback recording**
+
+Goal:
+
+- Make human PR feedback visible to Gaia without mixing it into CI status.
+
+Done when:
+
+- Gaia can record PR comments, latest reviews, review decision, and requested
+  reviewer count for a completed run.
+- The artifact recommends a next action such as `address-review-comments`,
+  `respond-to-comments`, `await-review`, or `complete`.
+- The event log records feedback evidence without changing the completed run
+  state.
+
+Completed foundation:
+
+- `gaia watch-pr-feedback <run-id> <pr>` writes `github-feedback.json`.
+- `GITHUB_FEEDBACK_RECORDED` replays into run snapshots.
+- Changes requested, comments-only, awaiting-review, and clear states are
+  classified separately.
+- Gaia records that unresolved review-thread state is not available from the
+  current `gh pr view --json` source.
+
+Non-goals:
+
+- merge authority;
+- comment posting;
+- unresolved review-thread resolution;
+- background GitHub notification watching.
 
 ## Phase 6: Linear Issue Graph
 

@@ -22,14 +22,17 @@ export type RunPaths = {
   readonly events: string;
   readonly gaiaRoot: string;
   readonly githubChecks: string;
+  readonly githubFeedback: string;
   readonly input: string;
   readonly latest: string;
   readonly planReviewMarkdown: string;
   readonly planReviewResult: string;
   readonly planReviewerSession: string;
+  readonly previewDeployment: string;
   readonly reportJson: string;
   readonly reportMarkdown: string;
   readonly root: string;
+  readonly runProfile: string;
   readonly runsRoot: string;
   readonly snapshots: string;
   readonly skillBundle: string;
@@ -84,6 +87,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       events: path.join(root, "events.jsonl"),
       gaiaRoot: store.gaiaRoot,
       githubChecks: path.join(root, "github-checks"),
+      githubFeedback: path.join(root, "github-feedback.json"),
       input: path.join(root, "input.md"),
       latest: store.latest,
       planReviewMarkdown: path.join(root, "plan-review.md"),
@@ -92,9 +96,11 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
         root,
         "plan-reviewer-session.json",
       ),
+      previewDeployment: path.join(root, "preview-deployment.json"),
       reportJson: path.join(root, "report.json"),
       reportMarkdown: path.join(root, "report.md"),
       root,
+      runProfile: path.join(root, "run-profile.json"),
       runsRoot: store.runsRoot,
       snapshots: path.join(root, "snapshots.jsonl"),
       skillBundle: path.join(root, "skill-bundle.json"),

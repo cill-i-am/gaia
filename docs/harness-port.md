@@ -82,6 +82,36 @@ Gaia passes context through environment variables:
 The process writes workspace artifacts. Gaia captures stdout/stderr into
 `worker.log`, then writes normalized `worker-result.json`.
 
+If the process creates or discovers a preview deployment, it may write this
+declaration to `GAIA_WORKER_RESULT_PATH` before exiting:
+
+```json
+{
+  "previewDeploymentUrl": "http://localhost:3000"
+}
+```
+
+Gaia parses that declaration with the same branded HTTP/HTTPS URL schema used
+by `--browser-url`, records `preview-deployment.json`, appends
+`PREVIEW_DEPLOYMENT_RECORDED`, and uses the URL for browser evidence unless an
+explicit CLI URL or run profile URL is already set.
+
+If a process only discovers a direct browser target without creating a preview
+deployment, it can use the lower-level declaration:
+
+```json
+{
+  "browserTargetUrl": "http://localhost:3000"
+}
+```
+
+Gaia resolves run-integrated browser targets in this order:
+
+1. explicit `--browser-url`;
+2. run profile `browser.targetUrl`;
+3. process `previewDeploymentUrl`;
+4. process `browserTargetUrl`.
+
 ## Codex Harness
 
 The Codex harness owns the stable non-interactive local Codex path:

@@ -765,3 +765,187 @@ Verification:
   review when given a target URL.
 - Runtime test proves integrated failed capture still leaves the run completed
   with failed browser evidence.
+
+## Slice 18: Required Browser Evidence Policy
+
+Outcome: Gaia now has an explicit required-browser-evidence check for
+`gaia run`. By default, browser capture remains non-blocking evidence. When the
+caller passes `--require-browser-evidence`, Gaia fails the run if the browser
+evidence status is not `collected`.
+
+Findings:
+
+- The CLI flag is a friendly boundary, but the runtime uses a small domain
+  policy value: `browserEvidenceRequirement: "optional" | "required"`. That
+  avoids passing a vague mode boolean through workflow code.
+- Required browser evidence should still record the failed browser artifact
+  before failing the run. The event log then shows both facts: capture was
+  attempted and the required check blocked completion.
+- At this stage, missing `--browser-url` under the required policy was a
+  command/config error, so Gaia failed fast before worker execution. Later
+  target discovery moved this check after worker completion.
+- The policy is intentionally narrow. It does not discover target URLs, invent
+  profiles, or make visual-diff claims.
+
+Verification:
+
+- Runtime test proves required browser evidence completes when capture is
+  collected.
+- Runtime test proved required browser evidence failed fast without a target
+  URL before target discovery existed.
+- Runtime test proves failed required capture records `browser-evidence.json`,
+  appends `BROWSER_EVIDENCE_RECORDED`, appends `RUN_FAILED`, and skips evidence
+  review.
+
+## Slice 19: Run Profiles And Browser Evidence Checks
+
+Outcome: Gaia now resolves a typed run profile for every run and writes it to
+`run-profile.json`. The default profile keeps browser evidence optional, while
+the checked-in `frontend` profile requires successful browser evidence capture.
+
+Findings:
+
+- Profiles are configuration evidence, not lifecycle state. Gaia persists the
+  resolved profile as an artifact and feeds it into the existing browser
+  evidence policy instead of adding a new event or state transition.
+- `--profile frontend` resolves to `profiles/frontend.json`; path-like values
+  are treated as explicit JSON profile files. This keeps named profiles simple
+  while still allowing experiments.
+- Explicit `--require-browser-evidence` still works as an override for one-off
+  runs, but profiles are the better operator-facing contract for repeatable run
+  classes.
+- Invalid profile JSON is a boundary/config failure and stops before worker
+  execution.
+
+Verification:
+
+- Runtime test proves the default profile is written and included in reports.
+- Runtime test proves a profile can require browser evidence and still complete
+  when capture succeeds.
+- Runtime test proves a profile-required browser URL fails when missing.
+- Runtime test proves invalid profiles fail before worker execution.
+
+## Slice 20: Browser Target URL Discovery
+
+Outcome: Gaia now discovers the browser target for run-integrated evidence from
+three typed sources: explicit CLI input, the run profile, then a worker-declared
+harness result. The checked-in `frontend` profile carries a default local target
+URL, so `gaia run --profile frontend` can enforce browser evidence without a
+separate `--browser-url`.
+
+Findings:
+
+- Target URL discovery belongs in serializable contracts, not log scraping. Run
+  profiles decode `browser.targetUrl`, and process harnesses can declare
+  `{ "browserTargetUrl": "http://..." }` by writing JSON to
+  `GAIA_WORKER_RESULT_PATH`.
+- Explicit CLI input still wins. This keeps one-off reroutes simple without
+  editing a shared profile.
+- Required browser evidence can no longer always fail before worker execution,
+  because the worker may be the source that discovers the target. Gaia now fails
+  after worker completion and verification, before evidence review, if no
+  target was provided or discovered.
+
+Verification:
+
+- Runtime test proves profile target URLs drive required browser evidence.
+- Runtime test proves explicit `--browser-url` overrides a profile target.
+- Runtime test proves a process harness declaration can supply the target URL.
+- Runtime test proves required browser evidence with no target fails after
+  worker completion and before evidence review.
+
+## Slice 21: Preview Deployment Target Discovery
+
+Outcome: Gaia now records preview deployment evidence separately from browser
+evidence. A process harness can declare `previewDeploymentUrl`, Gaia validates
+it as a branded HTTP/HTTPS URL, writes `preview-deployment.json`, appends
+`PREVIEW_DEPLOYMENT_RECORDED`, and uses that URL as the browser evidence target
+when no explicit CLI or profile target exists.
+
+Findings:
+
+- Preview deployment evidence should be a first-class artifact, not a log line
+  or overloaded browser evidence note. This gives future real deployment
+  adapters a stable place to report status and URL without changing browser
+  capture.
+- Target priority is now explicit CLI, profile, preview deployment, then direct
+  harness browser target. That keeps operator intent first, repeatable profile
+  defaults second, deployment reality third, and lower-level harness discovery
+  last.
+- Gaia still does not create preview deployments. The current slice proves the
+  typed handoff from a harness that creates or discovers one.
+- Invalid preview URLs fail as typed process harness declaration errors before
+  Gaia can trust or publish the value.
+
+Verification:
+
+- Core replay test proves `PREVIEW_DEPLOYMENT_RECORDED` can enrich a run before
+  verification/report completion.
+- Runtime test proves preview deployment URLs drive required browser evidence
+  before direct harness browser targets.
+- Runtime test proves explicit `--browser-url` still overrides a preview
+  deployment URL.
+- Runtime test proves invalid preview deployment declarations fail with
+  `ProcessHarnessDeclarationInvalid`.
+
+## Slice 22: Resumable CI Watcher
+
+Outcome: Gaia now has a bounded resumable CI watcher command. `gaia watch-ci
+<run-id> <pr>` starts or continues watching a pull request's checks, records a
+new check snapshot, and updates `ci-watch-state.json`. `gaia watch-ci <run-id>`
+resumes from stored watch state. Terminal stored state returns without polling
+GitHub again.
+
+Findings:
+
+- CI watching should build on the existing append-only event log and
+  `ci-watch-state.json`, not in-memory process state. That makes restart/resume
+  boring and inspectable.
+- Failed checks are terminal but not operationally "complete" for agents.
+  `ci-watch-state.json` now records `nextAction: "fix-failed-checks"` for
+  failed checks, while passing/no-check states use `complete` and pending states
+  use `poll-again`.
+- The watcher remains an explicit bounded command. Gaia still avoids hidden
+  global daemon state, unbounded polling, and merge authority.
+- PR review/comment watching is related but separate. Mixing human feedback
+  state into CI check state would make the watcher harder to reason about.
+
+Verification:
+
+- Runtime test proves `watchGitHubChecks` records failed checks and writes
+  `nextAction: "fix-failed-checks"`.
+- Runtime test proves `watchGitHubChecks` resumes a pending watch from
+  `ci-watch-state.json`.
+- Runtime test proves terminal watch state returns without another GitHub poll.
+- Runtime test proves a run without watch state needs an explicit pull request
+  selector before watching can start.
+
+## Slice 23: GitHub PR Feedback Watcher
+
+Outcome: Gaia now has `gaia watch-pr-feedback <run-id> <pr>`. The command reads
+GitHub PR comments, latest reviews, review decision, and requested-reviewer
+count through `gh pr view --json`, writes `github-feedback.json`, appends
+`GITHUB_FEEDBACK_RECORDED`, and returns a next action for the operator or
+implementation agent.
+
+Findings:
+
+- Human review feedback should stay separate from CI state. Failed checks point
+  at `fix-failed-checks`; changes-requested reviews point at
+  `address-review-comments`.
+- `gh pr view --json` does not expose unresolved review-thread state. Gaia
+  records that limitation in the artifact instead of pretending comments are
+  unresolved threads.
+- The first feedback watcher is single-shot and bounded, like the CI watcher.
+  It is not a daemon, merge gate, or broad GitHub notification system.
+- Classification is deliberately conservative: changes requested wins, then PR
+  comments, then awaiting review, otherwise clear.
+
+Verification:
+
+- Core replay test proves `GITHUB_FEEDBACK_RECORDED` enriches completed runs
+  without leaving the completed state.
+- Runtime tests cover changes requested, comments-only, awaiting-review, clear,
+  and invalid GitHub JSON through the recording command seam.
+- CLI help smoke proves `watch-pr-feedback` exposes `<run-id> <pull-request>`
+  and `--json`.

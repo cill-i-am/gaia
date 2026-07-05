@@ -20,9 +20,11 @@ export function writeReport(input: {
     const report = RunReport.make({
       artifacts: [
         "workspace-manifest.json",
+        "run-profile.json",
         "skill-manifest.json",
         "skill-bundle.json",
         "browser-evidence.json",
+        "preview-deployment.json",
         "worker-plan.md",
         "worker-plan.json",
         "plan-review.md",

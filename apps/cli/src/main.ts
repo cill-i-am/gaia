@@ -3,9 +3,12 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type {
   BrowserEvidenceRecord,
+  BrowserEvidenceRequirement,
   CommandSummary,
   GitHubChecksRecord,
   GitHubChecksSummary,
+  GitHubCiWatchSummary,
+  GitHubPrFeedbackSummary,
   GitHubPublishPreflightSummary,
   GitHubPublishPreview,
   GitHubPrSummary,
@@ -16,6 +19,7 @@ import {
   inspectGitHubChecks,
   listRuns,
   localDirectoryWorkspaceSource,
+  localRunProfileSource,
   localSkillManifestSource,
   makeCodexReviewer,
   makeCodexReviewerConfig,
@@ -30,6 +34,8 @@ import {
   resumeRun,
   runSpecFile,
   statusRun,
+  watchGitHubChecks,
+  watchGitHubFeedback,
 } from "@gaia/runtime";
 import path from "node:path";
 import * as Console from "effect/Console";
@@ -50,6 +56,7 @@ const specFile = Argument.string("spec-file");
 const runId = Argument.string("run-id");
 const pullRequest = Argument.string("pull-request");
 const optionalRunId = runId.pipe(Argument.optional);
+const optionalPullRequest = pullRequest.pipe(Argument.optional);
 const browserTargetUrl = Flag.string("url").pipe(
   Flag.withDescription("HTTP or HTTPS URL to capture browser evidence from."),
 );
@@ -58,6 +65,11 @@ const browserRunTargetUrl = Flag.string("browser-url").pipe(
     "HTTP or HTTPS URL to capture during a run before evidence review.",
   ),
   Flag.optional,
+);
+const requireBrowserEvidence = Flag.boolean("require-browser-evidence").pipe(
+  Flag.withDescription(
+    "Fail the run unless browser evidence is captured successfully.",
+  ),
 );
 const json = Flag.boolean("json").pipe(
   Flag.withDescription("Write a machine-readable JSON response."),
@@ -68,6 +80,12 @@ const workspaceSource = Flag.string("workspace-source").pipe(
 );
 const skillManifest = Flag.string("skill-manifest").pipe(
   Flag.withDescription("Record a JSON skill manifest as run evidence."),
+  Flag.optional,
+);
+const runProfile = Flag.string("profile").pipe(
+  Flag.withDescription(
+    "Select a run profile by name from profiles/<name>.json, or pass a JSON file path.",
+  ),
   Flag.optional,
 );
 const baseBranch = Flag.string("base").pipe(
@@ -137,7 +155,9 @@ const run = Command.make("run", {
   harnessArg,
   harnessCommand,
   json,
+  requireBrowserEvidence,
   reviewer,
+  runProfile,
   skillManifest,
   specFile,
   workspaceSource,
@@ -150,7 +170,9 @@ const run = Command.make("run", {
       harnessArg,
       harnessCommand,
       json,
+      requireBrowserEvidence,
       reviewer,
+      runProfile,
       skillManifest,
       specFile,
       workspaceSource,
@@ -174,7 +196,11 @@ const run = Command.make("run", {
             codexProfile,
             codexSandbox,
             codexTimeoutMs,
+            browserEvidenceRequirement: requireBrowserEvidence
+              ? "required"
+              : undefined,
             browserEvidenceTargetUrl: browserRunTargetUrl,
+            runProfile,
             skillManifest,
             reviewer,
             workspaceSource,
@@ -303,6 +329,47 @@ const checks = Command.make("checks", {
   ),
 );
 
+const watchCi = Command.make("watch-ci", {
+  json,
+  runId,
+  pullRequest: optionalPullRequest,
+}).pipe(
+  Command.withDescription(
+    "Resume or start a bounded GitHub CI watcher for a Gaia run.",
+  ),
+  Command.withHandler(({ json, pullRequest, runId }) =>
+    renderEffect(
+      watchGitHubChecks(runId, {
+        rootDirectory: invocationRoot(),
+        ...(Option.isSome(pullRequest)
+          ? { pullRequest: pullRequest.value }
+          : {}),
+      }),
+      json,
+      renderGitHubCiWatchSummary,
+    ),
+  ),
+);
+
+const watchPrFeedback = Command.make("watch-pr-feedback", {
+  json,
+  runId,
+  pullRequest,
+}).pipe(
+  Command.withDescription(
+    "Record human GitHub pull request feedback against a Gaia run.",
+  ),
+  Command.withHandler(({ json, pullRequest, runId }) =>
+    renderEffect(
+      watchGitHubFeedback(runId, pullRequest, {
+        rootDirectory: invocationRoot(),
+      }),
+      json,
+      renderGitHubPrFeedbackSummary,
+    ),
+  ),
+);
+
 const collectBrowserEvidenceCommand = Command.make("collect-browser-evidence", {
   browserTargetUrl,
   json,
@@ -334,6 +401,8 @@ const cli = Command.make("gaia").pipe(
     publishWorkspacePr,
     prChecks,
     checks,
+    watchCi,
+    watchPrFeedback,
   ]),
 );
 
@@ -351,11 +420,13 @@ function workflowOptions(
     codexProfile?: Option.Option<string>;
     codexSandbox?: Option.Option<string>;
     codexTimeoutMs?: Option.Option<string>;
+    browserEvidenceRequirement?: BrowserEvidenceRequirement | undefined;
     browserEvidenceTargetUrl?: Option.Option<string>;
     harness?: Option.Option<string>;
     harnessArgs?: ReadonlyArray<string>;
     harnessCommand?: Option.Option<string>;
     reviewer?: Option.Option<string>;
+    runProfile?: Option.Option<string>;
     skillManifest?: Option.Option<string>;
     workspaceSource?: Option.Option<string>;
   }> = {},
@@ -400,10 +471,17 @@ function workflowOptions(
     input.skillManifest ?? Option.none(),
     (source) => localSkillManifestSource(resolveInvocationPath(source)),
   );
+  const runProfileSource = Option.map(
+    input.runProfile ?? Option.none(),
+    (source) => localRunProfileSource(resolveRunProfilePath(source)),
+  );
   const browserEvidenceTargetUrl = input.browserEvidenceTargetUrl ?? Option.none();
 
   return {
     rootDirectory,
+    ...(input.browserEvidenceRequirement === undefined
+      ? {}
+      : { browserEvidenceRequirement: input.browserEvidenceRequirement }),
     ...(Option.isSome(browserEvidenceTargetUrl)
       ? { browserEvidenceTargetUrl: browserEvidenceTargetUrl.value }
       : {}),
@@ -418,6 +496,9 @@ function workflowOptions(
       : {}),
     ...(Option.isSome(skillManifestSource)
       ? { skillManifestSource: skillManifestSource.value }
+      : {}),
+    ...(Option.isSome(runProfileSource)
+      ? { runProfileSource: runProfileSource.value }
       : {}),
   };
 }
@@ -471,6 +552,12 @@ function githubPublishOptions(
 
 function resolveInvocationPath(input: string) {
   return path.resolve(invocationRoot(), input);
+}
+
+function resolveRunProfilePath(input: string) {
+  return /^[A-Za-z0-9_-]+$/u.test(input)
+    ? resolveInvocationPath(path.join("profiles", `${input}.json`))
+    : resolveInvocationPath(input);
 }
 
 function renderEffect<A>(
@@ -656,6 +743,106 @@ function renderGitHubChecksRecord(record: GitHubChecksRecord) {
       (check) => `- ${check.name}: ${check.state}`,
     ),
   ].join("\n");
+}
+
+function renderGitHubCiWatchSummary(summary: GitHubCiWatchSummary) {
+  const lines = [
+    `ci watch: ${summary.status}`,
+    `run: ${summary.runId}`,
+    `pr: ${summary.pr}`,
+    `source: ${summary.source}`,
+    `attempts: ${summary.attempts}`,
+    `terminal: ${summary.terminal}`,
+    `next action: ${summary.nextAction}`,
+    `snapshot: ${summary.snapshotPath}`,
+    `watch state: ${summary.watchStatePath}`,
+  ];
+
+  if (summary.checks.length === 0) {
+    return lines.join("\n");
+  }
+
+  return [
+    ...lines,
+    "checks:",
+    ...summary.checks.map(formatCheckRun),
+  ].join("\n");
+}
+
+function renderGitHubPrFeedbackSummary(summary: GitHubPrFeedbackSummary) {
+  const reviewDecision =
+    summary.reviewDecision === undefined
+      ? "unknown"
+      : summary.reviewDecision;
+  const lines = [
+    `pr feedback: ${summary.status}`,
+    `run: ${summary.runId}`,
+    `pr: ${summary.pr}`,
+    `next action: ${summary.nextAction}`,
+    `feedback: ${summary.feedbackPath}`,
+    `review decision: ${reviewDecision}`,
+    `comments: ${summary.commentCount}`,
+    `reviews: ${summary.reviewCount}`,
+    `review requests: ${summary.reviewRequestCount}`,
+  ];
+
+  if (summary.comments.length === 0 && summary.latestReviews.length === 0) {
+    return lines.join("\n");
+  }
+
+  return [
+    ...lines,
+    ...formatGitHubFeedbackComments(summary.comments),
+    ...formatGitHubFeedbackReviews(summary.latestReviews),
+  ].join("\n");
+}
+
+function formatGitHubFeedbackComments(
+  comments: GitHubPrFeedbackSummary["comments"],
+) {
+  if (comments.length === 0) {
+    return [];
+  }
+
+  return [
+    "comments:",
+    ...comments.map((comment) => {
+      const author =
+        comment.authorLogin === undefined ? "unknown" : comment.authorLogin;
+      const url = comment.url === undefined ? "" : ` ${comment.url}`;
+      return `- ${author}: ${firstLine(comment.body)}${url}`;
+    }),
+  ];
+}
+
+function formatGitHubFeedbackReviews(
+  reviews: GitHubPrFeedbackSummary["latestReviews"],
+) {
+  if (reviews.length === 0) {
+    return [];
+  }
+
+  return [
+    "latest reviews:",
+    ...reviews.map((review) => {
+      const author =
+        review.authorLogin === undefined ? "unknown" : review.authorLogin;
+      const url = review.url === undefined ? "" : ` ${review.url}`;
+      return `- ${author}: ${review.state}${url}`;
+    }),
+  ];
+}
+
+function firstLine(input: string) {
+  return input.split(/\r?\n/u)[0] ?? "";
+}
+
+function formatCheckRun(check: GitHubCiWatchSummary["checks"][number]) {
+  const workflow =
+    check.workflow === undefined ? "" : ` (${check.workflow})`;
+  const link = check.link === undefined ? "" : ` ${check.link}`;
+
+  return `- ${check.name}: ${check.state}${workflow}${link}`;
 }
 
 function formatCommand(

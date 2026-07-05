@@ -212,6 +212,80 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.context.githubPullRequest, "1");
   });
 
+  it("replays GitHub feedback evidence without leaving completed state", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const events = [
+      makeRunEvent({
+        payload: { specPath: "input.md" },
+        runId,
+        sequence: 1,
+        timestamp: "2026-07-04T10:00:00.000Z",
+        type: "RUN_CREATED",
+      }),
+      makeRunEvent({
+        payload: { workspacePath: "workspace" },
+        runId,
+        sequence: 2,
+        timestamp: "2026-07-04T10:00:01.000Z",
+        type: "WORKSPACE_PREPARED",
+      }),
+      makeRunEvent({
+        payload: { workerResultPath: "worker-result.json" },
+        runId,
+        sequence: 3,
+        timestamp: "2026-07-04T10:00:02.000Z",
+        type: "WORKER_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: { verificationResultPath: "verification-result.json" },
+        runId,
+        sequence: 4,
+        timestamp: "2026-07-04T10:00:03.000Z",
+        type: "VERIFICATION_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: { reportPath: "report.md" },
+        runId,
+        sequence: 5,
+        timestamp: "2026-07-04T10:00:04.000Z",
+        type: "REPORT_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: {
+          commentCount: 1,
+          feedbackPath: "github-feedback.json",
+          nextAction: "address-review-comments",
+          pullRequest: "1",
+          reviewCount: 1,
+          reviewRequestCount: 0,
+          status: "changes-requested",
+        },
+        runId,
+        sequence: 6,
+        timestamp: "2026-07-04T10:00:05.000Z",
+        type: "GITHUB_FEEDBACK_RECORDED",
+      }),
+    ];
+
+    const durableSnapshot = snapshotFromReplay(events);
+    assert.strictEqual(durableSnapshot.state, "completed");
+    assert.strictEqual(durableSnapshot.eventSequence, 6);
+    assert.strictEqual(
+      durableSnapshot.context.githubFeedbackPath,
+      "github-feedback.json",
+    );
+    assert.strictEqual(
+      durableSnapshot.context.githubFeedbackStatus,
+      "changes-requested",
+    );
+    assert.strictEqual(
+      durableSnapshot.context.githubFeedbackNextAction,
+      "address-review-comments",
+    );
+    assert.strictEqual(durableSnapshot.context.githubPullRequest, "1");
+    assert.strictEqual(durableSnapshot.context.githubFeedbackCommentCount, 1);
+  });
+
   it("replays browser evidence without leaving completed state", () => {
     const runId = parseRunId("run-V7kP9sQ2xY");
     const events = [
@@ -344,6 +418,74 @@ describe("core contracts", () => {
     );
     assert.strictEqual(
       durableSnapshot.context.browserEvidenceTargetUrl,
+      "http://localhost:3000",
+    );
+  });
+
+  it("replays preview deployment evidence recorded before verification", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const events = [
+      makeRunEvent({
+        payload: { specPath: "input.md" },
+        runId,
+        sequence: 1,
+        timestamp: "2026-07-04T10:00:00.000Z",
+        type: "RUN_CREATED",
+      }),
+      makeRunEvent({
+        payload: { workspacePath: "workspace" },
+        runId,
+        sequence: 2,
+        timestamp: "2026-07-04T10:00:01.000Z",
+        type: "WORKSPACE_PREPARED",
+      }),
+      makeRunEvent({
+        payload: { workerResultPath: "worker-result.json" },
+        runId,
+        sequence: 3,
+        timestamp: "2026-07-04T10:00:02.000Z",
+        type: "WORKER_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: {
+          deploymentPath: "preview-deployment.json",
+          status: "available",
+          url: "http://localhost:3000",
+        },
+        runId,
+        sequence: 4,
+        timestamp: "2026-07-04T10:00:03.000Z",
+        type: "PREVIEW_DEPLOYMENT_RECORDED",
+      }),
+      makeRunEvent({
+        payload: { verificationResultPath: "verification-result.json" },
+        runId,
+        sequence: 5,
+        timestamp: "2026-07-04T10:00:04.000Z",
+        type: "VERIFICATION_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: { reportPath: "report.md" },
+        runId,
+        sequence: 6,
+        timestamp: "2026-07-04T10:00:05.000Z",
+        type: "REPORT_COMPLETED",
+      }),
+    ];
+
+    const durableSnapshot = snapshotFromReplay(events);
+    assert.strictEqual(durableSnapshot.state, "completed");
+    assert.strictEqual(durableSnapshot.eventSequence, 6);
+    assert.strictEqual(
+      durableSnapshot.context.previewDeploymentPath,
+      "preview-deployment.json",
+    );
+    assert.strictEqual(
+      durableSnapshot.context.previewDeploymentStatus,
+      "available",
+    );
+    assert.strictEqual(
+      durableSnapshot.context.previewDeploymentUrl,
       "http://localhost:3000",
     );
   });
