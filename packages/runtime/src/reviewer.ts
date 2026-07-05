@@ -200,6 +200,16 @@ function reviewPlan(request: ReviewRunRequest) {
           severity: "info",
         }),
         ReviewFinding.make({
+          message: [
+            `Plan includes ${countLabel(workerPlan.acceptanceCriteria.length, "acceptance criterion", "acceptance criteria")},`,
+            `${countLabel(workerPlan.nonGoals.length, "non-goal", "non-goals")},`,
+            `${countLabel(workerPlan.likelyTouchedSurfaces.length, "likely touched surface", "likely touched surfaces")},`,
+            `${countLabel(workerPlan.verificationChecks.length, "verification check", "verification checks")},`,
+            `and ${countLabel(workerPlan.stopConditions.length, "stop condition", "stop conditions")}.`,
+          ].join(" "),
+          severity: "info",
+        }),
+        ReviewFinding.make({
           message: `Workspace source is ${workspaceManifest.source}.`,
           severity: "info",
         }),
@@ -212,6 +222,10 @@ function reviewPlan(request: ReviewRunRequest) {
       summary: "Plan review approved the spec and workspace contract.",
     });
   });
+}
+
+function countLabel(count: number, singular: string, plural: string) {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 function reviewEvidence(request: ReviewRunRequest) {

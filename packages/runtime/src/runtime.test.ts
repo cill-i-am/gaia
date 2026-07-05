@@ -71,6 +71,7 @@ import {
   type GaiaReviewer,
 } from "./reviewer.js";
 import { parseReviewerSessionEvidenceJson } from "./reviewer-session-evidence.js";
+import { parseWorkerPlanJson } from "./worker-plan.js";
 import {
   localRunProfileSource,
   parseRunProfileJson,
@@ -156,6 +157,105 @@ describe("runtime workflows", () => {
 
         const resumed = yield* resumeRun(summary.runId, { rootDirectory: cwd });
         assert.strictEqual(resumed.status, "completed");
+      }),
+    );
+
+    it.effect("writes a spec-derived worker plan for review", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          specPath,
+          [
+            "---",
+            "title: Rich worker plan",
+            "---",
+            "",
+            "Goal:",
+            "- Replace generic worker planning with a spec-derived plan artifact.",
+            "",
+            "Acceptance criteria:",
+            "- worker-plan.json lists spec acceptance criteria.",
+            "- worker-plan.md is readable without opening input.md.",
+            "",
+            "Non-goals:",
+            "- Do not add live reviewer threads.",
+            "",
+            "Likely touched surfaces:",
+            "- packages/runtime/src/worker-plan.ts",
+            "- packages/runtime/src/reviewer.ts",
+            "",
+            "Verification:",
+            "- `pnpm --filter @gaia/runtime test` passes.",
+            "- Existing fake harness smoke remains intact.",
+            "",
+            "Stop conditions:",
+            "- Stop if the spec omits testable acceptance criteria.",
+            "",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const workerPlan = parseWorkerPlanJson(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/worker-plan.json`),
+          ),
+        );
+        const workerPlanMarkdown = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-plan.md`,
+        );
+        const planReview = yield* fs.readFileString(
+          `${summary.runDirectory}/plan-review.md`,
+        );
+
+        assert.deepEqual(workerPlan.acceptanceCriteria, [
+          "worker-plan.json lists spec acceptance criteria.",
+          "worker-plan.md is readable without opening input.md.",
+        ]);
+        assert.deepEqual(workerPlan.nonGoals, [
+          "Do not add live reviewer threads.",
+        ]);
+        assert.deepEqual(workerPlan.likelyTouchedSurfaces, [
+          "packages/runtime/src/worker-plan.ts",
+          "packages/runtime/src/reviewer.ts",
+        ]);
+        assert.deepEqual(
+          workerPlan.verificationChecks.map((check) => check.expectation),
+          [
+            "`pnpm --filter @gaia/runtime test` passes.",
+            "Existing fake harness smoke remains intact.",
+          ],
+        );
+        assert.strictEqual(
+          workerPlan.verificationChecks[0]?.command,
+          "pnpm --filter @gaia/runtime test",
+        );
+        assert.deepEqual(workerPlan.stopConditions, [
+          "Stop if the spec omits testable acceptance criteria.",
+        ]);
+        assert.include(
+          workerPlanMarkdown,
+          "worker-plan.json lists spec acceptance criteria.",
+        );
+        assert.include(workerPlanMarkdown, "Do not add live reviewer threads.");
+        assert.include(
+          workerPlanMarkdown,
+          "packages/runtime/src/worker-plan.ts",
+        );
+        assert.include(
+          workerPlanMarkdown,
+          "`pnpm --filter @gaia/runtime test` passes.",
+        );
+        assert.include(
+          workerPlanMarkdown,
+          "Stop if the spec omits testable acceptance criteria.",
+        );
+        assert.include(
+          workerPlanMarkdown,
+          "Replace generic worker planning with a spec-derived plan artifact.",
+        );
+        assert.include(planReview, "2 acceptance criteria");
       }),
     );
 
@@ -1663,6 +1763,10 @@ describe("runtime workflows", () => {
           assert.include(
             command.stdin,
             "Do not write, edit, delete, move, or create files.",
+          );
+          assert.include(
+            command.stdin,
+            "Inspect the worker plan acceptance criteria, non-goals, likely touched surfaces, verification checks, and stop conditions.",
           );
           assert.include(command.stdin, "Status: approved");
           assert.include(command.stdin, "Summary: ");

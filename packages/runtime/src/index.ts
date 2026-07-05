@@ -276,6 +276,7 @@ export {
 export { VerificationResult, verifyHarnessOutput } from "./verifier.js";
 export {
   WorkerPlan,
+  WorkerPlanVerificationCheck,
   parseWorkerPlanJson,
   writeWorkerPlan,
 } from "./worker-plan.js";
