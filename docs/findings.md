@@ -949,3 +949,33 @@ Verification:
   and invalid GitHub JSON through the recording command seam.
 - CLI help smoke proves `watch-pr-feedback` exposes `<run-id> <pull-request>`
   and `--json`.
+
+## Slice 24: GitHub PR Loop Coordinator
+
+Outcome: Gaia now has `gaia pr-loop <run-id> <pr>`. The command records one
+current CI snapshot, records one current PR feedback snapshot, writes
+`pr-loop-state.json`, appends `GITHUB_PR_LOOP_RECORDED`, and returns a single
+ordered next action for the operator or next worker run.
+
+Findings:
+
+- The combined PR loop should be an aggregate over durable CI and feedback
+  artifacts, not a replacement for either artifact. Agents need the concise
+  next action, but reviewers still need the underlying evidence.
+- Changes-requested reviews should be first in the action order, even when CI
+  also fails. Human feedback often explains the change that will fix or
+  supersede the failing check, while the failed check remains a blocker in the
+  same state file.
+- Pending CI and awaiting review are waiting states, not failures. Gaia should
+  keep them distinct from actionable blockers that need a worker.
+- A clean PR loop returns `ready-for-merge-decision` rather than merging. This
+  keeps orchestrator authority explicit.
+
+Verification:
+
+- Core replay test proves `GITHUB_PR_LOOP_RECORDED` enriches completed runs
+  without leaving the completed state.
+- Runtime tests cover ordered blockers for changes-requested plus failed CI,
+  waiting state for pending CI plus required review, and clean ready state.
+- CLI help smoke proves `pr-loop` exposes `<run-id> <pull-request>` and
+  `--json`.

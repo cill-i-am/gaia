@@ -29,6 +29,7 @@ export type RunPaths = {
   readonly planReviewResult: string;
   readonly planReviewerSession: string;
   readonly previewDeployment: string;
+  readonly prLoopState: string;
   readonly reportJson: string;
   readonly reportMarkdown: string;
   readonly root: string;
@@ -97,6 +98,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
         "plan-reviewer-session.json",
       ),
       previewDeployment: path.join(root, "preview-deployment.json"),
+      prLoopState: path.join(root, "pr-loop-state.json"),
       reportJson: path.join(root, "report.json"),
       reportMarkdown: path.join(root, "report.md"),
       root,

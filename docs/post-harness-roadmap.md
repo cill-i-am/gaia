@@ -4,6 +4,10 @@ This roadmap starts after Gaia has a real Codex worker harness. The goal is to
 keep Gaia moving toward a software factory without turning the control plane
 into a hidden mega-agent.
 
+The product north star is documented in [`vision.md`](vision.md). This roadmap
+tracks the implementation slices that prepare the local-first control plane for
+that server/dashboard/runner shape.
+
 ## Ordering Principles
 
 - Ship one independently useful slice at a time.
@@ -301,6 +305,113 @@ Non-goals:
 - comment posting;
 - unresolved review-thread resolution;
 - background GitHub notification watching.
+
+## Phase 5.75: GitHub PR Loop Coordinator
+
+Status: **Completed for single-shot CI and feedback coordination**
+
+Goal:
+
+- Combine CI state and human PR feedback into one ordered next action for an
+  implementation or orchestration loop.
+
+Build after:
+
+- CI watch state and PR feedback artifacts exist.
+
+Done when:
+
+- Gaia records one current CI snapshot and one current PR feedback snapshot.
+- Gaia writes `pr-loop-state.json` with status, blockers, and next action.
+- Gaia appends `GITHUB_PR_LOOP_RECORDED` without leaving the completed run
+  state.
+- Changes-requested reviews outrank failed checks as the first action, while
+  failed checks remain visible blockers.
+- Pending CI and awaiting review are waiting states, not failures.
+- A clean PR state returns `ready-for-merge-decision` without merging.
+
+Completed foundation:
+
+- `gaia pr-loop <run-id> <pr>` coordinates existing CI and feedback recorders.
+- The PR-loop state is typed, serializable, and replayed through the run
+  machine.
+- The CLI supports human-readable and `--json` output.
+
+Non-goals:
+
+- auto-fixing code;
+- auto-merging;
+- hidden daemons;
+- replacing CI or review artifacts with a lossy aggregate.
+
+## Phase 5.9: Worker Remediation Handoff
+
+Status: **Next**
+
+Goal:
+
+- Turn a blocked `pr-loop-state.json` into an explicit follow-up worker run or
+  spec.
+
+Build after:
+
+- The PR-loop coordinator can produce stable next actions.
+
+Done when:
+
+- Gaia can create a remediation spec from `address-review-comments`,
+  `fix-failed-checks`, or `respond-to-comments`.
+- The remediation spec references the original run, PR, blockers, and relevant
+  artifacts.
+- The follow-up run remains visible and reviewable; no hidden auto-fix loop
+  mutates a PR behind the operator's back.
+- The orchestrator keeps final authority over whether the remediation run is
+  started, published, or merged.
+
+Non-goals:
+
+- automatically choosing arbitrary code changes from failing logs;
+- merging after remediation;
+- replacing human PR review conversation.
+
+## Product Track: Local Gaia Server
+
+Status: **Next after the PR remediation seam, or earlier if dashboard work starts**
+
+Goal:
+
+- Introduce `gaia server` as the local source-of-truth API while preserving the
+  existing CLI behavior.
+
+Build after:
+
+- The local artifact model has enough stable concepts for runs, events,
+  artifacts, PR loop state, and browser evidence.
+
+Done when:
+
+- A local server exposes run creation, run status, event reading/streaming, and
+  artifact reading over typed API contracts.
+- CLI commands can call the server where practical while direct local runtime
+  commands remain usable during migration.
+- Filesystem-backed `.gaia/runs` remains the storage adapter, not the public
+  client contract.
+- Tests prove CLI and API see the same run state.
+
+Next product slices after that:
+
+1. Local dashboard over the server API.
+2. Harness account model for local installed auth.
+3. Execution backend port for local shell versus trusted cloud runner.
+4. Trusted cloud harness auth and artifact storage.
+5. Hosted multi-user product shell.
+
+Non-goals:
+
+- dashboard-first rewrite;
+- multi-tenant SaaS auth;
+- cloud-only execution;
+- moving workflow logic into the UI.
 
 ## Phase 6: Linear Issue Graph
 

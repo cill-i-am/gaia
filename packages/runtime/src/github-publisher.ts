@@ -260,6 +260,81 @@ export class GitHubCiWatchSummary extends Schema.Class<GitHubCiWatchSummary>(
   watchStatePath: Schema.NonEmptyString,
 }) {}
 
+export const GitHubPrLoopStatusSchema = Schema.Literals([
+  "blocked",
+  "ready",
+  "waiting",
+] as const);
+
+/** Combined CI and human-feedback state for a GitHub PR loop. */
+export type GitHubPrLoopStatus = typeof GitHubPrLoopStatusSchema.Type;
+
+export const GitHubPrLoopNextActionSchema = Schema.Literals([
+  "address-review-comments",
+  "await-review",
+  "fix-failed-checks",
+  "ready-for-merge-decision",
+  "respond-to-comments",
+  "wait-for-ci",
+] as const);
+
+/** Next operator or agent action recommended by the combined PR-loop watcher. */
+export type GitHubPrLoopNextAction =
+  typeof GitHubPrLoopNextActionSchema.Type;
+
+export const GitHubPrLoopBlockerKindSchema = Schema.Literals([
+  "awaiting-review",
+  "changes-requested",
+  "failed-checks",
+  "pending-checks",
+  "pr-comments",
+] as const);
+
+/** Why a PR loop is not ready for a merge decision. */
+export type GitHubPrLoopBlockerKind =
+  typeof GitHubPrLoopBlockerKindSchema.Type;
+
+export class GitHubPrLoopBlocker extends Schema.Class<GitHubPrLoopBlocker>(
+  "GitHubPrLoopBlocker",
+)({
+  action: GitHubPrLoopNextActionSchema,
+  kind: GitHubPrLoopBlockerKindSchema,
+  summary: Schema.NonEmptyString,
+}) {}
+
+export class GitHubPrLoopState extends Schema.Class<GitHubPrLoopState>(
+  "GitHubPrLoopState",
+)({
+  blockerCount: GitHubFeedbackCountSchema,
+  blockers: Schema.Array(GitHubPrLoopBlocker),
+  checksPath: Schema.NonEmptyString,
+  checksStatus: GitHubChecksStatusSchema,
+  feedbackPath: Schema.NonEmptyString,
+  feedbackStatus: GitHubPrFeedbackStatusSchema,
+  nextAction: GitHubPrLoopNextActionSchema,
+  observedAt: Schema.NonEmptyString,
+  pr: GitHubPullRequestSelectorSchema,
+  runId: RunIdSchema,
+  status: GitHubPrLoopStatusSchema,
+  version: Schema.Literal(1),
+}) {}
+
+export class GitHubPrLoopSummary extends Schema.Class<GitHubPrLoopSummary>(
+  "GitHubPrLoopSummary",
+)({
+  blockerCount: GitHubFeedbackCountSchema,
+  blockers: Schema.Array(GitHubPrLoopBlocker),
+  checksPath: Schema.NonEmptyString,
+  checksStatus: GitHubChecksStatusSchema,
+  feedbackPath: Schema.NonEmptyString,
+  feedbackStatus: GitHubPrFeedbackStatusSchema,
+  nextAction: GitHubPrLoopNextActionSchema,
+  pr: GitHubPullRequestSelectorSchema,
+  runId: RunIdSchema,
+  statePath: Schema.NonEmptyString,
+  status: GitHubPrLoopStatusSchema,
+}) {}
+
 export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
   "GitHubPrSummary",
 )({
@@ -367,6 +442,10 @@ const GitHubCiWatchStateJson = Schema.toCodecJson(GitHubCiWatchState);
 const encodeGitHubCiWatchStateJson = Schema.encodeSync(GitHubCiWatchStateJson);
 export const parseGitHubCiWatchStateJson =
   Schema.decodeUnknownSync(GitHubCiWatchStateJson);
+const GitHubPrLoopStateJson = Schema.toCodecJson(GitHubPrLoopState);
+const encodeGitHubPrLoopStateJson = Schema.encodeSync(GitHubPrLoopStateJson);
+export const parseGitHubPrLoopStateJson =
+  Schema.decodeUnknownSync(GitHubPrLoopStateJson);
 
 export type CommandExecutionResult = {
   readonly exitCode: number;
@@ -408,6 +487,11 @@ export type GitHubCiWatchOptions = GitHubCheckRecordOptions & {
 
 /** Options for recording human GitHub PR feedback for a completed run. */
 export type GitHubPrFeedbackOptions = RunStorageOptions & {
+  readonly commandRunner?: GitHubCommandRunner;
+};
+
+/** Options for recording combined CI and human PR feedback. */
+export type GitHubPrLoopOptions = RunStorageOptions & {
   readonly commandRunner?: GitHubCommandRunner;
 };
 
@@ -851,6 +935,18 @@ export function watchGitHubFeedback(
   );
 }
 
+/** Record CI and review feedback once, then recommend the next PR-loop action. */
+export function coordinateGitHubPrLoop(
+  runIdInput: string,
+  prInput: string,
+  options: GitHubPrLoopOptions = {},
+) {
+  return withRunStoreLock(
+    options,
+    coordinateGitHubPrLoopUnlocked(runIdInput, prInput, options),
+  );
+}
+
 function recordGitHubChecksUnlocked(
   runIdInput: string,
   prInput: string,
@@ -986,6 +1082,69 @@ function watchGitHubFeedbackUnlocked(
       status: feedback.status,
       ...(feedback.title === undefined ? {} : { title: feedback.title }),
       ...(feedback.url === undefined ? {} : { url: feedback.url }),
+    });
+  });
+}
+
+function coordinateGitHubPrLoopUnlocked(
+  runIdInput: string,
+  prInput: string,
+  options: GitHubPrLoopOptions,
+) {
+  return Effect.gen(function* () {
+    const rootDirectory = options.rootDirectory ?? ".";
+    const runner = options.commandRunner ?? nodeCommandRunner;
+    const run = yield* statusRun(runIdInput, { rootDirectory });
+
+    if (run.status !== "completed") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "RunNotCompleted",
+          message: `Run ${run.runId} must be completed before coordinating the GitHub PR loop.`,
+          recoverable: false,
+        }),
+      );
+    }
+
+    const checks = yield* recordGitHubChecksUnlocked(run.runId, prInput, {
+      commandRunner: runner,
+      rootDirectory,
+      waitForTerminal: false,
+    });
+    const feedback = yield* watchGitHubFeedbackUnlocked(run.runId, prInput, {
+      commandRunner: runner,
+      rootDirectory,
+    });
+    const paths = yield* makeRunPaths(run.runId, { rootDirectory });
+    const state = makeGitHubPrLoopState({ checks, feedback, paths });
+
+    yield* writeGitHubPrLoopState(paths, state);
+
+    const statePath = runRelative(paths, paths.prLoopState);
+
+    yield* appendEvent(run.runId, paths, {
+      payload: {
+        blockerCount: state.blockerCount,
+        nextAction: state.nextAction,
+        prLoopPath: statePath,
+        pullRequest: state.pr,
+        status: state.status,
+      },
+      type: "GITHUB_PR_LOOP_RECORDED",
+    });
+
+    return GitHubPrLoopSummary.make({
+      blockerCount: state.blockerCount,
+      blockers: state.blockers,
+      checksPath: state.checksPath,
+      checksStatus: state.checksStatus,
+      feedbackPath: state.feedbackPath,
+      feedbackStatus: state.feedbackStatus,
+      nextAction: state.nextAction,
+      pr: state.pr,
+      runId: state.runId,
+      statePath: paths.prLoopState,
+      status: state.status,
     });
   });
 }
@@ -1192,6 +1351,140 @@ function writeGitHubPrFeedback(
           cause,
           code: "GitHubFeedbackWriteFailed",
           message: "Gaia could not write GitHub PR feedback evidence.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
+function makeGitHubPrLoopState(
+  input: Readonly<{
+    checks: GitHubChecksRecord;
+    feedback: GitHubPrFeedbackSummary;
+    paths: RunPaths;
+  }>,
+) {
+  const blockers = gitHubPrLoopBlockers(input.checks, input.feedback);
+  const firstBlocker = blockers.at(0);
+  const nextAction =
+    firstBlocker === undefined
+      ? "ready-for-merge-decision"
+      : firstBlocker.action;
+
+  return GitHubPrLoopState.make({
+    blockerCount: parseGitHubFeedbackCount(blockers.length),
+    blockers,
+    checksPath: runRelative(input.paths, input.checks.snapshotPath),
+    checksStatus: input.checks.status,
+    feedbackPath: runRelative(input.paths, input.feedback.feedbackPath),
+    feedbackStatus: input.feedback.status,
+    nextAction,
+    observedAt: new Date().toISOString(),
+    pr: input.feedback.pr,
+    runId: input.feedback.runId,
+    status: gitHubPrLoopStatus(blockers),
+    version: 1,
+  });
+}
+
+function gitHubPrLoopBlockers(
+  checks: GitHubChecksRecord,
+  feedback: GitHubPrFeedbackSummary,
+) {
+  const blockers: Array<GitHubPrLoopBlocker> = [];
+
+  if (feedback.status === "changes-requested") {
+    blockers.push(
+      GitHubPrLoopBlocker.make({
+        action: "address-review-comments",
+        kind: "changes-requested",
+        summary: "GitHub review requested changes.",
+      }),
+    );
+  }
+
+  if (checks.status === "failed") {
+    blockers.push(
+      GitHubPrLoopBlocker.make({
+        action: "fix-failed-checks",
+        kind: "failed-checks",
+        summary: `${failedChecks(checks.checks).length} check(s) failed.`,
+      }),
+    );
+  }
+
+  if (feedback.status === "comments") {
+    blockers.push(
+      GitHubPrLoopBlocker.make({
+        action: "respond-to-comments",
+        kind: "pr-comments",
+        summary: `${feedback.commentCount} PR comment(s) need response.`,
+      }),
+    );
+  }
+
+  if (checks.status === "pending") {
+    blockers.push(
+      GitHubPrLoopBlocker.make({
+        action: "wait-for-ci",
+        kind: "pending-checks",
+        summary: `${pendingChecks(checks.checks).length} check(s) pending.`,
+      }),
+    );
+  }
+
+  if (feedback.status === "awaiting-review") {
+    blockers.push(
+      GitHubPrLoopBlocker.make({
+        action: "await-review",
+        kind: "awaiting-review",
+        summary: "PR is waiting for review.",
+      }),
+    );
+  }
+
+  return blockers;
+}
+
+function gitHubPrLoopStatus(
+  blockers: ReadonlyArray<GitHubPrLoopBlocker>,
+): GitHubPrLoopStatus {
+  if (blockers.length === 0) {
+    return "ready";
+  }
+
+  if (
+    blockers.some(
+      (blocker) =>
+        blocker.kind === "changes-requested" ||
+        blocker.kind === "failed-checks" ||
+        blocker.kind === "pr-comments",
+    )
+  ) {
+    return "blocked";
+  }
+
+  return "waiting";
+}
+
+function writeGitHubPrLoopState(
+  paths: RunPaths,
+  state: GitHubPrLoopState,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(
+      paths.prLoopState,
+      `${JSON.stringify(encodeGitHubPrLoopStateJson(state), null, 2)}\n`,
+    );
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "GitHubPrLoopStateWriteFailed",
+          message: "Gaia could not write GitHub PR loop state.",
           recoverable: true,
         }),
       ),

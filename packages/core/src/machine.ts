@@ -25,6 +25,10 @@ export type RunMachineContext = {
   readonly githubFeedbackReviewCount: number | undefined;
   readonly githubFeedbackReviewRequestCount: number | undefined;
   readonly githubFeedbackStatus: string | undefined;
+  readonly githubPrLoopBlockerCount: number | undefined;
+  readonly githubPrLoopNextAction: string | undefined;
+  readonly githubPrLoopPath: string | undefined;
+  readonly githubPrLoopStatus: string | undefined;
   readonly githubPullRequest: string | undefined;
   readonly githubWatchStatePath: string | undefined;
   readonly lastEventSequence: number;
@@ -90,6 +94,14 @@ export type RunMachineEvent =
       readonly reviewRequestCount: number;
       readonly status: string;
     }
+  | {
+      readonly type: "GITHUB_PR_LOOP_RECORDED";
+      readonly blockerCount: number;
+      readonly nextAction: string;
+      readonly prLoopPath: string;
+      readonly pullRequest: string;
+      readonly status: string;
+    }
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
@@ -106,6 +118,10 @@ const initialContext: RunMachineContext = {
   githubFeedbackReviewCount: undefined,
   githubFeedbackReviewRequestCount: undefined,
   githubFeedbackStatus: undefined,
+  githubPrLoopBlockerCount: undefined,
+  githubPrLoopNextAction: undefined,
+  githubPrLoopPath: undefined,
+  githubPrLoopStatus: undefined,
   githubPullRequest: undefined,
   githubWatchStatePath: undefined,
   lastEventSequence: 0,
@@ -142,6 +158,9 @@ export const runMachine = createMachine({
         },
         GITHUB_FEEDBACK_RECORDED: {
           actions: "recordGitHubFeedback",
+        },
+        GITHUB_PR_LOOP_RECORDED: {
+          actions: "recordGitHubPrLoop",
         },
         PREVIEW_DEPLOYMENT_RECORDED: {
           actions: "recordPreviewDeployment",
@@ -302,6 +321,26 @@ export const runMachine = createMachine({
           ? event.pullRequest
           : undefined,
     }),
+    recordGitHubPrLoop: assign({
+      githubPrLoopBlockerCount: ({ event }) =>
+        event.type === "GITHUB_PR_LOOP_RECORDED"
+          ? event.blockerCount
+          : undefined,
+      githubPrLoopNextAction: ({ event }) =>
+        event.type === "GITHUB_PR_LOOP_RECORDED"
+          ? event.nextAction
+          : undefined,
+      githubPrLoopPath: ({ event }) =>
+        event.type === "GITHUB_PR_LOOP_RECORDED"
+          ? event.prLoopPath
+          : undefined,
+      githubPrLoopStatus: ({ event }) =>
+        event.type === "GITHUB_PR_LOOP_RECORDED" ? event.status : undefined,
+      githubPullRequest: ({ event }) =>
+        event.type === "GITHUB_PR_LOOP_RECORDED"
+          ? event.pullRequest
+          : undefined,
+    }),
     recordPreviewDeployment: assign({
       previewDeploymentPath: ({ event }) =>
         event.type === "PREVIEW_DEPLOYMENT_RECORDED"
@@ -430,6 +469,15 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         pullRequest: getStringPayload(event, "pullRequest"),
         reviewCount: getNumberPayload(event, "reviewCount"),
         reviewRequestCount: getNumberPayload(event, "reviewRequestCount"),
+        status: getStringPayload(event, "status"),
+        type: event.type,
+      };
+    case "GITHUB_PR_LOOP_RECORDED":
+      return {
+        blockerCount: getNumberPayload(event, "blockerCount"),
+        nextAction: getStringPayload(event, "nextAction"),
+        prLoopPath: getStringPayload(event, "prLoopPath"),
+        pullRequest: getStringPayload(event, "pullRequest"),
         status: getStringPayload(event, "status"),
         type: event.type,
       };
@@ -595,6 +643,18 @@ function snapshotContext(
   }
   if (context.githubFeedbackStatus !== undefined) {
     output.githubFeedbackStatus = context.githubFeedbackStatus;
+  }
+  if (context.githubPrLoopBlockerCount !== undefined) {
+    output.githubPrLoopBlockerCount = context.githubPrLoopBlockerCount;
+  }
+  if (context.githubPrLoopNextAction !== undefined) {
+    output.githubPrLoopNextAction = context.githubPrLoopNextAction;
+  }
+  if (context.githubPrLoopPath !== undefined) {
+    output.githubPrLoopPath = context.githubPrLoopPath;
+  }
+  if (context.githubPrLoopStatus !== undefined) {
+    output.githubPrLoopStatus = context.githubPrLoopStatus;
   }
   if (context.githubPullRequest !== undefined) {
     output.githubPullRequest = context.githubPullRequest;

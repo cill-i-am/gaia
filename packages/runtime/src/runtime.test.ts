@@ -27,9 +27,11 @@ import {
   makeCodexReviewerConfig,
 } from "./codex-reviewer.js";
 import {
+  coordinateGitHubPrLoop,
   inspectGitHubChecks,
   parseGitHubCiWatchStateJson,
   parseGitHubPrFeedbackJson,
+  parseGitHubPrLoopStateJson,
   preflightGitHubPublish,
   previewGitHubPublish,
   publishRunToGitHub,
@@ -2741,6 +2743,164 @@ describe("runtime workflows", () => {
 
         assert.strictEqual(feedback.status, "clear");
         assert.strictEqual(feedback.nextAction, "complete");
+      }),
+    );
+
+    it.effect("coordinates changes requested and failed CI as ordered blockers", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Coordinate blocked PR loop.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const summary = yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (input.args.join(" ").startsWith("pr checks")) {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify([
+                  {
+                    link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                    name: "test",
+                    state: "FAILURE",
+                    workflow: "CI",
+                  },
+                ]),
+              };
+            }
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify(
+                prFeedbackView({
+                  latestReviews: [
+                    {
+                      author: { login: "reviewer" },
+                      body: "Needs work.",
+                      state: "CHANGES_REQUESTED",
+                    },
+                  ],
+                  reviewDecision: "CHANGES_REQUESTED",
+                }),
+              ),
+            };
+          }),
+          rootDirectory: cwd,
+        });
+
+        const state = parseGitHubPrLoopStateJson(
+          JSON.parse(yield* fs.readFileString(summary.statePath)),
+        );
+        const events = yield* fs.readFileString(`${run.runDirectory}/events.jsonl`);
+
+        assert.strictEqual(summary.status, "blocked");
+        assert.strictEqual(summary.nextAction, "address-review-comments");
+        assert.strictEqual(summary.blockerCount, 2);
+        assert.deepStrictEqual(
+          summary.blockers.map((blocker) => blocker.kind),
+          ["changes-requested", "failed-checks"],
+        );
+        assert.strictEqual(state.status, "blocked");
+        assert.strictEqual(state.nextAction, "address-review-comments");
+        assert.include(events, '"type":"GITHUB_CHECKS_RECORDED"');
+        assert.include(events, '"type":"GITHUB_FEEDBACK_RECORDED"');
+        assert.include(events, '"type":"GITHUB_PR_LOOP_RECORDED"');
+        assert.include(events, '"prLoopPath":"pr-loop-state.json"');
+      }),
+    );
+
+    it.effect("coordinates pending CI and required review as waiting", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Coordinate waiting PR loop.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const summary = yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (input.args.join(" ").startsWith("pr checks")) {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify([
+                  {
+                    link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                    name: "test",
+                    state: "PENDING",
+                    workflow: "CI",
+                  },
+                ]),
+              };
+            }
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify(
+                prFeedbackView({
+                  reviewDecision: "REVIEW_REQUIRED",
+                  reviewRequests: [{ requestedReviewer: "team" }],
+                }),
+              ),
+            };
+          }),
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(summary.status, "waiting");
+        assert.strictEqual(summary.nextAction, "wait-for-ci");
+        assert.strictEqual(summary.blockerCount, 2);
+        assert.deepStrictEqual(
+          summary.blockers.map((blocker) => blocker.kind),
+          ["pending-checks", "awaiting-review"],
+        );
+      }),
+    );
+
+    it.effect("coordinates clean PR state as ready for merge decision", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Coordinate ready PR loop.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const summary = yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (input.args.join(" ").startsWith("pr checks")) {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify([
+                  {
+                    link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                    name: "test",
+                    state: "SUCCESS",
+                    workflow: "CI",
+                  },
+                ]),
+              };
+            }
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify(
+                prFeedbackView({ reviewDecision: "APPROVED" }),
+              ),
+            };
+          }),
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(summary.status, "ready");
+        assert.strictEqual(summary.nextAction, "ready-for-merge-decision");
+        assert.strictEqual(summary.blockerCount, 0);
+        assert.strictEqual(summary.blockers.length, 0);
       }),
     );
 

@@ -3,6 +3,10 @@
 This roadmap preserves the path from local prototype to software factory. Each
 slice should stay independently useful, testable, and reversible.
 
+The holistic product direction lives in [`vision.md`](vision.md). Keep this
+roadmap as the delivery ledger for thin, verifiable slices that move toward
+that local-first software factory.
+
 ## Principles
 
 - Keep Gaia as a control plane, not a mega-agent.
@@ -138,11 +142,13 @@ Completed behavior:
   interval;
 - mirror a completed run workspace to a `gaia/<run-id>-workspace` branch;
 - skip harness-declared workspace artifacts during source PR application;
-- refuse workspace PRs when there are no source changes.
+- refuse workspace PRs when there are no source changes;
+- record human PR feedback separately from CI state;
+- coordinate CI and PR feedback into one ordered next action for the PR loop.
 
 Remaining behavior:
 
-- background check watching over time when the target repo has checks to watch;
+- worker remediation handoff from the PR-loop next action into a follow-up run;
 - attach richer report/evidence comments once PR comments are needed;
 - connect a real Codex worker harness to the workspace loop.
 
@@ -224,6 +230,16 @@ available:
    requested-reviewer count in `github-feedback.json`, then recommends
    `address-review-comments`, `respond-to-comments`, `await-review`, or
    `complete`.
+9. **GitHub PR loop coordinator**: completed. `gaia pr-loop <run-id> <pr>`
+   records one CI snapshot and one PR feedback snapshot, writes
+   `pr-loop-state.json`, appends `GITHUB_PR_LOOP_RECORDED`, and recommends the
+   next ordered action without merging or fixing code itself.
+10. **Worker remediation handoff**: next. Turn a blocked PR-loop state into a
+   clear follow-up spec/run for the worker while preserving orchestrator final
+   authority.
+11. **Local Gaia server**: next product-track slice. Introduce `gaia server` as
+   a local source-of-truth API over the existing filesystem-backed run store so
+   the CLI and future dashboard can share state.
 
 ## Harness Slice
 
@@ -241,10 +257,13 @@ The steps after harness integration are documented in
 3. visible reviewer spectrum;
 4. skill bundle installation and versioning;
 5. live browser evidence capture;
-6. CI watcher daemon;
+6. CI watcher;
 7. GitHub PR feedback watcher;
-8. Linear issue graph;
-9. merge and deployment authority;
-10. persistent run index and operator UI;
-11. multi-harness support;
-12. reusable factory templates.
+8. GitHub PR loop coordinator;
+9. worker remediation handoff;
+10. local Gaia server and dashboard foundation;
+11. Linear issue graph;
+12. merge and deployment authority;
+13. persistent run index and operator UI;
+14. multi-harness support;
+15. reusable factory templates.

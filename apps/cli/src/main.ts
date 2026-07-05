@@ -9,6 +9,7 @@ import type {
   GitHubChecksSummary,
   GitHubCiWatchSummary,
   GitHubPrFeedbackSummary,
+  GitHubPrLoopSummary,
   GitHubPublishPreflightSummary,
   GitHubPublishPreview,
   GitHubPrSummary,
@@ -16,6 +17,7 @@ import type {
 import {
   GaiaRuntimeError,
   collectBrowserEvidence,
+  coordinateGitHubPrLoop,
   inspectGitHubChecks,
   listRuns,
   localDirectoryWorkspaceSource,
@@ -370,6 +372,25 @@ const watchPrFeedback = Command.make("watch-pr-feedback", {
   ),
 );
 
+const prLoop = Command.make("pr-loop", {
+  json,
+  runId,
+  pullRequest,
+}).pipe(
+  Command.withDescription(
+    "Record CI and review feedback, then recommend the next PR-loop action.",
+  ),
+  Command.withHandler(({ json, pullRequest, runId }) =>
+    renderEffect(
+      coordinateGitHubPrLoop(runId, pullRequest, {
+        rootDirectory: invocationRoot(),
+      }),
+      json,
+      renderGitHubPrLoopSummary,
+    ),
+  ),
+);
+
 const collectBrowserEvidenceCommand = Command.make("collect-browser-evidence", {
   browserTargetUrl,
   json,
@@ -403,6 +424,7 @@ const cli = Command.make("gaia").pipe(
     checks,
     watchCi,
     watchPrFeedback,
+    prLoop,
   ]),
 );
 
@@ -794,6 +816,31 @@ function renderGitHubPrFeedbackSummary(summary: GitHubPrFeedbackSummary) {
     ...lines,
     ...formatGitHubFeedbackComments(summary.comments),
     ...formatGitHubFeedbackReviews(summary.latestReviews),
+  ].join("\n");
+}
+
+function renderGitHubPrLoopSummary(summary: GitHubPrLoopSummary) {
+  const lines = [
+    `pr loop: ${summary.status}`,
+    `run: ${summary.runId}`,
+    `pr: ${summary.pr}`,
+    `next action: ${summary.nextAction}`,
+    `state: ${summary.statePath}`,
+    `checks: ${summary.checksStatus} (${summary.checksPath})`,
+    `feedback: ${summary.feedbackStatus} (${summary.feedbackPath})`,
+    `blockers: ${summary.blockerCount}`,
+  ];
+
+  if (summary.blockers.length === 0) {
+    return lines.join("\n");
+  }
+
+  return [
+    ...lines,
+    ...summary.blockers.map(
+      (blocker) =>
+        `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`,
+    ),
   ].join("\n");
 }
 
