@@ -7,8 +7,10 @@ import {
   readLocalRunArtifact,
   readLocalRunEvents,
 } from "./run-read-api.js";
+import { listRunsFromServer, statusRunFromServer } from "./server-read-client.js";
 import { makeRunStorePaths } from "./paths.js";
-import { runSpecFile } from "./workflows.js";
+import { listRuns, runSpecFile, statusRun } from "./workflows.js";
+import { GaiaRuntimeError } from "./errors.js";
 
 describe("local run read api", () => {
   layer(NodeServices.layer)((it) => {
@@ -116,5 +118,127 @@ describe("local run read api", () => {
         });
       }),
     );
+
+    it.effect("matches direct run list and status summaries through server envelopes", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-read-api-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Read through server.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const directList = yield* listRuns({ rootDirectory: cwd });
+        const directStatus = yield* statusRun(summary.runId, {
+          rootDirectory: cwd,
+        });
+        const runList = yield* listLocalRuns({ rootDirectory: cwd });
+        const runDetail = yield* readLocalRun(summary.runId, {
+          rootDirectory: cwd,
+        });
+        const fetcher = envelopeFetch({
+          "/runs": { data: runList, status: "success" },
+          [`/runs/${summary.runId}`]: { data: runDetail, status: "success" },
+        });
+
+        const serverList = yield* listRunsFromServer({
+          fetch: fetcher,
+          rootDirectory: cwd,
+          serverUrl: "http://127.0.0.1:8787",
+        });
+        const serverStatus = yield* statusRunFromServer(summary.runId, {
+          fetch: fetcher,
+          rootDirectory: cwd,
+          serverUrl: "http://127.0.0.1:8787",
+        });
+
+        assert.deepEqual(serverList, directList);
+        assert.deepEqual(serverStatus, directStatus);
+      }),
+    );
+
+    it.effect("fails clearly when the opted-in server is unavailable", () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(
+          listRunsFromServer({
+            fetch: () => Promise.reject(new Error("connection refused")),
+            rootDirectory: ".",
+            serverUrl: "http://127.0.0.1:9",
+          }),
+        );
+
+        assert.instanceOf(error, GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "ServerUnavailable");
+          assert.isTrue(error.recoverable);
+          assert.include(error.message, "without --server-url");
+          assert.include(error.message, "direct runtime path");
+        }
+      }),
+    );
+
+    it.effect("fails recoverably when server run data has an invalid run id", () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(
+          listRunsFromServer({
+            fetch: envelopeFetch({
+              "/runs": {
+                data: {
+                  diagnostics: [],
+                  runs: [
+                    {
+                      artifacts: [],
+                      createdAt: "2026-01-01T00:00:00.000Z",
+                      eventCount: 1,
+                      latestEventType: "RUN_COMPLETED",
+                      runId: "not-a-run-id",
+                      state: "completed",
+                      status: "completed",
+                      updatedAt: "2026-01-01T00:00:00.000Z",
+                    },
+                  ],
+                },
+                status: "success",
+              },
+            }),
+            rootDirectory: ".",
+            serverUrl: "http://127.0.0.1:8787",
+          }),
+        );
+
+        assert.instanceOf(error, GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "ServerResponseInvalid");
+          assert.isTrue(error.recoverable);
+          assert.include(error.message, "invalid Gaia run id");
+          assert.include(error.message, "without --server-url");
+        }
+      }),
+    );
   });
 });
+
+function envelopeFetch(
+  envelopes: Readonly<Record<string, unknown>>,
+): typeof fetch {
+  return async (input) => {
+    const url = new URL(input.toString());
+    const envelope = envelopes[url.pathname];
+    if (envelope === undefined) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: "EndpointNotFound",
+            message: "Endpoint does not exist.",
+            recoverable: false,
+          },
+          status: "error",
+        }),
+        { status: 404 },
+      );
+    }
+
+    return new Response(JSON.stringify(envelope), {
+      headers: { "content-type": "application/json; charset=utf-8" },
+      status: 200,
+    });
+  };
+}

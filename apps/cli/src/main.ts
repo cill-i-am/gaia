@@ -28,6 +28,7 @@ import {
   doctor,
   inspectGitHubChecks,
   listRuns,
+  listRunsFromServer,
   localDirectoryWorkspaceSource,
   localRunProfileSource,
   localSkillManifestSource,
@@ -46,6 +47,7 @@ import {
   resumeRun,
   runSpecFile,
   statusRun,
+  statusRunFromServer,
   watchGitHubChecks,
   watchGitHubFeedback,
 } from "@gaia/runtime";
@@ -86,6 +88,12 @@ const requireBrowserEvidence = Flag.boolean("require-browser-evidence").pipe(
 );
 const json = Flag.boolean("json").pipe(
   Flag.withDescription("Write a machine-readable JSON response."),
+);
+const serverUrl = Flag.string("server-url").pipe(
+  Flag.withDescription(
+    "Opt into read-only CLI data from a running local Gaia API server.",
+  ),
+  Flag.optional,
 );
 const workspaceSource = Flag.string("workspace-source").pipe(
   Flag.withDescription("Copy a local directory into the run workspace."),
@@ -232,11 +240,20 @@ const resume = Command.make("resume", { json, runId }).pipe(
   ),
 );
 
-const status = Command.make("status", { json, runId: optionalRunId }).pipe(
+const status = Command.make("status", {
+  json,
+  runId: optionalRunId,
+  serverUrl,
+}).pipe(
   Command.withDescription("Show the latest run status or a specific run status."),
-  Command.withHandler(({ json, runId }) =>
+  Command.withHandler(({ json, runId, serverUrl }) =>
     renderEffect(
-      statusRun(Option.getOrUndefined(runId), workflowOptions()),
+      serverReadEffect(
+        serverUrl,
+        (url) =>
+          statusRunFromServer(Option.getOrUndefined(runId), serverReadOptions(url)),
+        () => statusRun(Option.getOrUndefined(runId), workflowOptions()),
+      ),
       json,
       renderSummary,
     ),
@@ -254,10 +271,18 @@ const doctorCommand = Command.make("doctor", { json }).pipe(
   ),
 );
 
-const list = Command.make("list", { json }).pipe(
+const list = Command.make("list", { json, serverUrl }).pipe(
   Command.withDescription("List known Gaia runs."),
-  Command.withHandler(({ json }) =>
-    renderEffect(listRuns(workflowOptions()), json, renderRunList),
+  Command.withHandler(({ json, serverUrl }) =>
+    renderEffect(
+      serverReadEffect(
+        serverUrl,
+        (url) => listRunsFromServer(serverReadOptions(url)),
+        () => listRuns(workflowOptions()),
+      ),
+      json,
+      renderRunList,
+    ),
   ),
 );
 
@@ -628,6 +653,21 @@ function workflowOptions(
       ? { runProfileSource: runProfileSource.value }
       : {}),
   };
+}
+
+function serverReadOptions(serverUrl: string) {
+  return {
+    rootDirectory: invocationRoot(),
+    serverUrl,
+  };
+}
+
+function serverReadEffect<A>(
+  serverUrl: Option.Option<string>,
+  fromServer: (serverUrl: string) => Effect.Effect<A, unknown, NodeServices.NodeServices>,
+  direct: () => Effect.Effect<A, unknown, NodeServices.NodeServices>,
+) {
+  return Option.isSome(serverUrl) ? fromServer(serverUrl.value) : direct();
 }
 
 function makeReviewer(

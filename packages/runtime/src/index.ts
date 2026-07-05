@@ -171,6 +171,11 @@ export {
   type LocalRunSummary,
 } from "./run-read-api.js";
 export {
+  listRunsFromServer,
+  statusRunFromServer,
+  type ServerReadOptions,
+} from "./server-read-client.js";
+export {
   ReviewFinding,
   ReviewResult,
   ReviewRunRequest,

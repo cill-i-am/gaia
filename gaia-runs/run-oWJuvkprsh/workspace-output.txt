@@ -1,0 +1,23 @@
+Gaia worker result
+
+Original implementation run id: run-Tqmn1pn6dq
+Remediation run id: run-oWJuvkprsh
+Spec: gaia-2-cli-read-parity-remediation
+Paired read-only A/B reviewer thread: 019f3451-5d53-7d90-bb16-cf866a4aec55
+
+What changed:
+- Updated `packages/runtime/src/server-read-client.ts` so server-provided `runId` values are parsed with `parseRunId` before calling `makeRunPaths`.
+- Removed the TypeScript `RunId` cast from the server read client boundary path.
+- Converted invalid server `runId` payloads into recoverable `GaiaRuntimeError` failures with code `ServerResponseInvalid` and existing `--server-url` fallback wording.
+- Added runtime coverage proving invalid server run data fails recoverably instead of escaping as a raw parser exception.
+
+Verification:
+- `pnpm install --frozen-lockfile --offline`: passed, restored local dependencies from the existing pnpm store.
+- `pnpm --filter @gaia/runtime test -- run-read-api`: passed, 2 files / 85 tests.
+- `pnpm check`: passed. Turbo emitted sandbox IO warnings, but all 6 tasks succeeded.
+- `pnpm test`: passed. Turbo served cached package test results; the focused runtime command above exercised the new test.
+- `pnpm build`: passed. Turbo emitted sandbox IO warnings and existing sourcemap warnings, but all 4 build tasks succeeded.
+
+Residual risks:
+- Server envelope payloads are still only shallowly validated outside the `runId` path touched by this remediation.
+- Full `pnpm test` used Turbo cache for package tests, so the focused runtime test is the primary evidence for the new regression coverage.

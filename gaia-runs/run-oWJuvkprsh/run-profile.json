@@ -1,0 +1,7 @@
+{
+  "checks": {
+    "browserEvidence": "optional"
+  },
+  "name": "default",
+  "version": 1
+}
