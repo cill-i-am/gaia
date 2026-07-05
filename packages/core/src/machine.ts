@@ -139,6 +139,9 @@ export const runMachine = createMachine({
     },
     reporting: {
       on: {
+        BROWSER_EVIDENCE_RECORDED: {
+          actions: "recordBrowserEvidence",
+        },
         REPORT_STARTED: {},
         REPORT_COMPLETED: {
           actions: "recordReportCompleted",

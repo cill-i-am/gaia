@@ -53,6 +53,12 @@ const optionalRunId = runId.pipe(Argument.optional);
 const browserTargetUrl = Flag.string("url").pipe(
   Flag.withDescription("HTTP or HTTPS URL to capture browser evidence from."),
 );
+const browserRunTargetUrl = Flag.string("browser-url").pipe(
+  Flag.withDescription(
+    "HTTP or HTTPS URL to capture during a run before evidence review.",
+  ),
+  Flag.optional,
+);
 const json = Flag.boolean("json").pipe(
   Flag.withDescription("Write a machine-readable JSON response."),
 );
@@ -120,6 +126,7 @@ const codexTimeoutMs = Flag.string("codex-timeout-ms").pipe(
 );
 
 const run = Command.make("run", {
+  browserRunTargetUrl,
   codexArg,
   codexCommand,
   codexModel,
@@ -138,6 +145,7 @@ const run = Command.make("run", {
   Command.withDescription("Start a new Gaia run from a Markdown spec."),
   Command.withHandler(
     ({
+      browserRunTargetUrl,
       harness,
       harnessArg,
       harnessCommand,
@@ -166,6 +174,7 @@ const run = Command.make("run", {
             codexProfile,
             codexSandbox,
             codexTimeoutMs,
+            browserEvidenceTargetUrl: browserRunTargetUrl,
             skillManifest,
             reviewer,
             workspaceSource,
@@ -342,6 +351,7 @@ function workflowOptions(
     codexProfile?: Option.Option<string>;
     codexSandbox?: Option.Option<string>;
     codexTimeoutMs?: Option.Option<string>;
+    browserEvidenceTargetUrl?: Option.Option<string>;
     harness?: Option.Option<string>;
     harnessArgs?: ReadonlyArray<string>;
     harnessCommand?: Option.Option<string>;
@@ -390,9 +400,13 @@ function workflowOptions(
     input.skillManifest ?? Option.none(),
     (source) => localSkillManifestSource(resolveInvocationPath(source)),
   );
+  const browserEvidenceTargetUrl = input.browserEvidenceTargetUrl ?? Option.none();
 
   return {
     rootDirectory,
+    ...(Option.isSome(browserEvidenceTargetUrl)
+      ? { browserEvidenceTargetUrl: browserEvidenceTargetUrl.value }
+      : {}),
     ...(Option.isSome(workspaceSource)
       ? { workspaceSource: workspaceSource.value }
       : {}),

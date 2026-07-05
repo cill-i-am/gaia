@@ -218,6 +218,7 @@ function artifactsForPhase(request: ReviewRunRequest) {
 
   return [
     ...commonArtifacts,
+    `Browser evidence JSON: ${request.browserEvidencePath}`,
     `Worker result JSON: ${request.workerResultPath}`,
     `Verification result JSON: ${request.verificationResultPath}`,
   ];

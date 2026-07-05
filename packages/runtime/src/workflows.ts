@@ -18,6 +18,7 @@ import {
   writeBrowserEvidence,
   writeEmptyBrowserEvidence,
   type BrowserEvidenceCollector,
+  type BrowserEvidenceTargetUrl,
 } from "./browser-evidence.js";
 import type { CodexHarnessOptions } from "./codex-harness.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
@@ -74,6 +75,8 @@ export type CommandSummary = {
 };
 
 export type WorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
+  readonly browserEvidenceCollector?: BrowserEvidenceCollector;
+  readonly browserEvidenceTargetUrl?: string;
   readonly codexHarness?: CodexHarnessOptions;
   readonly harnessName?: HarnessName;
   readonly processHarness?: ProcessHarnessConfig;
@@ -100,6 +103,12 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
     const input = yield* fs.readFileString(specPath);
     const fallbackTitle = path.basename(specPath, path.extname(specPath));
     const spec = yield* parseSpec(input, fallbackTitle);
+    const browserEvidenceTargetUrl =
+      options.browserEvidenceTargetUrl === undefined
+        ? undefined
+        : yield* parseBrowserEvidenceTargetUrlEffect(
+            options.browserEvidenceTargetUrl,
+          );
     yield* fs.makeDirectory(paths.root, { recursive: true });
     yield* fs.writeFileString(paths.input, input);
     yield* fs.writeFileString(paths.latest, runId);
@@ -206,6 +215,18 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
       payload: { verificationResultPath: "verification-result.json" },
       type: "VERIFICATION_COMPLETED",
     });
+    if (browserEvidenceTargetUrl !== undefined) {
+      yield* recordBrowserEvidence(
+        runId,
+        paths,
+        browserEvidenceTargetUrl,
+        options,
+      ).pipe(
+        Effect.catchTag("GaiaRuntimeError", (error) =>
+          recordRunFailure(runId, paths, "reporting", error),
+        ),
+      );
+    }
     yield* runReviewPhase(runId, paths, spec, "evidence", options);
     yield* appendEvent(runId, paths, { type: "REPORT_STARTED" });
     yield* writeReport({ paths, runId, skillManifest, spec });
@@ -280,6 +301,7 @@ function collectBrowserEvidenceUnlocked(
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
+    const targetUrl = yield* parseBrowserEvidenceTargetUrlEffect(targetUrlInput);
     const run = yield* statusRun(runIdInput, { rootDirectory });
 
     if (run.status !== "completed") {
@@ -292,38 +314,8 @@ function collectBrowserEvidenceUnlocked(
       );
     }
 
-    const targetUrl = yield* parseBrowserEvidenceTargetUrlEffect(targetUrlInput);
     const paths = yield* makeRunPaths(run.runId, { rootDirectory });
-    const collector =
-      options.browserEvidenceCollector ?? playwrightBrowserEvidenceCollector;
-    const captured = yield* collector({ paths, targetUrl }).pipe(
-      Effect.catchTag("GaiaRuntimeError", (error) =>
-        Effect.succeed(
-          failedBrowserEvidence({
-            message: error.message,
-            targetUrl,
-          }),
-        ),
-      ),
-    );
-    const evidence = yield* writeBrowserEvidence({ evidence: captured, paths });
-    const record = browserEvidenceRecord({
-      evidence,
-      paths,
-      runId: run.runId,
-      targetUrl,
-    });
-
-    yield* appendEvent(run.runId, paths, {
-      payload: {
-        evidencePath: runRelative(paths, paths.browserEvidence),
-        status: record.status,
-        targetUrl,
-      },
-      type: "BROWSER_EVIDENCE_RECORDED",
-    });
-
-    return record;
+    return yield* recordBrowserEvidence(run.runId, paths, targetUrl, options);
   });
 }
 
@@ -438,6 +430,48 @@ function parseRunIdEffect(input: string) {
   });
 }
 
+function recordBrowserEvidence(
+  runId: RunId,
+  paths: RunPaths,
+  targetUrl: BrowserEvidenceTargetUrl,
+  options: Readonly<{
+    readonly browserEvidenceCollector?: BrowserEvidenceCollector;
+  }>,
+) {
+  return Effect.gen(function* () {
+    const collector =
+      options.browserEvidenceCollector ?? playwrightBrowserEvidenceCollector;
+    const captured = yield* collector({ paths, targetUrl }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        Effect.succeed(
+          failedBrowserEvidence({
+            message: error.message,
+            targetUrl,
+          }),
+        ),
+      ),
+    );
+    const evidence = yield* writeBrowserEvidence({ evidence: captured, paths });
+    const record = browserEvidenceRecord({
+      evidence,
+      paths,
+      runId,
+      targetUrl,
+    });
+
+    yield* appendEvent(runId, paths, {
+      payload: {
+        evidencePath: runRelative(paths, paths.browserEvidence),
+        status: record.status,
+        targetUrl,
+      },
+      type: "BROWSER_EVIDENCE_RECORDED",
+    });
+
+    return record;
+  });
+}
+
 function recordRunFailure(
   runId: RunId,
   paths: RunPaths,
@@ -473,6 +507,7 @@ function runReviewPhase(
     });
     const review = yield* runReviewer(
       ReviewRunRequest.make({
+        browserEvidencePath: paths.browserEvidence,
         markdownPath: reviewPaths.markdown,
         phase,
         resultPath: reviewPaths.result,

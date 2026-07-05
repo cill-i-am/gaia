@@ -207,7 +207,9 @@ available:
 6. **Read-only browser evidence shape**: completed and extended. Runs now
    write typed `browser-evidence.json` with `not-collected` status, and the
    explicit `collect-browser-evidence` command can populate screenshots,
-   console messages, or failed-capture evidence for completed runs.
+   console messages, or failed-capture evidence for completed runs. `gaia run
+   --browser-url <url>` can also collect browser evidence before the evidence
+   reviewer runs.
 7. **CI watcher model**: completed. GitHub check recording now writes
    `ci-watch-state.json` with latest snapshot, status, terminal flag, and next
    action before any background daemon exists.

@@ -12,6 +12,7 @@ import {
   type ReviewerSessionAdapterKind,
   type ReviewerSessionKind,
 } from "./reviewer-session-evidence.js";
+import { parseBrowserEvidenceJson } from "./browser-evidence.js";
 import { VerificationResult } from "./verifier.js";
 import { parseWorkerPlanJson } from "./worker-plan.js";
 import { WorkspacePreparationResult } from "./workspace.js";
@@ -48,6 +49,7 @@ export class ReviewResult extends Schema.Class<ReviewResult>("ReviewResult")({
 export class ReviewRunRequest extends Schema.Class<ReviewRunRequest>(
   "ReviewRunRequest",
 )({
+  browserEvidencePath: Schema.NonEmptyString,
   markdownPath: Schema.NonEmptyString,
   phase: ReviewPhaseSchema,
   resultPath: Schema.NonEmptyString,
@@ -214,6 +216,11 @@ function reviewPlan(request: ReviewRunRequest) {
 
 function reviewEvidence(request: ReviewRunRequest) {
   return Effect.gen(function* () {
+    const browserEvidence = yield* decodeJsonArtifact(
+      request.browserEvidencePath,
+      parseBrowserEvidenceJson,
+      "BrowserEvidence",
+    );
     const harnessResult = yield* decodeJsonArtifact(
       request.workerResultPath,
       parseHarnessRunResultJson,
@@ -234,6 +241,10 @@ function reviewEvidence(request: ReviewRunRequest) {
         ReviewFinding.make({
           message: `Verification ${verificationResult.status} for ${verificationResult.checkedArtifacts.length} artifact(s).`,
           severity: "info",
+        }),
+        ReviewFinding.make({
+          message: `Browser evidence ${browserEvidence.status} for ${browserEvidence.pages.length} page(s).`,
+          severity: browserEvidence.status === "failed" ? "warning" : "info",
         }),
       ],
       phase: "evidence",

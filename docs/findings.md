@@ -735,3 +735,33 @@ Verification:
   `browser-evidence.json`, appends the event, and keeps resume working.
 - Runtime tests prove failed collector output is recorded as `status: "failed"`
   evidence.
+
+## Slice 17: Run-Integrated Browser Evidence Capture
+
+Outcome: Gaia can now collect browser evidence during `gaia run` with
+`--browser-url <http-url>`. The URL is parsed before worker execution, the
+browser collector runs after harness verification, and
+`BROWSER_EVIDENCE_RECORDED` lands before the evidence reviewer starts.
+
+Findings:
+
+- The explicit completed-run command and run-integrated path should share one
+  recording helper. That keeps the event payload, failed-capture behavior, and
+  artifact shape identical.
+- The URL is command input, so it must parse before Gaia starts worker work.
+  Invalid target URLs now fail fast instead of producing a half-useful run.
+- Browser capture failure remains non-blocking. Gaia records
+  `status: "failed"` browser evidence and lets the evidence reviewer/report
+  reflect that fact. Turning that into a gate belongs to a future policy slice.
+- Event replay needed to accept browser evidence while the run is in
+  `reporting`, not only after completion, because integrated capture occurs
+  before `REPORT_COMPLETED`.
+
+Verification:
+
+- Core replay test proves `BROWSER_EVIDENCE_RECORDED` can be replayed before
+  report completion.
+- Runtime test proves `runSpecFile` records browser evidence before evidence
+  review when given a target URL.
+- Runtime test proves integrated failed capture still leaves the run completed
+  with failed browser evidence.

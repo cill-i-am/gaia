@@ -181,7 +181,7 @@ Non-goals:
 
 ## Phase 4: Live Browser Evidence Capture
 
-Status: **In progress: explicit CLI capture completed; run-integrated gates remain**
+Status: **Completed for explicit and run-integrated target URL capture; gates remain**
 
 Goal:
 
@@ -203,17 +203,18 @@ Completed foundation:
 
 - `gaia collect-browser-evidence <run-id> --url <http-url>` captures a
   completed run's target page through Playwright.
+- `gaia run --browser-url <http-url>` captures browser evidence after
+  verification and before the evidence reviewer runs.
 - Browser screenshots are stored under the run directory's `browser/` folder.
 - Console messages, page URL, screenshots, and failed-capture notes are written
   to `browser-evidence.json`.
 - A `BROWSER_EVIDENCE_RECORDED` event enriches completed runs without changing
-  their completed state.
+  their completed state, and can also be replayed while a run is still in the
+  reporting phase.
 - Evidence publishing copies the `browser/` folder when screenshots exist.
 
 Remaining:
 
-- Let `gaia run` collect browser evidence before evidence review when a target
-  URL is known.
 - Define profile/check policy for when failed browser evidence blocks a run.
 - Add target URL discovery from worker output, preview deploys, or future
   profiles.

@@ -31,7 +31,8 @@ before any real coding harness or external integration is introduced.
 19. Can record a GitHub check snapshot against a completed run, optionally
     polling until checks are no longer pending.
 20. Writes resumable CI watch state whenever GitHub checks are recorded.
-21. Can collect browser screenshot and console evidence for a completed run.
+21. Can collect browser screenshot and console evidence for a completed run, or
+    during a run when given a target URL.
 
 ## What It Does Not Do Yet
 
@@ -90,6 +91,7 @@ Run the local loop:
 ```sh
 pnpm gaia run examples/specs/smoke.md
 pnpm gaia run examples/specs/smoke.md --harness fake
+pnpm gaia run examples/specs/smoke.md --browser-url http://localhost:3000
 pnpm gaia run examples/specs/smoke.md --workspace-source .
 pnpm gaia run examples/specs/smoke.md --skill-manifest ./skills.json
 pnpm gaia status
@@ -239,12 +241,16 @@ with:
 }
 ```
 
-`collect-browser-evidence` opens the provided URL with Playwright, captures a
-full-page screenshot under `browser/`, records console messages, rewrites
-`browser-evidence.json`, and appends a `BROWSER_EVIDENCE_RECORDED` event. If
-capture is requested but the browser pass cannot run, Gaia writes `status:
-"failed"` evidence instead of pretending the page was verified. Publishing run
-evidence copies the `browser/` directory when screenshots exist.
+`gaia run --browser-url <url>` opens the provided URL with Playwright after
+verification and before evidence review. It captures a full-page screenshot
+under `browser/`, records console messages, rewrites `browser-evidence.json`,
+and appends a `BROWSER_EVIDENCE_RECORDED` event so the evidence reviewer sees
+the browser artifact. `collect-browser-evidence` can do the same for an already
+completed run. If capture is requested but the browser pass cannot run, Gaia
+writes `status: "failed"` evidence instead of pretending the page was verified.
+Failed browser capture does not fail the run by default; future evidence gates
+can choose to make that stricter. Publishing run evidence copies the `browser/`
+directory when screenshots exist.
 
 `publish-pr` copies selected evidence into `gaia-runs/<run-id>/` on a new
 `gaia/<run-id>` branch, commits it, pushes it, opens a draft GitHub PR, and

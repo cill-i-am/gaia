@@ -2,7 +2,7 @@ import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schema } from "effect";
 import { execPath } from "node:process";
-import { parseRunId } from "@gaia/core";
+import { parseRunEvent, parseRunId } from "@gaia/core";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
   BrowserEvidence,
@@ -702,6 +702,95 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("collects browser evidence during a run before evidence review", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          specPath,
+          "Run with integrated browser evidence.\n",
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          browserEvidenceCollector: collectedBrowserEvidenceCollector,
+          browserEvidenceTargetUrl: "http://localhost:3000",
+          rootDirectory: cwd,
+        });
+        const browserEvidence = parseBrowserEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/browser-evidence.json`,
+            ),
+          ),
+        );
+        const evidenceReview = yield* fs.readFileString(
+          `${summary.runDirectory}/evidence-review.md`,
+        );
+        const events = yield* readRunEvents(fs, summary.runDirectory);
+        const browserEventIndex = events.findIndex(
+          (event) => event.type === "BROWSER_EVIDENCE_RECORDED",
+        );
+        const evidenceReviewStartedIndex = events.findIndex(
+          (event) =>
+            event.type === "REVIEW_STARTED" &&
+            event.payload["phase"] === "evidence",
+        );
+
+        assert.strictEqual(summary.status, "completed");
+        assert.strictEqual(browserEvidence.status, "collected");
+        assert.strictEqual(
+          browserEvidence.pages[0]?.url,
+          "http://localhost:3000/",
+        );
+        assert.include(
+          evidenceReview,
+          "Browser evidence collected for 1 page(s).",
+        );
+        assert.isTrue(browserEventIndex >= 0);
+        assert.isTrue(evidenceReviewStartedIndex >= 0);
+        assert.isTrue(browserEventIndex < evidenceReviewStartedIndex);
+      }),
+    );
+
+    it.effect("keeps the run completed when integrated browser capture fails", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          specPath,
+          "Run with failed integrated browser evidence.\n",
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          browserEvidenceCollector: failedBrowserEvidenceCollector,
+          browserEvidenceTargetUrl: "http://localhost:3000",
+          rootDirectory: cwd,
+        });
+        const browserEvidence = parseBrowserEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/browser-evidence.json`,
+            ),
+          ),
+        );
+        const evidenceReview = yield* fs.readFileString(
+          `${summary.runDirectory}/evidence-review.md`,
+        );
+        const status = yield* statusRun(summary.runId, { rootDirectory: cwd });
+
+        assert.strictEqual(summary.status, "completed");
+        assert.strictEqual(status.status, "completed");
+        assert.strictEqual(browserEvidence.status, "failed");
+        assert.include(browserEvidence.notes.join("\n"), "browser unavailable");
+        assert.include(
+          evidenceReview,
+          "warning: Browser evidence failed for 0 page(s).",
+        );
+      }),
+    );
+
     it.effect("rejects unpinned skill manifest entries", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -994,6 +1083,9 @@ describe("runtime workflows", () => {
           );
           assert.include(command.stdin, "Status: approved");
           assert.include(command.stdin, "Summary: ");
+          if (codexReviewPhaseFromPrompt(command.stdin) === "evidence") {
+            assert.include(command.stdin, "Browser evidence JSON:");
+          }
         }
         assert.include(planReview, "Reviewer: codex-reviewer");
         assert.include(
@@ -1871,6 +1963,16 @@ const tempDirectory = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   return yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
 });
+
+function readRunEvents(fs: FileSystem.FileSystem, runDirectory: string) {
+  return Effect.gen(function* () {
+    const body = yield* fs.readFileString(`${runDirectory}/events.jsonl`);
+    return body
+      .trim()
+      .split(/\r?\n/u)
+      .map((line) => parseRunEvent(JSON.parse(line)));
+  });
+}
 
 function runIdFromCodexPrompt(prompt: string) {
   return prompt.match(/^Run ID: (.+)$/mu)?.[1] ?? "missing-run-id";

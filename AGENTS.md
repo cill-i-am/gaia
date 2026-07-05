@@ -73,6 +73,7 @@ creates a durable run directory, writes a worker plan, runs a harness, records
 read-only review evidence, verifies one artifact, writes reports, and can replay
 completed runs from the event log.
 
-Anything involving real coding agents, worktrees, browser testing, live reviewer
-threads, background CI check watching, or merge/deploy automation is a future
-slice.
+Anything involving real coding agents, worktrees, live reviewer threads,
+background CI check watching, or merge/deploy automation is a future slice.
+Browser evidence collection exists for explicit target URLs; do not add target
+discovery or browser evidence gates unless the task asks.
