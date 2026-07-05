@@ -148,7 +148,6 @@ Completed behavior:
 
 Remaining behavior:
 
-- attach richer report/evidence comments once PR comments are needed;
 - connect a real Codex worker harness to the workspace loop.
 
 Non-goals:
@@ -237,9 +236,10 @@ available:
     <run-id>` turns a blocked `pr-loop-state.json` into
     `remediation-spec.md`, appends `GITHUB_REMEDIATION_SPEC_RECORDED`, and
     refuses ready or waiting PR loops.
-11. **PR evidence comments**: next. Attach a concise Gaia status/evidence
-    comment to a PR without hiding the underlying artifacts or taking merge
-    authority.
+11. **PR evidence comments**: completed. `gaia comment-pr <run-id> <pr>`
+    writes `github-pr-comment.md`, posts it through `gh pr comment`, appends
+    `GITHUB_PR_COMMENT_RECORDED`, and keeps the comment timestamped rather
+    than pretending to own review-thread state.
 12. **Linear issue graph**: next planning-track slice. Intake one Linear issue,
     preserve blocker relationships through Linear blockers, and sync Gaia run
     state back to the issue.

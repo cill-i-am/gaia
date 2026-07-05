@@ -385,7 +385,7 @@ Non-goals:
 
 ## Phase 5.95: PR Evidence Comments
 
-Status: **Next**
+Status: **Completed for timestamped Gaia evidence comments**
 
 Goal:
 
@@ -405,6 +405,16 @@ Done when:
 - The comment does not replace durable artifacts in `.gaia/runs`.
 - The command is explicit and bounded; it does not merge, approve, or dismiss
   review feedback.
+
+Completed foundation:
+
+- `gaia comment-pr <run-id> <pr>` writes `github-pr-comment.md`.
+- The comment body references published Gaia evidence paths under
+  `gaia-runs/<run-id>/`.
+- The command posts through `gh pr comment <pr> --body-file <artifact>`.
+- `GITHUB_PR_COMMENT_RECORDED` replays into run snapshots.
+- The first version is deliberately timestamped, not idempotent, because Gaia
+  does not yet own unresolved review-thread state.
 
 Non-goals:
 

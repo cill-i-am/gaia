@@ -25,6 +25,8 @@ export type RunMachineContext = {
   readonly githubFeedbackReviewCount: number | undefined;
   readonly githubFeedbackReviewRequestCount: number | undefined;
   readonly githubFeedbackStatus: string | undefined;
+  readonly githubPrCommentPath: string | undefined;
+  readonly githubPrCommentUrl: string | undefined;
   readonly githubPrLoopBlockerCount: number | undefined;
   readonly githubPrLoopNextAction: string | undefined;
   readonly githubPrLoopPath: string | undefined;
@@ -106,6 +108,12 @@ export type RunMachineEvent =
       readonly status: string;
     }
   | {
+      readonly type: "GITHUB_PR_COMMENT_RECORDED";
+      readonly commentPath: string;
+      readonly commentUrl?: string;
+      readonly pullRequest: string;
+    }
+  | {
       readonly type: "GITHUB_REMEDIATION_SPEC_RECORDED";
       readonly blockerCount: number;
       readonly nextAction: string;
@@ -128,6 +136,8 @@ const initialContext: RunMachineContext = {
   githubFeedbackReviewCount: undefined,
   githubFeedbackReviewRequestCount: undefined,
   githubFeedbackStatus: undefined,
+  githubPrCommentPath: undefined,
+  githubPrCommentUrl: undefined,
   githubPrLoopBlockerCount: undefined,
   githubPrLoopNextAction: undefined,
   githubPrLoopPath: undefined,
@@ -174,6 +184,9 @@ export const runMachine = createMachine({
         },
         GITHUB_PR_LOOP_RECORDED: {
           actions: "recordGitHubPrLoop",
+        },
+        GITHUB_PR_COMMENT_RECORDED: {
+          actions: "recordGitHubPrComment",
         },
         GITHUB_REMEDIATION_SPEC_RECORDED: {
           actions: "recordGitHubRemediationSpec",
@@ -357,6 +370,20 @@ export const runMachine = createMachine({
           ? event.pullRequest
           : undefined,
     }),
+    recordGitHubPrComment: assign({
+      githubPrCommentPath: ({ event }) =>
+        event.type === "GITHUB_PR_COMMENT_RECORDED"
+          ? event.commentPath
+          : undefined,
+      githubPrCommentUrl: ({ event }) =>
+        event.type === "GITHUB_PR_COMMENT_RECORDED"
+          ? event.commentUrl
+          : undefined,
+      githubPullRequest: ({ event }) =>
+        event.type === "GITHUB_PR_COMMENT_RECORDED"
+          ? event.pullRequest
+          : undefined,
+    }),
     recordGitHubRemediationSpec: assign({
       githubRemediationBlockerCount: ({ event }) =>
         event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
@@ -514,6 +541,14 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         pullRequest: getStringPayload(event, "pullRequest"),
         status: getStringPayload(event, "status"),
         type: event.type,
+      };
+    case "GITHUB_PR_COMMENT_RECORDED":
+      const commentUrl = getOptionalStringPayload(event, "commentUrl");
+      return {
+        commentPath: getStringPayload(event, "commentPath"),
+        pullRequest: getStringPayload(event, "pullRequest"),
+        type: event.type,
+        ...(commentUrl === undefined ? {} : { commentUrl }),
       };
     case "GITHUB_REMEDIATION_SPEC_RECORDED":
       return {
@@ -685,6 +720,12 @@ function snapshotContext(
   }
   if (context.githubFeedbackStatus !== undefined) {
     output.githubFeedbackStatus = context.githubFeedbackStatus;
+  }
+  if (context.githubPrCommentPath !== undefined) {
+    output.githubPrCommentPath = context.githubPrCommentPath;
+  }
+  if (context.githubPrCommentUrl !== undefined) {
+    output.githubPrCommentUrl = context.githubPrCommentUrl;
   }
   if (context.githubPrLoopBlockerCount !== undefined) {
     output.githubPrLoopBlockerCount = context.githubPrLoopBlockerCount;

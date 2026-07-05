@@ -27,6 +27,7 @@ import {
   makeCodexReviewerConfig,
 } from "./codex-reviewer.js";
 import {
+  commentGitHubPullRequest,
   coordinateGitHubPrLoop,
   createGitHubRemediationSpec,
   inspectGitHubChecks,
@@ -3013,6 +3014,94 @@ describe("runtime workflows", () => {
         if (error instanceof GaiaRuntimeError) {
           assert.strictEqual(error.code, "GitHubPrLoopNotBlocked");
         }
+      }),
+    );
+
+    it.effect("publishes a timestamped Gaia evidence comment to a PR", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Comment with Gaia evidence.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (input.args.join(" ").startsWith("pr checks")) {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify([
+                  {
+                    link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                    name: "test",
+                    state: "FAILURE",
+                    workflow: "CI",
+                  },
+                ]),
+              };
+            }
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify(
+                prFeedbackView({ reviewDecision: "CHANGES_REQUESTED" }),
+              ),
+            };
+          }),
+          rootDirectory: cwd,
+        });
+        yield* createGitHubRemediationSpec(run.runId, { rootDirectory: cwd });
+
+        const commands: Array<GitHubCommandInput> = [];
+        const comment = yield* commentGitHubPullRequest(run.runId, "1", {
+          commandRunner: recordingGitHubRunner(commands, (input) => {
+            const args = input.args.join(" ");
+            if (input.command === "git" && args === "rev-parse --is-inside-work-tree") {
+              return { exitCode: 0, stderr: "", stdout: "true\n" };
+            }
+            if (input.command === "gh" && args === "auth status") {
+              return { exitCode: 0, stderr: "", stdout: "" };
+            }
+            if (input.command === "gh" && args.startsWith("pr comment 1 --body-file ")) {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: "https://github.com/cill-i-am/gaia/pull/1#issuecomment-1\n",
+              };
+            }
+
+            return {
+              exitCode: 1,
+              stderr: `unexpected command ${input.command} ${args}`,
+              stdout: "",
+            };
+          }),
+          rootDirectory: cwd,
+        });
+        const markdown = yield* fs.readFileString(comment.commentPath);
+        const events = yield* fs.readFileString(`${run.runDirectory}/events.jsonl`);
+        const commentCommand = commands.find(
+          (command) =>
+            command.command === "gh" &&
+            command.args.join(" ").startsWith("pr comment 1 --body-file "),
+        );
+
+        assert.strictEqual(comment.status, "posted");
+        assert.strictEqual(
+          comment.commentUrl,
+          "https://github.com/cill-i-am/gaia/pull/1#issuecomment-1",
+        );
+        assert.isDefined(commentCommand);
+        assert.include(markdown, `<!-- gaia:evidence-comment run-id=${run.runId} -->`);
+        assert.include(markdown, `gaia-runs/${run.runId}/report.md`);
+        assert.include(markdown, `gaia-runs/${run.runId}/pr-loop-state.json`);
+        assert.include(markdown, `gaia-runs/${run.runId}/remediation-spec.md`);
+        assert.include(markdown, "Gaia has not approved, merged, or resolved review feedback");
+        assert.include(events, '"type":"GITHUB_PR_COMMENT_RECORDED"');
+        assert.include(events, '"commentPath":"github-pr-comment.md"');
+        assert.include(events, '"commentUrl":"https://github.com/cill-i-am/gaia/pull/1#issuecomment-1"');
       }),
     );
 

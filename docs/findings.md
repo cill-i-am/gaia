@@ -1008,3 +1008,32 @@ Verification:
   ordered blockers and no auto-merge instruction.
 - Runtime test proves waiting PR-loop state fails with `GitHubPrLoopNotBlocked`.
 - CLI help smoke proves `plan-remediation` exposes `<run-id>` and `--json`.
+
+## Slice 26: PR Evidence Comments
+
+Outcome: Gaia now has `gaia comment-pr <run-id> <pr>`. The command writes
+`github-pr-comment.md`, posts it with `gh pr comment --body-file`, appends
+`GITHUB_PR_COMMENT_RECORDED`, and records the comment URL when GitHub CLI prints
+one.
+
+Findings:
+
+- The first comment model should be timestamped rather than idempotent. Gaia
+  does not yet own unresolved review-thread state, so pretending it can safely
+  update the correct existing comment would add false confidence.
+- The comment should reference published evidence paths under
+  `gaia-runs/<run-id>/`, not local absolute paths from the operator machine.
+- Posting evidence is a GitHub mutation, but it should not require a clean
+  worktree or synchronized base branch because it does not mutate local git.
+- The command should state that Gaia has not approved, merged, or resolved
+  feedback with the comment.
+
+Verification:
+
+- Core replay test proves `GITHUB_PR_COMMENT_RECORDED` enriches completed runs
+  without leaving the completed state.
+- Runtime test proves Gaia writes the comment body, invokes
+  `gh pr comment <pr> --body-file <artifact>`, captures the returned URL, and
+  records the event.
+- CLI help smoke proves `comment-pr` exposes `<run-id> <pull-request>` and
+  `--json`.

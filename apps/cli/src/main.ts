@@ -9,6 +9,7 @@ import type {
   GitHubChecksSummary,
   GitHubCiWatchSummary,
   GitHubPrFeedbackSummary,
+  GitHubPrCommentSummary,
   GitHubPrLoopSummary,
   GitHubRemediationSpecSummary,
   GitHubPublishPreflightSummary,
@@ -18,6 +19,7 @@ import type {
 import {
   GaiaRuntimeError,
   collectBrowserEvidence,
+  commentGitHubPullRequest,
   coordinateGitHubPrLoop,
   createGitHubRemediationSpec,
   inspectGitHubChecks,
@@ -411,6 +413,25 @@ const planRemediation = Command.make("plan-remediation", {
   ),
 );
 
+const commentPr = Command.make("comment-pr", {
+  json,
+  runId,
+  pullRequest,
+}).pipe(
+  Command.withDescription(
+    "Publish a timestamped Gaia evidence comment to a GitHub PR.",
+  ),
+  Command.withHandler(({ json, pullRequest, runId }) =>
+    renderEffect(
+      commentGitHubPullRequest(runId, pullRequest, {
+        rootDirectory: invocationRoot(),
+      }),
+      json,
+      renderGitHubPrCommentSummary,
+    ),
+  ),
+);
+
 const collectBrowserEvidenceCommand = Command.make("collect-browser-evidence", {
   browserTargetUrl,
   json,
@@ -446,6 +467,7 @@ const cli = Command.make("gaia").pipe(
     watchPrFeedback,
     prLoop,
     planRemediation,
+    commentPr,
   ]),
 );
 
@@ -862,6 +884,19 @@ function renderGitHubPrLoopSummary(summary: GitHubPrLoopSummary) {
       (blocker) =>
         `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`,
     ),
+  ].join("\n");
+}
+
+function renderGitHubPrCommentSummary(summary: GitHubPrCommentSummary) {
+  const commentUrl =
+    summary.commentUrl === undefined ? "unknown" : summary.commentUrl;
+
+  return [
+    `pr comment: ${summary.status}`,
+    `run: ${summary.runId}`,
+    `pr: ${summary.pr}`,
+    `comment body: ${summary.commentPath}`,
+    `comment url: ${commentUrl}`,
   ].join("\n");
 }
 

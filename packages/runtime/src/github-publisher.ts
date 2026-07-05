@@ -335,6 +335,16 @@ export class GitHubPrLoopSummary extends Schema.Class<GitHubPrLoopSummary>(
   status: GitHubPrLoopStatusSchema,
 }) {}
 
+export class GitHubPrCommentSummary extends Schema.Class<GitHubPrCommentSummary>(
+  "GitHubPrCommentSummary",
+)({
+  commentPath: Schema.NonEmptyString,
+  commentUrl: Schema.optionalKey(Schema.String),
+  pr: GitHubPullRequestSelectorSchema,
+  runId: RunIdSchema,
+  status: Schema.Literal("posted"),
+}) {}
+
 export class GitHubRemediationSpecSummary extends Schema.Class<GitHubRemediationSpecSummary>(
   "GitHubRemediationSpecSummary",
 )({
@@ -506,6 +516,11 @@ export type GitHubPrFeedbackOptions = RunStorageOptions & {
 
 /** Options for recording combined CI and human PR feedback. */
 export type GitHubPrLoopOptions = RunStorageOptions & {
+  readonly commandRunner?: GitHubCommandRunner;
+};
+
+/** Options for publishing a Gaia evidence comment to a GitHub PR. */
+export type GitHubPrCommentOptions = RunStorageOptions & {
   readonly commandRunner?: GitHubCommandRunner;
 };
 
@@ -972,6 +987,18 @@ export function createGitHubRemediationSpec(
   );
 }
 
+/** Publish a timestamped Gaia evidence comment to a GitHub pull request. */
+export function commentGitHubPullRequest(
+  runIdInput: string,
+  prInput: string,
+  options: GitHubPrCommentOptions = {},
+) {
+  return withRunStoreLock(
+    options,
+    commentGitHubPullRequestUnlocked(runIdInput, prInput, options),
+  );
+}
+
 function recordGitHubChecksUnlocked(
   runIdInput: string,
   prInput: string,
@@ -1233,6 +1260,66 @@ function createGitHubRemediationSpecUnlocked(
       specPath: paths.githubRemediationSpec,
       status: "created",
       title,
+    });
+  });
+}
+
+function commentGitHubPullRequestUnlocked(
+  runIdInput: string,
+  prInput: string,
+  options: GitHubPrCommentOptions,
+) {
+  return Effect.gen(function* () {
+    const rootDirectory = options.rootDirectory ?? ".";
+    const runner = options.commandRunner ?? nodeCommandRunner;
+    const run = yield* statusRun(runIdInput, { rootDirectory });
+
+    if (run.status !== "completed") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "RunNotCompleted",
+          message: `Run ${run.runId} must be completed before Gaia can comment on a pull request.`,
+          recoverable: false,
+        }),
+      );
+    }
+
+    const pr = yield* parseGitHubPullRequestSelectorEffect(prInput);
+    const paths = yield* makeRunPaths(run.runId, { rootDirectory });
+    const commentBody = yield* gitHubPrCommentMarkdown({
+      paths,
+      pr,
+      runId: run.runId,
+    });
+
+    yield* writeGitHubPrComment(paths, { body: commentBody });
+    yield* requireGitRepository(runner, rootDirectory);
+    yield* requireGitHubAuth(runner, rootDirectory);
+    const result = yield* runRequiredCommand(runner, rootDirectory, "gh", [
+      "pr",
+      "comment",
+      pr,
+      "--body-file",
+      paths.githubPrComment,
+    ]);
+    const commentUrl = optionalTrimmedString(result.stdout);
+    const commentPath = runRelative(paths, paths.githubPrComment);
+
+    yield* appendEvent(run.runId, paths, {
+      payload: {
+        commentPath,
+        pullRequest: pr,
+        ...(commentUrl === undefined ? {} : { commentUrl }),
+      },
+      type: "GITHUB_PR_COMMENT_RECORDED",
+    });
+
+    return GitHubPrCommentSummary.make({
+      commentPath: paths.githubPrComment,
+      ...(commentUrl === undefined ? {} : { commentUrl }),
+      pr,
+      runId: run.runId,
+      status: "posted",
     });
   });
 }
@@ -1631,6 +1718,25 @@ function readGitHubPrLoopState(paths: RunPaths) {
   );
 }
 
+function readOptionalGitHubPrLoopState(paths: RunPaths) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const exists = yield* fs.exists(paths.prLoopState);
+    return exists ? yield* readGitHubPrLoopState(paths) : undefined;
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "GitHubPrLoopStateReadFailed",
+          message: "Gaia could not read GitHub PR loop state.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
 function writeGitHubRemediationSpec(
   paths: RunPaths,
   input: Readonly<{ body: string }>,
@@ -1650,6 +1756,132 @@ function writeGitHubRemediationSpec(
       ),
     ),
   );
+}
+
+function gitHubPrCommentMarkdown(
+  input: Readonly<{
+    paths: RunPaths;
+    pr: GitHubPullRequestSelector;
+    runId: RunId;
+  }>,
+) {
+  return Effect.gen(function* () {
+    const artifacts = yield* gitHubPrCommentArtifacts(input.paths, input.runId);
+    const prLoop = yield* readOptionalGitHubPrLoopState(input.paths);
+    const prLoopLines =
+      prLoop === undefined
+        ? []
+        : [
+            `PR-loop status: \`${prLoop.status}\``,
+            `Next action: \`${prLoop.nextAction}\``,
+            `Blockers: \`${prLoop.blockerCount}\``,
+          ];
+
+    return [
+      `<!-- gaia:evidence-comment run-id=${input.runId} -->`,
+      "",
+      `## Gaia evidence for \`${input.runId}\``,
+      "",
+      `GitHub PR: \`${input.pr}\``,
+      `Posted: ${new Date().toISOString()}`,
+      ...prLoopLines,
+      "",
+      "This is a timestamped Gaia evidence comment. Rerunning the command posts a new comment for the latest observation.",
+      "",
+      "### Evidence artifacts",
+      "",
+      "If this PR branch contains Gaia evidence, inspect:",
+      "",
+      ...artifacts.map(
+        (artifact) => `- ${artifact.label}: \`${artifact.path}\``,
+      ),
+      "",
+      "Gaia has not approved, merged, or resolved review feedback with this comment.",
+      "",
+    ].join("\n");
+  });
+}
+
+function gitHubPrCommentArtifacts(paths: RunPaths, runId: RunId) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const evidenceRoot = `gaia-runs/${runId}`;
+    const optionalArtifacts = [
+      {
+        exists: yield* fs.exists(paths.githubChecks),
+        label: "GitHub check snapshots",
+        path: `${evidenceRoot}/github-checks/`,
+      },
+      {
+        exists: yield* fs.exists(paths.githubFeedback),
+        label: "GitHub PR feedback",
+        path: `${evidenceRoot}/github-feedback.json`,
+      },
+      {
+        exists: yield* fs.exists(paths.prLoopState),
+        label: "PR-loop state",
+        path: `${evidenceRoot}/pr-loop-state.json`,
+      },
+      {
+        exists: yield* fs.exists(paths.githubRemediationSpec),
+        label: "Remediation spec",
+        path: `${evidenceRoot}/remediation-spec.md`,
+      },
+      {
+        exists: yield* fs.exists(paths.browserEvidence),
+        label: "Browser evidence",
+        path: `${evidenceRoot}/browser-evidence.json`,
+      },
+    ];
+
+    return [
+      { label: "Run report", path: `${evidenceRoot}/report.md` },
+      { label: "Machine report", path: `${evidenceRoot}/report.json` },
+      ...optionalArtifacts
+        .filter((artifact) => artifact.exists)
+        .map((artifact) => ({
+          label: artifact.label,
+          path: artifact.path,
+        })),
+    ];
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "GitHubPrCommentArtifactReadFailed",
+          message: "Gaia could not inspect run artifacts for the PR comment.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
+function writeGitHubPrComment(
+  paths: RunPaths,
+  input: Readonly<{ body: string }>,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(paths.githubPrComment, input.body);
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "GitHubPrCommentWriteFailed",
+          message: "Gaia could not write the GitHub PR comment body.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
+function optionalTrimmedString(input: string) {
+  const trimmed = input.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
 }
 
 function gitHubRemediationSpecMarkdown(

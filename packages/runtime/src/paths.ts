@@ -23,6 +23,7 @@ export type RunPaths = {
   readonly gaiaRoot: string;
   readonly githubChecks: string;
   readonly githubFeedback: string;
+  readonly githubPrComment: string;
   readonly githubRemediationSpec: string;
   readonly input: string;
   readonly latest: string;
@@ -90,6 +91,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       gaiaRoot: store.gaiaRoot,
       githubChecks: path.join(root, "github-checks"),
       githubFeedback: path.join(root, "github-feedback.json"),
+      githubPrComment: path.join(root, "github-pr-comment.md"),
       githubRemediationSpec: path.join(root, "remediation-spec.md"),
       input: path.join(root, "input.md"),
       latest: store.latest,
