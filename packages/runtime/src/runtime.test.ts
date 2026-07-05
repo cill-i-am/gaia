@@ -12,6 +12,10 @@ import {
   type CodexCommandRunner,
 } from "./codex-harness.js";
 import {
+  makeCodexReviewer,
+  makeCodexReviewerConfig,
+} from "./codex-reviewer.js";
+import {
   inspectGitHubChecks,
   parseGitHubCiWatchStateJson,
   preflightGitHubPublish,
@@ -601,6 +605,140 @@ describe("runtime workflows", () => {
           assert.include(command.stdin, "Run through Codex.");
           assert.include(command.stdin, "that artifact is ./output.txt");
         }
+      }),
+    );
+
+    it.effect("runs the Codex reviewer through the workflow seam", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const commands: Array<CodexCommandInput> = [];
+        const commandRunner: CodexCommandRunner = (input) =>
+          Effect.gen(function* () {
+            commands.push(input);
+            const outputLastMessagePath = yield* codexLastMessagePath(input);
+            yield* fs.writeFileString(
+              outputLastMessagePath,
+              [
+                "Status: approved",
+                `Summary: Codex reviewer approved ${codexReviewPhaseFromPrompt(input.stdin)}.`,
+                "",
+                "- The reviewed artifacts are coherent.",
+              ].join("\n"),
+            );
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: '{"type":"review.completed"}\n',
+            };
+          });
+        yield* fs.writeFileString(specPath, "Run with Codex review.\n");
+
+        const summary = yield* runSpecFile(specPath, {
+          reviewer: makeCodexReviewer({
+            commandRunner,
+            config: makeCodexReviewerConfig({
+              command: "codex-review-test",
+              timeoutMs: "12345",
+            }),
+          }),
+          rootDirectory: cwd,
+        });
+
+        const planReview = yield* fs.readFileString(
+          `${summary.runDirectory}/plan-review.md`,
+        );
+        const evidenceReview = yield* fs.readFileString(
+          `${summary.runDirectory}/evidence-review.md`,
+        );
+        const planReviewerLog = yield* fs.readFileString(
+          `${summary.runDirectory}/plan-codex-reviewer.log`,
+        );
+
+        assert.lengthOf(commands, 2);
+        for (const command of commands) {
+          assert.strictEqual(command.command, "codex-review-test");
+          assert.strictEqual(command.cwd, summary.runDirectory);
+          assert.strictEqual(command.timeoutMs, 12345);
+          assert.deepEqual(command.args, [
+            "exec",
+            "--json",
+            "--cd",
+            summary.runDirectory,
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--sandbox",
+            "read-only",
+            "--output-last-message",
+            `${summary.runDirectory}/${codexReviewPhaseFromPrompt(command.stdin)}-codex-reviewer-last-message.md`,
+            "-",
+          ]);
+          assert.include(
+            command.stdin,
+            "Do not write, edit, delete, move, or create files.",
+          );
+          assert.include(command.stdin, "Status: approved");
+          assert.include(command.stdin, "Summary: ");
+        }
+        assert.include(planReview, "Reviewer: codex-reviewer");
+        assert.include(planReview, "Codex reviewer approved plan.");
+        assert.include(evidenceReview, "Codex reviewer approved evidence.");
+        assert.include(planReviewerLog, "Codex reviewer stdout:");
+      }),
+    );
+
+    it.effect("fails before worker execution when the Codex plan reviewer blocks", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const commands: Array<CodexCommandInput> = [];
+        const commandRunner: CodexCommandRunner = (input) =>
+          Effect.gen(function* () {
+            commands.push(input);
+            const outputLastMessagePath = yield* codexLastMessagePath(input);
+            yield* fs.writeFileString(
+              outputLastMessagePath,
+              [
+                "Status: blocked",
+                "Summary: Codex reviewer found an unsafe plan.",
+                "",
+                "- Do not proceed.",
+              ].join("\n"),
+            );
+
+            return { exitCode: 0, stderr: "", stdout: "" };
+          });
+        yield* fs.writeFileString(specPath, "Block this run.\n");
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            reviewer: makeCodexReviewer({
+              commandRunner,
+              config: makeCodexReviewerConfig({
+                command: "codex-review-test",
+              }),
+            }),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "ReviewBlocked");
+        }
+
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        const events = yield* fs.readFileString(
+          `${status.runDirectory}/events.jsonl`,
+        );
+        assert.lengthOf(commands, 1);
+        assert.strictEqual(status.state, "failed");
+        assert.include(events, '"status":"blocked"');
+        assert.notInclude(events, '"type":"WORKER_STARTED"');
       }),
     );
 
@@ -1398,6 +1536,27 @@ const tempDirectory = Effect.gen(function* () {
 
 function runIdFromCodexPrompt(prompt: string) {
   return prompt.match(/^Run ID: (.+)$/mu)?.[1] ?? "missing-run-id";
+}
+
+function codexReviewPhaseFromPrompt(prompt: string) {
+  return prompt.match(/^Review phase: (plan|evidence)$/mu)?.[1] ?? "plan";
+}
+
+function codexLastMessagePath(input: CodexCommandInput) {
+  const outputLastMessageIndex = input.args.indexOf("--output-last-message");
+  const outputLastMessagePath = input.args[outputLastMessageIndex + 1];
+
+  if (outputLastMessageIndex < 0 || outputLastMessagePath === undefined) {
+    return Effect.fail(
+      makeRuntimeError({
+        code: "TestCodexLastMessagePathMissing",
+        message: "Test Codex command did not receive a last message path.",
+        recoverable: false,
+      }),
+    );
+  }
+
+  return Effect.succeed(outputLastMessagePath);
 }
 
 function recordingGitHubRunner(

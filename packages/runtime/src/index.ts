@@ -10,6 +10,15 @@ export {
 } from "./browser-evidence.js";
 export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 export {
+  codexReviewerName,
+  makeCodexReviewer,
+  makeCodexReviewerConfig,
+  makeCodexReviewerPrompt,
+  type CodexReviewerConfigInput,
+  type CodexReviewerOptions,
+  type CodexReviewerPromptInput,
+} from "./codex-reviewer.js";
+export {
   CodexCommandSchema,
   CodexCommandTimeoutMsSchema,
   CodexHarnessConfig,

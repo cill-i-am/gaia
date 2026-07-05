@@ -15,6 +15,8 @@ import {
   listRuns,
   localDirectoryWorkspaceSource,
   localSkillManifestSource,
+  makeCodexReviewer,
+  makeCodexReviewerConfig,
   makeCodexHarnessConfig,
   makeProcessHarnessConfig,
   parseHarnessName,
@@ -71,6 +73,12 @@ const harness = Flag.string("harness").pipe(
   Flag.withDescription("Select the worker harness adapter."),
   Flag.optional,
 );
+const reviewer = Flag.string("reviewer").pipe(
+  Flag.withDescription(
+    "Select the reviewer adapter. Supported values: deterministic, codex.",
+  ),
+  Flag.optional,
+);
 const harnessCommand = Flag.string("harness-command").pipe(
   Flag.withDescription("Executable command for the process harness."),
   Flag.optional,
@@ -117,6 +125,7 @@ const run = Command.make("run", {
   harnessArg,
   harnessCommand,
   json,
+  reviewer,
   skillManifest,
   specFile,
   workspaceSource,
@@ -128,6 +137,7 @@ const run = Command.make("run", {
       harnessArg,
       harnessCommand,
       json,
+      reviewer,
       skillManifest,
       specFile,
       workspaceSource,
@@ -152,6 +162,7 @@ const run = Command.make("run", {
             codexSandbox,
             codexTimeoutMs,
             skillManifest,
+            reviewer,
             workspaceSource,
           }),
         ),
@@ -311,6 +322,7 @@ function workflowOptions(
     harness?: Option.Option<string>;
     harnessArgs?: ReadonlyArray<string>;
     harnessCommand?: Option.Option<string>;
+    reviewer?: Option.Option<string>;
     skillManifest?: Option.Option<string>;
     workspaceSource?: Option.Option<string>;
   }> = {},
@@ -340,6 +352,13 @@ function workflowOptions(
           }),
         }
       : undefined;
+  const reviewer = makeReviewer({
+    codexCommand: input.codexCommand,
+    codexModel: input.codexModel,
+    codexProfile: input.codexProfile,
+    codexTimeoutMs: input.codexTimeoutMs,
+    reviewer: input.reviewer,
+  });
   const processHarness = Option.map(
     input.harnessCommand ?? Option.none(),
     (command) => makeProcessHarnessConfig(command, input.harnessArgs ?? []),
@@ -356,6 +375,7 @@ function workflowOptions(
       : {}),
     ...(Option.isSome(harnessName) ? { harnessName: harnessName.value } : {}),
     ...(codexHarness === undefined ? {} : { codexHarness }),
+    ...(reviewer === undefined ? {} : { reviewer }),
     ...(Option.isSome(processHarness)
       ? { processHarness: processHarness.value }
       : {}),
@@ -363,6 +383,37 @@ function workflowOptions(
       ? { skillManifestSource: skillManifestSource.value }
       : {}),
   };
+}
+
+function makeReviewer(
+  input: Readonly<{
+    codexCommand?: Option.Option<string> | undefined;
+    codexModel?: Option.Option<string> | undefined;
+    codexProfile?: Option.Option<string> | undefined;
+    codexTimeoutMs?: Option.Option<string> | undefined;
+    reviewer?: Option.Option<string> | undefined;
+  }>,
+) {
+  const reviewerName = Option.getOrUndefined(input.reviewer ?? Option.none());
+
+  if (reviewerName === undefined || reviewerName === "deterministic") {
+    return undefined;
+  }
+
+  if (reviewerName === "codex") {
+    return makeCodexReviewer({
+      config: makeCodexReviewerConfig({
+        command: Option.getOrUndefined(input.codexCommand ?? Option.none()),
+        model: Option.getOrUndefined(input.codexModel ?? Option.none()),
+        profile: Option.getOrUndefined(input.codexProfile ?? Option.none()),
+        timeoutMs: Option.getOrUndefined(input.codexTimeoutMs ?? Option.none()),
+      }),
+    });
+  }
+
+  throw new Error(
+    `Unknown reviewer '${reviewerName}'. Supported reviewers: deterministic, codex.`,
+  );
 }
 
 function githubPublishOptions(

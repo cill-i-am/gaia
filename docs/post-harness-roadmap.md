@@ -93,7 +93,7 @@ Non-goals:
 
 ## Phase 2: Visible Reviewer Spectrum
 
-Status: **In progress: reviewer port and read-only guard completed**
+Status: **In progress: Codex CLI reviewer adapter completed; visible sessions remain**
 
 Goal:
 
@@ -120,12 +120,16 @@ Completed foundation:
 - The deterministic reviewer remains the default implementation.
 - Custom reviewers run through the same lifecycle events and artifacts.
 - Workspace mutation by a reviewer fails the run with a typed Gaia error.
+- `gaia run --reviewer codex` can run a Codex CLI reviewer in read-only mode.
+- Codex reviewer transcripts and logs are persisted as run evidence.
+- A blocked plan review stops the run before worker execution.
 
 Remaining:
 
-- Codex-backed visible reviewer sessions.
-- Pre-implementation plan review handoff to a visible reviewer worker.
-- Final diff/evidence review handoff to a visible reviewer worker.
+- Visible Codex reviewer sessions with session/thread identifiers.
+- Structured reviewer transcript capture beyond CLI stdout/stderr and
+  last-message artifacts.
+- Side-chat/resume semantics for reviewer sessions.
 
 Non-goals:
 

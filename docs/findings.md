@@ -554,3 +554,32 @@ Verification:
   writes normal review evidence.
 - Runtime test proves a reviewer that writes to the workspace fails with typed
   `ReviewerWorkspaceMutated` and leaves the run failed.
+
+## Slice 11: Codex CLI Reviewer Adapter
+
+Outcome: Gaia can run a read-only Codex reviewer with
+`gaia run --reviewer codex`. The adapter reuses the existing Codex command-runner
+seam, forces Codex sandbox mode to `read-only`, writes phase-specific
+`*-codex-reviewer.log` and `*-codex-reviewer-last-message.md` artifacts, parses
+the final reviewer decision, and records normal Gaia review evidence.
+
+Findings:
+
+- The reviewer adapter should be narrower than the worker harness. It accepts
+  command/model/profile/timeout settings, but does not accept raw extra Codex
+  args or sandbox overrides because the reviewer safety contract is read-only.
+- The Codex reviewer returns a tiny structured Markdown contract:
+  `Status: approved|blocked` plus `Summary: ...`. Gaia parses that boundary
+  instead of treating arbitrary prose as a typed decision.
+- Blocked reviews now stop the run with typed `ReviewBlocked`. That makes the
+  plan reviewer meaningful before worker execution without giving reviewers
+  merge authority.
+- This is still not the final visible reviewer spectrum. The CLI adapter has no
+  visible Codex thread id, side-chat support, or resumable session transcript.
+
+Verification:
+
+- Runtime test proves the Codex reviewer runs through the workflow seam with
+  `codex exec --sandbox read-only`, writes logs/transcripts, and records
+  review evidence.
+- Runtime test proves a blocked plan review fails before `WORKER_STARTED`.

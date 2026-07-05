@@ -404,6 +404,19 @@ function runReviewPhase(
       type: "REVIEW_COMPLETED",
     });
 
+    if (review.status === "blocked") {
+      return yield* recordRunFailure(
+        runId,
+        paths,
+        "reviewing",
+        makeRuntimeError({
+          code: "ReviewBlocked",
+          message: `${review.phase} review blocked the run: ${review.summary}`,
+          recoverable: true,
+        }),
+      );
+    }
+
     return review;
   });
 }
