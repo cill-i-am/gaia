@@ -90,7 +90,9 @@ export {
   ReviewerNameSchema,
   defaultReviewerName,
   runReviewer,
+  type GaiaReviewer,
   type ReviewerName,
+  type ReviewerRunOptions,
 } from "./reviewer.js";
 export { writeReport } from "./report-writer.js";
 export {

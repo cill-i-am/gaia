@@ -31,6 +31,7 @@ import {
   ReviewRunRequest,
   defaultReviewerName,
   runReviewer,
+  type ReviewerRunOptions,
 } from "./reviewer.js";
 import { writeReport } from "./report-writer.js";
 import { withRunStoreLock } from "./run-store-lock.js";
@@ -59,7 +60,7 @@ export type CommandSummary = {
   readonly status: "completed" | "failed" | "running";
 };
 
-export type WorkflowOptions = RunStorageOptions & {
+export type WorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly codexHarness?: CodexHarnessOptions;
   readonly harnessName?: HarnessName;
   readonly processHarness?: ProcessHarnessConfig;
@@ -123,7 +124,7 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
         recordRunFailure(runId, paths, "reviewing", error),
       ),
     );
-    yield* runReviewPhase(runId, paths, spec, "plan");
+    yield* runReviewPhase(runId, paths, spec, "plan", options);
     yield* appendEvent(runId, paths, {
       payload: { harnessName },
       type: "WORKER_STARTED",
@@ -171,7 +172,7 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
       payload: { verificationResultPath: "verification-result.json" },
       type: "VERIFICATION_COMPLETED",
     });
-    yield* runReviewPhase(runId, paths, spec, "evidence");
+    yield* runReviewPhase(runId, paths, spec, "evidence", options);
     yield* appendEvent(runId, paths, { type: "REPORT_STARTED" });
     yield* writeReport({ paths, runId, skillManifest, spec });
     const { snapshot } = yield* appendEvent(runId, paths, {
@@ -359,13 +360,15 @@ function runReviewPhase(
   paths: RunPaths,
   spec: ReturnType<typeof parseMarkdownSpec>,
   phase: ReviewPhase,
+  options: ReviewerRunOptions,
 ) {
   return Effect.gen(function* () {
     const reviewPaths = reviewPathsForPhase(paths, phase);
+    const reviewerName = reviewerNameFromOptions(options);
     yield* appendEvent(runId, paths, {
       payload: {
         phase,
-        reviewerName: defaultReviewerName,
+        reviewerName,
       },
       type: "REVIEW_STARTED",
     });
@@ -381,7 +384,9 @@ function runReviewPhase(
         workerPlanPath: paths.workerPlanResult,
         workerResultPath: paths.workerResult,
         workspaceManifestPath: paths.workspaceManifest,
+        workspacePath: paths.workspace,
       }),
+      options,
     ).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
         recordRunFailure(runId, paths, "reviewing", error),
@@ -401,6 +406,10 @@ function runReviewPhase(
 
     return review;
   });
+}
+
+function reviewerNameFromOptions(options: ReviewerRunOptions) {
+  return options.reviewer?.name ?? defaultReviewerName;
 }
 
 function reviewPathsForPhase(paths: RunPaths, phase: ReviewPhase) {

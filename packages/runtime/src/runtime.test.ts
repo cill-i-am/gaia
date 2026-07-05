@@ -1,6 +1,6 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
-import { Effect, FileSystem } from "effect";
+import { Effect, FileSystem, Schema } from "effect";
 import { execPath } from "node:process";
 import { parseRunId } from "@gaia/core";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
@@ -30,6 +30,11 @@ import {
 } from "./harness.js";
 import { makeRunPaths, makeRunStorePaths } from "./paths.js";
 import { localSkillManifestSource } from "./skill-manifest.js";
+import {
+  ReviewResult,
+  ReviewerNameSchema,
+  type GaiaReviewer,
+} from "./reviewer.js";
 import { listRuns, resumeRun, runSpecFile, statusRun } from "./workflows.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
 import { verifyHarnessOutput } from "./verifier.js";
@@ -229,6 +234,114 @@ describe("runtime workflows", () => {
         assert.include(harnessResult, '"output.txt"');
         assert.include(harnessResult, '"exitCode": 0');
         assert.include(harnessResult, '"summary":');
+      }),
+    );
+
+    it.effect("runs a configured reviewer through the workflow seam", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const reviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
+          "recording-reviewer",
+        );
+        const reviewer: GaiaReviewer = {
+          name: reviewerName,
+          run: (request) =>
+            Effect.succeed(
+              ReviewResult.make({
+                findings: [],
+                phase: request.phase,
+                resultPath:
+                  request.phase === "plan"
+                    ? "plan-review.json"
+                    : "evidence-review.json",
+                reviewerName,
+                runId: request.runId,
+                status: "approved",
+                summary: `Recording reviewer approved ${request.phase}.`,
+              }),
+            ),
+        };
+        yield* fs.writeFileString(specPath, "Run with a configured reviewer.\n");
+
+        const summary = yield* runSpecFile(specPath, {
+          reviewer,
+          rootDirectory: cwd,
+        });
+
+        const events = yield* fs.readFileString(
+          `${summary.runDirectory}/events.jsonl`,
+        );
+        const planReview = yield* fs.readFileString(
+          `${summary.runDirectory}/plan-review.md`,
+        );
+        const evidenceReview = yield* fs.readFileString(
+          `${summary.runDirectory}/evidence-review.md`,
+        );
+
+        assert.include(events, '"reviewerName":"recording-reviewer"');
+        assert.include(planReview, "Reviewer: recording-reviewer");
+        assert.include(evidenceReview, "Recording reviewer approved evidence.");
+      }),
+    );
+
+    it.effect("fails a run when a reviewer mutates the workspace", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const reviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
+          "mutating-reviewer",
+        );
+        const reviewer: GaiaReviewer = {
+          name: reviewerName,
+          run: (request) =>
+            Effect.gen(function* () {
+              const runFs = yield* FileSystem.FileSystem;
+              yield* runFs
+                .writeFileString(
+                  `${request.workspacePath}/reviewer-note.txt`,
+                  "reviewers must be read-only\n",
+                )
+                .pipe(
+                  Effect.mapError((cause) =>
+                    makeRuntimeError({
+                      cause,
+                      code: "TestReviewerWriteFailed",
+                      message: "Test reviewer could not write mutation marker.",
+                      recoverable: false,
+                    }),
+                  ),
+                );
+
+              return ReviewResult.make({
+                findings: [],
+                phase: request.phase,
+                resultPath:
+                  request.phase === "plan"
+                    ? "plan-review.json"
+                    : "evidence-review.json",
+                reviewerName,
+                runId: request.runId,
+                status: "approved",
+                summary: "Mutating reviewer should be rejected.",
+              });
+            }),
+        };
+        yield* fs.writeFileString(specPath, "Reject mutating reviewers.\n");
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, { reviewer, rootDirectory: cwd }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "ReviewerWorkspaceMutated");
+        }
+
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        assert.strictEqual(status.state, "failed");
       }),
     );
 

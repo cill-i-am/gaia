@@ -93,6 +93,8 @@ Non-goals:
 
 ## Phase 2: Visible Reviewer Spectrum
 
+Status: **In progress: reviewer port and read-only guard completed**
+
 Goal:
 
 - Add visible read-only reviewer/spec worker sessions that review the
@@ -108,7 +110,22 @@ Done when:
 - The reviewer checks the worker plan before implementation where practical.
 - The reviewer checks the final diff/evidence after implementation.
 - Reviewer artifacts are persisted as Gaia evidence.
-- Reviewer agents cannot mutate the workspace.
+- Reviewer agents cannot mutate the workspace. The runtime now enforces this
+  for the reviewer port by snapshotting the isolated workspace before and after
+  review.
+
+Completed foundation:
+
+- Review execution is now an explicit `GaiaReviewer` port.
+- The deterministic reviewer remains the default implementation.
+- Custom reviewers run through the same lifecycle events and artifacts.
+- Workspace mutation by a reviewer fails the run with a typed Gaia error.
+
+Remaining:
+
+- Codex-backed visible reviewer sessions.
+- Pre-implementation plan review handoff to a visible reviewer worker.
+- Final diff/evidence review handoff to a visible reviewer worker.
 
 Non-goals:
 

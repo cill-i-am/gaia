@@ -3,12 +3,13 @@ import {
   RunIdSchema,
   type ReviewPhase,
 } from "@gaia/core";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, FileSystem, Path, Schema } from "effect";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { HarnessRunResult } from "./harness.js";
 import { VerificationResult } from "./verifier.js";
 import { parseWorkerPlanJson } from "./worker-plan.js";
 import { WorkspacePreparationResult } from "./workspace.js";
+import { changedPaths, snapshotWorkspace } from "./workspace-snapshot.js";
 
 export const ReviewerNameSchema = Schema.NonEmptyString.pipe(
   Schema.brand("ReviewerName"),
@@ -50,7 +51,23 @@ export class ReviewRunRequest extends Schema.Class<ReviewRunRequest>(
   workerPlanPath: Schema.NonEmptyString,
   workerResultPath: Schema.NonEmptyString,
   workspaceManifestPath: Schema.NonEmptyString,
+  workspacePath: Schema.NonEmptyString,
 }) {}
+
+export type GaiaReviewer = {
+  readonly name: ReviewerName;
+  readonly run: (
+    request: ReviewRunRequest,
+  ) => Effect.Effect<
+    ReviewResult,
+    GaiaRuntimeError,
+    FileSystem.FileSystem | Path.Path
+  >;
+};
+
+export type ReviewerRunOptions = {
+  readonly reviewer?: GaiaReviewer;
+};
 
 const ReviewResultJson = Schema.toCodecJson(ReviewResult);
 const encodeReviewResult = Schema.encodeSync(ReviewResultJson);
@@ -69,16 +86,71 @@ const parseWorkspacePreparationResultJson = Schema.decodeUnknownSync(
 
 export function runReviewer(
   request: ReviewRunRequest,
-): Effect.Effect<ReviewResult, GaiaRuntimeError, FileSystem.FileSystem> {
+  options: ReviewerRunOptions = {},
+): Effect.Effect<
+  ReviewResult,
+  GaiaRuntimeError,
+  FileSystem.FileSystem | Path.Path
+> {
   return Effect.gen(function* () {
-    const result =
-      request.phase === "plan"
-        ? yield* reviewPlan(request)
-        : yield* reviewEvidence(request);
+    const reviewer = options.reviewer ?? deterministicReviewer;
+    const beforeWorkspace = yield* snapshotWorkspace(request.workspacePath).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "ReviewerWorkspaceSnapshotFailed",
+          message: "Reviewer could not snapshot the workspace before review.",
+          recoverable: true,
+        }),
+      ),
+    );
+    const result = yield* reviewer.run(request);
+    const afterWorkspace = yield* snapshotWorkspace(request.workspacePath).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "ReviewerWorkspaceSnapshotFailed",
+          message: "Reviewer could not snapshot the workspace after review.",
+          recoverable: true,
+        }),
+      ),
+    );
+
+    yield* requireReviewerDidNotMutateWorkspace(
+      beforeWorkspace,
+      afterWorkspace,
+      reviewer,
+    );
 
     yield* writeReviewArtifacts(request, result);
     return result;
   });
+}
+
+const deterministicReviewer: GaiaReviewer = {
+  name: defaultReviewerName,
+  run: (request) =>
+    request.phase === "plan" ? reviewPlan(request) : reviewEvidence(request),
+};
+
+function requireReviewerDidNotMutateWorkspace(
+  beforeWorkspace: ReadonlyMap<string, string>,
+  afterWorkspace: ReadonlyMap<string, string>,
+  reviewer: GaiaReviewer,
+) {
+  const mutatedPaths = changedPaths(beforeWorkspace, afterWorkspace);
+
+  if (mutatedPaths.length === 0) {
+    return Effect.void;
+  }
+
+  return Effect.fail(
+    makeRuntimeError({
+      code: "ReviewerWorkspaceMutated",
+      message: `Reviewer '${reviewer.name}' mutated workspace path(s): ${mutatedPaths.join(", ")}.`,
+      recoverable: true,
+    }),
+  );
 }
 
 function reviewPlan(request: ReviewRunRequest) {

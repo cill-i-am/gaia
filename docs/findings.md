@@ -524,3 +524,33 @@ Verification:
   subprocess as `CodexCommandTimedOut`.
 - Runtime test proves the workflow seam passes the branded timeout into the
   Codex command runner.
+
+## Slice 10: Reviewer Port And Read-only Guard
+
+Outcome: Gaia review execution is now an explicit `GaiaReviewer` port. The
+deterministic reviewer remains the default implementation, but workflows can
+inject a reviewer adapter without changing the lifecycle. Gaia snapshots the
+isolated workspace before and after reviewer execution and fails the run if a
+reviewer mutates source files.
+
+Findings:
+
+- The old deterministic reviewer was already an adapter in disguise. Making the
+  port explicit gives the visible reviewer work a clean insertion point without
+  changing the event log or report shape.
+- Reviewer artifacts still live outside the isolated workspace, so the
+  read-only guard can be strict about source mutation while still allowing Gaia
+  to persist `plan-review.*` and `evidence-review.*`.
+- Reusing the harness workspace snapshot logic keeps mutation semantics
+  consistent across workers and reviewers: added files, deleted files, and
+  content changes all count.
+- This is the Phase 2 foundation, not the full visible reviewer spectrum. Codex
+  reviewer sessions, session visibility, and reviewer transcript capture remain
+  separate slices.
+
+Verification:
+
+- Runtime test proves a configured reviewer runs through the workflow seam and
+  writes normal review evidence.
+- Runtime test proves a reviewer that writes to the workspace fails with typed
+  `ReviewerWorkspaceMutated` and leaves the run failed.
