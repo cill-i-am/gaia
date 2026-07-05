@@ -83,8 +83,8 @@ workspace with `--json`, `--skip-git-repo-check`, `--ephemeral`,
 `--output-last-message <run>/codex-last-message.md`. Gaia asks Codex to write
 the declared `workspace/output.txt` artifact as `./output.txt` from inside the
 workspace. Use `--codex-command`, repeated `--codex-arg`, `--codex-model`,
-`--codex-profile`, and `--codex-sandbox` only when you need to override those
-defaults.
+`--codex-profile`, `--codex-sandbox`, and `--codex-timeout-ms` only when you
+need to override those defaults.
 `pnpm gaia run --skill-manifest <path>` records a pinned portable-skill
 manifest as `skill-manifest.json` evidence. Gaia validates that every selected
 skill has a source repository, source path, and either a version or commit. It

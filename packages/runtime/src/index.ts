@@ -11,6 +11,7 @@ export {
 export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 export {
   CodexCommandSchema,
+  CodexCommandTimeoutMsSchema,
   CodexHarnessConfig,
   CodexSandboxModeSchema,
   makeCodexHarnessConfig,
@@ -21,6 +22,7 @@ export {
   type CodexCommand,
   type CodexCommandInput,
   type CodexCommandResult,
+  type CodexCommandTimeoutMs,
   type CodexCommandRunner,
   type CodexHarnessConfigInput,
   type CodexHarnessOptions,

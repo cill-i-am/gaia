@@ -44,6 +44,8 @@ Deferred from this phase:
 
 ## Phase 1: Real Workspace PR Loop
 
+Status: **Completed**
+
 Goal:
 
 - Make Codex-produced source changes flow into the existing workspace PR path.
@@ -65,6 +67,29 @@ Non-goals:
 - auto-merge;
 - deployment;
 - Linear sync.
+
+## Phase 1.5: Codex Harness Hardening
+
+Status: **Completed for subprocess timeout and typed timeout failure**
+
+Goal:
+
+- Make the non-interactive Codex CLI adapter safer before adding visible
+  reviewer sessions.
+
+Done when:
+
+- Codex subprocesses have an explicit bounded lifetime.
+- Timeout and process-level failures are classified as typed Gaia failures.
+- The command-runner seam records enough evidence to diagnose failures without
+  leaking operator secrets.
+- CLI users can override safe defaults without raw `codex exec` argument hacks.
+
+Non-goals:
+
+- visible Codex worker sessions;
+- reviewer worker sessions;
+- automatic retries or resume.
 
 ## Phase 2: Visible Reviewer Spectrum
 

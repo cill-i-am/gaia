@@ -6,12 +6,27 @@ import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 const codexCommandMaxBufferBytes = 10 * 1024 * 1024;
 const defaultCodexCommand = "codex";
 const defaultCodexSandbox = "workspace-write";
+const defaultCodexCommandTimeoutMs = 10 * 60 * 1000;
 
 export const CodexCommandSchema = Schema.NonEmptyString.pipe(
   Schema.brand("CodexCommand"),
 );
 
 export type CodexCommand = typeof CodexCommandSchema.Type;
+
+export const CodexCommandTimeoutMsSchema = Schema.Number.check(
+  Schema.isInt({ identifier: "CodexCommandTimeoutMsInt" }),
+  Schema.isGreaterThanOrEqualTo(1, {
+    identifier: "CodexCommandTimeoutMsPositive",
+  }),
+).pipe(Schema.brand("CodexCommandTimeoutMs"));
+
+export type CodexCommandTimeoutMs =
+  typeof CodexCommandTimeoutMsSchema.Type;
+
+const parseCodexCommandTimeoutMs = Schema.decodeUnknownSync(
+  CodexCommandTimeoutMsSchema,
+);
 
 export const CodexSandboxModeSchema = Schema.Literals([
   "read-only",
@@ -28,6 +43,7 @@ export class CodexHarnessConfig extends Schema.Class<CodexHarnessConfig>(
   model: Schema.optionalKey(Schema.NonEmptyString),
   profile: Schema.optionalKey(Schema.NonEmptyString),
   sandbox: CodexSandboxModeSchema,
+  timeoutMs: CodexCommandTimeoutMsSchema,
 }) {}
 
 export const parseCodexHarnessConfig =
@@ -39,6 +55,7 @@ export type CodexHarnessConfigInput = {
   readonly model?: string | undefined;
   readonly profile?: string | undefined;
   readonly sandbox?: string | undefined;
+  readonly timeoutMs?: number | string | undefined;
 };
 
 export function makeCodexHarnessConfig(
@@ -50,6 +67,7 @@ export function makeCodexHarnessConfig(
     ...(input.model === undefined ? {} : { model: input.model }),
     ...(input.profile === undefined ? {} : { profile: input.profile }),
     sandbox: input.sandbox ?? defaultCodexSandbox,
+    timeoutMs: parseCodexCommandTimeoutInput(input.timeoutMs),
   });
 }
 
@@ -58,6 +76,7 @@ export type CodexCommandInput = {
   readonly command: CodexCommand;
   readonly cwd: string;
   readonly stdin: string;
+  readonly timeoutMs: CodexCommandTimeoutMs;
 };
 
 export type CodexCommandResult = {
@@ -103,6 +122,7 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
           {
             cwd: input.cwd,
             maxBuffer: codexCommandMaxBufferBytes,
+            timeout: input.timeoutMs,
           },
           (error, stdout, stderr) => {
             if (error !== null && error.code === "ENOENT") {
@@ -110,7 +130,12 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
               return;
             }
 
-            if (error !== null && error.code === undefined) {
+            if (
+              error !== null &&
+              (error.code === undefined ||
+                error.code === null ||
+                isTimeoutError(error))
+            ) {
               reject(error);
               return;
             }
@@ -127,12 +152,8 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
     catch: (cause) =>
       makeRuntimeError({
         cause,
-        code: isErrorWithCode(cause, "ENOENT")
-          ? "CodexCommandMissing"
-          : "CodexCommandFailed",
-        message: isErrorWithCode(cause, "ENOENT")
-          ? `Codex command '${input.command}' was not found.`
-          : `Codex command '${input.command}' failed.`,
+        code: codexCommandFailureCode(cause),
+        message: codexCommandFailureMessage(input.command, cause),
         recoverable: true,
       }),
   });
@@ -177,6 +198,22 @@ export function makeCodexCommandArgs(input: CodexCommandArgsInput) {
   ];
 }
 
+function parseCodexCommandTimeoutInput(
+  input: CodexHarnessConfigInput["timeoutMs"],
+) {
+  if (input === undefined) {
+    return parseCodexCommandTimeoutMs(defaultCodexCommandTimeoutMs);
+  }
+
+  if (typeof input === "string") {
+    return parseCodexCommandTimeoutMs(
+      Schema.decodeUnknownSync(Schema.NumberFromString)(input),
+    );
+  }
+
+  return parseCodexCommandTimeoutMs(input);
+}
+
 function normalizeExitCode(code: string | number | null | undefined) {
   if (typeof code === "number") {
     return code;
@@ -190,10 +227,45 @@ function normalizeExitCode(code: string | number | null | undefined) {
   return 0;
 }
 
+function codexCommandFailureCode(cause: unknown) {
+  if (isErrorWithCode(cause, "ENOENT")) {
+    return "CodexCommandMissing";
+  }
+
+  if (isTimeoutError(cause)) {
+    return "CodexCommandTimedOut";
+  }
+
+  return "CodexCommandFailed";
+}
+
+function codexCommandFailureMessage(command: CodexCommand, cause: unknown) {
+  if (isErrorWithCode(cause, "ENOENT")) {
+    return `Codex command '${command}' was not found.`;
+  }
+
+  if (isTimeoutError(cause)) {
+    return `Codex command '${command}' timed out.`;
+  }
+
+  return `Codex command '${command}' failed.`;
+}
+
 function isErrorWithCode(error: unknown, code: string) {
   if (typeof error !== "object" || error === null) {
     return false;
   }
 
   return Reflect.get(error, "code") === code;
+}
+
+function isTimeoutError(error: unknown) {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+
+  return (
+    Reflect.get(error, "killed") === true &&
+    Reflect.get(error, "signal") === "SIGTERM"
+  );
 }

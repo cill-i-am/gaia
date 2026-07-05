@@ -103,6 +103,7 @@ Codex-specific flags are intentionally narrow:
 - `--codex-model` maps to `--model`.
 - `--codex-profile` maps to `--profile`.
 - `--codex-sandbox` supports `read-only` or `workspace-write`.
+- `--codex-timeout-ms` overrides the default Codex subprocess timeout.
 
 ## Deferred Dedicated Harness Work
 

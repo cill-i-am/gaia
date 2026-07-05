@@ -223,12 +223,13 @@ The steps after harness integration are documented in
 [`post-harness-roadmap.md`](post-harness-roadmap.md). In order, they are:
 
 1. real workspace PR loop;
-2. visible reviewer spectrum;
-3. skill bundle installation and versioning;
-4. live browser evidence capture;
-5. CI watcher daemon;
-6. Linear issue graph;
-7. merge and deployment authority;
-8. persistent run index and operator UI;
-9. multi-harness support;
-10. reusable factory templates.
+2. Codex harness hardening;
+3. visible reviewer spectrum;
+4. skill bundle installation and versioning;
+5. live browser evidence capture;
+6. CI watcher daemon;
+7. Linear issue graph;
+8. merge and deployment authority;
+9. persistent run index and operator UI;
+10. multi-harness support;
+11. reusable factory templates.

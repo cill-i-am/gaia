@@ -7,6 +7,7 @@ import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import { parseBrowserEvidenceJson } from "./browser-evidence.js";
 import {
   makeCodexHarnessConfig,
+  nodeCodexCommandRunner,
   type CodexCommandInput,
   type CodexCommandRunner,
 } from "./codex-harness.js";
@@ -357,6 +358,33 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("classifies a timed-out Codex process as a typed failure", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const config = makeCodexHarnessConfig({
+          command: execPath,
+          timeoutMs: 10,
+        });
+
+        const error = yield* Effect.flip(
+          nodeCodexCommandRunner({
+            args: ["-e", "setTimeout(() => {}, 1000);"],
+            command: config.command,
+            cwd,
+            stdin: "",
+            timeoutMs: config.timeoutMs,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "CodexCommandTimedOut");
+          assert.isTrue(error.recoverable);
+        }
+      }),
+    );
+
     it.effect("runs the Codex harness through the workflow seam", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -406,7 +434,10 @@ describe("runtime workflows", () => {
         const summary = yield* runSpecFile(specPath, {
           codexHarness: {
             commandRunner,
-            config: makeCodexHarnessConfig({ command: "codex-test" }),
+            config: makeCodexHarnessConfig({
+              command: "codex-test",
+              timeoutMs: "12345",
+            }),
           },
           harnessName: codexHarnessName,
           rootDirectory: cwd,
@@ -439,6 +470,7 @@ describe("runtime workflows", () => {
         if (command !== undefined) {
           assert.strictEqual(command.command, "codex-test");
           assert.strictEqual(command.cwd, `${summary.runDirectory}/workspace`);
+          assert.strictEqual(command.timeoutMs, 12345);
           assert.deepEqual(command.args, [
             "exec",
             "--json",

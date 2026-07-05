@@ -492,5 +492,35 @@ Verification:
   `base-synchronized` check.
 - Runtime test proves divergent local/remote base state fails with
   `GitBaseBranchOutOfSync`.
-- Real Codex workspace proof produced a source change in an isolated workspace;
-  publishing is intentionally deferred until trunk synchronization is explicit.
+- Real Codex workspace proof first produced a source change in an isolated
+  workspace, then the synchronized-base guard prevented publishing until trunk
+  was pushed.
+
+## Slice 9: Real Workspace PR Loop And Codex Hardening
+
+Outcome: Gaia proved the real workspace PR loop with Codex and now gives the
+Codex subprocess an explicit timeout. A Codex-generated workspace change can be
+previewed and published as a draft PR with Gaia evidence, and timed-out Codex
+commands fail as `CodexCommandTimedOut` instead of being normalized as success.
+
+Findings:
+
+- The first publish attempt found a real Git pathspec bug: explicitly passing
+  ignored `.gaia` pathspec exclusions to `git add` can make Git fail before
+  staging source changes. Gaia now lets `.gitignore` exclude local run state and
+  stages PR evidence separately.
+- Harness hardening belongs before visible reviewer sessions. Reviewers are
+  less useful if the worker adapter can hang forever or misclassify a killed
+  subprocess.
+- `--codex-timeout-ms` is a Gaia-owned setting, not a raw `codex exec`
+  passthrough. This keeps the CLI override typed and visible in the harness
+  config.
+
+Verification:
+
+- Real Codex workspace run `run-RBAWt0lqoP` opened draft PR
+  `https://github.com/cill-i-am/gaia/pull/2`.
+- Runtime test proves the node Codex command runner classifies a timed-out
+  subprocess as `CodexCommandTimedOut`.
+- Runtime test proves the workflow seam passes the branded timeout into the
+  Codex command runner.

@@ -127,6 +127,7 @@ export class CodexHarnessConfig extends Schema.Class<CodexHarnessConfig>(
   model: Schema.optionalKey(Schema.NonEmptyString),
   profile: Schema.optionalKey(Schema.NonEmptyString),
   sandbox: CodexSandboxModeSchema,
+  timeoutMs: CodexCommandTimeoutMsSchema,
 }) {}
 ```
 
@@ -280,6 +281,7 @@ export class CodexHarnessConfig extends Schema.Class<CodexHarnessConfig>(
   model: Schema.optionalKey(Schema.NonEmptyString),
   profile: Schema.optionalKey(Schema.NonEmptyString),
   sandbox: CodexSandboxModeSchema,
+  timeoutMs: CodexCommandTimeoutMsSchema,
 }) {}
 
 export class CodexExecutionResult extends Schema.Class<CodexExecutionResult>(
@@ -338,6 +340,7 @@ pnpm gaia run spec.md --harness codex
 pnpm gaia run spec.md --harness codex --codex-model gpt-5
 pnpm gaia run spec.md --harness codex --codex-profile gaia
 pnpm gaia run spec.md --harness codex --codex-sandbox workspace-write
+pnpm gaia run spec.md --harness codex --codex-timeout-ms 600000
 ```
 
 Initial defaults:
@@ -347,6 +350,7 @@ const defaultCodexHarnessConfig = CodexHarnessConfig.make({
   command: parseCodexCommand("codex"),
   extraArgs: [],
   sandbox: "workspace-write",
+  timeoutMs: 600000,
 });
 ```
 
@@ -436,6 +440,7 @@ type CodexHarnessFailureCode =
   | "CodexHarnessConfigMissing"
   | "CodexCommandMissing"
   | "CodexCommandFailed"
+  | "CodexCommandTimedOut"
   | "CodexOutputWriteFailed"
   | "CodexPromptWriteFailed"
   | "CodexLastMessageMissing"

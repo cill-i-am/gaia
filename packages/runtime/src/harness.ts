@@ -239,6 +239,7 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
             workspaceOutputPath: request.workspaceOutputPath,
             workspacePath: request.workspacePath,
           }),
+          timeoutMs: options.config.timeoutMs,
         });
         yield* fs.writeFileString(
           request.workerLogPath,

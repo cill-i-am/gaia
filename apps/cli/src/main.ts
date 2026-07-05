@@ -101,6 +101,10 @@ const codexSandbox = Flag.string("codex-sandbox").pipe(
   ),
   Flag.optional,
 );
+const codexTimeoutMs = Flag.string("codex-timeout-ms").pipe(
+  Flag.withDescription("Maximum Codex command runtime in milliseconds."),
+  Flag.optional,
+);
 
 const run = Command.make("run", {
   codexArg,
@@ -108,6 +112,7 @@ const run = Command.make("run", {
   codexModel,
   codexProfile,
   codexSandbox,
+  codexTimeoutMs,
   harness,
   harnessArg,
   harnessCommand,
@@ -131,6 +136,7 @@ const run = Command.make("run", {
       codexModel,
       codexProfile,
       codexSandbox,
+      codexTimeoutMs,
     }) =>
       renderEffect(
         runSpecFile(
@@ -144,6 +150,7 @@ const run = Command.make("run", {
             codexModel,
             codexProfile,
             codexSandbox,
+            codexTimeoutMs,
             skillManifest,
             workspaceSource,
           }),
@@ -300,6 +307,7 @@ function workflowOptions(
     codexModel?: Option.Option<string>;
     codexProfile?: Option.Option<string>;
     codexSandbox?: Option.Option<string>;
+    codexTimeoutMs?: Option.Option<string>;
     harness?: Option.Option<string>;
     harnessArgs?: ReadonlyArray<string>;
     harnessCommand?: Option.Option<string>;
@@ -326,6 +334,9 @@ function workflowOptions(
             model: Option.getOrUndefined(input.codexModel ?? Option.none()),
             profile: Option.getOrUndefined(input.codexProfile ?? Option.none()),
             sandbox: Option.getOrUndefined(input.codexSandbox ?? Option.none()),
+            timeoutMs: Option.getOrUndefined(
+              input.codexTimeoutMs ?? Option.none(),
+            ),
           }),
         }
       : undefined;
