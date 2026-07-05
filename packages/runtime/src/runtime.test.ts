@@ -5,7 +5,11 @@ import { execPath } from "node:process";
 import { parseRunId } from "@gaia/core";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import { parseBrowserEvidenceJson } from "./browser-evidence.js";
-import { parseSkillBundleJson } from "./skill-bundle.js";
+import {
+  parseSkillBundleJson,
+  type SkillInstallCommandInput,
+  type SkillInstallCommandRunner,
+} from "./skill-bundle.js";
 import {
   makeCodexHarnessConfig,
   nodeCodexCommandRunner,
@@ -380,6 +384,14 @@ describe("runtime workflows", () => {
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
         const specPath = `${cwd}/spec.md`;
         const manifestPath = `${cwd}/skills.json`;
+        const installCommands: Array<SkillInstallCommandInput> = [];
+        const skillInstaller = {
+          commandRunner: installingSkillRunner(
+            fs,
+            installCommands,
+            "skills/coding-standards",
+          ),
+        };
         yield* fs.writeFileString(specPath, "Run with selected skills.\n");
         yield* fs.writeFileString(
           manifestPath,
@@ -401,6 +413,7 @@ describe("runtime workflows", () => {
 
         const summary = yield* runSpecFile(specPath, {
           rootDirectory: cwd,
+          skillInstaller,
           skillManifestSource: localSkillManifestSource(manifestPath),
         });
 
@@ -420,13 +433,79 @@ describe("runtime workflows", () => {
         const reportMarkdown = yield* fs.readFileString(summary.reportPath);
 
         assert.include(skillManifest, '"name": "coding-standards"');
-        assert.strictEqual(skillBundle.status, "requires-install");
-        assert.strictEqual(skillBundle.skills[0]?.resolution, "external");
+        assert.strictEqual(skillBundle.status, "ready");
+        assert.strictEqual(skillBundle.skills[0]?.resolution, "installed");
+        assert.include(
+          skillBundle.skills[0]?.resolvedPath,
+          "/skill-sources/0-coding-standards/repository/skills/coding-standards",
+        );
+        assert.deepEqual(
+          installCommands.map((command) => command.args),
+          [
+            [
+              "clone",
+              "https://github.com/cillianbarron/skills.git",
+              `${summary.runDirectory}/skill-sources/0-coding-standards/repository`,
+            ],
+            [
+              "-C",
+              `${summary.runDirectory}/skill-sources/0-coding-standards/repository`,
+              "checkout",
+              "abc123",
+            ],
+          ],
+        );
         assert.include(reportJson, '"selectedSkills": [');
         assert.include(reportJson, '"coding-standards"');
         assert.include(reportMarkdown, "- coding-standards");
         assert.include(reportMarkdown, "skill-manifest.json");
         assert.include(reportMarkdown, "skill-bundle.json");
+      }),
+    );
+
+    it.effect("fails before worker execution when external skill install fails", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const manifestPath = `${cwd}/skills.json`;
+        yield* fs.writeFileString(specPath, "Run with broken skills.\n");
+        yield* fs.writeFileString(
+          manifestPath,
+          `${JSON.stringify({
+            skills: [
+              {
+                commit: "abc123",
+                name: "coding-standards",
+                sourcePath: "skills/coding-standards",
+                sourceRepository: "github.com/cillianbarron/skills",
+              },
+            ],
+          })}\n`,
+        );
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            rootDirectory: cwd,
+            skillInstaller: {
+              commandRunner: () =>
+                Effect.succeed({
+                  exitCode: 128,
+                  stderr: "repository not found\n",
+                  stdout: "",
+                }),
+            },
+            skillManifestSource: localSkillManifestSource(manifestPath),
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "SkillBundleInstallCommandFailed");
+        }
+
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        assert.strictEqual(status.state, "failed");
       }),
     );
 
@@ -1730,6 +1809,58 @@ function codexLastMessagePath(input: CodexCommandInput) {
   }
 
   return Effect.succeed(outputLastMessagePath);
+}
+
+function installingSkillRunner(
+  fs: FileSystem.FileSystem,
+  commands: Array<SkillInstallCommandInput>,
+  sourcePath: string,
+): SkillInstallCommandRunner {
+  return (input) =>
+    Effect.gen(function* () {
+      commands.push(input);
+
+      if (input.args[0] === "clone") {
+        const repositoryDirectory = input.args[2];
+        if (repositoryDirectory === undefined) {
+          return yield* Effect.fail(
+            makeRuntimeError({
+              code: "TestSkillInstallMissingCloneTarget",
+              message: "The test skill installer expected a git clone target.",
+              recoverable: false,
+            }),
+          );
+        }
+
+        const skillDirectory = `${repositoryDirectory}/${sourcePath}`;
+        yield* fs.makeDirectory(skillDirectory, { recursive: true }).pipe(
+          Effect.catchTag("PlatformError", (cause) =>
+            Effect.fail(
+              makeRuntimeError({
+                cause,
+                code: "TestSkillInstallDirectoryFailed",
+                message: "The test skill installer could not make a skill directory.",
+                recoverable: false,
+              }),
+            ),
+          ),
+        );
+        yield* fs.writeFileString(`${skillDirectory}/SKILL.md`, "# Skill\n").pipe(
+          Effect.catchTag("PlatformError", (cause) =>
+            Effect.fail(
+              makeRuntimeError({
+                cause,
+                code: "TestSkillInstallSkillMarkdownFailed",
+                message: "The test skill installer could not write SKILL.md.",
+                recoverable: false,
+              }),
+            ),
+          ),
+        );
+      }
+
+      return { exitCode: 0, stderr: "", stdout: "" };
+    });
 }
 
 function recordingGitHubRunner(

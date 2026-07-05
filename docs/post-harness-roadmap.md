@@ -141,7 +141,7 @@ Non-goals:
 
 ## Phase 3: Skill Bundle Installation and Versioning
 
-Status: **In progress: local skill bundle resolution and worker context completed; external installation remains**
+Status: **Completed for pinned local and git-backed skill sources**
 
 Goal:
 
@@ -163,14 +163,16 @@ Completed foundation:
 - Gaia writes `skill-bundle.json` for every run.
 - Local manifest entries with `sourceRepository: "local"` or `"file"` resolve
   to checked skill directories containing `SKILL.md`.
-- External manifest entries are marked `requires-install` instead of being
-  silently treated as available.
+- External git-backed manifest entries are cloned into the run directory,
+  checked out at their pinned commit or version, and validated for `SKILL.md`.
 - Missing local skill sources fail before worker execution.
-- Worker harnesses receive the skill bundle path and resolved local skill paths.
+- Unsupported repositories, failed installs, and missing installed skill
+  directories fail before worker execution.
+- Worker harnesses receive the skill bundle path and resolved skill paths.
 
 Remaining:
 
-- Install or fetch external pinned skill sources.
+- Registry-specific installers can be added when Gaia needs them.
 
 Non-goals:
 

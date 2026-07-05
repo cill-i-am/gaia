@@ -671,3 +671,34 @@ Verification:
   resolved local skill path.
 - Runtime test proves process harnesses receive the skill bundle environment
   contract.
+
+## Slice 15: External Skill Bundle Installation
+
+Outcome: Gaia now installs git-backed external skill manifest entries before
+worker execution. A pinned external entry is cloned into the run's
+`skill-sources` directory, checked out at its commit or version, validated for
+`SKILL.md`, recorded as an `installed` bundle entry, and passed to workers as a
+resolved skill path.
+
+Findings:
+
+- Per-run installs are intentionally boring. Gaia does not need a global cache
+  or registry abstraction yet; the run directory is the evidence boundary and
+  contains the exact checked-out source path the worker saw.
+- The installer is a command-runner seam around `git clone` and `git checkout`.
+  Tests can fake it without network access, while normal CLI runs use the local
+  `git` binary.
+- External `sourcePath` values must be relative to the checked-out repository.
+  That keeps manifests portable and prevents a remote skill entry from pointing
+  at arbitrary local filesystem paths.
+- Unsupported repositories, failed install commands, missing source
+  directories, and missing `SKILL.md` fail before worker execution with typed
+  Gaia runtime errors.
+
+Verification:
+
+- Runtime test proves a pinned GitHub-style skill source installs into
+  `skill-sources`, records an `installed` bundle, and appears in reports.
+- Runtime test proves a failed install command fails the run before worker
+  execution with typed `SkillBundleInstallCommandFailed`.
+- Full `pnpm check`, `pnpm test`, and `pnpm build` passed after the slice.

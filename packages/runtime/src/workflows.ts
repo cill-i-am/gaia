@@ -39,7 +39,11 @@ import {
   writeSkillManifest,
   type SkillManifestSource,
 } from "./skill-manifest.js";
-import { resolvedSkillPaths, writeSkillBundle } from "./skill-bundle.js";
+import {
+  resolvedSkillPaths,
+  writeSkillBundle,
+  type SkillInstallerOptions,
+} from "./skill-bundle.js";
 import { verifyHarnessOutput } from "./verifier.js";
 import { writeWorkerPlan } from "./worker-plan.js";
 import {
@@ -65,6 +69,7 @@ export type WorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly codexHarness?: CodexHarnessOptions;
   readonly harnessName?: HarnessName;
   readonly processHarness?: ProcessHarnessConfig;
+  readonly skillInstaller?: SkillInstallerOptions;
   readonly skillManifestSource?: SkillManifestSource;
   readonly workspaceSource?: WorkspaceSource;
 };
@@ -117,6 +122,9 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
     const skillBundle = yield* writeSkillBundle({
       manifest: skillManifest,
       paths,
+      ...(options.skillInstaller === undefined
+        ? {}
+        : { installer: options.skillInstaller }),
       ...(options.skillManifestSource === undefined
         ? {}
         : { source: options.skillManifestSource }),

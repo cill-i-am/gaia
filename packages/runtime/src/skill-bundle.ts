@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
@@ -10,6 +11,7 @@ import {
 
 export const SkillBundleResolutionSchema = Schema.Literals([
   "external",
+  "installed",
   "local",
 ] as const);
 
@@ -45,7 +47,63 @@ const SkillBundleJson = Schema.toCodecJson(SkillBundle);
 const encodeSkillBundleJson = Schema.encodeSync(SkillBundleJson);
 export const parseSkillBundleJson = Schema.decodeUnknownSync(SkillBundleJson);
 
+const defaultSkillInstallCommand = "git";
+const skillInstallCommandMaxBufferBytes = 10 * 1024 * 1024;
+
+export type SkillInstallCommandInput = {
+  readonly args: ReadonlyArray<string>;
+  readonly command: string;
+  readonly cwd: string;
+};
+
+export type SkillInstallCommandResult = {
+  readonly exitCode: number;
+  readonly stderr: string;
+  readonly stdout: string;
+};
+
+export type SkillInstallCommandRunner = (
+  input: SkillInstallCommandInput,
+) => Effect.Effect<SkillInstallCommandResult, GaiaRuntimeError>;
+
+export type SkillInstallerOptions = {
+  readonly command?: string;
+  readonly commandRunner?: SkillInstallCommandRunner;
+};
+
+export const nodeSkillInstallCommandRunner: SkillInstallCommandRunner = (
+  input,
+) =>
+  Effect.tryPromise({
+    try: () =>
+      new Promise<SkillInstallCommandResult>((resolve, reject) => {
+        execFile(input.command, [...input.args], {
+          cwd: input.cwd,
+          maxBuffer: skillInstallCommandMaxBufferBytes,
+        }, (error, stdout, stderr) => {
+          if (error !== null && error.code === undefined) {
+            reject(error);
+            return;
+          }
+
+          resolve({
+            exitCode: normalizeExitCode(error?.code),
+            stderr: String(stderr),
+            stdout: String(stdout),
+          });
+        });
+      }),
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "SkillBundleInstallCommandFailed",
+        message: `${input.command} ${input.args.join(" ")} failed.`,
+        recoverable: true,
+      }),
+  });
+
 export function writeSkillBundle(input: {
+  readonly installer?: SkillInstallerOptions;
   readonly manifest: SkillManifest;
   readonly paths: RunPaths;
   readonly source?: SkillManifestSource;
@@ -58,8 +116,16 @@ export function writeSkillBundle(input: {
     const fs = yield* FileSystem.FileSystem;
     const entries: Array<SkillBundleEntry> = [];
 
-    for (const skill of input.manifest.skills) {
-      entries.push(yield* resolveSkillBundleEntry(skill, input.source));
+    for (const [index, skill] of input.manifest.skills.entries()) {
+      entries.push(
+        yield* resolveSkillBundleEntry({
+          index,
+          installer: input.installer,
+          paths: input.paths,
+          skill,
+          source: input.source,
+        }),
+      );
     }
 
     const bundle = SkillBundle.make({
@@ -96,22 +162,153 @@ export function resolvedSkillPaths(
   );
 }
 
-function resolveSkillBundleEntry(
-  skill: SkillManifestEntry,
-  source: SkillManifestSource | undefined,
-) {
+function resolveSkillBundleEntry(input: {
+  readonly index: number;
+  readonly installer: SkillInstallerOptions | undefined;
+  readonly paths: RunPaths;
+  readonly skill: SkillManifestEntry;
+  readonly source: SkillManifestSource | undefined;
+}) {
+  const { skill } = input;
+
   return isLocalSkillSource(skill.sourceRepository)
-    ? resolveLocalSkillBundleEntry(skill, source)
-    : Effect.succeed(
-        SkillBundleEntry.make({
-          ...(skill.commit === undefined ? {} : { commit: skill.commit }),
-          name: skill.name,
-          resolution: "external",
-          sourcePath: skill.sourcePath,
-          sourceRepository: skill.sourceRepository,
-          ...(skill.version === undefined ? {} : { version: skill.version }),
+    ? resolveLocalSkillBundleEntry(skill, input.source)
+    : resolveExternalSkillBundleEntry(input);
+}
+
+function resolveExternalSkillBundleEntry(input: {
+  readonly index: number;
+  readonly installer: SkillInstallerOptions | undefined;
+  readonly paths: RunPaths;
+  readonly skill: SkillManifestEntry;
+}) {
+  return Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const fs = yield* FileSystem.FileSystem;
+    const runner =
+      input.installer?.commandRunner ?? nodeSkillInstallCommandRunner;
+    const command = input.installer?.command ?? defaultSkillInstallCommand;
+    const repositoryUrl = yield* resolveRepositoryCloneUrl(input.skill);
+    const installDirectory = path.join(
+      input.paths.skillInstallRoot,
+      `${input.index}-${safeSkillDirectoryName(input.skill.name)}`,
+    );
+    const repositoryDirectory = path.join(installDirectory, "repository");
+    const checkoutRef = input.skill.commit ?? input.skill.version;
+
+    if (checkoutRef === undefined) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "SkillBundleEntryUnpinned",
+          message: `Skill '${input.skill.name}' must pin either commit or version before installation.`,
+          recoverable: false,
         }),
       );
+    }
+
+    if (path.isAbsolute(input.skill.sourcePath)) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "SkillBundleExternalSourcePathAbsolute",
+          message: `Skill '${input.skill.name}' external sourcePath must be relative to the checked out repository.`,
+          recoverable: false,
+        }),
+      );
+    }
+
+    yield* fs.makeDirectory(installDirectory, { recursive: true }).pipe(
+      Effect.catchTag("PlatformError", (cause) =>
+        Effect.fail(
+          makeRuntimeError({
+            cause,
+            code: "SkillBundleInstallDirectoryFailed",
+            message: `Gaia could not create the install directory for skill '${input.skill.name}'.`,
+            recoverable: false,
+          }),
+        ),
+      ),
+    );
+    yield* runSkillInstallCommand(
+      {
+        args: ["clone", repositoryUrl, repositoryDirectory],
+        command,
+        cwd: input.paths.root,
+      },
+      input.skill,
+      runner,
+    );
+    yield* runSkillInstallCommand(
+      {
+        args: ["-C", repositoryDirectory, "checkout", checkoutRef],
+        command,
+        cwd: input.paths.root,
+      },
+      input.skill,
+      runner,
+    );
+
+    const resolvedPath = path.join(repositoryDirectory, input.skill.sourcePath);
+    yield* validateSkillDirectory(input.skill, resolvedPath);
+
+    return SkillBundleEntry.make({
+      ...(input.skill.commit === undefined
+        ? {}
+        : { commit: input.skill.commit }),
+      name: input.skill.name,
+      resolution: "installed",
+      resolvedPath,
+      sourcePath: input.skill.sourcePath,
+      sourceRepository: input.skill.sourceRepository,
+      ...(input.skill.version === undefined
+        ? {}
+        : { version: input.skill.version }),
+    });
+  });
+}
+
+function resolveRepositoryCloneUrl(skill: SkillManifestEntry) {
+  if (skill.sourceRepository.startsWith("github.com/")) {
+    const suffix = skill.sourceRepository.endsWith(".git") ? "" : ".git";
+    return Effect.succeed(`https://${skill.sourceRepository}${suffix}`);
+  }
+
+  if (
+    skill.sourceRepository.startsWith("https://") ||
+    skill.sourceRepository.startsWith("http://") ||
+    skill.sourceRepository.startsWith("git@")
+  ) {
+    return Effect.succeed(skill.sourceRepository);
+  }
+
+  return Effect.fail(
+    makeRuntimeError({
+      code: "SkillBundleRepositoryUnsupported",
+      message: `Skill '${skill.name}' source repository '${skill.sourceRepository}' is not a supported git repository reference.`,
+      recoverable: false,
+    }),
+  );
+}
+
+function runSkillInstallCommand(
+  input: SkillInstallCommandInput,
+  skill: SkillManifestEntry,
+  runner: SkillInstallCommandRunner,
+) {
+  return Effect.gen(function* () {
+    const result = yield* runner(input);
+
+    if (result.exitCode !== 0) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "SkillBundleInstallCommandFailed",
+          message: `Skill '${skill.name}' install command '${input.command} ${input.args.join(" ")}' exited with code ${result.exitCode}.`,
+          recoverable: true,
+        }),
+      );
+    }
+
+    return result;
+  });
 }
 
 function resolveLocalSkillBundleEntry(
@@ -119,13 +316,33 @@ function resolveLocalSkillBundleEntry(
   source: SkillManifestSource | undefined,
 ) {
   return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const manifestDirectory =
       source === undefined ? "." : path.dirname(source.path);
     const resolvedPath = path.isAbsolute(skill.sourcePath)
       ? skill.sourcePath
       : path.resolve(manifestDirectory, skill.sourcePath);
+    yield* validateSkillDirectory(skill, resolvedPath);
+
+    return SkillBundleEntry.make({
+      ...(skill.commit === undefined ? {} : { commit: skill.commit }),
+      name: skill.name,
+      resolution: "local",
+      resolvedPath,
+      sourcePath: skill.sourcePath,
+      sourceRepository: skill.sourceRepository,
+      ...(skill.version === undefined ? {} : { version: skill.version }),
+    });
+  });
+}
+
+function validateSkillDirectory(
+  skill: SkillManifestEntry,
+  resolvedPath: string,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const skillInfo = yield* fs.stat(resolvedPath).pipe(
       Effect.catchTag("PlatformError", (cause) =>
         Effect.fail(
@@ -160,16 +377,6 @@ function resolveLocalSkillBundleEntry(
         }),
       );
     }
-
-    return SkillBundleEntry.make({
-      ...(skill.commit === undefined ? {} : { commit: skill.commit }),
-      name: skill.name,
-      resolution: "local",
-      resolvedPath,
-      sourcePath: skill.sourcePath,
-      sourceRepository: skill.sourceRepository,
-      ...(skill.version === undefined ? {} : { version: skill.version }),
-    });
   });
 }
 
@@ -187,4 +394,12 @@ function skillBundleStatus(
 
 function isLocalSkillSource(sourceRepository: string) {
   return sourceRepository === "local" || sourceRepository === "file";
+}
+
+function safeSkillDirectoryName(name: string) {
+  return name.replace(/[^A-Za-z0-9._-]+/gu, "_");
+}
+
+function normalizeExitCode(code: number | string | null | undefined) {
+  return typeof code === "number" ? code : code === undefined ? 0 : 1;
 }

@@ -120,8 +120,13 @@ export {
   SkillBundleEntry,
   SkillBundleResolutionSchema,
   SkillBundleStatusSchema,
+  nodeSkillInstallCommandRunner,
   parseSkillBundleJson,
   writeSkillBundle,
+  type SkillInstallCommandInput,
+  type SkillInstallCommandResult,
+  type SkillInstallCommandRunner,
+  type SkillInstallerOptions,
   type SkillBundleResolution,
   type SkillBundleStatus,
 } from "./skill-bundle.js";
