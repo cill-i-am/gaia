@@ -559,6 +559,72 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.context.linearBlocksCount, 2);
   });
 
+  it("replays merge decision evidence without leaving completed state", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const events = [
+      makeRunEvent({
+        payload: { specPath: "input.md" },
+        runId,
+        sequence: 1,
+        timestamp: "2026-07-04T10:00:00.000Z",
+        type: "RUN_CREATED",
+      }),
+      makeRunEvent({
+        payload: { workspacePath: "workspace" },
+        runId,
+        sequence: 2,
+        timestamp: "2026-07-04T10:00:01.000Z",
+        type: "WORKSPACE_PREPARED",
+      }),
+      makeRunEvent({
+        payload: { workerResultPath: "worker-result.json" },
+        runId,
+        sequence: 3,
+        timestamp: "2026-07-04T10:00:02.000Z",
+        type: "WORKER_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: { verificationResultPath: "verification-result.json" },
+        runId,
+        sequence: 4,
+        timestamp: "2026-07-04T10:00:03.000Z",
+        type: "VERIFICATION_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: { reportPath: "report.md" },
+        runId,
+        sequence: 5,
+        timestamp: "2026-07-04T10:00:04.000Z",
+        type: "REPORT_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: {
+          blockerCount: 0,
+          mergeDecisionPath: "merge-decision.json",
+          nextAction: "merge-pr",
+          pullRequest: "1",
+          status: "approved",
+        },
+        runId,
+        sequence: 6,
+        timestamp: "2026-07-04T10:00:05.000Z",
+        type: "MERGE_DECISION_RECORDED",
+      }),
+    ];
+
+    const durableSnapshot = snapshotFromReplay(events);
+    assert.strictEqual(durableSnapshot.state, "completed");
+    assert.strictEqual(durableSnapshot.eventSequence, 6);
+    assert.strictEqual(durableSnapshot.context.githubPullRequest, "1");
+    assert.strictEqual(durableSnapshot.context.mergeDecisionBlockerCount, 0);
+    assert.strictEqual(durableSnapshot.context.mergeDecisionNextAction, "merge-pr");
+    assert.strictEqual(
+      durableSnapshot.context.mergeDecisionPath,
+      "merge-decision.json",
+    );
+    assert.strictEqual(durableSnapshot.context.mergeDecisionStatus, "approved");
+  });
+
   it("replays browser evidence without leaving completed state", () => {
     const runId = parseRunId("run-V7kP9sQ2xY");
     const events = [

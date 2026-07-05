@@ -56,6 +56,10 @@ import {
   parseLinearIssueGraphJson,
   recordLinearIssueGraph,
 } from "./linear-issue-graph.js";
+import {
+  parseMergeDecisionJson,
+  recordMergeDecision,
+} from "./merge-decision.js";
 import { localSkillManifestSource } from "./skill-manifest.js";
 import {
   ReviewResult,
@@ -3199,6 +3203,92 @@ describe("runtime workflows", () => {
           assert.strictEqual(error.code, "LinearIssueGraphInvalid");
           assert.isFalse(error.recoverable);
         }
+      }),
+    );
+
+    it.effect("approves merge decision when PR loop and reviewer gates pass", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Approve merge decision.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (input.args.join(" ").startsWith("pr checks")) {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify([
+                  {
+                    link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                    name: "test",
+                    state: "SUCCESS",
+                    workflow: "CI",
+                  },
+                ]),
+              };
+            }
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify(
+                prFeedbackView({ reviewDecision: "APPROVED" }),
+              ),
+            };
+          }),
+          rootDirectory: cwd,
+        });
+
+        const summary = yield* recordMergeDecision(run.runId, {
+          rootDirectory: cwd,
+        });
+        const decision = parseMergeDecisionJson(
+          JSON.parse(yield* fs.readFileString(summary.decisionPath)),
+        );
+        const events = yield* fs.readFileString(`${run.runDirectory}/events.jsonl`);
+
+        assert.strictEqual(summary.status, "approved");
+        assert.strictEqual(summary.nextAction, "merge-pr");
+        assert.strictEqual(summary.pr, "1");
+        assert.strictEqual(summary.blockerCount, 0);
+        assert.strictEqual(decision.status, "approved");
+        assert.strictEqual(decision.pr, "1");
+        assert.strictEqual(decision.planReviewerSessionPath, "plan-reviewer-session.json");
+        assert.strictEqual(decision.evidenceReviewerSessionPath, "evidence-reviewer-session.json");
+        assert.include(events, '"type":"MERGE_DECISION_RECORDED"');
+        assert.include(events, '"mergeDecisionPath":"merge-decision.json"');
+        assert.include(events, '"nextAction":"merge-pr"');
+      }),
+    );
+
+    it.effect("blocks merge decision when PR loop evidence is missing", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Block merge decision.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const summary = yield* recordMergeDecision(run.runId, {
+          rootDirectory: cwd,
+        });
+        const decision = parseMergeDecisionJson(
+          JSON.parse(yield* fs.readFileString(summary.decisionPath)),
+        );
+
+        assert.strictEqual(summary.status, "blocked");
+        assert.strictEqual(summary.nextAction, "resolve-blockers");
+        assert.strictEqual(summary.pr, undefined);
+        assert.strictEqual(summary.blockerCount, 1);
+        assert.deepEqual(
+          summary.blockers.map((blocker) => blocker.kind),
+          ["missing-pr-loop"],
+        );
+        assert.strictEqual(decision.status, "blocked");
+        assert.strictEqual(decision.blockerCount, 1);
       }),
     );
 

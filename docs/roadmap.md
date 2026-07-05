@@ -246,9 +246,11 @@ available:
     relationships, and appends `LINEAR_ISSUE_GRAPH_RECORDED`. Live Linear API
     sync and issue comments remain deferred until the connector boundary is
     explicit.
-13. **Merge and deployment authority**: next non-vision slice. Turn existing
-    PR-loop, check, reviewer, and browser evidence into an explicit merge
-    decision artifact without auto-merging.
+13. **Merge and deployment authority**: completed for explicit merge decision
+    artifacts. `gaia merge-decision <run-id>` reads PR-loop, reviewer, run
+    profile, and browser evidence, writes `merge-decision.json`, appends
+    `MERGE_DECISION_RECORDED`, and recommends either `merge-pr` or
+    `resolve-blockers` without mutating GitHub or deployments.
 14. **Local Gaia server**: later product-track slice. Introduce `gaia server`
     as a local source-of-truth API over the existing filesystem-backed run
     store so the CLI and future dashboard can share state.

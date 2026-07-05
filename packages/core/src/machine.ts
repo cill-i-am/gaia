@@ -43,6 +43,10 @@ export type RunMachineContext = {
   readonly linearIssueGraphPath: string | undefined;
   readonly linearIssueIdentifier: string | undefined;
   readonly linearIssueUrl: string | undefined;
+  readonly mergeDecisionBlockerCount: number | undefined;
+  readonly mergeDecisionNextAction: string | undefined;
+  readonly mergeDecisionPath: string | undefined;
+  readonly mergeDecisionStatus: string | undefined;
   readonly planReviewPath: string | undefined;
   readonly planReviewerSessionPath: string | undefined;
   readonly previewDeploymentPath: string | undefined;
@@ -133,6 +137,14 @@ export type RunMachineEvent =
       readonly issueIdentifier: string;
       readonly issueUrl?: string;
     }
+  | {
+      readonly type: "MERGE_DECISION_RECORDED";
+      readonly blockerCount: number;
+      readonly mergeDecisionPath: string;
+      readonly nextAction: string;
+      readonly pullRequest?: string;
+      readonly status: string;
+    }
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
@@ -167,6 +179,10 @@ const initialContext: RunMachineContext = {
   linearIssueGraphPath: undefined,
   linearIssueIdentifier: undefined,
   linearIssueUrl: undefined,
+  mergeDecisionBlockerCount: undefined,
+  mergeDecisionNextAction: undefined,
+  mergeDecisionPath: undefined,
+  mergeDecisionStatus: undefined,
   planReviewPath: undefined,
   planReviewerSessionPath: undefined,
   previewDeploymentPath: undefined,
@@ -211,6 +227,9 @@ export const runMachine = createMachine({
         },
         LINEAR_ISSUE_GRAPH_RECORDED: {
           actions: "recordLinearIssueGraph",
+        },
+        MERGE_DECISION_RECORDED: {
+          actions: "recordMergeDecision",
         },
         PREVIEW_DEPLOYMENT_RECORDED: {
           actions: "recordPreviewDeployment",
@@ -445,6 +464,27 @@ export const runMachine = createMachine({
           ? event.issueUrl
           : undefined,
     }),
+    recordMergeDecision: assign({
+      githubPullRequest: ({ context, event }) =>
+        event.type === "MERGE_DECISION_RECORDED" &&
+        event.pullRequest !== undefined
+          ? event.pullRequest
+          : context.githubPullRequest,
+      mergeDecisionBlockerCount: ({ event }) =>
+        event.type === "MERGE_DECISION_RECORDED"
+          ? event.blockerCount
+          : undefined,
+      mergeDecisionNextAction: ({ event }) =>
+        event.type === "MERGE_DECISION_RECORDED"
+          ? event.nextAction
+          : undefined,
+      mergeDecisionPath: ({ event }) =>
+        event.type === "MERGE_DECISION_RECORDED"
+          ? event.mergeDecisionPath
+          : undefined,
+      mergeDecisionStatus: ({ event }) =>
+        event.type === "MERGE_DECISION_RECORDED" ? event.status : undefined,
+    }),
     recordPreviewDeployment: assign({
       previewDeploymentPath: ({ event }) =>
         event.type === "PREVIEW_DEPLOYMENT_RECORDED"
@@ -610,6 +650,16 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         issueIdentifier: getStringPayload(event, "issueIdentifier"),
         type: event.type,
         ...(issueUrl === undefined ? {} : { issueUrl }),
+      };
+    case "MERGE_DECISION_RECORDED":
+      const pullRequest = getOptionalStringPayload(event, "pullRequest");
+      return {
+        blockerCount: getNumberPayload(event, "blockerCount"),
+        mergeDecisionPath: getStringPayload(event, "mergeDecisionPath"),
+        nextAction: getStringPayload(event, "nextAction"),
+        status: getStringPayload(event, "status"),
+        type: event.type,
+        ...(pullRequest === undefined ? {} : { pullRequest }),
       };
     case "PREVIEW_DEPLOYMENT_RECORDED":
       const url = getOptionalStringPayload(event, "url");
@@ -823,6 +873,18 @@ function snapshotContext(
   }
   if (context.linearIssueUrl !== undefined) {
     output.linearIssueUrl = context.linearIssueUrl;
+  }
+  if (context.mergeDecisionBlockerCount !== undefined) {
+    output.mergeDecisionBlockerCount = context.mergeDecisionBlockerCount;
+  }
+  if (context.mergeDecisionNextAction !== undefined) {
+    output.mergeDecisionNextAction = context.mergeDecisionNextAction;
+  }
+  if (context.mergeDecisionPath !== undefined) {
+    output.mergeDecisionPath = context.mergeDecisionPath;
+  }
+  if (context.mergeDecisionStatus !== undefined) {
+    output.mergeDecisionStatus = context.mergeDecisionStatus;
   }
   if (context.planReviewPath !== undefined) {
     output.planReviewPath = context.planReviewPath;

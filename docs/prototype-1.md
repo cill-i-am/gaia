@@ -461,6 +461,18 @@ boundary, writes `linear-issue-graph.json`, and appends
 `LINEAR_ISSUE_GRAPH_RECORDED`. This is a typed intake foundation, not live
 Linear API sync yet.
 
+`merge-decision` records Gaia's explicit merge gate decision:
+
+```sh
+pnpm gaia merge-decision <run-id>
+```
+
+It reads the PR-loop state, reviewer session evidence, run profile, and browser
+evidence. Gaia writes `merge-decision.json`, appends
+`MERGE_DECISION_RECORDED`, and returns either `merge-pr` or
+`resolve-blockers`. It does not mutate GitHub, approve a PR, merge a branch, or
+deploy.
+
 ## Lifecycle
 
 Prototype 1 uses an XState machine in `@gaia/core`.
@@ -485,6 +497,7 @@ Prototype 1 uses an XState machine in `@gaia/core`.
 | `GITHUB_PR_COMMENT_RECORDED` | Attach a timestamped GitHub PR evidence comment to an already completed run. |
 | `GITHUB_REMEDIATION_SPEC_RECORDED` | Attach a follow-up remediation spec to an already completed run. |
 | `LINEAR_ISSUE_GRAPH_RECORDED` | Attach a typed Linear issue graph snapshot to an already completed run. |
+| `MERGE_DECISION_RECORDED` | Attach Gaia's explicit merge gate decision to an already completed run. |
 | `RUN_FAILED` | Record a typed failure and move to failed. |
 
 Resume is intentionally conservative. It replays completed runs and validates the
@@ -547,6 +560,7 @@ Boundary values are parsed before use:
 - GitHub PR evidence comments are emitted through `GitHubPrCommentSummary`.
 - GitHub remediation handoff summaries are emitted through `GitHubRemediationSpecSummary`.
 - Linear issue graph artifacts are emitted through `LinearIssueGraph`.
+- merge decisions are emitted through `MergeDecision`.
 - browser evidence target URLs are parsed as branded HTTP/HTTPS URLs.
 - preview deployment artifacts are emitted through `PreviewDeployment`.
 
@@ -580,6 +594,7 @@ Runtime tests cover:
 - run-scoped GitHub remediation spec creation and non-blocked refusal;
 - run-scoped GitHub PR evidence comment creation and command invocation;
 - run-scoped Linear issue graph parsing and event recording;
+- run-scoped merge decision gate approval and blocker recording;
 - verification failure when a worker artifact is missing.
 
 Tests use temp run roots instead of the repository `.gaia/` directory.

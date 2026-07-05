@@ -201,6 +201,19 @@ export {
   type LinearIssueIdentifier,
   type LinearIssueUrl,
 } from "./linear-issue-graph.js";
+export {
+  MergeDecision,
+  MergeDecisionBlocker,
+  MergeDecisionBlockerKindSchema,
+  MergeDecisionNextActionSchema,
+  MergeDecisionStatusSchema,
+  MergeDecisionSummary,
+  parseMergeDecisionJson,
+  recordMergeDecision,
+  type MergeDecisionBlockerKind,
+  type MergeDecisionNextAction,
+  type MergeDecisionStatus,
+} from "./merge-decision.js";
 export { writeReport } from "./report-writer.js";
 export {
   SkillBundle,

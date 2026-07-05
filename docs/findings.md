@@ -1068,3 +1068,35 @@ Verification:
   relationships, and records the event.
 - Runtime test proves invalid Linear issue identifiers fail with
   `LinearIssueGraphInvalid`.
+
+## Slice 28: Merge Decision Authority
+
+Outcome: Gaia now has `gaia merge-decision <run-id>`. The command reads the
+run's PR-loop state, reviewer session evidence, run profile, and browser
+evidence, writes `merge-decision.json`, appends `MERGE_DECISION_RECORDED`, and
+returns either `merge-pr` or `resolve-blockers`.
+
+Findings:
+
+- Merge authority should start as a decision artifact, not a mutation. The
+  orchestrator gets a typed recommendation while GitHub merge/deploy execution
+  remains explicit future work.
+- `ready-for-merge-decision` from the PR loop is necessary but not the whole
+  gate. Gaia should also prove reviewer evidence exists and approved the run,
+  then apply browser evidence policy from the run profile.
+- Missing evidence should usually produce a blocked decision rather than a
+  command failure. A blocked `merge-decision.json` is useful operator evidence;
+  corrupt or unreadable artifacts still fail as typed runtime errors.
+- Browser evidence is conditional. Optional/default runs should not be blocked
+  just because no browser capture exists, but profile-required browser evidence
+  must be collected before merge approval.
+
+Verification:
+
+- Core replay test proves `MERGE_DECISION_RECORDED` enriches completed runs
+  without leaving the completed state.
+- Runtime test proves a clean PR-loop plus approved reviewer evidence produces
+  an approved `merge-pr` decision.
+- Runtime test proves missing PR-loop evidence produces a blocked decision with
+  a `missing-pr-loop` blocker.
+- CLI help smoke proves `merge-decision` exposes `<run-id>` and `--json`.

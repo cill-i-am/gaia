@@ -503,6 +503,8 @@ Non-goals:
 
 ## Phase 7: Merge and Deployment Authority
 
+Status: **Completed for explicit merge decision artifacts**
+
 Goal:
 
 - Let Gaia enforce evidence gates before merge/deploy decisions.
@@ -518,6 +520,23 @@ Done when:
 - Reviewer/spec evidence is required for non-trivial changes.
 - Browser evidence is required only for changes that need it.
 - Merge/deploy actions are explicit, logged, and recoverable.
+
+Current behavior:
+
+- `gaia merge-decision <run-id>` reads `pr-loop-state.json`, reviewer session
+  evidence, run profile policy, and browser evidence.
+- Gaia writes `merge-decision.json` and appends `MERGE_DECISION_RECORDED`.
+- The decision is `approved` only when the PR loop is ready, checks passed,
+  reviewer sessions approved, and required browser evidence is collected.
+- The command recommends `merge-pr` or `resolve-blockers`; it does not merge,
+  approve, comment, or deploy.
+
+Deferred:
+
+- actual GitHub merge execution;
+- deployment execution;
+- human override flows;
+- deployment rollback/cleanup authority.
 
 Non-goals:
 

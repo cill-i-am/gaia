@@ -13,6 +13,7 @@ import type {
   GitHubPrLoopSummary,
   GitHubRemediationSpecSummary,
   LinearIssueGraphSummary,
+  MergeDecisionSummary,
   GitHubPublishPreflightSummary,
   GitHubPublishPreview,
   GitHubPrSummary,
@@ -38,6 +39,7 @@ import {
   publishRunToGitHub,
   publishWorkspaceRunToGitHub,
   recordLinearIssueGraph,
+  recordMergeDecision,
   recordGitHubChecks,
   resumeRun,
   runSpecFile,
@@ -458,6 +460,24 @@ const linearIssue = Command.make("linear-issue", {
   ),
 );
 
+const mergeDecision = Command.make("merge-decision", {
+  json,
+  runId,
+}).pipe(
+  Command.withDescription(
+    "Record Gaia's explicit merge decision for a completed run.",
+  ),
+  Command.withHandler(({ json, runId }) =>
+    renderEffect(
+      recordMergeDecision(runId, {
+        rootDirectory: invocationRoot(),
+      }),
+      json,
+      renderMergeDecisionSummary,
+    ),
+  ),
+);
+
 const collectBrowserEvidenceCommand = Command.make("collect-browser-evidence", {
   browserTargetUrl,
   json,
@@ -495,6 +515,7 @@ const cli = Command.make("gaia").pipe(
     planRemediation,
     commentPr,
     linearIssue,
+    mergeDecision,
   ]),
 );
 
@@ -961,6 +982,30 @@ function renderLinearIssueGraphSummary(summary: LinearIssueGraphSummary) {
     `source: ${summary.sourcePath}`,
     `blocked by: ${summary.blockedByCount}`,
     `blocks: ${summary.blocksCount}`,
+  ].join("\n");
+}
+
+function renderMergeDecisionSummary(summary: MergeDecisionSummary) {
+  const pr = summary.pr === undefined ? "unknown" : summary.pr;
+  const lines = [
+    `merge decision: ${summary.status}`,
+    `run: ${summary.runId}`,
+    `pr: ${pr}`,
+    `next action: ${summary.nextAction}`,
+    `decision: ${summary.decisionPath}`,
+    `blockers: ${summary.blockerCount}`,
+  ];
+
+  if (summary.blockers.length === 0) {
+    return lines.join("\n");
+  }
+
+  return [
+    ...lines,
+    ...summary.blockers.map(
+      (blocker) =>
+        `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`,
+    ),
   ].join("\n");
 }
 
