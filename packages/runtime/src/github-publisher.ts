@@ -1126,6 +1126,7 @@ function copyRunArtifacts(
     ["report.json", "report.json"],
     ["browser-evidence.json", "browser-evidence.json"],
     ["skill-manifest.json", "skill-manifest.json"],
+    ["skill-bundle.json", "skill-bundle.json"],
     ["worker-plan.md", "worker-plan.md"],
     ["plan-review.md", "plan-review.md"],
     ["worker-result.json", "worker-result.json"],

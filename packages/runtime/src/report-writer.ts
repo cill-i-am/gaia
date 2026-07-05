@@ -21,6 +21,7 @@ export function writeReport(input: {
       artifacts: [
         "workspace-manifest.json",
         "skill-manifest.json",
+        "skill-bundle.json",
         "browser-evidence.json",
         "worker-plan.md",
         "worker-plan.json",

@@ -141,6 +141,8 @@ Non-goals:
 
 ## Phase 3: Skill Bundle Installation and Versioning
 
+Status: **In progress: local skill bundle resolution completed; external installation remains**
+
 Goal:
 
 - Turn the recorded skill manifest into an installed, pinned worker context.
@@ -155,6 +157,20 @@ Done when:
 - Installed skill source, version/commit, and local path are recorded.
 - A missing or unpinned skill fails before worker execution.
 - The worker prompt points to the resolved skill paths.
+
+Completed foundation:
+
+- Gaia writes `skill-bundle.json` for every run.
+- Local manifest entries with `sourceRepository: "local"` or `"file"` resolve
+  to checked skill directories containing `SKILL.md`.
+- External manifest entries are marked `requires-install` instead of being
+  silently treated as available.
+- Missing local skill sources fail before worker execution.
+
+Remaining:
+
+- Install or fetch external pinned skill sources.
+- Point the worker prompt at resolved skill paths.
 
 Non-goals:
 

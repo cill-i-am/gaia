@@ -5,6 +5,7 @@ import { execPath } from "node:process";
 import { parseRunId } from "@gaia/core";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import { parseBrowserEvidenceJson } from "./browser-evidence.js";
+import { parseSkillBundleJson } from "./skill-bundle.js";
 import {
   makeCodexHarnessConfig,
   nodeCodexCommandRunner,
@@ -406,16 +407,111 @@ describe("runtime workflows", () => {
         const skillManifest = yield* fs.readFileString(
           `${summary.runDirectory}/skill-manifest.json`,
         );
+        const skillBundle = parseSkillBundleJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/skill-bundle.json`,
+            ),
+          ),
+        );
         const reportJson = yield* fs.readFileString(
           `${summary.runDirectory}/report.json`,
         );
         const reportMarkdown = yield* fs.readFileString(summary.reportPath);
 
         assert.include(skillManifest, '"name": "coding-standards"');
+        assert.strictEqual(skillBundle.status, "requires-install");
+        assert.strictEqual(skillBundle.skills[0]?.resolution, "external");
         assert.include(reportJson, '"selectedSkills": [');
         assert.include(reportJson, '"coding-standards"');
         assert.include(reportMarkdown, "- coding-standards");
         assert.include(reportMarkdown, "skill-manifest.json");
+        assert.include(reportMarkdown, "skill-bundle.json");
+      }),
+    );
+
+    it.effect("resolves local skills from a pinned skill manifest", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const manifestPath = `${cwd}/skills.json`;
+        const skillDirectory = `${cwd}/skills/coding-standards`;
+        yield* fs.makeDirectory(skillDirectory, { recursive: true });
+        yield* fs.writeFileString(`${skillDirectory}/SKILL.md`, "# Skill\n");
+        yield* fs.writeFileString(specPath, "Run with local skills.\n");
+        yield* fs.writeFileString(
+          manifestPath,
+          `${JSON.stringify(
+            {
+              skills: [
+                {
+                  commit: "abc123",
+                  name: "coding-standards",
+                  sourcePath: "skills/coding-standards",
+                  sourceRepository: "local",
+                },
+              ],
+            },
+            null,
+            2,
+          )}\n`,
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          rootDirectory: cwd,
+          skillManifestSource: localSkillManifestSource(manifestPath),
+        });
+
+        const skillBundle = parseSkillBundleJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/skill-bundle.json`,
+            ),
+          ),
+        );
+
+        assert.strictEqual(skillBundle.status, "ready");
+        assert.strictEqual(skillBundle.skills[0]?.resolution, "local");
+        assert.strictEqual(skillBundle.skills[0]?.resolvedPath, skillDirectory);
+      }),
+    );
+
+    it.effect("rejects missing local skill sources", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const manifestPath = `${cwd}/skills.json`;
+        yield* fs.writeFileString(specPath, "Run with missing local skills.\n");
+        yield* fs.writeFileString(
+          manifestPath,
+          `${JSON.stringify({
+            skills: [
+              {
+                commit: "abc123",
+                name: "coding-standards",
+                sourcePath: "skills/coding-standards",
+                sourceRepository: "local",
+              },
+            ],
+          })}\n`,
+        );
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            rootDirectory: cwd,
+            skillManifestSource: localSkillManifestSource(manifestPath),
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "SkillBundleSourceUnavailable");
+        }
+
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        assert.strictEqual(status.state, "failed");
       }),
     );
 

@@ -31,6 +31,7 @@ export type RunPaths = {
   readonly root: string;
   readonly runsRoot: string;
   readonly snapshots: string;
+  readonly skillBundle: string;
   readonly skillManifest: string;
   readonly verificationLog: string;
   readonly verificationResult: string;
@@ -93,6 +94,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       root,
       runsRoot: store.runsRoot,
       snapshots: path.join(root, "snapshots.jsonl"),
+      skillBundle: path.join(root, "skill-bundle.json"),
       skillManifest: path.join(root, "skill-manifest.json"),
       verificationLog: path.join(root, "verification.log"),
       verificationResult: path.join(root, "verification-result.json"),

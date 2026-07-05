@@ -88,7 +88,8 @@ need to override those defaults.
 `pnpm gaia run --skill-manifest <path>` records a pinned portable-skill
 manifest as `skill-manifest.json` evidence. Gaia validates that every selected
 skill has a source repository, source path, and either a version or commit. It
-does not install skills yet.
+also writes `skill-bundle.json`: local skill sources are resolved and checked
+for `SKILL.md`; external sources are marked as requiring installation.
 `pnpm gaia publish-pr <run-id>` intentionally mutates GitHub state: it creates
 an evidence branch, commits selected run evidence under `gaia-runs/<run-id>/`,
 pushes it, opens a draft PR, and restores the original local branch.
@@ -118,11 +119,13 @@ Each run is stored relative to the current working directory:
   snapshots.jsonl
   workspace-manifest.json
   skill-manifest.json
+  skill-bundle.json
   browser-evidence.json
   worker-plan.md
   worker-plan.json
   plan-review.md
   plan-review.json
+  plan-reviewer-session.json
   workspace/
     output.txt
   codex-last-message.md  # Codex harness runs
@@ -132,6 +135,7 @@ Each run is stored relative to the current working directory:
   verification-result.json
   evidence-review.md
   evidence-review.json
+  evidence-reviewer-session.json
   report.md
   report.json
   github-checks/

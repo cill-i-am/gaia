@@ -616,3 +616,31 @@ Verification:
 - Runtime test proves blocked Codex plan reviews still write blocked session
   evidence before the run fails.
 - Core replay test proves reviewer session paths are preserved in snapshots.
+
+## Slice 13: Skill Bundle Resolution Contract
+
+Outcome: Gaia now writes `skill-bundle.json` for every run. Empty manifests
+produce an empty bundle, local skill entries resolve to checked directories with
+`SKILL.md`, and external skill entries are preserved as `requires-install`
+instead of being silently treated as available.
+
+Findings:
+
+- The recorded manifest and the resolved bundle are different artifacts. The
+  manifest is the user's requested portable skill set; the bundle is Gaia's
+  current ability to hand concrete skill paths to a worker.
+- Local resolution is useful now and keeps the failure mode honest. A local
+  entry with `sourceRepository: "local"` or `"file"` must point to a directory
+  containing `SKILL.md`, otherwise the run fails before worker planning.
+- External skill installation should remain a separate slice. Marking remote
+  entries as `requires-install` gives the future installer a clear input
+  without pretending remote skills are already available in worker context.
+
+Verification:
+
+- Runtime test proves external pinned manifest entries produce a
+  `requires-install` bundle and still appear in reports.
+- Runtime test proves local skill entries resolve to absolute local paths and
+  produce a `ready` bundle.
+- Runtime test proves missing local skill sources fail with typed
+  `SkillBundleSourceUnavailable` before worker execution.

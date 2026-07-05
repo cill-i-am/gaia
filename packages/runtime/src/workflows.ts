@@ -39,6 +39,7 @@ import {
   writeSkillManifest,
   type SkillManifestSource,
 } from "./skill-manifest.js";
+import { writeSkillBundle } from "./skill-bundle.js";
 import { verifyHarnessOutput } from "./verifier.js";
 import { writeWorkerPlan } from "./worker-plan.js";
 import {
@@ -104,6 +105,17 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
       type: "WORKSPACE_PREPARED",
     });
     const skillManifest = yield* writeSkillManifest({
+      paths,
+      ...(options.skillManifestSource === undefined
+        ? {}
+        : { source: options.skillManifestSource }),
+    }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "preparingWorkspace", error),
+      ),
+    );
+    yield* writeSkillBundle({
+      manifest: skillManifest,
       paths,
       ...(options.skillManifestSource === undefined
         ? {}

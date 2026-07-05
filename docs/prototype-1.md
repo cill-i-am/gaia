@@ -155,11 +155,13 @@ A completed run looks like this:
       snapshots.jsonl
       workspace-manifest.json
       skill-manifest.json
+      skill-bundle.json
       browser-evidence.json
       worker-plan.md
       worker-plan.json
       plan-review.md
       plan-review.json
+      plan-reviewer-session.json
       workspace/
         output.txt
       worker.log
@@ -168,6 +170,7 @@ A completed run looks like this:
       verification-result.json
       evidence-review.md
       evidence-review.json
+      evidence-reviewer-session.json
       report.md
       report.json
       github-checks/
@@ -213,8 +216,10 @@ normalizes this shape:
 ```
 
 Every skill must include a `sourceRepository`, `sourcePath`, and either
-`version` or `commit`. Gaia records the manifest and report selected skills; it
-does not install or resolve the bundle yet.
+`version` or `commit`. Gaia records the manifest and report selected skills.
+It also writes `skill-bundle.json`: local entries with `sourceRepository:
+"local"` or `"file"` are resolved relative to the manifest and must contain
+`SKILL.md`; external entries are preserved as requiring installation.
 
 `browser-evidence.json` defines the future browser automation contract. Current
 runs write:

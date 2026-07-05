@@ -116,6 +116,16 @@ export {
 } from "./reviewer-session-evidence.js";
 export { writeReport } from "./report-writer.js";
 export {
+  SkillBundle,
+  SkillBundleEntry,
+  SkillBundleResolutionSchema,
+  SkillBundleStatusSchema,
+  parseSkillBundleJson,
+  writeSkillBundle,
+  type SkillBundleResolution,
+  type SkillBundleStatus,
+} from "./skill-bundle.js";
+export {
   SkillManifest,
   SkillManifestEntry,
   SkillNameSchema,
