@@ -30,6 +30,9 @@ export type RunMachineContext = {
   readonly githubPrLoopPath: string | undefined;
   readonly githubPrLoopStatus: string | undefined;
   readonly githubPullRequest: string | undefined;
+  readonly githubRemediationBlockerCount: number | undefined;
+  readonly githubRemediationNextAction: string | undefined;
+  readonly githubRemediationSpecPath: string | undefined;
   readonly githubWatchStatePath: string | undefined;
   readonly lastEventSequence: number;
   readonly evidenceReviewerSessionPath: string | undefined;
@@ -102,6 +105,13 @@ export type RunMachineEvent =
       readonly pullRequest: string;
       readonly status: string;
     }
+  | {
+      readonly type: "GITHUB_REMEDIATION_SPEC_RECORDED";
+      readonly blockerCount: number;
+      readonly nextAction: string;
+      readonly pullRequest: string;
+      readonly remediationSpecPath: string;
+    }
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
@@ -123,6 +133,9 @@ const initialContext: RunMachineContext = {
   githubPrLoopPath: undefined,
   githubPrLoopStatus: undefined,
   githubPullRequest: undefined,
+  githubRemediationBlockerCount: undefined,
+  githubRemediationNextAction: undefined,
+  githubRemediationSpecPath: undefined,
   githubWatchStatePath: undefined,
   lastEventSequence: 0,
   evidenceReviewerSessionPath: undefined,
@@ -161,6 +174,9 @@ export const runMachine = createMachine({
         },
         GITHUB_PR_LOOP_RECORDED: {
           actions: "recordGitHubPrLoop",
+        },
+        GITHUB_REMEDIATION_SPEC_RECORDED: {
+          actions: "recordGitHubRemediationSpec",
         },
         PREVIEW_DEPLOYMENT_RECORDED: {
           actions: "recordPreviewDeployment",
@@ -341,6 +357,24 @@ export const runMachine = createMachine({
           ? event.pullRequest
           : undefined,
     }),
+    recordGitHubRemediationSpec: assign({
+      githubRemediationBlockerCount: ({ event }) =>
+        event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
+          ? event.blockerCount
+          : undefined,
+      githubPullRequest: ({ event }) =>
+        event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
+          ? event.pullRequest
+          : undefined,
+      githubRemediationNextAction: ({ event }) =>
+        event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
+          ? event.nextAction
+          : undefined,
+      githubRemediationSpecPath: ({ event }) =>
+        event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
+          ? event.remediationSpecPath
+          : undefined,
+    }),
     recordPreviewDeployment: assign({
       previewDeploymentPath: ({ event }) =>
         event.type === "PREVIEW_DEPLOYMENT_RECORDED"
@@ -479,6 +513,14 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         prLoopPath: getStringPayload(event, "prLoopPath"),
         pullRequest: getStringPayload(event, "pullRequest"),
         status: getStringPayload(event, "status"),
+        type: event.type,
+      };
+    case "GITHUB_REMEDIATION_SPEC_RECORDED":
+      return {
+        blockerCount: getNumberPayload(event, "blockerCount"),
+        nextAction: getStringPayload(event, "nextAction"),
+        pullRequest: getStringPayload(event, "pullRequest"),
+        remediationSpecPath: getStringPayload(event, "remediationSpecPath"),
         type: event.type,
       };
     case "PREVIEW_DEPLOYMENT_RECORDED":
@@ -658,6 +700,17 @@ function snapshotContext(
   }
   if (context.githubPullRequest !== undefined) {
     output.githubPullRequest = context.githubPullRequest;
+  }
+  if (context.githubRemediationBlockerCount !== undefined) {
+    output.githubRemediationBlockerCount =
+      context.githubRemediationBlockerCount;
+  }
+  if (context.githubRemediationNextAction !== undefined) {
+    output.githubRemediationNextAction =
+      context.githubRemediationNextAction;
+  }
+  if (context.githubRemediationSpecPath !== undefined) {
+    output.githubRemediationSpecPath = context.githubRemediationSpecPath;
   }
   if (context.githubWatchStatePath !== undefined) {
     output.githubWatchStatePath = context.githubWatchStatePath;

@@ -335,6 +335,20 @@ export class GitHubPrLoopSummary extends Schema.Class<GitHubPrLoopSummary>(
   status: GitHubPrLoopStatusSchema,
 }) {}
 
+export class GitHubRemediationSpecSummary extends Schema.Class<GitHubRemediationSpecSummary>(
+  "GitHubRemediationSpecSummary",
+)({
+  blockerCount: GitHubFeedbackCountSchema,
+  blockers: Schema.Array(GitHubPrLoopBlocker),
+  nextAction: GitHubPrLoopNextActionSchema,
+  pr: GitHubPullRequestSelectorSchema,
+  prLoopPath: Schema.NonEmptyString,
+  runId: RunIdSchema,
+  specPath: Schema.NonEmptyString,
+  status: Schema.Literal("created"),
+  title: Schema.NonEmptyString,
+}) {}
+
 export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
   "GitHubPrSummary",
 )({
@@ -947,6 +961,17 @@ export function coordinateGitHubPrLoop(
   );
 }
 
+/** Create a follow-up remediation spec from a blocked GitHub PR loop. */
+export function createGitHubRemediationSpec(
+  runIdInput: string,
+  options: RunStorageOptions = {},
+) {
+  return withRunStoreLock(
+    options,
+    createGitHubRemediationSpecUnlocked(runIdInput, options),
+  );
+}
+
 function recordGitHubChecksUnlocked(
   runIdInput: string,
   prInput: string,
@@ -1145,6 +1170,69 @@ function coordinateGitHubPrLoopUnlocked(
       runId: state.runId,
       statePath: paths.prLoopState,
       status: state.status,
+    });
+  });
+}
+
+function createGitHubRemediationSpecUnlocked(
+  runIdInput: string,
+  options: RunStorageOptions,
+) {
+  return Effect.gen(function* () {
+    const rootDirectory = options.rootDirectory ?? ".";
+    const run = yield* statusRun(runIdInput, { rootDirectory });
+
+    if (run.status !== "completed") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "RunNotCompleted",
+          message: `Run ${run.runId} must be completed before creating a remediation spec.`,
+          recoverable: false,
+        }),
+      );
+    }
+
+    const paths = yield* makeRunPaths(run.runId, { rootDirectory });
+    const prLoop = yield* readGitHubPrLoopState(paths);
+
+    if (prLoop.status !== "blocked") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "GitHubPrLoopNotBlocked",
+          message: `Run ${run.runId} has PR-loop status '${prLoop.status}', so there is no remediation spec to create.`,
+          recoverable: false,
+        }),
+      );
+    }
+
+    const title = `Remediate GitHub PR ${prLoop.pr}`;
+    yield* writeGitHubRemediationSpec(paths, {
+      body: gitHubRemediationSpecMarkdown({ prLoop, title }),
+    });
+
+    const remediationSpecPath = runRelative(paths, paths.githubRemediationSpec);
+    const prLoopPath = runRelative(paths, paths.prLoopState);
+
+    yield* appendEvent(run.runId, paths, {
+      payload: {
+        blockerCount: prLoop.blockerCount,
+        nextAction: prLoop.nextAction,
+        pullRequest: prLoop.pr,
+        remediationSpecPath,
+      },
+      type: "GITHUB_REMEDIATION_SPEC_RECORDED",
+    });
+
+    return GitHubRemediationSpecSummary.make({
+      blockerCount: prLoop.blockerCount,
+      blockers: prLoop.blockers,
+      nextAction: prLoop.nextAction,
+      pr: prLoop.pr,
+      prLoopPath,
+      runId: prLoop.runId,
+      specPath: paths.githubRemediationSpec,
+      status: "created",
+      title,
     });
   });
 }
@@ -1490,6 +1578,136 @@ function writeGitHubPrLoopState(
       ),
     ),
   );
+}
+
+function readGitHubPrLoopState(paths: RunPaths) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const exists = yield* fs.exists(paths.prLoopState);
+
+    if (!exists) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "GitHubPrLoopStateMissing",
+          message: "Gaia could not find pr-loop-state.json for this run.",
+          recoverable: false,
+        }),
+      );
+    }
+
+    const contents = yield* fs.readFileString(paths.prLoopState);
+    const parsed = yield* Effect.try({
+      try: (): unknown => JSON.parse(contents),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubPrLoopStateJsonInvalid",
+          message: "GitHub PR loop state was not valid JSON.",
+          recoverable: true,
+        }),
+    });
+
+    return yield* Effect.try({
+      try: () => parseGitHubPrLoopStateJson(parsed),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubPrLoopStateInvalid",
+          message: "GitHub PR loop state did not match Gaia's schema.",
+          recoverable: true,
+        }),
+    });
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "GitHubPrLoopStateReadFailed",
+          message: "Gaia could not read GitHub PR loop state.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
+function writeGitHubRemediationSpec(
+  paths: RunPaths,
+  input: Readonly<{ body: string }>,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(paths.githubRemediationSpec, input.body);
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "GitHubRemediationSpecWriteFailed",
+          message: "Gaia could not write the GitHub remediation spec.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
+function gitHubRemediationSpecMarkdown(
+  input: Readonly<{
+    prLoop: GitHubPrLoopState;
+    title: string;
+  }>,
+) {
+  const blockerLines = input.prLoop.blockers
+    .map(formatGitHubRemediationBlocker)
+    .join("\n");
+
+  return [
+    "---",
+    `title: ${JSON.stringify(input.title)}`,
+    "---",
+    "",
+    `# ${input.title}`,
+    "",
+    `Original Gaia run: \`${input.prLoop.runId}\``,
+    `GitHub PR: \`${input.prLoop.pr}\``,
+    "PR-loop state: `pr-loop-state.json`",
+    `Next action: \`${input.prLoop.nextAction}\``,
+    "",
+    "## Goal",
+    "",
+    "Resolve the actionable blockers recorded by Gaia's PR-loop coordinator.",
+    "Keep the fix narrow, preserve the existing PR, and do not merge.",
+    "",
+    "## Blockers",
+    "",
+    blockerLines,
+    "",
+    "## Evidence To Inspect",
+    "",
+    "- `pr-loop-state.json` for the ordered blocker summary.",
+    "- `github-feedback.json` for review comments, latest reviews, and review decision.",
+    "- `github-checks/` for the recorded check snapshot.",
+    "- `report.md` and `worker-result.json` for the original run context.",
+    "",
+    "## Constraints",
+    "",
+    "- Make the smallest source change that addresses the blockers.",
+    "- Treat frontend or generated checks as evidence, not as security proof.",
+    "- Keep errors and uncertainty visible in the final report.",
+    "- Do not auto-merge, force-push over unrelated work, or hide review feedback.",
+    "",
+    "## Done When",
+    "",
+    "- The blockers have a direct code or documentation response.",
+    "- Relevant tests or checks have been run.",
+    "- A follow-up PR-loop pass can record a new state.",
+    "",
+  ].join("\n");
+}
+
+function formatGitHubRemediationBlocker(blocker: GitHubPrLoopBlocker) {
+  return `- \`${blocker.kind}\` -> \`${blocker.action}\`: ${blocker.summary}`;
 }
 
 function classifyGitHubFeedback(

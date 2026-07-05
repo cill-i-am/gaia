@@ -10,6 +10,7 @@ import type {
   GitHubCiWatchSummary,
   GitHubPrFeedbackSummary,
   GitHubPrLoopSummary,
+  GitHubRemediationSpecSummary,
   GitHubPublishPreflightSummary,
   GitHubPublishPreview,
   GitHubPrSummary,
@@ -18,6 +19,7 @@ import {
   GaiaRuntimeError,
   collectBrowserEvidence,
   coordinateGitHubPrLoop,
+  createGitHubRemediationSpec,
   inspectGitHubChecks,
   listRuns,
   localDirectoryWorkspaceSource,
@@ -391,6 +393,24 @@ const prLoop = Command.make("pr-loop", {
   ),
 );
 
+const planRemediation = Command.make("plan-remediation", {
+  json,
+  runId,
+}).pipe(
+  Command.withDescription(
+    "Create a follow-up remediation spec from a blocked PR-loop state.",
+  ),
+  Command.withHandler(({ json, runId }) =>
+    renderEffect(
+      createGitHubRemediationSpec(runId, {
+        rootDirectory: invocationRoot(),
+      }),
+      json,
+      renderGitHubRemediationSpecSummary,
+    ),
+  ),
+);
+
 const collectBrowserEvidenceCommand = Command.make("collect-browser-evidence", {
   browserTargetUrl,
   json,
@@ -425,6 +445,7 @@ const cli = Command.make("gaia").pipe(
     watchCi,
     watchPrFeedback,
     prLoop,
+    planRemediation,
   ]),
 );
 
@@ -834,6 +855,28 @@ function renderGitHubPrLoopSummary(summary: GitHubPrLoopSummary) {
   if (summary.blockers.length === 0) {
     return lines.join("\n");
   }
+
+  return [
+    ...lines,
+    ...summary.blockers.map(
+      (blocker) =>
+        `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`,
+    ),
+  ].join("\n");
+}
+
+function renderGitHubRemediationSpecSummary(
+  summary: GitHubRemediationSpecSummary,
+) {
+  const lines = [
+    `remediation spec: ${summary.status}`,
+    `run: ${summary.runId}`,
+    `pr: ${summary.pr}`,
+    `next action: ${summary.nextAction}`,
+    `spec: ${summary.specPath}`,
+    `pr loop: ${summary.prLoopPath}`,
+    `blockers: ${summary.blockerCount}`,
+  ];
 
   return [
     ...lines,

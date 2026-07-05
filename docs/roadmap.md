@@ -148,7 +148,6 @@ Completed behavior:
 
 Remaining behavior:
 
-- worker remediation handoff from the PR-loop next action into a follow-up run;
 - attach richer report/evidence comments once PR comments are needed;
 - connect a real Codex worker harness to the workspace loop.
 
@@ -234,12 +233,19 @@ available:
    records one CI snapshot and one PR feedback snapshot, writes
    `pr-loop-state.json`, appends `GITHUB_PR_LOOP_RECORDED`, and recommends the
    next ordered action without merging or fixing code itself.
-10. **Worker remediation handoff**: next. Turn a blocked PR-loop state into a
-   clear follow-up spec/run for the worker while preserving orchestrator final
-   authority.
-11. **Local Gaia server**: next product-track slice. Introduce `gaia server` as
-   a local source-of-truth API over the existing filesystem-backed run store so
-   the CLI and future dashboard can share state.
+10. **Worker remediation handoff**: completed. `gaia plan-remediation
+    <run-id>` turns a blocked `pr-loop-state.json` into
+    `remediation-spec.md`, appends `GITHUB_REMEDIATION_SPEC_RECORDED`, and
+    refuses ready or waiting PR loops.
+11. **PR evidence comments**: next. Attach a concise Gaia status/evidence
+    comment to a PR without hiding the underlying artifacts or taking merge
+    authority.
+12. **Linear issue graph**: next planning-track slice. Intake one Linear issue,
+    preserve blocker relationships through Linear blockers, and sync Gaia run
+    state back to the issue.
+13. **Local Gaia server**: later product-track slice. Introduce `gaia server`
+    as a local source-of-truth API over the existing filesystem-backed run
+    store so the CLI and future dashboard can share state.
 
 ## Harness Slice
 
@@ -261,9 +267,10 @@ The steps after harness integration are documented in
 7. GitHub PR feedback watcher;
 8. GitHub PR loop coordinator;
 9. worker remediation handoff;
-10. local Gaia server and dashboard foundation;
+10. PR evidence comments;
 11. Linear issue graph;
 12. merge and deployment authority;
-13. persistent run index and operator UI;
-14. multi-harness support;
-15. reusable factory templates.
+13. local Gaia server and dashboard foundation;
+14. persistent run index and operator UI;
+15. multi-harness support;
+16. reusable factory templates.

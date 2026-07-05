@@ -979,3 +979,32 @@ Verification:
   waiting state for pending CI plus required review, and clean ready state.
 - CLI help smoke proves `pr-loop` exposes `<run-id> <pull-request>` and
   `--json`.
+
+## Slice 25: Worker Remediation Handoff
+
+Outcome: Gaia now has `gaia plan-remediation <run-id>`. The command reads a
+blocked `pr-loop-state.json`, writes `remediation-spec.md`, appends
+`GITHUB_REMEDIATION_SPEC_RECORDED`, and returns a typed summary pointing at the
+generated spec.
+
+Findings:
+
+- Remediation should start as an explicit handoff artifact, not an automatic
+  fix loop. This preserves operator authority and makes the next worker run
+  inspectable before it starts.
+- The handoff should refuse `waiting` and `ready` PR loops. Pending CI,
+  awaiting review, and ready-for-merge decisions are not implementation work.
+- Markdown is the right first artifact because the existing `gaia run
+  <spec-file>` path can consume it without a special remediation runner.
+- The generated spec should point to `pr-loop-state.json`, `github-feedback.json`,
+  `github-checks/`, and original run evidence rather than copying all context
+  into the prompt and making it stale.
+
+Verification:
+
+- Core replay test proves `GITHUB_REMEDIATION_SPEC_RECORDED` enriches completed
+  runs without leaving the completed state.
+- Runtime test proves blocked PR-loop state creates `remediation-spec.md` with
+  ordered blockers and no auto-merge instruction.
+- Runtime test proves waiting PR-loop state fails with `GitHubPrLoopNotBlocked`.
+- CLI help smoke proves `plan-remediation` exposes `<run-id>` and `--json`.

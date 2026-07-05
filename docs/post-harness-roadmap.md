@@ -346,7 +346,7 @@ Non-goals:
 
 ## Phase 5.9: Worker Remediation Handoff
 
-Status: **Next**
+Status: **Completed for explicit remediation spec creation**
 
 Goal:
 
@@ -359,8 +359,7 @@ Build after:
 
 Done when:
 
-- Gaia can create a remediation spec from `address-review-comments`,
-  `fix-failed-checks`, or `respond-to-comments`.
+- Gaia can create a remediation spec from a blocked PR loop.
 - The remediation spec references the original run, PR, blockers, and relevant
   artifacts.
 - The follow-up run remains visible and reviewable; no hidden auto-fix loop
@@ -368,15 +367,55 @@ Done when:
 - The orchestrator keeps final authority over whether the remediation run is
   started, published, or merged.
 
+Completed foundation:
+
+- `gaia plan-remediation <run-id>` reads `pr-loop-state.json` and writes
+  `remediation-spec.md`.
+- Gaia refuses remediation for `ready` or `waiting` PR loops.
+- `GITHUB_REMEDIATION_SPEC_RECORDED` replays into run snapshots without
+  changing completed state.
+- The generated Markdown spec can be passed to `gaia run` later through the
+  normal spec path.
+
 Non-goals:
 
 - automatically choosing arbitrary code changes from failing logs;
 - merging after remediation;
 - replacing human PR review conversation.
 
+## Phase 5.95: PR Evidence Comments
+
+Status: **Next**
+
+Goal:
+
+- Publish a concise Gaia status/evidence comment to the GitHub PR.
+
+Build after:
+
+- The PR-loop coordinator and remediation handoff can explain what happened and
+  what should happen next.
+
+Done when:
+
+- Gaia can create or update a PR comment that links the run report, CI snapshot,
+  PR feedback artifact, PR-loop state, and remediation spec when present.
+- The comment is idempotent for a run or clearly creates a new timestamped
+  evidence comment.
+- The comment does not replace durable artifacts in `.gaia/runs`.
+- The command is explicit and bounded; it does not merge, approve, or dismiss
+  review feedback.
+
+Non-goals:
+
+- unresolved review-thread resolution;
+- comment spam;
+- merge authority;
+- replacing Linear or GitHub issue state.
+
 ## Product Track: Local Gaia Server
 
-Status: **Next after the PR remediation seam, or earlier if dashboard work starts**
+Status: **Later; do not start until the product-track slice is explicitly chosen**
 
 Goal:
 

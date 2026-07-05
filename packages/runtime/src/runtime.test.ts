@@ -28,6 +28,7 @@ import {
 } from "./codex-reviewer.js";
 import {
   coordinateGitHubPrLoop,
+  createGitHubRemediationSpec,
   inspectGitHubChecks,
   parseGitHubCiWatchStateJson,
   parseGitHubPrFeedbackJson,
@@ -2901,6 +2902,117 @@ describe("runtime workflows", () => {
         assert.strictEqual(summary.nextAction, "ready-for-merge-decision");
         assert.strictEqual(summary.blockerCount, 0);
         assert.strictEqual(summary.blockers.length, 0);
+      }),
+    );
+
+    it.effect("creates a remediation spec from a blocked PR loop", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Create remediation spec.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (input.args.join(" ").startsWith("pr checks")) {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify([
+                  {
+                    link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                    name: "test",
+                    state: "FAILURE",
+                    workflow: "CI",
+                  },
+                ]),
+              };
+            }
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify(
+                prFeedbackView({
+                  latestReviews: [
+                    {
+                      author: { login: "reviewer" },
+                      body: "Needs work.",
+                      state: "CHANGES_REQUESTED",
+                    },
+                  ],
+                  reviewDecision: "CHANGES_REQUESTED",
+                }),
+              ),
+            };
+          }),
+          rootDirectory: cwd,
+        });
+
+        const remediation = yield* createGitHubRemediationSpec(run.runId, {
+          rootDirectory: cwd,
+        });
+        const markdown = yield* fs.readFileString(remediation.specPath);
+        const events = yield* fs.readFileString(`${run.runDirectory}/events.jsonl`);
+
+        assert.strictEqual(remediation.status, "created");
+        assert.strictEqual(remediation.nextAction, "address-review-comments");
+        assert.strictEqual(remediation.blockerCount, 2);
+        assert.include(markdown, "title: \"Remediate GitHub PR 1\"");
+        assert.include(markdown, "PR-loop state: `pr-loop-state.json`");
+        assert.include(markdown, "`changes-requested` -> `address-review-comments`");
+        assert.include(markdown, "`failed-checks` -> `fix-failed-checks`");
+        assert.include(markdown, "Do not auto-merge");
+        assert.include(events, '"type":"GITHUB_REMEDIATION_SPEC_RECORDED"');
+        assert.include(events, '"remediationSpecPath":"remediation-spec.md"');
+      }),
+    );
+
+    it.effect("does not create remediation specs from waiting PR loops", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Do not remediate waiting state.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (input.args.join(" ").startsWith("pr checks")) {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify([
+                  {
+                    link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                    name: "test",
+                    state: "PENDING",
+                    workflow: "CI",
+                  },
+                ]),
+              };
+            }
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify(
+                prFeedbackView({ reviewDecision: "REVIEW_REQUIRED" }),
+              ),
+            };
+          }),
+          rootDirectory: cwd,
+        });
+
+        const error = yield* Effect.flip(
+          createGitHubRemediationSpec(run.runId, { rootDirectory: cwd }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "GitHubPrLoopNotBlocked");
+        }
       }),
     );
 

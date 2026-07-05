@@ -36,9 +36,10 @@ before any real coding harness or external integration is introduced.
 23. Can resume a bounded GitHub CI watch from stored `ci-watch-state.json`.
 24. Can record GitHub PR feedback and recommend the next review-response action.
 25. Can coordinate CI and PR feedback into one ordered PR-loop next action.
-26. Can collect browser screenshot and console evidence for a completed run, or
+26. Can create a remediation spec from a blocked PR-loop state.
+27. Can collect browser screenshot and console evidence for a completed run, or
     during a run when given a target URL.
-27. Can record a worker-declared preview deployment URL and use it as the
+28. Can record a worker-declared preview deployment URL and use it as the
     browser evidence target when no explicit or profile target is set.
 
 ## What It Does Not Do Yet
@@ -119,6 +120,7 @@ pnpm gaia watch-ci <run-id> <pr-number-or-url>
 pnpm gaia watch-ci <run-id>
 pnpm gaia watch-pr-feedback <run-id> <pr-number-or-url>
 pnpm gaia pr-loop <run-id> <pr-number-or-url>
+pnpm gaia plan-remediation <run-id>
 pnpm gaia collect-browser-evidence <run-id> --url http://localhost:3000
 ```
 
@@ -199,6 +201,7 @@ A completed run looks like this:
         checks-<event-sequence>.json
       github-feedback.json
       pr-loop-state.json
+      remediation-spec.md
 ```
 
 `events.jsonl` is the source of truth. Every line is a parsed `RunEvent`.
@@ -418,6 +421,19 @@ and awaiting review produce `status: "waiting"`. A clear PR produces
 `status: "ready"` and `nextAction: "ready-for-merge-decision"`. The command is
 a coordinator, not a daemon, fixer, or merge authority.
 
+`plan-remediation` creates an explicit follow-up spec from a blocked PR-loop
+state:
+
+```sh
+pnpm gaia plan-remediation <run-id>
+```
+
+It reads `pr-loop-state.json`, refuses non-blocked states, writes
+`remediation-spec.md`, and appends `GITHUB_REMEDIATION_SPEC_RECORDED`. The
+generated Markdown references the original run, PR, blockers, and artifacts to
+inspect. It does not start a worker, mutate the PR, or merge. A later run can
+consume the Markdown through the normal `gaia run <spec-file>` path.
+
 ## Lifecycle
 
 Prototype 1 uses an XState machine in `@gaia/core`.
@@ -439,6 +455,7 @@ Prototype 1 uses an XState machine in `@gaia/core`.
 | `GITHUB_CHECKS_RECORDED` | Attach GitHub check evidence to an already completed run. |
 | `GITHUB_FEEDBACK_RECORDED` | Attach GitHub PR feedback evidence to an already completed run. |
 | `GITHUB_PR_LOOP_RECORDED` | Attach the combined PR-loop next action to an already completed run. |
+| `GITHUB_REMEDIATION_SPEC_RECORDED` | Attach a follow-up remediation spec to an already completed run. |
 | `RUN_FAILED` | Record a typed failure and move to failed. |
 
 Resume is intentionally conservative. It replays completed runs and validates the
@@ -498,6 +515,7 @@ Boundary values are parsed before use:
 - GitHub check snapshots are emitted through `GitHubChecksSnapshot`.
 - GitHub PR feedback artifacts are emitted through `GitHubPrFeedback`.
 - GitHub PR loop artifacts are emitted through `GitHubPrLoopState`.
+- GitHub remediation handoff summaries are emitted through `GitHubRemediationSpecSummary`.
 - browser evidence target URLs are parsed as branded HTTP/HTTPS URLs.
 - preview deployment artifacts are emitted through `PreviewDeployment`.
 
@@ -528,6 +546,7 @@ Runtime tests cover:
 - run-scoped GitHub check snapshot recording and bounded wait polling;
 - run-scoped GitHub PR feedback recording and next-action classification;
 - run-scoped GitHub PR loop coordination and blocker ordering;
+- run-scoped GitHub remediation spec creation and non-blocked refusal;
 - verification failure when a worker artifact is missing.
 
 Tests use temp run roots instead of the repository `.gaia/` directory.
