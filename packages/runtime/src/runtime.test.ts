@@ -27,6 +27,10 @@ import {
   makeCodexReviewerConfig,
 } from "./codex-reviewer.js";
 import {
+  doctor,
+  type DoctorCommandRunner,
+} from "./doctor.js";
+import {
   commentGitHubPullRequest,
   coordinateGitHubPrLoop,
   createGitHubRemediationSpec,
@@ -223,6 +227,50 @@ describe("runtime workflows", () => {
           assert.strictEqual(error.code, "RunStoreLocked");
           assert.isTrue(error.recoverable);
         }
+      }),
+    );
+
+    it.effect("reports a healthy local doctor result", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+
+        const summary = yield* doctor({
+          browserInspector: () => Effect.succeed(true),
+          commandRunner: passingDoctorCommandRunner,
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(summary.status, "healthy");
+        assert.deepEqual(
+          summary.checks.map((check) => check.status),
+          ["passed", "passed", "passed", "passed", "passed"],
+        );
+      }),
+    );
+
+    it.effect("reports local doctor warnings without failing the command", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+
+        const summary = yield* doctor({
+          browserInspector: () => Effect.succeed(false),
+          commandRunner: warningDoctorCommandRunner,
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(summary.status, "warnings");
+        assert.deepEqual(
+          summary.checks.map((check) => [check.name, check.status]),
+          [
+            ["gaia-store-writable", "passed"],
+            ["git-repository", "warning"],
+            ["gh-auth", "warning"],
+            ["codex-cli", "warning"],
+            ["playwright-browser", "warning"],
+          ],
+        );
       }),
     );
 
@@ -3251,7 +3299,7 @@ describe("runtime workflows", () => {
         const events = yield* fs.readFileString(`${run.runDirectory}/events.jsonl`);
 
         assert.strictEqual(summary.status, "approved");
-        assert.strictEqual(summary.nextAction, "merge-pr");
+        assert.strictEqual(summary.nextAction, "ready-to-merge");
         assert.strictEqual(summary.pr, "1");
         assert.strictEqual(summary.blockerCount, 0);
         assert.strictEqual(decision.status, "approved");
@@ -3260,7 +3308,7 @@ describe("runtime workflows", () => {
         assert.strictEqual(decision.evidenceReviewerSessionPath, "evidence-reviewer-session.json");
         assert.include(events, '"type":"MERGE_DECISION_RECORDED"');
         assert.include(events, '"mergeDecisionPath":"merge-decision.json"');
-        assert.include(events, '"nextAction":"merge-pr"');
+        assert.include(events, '"nextAction":"ready-to-merge"');
       }),
     );
 
@@ -3445,6 +3493,22 @@ function installingSkillRunner(
       return { exitCode: 0, stderr: "", stdout: "" };
     });
 }
+
+const passingDoctorCommandRunner: DoctorCommandRunner = (input) =>
+  Effect.sync(() => {
+    if (input.command === "git") {
+      return { exitCode: 0, stderr: "", stdout: "true\n" };
+    }
+
+    return { exitCode: 0, stderr: "", stdout: "" };
+  });
+
+const warningDoctorCommandRunner: DoctorCommandRunner = (input) =>
+  Effect.sync(() => ({
+    exitCode: 1,
+    stderr: `${input.command} unavailable`,
+    stdout: "",
+  }));
 
 const collectedBrowserEvidenceCollector: BrowserEvidenceCollector = (input) =>
   Effect.sync(() =>

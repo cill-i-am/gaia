@@ -601,7 +601,7 @@ describe("core contracts", () => {
         payload: {
           blockerCount: 0,
           mergeDecisionPath: "merge-decision.json",
-          nextAction: "merge-pr",
+          nextAction: "ready-to-merge",
           pullRequest: "1",
           status: "approved",
         },
@@ -617,7 +617,7 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.eventSequence, 6);
     assert.strictEqual(durableSnapshot.context.githubPullRequest, "1");
     assert.strictEqual(durableSnapshot.context.mergeDecisionBlockerCount, 0);
-    assert.strictEqual(durableSnapshot.context.mergeDecisionNextAction, "merge-pr");
+    assert.strictEqual(durableSnapshot.context.mergeDecisionNextAction, "ready-to-merge");
     assert.strictEqual(
       durableSnapshot.context.mergeDecisionPath,
       "merge-decision.json",

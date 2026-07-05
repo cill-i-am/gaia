@@ -48,6 +48,24 @@ export {
   type CodexHarnessOptions,
   type CodexSandboxMode,
 } from "./codex-harness.js";
+export {
+  DoctorCheck,
+  DoctorCheckNameSchema,
+  DoctorCheckStatusSchema,
+  DoctorStatusSchema,
+  DoctorSummary,
+  doctor,
+  nodeDoctorCommandRunner,
+  nodePlaywrightBrowserInspector,
+  type DoctorBrowserInspector,
+  type DoctorCheckName,
+  type DoctorCheckStatus,
+  type DoctorCommandInput,
+  type DoctorCommandResult,
+  type DoctorCommandRunner,
+  type DoctorOptions,
+  type DoctorStatus,
+} from "./doctor.js";
 export { appendEvent, loadRun, readEvents, type AppendEventInput } from "./event-store.js";
 export {
   GitHubCheckRun,

@@ -469,9 +469,26 @@ pnpm gaia merge-decision <run-id>
 
 It reads the PR-loop state, reviewer session evidence, run profile, and browser
 evidence. Gaia writes `merge-decision.json`, appends
-`MERGE_DECISION_RECORDED`, and returns either `merge-pr` or
+`MERGE_DECISION_RECORDED`, and returns either `ready-to-merge` or
 `resolve-blockers`. It does not mutate GitHub, approve a PR, merge a branch, or
 deploy.
+
+`doctor` inspects local Gaia prerequisites:
+
+```sh
+pnpm gaia doctor
+pnpm gaia doctor --json
+```
+
+It checks `.gaia` writability, git repository presence, GitHub CLI auth, Codex
+CLI availability, and Playwright Chromium availability. Missing optional tools
+produce warnings instead of failing the command.
+
+Demo fixtures live under `examples/*`:
+
+- `examples/specs/factory-demo.md`
+- `examples/linear/issue-graph.json`
+- `examples/github/pr-loop-state.ready.json`
 
 ## Lifecycle
 
@@ -561,6 +578,7 @@ Boundary values are parsed before use:
 - GitHub remediation handoff summaries are emitted through `GitHubRemediationSpecSummary`.
 - Linear issue graph artifacts are emitted through `LinearIssueGraph`.
 - merge decisions are emitted through `MergeDecision`.
+- doctor results are emitted through `DoctorSummary`.
 - browser evidence target URLs are parsed as branded HTTP/HTTPS URLs.
 - preview deployment artifacts are emitted through `PreviewDeployment`.
 
@@ -595,6 +613,7 @@ Runtime tests cover:
 - run-scoped GitHub PR evidence comment creation and command invocation;
 - run-scoped Linear issue graph parsing and event recording;
 - run-scoped merge decision gate approval and blocker recording;
+- local doctor health and warning results through fake command seams;
 - verification failure when a worker artifact is missing.
 
 Tests use temp run roots instead of the repository `.gaia/` directory.

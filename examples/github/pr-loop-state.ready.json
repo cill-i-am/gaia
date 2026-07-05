@@ -1,0 +1,14 @@
+{
+  "blockerCount": 0,
+  "blockers": [],
+  "checksPath": "github-checks/latest.json",
+  "checksStatus": "passed",
+  "feedbackPath": "github-feedback.json",
+  "feedbackStatus": "clear",
+  "nextAction": "ready-for-merge-decision",
+  "observedAt": "2026-07-05T00:00:00.000Z",
+  "pr": "1",
+  "runId": "run-V7kP9sQ2xY",
+  "status": "ready",
+  "version": 1
+}

@@ -528,7 +528,7 @@ Current behavior:
 - Gaia writes `merge-decision.json` and appends `MERGE_DECISION_RECORDED`.
 - The decision is `approved` only when the PR loop is ready, checks passed,
   reviewer sessions approved, and required browser evidence is collected.
-- The command recommends `merge-pr` or `resolve-blockers`; it does not merge,
+- The command recommends `ready-to-merge` or `resolve-blockers`; it does not merge,
   approve, comment, or deploy.
 
 Deferred:
@@ -537,6 +537,14 @@ Deferred:
 - deployment execution;
 - human override flows;
 - deployment rollback/cleanup authority.
+
+Pre-product cleanup:
+
+- [`operator-model.md`](operator-model.md) records the current read-model and
+  command-authority decisions that should inform the server/dashboard specs.
+- `gaia doctor` checks local prerequisites without mutating external systems.
+- Static fixtures under `examples/*` make local demos possible without GitHub,
+  Linear, or Codex.
 
 Non-goals:
 

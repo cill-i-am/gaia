@@ -1074,7 +1074,7 @@ Verification:
 Outcome: Gaia now has `gaia merge-decision <run-id>`. The command reads the
 run's PR-loop state, reviewer session evidence, run profile, and browser
 evidence, writes `merge-decision.json`, appends `MERGE_DECISION_RECORDED`, and
-returns either `merge-pr` or `resolve-blockers`.
+returns either `ready-to-merge` or `resolve-blockers`.
 
 Findings:
 
@@ -1096,7 +1096,38 @@ Verification:
 - Core replay test proves `MERGE_DECISION_RECORDED` enriches completed runs
   without leaving the completed state.
 - Runtime test proves a clean PR-loop plus approved reviewer evidence produces
-  an approved `merge-pr` decision.
+  an approved `ready-to-merge` decision.
 - Runtime test proves missing PR-loop evidence produces a blocked decision with
   a `missing-pr-loop` blocker.
 - CLI help smoke proves `merge-decision` exposes `<run-id>` and `--json`.
+
+## Slice 29: Pre-Product QoL And Operator Model
+
+Outcome: Gaia now has `gaia doctor`, portable demo fixtures under
+`examples/*`, `ready-to-merge` wording for merge decisions, and
+[`operator-model.md`](operator-model.md) for read-model and command-authority
+decisions.
+
+Findings:
+
+- Server planning should happen as part of the vision phase specs, but the
+  read-model tradeoff is stable enough to record now: keep `events.jsonl` as
+  source of truth, derive the first server's run index in memory, and defer
+  SQLite until query needs justify it.
+- Command authority needs explicit vocabulary before a UI exists. Gaia now
+  distinguishes read-only commands, local artifact writers, external-mutating
+  commands, and future destructive authority.
+- `merge-decision` should say `ready-to-merge`, not `merge-pr`. The former is a
+  decision result; the latter sounds like an executable instruction.
+- `doctor` should not hard-fail merely because optional integrations are
+  missing. Local runs remain useful without GitHub, Codex, or browser evidence
+  support, so those checks produce warnings.
+- Demo fixtures should stay static and portable. They are documentation and
+  smoke-test aids, not a second source of truth for real run state.
+
+Verification:
+
+- Runtime tests prove `doctor` returns a healthy result when all fake seams pass.
+- Runtime tests prove `doctor` returns warnings when git, GitHub, Codex, and
+  Playwright checks fail through fake seams.
+- CLI help smoke proves `doctor` exposes `--json`.

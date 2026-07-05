@@ -26,7 +26,7 @@ export const MergeDecisionStatusSchema = Schema.Literals([
 export type MergeDecisionStatus = typeof MergeDecisionStatusSchema.Type;
 
 export const MergeDecisionNextActionSchema = Schema.Literals([
-  "merge-pr",
+  "ready-to-merge",
   "resolve-blockers",
 ] as const);
 
@@ -138,7 +138,7 @@ function recordMergeDecisionUnlocked(
     const status: MergeDecisionStatus =
       blockers.length === 0 ? "approved" : "blocked";
     const nextAction: MergeDecisionNextAction =
-      status === "approved" ? "merge-pr" : "resolve-blockers";
+      status === "approved" ? "ready-to-merge" : "resolve-blockers";
     const decision = MergeDecision.make({
       blockerCount: parseMergeDecisionBlockerCount(blockers.length),
       blockers,

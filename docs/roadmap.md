@@ -7,6 +7,10 @@ The holistic product direction lives in [`vision.md`](vision.md). Keep this
 roadmap as the delivery ledger for thin, verifiable slices that move toward
 that local-first software factory.
 
+Operator-facing command authority and read-model decisions live in
+[`operator-model.md`](operator-model.md). Keep server/API planning inside the
+phase specs that break down the vision doc.
+
 ## Principles
 
 - Keep Gaia as a control plane, not a mega-agent.
@@ -249,9 +253,14 @@ available:
 13. **Merge and deployment authority**: completed for explicit merge decision
     artifacts. `gaia merge-decision <run-id>` reads PR-loop, reviewer, run
     profile, and browser evidence, writes `merge-decision.json`, appends
-    `MERGE_DECISION_RECORDED`, and recommends either `merge-pr` or
+    `MERGE_DECISION_RECORDED`, and recommends either `ready-to-merge` or
     `resolve-blockers` without mutating GitHub or deployments.
-14. **Local Gaia server**: later product-track slice. Introduce `gaia server`
+14. **Pre-product QoL**: completed. `gaia doctor` inspects local prerequisites
+    without external mutation, examples now include a richer factory demo spec,
+    Linear graph fixture, and PR-loop fixture, and
+    [`operator-model.md`](operator-model.md) documents read-model and command
+    authority tradeoffs before server work begins.
+15. **Local Gaia server**: later product-track slice. Introduce `gaia server`
     as a local source-of-truth API over the existing filesystem-backed run
     store so the CLI and future dashboard can share state.
 

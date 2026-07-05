@@ -5,6 +5,7 @@ import type {
   BrowserEvidenceRecord,
   BrowserEvidenceRequirement,
   CommandSummary,
+  DoctorSummary,
   GitHubChecksRecord,
   GitHubChecksSummary,
   GitHubCiWatchSummary,
@@ -24,6 +25,7 @@ import {
   commentGitHubPullRequest,
   coordinateGitHubPrLoop,
   createGitHubRemediationSpec,
+  doctor,
   inspectGitHubChecks,
   listRuns,
   localDirectoryWorkspaceSource,
@@ -237,6 +239,17 @@ const status = Command.make("status", { json, runId: optionalRunId }).pipe(
       statusRun(Option.getOrUndefined(runId), workflowOptions()),
       json,
       renderSummary,
+    ),
+  ),
+);
+
+const doctorCommand = Command.make("doctor", { json }).pipe(
+  Command.withDescription("Inspect local Gaia prerequisites."),
+  Command.withHandler(({ json }) =>
+    renderEffect(
+      doctor({ rootDirectory: invocationRoot() }),
+      json,
+      renderDoctorSummary,
     ),
   ),
 );
@@ -499,6 +512,7 @@ const cli = Command.make("gaia").pipe(
   Command.withDescription("Gaia software-factory control plane prototype."),
   Command.withSubcommands([
     run,
+    doctorCommand,
     resume,
     status,
     list,
@@ -753,6 +767,15 @@ function renderRunList(summaries: ReadonlyArray<CommandSummary>) {
   return summaries
     .map((summary) => `${summary.runId} ${summary.status} ${summary.state}`)
     .join("\n");
+}
+
+function renderDoctorSummary(summary: DoctorSummary) {
+  return [
+    `doctor: ${summary.status}`,
+    ...summary.checks.map(
+      (check) => `- ${check.name}: ${check.status} - ${check.detail}`,
+    ),
+  ].join("\n");
 }
 
 function renderBrowserEvidenceRecord(record: BrowserEvidenceRecord) {

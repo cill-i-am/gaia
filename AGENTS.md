@@ -46,6 +46,7 @@ pnpm build
 For CLI behavior, also run a smoke pass:
 
 ```sh
+pnpm gaia doctor
 pnpm gaia run examples/specs/smoke.md
 pnpm gaia run examples/specs/smoke.md --harness fake
 pnpm gaia run examples/specs/smoke.md --harness process --harness-command node --harness-arg "$PWD/examples/harnesses/process-harness.mjs"

@@ -1,0 +1,22 @@
+{
+  "issue": {
+    "identifier": "GAI-123",
+    "status": "In Progress",
+    "title": "Prove Gaia can record planning context",
+    "url": "https://linear.app/acme/issue/GAI-123/prove-gaia-can-record-planning-context"
+  },
+  "blockedBy": [
+    {
+      "identifier": "GAI-122",
+      "title": "Define the first workflow evidence boundary",
+      "url": "https://linear.app/acme/issue/GAI-122/define-the-first-workflow-evidence-boundary"
+    }
+  ],
+  "blocks": [
+    {
+      "identifier": "GAI-124",
+      "title": "Add live Linear sync after the typed artifact is stable",
+      "url": "https://linear.app/acme/issue/GAI-124/add-live-linear-sync-after-the-typed-artifact-is-stable"
+    }
+  ]
+}
