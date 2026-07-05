@@ -750,6 +750,22 @@ describe("runtime workflows", () => {
           preview.branchName,
           `gaia/${summary.runId}-workspace`,
         );
+        const sourceAddCommand = preview.commands.find(
+          (command) =>
+            command.command === "git" &&
+            command.args.join(" ") === "add --all -- .",
+        );
+        const sourceDiffCommand = preview.commands.find(
+          (command) =>
+            command.command === "git" &&
+            command.args.join(" ") === "diff --cached --quiet -- .",
+        );
+        if (sourceAddCommand === undefined) {
+          assert.fail("Expected workspace preview to stage source changes.");
+        }
+        if (sourceDiffCommand === undefined) {
+          assert.fail("Expected workspace preview to check staged changes.");
+        }
         assert.deepEqual(
           preview.commands.map((command) => [
             command.command,
@@ -902,6 +918,22 @@ describe("runtime workflows", () => {
         assert.isFalse(removedFileExists);
         assert.isFalse(outputArtifactExists);
         assert.include(evidenceOutput, summary.runId);
+        const sourceAddCommand = commands.find(
+          (command) =>
+            command.command === "git" &&
+            command.args.join(" ") === "add --all -- .",
+        );
+        const sourceDiffCommand = commands.find(
+          (command) =>
+            command.command === "git" &&
+            command.args.join(" ") === "diff --cached --quiet -- .",
+        );
+        if (sourceAddCommand === undefined) {
+          assert.fail("Expected publish to stage source changes.");
+        }
+        if (sourceDiffCommand === undefined) {
+          assert.fail("Expected publish to check staged source changes.");
+        }
         assert.deepEqual(
           commands.map((command) => [command.command, command.args[0]]),
           [

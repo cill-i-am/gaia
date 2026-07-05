@@ -479,8 +479,6 @@ function publishPreviewCommands(input: Readonly<{
             "--all",
             "--",
             ".",
-            ":!.gaia",
-            `:!${input.evidencePath}`,
           ]),
           previewCommand("git", [
             "diff",
@@ -488,8 +486,6 @@ function publishPreviewCommands(input: Readonly<{
             "--quiet",
             "--",
             ".",
-            ":!.gaia",
-            `:!${input.evidencePath}`,
           ]),
         ]
       : []),
@@ -552,7 +548,7 @@ export function publishWorkspaceRunToGitHub(
       ]);
 
       yield* applyRunWorkspace(paths, rootDirectory);
-      yield* stageWorkspaceChanges(runner, rootDirectory, preflight.runId);
+      yield* stageWorkspaceChanges(runner, rootDirectory);
 
       const evidencePath = yield* writePullRequestEvidence(
         preflight.runId,
@@ -804,17 +800,13 @@ function readWorkspaceArtifactRelativePaths(paths: RunPaths) {
 function stageWorkspaceChanges(
   runner: GitHubCommandRunner,
   rootDirectory: string,
-  runId: RunId,
 ) {
   return Effect.gen(function* () {
-    const excludedEvidencePath = `:!gaia-runs/${runId}`;
     yield* runRequiredCommand(runner, rootDirectory, "git", [
       "add",
       "--all",
       "--",
       ".",
-      ":!.gaia",
-      excludedEvidencePath,
     ]);
     const diff = yield* runCommand(runner, rootDirectory, "git", [
       "diff",
@@ -822,8 +814,6 @@ function stageWorkspaceChanges(
       "--quiet",
       "--",
       ".",
-      ":!.gaia",
-      excludedEvidencePath,
     ]);
 
     if (diff.exitCode === 0) {
