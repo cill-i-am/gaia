@@ -1,0 +1,22 @@
+Run ID: run-9NwGyq3PC5
+
+Implemented GAIA-1 read-only local run API.
+
+Changed files:
+- packages/runtime/src/run-read-model.ts: added events.jsonl-backed read helpers for run lists, run detail, event logs, constrained diagnostics, and allowlisted text/JSON artifact reads.
+- packages/runtime/src/index.ts: exported the new read helpers and API-facing types.
+- packages/runtime/src/runtime.test.ts: added runtime contract coverage for partial diagnostics, run/event reads, and artifact allowlisting.
+- apps/server/*: added @gaia/server with native Node HTTP boundary, Effect-backed request handling, typed success/partial/error envelopes, default 127.0.0.1 binding, root option, CLI entrypoint, build config, and HTTP boundary tests.
+
+Verification:
+- pnpm --filter @gaia/runtime check
+- pnpm --filter @gaia/server check
+- pnpm --filter @gaia/runtime test
+- pnpm --filter @gaia/server test
+- pnpm check
+- pnpm test
+- pnpm --filter @gaia/server build
+- pnpm build
+
+Residual risk:
+- Server tests use the exported HTTP request handler rather than binding a loopback port because this sandbox rejects listen(127.0.0.1) with EPERM. Route/status/envelope behavior is still covered.

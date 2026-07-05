@@ -1,6 +1,6 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, Exit, FileSystem, Schema } from "effect";
 import { execPath } from "node:process";
 import { parseRunEvent, parseRunId } from "@gaia/core";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
@@ -82,6 +82,12 @@ import {
   runSpecFile,
   statusRun,
 } from "./workflows.js";
+import {
+  listReadableRuns,
+  readRunArtifact,
+  readRunDetail,
+  readRunEventLog,
+} from "./run-read-model.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
 import { verifyHarnessOutput } from "./verifier.js";
 
@@ -190,6 +196,65 @@ describe("runtime workflows", () => {
           runs.map((run) => run.runId),
           [summary.runId],
         );
+      }),
+    );
+
+    it.effect("lists readable runs with diagnostics for invalid run directories", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "List readable runs.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        yield* fs.makeDirectory(`${store.runsRoot}/run-not-a-valid-id`);
+
+        const result = yield* listReadableRuns({ rootDirectory: cwd });
+
+        assert.deepEqual(
+          result.runs.map((run) => run.runId),
+          [summary.runId],
+        );
+        assert.isDefined(
+          result.diagnostics.find(
+            (diagnostic) =>
+              diagnostic.code === "InvalidRunDirectory" &&
+              diagnostic.message ===
+                "Run directory name is not a valid Gaia run id." &&
+              diagnostic.pathSegment === "run-not-a-valid-id" &&
+              diagnostic.recoverable,
+          ),
+        );
+      }),
+    );
+
+    it.effect("reads run detail, event log, and allowlisted artifacts", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Read API contract.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const detail = yield* readRunDetail(summary.runId, { rootDirectory: cwd });
+        const events = yield* readRunEventLog(summary.runId, {
+          rootDirectory: cwd,
+        });
+        const report = yield* readRunArtifact(summary.runId, "report.json", {
+          rootDirectory: cwd,
+        });
+        const blocked = yield* Effect.exit(
+          readRunArtifact(summary.runId, "../events.jsonl", {
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.strictEqual(detail.runId, summary.runId);
+        assert.strictEqual(detail.state, "completed");
+        assert.strictEqual(events.events.length, detail.eventCount);
+        assert.strictEqual(report.encoding, "json");
+        assert.strictEqual(report.artifactName, "report.json");
+        assert.isTrue(Exit.isFailure(blocked));
       }),
     );
 

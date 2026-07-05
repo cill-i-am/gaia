@@ -205,6 +205,20 @@ export {
   type RunProfileSource,
 } from "./run-profile.js";
 export {
+  listReadableRuns,
+  publicRunDiagnostic,
+  readRunArtifact,
+  readRunDetail,
+  readRunEventLog,
+  type RunArtifactName,
+  type RunArtifactReadResult,
+  type RunEventsReadResult,
+  type RunListReadResult,
+  type RunReadDetail,
+  type RunReadDiagnostic,
+  type RunReadSummary,
+} from "./run-read-model.js";
+export {
   LinearIssue,
   LinearIssueGraph,
   LinearIssueGraphInput,
