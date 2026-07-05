@@ -27,6 +27,7 @@ export type RunPaths = {
   readonly githubRemediationSpec: string;
   readonly input: string;
   readonly latest: string;
+  readonly linearIssueGraph: string;
   readonly planReviewMarkdown: string;
   readonly planReviewResult: string;
   readonly planReviewerSession: string;
@@ -95,6 +96,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       githubRemediationSpec: path.join(root, "remediation-spec.md"),
       input: path.join(root, "input.md"),
       latest: store.latest,
+      linearIssueGraph: path.join(root, "linear-issue-graph.json"),
       planReviewMarkdown: path.join(root, "plan-review.md"),
       planReviewResult: path.join(root, "plan-review.json"),
       planReviewerSession: path.join(

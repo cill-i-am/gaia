@@ -449,6 +449,18 @@ the GitHub CLI prints one. The comment references published Gaia evidence paths
 under `gaia-runs/<run-id>/`; it does not approve, merge, dismiss, or resolve
 review feedback.
 
+`linear-issue` records one exported Linear issue graph against an existing run:
+
+```sh
+pnpm gaia linear-issue <run-id> <linear-issue-graph-file>
+```
+
+The input JSON must contain a primary `issue` and `blockedBy` / `blocks`
+relationship arrays. Gaia parses Linear issue identifiers and issue URLs at the
+boundary, writes `linear-issue-graph.json`, and appends
+`LINEAR_ISSUE_GRAPH_RECORDED`. This is a typed intake foundation, not live
+Linear API sync yet.
+
 ## Lifecycle
 
 Prototype 1 uses an XState machine in `@gaia/core`.
@@ -472,6 +484,7 @@ Prototype 1 uses an XState machine in `@gaia/core`.
 | `GITHUB_PR_LOOP_RECORDED` | Attach the combined PR-loop next action to an already completed run. |
 | `GITHUB_PR_COMMENT_RECORDED` | Attach a timestamped GitHub PR evidence comment to an already completed run. |
 | `GITHUB_REMEDIATION_SPEC_RECORDED` | Attach a follow-up remediation spec to an already completed run. |
+| `LINEAR_ISSUE_GRAPH_RECORDED` | Attach a typed Linear issue graph snapshot to an already completed run. |
 | `RUN_FAILED` | Record a typed failure and move to failed. |
 
 Resume is intentionally conservative. It replays completed runs and validates the
@@ -533,6 +546,7 @@ Boundary values are parsed before use:
 - GitHub PR loop artifacts are emitted through `GitHubPrLoopState`.
 - GitHub PR evidence comments are emitted through `GitHubPrCommentSummary`.
 - GitHub remediation handoff summaries are emitted through `GitHubRemediationSpecSummary`.
+- Linear issue graph artifacts are emitted through `LinearIssueGraph`.
 - browser evidence target URLs are parsed as branded HTTP/HTTPS URLs.
 - preview deployment artifacts are emitted through `PreviewDeployment`.
 
@@ -565,6 +579,7 @@ Runtime tests cover:
 - run-scoped GitHub PR loop coordination and blocker ordering;
 - run-scoped GitHub remediation spec creation and non-blocked refusal;
 - run-scoped GitHub PR evidence comment creation and command invocation;
+- run-scoped Linear issue graph parsing and event recording;
 - verification failure when a worker artifact is missing.
 
 Tests use temp run roots instead of the repository `.gaia/` directory.

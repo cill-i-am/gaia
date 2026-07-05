@@ -12,6 +12,7 @@ import type {
   GitHubPrCommentSummary,
   GitHubPrLoopSummary,
   GitHubRemediationSpecSummary,
+  LinearIssueGraphSummary,
   GitHubPublishPreflightSummary,
   GitHubPublishPreview,
   GitHubPrSummary,
@@ -36,6 +37,7 @@ import {
   previewGitHubPublish,
   publishRunToGitHub,
   publishWorkspaceRunToGitHub,
+  recordLinearIssueGraph,
   recordGitHubChecks,
   resumeRun,
   runSpecFile,
@@ -59,6 +61,7 @@ type FailureOutput = {
 };
 
 const specFile = Argument.string("spec-file");
+const linearIssueGraphFile = Argument.string("linear-issue-graph-file");
 const runId = Argument.string("run-id");
 const pullRequest = Argument.string("pull-request");
 const optionalRunId = runId.pipe(Argument.optional);
@@ -432,6 +435,29 @@ const commentPr = Command.make("comment-pr", {
   ),
 );
 
+const linearIssue = Command.make("linear-issue", {
+  json,
+  runId,
+  linearIssueGraphFile,
+}).pipe(
+  Command.withDescription(
+    "Record a Linear issue graph JSON snapshot against a Gaia run.",
+  ),
+  Command.withHandler(({ json, linearIssueGraphFile, runId }) =>
+    renderEffect(
+      recordLinearIssueGraph(
+        runId,
+        resolveInvocationPath(linearIssueGraphFile),
+        {
+          rootDirectory: invocationRoot(),
+        },
+      ),
+      json,
+      renderLinearIssueGraphSummary,
+    ),
+  ),
+);
+
 const collectBrowserEvidenceCommand = Command.make("collect-browser-evidence", {
   browserTargetUrl,
   json,
@@ -468,6 +494,7 @@ const cli = Command.make("gaia").pipe(
     prLoop,
     planRemediation,
     commentPr,
+    linearIssue,
   ]),
 );
 
@@ -919,6 +946,21 @@ function renderGitHubRemediationSpecSummary(
       (blocker) =>
         `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`,
     ),
+  ].join("\n");
+}
+
+function renderLinearIssueGraphSummary(summary: LinearIssueGraphSummary) {
+  const issueUrl = summary.issueUrl === undefined ? "unknown" : summary.issueUrl;
+
+  return [
+    `linear issue: ${summary.issueIdentifier}`,
+    `run: ${summary.runId}`,
+    `title: ${summary.issueTitle}`,
+    `url: ${issueUrl}`,
+    `graph: ${summary.graphPath}`,
+    `source: ${summary.sourcePath}`,
+    `blocked by: ${summary.blockedByCount}`,
+    `blocks: ${summary.blocksCount}`,
   ].join("\n");
 }
 

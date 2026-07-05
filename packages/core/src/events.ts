@@ -32,6 +32,7 @@ export const EventTypeSchema = Schema.Literals([
   "GITHUB_PR_LOOP_RECORDED",
   "GITHUB_PR_COMMENT_RECORDED",
   "GITHUB_REMEDIATION_SPEC_RECORDED",
+  "LINEAR_ISSUE_GRAPH_RECORDED",
   "RUN_FAILED",
 ] as const);
 

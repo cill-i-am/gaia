@@ -240,10 +240,16 @@ available:
     writes `github-pr-comment.md`, posts it through `gh pr comment`, appends
     `GITHUB_PR_COMMENT_RECORDED`, and keeps the comment timestamped rather
     than pretending to own review-thread state.
-12. **Linear issue graph**: next planning-track slice. Intake one Linear issue,
-    preserve blocker relationships through Linear blockers, and sync Gaia run
-    state back to the issue.
-13. **Local Gaia server**: later product-track slice. Introduce `gaia server`
+12. **Linear issue graph**: completed for the local typed intake foundation.
+    `gaia linear-issue <run-id> <linear-issue-graph-file>` records one
+    schema-validated Linear issue graph, preserves `blockedBy`/`blocks`
+    relationships, and appends `LINEAR_ISSUE_GRAPH_RECORDED`. Live Linear API
+    sync and issue comments remain deferred until the connector boundary is
+    explicit.
+13. **Merge and deployment authority**: next non-vision slice. Turn existing
+    PR-loop, check, reviewer, and browser evidence into an explicit merge
+    decision artifact without auto-merging.
+14. **Local Gaia server**: later product-track slice. Introduce `gaia server`
     as a local source-of-truth API over the existing filesystem-backed run
     store so the CLI and future dashboard can share state.
 

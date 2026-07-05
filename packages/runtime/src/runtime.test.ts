@@ -52,6 +52,10 @@ import {
 } from "./harness.js";
 import { makeRunPaths, makeRunStorePaths } from "./paths.js";
 import { parsePreviewDeploymentJson } from "./preview-deployment.js";
+import {
+  parseLinearIssueGraphJson,
+  recordLinearIssueGraph,
+} from "./linear-issue-graph.js";
 import { localSkillManifestSource } from "./skill-manifest.js";
 import {
   ReviewResult,
@@ -3102,6 +3106,99 @@ describe("runtime workflows", () => {
         assert.include(events, '"type":"GITHUB_PR_COMMENT_RECORDED"');
         assert.include(events, '"commentPath":"github-pr-comment.md"');
         assert.include(events, '"commentUrl":"https://github.com/cill-i-am/gaia/pull/1#issuecomment-1"');
+      }),
+    );
+
+    it.effect("records a Linear issue graph against a completed run", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const linearGraphPath = `${cwd}/linear-issue.json`;
+        yield* fs.writeFileString(specPath, "Record Linear issue graph.\n");
+        yield* fs.writeFileString(
+          linearGraphPath,
+          JSON.stringify({
+            blockedBy: [
+              {
+                identifier: "GAI-122",
+                title: "Complete prerequisite",
+                url: "https://linear.app/acme/issue/GAI-122/prerequisite",
+              },
+            ],
+            blocks: [
+              {
+                identifier: "GAI-124",
+                title: "Follow-up task",
+              },
+            ],
+            issue: {
+              description: "Build the first issue graph slice.",
+              identifier: "GAI-123",
+              status: "In Progress",
+              title: "Record Linear issue graph",
+              url: "https://linear.app/acme/issue/GAI-123/record-linear-issue-graph",
+            },
+          }),
+        );
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const summary = yield* recordLinearIssueGraph(
+          run.runId,
+          linearGraphPath,
+          { rootDirectory: cwd },
+        );
+        const graph = parseLinearIssueGraphJson(
+          JSON.parse(yield* fs.readFileString(summary.graphPath)),
+        );
+        const events = yield* fs.readFileString(`${run.runDirectory}/events.jsonl`);
+
+        assert.strictEqual(summary.issueIdentifier, "GAI-123");
+        assert.strictEqual(summary.issueTitle, "Record Linear issue graph");
+        assert.strictEqual(summary.blockedByCount, 1);
+        assert.strictEqual(summary.blocksCount, 1);
+        assert.strictEqual(graph.source, "linear-json");
+        assert.strictEqual(graph.sourcePath, linearGraphPath);
+        assert.strictEqual(graph.issue.identifier, "GAI-123");
+        assert.strictEqual(graph.blockedBy[0]?.identifier, "GAI-122");
+        assert.strictEqual(graph.blocks[0]?.identifier, "GAI-124");
+        assert.include(events, '"type":"LINEAR_ISSUE_GRAPH_RECORDED"');
+        assert.include(events, '"issueGraphPath":"linear-issue-graph.json"');
+        assert.include(events, '"issueIdentifier":"GAI-123"');
+      }),
+    );
+
+    it.effect("rejects invalid Linear issue identifiers", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const linearGraphPath = `${cwd}/linear-issue.json`;
+        yield* fs.writeFileString(specPath, "Reject invalid Linear graph.\n");
+        yield* fs.writeFileString(
+          linearGraphPath,
+          JSON.stringify({
+            blockedBy: [],
+            blocks: [],
+            issue: {
+              identifier: "not-linear",
+              title: "Invalid identifier",
+            },
+          }),
+        );
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const error = yield* Effect.flip(
+          recordLinearIssueGraph(run.runId, linearGraphPath, {
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "LinearIssueGraphInvalid");
+          assert.isFalse(error.recoverable);
+        }
       }),
     );
 

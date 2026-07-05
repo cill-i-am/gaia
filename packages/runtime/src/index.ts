@@ -186,6 +186,21 @@ export {
   type RunProfileName,
   type RunProfileSource,
 } from "./run-profile.js";
+export {
+  LinearIssue,
+  LinearIssueGraph,
+  LinearIssueGraphInput,
+  LinearIssueGraphSummary,
+  LinearIssueIdentifierSchema,
+  LinearIssueIdSchema,
+  LinearIssueReference,
+  LinearIssueUrlSchema,
+  parseLinearIssueGraphJson,
+  recordLinearIssueGraph,
+  type LinearIssueId,
+  type LinearIssueIdentifier,
+  type LinearIssueUrl,
+} from "./linear-issue-graph.js";
 export { writeReport } from "./report-writer.js";
 export {
   SkillBundle,

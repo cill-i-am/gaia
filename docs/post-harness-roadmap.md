@@ -464,6 +464,8 @@ Non-goals:
 
 ## Phase 6: Linear Issue Graph
 
+Status: **Completed for local typed intake foundation**
+
 Goal:
 
 - Use Linear as the planning and blocker source of truth.
@@ -474,10 +476,25 @@ Build after:
 
 Done when:
 
-- Gaia can intake one Linear issue into a run spec.
+- Gaia can intake one Linear issue graph snapshot as run evidence.
 - Linear blockers model issue dependencies.
 - Gaia posts run, PR, and check status back to Linear.
 - Human-readable decisions stay in Linear comments or linked docs.
+
+Current behavior:
+
+- `gaia linear-issue <run-id> <linear-issue-graph-file>` records one
+  schema-validated Linear issue graph against a completed run.
+- The graph preserves the primary issue plus `blockedBy` and `blocks`
+  relationships using branded Linear issue identifiers.
+- Gaia writes `linear-issue-graph.json` and appends
+  `LINEAR_ISSUE_GRAPH_RECORDED`.
+
+Deferred:
+
+- live Linear API intake;
+- status/comment sync back to Linear;
+- generating the initial run spec directly from a Linear issue.
 
 Non-goals:
 

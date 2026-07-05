@@ -1037,3 +1037,34 @@ Verification:
   records the event.
 - CLI help smoke proves `comment-pr` exposes `<run-id> <pull-request>` and
   `--json`.
+
+## Slice 27: Linear Issue Graph Intake Foundation
+
+Outcome: Gaia now has `gaia linear-issue <run-id> <linear-issue-graph-file>`.
+The command parses one exported Linear issue graph, writes
+`linear-issue-graph.json`, appends `LINEAR_ISSUE_GRAPH_RECORDED`, and records
+the primary issue plus `blockedBy` / `blocks` relationships against a completed
+run.
+
+Findings:
+
+- The first Linear slice should not fake a live sync loop. A typed import
+  boundary gives us the durable artifact shape while leaving live Linear API
+  intake and comment/status sync as explicit later work.
+- Linear should remain the planning source of truth. Gaia records a run-scoped
+  snapshot and relationship evidence, not a second local issue tracker or label
+  system.
+- Linear identifiers and issue URLs are meaningful boundary values, so they are
+  parsed and branded before they reach the run artifact.
+- Blocker relationships should use Linear's own graph language: `blockedBy` and
+  `blocks`. Gaia can later map those directly to Linear blockers instead of
+  inventing local dependency labels.
+
+Verification:
+
+- Core replay test proves `LINEAR_ISSUE_GRAPH_RECORDED` enriches completed runs
+  without leaving the completed state.
+- Runtime test proves Gaia writes `linear-issue-graph.json`, preserves blocker
+  relationships, and records the event.
+- Runtime test proves invalid Linear issue identifiers fail with
+  `LinearIssueGraphInvalid`.

@@ -490,6 +490,75 @@ describe("core contracts", () => {
     );
   });
 
+  it("replays Linear issue graph evidence without leaving completed state", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const events = [
+      makeRunEvent({
+        payload: { specPath: "input.md" },
+        runId,
+        sequence: 1,
+        timestamp: "2026-07-04T10:00:00.000Z",
+        type: "RUN_CREATED",
+      }),
+      makeRunEvent({
+        payload: { workspacePath: "workspace" },
+        runId,
+        sequence: 2,
+        timestamp: "2026-07-04T10:00:01.000Z",
+        type: "WORKSPACE_PREPARED",
+      }),
+      makeRunEvent({
+        payload: { workerResultPath: "worker-result.json" },
+        runId,
+        sequence: 3,
+        timestamp: "2026-07-04T10:00:02.000Z",
+        type: "WORKER_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: { verificationResultPath: "verification-result.json" },
+        runId,
+        sequence: 4,
+        timestamp: "2026-07-04T10:00:03.000Z",
+        type: "VERIFICATION_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: { reportPath: "report.md" },
+        runId,
+        sequence: 5,
+        timestamp: "2026-07-04T10:00:04.000Z",
+        type: "REPORT_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: {
+          blockedByCount: 1,
+          blocksCount: 2,
+          issueGraphPath: "linear-issue-graph.json",
+          issueIdentifier: "GAI-123",
+          issueUrl: "https://linear.app/acme/issue/GAI-123/test",
+        },
+        runId,
+        sequence: 6,
+        timestamp: "2026-07-04T10:00:05.000Z",
+        type: "LINEAR_ISSUE_GRAPH_RECORDED",
+      }),
+    ];
+
+    const durableSnapshot = snapshotFromReplay(events);
+    assert.strictEqual(durableSnapshot.state, "completed");
+    assert.strictEqual(durableSnapshot.eventSequence, 6);
+    assert.strictEqual(
+      durableSnapshot.context.linearIssueGraphPath,
+      "linear-issue-graph.json",
+    );
+    assert.strictEqual(durableSnapshot.context.linearIssueIdentifier, "GAI-123");
+    assert.strictEqual(
+      durableSnapshot.context.linearIssueUrl,
+      "https://linear.app/acme/issue/GAI-123/test",
+    );
+    assert.strictEqual(durableSnapshot.context.linearBlockedByCount, 1);
+    assert.strictEqual(durableSnapshot.context.linearBlocksCount, 2);
+  });
+
   it("replays browser evidence without leaving completed state", () => {
     const runId = parseRunId("run-V7kP9sQ2xY");
     const events = [

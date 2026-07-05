@@ -38,6 +38,11 @@ export type RunMachineContext = {
   readonly githubWatchStatePath: string | undefined;
   readonly lastEventSequence: number;
   readonly evidenceReviewerSessionPath: string | undefined;
+  readonly linearBlockedByCount: number | undefined;
+  readonly linearBlocksCount: number | undefined;
+  readonly linearIssueGraphPath: string | undefined;
+  readonly linearIssueIdentifier: string | undefined;
+  readonly linearIssueUrl: string | undefined;
   readonly planReviewPath: string | undefined;
   readonly planReviewerSessionPath: string | undefined;
   readonly previewDeploymentPath: string | undefined;
@@ -120,6 +125,14 @@ export type RunMachineEvent =
       readonly pullRequest: string;
       readonly remediationSpecPath: string;
     }
+  | {
+      readonly type: "LINEAR_ISSUE_GRAPH_RECORDED";
+      readonly blockedByCount: number;
+      readonly blocksCount: number;
+      readonly issueGraphPath: string;
+      readonly issueIdentifier: string;
+      readonly issueUrl?: string;
+    }
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
@@ -149,6 +162,11 @@ const initialContext: RunMachineContext = {
   githubWatchStatePath: undefined,
   lastEventSequence: 0,
   evidenceReviewerSessionPath: undefined,
+  linearBlockedByCount: undefined,
+  linearBlocksCount: undefined,
+  linearIssueGraphPath: undefined,
+  linearIssueIdentifier: undefined,
+  linearIssueUrl: undefined,
   planReviewPath: undefined,
   planReviewerSessionPath: undefined,
   previewDeploymentPath: undefined,
@@ -190,6 +208,9 @@ export const runMachine = createMachine({
         },
         GITHUB_REMEDIATION_SPEC_RECORDED: {
           actions: "recordGitHubRemediationSpec",
+        },
+        LINEAR_ISSUE_GRAPH_RECORDED: {
+          actions: "recordLinearIssueGraph",
         },
         PREVIEW_DEPLOYMENT_RECORDED: {
           actions: "recordPreviewDeployment",
@@ -402,6 +423,28 @@ export const runMachine = createMachine({
           ? event.remediationSpecPath
           : undefined,
     }),
+    recordLinearIssueGraph: assign({
+      linearBlockedByCount: ({ event }) =>
+        event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
+          ? event.blockedByCount
+          : undefined,
+      linearBlocksCount: ({ event }) =>
+        event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
+          ? event.blocksCount
+          : undefined,
+      linearIssueGraphPath: ({ event }) =>
+        event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
+          ? event.issueGraphPath
+          : undefined,
+      linearIssueIdentifier: ({ event }) =>
+        event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
+          ? event.issueIdentifier
+          : undefined,
+      linearIssueUrl: ({ event }) =>
+        event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
+          ? event.issueUrl
+          : undefined,
+    }),
     recordPreviewDeployment: assign({
       previewDeploymentPath: ({ event }) =>
         event.type === "PREVIEW_DEPLOYMENT_RECORDED"
@@ -557,6 +600,16 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         pullRequest: getStringPayload(event, "pullRequest"),
         remediationSpecPath: getStringPayload(event, "remediationSpecPath"),
         type: event.type,
+      };
+    case "LINEAR_ISSUE_GRAPH_RECORDED":
+      const issueUrl = getOptionalStringPayload(event, "issueUrl");
+      return {
+        blockedByCount: getNumberPayload(event, "blockedByCount"),
+        blocksCount: getNumberPayload(event, "blocksCount"),
+        issueGraphPath: getStringPayload(event, "issueGraphPath"),
+        issueIdentifier: getStringPayload(event, "issueIdentifier"),
+        type: event.type,
+        ...(issueUrl === undefined ? {} : { issueUrl }),
       };
     case "PREVIEW_DEPLOYMENT_RECORDED":
       const url = getOptionalStringPayload(event, "url");
@@ -755,6 +808,21 @@ function snapshotContext(
   }
   if (context.githubWatchStatePath !== undefined) {
     output.githubWatchStatePath = context.githubWatchStatePath;
+  }
+  if (context.linearBlockedByCount !== undefined) {
+    output.linearBlockedByCount = context.linearBlockedByCount;
+  }
+  if (context.linearBlocksCount !== undefined) {
+    output.linearBlocksCount = context.linearBlocksCount;
+  }
+  if (context.linearIssueGraphPath !== undefined) {
+    output.linearIssueGraphPath = context.linearIssueGraphPath;
+  }
+  if (context.linearIssueIdentifier !== undefined) {
+    output.linearIssueIdentifier = context.linearIssueIdentifier;
+  }
+  if (context.linearIssueUrl !== undefined) {
+    output.linearIssueUrl = context.linearIssueUrl;
   }
   if (context.planReviewPath !== undefined) {
     output.planReviewPath = context.planReviewPath;
