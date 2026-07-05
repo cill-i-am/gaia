@@ -702,3 +702,36 @@ Verification:
 - Runtime test proves a failed install command fails the run before worker
   execution with typed `SkillBundleInstallCommandFailed`.
 - Full `pnpm check`, `pnpm test`, and `pnpm build` passed after the slice.
+
+## Slice 16: Explicit Browser Evidence Capture
+
+Outcome: Gaia can now collect browser evidence for a completed run with
+`gaia collect-browser-evidence <run-id> --url <http-url>`. The runtime captures
+through a browser collector port, uses Playwright as the production adapter,
+writes screenshot paths and console messages into `browser-evidence.json`, and
+records a `BROWSER_EVIDENCE_RECORDED` event without changing the completed run
+state.
+
+Findings:
+
+- Browser capture should not silently become a run gate yet. This slice makes
+  capture explicit and durable, while leaving profile/check policy for a later
+  slice.
+- Failed capture is evidence, not absence. If the collector cannot launch or
+  navigate, Gaia rewrites `browser-evidence.json` with `status: "failed"` and a
+  safe diagnostic note.
+- The collector is a real seam. Tests use a fake `BrowserEvidenceCollector`
+  through the runtime interface; production uses Playwright behind the same
+  contract.
+- Screenshots live under the run directory's `browser/` folder, and GitHub
+  evidence publishing copies that folder when present so screenshot references
+  do not dangle.
+
+Verification:
+
+- Core replay test proves `BROWSER_EVIDENCE_RECORDED` enriches completed runs
+  without changing their state.
+- Runtime tests prove successful browser evidence collection updates
+  `browser-evidence.json`, appends the event, and keeps resume working.
+- Runtime tests prove failed collector output is recorded as `status: "failed"`
+  evidence.

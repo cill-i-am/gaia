@@ -4,7 +4,13 @@ import { Effect, FileSystem, Schema } from "effect";
 import { execPath } from "node:process";
 import { parseRunId } from "@gaia/core";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
-import { parseBrowserEvidenceJson } from "./browser-evidence.js";
+import {
+  BrowserEvidence,
+  BrowserPageEvidence,
+  BrowserScreenshotEvidence,
+  parseBrowserEvidenceJson,
+  type BrowserEvidenceCollector,
+} from "./browser-evidence.js";
 import {
   parseSkillBundleJson,
   type SkillInstallCommandInput,
@@ -45,7 +51,13 @@ import {
   type GaiaReviewer,
 } from "./reviewer.js";
 import { parseReviewerSessionEvidenceJson } from "./reviewer-session-evidence.js";
-import { listRuns, resumeRun, runSpecFile, statusRun } from "./workflows.js";
+import {
+  collectBrowserEvidence,
+  listRuns,
+  resumeRun,
+  runSpecFile,
+  statusRun,
+} from "./workflows.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
 import { verifyHarnessOutput } from "./verifier.js";
 
@@ -613,6 +625,80 @@ describe("runtime workflows", () => {
         assert.strictEqual(parsed.status, "not-collected");
         assert.deepEqual(parsed.pages, []);
         assert.include(report, "browser-evidence.json");
+      }),
+    );
+
+    it.effect("collects browser evidence for a completed run", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Run with collected browser evidence.\n");
+
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const record = yield* collectBrowserEvidence(
+          summary.runId,
+          "http://localhost:3000",
+          {
+            browserEvidenceCollector: collectedBrowserEvidenceCollector,
+            rootDirectory: cwd,
+          },
+        );
+        const browserEvidence = parseBrowserEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/browser-evidence.json`,
+            ),
+          ),
+        );
+        const events = yield* fs.readFileString(
+          `${summary.runDirectory}/events.jsonl`,
+        );
+        const resumed = yield* resumeRun(summary.runId, { rootDirectory: cwd });
+
+        assert.strictEqual(record.status, "collected");
+        assert.strictEqual(record.evidencePath, "browser-evidence.json");
+        assert.strictEqual(record.pages[0]?.screenshots[0]?.path, "browser/page-1.png");
+        assert.strictEqual(browserEvidence.status, "collected");
+        assert.strictEqual(browserEvidence.pages[0]?.url, "http://localhost:3000/");
+        assert.include(events, '"type":"BROWSER_EVIDENCE_RECORDED"');
+        assert.include(events, '"targetUrl":"http://localhost:3000"');
+        assert.strictEqual(resumed.status, "completed");
+      }),
+    );
+
+    it.effect("records failed browser capture as browser evidence", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Run with failed browser evidence.\n");
+
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const record = yield* collectBrowserEvidence(
+          summary.runId,
+          "http://localhost:3000",
+          {
+            browserEvidenceCollector: failedBrowserEvidenceCollector,
+            rootDirectory: cwd,
+          },
+        );
+        const browserEvidence = parseBrowserEvidenceJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/browser-evidence.json`,
+            ),
+          ),
+        );
+        const events = yield* fs.readFileString(
+          `${summary.runDirectory}/events.jsonl`,
+        );
+
+        assert.strictEqual(record.status, "failed");
+        assert.deepEqual(record.pages, []);
+        assert.strictEqual(browserEvidence.status, "failed");
+        assert.include(browserEvidence.notes.join("\n"), "browser unavailable");
+        assert.include(events, '"status":"failed"');
       }),
     );
 
@@ -1862,6 +1948,36 @@ function installingSkillRunner(
       return { exitCode: 0, stderr: "", stdout: "" };
     });
 }
+
+const collectedBrowserEvidenceCollector: BrowserEvidenceCollector = () =>
+  Effect.succeed(
+    BrowserEvidence.make({
+      notes: ["Browser evidence captured by test collector."],
+      pages: [
+        BrowserPageEvidence.make({
+          consoleMessages: [],
+          screenshots: [
+            BrowserScreenshotEvidence.make({
+              description: "Test screenshot.",
+              path: "browser/page-1.png",
+            }),
+          ],
+          url: "http://localhost:3000/",
+        }),
+      ],
+      status: "collected",
+      version: 1,
+    }),
+  );
+
+const failedBrowserEvidenceCollector: BrowserEvidenceCollector = () =>
+  Effect.fail(
+    makeRuntimeError({
+      code: "TestBrowserEvidenceCaptureFailed",
+      message: "browser unavailable",
+      recoverable: true,
+    }),
+  );
 
 function recordingGitHubRunner(
   commands: Array<GitHubCommandInput>,

@@ -12,6 +12,9 @@ import {
 import type { RunId } from "./run-id.js";
 
 export type RunMachineContext = {
+  readonly browserEvidencePath: string | undefined;
+  readonly browserEvidenceStatus: string | undefined;
+  readonly browserEvidenceTargetUrl: string | undefined;
   readonly evidenceReviewPath: string | undefined;
   readonly failure: GaiaFailure | undefined;
   readonly githubChecksPath: string | undefined;
@@ -47,6 +50,12 @@ export type RunMachineEvent =
       readonly type: "VERIFICATION_COMPLETED";
       readonly verificationResultPath: string;
     }
+  | {
+      readonly type: "BROWSER_EVIDENCE_RECORDED";
+      readonly evidencePath: string;
+      readonly status: string;
+      readonly targetUrl: string;
+    }
   | { readonly type: "REPORT_STARTED" }
   | { readonly type: "REPORT_COMPLETED"; readonly reportPath: string }
   | {
@@ -59,6 +68,9 @@ export type RunMachineEvent =
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
+  browserEvidencePath: undefined,
+  browserEvidenceStatus: undefined,
+  browserEvidenceTargetUrl: undefined,
   evidenceReviewPath: undefined,
   failure: undefined,
   githubChecksPath: undefined,
@@ -88,6 +100,9 @@ export const runMachine = createMachine({
   states: {
     completed: {
       on: {
+        BROWSER_EVIDENCE_RECORDED: {
+          actions: "recordBrowserEvidence",
+        },
         GITHUB_CHECKS_RECORDED: {
           actions: "recordGitHubChecks",
         },
@@ -172,6 +187,18 @@ export const runMachine = createMachine({
   },
 }).provide({
   actions: {
+    recordBrowserEvidence: assign({
+      browserEvidencePath: ({ event }) =>
+        event.type === "BROWSER_EVIDENCE_RECORDED"
+          ? event.evidencePath
+          : undefined,
+      browserEvidenceStatus: ({ event }) =>
+        event.type === "BROWSER_EVIDENCE_RECORDED" ? event.status : undefined,
+      browserEvidenceTargetUrl: ({ event }) =>
+        event.type === "BROWSER_EVIDENCE_RECORDED"
+          ? event.targetUrl
+          : undefined,
+    }),
     recordFailure: assign({
       failure: ({ event }) =>
         event.type === "RUN_FAILED" ? event.failure : undefined,
@@ -280,6 +307,13 @@ export function snapshotFromReplay(events: ReadonlyArray<RunEvent>): RunSnapshot
 
 function toMachineEvent(event: RunEvent): RunMachineEvent {
   switch (event.type) {
+    case "BROWSER_EVIDENCE_RECORDED":
+      return {
+        evidencePath: getStringPayload(event, "evidencePath"),
+        status: getStringPayload(event, "status"),
+        targetUrl: getStringPayload(event, "targetUrl"),
+        type: event.type,
+      };
     case "GITHUB_CHECKS_RECORDED":
       const watchStatePath = getOptionalStringPayload(
         event,
@@ -401,6 +435,15 @@ function snapshotContext(
 ): Readonly<Record<string, string | boolean>> {
   const output: Record<string, string | boolean> = {};
 
+  if (context.browserEvidencePath !== undefined) {
+    output.browserEvidencePath = context.browserEvidencePath;
+  }
+  if (context.browserEvidenceStatus !== undefined) {
+    output.browserEvidenceStatus = context.browserEvidenceStatus;
+  }
+  if (context.browserEvidenceTargetUrl !== undefined) {
+    output.browserEvidenceTargetUrl = context.browserEvidenceTargetUrl;
+  }
   if (context.evidenceReviewPath !== undefined) {
     output.evidenceReviewPath = context.evidenceReviewPath;
   }

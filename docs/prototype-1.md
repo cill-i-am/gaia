@@ -14,7 +14,7 @@ before any real coding harness or external integration is introduced.
 4. Prepares an isolated workspace, optionally copied from a local source
    directory.
 5. Records a pinned portable-skill manifest when provided.
-6. Writes a typed browser evidence placeholder.
+6. Writes typed browser evidence, starting as `not-collected`.
 7. Appends lifecycle events to `events.jsonl`.
 8. Writes derived snapshots to `snapshots.jsonl`.
 9. Writes a worker plan artifact.
@@ -31,6 +31,7 @@ before any real coding harness or external integration is introduced.
 19. Can record a GitHub check snapshot against a completed run, optionally
     polling until checks are no longer pending.
 20. Writes resumable CI watch state whenever GitHub checks are recorded.
+21. Can collect browser screenshot and console evidence for a completed run.
 
 ## What It Does Not Do Yet
 
@@ -42,7 +43,7 @@ Prototype 1 intentionally excludes:
 - live reviewer/spec worker threads;
 - background GitHub check watching attached to runs or merges;
 - Linear issue intake or blocker graphs;
-- browser or deployment evidence;
+- deployment evidence;
 - SQLite run indexing;
 - dashboard or TUI;
 - cancellation of live external work;
@@ -102,6 +103,7 @@ pnpm gaia publish-workspace-pr <run-id>
 pnpm gaia pr-checks <pr-number-or-url>
 pnpm gaia checks <run-id> <pr-number-or-url>
 pnpm gaia checks <run-id> <pr-number-or-url> --wait
+pnpm gaia collect-browser-evidence <run-id> --url http://localhost:3000
 ```
 
 Machine-readable output:
@@ -221,12 +223,12 @@ Every skill must include a `sourceRepository`, `sourcePath`, and either
 `version` or `commit`. Gaia records the manifest and report selected skills.
 It also writes `skill-bundle.json`: local entries with `sourceRepository:
 "local"` or `"file"` are resolved relative to the manifest and must contain
-`SKILL.md`; external entries are preserved as requiring installation. Worker
-harnesses receive the bundle path and resolved local skill paths in their
-execution context.
+`SKILL.md`; git-backed external entries are cloned into the run directory and
+checked out at their pinned commit or version. Worker harnesses receive the
+bundle path and resolved skill paths in their execution context.
 
-`browser-evidence.json` defines the future browser automation contract. Current
-runs write:
+`browser-evidence.json` records browser automation evidence. New runs start
+with:
 
 ```json
 {
@@ -237,8 +239,12 @@ runs write:
 }
 ```
 
-Future browser capture should append page entries with URL, screenshots, and
-console messages without changing the report or PR evidence layout.
+`collect-browser-evidence` opens the provided URL with Playwright, captures a
+full-page screenshot under `browser/`, records console messages, rewrites
+`browser-evidence.json`, and appends a `BROWSER_EVIDENCE_RECORDED` event. If
+capture is requested but the browser pass cannot run, Gaia writes `status:
+"failed"` evidence instead of pretending the page was verified. Publishing run
+evidence copies the `browser/` directory when screenshots exist.
 
 `publish-pr` copies selected evidence into `gaia-runs/<run-id>/` on a new
 `gaia/<run-id>` branch, commits it, pushes it, opens a draft GitHub PR, and

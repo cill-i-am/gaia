@@ -14,6 +14,7 @@ export type RunStorePaths = {
 
 export type RunPaths = {
   readonly browserEvidence: string;
+  readonly browserScreenshots: string;
   readonly ciWatchState: string;
   readonly evidenceReviewMarkdown: string;
   readonly evidenceReviewResult: string;
@@ -72,6 +73,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
 
     return {
       browserEvidence: path.join(root, "browser-evidence.json"),
+      browserScreenshots: path.join(root, "browser"),
       ciWatchState: path.join(root, "ci-watch-state.json"),
       evidenceReviewMarkdown: path.join(root, "evidence-review.md"),
       evidenceReviewResult: path.join(root, "evidence-review.json"),

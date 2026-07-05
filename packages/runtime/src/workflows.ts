@@ -10,7 +10,15 @@ import {
 import { customAlphabet } from "nanoid";
 import { Effect, FileSystem, Path, type Schema } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
-import { writeEmptyBrowserEvidence } from "./browser-evidence.js";
+import {
+  browserEvidenceRecord,
+  failedBrowserEvidence,
+  parseBrowserEvidenceTargetUrl,
+  playwrightBrowserEvidenceCollector,
+  writeBrowserEvidence,
+  writeEmptyBrowserEvidence,
+  type BrowserEvidenceCollector,
+} from "./browser-evidence.js";
 import type { CodexHarnessOptions } from "./codex-harness.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
@@ -72,6 +80,10 @@ export type WorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly skillInstaller?: SkillInstallerOptions;
   readonly skillManifestSource?: SkillManifestSource;
   readonly workspaceSource?: WorkspaceSource;
+};
+
+export type BrowserEvidenceCollectionOptions = RunStorageOptions & {
+  readonly browserEvidenceCollector?: BrowserEvidenceCollector;
 };
 
 export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
@@ -247,6 +259,71 @@ export function resumeRun(runIdInput: string, options: WorkflowOptions = {}) {
         recoverable: false,
       }),
     );
+  });
+}
+
+export function collectBrowserEvidence(
+  runIdInput: string,
+  targetUrlInput: string,
+  options: BrowserEvidenceCollectionOptions = {},
+) {
+  return withRunStoreLock(
+    options,
+    collectBrowserEvidenceUnlocked(runIdInput, targetUrlInput, options),
+  );
+}
+
+function collectBrowserEvidenceUnlocked(
+  runIdInput: string,
+  targetUrlInput: string,
+  options: BrowserEvidenceCollectionOptions,
+) {
+  return Effect.gen(function* () {
+    const rootDirectory = options.rootDirectory ?? ".";
+    const run = yield* statusRun(runIdInput, { rootDirectory });
+
+    if (run.status !== "completed") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "RunNotCompleted",
+          message: `Run ${run.runId} must be completed before collecting browser evidence.`,
+          recoverable: false,
+        }),
+      );
+    }
+
+    const targetUrl = yield* parseBrowserEvidenceTargetUrlEffect(targetUrlInput);
+    const paths = yield* makeRunPaths(run.runId, { rootDirectory });
+    const collector =
+      options.browserEvidenceCollector ?? playwrightBrowserEvidenceCollector;
+    const captured = yield* collector({ paths, targetUrl }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        Effect.succeed(
+          failedBrowserEvidence({
+            message: error.message,
+            targetUrl,
+          }),
+        ),
+      ),
+    );
+    const evidence = yield* writeBrowserEvidence({ evidence: captured, paths });
+    const record = browserEvidenceRecord({
+      evidence,
+      paths,
+      runId: run.runId,
+      targetUrl,
+    });
+
+    yield* appendEvent(run.runId, paths, {
+      payload: {
+        evidencePath: runRelative(paths, paths.browserEvidence),
+        status: record.status,
+        targetUrl,
+      },
+      type: "BROWSER_EVIDENCE_RECORDED",
+    });
+
+    return record;
   });
 }
 
@@ -467,6 +544,19 @@ function reviewPathsForPhase(paths: RunPaths, phase: ReviewPhase) {
         sessionEvidence: paths.evidenceReviewerSession,
       };
   }
+}
+
+function parseBrowserEvidenceTargetUrlEffect(input: string) {
+  return Effect.try({
+    try: () => parseBrowserEvidenceTargetUrl(input),
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "BrowserEvidenceTargetUrlInvalid",
+        message: `Browser evidence target URL '${input}' must be a valid HTTP or HTTPS URL.`,
+        recoverable: false,
+      }),
+  });
 }
 
 function statusFromState(state: RunState): CommandSummary["status"] {

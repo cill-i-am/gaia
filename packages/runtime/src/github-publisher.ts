@@ -1145,6 +1145,14 @@ function copyRunArtifacts(
         path.join(evidencePath, destination),
       );
     }
+
+    const hasBrowserScreenshots = yield* fs.exists(paths.browserScreenshots);
+    if (hasBrowserScreenshots) {
+      yield* copyWorkspaceDirectoryContents(
+        paths.browserScreenshots,
+        path.join(evidencePath, "browser"),
+      );
+    }
   }).pipe(
     Effect.catchTag("PlatformError", (cause) =>
       Effect.fail(

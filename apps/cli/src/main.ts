@@ -2,6 +2,7 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type {
+  BrowserEvidenceRecord,
   CommandSummary,
   GitHubChecksRecord,
   GitHubChecksSummary,
@@ -11,6 +12,7 @@ import type {
 } from "@gaia/runtime";
 import {
   GaiaRuntimeError,
+  collectBrowserEvidence,
   inspectGitHubChecks,
   listRuns,
   localDirectoryWorkspaceSource,
@@ -48,6 +50,9 @@ const specFile = Argument.string("spec-file");
 const runId = Argument.string("run-id");
 const pullRequest = Argument.string("pull-request");
 const optionalRunId = runId.pipe(Argument.optional);
+const browserTargetUrl = Flag.string("url").pipe(
+  Flag.withDescription("HTTP or HTTPS URL to capture browser evidence from."),
+);
 const json = Flag.boolean("json").pipe(
   Flag.withDescription("Write a machine-readable JSON response."),
 );
@@ -289,6 +294,23 @@ const checks = Command.make("checks", {
   ),
 );
 
+const collectBrowserEvidenceCommand = Command.make("collect-browser-evidence", {
+  browserTargetUrl,
+  json,
+  runId,
+}).pipe(
+  Command.withDescription("Collect screenshot and console evidence for a completed run."),
+  Command.withHandler(({ browserTargetUrl, json, runId }) =>
+    renderEffect(
+      collectBrowserEvidence(runId, browserTargetUrl, {
+        rootDirectory: invocationRoot(),
+      }),
+      json,
+      renderBrowserEvidenceRecord,
+    ),
+  ),
+);
+
 const cli = Command.make("gaia").pipe(
   Command.withDescription("Gaia software-factory control plane prototype."),
   Command.withSubcommands([
@@ -296,6 +318,7 @@ const cli = Command.make("gaia").pipe(
     resume,
     status,
     list,
+    collectBrowserEvidenceCommand,
     preflightGithub,
     previewPr,
     publishPr,
@@ -516,6 +539,31 @@ function renderRunList(summaries: ReadonlyArray<CommandSummary>) {
   return summaries
     .map((summary) => `${summary.runId} ${summary.status} ${summary.state}`)
     .join("\n");
+}
+
+function renderBrowserEvidenceRecord(record: BrowserEvidenceRecord) {
+  const lines = [
+    `browser evidence: ${record.status}`,
+    `run: ${record.runId}`,
+    `target: ${record.targetUrl}`,
+    `evidence: ${record.evidencePath}`,
+    `pages: ${record.pages.length}`,
+  ];
+
+  if (record.pages.length === 0) {
+    return lines.join("\n");
+  }
+
+  return [
+    ...lines,
+    ...record.pages.flatMap((page) => [
+      `- ${page.url}`,
+      ...page.screenshots.map(
+        (screenshot) => `  screenshot: ${screenshot.path}`,
+      ),
+      `  console: ${page.consoleMessages.length}`,
+    ]),
+  ].join("\n");
 }
 
 function renderGitHubPrSummary(summary: GitHubPrSummary) {

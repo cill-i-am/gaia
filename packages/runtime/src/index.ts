@@ -2,11 +2,22 @@ export {
   BrowserConsoleLevelSchema,
   BrowserConsoleMessage,
   BrowserEvidence,
+  BrowserEvidenceRecord,
   BrowserEvidenceStatusSchema,
+  BrowserEvidenceTargetUrlSchema,
   BrowserPageEvidence,
   BrowserScreenshotEvidence,
+  browserEvidenceRecord,
+  failedBrowserEvidence,
+  parseBrowserEvidenceTargetUrl,
   parseBrowserEvidenceJson,
+  playwrightBrowserEvidenceCollector,
+  writeBrowserEvidence,
   writeEmptyBrowserEvidence,
+  type BrowserEvidenceCollector,
+  type BrowserEvidenceCollectorInput,
+  type BrowserEvidenceStatus,
+  type BrowserEvidenceTargetUrl,
 } from "./browser-evidence.js";
 export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 export {
@@ -157,8 +168,10 @@ export {
 } from "./workspace.js";
 export {
   listRuns,
+  collectBrowserEvidence,
   resumeRun,
   runSpecFile,
   statusRun,
+  type BrowserEvidenceCollectionOptions,
   type CommandSummary,
 } from "./workflows.js";
