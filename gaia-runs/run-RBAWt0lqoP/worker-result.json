@@ -1,0 +1,15 @@
+{
+  "changedWorkspacePaths": [
+    "docs/gaia-codex-workspace-smoke.md",
+    "output.txt"
+  ],
+  "exitCode": 0,
+  "harnessName": "codex",
+  "outputArtifacts": [
+    "workspace/output.txt"
+  ],
+  "resultPath": "worker-result.json",
+  "runId": "run-RBAWt0lqoP",
+  "status": "completed",
+  "summary": "Codex harness completed \"Real workspace PR smoke\"."
+}
