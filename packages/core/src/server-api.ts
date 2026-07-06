@@ -19,11 +19,15 @@ export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "InternalServerError",
   "MethodNotAllowed",
   "RunHasNoEvents",
+  "InvalidRunSpec",
   "RunNotFound",
   "RunUnreadable",
 ] as const);
 
-const BadRequestDiagnosticCodeSchema = Schema.Literals(["InvalidRunId"] as const);
+const BadRequestDiagnosticCodeSchema = Schema.Literals([
+  "InvalidRunId",
+  "InvalidRunSpec",
+] as const);
 const NotFoundDiagnosticCodeSchema = Schema.Literals([
   "ArtifactNotAllowed",
   "ArtifactNotFound",
@@ -319,12 +323,14 @@ export class HealthResponse extends Schema.Class<HealthResponse>(
   workspaceRoot: Schema.NonEmptyString,
 }) {}
 
-export class CreateRunRequest extends Schema.Class<CreateRunRequest>(
-  "CreateRunRequest",
-)({
+export const CreateRunRequest = Schema.Struct({
   specMarkdown: Schema.NonEmptyString,
   title: Schema.optionalKey(Schema.NonEmptyString),
-}) {}
+}).annotate({
+  parseOptions: { onExcessProperty: "error" },
+});
+
+export type CreateRunRequest = typeof CreateRunRequest.Type;
 
 export class CreateRunAcceptedResponse extends Schema.Class<CreateRunAcceptedResponse>(
   "CreateRunAcceptedResponse",
@@ -361,7 +367,7 @@ export const RunsGroup = HttpApiGroup.make("runs")
   .add(
     HttpApiEndpoint.post("createRun", "/runs", {
       error: LocalRunCreateErrorResponse,
-      payload: [HttpApiSchema.NoContent, CreateRunRequest],
+      payload: CreateRunRequest,
       success: CreateRunAcceptedResponse.pipe(HttpApiSchema.status(202)),
     }),
   )

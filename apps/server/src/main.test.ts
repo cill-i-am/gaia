@@ -1,6 +1,8 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import type { ServerMetadata } from "@gaia/core";
+import { acceptServerRun } from "@gaia/runtime/server-workflows";
+import { readLocalRunEvents } from "@gaia/runtime/run-read-api";
 import { Deferred, Effect, Fiber, FileSystem } from "effect";
 import { createServer } from "node:net";
 import { runLocalGaiaServer } from "./main.js";
@@ -42,6 +44,28 @@ describe("local Gaia server process", () => {
 
         assert.strictEqual(server.metadata.port, port);
         assert.strictEqual(server.metadata.url, `http://127.0.0.1:${port}`);
+
+        yield* server.close;
+      }),
+      20_000,
+    );
+
+    it.effect("reconciles accepted unfinished server runs on startup", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-main-" });
+        const accepted = yield* acceptServerRun({
+          rootDirectory: cwd,
+          specMarkdown: "Interrupted through process startup.\n",
+        });
+        const server = yield* startServer(cwd);
+        const events = yield* readLocalRunEvents(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        const failed = events.events.at(-1);
+
+        assert.strictEqual(failed?.type, "RUN_FAILED");
+        assert.strictEqual(failed?.payload["code"], "ServerExecutionInterrupted");
 
         yield* server.close;
       }),

@@ -76,6 +76,29 @@ describe("LocalGaiaServerApi contract", () => {
     );
   });
 
+  it("publishes a markdown-only create request schema", () => {
+    const requestSchema =
+      LocalGaiaServerOpenApi.paths["/runs"]?.post?.requestBody?.content?.[
+        "application/json"
+      ]?.schema;
+
+    assert.deepEqual(requestSchema, {
+      additionalProperties: false,
+      properties: {
+        specMarkdown: {
+          allOf: [{ minLength: 1 }],
+          type: "string",
+        },
+        title: {
+          allOf: [{ minLength: 1 }],
+          type: "string",
+        },
+      },
+      required: ["specMarkdown"],
+      type: "object",
+    });
+  });
+
   it("models path params and future SSE metadata", () => {
     const artifactParameters =
       LocalGaiaServerOpenApi.paths["/runs/{runId}/artifacts/{artifactId}"]?.get

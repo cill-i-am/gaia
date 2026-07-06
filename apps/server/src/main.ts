@@ -5,6 +5,7 @@ import type { ServerMetadata } from "@gaia/core";
 import { Effect, Layer } from "effect";
 import * as Console from "effect/Console";
 import { HttpServer } from "effect/unstable/http";
+import { reconcileInterruptedServerRuns } from "@gaia/runtime/server-workflows";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
@@ -50,6 +51,9 @@ export function runLocalGaiaServer(input: {
   return Effect.scoped(
     Effect.gen(function* () {
       const server = yield* HttpServer.HttpServer;
+      yield* reconcileInterruptedServerRuns({
+        rootDirectory: identity.rootDirectory,
+      });
       const metadata = yield* serverMetadataFromAddress(identity, server.address);
       yield* writeServerMetadata(metadata);
       yield* Effect.addFinalizer(() =>

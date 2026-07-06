@@ -108,6 +108,15 @@ export type BrowserEvidenceCollectionOptions = RunStorageOptions & {
   readonly browserEvidenceCollector?: BrowserEvidenceCollector;
 };
 
+export type ServerWorkflowOptions = RunStorageOptions;
+
+export type ServerAcceptedRun = {
+  readonly acceptedAt: string;
+  readonly runDirectory: string;
+  readonly runId: RunId;
+  readonly status: "accepted";
+};
+
 export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
   return withRunStoreLock(options, runSpecFileUnlocked(specPath, options));
 }
@@ -122,6 +131,26 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
     const input = yield* fs.readFileString(specPath);
     const fallbackTitle = path.basename(specPath, path.extname(specPath));
     const spec = yield* parseSpec(input, fallbackTitle);
+    yield* fs.makeDirectory(paths.root, { recursive: true });
+    yield* fs.writeFileString(paths.input, input);
+    yield* fs.writeFileString(paths.latest, runId);
+
+    yield* appendEvent(runId, paths, {
+      payload: { specPath: "input.md" },
+      type: "RUN_CREATED",
+    });
+
+    return yield* executeRunAfterCreated(runId, paths, spec, options);
+  });
+}
+
+function executeRunAfterCreated(
+  runId: RunId,
+  paths: RunPaths,
+  spec: ReturnType<typeof parseMarkdownSpec>,
+  options: WorkflowOptions,
+) {
+  return Effect.gen(function* () {
     const runProfile = yield* resolveRunProfile(options.runProfileSource);
     const browserEvidenceRequirement =
       options.browserEvidenceRequirement ??
@@ -132,19 +161,11 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
         : yield* parseBrowserEvidenceTargetUrlEffect(
             options.browserEvidenceTargetUrl,
           );
-    yield* fs.makeDirectory(paths.root, { recursive: true });
-    yield* fs.writeFileString(paths.input, input);
-    yield* fs.writeFileString(paths.latest, runId);
     yield* writeRunProfile({ paths, profile: runProfile }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "creating", error),
+        recordRunFailure(runId, paths, "preparingWorkspace", error),
       ),
     );
-
-    yield* appendEvent(runId, paths, {
-      payload: { specPath: "input.md" },
-      type: "RUN_CREATED",
-    });
     const workspace = yield* prepareWorkspace(
       paths,
       options.workspaceSource ?? emptyWorkspaceSource(),
@@ -345,6 +366,186 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
       state: snapshot.state,
       status: "completed",
     } satisfies CommandSummary;
+  });
+}
+
+export function acceptServerRun(input: {
+  readonly rootDirectory?: string | undefined;
+  readonly specMarkdown: string;
+  readonly title?: string | undefined;
+}) {
+  const options = {
+    ...(input.rootDirectory === undefined
+      ? {}
+      : { rootDirectory: input.rootDirectory }),
+  } satisfies ServerWorkflowOptions;
+
+  return withRunStoreLock(options, acceptServerRunUnlocked(input, options));
+}
+
+function acceptServerRunUnlocked(
+  input: {
+    readonly specMarkdown: string;
+    readonly title?: string | undefined;
+  },
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    const spec = yield* parseSpec(input.specMarkdown, input.title ?? "server-run");
+    const runId = yield* generateRunId;
+    const paths = yield* makeRunPaths(runId, options);
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(paths.root, { recursive: true });
+    yield* fs.writeFileString(paths.input, input.specMarkdown);
+    yield* fs.writeFileString(paths.latest, runId);
+    const { event } = yield* appendEvent(runId, paths, {
+      payload: {
+        source: "server",
+        specPath: "input.md",
+        title: spec.title,
+      },
+      type: "RUN_CREATED",
+    });
+
+    return {
+      acceptedAt: event.timestamp,
+      runDirectory: paths.root,
+      runId,
+      status: "accepted",
+    } satisfies ServerAcceptedRun;
+  });
+}
+
+export function continueServerRun(
+  runIdInput: string,
+  options: ServerWorkflowOptions = {},
+) {
+  return withRunStoreLock(options, continueServerRunUnlocked(runIdInput, options));
+}
+
+function continueServerRunUnlocked(
+  runIdInput: string,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    const runId = yield* parseRunIdEffect(runIdInput);
+    const paths = yield* makeRunPaths(runId, options);
+    const loaded = yield* loadRun(paths);
+    const firstEvent = loaded.events[0];
+    if (
+      firstEvent?.type !== "RUN_CREATED" ||
+      firstEvent.payload["source"] !== "server" ||
+      firstEvent.payload["specPath"] !== "input.md"
+    ) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "NotServerCreatedRun",
+          message: `Run ${runId} was not accepted by the local server.`,
+          recoverable: false,
+        }),
+      );
+    }
+
+    const snapshot = snapshotFromReplay(loaded.events);
+    if (snapshot.state === "completed" || snapshot.state === "failed") {
+      return yield* statusRun(runId, options);
+    }
+
+    const input = yield* readServerInput(runId, paths).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "preparingWorkspace", error),
+      ),
+    );
+    const spec = yield* parseSpec(input, "server-run").pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "preparingWorkspace", error),
+      ),
+    );
+
+    return yield* executeRunAfterCreated(runId, paths, spec, options);
+  });
+}
+
+function readServerInput(runId: RunId, paths: RunPaths) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const exists = yield* fs.exists(paths.input);
+    if (!exists) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "ServerRunInputMissing",
+          message: `Server-created run ${runId} is missing input.md.`,
+          recoverable: false,
+        }),
+      );
+    }
+
+    return yield* fs.readFileString(paths.input);
+  });
+}
+
+export function reconcileInterruptedServerRuns(
+  options: ServerWorkflowOptions = {},
+) {
+  return withRunStoreLock(options, reconcileInterruptedServerRunsUnlocked(options));
+}
+
+function reconcileInterruptedServerRunsUnlocked(options: ServerWorkflowOptions) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const store = yield* makeRunStorePaths(options);
+    const exists = yield* fs.exists(store.runsRoot);
+    if (!exists) {
+      return [];
+    }
+
+    const entries = (yield* fs.readDirectory(store.runsRoot))
+      .filter((entry) => entry.startsWith("run-"))
+      .sort();
+    const reconciled: Array<RunId> = [];
+
+    for (const entry of entries) {
+      const parsedRunId = yield* Effect.exit(parseRunIdEffect(entry));
+      if (parsedRunId._tag === "Failure") {
+        continue;
+      }
+
+      const runId = parsedRunId.value;
+      const paths = yield* makeRunPaths(runId, options);
+      const loaded = yield* Effect.exit(loadRun(paths));
+      if (loaded._tag === "Failure") {
+        continue;
+      }
+
+      const firstEvent = loaded.value.events[0];
+      if (
+        firstEvent?.type !== "RUN_CREATED" ||
+        firstEvent.payload["source"] !== "server"
+      ) {
+        continue;
+      }
+
+      const snapshot = snapshotFromReplay(loaded.value.events);
+      if (snapshot.state === "completed" || snapshot.state === "failed") {
+        continue;
+      }
+
+      yield* appendEvent(runId, paths, {
+        payload: failureToEventPayload(
+          makeRuntimeError({
+            code: "ServerExecutionInterrupted",
+            message:
+              "Server process stopped before completing the accepted run.",
+            recoverable: true,
+          }),
+          stageFromRunState(snapshot.state),
+        ),
+        type: "RUN_FAILED",
+      });
+      reconciled.push(runId);
+    }
+
+    return reconciled;
   });
 }
 
@@ -791,6 +992,24 @@ function statusFromState(state: RunState): CommandSummary["status"] {
     case "verifying":
     case "reporting":
       return "running";
+  }
+}
+
+function stageFromRunState(state: RunState): GaiaFailure["stage"] {
+  switch (state) {
+    case "created":
+      return "creating";
+    case "preparingWorkspace":
+      return "preparingWorkspace";
+    case "runningWorker":
+      return "runningWorker";
+    case "verifying":
+      return "verifying";
+    case "reporting":
+      return "reporting";
+    case "completed":
+    case "failed":
+      return "replaying";
   }
 }
 

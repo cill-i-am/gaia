@@ -1,4 +1,5 @@
 import {
+  CreateRunAcceptedResponse,
   HealthResponse,
   LocalGaiaServerApi,
   LocalRunApiBadRequest,
@@ -33,9 +34,18 @@ import {
 } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import {
+  acceptServerRun,
+  continueServerRun,
+} from "@gaia/runtime/server-workflows";
+import type { GaiaRuntimeError } from "@gaia/runtime";
+import {
   serverMetadataFromAddress,
   type LocalServerIdentity,
 } from "./discovery.js";
+import {
+  ServerRunRegistry,
+  ServerRunRegistryLive,
+} from "./server-state.js";
 
 export class LocalServerConfig extends Context.Service<LocalServerConfig, LocalServerIdentity>()(
   "@gaia/server/LocalServerConfig",
@@ -86,14 +96,58 @@ export const RunsLive = HttpApiBuilder.group(
           });
         }),
       )
-      .handle("createRun", () =>
-        Effect.fail(
-          methodNotAllowedApiError({
-            code: "MethodNotAllowed",
-            message: "Local Gaia API is read-only in GAIA-12.",
-            recoverable: false,
-          }),
-        ),
+      .handle("createRun", ({ payload }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const registry = yield* ServerRunRegistry;
+          const reservation = yield* registry.reserve.pipe(
+            Effect.mapError(() =>
+              conflictApiError({
+                code: "ActiveRunConflict",
+                message: "A server-created Gaia run is already active.",
+                recoverable: true,
+              }),
+            ),
+          );
+          if (payload === undefined) {
+            yield* reservation.rollback;
+            return yield* Effect.fail(
+              badRequestApiError({
+                code: "InvalidRunSpec",
+                message: "Local Gaia run creation request body is required.",
+                recoverable: false,
+              }),
+            );
+          }
+
+          const accepted = yield* acceptServerRun({
+            rootDirectory: identity.rootDirectory,
+            specMarkdown: payload.specMarkdown,
+            ...(payload.title === undefined ? {} : { title: payload.title }),
+          }).pipe(
+            Effect.tapError(() => reservation.rollback),
+            Effect.mapError((error) => runtimeApiError(error)),
+          );
+          yield* reservation.markAccepted(accepted.runId);
+          yield* continueServerRun(accepted.runId, {
+            rootDirectory: identity.rootDirectory,
+          }).pipe(
+            Effect.catchCause(() => Effect.void),
+            Effect.ensuring(reservation.clear),
+            Effect.forkDetach,
+          );
+
+          return CreateRunAcceptedResponse.make({
+            acceptedAt: accepted.acceptedAt,
+            runId: accepted.runId,
+            status: "accepted" as const,
+            urls: {
+              eventStream: `/runs/${accepted.runId}/events/stream`,
+              events: `/runs/${accepted.runId}/events`,
+              run: `/runs/${accepted.runId}`,
+            },
+          });
+        }),
       )
       .handle("getRun", ({ params }) =>
         Effect.gen(function* () {
@@ -181,6 +235,7 @@ export function makeLocalGaiaServerLayer(
     disableLogger: true,
     middleware: structuredServerErrors,
   }).pipe(
+    Layer.provide(ServerRunRegistryLive),
     Layer.provide(Layer.succeed(LocalServerConfig)(identity)),
   );
 }
@@ -189,18 +244,18 @@ function structuredServerErrors<E, R>(
   effect: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
 ) {
   return HttpEffect.withPreResponseHandler(effect, (request, response) => {
-    if (request.method !== "GET") {
+    if (!isEmptyResponse(response)) {
+      return Effect.succeed(response);
+    }
+
+    if (request.method !== "GET" && !isCreateRunRequest(request)) {
       return errorJsonResponse(
         methodNotAllowedApiError({
           code: "MethodNotAllowed",
-          message: "Local Gaia API is read-only in GAIA-12.",
+          message: "Local Gaia API only accepts POST for /runs.",
           recoverable: false,
         }),
       );
-    }
-
-    if (!isEmptyResponse(response)) {
-      return Effect.succeed(response);
     }
 
     if (response.status === 404) {
@@ -216,8 +271,10 @@ function structuredServerErrors<E, R>(
     if (response.status === 400) {
       return errorJsonResponse(
         apiError({
-          code: "InvalidRunId",
-          message: "Local Gaia API request could not be parsed.",
+          code: isCreateRunRequest(request) ? "InvalidRunSpec" : "InvalidRunId",
+          message: isCreateRunRequest(request)
+            ? "Local Gaia run creation request could not be parsed."
+            : "Local Gaia API request could not be parsed.",
           recoverable: false,
         }),
       );
@@ -225,6 +282,10 @@ function structuredServerErrors<E, R>(
 
     return Effect.succeed(response);
   });
+}
+
+function isCreateRunRequest(request: { readonly method: string; readonly url: string }) {
+  return request.method === "POST" && request.url.split("?")[0] === "/runs";
 }
 
 function errorJsonResponse(error: LocalRunApiError) {
@@ -240,6 +301,7 @@ function isEmptyResponse(response: HttpServerResponse.HttpServerResponse) {
 function statusForApiError(error: LocalRunApiError) {
   switch (error.error.code) {
     case "InvalidRunId":
+    case "InvalidRunSpec":
       return 400;
     case "ArtifactNotAllowed":
     case "ArtifactNotFound":
@@ -257,6 +319,18 @@ function statusForApiError(error: LocalRunApiError) {
     case "InternalServerError":
       return 500;
   }
+}
+
+function runtimeApiError(error: unknown): LocalRunCreateApiError {
+  if (isGaiaRuntimeError(error) && error.code === "InvalidSpec") {
+    return badRequestApiError({
+      code: "InvalidRunSpec",
+      message: error.message,
+      recoverable: error.recoverable,
+    });
+  }
+
+  return internalApiError(error);
 }
 
 function readApiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunReadApiError {
@@ -288,8 +362,9 @@ function causeToDiagnostic(cause: Cause.Cause<unknown>): ApiDiagnostic {
 function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
   switch (diagnostic.code) {
     case "InvalidRunId":
+    case "InvalidRunSpec":
       return LocalRunApiBadRequest.make({
-        error: { ...diagnostic, code: "InvalidRunId" },
+        error: { ...diagnostic, code: diagnostic.code },
         status: "error",
       });
     case "ArtifactNotAllowed":
@@ -343,13 +418,32 @@ function methodNotAllowedApiError(
   });
 }
 
+function badRequestApiError(
+  diagnostic: (typeof LocalRunApiBadRequest.Type)["error"],
+): typeof LocalRunApiBadRequest.Type {
+  return LocalRunApiBadRequest.make({
+    error: diagnostic,
+    status: "error",
+  });
+}
+
+function conflictApiError(
+  diagnostic: (typeof LocalRunApiConflict.Type)["error"],
+): typeof LocalRunApiConflict.Type {
+  return LocalRunApiConflict.make({
+    error: diagnostic,
+    status: "error",
+  });
+}
+
 function apiError(
   diagnostic: ApiDiagnostic,
 ): LocalRunApiError {
   switch (diagnostic.code) {
     case "InvalidRunId":
+    case "InvalidRunSpec":
       return LocalRunApiBadRequest.make({
-        error: { ...diagnostic, code: "InvalidRunId" },
+        error: { ...diagnostic, code: diagnostic.code },
         status: "error",
       });
     case "ArtifactNotAllowed":
@@ -432,6 +526,22 @@ type LocalRunReadApiError =
   | typeof LocalRunApiNotFound.Type
   | typeof LocalRunApiUnprocessable.Type
   | typeof LocalRunApiInternalServerError.Type;
+type LocalRunCreateApiError =
+  | typeof LocalRunApiBadRequest.Type
+  | typeof LocalRunApiConflict.Type
+  | typeof LocalRunApiUnprocessable.Type
+  | typeof LocalRunApiInternalServerError.Type;
+
+function isGaiaRuntimeError(input: unknown): input is GaiaRuntimeError {
+  return (
+    typeof input === "object" &&
+    input !== null &&
+    "_tag" in input &&
+    input._tag === "GaiaRuntimeError" &&
+    "code" in input &&
+    typeof input.code === "string"
+  );
+}
 
 function internalApiError(error: unknown): typeof LocalRunApiInternalServerError.Type {
   const message =
