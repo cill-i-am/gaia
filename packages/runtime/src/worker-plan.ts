@@ -11,8 +11,25 @@ export class WorkerPlanVerificationCheck extends Schema.Class<WorkerPlanVerifica
   expectation: Schema.NonEmptyString,
 }) {}
 
+export const WorkerPlanDomainReferenceKindSchema = Schema.Literals([
+  "code-symbol",
+  "effect-api",
+  "file-path",
+  "http-route",
+  "package-name",
+  "quoted-symbol",
+] as const);
+
+export class WorkerPlanDomainReference extends Schema.Class<WorkerPlanDomainReference>(
+  "WorkerPlanDomainReference",
+)({
+  kind: WorkerPlanDomainReferenceKindSchema,
+  value: Schema.NonEmptyString,
+}) {}
+
 export class WorkerPlan extends Schema.Class<WorkerPlan>("WorkerPlan")({
   acceptanceCriteria: Schema.Array(Schema.NonEmptyString),
+  domainReferences: Schema.Array(WorkerPlanDomainReference),
   expectedArtifacts: Schema.Array(Schema.NonEmptyString),
   harnessName: HarnessNameSchema,
   likelyTouchedSurfaces: Schema.Array(Schema.NonEmptyString),
@@ -41,6 +58,7 @@ export function writeWorkerPlan(input: {
     const derived = derivePlanFromSpec(input.spec);
     const plan = WorkerPlan.make({
       acceptanceCriteria: derived.acceptanceCriteria,
+      domainReferences: derived.domainReferences,
       expectedArtifacts: ["workspace/output.txt", "worker-result.json"],
       harnessName: input.harnessName,
       likelyTouchedSurfaces: derived.likelyTouchedSurfaces,
@@ -82,6 +100,7 @@ export function writeWorkerPlan(input: {
 
 type DerivedWorkerPlan = {
   readonly acceptanceCriteria: ReadonlyArray<string>;
+  readonly domainReferences: ReadonlyArray<WorkerPlanDomainReference>;
   readonly likelyTouchedSurfaces: ReadonlyArray<string>;
   readonly nonGoals: ReadonlyArray<string>;
   readonly stopConditions: ReadonlyArray<string>;
@@ -121,7 +140,7 @@ function derivePlanFromSpec(spec: RunSpec): DerivedWorkerPlan {
     "No explicit touched surfaces were provided by the spec; inspect the workspace before editing.",
   );
   const verificationChecks = withFallback(
-    extractSectionItems(spec.body, [
+    extractVerificationItems(spec.body, [
       "verification",
       "verification commands",
       "validation",
@@ -146,6 +165,7 @@ function derivePlanFromSpec(spec: RunSpec): DerivedWorkerPlan {
 
   return {
     acceptanceCriteria,
+    domainReferences: classifyDomainReferences(spec.body),
     likelyTouchedSurfaces,
     nonGoals,
     stopConditions,
@@ -161,6 +181,9 @@ function markdownPlan(plan: WorkerPlan) {
   const acceptanceCriteria = markdownList(plan.acceptanceCriteria);
   const nonGoals = markdownList(plan.nonGoals);
   const likelyTouchedSurfaces = markdownList(plan.likelyTouchedSurfaces);
+  const domainReferences = markdownList(
+    plan.domainReferences.map(formatDomainReference),
+  );
   const verificationChecks = markdownList(
     plan.verificationChecks.map(formatVerificationCheck),
   );
@@ -187,6 +210,10 @@ ${nonGoals}
 ## Likely Touched Surfaces
 
 ${likelyTouchedSurfaces}
+
+## Domain References
+
+${domainReferences}
 
 ## Verification
 
@@ -219,6 +246,58 @@ function extractSectionItems(
   let active = false;
 
   for (const line of input.split(/\r?\n/u)) {
+    const marker = sectionMarkerFromLine(line);
+    if (marker !== undefined) {
+      active = normalizedLabels.includes(marker.label);
+      if (active && marker.inlineContent !== undefined) {
+        items.push(marker.inlineContent);
+      }
+      continue;
+    }
+
+    if (!active) {
+      continue;
+    }
+
+    const item = itemFromLine(line);
+    if (item !== undefined) {
+      items.push(item);
+    }
+  }
+
+  return uniqueItems(items);
+}
+
+function extractVerificationItems(
+  input: string,
+  labels: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  const normalizedLabels = labels.map(normalizeSectionLabel);
+  const items: Array<string> = [];
+  let active = false;
+  let fence: "none" | "shell" | "other" = "none";
+
+  for (const line of input.split(/\r?\n/u)) {
+    const fenceKind = codeFenceKind(line);
+    if (fenceKind !== undefined) {
+      if (fence === "none") {
+        fence = isShellFence(fenceKind) ? "shell" : "other";
+      } else {
+        fence = "none";
+      }
+      continue;
+    }
+
+    if (fence !== "none") {
+      if (active && fence === "shell") {
+        const command = executableCommandFromShellLine(line);
+        if (command !== undefined) {
+          items.push(command);
+        }
+      }
+      continue;
+    }
+
     const marker = sectionMarkerFromLine(line);
     if (marker !== undefined) {
       active = normalizedLabels.includes(marker.label);
@@ -337,7 +416,7 @@ function withFallback<T>(
 }
 
 function makeVerificationCheck(item: string) {
-  const command = commandFromMarkdown(item);
+  const command = executableCommandFromText(item);
 
   return WorkerPlanVerificationCheck.make({
     ...(command === undefined ? {} : { command }),
@@ -345,11 +424,189 @@ function makeVerificationCheck(item: string) {
   });
 }
 
-function commandFromMarkdown(input: string) {
-  const commandMatch = /`(?<command>[^`]+)`/u.exec(input);
-  const command = commandMatch?.groups?.["command"]?.trim();
+function executableCommandFromText(input: string) {
+  const directCommand = executableCommandFromShellLine(input);
+  if (directCommand !== undefined) {
+    return directCommand;
+  }
 
-  return command === undefined || command.length === 0 ? undefined : command;
+  for (const snippet of inlineCodeSnippets(input)) {
+    const command = executableCommandFromShellLine(snippet);
+    if (command !== undefined) {
+      return command;
+    }
+  }
+
+  return undefined;
+}
+
+function executableCommandFromShellLine(input: string) {
+  const command = input
+    .trim()
+    .replace(/^\$\s+/u, "")
+    .replace(/^>\s+/u, "")
+    .trim();
+
+  if (command.length === 0 || command.startsWith("#")) {
+    return undefined;
+  }
+
+  return isKnownWorkspaceCommand(command) ? command : undefined;
+}
+
+function isKnownWorkspaceCommand(command: string) {
+  return /^pnpm(?:\s|$)/u.test(command);
+}
+
+export function classifyDomainReferences(
+  input: string,
+): ReadonlyArray<WorkerPlanDomainReference> {
+  const references: Array<WorkerPlanDomainReference> = [];
+  const seen = new Set<string>();
+  let fence: "none" | "shell" | "other" = "none";
+
+  for (const line of input.split(/\r?\n/u)) {
+    const fenceKind = codeFenceKind(line);
+    if (fenceKind !== undefined) {
+      if (fence === "none") {
+        fence = isShellFence(fenceKind) ? "shell" : "other";
+      } else {
+        fence = "none";
+      }
+      continue;
+    }
+
+    if (fence === "shell") {
+      continue;
+    }
+
+    const sanitized = removeExecutableInlineCode(line);
+    const lineReferences = [
+      ...referenceMatches(
+        sanitized,
+        "http-route",
+        /\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\/[^\s`'")]+/gu,
+      ),
+      ...referenceMatches(
+        sanitized,
+        "effect-api",
+        /\b(?:Effect|Schema|HttpApi|HttpApiBuilder|HttpApiEndpoint|HttpApiGroup|Layer|Context|Stream|Exit|Cause)\.[A-Za-z_$][\w$]*/gu,
+      ),
+      ...referenceMatches(
+        sanitized,
+        "code-symbol",
+        /\b[A-Z][A-Za-z0-9_$]*(?:\.[A-Za-z_$][\w$]*)+\b/gu,
+      ),
+      ...referenceMatches(
+        sanitized,
+        "package-name",
+        /(?<![\w./-])@[a-z0-9][\w.-]*\/[a-z0-9][\w.-]*(?![\w./-])/giu,
+      ),
+      ...referenceMatches(
+        sanitized,
+        "file-path",
+        /(?<![\w./-])(?:\.{1,2}\/)?(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]+(?![\w./-])/gu,
+      ),
+      ...quotedSymbolReferences(sanitized),
+    ].sort((left, right) => left.index - right.index);
+
+    for (const reference of lineReferences) {
+      const key = reference.value;
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      references.push(
+        WorkerPlanDomainReference.make({
+          kind: reference.kind,
+          value: reference.value,
+        }),
+      );
+    }
+  }
+
+  return references;
+}
+
+type DomainReferenceMatch = {
+  readonly index: number;
+  readonly kind: typeof WorkerPlanDomainReferenceKindSchema.Type;
+  readonly value: string;
+};
+
+function referenceMatches(
+  input: string,
+  kind: typeof WorkerPlanDomainReferenceKindSchema.Type,
+  pattern: RegExp,
+): ReadonlyArray<DomainReferenceMatch> {
+  return [...input.matchAll(pattern)].flatMap((match) => {
+    const value = match[0]?.trim();
+    if (value === undefined || value.length === 0 || match.index === undefined) {
+      return [];
+    }
+
+    return [{ index: match.index, kind, value }];
+  });
+}
+
+function quotedSymbolReferences(
+  input: string,
+): ReadonlyArray<DomainReferenceMatch> {
+  return inlineCodeSnippetsWithIndex(input).flatMap((snippet) => {
+    if (!/^[A-Za-z_$][\w$]*$/u.test(snippet.value)) {
+      return [];
+    }
+    const kind: typeof WorkerPlanDomainReferenceKindSchema.Type =
+      "quoted-symbol";
+
+    return [
+      {
+        index: snippet.index,
+        kind,
+        value: snippet.value,
+      },
+    ];
+  });
+}
+
+function removeExecutableInlineCode(input: string) {
+  let output = input;
+  for (const snippet of inlineCodeSnippets(input)) {
+    if (executableCommandFromShellLine(snippet) !== undefined) {
+      output = output.replace(`\`${snippet}\``, "");
+    }
+  }
+
+  return output;
+}
+
+function inlineCodeSnippets(input: string) {
+  return inlineCodeSnippetsWithIndex(input).map((snippet) => snippet.value);
+}
+
+function inlineCodeSnippetsWithIndex(input: string) {
+  return [...input.matchAll(/`(?<snippet>[^`]+)`/gu)].flatMap((match) => {
+    const snippet = match.groups?.["snippet"]?.trim();
+    if (
+      snippet === undefined ||
+      snippet.length === 0 ||
+      match.index === undefined
+    ) {
+      return [];
+    }
+
+    return [{ index: match.index, value: snippet }];
+  });
+}
+
+function codeFenceKind(input: string) {
+  const match = /^```\s*(?<kind>[A-Za-z0-9_-]*)\s*$/u.exec(input.trim());
+  return match?.groups?.["kind"];
+}
+
+function isShellFence(kind: string) {
+  return /^(?:sh|shell|bash|zsh|console|terminal)$/iu.test(kind);
 }
 
 function firstMeaningfulLine(input: string) {
@@ -370,7 +627,13 @@ function isLikelySectionLabel(input: string) {
 }
 
 function markdownList(items: ReadonlyArray<string>) {
-  return items.map((item) => `- ${item}`).join("\n");
+  return items.length === 0
+    ? "- none"
+    : items.map((item) => `- ${item}`).join("\n");
+}
+
+function formatDomainReference(reference: WorkerPlanDomainReference) {
+  return `${reference.kind}: \`${reference.value}\``;
 }
 
 function formatVerificationCheck(check: WorkerPlanVerificationCheck) {
