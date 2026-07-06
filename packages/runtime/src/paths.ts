@@ -49,6 +49,7 @@ export type RunPaths = {
   readonly workerPlanMarkdown: string;
   readonly workerPlanResult: string;
   readonly workerResult: string;
+  readonly workspacePrGate: string;
   readonly workspace: string;
   readonly workspaceManifest: string;
   readonly workspaceOutput: string;
@@ -122,6 +123,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       workerPlanMarkdown: path.join(root, "worker-plan.md"),
       workerPlanResult: path.join(root, "worker-plan.json"),
       workerResult: path.join(root, "worker-result.json"),
+      workspacePrGate: path.join(root, "workspace-pr-gate.json"),
       workspace,
       workspaceManifest: path.join(root, "workspace-manifest.json"),
       workspaceOutput: path.join(workspace, "output.txt"),

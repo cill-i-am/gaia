@@ -21,6 +21,8 @@ import type {
   LocalRunArtifact,
   LocalRunEvents,
   LocalRunReadDiagnostic,
+  WorkspacePrQualityGate,
+  WorkspacePrQualityGateItem,
 } from "@gaia/runtime";
 import {
   GaiaRuntimeError,
@@ -973,12 +975,18 @@ function renderBrowserEvidenceRecord(record: BrowserEvidenceRecord) {
 }
 
 function renderGitHubPrSummary(summary: GitHubPrSummary) {
+  const gateLines =
+    summary.workspaceGate === undefined
+      ? []
+      : renderWorkspacePrQualityGateLines(summary.workspaceGate);
+
   return [
     `opened: ${summary.prUrl}`,
     `run: ${summary.runId}`,
     `branch: ${summary.branchName}`,
     `base: ${summary.baseBranch}`,
     `evidence: ${summary.evidencePath}`,
+    ...gateLines,
   ].join("\n");
 }
 
@@ -994,6 +1002,11 @@ function renderGitHubPreflightSummary(summary: GitHubPublishPreflightSummary) {
 }
 
 function renderGitHubPublishPreview(summary: GitHubPublishPreview) {
+  const gateLines =
+    summary.workspaceGate === undefined
+      ? []
+      : renderWorkspacePrQualityGateLines(summary.workspaceGate);
+
   return [
     "preview: github-pr",
     `mode: ${summary.mode}`,
@@ -1003,9 +1016,26 @@ function renderGitHubPublishPreview(summary: GitHubPublishPreview) {
     `remote: ${summary.remoteName}`,
     `source changes: ${summary.sourceChanges}`,
     `evidence: ${summary.evidencePath}`,
+    ...gateLines,
     "commands:",
     ...summary.commands.map((command) => `- ${formatCommand(command)}`),
   ].join("\n");
+}
+
+function renderWorkspacePrQualityGateLines(gate: WorkspacePrQualityGate) {
+  return [
+    `quality gate: ${gate.status}`,
+    `quality gate artifact: ${gate.artifactPath}`,
+    `quality gate items: ${gate.failItemCount} fail, ${gate.warnItemCount} warn`,
+    ...gate.items.map(formatWorkspacePrQualityGateItem),
+  ];
+}
+
+function formatWorkspacePrQualityGateItem(item: WorkspacePrQualityGateItem) {
+  const changedFiles =
+    item.changedFiles.length === 0 ? "none" : item.changedFiles.join(", ");
+
+  return `- ${item.severity}: ${changedFiles} - ${item.reason} remediation: ${item.remediation}`;
 }
 
 function renderGitHubChecksSummary(summary: GitHubChecksSummary) {
