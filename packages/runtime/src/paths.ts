@@ -22,6 +22,8 @@ export type RunPaths = {
   readonly evidenceReviewResult: string;
   readonly evidenceReviewerSession: string;
   readonly events: string;
+  readonly factoryRetroJson: string;
+  readonly factoryRetroMarkdown: string;
   readonly gaiaRoot: string;
   readonly githubChecks: string;
   readonly githubFeedback: string;
@@ -99,6 +101,11 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
         "evidence-reviewer-session.json",
       ),
       events: path.join(root, "events.jsonl"),
+      factoryRetroJson: path.join(promotedEvidenceDirectory, "factory-retro.json"),
+      factoryRetroMarkdown: path.join(
+        promotedEvidenceDirectory,
+        "factory-retro.md",
+      ),
       gaiaRoot: store.gaiaRoot,
       githubChecks: path.join(root, "github-checks"),
       githubFeedback: path.join(root, "github-feedback.json"),

@@ -2,6 +2,7 @@ import {
   RunReport,
   type DogfoodRetrospective,
   type EvidencePromotion,
+  type FactoryRetro,
   type RunId,
   type RunSpec,
 } from "@gaia/core";
@@ -27,6 +28,7 @@ export function writeReport(input: {
   readonly inferredRecommendations: WorkerPlanInferredRecommendations;
   readonly paths: RunPaths;
   readonly evidencePromotion?: EvidencePromotion | undefined;
+  readonly factoryRetro?: FactoryRetro | undefined;
   readonly runId: RunId;
   readonly skillManifest: SkillManifest;
   readonly spec: RunSpec;
@@ -56,6 +58,8 @@ export function writeReport(input: {
         "dogfood-retrospective.json",
         "evidence-promotion.json",
         "evidence-promotion.md",
+        "factory-retro.json",
+        "factory-retro.md",
         "worker.log",
         "verification.log",
         "workspace/output.txt",
@@ -78,6 +82,7 @@ export function writeReport(input: {
         report,
         input.retrospective,
         input.evidencePromotion,
+        input.factoryRetro,
         input.inferredRecommendations,
         classifyDomainReferences(input.spec.body),
       ),
@@ -95,6 +100,7 @@ function markdownReport(
   report: RunReport,
   retrospective: DogfoodRetrospective | undefined,
   evidencePromotion: EvidencePromotion | undefined,
+  factoryRetro: FactoryRetro | undefined,
   inferredRecommendations: WorkerPlanInferredRecommendations,
   domainReferences: ReadonlyArray<WorkerPlanDomainReference>,
 ): string {
@@ -147,6 +153,43 @@ function markdownReport(
           "Cleanup guidance:",
           "Raw run state is disposable only after the promoted Markdown has been copied into Linear/PR evidence or the promotion status is otherwise marked complete.",
         ].join("\n");
+  const factoryRetroSection =
+    factoryRetro === undefined
+      ? [
+          "Factory retro JSON: factory-retro.json",
+          "Factory retro Markdown: factory-retro.md",
+        ].join("\n")
+      : [
+          "Factory retro JSON: factory-retro.json",
+          "Factory retro Markdown: factory-retro.md",
+          "",
+          `Promotion status: ${factoryRetro.promotionStatus}`,
+          `Cleanup status: ${factoryRetro.cleanupStatus}`,
+          "",
+          "Helped:",
+          ...(factoryRetro.helped.length === 0
+            ? ["- none"]
+            : factoryRetro.helped.map(
+                (entry) => `- ${entry.source}: ${entry.summary}`,
+              )),
+          "",
+          "Missed:",
+          ...(factoryRetro.missed.length === 0
+            ? ["- none"]
+            : factoryRetro.missed.map(
+                (entry) => `- ${entry.source}: ${entry.summary}`,
+              )),
+          "",
+          "Misled:",
+          ...(factoryRetro.misled.length === 0
+            ? ["- none"]
+            : factoryRetro.misled.map(
+                (entry) => `- ${entry.source}: ${entry.summary}`,
+              )),
+          "",
+          "Recommended next factory improvement:",
+          factoryRetro.recommendedNextFactoryImprovement,
+        ].join("\n");
   const domainReferenceSection =
     domainReferences.length === 0
       ? "No domain references classified from the source spec."
@@ -177,6 +220,10 @@ ${retrospectiveSection}
 ## Evidence Promotion
 
 ${promotionSection}
+
+## Factory Retro
+
+${factoryRetroSection}
 
 ## Domain References
 

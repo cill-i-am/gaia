@@ -92,6 +92,8 @@ export const LocalRunArtifactIdSchema = Schema.Literals([
   "evidence-review",
   "evidence-promotion",
   "evidence-promotion-markdown",
+  "factory-retro",
+  "factory-retro-markdown",
   "report",
   "report-json",
   "events",
