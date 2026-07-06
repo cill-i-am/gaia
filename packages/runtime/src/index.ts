@@ -290,6 +290,10 @@ export {
   type WorkspaceSourcePath,
 } from "./workspace.js";
 export {
+  WorkspaceDiffOmittedGeneratedPath,
+  WorkspaceDiffSummary,
+} from "./workspace-snapshot.js";
+export {
   listRuns,
   collectBrowserEvidence,
   resumeRun,
