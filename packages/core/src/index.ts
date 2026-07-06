@@ -22,5 +22,16 @@ export {
   type RunMachineEvent,
 } from "./machine.js";
 export { RunReport, ReportStatusSchema, parseRunReport } from "./report.js";
+export {
+  DogfoodFinding,
+  DogfoodFindingCategorySchema,
+  DogfoodFindingSeveritySchema,
+  DogfoodFindingSource,
+  DogfoodRetrospective,
+  LinearCandidateIssue,
+  parseDogfoodRetrospective,
+  type DogfoodFindingCategory,
+  type DogfoodFindingSeverity,
+} from "./retrospective.js";
 export { RunIdSchema, parseRunId, type RunId } from "./run-id.js";
 export { RunSpec, SpecFrontmatter, parseMarkdownSpec } from "./spec.js";

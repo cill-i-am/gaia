@@ -45,6 +45,7 @@ import {
   type ReviewerRunOptions,
 } from "./reviewer.js";
 import { writeReport } from "./report-writer.js";
+import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 import {
   resolveRunProfile,
   writeRunProfile,
@@ -323,7 +324,12 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
     }
     yield* runReviewPhase(runId, paths, spec, "evidence", options);
     yield* appendEvent(runId, paths, { type: "REPORT_STARTED" });
-    yield* writeReport({ paths, runId, skillManifest, spec });
+    const retrospective = yield* writeDogfoodRetrospective(runId, paths).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "reporting", error),
+      ),
+    );
+    yield* writeReport({ paths, retrospective, runId, skillManifest, spec });
     const { snapshot } = yield* appendEvent(runId, paths, {
       payload: { reportPath: "report.md" },
       type: "REPORT_COMPLETED",
@@ -650,6 +656,9 @@ function recordRunFailure(
       payload: failureToEventPayload(error, stage),
       type: "RUN_FAILED",
     });
+    yield* writeDogfoodRetrospective(runId, paths).pipe(
+      Effect.catchTag("GaiaRuntimeError", () => Effect.void),
+    );
 
     return yield* Effect.fail(error);
   });
