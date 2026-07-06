@@ -1,13 +1,17 @@
 import {
   EventTypeSchema,
+  CreateRunAcceptedResponse,
+  HealthResponse,
   LocalRunApiErrorStatusSchema,
   LocalRunArtifactIdSchema,
   LocalRunReadDiagnosticCodeSchema,
   RunEvent,
   RunIdSchema,
   RunStateSchema,
+  ServerMetadata,
 } from "@gaia/core";
 import {
+  GaiaRuntimeError,
   makeRunPaths,
   makeRuntimeError,
   type CommandSummary,
@@ -16,6 +20,10 @@ import {
   type LocalRunSummary,
 } from "@gaia/runtime";
 import { Effect, Schema } from "effect";
+import { spawn } from "node:child_process";
+import { closeSync, mkdirSync, openSync } from "node:fs";
+import { realpath, rm, readFile } from "node:fs/promises";
+import path from "node:path";
 
 const LocalRunStatusSchema = Schema.Literals([
   "completed",
@@ -93,6 +101,9 @@ const decodeLocalRunSummary = Schema.decodeUnknownSync(LocalRunSummaryDto);
 const decodeLocalRunEvents = Schema.decodeUnknownSync(LocalRunEventsDto);
 const decodeLocalRunArtifact = Schema.decodeUnknownSync(LocalRunArtifactDto);
 const decodeLocalRunApiError = Schema.decodeUnknownSync(LocalRunApiErrorDto);
+const decodeCreateRunAccepted = Schema.decodeUnknownSync(CreateRunAcceptedResponse);
+const decodeHealthResponse = Schema.decodeUnknownSync(HealthResponse);
+const decodeServerMetadata = Schema.decodeUnknownSync(ServerMetadata);
 
 type ParsedServerEnvelope =
   | {
@@ -121,6 +132,58 @@ export function listRunsFromServer(input: {
     }
 
     return summaries;
+  });
+}
+
+export function ensureServerModeUrl(input: { readonly rootDirectory: string }) {
+  return Effect.gen(function* () {
+    const reusable = yield* reusableServerUrl(input.rootDirectory);
+    if (reusable !== undefined) {
+      return reusable;
+    }
+
+    yield* removeServerMetadata(input.rootDirectory);
+    yield* startBackgroundServer(input.rootDirectory);
+    return yield* waitForReusableServer(input.rootDirectory);
+  });
+}
+
+export function createRunFromServer(input: {
+  readonly rootDirectory: string;
+  readonly serverUrl: string;
+  readonly specPath: string;
+}) {
+  return Effect.gen(function* () {
+    const fs = yield* Effect.tryPromise({
+      try: () => readFile(input.specPath, "utf8"),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "SpecReadFailed",
+          message: `Could not read spec file ${input.specPath}.`,
+          recoverable: false,
+        }),
+    });
+    const response = yield* postServerJson(input.serverUrl, "/runs", {
+      specMarkdown: fs,
+      title: path.basename(input.specPath),
+    });
+    const accepted = yield* decodeServerData(
+      response,
+      decodeCreateRunAccepted,
+      "run acceptance",
+    );
+    const paths = yield* makeRunPaths(accepted.runId, {
+      rootDirectory: input.rootDirectory,
+    });
+
+    return {
+      reportPath: undefined,
+      runDirectory: paths.root,
+      runId: accepted.runId,
+      state: "created",
+      status: "running",
+    } satisfies CommandSummary;
   });
 }
 
@@ -218,6 +281,177 @@ function fetchServerJson(serverUrl: string, pathname: string) {
         cause,
         code: "LocalRunApiUnavailable",
         message: `Local Gaia API server is unavailable at ${serverUrl}. Direct runtime reads remain available without --server-url.`,
+        recoverable: true,
+      }),
+  });
+}
+
+function postServerJson(
+  serverUrl: string,
+  pathname: string,
+  payload: Readonly<Record<string, unknown>>,
+) {
+  return Effect.tryPromise({
+    try: async () => {
+      const response = await fetch(serverEndpoint(serverUrl, pathname), {
+        body: JSON.stringify(payload),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      const parsed: unknown = await response.json();
+      if (response.ok) {
+        return parsed;
+      }
+
+      const diagnostic = decodeLocalRunApiError(parsed);
+      throw runtimeErrorFromDiagnostic(diagnostic);
+    },
+    catch: (cause) =>
+      cause instanceof GaiaRuntimeError
+        ? cause
+        : makeRuntimeError({
+            cause,
+            code: "LocalRunApiUnavailable",
+            message: `Local Gaia API server is unavailable at ${serverUrl}. Direct runtime reads remain available without --server.`,
+            recoverable: true,
+          }),
+  });
+}
+
+function reusableServerUrl(rootDirectory: string) {
+  return Effect.gen(function* () {
+    const metadata = yield* readServerMetadata(rootDirectory).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
+    if (metadata === undefined) {
+      return undefined;
+    }
+
+    const health = yield* fetchServerHealth(metadata.url).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
+    const sameRoot =
+      health === undefined
+        ? false
+        : yield* sameWorkspaceRoot(health.workspaceRoot, rootDirectory);
+    if (
+      health === undefined ||
+      health.serverId !== metadata.serverId ||
+      !sameRoot
+    ) {
+      return undefined;
+    }
+
+    return metadata.url;
+  });
+}
+
+function waitForReusableServer(rootDirectory: string) {
+  return Effect.gen(function* () {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const reusable = yield* reusableServerUrl(rootDirectory);
+      if (reusable !== undefined) {
+        return reusable;
+      }
+      yield* Effect.sleep("100 millis");
+    }
+
+    return yield* Effect.fail(
+      makeRuntimeError({
+        code: "LocalRunApiUnavailable",
+        message:
+          "Local Gaia API server did not become ready after auto-start.",
+        recoverable: true,
+      }),
+    );
+  });
+}
+
+function readServerMetadata(rootDirectory: string) {
+  return Effect.tryPromise({
+    try: async () => {
+      const text = await readFile(serverJsonPath(rootDirectory), "utf8");
+      return decodeServerMetadata(JSON.parse(text));
+    },
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "LocalRunApiInvalidResponse",
+        message: "Local Gaia server metadata is missing or invalid.",
+        recoverable: true,
+      }),
+  });
+}
+
+function fetchServerHealth(serverUrl: string) {
+  return Effect.tryPromise({
+    try: async () => {
+      const response = await fetch(serverEndpoint(serverUrl, "/health"));
+      const parsed: unknown = await response.json();
+      return decodeHealthResponse(parsed);
+    },
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "LocalRunApiUnavailable",
+        message: `Local Gaia API server is unavailable at ${serverUrl}. Direct runtime reads remain available without --server.`,
+        recoverable: true,
+      }),
+  });
+}
+
+function removeServerMetadata(rootDirectory: string) {
+  return Effect.tryPromise({
+    try: () => rm(serverJsonPath(rootDirectory), { force: true }),
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "LocalRunApiInvalidResponse",
+        message: "Could not replace stale local Gaia server metadata.",
+        recoverable: true,
+      }),
+  });
+}
+
+function startBackgroundServer(rootDirectory: string) {
+  return Effect.try({
+    try: () => {
+      const gaiaRoot = path.join(rootDirectory, ".gaia");
+      mkdirSync(gaiaRoot, { recursive: true });
+      const logFd = openSync(serverLogPath(rootDirectory), "a");
+      try {
+        const child = spawn(
+          "pnpm",
+          [
+            "--dir",
+            gaiaRepoRoot(),
+            "--filter",
+            "@gaia/server",
+            "dev",
+            "--root",
+            rootDirectory,
+          ],
+          {
+            cwd: rootDirectory,
+            detached: true,
+            env: {
+              ...process.env,
+              INIT_CWD: rootDirectory,
+            },
+            stdio: ["ignore", logFd, logFd],
+          },
+        );
+        child.on("error", () => undefined);
+        child.unref();
+      } finally {
+        closeSync(logFd);
+      }
+    },
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "LocalRunApiUnavailable",
+        message: "Could not auto-start the local Gaia API server.",
         recoverable: true,
       }),
   });
@@ -336,4 +570,30 @@ function serverEndpoint(serverUrl: string, pathname: string) {
 
 function normalizedServerUrl(serverUrl: string) {
   return serverUrl.endsWith("/") ? serverUrl : `${serverUrl}/`;
+}
+
+function serverJsonPath(rootDirectory: string) {
+  return path.join(rootDirectory, ".gaia", "server.json");
+}
+
+function serverLogPath(rootDirectory: string) {
+  return path.join(rootDirectory, ".gaia", "server.log");
+}
+
+function sameWorkspaceRoot(left: string, right: string) {
+  return Effect.promise(async () => {
+    try {
+      const [leftReal, rightReal] = await Promise.all([
+        realpath(left),
+        realpath(right),
+      ]);
+      return leftReal === rightReal;
+    } catch {
+      return path.resolve(left) === path.resolve(right);
+    }
+  });
+}
+
+function gaiaRepoRoot() {
+  return path.resolve(new URL("../../..", import.meta.url).pathname);
 }
