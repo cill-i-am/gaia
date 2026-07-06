@@ -20,6 +20,7 @@ export {
   type BrowserEvidenceTargetUrl,
 } from "./browser-evidence.js";
 export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
+export { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 export {
   codexReviewerName,
   makeCodexReviewer,

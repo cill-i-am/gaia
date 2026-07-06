@@ -87,6 +87,10 @@ const artifactDefinitions: Readonly<Record<string, ArtifactDefinition>> = {
     contentType: "application/json",
     path: (paths) => paths.codexHarnessProgress,
   },
+  "dogfood-retrospective.json": {
+    contentType: "application/json",
+    path: (paths) => paths.dogfoodRetrospective,
+  },
   "evidence-review.json": {
     contentType: "application/json",
     path: (paths) => paths.evidenceReviewResult,

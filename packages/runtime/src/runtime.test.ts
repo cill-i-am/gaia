@@ -2,7 +2,11 @@ import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schema } from "effect";
 import { execPath } from "node:process";
-import { parseRunEvent, parseRunId } from "@gaia/core";
+import {
+  parseDogfoodRetrospective,
+  parseRunEvent,
+  parseRunId,
+} from "@gaia/core";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
   BrowserEvidence,
@@ -68,6 +72,7 @@ import {
 } from "./merge-decision.js";
 import { localSkillManifestSource } from "./skill-manifest.js";
 import {
+  ReviewFinding,
   ReviewResult,
   ReviewerNameSchema,
   type GaiaReviewer,
@@ -456,6 +461,249 @@ describe("runtime workflows", () => {
         assert.include(harnessResult, '"output.txt"');
         assert.include(harnessResult, '"exitCode": 0');
         assert.include(harnessResult, '"summary":');
+      }),
+    );
+
+    it.effect("emits a clean dogfood retrospective for a completed run", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Retrospective clean run.\n");
+
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const retrospective = parseDogfoodRetrospective(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/dogfood-retrospective.json`,
+            ),
+          ),
+        );
+        const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+        const reportJson = yield* fs.readFileString(
+          `${summary.runDirectory}/report.json`,
+        );
+        const artifact = yield* readLocalRunArtifact(
+          summary.runId,
+          "dogfood-retrospective.json",
+          { rootDirectory: cwd },
+        );
+
+        assert.strictEqual(retrospective.status, "clean");
+        assert.strictEqual(retrospective.findings.length, 0);
+        assert.strictEqual(retrospective.candidateIssueCount, 0);
+        assert.include(
+          retrospective.summary,
+          "No high-signal dogfood findings",
+        );
+        assert.include(reportMarkdown, "dogfood-retrospective.json");
+        assert.include(reportMarkdown, "No high-signal dogfood findings");
+        assert.include(reportJson, '"dogfood-retrospective.json"');
+        assert.strictEqual(artifact.contentType, "application/json");
+      }),
+    );
+
+    it.effect("classifies repeated generic plan blockers consistently", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const reviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
+          "blocking-plan-reviewer",
+        );
+        const reviewer: GaiaReviewer = {
+          name: reviewerName,
+          run: (request) =>
+            Effect.succeed(
+              ReviewResult.make({
+                findings: [
+                  ReviewFinding.make({
+                    message:
+                      "Worker plan is generic and does not name concrete implementation surfaces.",
+                    severity: "blocker",
+                  }),
+                ],
+                phase: request.phase,
+                resultPath:
+                  request.phase === "plan"
+                    ? "plan-review.json"
+                    : "evidence-review.json",
+                reviewerName,
+                runId: request.runId,
+                status: request.phase === "plan" ? "blocked" : "approved",
+                summary:
+                  "Codex plan review blocked the run because the worker plan is generic.",
+              }),
+            ),
+        };
+
+        const runBlockedSpec = (body: string) =>
+          Effect.gen(function* () {
+            const specPath = `${cwd}/${body}.md`;
+            yield* fs.writeFileString(specPath, `${body}\n`);
+            const error = yield* Effect.flip(
+              runSpecFile(specPath, { reviewer, rootDirectory: cwd }),
+            );
+            assert.isTrue(error instanceof GaiaRuntimeError);
+            const status = yield* statusRun(undefined, { rootDirectory: cwd });
+            return parseDogfoodRetrospective(
+              JSON.parse(
+                yield* fs.readFileString(
+                  `${status.runDirectory}/dogfood-retrospective.json`,
+                ),
+              ),
+            );
+          });
+
+        const gaia1Retrospective = yield* runBlockedSpec("gaia-1-plan-blocker");
+        const gaia2Retrospective = yield* runBlockedSpec("gaia-2-plan-blocker");
+        const gaia1Finding = gaia1Retrospective.findings[0];
+        const gaia2Finding = gaia2Retrospective.findings[0];
+
+        assert.strictEqual(gaia1Finding?.category, "plan-quality");
+        assert.strictEqual(gaia2Finding?.category, "plan-quality");
+        assert.strictEqual(gaia1Finding?.severity, "blocker");
+        assert.strictEqual(gaia2Finding?.severity, "blocker");
+        assert.include(gaia1Finding?.summary ?? "", "generic");
+        assert.include(gaia2Finding?.summary ?? "", "generic");
+        assert.strictEqual(
+          gaia1Finding?.candidateIssue?.category,
+          "plan-quality",
+        );
+        assert.include(
+          gaia1Finding?.candidateIssue?.bodyMarkdown ?? "",
+          "## Acceptance Criteria",
+        );
+      }),
+    );
+
+    it.effect("caps reviewer findings before rendering Linear-ready candidates", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const rawOversizedBody = `RAW_PAYLOAD_${"x".repeat(8_000)}_END`;
+        const reviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
+          "oversized-reviewer",
+        );
+        const reviewer: GaiaReviewer = {
+          name: reviewerName,
+          run: (request) =>
+            Effect.succeed(
+              ReviewResult.make({
+                findings: [
+                  ReviewFinding.make({
+                    message: `Reviewer found unsafe output.\n${rawOversizedBody}`,
+                    severity: "blocker",
+                  }),
+                ],
+                phase: request.phase,
+                resultPath:
+                  request.phase === "plan"
+                    ? "plan-review.json"
+                    : "evidence-review.json",
+                reviewerName,
+                runId: request.runId,
+                status: request.phase === "plan" ? "blocked" : "approved",
+                summary: "Reviewer blocked the plan with an oversized finding.",
+              }),
+            ),
+        };
+        yield* fs.writeFileString(specPath, "Cap reviewer summaries.\n");
+
+        yield* Effect.flip(
+          runSpecFile(specPath, { reviewer, rootDirectory: cwd }),
+        );
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        const retrospective = parseDogfoodRetrospective(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${status.runDirectory}/dogfood-retrospective.json`,
+            ),
+          ),
+        );
+        const candidateBody =
+          retrospective.linearCandidates
+            .map((candidate) => candidate.bodyMarkdown)
+            .find((body) => body.includes("Reviewer found unsafe output.")) ??
+          "";
+
+        assert.isAtMost(candidateBody.length, 2_000);
+        assert.notInclude(candidateBody, rawOversizedBody);
+        assert.include(candidateBody, "Reviewer found unsafe output.");
+        assert.include(candidateBody, "## Source Evidence");
+        assert.include(candidateBody, "plan-review.json");
+        assert.notInclude(
+          retrospective.findings.map((finding) => finding.summary).join("\n"),
+          rawOversizedBody,
+        );
+      }),
+    );
+
+    it.effect("emits Linear-ready candidates for noisy evidence and pre-publish failures", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Publish noisy evidence.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const paths = yield* makeRunPaths(summary.runId, { rootDirectory: cwd });
+        const workerResult = parseHarnessRunResultJson(
+          JSON.parse(yield* fs.readFileString(paths.workerResult)),
+        );
+        yield* fs.writeFileString(
+          paths.workerResult,
+          `${JSON.stringify(
+            {
+              ...workerResult,
+              changedWorkspacePaths: Array.from(
+                { length: 4_000 },
+                (_, index) => `node_modules/package-${index}/index.js`,
+              ),
+            },
+            null,
+            2,
+          )}\n`,
+        );
+
+        const commands: Array<GitHubCommandInput> = [];
+        yield* Effect.flip(
+          publishWorkspaceRunToGitHub(summary.runId, {
+            commandRunner: githubPublishingRunner(commands),
+            rootDirectory: cwd,
+          }),
+        );
+
+        const retrospective = parseDogfoodRetrospective(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/dogfood-retrospective.json`,
+            ),
+          ),
+        );
+        const categories = retrospective.findings.map(
+          (finding) => finding.category,
+        );
+        const evidenceFinding = retrospective.findings.find(
+          (finding) => finding.category === "evidence-noise",
+        );
+        const verificationFinding = retrospective.findings.find(
+          (finding) => finding.category === "verification",
+        );
+
+        assert.includeMembers(categories, ["evidence-noise", "verification"]);
+        assert.isAtLeast(retrospective.candidateIssueCount, 2);
+        assert.include(
+          evidenceFinding?.candidateIssue?.bodyMarkdown ?? "",
+          "## Source Evidence",
+        );
+        assert.include(
+          verificationFinding?.candidateIssue?.title ?? "",
+          "pre-publish",
+        );
+        assert.deepEqual(
+          commands.map((command) => [command.command, command.args[0]]),
+          workspacePrPreflightCommandSummary(),
+        );
       }),
     );
 

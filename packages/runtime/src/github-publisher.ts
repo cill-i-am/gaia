@@ -3,6 +3,7 @@ import { Duration, Effect, FileSystem, Path, Schedule, Schema } from "effect";
 import { execFile } from "node:child_process";
 import { appendEvent, readEvents } from "./event-store.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 import { HarnessRunResult } from "./harness.js";
 import {
   makeRunPaths,
@@ -863,6 +864,7 @@ export function publishWorkspaceRunToGitHub(
       preflight.runId,
       paths,
     );
+    yield* writeDogfoodRetrospective(preflight.runId, paths);
 
     yield* requireWorkspacePrQualityGatePassed(workspaceGate);
 
@@ -1259,6 +1261,7 @@ function coordinateGitHubPrLoopUnlocked(
       },
       type: "GITHUB_PR_LOOP_RECORDED",
     });
+    yield* writeDogfoodRetrospective(run.runId, paths);
 
     return gitHubPrLoopSummaryFromState(paths, state);
   });
@@ -2117,6 +2120,11 @@ function gitHubPrCommentArtifacts(paths: RunPaths, runId: RunId) {
         path: `${evidenceRoot}/pr-loop-state.json`,
       },
       {
+        exists: yield* fs.exists(paths.dogfoodRetrospective),
+        label: "Dogfood retrospective",
+        path: `${evidenceRoot}/dogfood-retrospective.json`,
+      },
+      {
         exists: yield* fs.exists(paths.githubRemediationSpec),
         label: "Remediation spec",
         path: `${evidenceRoot}/remediation-spec.md`,
@@ -2727,6 +2735,7 @@ function copyRunArtifacts(
     ["input.md", "input.md"],
     ["report.md", "README.md"],
     ["report.json", "report.json"],
+    ["dogfood-retrospective.json", "dogfood-retrospective.json"],
     ["run-profile.json", "run-profile.json"],
     ["browser-evidence.json", "browser-evidence.json"],
     ["preview-deployment.json", "preview-deployment.json"],

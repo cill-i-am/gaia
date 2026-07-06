@@ -1,4 +1,9 @@
-import { RunReport, type RunId, type RunSpec } from "@gaia/core";
+import {
+  RunReport,
+  type DogfoodRetrospective,
+  type RunId,
+  type RunSpec,
+} from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 import type { RunPaths } from "./paths.js";
 import {
@@ -14,6 +19,7 @@ export function writeReport(input: {
   readonly runId: RunId;
   readonly skillManifest: SkillManifest;
   readonly spec: RunSpec;
+  readonly retrospective?: DogfoodRetrospective | undefined;
 }) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -36,6 +42,7 @@ export function writeReport(input: {
         ...(codexHarnessProgressExists
           ? ["codex-harness-progress.json"]
           : []),
+        "dogfood-retrospective.json",
         "worker.log",
         "verification.log",
         "workspace/output.txt",
@@ -52,7 +59,10 @@ export function writeReport(input: {
       summary: `Gaia completed, reviewed, and verified "${input.spec.title}".`,
     });
 
-    yield* fs.writeFileString(input.paths.reportMarkdown, markdownReport(report));
+    yield* fs.writeFileString(
+      input.paths.reportMarkdown,
+      markdownReport(report, input.retrospective),
+    );
     yield* fs.writeFileString(
       input.paths.reportJson,
       `${JSON.stringify(encodeRunReport(report), null, 2)}\n`,
@@ -62,7 +72,10 @@ export function writeReport(input: {
   });
 }
 
-function markdownReport(report: RunReport): string {
+function markdownReport(
+  report: RunReport,
+  retrospective: DogfoodRetrospective | undefined,
+): string {
   const artifacts = report.artifacts
     .map((artifact) => `- ${artifact}`)
     .join("\n");
@@ -70,6 +83,22 @@ function markdownReport(report: RunReport): string {
     report.selectedSkills.length === 0
       ? "No skills selected for this run."
       : report.selectedSkills.map((skill) => `- ${skill}`).join("\n");
+
+  const retrospectiveSection =
+    retrospective === undefined
+      ? "Retrospective artifact: dogfood-retrospective.json"
+      : [
+          "Retrospective artifact: dogfood-retrospective.json",
+          "",
+          retrospective.summary,
+          "",
+          "High-signal findings:",
+          ...(retrospective.findings.length === 0
+            ? ["- none"]
+            : retrospective.findings.map(
+                (finding) => `- ${finding.category}: ${finding.summary}`,
+              )),
+        ].join("\n");
 
   return `# Gaia Run ${report.runId}
 
@@ -82,6 +111,10 @@ ${report.summary}
 ## Selected Skills
 
 ${selectedSkills}
+
+## Dogfood Retrospective
+
+${retrospectiveSection}
 
 ## Evidence
 
