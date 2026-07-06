@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
-import { NodeHttpServer } from "@effect/platform-node";
+import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import type { ServerMetadata } from "@gaia/core";
+import { reconcileInterruptedServerRuns } from "@gaia/runtime/server-workflows";
 import { Effect, Layer } from "effect";
 import * as Console from "effect/Console";
 import { HttpServer } from "effect/unstable/http";
@@ -49,26 +50,31 @@ export function runLocalGaiaServer(input: {
 
   return Effect.scoped(
     Effect.gen(function* () {
-      const server = yield* HttpServer.HttpServer;
-      const metadata = yield* serverMetadataFromAddress(identity, server.address);
-      yield* writeServerMetadata(metadata);
-      yield* Effect.addFinalizer(() =>
-        removeServerMetadata(metadata).pipe(Effect.orElseSucceed(() => undefined)),
-      );
-      yield* appendServerLog(
-        metadata.workspaceRoot,
-        `${metadata.startedAt} ${metadata.serverId} listening ${metadata.url}`,
-      );
-      if (input.onReady !== undefined) {
-        yield* input.onReady(metadata);
-      }
-      yield* Console.log(
-        `Gaia local API listening on ${metadata.url}`,
-      );
-      yield* Console.log(`workspace: ${metadata.workspaceRoot}`);
-      yield* Effect.never;
-    }).pipe(Effect.provide(serverLayer)),
-  );
+      yield* reconcileInterruptedServerRuns({
+        rootDirectory: identity.rootDirectory,
+      });
+      yield* Effect.gen(function* () {
+        const server = yield* HttpServer.HttpServer;
+        const metadata = yield* serverMetadataFromAddress(identity, server.address);
+        yield* writeServerMetadata(metadata);
+        yield* Effect.addFinalizer(() =>
+          removeServerMetadata(metadata).pipe(Effect.orElseSucceed(() => undefined)),
+        );
+        yield* appendServerLog(
+          metadata.workspaceRoot,
+          `${metadata.startedAt} ${metadata.serverId} listening ${metadata.url}`,
+        );
+        if (input.onReady !== undefined) {
+          yield* input.onReady(metadata);
+        }
+        yield* Console.log(
+          `Gaia local API listening on ${metadata.url}`,
+        );
+        yield* Console.log(`workspace: ${metadata.workspaceRoot}`);
+        yield* Effect.never;
+      }).pipe(Effect.provide(serverLayer));
+    }),
+  ).pipe(Effect.provide(NodeServices.layer));
 }
 
 export function parseServerArgs(args: ReadonlyArray<string>): ServerConfig {

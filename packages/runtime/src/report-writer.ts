@@ -10,6 +10,10 @@ import {
   selectedSkillNames,
   type SkillManifest,
 } from "./skill-manifest.js";
+import {
+  classifyDomainReferences,
+  type WorkerPlanDomainReference,
+} from "./worker-plan.js";
 
 const RunReportJson = Schema.toCodecJson(RunReport);
 const encodeRunReport = Schema.encodeSync(RunReportJson);
@@ -61,7 +65,11 @@ export function writeReport(input: {
 
     yield* fs.writeFileString(
       input.paths.reportMarkdown,
-      markdownReport(report, input.retrospective),
+      markdownReport(
+        report,
+        input.retrospective,
+        classifyDomainReferences(input.spec.body),
+      ),
     );
     yield* fs.writeFileString(
       input.paths.reportJson,
@@ -75,6 +83,7 @@ export function writeReport(input: {
 function markdownReport(
   report: RunReport,
   retrospective: DogfoodRetrospective | undefined,
+  domainReferences: ReadonlyArray<WorkerPlanDomainReference>,
 ): string {
   const artifacts = report.artifacts
     .map((artifact) => `- ${artifact}`)
@@ -99,6 +108,12 @@ function markdownReport(
                 (finding) => `- ${finding.category}: ${finding.summary}`,
               )),
         ].join("\n");
+  const domainReferenceSection =
+    domainReferences.length === 0
+      ? "No domain references classified from the source spec."
+      : domainReferences
+          .map((reference) => `- ${reference.kind}: \`${reference.value}\``)
+          .join("\n");
 
   return `# Gaia Run ${report.runId}
 
@@ -115,6 +130,10 @@ ${selectedSkills}
 ## Dogfood Retrospective
 
 ${retrospectiveSection}
+
+## Domain References
+
+${domainReferenceSection}
 
 ## Evidence
 
