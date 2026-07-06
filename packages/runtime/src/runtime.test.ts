@@ -83,7 +83,6 @@ import {
   localRunProfileSource,
   parseRunProfileJson,
 } from "./run-profile.js";
-import { readLocalRunArtifact } from "./run-read-api.js";
 import {
   collectBrowserEvidence,
   listRuns,
@@ -483,12 +482,6 @@ describe("runtime workflows", () => {
         const reportJson = yield* fs.readFileString(
           `${summary.runDirectory}/report.json`,
         );
-        const artifact = yield* readLocalRunArtifact(
-          summary.runId,
-          "dogfood-retrospective.json",
-          { rootDirectory: cwd },
-        );
-
         assert.strictEqual(retrospective.status, "clean");
         assert.strictEqual(retrospective.findings.length, 0);
         assert.strictEqual(retrospective.candidateIssueCount, 0);
@@ -499,7 +492,6 @@ describe("runtime workflows", () => {
         assert.include(reportMarkdown, "dogfood-retrospective.json");
         assert.include(reportMarkdown, "No high-signal dogfood findings");
         assert.include(reportJson, '"dogfood-retrospective.json"');
-        assert.strictEqual(artifact.contentType, "application/json");
       }),
     );
 
@@ -2130,19 +2122,12 @@ describe("runtime workflows", () => {
             ),
           ),
         );
-        const artifact = yield* readLocalRunArtifact(
-          status.runId,
-          "codex-harness-progress.json",
-          { rootDirectory: cwd },
-        );
-
         assert.strictEqual(status.state, "failed");
         assert.strictEqual(status.status, "failed");
         assert.strictEqual(
           status.harnessProgressPath,
           `${status.runDirectory}/codex-harness-progress.json`,
         );
-        assert.strictEqual(artifact.contentType, "application/json");
         assert.strictEqual(progress.status, "timed-out");
         assert.isTrue(progress.terminal);
         assert.strictEqual(progress.stallClassification, "no-progress");
@@ -4896,6 +4881,51 @@ describe("runtime workflows", () => {
         assert.include(events, '"type":"MERGE_DECISION_RECORDED"');
         assert.include(events, '"mergeDecisionPath":"merge-decision.json"');
         assert.include(events, '"nextAction":"ready-to-merge"');
+      }),
+    );
+
+    it.effect("approves merge decision when no CI is configured and local verification evidence exists", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Approve no-CI merge decision.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const prLoop = yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (input.args.join(" ").startsWith("pr checks")) {
+              return {
+                exitCode: 1,
+                stderr: "no checks reported on the 'gaia/example' branch\n",
+                stdout: "",
+              };
+            }
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify(
+                prFeedbackView({ reviewDecision: "APPROVED" }),
+              ),
+            };
+          }),
+          rootDirectory: cwd,
+        });
+
+        const summary = yield* recordMergeDecision(run.runId, {
+          rootDirectory: cwd,
+        });
+        const verificationLog = yield* fs.readFileString(
+          `${run.runDirectory}/verification.log`,
+        );
+
+        assert.strictEqual(prLoop.status, "ready");
+        assert.strictEqual(prLoop.checksStatus, "no-checks-configured");
+        assert.strictEqual(summary.status, "approved");
+        assert.strictEqual(summary.nextAction, "ready-to-merge");
+        assert.strictEqual(summary.blockerCount, 0);
+        assert.include(verificationLog, "Verification passed.");
       }),
     );
 

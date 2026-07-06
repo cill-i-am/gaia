@@ -16,14 +16,21 @@ export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "EndpointNotFound",
   "InvalidRunDirectory",
   "InvalidRunId",
+  "InvalidRequest",
+  "InvalidSpec",
   "InternalServerError",
   "MethodNotAllowed",
+  "RunStoreLocked",
   "RunHasNoEvents",
   "RunNotFound",
   "RunUnreadable",
 ] as const);
 
-const BadRequestDiagnosticCodeSchema = Schema.Literals(["InvalidRunId"] as const);
+const BadRequestDiagnosticCodeSchema = Schema.Literals([
+  "InvalidRequest",
+  "InvalidRunId",
+  "InvalidSpec",
+] as const);
 const NotFoundDiagnosticCodeSchema = Schema.Literals([
   "ArtifactNotAllowed",
   "ArtifactNotFound",
@@ -35,6 +42,7 @@ const MethodNotAllowedDiagnosticCodeSchema = Schema.Literals([
 ] as const);
 const ConflictDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
+  "RunStoreLocked",
 ] as const);
 const UnprocessableDiagnosticCodeSchema = Schema.Literals([
   "InvalidRunDirectory",
@@ -43,6 +51,15 @@ const UnprocessableDiagnosticCodeSchema = Schema.Literals([
 ] as const);
 const InternalServerDiagnosticCodeSchema = Schema.Literals([
   "InternalServerError",
+] as const);
+
+export const LocalRunApiErrorStatusSchema = Schema.Literals([
+  400,
+  404,
+  405,
+  409,
+  422,
+  500,
 ] as const);
 
 const diagnosticFields = {
@@ -65,6 +82,20 @@ export const LocalRunArtifactContentTypeSchema = Schema.Literals([
   "text/plain",
 ] as const);
 
+export const LocalRunArtifactIdSchema = Schema.Literals([
+  "input",
+  "worker-plan",
+  "plan-review",
+  "worker-log",
+  "worker-result",
+  "verification-result",
+  "evidence-review",
+  "report",
+  "report-json",
+  "events",
+  "snapshots",
+] as const).annotate({ identifier: "LocalRunArtifactId" });
+
 export const ServerHostSchema = Schema.Literal("127.0.0.1");
 
 export class LocalRunReadDiagnosticDto extends Schema.Class<LocalRunReadDiagnosticDto>(
@@ -78,52 +109,10 @@ export class LocalRunReadDiagnosticDto extends Schema.Class<LocalRunReadDiagnost
   runId: Schema.optionalKey(RunIdSchema),
 }) {}
 
-class BadRequestDiagnosticDto extends Schema.Class<BadRequestDiagnosticDto>(
-  "BadRequestDiagnosticDto",
-)({
-  ...diagnosticFields,
-  code: BadRequestDiagnosticCodeSchema,
-}) {}
-
-class NotFoundDiagnosticDto extends Schema.Class<NotFoundDiagnosticDto>(
-  "NotFoundDiagnosticDto",
-)({
-  ...diagnosticFields,
-  code: NotFoundDiagnosticCodeSchema,
-}) {}
-
-class MethodNotAllowedDiagnosticDto extends Schema.Class<MethodNotAllowedDiagnosticDto>(
-  "MethodNotAllowedDiagnosticDto",
-)({
-  ...diagnosticFields,
-  code: MethodNotAllowedDiagnosticCodeSchema,
-}) {}
-
-class ConflictDiagnosticDto extends Schema.Class<ConflictDiagnosticDto>(
-  "ConflictDiagnosticDto",
-)({
-  ...diagnosticFields,
-  code: ConflictDiagnosticCodeSchema,
-}) {}
-
-class UnprocessableDiagnosticDto extends Schema.Class<UnprocessableDiagnosticDto>(
-  "UnprocessableDiagnosticDto",
-)({
-  ...diagnosticFields,
-  code: UnprocessableDiagnosticCodeSchema,
-}) {}
-
-class InternalServerDiagnosticDto extends Schema.Class<InternalServerDiagnosticDto>(
-  "InternalServerDiagnosticDto",
-)({
-  ...diagnosticFields,
-  code: InternalServerDiagnosticCodeSchema,
-}) {}
-
 export class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
   "LocalRunSummaryDto",
 )({
-  artifacts: Schema.Array(Schema.String),
+  artifacts: Schema.Array(LocalRunArtifactIdSchema),
   createdAt: Schema.NonEmptyString,
   eventCount: Schema.Number.pipe(
     Schema.check(Schema.isInt({ identifier: "EventCount" })),
@@ -152,7 +141,7 @@ export class LocalRunEventsDto extends Schema.Class<LocalRunEventsDto>(
 export class LocalRunArtifactDto extends Schema.Class<LocalRunArtifactDto>(
   "LocalRunArtifactDto",
 )({
-  artifactName: Schema.String,
+  artifactName: LocalRunArtifactIdSchema,
   body: Schema.String,
   contentType: LocalRunArtifactContentTypeSchema,
   runId: RunIdSchema,
@@ -197,50 +186,57 @@ export class LocalRunArtifactSuccessEnvelope extends Schema.Class<LocalRunArtifa
 export class LocalRunApiErrorEnvelope extends Schema.Class<LocalRunApiErrorEnvelope>(
   "LocalRunApiErrorEnvelope",
 )({
-  error: LocalRunReadDiagnosticDto,
-  status: Schema.Literal("error"),
+  ...diagnosticFields,
+  code: LocalRunReadDiagnosticCodeSchema,
+  status: LocalRunApiErrorStatusSchema,
 }) {}
 
 export class LocalRunApiBadRequest extends Schema.Class<LocalRunApiBadRequest>(
   "LocalRunApiBadRequest",
 )({
-  error: BadRequestDiagnosticDto,
-  status: Schema.Literal("error"),
+  ...diagnosticFields,
+  code: BadRequestDiagnosticCodeSchema,
+  status: Schema.Literal(400),
 }) {}
 
 export class LocalRunApiNotFound extends Schema.Class<LocalRunApiNotFound>(
   "LocalRunApiNotFound",
 )({
-  error: NotFoundDiagnosticDto,
-  status: Schema.Literal("error"),
+  ...diagnosticFields,
+  code: NotFoundDiagnosticCodeSchema,
+  status: Schema.Literal(404),
 }) {}
 
 export class LocalRunApiMethodNotAllowed extends Schema.Class<LocalRunApiMethodNotAllowed>(
   "LocalRunApiMethodNotAllowed",
 )({
-  error: MethodNotAllowedDiagnosticDto,
-  status: Schema.Literal("error"),
+  ...diagnosticFields,
+  code: MethodNotAllowedDiagnosticCodeSchema,
+  status: Schema.Literal(405),
 }) {}
 
 export class LocalRunApiConflict extends Schema.Class<LocalRunApiConflict>(
   "LocalRunApiConflict",
 )({
-  error: ConflictDiagnosticDto,
-  status: Schema.Literal("error"),
+  ...diagnosticFields,
+  code: ConflictDiagnosticCodeSchema,
+  status: Schema.Literal(409),
 }) {}
 
 export class LocalRunApiUnprocessable extends Schema.Class<LocalRunApiUnprocessable>(
   "LocalRunApiUnprocessable",
 )({
-  error: UnprocessableDiagnosticDto,
-  status: Schema.Literal("error"),
+  ...diagnosticFields,
+  code: UnprocessableDiagnosticCodeSchema,
+  status: Schema.Literal(422),
 }) {}
 
 export class LocalRunApiInternalServerError extends Schema.Class<LocalRunApiInternalServerError>(
   "LocalRunApiInternalServerError",
 )({
-  error: InternalServerDiagnosticDto,
-  status: Schema.Literal("error"),
+  ...diagnosticFields,
+  code: InternalServerDiagnosticCodeSchema,
+  status: Schema.Literal(500),
 }) {}
 
 export const LocalRunListResponse = Schema.Union([
@@ -324,6 +320,8 @@ export class CreateRunRequest extends Schema.Class<CreateRunRequest>(
 )({
   specMarkdown: Schema.NonEmptyString,
   title: Schema.optionalKey(Schema.NonEmptyString),
+}, {
+  parseOptions: { onExcessProperty: "error" },
 }) {}
 
 export class CreateRunAcceptedResponse extends Schema.Class<CreateRunAcceptedResponse>(
@@ -396,7 +394,7 @@ export const RunsGroup = HttpApiGroup.make("runs")
     HttpApiEndpoint.get("getRunArtifact", "/runs/:runId/artifacts/:artifactId", {
       error: LocalRunReadErrorResponse,
       params: {
-        artifactId: Schema.String,
+        artifactId: LocalRunArtifactIdSchema,
         runId: RunIdSchema,
       },
       success: LocalRunArtifactSuccessEnvelope,

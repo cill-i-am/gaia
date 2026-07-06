@@ -204,7 +204,7 @@ function prLoopBlockers(
   if (
     prLoop.status === "ready" &&
     prLoop.nextAction === "ready-for-merge-decision" &&
-    prLoop.checksStatus === "green"
+    mergeDecisionAcceptsChecksStatus(prLoop.checksStatus)
   ) {
     return [];
   }
@@ -217,6 +217,12 @@ function prLoopBlockers(
       summary: `PR-loop status is '${prLoop.status}' with checks '${prLoop.checksStatus}' and next action '${prLoop.nextAction}'.`,
     }),
   ];
+}
+
+function mergeDecisionAcceptsChecksStatus(
+  status: GitHubPrLoopState["checksStatus"],
+) {
+  return status === "green" || status === "no-checks-configured";
 }
 
 function reviewerEvidenceBlockers(paths: RunPaths) {

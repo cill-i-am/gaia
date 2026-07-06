@@ -63,7 +63,20 @@ describe("local run read api", () => {
         assert.strictEqual(run.runId, summary.runId);
         assert.strictEqual(run.status, "completed");
         assert.isAbove(run.eventCount, 0);
-        assert.include(run.artifacts, "report.json");
+        assert.includeMembers(run.artifacts, [
+          "input",
+          "worker-plan",
+          "plan-review",
+          "worker-log",
+          "worker-result",
+          "verification-result",
+          "evidence-review",
+          "report",
+          "report-json",
+          "events",
+          "snapshots",
+        ]);
+        assert.notInclude(run.artifacts, "report.json");
         assert.strictEqual(events.runId, summary.runId);
         assert.strictEqual(events.events.length, run.eventCount);
         assert.strictEqual(events.events[0]?.type, "RUN_CREATED");
@@ -85,7 +98,7 @@ describe("local run read api", () => {
       }),
     );
 
-    it.effect("reads allowlisted text artifacts and rejects arbitrary paths", () =>
+    it.effect("reads logical artifacts and rejects arbitrary paths", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-read-api-" });
@@ -95,7 +108,12 @@ describe("local run read api", () => {
 
         const report = yield* readLocalRunArtifact(
           summary.runId,
-          "report.json",
+          "report-json",
+          { rootDirectory: cwd },
+        );
+        const events = yield* readLocalRunArtifact(
+          summary.runId,
+          "events",
           { rootDirectory: cwd },
         );
         const rejected = yield* Effect.flip(
@@ -104,9 +122,12 @@ describe("local run read api", () => {
           }),
         );
 
-        assert.strictEqual(report.artifactName, "report.json");
+        assert.strictEqual(report.artifactName, "report-json");
         assert.strictEqual(report.contentType, "application/json");
         assert.include(report.body, summary.runId);
+        assert.strictEqual(events.artifactName, "events");
+        assert.strictEqual(events.contentType, "application/json");
+        assert.include(events.body, "\"type\":\"RUN_CREATED\"");
         assert.deepEqual(rejected, {
           artifactName: "../events.jsonl",
           code: "ArtifactNotAllowed",

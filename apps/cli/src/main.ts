@@ -59,10 +59,13 @@ import {
 } from "@gaia/runtime";
 import { runLocalGaiaServer } from "@gaia/server";
 import {
+  createRunFromServer,
+  ensureLocalServer,
   readLocalRunArtifactFromServer,
   readLocalRunEventsFromServer,
   listRunsFromServer,
   statusRunFromServer,
+  type ServerRunAcceptedSummary,
 } from "./server-read-client.js";
 import path from "node:path";
 import * as Console from "effect/Console";
@@ -108,6 +111,11 @@ const serverUrl = Flag.string("server-url").pipe(
     "Opt into read-only CLI reads through an already-running local Gaia API server.",
   ),
   Flag.optional,
+);
+const serverMode = Flag.boolean("server").pipe(
+  Flag.withDescription(
+    "Opt into the workspace local Gaia server, autostarting it when needed.",
+  ),
 );
 const serverPort = Flag.string("port").pipe(
   Flag.withDescription("Bind the foreground local Gaia server to an explicit loopback port."),
@@ -197,6 +205,7 @@ const run = Command.make("run", {
   requireBrowserEvidence,
   reviewer,
   runProfile,
+  serverMode,
   skillManifest,
   specFile,
   workspaceSource,
@@ -212,6 +221,7 @@ const run = Command.make("run", {
       requireBrowserEvidence,
       reviewer,
       runProfile,
+      serverMode,
       skillManifest,
       specFile,
       workspaceSource,
@@ -223,30 +233,27 @@ const run = Command.make("run", {
       codexTimeoutMs,
     }) =>
       renderEffect(
-        runSpecFile(
-          resolveInvocationPath(specFile),
-          workflowOptions({
-            harness,
-            harnessArgs: harnessArg,
-            harnessCommand,
-            codexArgs: codexArg,
-            codexCommand,
-            codexModel,
-            codexProfile,
-            codexSandbox,
-            codexTimeoutMs,
-            browserEvidenceRequirement: requireBrowserEvidence
-              ? "required"
-              : undefined,
-            browserEvidenceTargetUrl: browserRunTargetUrl,
-            runProfile,
-            skillManifest,
-            reviewer,
-            workspaceSource,
-          }),
-        ),
+        runCommand({
+          browserRunTargetUrl,
+          codexArg,
+          codexCommand,
+          codexModel,
+          codexProfile,
+          codexSandbox,
+          codexTimeoutMs,
+          harness,
+          harnessArg,
+          harnessCommand,
+          requireBrowserEvidence,
+          reviewer,
+          runProfile,
+          serverMode,
+          skillManifest,
+          specFile,
+          workspaceSource,
+        }),
         json,
-        renderSummary,
+        renderRunCommandSummary,
       ),
   ),
 );
@@ -261,14 +268,16 @@ const resume = Command.make("resume", { json, runId }).pipe(
 const status = Command.make("status", {
   json,
   runId: optionalRunId,
+  serverMode,
   serverUrl,
 }).pipe(
   Command.withDescription("Show the latest run status or a specific run status."),
-  Command.withHandler(({ json, runId, serverUrl }) =>
+  Command.withHandler(({ json, runId, serverMode, serverUrl }) =>
     renderEffect(
       readStatus({
         ...serverUrlInput(Option.getOrUndefined(serverUrl)),
         ...(Option.isSome(runId) ? { runId: runId.value } : {}),
+        serverMode,
       }),
       json,
       renderSummary,
@@ -287,24 +296,28 @@ const doctorCommand = Command.make("doctor", { json }).pipe(
   ),
 );
 
-const list = Command.make("list", { json, serverUrl }).pipe(
+const list = Command.make("list", { json, serverMode, serverUrl }).pipe(
   Command.withDescription("List known Gaia runs."),
-  Command.withHandler(({ json, serverUrl }) =>
+  Command.withHandler(({ json, serverMode, serverUrl }) =>
     renderEffect(
-      readList(serverUrlInput(Option.getOrUndefined(serverUrl))),
+      readList({
+        ...serverUrlInput(Option.getOrUndefined(serverUrl)),
+        serverMode,
+      }),
       json,
       renderRunList,
     ),
   ),
 );
 
-const events = Command.make("events", { json, runId, serverUrl }).pipe(
+const events = Command.make("events", { json, runId, serverMode, serverUrl }).pipe(
   Command.withDescription("Read a Gaia run's event log."),
-  Command.withHandler(({ json, runId, serverUrl }) =>
+  Command.withHandler(({ json, runId, serverMode, serverUrl }) =>
     renderEffect(
       readEvents({
         ...serverUrlInput(Option.getOrUndefined(serverUrl)),
         runId,
+        serverMode,
       }),
       json,
       renderRunEvents,
@@ -814,44 +827,168 @@ function parseServerPortFlag(
   return Effect.succeed<number | undefined>(parsed);
 }
 
+type RunCommandSummary = CommandSummary | ServerRunAcceptedSummary;
+
+function runCommand(input: {
+  readonly browserRunTargetUrl: Option.Option<string>;
+  readonly codexArg: ReadonlyArray<string>;
+  readonly codexCommand: Option.Option<string>;
+  readonly codexModel: Option.Option<string>;
+  readonly codexProfile: Option.Option<string>;
+  readonly codexSandbox: Option.Option<string>;
+  readonly codexTimeoutMs: Option.Option<string>;
+  readonly harness: Option.Option<string>;
+  readonly harnessArg: ReadonlyArray<string>;
+  readonly harnessCommand: Option.Option<string>;
+  readonly requireBrowserEvidence: boolean;
+  readonly reviewer: Option.Option<string>;
+  readonly runProfile: Option.Option<string>;
+  readonly serverMode: boolean;
+  readonly skillManifest: Option.Option<string>;
+  readonly specFile: string;
+  readonly workspaceSource: Option.Option<string>;
+}) {
+  const specPath = resolveInvocationPath(input.specFile);
+  if (input.serverMode) {
+    return Effect.gen(function* () {
+      yield* validateServerRunOptions(input);
+      const serverUrl = yield* serverUrlFor({ serverMode: true });
+      return yield* createRunFromServer({
+        rootDirectory: invocationRoot(),
+        serverUrl,
+        specPath,
+      });
+    });
+  }
+
+  return runSpecFile(
+    specPath,
+    workflowOptions({
+      harness: input.harness,
+      harnessArgs: input.harnessArg,
+      harnessCommand: input.harnessCommand,
+      codexArgs: input.codexArg,
+      codexCommand: input.codexCommand,
+      codexModel: input.codexModel,
+      codexProfile: input.codexProfile,
+      codexSandbox: input.codexSandbox,
+      codexTimeoutMs: input.codexTimeoutMs,
+      browserEvidenceRequirement: input.requireBrowserEvidence
+        ? "required"
+        : undefined,
+      browserEvidenceTargetUrl: input.browserRunTargetUrl,
+      runProfile: input.runProfile,
+      skillManifest: input.skillManifest,
+      reviewer: input.reviewer,
+      workspaceSource: input.workspaceSource,
+    }),
+  );
+}
+
+function validateServerRunOptions(input: {
+  readonly browserRunTargetUrl: Option.Option<string>;
+  readonly codexArg: ReadonlyArray<string>;
+  readonly codexCommand: Option.Option<string>;
+  readonly codexModel: Option.Option<string>;
+  readonly codexProfile: Option.Option<string>;
+  readonly codexSandbox: Option.Option<string>;
+  readonly codexTimeoutMs: Option.Option<string>;
+  readonly harness: Option.Option<string>;
+  readonly harnessArg: ReadonlyArray<string>;
+  readonly harnessCommand: Option.Option<string>;
+  readonly requireBrowserEvidence: boolean;
+  readonly reviewer: Option.Option<string>;
+  readonly runProfile: Option.Option<string>;
+  readonly skillManifest: Option.Option<string>;
+  readonly workspaceSource: Option.Option<string>;
+}) {
+  const unsupported = [
+    optionName(input.browserRunTargetUrl, "--browser-url"),
+    optionName(input.codexCommand, "--codex-command"),
+    optionName(input.codexModel, "--codex-model"),
+    optionName(input.codexProfile, "--codex-profile"),
+    optionName(input.codexSandbox, "--codex-sandbox"),
+    optionName(input.codexTimeoutMs, "--codex-timeout-ms"),
+    optionName(input.harness, "--harness"),
+    optionName(input.harnessCommand, "--harness-command"),
+    optionName(input.reviewer, "--reviewer"),
+    optionName(input.runProfile, "--profile"),
+    optionName(input.skillManifest, "--skill-manifest"),
+    optionName(input.workspaceSource, "--workspace-source"),
+    input.codexArg.length > 0 ? "--codex-arg" : undefined,
+    input.harnessArg.length > 0 ? "--harness-arg" : undefined,
+    input.requireBrowserEvidence ? "--require-browser-evidence" : undefined,
+  ].filter((name): name is string => name !== undefined);
+
+  if (unsupported.length === 0) {
+    return Effect.void;
+  }
+
+  return Effect.fail(
+    makeRuntimeError({
+      code: "UnsupportedServerRunOption",
+      message: `--server run mode only accepts a Markdown spec path and --json in this slice. Unsupported flags: ${unsupported.join(", ")}.`,
+      recoverable: false,
+    }),
+  );
+}
+
+function optionName(option: Option.Option<string>, name: string) {
+  return Option.isSome(option) ? name : undefined;
+}
+
 function readStatus(input: {
   readonly runId?: string;
+  readonly serverMode: boolean;
   readonly serverUrl?: string;
 }) {
-  if (input.serverUrl === undefined) {
+  if (!input.serverMode && input.serverUrl === undefined) {
     return statusRun(input.runId, workflowOptions());
   }
 
-  return statusRunFromServer({
-    rootDirectory: invocationRoot(),
-    serverUrl: input.serverUrl,
-    ...(input.runId === undefined ? {} : { runId: input.runId }),
-  });
+  return serverUrlFor(input).pipe(
+    Effect.flatMap((serverUrl) =>
+      statusRunFromServer({
+        rootDirectory: invocationRoot(),
+        serverUrl,
+        ...(input.runId === undefined ? {} : { runId: input.runId }),
+      }),
+    ),
+  );
 }
 
-function readList(input: { readonly serverUrl?: string }) {
-  if (input.serverUrl === undefined) {
+function readList(input: { readonly serverMode: boolean; readonly serverUrl?: string }) {
+  if (!input.serverMode && input.serverUrl === undefined) {
     return listRuns(workflowOptions());
   }
 
-  return listRunsFromServer({
-    rootDirectory: invocationRoot(),
-    serverUrl: input.serverUrl,
-  });
+  return serverUrlFor(input).pipe(
+    Effect.flatMap((serverUrl) =>
+      listRunsFromServer({
+        rootDirectory: invocationRoot(),
+        serverUrl,
+      }),
+    ),
+  );
 }
 
 function readEvents(input: {
   readonly runId: string;
+  readonly serverMode: boolean;
   readonly serverUrl?: string;
 }) {
-  if (input.serverUrl === undefined) {
+  if (!input.serverMode && input.serverUrl === undefined) {
     return readLocalRunEvents(input.runId, workflowOptions());
   }
 
-  return readLocalRunEventsFromServer({
-    runId: input.runId,
-    serverUrl: input.serverUrl,
-  });
+  return serverUrlFor(input).pipe(
+    Effect.flatMap((serverUrl) =>
+      readLocalRunEventsFromServer({
+        runId: input.runId,
+        serverUrl,
+      }),
+    ),
+  );
 }
 
 function readArtifact(input: {
@@ -872,6 +1009,27 @@ function readArtifact(input: {
     runId: input.runId,
     serverUrl: input.serverUrl,
   });
+}
+
+function serverUrlFor(input: {
+  readonly serverMode: boolean;
+  readonly serverUrl?: string;
+}) {
+  if (input.serverUrl !== undefined) {
+    return Effect.succeed(input.serverUrl);
+  }
+
+  if (input.serverMode) {
+    return ensureLocalServer({ rootDirectory: invocationRoot() });
+  }
+
+  return Effect.fail(
+    makeRuntimeError({
+      code: "ServerModeDisabled",
+      message: "Server mode was not requested.",
+      recoverable: false,
+    }),
+  );
 }
 
 function renderEffect<A>(
@@ -974,6 +1132,23 @@ function renderSummary(summary: CommandSummary) {
   return [...lines, harnessProgressLine, reportLine]
     .filter((line): line is string => line !== undefined)
     .join("\n");
+}
+
+function renderRunCommandSummary(summary: RunCommandSummary) {
+  if (summary.status === "accepted") {
+    return renderServerRunAccepted(summary);
+  }
+
+  return renderSummary(summary);
+}
+
+function renderServerRunAccepted(summary: ServerRunAcceptedSummary) {
+  return [
+    `accepted: ${summary.runId}`,
+    `server: ${summary.serverUrl}`,
+    `run: ${summary.urls.run}`,
+    `events: ${summary.urls.events}`,
+  ].join("\n");
 }
 
 function renderRunList(summaries: ReadonlyArray<CommandSummary>) {
