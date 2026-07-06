@@ -80,6 +80,7 @@ import {
   type GaiaReviewer,
 } from "./reviewer.js";
 import { parseReviewerSessionEvidenceJson } from "./reviewer-session-evidence.js";
+import { parseReviewerFindingsJson } from "./reviewer-findings.js";
 import { parseWorkerPlanJson } from "./worker-plan.js";
 import {
   localRunProfileSource,
@@ -519,6 +520,231 @@ describe("runtime workflows", () => {
           workerPlan.verificationChecks.map((check) => check.command).join("\n"),
           "POST /runs",
         );
+      }),
+    );
+
+    it.effect("surfaces relevant reviewer findings as historical risk notes", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const source = `${cwd}/source`;
+        const specPath = `${cwd}/spec.md`;
+        yield* writeReferencePlanningFixture(source);
+        yield* writeGaia12ReviewerFindingsFixture(source);
+        yield* fs.writeFileString(
+          specPath,
+          [
+            "---",
+            "title: Future server API planning",
+            "---",
+            "",
+            "Goal:",
+            "- Plan a server/API-like slice that touches Effect HttpApi routes, runtime run reads, package manifests, and CLI server smoke.",
+            "",
+            "Acceptance criteria:",
+            "- Server API contracts and non-GET behavior stay covered.",
+            "- Runtime metadata cleanup timing remains explicit before handoff.",
+            "",
+            "Likely touched surfaces:",
+            "- apps/server/src/api.ts",
+            "- apps/server/src/main.ts",
+            "- apps/cli/src/main.ts",
+            "- packages/runtime/src/run-read-api.ts",
+            "- packages/core/src/server-api.ts",
+            "- package.json",
+            "",
+            "Verification:",
+            "- Focused server API tests pass.",
+            "- Built server binary smoke passes.",
+            "- Metadata cleanup is verified before deleting raw .gaia state.",
+            "",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          rootDirectory: cwd,
+          workspaceSource: localDirectoryWorkspaceSource(source),
+        });
+        const workerPlan = parseWorkerPlanJson(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/worker-plan.json`),
+          ),
+        );
+        const reviewerFindings = parseReviewerFindingsJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/reviewer-findings.json`,
+            ),
+          ),
+        );
+        const workerPlanMarkdown = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-plan.md`,
+        );
+        const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+        const readArtifact = yield* readLocalRunArtifact(
+          summary.runId,
+          "reviewer-findings",
+          { rootDirectory: cwd },
+        );
+        const riskTitles = workerPlan.historicalRiskNotes.map((note) => note.title);
+        const verificationPrompts = workerPlan.historicalRiskNotes.flatMap(
+          (note) => note.verificationPrompts,
+        );
+
+        assert.includeMembers(riskTitles, [
+          "Built server binary smoke was missed",
+          "Package-barrel import drag hid runtime coupling",
+          "Non-GET behavior needed explicit coverage",
+          "Startup timeouts needed race-safe tests",
+          "Metadata cleanup timing needed finalization",
+        ]);
+        assert.strictEqual(
+          workerPlan.historicalRiskNotes.every(
+            (note) => note.status === "historical-risk",
+          ),
+          true,
+        );
+        assert.includeMembers(verificationPrompts, [
+          "Smoke the built server binary, not only TypeScript source paths.",
+          "Assert non-GET methods return the expected API error shape.",
+          "Verify cleanup timing before deleting raw .gaia run state.",
+        ]);
+        assert.strictEqual(reviewerFindings.matchedRiskNotes.length, 5);
+        assert.isAtLeast(reviewerFindings.relevanceInputs.length, 1);
+        assert.include(
+          reviewerFindings.relevanceInputs.map((input) => input.value),
+          "apps/server/src/api.ts",
+        );
+        assert.include(workerPlanMarkdown, "## Historical Reviewer Risk Notes");
+        assert.include(workerPlanMarkdown, "Historical risk, not current blocker");
+        assert.include(workerPlanMarkdown, "historical-risk-not-current-blocker");
+        assert.include(workerPlanMarkdown, "Source classification: historical-risk");
+        assert.include(workerPlanMarkdown, "https://github.com/cill-i-am/gaia/pull/15");
+        assert.include(reportMarkdown, "## Historical Reviewer Risk Notes");
+        assert.include(reportMarkdown, "historical-risk-not-current-blocker");
+        assert.include(reportMarkdown, "reviewer-findings.json");
+        assert.include(reportMarkdown, "Built server binary smoke was missed");
+        assert.strictEqual(readArtifact.contentType, "application/json");
+        assert.include(readArtifact.body, '"matchedRiskNotes"');
+      }),
+    );
+
+    it.effect("filters irrelevant reviewer findings out of docs-only plans", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const source = `${cwd}/source`;
+        const specPath = `${cwd}/spec.md`;
+        yield* writeReferencePlanningFixture(source);
+        yield* writeGaia12ReviewerFindingsFixture(source);
+        yield* fs.writeFileString(
+          specPath,
+          [
+            "---",
+            "title: Reviewer template wording",
+            "---",
+            "",
+            "Goal:",
+            "- Update docs/agents reviewer template copy.",
+            "",
+            "Likely touched surfaces:",
+            "- docs/agents/reviewer-thread-template.md",
+            "",
+            "Acceptance criteria:",
+            "- Template wording remains source-backed.",
+            "- No runtime or server behavior changes.",
+            "",
+            "Verification:",
+            "- Review the docs/template diff.",
+            "",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          rootDirectory: cwd,
+          workspaceSource: localDirectoryWorkspaceSource(source),
+        });
+        const workerPlan = parseWorkerPlanJson(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/worker-plan.json`),
+          ),
+        );
+        const reviewerFindings = parseReviewerFindingsJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/reviewer-findings.json`,
+            ),
+          ),
+        );
+        const workerPlanMarkdown = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-plan.md`,
+        );
+
+        assert.strictEqual(workerPlan.historicalRiskNotes.length, 0);
+        assert.isAtLeast(reviewerFindings.relevanceInputs.length, 1);
+        assert.strictEqual(reviewerFindings.suppliedFindings.length, 5);
+        assert.strictEqual(reviewerFindings.matchedRiskNotes.length, 0);
+        assert.include(workerPlanMarkdown, "## Historical Reviewer Risk Notes");
+        assert.include(
+          workerPlanMarkdown,
+          "No supplied reviewer findings matched this plan's touched surfaces.",
+        );
+      }),
+    );
+
+    it.effect("ignores source-less supplied reviewer findings", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const source = `${cwd}/source`;
+        const specPath = `${cwd}/spec.md`;
+        yield* writeReferencePlanningFixture(source);
+        yield* writeSourceLessReviewerFindingsFixture(source);
+        yield* fs.writeFileString(
+          specPath,
+          [
+            "---",
+            "title: Future server API planning",
+            "---",
+            "",
+            "Goal:",
+            "- Plan a server/API-like slice that touches Effect HttpApi routes and runtime run reads.",
+            "",
+            "Likely touched surfaces:",
+            "- apps/server/src/api.ts",
+            "- packages/runtime/src/run-read-api.ts",
+            "",
+            "Verification:",
+            "- Built server binary smoke passes.",
+            "",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          rootDirectory: cwd,
+          workspaceSource: localDirectoryWorkspaceSource(source),
+        });
+        const workerPlan = parseWorkerPlanJson(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/worker-plan.json`),
+          ),
+        );
+        const reviewerFindings = parseReviewerFindingsJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/reviewer-findings.json`,
+            ),
+          ),
+        );
+        const workerPlanMarkdown = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-plan.md`,
+        );
+
+        assert.strictEqual(reviewerFindings.suppliedFindings.length, 0);
+        assert.strictEqual(reviewerFindings.matchedRiskNotes.length, 0);
+        assert.strictEqual(workerPlan.historicalRiskNotes.length, 0);
+        assert.notInclude(workerPlanMarkdown, "Source-less server smoke finding");
+        assert.notInclude(workerPlanMarkdown, "Sources:\n- none");
       }),
     );
 
@@ -5840,6 +6066,144 @@ function writeReferencePlanningFixture(root: string) {
       }
       yield* fs.writeFileString(`${root}/${relativePath}`, `${body}\n`);
     }
+  });
+}
+
+function writeGaia12ReviewerFindingsFixture(root: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const findings = {
+      findings: [
+        {
+          id: "gaia-12-built-server-binary",
+          severity: "warning",
+          sourceStatus: "historical-risk",
+          sources: [
+            {
+              label: "GAIA-12 accepted PR",
+              pullRequest: "#15",
+              url: "https://github.com/cill-i-am/gaia/pull/15",
+            },
+          ],
+          summary:
+            "The local server lane needed a built server binary smoke because source-level tests did not prove package bin resolution.",
+          surfaces: ["apps/server", "server api", "package manifest"],
+          title: "Built server binary smoke was missed",
+          verificationPrompts: [
+            "Smoke the built server binary, not only TypeScript source paths.",
+          ],
+        },
+        {
+          id: "gaia-12-package-barrel-import-drag",
+          severity: "warning",
+          sourceStatus: "historical-risk",
+          sources: [
+            {
+              artifactPath: "plan-review.json",
+              label: "GAIA-12 reviewer artifact",
+              url: "https://github.com/cill-i-am/gaia/pull/15#discussion_r1",
+            },
+          ],
+          summary:
+            "Package-barrel imports pulled more runtime dependencies than the server entrypoint needed.",
+          surfaces: ["packages/runtime", "package barrel", "apps/server"],
+          title: "Package-barrel import drag hid runtime coupling",
+          verificationPrompts: [
+            "Check server entrypoint imports avoid unnecessary runtime barrel drag.",
+          ],
+        },
+        {
+          id: "gaia-12-non-get-behavior",
+          severity: "warning",
+          sourceStatus: "historical-risk",
+          sources: [
+            {
+              label: "GAIA-12 accepted PR",
+              pullRequest: "#15",
+              url: "https://github.com/cill-i-am/gaia/pull/15",
+            },
+          ],
+          summary:
+            "Reviewer pressure added non-GET route behavior coverage for server API endpoints.",
+          surfaces: ["server api", "http route", "non-get", "packages/core"],
+          title: "Non-GET behavior needed explicit coverage",
+          verificationPrompts: [
+            "Assert non-GET methods return the expected API error shape.",
+          ],
+        },
+        {
+          id: "gaia-12-startup-timeouts",
+          severity: "warning",
+          sourceStatus: "historical-risk",
+          sources: [
+            {
+              label: "GAIA-12 accepted PR",
+              pullRequest: "#15",
+              url: "https://github.com/cill-i-am/gaia/pull/15",
+            },
+          ],
+          summary:
+            "Startup tests needed timeout/race behavior coverage before server handoff.",
+          surfaces: ["apps/server", "startup timeout", "server main"],
+          title: "Startup timeouts needed race-safe tests",
+          verificationPrompts: [
+            "Exercise startup timeout and race behavior around the server process.",
+          ],
+        },
+        {
+          id: "gaia-12-metadata-cleanup-timing",
+          severity: "warning",
+          sourceStatus: "historical-risk",
+          sources: [
+            {
+              artifactPath: "remediation-spec.md",
+              label: "GAIA-12 remediation notes",
+              url: "https://linear.app/tskr/issue/GAIA-12/migrate-local-server-foundation-to-effect-httpapi-and-workspace",
+            },
+          ],
+          summary:
+            "Metadata cleanup timing had to be finalized so promoted evidence was preserved before raw run state cleanup.",
+          surfaces: ["metadata cleanup", "runtime", ".gaia"],
+          title: "Metadata cleanup timing needed finalization",
+          verificationPrompts: [
+            "Verify cleanup timing before deleting raw .gaia run state.",
+          ],
+        },
+      ],
+      version: 1,
+    };
+    yield* fs.writeFileString(
+      `${root}/reviewer-findings.json`,
+      `${JSON.stringify(findings, null, 2)}\n`,
+    );
+  });
+}
+
+function writeSourceLessReviewerFindingsFixture(root: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const findings = {
+      findings: [
+        {
+          id: "source-less-server-smoke",
+          severity: "warning",
+          sourceStatus: "historical-risk",
+          sources: [],
+          summary:
+            "A server/API plan should not render this source-less finding.",
+          surfaces: ["apps/server/src/api.ts", "built server binary"],
+          title: "Source-less server smoke finding",
+          verificationPrompts: [
+            "This prompt must not appear because the finding has no source.",
+          ],
+        },
+      ],
+      version: 1,
+    };
+    yield* fs.writeFileString(
+      `${root}/reviewer-findings.json`,
+      `${JSON.stringify(findings, null, 2)}\n`,
+    );
   });
 }
 

@@ -199,6 +199,20 @@ export {
   type LocalRunSummary,
 } from "./run-read-api.js";
 export {
+  ReviewerFindingInput,
+  ReviewerFindingRelevanceInput,
+  ReviewerFindingRelevanceInputKindSchema,
+  ReviewerFindingSeveritySchema,
+  ReviewerFindingSource,
+  ReviewerFindingSourceStatusSchema,
+  ReviewerFindings,
+  WorkerPlanHistoricalRiskNote,
+  markdownHistoricalRiskNotes,
+  parseReviewerFindingsJson,
+  type ReviewerFindingSeverity,
+  type ReviewerFindingSourceStatus,
+} from "./reviewer-findings.js";
+export {
   ReviewFinding,
   ReviewResult,
   ReviewRunRequest,

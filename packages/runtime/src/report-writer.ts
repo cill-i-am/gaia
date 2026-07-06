@@ -17,6 +17,10 @@ import {
   type WorkerPlanInferredRecommendations,
 } from "./skill-review-inference.js";
 import {
+  markdownHistoricalRiskNotes,
+  type WorkerPlanHistoricalRiskNote,
+} from "./reviewer-findings.js";
+import {
   classifyDomainReferences,
   type WorkerPlanDomainReference,
 } from "./worker-plan.js";
@@ -26,6 +30,7 @@ const encodeRunReport = Schema.encodeSync(RunReportJson);
 
 export function writeReport(input: {
   readonly inferredRecommendations: WorkerPlanInferredRecommendations;
+  readonly historicalRiskNotes: ReadonlyArray<WorkerPlanHistoricalRiskNote>;
   readonly paths: RunPaths;
   readonly evidencePromotion?: EvidencePromotion | undefined;
   readonly factoryRetro?: FactoryRetro | undefined;
@@ -49,6 +54,7 @@ export function writeReport(input: {
         "preview-deployment.json",
         "worker-plan.md",
         "worker-plan.json",
+        "reviewer-findings.json",
         "plan-review.md",
         "plan-review.json",
         "plan-reviewer-session.json",
@@ -84,6 +90,7 @@ export function writeReport(input: {
         input.evidencePromotion,
         input.factoryRetro,
         input.inferredRecommendations,
+        input.historicalRiskNotes,
         classifyDomainReferences(input.spec.body),
       ),
     );
@@ -102,6 +109,7 @@ function markdownReport(
   evidencePromotion: EvidencePromotion | undefined,
   factoryRetro: FactoryRetro | undefined,
   inferredRecommendations: WorkerPlanInferredRecommendations,
+  historicalRiskNotes: ReadonlyArray<WorkerPlanHistoricalRiskNote>,
   domainReferences: ReadonlyArray<WorkerPlanDomainReference>,
 ): string {
   const artifacts = report.artifacts
@@ -118,6 +126,11 @@ function markdownReport(
     "Inferred recommendations are additive planning evidence and do not replace explicit manifests or orchestrator judgment.",
     "",
     markdownInferredRecommendations(inferredRecommendations),
+  ].join("\n");
+  const historicalRiskSection = [
+    "Reviewer findings are supplied planning evidence. Matched notes are historical-risk-not-current-blocker prompts unless current evidence proves a blocker.",
+    "",
+    markdownHistoricalRiskNotes(historicalRiskNotes),
   ].join("\n");
 
   const retrospectiveSection =
@@ -212,6 +225,10 @@ ${selectedSkills}
 ## Inferred Recommendations
 
 ${inferredRecommendationSection}
+
+## Historical Reviewer Risk Notes
+
+${historicalRiskSection}
 
 ## Dogfood Retrospective
 

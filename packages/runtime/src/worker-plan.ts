@@ -4,6 +4,11 @@ import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { HarnessNameSchema, type HarnessName } from "./harness.js";
 import type { RunPaths } from "./paths.js";
 import {
+  WorkerPlanHistoricalRiskNote,
+  markdownHistoricalRiskNotes,
+  writeReviewerFindings,
+} from "./reviewer-findings.js";
+import {
   WorkerPlanInferredRecommendations,
   inferSkillReviewStack,
   markdownInferredRecommendations,
@@ -21,6 +26,7 @@ import {
 export {
   WorkerPlanAgentInstruction,
   WorkerPlanInferredRecommendations,
+  WorkerPlanHistoricalRiskNote,
   WorkerPlanLikelyFile,
   WorkerPlanPlanningContext,
   WorkerPlanSimilarTest,
@@ -56,6 +62,7 @@ export class WorkerPlan extends Schema.Class<WorkerPlan>("WorkerPlan")({
   domainReferences: Schema.Array(WorkerPlanDomainReference),
   expectedArtifacts: Schema.Array(Schema.NonEmptyString),
   harnessName: HarnessNameSchema,
+  historicalRiskNotes: Schema.Array(WorkerPlanHistoricalRiskNote),
   inferredRecommendations: WorkerPlanInferredRecommendations,
   likelyTouchedSurfaces: Schema.Array(Schema.NonEmptyString),
   nonGoals: Schema.Array(Schema.NonEmptyString),
@@ -95,11 +102,20 @@ export function writeWorkerPlan(input: {
       planningContext,
       verificationChecks: derived.verificationChecks,
     });
+    const reviewerFindings = yield* writeReviewerFindings({
+      domainReferences: derived.domainReferences,
+      likelyTouchedSurfaces: derived.likelyTouchedSurfaces,
+      paths: input.paths,
+      planningContext,
+      spec: input.spec,
+      verificationChecks: derived.verificationChecks,
+    });
     const plan = WorkerPlan.make({
       acceptanceCriteria: derived.acceptanceCriteria,
       domainReferences: derived.domainReferences,
       expectedArtifacts: ["workspace/output.txt", "worker-result.json"],
       harnessName: input.harnessName,
+      historicalRiskNotes: reviewerFindings.matchedRiskNotes,
       inferredRecommendations,
       likelyTouchedSurfaces: derived.likelyTouchedSurfaces,
       nonGoals: derived.nonGoals,
@@ -229,6 +245,9 @@ function markdownPlan(plan: WorkerPlan) {
   const inferredRecommendations = markdownInferredRecommendations(
     plan.inferredRecommendations,
   );
+  const historicalRiskNotes = markdownHistoricalRiskNotes(
+    plan.historicalRiskNotes,
+  );
   const verificationChecks = markdownList(
     plan.verificationChecks.map(formatVerificationCheck),
   );
@@ -267,6 +286,10 @@ ${planningContext}
 ## Inferred Recommendations
 
 ${inferredRecommendations}
+
+## Historical Reviewer Risk Notes
+
+${historicalRiskNotes}
 
 ## Verification
 

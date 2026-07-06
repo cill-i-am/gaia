@@ -426,6 +426,7 @@ function executeAcceptedRun(input: {
     yield* writeReport({
       evidencePromotion,
       factoryRetro,
+      historicalRiskNotes: workerPlan.historicalRiskNotes,
       inferredRecommendations: workerPlan.inferredRecommendations,
       paths,
       retrospective,
