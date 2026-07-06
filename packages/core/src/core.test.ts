@@ -5,10 +5,14 @@ import {
   EvidencePromotionPullRequestSummary,
   EvidencePromotionReportPaths,
   EvidencePromotionVerificationSummary,
+  FactoryRetro,
+  FactoryRetroEntry,
+  FactoryRetroSourceLink,
   PromotedEvidenceItem,
   parseFactoryDelegationPromptValidationInput,
   makeRunEvent,
   parseEvidencePromotion,
+  parseFactoryRetro,
   parseMarkdownSpec,
   parseRunId,
   replayRunEvents,
@@ -80,6 +84,62 @@ describe("core contracts", () => {
     assert.strictEqual(parseEvidencePromotion(serialized).runId, runId);
     assert.strictEqual(promotion.cleanupStatus, "not-completed");
     assert.strictEqual(promotion.promotionStatus, "pending-promotion");
+  });
+
+  it("parses JSON-safe factory retro artifacts", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const retro = FactoryRetro.make({
+      artifactPath: ".gaia/promoted/run-V7kP9sQ2xY/factory-retro.json",
+      cleanupStatus: "not-completed",
+      generatedAt: "2026-07-06T12:00:00.000Z",
+      helped: [
+        FactoryRetroEntry.make({
+          source: "observed",
+          summary: "Durable planning and report artifacts helped review.",
+        }),
+      ],
+      markdown: "# Factory Retro run-V7kP9sQ2xY\n",
+      markdownPath: ".gaia/promoted/run-V7kP9sQ2xY/factory-retro.md",
+      missed: [
+        FactoryRetroEntry.make({
+          source: "operator-note",
+          summary: "Gaia missed likely implementation files.",
+        }),
+      ],
+      misled: [
+        FactoryRetroEntry.make({
+          source: "inferred",
+          summary: "Command extraction treated a route like a shell command.",
+        }),
+      ],
+      promotionStatus: "pending-promotion",
+      promotedEvidence: [
+        PromotedEvidenceItem.make({
+          label: "Evidence promotion",
+          path: ".gaia/promoted/run-V7kP9sQ2xY/evidence-promotion.md",
+          status: "pending-promotion",
+          summary: "Promotion is pending operator copy into Linear or PR text.",
+        }),
+      ],
+      recommendedNextFactoryImprovement:
+        "Separate executable commands from domain references.",
+      runId,
+      sourceLinks: [
+        FactoryRetroSourceLink.make({
+          label: "GAIA-12 retro",
+          url: "https://linear.app/tskr/document/factory-retro-gaia-12-ab-dogfood-45bcc888784b",
+        }),
+      ],
+      status: "findings",
+      version: 1,
+    });
+
+    const serialized: unknown = JSON.parse(JSON.stringify(retro));
+
+    assert.strictEqual(parseFactoryRetro(serialized).runId, runId);
+    assert.strictEqual(retro.helped[0]?.source, "observed");
+    assert.strictEqual(retro.cleanupStatus, "not-completed");
+    assert.strictEqual(retro.recommendedNextFactoryImprovement.includes("commands"), true);
   });
 
   it("flags dogfood requirements on direct fallback lanes", () => {

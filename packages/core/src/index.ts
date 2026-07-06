@@ -12,6 +12,14 @@ export {
   type EvidencePromotionStatus,
 } from "./evidence-promotion.js";
 export {
+  FactoryRetro,
+  FactoryRetroEntry,
+  FactoryRetroEntrySourceSchema,
+  FactoryRetroSourceLink,
+  parseFactoryRetro,
+  type FactoryRetroEntrySource,
+} from "./factory-retro.js";
+export {
   FactoryDelegationFindingCodeSchema,
   FactoryDelegationFindingSeveritySchema,
   FactoryDelegationPromptValidation,

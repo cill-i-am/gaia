@@ -73,6 +73,8 @@ describe("local run read api", () => {
           "evidence-review",
           "evidence-promotion",
           "evidence-promotion-markdown",
+          "factory-retro",
+          "factory-retro-markdown",
           "report",
           "report-json",
           "events",
@@ -123,6 +125,11 @@ describe("local run read api", () => {
           "evidence-promotion-markdown",
           { rootDirectory: cwd },
         );
+        const factoryRetro = yield* readLocalRunArtifact(
+          summary.runId,
+          "factory-retro-markdown",
+          { rootDirectory: cwd },
+        );
         const rejected = yield* Effect.flip(
           readLocalRunArtifact(summary.runId, "../events.jsonl", {
             rootDirectory: cwd,
@@ -138,6 +145,9 @@ describe("local run read api", () => {
         assert.strictEqual(promotion.artifactName, "evidence-promotion-markdown");
         assert.strictEqual(promotion.contentType, "text/markdown");
         assert.include(promotion.body, `# Evidence Promotion ${summary.runId}`);
+        assert.strictEqual(factoryRetro.artifactName, "factory-retro-markdown");
+        assert.strictEqual(factoryRetro.contentType, "text/markdown");
+        assert.include(factoryRetro.body, `# Factory Retro ${summary.runId}`);
         assert.deepEqual(rejected, {
           artifactName: "../events.jsonl",
           code: "ArtifactNotAllowed",

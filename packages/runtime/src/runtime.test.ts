@@ -4,6 +4,7 @@ import { Effect, FileSystem, Schema } from "effect";
 import { execPath } from "node:process";
 import {
   parseEvidencePromotion,
+  parseFactoryRetro,
   parseDogfoodRetrospective,
   parseRunEvent,
   parseRunId,
@@ -910,6 +911,83 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("emits a factory retro with helped/missed/misled and source links", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          specPath,
+          [
+            "---",
+            "title: GAIA-12-like dogfood retro",
+            "---",
+            "",
+            "Acceptance criteria:",
+            "- Factory retro captures helped, missed, and misled notes.",
+            "",
+            "Factory retro helped:",
+            "- Durable planning and report artifacts changed review behavior.",
+            "",
+            "Factory retro missed:",
+            "- Gaia missed likely implementation files and skills.",
+            "",
+            "Factory retro misled:",
+            "- Command extraction treated `POST /runs` like a shell command.",
+            "",
+            "Factory retro next improvement:",
+            "- Separate executable commands from domain references.",
+            "",
+            "Factory retro source links:",
+            "- GAIA-12 retro: https://linear.app/tskr/document/factory-retro-gaia-12-ab-dogfood-45bcc888784b",
+            "",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const factoryRetroPath = `${cwd}/.gaia/promoted/${summary.runId}/factory-retro.json`;
+        const factoryRetroMarkdownPath = `${cwd}/.gaia/promoted/${summary.runId}/factory-retro.md`;
+        const retro = parseFactoryRetro(
+          JSON.parse(yield* fs.readFileString(factoryRetroPath)),
+        );
+        const markdown = yield* fs.readFileString(factoryRetroMarkdownPath);
+        const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+
+        assert.strictEqual(retro.runId, summary.runId);
+        assert.strictEqual(retro.status, "findings");
+        assert.strictEqual(retro.cleanupStatus, "not-completed");
+        assert.strictEqual(retro.promotionStatus, "pending-promotion");
+        assert.include(
+          retro.helped.map((entry) => entry.summary).join("\n"),
+          "Durable planning and report artifacts",
+        );
+        assert.include(
+          retro.missed.map((entry) => entry.summary).join("\n"),
+          "likely implementation files",
+        );
+        assert.include(
+          retro.misled.map((entry) => entry.summary).join("\n"),
+          "POST /runs",
+        );
+        assert.strictEqual(
+          retro.recommendedNextFactoryImprovement,
+          "Separate executable commands from domain references.",
+        );
+        const gaia12Source = retro.sourceLinks.find(
+          (source) => source.label === "GAIA-12 retro",
+        );
+        assert.strictEqual(
+          gaia12Source?.url,
+          "https://linear.app/tskr/document/factory-retro-gaia-12-ab-dogfood-45bcc888784b",
+        );
+        assert.include(markdown, "## Helped");
+        assert.include(markdown, "## Missed");
+        assert.include(markdown, "## Misled");
+        assert.include(reportMarkdown, "factory-retro.json");
+        assert.include(reportMarkdown, "factory-retro.md");
+      }),
+    );
+
     it.effect("promotes selected evidence before raw run cleanup", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -941,6 +1019,7 @@ describe("runtime workflows", () => {
         assert.include(promotionMarkdown, `# Evidence Promotion ${summary.runId}`);
         assert.include(promotionMarkdown, "Cleanup status: not-completed");
         assert.include(reportMarkdown, "evidence-promotion.json");
+        assert.include(reportMarkdown, "factory-retro.json");
         assert.isBelow(
           reportMarkdown.indexOf("evidence-promotion.json"),
           reportMarkdown.indexOf("Raw run state is disposable"),
@@ -951,12 +1030,21 @@ describe("runtime workflows", () => {
         const survivingPromotion = parseEvidencePromotion(
           JSON.parse(yield* fs.readFileString(promotedPath)),
         );
+        const survivingFactoryRetro = parseFactoryRetro(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${cwd}/.gaia/promoted/${summary.runId}/factory-retro.json`,
+            ),
+          ),
+        );
         assert.strictEqual(survivingPromotion.runId, summary.runId);
         assert.strictEqual(survivingPromotion.cleanupStatus, "not-completed");
+        assert.strictEqual(survivingFactoryRetro.runId, summary.runId);
+        assert.strictEqual(survivingFactoryRetro.cleanupStatus, "not-completed");
       }),
     );
 
-    it.effect("promotes blocked run evidence with cleanup still not completed", () =>
+    it.effect("promotes blocked run evidence with factory retro cleanup still not completed", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
@@ -1000,11 +1088,29 @@ describe("runtime workflows", () => {
             ),
           ),
         );
+        const retro = parseFactoryRetro(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${cwd}/.gaia/promoted/${status.runId}/factory-retro.json`,
+            ),
+          ),
+        );
 
         assert.strictEqual(status.state, "failed");
         assert.strictEqual(promotion.runId, status.runId);
         assert.strictEqual(promotion.promotionStatus, "pending-promotion");
         assert.strictEqual(promotion.cleanupStatus, "not-completed");
+        assert.strictEqual(retro.runId, status.runId);
+        assert.strictEqual(retro.status, "findings");
+        assert.strictEqual(retro.cleanupStatus, "not-completed");
+        assert.include(
+          retro.missed.map((entry) => entry.summary).join("\n"),
+          "Plan needs concrete evidence promotion handling.",
+        );
+        assert.include(
+          retro.misled.map((entry) => entry.summary).join("\n"),
+          "Plan review blocked evidence promotion.",
+        );
         assert.isFalse(yield* fs.exists(`${status.runDirectory}/report.md`));
         assert.isFalse(yield* fs.exists(`${status.runDirectory}/report.json`));
         assert.isUndefined(promotion.reportPaths.reportMarkdownPath);

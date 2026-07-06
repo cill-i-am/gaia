@@ -47,6 +47,7 @@ import {
 import { writeReport } from "./report-writer.js";
 import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 import { writeEvidencePromotion } from "./evidence-promotion.js";
+import { writeFactoryRetro } from "./factory-retro.js";
 import {
   resolveRunProfile,
   writeRunProfile,
@@ -412,8 +413,19 @@ function executeAcceptedRun(input: {
         recordRunFailure(runId, paths, "reporting", error),
       ),
     );
+    const factoryRetro = yield* writeFactoryRetro({
+      evidencePromotion,
+      paths,
+      runId,
+      spec,
+    }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "reporting", error),
+      ),
+    );
     yield* writeReport({
       evidencePromotion,
+      factoryRetro,
       inferredRecommendations: workerPlan.inferredRecommendations,
       paths,
       retrospective,
@@ -751,6 +763,23 @@ function recordRunFailure(
       Effect.catchTag("GaiaRuntimeError", () => Effect.void),
     );
     yield* writeEvidencePromotion({ paths, runId }).pipe(
+      Effect.catchTag("GaiaRuntimeError", () => Effect.void),
+    );
+    const fs = yield* FileSystem.FileSystem;
+    let input = {
+      body: "Failed run did not have a parseable source spec.",
+      title: "factory-retro-failed-run",
+    };
+    const inputText = yield* Effect.exit(fs.readFileString(paths.input));
+    if (inputText._tag === "Success") {
+      const parsedSpec = yield* Effect.exit(
+        parseSpec(inputText.value, "factory-retro-failed-run"),
+      );
+      if (parsedSpec._tag === "Success") {
+        input = parsedSpec.value;
+      }
+    }
+    yield* writeFactoryRetro({ paths, runId, spec: input }).pipe(
       Effect.catchTag("GaiaRuntimeError", () => Effect.void),
     );
 
