@@ -148,6 +148,14 @@ export {
   type GitHubPullRequestSelector,
 } from "./github-publisher.js";
 export {
+  WorkspacePrQualityGate,
+  WorkspacePrQualityGateItem,
+  WorkspacePrQualityGateSeveritySchema,
+  evaluateWorkspacePrQualityGate,
+  parseWorkspacePrQualityGateJson,
+  type WorkspacePrQualityGateSeverity,
+} from "./workspace-pr-gate.js";
+export {
   HarnessNameSchema,
   HarnessRunRequest,
   HarnessRunResult,

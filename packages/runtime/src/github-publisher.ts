@@ -12,6 +12,10 @@ import {
 } from "./paths.js";
 import { withRunStoreLock } from "./run-store-lock.js";
 import { copyWorkspaceDirectoryContents } from "./workspace.js";
+import {
+  evaluateWorkspacePrQualityGate,
+  WorkspacePrQualityGate,
+} from "./workspace-pr-gate.js";
 import { statusRun } from "./workflows.js";
 
 const commandMaxBufferBytes = 10 * 1024 * 1024;
@@ -382,6 +386,7 @@ export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
   prUrl: Schema.NonEmptyString,
   runId: RunIdSchema,
   status: Schema.Literal("opened"),
+  workspaceGate: Schema.optionalKey(WorkspacePrQualityGate),
 }) {}
 
 export class GitHubPreflightCheck extends Schema.Class<GitHubPreflightCheck>(
@@ -422,6 +427,7 @@ export class GitHubPublishPreview extends Schema.Class<GitHubPublishPreview>(
   runId: RunIdSchema,
   sourceChanges: GitHubPublishSourceChangeClaimSchema,
   status: Schema.Literal("preview"),
+  workspaceGate: Schema.optionalKey(WorkspacePrQualityGate),
 }) {}
 
 class GitHubPrViewAuthor extends Schema.Class<GitHubPrViewAuthor>(
@@ -656,6 +662,13 @@ export function previewGitHubPublish(
         ? `gaia/${preflight.runId}-workspace`
         : `gaia/${preflight.runId}`;
     const evidencePath = `gaia-runs/${preflight.runId}`;
+    const paths = yield* makeRunPaths(preflight.runId, {
+      rootDirectory: options.rootDirectory ?? ".",
+    });
+    const workspaceGate =
+      mode === "workspace"
+        ? yield* evaluateWorkspacePrQualityGate(preflight.runId, paths)
+        : undefined;
 
     return GitHubPublishPreview.make({
       baseBranch: preflight.baseBranch,
@@ -674,6 +687,7 @@ export function previewGitHubPublish(
       sourceChanges:
         mode === "workspace" ? "workspace-required" : "evidence-only",
       status: "preview",
+      ...(workspaceGate === undefined ? {} : { workspaceGate }),
     });
   });
 }
@@ -845,6 +859,12 @@ export function publishWorkspaceRunToGitHub(
     const preflight = yield* preflightGitHubPublish(runIdInput, options);
     const branchName = `gaia/${preflight.runId}-workspace`;
     const paths = yield* makeRunPaths(preflight.runId, { rootDirectory });
+    const workspaceGate = yield* evaluateWorkspacePrQualityGate(
+      preflight.runId,
+      paths,
+    );
+
+    yield* requireWorkspacePrQualityGatePassed(workspaceGate);
 
     const prUrl = yield* Effect.gen(function* () {
       yield* runRequiredCommand(runner, rootDirectory, "git", [
@@ -914,6 +934,7 @@ export function publishWorkspaceRunToGitHub(
       prUrl,
       runId: preflight.runId,
       status: "opened",
+      workspaceGate,
     });
   });
 }
@@ -2284,6 +2305,48 @@ function applyRunWorkspace(paths: RunPaths, rootDirectory: string) {
   );
 }
 
+function requireWorkspacePrQualityGatePassed(
+  gate: WorkspacePrQualityGate,
+) {
+  if (gate.status === "passed") {
+    return Effect.void;
+  }
+
+  return Effect.fail(
+    makeRuntimeError({
+      code: "WorkspacePrQualityGateFailed",
+      message: workspacePrQualityGateFailureMessage(gate),
+      recoverable: false,
+    }),
+  );
+}
+
+function workspacePrQualityGateFailureMessage(gate: WorkspacePrQualityGate) {
+  const failedItems = gate.items.filter((item) => item.severity === "fail");
+  const preview = failedItems.slice(0, 3).map(formatWorkspacePrGateFailure);
+  const remaining = failedItems.length - preview.length;
+  const remainingLine =
+    remaining > 0 ? ` ${remaining} additional fail item(s) omitted.` : "";
+
+  return [
+    `Workspace PR quality gate failed with ${gate.failItemCount} fail item(s).`,
+    ...preview,
+    `Inspect ${gate.artifactPath} for the full gate result.`,
+    remainingLine.trim(),
+  ]
+    .filter((line) => line.length > 0)
+    .join(" ");
+}
+
+function formatWorkspacePrGateFailure(
+  item: WorkspacePrQualityGate["items"][number],
+) {
+  const files =
+    item.changedFiles.length === 0 ? "unknown files" : item.changedFiles.join(", ");
+
+  return `${item.severity}: ${files} - ${item.reason} Remediation: ${item.remediation}`;
+}
+
 function readWorkspaceArtifactRelativePaths(paths: RunPaths) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -2701,6 +2764,14 @@ function copyRunArtifacts(
       yield* fs.copyFile(
         paths.githubFeedback,
         path.join(evidencePath, "github-feedback.json"),
+      );
+    }
+
+    const hasWorkspacePrGate = yield* fs.exists(paths.workspacePrGate);
+    if (hasWorkspacePrGate) {
+      yield* fs.copyFile(
+        paths.workspacePrGate,
+        path.join(evidencePath, "workspace-pr-gate.json"),
       );
     }
   }).pipe(
