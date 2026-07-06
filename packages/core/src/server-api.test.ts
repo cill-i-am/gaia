@@ -95,7 +95,7 @@ describe("LocalGaiaServerApi contract", () => {
       in: "path",
       name: "artifactId",
       required: true,
-      schema: { type: "string" },
+      schema: { $ref: "#/components/schemas/LocalRunArtifactId" },
     });
     assert.deepInclude(artifactParameters, {
       in: "path",
@@ -126,6 +126,31 @@ describe("LocalGaiaServerApi contract", () => {
           "snapshots",
         ],
         type: "string",
+      },
+    );
+    assert.deepEqual(
+      LocalGaiaServerOpenApi.components?.schemas?.LocalRunApiNotFound,
+      {
+        additionalProperties: false,
+        properties: {
+          artifactName: { type: "string" },
+          code: {
+            enum: [
+              "ArtifactNotAllowed",
+              "ArtifactNotFound",
+              "EndpointNotFound",
+              "RunNotFound",
+            ],
+            type: "string",
+          },
+          message: { allOf: [{ minLength: 1 }], type: "string" },
+          pathSegment: { type: "string" },
+          recoverable: { type: "boolean" },
+          runId: { $ref: "#/components/schemas/RunId" },
+          status: { enum: [404], type: "number" },
+        },
+        required: ["message", "recoverable", "code", "status"],
+        type: "object",
       },
     );
   });

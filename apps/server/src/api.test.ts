@@ -188,10 +188,9 @@ describe("local run api http boundary", () => {
       Effect.gen(function* () {
         const response = yield* postCreateRun(testServerLayer("."), "   ");
         const body = yield* responseJsonObject(response);
-        const error = getObject(body, "error");
 
         assert.strictEqual(response.status, 400);
-        assert.strictEqual(getString(error, "code"), "InvalidSpec");
+        assertApiError(body, "InvalidSpec", 400);
       }),
     );
 
@@ -213,13 +212,11 @@ describe("local run api http boundary", () => {
         }).pipe(Effect.provide(layer));
         const pathBearingBody = yield* responseJsonObject(pathBearing);
         const unknownOptionsBody = yield* responseJsonObject(unknownOptions);
-        const pathBearingError = getObject(pathBearingBody, "error");
-        const unknownOptionsError = getObject(unknownOptionsBody, "error");
 
         assert.strictEqual(pathBearing.status, 400);
-        assert.strictEqual(getString(pathBearingError, "code"), "InvalidRequest");
+        assertApiError(pathBearingBody, "InvalidRequest", 400);
         assert.strictEqual(unknownOptions.status, 400);
-        assert.strictEqual(getString(unknownOptionsError, "code"), "InvalidRequest");
+        assertApiError(unknownOptionsBody, "InvalidRequest", 400);
       }),
     );
 
@@ -247,11 +244,10 @@ describe("local run api http boundary", () => {
         }
 
         const body = yield* responseJsonObject(second);
-        const error = getObject(body, "error");
 
         assert.strictEqual(first.status, 202);
         assert.strictEqual(second.status, 409);
-        assert.strictEqual(getString(error, "code"), "ActiveRunConflict");
+        assertApiError(body, "ActiveRunConflict", 409);
 
         yield* Deferred.succeed(release, undefined);
       }),
@@ -300,29 +296,20 @@ describe("local run api http boundary", () => {
           malformedPath,
           "malformed path",
         );
-        const badRunError = getObject(badRunBody, "error");
-        const badArtifactError = getObject(badArtifactBody, "error");
-        const unknownArtifactError = getObject(unknownArtifactBody, "error");
-        const postError = getObject(postBody, "error");
-        const putError = getObject(putBody, "error");
-        const malformedPathError = getObject(malformedPathBody, "error");
 
         assert.strictEqual(badRun.status, 400);
-        assert.strictEqual(getString(badRunError, "code"), "InvalidRunId");
+        assertApiError(badRunBody, "InvalidRunId", 400);
         assert.strictEqual(badArtifact.status, 404);
-        assert.strictEqual(getString(badArtifactError, "code"), "ArtifactNotAllowed");
+        assertApiError(badArtifactBody, "ArtifactNotAllowed", 404);
         assert.strictEqual(unknownArtifact.status, 404);
-        assert.strictEqual(
-          getString(unknownArtifactError, "code"),
-          "ArtifactNotAllowed",
-        );
+        assertApiError(unknownArtifactBody, "ArtifactNotAllowed", 404);
         assert.strictEqual(post.status, 400);
-        assert.strictEqual(getString(postError, "code"), "InvalidRequest");
+        assertApiError(postBody, "InvalidRequest", 400);
         assert.strictEqual(put.status, 405);
-        assert.strictEqual(getString(putError, "code"), "MethodNotAllowed");
+        assertApiError(putBody, "MethodNotAllowed", 405);
         assert.strictEqual(head.status, 405);
         assert.strictEqual(malformedPath.status, 404);
-        assert.strictEqual(getString(malformedPathError, "code"), "EndpointNotFound");
+        assertApiError(malformedPathBody, "EndpointNotFound", 404);
       }),
     );
   });
@@ -391,6 +378,18 @@ function parseSseDataEvents(
 
       return [parsed];
     });
+}
+
+function assertApiError(
+  body: Readonly<Record<string, unknown>>,
+  code: string,
+  status: number,
+) {
+  assert.strictEqual(getString(body, "code"), code);
+  assert.strictEqual(getNumber(body, "status"), status);
+  assert.strictEqual(typeof body["message"], "string");
+  assert.strictEqual(typeof body["recoverable"], "boolean");
+  assert.notProperty(body, "error");
 }
 
 function postCreateRun(

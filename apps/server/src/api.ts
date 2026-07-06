@@ -299,6 +299,16 @@ function structuredServerErrors<E, R>(
 
     if (response.status === 400) {
       const path = pathnameFromUrl(request.url);
+      if (isArtifactReadPath(path)) {
+        return errorJsonResponse(
+          apiError({
+            code: "ArtifactNotAllowed",
+            message: "Artifact is not allowlisted for local API reads.",
+            recoverable: false,
+          }),
+        );
+      }
+
       return errorJsonResponse(
         apiError({
           code:
@@ -341,8 +351,16 @@ function pathnameFromUrl(url: string) {
   }
 }
 
+function isArtifactReadPath(path: string) {
+  return /^\/runs\/[^/]+\/artifacts\/[^/]+$/u.test(path);
+}
+
 function statusForApiError(error: LocalRunApiError) {
-  switch (error.error.code) {
+  return error.status;
+}
+
+function statusForDiagnostic(diagnostic: ApiDiagnostic) {
+  switch (diagnostic.code) {
     case "InvalidRunId":
     case "InvalidRequest":
     case "InvalidSpec":
@@ -412,53 +430,63 @@ function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
   switch (diagnostic.code) {
     case "InvalidRequest":
       return LocalRunApiBadRequest.make({
-        error: { ...diagnostic, code: "InvalidRequest" },
-        status: "error",
+        ...diagnostic,
+        code: "InvalidRequest",
+        status: 400,
       });
     case "InvalidRunId":
       return LocalRunApiBadRequest.make({
-        error: { ...diagnostic, code: "InvalidRunId" },
-        status: "error",
+        ...diagnostic,
+        code: "InvalidRunId",
+        status: 400,
       });
     case "InvalidSpec":
       return LocalRunApiBadRequest.make({
-        error: { ...diagnostic, code: "InvalidSpec" },
-        status: "error",
+        ...diagnostic,
+        code: "InvalidSpec",
+        status: 400,
       });
     case "ArtifactNotAllowed":
       return LocalRunApiNotFound.make({
-        error: { ...diagnostic, code: "ArtifactNotAllowed" },
-        status: "error",
+        ...diagnostic,
+        code: "ArtifactNotAllowed",
+        status: 404,
       });
     case "ArtifactNotFound":
       return LocalRunApiNotFound.make({
-        error: { ...diagnostic, code: "ArtifactNotFound" },
-        status: "error",
+        ...diagnostic,
+        code: "ArtifactNotFound",
+        status: 404,
       });
     case "EndpointNotFound":
       return LocalRunApiNotFound.make({
-        error: { ...diagnostic, code: "EndpointNotFound" },
-        status: "error",
+        ...diagnostic,
+        code: "EndpointNotFound",
+        status: 404,
       });
     case "RunNotFound":
       return LocalRunApiNotFound.make({
-        error: { ...diagnostic, code: "RunNotFound" },
-        status: "error",
+        ...diagnostic,
+        code: "RunNotFound",
+        status: 404,
       });
     case "InvalidRunDirectory":
       return LocalRunApiUnprocessable.make({
-        error: { ...diagnostic, code: "InvalidRunDirectory" },
-        status: "error",
+        ...diagnostic,
+        code: "InvalidRunDirectory",
+        status: 422,
       });
     case "RunHasNoEvents":
       return LocalRunApiUnprocessable.make({
-        error: { ...diagnostic, code: "RunHasNoEvents" },
-        status: "error",
+        ...diagnostic,
+        code: "RunHasNoEvents",
+        status: 422,
       });
     case "RunUnreadable":
       return LocalRunApiUnprocessable.make({
-        error: { ...diagnostic, code: "RunUnreadable" },
-        status: "error",
+        ...diagnostic,
+        code: "RunUnreadable",
+        status: 422,
       });
     case "ActiveRunConflict":
     case "RunStoreLocked":
@@ -472,8 +500,9 @@ function methodNotAllowedApiError(
   diagnostic: MethodNotAllowedDiagnostic,
 ): typeof LocalRunApiMethodNotAllowed.Type {
   return LocalRunApiMethodNotAllowed.make({
-    error: { ...diagnostic, code: "MethodNotAllowed" },
-    status: "error",
+    ...diagnostic,
+    code: "MethodNotAllowed",
+    status: 405,
   });
 }
 
@@ -483,83 +512,95 @@ function apiError(
   switch (diagnostic.code) {
     case "InvalidRequest":
       return LocalRunApiBadRequest.make({
-        error: { ...diagnostic, code: "InvalidRequest" },
-        status: "error",
+        ...diagnostic,
+        code: "InvalidRequest",
+        status: 400,
       });
     case "InvalidRunId":
       return LocalRunApiBadRequest.make({
-        error: { ...diagnostic, code: "InvalidRunId" },
-        status: "error",
+        ...diagnostic,
+        code: "InvalidRunId",
+        status: 400,
       });
     case "InvalidSpec":
       return LocalRunApiBadRequest.make({
-        error: { ...diagnostic, code: "InvalidSpec" },
-        status: "error",
+        ...diagnostic,
+        code: "InvalidSpec",
+        status: 400,
       });
     case "ArtifactNotAllowed":
       return LocalRunApiNotFound.make({
-        error: { ...diagnostic, code: "ArtifactNotAllowed" },
-        status: "error",
+        ...diagnostic,
+        code: "ArtifactNotAllowed",
+        status: 404,
       });
     case "ArtifactNotFound":
       return LocalRunApiNotFound.make({
-        error: { ...diagnostic, code: "ArtifactNotFound" },
-        status: "error",
+        ...diagnostic,
+        code: "ArtifactNotFound",
+        status: 404,
       });
     case "EndpointNotFound":
       return LocalRunApiNotFound.make({
-        error: { ...diagnostic, code: "EndpointNotFound" },
-        status: "error",
+        ...diagnostic,
+        code: "EndpointNotFound",
+        status: 404,
       });
     case "RunNotFound":
       return LocalRunApiNotFound.make({
-        error: { ...diagnostic, code: "RunNotFound" },
-        status: "error",
+        ...diagnostic,
+        code: "RunNotFound",
+        status: 404,
       });
     case "MethodNotAllowed":
       return LocalRunApiMethodNotAllowed.make({
-        error: { ...diagnostic, code: "MethodNotAllowed" },
-        status: "error",
+        ...diagnostic,
+        code: "MethodNotAllowed",
+        status: 405,
       });
     case "ActiveRunConflict":
       return LocalRunApiConflict.make({
-        error: { ...diagnostic, code: "ActiveRunConflict" },
-        status: "error",
+        ...diagnostic,
+        code: "ActiveRunConflict",
+        status: 409,
       });
     case "RunStoreLocked":
       return LocalRunApiConflict.make({
-        error: { ...diagnostic, code: "RunStoreLocked" },
-        status: "error",
+        ...diagnostic,
+        code: "RunStoreLocked",
+        status: 409,
       });
     case "InvalidRunDirectory":
       return LocalRunApiUnprocessable.make({
-        error: { ...diagnostic, code: "InvalidRunDirectory" },
-        status: "error",
+        ...diagnostic,
+        code: "InvalidRunDirectory",
+        status: 422,
       });
     case "RunHasNoEvents":
       return LocalRunApiUnprocessable.make({
-        error: { ...diagnostic, code: "RunHasNoEvents" },
-        status: "error",
+        ...diagnostic,
+        code: "RunHasNoEvents",
+        status: 422,
       });
     case "RunUnreadable":
       return LocalRunApiUnprocessable.make({
-        error: { ...diagnostic, code: "RunUnreadable" },
-        status: "error",
+        ...diagnostic,
+        code: "RunUnreadable",
+        status: 422,
       });
     case "InternalServerError":
       return LocalRunApiInternalServerError.make({
-        error: { ...diagnostic, code: "InternalServerError" },
-        status: "error",
+        ...diagnostic,
+        code: "InternalServerError",
+        status: 500,
       });
   }
 
   return LocalRunApiInternalServerError.make({
-    error: {
-      code: "InternalServerError",
-      message: diagnostic.message,
-      recoverable: false,
-    },
-    status: "error",
+    code: "InternalServerError",
+    message: diagnostic.message,
+    recoverable: false,
+    status: 500,
   });
 }
 
@@ -567,18 +608,21 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
   switch (diagnostic.code) {
     case "InvalidRequest":
       return LocalRunApiBadRequest.make({
-        error: { ...diagnostic, code: "InvalidRequest" },
-        status: "error",
+        ...diagnostic,
+        code: "InvalidRequest",
+        status: 400,
       });
     case "InvalidRunId":
       return LocalRunApiBadRequest.make({
-        error: { ...diagnostic, code: "InvalidRunId" },
-        status: "error",
+        ...diagnostic,
+        code: "InvalidRunId",
+        status: 400,
       });
     case "InvalidSpec":
       return LocalRunApiBadRequest.make({
-        error: { ...diagnostic, code: "InvalidSpec" },
-        status: "error",
+        ...diagnostic,
+        code: "InvalidSpec",
+        status: 400,
       });
     case "MethodNotAllowed":
       return methodNotAllowedApiError({
@@ -587,28 +631,33 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
       });
     case "ActiveRunConflict":
       return LocalRunApiConflict.make({
-        error: { ...diagnostic, code: "ActiveRunConflict" },
-        status: "error",
+        ...diagnostic,
+        code: "ActiveRunConflict",
+        status: 409,
       });
     case "RunStoreLocked":
       return LocalRunApiConflict.make({
-        error: { ...diagnostic, code: "RunStoreLocked" },
-        status: "error",
+        ...diagnostic,
+        code: "RunStoreLocked",
+        status: 409,
       });
     case "InvalidRunDirectory":
       return LocalRunApiUnprocessable.make({
-        error: { ...diagnostic, code: "InvalidRunDirectory" },
-        status: "error",
+        ...diagnostic,
+        code: "InvalidRunDirectory",
+        status: 422,
       });
     case "RunHasNoEvents":
       return LocalRunApiUnprocessable.make({
-        error: { ...diagnostic, code: "RunHasNoEvents" },
-        status: "error",
+        ...diagnostic,
+        code: "RunHasNoEvents",
+        status: 422,
       });
     case "RunUnreadable":
       return LocalRunApiUnprocessable.make({
-        error: { ...diagnostic, code: "RunUnreadable" },
-        status: "error",
+        ...diagnostic,
+        code: "RunUnreadable",
+        status: 422,
       });
     case "ArtifactNotAllowed":
     case "ArtifactNotFound":
@@ -642,12 +691,10 @@ function activeRunConflictApiError(
   error: ActiveServerRunConflict,
 ): typeof LocalRunApiConflict.Type {
   return LocalRunApiConflict.make({
-    error: {
-      code: "ActiveRunConflict",
-      message: error.message,
-      recoverable: error.recoverable,
-    },
-    status: "error",
+    code: "ActiveRunConflict",
+    message: error.message,
+    recoverable: error.recoverable,
+    status: 409,
   });
 }
 
@@ -747,8 +794,8 @@ function streamApiError(error: unknown): typeof LocalRunApiErrorEnvelope.Type {
       });
 
   return LocalRunApiErrorEnvelope.make({
-    error: diagnostic,
-    status: "error",
+    ...diagnostic,
+    status: statusForDiagnostic(diagnostic),
   });
 }
 
@@ -777,8 +824,10 @@ function isApiDiagnostic(input: unknown): input is ApiDiagnostic {
 }
 
 type ApiDiagnostic = typeof LocalRunReadDiagnosticDto.Type;
-type MethodNotAllowedDiagnostic =
-  (typeof LocalRunApiMethodNotAllowed.Type)["error"];
+type MethodNotAllowedDiagnostic = Omit<
+  typeof LocalRunApiMethodNotAllowed.Type,
+  "status"
+>;
 type LocalRunReadApiError =
   | typeof LocalRunApiBadRequest.Type
   | typeof LocalRunApiNotFound.Type
@@ -801,11 +850,9 @@ function internalApiError(error: unknown): typeof LocalRunApiInternalServerError
       : "Local Gaia API request failed.";
 
   return LocalRunApiInternalServerError.make({
-    error: {
-      code: "InternalServerError",
-      message,
-      recoverable: false,
-    },
-    status: "error",
+    code: "InternalServerError",
+    message,
+    recoverable: false,
+    status: 500,
   });
 }

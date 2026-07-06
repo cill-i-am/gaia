@@ -33,6 +33,7 @@ export {
   LocalRunApiBadRequestResponse,
   LocalRunApiConflict,
   LocalRunApiConflictResponse,
+  LocalRunApiErrorStatusSchema,
   LocalRunCreateErrorResponse,
   LocalRunApiErrorEnvelope,
   LocalRunApiInternalServerError,
