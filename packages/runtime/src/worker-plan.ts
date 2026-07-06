@@ -140,14 +140,14 @@ function derivePlanFromSpec(spec: RunSpec): DerivedWorkerPlan {
     "No explicit touched surfaces were provided by the spec; inspect the workspace before editing.",
   );
   const verificationChecks = withFallback(
-    extractVerificationItems(spec.body, [
+    extractVerificationChecks(spec.body, [
       "verification",
       "verification commands",
       "validation",
       "test plan",
       "tests",
       "commands",
-    ]).map(makeVerificationCheck),
+    ]),
     WorkerPlanVerificationCheck.make({
       expectation:
         "The Gaia run completes with worker-result.json and verification-result.json evidence.",
@@ -268,12 +268,12 @@ function extractSectionItems(
   return uniqueItems(items);
 }
 
-function extractVerificationItems(
+function extractVerificationChecks(
   input: string,
   labels: ReadonlyArray<string>,
-): ReadonlyArray<string> {
+): ReadonlyArray<WorkerPlanVerificationCheck> {
   const normalizedLabels = labels.map(normalizeSectionLabel);
-  const items: Array<string> = [];
+  const items: Array<WorkerPlanVerificationCheck> = [];
   let active = false;
   let fence: "none" | "shell" | "other" = "none";
 
@@ -290,9 +290,14 @@ function extractVerificationItems(
 
     if (fence !== "none") {
       if (active && fence === "shell") {
-        const command = executableCommandFromShellLine(line);
+        const command = executableCommandFromShellFenceLine(line);
         if (command !== undefined) {
-          items.push(command);
+          items.push(
+            WorkerPlanVerificationCheck.make({
+              command,
+              expectation: command,
+            }),
+          );
         }
       }
       continue;
@@ -302,7 +307,7 @@ function extractVerificationItems(
     if (marker !== undefined) {
       active = normalizedLabels.includes(marker.label);
       if (active && marker.inlineContent !== undefined) {
-        items.push(marker.inlineContent);
+        items.push(makeVerificationCheck(marker.inlineContent));
       }
       continue;
     }
@@ -313,11 +318,11 @@ function extractVerificationItems(
 
     const item = itemFromLine(line);
     if (item !== undefined) {
-      items.push(item);
+      items.push(makeVerificationCheck(item));
     }
   }
 
-  return uniqueItems(items);
+  return uniqueVerificationChecks(items);
 }
 
 function sectionMarkerFromLine(line: string) {
@@ -408,6 +413,25 @@ function uniqueItems(items: ReadonlyArray<string>) {
   return unique;
 }
 
+function uniqueVerificationChecks(
+  checks: ReadonlyArray<WorkerPlanVerificationCheck>,
+) {
+  const seen = new Set<string>();
+  const unique: Array<WorkerPlanVerificationCheck> = [];
+
+  for (const check of checks) {
+    const key = `${check.command ?? ""}\u0000${check.expectation}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    unique.push(check);
+  }
+
+  return unique;
+}
+
 function withFallback<T>(
   values: ReadonlyArray<T>,
   fallback: T,
@@ -441,17 +465,27 @@ function executableCommandFromText(input: string) {
 }
 
 function executableCommandFromShellLine(input: string) {
-  const command = input
-    .trim()
-    .replace(/^\$\s+/u, "")
-    .replace(/^>\s+/u, "")
-    .trim();
+  const command = normalizeShellCommandLine(input);
 
   if (command.length === 0 || command.startsWith("#")) {
     return undefined;
   }
 
   return isKnownWorkspaceCommand(command) ? command : undefined;
+}
+
+function executableCommandFromShellFenceLine(input: string) {
+  const command = normalizeShellCommandLine(input);
+
+  return command.length === 0 || command.startsWith("#") ? undefined : command;
+}
+
+function normalizeShellCommandLine(input: string) {
+  return input
+    .trim()
+    .replace(/^\$\s+/u, "")
+    .replace(/^>\s+/u, "")
+    .trim();
 }
 
 function isKnownWorkspaceCommand(command: string) {
