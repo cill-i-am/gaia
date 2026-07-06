@@ -208,7 +208,7 @@ describe("core contracts", () => {
       durableSnapshot.context.githubChecksPath,
       "github-checks/checks-6.json",
     );
-    assert.strictEqual(durableSnapshot.context.githubChecksStatus, "passed");
+    assert.strictEqual(durableSnapshot.context.githubChecksStatus, "green");
     assert.strictEqual(durableSnapshot.context.githubPullRequest, "1");
   });
 

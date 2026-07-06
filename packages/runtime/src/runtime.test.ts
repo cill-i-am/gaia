@@ -3554,10 +3554,10 @@ describe("runtime workflows", () => {
       }),
     );
 
-    it.effect("reports no GitHub checks as an explicit state", () =>
+    it.effect("classifies GitHub checks into operator-facing states", () =>
       Effect.gen(function* () {
         const cwd = yield* tempDirectory;
-        const summary = yield* inspectGitHubChecks("1", {
+        const noChecks = yield* inspectGitHubChecks("1", {
           commandRunner: recordingGitHubRunner([], () => ({
             exitCode: 1,
             stderr: "no checks reported on the 'gaia/example' branch\n",
@@ -3565,16 +3565,7 @@ describe("runtime workflows", () => {
           })),
           rootDirectory: cwd,
         });
-
-        assert.strictEqual(summary.status, "no-checks");
-        assert.strictEqual(summary.checks.length, 0);
-      }),
-    );
-
-    it.effect("classifies pending GitHub checks", () =>
-      Effect.gen(function* () {
-        const cwd = yield* tempDirectory;
-        const summary = yield* inspectGitHubChecks("1", {
+        const pending = yield* inspectGitHubChecks("1", {
           commandRunner: recordingGitHubRunner([], () => ({
             exitCode: 0,
             stderr: "",
@@ -3589,15 +3580,7 @@ describe("runtime workflows", () => {
           })),
           rootDirectory: cwd,
         });
-
-        assert.strictEqual(summary.status, "pending");
-      }),
-    );
-
-    it.effect("classifies passing and failing GitHub checks", () =>
-      Effect.gen(function* () {
-        const cwd = yield* tempDirectory;
-        const passed = yield* inspectGitHubChecks("1", {
+        const green = yield* inspectGitHubChecks("1", {
           commandRunner: recordingGitHubRunner([], () => ({
             exitCode: 0,
             stderr: "",
@@ -3612,7 +3595,7 @@ describe("runtime workflows", () => {
           })),
           rootDirectory: cwd,
         });
-        const failed = yield* inspectGitHubChecks("1", {
+        const failing = yield* inspectGitHubChecks("1", {
           commandRunner: recordingGitHubRunner([], () => ({
             exitCode: 0,
             stderr: "",
@@ -3627,11 +3610,40 @@ describe("runtime workflows", () => {
           })),
           rootDirectory: cwd,
         });
+        const providerUnavailable = yield* inspectGitHubChecks("1", {
+          commandRunner: recordingGitHubRunner([], () => ({
+            exitCode: 1,
+            stderr: "GraphQL: Resource not accessible by integration\n",
+            stdout: "",
+          })),
+          rootDirectory: cwd,
+        });
 
-        assert.strictEqual(passed.status, "passed");
-        assert.strictEqual(failed.status, "failed");
+        assert.strictEqual(green.status, "green");
+        assert.strictEqual(failing.status, "failing");
+        assert.strictEqual(pending.status, "pending");
+        assert.strictEqual(noChecks.status, "no-checks-configured");
+        assert.strictEqual(noChecks.checks.length, 0);
+        assert.strictEqual(providerUnavailable.status, "provider-unavailable");
+        assert.strictEqual(providerUnavailable.checks.length, 0);
       }),
     );
+
+    it("decodes legacy GitHub check statuses as operator-facing states", () => {
+      const state = parseGitHubCiWatchStateJson({
+        attempts: 1,
+        lastSnapshotPath: "github-checks/checks-1.json",
+        lastStatus: "passed",
+        nextAction: "complete",
+        pr: "1",
+        runId: parseRunId("run-V7kP9sQ2xY"),
+        terminal: true,
+        updatedAt: "2026-07-06T10:00:00.000Z",
+        version: 1,
+      });
+
+      assert.strictEqual(state.lastStatus, "green");
+    });
 
     it.effect("records a GitHub check snapshot against a completed run", () =>
       Effect.gen(function* () {
@@ -3666,10 +3678,10 @@ describe("runtime workflows", () => {
           run.runDirectory.length + 1,
         );
 
-        assert.strictEqual(recorded.status, "passed");
+        assert.strictEqual(recorded.status, "green");
         assert.strictEqual(recorded.attempts, 1);
         assert.isTrue(recorded.terminal);
-        assert.include(snapshot, '"status": "passed"');
+        assert.include(snapshot, '"status": "green"');
         assert.include(snapshot, '"attempts": 1');
         assert.strictEqual(watchState.nextAction, "complete");
         assert.strictEqual(watchState.lastSnapshotPath, relativeSnapshotPath);
@@ -3837,7 +3849,7 @@ describe("runtime workflows", () => {
           waitForTerminal: true,
         });
 
-        assert.strictEqual(recorded.status, "passed");
+        assert.strictEqual(recorded.status, "green");
         assert.strictEqual(recorded.attempts, 2);
         assert.isTrue(recorded.terminal);
         assert.strictEqual(checksCalls, 2);
@@ -3918,14 +3930,14 @@ describe("runtime workflows", () => {
           JSON.parse(yield* fs.readFileString(watched.watchStatePath)),
         );
 
-        assert.strictEqual(watched.status, "failed");
+        assert.strictEqual(watched.status, "failing");
         assert.strictEqual(watched.source, "recorded");
         assert.isTrue(watched.terminal);
         assert.strictEqual(watched.nextAction, "fix-failed-checks");
         assert.strictEqual(watched.failedChecks.length, 1);
         assert.strictEqual(watched.failedChecks[0]?.name, "test");
         assert.strictEqual(watchState.nextAction, "fix-failed-checks");
-        assert.strictEqual(watchState.lastStatus, "failed");
+        assert.strictEqual(watchState.lastStatus, "failing");
       }),
     );
 
@@ -3975,7 +3987,7 @@ describe("runtime workflows", () => {
           (event) => event.type === "GITHUB_CHECKS_RECORDED",
         );
 
-        assert.strictEqual(watched.status, "passed");
+        assert.strictEqual(watched.status, "green");
         assert.strictEqual(watched.source, "recorded");
         assert.strictEqual(watched.pr, "1");
         assert.strictEqual(watched.nextAction, "complete");
@@ -4019,7 +4031,7 @@ describe("runtime workflows", () => {
           rootDirectory: cwd,
         });
 
-        assert.strictEqual(watched.status, "passed");
+        assert.strictEqual(watched.status, "green");
         assert.strictEqual(watched.source, "already-terminal");
         assert.strictEqual(watched.nextAction, "complete");
         assert.strictEqual(calls, 0);
@@ -4316,6 +4328,47 @@ describe("runtime workflows", () => {
         assert.deepStrictEqual(
           summary.blockers.map((blocker) => blocker.kind),
           ["pending-checks", "awaiting-review"],
+        );
+      }),
+    );
+
+    it.effect("coordinates unavailable check provider as a distinct blocker", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Coordinate unavailable CI.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const summary = yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (input.args.join(" ").startsWith("pr checks")) {
+              return {
+                exitCode: 1,
+                stderr: "GraphQL: Resource not accessible by integration\n",
+                stdout: "",
+              };
+            }
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify(
+                prFeedbackView({
+                  reviewDecision: "APPROVED",
+                }),
+              ),
+            };
+          }),
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(summary.status, "blocked");
+        assert.strictEqual(summary.checksStatus, "provider-unavailable");
+        assert.strictEqual(summary.nextAction, "restore-check-provider");
+        assert.deepStrictEqual(
+          summary.blockers.map((blocker) => blocker.kind),
+          ["provider-unavailable"],
         );
       }),
     );

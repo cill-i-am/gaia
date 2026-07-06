@@ -204,7 +204,7 @@ function prLoopBlockers(
   if (
     prLoop.status === "ready" &&
     prLoop.nextAction === "ready-for-merge-decision" &&
-    prLoop.checksStatus === "passed"
+    prLoop.checksStatus === "green"
   ) {
     return [];
   }

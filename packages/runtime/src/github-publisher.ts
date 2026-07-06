@@ -91,13 +91,20 @@ const GitHubPrHeadShaSchema = Schema.NonEmptyString.pipe(
 type GitHubPrHeadSha = typeof GitHubPrHeadShaSchema.Type;
 
 export const GitHubChecksStatusSchema = Schema.Literals([
-  "no-checks",
+  "green",
+  "failing",
   "pending",
-  "passed",
-  "failed",
+  "no-checks-configured",
+  "provider-unavailable",
 ] as const);
 
 export type GitHubChecksStatus = typeof GitHubChecksStatusSchema.Type;
+
+const legacyGitHubChecksStatusMap = new Map<string, GitHubChecksStatus>([
+  ["failed", "failing"],
+  ["no-checks", "no-checks-configured"],
+  ["passed", "green"],
+]);
 
 export const GitHubPrFeedbackStatusSchema = Schema.Literals([
   "awaiting-review",
@@ -228,6 +235,7 @@ export const GitHubCiWatchNextActionSchema = Schema.Literals([
   "complete",
   "fix-failed-checks",
   "poll-again",
+  "restore-check-provider",
 ] as const);
 
 /** Next operator or agent action recommended by the CI watcher. */
@@ -292,6 +300,7 @@ export const GitHubPrLoopNextActionSchema = Schema.Literals([
   "fix-failed-checks",
   "ready-for-merge-decision",
   "respond-to-comments",
+  "restore-check-provider",
   "wait-for-ci",
 ] as const);
 
@@ -304,6 +313,7 @@ export const GitHubPrLoopBlockerKindSchema = Schema.Literals([
   "changes-requested",
   "failed-checks",
   "pending-checks",
+  "provider-unavailable",
   "pr-comments",
 ] as const);
 
@@ -487,17 +497,57 @@ const GitHubChecksSnapshotJson = Schema.toCodecJson(GitHubChecksSnapshot);
 const encodeGitHubChecksSnapshotJson = Schema.encodeSync(
   GitHubChecksSnapshotJson,
 );
-const parseGitHubChecksSnapshotJson = Schema.decodeUnknownSync(
+const decodeGitHubChecksSnapshotJson = Schema.decodeUnknownSync(
   GitHubChecksSnapshotJson,
 );
 const GitHubCiWatchStateJson = Schema.toCodecJson(GitHubCiWatchState);
 const encodeGitHubCiWatchStateJson = Schema.encodeSync(GitHubCiWatchStateJson);
-export const parseGitHubCiWatchStateJson =
-  Schema.decodeUnknownSync(GitHubCiWatchStateJson);
+const decodeGitHubCiWatchStateJson = Schema.decodeUnknownSync(
+  GitHubCiWatchStateJson,
+);
 const GitHubPrLoopStateJson = Schema.toCodecJson(GitHubPrLoopState);
 const encodeGitHubPrLoopStateJson = Schema.encodeSync(GitHubPrLoopStateJson);
-export const parseGitHubPrLoopStateJson =
-  Schema.decodeUnknownSync(GitHubPrLoopStateJson);
+const decodeGitHubPrLoopStateJson = Schema.decodeUnknownSync(
+  GitHubPrLoopStateJson,
+);
+
+export function parseGitHubCiWatchStateJson(input: unknown) {
+  return decodeGitHubCiWatchStateJson(normalizeGitHubChecksStatusFields(input));
+}
+
+export function parseGitHubPrLoopStateJson(input: unknown) {
+  return decodeGitHubPrLoopStateJson(normalizeGitHubChecksStatusFields(input));
+}
+
+function normalizeGitHubChecksStatusFields(input: unknown): unknown {
+  if (Array.isArray(input)) {
+    return input.map(normalizeGitHubChecksStatusFields);
+  }
+
+  if (input === null || typeof input !== "object") {
+    return input;
+  }
+
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    const normalizedValue = key === "status" ||
+      key === "lastStatus" ||
+      key === "checksStatus"
+      ? normalizeGitHubChecksStatusValue(value)
+      : value;
+    output[key] = normalizeGitHubChecksStatusFields(normalizedValue);
+  }
+
+  return output;
+}
+
+function normalizeGitHubChecksStatusValue(input: unknown): unknown {
+  if (typeof input !== "string") {
+    return input;
+  }
+
+  return legacyGitHubChecksStatusMap.get(input) ?? input;
+}
 
 export type CommandExecutionResult = {
   readonly exitCode: number;
@@ -949,27 +999,58 @@ export function inspectGitHubChecks(
     const rootDirectory = options.rootDirectory ?? ".";
     const runner = options.commandRunner ?? nodeCommandRunner;
     const pr = yield* parseGitHubPullRequestSelectorEffect(prInput);
-    const result = yield* runCommand(runner, rootDirectory, "gh", [
+    const checked = yield* runCommand(runner, rootDirectory, "gh", [
       "pr",
       "checks",
       pr,
       "--json",
       "name,state,workflow,link",
-    ]);
+    ]).pipe(
+      Effect.map((result) => ({ result, type: "result" as const })),
+      Effect.catchTag("GaiaRuntimeError", () =>
+        Effect.succeed({
+          summary: providerUnavailableGitHubChecksSummary(pr),
+          type: "summary" as const,
+        }),
+      ),
+    );
+
+    if (checked.type === "summary") {
+      return checked.summary;
+    }
+
+    const { result } = checked;
 
     if (result.exitCode !== 0 && isNoChecksOutput(result)) {
       return GitHubChecksSummary.make({
         checks: [],
         pr,
-        status: "no-checks",
+        status: "no-checks-configured",
       });
     }
 
-    const checks = yield* parseGitHubChecks(result);
+    if (result.exitCode !== 0) {
+      return providerUnavailableGitHubChecksSummary(pr);
+    }
+
+    const parsed = yield* parseGitHubChecks(result).pipe(
+      Effect.map((checks) => ({ checks, type: "checks" as const })),
+      Effect.catchTag("GaiaRuntimeError", () =>
+        Effect.succeed({
+          summary: providerUnavailableGitHubChecksSummary(pr),
+          type: "summary" as const,
+        }),
+      ),
+    );
+
+    if (parsed.type === "summary") {
+      return parsed.summary;
+    }
+
     return GitHubChecksSummary.make({
-      checks,
+      checks: parsed.checks,
       pr,
-      status: classifyChecks(checks),
+      status: classifyChecks(parsed.checks),
     });
   });
 }
@@ -1817,12 +1898,22 @@ function gitHubPrLoopBlockers(
     );
   }
 
-  if (checks.status === "failed") {
+  if (checks.status === "failing") {
     blockers.push(
       GitHubPrLoopBlocker.make({
         action: "fix-failed-checks",
         kind: "failed-checks",
         summary: `${failedChecks(checks.checks).length} check(s) failed.`,
+      }),
+    );
+  }
+
+  if (checks.status === "provider-unavailable") {
+    blockers.push(
+      GitHubPrLoopBlocker.make({
+        action: "restore-check-provider",
+        kind: "provider-unavailable",
+        summary: "GitHub check provider was unavailable.",
       }),
     );
   }
@@ -1872,6 +1963,7 @@ function gitHubPrLoopStatus(
       (blocker) =>
         blocker.kind === "changes-requested" ||
         blocker.kind === "failed-checks" ||
+        blocker.kind === "provider-unavailable" ||
         blocker.kind === "pr-comments",
     )
   ) {
@@ -3013,7 +3105,8 @@ function readGitHubChecksSnapshot(
     });
 
     return yield* Effect.try({
-      try: () => parseGitHubChecksSnapshotJson(parsed),
+      try: () =>
+        decodeGitHubChecksSnapshotJson(normalizeGitHubChecksStatusFields(parsed)),
       catch: (cause) =>
         makeRuntimeError({
           cause,
@@ -3247,6 +3340,16 @@ function isNoChecksOutput(result: CommandExecutionResult) {
   return output.includes("no checks reported");
 }
 
+function providerUnavailableGitHubChecksSummary(
+  pr: GitHubPullRequestSelector,
+) {
+  return GitHubChecksSummary.make({
+    checks: [],
+    pr,
+    status: "provider-unavailable",
+  });
+}
+
 function parseGitHubChecks(result: CommandExecutionResult) {
   return Effect.gen(function* () {
     const parsed = yield* Effect.try({
@@ -3279,7 +3382,7 @@ function classifyChecks(
   checks: ReadonlyArray<GitHubCheckRun>,
 ): GitHubChecksStatus {
   if (checks.length === 0) {
-    return "no-checks";
+    return "no-checks-configured";
   }
 
   if (checks.some((check) => isPendingCheckState(check.state))) {
@@ -3287,26 +3390,28 @@ function classifyChecks(
   }
 
   if (checks.every((check) => isPassingCheckState(check.state))) {
-    return "passed";
+    return "green";
   }
 
-  return "failed";
+  return "failing";
 }
 
 function isTerminalGitHubChecksStatus(status: GitHubChecksStatus) {
-  return status !== "pending";
+  return status !== "pending" && status !== "provider-unavailable";
 }
 
 function nextActionForGitHubChecksStatus(
   status: GitHubChecksStatus,
 ): GitHubCiWatchNextAction {
   switch (status) {
-    case "failed":
+    case "failing":
       return "fix-failed-checks";
     case "pending":
       return "poll-again";
-    case "no-checks":
-    case "passed":
+    case "provider-unavailable":
+      return "restore-check-provider";
+    case "green":
+    case "no-checks-configured":
       return "complete";
   }
 }

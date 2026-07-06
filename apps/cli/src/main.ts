@@ -1102,7 +1102,7 @@ function formatWorkspacePrQualityGateItem(item: WorkspacePrQualityGateItem) {
 
 function renderGitHubChecksSummary(summary: GitHubChecksSummary) {
   const lines = [
-    `checks: ${summary.status}`,
+    `checks: ${formatGitHubChecksStatus(summary.status)}`,
     `outcome: ${gitHubChecksOutcome(summary.status)}`,
     `pr: ${summary.pr}`,
     `count: ${summary.checks.length}`,
@@ -1122,7 +1122,7 @@ function renderGitHubChecksSummary(summary: GitHubChecksSummary) {
 
 function renderGitHubChecksRecord(record: GitHubChecksRecord) {
   const lines = [
-    `checks: ${record.status}`,
+    `checks: ${formatGitHubChecksStatus(record.status)}`,
     `outcome: ${gitHubChecksOutcome(record.status)}`,
     `run: ${record.runId}`,
     `pr: ${record.pr}`,
@@ -1147,7 +1147,7 @@ function renderGitHubChecksRecord(record: GitHubChecksRecord) {
 
 function renderGitHubCiWatchSummary(summary: GitHubCiWatchSummary) {
   const lines = [
-    `ci watch: ${summary.status}`,
+    `ci watch: ${formatGitHubChecksStatus(summary.status)}`,
     `outcome: ${gitHubChecksOutcome(summary.status)}`,
     `run: ${summary.runId}`,
     `pr: ${summary.pr}`,
@@ -1210,7 +1210,7 @@ function renderGitHubPrLoopSummary(summary: GitHubPrLoopSummary) {
     ...(summary.headSha === undefined ? [] : [`head: ${summary.headSha}`]),
     `next action: ${summary.nextAction}`,
     `state: ${summary.statePath}`,
-    `checks: ${summary.checksStatus} (${summary.checksPath})`,
+    `checks: ${formatGitHubChecksStatus(summary.checksStatus)} (${summary.checksPath})`,
     `feedback: ${summary.feedbackStatus} (${summary.feedbackPath})`,
     `blockers: ${summary.blockerCount}`,
   ];
@@ -1229,15 +1229,21 @@ function renderGitHubPrLoopSummary(summary: GitHubPrLoopSummary) {
 }
 
 function gitHubChecksOutcome(status: GitHubChecksSummary["status"]) {
+  return formatGitHubChecksStatus(status);
+}
+
+function formatGitHubChecksStatus(status: GitHubChecksSummary["status"]) {
   switch (status) {
-    case "failed":
-      return "failed";
-    case "no-checks":
-      return "no-checks";
-    case "passed":
+    case "failing":
+      return "failing";
+    case "green":
       return "green";
+    case "no-checks-configured":
+      return "no checks configured";
     case "pending":
       return "pending";
+    case "provider-unavailable":
+      return "provider unavailable";
   }
 }
 
@@ -1254,8 +1260,12 @@ function gitHubFeedbackOutcome(status: GitHubPrFeedbackSummary["status"]) {
 }
 
 function gitHubPrLoopOutcome(summary: GitHubPrLoopSummary) {
-  if (summary.checksStatus === "failed") {
-    return "failed";
+  if (summary.checksStatus === "failing") {
+    return "failing";
+  }
+
+  if (summary.checksStatus === "provider-unavailable") {
+    return "provider unavailable";
   }
 
   if (
@@ -1269,8 +1279,8 @@ function gitHubPrLoopOutcome(summary: GitHubPrLoopSummary) {
     return "awaiting-review";
   }
 
-  if (summary.checksStatus === "no-checks") {
-    return "no-checks";
+  if (summary.checksStatus === "no-checks-configured") {
+    return "no checks configured";
   }
 
   if (summary.status === "ready") {
