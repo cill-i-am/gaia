@@ -11,6 +11,10 @@ import {
   selectedSkillNames,
   type SkillManifest,
 } from "./skill-manifest.js";
+import {
+  classifyDomainReferences,
+  type WorkerPlanDomainReference,
+} from "./worker-plan.js";
 
 const RunReportJson = Schema.toCodecJson(RunReport);
 const encodeRunReport = Schema.encodeSync(RunReportJson);
@@ -65,7 +69,12 @@ export function writeReport(input: {
 
     yield* fs.writeFileString(
       input.paths.reportMarkdown,
-      markdownReport(report, input.retrospective, input.evidencePromotion),
+      markdownReport(
+        report,
+        input.retrospective,
+        input.evidencePromotion,
+        classifyDomainReferences(input.spec.body),
+      ),
     );
     yield* fs.writeFileString(
       input.paths.reportJson,
@@ -80,6 +89,7 @@ function markdownReport(
   report: RunReport,
   retrospective: DogfoodRetrospective | undefined,
   evidencePromotion: EvidencePromotion | undefined,
+  domainReferences: ReadonlyArray<WorkerPlanDomainReference>,
 ): string {
   const artifacts = report.artifacts
     .map((artifact) => `- ${artifact}`)
@@ -122,6 +132,12 @@ function markdownReport(
           "Cleanup guidance:",
           "Raw run state is disposable only after the promoted Markdown has been copied into Linear/PR evidence or the promotion status is otherwise marked complete.",
         ].join("\n");
+  const domainReferenceSection =
+    domainReferences.length === 0
+      ? "No domain references classified from the source spec."
+      : domainReferences
+          .map((reference) => `- ${reference.kind}: \`${reference.value}\``)
+          .join("\n");
 
   return `# Gaia Run ${report.runId}
 
@@ -142,6 +158,10 @@ ${retrospectiveSection}
 ## Evidence Promotion
 
 ${promotionSection}
+
+## Domain References
+
+${domainReferenceSection}
 
 ## Evidence
 

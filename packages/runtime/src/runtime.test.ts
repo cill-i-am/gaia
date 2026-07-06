@@ -274,6 +274,89 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("separates executable checks from domain references in worker plans", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          specPath,
+          [
+            "---",
+            "title: Command reference classification",
+            "---",
+            "",
+            "Goal:",
+            "- Keep domain references inspectable without turning them into checks.",
+            "",
+            "Verification:",
+            "- `POST /runs` is an API route, not a shell command.",
+            "- `GET /health` is also an API route.",
+            "- `HttpApiBuilder.group` should stay a code reference.",
+            "- `@effect/platform-node` should stay a package reference.",
+            "- `packages/runtime/src/worker-plan.ts` should stay a file reference.",
+            "- `runId` should stay a quoted symbol.",
+            "- `pnpm --filter @gaia/runtime test` passes.",
+            "- pnpm build",
+            "",
+            "```sh",
+            "node ./scripts/check.mjs",
+            "pnpm check",
+            "pnpm test",
+            "```",
+            "",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const workerPlan = parseWorkerPlanJson(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/worker-plan.json`),
+          ),
+        );
+        const workerPlanMarkdown = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-plan.md`,
+        );
+        const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+
+        assert.deepEqual(
+          workerPlan.verificationChecks.map((check) => check.command),
+          [
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            "pnpm --filter @gaia/runtime test",
+            "pnpm build",
+            "node ./scripts/check.mjs",
+            "pnpm check",
+            "pnpm test",
+          ],
+        );
+        assert.deepEqual(
+          workerPlan.domainReferences.map((reference) => [
+            reference.kind,
+            reference.value,
+          ]),
+          [
+            ["http-route", "POST /runs"],
+            ["http-route", "GET /health"],
+            ["effect-api", "HttpApiBuilder.group"],
+            ["package-name", "@effect/platform-node"],
+            ["file-path", "packages/runtime/src/worker-plan.ts"],
+            ["quoted-symbol", "runId"],
+          ],
+        );
+        assert.include(workerPlanMarkdown, "## Domain References");
+        assert.include(workerPlanMarkdown, "- http-route: `POST /runs`");
+        assert.include(workerPlanMarkdown, "- effect-api: `HttpApiBuilder.group`");
+        assert.include(reportMarkdown, "## Domain References");
+        assert.include(reportMarkdown, "- http-route: `POST /runs`");
+      }),
+    );
+
     it.effect("reports status for the latest run", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
