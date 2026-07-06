@@ -263,7 +263,12 @@ function executeAcceptedRun(input: {
       ),
     );
     const harnessName = options.harnessName ?? defaultHarnessName;
-    yield* writeWorkerPlan({ harnessName, paths, runId, spec }).pipe(
+    const workerPlan = yield* writeWorkerPlan({
+      harnessName,
+      paths,
+      runId,
+      spec,
+    }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
         recordRunFailure(runId, paths, "reviewing", error),
       ),
@@ -409,6 +414,7 @@ function executeAcceptedRun(input: {
     );
     yield* writeReport({
       evidencePromotion,
+      inferredRecommendations: workerPlan.inferredRecommendations,
       paths,
       retrospective,
       runId,

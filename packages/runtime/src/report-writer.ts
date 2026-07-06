@@ -12,6 +12,10 @@ import {
   type SkillManifest,
 } from "./skill-manifest.js";
 import {
+  markdownInferredRecommendations,
+  type WorkerPlanInferredRecommendations,
+} from "./skill-review-inference.js";
+import {
   classifyDomainReferences,
   type WorkerPlanDomainReference,
 } from "./worker-plan.js";
@@ -20,6 +24,7 @@ const RunReportJson = Schema.toCodecJson(RunReport);
 const encodeRunReport = Schema.encodeSync(RunReportJson);
 
 export function writeReport(input: {
+  readonly inferredRecommendations: WorkerPlanInferredRecommendations;
   readonly paths: RunPaths;
   readonly evidencePromotion?: EvidencePromotion | undefined;
   readonly runId: RunId;
@@ -73,6 +78,7 @@ export function writeReport(input: {
         report,
         input.retrospective,
         input.evidencePromotion,
+        input.inferredRecommendations,
         classifyDomainReferences(input.spec.body),
       ),
     );
@@ -89,6 +95,7 @@ function markdownReport(
   report: RunReport,
   retrospective: DogfoodRetrospective | undefined,
   evidencePromotion: EvidencePromotion | undefined,
+  inferredRecommendations: WorkerPlanInferredRecommendations,
   domainReferences: ReadonlyArray<WorkerPlanDomainReference>,
 ): string {
   const artifacts = report.artifacts
@@ -96,8 +103,16 @@ function markdownReport(
     .join("\n");
   const selectedSkills =
     report.selectedSkills.length === 0
-      ? "No skills selected for this run."
-      : report.selectedSkills.map((skill) => `- ${skill}`).join("\n");
+      ? "No explicit manifest-selected skills were provided for this run."
+      : [
+          "Explicit manifest-selected skills:",
+          ...report.selectedSkills.map((skill) => `- ${skill}`),
+        ].join("\n");
+  const inferredRecommendationSection = [
+    "Inferred recommendations are additive planning evidence and do not replace explicit manifests or orchestrator judgment.",
+    "",
+    markdownInferredRecommendations(inferredRecommendations),
+  ].join("\n");
 
   const retrospectiveSection =
     retrospective === undefined
@@ -150,6 +165,10 @@ ${report.summary}
 ## Selected Skills
 
 ${selectedSkills}
+
+## Inferred Recommendations
+
+${inferredRecommendationSection}
 
 ## Dogfood Retrospective
 

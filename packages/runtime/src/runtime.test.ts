@@ -407,6 +407,7 @@ describe("runtime workflows", () => {
         const workerPlanMarkdown = yield* fs.readFileString(
           `${summary.runDirectory}/worker-plan.md`,
         );
+        const reportMarkdown = yield* fs.readFileString(summary.reportPath);
         const likelyFiles = workerPlan.planningContext.likelyFiles.map(
           (file) => file.path,
         );
@@ -423,6 +424,24 @@ describe("runtime workflows", () => {
           (workspacePackage) => workspacePackage.name,
         );
         const traps = workerPlan.planningContext.outOfScopeTraps;
+        const inferredSkills = workerPlan.inferredRecommendations.skills.map(
+          (recommendation) => recommendation.name,
+        );
+        const inferredReviewStack =
+          workerPlan.inferredRecommendations.reviewStack.map(
+            (recommendation) => recommendation.name,
+          );
+        const inferredVerification =
+          workerPlan.inferredRecommendations.verification.map(
+            (recommendation) => recommendation.check,
+          );
+        const effectSkill = workerPlan.inferredRecommendations.skills.find(
+          (recommendation) => recommendation.name === "effect-ts",
+        );
+        const reviewSwarm =
+          workerPlan.inferredRecommendations.reviewStack.find(
+            (recommendation) => recommendation.name === "review-swarm",
+          );
 
         assert.include(likelyFiles, "packages/core/src/server-api.ts");
         assert.include(likelyFiles, "apps/server/src/api.ts");
@@ -465,6 +484,36 @@ describe("runtime workflows", () => {
         assert.include(workerPlanMarkdown, "packages/core/src/server-api.ts");
         assert.include(workerPlanMarkdown, "packages/runtime/AGENTS.md");
         assert.include(workerPlanMarkdown, "apps/server/src/api.test.ts");
+        assert.includeMembers(inferredSkills, [
+          "effect-ts",
+          "production-ready",
+          "code-review",
+          "simplify",
+          "review-swarm",
+        ]);
+        assert.includeMembers(inferredReviewStack, [
+          "effect-ts",
+          "production-ready",
+          "code-review",
+          "simplify",
+          "review-swarm",
+        ]);
+        assert.includeMembers(inferredVerification, [
+          "Focused core contract tests",
+          "Focused server tests",
+          "Focused CLI tests",
+          "Built server binary smoke",
+        ]);
+        assert.isAtLeast(effectSkill?.reasons.length ?? 0, 1);
+        assert.isAtLeast(effectSkill?.sources.length ?? 0, 1);
+        assert.isAtLeast(reviewSwarm?.sources.length ?? 0, 3);
+        assert.include(workerPlanMarkdown, "## Inferred Recommendations");
+        assert.include(workerPlanMarkdown, "effect-ts");
+        assert.include(workerPlanMarkdown, "review-swarm");
+        assert.include(workerPlanMarkdown, "Built server binary smoke");
+        assert.include(reportMarkdown, "## Inferred Recommendations");
+        assert.include(reportMarkdown, "effect-ts");
+        assert.include(reportMarkdown, "review-swarm");
         assert.notInclude(
           workerPlan.verificationChecks.map((check) => check.command).join("\n"),
           "POST /runs",
@@ -524,6 +573,17 @@ describe("runtime workflows", () => {
         const packageNames = workerPlan.planningContext.packages.map(
           (workspacePackage) => workspacePackage.name,
         );
+        const inferredSkills = workerPlan.inferredRecommendations.skills.map(
+          (recommendation) => recommendation.name,
+        );
+        const inferredReviewStack =
+          workerPlan.inferredRecommendations.reviewStack.map(
+            (recommendation) => recommendation.name,
+          );
+        const inferredVerification =
+          workerPlan.inferredRecommendations.verification.map(
+            (recommendation) => recommendation.check,
+          );
 
         assert.include(likelyFiles, "packages/core/src/evidence-promotion.ts");
         assert.include(likelyFiles, "packages/runtime/src/evidence-promotion.ts");
@@ -534,6 +594,96 @@ describe("runtime workflows", () => {
         assert.notInclude(packageNames, "@gaia/cli");
         assert.notInclude(instructionScopes, "apps/AGENTS.md");
         assert.notInclude(instructionScopes, "apps/cli/AGENTS.md");
+        assert.includeMembers(inferredSkills, [
+          "production-ready",
+          "code-review",
+          "simplify",
+        ]);
+        assert.includeMembers(inferredReviewStack, [
+          "production-ready",
+          "code-review",
+          "simplify",
+        ]);
+        assert.notInclude(inferredSkills, "effect-ts");
+        assert.notInclude(inferredReviewStack, "review-swarm");
+        assert.notInclude(inferredVerification, "Focused server tests");
+        assert.notInclude(inferredVerification, "Built server binary smoke");
+      }),
+    );
+
+    it.effect("keeps docs and template-only inference lightweight", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const source = `${cwd}/source`;
+        const specPath = `${cwd}/spec.md`;
+        yield* writeReferencePlanningFixture(source);
+        yield* fs.writeFileString(
+          specPath,
+          [
+            "---",
+            "title: Docs template planning update",
+            "---",
+            "",
+            "Goal:",
+            "- Update worker handoff template language for clearer evidence prompts.",
+            "",
+            "Likely touched surfaces:",
+            "- docs/agents/worker-thread-template.md",
+            "- docs/agents/reviewer-thread-template.md",
+            "",
+            "Acceptance criteria:",
+            "- Template language remains source-backed and reviewable.",
+            "- No runtime behavior changes are introduced.",
+            "",
+            "Out of scope:",
+            "- Do not add live reviewer threads or automatic skill installation.",
+            "",
+            "Verification:",
+            "- Review the docs/template diff for durable workflow wording.",
+            "",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          rootDirectory: cwd,
+          workspaceSource: localDirectoryWorkspaceSource(source),
+        });
+        const workerPlan = parseWorkerPlanJson(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/worker-plan.json`),
+          ),
+        );
+        const workerPlanMarkdown = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-plan.md`,
+        );
+        const inferredSkills = workerPlan.inferredRecommendations.skills.map(
+          (recommendation) => recommendation.name,
+        );
+        const inferredReviewStack =
+          workerPlan.inferredRecommendations.reviewStack.map(
+            (recommendation) => recommendation.name,
+          );
+        const inferredVerification =
+          workerPlan.inferredRecommendations.verification.map(
+            (recommendation) => recommendation.check,
+          );
+
+        assert.includeMembers(inferredSkills, [
+          "production-ready",
+          "code-review",
+          "simplify",
+        ]);
+        assert.includeMembers(inferredReviewStack, [
+          "production-ready",
+          "code-review",
+          "simplify",
+        ]);
+        assert.notInclude(inferredSkills, "effect-ts");
+        assert.notInclude(inferredReviewStack, "review-swarm");
+        assert.deepEqual(inferredVerification, ["Docs/template artifact review"]);
+        assert.include(workerPlanMarkdown, "docs/agents/worker-thread-template.md");
+        assert.include(workerPlanMarkdown, "Docs/template artifact review");
       }),
     );
 
@@ -1236,6 +1386,11 @@ describe("runtime workflows", () => {
           `${summary.runDirectory}/report.json`,
         );
         const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+        const workerPlan = parseWorkerPlanJson(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/worker-plan.json`),
+          ),
+        );
 
         assert.include(skillManifest, '"name": "coding-standards"');
         assert.strictEqual(skillBundle.status, "ready");
@@ -1263,6 +1418,14 @@ describe("runtime workflows", () => {
         assert.include(reportJson, '"selectedSkills": [');
         assert.include(reportJson, '"coding-standards"');
         assert.include(reportMarkdown, "- coding-standards");
+        assert.include(reportMarkdown, "Explicit manifest-selected skills");
+        assert.include(reportMarkdown, "Inferred recommendations are additive");
+        assert.notInclude(
+          workerPlan.inferredRecommendations.skills.map(
+            (recommendation) => recommendation.name,
+          ),
+          "coding-standards",
+        );
         assert.include(reportMarkdown, "skill-manifest.json");
         assert.include(reportMarkdown, "skill-bundle.json");
       }),
@@ -5552,6 +5715,14 @@ function writeReferencePlanningFixture(root: string) {
       [
         "docs/post-harness-roadmap.md",
         "# Post Harness Roadmap\n\nIntroduce gaia server while preserving direct local runtime commands.\n",
+      ],
+      [
+        "docs/agents/worker-thread-template.md",
+        "# Worker Thread Template\n\nRecord branch, evidence, review stack, verification, and cleanup expectations.\n",
+      ],
+      [
+        "docs/agents/reviewer-thread-template.md",
+        "# Reviewer Thread Template\n\nReview spec adherence, simplicity, standards, tests, and residual risk.\n",
       ],
     ];
 
