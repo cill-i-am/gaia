@@ -12,6 +12,22 @@ export {
   type EvidencePromotionStatus,
 } from "./evidence-promotion.js";
 export {
+  FactoryDelegationFindingCodeSchema,
+  FactoryDelegationFindingSeveritySchema,
+  FactoryDelegationPromptValidation,
+  FactoryDelegationPromptValidationFinding,
+  FactoryDelegationPromptValidationInput,
+  FactoryDelegationValidationStatusSchema,
+  FactoryLaneRoleSchema,
+  parseFactoryDelegationPromptValidation,
+  parseFactoryDelegationPromptValidationInput,
+  validateFactoryDelegationPrompt,
+  type FactoryDelegationFindingCode,
+  type FactoryDelegationFindingSeverity,
+  type FactoryDelegationValidationStatus,
+  type FactoryLaneRole,
+} from "./factory-delegation.js";
+export {
   EventTypeSchema,
   FailureStageSchema,
   GaiaFailure,

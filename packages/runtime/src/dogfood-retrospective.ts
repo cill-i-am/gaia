@@ -453,18 +453,26 @@ function prLoopFindings(
     });
   }
 
-  if (checksStatus === "failed" || checksStatus === "pending") {
+  if (
+    checksStatus === "failing" ||
+    checksStatus === "failed" ||
+    checksStatus === "pending" ||
+    checksStatus === "provider-unavailable"
+  ) {
+    const failingChecks = checksStatus === "failing" || checksStatus === "failed";
     findings.push({
       category: "verification",
       lesson:
         "PR checks should be recorded with terminal status before merge confidence is claimed.",
-      severity: checksStatus === "failed" ? "blocker" : "warning",
+      severity: failingChecks || checksStatus === "provider-unavailable"
+        ? "blocker"
+        : "warning",
       sources: [source],
       summary: `GitHub checks are ${checksStatus} in the PR-loop state.`,
     });
   }
 
-  if (checksStatus === "no-checks") {
+  if (checksStatus === "no-checks-configured" || checksStatus === "no-checks") {
     findings.push({
       category: "verification",
       lesson:

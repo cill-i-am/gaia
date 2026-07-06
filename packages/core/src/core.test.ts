@@ -6,12 +6,14 @@ import {
   EvidencePromotionReportPaths,
   EvidencePromotionVerificationSummary,
   PromotedEvidenceItem,
+  parseFactoryDelegationPromptValidationInput,
   makeRunEvent,
   parseEvidencePromotion,
   parseMarkdownSpec,
   parseRunId,
   replayRunEvents,
   snapshotFromReplay,
+  validateFactoryDelegationPrompt,
 } from "./index.js";
 
 describe("core contracts", () => {
@@ -78,6 +80,152 @@ describe("core contracts", () => {
     assert.strictEqual(parseEvidencePromotion(serialized).runId, runId);
     assert.strictEqual(promotion.cleanupStatus, "not-completed");
     assert.strictEqual(promotion.promotionStatus, "pending-promotion");
+  });
+
+  it("flags dogfood requirements on direct fallback lanes", () => {
+    const validation = validateFactoryDelegationPrompt({
+      laneRole: "direct-fallback",
+      promptMarkdown: [
+        "Lane role: direct fallback.",
+        "Base commit: e9e2f1ee79f15fe3949703277f0fe83bd6a19634.",
+        "Use isolated worktree branch codex/gaia-20.",
+        "Clean up generated .gaia run state before handoff.",
+        "Wait for both A/B PRs before comparing lanes.",
+        "Record Gaia dogfood run IDs and a dogfood retrospective.",
+      ].join("\n"),
+      requiresComparisonWait: true,
+    });
+
+    assert.strictEqual(validation.status, "failed");
+    assert.include(
+      validation.findings.map((finding) => finding.code),
+      "dogfood-requirement-on-non-dogfood-lane",
+    );
+  });
+
+  it("flags dogfood lanes missing Gaia evidence expectations", () => {
+    const validation = validateFactoryDelegationPrompt({
+      laneRole: "gaia-dogfood",
+      promptMarkdown: [
+        "Lane role: Gaia dogfood.",
+        "Base commit: e9e2f1ee79f15fe3949703277f0fe83bd6a19634.",
+        "Use isolated worktree branch codex/gaia-20.",
+        "Clean up generated .gaia run state before handoff.",
+        "Wait for both A/B PRs before comparing lanes.",
+      ].join("\n"),
+      requiresComparisonWait: true,
+    });
+
+    assert.strictEqual(validation.status, "failed");
+    assert.sameMembers(
+      validation.findings.map((finding) => finding.code),
+      [
+        "dogfood-run-evidence-missing",
+        "dogfood-retrospective-missing",
+        "dogfood-promotion-evidence-missing",
+      ],
+    );
+  });
+
+  it("flags A/B lanes missing base, cleanup, and comparison-wait guidance", () => {
+    const validation = validateFactoryDelegationPrompt({
+      laneRole: "direct-fallback",
+      promptMarkdown: [
+        "Lane role: direct fallback.",
+        "Use an isolated worktree branch codex/gaia-20.",
+      ].join("\n"),
+      requiresComparisonWait: true,
+    });
+
+    assert.strictEqual(validation.status, "failed");
+    assert.sameMembers(
+      validation.findings.map((finding) => finding.code),
+      [
+        "base-commit-missing",
+        "cleanup-rules-missing",
+        "comparison-wait-rules-missing",
+      ],
+    );
+  });
+
+  it("flags A/B lanes missing isolated worktree and branch guidance", () => {
+    const validation = validateFactoryDelegationPrompt({
+      laneRole: "direct-fallback",
+      promptMarkdown: [
+        "Lane role: direct fallback.",
+        "Base commit: e9e2f1ee79f15fe3949703277f0fe83bd6a19634.",
+        "Clean up generated .gaia run state before handoff.",
+        "Wait for both A/B PRs before comparing lanes.",
+      ].join("\n"),
+      requiresComparisonWait: true,
+    });
+
+    assert.deepEqual(
+      validation.findings.map((finding) => finding.code),
+      ["worktree-branch-expectations-missing"],
+    );
+  });
+
+  it("flags prompts that do not declare the selected lane role", () => {
+    const validation = validateFactoryDelegationPrompt({
+      laneRole: "reviewer-spec",
+      promptMarkdown: "Read the PR and report findings without editing files.",
+      requiresComparisonWait: false,
+    });
+
+    assert.deepEqual(
+      validation.findings.map((finding) => finding.code),
+      ["lane-role-missing"],
+    );
+  });
+
+  it("flags prompts with conflicting lane role declarations", () => {
+    const validation = validateFactoryDelegationPrompt({
+      laneRole: "direct-fallback",
+      promptMarkdown: [
+        "Lane role: direct fallback.",
+        "Lane role: Gaia dogfood.",
+        "Base commit: e9e2f1ee79f15fe3949703277f0fe83bd6a19634.",
+        "Use isolated worktree branch codex/gaia-20.",
+        "Clean up generated .gaia run state before handoff.",
+        "Wait for both A/B PRs before comparing lanes.",
+      ].join("\n"),
+      requiresComparisonWait: true,
+    });
+
+    assert.strictEqual(validation.status, "failed");
+    assert.include(
+      validation.findings.map((finding) => finding.code),
+      "lane-role-conflict",
+    );
+  });
+
+  it("passes a dogfood A/B lane with the required evidence and wait rules", () => {
+    const validation = validateFactoryDelegationPrompt({
+      laneRole: "gaia-dogfood",
+      promptMarkdown: [
+        "Lane role: Gaia dogfood.",
+        "Base commit: e9e2f1ee79f15fe3949703277f0fe83bd6a19634.",
+        "Use isolated worktree branch codex/gaia-20.",
+        "Promote Gaia run IDs and run artifact evidence to Linear/PR text before cleanup.",
+        "Write a dogfood retrospective.",
+        "Wait for both A/B PRs before comparing lanes.",
+      ].join("\n"),
+      requiresComparisonWait: true,
+    });
+
+    assert.strictEqual(validation.status, "passed");
+    assert.deepEqual(validation.findings, []);
+  });
+
+  it("accepts valid delegation validation input lane roles", () => {
+    const input = parseFactoryDelegationPromptValidationInput({
+      laneRole: "ci-watch",
+      promptMarkdown: "Lane role: CI watch. Monitor the PR checks and comments.",
+      requiresComparisonWait: false,
+    });
+
+    assert.strictEqual(input.laneRole, "ci-watch");
   });
 
   it("replays the durable event log to the current state", () => {
@@ -265,7 +413,7 @@ describe("core contracts", () => {
       durableSnapshot.context.githubChecksPath,
       "github-checks/checks-6.json",
     );
-    assert.strictEqual(durableSnapshot.context.githubChecksStatus, "passed");
+    assert.strictEqual(durableSnapshot.context.githubChecksStatus, "green");
     assert.strictEqual(durableSnapshot.context.githubPullRequest, "1");
   });
 
