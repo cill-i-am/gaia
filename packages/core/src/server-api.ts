@@ -366,7 +366,7 @@ export const RunsGroup = HttpApiGroup.make("runs")
   .add(
     HttpApiEndpoint.post("createRun", "/runs", {
       error: LocalRunCreateErrorResponse,
-      payload: [HttpApiSchema.NoContent, CreateRunRequest],
+      payload: [CreateRunRequest, HttpApiSchema.NoContent],
       success: CreateRunAcceptedResponse.pipe(HttpApiSchema.status(202)),
     }),
   )
