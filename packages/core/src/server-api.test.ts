@@ -77,7 +77,7 @@ describe("LocalGaiaServerApi contract", () => {
     );
   });
 
-  it("models path params and future SSE metadata", () => {
+  it("models logical artifact path params and SSE metadata", () => {
     const artifactParameters =
       LocalGaiaServerOpenApi.paths["/runs/{runId}/artifacts/{artifactId}"]?.get
         ?.parameters;
@@ -95,7 +95,7 @@ describe("LocalGaiaServerApi contract", () => {
       in: "path",
       name: "artifactId",
       required: true,
-      schema: { type: "string" },
+      schema: { $ref: "#/components/schemas/LocalRunArtifactId" },
     });
     assert.deepInclude(artifactParameters, {
       in: "path",
@@ -109,6 +109,50 @@ describe("LocalGaiaServerApi contract", () => {
     });
     assert.isObject(stream);
     assert.strictEqual(stream?.encoding, "sse");
+    assert.deepEqual(
+      LocalGaiaServerOpenApi.components?.schemas?.LocalRunArtifactId,
+      {
+        enum: [
+          "input",
+          "worker-plan",
+          "plan-review",
+          "worker-log",
+          "worker-result",
+          "verification-result",
+          "evidence-review",
+          "report",
+          "report-json",
+          "events",
+          "snapshots",
+        ],
+        type: "string",
+      },
+    );
+    assert.deepEqual(
+      LocalGaiaServerOpenApi.components?.schemas?.LocalRunApiNotFound,
+      {
+        additionalProperties: false,
+        properties: {
+          artifactName: { type: "string" },
+          code: {
+            enum: [
+              "ArtifactNotAllowed",
+              "ArtifactNotFound",
+              "EndpointNotFound",
+              "RunNotFound",
+            ],
+            type: "string",
+          },
+          message: { allOf: [{ minLength: 1 }], type: "string" },
+          pathSegment: { type: "string" },
+          recoverable: { type: "boolean" },
+          runId: { $ref: "#/components/schemas/RunId" },
+          status: { enum: [404], type: "number" },
+        },
+        required: ["message", "recoverable", "code", "status"],
+        type: "object",
+      },
+    );
   });
 
   it("rejects path-bearing and unknown create request fields at decode", () => {

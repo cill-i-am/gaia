@@ -1,5 +1,8 @@
 import {
   EventTypeSchema,
+  LocalRunApiErrorStatusSchema,
+  LocalRunArtifactIdSchema,
+  LocalRunReadDiagnosticCodeSchema,
   RunEvent,
   RunIdSchema,
   RunStateSchema,
@@ -10,20 +13,10 @@ import {
   type CommandSummary,
   type LocalRunArtifact,
   type LocalRunEvents,
-  type LocalRunReadDiagnostic,
   type LocalRunSummary,
 } from "@gaia/runtime";
 import { Effect, Schema } from "effect";
 
-const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
-    "ArtifactNotAllowed",
-    "ArtifactNotFound",
-    "InvalidRunDirectory",
-    "InvalidRunId",
-    "RunHasNoEvents",
-    "RunNotFound",
-    "RunUnreadable",
-  ] as const);
 const LocalRunStatusSchema = Schema.Literals([
   "completed",
   "failed",
@@ -46,10 +39,22 @@ class LocalRunReadDiagnosticDto extends Schema.Class<LocalRunReadDiagnosticDto>(
   runId: Schema.optionalKey(RunIdSchema),
 }) {}
 
+class LocalRunApiErrorDto extends Schema.Class<LocalRunApiErrorDto>(
+  "LocalRunApiErrorDto",
+)({
+  artifactName: Schema.optionalKey(Schema.String),
+  code: LocalRunReadDiagnosticCodeSchema,
+  message: Schema.String,
+  pathSegment: Schema.optionalKey(Schema.String),
+  recoverable: Schema.Boolean,
+  runId: Schema.optionalKey(RunIdSchema),
+  status: LocalRunApiErrorStatusSchema,
+}) {}
+
 class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
   "LocalRunSummaryDto",
 )({
-  artifacts: Schema.Array(Schema.String),
+  artifacts: Schema.Array(LocalRunArtifactIdSchema),
   createdAt: Schema.String,
   eventCount: Schema.Number,
   latestEventType: EventTypeSchema,
@@ -74,7 +79,7 @@ class LocalRunEventsDto extends Schema.Class<LocalRunEventsDto>(
 class LocalRunArtifactDto extends Schema.Class<LocalRunArtifactDto>(
   "LocalRunArtifactDto",
 )({
-  artifactName: Schema.String,
+  artifactName: LocalRunArtifactIdSchema,
   body: Schema.String,
   contentType: LocalRunArtifactContentTypeSchema,
   runId: RunIdSchema,
@@ -87,9 +92,7 @@ const decodeLocalRunList = Schema.decodeUnknownSync(LocalRunListDto);
 const decodeLocalRunSummary = Schema.decodeUnknownSync(LocalRunSummaryDto);
 const decodeLocalRunEvents = Schema.decodeUnknownSync(LocalRunEventsDto);
 const decodeLocalRunArtifact = Schema.decodeUnknownSync(LocalRunArtifactDto);
-const decodeLocalRunDiagnostic = Schema.decodeUnknownSync(
-  LocalRunReadDiagnosticDto,
-);
+const decodeLocalRunApiError = Schema.decodeUnknownSync(LocalRunApiErrorDto);
 
 type ParsedServerEnvelope =
   | {
@@ -97,7 +100,7 @@ type ParsedServerEnvelope =
       readonly status: "partial" | "success";
     }
   | {
-      readonly error: LocalRunReadDiagnostic;
+      readonly error: LocalRunApiErrorDto;
       readonly status: "error";
     };
 
@@ -235,10 +238,10 @@ function parseEnvelope(
         };
       }
 
-      if (status === "error") {
+      if (typeof status === "number") {
         return {
-          error: toLocalRunDiagnostic(decodeLocalRunDiagnostic(envelope["error"])),
-          status,
+          error: decodeLocalRunApiError(envelope),
+          status: "error",
         };
       }
 
@@ -279,9 +282,6 @@ function commandSummaryFromLocalRun(
     const summary = toLocalRunSummary(run);
     const paths = yield* makeRunPaths(summary.runId, { rootDirectory });
     return {
-      ...(summary.artifacts.includes("codex-harness-progress.json")
-        ? { harnessProgressPath: paths.codexHarnessProgress }
-        : {}),
       reportPath:
         summary.status === "completed" ? paths.reportMarkdown : undefined,
       runDirectory: paths.root,
@@ -321,24 +321,7 @@ function toLocalRunArtifact(input: LocalRunArtifactDto) {
   } satisfies LocalRunArtifact;
 }
 
-function toLocalRunDiagnostic(
-  input: LocalRunReadDiagnosticDto,
-): LocalRunReadDiagnostic {
-  return {
-    ...(input.artifactName === undefined
-      ? {}
-      : { artifactName: input.artifactName }),
-    code: input.code,
-    message: input.message,
-    ...(input.pathSegment === undefined
-      ? {}
-      : { pathSegment: input.pathSegment }),
-    recoverable: input.recoverable,
-    ...(input.runId === undefined ? {} : { runId: input.runId }),
-  };
-}
-
-function runtimeErrorFromDiagnostic(diagnostic: LocalRunReadDiagnostic) {
+function runtimeErrorFromDiagnostic(diagnostic: LocalRunApiErrorDto) {
   return makeRuntimeError({
     code: diagnostic.code,
     message: diagnostic.message,
