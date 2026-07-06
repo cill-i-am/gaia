@@ -576,6 +576,69 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("caps reviewer findings before rendering Linear-ready candidates", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const rawOversizedBody = `RAW_PAYLOAD_${"x".repeat(8_000)}_END`;
+        const reviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
+          "oversized-reviewer",
+        );
+        const reviewer: GaiaReviewer = {
+          name: reviewerName,
+          run: (request) =>
+            Effect.succeed(
+              ReviewResult.make({
+                findings: [
+                  ReviewFinding.make({
+                    message: `Reviewer found unsafe output.\n${rawOversizedBody}`,
+                    severity: "blocker",
+                  }),
+                ],
+                phase: request.phase,
+                resultPath:
+                  request.phase === "plan"
+                    ? "plan-review.json"
+                    : "evidence-review.json",
+                reviewerName,
+                runId: request.runId,
+                status: request.phase === "plan" ? "blocked" : "approved",
+                summary: "Reviewer blocked the plan with an oversized finding.",
+              }),
+            ),
+        };
+        yield* fs.writeFileString(specPath, "Cap reviewer summaries.\n");
+
+        yield* Effect.flip(
+          runSpecFile(specPath, { reviewer, rootDirectory: cwd }),
+        );
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        const retrospective = parseDogfoodRetrospective(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${status.runDirectory}/dogfood-retrospective.json`,
+            ),
+          ),
+        );
+        const candidateBody =
+          retrospective.linearCandidates
+            .map((candidate) => candidate.bodyMarkdown)
+            .find((body) => body.includes("Reviewer found unsafe output.")) ??
+          "";
+
+        assert.isAtMost(candidateBody.length, 2_000);
+        assert.notInclude(candidateBody, rawOversizedBody);
+        assert.include(candidateBody, "Reviewer found unsafe output.");
+        assert.include(candidateBody, "## Source Evidence");
+        assert.include(candidateBody, "plan-review.json");
+        assert.notInclude(
+          retrospective.findings.map((finding) => finding.summary).join("\n"),
+          rawOversizedBody,
+        );
+      }),
+    );
+
     it.effect("emits Linear-ready candidates for noisy evidence and pre-publish failures", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

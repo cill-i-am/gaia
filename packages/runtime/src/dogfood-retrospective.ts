@@ -23,6 +23,7 @@ import {
 const noisePathPattern = /(?:^|\/)(node_modules|dist|\.turbo)(?:\/|$)/u;
 const genericPlanPattern = /\bgeneric\b|\bconcrete\b|\bsurface/u;
 const noisyChangedPathThreshold = 100;
+const safeSummaryMaxLength = 240;
 
 const ReviewResultJson = Schema.toCodecJson(ReviewResult);
 const parseReviewResultJson: (input: unknown) => ReviewResult =
@@ -571,18 +572,22 @@ function aggregateFindings(
   const occurrenceCounts = new Map<string, number>();
 
   for (const draft of drafts) {
-    const key = `${draft.category}:${normalizeSummary(draft.summary)}`;
+    const safeDraft = {
+      ...draft,
+      summary: safeSummary(draft.summary),
+    };
+    const key = `${safeDraft.category}:${normalizeSummary(safeDraft.summary)}`;
     const existing = grouped.get(key);
     if (existing === undefined) {
-      grouped.set(key, draft);
+      grouped.set(key, safeDraft);
       occurrenceCounts.set(key, 1);
       continue;
     }
 
     grouped.set(key, {
       ...existing,
-      severity: maxSeverity(existing.severity, draft.severity),
-      sources: mergeSources(existing.sources, draft.sources),
+      severity: maxSeverity(existing.severity, safeDraft.severity),
+      sources: mergeSources(existing.sources, safeDraft.sources),
     });
     occurrenceCounts.set(key, (occurrenceCounts.get(key) ?? 1) + 1);
   }
@@ -1000,6 +1005,19 @@ function severityRank(severity: DogfoodFindingSeverity) {
 
 function normalizeSummary(summary: string) {
   return summary.toLowerCase().replace(/\s+/gu, " ").trim();
+}
+
+function safeSummary(input: string) {
+  const firstMeaningfulLine =
+    input
+      .split(/\r?\n/u)
+      .map((line) => line.replace(/\s+/gu, " ").trim())
+      .find((line) => line.length > 0) ??
+    "Finding details are available in source evidence.";
+
+  return firstMeaningfulLine.length <= safeSummaryMaxLength
+    ? firstMeaningfulLine
+    : `${firstMeaningfulLine.slice(0, safeSummaryMaxLength - 3)}...`;
 }
 
 function shortTitle(summary: string) {
