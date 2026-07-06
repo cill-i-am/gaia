@@ -8,11 +8,20 @@ import {
   FactoryRetro,
   FactoryRetroEntry,
   FactoryRetroSourceLink,
+  FactoryLaneScorecard,
+  FactoryLaneScorecardCriterionAssessment,
+  FactoryLaneScorecardFactoryLearningSignal,
+  FactoryLaneScorecardImplementationAcceptance,
+  FactoryLaneScorecardLane,
+  FactoryLaneScorecardPreferredLane,
+  FactoryLaneScorecardSourceLink,
+  FactoryLaneScorecardVerificationEvidence,
   PromotedEvidenceItem,
   parseFactoryDelegationPromptValidationInput,
   makeRunEvent,
   parseEvidencePromotion,
   parseFactoryRetro,
+  parseFactoryLaneScorecard,
   parseMarkdownSpec,
   parseRunId,
   replayRunEvents,
@@ -140,6 +149,119 @@ describe("core contracts", () => {
     assert.strictEqual(retro.helped[0]?.source, "observed");
     assert.strictEqual(retro.cleanupStatus, "not-completed");
     assert.strictEqual(retro.recommendedNextFactoryImprovement.includes("commands"), true);
+  });
+
+  it("parses JSON-safe factory lane scorecards with acceptance separated from factory learning", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const scorecard = FactoryLaneScorecard.make({
+      artifactPath: ".gaia/promoted/run-V7kP9sQ2xY/factory-scorecard.json",
+      comparisonSummary:
+        "Lane B is preferred for accepted implementation quality while Lane A remains a smaller fallback.",
+      generatedAt: "2026-07-06T12:00:00.000Z",
+      lanes: [
+        FactoryLaneScorecardLane.make({
+          checkStatus: "no-checks-configured",
+          comparisonWaitStatus: "valid",
+          criteria: [
+            FactoryLaneScorecardCriterionAssessment.make({
+              classification: "adequate",
+              criterion: "correctness",
+              evidence: ["Focused tests passed."],
+              summary: "Correct but narrower.",
+            }),
+          ],
+          factoryLearningSignal: FactoryLaneScorecardFactoryLearningSignal.make({
+            evidence: ["Direct lane did not exercise Gaia artifacts."],
+            status: "weak",
+            summary: "Useful fallback but limited dogfood signal.",
+          }),
+          headSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          implementationAcceptance:
+            FactoryLaneScorecardImplementationAcceptance.make({
+              status: "fallback",
+              summary: "Closed unmerged as fallback/reference.",
+            }),
+          label: "Lane A",
+          laneId: "lane-a",
+          localVerification: [
+            FactoryLaneScorecardVerificationEvidence.make({
+              command: "pnpm test",
+              result: "passed",
+            }),
+          ],
+          pullRequest: "#14",
+          role: "direct-fallback",
+          sourceLinks: [
+            FactoryLaneScorecardSourceLink.make({
+              label: "Closed fallback lane PR #14",
+              url: "https://github.com/cill-i-am/gaia/pull/14",
+            }),
+          ],
+          tradeoffs: ["Smaller diff, weaker factory signal."],
+        }),
+        FactoryLaneScorecardLane.make({
+          checkStatus: "no-checks-configured",
+          comparisonWaitStatus: "valid",
+          criteria: [
+            FactoryLaneScorecardCriterionAssessment.make({
+              classification: "strong",
+              criterion: "dogfood-signal",
+              evidence: ["Gaia run IDs and factory retro were promoted."],
+              summary: "Dogfood artifacts improved handoff evidence.",
+            }),
+          ],
+          factoryLearningSignal: FactoryLaneScorecardFactoryLearningSignal.make({
+            evidence: ["Gaia exposed command extraction and planning gaps."],
+            status: "strong",
+            summary: "Strong signal for Gaia self-improvement.",
+          }),
+          headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          implementationAcceptance:
+            FactoryLaneScorecardImplementationAcceptance.make({
+              status: "accepted",
+              summary: "Accepted and merged after reviewer fixes.",
+            }),
+          label: "Lane B",
+          laneId: "lane-b",
+          localVerification: [
+            FactoryLaneScorecardVerificationEvidence.make({
+              command: "pnpm build",
+              result: "passed",
+            }),
+          ],
+          pullRequest: "#15",
+          role: "gaia-dogfood",
+          sourceLinks: [
+            FactoryLaneScorecardSourceLink.make({
+              label: "Accepted dogfood lane PR #15",
+              url: "https://github.com/cill-i-am/gaia/pull/15",
+            }),
+          ],
+          tradeoffs: ["Broader diff, stronger boundary typing and evidence."],
+        }),
+      ],
+      markdown: "# Factory Lane Scorecard run-V7kP9sQ2xY\n",
+      markdownPath: ".gaia/promoted/run-V7kP9sQ2xY/factory-scorecard.md",
+      notes: ["No-CI is not green; local verification remains evidence."],
+      preferredLane: FactoryLaneScorecardPreferredLane.make({
+        laneId: "lane-b",
+        rationale: "Lane B had stronger implementation quality and dogfood signal.",
+        tradeoffsPreserved: ["Lane A remains a smaller fallback/reference."],
+      }),
+      recommendationSummary:
+        "Prefer Lane B while preserving Lane A as fallback context.",
+      runId,
+      version: 1,
+    });
+
+    const serialized: unknown = JSON.parse(JSON.stringify(scorecard));
+    const parsed = parseFactoryLaneScorecard(serialized);
+
+    assert.strictEqual(parsed.runId, runId);
+    assert.strictEqual(parsed.lanes[0]?.checkStatus, "no-checks-configured");
+    assert.strictEqual(parsed.lanes[1]?.implementationAcceptance.status, "accepted");
+    assert.strictEqual(parsed.lanes[1]?.factoryLearningSignal.status, "strong");
+    assert.strictEqual(parsed.preferredLane?.laneId, "lane-b");
   });
 
   it("flags dogfood requirements on direct fallback lanes", () => {

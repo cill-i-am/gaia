@@ -24,6 +24,8 @@ export type RunPaths = {
   readonly events: string;
   readonly factoryRetroJson: string;
   readonly factoryRetroMarkdown: string;
+  readonly factoryScorecardJson: string;
+  readonly factoryScorecardMarkdown: string;
   readonly gaiaRoot: string;
   readonly githubChecks: string;
   readonly githubFeedback: string;
@@ -106,6 +108,14 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       factoryRetroMarkdown: path.join(
         promotedEvidenceDirectory,
         "factory-retro.md",
+      ),
+      factoryScorecardJson: path.join(
+        promotedEvidenceDirectory,
+        "factory-scorecard.json",
+      ),
+      factoryScorecardMarkdown: path.join(
+        promotedEvidenceDirectory,
+        "factory-scorecard.md",
       ),
       gaiaRoot: store.gaiaRoot,
       githubChecks: path.join(root, "github-checks"),

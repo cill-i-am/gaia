@@ -125,6 +125,8 @@ describe("LocalGaiaServerApi contract", () => {
           "evidence-promotion-markdown",
           "factory-retro",
           "factory-retro-markdown",
+          "factory-scorecard",
+          "factory-scorecard-markdown",
           "report",
           "report-json",
           "events",

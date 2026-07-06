@@ -3,6 +3,7 @@ import {
   type DogfoodRetrospective,
   type EvidencePromotion,
   type FactoryRetro,
+  type FactoryLaneScorecard,
   type RunId,
   type RunSpec,
 } from "@gaia/core";
@@ -34,6 +35,7 @@ export function writeReport(input: {
   readonly paths: RunPaths;
   readonly evidencePromotion?: EvidencePromotion | undefined;
   readonly factoryRetro?: FactoryRetro | undefined;
+  readonly factoryScorecard?: FactoryLaneScorecard | undefined;
   readonly runId: RunId;
   readonly skillManifest: SkillManifest;
   readonly spec: RunSpec;
@@ -66,6 +68,9 @@ export function writeReport(input: {
         "evidence-promotion.md",
         "factory-retro.json",
         "factory-retro.md",
+        ...(input.factoryScorecard === undefined
+          ? []
+          : ["factory-scorecard.json", "factory-scorecard.md"]),
         "worker.log",
         "verification.log",
         "workspace/output.txt",
@@ -89,6 +94,7 @@ export function writeReport(input: {
         input.retrospective,
         input.evidencePromotion,
         input.factoryRetro,
+        input.factoryScorecard,
         input.inferredRecommendations,
         input.historicalRiskNotes,
         classifyDomainReferences(input.spec.body),
@@ -108,6 +114,7 @@ function markdownReport(
   retrospective: DogfoodRetrospective | undefined,
   evidencePromotion: EvidencePromotion | undefined,
   factoryRetro: FactoryRetro | undefined,
+  factoryScorecard: FactoryLaneScorecard | undefined,
   inferredRecommendations: WorkerPlanInferredRecommendations,
   historicalRiskNotes: ReadonlyArray<WorkerPlanHistoricalRiskNote>,
   domainReferences: ReadonlyArray<WorkerPlanDomainReference>,
@@ -203,6 +210,35 @@ function markdownReport(
           "Recommended next factory improvement:",
           factoryRetro.recommendedNextFactoryImprovement,
         ].join("\n");
+  const factoryScorecardSection =
+    factoryScorecard === undefined
+      ? "Factory scorecard: not generated; at least two lane evidence bundles are required."
+      : [
+          "Factory scorecard JSON: factory-scorecard.json",
+          "Factory scorecard Markdown: factory-scorecard.md",
+          "",
+          factoryScorecard.comparisonSummary,
+          "",
+          "Recommendation:",
+          factoryScorecard.recommendationSummary,
+          "",
+          "Lane implementation acceptance:",
+          ...factoryScorecard.lanes.map(
+            (lane) =>
+              `- ${lane.label}: ${lane.implementationAcceptance.status} - ${lane.implementationAcceptance.summary}`,
+          ),
+          "",
+          "Gaia factory learning signal:",
+          ...factoryScorecard.lanes.map(
+            (lane) =>
+              `- ${lane.label}: ${lane.factoryLearningSignal.status} - ${lane.factoryLearningSignal.summary}`,
+          ),
+          "",
+          "Notes:",
+          ...(factoryScorecard.notes.length === 0
+            ? ["- none"]
+            : factoryScorecard.notes.map((note) => `- ${note}`)),
+        ].join("\n");
   const domainReferenceSection =
     domainReferences.length === 0
       ? "No domain references classified from the source spec."
@@ -241,6 +277,10 @@ ${promotionSection}
 ## Factory Retro
 
 ${factoryRetroSection}
+
+## Factory Lane Scorecard
+
+${factoryScorecardSection}
 
 ## Domain References
 
