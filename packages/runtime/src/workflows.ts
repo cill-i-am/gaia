@@ -46,6 +46,7 @@ import {
 } from "./reviewer.js";
 import { writeReport } from "./report-writer.js";
 import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
+import { writeEvidencePromotion } from "./evidence-promotion.js";
 import {
   resolveRunProfile,
   writeRunProfile,
@@ -398,7 +399,22 @@ function executeAcceptedRun(input: {
         recordRunFailure(runId, paths, "reporting", error),
       ),
     );
-    yield* writeReport({ paths, retrospective, runId, skillManifest, spec });
+    const evidencePromotion = yield* writeEvidencePromotion({
+      paths,
+      runId,
+    }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "reporting", error),
+      ),
+    );
+    yield* writeReport({
+      evidencePromotion,
+      paths,
+      retrospective,
+      runId,
+      skillManifest,
+      spec,
+    });
     const { snapshot } = yield* appendEvent(runId, paths, {
       payload: { reportPath: "report.md" },
       type: "REPORT_COMPLETED",
@@ -726,6 +742,9 @@ function recordRunFailure(
       type: "RUN_FAILED",
     });
     yield* writeDogfoodRetrospective(runId, paths).pipe(
+      Effect.catchTag("GaiaRuntimeError", () => Effect.void),
+    );
+    yield* writeEvidencePromotion({ paths, runId }).pipe(
       Effect.catchTag("GaiaRuntimeError", () => Effect.void),
     );
 

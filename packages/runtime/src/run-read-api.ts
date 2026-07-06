@@ -70,6 +70,8 @@ export type LocalRunArtifactId =
   | "worker-result"
   | "verification-result"
   | "evidence-review"
+  | "evidence-promotion"
+  | "evidence-promotion-markdown"
   | "report"
   | "report-json"
   | "events"
@@ -83,6 +85,8 @@ const localRunArtifactIds: ReadonlyArray<LocalRunArtifactId> = [
   "worker-result",
   "verification-result",
   "evidence-review",
+  "evidence-promotion",
+  "evidence-promotion-markdown",
   "report",
   "report-json",
   "events",
@@ -113,6 +117,14 @@ const artifactDefinitions: Readonly<Record<LocalRunArtifactId, ArtifactDefinitio
   input: {
     contentType: "text/markdown",
     path: (paths) => paths.input,
+  },
+  "evidence-promotion": {
+    contentType: "application/json",
+    path: (paths) => paths.evidencePromotionJson,
+  },
+  "evidence-promotion-markdown": {
+    contentType: "text/markdown",
+    path: (paths) => paths.evidencePromotionMarkdown,
   },
   "plan-review": {
     contentType: "application/json",
@@ -309,6 +321,8 @@ function parseArtifactId(input: string): ParsedArtifactId {
     case "worker-result":
     case "verification-result":
     case "evidence-review":
+    case "evidence-promotion":
+    case "evidence-promotion-markdown":
     case "report":
     case "report-json":
     case "events":

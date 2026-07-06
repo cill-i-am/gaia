@@ -21,6 +21,7 @@ export {
 } from "./browser-evidence.js";
 export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 export { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
+export { writeEvidencePromotion } from "./evidence-promotion.js";
 export {
   codexReviewerName,
   makeCodexReviewer,

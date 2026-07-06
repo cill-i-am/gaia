@@ -35,6 +35,9 @@ export type RunPaths = {
   readonly planReviewResult: string;
   readonly planReviewerSession: string;
   readonly previewDeployment: string;
+  readonly promotedEvidenceDirectory: string;
+  readonly evidencePromotionJson: string;
+  readonly evidencePromotionMarkdown: string;
   readonly prLoopState: string;
   readonly reportJson: string;
   readonly reportMarkdown: string;
@@ -80,6 +83,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
     const path = yield* Path.Path;
     const store = yield* makeRunStorePaths(options);
     const root = path.join(store.runsRoot, runId);
+    const promotedEvidenceDirectory = path.join(store.gaiaRoot, "promoted", runId);
     const workspace = path.join(root, "workspace");
 
     return {
@@ -111,6 +115,15 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
         "plan-reviewer-session.json",
       ),
       previewDeployment: path.join(root, "preview-deployment.json"),
+      promotedEvidenceDirectory,
+      evidencePromotionJson: path.join(
+        promotedEvidenceDirectory,
+        "evidence-promotion.json",
+      ),
+      evidencePromotionMarkdown: path.join(
+        promotedEvidenceDirectory,
+        "evidence-promotion.md",
+      ),
       prLoopState: path.join(root, "pr-loop-state.json"),
       reportJson: path.join(root, "report.json"),
       reportMarkdown: path.join(root, "report.md"),

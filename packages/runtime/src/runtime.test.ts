@@ -3,6 +3,7 @@ import { assert, describe, it, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schema } from "effect";
 import { execPath } from "node:process";
 import {
+  parseEvidencePromotion,
   parseDogfoodRetrospective,
   parseRunEvent,
   parseRunId,
@@ -83,6 +84,7 @@ import {
   localRunProfileSource,
   parseRunProfileJson,
 } from "./run-profile.js";
+import { readLocalRunArtifact } from "./run-read-api.js";
 import {
   collectBrowserEvidence,
   listRuns,
@@ -575,6 +577,117 @@ describe("runtime workflows", () => {
         assert.include(reportMarkdown, "dogfood-retrospective.json");
         assert.include(reportMarkdown, "No high-signal dogfood findings");
         assert.include(reportJson, '"dogfood-retrospective.json"');
+      }),
+    );
+
+    it.effect("promotes selected evidence before raw run cleanup", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Promote evidence before cleanup.\n");
+
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const promotedPath = `${cwd}/.gaia/promoted/${summary.runId}/evidence-promotion.json`;
+        const promotedMarkdownPath = `${cwd}/.gaia/promoted/${summary.runId}/evidence-promotion.md`;
+        const promotion = parseEvidencePromotion(
+          JSON.parse(yield* fs.readFileString(promotedPath)),
+        );
+        const promotionMarkdown = yield* fs.readFileString(promotedMarkdownPath);
+        const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+        const run = yield* readLocalRunArtifact(
+          summary.runId,
+          "evidence-promotion",
+          { rootDirectory: cwd },
+        );
+
+        assert.strictEqual(promotion.runId, summary.runId);
+        assert.strictEqual(promotion.promotionStatus, "pending-promotion");
+        assert.strictEqual(promotion.cleanupStatus, "not-completed");
+        assert.strictEqual(
+          promotion.artifactPath,
+          `.gaia/promoted/${summary.runId}/evidence-promotion.json`,
+        );
+        assert.include(promotionMarkdown, `# Evidence Promotion ${summary.runId}`);
+        assert.include(promotionMarkdown, "Cleanup status: not-completed");
+        assert.include(reportMarkdown, "evidence-promotion.json");
+        assert.isBelow(
+          reportMarkdown.indexOf("evidence-promotion.json"),
+          reportMarkdown.indexOf("Raw run state is disposable"),
+        );
+        assert.strictEqual(run.contentType, "application/json");
+
+        yield* fs.remove(summary.runDirectory, { recursive: true });
+        const survivingPromotion = parseEvidencePromotion(
+          JSON.parse(yield* fs.readFileString(promotedPath)),
+        );
+        assert.strictEqual(survivingPromotion.runId, summary.runId);
+        assert.strictEqual(survivingPromotion.cleanupStatus, "not-completed");
+      }),
+    );
+
+    it.effect("promotes blocked run evidence with cleanup still not completed", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const reviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
+          "blocking-promotion-reviewer",
+        );
+        const reviewer: GaiaReviewer = {
+          name: reviewerName,
+          run: (request) =>
+            Effect.succeed(
+              ReviewResult.make({
+                findings: [
+                  ReviewFinding.make({
+                    message: "Plan needs concrete evidence promotion handling.",
+                    severity: "blocker",
+                  }),
+                ],
+                phase: request.phase,
+                resultPath:
+                  request.phase === "plan"
+                    ? "plan-review.json"
+                    : "evidence-review.json",
+                reviewerName,
+                runId: request.runId,
+                status: request.phase === "plan" ? "blocked" : "approved",
+                summary: "Plan review blocked evidence promotion.",
+              }),
+            ),
+        };
+        yield* fs.writeFileString(specPath, "Blocked evidence promotion.\n");
+
+        yield* Effect.flip(
+          runSpecFile(specPath, { reviewer, rootDirectory: cwd }),
+        );
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        const promotion = parseEvidencePromotion(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${cwd}/.gaia/promoted/${status.runId}/evidence-promotion.json`,
+            ),
+          ),
+        );
+
+        assert.strictEqual(status.state, "failed");
+        assert.strictEqual(promotion.runId, status.runId);
+        assert.strictEqual(promotion.promotionStatus, "pending-promotion");
+        assert.strictEqual(promotion.cleanupStatus, "not-completed");
+        assert.isFalse(yield* fs.exists(`${status.runDirectory}/report.md`));
+        assert.isFalse(yield* fs.exists(`${status.runDirectory}/report.json`));
+        assert.isUndefined(promotion.reportPaths.reportMarkdownPath);
+        assert.isUndefined(promotion.reportPaths.reportJsonPath);
+        const reportEvidence = promotion.selectedEvidence.find(
+          (evidence) => evidence.label === "Run report",
+        );
+        assert.strictEqual(reportEvidence?.status, "skipped");
+        assert.isUndefined(reportEvidence?.path);
+        assert.include(
+          promotion.markdown,
+          "- Report markdown: skipped\n- Report JSON: skipped",
+        );
       }),
     );
 

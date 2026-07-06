@@ -120,6 +120,8 @@ describe("LocalGaiaServerApi contract", () => {
           "worker-result",
           "verification-result",
           "evidence-review",
+          "evidence-promotion",
+          "evidence-promotion-markdown",
           "report",
           "report-json",
           "events",
