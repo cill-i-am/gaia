@@ -18,6 +18,7 @@ export const FactoryDelegationFindingCodeSchema = Schema.Literals([
   "dogfood-requirement-on-non-dogfood-lane",
   "dogfood-retrospective-missing",
   "dogfood-run-evidence-missing",
+  "lane-role-conflict",
   "lane-role-missing",
   "worktree-branch-expectations-missing",
 ] as const);
@@ -90,7 +91,17 @@ export function validateFactoryDelegationPrompt(
     );
   };
 
-  if (!containsLaneRole(prompt, decodedInput.laneRole)) {
+  const declaredLaneRoles = findDeclaredLaneRoles(decodedInput.promptMarkdown);
+  const uniqueDeclaredLaneRoles = Array.from(new Set(declaredLaneRoles));
+
+  if (uniqueDeclaredLaneRoles.length > 1) {
+    addBlocker(
+      "lane-role-conflict",
+      "Delegation prompts must not declare more than one factory lane role.",
+    );
+  }
+
+  if (!uniqueDeclaredLaneRoles.includes(decodedInput.laneRole)) {
     addBlocker(
       "lane-role-missing",
       "Delegation prompts must explicitly declare the selected factory lane role.",
@@ -163,20 +174,38 @@ export function validateFactoryDelegationPrompt(
   });
 }
 
-function containsLaneRole(prompt: string, laneRole: FactoryLaneRole) {
-  if (laneRole === "direct-fallback") {
-    return /\bdirect fallback\b/u.test(prompt);
+function findDeclaredLaneRoles(promptMarkdown: string) {
+  const declaredRoles: Array<FactoryLaneRole> = [];
+  for (const rawLine of promptMarkdown.split("\n")) {
+    const line = rawLine.trim().toLowerCase();
+    if (!line.startsWith("lane role:")) {
+      continue;
+    }
+    const role = laneRoleFromDeclaration(line);
+    if (role !== undefined) {
+      declaredRoles.push(role);
+    }
   }
-  if (laneRole === "gaia-dogfood") {
-    return /\b(gaia dogfood|dogfood lane)\b/u.test(prompt);
+  return declaredRoles;
+}
+
+function laneRoleFromDeclaration(line: string): FactoryLaneRole | undefined {
+  if (/\bdirect fallback\b/u.test(line)) {
+    return "direct-fallback";
   }
-  if (laneRole === "reviewer-spec") {
-    return /\b(reviewer\/spec|reviewer spec|reviewer lane)\b/u.test(prompt);
+  if (/\b(gaia dogfood|dogfood lane)\b/u.test(line)) {
+    return "gaia-dogfood";
   }
-  if (laneRole === "ci-watch") {
-    return /\b(ci watch|ci watcher|ci-watch)\b/u.test(prompt);
+  if (/\b(reviewer\/spec|reviewer spec|reviewer lane)\b/u.test(line)) {
+    return "reviewer-spec";
   }
-  return /\borchestrator\b/u.test(prompt);
+  if (/\b(ci watch|ci watcher|ci-watch)\b/u.test(line)) {
+    return "ci-watch";
+  }
+  if (/\borchestrator\b/u.test(line)) {
+    return "orchestrator";
+  }
+  return undefined;
 }
 
 function containsDogfoodRequirement(prompt: string) {

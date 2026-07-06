@@ -48,6 +48,8 @@ loop evolves.
   fails before dispatch.
 - A prompt whose body does not declare the selected role fails with
   `lane-role-missing`.
+- A prompt with more than one `Lane role:` declaration fails with
+  `lane-role-conflict`.
 
 ## Artifact Shape
 

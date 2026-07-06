@@ -122,6 +122,27 @@ describe("core contracts", () => {
     );
   });
 
+  it("flags prompts with conflicting lane role declarations", () => {
+    const validation = validateFactoryDelegationPrompt({
+      laneRole: "direct-fallback",
+      promptMarkdown: [
+        "Lane role: direct fallback.",
+        "Lane role: Gaia dogfood.",
+        "Base commit: e9e2f1ee79f15fe3949703277f0fe83bd6a19634.",
+        "Use isolated worktree branch codex/gaia-20.",
+        "Clean up generated .gaia run state before handoff.",
+        "Wait for both A/B PRs before comparing lanes.",
+      ].join("\n"),
+      requiresComparisonWait: true,
+    });
+
+    assert.strictEqual(validation.status, "failed");
+    assert.include(
+      validation.findings.map((finding) => finding.code),
+      "lane-role-conflict",
+    );
+  });
+
   it("passes a dogfood A/B lane with the required evidence and wait rules", () => {
     const validation = validateFactoryDelegationPrompt({
       laneRole: "gaia-dogfood",
