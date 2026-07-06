@@ -2689,7 +2689,7 @@ describe("runtime workflows", () => {
             "import { mkdirSync, writeFileSync } from 'node:fs';",
             "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/src`, { recursive: true });",
             "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness ${process.env.GAIA_RUN_ID}\\n`);",
-            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/src/run-id-text.ts`, '// do not use as RunId in source\\nexport const note = \"as RunId appears in regression text\";\\n');",
+            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/src/run-id-text.ts`, '// do not use as RunId in source\\nexport const note = \"as RunId appears in regression text\";\\nexport const templateNote = `as RunId appears in template text`;\\n');",
           ].join("\n"),
         );
         yield* fs.writeFileString(specPath, "Publish RunId text fixture.\n");
@@ -2710,6 +2710,58 @@ describe("runtime workflows", () => {
 
         assert.strictEqual(preview.workspaceGate?.status, "passed");
         assert.isUndefined(runIdCastItem);
+      }),
+    );
+
+    it.effect("refuses to publish a workspace PR when changed source casts as RunId inside template interpolation", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const scriptPath = `${cwd}/process-harness.mjs`;
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          scriptPath,
+          [
+            "import { mkdirSync, writeFileSync } from 'node:fs';",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/src`, { recursive: true });",
+            "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness ${process.env.GAIA_RUN_ID}\\n`);",
+            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/src/template-run-id.ts`, 'import type { RunId } from \"@gaia/core\";\\nconst raw = \"run-V7kP9sQ2xY\";\\nexport const label = `${raw as RunId}`;\\n');",
+          ].join("\n"),
+        );
+        yield* fs.writeFileString(specPath, "Publish template RunId cast.\n");
+        const summary = yield* runSpecFile(specPath, {
+          harnessName: parseHarnessName("process"),
+          processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+          rootDirectory: cwd,
+        });
+        const commands: Array<GitHubCommandInput> = [];
+        const error = yield* Effect.flip(
+          publishWorkspaceRunToGitHub(summary.runId, {
+            commandRunner: githubPublishingRunner(commands),
+            rootDirectory: cwd,
+          }),
+        );
+        const paths = yield* makeRunPaths(summary.runId, { rootDirectory: cwd });
+        const gate = parseWorkspacePrQualityGateJson(
+          JSON.parse(yield* fs.readFileString(paths.workspacePrGate)),
+        );
+        const runIdCastItem = gate.items.find(
+          (item) => item.check === "run-id-brand-cast",
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "WorkspacePrQualityGateFailed");
+          assert.include(error.message, "src/template-run-id.ts");
+        }
+        assert.strictEqual(gate.status, "blocked");
+        assert.deepEqual(runIdCastItem?.changedFiles, [
+          "src/template-run-id.ts",
+        ]);
+        assert.deepEqual(
+          commands.map((command) => [command.command, command.args[0]]),
+          workspacePrPreflightCommandSummary(),
+        );
       }),
     );
 

@@ -478,119 +478,207 @@ function containsRunIdAsExpression(input: string) {
 }
 
 function stripCommentsAndStrings(input: string) {
-  let output = "";
-  let state:
-    | "blockComment"
-    | "code"
-    | "doubleQuote"
-    | "lineComment"
-    | "singleQuote"
-    | "template" = "code";
-  let escaped = false;
+  return stripCode(input, 0, false).output;
+}
 
-  for (let index = 0; index < input.length; index += 1) {
+function stripCode(
+  input: string,
+  startIndex: number,
+  stopOnTemplateExpressionClose: boolean,
+) {
+  let output = "";
+  let index = startIndex;
+  let braceDepth = 0;
+
+  while (index < input.length) {
     const character = input[index] ?? "";
     const nextCharacter = input[index + 1] ?? "";
 
-    switch (state) {
-      case "code": {
-        if (character === "/" && nextCharacter === "/") {
-          output += "  ";
-          index += 1;
-          state = "lineComment";
-          continue;
-        }
-
-        if (character === "/" && nextCharacter === "*") {
-          output += "  ";
-          index += 1;
-          state = "blockComment";
-          continue;
-        }
-
-        if (character === "'") {
-          output += " ";
-          state = "singleQuote";
-          escaped = false;
-          continue;
-        }
-
-        if (character === '"') {
-          output += " ";
-          state = "doubleQuote";
-          escaped = false;
-          continue;
-        }
-
-        if (character === "`") {
-          output += " ";
-          state = "template";
-          escaped = false;
-          continue;
-        }
-
-        output += character;
-        continue;
-      }
-
-      case "lineComment": {
-        if (character === "\n") {
-          output += "\n";
-          state = "code";
-          continue;
-        }
-
-        output += " ";
-        continue;
-      }
-
-      case "blockComment": {
-        if (character === "*" && nextCharacter === "/") {
-          output += "  ";
-          index += 1;
-          state = "code";
-          continue;
-        }
-
-        output += character === "\n" ? "\n" : " ";
-        continue;
-      }
-
-      case "singleQuote":
-      case "doubleQuote":
-      case "template": {
-        const closingCharacter =
-          state === "singleQuote"
-            ? "'"
-            : state === "doubleQuote"
-              ? '"'
-              : "`";
-
-        if (escaped) {
-          output += character === "\n" ? "\n" : " ";
-          escaped = false;
-          continue;
-        }
-
-        if (character === "\\") {
-          output += " ";
-          escaped = true;
-          continue;
-        }
-
-        if (character === closingCharacter) {
-          output += " ";
-          state = "code";
-          continue;
-        }
-
-        output += character === "\n" ? "\n" : " ";
-        continue;
-      }
+    if (
+      stopOnTemplateExpressionClose &&
+      character === "}" &&
+      braceDepth === 0
+    ) {
+      return { index, output };
     }
+
+    if (character === "/" && nextCharacter === "/") {
+      const stripped = stripLineComment(input, index);
+      output += stripped.output;
+      index = stripped.index;
+      continue;
+    }
+
+    if (character === "/" && nextCharacter === "*") {
+      const stripped = stripBlockComment(input, index);
+      output += stripped.output;
+      index = stripped.index;
+      continue;
+    }
+
+    if (character === "'") {
+      const stripped = stripQuotedLiteral(input, index, "'");
+      output += stripped.output;
+      index = stripped.index;
+      continue;
+    }
+
+    if (character === '"') {
+      const stripped = stripQuotedLiteral(input, index, '"');
+      output += stripped.output;
+      index = stripped.index;
+      continue;
+    }
+
+    if (character === "`") {
+      const stripped = stripTemplateLiteral(input, index);
+      output += stripped.output;
+      index = stripped.index;
+      continue;
+    }
+
+    if (stopOnTemplateExpressionClose && character === "{") {
+      braceDepth += 1;
+    } else if (
+      stopOnTemplateExpressionClose &&
+      character === "}" &&
+      braceDepth > 0
+    ) {
+      braceDepth -= 1;
+    }
+
+    output += character;
+    index += 1;
   }
 
-  return output;
+  return { index, output };
+}
+
+function stripLineComment(input: string, startIndex: number) {
+  let output = "  ";
+  let index = startIndex + 2;
+
+  while (index < input.length) {
+    const character = input[index] ?? "";
+    if (character === "\n") {
+      output += "\n";
+      index += 1;
+      break;
+    }
+
+    output += " ";
+    index += 1;
+  }
+
+  return { index, output };
+}
+
+function stripBlockComment(input: string, startIndex: number) {
+  let output = "  ";
+  let index = startIndex + 2;
+
+  while (index < input.length) {
+    const character = input[index] ?? "";
+    const nextCharacter = input[index + 1] ?? "";
+
+    if (character === "*" && nextCharacter === "/") {
+      output += "  ";
+      index += 2;
+      break;
+    }
+
+    output += character === "\n" ? "\n" : " ";
+    index += 1;
+  }
+
+  return { index, output };
+}
+
+function stripQuotedLiteral(
+  input: string,
+  startIndex: number,
+  closingCharacter: "'" | '"',
+) {
+  let output = " ";
+  let index = startIndex + 1;
+  let escaped = false;
+
+  while (index < input.length) {
+    const character = input[index] ?? "";
+
+    if (escaped) {
+      output += character === "\n" ? "\n" : " ";
+      escaped = false;
+      index += 1;
+      continue;
+    }
+
+    if (character === "\\") {
+      output += " ";
+      escaped = true;
+      index += 1;
+      continue;
+    }
+
+    if (character === closingCharacter) {
+      output += " ";
+      index += 1;
+      break;
+    }
+
+    output += character === "\n" ? "\n" : " ";
+    index += 1;
+  }
+
+  return { index, output };
+}
+
+function stripTemplateLiteral(input: string, startIndex: number) {
+  let output = " ";
+  let index = startIndex + 1;
+  let escaped = false;
+
+  while (index < input.length) {
+    const character = input[index] ?? "";
+    const nextCharacter = input[index + 1] ?? "";
+
+    if (escaped) {
+      output += character === "\n" ? "\n" : " ";
+      escaped = false;
+      index += 1;
+      continue;
+    }
+
+    if (character === "\\") {
+      output += " ";
+      escaped = true;
+      index += 1;
+      continue;
+    }
+
+    if (character === "`") {
+      output += " ";
+      index += 1;
+      break;
+    }
+
+    if (character === "$" && nextCharacter === "{") {
+      output += "  ";
+      const expression = stripCode(input, index + 2, true);
+      output += expression.output;
+      index = expression.index;
+      if (input[index] === "}") {
+        output += " ";
+        index += 1;
+      }
+      continue;
+    }
+
+    output += character === "\n" ? "\n" : " ";
+    index += 1;
+  }
+
+  return { index, output };
 }
 
 function errorMessage(cause: unknown) {
