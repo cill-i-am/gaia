@@ -2881,6 +2881,58 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("refuses to publish a workspace PR when worker-result resultPath is unsafe", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Publish unsafe result path.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const paths = yield* makeRunPaths(summary.runId, { rootDirectory: cwd });
+        const workerResult = parseHarnessRunResultJson(
+          JSON.parse(yield* fs.readFileString(paths.workerResult)),
+        );
+        yield* fs.writeFileString(
+          paths.workerResult,
+          `${JSON.stringify(
+            {
+              ...workerResult,
+              resultPath: "/Users/cillian/project/.gaia/run/worker-result.json",
+            },
+            null,
+            2,
+          )}\n`,
+        );
+
+        const commands: Array<GitHubCommandInput> = [];
+        const error = yield* Effect.flip(
+          publishWorkspaceRunToGitHub(summary.runId, {
+            commandRunner: githubPublishingRunner(commands),
+            rootDirectory: cwd,
+          }),
+        );
+        const gate = parseWorkspacePrQualityGateJson(
+          JSON.parse(yield* fs.readFileString(paths.workspacePrGate)),
+        );
+        const unsafePathItem = gate.items.find(
+          (item) => item.check === "worker-result-safe-paths",
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "WorkspacePrQualityGateFailed");
+        }
+        assert.strictEqual(gate.status, "blocked");
+        assert.deepEqual(unsafePathItem?.changedFiles, [
+          "/Users/cillian/project/.gaia/run/worker-result.json",
+        ]);
+        assert.deepEqual(
+          commands.map((command) => [command.command, command.args[0]]),
+          workspacePrPreflightCommandSummary(),
+        );
+      }),
+    );
+
     it.effect("refuses to publish a workspace PR when outputArtifacts contain unsafe workspace paths", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

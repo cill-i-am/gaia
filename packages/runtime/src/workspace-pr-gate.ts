@@ -241,6 +241,21 @@ export function evaluateWorkspacePrQualityGate(
       );
     }
 
+    const unsafeWorkerResultPaths = unsafeRelativePaths([
+      harnessResult.value.resultPath,
+    ]);
+    if (unsafeWorkerResultPaths.length > 0) {
+      items.push(
+        gateItem({
+          changedFiles: unsafeWorkerResultPaths,
+          check: "worker-result-safe-paths",
+          reason: "worker-result.json resultPath is not a safe relative path.",
+          remediation: "Emit resultPath relative to the run artifact root without absolute paths or parent-directory segments.",
+          severity: "fail",
+        }),
+      );
+    }
+
     const unsafeOutputArtifactPaths = unsafeOutputArtifacts(
       harnessResult.value.outputArtifacts,
     );
