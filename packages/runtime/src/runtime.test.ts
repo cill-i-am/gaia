@@ -4,6 +4,7 @@ import { Effect, FileSystem, Schema } from "effect";
 import { execPath } from "node:process";
 import {
   parseEvidencePromotion,
+  parseFactoryLaneScorecard,
   parseFactoryRetro,
   parseDogfoodRetrospective,
   parseRunEvent,
@@ -1211,6 +1212,118 @@ describe("runtime workflows", () => {
         assert.include(markdown, "## Misled");
         assert.include(reportMarkdown, "factory-retro.json");
         assert.include(reportMarkdown, "factory-retro.md");
+      }),
+    );
+
+    it.effect("emits a GAIA-12-like A/B lane scorecard preserving implementation and factory-learning tradeoffs", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          specPath,
+          [
+            "---",
+            "title: GAIA-12-like A/B lane scorecard",
+            "---",
+            "",
+            "Factory scorecard lane A:",
+            "- Lane id: lane-a",
+            "- Label: Lane A fallback",
+            "- Role: direct fallback",
+            "- PR: #14",
+            "- Head SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "- Checks: no checks configured",
+            "- Comparison wait: valid",
+            "- Local verification: pnpm check - passed",
+            "- Local verification: pnpm test - passed",
+            "- Correctness: adequate - Correct smaller-diff fallback.",
+            "- Scope adherence: strong - Stayed inside the local-server slice.",
+            "- Simplicity: strong - Smaller and easier to inspect.",
+            "- Test evidence: adequate - Focused tests passed.",
+            "- Production readiness: adequate - Local verification supplied because no CI exists.",
+            "- Diff risk: low - Smaller diff with fewer moving parts.",
+            "- Dogfood signal: weak - Did not exercise Gaia run artifacts.",
+            "- Implementation acceptance: fallback - Closed unmerged as useful fallback/reference.",
+            "- Factory learning signal: weak - Useful comparison baseline but little Gaia self-improvement evidence.",
+            "- Tradeoff: Smaller diff, weaker boundary typing and dogfood evidence.",
+            "- Source: Closed fallback lane PR #14: https://github.com/cill-i-am/gaia/pull/14",
+            "",
+            "Factory scorecard lane B:",
+            "- Lane id: lane-b",
+            "- Label: Lane B dogfood",
+            "- Role: gaia dogfood",
+            "- PR: #15",
+            "- Head SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "- Checks: no checks configured",
+            "- Comparison wait: valid",
+            "- Local verification: pnpm check - passed",
+            "- Local verification: pnpm test - passed",
+            "- Local verification: pnpm build - passed",
+            "- Correctness: strong - Reviewer fixes improved endpoint errors and path schemas.",
+            "- Scope adherence: adequate - Broader but stayed tied to the accepted slice.",
+            "- Simplicity: adequate - Broader implementation with clearer contracts.",
+            "- Test evidence: strong - Startup, contract, CLI, and built binary smokes were recorded.",
+            "- Production readiness: strong - Local gates and smoke evidence were stronger despite no CI.",
+            "- Diff risk: medium - Larger diff carried more integration risk.",
+            "- Dogfood signal: strong - Gaia run IDs and factory retro evidence exposed planning gaps.",
+            "- Implementation acceptance: accepted - Accepted and merged after reviewer fixes.",
+            "- Factory learning signal: strong - Exposed command extraction, file inference, and evidence-promotion gaps.",
+            "- Tradeoff: Broader diff, stronger boundary parsing and dogfood signal.",
+            "- Source: Accepted dogfood lane PR #15: https://github.com/cill-i-am/gaia/pull/15",
+            "",
+            "Factory scorecard recommendation:",
+            "- Preferred lane: lane-b",
+            "- Rationale: Prefer Lane B because accepted implementation quality and dogfood evidence were stronger.",
+            "- Tradeoff: Preserve Lane A as the smaller fallback/reference.",
+            "- Note: No-CI is represented as no checks configured, not green.",
+            "",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const scorecardPath = `${cwd}/.gaia/promoted/${summary.runId}/factory-scorecard.json`;
+        const scorecardMarkdownPath = `${cwd}/.gaia/promoted/${summary.runId}/factory-scorecard.md`;
+        const scorecard = parseFactoryLaneScorecard(
+          JSON.parse(yield* fs.readFileString(scorecardPath)),
+        );
+        const markdown = yield* fs.readFileString(scorecardMarkdownPath);
+        const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+        const readable = yield* readLocalRunArtifact(
+          summary.runId,
+          "factory-scorecard",
+          { rootDirectory: cwd },
+        );
+
+        assert.strictEqual(scorecard.runId, summary.runId);
+        assert.strictEqual(scorecard.lanes.length, 2);
+        assert.sameMembers(
+          scorecard.lanes[0]?.criteria.map((criterion) => criterion.criterion) ?? [],
+          [
+            "correctness",
+            "scope-adherence",
+            "simplicity",
+            "test-evidence",
+            "production-readiness",
+            "diff-risk",
+            "dogfood-signal",
+          ],
+        );
+        assert.strictEqual(scorecard.lanes[0]?.checkStatus, "no-checks-configured");
+        assert.strictEqual(scorecard.lanes[1]?.checkStatus, "no-checks-configured");
+        assert.strictEqual(
+          scorecard.lanes[1]?.implementationAcceptance.status,
+          "accepted",
+        );
+        assert.strictEqual(scorecard.lanes[1]?.factoryLearningSignal.status, "strong");
+        assert.strictEqual(scorecard.preferredLane?.laneId, "lane-b");
+        assert.include(scorecard.preferredLane?.tradeoffsPreserved.join("\n"), "Lane A");
+        assert.include(markdown, "## Accepted Implementation Quality");
+        assert.include(markdown, "## Gaia Factory Learning Signal");
+        assert.include(markdown, "no checks configured");
+        assert.include(reportMarkdown, "factory-scorecard.json");
+        assert.include(reportMarkdown, "No-CI is represented as no checks configured, not green.");
+        assert.strictEqual(readable.contentType, "application/json");
       }),
     );
 

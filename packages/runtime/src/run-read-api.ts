@@ -75,6 +75,8 @@ export type LocalRunArtifactId =
   | "evidence-promotion-markdown"
   | "factory-retro"
   | "factory-retro-markdown"
+  | "factory-scorecard"
+  | "factory-scorecard-markdown"
   | "report"
   | "report-json"
   | "events"
@@ -93,6 +95,8 @@ const localRunArtifactIds: ReadonlyArray<LocalRunArtifactId> = [
   "evidence-promotion-markdown",
   "factory-retro",
   "factory-retro-markdown",
+  "factory-scorecard",
+  "factory-scorecard-markdown",
   "report",
   "report-json",
   "events",
@@ -139,6 +143,14 @@ const artifactDefinitions: Readonly<Record<LocalRunArtifactId, ArtifactDefinitio
   "factory-retro-markdown": {
     contentType: "text/markdown",
     path: (paths) => paths.factoryRetroMarkdown,
+  },
+  "factory-scorecard": {
+    contentType: "application/json",
+    path: (paths) => paths.factoryScorecardJson,
+  },
+  "factory-scorecard-markdown": {
+    contentType: "text/markdown",
+    path: (paths) => paths.factoryScorecardMarkdown,
   },
   "plan-review": {
     contentType: "application/json",
@@ -344,6 +356,8 @@ function parseArtifactId(input: string): ParsedArtifactId {
     case "evidence-promotion-markdown":
     case "factory-retro":
     case "factory-retro-markdown":
+    case "factory-scorecard":
+    case "factory-scorecard-markdown":
     case "report":
     case "report-json":
     case "events":

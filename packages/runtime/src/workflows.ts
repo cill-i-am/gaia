@@ -48,6 +48,7 @@ import { writeReport } from "./report-writer.js";
 import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 import { writeEvidencePromotion } from "./evidence-promotion.js";
 import { writeFactoryRetro } from "./factory-retro.js";
+import { writeFactoryScorecard } from "./factory-scorecard.js";
 import {
   resolveRunProfile,
   writeRunProfile,
@@ -423,9 +424,19 @@ function executeAcceptedRun(input: {
         recordRunFailure(runId, paths, "reporting", error),
       ),
     );
+    const factoryScorecard = yield* writeFactoryScorecard({
+      paths,
+      runId,
+      spec,
+    }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "reporting", error),
+      ),
+    );
     yield* writeReport({
       evidencePromotion,
       factoryRetro,
+      factoryScorecard,
       historicalRiskNotes: workerPlan.historicalRiskNotes,
       inferredRecommendations: workerPlan.inferredRecommendations,
       paths,
