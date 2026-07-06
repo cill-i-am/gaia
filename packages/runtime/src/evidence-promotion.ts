@@ -135,13 +135,15 @@ function buildReportPaths(paths: RunPaths) {
       paths,
       paths.dogfoodRetrospective,
     );
+    const reportMarkdownPath = yield* existingRunPath(paths, paths.reportMarkdown);
+    const reportJsonPath = yield* existingRunPath(paths, paths.reportJson);
 
     return EvidencePromotionReportPaths.make({
       ...(dogfoodRetrospectivePath === undefined
         ? {}
         : { dogfoodRetrospectivePath }),
-      reportJsonPath: runRelative(paths, paths.reportJson),
-      reportMarkdownPath: runRelative(paths, paths.reportMarkdown),
+      ...(reportJsonPath === undefined ? {} : { reportJsonPath }),
+      ...(reportMarkdownPath === undefined ? {} : { reportMarkdownPath }),
       ...(workerPlanPath === undefined ? {} : { workerPlanPath }),
     });
   });
@@ -255,10 +257,18 @@ function buildSelectedEvidence(input: {
     }),
     promotedEvidenceItem({
       label: "Run report",
-      path: input.reportPaths.reportMarkdownPath,
-      status: "pending-promotion",
+      path:
+        input.reportPaths.reportMarkdownPath ?? input.reportPaths.reportJsonPath,
+      status:
+        input.reportPaths.reportMarkdownPath === undefined &&
+        input.reportPaths.reportJsonPath === undefined
+          ? "skipped"
+          : "pending-promotion",
       summary:
-        "Report path is selected here before report cleanup guidance is rendered.",
+        input.reportPaths.reportMarkdownPath === undefined &&
+        input.reportPaths.reportJsonPath === undefined
+          ? "Run report artifacts were not written before this run stopped."
+          : "Report path is selected here before report cleanup guidance is rendered.",
     }),
     promotedEvidenceItem({
       label: "Verification summary",
@@ -341,8 +351,8 @@ Generated at: ${input.generatedAt}
 ## Plan And Report Paths
 
 - Worker plan: ${input.reportPaths.workerPlanPath ?? "skipped"}
-- Report markdown: ${input.reportPaths.reportMarkdownPath}
-- Report JSON: ${input.reportPaths.reportJsonPath}
+- Report markdown: ${input.reportPaths.reportMarkdownPath ?? "skipped"}
+- Report JSON: ${input.reportPaths.reportJsonPath ?? "skipped"}
 - Dogfood retrospective: ${input.reportPaths.dogfoodRetrospectivePath ?? "skipped"}
 
 ## Selected Evidence

@@ -5,6 +5,7 @@ import { runSpecFile } from "@gaia/runtime";
 import { runLocalGaiaServer } from "@gaia/server";
 import { Deferred, Effect, Fiber, FileSystem } from "effect";
 import { execFile } from "node:child_process";
+import { realpath } from "node:fs/promises";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -74,13 +75,13 @@ describe("gaia CLI local server read parity", () => {
             const directArtifact = yield* runGaiaJson(cwd, [
               "artifact",
               runId,
-              "report.json",
+              "report-json",
               "--json",
             ]);
             const serverArtifact = yield* runGaiaJson(cwd, [
               "artifact",
               runId,
-              "report.json",
+              "report-json",
               "--json",
               "--server-url",
               server.url,
@@ -126,6 +127,236 @@ describe("gaia CLI local server read parity", () => {
       20_000,
     );
 
+    it.effect(
+      "autostarts and reuses a workspace server for opt-in run, status, list, and events",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-server-" });
+          const specPath = `${cwd}/spec.md`;
+          yield* fs.writeFileString(specPath, "Run through opt-in server mode.\n");
+
+          try {
+            const accepted = yield* runGaiaJson(cwd, [
+              "run",
+              specPath,
+              "--server",
+              "--json",
+            ]);
+            const runId = getObjectString(accepted, "runId");
+            const metadata = yield* readServerMetadata(cwd);
+            const status = yield* waitForCompletedServerRun(cwd, runId);
+            const list = yield* runGaiaJson(cwd, ["list", "--server", "--json"]);
+            const events = yield* runGaiaJson(cwd, [
+              "events",
+              runId,
+              "--server",
+              "--json",
+            ]);
+            const reused = yield* readServerMetadata(cwd);
+
+            expect(getObjectString(accepted, "status")).toBe("accepted");
+            expect(status.status).toBe("completed");
+            expect(getRunId(list)).toBe(runId);
+            expect(getObjectString(events, "runId")).toBe(runId);
+            expect(getObjectArray(events, "events").length).toBeGreaterThan(0);
+            expect(reused.serverId).toBe(metadata.serverId);
+            expect(yield* fs.exists(`${cwd}/.gaia/server.log`)).toBe(true);
+
+            const humanStatus = yield* runGaia(cwd, [
+              "status",
+              runId,
+              "--server",
+            ]);
+            const humanList = yield* runGaia(cwd, ["list", "--server"]);
+            const humanEvents = yield* runGaia(cwd, [
+              "events",
+              runId,
+              "--server",
+            ]);
+            expect(humanStatus.stdout).toContain(`completed: ${runId}`);
+            expect(humanList.stdout).toContain(runId);
+            expect(humanEvents.stdout).toContain(`events: ${runId}`);
+          } finally {
+            yield* stopAutostartedServer(cwd);
+          }
+        }),
+      30_000,
+    );
+
+    it.effect(
+      "keeps direct run as the default when --server is absent",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-direct-" });
+          const specPath = `${cwd}/spec.md`;
+          yield* fs.makeDirectory(`${cwd}/.gaia`, { recursive: true });
+          yield* fs.writeFileString(specPath, "Run directly by default.\n");
+          yield* fs.writeFileString(
+            `${cwd}/.gaia/server.json`,
+            `${JSON.stringify({
+              gaiaRoot: `${cwd}/.gaia`,
+              host: "127.0.0.1",
+              pid: 999_999,
+              port: 1,
+              serverId: "srv_stale",
+              startedAt: "2026-07-06T00:00:00.000Z",
+              updatedAt: "2026-07-06T00:00:00.000Z",
+              url: "http://example.com:1",
+              version: 1,
+              workspaceRoot: cwd,
+            }, null, 2)}\n`,
+          );
+
+          const summary = yield* runGaiaJson(cwd, ["run", specPath, "--json"]);
+          const metadata = yield* readServerMetadata(cwd);
+
+          expect(getObjectString(summary, "status")).toBe("completed");
+          expect(getObjectString(metadata, "serverId")).toBe("srv_stale");
+          expect(yield* fs.exists(`${cwd}/.gaia/server.log`)).toBe(false);
+        }),
+      20_000,
+    );
+
+    it.effect(
+      "uses the latest pointer for status through server mode",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-latest-" });
+          yield* createSpecRun(cwd, "First latest candidate.\n");
+          yield* createSpecRun(cwd, "Second latest candidate.\n");
+          const directList = yield* runGaiaJson(cwd, ["list", "--json"]);
+          const runIds = getRunIds(directList);
+          const selected = runIds[1] ?? runIds[0];
+          if (selected === undefined) {
+            throw new Error("Expected at least one Gaia run.");
+          }
+          yield* fs.writeFileString(`${cwd}/.gaia/latest`, selected);
+
+          const server = yield* startLocalRunServer(cwd);
+          try {
+            const directStatus = yield* runGaiaJson(cwd, ["status", "--json"]);
+            const serverStatus = yield* runGaiaJson(cwd, [
+              "status",
+              "--server-url",
+              server.url,
+              "--json",
+            ]);
+
+            expect(getObjectString(directStatus, "runId")).toBe(selected);
+            expect(serverStatus).toEqual(directStatus);
+          } finally {
+            yield* stopServer(server);
+          }
+        }),
+      25_000,
+    );
+
+    it.effect(
+      "honors explicit --server-url instead of discovery metadata",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const sourceRoot = yield* createRunStore("Explicit URL source.");
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-url-" });
+          const sourceRunId = getRunId(yield* runGaiaJson(sourceRoot, [
+            "list",
+            "--json",
+          ]));
+          const sourceServer = yield* startLocalRunServer(sourceRoot);
+          const localServer = yield* startLocalRunServer(cwd);
+          try {
+            const list = yield* runGaiaJson(cwd, [
+              "list",
+              "--json",
+              "--server-url",
+              sourceServer.url,
+            ]);
+
+            expect(getRunId(list)).toBe(sourceRunId);
+            expect(getObjectString(yield* readServerMetadata(cwd), "serverId")).toBe(
+              localServer.serverId,
+            );
+          } finally {
+            yield* stopServer(sourceServer);
+            yield* stopServer(localServer);
+          }
+        }),
+      25_000,
+    );
+
+    it.effect(
+      "recovers stale server metadata when --server is requested",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-stale-" });
+          yield* fs.makeDirectory(`${cwd}/.gaia`, { recursive: true });
+          yield* fs.writeFileString(
+            `${cwd}/.gaia/server.json`,
+            `${JSON.stringify({
+              gaiaRoot: `${cwd}/.gaia`,
+              host: "127.0.0.1",
+              pid: 999_999,
+              port: 1,
+              serverId: "srv_stale",
+              startedAt: "2026-07-06T00:00:00.000Z",
+              updatedAt: "2026-07-06T00:00:00.000Z",
+              url: "http://example.com:1",
+              version: 1,
+              workspaceRoot: cwd,
+            }, null, 2)}\n`,
+          );
+
+          try {
+            const list = yield* runGaiaJson(cwd, ["list", "--server", "--json"]);
+            const metadata = yield* readServerMetadata(cwd);
+
+            expect(list).toEqual([]);
+            expect(metadata.serverId).not.toBe("srv_stale");
+            expect(yield* canonicalPath(getObjectString(metadata, "workspaceRoot"))).toBe(
+              yield* canonicalPath(cwd),
+            );
+          } finally {
+            yield* stopAutostartedServer(cwd);
+          }
+        }),
+      20_000,
+    );
+
+    it.effect(
+      "ignores healthy wrong-root metadata when --server is requested",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const wrongRoot = yield* createRunStore("Wrong root server.");
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-wrong-root-" });
+          const wrongServer = yield* startLocalRunServer(wrongRoot);
+          try {
+            const wrongMetadata = yield* fs.readFileString(
+              `${wrongRoot}/.gaia/server.json`,
+            );
+            yield* fs.makeDirectory(`${cwd}/.gaia`, { recursive: true });
+            yield* fs.writeFileString(`${cwd}/.gaia/server.json`, wrongMetadata);
+
+            const list = yield* runGaiaJson(cwd, ["list", "--server", "--json"]);
+            const metadata = yield* readServerMetadata(cwd);
+
+            expect(list).toEqual([]);
+            expect(yield* canonicalPath(getObjectString(metadata, "workspaceRoot"))).toBe(
+              yield* canonicalPath(cwd),
+            );
+            expect(metadata.serverId).not.toBe(wrongServer.serverId);
+          } finally {
+            yield* stopServer(wrongServer);
+            yield* stopAutostartedServer(cwd);
+          }
+        }),
+      30_000,
+    );
+
     it.effect("rejects malformed foreground server ports", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -150,6 +381,7 @@ type CliResult = {
 
 type TestServer = {
   readonly close: Effect.Effect<void>;
+  readonly serverId: string;
   readonly url: string;
 };
 
@@ -157,10 +389,17 @@ function createRunStore(specBody: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-" });
-    const specPath = `${cwd}/spec.md`;
-    yield* fs.writeFileString(specPath, specBody);
-    yield* runSpecFile(specPath, { rootDirectory: cwd });
+    yield* createSpecRun(cwd, specBody);
     return cwd;
+  });
+}
+
+function createSpecRun(cwd: string, specBody: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const specPath = `${cwd}/spec-${Date.now()}.md`;
+    yield* fs.writeFileString(specPath, specBody);
+    return yield* runSpecFile(specPath, { rootDirectory: cwd });
   });
 }
 
@@ -182,6 +421,7 @@ function startLocalRunServer(rootDirectory: string) {
     );
     return {
       close: Fiber.interrupt(fiber).pipe(Effect.asVoid),
+      serverId: metadata.serverId,
       url: metadata.url,
     } satisfies TestServer;
   });
@@ -245,18 +485,128 @@ function runGaia(
 }
 
 function getRunId(input: unknown) {
-  if (
-    Array.isArray(input) &&
-    input.length > 0 &&
-    typeof input[0] === "object" &&
-    input[0] !== null &&
-    "runId" in input[0] &&
-    typeof input[0].runId === "string"
-  ) {
-    return input[0].runId;
+  const first = getRunIds(input)[0];
+  if (first !== undefined) {
+    return first;
   }
 
   throw new Error("Expected list JSON output to contain a run id.");
+}
+
+function getRunIds(input: unknown) {
+  if (
+    Array.isArray(input) &&
+    input.every(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        "runId" in entry &&
+        typeof entry.runId === "string",
+    )
+  ) {
+    return input.map((entry) => entry.runId);
+  }
+
+  throw new Error("Expected list JSON output to contain run ids.");
+}
+
+function waitForCompletedServerRun(cwd: string, runId: string) {
+  return Effect.gen(function* () {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const status = yield* runGaiaJson(cwd, [
+        "status",
+        runId,
+        "--server",
+        "--json",
+      ]);
+      if (isObjectRecord(status) && status.status === "completed") {
+        return status;
+      }
+
+      yield* Effect.sleep("250 millis");
+    }
+
+    throw new Error(`Server run ${runId} did not complete in time.`);
+  });
+}
+
+function readServerMetadata(cwd: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return parseJsonObject(yield* fs.readFileString(`${cwd}/.gaia/server.json`));
+  });
+}
+
+function stopAutostartedServer(cwd: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const metadataPath = `${cwd}/.gaia/server.json`;
+    if (!(yield* fs.exists(metadataPath))) {
+      return;
+    }
+
+    const metadata = parseJsonObject(yield* fs.readFileString(metadataPath));
+    const pid = metadata["pid"];
+    if (typeof pid === "number") {
+      yield* Effect.sync(() => {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {
+          // The process may already have exited after the command under test.
+        }
+      });
+    }
+  });
+}
+
+function getObjectString(input: unknown, key: string) {
+  const value = parseJsonObjectValue(input, key);
+  if (typeof value === "string") {
+    return value;
+  }
+
+  throw new Error(`Expected JSON object string field ${key}.`);
+}
+
+function getObjectArray(input: unknown, key: string) {
+  const value = parseJsonObjectValue(input, key);
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  throw new Error(`Expected JSON object array field ${key}.`);
+}
+
+function parseJsonObjectValue(input: unknown, key: string) {
+  const object = parseJsonObject(input);
+  if (key in object) {
+    return object[key];
+  }
+
+  throw new Error(`Expected JSON object field ${key}.`);
+}
+
+function parseJsonObject(input: unknown) {
+  if (isObjectRecord(input)) {
+    return input;
+  }
+
+  if (typeof input === "string") {
+    const parsed = JSON.parse(input) as unknown;
+    if (isObjectRecord(parsed)) {
+      return parsed;
+    }
+  }
+
+  throw new Error("Expected a JSON object.");
+}
+
+function isObjectRecord(input: unknown): input is Record<string, unknown> {
+  return typeof input === "object" && input !== null && !Array.isArray(input);
+}
+
+function canonicalPath(input: string) {
+  return Effect.promise(() => realpath(input));
 }
 
 function parseCliJson(stdout: string) {

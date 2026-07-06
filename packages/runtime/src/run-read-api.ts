@@ -35,7 +35,7 @@ export type LocalRunReadDiagnostic = {
 export type LocalRunStatus = "completed" | "failed" | "running";
 
 export type LocalRunSummary = {
-  readonly artifacts: ReadonlyArray<string>;
+  readonly artifacts: ReadonlyArray<LocalRunArtifactId>;
   readonly createdAt: string;
   readonly eventCount: number;
   readonly latestEventType: RunEvent["type"];
@@ -62,8 +62,39 @@ export type LocalRunArtifactContentType =
   | "text/markdown"
   | "text/plain";
 
+export type LocalRunArtifactId =
+  | "input"
+  | "worker-plan"
+  | "plan-review"
+  | "worker-log"
+  | "worker-result"
+  | "verification-result"
+  | "evidence-review"
+  | "evidence-promotion"
+  | "evidence-promotion-markdown"
+  | "report"
+  | "report-json"
+  | "events"
+  | "snapshots";
+
+const localRunArtifactIds: ReadonlyArray<LocalRunArtifactId> = [
+  "input",
+  "worker-plan",
+  "plan-review",
+  "worker-log",
+  "worker-result",
+  "verification-result",
+  "evidence-review",
+  "evidence-promotion",
+  "evidence-promotion-markdown",
+  "report",
+  "report-json",
+  "events",
+  "snapshots",
+];
+
 export type LocalRunArtifact = {
-  readonly artifactName: string;
+  readonly artifactName: LocalRunArtifactId;
   readonly body: string;
   readonly contentType: LocalRunArtifactContentType;
   readonly runId: RunId;
@@ -74,126 +105,58 @@ type ArtifactDefinition = {
   readonly path: (paths: RunPaths) => string;
 };
 
-const artifactDefinitions: Readonly<Record<string, ArtifactDefinition>> = {
-  "browser-evidence.json": {
-    contentType: "application/json",
-    path: (paths) => paths.browserEvidence,
-  },
-  "ci-watch-state.json": {
-    contentType: "application/json",
-    path: (paths) => paths.ciWatchState,
-  },
-  "codex-harness-progress.json": {
-    contentType: "application/json",
-    path: (paths) => paths.codexHarnessProgress,
-  },
-  "dogfood-retrospective.json": {
-    contentType: "application/json",
-    path: (paths) => paths.dogfoodRetrospective,
-  },
-  "evidence-review.json": {
+const artifactDefinitions: Readonly<Record<LocalRunArtifactId, ArtifactDefinition>> = {
+  "evidence-review": {
     contentType: "application/json",
     path: (paths) => paths.evidenceReviewResult,
   },
-  "evidence-review.md": {
-    contentType: "text/markdown",
-    path: (paths) => paths.evidenceReviewMarkdown,
-  },
-  "evidence-reviewer-session.json": {
+  events: {
     contentType: "application/json",
-    path: (paths) => paths.evidenceReviewerSession,
+    path: (paths) => paths.events,
   },
-  "evidence-promotion.json": {
+  input: {
+    contentType: "text/markdown",
+    path: (paths) => paths.input,
+  },
+  "evidence-promotion": {
     contentType: "application/json",
     path: (paths) => paths.evidencePromotionJson,
   },
-  "evidence-promotion.md": {
+  "evidence-promotion-markdown": {
     contentType: "text/markdown",
     path: (paths) => paths.evidencePromotionMarkdown,
   },
-  "github-feedback.json": {
-    contentType: "application/json",
-    path: (paths) => paths.githubFeedback,
-  },
-  "github-pr-comment.md": {
-    contentType: "text/markdown",
-    path: (paths) => paths.githubPrComment,
-  },
-  "linear-issue-graph.json": {
-    contentType: "application/json",
-    path: (paths) => paths.linearIssueGraph,
-  },
-  "merge-decision.json": {
-    contentType: "application/json",
-    path: (paths) => paths.mergeDecision,
-  },
-  "plan-review.json": {
+  "plan-review": {
     contentType: "application/json",
     path: (paths) => paths.planReviewResult,
   },
-  "plan-review.md": {
-    contentType: "text/markdown",
-    path: (paths) => paths.planReviewMarkdown,
-  },
-  "plan-reviewer-session.json": {
-    contentType: "application/json",
-    path: (paths) => paths.planReviewerSession,
-  },
-  "preview-deployment.json": {
-    contentType: "application/json",
-    path: (paths) => paths.previewDeployment,
-  },
-  "pr-loop-state.json": {
-    contentType: "application/json",
-    path: (paths) => paths.prLoopState,
-  },
-  "remediation-spec.md": {
-    contentType: "text/markdown",
-    path: (paths) => paths.githubRemediationSpec,
-  },
-  "report.json": {
-    contentType: "application/json",
-    path: (paths) => paths.reportJson,
-  },
-  "report.md": {
+  report: {
     contentType: "text/markdown",
     path: (paths) => paths.reportMarkdown,
   },
-  "run-profile.json": {
+  "report-json": {
     contentType: "application/json",
-    path: (paths) => paths.runProfile,
+    path: (paths) => paths.reportJson,
   },
-  "skill-bundle.json": {
+  snapshots: {
     contentType: "application/json",
-    path: (paths) => paths.skillBundle,
+    path: (paths) => paths.snapshots,
   },
-  "skill-manifest.json": {
-    contentType: "application/json",
-    path: (paths) => paths.skillManifest,
-  },
-  "verification-result.json": {
+  "verification-result": {
     contentType: "application/json",
     path: (paths) => paths.verificationResult,
   },
-  "verification.log": {
+  "worker-log": {
     contentType: "text/plain",
-    path: (paths) => paths.verificationLog,
+    path: (paths) => paths.workerLog,
   },
-  "worker-plan.json": {
+  "worker-plan": {
     contentType: "application/json",
     path: (paths) => paths.workerPlanResult,
   },
-  "worker-plan.md": {
-    contentType: "text/markdown",
-    path: (paths) => paths.workerPlanMarkdown,
-  },
-  "worker-result.json": {
+  "worker-result": {
     contentType: "application/json",
     path: (paths) => paths.workerResult,
-  },
-  "worker.log": {
-    contentType: "text/plain",
-    path: (paths) => paths.workerLog,
   },
 };
 
@@ -308,8 +271,8 @@ export function readLocalRunArtifact(
 ) {
   return Effect.gen(function* () {
     const runId = yield* parseRequestedRunId(runIdInput);
-    const definition = artifactDefinitions[artifactName];
-    if (definition === undefined) {
+    const artifactId = parseArtifactId(artifactName);
+    if (artifactId._tag === "Failure") {
       return yield* Effect.fail({
         artifactName,
         code: "ArtifactNotAllowed",
@@ -319,6 +282,7 @@ export function readLocalRunArtifact(
       } satisfies LocalRunReadDiagnostic);
     }
 
+    const definition = artifactDefinitions[artifactId.artifactId];
     yield* readLocalRun(runId, options);
     const fs = yield* FileSystem.FileSystem;
     const paths = yield* makeRunPaths(runId, options);
@@ -336,12 +300,37 @@ export function readLocalRunArtifact(
 
     const body = yield* fs.readFileString(artifactPath);
     return {
-      artifactName,
+      artifactName: artifactId.artifactId,
       body,
       contentType: definition.contentType,
       runId,
     } satisfies LocalRunArtifact;
   });
+}
+
+type ParsedArtifactId =
+  | { readonly _tag: "Failure" }
+  | { readonly _tag: "Success"; readonly artifactId: LocalRunArtifactId };
+
+function parseArtifactId(input: string): ParsedArtifactId {
+  switch (input) {
+    case "input":
+    case "worker-plan":
+    case "plan-review":
+    case "worker-log":
+    case "worker-result":
+    case "verification-result":
+    case "evidence-review":
+    case "evidence-promotion":
+    case "evidence-promotion-markdown":
+    case "report":
+    case "report-json":
+    case "events":
+    case "snapshots":
+      return { _tag: "Success", artifactId: input };
+  }
+
+  return { _tag: "Failure" };
 }
 
 function parseRequestedRunId(runIdInput: string) {
@@ -392,8 +381,9 @@ function statusFromState(state: RunState): LocalRunStatus {
 function existingArtifacts(paths: RunPaths) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const artifacts: Array<string> = [];
-    for (const [artifactName, definition] of Object.entries(artifactDefinitions)) {
+    const artifacts: Array<LocalRunArtifactId> = [];
+    for (const artifactName of localRunArtifactIds) {
+      const definition = artifactDefinitions[artifactName];
       const exists = yield* fs.exists(definition.path(paths));
       if (exists) {
         artifacts.push(artifactName);

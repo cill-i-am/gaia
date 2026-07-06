@@ -51,6 +51,7 @@ import {
   resolveRunProfile,
   writeRunProfile,
   type BrowserEvidenceRequirement,
+  type RunProfile,
   type RunProfileSource,
 } from "./run-profile.js";
 import {
@@ -146,6 +147,74 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
       payload: { specPath: "input.md" },
       type: "RUN_CREATED",
     });
+
+    return yield* executeAcceptedRun({
+      browserEvidenceRequirement,
+      explicitBrowserEvidenceTargetUrl,
+      options,
+      paths,
+      runId,
+      runProfile,
+      spec,
+    });
+  });
+}
+
+export function continueAcceptedRun(
+  runId: RunId,
+  paths: RunPaths,
+  spec: ReturnType<typeof parseMarkdownSpec>,
+  options: WorkflowOptions = {},
+) {
+  return Effect.gen(function* () {
+    const runProfile = yield* resolveRunProfile(options.runProfileSource);
+    const browserEvidenceRequirement =
+      options.browserEvidenceRequirement ??
+      runProfile.checks.browserEvidence;
+    const explicitBrowserEvidenceTargetUrl =
+      options.browserEvidenceTargetUrl === undefined
+        ? undefined
+        : yield* parseBrowserEvidenceTargetUrlEffect(
+            options.browserEvidenceTargetUrl,
+          );
+
+    yield* writeRunProfile({ paths, profile: runProfile }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "creating", error),
+      ),
+    );
+
+    return yield* executeAcceptedRun({
+      browserEvidenceRequirement,
+      explicitBrowserEvidenceTargetUrl,
+      options,
+      paths,
+      runId,
+      runProfile,
+      spec,
+    });
+  });
+}
+
+function executeAcceptedRun(input: {
+  readonly browserEvidenceRequirement: BrowserEvidenceRequirement;
+  readonly explicitBrowserEvidenceTargetUrl?: BrowserEvidenceTargetUrl | undefined;
+  readonly options: WorkflowOptions;
+  readonly paths: RunPaths;
+  readonly runId: RunId;
+  readonly runProfile: RunProfile;
+  readonly spec: ReturnType<typeof parseMarkdownSpec>;
+}) {
+  return Effect.gen(function* () {
+    const {
+      browserEvidenceRequirement,
+      explicitBrowserEvidenceTargetUrl,
+      options,
+      paths,
+      runId,
+      runProfile,
+      spec,
+    } = input;
     const workspace = yield* prepareWorkspace(
       paths,
       options.workspaceSource ?? emptyWorkspaceSource(),

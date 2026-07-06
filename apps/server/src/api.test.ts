@@ -1,7 +1,17 @@
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
-import { runSpecFile } from "@gaia/runtime";
-import { Effect, FileSystem, Layer } from "effect";
+import {
+  ReviewResult,
+  ReviewerNameSchema,
+  type GaiaReviewer,
+  runSpecFile,
+} from "@gaia/runtime";
+import type { ServerWorkflowOptions } from "@gaia/runtime/server-workflows";
+import {
+  acceptServerRun,
+  continueServerRun,
+} from "@gaia/runtime/server-workflows";
+import { Deferred, Effect, FileSystem, Layer, Schema } from "effect";
 import {
   HttpClient,
   HttpClientRequest,
@@ -85,7 +95,7 @@ describe("local run api http boundary", () => {
       }),
     );
 
-    it.effect("serves allowlisted artifacts through JSON envelopes only", () =>
+    it.effect("serves logical artifacts through JSON envelopes only", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
@@ -94,16 +104,154 @@ describe("local run api http boundary", () => {
         const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
 
         const response = yield* HttpClient.get(
-          `/runs/${summary.runId}/artifacts/report.json`,
+          `/runs/${summary.runId}/artifacts/report-json`,
+        ).pipe(Effect.provide(testServerLayer(cwd)));
+        const inputResponse = yield* HttpClient.get(
+          `/runs/${summary.runId}/artifacts/input`,
         ).pipe(Effect.provide(testServerLayer(cwd)));
         const body = yield* responseJsonObject(response);
+        const inputBody = yield* responseJsonObject(inputResponse);
         const data = getObject(body, "data");
+        const inputData = getObject(inputBody, "data");
 
         assert.strictEqual(response.status, 200);
-        assert.strictEqual(getString(data, "artifactName"), "report.json");
+        assert.strictEqual(inputResponse.status, 200);
+        assert.strictEqual(getString(data, "artifactName"), "report-json");
         assert.strictEqual(getString(data, "contentType"), "application/json");
         assert.include(getString(data, "body"), summary.runId);
+        assert.strictEqual(getString(inputData, "artifactName"), "input");
+        assert.strictEqual(getString(inputData, "contentType"), "text/markdown");
       }),
+    );
+
+    it.effect("streams a server-created run from replayed events to terminal close", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const accepted = yield* acceptServerRun({
+          specMarkdown: "Stream this server run to completion.\n",
+        }, {
+          rootDirectory: cwd,
+        });
+
+        yield* continueServerRun(accepted.runId, { rootDirectory: cwd });
+        const response = yield* HttpClient.get(
+          `/runs/${accepted.runId}/events/stream`,
+        ).pipe(Effect.provide(testServerLayer(cwd)));
+        const text = yield* response.text;
+        const events = parseSseDataEvents(text);
+        const firstEvent = events[0];
+        const lastEvent = events.at(-1);
+
+        assert.strictEqual(response.status, 200);
+        if (firstEvent === undefined || lastEvent === undefined) {
+          assert.fail("Expected stream to emit run events.");
+        }
+
+        assert.strictEqual(getString(firstEvent, "type"), "RUN_CREATED");
+        assert.strictEqual(getString(lastEvent, "type"), "REPORT_COMPLETED");
+        assert.deepEqual(
+          events.map((event) => getNumber(event, "sequence")),
+          Array.from({ length: events.length }, (_, index) => index + 1),
+        );
+      }),
+      20_000,
+    );
+
+    it.effect("accepts Markdown content durably before returning", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const layer = testServerLayer(cwd);
+        const response = yield* postCreateRun(
+          layer,
+          "Create through the local server.\n",
+        );
+        const body = yield* responseJsonObject(response);
+        const runId = getString(body, "runId");
+        const events = yield* HttpClient.get(`/runs/${runId}/events`).pipe(
+          Effect.provide(layer),
+        );
+        const eventsBody = yield* responseJsonObject(events);
+        const eventItems = getArray(getObject(eventsBody, "data"), "events");
+        const firstEvent = getObjectFromArray(eventItems, 0);
+
+        assert.strictEqual(response.status, 202);
+        assert.strictEqual(getString(body, "status"), "accepted");
+        assert.strictEqual(getString(firstEvent, "type"), "RUN_CREATED");
+        assert.strictEqual(getString(getObject(firstEvent, "payload"), "source"), "server");
+      }),
+      20_000,
+    );
+
+    it.effect("returns typed 400 for invalid Markdown content", () =>
+      Effect.gen(function* () {
+        const response = yield* postCreateRun(testServerLayer("."), "   ");
+        const body = yield* responseJsonObject(response);
+
+        assert.strictEqual(response.status, 400);
+        assertApiError(body, "InvalidSpec", 400);
+      }),
+    );
+
+    it.effect("rejects path-bearing and unknown create request shapes", () =>
+      Effect.gen(function* () {
+        const layer = testServerLayer(".");
+        const pathBearing = yield* createRunRequestFromPayload({
+          browserEvidenceTargetUrl: "http://127.0.0.1:3000",
+          codexHarness: { command: "codex" },
+          processHarness: { command: "node", args: ["harness.mjs"] },
+          profile: "dogfood",
+          skillManifestSource: "skills.json",
+          specMarkdown: "Only Markdown content is accepted here.\n",
+          workspaceSource: ".",
+        }).pipe(Effect.provide(layer));
+        const unknownOptions = yield* createRunRequestFromPayload({
+          options: { workspaceSource: "." },
+          specMarkdown: "Unknown option bags are rejected too.\n",
+        }).pipe(Effect.provide(layer));
+        const pathBearingBody = yield* responseJsonObject(pathBearing);
+        const unknownOptionsBody = yield* responseJsonObject(unknownOptions);
+
+        assert.strictEqual(pathBearing.status, 400);
+        assertApiError(pathBearingBody, "InvalidRequest", 400);
+        assert.strictEqual(unknownOptions.status, 400);
+        assertApiError(unknownOptionsBody, "InvalidRequest", 400);
+      }),
+    );
+
+    it.effect("returns typed 409 while a server-created run is active", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const release = yield* Deferred.make<void>();
+        const layer = testServerLayer(cwd, {
+          reviewer: pausingReviewer(release),
+        });
+
+        const responses = yield* Effect.all(
+          [
+            createRunRequest("Keep this run active.\n"),
+            createRunRequest("Conflict with active run.\n"),
+          ],
+          { concurrency: "unbounded" },
+        ).pipe(Effect.provide(layer));
+        const first = responses.find((response) => response.status === 202);
+        const second = responses.find((response) => response.status === 409);
+
+        if (first === undefined || second === undefined) {
+          assert.fail("Expected one accepted response and one conflict response.");
+        }
+
+        const body = yield* responseJsonObject(second);
+
+        assert.strictEqual(first.status, 202);
+        assert.strictEqual(second.status, 409);
+        assertApiError(body, "ActiveRunConflict", 409);
+
+        yield* Deferred.succeed(release, undefined);
+      }),
+      20_000,
     );
 
     it.effect("rejects malformed ids, path-like artifacts, and mutation methods", () =>
@@ -114,6 +262,9 @@ describe("local run api http boundary", () => {
         );
         const badArtifact = yield* HttpClient.get(
           "/runs/run-V7kP9sQ2xY/artifacts/..%2Fevents.jsonl",
+        ).pipe(Effect.provide(layer));
+        const unknownArtifact = yield* HttpClient.get(
+          "/runs/run-V7kP9sQ2xY/artifacts/report.json",
         ).pipe(Effect.provide(layer));
         const post = yield* HttpClientRequest.post("/runs").pipe(
           HttpClient.execute,
@@ -135,36 +286,40 @@ describe("local run api http boundary", () => {
           badArtifact,
           "bad artifact",
         );
+        const unknownArtifactBody = yield* responseJsonObject(
+          unknownArtifact,
+          "unknown artifact",
+        );
         const postBody = yield* responseJsonObject(post, "post runs");
         const putBody = yield* responseJsonObject(put, "put run");
         const malformedPathBody = yield* responseJsonObject(
           malformedPath,
           "malformed path",
         );
-        const badRunError = getObject(badRunBody, "error");
-        const badArtifactError = getObject(badArtifactBody, "error");
-        const postError = getObject(postBody, "error");
-        const putError = getObject(putBody, "error");
-        const malformedPathError = getObject(malformedPathBody, "error");
 
         assert.strictEqual(badRun.status, 400);
-        assert.strictEqual(getString(badRunError, "code"), "InvalidRunId");
+        assertApiError(badRunBody, "InvalidRunId", 400);
         assert.strictEqual(badArtifact.status, 404);
-        assert.strictEqual(getString(badArtifactError, "code"), "ArtifactNotAllowed");
-        assert.strictEqual(post.status, 405);
-        assert.strictEqual(getString(postError, "code"), "MethodNotAllowed");
+        assertApiError(badArtifactBody, "ArtifactNotAllowed", 404);
+        assert.strictEqual(unknownArtifact.status, 404);
+        assertApiError(unknownArtifactBody, "ArtifactNotAllowed", 404);
+        assert.strictEqual(post.status, 400);
+        assertApiError(postBody, "InvalidRequest", 400);
         assert.strictEqual(put.status, 405);
-        assert.strictEqual(getString(putError, "code"), "MethodNotAllowed");
+        assertApiError(putBody, "MethodNotAllowed", 405);
         assert.strictEqual(head.status, 405);
         assert.strictEqual(malformedPath.status, 404);
-        assert.strictEqual(getString(malformedPathError, "code"), "EndpointNotFound");
+        assertApiError(malformedPathBody, "EndpointNotFound", 404);
       }),
     );
   });
 });
 
-function testServerLayer(rootDirectory: string) {
-  return makeLocalGaiaServerLayer(testIdentity(rootDirectory)).pipe(
+function testServerLayer(
+  rootDirectory: string,
+  workflowOptions: ServerWorkflowOptions = {},
+) {
+  return makeLocalGaiaServerLayer(testIdentity(rootDirectory), workflowOptions).pipe(
     Layer.provideMerge(NodeHttpServer.layerTest),
   );
 }
@@ -196,6 +351,92 @@ function responseJsonObject(
       );
     }),
   );
+}
+
+function parseSseDataEvents(
+  text: string,
+): ReadonlyArray<Readonly<Record<string, unknown>>> {
+  return text
+    .trim()
+    .split(/\r?\n\r?\n/u)
+    .flatMap((block) => {
+      const dataLines = block
+        .split(/\r?\n/u)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).trimStart());
+
+      if (dataLines.length === 0) {
+        return [];
+      }
+
+      const parsed: unknown = JSON.parse(dataLines.join("\n"));
+      if (!isJsonObject(parsed)) {
+        throw new Error(
+          `Expected SSE data event to be an object: ${dataLines.join("\n")}.`,
+        );
+      }
+
+      return [parsed];
+    });
+}
+
+function assertApiError(
+  body: Readonly<Record<string, unknown>>,
+  code: string,
+  status: number,
+) {
+  assert.strictEqual(getString(body, "code"), code);
+  assert.strictEqual(getNumber(body, "status"), status);
+  assert.strictEqual(typeof body["message"], "string");
+  assert.strictEqual(typeof body["recoverable"], "boolean");
+  assert.notProperty(body, "error");
+}
+
+function postCreateRun(
+  layer: ReturnType<typeof testServerLayer>,
+  specMarkdown: string,
+) {
+  return createRunRequest(specMarkdown).pipe(Effect.provide(layer));
+}
+
+function createRunRequest(specMarkdown: string) {
+  return createRunRequestFromPayload({ specMarkdown });
+}
+
+function createRunRequestFromPayload(payload: unknown) {
+  return HttpClientRequest.post("/runs").pipe(
+    HttpClientRequest.bodyJsonUnsafe(payload),
+    HttpClient.execute,
+  );
+}
+
+function pausingReviewer(release: Deferred.Deferred<void>): GaiaReviewer {
+  const reviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
+    "pausing-server-reviewer",
+  );
+
+  return {
+    name: reviewerName,
+    run: (request) =>
+      Effect.gen(function* () {
+        if (request.phase === "plan") {
+          yield* Deferred.await(release);
+        }
+
+        return ReviewResult.make({
+          findings: [],
+          phase: request.phase,
+          resultPath:
+            request.phase === "plan"
+              ? "plan-review.json"
+              : "evidence-review.json",
+          reviewerName,
+          runId: request.runId,
+          status: "approved",
+          summary: `Pausing reviewer approved ${request.phase}.`,
+        });
+      }),
+  };
 }
 
 function getObject(

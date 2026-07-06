@@ -37,8 +37,8 @@ export class EvidencePromotionReportPaths extends Schema.Class<EvidencePromotion
   "EvidencePromotionReportPaths",
 )({
   dogfoodRetrospectivePath: Schema.optionalKey(Schema.NonEmptyString),
-  reportJsonPath: Schema.NonEmptyString,
-  reportMarkdownPath: Schema.NonEmptyString,
+  reportJsonPath: Schema.optionalKey(Schema.NonEmptyString),
+  reportMarkdownPath: Schema.optionalKey(Schema.NonEmptyString),
   workerPlanPath: Schema.optionalKey(Schema.NonEmptyString),
 }) {}
 

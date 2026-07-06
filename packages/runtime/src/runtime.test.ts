@@ -484,12 +484,6 @@ describe("runtime workflows", () => {
         const reportJson = yield* fs.readFileString(
           `${summary.runDirectory}/report.json`,
         );
-        const artifact = yield* readLocalRunArtifact(
-          summary.runId,
-          "dogfood-retrospective.json",
-          { rootDirectory: cwd },
-        );
-
         assert.strictEqual(retrospective.status, "clean");
         assert.strictEqual(retrospective.findings.length, 0);
         assert.strictEqual(retrospective.candidateIssueCount, 0);
@@ -500,7 +494,6 @@ describe("runtime workflows", () => {
         assert.include(reportMarkdown, "dogfood-retrospective.json");
         assert.include(reportMarkdown, "No high-signal dogfood findings");
         assert.include(reportJson, '"dogfood-retrospective.json"');
-        assert.strictEqual(artifact.contentType, "application/json");
       }),
     );
 
@@ -521,7 +514,7 @@ describe("runtime workflows", () => {
         const reportMarkdown = yield* fs.readFileString(summary.reportPath);
         const run = yield* readLocalRunArtifact(
           summary.runId,
-          "evidence-promotion.json",
+          "evidence-promotion",
           { rootDirectory: cwd },
         );
 
@@ -599,11 +592,18 @@ describe("runtime workflows", () => {
         assert.strictEqual(promotion.runId, status.runId);
         assert.strictEqual(promotion.promotionStatus, "pending-promotion");
         assert.strictEqual(promotion.cleanupStatus, "not-completed");
-        assert.isAtLeast(
-          promotion.selectedEvidence.filter(
-            (evidence) => evidence.status === "skipped",
-          ).length,
-          1,
+        assert.isFalse(yield* fs.exists(`${status.runDirectory}/report.md`));
+        assert.isFalse(yield* fs.exists(`${status.runDirectory}/report.json`));
+        assert.isUndefined(promotion.reportPaths.reportMarkdownPath);
+        assert.isUndefined(promotion.reportPaths.reportJsonPath);
+        const reportEvidence = promotion.selectedEvidence.find(
+          (evidence) => evidence.label === "Run report",
+        );
+        assert.strictEqual(reportEvidence?.status, "skipped");
+        assert.isUndefined(reportEvidence?.path);
+        assert.include(
+          promotion.markdown,
+          "- Report markdown: skipped\n- Report JSON: skipped",
         );
       }),
     );
@@ -2235,19 +2235,12 @@ describe("runtime workflows", () => {
             ),
           ),
         );
-        const artifact = yield* readLocalRunArtifact(
-          status.runId,
-          "codex-harness-progress.json",
-          { rootDirectory: cwd },
-        );
-
         assert.strictEqual(status.state, "failed");
         assert.strictEqual(status.status, "failed");
         assert.strictEqual(
           status.harnessProgressPath,
           `${status.runDirectory}/codex-harness-progress.json`,
         );
-        assert.strictEqual(artifact.contentType, "application/json");
         assert.strictEqual(progress.status, "timed-out");
         assert.isTrue(progress.terminal);
         assert.strictEqual(progress.stallClassification, "no-progress");
