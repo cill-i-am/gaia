@@ -518,12 +518,22 @@ describe("runtime workflows", () => {
         const similarTests = workerPlan.planningContext.similarTests.map(
           (test) => test.path,
         );
+        const instructionScopes = workerPlan.planningContext.agentInstructions.map(
+          (instruction) => instruction.path,
+        );
+        const packageNames = workerPlan.planningContext.packages.map(
+          (workspacePackage) => workspacePackage.name,
+        );
 
         assert.include(likelyFiles, "packages/core/src/evidence-promotion.ts");
         assert.include(likelyFiles, "packages/runtime/src/evidence-promotion.ts");
         assert.include(similarTests, "packages/runtime/src/runtime.test.ts");
         assert.notInclude(likelyFiles, "apps/server/src/api.ts");
         assert.notInclude(likelyFiles, "apps/server/src/main.ts");
+        assert.notInclude(packageNames, "@gaia/server");
+        assert.notInclude(packageNames, "@gaia/cli");
+        assert.notInclude(instructionScopes, "apps/AGENTS.md");
+        assert.notInclude(instructionScopes, "apps/cli/AGENTS.md");
       }),
     );
 

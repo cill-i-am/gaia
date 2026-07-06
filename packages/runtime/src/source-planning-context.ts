@@ -142,6 +142,7 @@ const weakTokens = new Set([
   "does",
   "for",
   "from",
+  "gaia",
   "into",
   "keep",
   "local",
@@ -204,26 +205,25 @@ export function buildSourcePlanningContext(
           reason: reasonFromRankedPath(ranked),
         }),
       );
-    const selectedPaths = [
-      ...likelyFiles.map((file) => file.path),
-      ...similarTests.map((test) => test.path),
+    const likelyFilePaths = likelyFiles.map((file) => file.path);
+    const instructionSourcePaths = [
+      ...likelyFilePaths,
       ...sourceDocs.map((doc) => doc.path),
-      ...packageManifests.map((manifest) => manifest.path),
     ];
     const agentInstructions = yield* readRelevantAgentInstructions(
       fs,
       input.workspaceRoot,
       files,
-      selectedPaths,
+      instructionSourcePaths,
       profile,
     );
     const packages = packageManifests
-      .filter((manifest) => packageIsRelevant(manifest, selectedPaths, profile))
+      .filter((manifest) => packageIsRelevant(manifest, likelyFilePaths, profile))
       .map((manifest) =>
         WorkerPlanWorkspacePackage.make({
           name: manifest.name,
           path: manifest.path,
-          reason: packageReason(manifest, selectedPaths, profile),
+          reason: packageReason(manifest, likelyFilePaths, profile),
           scripts: [...manifest.scripts],
         }),
       );
@@ -366,7 +366,7 @@ function packageReason(
   profile: ReturnType<typeof sourceProfile>,
 ) {
   if (packageOwnsSelectedPath(manifest, selectedPaths)) {
-    return "Owns one or more likely files or similar tests.";
+    return "Owns one or more likely files.";
   }
 
   const matchedTokens = [...tokenSet([manifest.name, manifest.directory].join(" "))]
