@@ -1,4 +1,5 @@
 import {
+  CreateRunAcceptedResponse,
   HealthResponse,
   LocalGaiaServerApi,
   LocalRunApiBadRequest,
@@ -33,13 +34,33 @@ import {
 } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import {
+  acceptServerRun,
+  continueServerRun,
+  type ServerRunAcceptance,
+  type ServerWorkflowOptions,
+} from "@gaia/runtime/server-workflows";
+import { GaiaRuntimeError } from "@gaia/runtime";
+import {
+  appendServerLog,
   serverMetadataFromAddress,
   type LocalServerIdentity,
 } from "./discovery.js";
+import {
+  ActiveServerRunConflict,
+  makeServerRunRegistry,
+  type ServerRunReservation,
+  type ServerRunRegistryService,
+} from "./server-state.js";
 
-export class LocalServerConfig extends Context.Service<LocalServerConfig, LocalServerIdentity>()(
-  "@gaia/server/LocalServerConfig",
-) {}
+type LocalServerConfigValue = LocalServerIdentity & {
+  readonly runRegistry: ServerRunRegistryService;
+  readonly workflowOptions: ServerWorkflowOptions;
+};
+
+export class LocalServerConfig extends Context.Service<
+  LocalServerConfig,
+  LocalServerConfigValue
+>()("@gaia/server/LocalServerConfig") {}
 
 export const HealthLive = HttpApiBuilder.group(
   LocalGaiaServerApi,
@@ -86,14 +107,53 @@ export const RunsLive = HttpApiBuilder.group(
           });
         }),
       )
-      .handle("createRun", () =>
-        Effect.fail(
-          methodNotAllowedApiError({
-            code: "MethodNotAllowed",
-            message: "Local Gaia API is read-only in GAIA-12.",
-            recoverable: false,
-          }),
-        ),
+      .handle("createRun", ({ payload }) =>
+        Effect.gen(function* () {
+          if (payload === undefined) {
+            return yield* Effect.fail(
+              createApiError({
+                code: "InvalidRequest",
+                message: "Create run requests must include a JSON body.",
+                recoverable: false,
+              }),
+            );
+          }
+
+          const identity = yield* LocalServerConfig;
+          const reservation = yield* identity.runRegistry.reserveCreate.pipe(
+            Effect.mapError((error) => activeRunConflictApiError(error)),
+          );
+          const acceptedExit = yield* Effect.exit(
+            acceptServerRun(payload, {
+              ...identity.workflowOptions,
+              rootDirectory: identity.rootDirectory,
+            }),
+          );
+
+          if (acceptedExit._tag === "Failure") {
+            yield* reservation.rollback;
+            return yield* Effect.fail(apiErrorFromCause(acceptedExit.cause));
+          }
+
+          const accepted = acceptedExit.value;
+          yield* reservation.markAccepted(accepted.runId);
+          yield* forkServerContinuation({
+            accepted,
+            identity,
+            reservation,
+          });
+
+          return CreateRunAcceptedResponse.make({
+            acceptedAt: accepted.acceptedAt,
+            runId: accepted.runId,
+            status: "accepted",
+            urls: {
+              eventStream: `/runs/${accepted.runId}/events/stream`,
+              events: `/runs/${accepted.runId}/events`,
+              run: `/runs/${accepted.runId}`,
+            },
+          });
+        }),
       )
       .handle("getRun", ({ params }) =>
         Effect.gen(function* () {
@@ -167,6 +227,7 @@ export const LocalGaiaServerApiLayer = HttpApiBuilder.layer(LocalGaiaServerApi).
 
 export function makeLocalGaiaServerLayer(
   identity: LocalServerIdentity,
+  workflowOptions: ServerWorkflowOptions = {},
 ): Layer.Layer<
   never,
   never,
@@ -176,12 +237,23 @@ export function makeLocalGaiaServerLayer(
   | HttpPlatform
   | Generator
 > {
+  const configLayer = Layer.effect(
+    LocalServerConfig,
+    makeServerRunRegistry().pipe(
+      Effect.map((runRegistry) => ({
+        ...identity,
+        runRegistry,
+        workflowOptions,
+      })),
+    ),
+  );
+
   return HttpRouter.serve(LocalGaiaServerApiLayer, {
     disableListenLog: true,
     disableLogger: true,
     middleware: structuredServerErrors,
   }).pipe(
-    Layer.provide(Layer.succeed(LocalServerConfig)(identity)),
+    Layer.provide(configLayer),
   );
 }
 
@@ -189,11 +261,11 @@ function structuredServerErrors<E, R>(
   effect: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
 ) {
   return HttpEffect.withPreResponseHandler(effect, (request, response) => {
-    if (request.method !== "GET") {
+    if (!isAllowedMethod(request.method, request.url)) {
       return errorJsonResponse(
         methodNotAllowedApiError({
           code: "MethodNotAllowed",
-          message: "Local Gaia API is read-only in GAIA-12.",
+          message: "Local Gaia API method is not supported for this endpoint.",
           recoverable: false,
         }),
       );
@@ -214,9 +286,13 @@ function structuredServerErrors<E, R>(
     }
 
     if (response.status === 400) {
+      const path = pathnameFromUrl(request.url);
       return errorJsonResponse(
         apiError({
-          code: "InvalidRunId",
+          code:
+            request.method === "GET" && path.startsWith("/runs/")
+              ? "InvalidRunId"
+              : "InvalidRequest",
           message: "Local Gaia API request could not be parsed.",
           recoverable: false,
         }),
@@ -237,9 +313,27 @@ function isEmptyResponse(response: HttpServerResponse.HttpServerResponse) {
   return response.body._tag === "Empty";
 }
 
+function isAllowedMethod(method: string, url: string) {
+  if (method === "GET") {
+    return true;
+  }
+
+  return method === "POST" && pathnameFromUrl(url) === "/runs";
+}
+
+function pathnameFromUrl(url: string) {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url.split("?")[0] ?? url;
+  }
+}
+
 function statusForApiError(error: LocalRunApiError) {
   switch (error.error.code) {
     case "InvalidRunId":
+    case "InvalidRequest":
+    case "InvalidSpec":
       return 400;
     case "ArtifactNotAllowed":
     case "ArtifactNotFound":
@@ -249,6 +343,7 @@ function statusForApiError(error: LocalRunApiError) {
     case "MethodNotAllowed":
       return 405;
     case "ActiveRunConflict":
+    case "RunStoreLocked":
       return 409;
     case "InvalidRunDirectory":
     case "RunHasNoEvents":
@@ -261,6 +356,22 @@ function statusForApiError(error: LocalRunApiError) {
 
 function readApiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunReadApiError {
   return readApiError(causeToDiagnostic(cause));
+}
+
+function apiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunCreateApiError {
+  for (const reason of cause.reasons) {
+    if (Cause.isFailReason(reason)) {
+      if (reason.error instanceof GaiaRuntimeError) {
+        return apiErrorFromRuntimeError(reason.error);
+      }
+
+      if (isApiDiagnostic(reason.error)) {
+        return createApiError(reason.error);
+      }
+    }
+  }
+
+  return internalApiError(cause);
 }
 
 function causeToDiagnostic(cause: Cause.Cause<unknown>): ApiDiagnostic {
@@ -287,9 +398,19 @@ function causeToDiagnostic(cause: Cause.Cause<unknown>): ApiDiagnostic {
 
 function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
   switch (diagnostic.code) {
+    case "InvalidRequest":
+      return LocalRunApiBadRequest.make({
+        error: { ...diagnostic, code: "InvalidRequest" },
+        status: "error",
+      });
     case "InvalidRunId":
       return LocalRunApiBadRequest.make({
         error: { ...diagnostic, code: "InvalidRunId" },
+        status: "error",
+      });
+    case "InvalidSpec":
+      return LocalRunApiBadRequest.make({
+        error: { ...diagnostic, code: "InvalidSpec" },
         status: "error",
       });
     case "ArtifactNotAllowed":
@@ -328,6 +449,7 @@ function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
         status: "error",
       });
     case "ActiveRunConflict":
+    case "RunStoreLocked":
     case "InternalServerError":
     case "MethodNotAllowed":
       return internalApiError(diagnostic);
@@ -347,9 +469,19 @@ function apiError(
   diagnostic: ApiDiagnostic,
 ): LocalRunApiError {
   switch (diagnostic.code) {
+    case "InvalidRequest":
+      return LocalRunApiBadRequest.make({
+        error: { ...diagnostic, code: "InvalidRequest" },
+        status: "error",
+      });
     case "InvalidRunId":
       return LocalRunApiBadRequest.make({
         error: { ...diagnostic, code: "InvalidRunId" },
+        status: "error",
+      });
+    case "InvalidSpec":
+      return LocalRunApiBadRequest.make({
+        error: { ...diagnostic, code: "InvalidSpec" },
         status: "error",
       });
     case "ArtifactNotAllowed":
@@ -380,6 +512,11 @@ function apiError(
     case "ActiveRunConflict":
       return LocalRunApiConflict.make({
         error: { ...diagnostic, code: "ActiveRunConflict" },
+        status: "error",
+      });
+    case "RunStoreLocked":
+      return LocalRunApiConflict.make({
+        error: { ...diagnostic, code: "RunStoreLocked" },
         status: "error",
       });
     case "InvalidRunDirectory":
@@ -414,7 +551,130 @@ function apiError(
   });
 }
 
+function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
+  switch (diagnostic.code) {
+    case "InvalidRequest":
+      return LocalRunApiBadRequest.make({
+        error: { ...diagnostic, code: "InvalidRequest" },
+        status: "error",
+      });
+    case "InvalidRunId":
+      return LocalRunApiBadRequest.make({
+        error: { ...diagnostic, code: "InvalidRunId" },
+        status: "error",
+      });
+    case "InvalidSpec":
+      return LocalRunApiBadRequest.make({
+        error: { ...diagnostic, code: "InvalidSpec" },
+        status: "error",
+      });
+    case "MethodNotAllowed":
+      return methodNotAllowedApiError({
+        ...diagnostic,
+        code: "MethodNotAllowed",
+      });
+    case "ActiveRunConflict":
+      return LocalRunApiConflict.make({
+        error: { ...diagnostic, code: "ActiveRunConflict" },
+        status: "error",
+      });
+    case "RunStoreLocked":
+      return LocalRunApiConflict.make({
+        error: { ...diagnostic, code: "RunStoreLocked" },
+        status: "error",
+      });
+    case "InvalidRunDirectory":
+      return LocalRunApiUnprocessable.make({
+        error: { ...diagnostic, code: "InvalidRunDirectory" },
+        status: "error",
+      });
+    case "RunHasNoEvents":
+      return LocalRunApiUnprocessable.make({
+        error: { ...diagnostic, code: "RunHasNoEvents" },
+        status: "error",
+      });
+    case "RunUnreadable":
+      return LocalRunApiUnprocessable.make({
+        error: { ...diagnostic, code: "RunUnreadable" },
+        status: "error",
+      });
+    case "ArtifactNotAllowed":
+    case "ArtifactNotFound":
+    case "EndpointNotFound":
+    case "RunNotFound":
+    case "InternalServerError":
+      return internalApiError(diagnostic);
+  }
+}
+
+function apiErrorFromRuntimeError(error: GaiaRuntimeError): LocalRunCreateApiError {
+  switch (error.code) {
+    case "InvalidSpec":
+      return createApiError({
+        code: "InvalidSpec",
+        message: error.message,
+        recoverable: error.recoverable,
+      });
+    case "RunStoreLocked":
+      return createApiError({
+        code: "RunStoreLocked",
+        message: error.message,
+        recoverable: error.recoverable,
+      });
+    default:
+      return internalApiError(error);
+  }
+}
+
+function activeRunConflictApiError(
+  error: ActiveServerRunConflict,
+): typeof LocalRunApiConflict.Type {
+  return LocalRunApiConflict.make({
+    error: {
+      code: "ActiveRunConflict",
+      message: error.message,
+      recoverable: error.recoverable,
+    },
+    status: "error",
+  });
+}
+
+function forkServerContinuation(input: {
+  readonly accepted: ServerRunAcceptance;
+  readonly identity: LocalServerConfigValue;
+  readonly reservation: ServerRunReservation;
+}) {
+  return continueServerRun(input.accepted.runId, {
+    ...input.identity.workflowOptions,
+    rootDirectory: input.identity.rootDirectory,
+  }).pipe(
+    Effect.tapError((error) =>
+      appendServerLog(
+        input.identity.rootDirectory,
+        `${new Date().toISOString()} ${input.identity.serverId} run ${input.accepted.runId} failed ${error.code}`,
+      ).pipe(Effect.ignore),
+    ),
+    Effect.ensuring(input.reservation.clear),
+    Effect.matchEffect({
+      onFailure: () => Effect.void,
+      onSuccess: () => Effect.void,
+    }),
+    Effect.forkDetach,
+    Effect.asVoid,
+  );
+}
+
 function isRuntimeDiagnostic(input: unknown): input is LocalRunReadDiagnostic {
+  return (
+    typeof input === "object" &&
+    input !== null &&
+    "code" in input &&
+    "message" in input &&
+    "recoverable" in input
+  );
+}
+
+function isApiDiagnostic(input: unknown): input is ApiDiagnostic {
   return (
     typeof input === "object" &&
     input !== null &&
@@ -430,6 +690,12 @@ type MethodNotAllowedDiagnostic =
 type LocalRunReadApiError =
   | typeof LocalRunApiBadRequest.Type
   | typeof LocalRunApiNotFound.Type
+  | typeof LocalRunApiUnprocessable.Type
+  | typeof LocalRunApiInternalServerError.Type;
+type LocalRunCreateApiError =
+  | typeof LocalRunApiBadRequest.Type
+  | typeof LocalRunApiMethodNotAllowed.Type
+  | typeof LocalRunApiConflict.Type
   | typeof LocalRunApiUnprocessable.Type
   | typeof LocalRunApiInternalServerError.Type;
 

@@ -16,14 +16,21 @@ export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "EndpointNotFound",
   "InvalidRunDirectory",
   "InvalidRunId",
+  "InvalidRequest",
+  "InvalidSpec",
   "InternalServerError",
   "MethodNotAllowed",
+  "RunStoreLocked",
   "RunHasNoEvents",
   "RunNotFound",
   "RunUnreadable",
 ] as const);
 
-const BadRequestDiagnosticCodeSchema = Schema.Literals(["InvalidRunId"] as const);
+const BadRequestDiagnosticCodeSchema = Schema.Literals([
+  "InvalidRequest",
+  "InvalidRunId",
+  "InvalidSpec",
+] as const);
 const NotFoundDiagnosticCodeSchema = Schema.Literals([
   "ArtifactNotAllowed",
   "ArtifactNotFound",
@@ -35,6 +42,7 @@ const MethodNotAllowedDiagnosticCodeSchema = Schema.Literals([
 ] as const);
 const ConflictDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
+  "RunStoreLocked",
 ] as const);
 const UnprocessableDiagnosticCodeSchema = Schema.Literals([
   "InvalidRunDirectory",
@@ -324,6 +332,8 @@ export class CreateRunRequest extends Schema.Class<CreateRunRequest>(
 )({
   specMarkdown: Schema.NonEmptyString,
   title: Schema.optionalKey(Schema.NonEmptyString),
+}, {
+  parseOptions: { onExcessProperty: "error" },
 }) {}
 
 export class CreateRunAcceptedResponse extends Schema.Class<CreateRunAcceptedResponse>(
