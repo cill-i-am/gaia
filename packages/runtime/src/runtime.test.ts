@@ -19,6 +19,7 @@ import {
 import {
   makeCodexHarnessConfig,
   nodeCodexCommandRunner,
+  parseCodexHarnessProgressJson,
   type CodexCommandInput,
   type CodexCommandRunner,
 } from "./codex-harness.js";
@@ -75,6 +76,7 @@ import {
   localRunProfileSource,
   parseRunProfileJson,
 } from "./run-profile.js";
+import { readLocalRunArtifact } from "./run-read-api.js";
 import {
   collectBrowserEvidence,
   listRuns,
@@ -1459,6 +1461,46 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("observes Node Codex command output through the progress recorder", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const config = makeCodexHarnessConfig({
+          command: execPath,
+          timeoutMs: 1_000,
+        });
+        const observations: Array<{
+          readonly bytes: number;
+          readonly stream: "stderr" | "stdout";
+        }> = [];
+
+        const result = yield* nodeCodexCommandRunner({
+          args: [
+            "-e",
+            "process.stdout.write('hello'); process.stderr.write('warn');",
+          ],
+          command: config.command,
+          cwd,
+          progressPath: `${cwd}/codex-harness-progress.json`,
+          recordProgress: (observation) => {
+            observations.push(observation);
+            return Promise.resolve();
+          },
+          stdin: "",
+          timeoutMs: config.timeoutMs,
+        });
+
+        assert.strictEqual(result.exitCode, 0);
+        assert.strictEqual(result.stdout, "hello");
+        assert.strictEqual(result.stderr, "warn");
+        assert.deepEqual(
+          observations.map((observation) => observation.stream).sort(),
+          ["stderr", "stdout"],
+        );
+        assert.isTrue(observations.every((observation) => observation.bytes > 0));
+      }),
+    );
+
     it.effect("runs the Codex harness through the workflow seam", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -1485,6 +1527,47 @@ describe("runtime workflows", () => {
                 }),
               );
             }
+
+            if (
+              input.progressPath === undefined ||
+              input.recordProgress === undefined
+            ) {
+              return yield* Effect.fail(
+                makeRuntimeError({
+                  code: "TestCodexProgressRecorderMissing",
+                  message:
+                    "Test Codex command did not receive a progress recorder.",
+                  recoverable: false,
+                }),
+              );
+            }
+            const progressPath = input.progressPath;
+            const recordProgress = input.recordProgress;
+
+            const startedProgress = parseCodexHarnessProgressJson(
+              JSON.parse(yield* fs.readFileString(progressPath)),
+            );
+            assert.strictEqual(startedProgress.status, "running");
+            assert.isFalse(startedProgress.terminal);
+            assert.strictEqual(startedProgress.command, "codex-test");
+            assert.strictEqual(startedProgress.cwd, input.cwd);
+            assert.strictEqual(startedProgress.timeoutMs, 12345);
+            assert.strictEqual(
+              startedProgress.lastMessagePath,
+              "codex-last-message.md",
+            );
+
+            yield* Effect.promise(() =>
+              recordProgress({ bytes: 32, stream: "stdout" }),
+            );
+            const observedProgress = parseCodexHarnessProgressJson(
+              JSON.parse(yield* fs.readFileString(progressPath)),
+            );
+            assert.strictEqual(
+              observedProgress.lastObservedOutputStream,
+              "stdout",
+            );
+            assert.isDefined(observedProgress.lastObservedOutputAt);
 
             yield* fs.writeFileString(
               `${input.cwd}/output.txt`,
@@ -1547,6 +1630,17 @@ describe("runtime workflows", () => {
         const harnessResult = yield* fs.readFileString(
           `${summary.runDirectory}/worker-result.json`,
         );
+        const progress = parseCodexHarnessProgressJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/codex-harness-progress.json`,
+            ),
+          ),
+        );
+        const report = yield* fs.readFileString(
+          `${summary.runDirectory}/report.md`,
+        );
+        const status = yield* statusRun(summary.runId, { rootDirectory: cwd });
         const command = commands[0];
 
         assert.include(output, "true");
@@ -1557,6 +1651,17 @@ describe("runtime workflows", () => {
         assert.include(harnessResult, '"changed.txt"');
         assert.include(harnessResult, '"output.txt"');
         assert.include(harnessResult, '"exitCode": 0');
+        assert.strictEqual(progress.status, "completed");
+        assert.isTrue(progress.terminal);
+        assert.strictEqual(
+          progress.progressPath,
+          "codex-harness-progress.json",
+        );
+        assert.strictEqual(
+          status.harnessProgressPath,
+          `${summary.runDirectory}/codex-harness-progress.json`,
+        );
+        assert.include(report, "codex-harness-progress.json");
         assert.isDefined(command);
 
         if (command !== undefined) {
@@ -1582,6 +1687,140 @@ describe("runtime workflows", () => {
           assert.include(command.stdin, "Skill bundle JSON:");
           assert.include(command.stdin, skillDirectory);
         }
+      }),
+    );
+
+    it.effect("records timed-out Codex harness progress before failing the run", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const commandRunner: CodexCommandRunner = () =>
+          Effect.fail(
+            makeRuntimeError({
+              code: "CodexCommandTimedOut",
+              message: "Codex command 'codex-test' timed out.",
+              recoverable: true,
+            }),
+          );
+        yield* fs.writeFileString(specPath, "Run through slow Codex.\n");
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            codexHarness: {
+              commandRunner,
+              config: makeCodexHarnessConfig({ command: "codex-test" }),
+            },
+            harnessName: codexHarnessName,
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "CodexCommandTimedOut");
+          assert.isTrue(error.recoverable);
+        }
+
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        const progress = parseCodexHarnessProgressJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${status.runDirectory}/codex-harness-progress.json`,
+            ),
+          ),
+        );
+        const artifact = yield* readLocalRunArtifact(
+          status.runId,
+          "codex-harness-progress.json",
+          { rootDirectory: cwd },
+        );
+
+        assert.strictEqual(status.state, "failed");
+        assert.strictEqual(status.status, "failed");
+        assert.strictEqual(
+          status.harnessProgressPath,
+          `${status.runDirectory}/codex-harness-progress.json`,
+        );
+        assert.strictEqual(artifact.contentType, "application/json");
+        assert.strictEqual(progress.status, "timed-out");
+        assert.isTrue(progress.terminal);
+        assert.strictEqual(progress.stallClassification, "no-progress");
+        assert.isUndefined(progress.lastObservedOutputAt);
+      }),
+    );
+
+    it.effect("records missing last-message Codex progress before failing the run", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const commandRunner: CodexCommandRunner = (input) =>
+          Effect.gen(function* () {
+            if (input.recordProgress === undefined) {
+              return yield* Effect.fail(
+                makeRuntimeError({
+                  code: "TestCodexProgressRecorderMissing",
+                  message:
+                    "Test Codex command did not receive a progress recorder.",
+                  recoverable: false,
+                }),
+              );
+            }
+            const recordProgress = input.recordProgress;
+
+            yield* Effect.promise(() =>
+              recordProgress({ bytes: 17, stream: "stderr" }),
+            );
+            yield* fs.writeFileString(
+              `${input.cwd}/output.txt`,
+              `codex harness ${runIdFromCodexPrompt(input.stdin)}\n`,
+            );
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: "",
+            };
+          });
+        yield* fs.writeFileString(specPath, "Run without last message.\n");
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            codexHarness: {
+              commandRunner,
+              config: makeCodexHarnessConfig({ command: "codex-test" }),
+            },
+            harnessName: codexHarnessName,
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "CodexLastMessageMissing");
+          assert.isTrue(error.recoverable);
+        }
+
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        const progress = parseCodexHarnessProgressJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${status.runDirectory}/codex-harness-progress.json`,
+            ),
+          ),
+        );
+
+        assert.strictEqual(status.state, "failed");
+        assert.strictEqual(
+          status.harnessProgressPath,
+          `${status.runDirectory}/codex-harness-progress.json`,
+        );
+        assert.strictEqual(progress.status, "last-message-missing");
+        assert.isTrue(progress.terminal);
+        assert.strictEqual(progress.lastMessagePath, "codex-last-message.md");
+        assert.strictEqual(progress.lastObservedOutputStream, "stderr");
+        assert.strictEqual(progress.stallClassification, "progress-observed");
       }),
     );
 
