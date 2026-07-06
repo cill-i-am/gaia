@@ -5,7 +5,7 @@ import { runSpecFile } from "@gaia/runtime";
 import { runLocalGaiaServer } from "@gaia/server";
 import { Deferred, Effect, Fiber, FileSystem } from "effect";
 import { execFile } from "node:child_process";
-import { realpath } from "node:fs/promises";
+import { chmod, realpath } from "node:fs/promises";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -370,6 +370,51 @@ describe("gaia CLI local server read parity", () => {
         expect(failed.stdout).not.toContain("Gaia local API listening");
       }),
     );
+
+    it.effect("renders no configured PR checks as an operator-facing human state", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-checks-" });
+        const fakeGh = yield* createFakeGh(cwd, [
+          "#!/bin/sh",
+          "echo \"no checks reported on the 'gaia/example' branch\" >&2",
+          "exit 1",
+          "",
+        ].join("\n"));
+
+        const result = yield* runGaia(cwd, ["pr-checks", "1"], {
+          env: { PATH: `${fakeGh}:${process.env.PATH ?? ""}` },
+        });
+
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain("checks: no checks configured");
+        expect(result.stdout).toContain("outcome: no checks configured");
+      }),
+    );
+
+    it.effect("emits provider unavailable in PR checks JSON output", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-checks-" });
+        const fakeGh = yield* createFakeGh(cwd, [
+          "#!/bin/sh",
+          "echo \"GraphQL: Resource not accessible by integration\" >&2",
+          "exit 1",
+          "",
+        ].join("\n"));
+
+        const result = yield* runGaia(cwd, ["pr-checks", "1", "--json"], {
+          env: { PATH: `${fakeGh}:${process.env.PATH ?? ""}` },
+        });
+
+        expect(result.exitCode).toBe(0);
+        expect(parseCliJson(result.stdout)).toMatchObject({
+          checks: [],
+          pr: "1",
+          status: "provider-unavailable",
+        });
+      }),
+    );
   });
 });
 
@@ -443,7 +488,10 @@ function runGaiaJson(cwd: string, args: ReadonlyArray<string>) {
 function runGaia(
   cwd: string,
   args: ReadonlyArray<string>,
-  options: { readonly timeoutMs?: number } = {},
+  options: {
+    readonly env?: Readonly<Record<string, string>>;
+    readonly timeoutMs?: number;
+  } = {},
 ) {
   return Effect.promise(async () => {
     const result = await execFileAsync("pnpm", [
@@ -457,6 +505,7 @@ function runGaia(
       cwd,
       env: {
         ...process.env,
+        ...options.env,
         INIT_CWD: cwd,
       },
       timeout: options.timeoutMs,
@@ -481,6 +530,18 @@ function runGaia(
     );
 
     return result;
+  });
+}
+
+function createFakeGh(cwd: string, script: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const bin = `${cwd}/bin`;
+    const gh = `${bin}/gh`;
+    yield* fs.makeDirectory(bin, { recursive: true });
+    yield* fs.writeFileString(gh, script);
+    yield* Effect.promise(() => chmod(gh, 0o755));
+    return bin;
   });
 }
 

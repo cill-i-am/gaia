@@ -601,7 +601,7 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
       return {
         checksPath: getStringPayload(event, "checksPath"),
         pullRequest: getStringPayload(event, "pullRequest"),
-        status: getStringPayload(event, "status"),
+        status: normalizeGitHubChecksStatus(getStringPayload(event, "status")),
         type: event.type,
         ...(watchStatePath === undefined ? {} : { watchStatePath }),
       };
@@ -726,6 +726,19 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         type: event.type,
         workspacePath: getStringPayload(event, "workspacePath"),
       };
+  }
+}
+
+function normalizeGitHubChecksStatus(status: string): string {
+  switch (status) {
+    case "failed":
+      return "failing";
+    case "no-checks":
+      return "no-checks-configured";
+    case "passed":
+      return "green";
+    default:
+      return status;
   }
 }
 
