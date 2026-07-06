@@ -303,7 +303,13 @@ export {
 export { VerificationResult, verifyHarnessOutput } from "./verifier.js";
 export {
   WorkerPlan,
+  WorkerPlanAgentInstruction,
+  WorkerPlanLikelyFile,
+  WorkerPlanPlanningContext,
+  WorkerPlanSimilarTest,
+  WorkerPlanSourceDoc,
   WorkerPlanVerificationCheck,
+  WorkerPlanWorkspacePackage,
   parseWorkerPlanJson,
   writeWorkerPlan,
 } from "./worker-plan.js";

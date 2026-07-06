@@ -357,6 +357,176 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("produces source-backed planning context for a GAIA-12-like server slice", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const source = `${cwd}/source`;
+        const specPath = `${cwd}/spec.md`;
+        yield* writeReferencePlanningFixture(source);
+        yield* fs.writeFileString(
+          specPath,
+          [
+            "---",
+            "title: GAIA-12 server foundation follow-up",
+            "---",
+            "",
+            "Goal:",
+            "- Migrate the local server foundation to Effect HttpApi and keep workspace read APIs aligned.",
+            "",
+            "Context:",
+            "- The GAIA-12 retro says planning should name server/API contracts, CLI server plumbing, runtime read exports, package manifests, and focused tests.",
+            "- Keep `POST /runs`, `GET /health`, and `HttpApiBuilder.group` as source references, not executable checks.",
+            "",
+            "Acceptance criteria:",
+            "- Server API contracts and runtime read artifacts stay parseable.",
+            "- CLI server commands continue to surface run artifacts without scraping markdown.",
+            "",
+            "Out of scope:",
+            "- Do not implement GAIA-13 local-server run acceptance.",
+            "- Do not add dashboards, live Linear sync, auth, SQLite, or merge automation.",
+            "",
+            "Verification:",
+            "- Focused server API tests pass.",
+            "- Focused CLI server smoke passes.",
+            "- `pnpm check`",
+            "- `pnpm test`",
+            "",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          rootDirectory: cwd,
+          workspaceSource: localDirectoryWorkspaceSource(source),
+        });
+        const workerPlan = parseWorkerPlanJson(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/worker-plan.json`),
+          ),
+        );
+        const workerPlanMarkdown = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-plan.md`,
+        );
+        const likelyFiles = workerPlan.planningContext.likelyFiles.map(
+          (file) => file.path,
+        );
+        const sourceDocs = workerPlan.planningContext.sourceDocs.map(
+          (doc) => doc.path,
+        );
+        const similarTests = workerPlan.planningContext.similarTests.map(
+          (test) => test.path,
+        );
+        const instructionScopes = workerPlan.planningContext.agentInstructions.map(
+          (instruction) => instruction.path,
+        );
+        const packageNames = workerPlan.planningContext.packages.map(
+          (workspacePackage) => workspacePackage.name,
+        );
+        const traps = workerPlan.planningContext.outOfScopeTraps;
+
+        assert.include(likelyFiles, "packages/core/src/server-api.ts");
+        assert.include(likelyFiles, "apps/server/src/api.ts");
+        assert.include(likelyFiles, "apps/server/src/main.ts");
+        assert.include(likelyFiles, "apps/cli/src/main.ts");
+        assert.include(likelyFiles, "packages/runtime/src/run-read-api.ts");
+        assert.include(sourceDocs, "docs/operator-model.md");
+        assert.include(sourceDocs, "docs/post-harness-roadmap.md");
+        assert.include(similarTests, "packages/core/src/server-api.test.ts");
+        assert.include(similarTests, "apps/server/src/api.test.ts");
+        assert.include(similarTests, "apps/cli/src/main.test.ts");
+        assert.include(similarTests, "packages/runtime/src/runtime.test.ts");
+        assert.include(instructionScopes, "AGENTS.md");
+        assert.include(instructionScopes, "apps/AGENTS.md");
+        assert.include(instructionScopes, "apps/cli/AGENTS.md");
+        assert.include(instructionScopes, "packages/AGENTS.md");
+        assert.include(instructionScopes, "packages/core/AGENTS.md");
+        assert.include(instructionScopes, "packages/runtime/AGENTS.md");
+        assert.include(packageNames, "@gaia/core");
+        assert.include(packageNames, "@gaia/server");
+        assert.include(packageNames, "@gaia/cli");
+        assert.include(packageNames, "@gaia/runtime");
+        assert.include(
+          workerPlan.planningContext.verificationSeams,
+          "apps/server/src/api.test.ts exercises server API behavior.",
+        );
+        assert.include(
+          workerPlan.planningContext.verificationSeams,
+          "apps/cli/src/main.test.ts exercises CLI behavior.",
+        );
+        assert.include(
+          traps,
+          "Do not implement GAIA-13 local-server run acceptance.",
+        );
+        assert.include(
+          traps,
+          "Do not add dashboards, live Linear sync, auth, SQLite, or merge automation.",
+        );
+        assert.include(workerPlanMarkdown, "## Reference-First Planning Context");
+        assert.include(workerPlanMarkdown, "packages/core/src/server-api.ts");
+        assert.include(workerPlanMarkdown, "packages/runtime/AGENTS.md");
+        assert.include(workerPlanMarkdown, "apps/server/src/api.test.ts");
+        assert.notInclude(
+          workerPlan.verificationChecks.map((check) => check.command).join("\n"),
+          "POST /runs",
+        );
+      }),
+    );
+
+    it.effect("keeps narrow non-server source context focused", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const source = `${cwd}/source`;
+        const specPath = `${cwd}/spec.md`;
+        yield* writeReferencePlanningFixture(source);
+        yield* fs.writeFileString(
+          specPath,
+          [
+            "---",
+            "title: Evidence promotion context",
+            "---",
+            "",
+            "Goal:",
+            "- Preserve selected dogfood evidence before raw run cleanup.",
+            "",
+            "Acceptance criteria:",
+            "- Evidence promotion stays JSON-safe and report-visible.",
+            "- Runtime and core artifacts explain cleanup status.",
+            "",
+            "Out of scope:",
+            "- Do not add live Linear sync or dashboards.",
+            "",
+            "Verification:",
+            "- Focused evidence promotion tests pass.",
+            "- `pnpm --filter @gaia/runtime test`",
+            "",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, {
+          rootDirectory: cwd,
+          workspaceSource: localDirectoryWorkspaceSource(source),
+        });
+        const workerPlan = parseWorkerPlanJson(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/worker-plan.json`),
+          ),
+        );
+        const likelyFiles = workerPlan.planningContext.likelyFiles.map(
+          (file) => file.path,
+        );
+        const similarTests = workerPlan.planningContext.similarTests.map(
+          (test) => test.path,
+        );
+
+        assert.include(likelyFiles, "packages/core/src/evidence-promotion.ts");
+        assert.include(likelyFiles, "packages/runtime/src/evidence-promotion.ts");
+        assert.include(similarTests, "packages/runtime/src/runtime.test.ts");
+        assert.notInclude(likelyFiles, "apps/server/src/api.ts");
+        assert.notInclude(likelyFiles, "apps/server/src/main.ts");
+      }),
+    );
+
     it.effect("reports status for the latest run", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -5219,6 +5389,172 @@ const tempDirectory = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   return yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
 });
+
+function writeReferencePlanningFixture(root: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(root, { recursive: true });
+    const files: ReadonlyArray<readonly [string, string]> = [
+      [
+        "AGENTS.md",
+        [
+          "# Agent Instructions",
+          "",
+          "- Use pnpm for installs, scripts, workspace commands, and one-off package execution.",
+          "- Keep the control plane boring, inspectable, and resumable.",
+          "- Parse boundary input immediately with Effect Schema or the owning parser.",
+          "- Do not add live Linear sync, dashboards, auth, SQLite, or merge automation unless explicitly asked.",
+        ].join("\n"),
+      ],
+      [
+        "apps/AGENTS.md",
+        [
+          "# Apps Intent",
+          "",
+          "- Keep app code thin.",
+          "- App inputs are boundary input.",
+        ].join("\n"),
+      ],
+      [
+        "apps/cli/AGENTS.md",
+        [
+          "# CLI Intent",
+          "",
+          "- CLI handlers parse arguments, call runtime, then render output.",
+          "- Do not execute workflow work directly in the CLI.",
+        ].join("\n"),
+      ],
+      [
+        "packages/AGENTS.md",
+        [
+          "# Packages Intent",
+          "",
+          "- Preserve dependency direction: app -> runtime -> core.",
+          "- Prefer package-local tests for package behavior.",
+        ].join("\n"),
+      ],
+      [
+        "packages/core/AGENTS.md",
+        [
+          "# Core Intent",
+          "",
+          "- Core owns pure Gaia contracts, schemas, run IDs, and report models.",
+          "- Keep persisted event payloads plain and serializable.",
+        ].join("\n"),
+      ],
+      [
+        "packages/runtime/AGENTS.md",
+        [
+          "# Runtime Intent",
+          "",
+          "- Runtime owns Gaia Effect workflows and side effects.",
+          "- Keep runtime payloads JSON-safe.",
+        ].join("\n"),
+      ],
+      [
+        "docs/AGENTS.md",
+        [
+          "# Docs Intent",
+          "",
+          "- Keep implementation slices in narrow phase specs.",
+          "- Do not turn product docs into API implementation.",
+        ].join("\n"),
+      ],
+      [
+        "package.json",
+        [
+          "{",
+          '  "name": "gaia-fixture",',
+          '  "private": true,',
+          '  "workspaces": ["apps/*", "packages/*"]',
+          "}",
+        ].join("\n"),
+      ],
+      [
+        "packages/core/package.json",
+        [
+          "{",
+          '  "name": "@gaia/core",',
+          '  "scripts": { "test": "vitest run src/core.test.ts" }',
+          "}",
+        ].join("\n"),
+      ],
+      [
+        "packages/runtime/package.json",
+        [
+          "{",
+          '  "name": "@gaia/runtime",',
+          '  "scripts": { "test": "vitest run src/runtime.test.ts" }',
+          "}",
+        ].join("\n"),
+      ],
+      [
+        "apps/cli/package.json",
+        [
+          "{",
+          '  "name": "@gaia/cli",',
+          '  "scripts": { "test": "vitest run src/main.test.ts" }',
+          "}",
+        ].join("\n"),
+      ],
+      [
+        "apps/server/package.json",
+        [
+          "{",
+          '  "name": "@gaia/server",',
+          '  "scripts": { "test": "vitest run src/api.test.ts" }',
+          "}",
+        ].join("\n"),
+      ],
+      [
+        "packages/core/src/server-api.ts",
+        "export const serverApiContract = 'POST /runs';\n",
+      ],
+      [
+        "packages/core/src/server-api.test.ts",
+        "it('parses server API artifacts', () => {});\n",
+      ],
+      [
+        "packages/core/src/evidence-promotion.ts",
+        "export const evidencePromotionContract = 'cleanup status';\n",
+      ],
+      [
+        "packages/runtime/src/run-read-api.ts",
+        "export const readRunArtifact = 'worker-plan';\n",
+      ],
+      [
+        "packages/runtime/src/evidence-promotion.ts",
+        "export const promoteEvidence = 'evidence-promotion';\n",
+      ],
+      [
+        "packages/runtime/src/runtime.test.ts",
+        "it('promotes selected evidence before raw run cleanup', () => {});\n",
+      ],
+      ["apps/server/src/api.ts", "export const api = 'HttpApiBuilder.group';\n"],
+      ["apps/server/src/main.ts", "export const main = 'gaia server';\n"],
+      ["apps/server/src/api.test.ts", "it('serves POST /runs', () => {});\n"],
+      ["apps/cli/src/main.ts", "export const cli = 'gaia server';\n"],
+      ["apps/cli/src/main.test.ts", "it('reads server artifacts', () => {});\n"],
+      [
+        "docs/operator-model.md",
+        "# Operator Model\n\nLocal artifact writing remains explicit and resumable.\n",
+      ],
+      [
+        "docs/post-harness-roadmap.md",
+        "# Post Harness Roadmap\n\nIntroduce gaia server while preserving direct local runtime commands.\n",
+      ],
+    ];
+
+    for (const [relativePath, body] of files) {
+      const segments = relativePath.split("/");
+      const directory = segments.slice(0, -1).join("/");
+      if (directory.length > 0) {
+        yield* fs.makeDirectory(`${root}/${directory}`, { recursive: true });
+      }
+      yield* fs.writeFileString(`${root}/${relativePath}`, `${body}\n`);
+    }
+  });
+}
 
 function readRunEvents(fs: FileSystem.FileSystem, runDirectory: string) {
   return Effect.gen(function* () {
