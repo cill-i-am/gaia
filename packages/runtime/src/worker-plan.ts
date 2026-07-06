@@ -3,6 +3,24 @@ import { Effect, FileSystem, Schema } from "effect";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { HarnessNameSchema, type HarnessName } from "./harness.js";
 import type { RunPaths } from "./paths.js";
+import {
+  WorkerPlanAgentInstruction,
+  WorkerPlanLikelyFile,
+  WorkerPlanPlanningContext,
+  WorkerPlanSimilarTest,
+  WorkerPlanSourceDoc,
+  WorkerPlanWorkspacePackage,
+  buildSourcePlanningContext,
+} from "./source-planning-context.js";
+
+export {
+  WorkerPlanAgentInstruction,
+  WorkerPlanLikelyFile,
+  WorkerPlanPlanningContext,
+  WorkerPlanSimilarTest,
+  WorkerPlanSourceDoc,
+  WorkerPlanWorkspacePackage,
+};
 
 export class WorkerPlanVerificationCheck extends Schema.Class<WorkerPlanVerificationCheck>(
   "WorkerPlanVerificationCheck",
@@ -34,6 +52,7 @@ export class WorkerPlan extends Schema.Class<WorkerPlan>("WorkerPlan")({
   harnessName: HarnessNameSchema,
   likelyTouchedSurfaces: Schema.Array(Schema.NonEmptyString),
   nonGoals: Schema.Array(Schema.NonEmptyString),
+  planningContext: WorkerPlanPlanningContext,
   runId: RunIdSchema,
   sourceSpecBody: Schema.NonEmptyString,
   sourceSpecTitle: Schema.NonEmptyString,
@@ -56,6 +75,13 @@ export function writeWorkerPlan(input: {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const derived = derivePlanFromSpec(input.spec);
+    const planningContext = yield* buildSourcePlanningContext({
+      domainReferences: derived.domainReferences,
+      nonGoals: derived.nonGoals,
+      spec: input.spec,
+      verificationChecks: derived.verificationChecks,
+      workspaceRoot: input.paths.workspace,
+    });
     const plan = WorkerPlan.make({
       acceptanceCriteria: derived.acceptanceCriteria,
       domainReferences: derived.domainReferences,
@@ -63,6 +89,7 @@ export function writeWorkerPlan(input: {
       harnessName: input.harnessName,
       likelyTouchedSurfaces: derived.likelyTouchedSurfaces,
       nonGoals: derived.nonGoals,
+      planningContext,
       runId: input.runId,
       sourceSpecBody: input.spec.body,
       sourceSpecTitle: input.spec.title,
@@ -184,6 +211,7 @@ function markdownPlan(plan: WorkerPlan) {
   const domainReferences = markdownList(
     plan.domainReferences.map(formatDomainReference),
   );
+  const planningContext = markdownPlanningContext(plan.planningContext);
   const verificationChecks = markdownList(
     plan.verificationChecks.map(formatVerificationCheck),
   );
@@ -215,6 +243,10 @@ ${likelyTouchedSurfaces}
 
 ${domainReferences}
 
+## Reference-First Planning Context
+
+${planningContext}
+
 ## Verification
 
 ${verificationChecks}
@@ -235,6 +267,47 @@ ${artifacts}
 
 ${plan.sourceSpecBody}
 `;
+}
+
+function markdownPlanningContext(context: WorkerPlanPlanningContext) {
+  return [
+    "### Likely Files",
+    markdownList(
+      context.likelyFiles.map(
+        (file) => `${file.path} (owner: ${file.owner}) - ${file.reason}`,
+      ),
+    ),
+    "",
+    "### Semantic Owners",
+    markdownList(
+      context.packages.map(
+        (workspacePackage) =>
+          `${workspacePackage.name} via ${workspacePackage.path} - ${workspacePackage.reason}`,
+      ),
+    ),
+    "",
+    "### Agent Instructions",
+    markdownList(
+      context.agentInstructions.map(
+        (instruction) =>
+          `${instruction.path} (${instruction.scope}) - ${instruction.summary}`,
+      ),
+    ),
+    "",
+    "### Source Docs",
+    markdownList(context.sourceDocs.map((doc) => `${doc.path} - ${doc.reason}`)),
+    "",
+    "### Similar Tests",
+    markdownList(
+      context.similarTests.map((test) => `${test.path} - ${test.reason}`),
+    ),
+    "",
+    "### Verification Seams",
+    markdownList(context.verificationSeams),
+    "",
+    "### Out-of-Scope Traps",
+    markdownList(context.outOfScopeTraps),
+  ].join("\n");
 }
 
 function extractSectionItems(
