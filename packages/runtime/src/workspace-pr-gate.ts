@@ -5,7 +5,8 @@ import { HarnessRunResult } from "./harness.js";
 import { runRelative, type RunPaths } from "./paths.js";
 
 const maxReviewableWorkerResultBytes = 64 * 1024;
-const runIdCastPattern = /\bas\s+RunId\b/u;
+const runIdAsExpressionPattern = /\bas\s+RunId\b/u;
+const workspaceArtifactPrefix = "workspace/";
 const sourceFileExtensions = new Set([
   ".cjs",
   ".cts",
@@ -195,16 +196,61 @@ export function evaluateWorkspacePrQualityGate(
       }),
     );
 
-    const unsafeChangedPaths = workspaceDiff.productChangedPaths.filter(
-      (changedPath) => !isSafeRelativePath(changedPath),
+    const unsafeProductChangedPaths = unsafeRelativePaths(
+      workspaceDiff.productChangedPaths,
     );
-    if (unsafeChangedPaths.length > 0) {
+    if (unsafeProductChangedPaths.length > 0) {
       items.push(
         gateItem({
-          changedFiles: unsafeChangedPaths,
-          check: "workspace-diff-safe-paths",
-          reason: "workspaceDiff contains changed paths that are not safe relative workspace paths.",
+          changedFiles: unsafeProductChangedPaths,
+          check: "workspace-diff-product-safe-paths",
+          reason: "workspaceDiff productChangedPaths contains paths that are not safe relative workspace paths.",
           remediation: "Emit workspaceDiff paths relative to the workspace root without absolute paths or parent-directory segments.",
+          severity: "fail",
+        }),
+      );
+    }
+
+    const unsafeGeneratedPaths = unsafeRelativePaths(
+      workspaceDiff.omittedGeneratedPaths.map((entry) => entry.path),
+    );
+    if (unsafeGeneratedPaths.length > 0) {
+      items.push(
+        gateItem({
+          changedFiles: unsafeGeneratedPaths,
+          check: "workspace-diff-generated-safe-paths",
+          reason: "workspaceDiff omittedGeneratedPaths contains paths that are not safe relative workspace paths.",
+          remediation: "Emit generated path summaries relative to the workspace root without absolute paths or parent-directory segments.",
+          severity: "fail",
+        }),
+      );
+    }
+
+    const unsafeChangedWorkspacePaths = unsafeRelativePaths(
+      harnessResult.value.changedWorkspacePaths,
+    );
+    if (unsafeChangedWorkspacePaths.length > 0) {
+      items.push(
+        gateItem({
+          changedFiles: unsafeChangedWorkspacePaths,
+          check: "changed-workspace-safe-paths",
+          reason: "changedWorkspacePaths contains paths that are not safe relative workspace paths.",
+          remediation: "Emit changedWorkspacePaths relative to the workspace root without absolute paths or parent-directory segments.",
+          severity: "fail",
+        }),
+      );
+    }
+
+    const unsafeOutputArtifactPaths = unsafeOutputArtifacts(
+      harnessResult.value.outputArtifacts,
+    );
+    if (unsafeOutputArtifactPaths.length > 0) {
+      items.push(
+        gateItem({
+          changedFiles: unsafeOutputArtifactPaths,
+          check: "output-artifact-safe-paths",
+          reason: "outputArtifacts contains workspace artifact paths that are not safe relative paths.",
+          remediation: "Emit outputArtifacts as safe run-relative paths such as workspace/output.txt.",
           severity: "fail",
         }),
       );
@@ -339,7 +385,7 @@ function changedSourceFilesContainingRunIdCast(
       const fileContents = yield* readWorkspaceSourceFile(paths, changedPath);
       if (
         fileContents !== undefined &&
-        runIdCastPattern.test(fileContents)
+        containsRunIdAsExpression(fileContents)
       ) {
         matches.push(changedPath);
       }
@@ -399,6 +445,24 @@ function isSafeRelativePath(input: string) {
   );
 }
 
+function unsafeRelativePaths(paths: ReadonlyArray<string>) {
+  return paths.filter((path) => !isSafeRelativePath(path));
+}
+
+function unsafeOutputArtifacts(paths: ReadonlyArray<string>) {
+  return paths.filter((artifactPath) => {
+    if (!isSafeRelativePath(artifactPath)) {
+      return true;
+    }
+
+    if (!artifactPath.startsWith(workspaceArtifactPrefix)) {
+      return false;
+    }
+
+    return !isSafeRelativePath(artifactPath.slice(workspaceArtifactPrefix.length));
+  });
+}
+
 function isSourceFile(input: string) {
   for (const extension of sourceFileExtensions) {
     if (input.endsWith(extension)) {
@@ -407,6 +471,126 @@ function isSourceFile(input: string) {
   }
 
   return false;
+}
+
+function containsRunIdAsExpression(input: string) {
+  return runIdAsExpressionPattern.test(stripCommentsAndStrings(input));
+}
+
+function stripCommentsAndStrings(input: string) {
+  let output = "";
+  let state:
+    | "blockComment"
+    | "code"
+    | "doubleQuote"
+    | "lineComment"
+    | "singleQuote"
+    | "template" = "code";
+  let escaped = false;
+
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index] ?? "";
+    const nextCharacter = input[index + 1] ?? "";
+
+    switch (state) {
+      case "code": {
+        if (character === "/" && nextCharacter === "/") {
+          output += "  ";
+          index += 1;
+          state = "lineComment";
+          continue;
+        }
+
+        if (character === "/" && nextCharacter === "*") {
+          output += "  ";
+          index += 1;
+          state = "blockComment";
+          continue;
+        }
+
+        if (character === "'") {
+          output += " ";
+          state = "singleQuote";
+          escaped = false;
+          continue;
+        }
+
+        if (character === '"') {
+          output += " ";
+          state = "doubleQuote";
+          escaped = false;
+          continue;
+        }
+
+        if (character === "`") {
+          output += " ";
+          state = "template";
+          escaped = false;
+          continue;
+        }
+
+        output += character;
+        continue;
+      }
+
+      case "lineComment": {
+        if (character === "\n") {
+          output += "\n";
+          state = "code";
+          continue;
+        }
+
+        output += " ";
+        continue;
+      }
+
+      case "blockComment": {
+        if (character === "*" && nextCharacter === "/") {
+          output += "  ";
+          index += 1;
+          state = "code";
+          continue;
+        }
+
+        output += character === "\n" ? "\n" : " ";
+        continue;
+      }
+
+      case "singleQuote":
+      case "doubleQuote":
+      case "template": {
+        const closingCharacter =
+          state === "singleQuote"
+            ? "'"
+            : state === "doubleQuote"
+              ? '"'
+              : "`";
+
+        if (escaped) {
+          output += character === "\n" ? "\n" : " ";
+          escaped = false;
+          continue;
+        }
+
+        if (character === "\\") {
+          output += " ";
+          escaped = true;
+          continue;
+        }
+
+        if (character === closingCharacter) {
+          output += " ";
+          state = "code";
+          continue;
+        }
+
+        output += character === "\n" ? "\n" : " ";
+        continue;
+      }
+    }
+  }
+
+  return output;
 }
 
 function errorMessage(cause: unknown) {

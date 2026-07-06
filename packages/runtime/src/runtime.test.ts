@@ -2677,6 +2677,210 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("does not block a workspace PR when changed source only mentions as RunId in comments and strings", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const scriptPath = `${cwd}/process-harness.mjs`;
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          scriptPath,
+          [
+            "import { mkdirSync, writeFileSync } from 'node:fs';",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/src`, { recursive: true });",
+            "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness ${process.env.GAIA_RUN_ID}\\n`);",
+            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/src/run-id-text.ts`, '// do not use as RunId in source\\nexport const note = \"as RunId appears in regression text\";\\n');",
+          ].join("\n"),
+        );
+        yield* fs.writeFileString(specPath, "Publish RunId text fixture.\n");
+        const summary = yield* runSpecFile(specPath, {
+          harnessName: parseHarnessName("process"),
+          processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+          rootDirectory: cwd,
+        });
+
+        const preview = yield* previewGitHubPublish(summary.runId, {
+          commandRunner: githubPublishingRunner([]),
+          mode: "workspace",
+          rootDirectory: cwd,
+        });
+        const runIdCastItem = preview.workspaceGate?.items.find(
+          (item) => item.check === "run-id-brand-cast",
+        );
+
+        assert.strictEqual(preview.workspaceGate?.status, "passed");
+        assert.isUndefined(runIdCastItem);
+      }),
+    );
+
+    it.effect("refuses to publish a workspace PR when omitted generated paths are unsafe", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Publish unsafe generated path.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const paths = yield* makeRunPaths(summary.runId, { rootDirectory: cwd });
+        const workerResult = parseHarnessRunResultJson(
+          JSON.parse(yield* fs.readFileString(paths.workerResult)),
+        );
+        const workspaceDiff = workerResult.workspaceDiff;
+        if (workspaceDiff === undefined) {
+          assert.fail("Expected test fixture to include workspaceDiff.");
+          return;
+        }
+        yield* fs.writeFileString(
+          paths.workerResult,
+          `${JSON.stringify(
+            {
+              ...workerResult,
+              workspaceDiff: {
+                ...workspaceDiff,
+                omittedGeneratedFileCount: 1,
+                omittedGeneratedPathCount: 1,
+                omittedGeneratedPaths: [
+                  {
+                    changedFileCount: 1,
+                    path: "../dist",
+                    reason: "unsafe generated path fixture",
+                  },
+                ],
+              },
+            },
+            null,
+            2,
+          )}\n`,
+        );
+
+        const commands: Array<GitHubCommandInput> = [];
+        const error = yield* Effect.flip(
+          publishWorkspaceRunToGitHub(summary.runId, {
+            commandRunner: githubPublishingRunner(commands),
+            rootDirectory: cwd,
+          }),
+        );
+        const gate = parseWorkspacePrQualityGateJson(
+          JSON.parse(yield* fs.readFileString(paths.workspacePrGate)),
+        );
+        const unsafePathItem = gate.items.find(
+          (item) => item.check === "workspace-diff-generated-safe-paths",
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "WorkspacePrQualityGateFailed");
+        }
+        assert.strictEqual(gate.status, "blocked");
+        assert.deepEqual(unsafePathItem?.changedFiles, ["../dist"]);
+        assert.deepEqual(
+          commands.map((command) => [command.command, command.args[0]]),
+          workspacePrPreflightCommandSummary(),
+        );
+      }),
+    );
+
+    it.effect("refuses to publish a workspace PR when changedWorkspacePaths are unsafe", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Publish unsafe changed path.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const paths = yield* makeRunPaths(summary.runId, { rootDirectory: cwd });
+        const workerResult = parseHarnessRunResultJson(
+          JSON.parse(yield* fs.readFileString(paths.workerResult)),
+        );
+        yield* fs.writeFileString(
+          paths.workerResult,
+          `${JSON.stringify(
+            {
+              ...workerResult,
+              changedWorkspacePaths: ["../src/leak.ts"],
+            },
+            null,
+            2,
+          )}\n`,
+        );
+
+        const commands: Array<GitHubCommandInput> = [];
+        const error = yield* Effect.flip(
+          publishWorkspaceRunToGitHub(summary.runId, {
+            commandRunner: githubPublishingRunner(commands),
+            rootDirectory: cwd,
+          }),
+        );
+        const gate = parseWorkspacePrQualityGateJson(
+          JSON.parse(yield* fs.readFileString(paths.workspacePrGate)),
+        );
+        const unsafePathItem = gate.items.find(
+          (item) => item.check === "changed-workspace-safe-paths",
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "WorkspacePrQualityGateFailed");
+        }
+        assert.strictEqual(gate.status, "blocked");
+        assert.deepEqual(unsafePathItem?.changedFiles, ["../src/leak.ts"]);
+        assert.deepEqual(
+          commands.map((command) => [command.command, command.args[0]]),
+          workspacePrPreflightCommandSummary(),
+        );
+      }),
+    );
+
+    it.effect("refuses to publish a workspace PR when outputArtifacts contain unsafe workspace paths", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Publish unsafe output artifact.\n");
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const paths = yield* makeRunPaths(summary.runId, { rootDirectory: cwd });
+        const workerResult = parseHarnessRunResultJson(
+          JSON.parse(yield* fs.readFileString(paths.workerResult)),
+        );
+        yield* fs.writeFileString(
+          paths.workerResult,
+          `${JSON.stringify(
+            {
+              ...workerResult,
+              outputArtifacts: ["workspace/../secret.txt"],
+            },
+            null,
+            2,
+          )}\n`,
+        );
+
+        const commands: Array<GitHubCommandInput> = [];
+        const error = yield* Effect.flip(
+          publishWorkspaceRunToGitHub(summary.runId, {
+            commandRunner: githubPublishingRunner(commands),
+            rootDirectory: cwd,
+          }),
+        );
+        const gate = parseWorkspacePrQualityGateJson(
+          JSON.parse(yield* fs.readFileString(paths.workspacePrGate)),
+        );
+        const unsafePathItem = gate.items.find(
+          (item) => item.check === "output-artifact-safe-paths",
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "WorkspacePrQualityGateFailed");
+        }
+        assert.strictEqual(gate.status, "blocked");
+        assert.deepEqual(unsafePathItem?.changedFiles, [
+          "workspace/../secret.txt",
+        ]);
+        assert.deepEqual(
+          commands.map((command) => [command.command, command.args[0]]),
+          workspacePrPreflightCommandSummary(),
+        );
+      }),
+    );
+
     it.effect("reports invalid worker-result JSON as a gate failure before workspace PR mutation", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -4574,6 +4778,18 @@ function recordingGitHubRunner(
       commands.push(input);
       return respond(input);
     });
+}
+
+function workspacePrPreflightCommandSummary() {
+  return [
+    ["git", "rev-parse"],
+    ["git", "status"],
+    ["git", "rev-parse"],
+    ["git", "remote"],
+    ["git", "ls-remote"],
+    ["git", "rev-parse"],
+    ["gh", "auth"],
+  ];
 }
 
 function githubPublishingRunner(
