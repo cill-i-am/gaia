@@ -65,6 +65,7 @@ export type LocalRunArtifactContentType =
 export type LocalRunArtifactId =
   | "input"
   | "worker-plan"
+  | "reviewer-findings"
   | "plan-review"
   | "worker-log"
   | "worker-result"
@@ -82,6 +83,7 @@ export type LocalRunArtifactId =
 const localRunArtifactIds: ReadonlyArray<LocalRunArtifactId> = [
   "input",
   "worker-plan",
+  "reviewer-findings",
   "plan-review",
   "worker-log",
   "worker-result",
@@ -149,6 +151,10 @@ const artifactDefinitions: Readonly<Record<LocalRunArtifactId, ArtifactDefinitio
   "report-json": {
     contentType: "application/json",
     path: (paths) => paths.reportJson,
+  },
+  "reviewer-findings": {
+    contentType: "application/json",
+    path: (paths) => paths.reviewerFindings,
   },
   snapshots: {
     contentType: "application/json",
@@ -328,6 +334,7 @@ function parseArtifactId(input: string): ParsedArtifactId {
   switch (input) {
     case "input":
     case "worker-plan":
+    case "reviewer-findings":
     case "plan-review":
     case "worker-log":
     case "worker-result":

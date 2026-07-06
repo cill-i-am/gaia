@@ -115,6 +115,7 @@ describe("LocalGaiaServerApi contract", () => {
         enum: [
           "input",
           "worker-plan",
+          "reviewer-findings",
           "plan-review",
           "worker-log",
           "worker-result",

@@ -43,6 +43,7 @@ export type RunPaths = {
   readonly prLoopState: string;
   readonly reportJson: string;
   readonly reportMarkdown: string;
+  readonly reviewerFindings: string;
   readonly root: string;
   readonly runProfile: string;
   readonly runsRoot: string;
@@ -134,6 +135,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       prLoopState: path.join(root, "pr-loop-state.json"),
       reportJson: path.join(root, "report.json"),
       reportMarkdown: path.join(root, "report.md"),
+      reviewerFindings: path.join(root, "reviewer-findings.json"),
       root,
       runProfile: path.join(root, "run-profile.json"),
       runsRoot: store.runsRoot,

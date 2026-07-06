@@ -85,6 +85,7 @@ export const LocalRunArtifactContentTypeSchema = Schema.Literals([
 export const LocalRunArtifactIdSchema = Schema.Literals([
   "input",
   "worker-plan",
+  "reviewer-findings",
   "plan-review",
   "worker-log",
   "worker-result",
