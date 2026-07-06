@@ -1,3 +1,4 @@
+import { RunIdSchema } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { execFile } from "node:child_process";
 import type { PlatformError } from "effect/PlatformError";
@@ -34,6 +35,70 @@ export const CodexSandboxModeSchema = Schema.Literals([
 ] as const);
 
 export type CodexSandboxMode = typeof CodexSandboxModeSchema.Type;
+
+export const CodexCommandOutputStreamSchema = Schema.Literals([
+  "stderr",
+  "stdout",
+] as const);
+
+export type CodexCommandOutputStream =
+  typeof CodexCommandOutputStreamSchema.Type;
+
+export const CodexHarnessProgressStatusSchema = Schema.Literals([
+  "running",
+  "completed",
+  "command-failed",
+  "timed-out",
+  "last-message-missing",
+] as const);
+
+export type CodexHarnessProgressStatus =
+  typeof CodexHarnessProgressStatusSchema.Type;
+
+export const CodexHarnessStallClassificationSchema = Schema.Literals([
+  "no-progress",
+  "progress-observed",
+] as const);
+
+export type CodexHarnessStallClassification =
+  typeof CodexHarnessStallClassificationSchema.Type;
+
+export class CodexHarnessProgress extends Schema.Class<CodexHarnessProgress>(
+  "CodexHarnessProgress",
+)({
+  command: CodexCommandSchema,
+  cwd: Schema.NonEmptyString,
+  lastMessagePath: Schema.NonEmptyString,
+  lastObservedOutputAt: Schema.optionalKey(Schema.NonEmptyString),
+  lastObservedOutputStream: Schema.optionalKey(CodexCommandOutputStreamSchema),
+  observedOutputBytes: Schema.Number.check(
+    Schema.isInt({ identifier: "ObservedOutputBytesInt" }),
+    Schema.isGreaterThanOrEqualTo(0, {
+      identifier: "ObservedOutputBytesNonNegative",
+    }),
+  ),
+  progressPath: Schema.NonEmptyString,
+  runId: RunIdSchema,
+  stallClassification: Schema.optionalKey(
+    CodexHarnessStallClassificationSchema,
+  ),
+  startedAt: Schema.NonEmptyString,
+  status: CodexHarnessProgressStatusSchema,
+  terminal: Schema.Boolean,
+  timeoutMs: CodexCommandTimeoutMsSchema,
+  updatedAt: Schema.NonEmptyString,
+  version: Schema.Literal(1),
+}) {}
+
+const CodexHarnessProgressJson = Schema.toCodecJson(CodexHarnessProgress);
+
+export const encodeCodexHarnessProgress = Schema.encodeSync(
+  CodexHarnessProgressJson,
+);
+
+export const parseCodexHarnessProgressJson = Schema.decodeUnknownSync(
+  CodexHarnessProgressJson,
+);
 
 export class CodexHarnessConfig extends Schema.Class<CodexHarnessConfig>(
   "CodexHarnessConfig",
@@ -75,9 +140,20 @@ export type CodexCommandInput = {
   readonly args: ReadonlyArray<string>;
   readonly command: CodexCommand;
   readonly cwd: string;
+  readonly progressPath?: string | undefined;
+  readonly recordProgress?: CodexCommandProgressRecorder | undefined;
   readonly stdin: string;
   readonly timeoutMs: CodexCommandTimeoutMs;
 };
+
+export type CodexCommandOutputObservation = {
+  readonly bytes: number;
+  readonly stream: CodexCommandOutputStream;
+};
+
+export type CodexCommandProgressRecorder = (
+  observation: CodexCommandOutputObservation,
+) => Promise<void>;
 
 export type CodexCommandResult = {
   readonly exitCode: number;
@@ -118,6 +194,52 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
   Effect.tryPromise({
     try: () =>
       new Promise<CodexCommandResult>((resolve, reject) => {
+        const pendingProgressWrites = new Set<Promise<void>>();
+        let progressWriteFailed = false;
+        let progressWriteFailure: unknown;
+        const recordProgressWriteFailure = (cause: unknown) => {
+          if (!progressWriteFailed) {
+            progressWriteFailed = true;
+            progressWriteFailure = cause;
+          }
+        };
+        const observeOutput = (
+          stream: CodexCommandOutputStream,
+          chunk: Buffer | string,
+        ) => {
+          const bytes = Buffer.byteLength(chunk);
+          if (bytes === 0 || input.recordProgress === undefined) {
+            return;
+          }
+
+          const recordProgress = input.recordProgress;
+          const pending = Promise.resolve()
+            .then(() => recordProgress({ bytes, stream }))
+            .catch(recordProgressWriteFailure)
+            .finally(() => pendingProgressWrites.delete(pending));
+          pendingProgressWrites.add(pending);
+        };
+        const settleAfterProgressWrites = (
+          complete: () => void,
+          fail: (cause: unknown) => void,
+        ) => {
+          Promise.allSettled([...pendingProgressWrites]).then((results) => {
+            const rejected = results.find(
+              (result) => result.status === "rejected",
+            );
+            if (rejected?.status === "rejected") {
+              fail(rejected.reason);
+              return;
+            }
+
+            if (progressWriteFailed) {
+              fail(progressWriteFailure);
+              return;
+            }
+
+            complete();
+          }, fail);
+        };
         const child = execFile(
           input.command,
           [...input.args],
@@ -128,7 +250,10 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
           },
           (error, stdout, stderr) => {
             if (error !== null && error.code === "ENOENT") {
-              reject(error);
+              settleAfterProgressWrites(
+                () => reject(error),
+                (cause) => reject(cause),
+              );
               return;
             }
 
@@ -138,26 +263,41 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
                 error.code === null ||
                 isTimeoutError(error))
             ) {
-              reject(error);
+              settleAfterProgressWrites(
+                () => reject(error),
+                (cause) => reject(cause),
+              );
               return;
             }
 
-            resolve({
-              exitCode: normalizeExitCode(error?.code),
-              stderr: String(stderr),
-              stdout: String(stdout),
-            });
+            settleAfterProgressWrites(
+              () =>
+                resolve({
+                  exitCode: normalizeExitCode(error?.code),
+                  stderr: String(stderr),
+                  stdout: String(stdout),
+                }),
+              (cause) => reject(cause),
+            );
           },
+        );
+        child.stdout?.on("data", (chunk: Buffer | string) =>
+          observeOutput("stdout", chunk),
+        );
+        child.stderr?.on("data", (chunk: Buffer | string) =>
+          observeOutput("stderr", chunk),
         );
         child.stdin?.end(input.stdin);
       }),
     catch: (cause) =>
-      makeRuntimeError({
-        cause,
-        code: codexCommandFailureCode(cause),
-        message: codexCommandFailureMessage(input.command, cause),
-        recoverable: true,
-      }),
+      cause instanceof GaiaRuntimeError
+        ? cause
+        : makeRuntimeError({
+            cause,
+            code: codexCommandFailureCode(cause),
+            message: codexCommandFailureMessage(input.command, cause),
+            recoverable: true,
+          }),
   });
 
 export function makeCodexHarnessPrompt(input: CodexHarnessPromptInput) {

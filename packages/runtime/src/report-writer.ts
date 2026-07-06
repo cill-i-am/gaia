@@ -17,6 +17,9 @@ export function writeReport(input: {
 }) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const codexHarnessProgressExists = yield* fs.exists(
+      input.paths.codexHarnessProgress,
+    );
     const report = RunReport.make({
       artifacts: [
         "workspace-manifest.json",
@@ -30,6 +33,9 @@ export function writeReport(input: {
         "plan-review.md",
         "plan-review.json",
         "plan-reviewer-session.json",
+        ...(codexHarnessProgressExists
+          ? ["codex-harness-progress.json"]
+          : []),
         "worker.log",
         "verification.log",
         "workspace/output.txt",

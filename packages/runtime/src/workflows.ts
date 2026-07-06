@@ -25,6 +25,7 @@ import type { CodexHarnessOptions } from "./codex-harness.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
   HarnessRunRequest,
+  codexHarnessName,
   defaultHarnessName,
   runHarness,
   type HarnessName,
@@ -81,6 +82,7 @@ const nanoid = customAlphabet(
 );
 
 export type CommandSummary = {
+  readonly harnessProgressPath?: string | undefined;
   readonly reportPath: string | undefined;
   readonly runDirectory: string;
   readonly runId: RunId;
@@ -197,7 +199,17 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
     );
     yield* runReviewPhase(runId, paths, spec, "plan", options);
     yield* appendEvent(runId, paths, {
-      payload: { harnessName },
+      payload: {
+        harnessName,
+        ...(harnessName === codexHarnessName
+          ? {
+              harnessProgressPath: runRelative(
+                paths,
+                paths.codexHarnessProgress,
+              ),
+            }
+          : {}),
+      },
       type: "WORKER_STARTED",
     });
     const harnessOptions = {
@@ -210,6 +222,7 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
     };
     const harnessResult = yield* runHarness(
       HarnessRunRequest.make({
+        codexHarnessProgressPath: paths.codexHarnessProgress,
         harnessName,
         resolvedSkillPaths: [...resolvedSkillPaths(skillBundle)],
         runId,
@@ -317,6 +330,9 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
     });
 
     return {
+      ...(harnessName === codexHarnessName
+        ? { harnessProgressPath: paths.codexHarnessProgress }
+        : {}),
       reportPath: paths.reportMarkdown,
       runDirectory: paths.root,
       runId,
@@ -359,6 +375,7 @@ export function resumeRun(runIdInput: string, options: WorkflowOptions = {}) {
     const snapshot = snapshotFromReplay(loaded.events);
     if (snapshot.state === "completed") {
       return {
+        ...(yield* existingHarnessProgressPath(paths)),
         reportPath: paths.reportMarkdown,
         runDirectory: paths.root,
         runId,
@@ -438,6 +455,7 @@ export function statusRun(
 
     const snapshot = snapshotFromReplay(loaded.events);
     return {
+      ...(yield* existingHarnessProgressPath(paths)),
       reportPath:
         snapshot.state === "completed" ? paths.reportMarkdown : undefined,
       runDirectory: paths.root,
@@ -445,6 +463,14 @@ export function statusRun(
       state: snapshot.state,
       status: statusFromState(snapshot.state),
     } satisfies CommandSummary;
+  });
+}
+
+function existingHarnessProgressPath(paths: RunPaths) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const exists = yield* fs.exists(paths.codexHarnessProgress);
+    return exists ? { harnessProgressPath: paths.codexHarnessProgress } : {};
   });
 }
 

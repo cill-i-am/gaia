@@ -19,6 +19,7 @@ import {
 import {
   makeCodexHarnessConfig,
   nodeCodexCommandRunner,
+  parseCodexHarnessProgressJson,
   type CodexCommandInput,
   type CodexCommandRunner,
 } from "./codex-harness.js";
@@ -77,6 +78,7 @@ import {
   localRunProfileSource,
   parseRunProfileJson,
 } from "./run-profile.js";
+import { readLocalRunArtifact } from "./run-read-api.js";
 import {
   collectBrowserEvidence,
   listRuns,
@@ -1566,6 +1568,91 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("observes Node Codex command output through the progress recorder", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const config = makeCodexHarnessConfig({
+          command: execPath,
+          timeoutMs: 1_000,
+        });
+        const observations: Array<{
+          readonly bytes: number;
+          readonly stream: "stderr" | "stdout";
+        }> = [];
+
+        const result = yield* nodeCodexCommandRunner({
+          args: [
+            "-e",
+            "process.stdout.write('hello'); process.stderr.write('warn');",
+          ],
+          command: config.command,
+          cwd,
+          progressPath: `${cwd}/codex-harness-progress.json`,
+          recordProgress: (observation) => {
+            observations.push(observation);
+            return Promise.resolve();
+          },
+          stdin: "",
+          timeoutMs: config.timeoutMs,
+        });
+
+        assert.strictEqual(result.exitCode, 0);
+        assert.strictEqual(result.stdout, "hello");
+        assert.strictEqual(result.stderr, "warn");
+        assert.deepEqual(
+          observations.map((observation) => observation.stream).sort(),
+          ["stderr", "stdout"],
+        );
+        assert.isTrue(observations.every((observation) => observation.bytes > 0));
+      }),
+    );
+
+    it.effect("owns rejected Codex progress recorder promises until process exit", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const config = makeCodexHarnessConfig({
+          command: execPath,
+          timeoutMs: 1_000,
+        });
+        let observations = 0;
+
+        const error = yield* Effect.flip(
+          nodeCodexCommandRunner({
+            args: [
+              "-e",
+              "process.stdout.write('hello'); setTimeout(() => process.stdout.write('done'), 150);",
+            ],
+            command: config.command,
+            cwd,
+            progressPath: `${cwd}/codex-harness-progress.json`,
+            recordProgress: () => {
+              observations += 1;
+              return observations === 1
+                ? Promise.reject(
+                    makeRuntimeError({
+                      code: "TestCodexProgressWriteFailed",
+                      message: "Test progress recorder failed.",
+                      recoverable: true,
+                    }),
+                  )
+                : Promise.resolve();
+            },
+            stdin: "",
+            timeoutMs: config.timeoutMs,
+          }),
+        );
+
+        assert.isAtLeast(observations, 1);
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "TestCodexProgressWriteFailed");
+          assert.isTrue(error.recoverable);
+        }
+      }),
+    );
+
     it.effect("runs the Codex harness through the workflow seam", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -1592,6 +1679,47 @@ describe("runtime workflows", () => {
                 }),
               );
             }
+
+            if (
+              input.progressPath === undefined ||
+              input.recordProgress === undefined
+            ) {
+              return yield* Effect.fail(
+                makeRuntimeError({
+                  code: "TestCodexProgressRecorderMissing",
+                  message:
+                    "Test Codex command did not receive a progress recorder.",
+                  recoverable: false,
+                }),
+              );
+            }
+            const progressPath = input.progressPath;
+            const recordProgress = input.recordProgress;
+
+            const startedProgress = parseCodexHarnessProgressJson(
+              JSON.parse(yield* fs.readFileString(progressPath)),
+            );
+            assert.strictEqual(startedProgress.status, "running");
+            assert.isFalse(startedProgress.terminal);
+            assert.strictEqual(startedProgress.command, "codex-test");
+            assert.strictEqual(startedProgress.cwd, input.cwd);
+            assert.strictEqual(startedProgress.timeoutMs, 12345);
+            assert.strictEqual(
+              startedProgress.lastMessagePath,
+              "codex-last-message.md",
+            );
+
+            yield* Effect.promise(() =>
+              recordProgress({ bytes: 32, stream: "stdout" }),
+            );
+            const observedProgress = parseCodexHarnessProgressJson(
+              JSON.parse(yield* fs.readFileString(progressPath)),
+            );
+            assert.strictEqual(
+              observedProgress.lastObservedOutputStream,
+              "stdout",
+            );
+            assert.isDefined(observedProgress.lastObservedOutputAt);
 
             yield* fs.writeFileString(
               `${input.cwd}/output.txt`,
@@ -1654,6 +1782,17 @@ describe("runtime workflows", () => {
         const harnessResult = yield* fs.readFileString(
           `${summary.runDirectory}/worker-result.json`,
         );
+        const progress = parseCodexHarnessProgressJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/codex-harness-progress.json`,
+            ),
+          ),
+        );
+        const report = yield* fs.readFileString(
+          `${summary.runDirectory}/report.md`,
+        );
+        const status = yield* statusRun(summary.runId, { rootDirectory: cwd });
         const command = commands[0];
 
         assert.include(output, "true");
@@ -1664,6 +1803,17 @@ describe("runtime workflows", () => {
         assert.include(harnessResult, '"changed.txt"');
         assert.include(harnessResult, '"output.txt"');
         assert.include(harnessResult, '"exitCode": 0');
+        assert.strictEqual(progress.status, "completed");
+        assert.isTrue(progress.terminal);
+        assert.strictEqual(
+          progress.progressPath,
+          "codex-harness-progress.json",
+        );
+        assert.strictEqual(
+          status.harnessProgressPath,
+          `${summary.runDirectory}/codex-harness-progress.json`,
+        );
+        assert.include(report, "codex-harness-progress.json");
         assert.isDefined(command);
 
         if (command !== undefined) {
@@ -1689,6 +1839,140 @@ describe("runtime workflows", () => {
           assert.include(command.stdin, "Skill bundle JSON:");
           assert.include(command.stdin, skillDirectory);
         }
+      }),
+    );
+
+    it.effect("records timed-out Codex harness progress before failing the run", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const commandRunner: CodexCommandRunner = () =>
+          Effect.fail(
+            makeRuntimeError({
+              code: "CodexCommandTimedOut",
+              message: "Codex command 'codex-test' timed out.",
+              recoverable: true,
+            }),
+          );
+        yield* fs.writeFileString(specPath, "Run through slow Codex.\n");
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            codexHarness: {
+              commandRunner,
+              config: makeCodexHarnessConfig({ command: "codex-test" }),
+            },
+            harnessName: codexHarnessName,
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "CodexCommandTimedOut");
+          assert.isTrue(error.recoverable);
+        }
+
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        const progress = parseCodexHarnessProgressJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${status.runDirectory}/codex-harness-progress.json`,
+            ),
+          ),
+        );
+        const artifact = yield* readLocalRunArtifact(
+          status.runId,
+          "codex-harness-progress.json",
+          { rootDirectory: cwd },
+        );
+
+        assert.strictEqual(status.state, "failed");
+        assert.strictEqual(status.status, "failed");
+        assert.strictEqual(
+          status.harnessProgressPath,
+          `${status.runDirectory}/codex-harness-progress.json`,
+        );
+        assert.strictEqual(artifact.contentType, "application/json");
+        assert.strictEqual(progress.status, "timed-out");
+        assert.isTrue(progress.terminal);
+        assert.strictEqual(progress.stallClassification, "no-progress");
+        assert.isUndefined(progress.lastObservedOutputAt);
+      }),
+    );
+
+    it.effect("records missing last-message Codex progress before failing the run", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        const commandRunner: CodexCommandRunner = (input) =>
+          Effect.gen(function* () {
+            if (input.recordProgress === undefined) {
+              return yield* Effect.fail(
+                makeRuntimeError({
+                  code: "TestCodexProgressRecorderMissing",
+                  message:
+                    "Test Codex command did not receive a progress recorder.",
+                  recoverable: false,
+                }),
+              );
+            }
+            const recordProgress = input.recordProgress;
+
+            yield* Effect.promise(() =>
+              recordProgress({ bytes: 17, stream: "stderr" }),
+            );
+            yield* fs.writeFileString(
+              `${input.cwd}/output.txt`,
+              `codex harness ${runIdFromCodexPrompt(input.stdin)}\n`,
+            );
+
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: "",
+            };
+          });
+        yield* fs.writeFileString(specPath, "Run without last message.\n");
+
+        const error = yield* Effect.flip(
+          runSpecFile(specPath, {
+            codexHarness: {
+              commandRunner,
+              config: makeCodexHarnessConfig({ command: "codex-test" }),
+            },
+            harnessName: codexHarnessName,
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "CodexLastMessageMissing");
+          assert.isTrue(error.recoverable);
+        }
+
+        const status = yield* statusRun(undefined, { rootDirectory: cwd });
+        const progress = parseCodexHarnessProgressJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${status.runDirectory}/codex-harness-progress.json`,
+            ),
+          ),
+        );
+
+        assert.strictEqual(status.state, "failed");
+        assert.strictEqual(
+          status.harnessProgressPath,
+          `${status.runDirectory}/codex-harness-progress.json`,
+        );
+        assert.strictEqual(progress.status, "last-message-missing");
+        assert.isTrue(progress.terminal);
+        assert.strictEqual(progress.lastMessagePath, "codex-last-message.md");
+        assert.strictEqual(progress.lastObservedOutputStream, "stderr");
+        assert.strictEqual(progress.stallClassification, "progress-observed");
       }),
     );
 
@@ -2867,6 +3151,97 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("reports the active PR-loop operation when the run store is locked", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Lock with metadata.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        yield* fs.makeDirectory(store.lock);
+        yield* fs.writeFileString(
+          `${store.lock}/metadata.json`,
+          `${JSON.stringify({
+            acquiredAt: "2026-07-05T10:00:00.000Z",
+            nextSafeAction: "Wait for the active command, then rerun pnpm gaia pr-loop.",
+            operation: "GitHub CI watch",
+            version: 1,
+          })}\n`,
+        );
+
+        const error = yield* Effect.flip(
+          watchGitHubFeedback(run.runId, "1", {
+            commandRunner: recordingGitHubRunner([], () => ({
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify(prFeedbackView()),
+            })),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "RunStoreLocked");
+          assert.isTrue(error.recoverable);
+          assert.include(error.message, "GitHub CI watch");
+          assert.include(error.message, "rerun pnpm gaia pr-loop");
+        }
+      }),
+    );
+
+    it.effect("reuses GitHub check evidence for the same run, PR, and head", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Idempotent checks.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const runner = recordingGitHubRunner([], (input) => {
+          const args = input.args.join(" ");
+          if (args === "pr view 1 --json headRefOid") {
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify({ headRefOid: "abc123" }),
+            };
+          }
+
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify([
+              {
+                link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                name: "check",
+                state: "SUCCESS",
+                workflow: "CI",
+              },
+            ]),
+          };
+        });
+
+        const first = yield* recordGitHubChecks(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const second = yield* recordGitHubChecks(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const events = yield* readRunEvents(fs, run.runDirectory);
+
+        assert.strictEqual(second.snapshotPath, first.snapshotPath);
+        assert.strictEqual(second.watchStatePath, first.watchStatePath);
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_CHECKS_RECORDED")
+            .length,
+          1,
+        );
+      }),
+    );
+
     it.effect("waits for pending GitHub checks before recording", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -2877,7 +3252,16 @@ describe("runtime workflows", () => {
         let checksCalls = 0;
 
         const recorded = yield* recordGitHubChecks(run.runId, "1", {
-          commandRunner: recordingGitHubRunner([], () => {
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (!input.args.join(" ").startsWith("pr checks")) {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify({ headRefOid: "abc123" }),
+              };
+            }
+
+            const state = checksCalls === 0 ? "PENDING" : "SUCCESS";
             checksCalls += 1;
             return {
               exitCode: 0,
@@ -2886,7 +3270,7 @@ describe("runtime workflows", () => {
                 {
                   link: "https://github.com/cill-i-am/gaia/actions/runs/1",
                   name: "check",
-                  state: checksCalls === 1 ? "PENDING" : "SUCCESS",
+                  state,
                   workflow: "CI",
                 },
               ]),
@@ -2914,8 +3298,10 @@ describe("runtime workflows", () => {
         let checksCalls = 0;
 
         const recorded = yield* recordGitHubChecks(run.runId, "1", {
-          commandRunner: recordingGitHubRunner([], () => {
-            checksCalls += 1;
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (input.args.join(" ").startsWith("pr checks")) {
+              checksCalls += 1;
+            }
             return {
               exitCode: 0,
               stderr: "",
@@ -3225,6 +3611,44 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("reuses PR feedback evidence for the same run, PR, and head", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Idempotent PR feedback.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const runner = recordingGitHubRunner([], () => ({
+          exitCode: 0,
+          stderr: "",
+          stdout: JSON.stringify(
+            prFeedbackView({
+              headRefOid: "abc123",
+              reviewDecision: "APPROVED",
+            }),
+          ),
+        }));
+
+        const first = yield* watchGitHubFeedback(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const second = yield* watchGitHubFeedback(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const events = yield* readRunEvents(fs, run.runDirectory);
+
+        assert.strictEqual(second.feedbackPath, first.feedbackPath);
+        assert.strictEqual(second.status, first.status);
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_FEEDBACK_RECORDED")
+            .length,
+          1,
+        );
+      }),
+    );
+
     it.effect("coordinates changes requested and failed CI as ordered blockers", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -3380,6 +3804,139 @@ describe("runtime workflows", () => {
         assert.strictEqual(summary.nextAction, "ready-for-merge-decision");
         assert.strictEqual(summary.blockerCount, 0);
         assert.strictEqual(summary.blockers.length, 0);
+      }),
+    );
+
+    it.effect("reuses PR-loop evidence for the same run, PR, and head", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Idempotent PR loop.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const runner = recordingGitHubRunner([], (input) => {
+          const args = input.args.join(" ");
+          if (args === "pr view 1 --json headRefOid") {
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify({ headRefOid: "abc123" }),
+            };
+          }
+
+          if (args.startsWith("pr checks")) {
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify([
+                {
+                  link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                  name: "test",
+                  state: "SUCCESS",
+                  workflow: "CI",
+                },
+              ]),
+            };
+          }
+
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify(
+              prFeedbackView({
+                headRefOid: "abc123",
+                reviewDecision: "APPROVED",
+              }),
+            ),
+          };
+        });
+
+        const first = yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const second = yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const events = yield* readRunEvents(fs, run.runDirectory);
+
+        assert.strictEqual(second.checksPath, first.checksPath);
+        assert.strictEqual(second.feedbackPath, first.feedbackPath);
+        assert.strictEqual(second.statePath, first.statePath);
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_CHECKS_RECORDED")
+            .length,
+          1,
+        );
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_FEEDBACK_RECORDED")
+            .length,
+          1,
+        );
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_PR_LOOP_RECORDED")
+            .length,
+          1,
+        );
+      }),
+    );
+
+    it.effect("rejects PR-loop evidence from mismatched PR heads", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Reject mismatched PR heads.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const error = yield* Effect.flip(
+          coordinateGitHubPrLoop(run.runId, "1", {
+            commandRunner: recordingGitHubRunner([], (input) => {
+              const args = input.args.join(" ");
+              if (args === "pr view 1 --json headRefOid") {
+                return {
+                  exitCode: 0,
+                  stderr: "",
+                  stdout: JSON.stringify({ headRefOid: "checks-head" }),
+                };
+              }
+
+              if (args.startsWith("pr checks")) {
+                return {
+                  exitCode: 0,
+                  stderr: "",
+                  stdout: JSON.stringify([
+                    {
+                      link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                      name: "test",
+                      state: "SUCCESS",
+                      workflow: "CI",
+                    },
+                  ]),
+                };
+              }
+
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify(
+                  prFeedbackView({
+                    headRefOid: "feedback-head",
+                    reviewDecision: "APPROVED",
+                  }),
+                ),
+              };
+            }),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "GitHubPrHeadMismatch");
+          assert.isTrue(error.recoverable);
+        }
       }),
     );
 
@@ -3989,6 +4546,7 @@ function writeFrontendRunProfile(
 function prFeedbackView(
   input: Readonly<{
     comments?: ReadonlyArray<unknown>;
+    headRefOid?: string;
     isDraft?: boolean;
     latestReviews?: ReadonlyArray<unknown>;
     reviewDecision?: string | null;
@@ -3997,6 +4555,7 @@ function prFeedbackView(
 ) {
   return {
     comments: input.comments ?? [],
+    ...(input.headRefOid === undefined ? {} : { headRefOid: input.headRefOid }),
     isDraft: input.isDraft ?? false,
     latestReviews: input.latestReviews ?? [],
     reviewDecision: input.reviewDecision ?? null,

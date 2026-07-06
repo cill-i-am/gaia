@@ -83,6 +83,12 @@ export const parseGitHubPullRequestSelector = Schema.decodeUnknownSync(
   GitHubPullRequestSelectorSchema,
 );
 
+const GitHubPrHeadShaSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("GitHubPrHeadSha"),
+);
+
+type GitHubPrHeadSha = typeof GitHubPrHeadShaSchema.Type;
+
 export const GitHubChecksStatusSchema = Schema.Literals([
   "no-checks",
   "pending",
@@ -147,6 +153,7 @@ export class GitHubPrFeedback extends Schema.Class<GitHubPrFeedback>(
 )({
   commentCount: GitHubFeedbackCountSchema,
   comments: Schema.Array(GitHubPrFeedbackComment),
+  headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
   latestReviews: Schema.Array(GitHubPrFeedbackReview),
   nextAction: GitHubPrFeedbackNextActionSchema,
   notes: Schema.Array(Schema.String),
@@ -166,6 +173,7 @@ export class GitHubPrFeedbackSummary extends Schema.Class<GitHubPrFeedbackSummar
   commentCount: GitHubFeedbackCountSchema,
   comments: Schema.Array(GitHubPrFeedbackComment),
   feedbackPath: Schema.NonEmptyString,
+  headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
   latestReviews: Schema.Array(GitHubPrFeedbackReview),
   nextAction: GitHubPrFeedbackNextActionSchema,
   notes: Schema.Array(Schema.String),
@@ -192,6 +200,7 @@ export class GitHubChecksSnapshot extends Schema.Class<GitHubChecksSnapshot>(
 )({
   attempts: GitHubCheckPollAttemptCountSchema,
   checks: Schema.Array(GitHubCheckRun),
+  headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
   observedAt: Schema.NonEmptyString,
   pr: GitHubPullRequestSelectorSchema,
   runId: RunIdSchema,
@@ -204,6 +213,7 @@ export class GitHubChecksRecord extends Schema.Class<GitHubChecksRecord>(
 )({
   attempts: GitHubCheckPollAttemptCountSchema,
   checks: Schema.Array(GitHubCheckRun),
+  headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
   observedAt: Schema.NonEmptyString,
   pr: GitHubPullRequestSelectorSchema,
   runId: RunIdSchema,
@@ -227,6 +237,7 @@ export class GitHubCiWatchState extends Schema.Class<GitHubCiWatchState>(
   "GitHubCiWatchState",
 )({
   attempts: GitHubCheckPollAttemptCountSchema,
+  headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
   lastSnapshotPath: Schema.NonEmptyString,
   lastStatus: GitHubChecksStatusSchema,
   nextAction: GitHubCiWatchNextActionSchema,
@@ -253,6 +264,7 @@ export class GitHubCiWatchSummary extends Schema.Class<GitHubCiWatchSummary>(
   attempts: GitHubCheckPollAttemptCountSchema,
   checks: Schema.Array(GitHubCheckRun),
   failedChecks: Schema.Array(GitHubCheckRun),
+  headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
   nextAction: GitHubCiWatchNextActionSchema,
   pendingChecks: Schema.Array(GitHubCheckRun),
   pr: GitHubPullRequestSelectorSchema,
@@ -315,6 +327,7 @@ export class GitHubPrLoopState extends Schema.Class<GitHubPrLoopState>(
   checksStatus: GitHubChecksStatusSchema,
   feedbackPath: Schema.NonEmptyString,
   feedbackStatus: GitHubPrFeedbackStatusSchema,
+  headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
   nextAction: GitHubPrLoopNextActionSchema,
   observedAt: Schema.NonEmptyString,
   pr: GitHubPullRequestSelectorSchema,
@@ -332,6 +345,7 @@ export class GitHubPrLoopSummary extends Schema.Class<GitHubPrLoopSummary>(
   checksStatus: GitHubChecksStatusSchema,
   feedbackPath: Schema.NonEmptyString,
   feedbackStatus: GitHubPrFeedbackStatusSchema,
+  headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
   nextAction: GitHubPrLoopNextActionSchema,
   pr: GitHubPullRequestSelectorSchema,
   runId: RunIdSchema,
@@ -445,12 +459,19 @@ class GitHubPrFeedbackView extends Schema.Class<GitHubPrFeedbackView>(
   "GitHubPrFeedbackView",
 )({
   comments: Schema.Array(GitHubPrViewComment),
+  headRefOid: Schema.optionalKey(GitHubPrHeadShaSchema),
   isDraft: Schema.Boolean,
   latestReviews: Schema.Array(GitHubPrViewReview),
   reviewDecision: Schema.NullOr(Schema.String),
   reviewRequests: Schema.Array(Schema.Unknown),
   title: Schema.String,
   url: Schema.String,
+}) {}
+
+class GitHubPrHeadView extends Schema.Class<GitHubPrHeadView>(
+  "GitHubPrHeadView",
+)({
+  headRefOid: GitHubPrHeadShaSchema,
 }) {}
 
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
@@ -959,6 +980,10 @@ export function recordGitHubChecks(
   return withRunStoreLock(
     options,
     recordGitHubChecksUnlocked(runIdInput, prInput, options),
+    {
+      nextSafeAction: `Wait for the active command to finish, then rerun pnpm gaia pr-loop ${runIdInput} ${prInput} to serialize check and feedback evidence.`,
+      operation: "GitHub check evidence recording",
+    },
   );
 }
 
@@ -970,6 +995,13 @@ export function watchGitHubChecks(
   return withRunStoreLock(
     options,
     watchGitHubChecksUnlocked(runIdInput, options),
+    {
+      nextSafeAction:
+        options.pullRequest === undefined
+          ? `Wait for the active command to finish, then rerun pnpm gaia watch-ci ${runIdInput}.`
+          : `Wait for the active command to finish, then rerun pnpm gaia pr-loop ${runIdInput} ${options.pullRequest} to serialize check and feedback evidence.`,
+      operation: "GitHub CI watch",
+    },
   );
 }
 
@@ -982,6 +1014,10 @@ export function watchGitHubFeedback(
   return withRunStoreLock(
     options,
     watchGitHubFeedbackUnlocked(runIdInput, prInput, options),
+    {
+      nextSafeAction: `Wait for the active command to finish, then rerun pnpm gaia pr-loop ${runIdInput} ${prInput} to serialize check and feedback evidence.`,
+      operation: "GitHub PR feedback watch",
+    },
   );
 }
 
@@ -994,6 +1030,10 @@ export function coordinateGitHubPrLoop(
   return withRunStoreLock(
     options,
     coordinateGitHubPrLoopUnlocked(runIdInput, prInput, options),
+    {
+      nextSafeAction: `Wait for the active command to finish, then rerun pnpm gaia pr-loop ${runIdInput} ${prInput}.`,
+      operation: "GitHub PR-loop evidence coordination",
+    },
   );
 }
 
@@ -1005,6 +1045,10 @@ export function createGitHubRemediationSpec(
   return withRunStoreLock(
     options,
     createGitHubRemediationSpecUnlocked(runIdInput, options),
+    {
+      nextSafeAction: `Wait for the active command to finish, then rerun pnpm gaia plan-remediation ${runIdInput}.`,
+      operation: "GitHub PR-loop remediation planning",
+    },
   );
 }
 
@@ -1017,6 +1061,10 @@ export function commentGitHubPullRequest(
   return withRunStoreLock(
     options,
     commentGitHubPullRequestUnlocked(runIdInput, prInput, options),
+    {
+      nextSafeAction: `Wait for the active command to finish, then rerun pnpm gaia comment-pr ${runIdInput} ${prInput}.`,
+      operation: "GitHub PR evidence comment publishing",
+    },
   );
 }
 
@@ -1040,6 +1088,7 @@ function recordGitHubChecksUnlocked(
       );
     }
 
+    const pr = yield* parseGitHubPullRequestSelectorEffect(prInput);
     const attempts = yield* parseGitHubCheckPollAttemptCountEffect(
       options.maxAttempts ?? defaultGitHubCheckPollAttempts,
     );
@@ -1052,18 +1101,32 @@ function recordGitHubChecksUnlocked(
         })
       : {
           attempts: parseGitHubCheckPollAttemptCount(1),
-          summary: yield* inspectGitHubChecks(prInput, {
+          summary: yield* inspectGitHubChecks(pr, {
             commandRunner: runner,
             rootDirectory,
           }),
         };
     const paths = yield* makeRunPaths(run.runId, { rootDirectory });
+    const headSha = yield* readOptionalGitHubPullRequestHeadSha(pr, {
+      rootDirectory,
+      runner,
+    });
+    const reusable = yield* findReusableGitHubChecksRecord(paths, {
+      headSha,
+      summary: observed.summary,
+    });
+
+    if (reusable !== undefined) {
+      return reusable;
+    }
+
     const recorded = yield* writeGitHubChecksSnapshot(paths, {
       attempts: observed.attempts,
+      headSha,
       runId: run.runId,
       summary: observed.summary,
     });
-    const watchState = yield* writeGitHubCiWatchState(paths, recorded);
+    yield* writeGitHubCiWatchState(paths, recorded);
     const checksPath = runRelative(paths, recorded.snapshotPath);
     const watchStatePath = runRelative(paths, paths.ciWatchState);
 
@@ -1071,6 +1134,7 @@ function recordGitHubChecksUnlocked(
       payload: {
         attempts: recorded.attempts,
         checksPath,
+        ...(recorded.headSha === undefined ? {} : { headSha: recorded.headSha }),
         pullRequest: recorded.pr,
         status: recorded.status,
         terminal: recorded.terminal,
@@ -1079,17 +1143,7 @@ function recordGitHubChecksUnlocked(
       type: "GITHUB_CHECKS_RECORDED",
     });
 
-    return GitHubChecksRecord.make({
-      attempts: recorded.attempts,
-      checks: recorded.checks,
-      observedAt: recorded.observedAt,
-      pr: recorded.pr,
-      runId: recorded.runId,
-      snapshotPath: recorded.snapshotPath,
-      status: recorded.status,
-      terminal: recorded.terminal,
-      watchStatePath: watchState.path,
-    });
+    return recorded;
   });
 }
 
@@ -1120,6 +1174,15 @@ function watchGitHubFeedbackUnlocked(
     });
     const paths = yield* makeRunPaths(run.runId, { rootDirectory });
     const feedback = makeGitHubPrFeedback(pr, view);
+    const reusable = yield* findReusableGitHubPrFeedback(
+      paths,
+      feedback,
+      run.runId,
+    );
+
+    if (reusable !== undefined) {
+      return reusable;
+    }
 
     yield* writeGitHubPrFeedback(paths, feedback);
 
@@ -1129,6 +1192,7 @@ function watchGitHubFeedbackUnlocked(
       payload: {
         commentCount: feedback.commentCount,
         feedbackPath,
+        ...(feedback.headSha === undefined ? {} : { headSha: feedback.headSha }),
         nextAction: feedback.nextAction,
         pullRequest: feedback.pr,
         reviewCount: feedback.reviewCount,
@@ -1138,24 +1202,7 @@ function watchGitHubFeedbackUnlocked(
       type: "GITHUB_FEEDBACK_RECORDED",
     });
 
-    return GitHubPrFeedbackSummary.make({
-      commentCount: feedback.commentCount,
-      comments: feedback.comments,
-      feedbackPath: paths.githubFeedback,
-      latestReviews: feedback.latestReviews,
-      nextAction: feedback.nextAction,
-      notes: feedback.notes,
-      pr: feedback.pr,
-      reviewCount: feedback.reviewCount,
-      ...(feedback.reviewDecision === undefined
-        ? {}
-        : { reviewDecision: feedback.reviewDecision }),
-      reviewRequestCount: feedback.reviewRequestCount,
-      runId: run.runId,
-      status: feedback.status,
-      ...(feedback.title === undefined ? {} : { title: feedback.title }),
-      ...(feedback.url === undefined ? {} : { url: feedback.url }),
-    });
+    return gitHubPrFeedbackSummaryFromFeedback(paths, feedback, run.runId);
   });
 }
 
@@ -1188,8 +1235,14 @@ function coordinateGitHubPrLoopUnlocked(
       commandRunner: runner,
       rootDirectory,
     });
+    yield* requireMatchingGitHubPrHead(checks, feedback);
     const paths = yield* makeRunPaths(run.runId, { rootDirectory });
     const state = makeGitHubPrLoopState({ checks, feedback, paths });
+    const reusable = yield* findReusableGitHubPrLoopState(paths, state);
+
+    if (reusable !== undefined) {
+      return reusable;
+    }
 
     yield* writeGitHubPrLoopState(paths, state);
 
@@ -1198,6 +1251,7 @@ function coordinateGitHubPrLoopUnlocked(
     yield* appendEvent(run.runId, paths, {
       payload: {
         blockerCount: state.blockerCount,
+        ...(state.headSha === undefined ? {} : { headSha: state.headSha }),
         nextAction: state.nextAction,
         prLoopPath: statePath,
         pullRequest: state.pr,
@@ -1206,19 +1260,7 @@ function coordinateGitHubPrLoopUnlocked(
       type: "GITHUB_PR_LOOP_RECORDED",
     });
 
-    return GitHubPrLoopSummary.make({
-      blockerCount: state.blockerCount,
-      blockers: state.blockers,
-      checksPath: state.checksPath,
-      checksStatus: state.checksStatus,
-      feedbackPath: state.feedbackPath,
-      feedbackStatus: state.feedbackStatus,
-      nextAction: state.nextAction,
-      pr: state.pr,
-      runId: state.runId,
-      statePath: paths.prLoopState,
-      status: state.status,
-    });
+    return gitHubPrLoopSummaryFromState(paths, state);
   });
 }
 
@@ -1362,7 +1404,7 @@ function inspectGitHubFeedback(
         "view",
         pr,
         "--json",
-        "comments,isDraft,latestReviews,reviewDecision,reviewRequests,title,url",
+        "comments,headRefOid,isDraft,latestReviews,reviewDecision,reviewRequests,title,url",
       ],
     );
 
@@ -1410,9 +1452,12 @@ function watchGitHubChecksUnlocked(
 
     const paths = yield* makeRunPaths(run.runId, { rootDirectory });
     const storedWatchState = yield* readOptionalGitHubCiWatchState(paths);
+    const requestedPr = options.pullRequest === undefined
+      ? undefined
+      : yield* parseGitHubPullRequestSelectorEffect(options.pullRequest);
 
     if (
-      options.pullRequest === undefined &&
+      requestedPr === undefined &&
       storedWatchState !== undefined &&
       storedWatchState.terminal
     ) {
@@ -1429,7 +1474,7 @@ function watchGitHubChecksUnlocked(
       });
     }
 
-    const pr = options.pullRequest ?? storedWatchState?.pr;
+    const pr = requestedPr ?? storedWatchState?.pr;
 
     if (pr === undefined) {
       return yield* Effect.fail(
@@ -1440,6 +1485,32 @@ function watchGitHubChecksUnlocked(
           recoverable: false,
         }),
       );
+    }
+
+    if (
+      requestedPr !== undefined &&
+      storedWatchState !== undefined &&
+      storedWatchState.terminal &&
+      storedWatchState.pr === requestedPr
+    ) {
+      const headSha = yield* readOptionalGitHubPullRequestHeadSha(requestedPr, {
+        rootDirectory,
+        runner: options.commandRunner ?? nodeCommandRunner,
+      });
+
+      if (headSha !== undefined && storedWatchState.headSha === headSha) {
+        const snapshot = yield* readGitHubChecksSnapshot(
+          paths,
+          storedWatchState.lastSnapshotPath,
+        );
+
+        return ciWatchSummaryFromSnapshot({
+          paths,
+          snapshot,
+          source: "already-terminal",
+          state: storedWatchState,
+        });
+      }
     }
 
     const record = yield* recordGitHubChecksUnlocked(
@@ -1483,6 +1554,7 @@ function makeGitHubPrFeedback(
   return GitHubPrFeedback.make({
     commentCount: parseGitHubFeedbackCount(comments.length),
     comments,
+    ...(view.headRefOid === undefined ? {} : { headSha: view.headRefOid }),
     latestReviews,
     nextAction,
     notes: [
@@ -1554,6 +1626,121 @@ function writeGitHubPrFeedback(
   );
 }
 
+function findReusableGitHubPrFeedback(
+  paths: RunPaths,
+  feedback: GitHubPrFeedback,
+  runId: RunId,
+) {
+  return Effect.gen(function* () {
+    if (feedback.headSha === undefined) {
+      return undefined;
+    }
+
+    const stored = yield* readOptionalGitHubPrFeedback(paths);
+
+    if (
+      stored === undefined ||
+      !sameGitHubPrFeedback(stored, feedback)
+    ) {
+      return undefined;
+    }
+
+    return gitHubPrFeedbackSummaryFromFeedback(paths, stored, runId);
+  });
+}
+
+function readOptionalGitHubPrFeedback(paths: RunPaths) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const exists = yield* fs.exists(paths.githubFeedback);
+
+    if (!exists) {
+      return undefined;
+    }
+
+    const contents = yield* fs.readFileString(paths.githubFeedback);
+    const parsed = yield* Effect.try({
+      try: (): unknown => JSON.parse(contents),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubFeedbackJsonInvalid",
+          message: "GitHub PR feedback evidence was not valid JSON.",
+          recoverable: true,
+        }),
+    });
+
+    return yield* Effect.try({
+      try: () => parseGitHubPrFeedbackJson(parsed),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubFeedbackInvalid",
+          message: "GitHub PR feedback evidence did not match Gaia's schema.",
+          recoverable: true,
+        }),
+    });
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "GitHubFeedbackReadFailed",
+          message: "Gaia could not read GitHub PR feedback evidence.",
+          recoverable: true,
+        }),
+      ),
+    ),
+  );
+}
+
+function gitHubPrFeedbackSummaryFromFeedback(
+  paths: RunPaths,
+  feedback: GitHubPrFeedback,
+  runId: RunId,
+) {
+  return GitHubPrFeedbackSummary.make({
+    commentCount: feedback.commentCount,
+    comments: feedback.comments,
+    feedbackPath: paths.githubFeedback,
+    ...(feedback.headSha === undefined ? {} : { headSha: feedback.headSha }),
+    latestReviews: feedback.latestReviews,
+    nextAction: feedback.nextAction,
+    notes: feedback.notes,
+    pr: feedback.pr,
+    reviewCount: feedback.reviewCount,
+    ...(feedback.reviewDecision === undefined
+      ? {}
+      : { reviewDecision: feedback.reviewDecision }),
+    reviewRequestCount: feedback.reviewRequestCount,
+    runId,
+    status: feedback.status,
+    ...(feedback.title === undefined ? {} : { title: feedback.title }),
+    ...(feedback.url === undefined ? {} : { url: feedback.url }),
+  });
+}
+
+function sameGitHubPrFeedback(
+  left: GitHubPrFeedback,
+  right: GitHubPrFeedback,
+) {
+  return (
+    left.headSha !== undefined &&
+    left.headSha === right.headSha &&
+    left.pr === right.pr &&
+    left.status === right.status &&
+    left.nextAction === right.nextAction &&
+    left.commentCount === right.commentCount &&
+    left.reviewCount === right.reviewCount &&
+    left.reviewRequestCount === right.reviewRequestCount &&
+    left.reviewDecision === right.reviewDecision &&
+    left.title === right.title &&
+    left.url === right.url &&
+    stableJson(left.comments) === stableJson(right.comments) &&
+    stableJson(left.latestReviews) === stableJson(right.latestReviews)
+  );
+}
+
 function makeGitHubPrLoopState(
   input: Readonly<{
     checks: GitHubChecksRecord;
@@ -1575,6 +1762,11 @@ function makeGitHubPrLoopState(
     checksStatus: input.checks.status,
     feedbackPath: runRelative(input.paths, input.feedback.feedbackPath),
     feedbackStatus: input.feedback.status,
+    ...(input.feedback.headSha === undefined
+      ? input.checks.headSha === undefined
+        ? {}
+        : { headSha: input.checks.headSha }
+      : { headSha: input.feedback.headSha }),
     nextAction,
     observedAt: new Date().toISOString(),
     pr: input.feedback.pr,
@@ -1582,6 +1774,28 @@ function makeGitHubPrLoopState(
     status: gitHubPrLoopStatus(blockers),
     version: 1,
   });
+}
+
+function requireMatchingGitHubPrHead(
+  checks: GitHubChecksRecord,
+  feedback: GitHubPrFeedbackSummary,
+) {
+  if (
+    checks.headSha === undefined ||
+    feedback.headSha === undefined ||
+    checks.headSha === feedback.headSha
+  ) {
+    return Effect.void;
+  }
+
+  return Effect.fail(
+    makeRuntimeError({
+      code: "GitHubPrHeadMismatch",
+      message:
+        "GitHub PR checks and feedback were observed from different head SHAs. Rerun the PR-loop command so Gaia records one coherent PR state.",
+      recoverable: true,
+    }),
+  );
 }
 
 function gitHubPrLoopBlockers(
@@ -1685,6 +1899,65 @@ function writeGitHubPrLoopState(
         }),
       ),
     ),
+  );
+}
+
+function findReusableGitHubPrLoopState(
+  paths: RunPaths,
+  state: GitHubPrLoopState,
+) {
+  return Effect.gen(function* () {
+    if (state.headSha === undefined) {
+      return undefined;
+    }
+
+    const stored = yield* readOptionalGitHubPrLoopState(paths);
+
+    if (stored === undefined || !sameGitHubPrLoopState(stored, state)) {
+      return undefined;
+    }
+
+    return gitHubPrLoopSummaryFromState(paths, stored);
+  });
+}
+
+function gitHubPrLoopSummaryFromState(
+  paths: RunPaths,
+  state: GitHubPrLoopState,
+) {
+  return GitHubPrLoopSummary.make({
+    blockerCount: state.blockerCount,
+    blockers: state.blockers,
+    checksPath: state.checksPath,
+    checksStatus: state.checksStatus,
+    feedbackPath: state.feedbackPath,
+    feedbackStatus: state.feedbackStatus,
+    ...(state.headSha === undefined ? {} : { headSha: state.headSha }),
+    nextAction: state.nextAction,
+    pr: state.pr,
+    runId: state.runId,
+    statePath: paths.prLoopState,
+    status: state.status,
+  });
+}
+
+function sameGitHubPrLoopState(
+  left: GitHubPrLoopState,
+  right: GitHubPrLoopState,
+) {
+  return (
+    left.headSha !== undefined &&
+    left.headSha === right.headSha &&
+    left.pr === right.pr &&
+    left.runId === right.runId &&
+    left.status === right.status &&
+    left.nextAction === right.nextAction &&
+    left.blockerCount === right.blockerCount &&
+    left.checksPath === right.checksPath &&
+    left.checksStatus === right.checksStatus &&
+    left.feedbackPath === right.feedbackPath &&
+    left.feedbackStatus === right.feedbackStatus &&
+    stableJson(left.blockers) === stableJson(right.blockers)
   );
 }
 
@@ -2543,6 +2816,55 @@ function parseGitHubPullRequestSelectorEffect(input: string) {
   });
 }
 
+function readOptionalGitHubPullRequestHeadSha(
+  pr: GitHubPullRequestSelector,
+  options: Readonly<{
+    rootDirectory: string;
+    runner: GitHubCommandRunner;
+  }>,
+): Effect.Effect<GitHubPrHeadSha | undefined, never> {
+  return Effect.gen(function* () {
+    const result = yield* runCommand(
+      options.runner,
+      options.rootDirectory,
+      "gh",
+      ["pr", "view", pr, "--json", "headRefOid"],
+    );
+
+    if (result.exitCode !== 0) {
+      return undefined;
+    }
+
+    const parsed = yield* Effect.try({
+      try: (): unknown => JSON.parse(result.stdout),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubPrHeadJsonInvalid",
+          message: "GitHub PR head output was not valid JSON.",
+          recoverable: true,
+        }),
+    });
+    const view = yield* Effect.try({
+      try: () => Schema.decodeUnknownSync(GitHubPrHeadView)(parsed),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubPrHeadInvalid",
+          message: "GitHub PR head output did not match Gaia's schema.",
+          recoverable: true,
+        }),
+    });
+
+    return view.headRefOid;
+  }).pipe(
+    Effect.matchEffect({
+      onFailure: () => Effect.succeed(undefined),
+      onSuccess: (headSha) => Effect.succeed(headSha),
+    }),
+  );
+}
+
 function parseGitHubCheckPollAttemptCountEffect(input: number) {
   return Effect.try({
     try: () => parseGitHubCheckPollAttemptCount(input),
@@ -2601,6 +2923,7 @@ function writeGitHubChecksSnapshot(
   paths: RunPaths,
   input: Readonly<{
     attempts: GitHubCheckPollAttemptCount;
+    headSha: GitHubPrHeadSha | undefined;
     runId: RunId;
     summary: GitHubChecksSummary;
   }>,
@@ -2618,6 +2941,7 @@ function writeGitHubChecksSnapshot(
     const snapshot = GitHubChecksSnapshot.make({
       attempts: input.attempts,
       checks: input.summary.checks,
+      ...(input.headSha === undefined ? {} : { headSha: input.headSha }),
       observedAt,
       pr: input.summary.pr,
       runId: input.runId,
@@ -2634,6 +2958,7 @@ function writeGitHubChecksSnapshot(
     return GitHubChecksRecord.make({
       attempts: snapshot.attempts,
       checks: snapshot.checks,
+      ...(snapshot.headSha === undefined ? {} : { headSha: snapshot.headSha }),
       observedAt: snapshot.observedAt,
       pr: snapshot.pr,
       runId: snapshot.runId,
@@ -2662,8 +2987,11 @@ function readGitHubChecksSnapshot(
 ): Effect.Effect<GitHubChecksSnapshot, GaiaRuntimeError, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const contents = yield* fs.readFileString(path.join(paths.root, snapshotPath));
+    const resolvedSnapshotPath = yield* resolveRunArtifactPath(
+      paths,
+      snapshotPath,
+    );
+    const contents = yield* fs.readFileString(resolvedSnapshotPath);
     const parsed = yield* Effect.try({
       try: (): unknown => JSON.parse(contents),
       catch: (cause) =>
@@ -2707,6 +3035,7 @@ function writeGitHubCiWatchState(
     const fs = yield* FileSystem.FileSystem;
     const state = GitHubCiWatchState.make({
       attempts: record.attempts,
+      ...(record.headSha === undefined ? {} : { headSha: record.headSha }),
       lastSnapshotPath: runRelative(paths, record.snapshotPath),
       lastStatus: record.status,
       nextAction: nextActionForGitHubChecksStatus(record.status),
@@ -2783,6 +3112,81 @@ function readOptionalGitHubCiWatchState(
   );
 }
 
+function findReusableGitHubChecksRecord(
+  paths: RunPaths,
+  input: Readonly<{
+    headSha: GitHubPrHeadSha | undefined;
+    summary: GitHubChecksSummary;
+  }>,
+) {
+  return Effect.gen(function* () {
+    if (input.headSha === undefined) {
+      return undefined;
+    }
+
+    const storedWatchState = yield* readOptionalGitHubCiWatchState(paths);
+
+    if (
+      storedWatchState === undefined ||
+      storedWatchState.headSha !== input.headSha ||
+      storedWatchState.pr !== input.summary.pr
+    ) {
+      return undefined;
+    }
+
+    const snapshot = yield* readGitHubChecksSnapshot(
+      paths,
+      storedWatchState.lastSnapshotPath,
+    );
+
+    if (!sameGitHubChecksSnapshot(snapshot, input.summary, input.headSha)) {
+      return undefined;
+    }
+
+    const snapshotPath = yield* resolveRunArtifactPath(
+      paths,
+      storedWatchState.lastSnapshotPath,
+    );
+
+    return GitHubChecksRecord.make({
+      attempts: snapshot.attempts,
+      checks: snapshot.checks,
+      ...(snapshot.headSha === undefined ? {} : { headSha: snapshot.headSha }),
+      observedAt: snapshot.observedAt,
+      pr: snapshot.pr,
+      runId: snapshot.runId,
+      snapshotPath,
+      status: snapshot.status,
+      terminal: snapshot.terminal,
+      watchStatePath: paths.ciWatchState,
+    });
+  });
+}
+
+function sameGitHubChecksSnapshot(
+  snapshot: GitHubChecksSnapshot,
+  summary: GitHubChecksSummary,
+  headSha: GitHubPrHeadSha,
+) {
+  return (
+    snapshot.headSha === headSha &&
+    snapshot.pr === summary.pr &&
+    snapshot.status === summary.status &&
+    stableJson(snapshot.checks) === stableJson(summary.checks)
+  );
+}
+
+function resolveRunArtifactPath(paths: RunPaths, artifactPath: string) {
+  return Effect.gen(function* () {
+    if (artifactPath.startsWith(`${paths.root}/`)) {
+      return artifactPath;
+    }
+
+    const path = yield* Path.Path;
+    return path.join(paths.root, artifactPath);
+  });
+}
+
 function ciWatchSummaryFromRecord(
   record: GitHubChecksRecord,
   source: GitHubCiWatchResultSource,
@@ -2791,6 +3195,7 @@ function ciWatchSummaryFromRecord(
     attempts: record.attempts,
     checks: record.checks,
     failedChecks: failedChecks(record.checks),
+    ...(record.headSha === undefined ? {} : { headSha: record.headSha }),
     nextAction: nextActionForGitHubChecksStatus(record.status),
     pendingChecks: pendingChecks(record.checks),
     pr: record.pr,
@@ -2813,6 +3218,9 @@ function ciWatchSummaryFromSnapshot(input: Readonly<{
     attempts: input.snapshot.attempts,
     checks: input.snapshot.checks,
     failedChecks: failedChecks(input.snapshot.checks),
+    ...(input.snapshot.headSha === undefined
+      ? {}
+      : { headSha: input.snapshot.headSha }),
     nextAction: input.state.nextAction,
     pendingChecks: pendingChecks(input.snapshot.checks),
     pr: input.snapshot.pr,
@@ -2903,6 +3311,10 @@ function failedChecks(checks: ReadonlyArray<GitHubCheckRun>) {
 
 function pendingChecks(checks: ReadonlyArray<GitHubCheckRun>) {
   return checks.filter((check) => isPendingCheckState(check.state));
+}
+
+function stableJson(input: unknown) {
+  return JSON.stringify(input);
 }
 
 function isPendingCheckState(state: string) {
