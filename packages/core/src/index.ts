@@ -48,6 +48,7 @@ export {
   LocalRunStreamErrorResponse,
   LocalRunArtifactContentTypeSchema,
   LocalRunArtifactDto,
+  LocalRunArtifactIdSchema,
   LocalRunArtifactSuccessEnvelope,
   LocalRunDetailSuccessEnvelope,
   LocalRunEventsDto,

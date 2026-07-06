@@ -74,13 +74,13 @@ describe("gaia CLI local server read parity", () => {
             const directArtifact = yield* runGaiaJson(cwd, [
               "artifact",
               runId,
-              "report.json",
+              "report-json",
               "--json",
             ]);
             const serverArtifact = yield* runGaiaJson(cwd, [
               "artifact",
               runId,
-              "report.json",
+              "report-json",
               "--json",
               "--server-url",
               server.url,

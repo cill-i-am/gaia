@@ -77,7 +77,7 @@ describe("LocalGaiaServerApi contract", () => {
     );
   });
 
-  it("models path params and future SSE metadata", () => {
+  it("models logical artifact path params and SSE metadata", () => {
     const artifactParameters =
       LocalGaiaServerOpenApi.paths["/runs/{runId}/artifacts/{artifactId}"]?.get
         ?.parameters;
@@ -109,6 +109,25 @@ describe("LocalGaiaServerApi contract", () => {
     });
     assert.isObject(stream);
     assert.strictEqual(stream?.encoding, "sse");
+    assert.deepEqual(
+      LocalGaiaServerOpenApi.components?.schemas?.LocalRunArtifactId,
+      {
+        enum: [
+          "input",
+          "worker-plan",
+          "plan-review",
+          "worker-log",
+          "worker-result",
+          "verification-result",
+          "evidence-review",
+          "report",
+          "report-json",
+          "events",
+          "snapshots",
+        ],
+        type: "string",
+      },
+    );
   });
 
   it("rejects path-bearing and unknown create request fields at decode", () => {

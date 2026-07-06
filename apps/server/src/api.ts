@@ -5,6 +5,7 @@ import {
   LocalRunApiBadRequest,
   LocalRunApiConflict,
   LocalRunApiInternalServerError,
+  LocalRunApiErrorEnvelope,
   LocalRunApiMethodNotAllowed,
   LocalRunApiNotFound,
   LocalRunApiUnprocessable,
@@ -15,6 +16,7 @@ import {
   LocalRunListSuccessEnvelope,
   type LocalRunApiError,
   LocalRunReadDiagnosticDto,
+  type RunEvent,
 } from "@gaia/core";
 import type { LocalRunReadDiagnostic } from "@gaia/runtime/run-read-api";
 import {
@@ -23,7 +25,7 @@ import {
   readLocalRunArtifact,
   readLocalRunEvents,
 } from "@gaia/runtime/run-read-api";
-import { Cause, Context, Effect, FileSystem, Layer, Path } from "effect";
+import { Cause, Context, Effect, FileSystem, Layer, Path, Stream } from "effect";
 import type { Generator } from "effect/unstable/http/Etag";
 import type { HttpPlatform } from "effect/unstable/http/HttpPlatform";
 import {
@@ -191,14 +193,24 @@ export const RunsLive = HttpApiBuilder.group(
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
         }),
       )
-      .handle("streamRunEvents", () =>
-        Effect.fail(
-          methodNotAllowedApiError({
-            code: "MethodNotAllowed",
-            message: "Event streaming is a contract placeholder for a later Gaia slice.",
-            recoverable: false,
-          }),
-        ),
+      .handle("streamRunEvents", ({ params }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const initialRead = yield* Effect.exit(
+            readLocalRunEvents(params.runId, {
+              rootDirectory: identity.rootDirectory,
+            }),
+          );
+          if (initialRead._tag === "Failure") {
+            return yield* Effect.fail(readApiErrorFromCause(initialRead.cause));
+          }
+
+          const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
+          return streamRunEvents({
+            rootDirectory: identity.rootDirectory,
+            runId: params.runId,
+          }).pipe(Stream.provideContext(context));
+        }),
       )
       .handle("getRunArtifact", ({ params }) =>
         Effect.gen(function* () {
@@ -662,6 +674,86 @@ function forkServerContinuation(input: {
     Effect.forkDetach,
     Effect.asVoid,
   );
+}
+
+type EventStreamState = {
+  readonly done: boolean;
+  readonly nextSequence: number;
+  readonly rootDirectory: string;
+  readonly runId: string;
+};
+
+function streamRunEvents(input: {
+  readonly rootDirectory: string;
+  readonly runId: string;
+}) {
+  return Stream.unfold(
+    {
+      done: false,
+      nextSequence: 1,
+      rootDirectory: input.rootDirectory,
+      runId: input.runId,
+    } satisfies EventStreamState,
+    readNextStreamEvent,
+  );
+}
+
+function readNextStreamEvent(
+  state: EventStreamState,
+): Effect.Effect<
+  readonly [RunEvent, EventStreamState] | undefined,
+  typeof LocalRunApiErrorEnvelope.Type,
+  FileSystem.FileSystem | Path.Path
+> {
+  if (state.done) {
+    return Effect.succeed(undefined);
+  }
+
+  return Effect.gen(function* () {
+    const events = yield* readLocalRunEvents(state.runId, {
+      rootDirectory: state.rootDirectory,
+    }).pipe(
+      Effect.mapError((error: unknown) => streamApiError(error)),
+    );
+    const event = events.events.find(
+      (candidate) => candidate.sequence === state.nextSequence,
+    );
+
+    if (event === undefined) {
+      yield* Effect.sleep("50 millis");
+      return yield* readNextStreamEvent(state);
+    }
+
+    const next: readonly [RunEvent, EventStreamState] = [
+      event,
+      {
+        ...state,
+        done: isTerminalRunEvent(event),
+        nextSequence: event.sequence + 1,
+      },
+    ];
+
+    return next;
+  });
+}
+
+function streamApiError(error: unknown): typeof LocalRunApiErrorEnvelope.Type {
+  const diagnostic = isRuntimeDiagnostic(error)
+    ? LocalRunReadDiagnosticDto.make(error)
+    : LocalRunReadDiagnosticDto.make({
+        code: "InternalServerError",
+        message: "Local Gaia event stream failed.",
+        recoverable: false,
+      });
+
+  return LocalRunApiErrorEnvelope.make({
+    error: diagnostic,
+    status: "error",
+  });
+}
+
+function isTerminalRunEvent(event: RunEvent) {
+  return event.type === "REPORT_COMPLETED" || event.type === "RUN_FAILED";
 }
 
 function isRuntimeDiagnostic(input: unknown): input is LocalRunReadDiagnostic {

@@ -73,6 +73,20 @@ export const LocalRunArtifactContentTypeSchema = Schema.Literals([
   "text/plain",
 ] as const);
 
+export const LocalRunArtifactIdSchema = Schema.Literals([
+  "input",
+  "worker-plan",
+  "plan-review",
+  "worker-log",
+  "worker-result",
+  "verification-result",
+  "evidence-review",
+  "report",
+  "report-json",
+  "events",
+  "snapshots",
+] as const).annotate({ identifier: "LocalRunArtifactId" });
+
 export const ServerHostSchema = Schema.Literal("127.0.0.1");
 
 export class LocalRunReadDiagnosticDto extends Schema.Class<LocalRunReadDiagnosticDto>(
@@ -131,7 +145,7 @@ class InternalServerDiagnosticDto extends Schema.Class<InternalServerDiagnosticD
 export class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
   "LocalRunSummaryDto",
 )({
-  artifacts: Schema.Array(Schema.String),
+  artifacts: Schema.Array(LocalRunArtifactIdSchema),
   createdAt: Schema.NonEmptyString,
   eventCount: Schema.Number.pipe(
     Schema.check(Schema.isInt({ identifier: "EventCount" })),
@@ -160,7 +174,7 @@ export class LocalRunEventsDto extends Schema.Class<LocalRunEventsDto>(
 export class LocalRunArtifactDto extends Schema.Class<LocalRunArtifactDto>(
   "LocalRunArtifactDto",
 )({
-  artifactName: Schema.String,
+  artifactName: LocalRunArtifactIdSchema,
   body: Schema.String,
   contentType: LocalRunArtifactContentTypeSchema,
   runId: RunIdSchema,

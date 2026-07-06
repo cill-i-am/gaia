@@ -1,5 +1,6 @@
 import {
   EventTypeSchema,
+  LocalRunArtifactIdSchema,
   RunEvent,
   RunIdSchema,
   RunStateSchema,
@@ -49,7 +50,7 @@ class LocalRunReadDiagnosticDto extends Schema.Class<LocalRunReadDiagnosticDto>(
 class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
   "LocalRunSummaryDto",
 )({
-  artifacts: Schema.Array(Schema.String),
+  artifacts: Schema.Array(LocalRunArtifactIdSchema),
   createdAt: Schema.String,
   eventCount: Schema.Number,
   latestEventType: EventTypeSchema,
@@ -74,7 +75,7 @@ class LocalRunEventsDto extends Schema.Class<LocalRunEventsDto>(
 class LocalRunArtifactDto extends Schema.Class<LocalRunArtifactDto>(
   "LocalRunArtifactDto",
 )({
-  artifactName: Schema.String,
+  artifactName: LocalRunArtifactIdSchema,
   body: Schema.String,
   contentType: LocalRunArtifactContentTypeSchema,
   runId: RunIdSchema,
@@ -279,9 +280,6 @@ function commandSummaryFromLocalRun(
     const summary = toLocalRunSummary(run);
     const paths = yield* makeRunPaths(summary.runId, { rootDirectory });
     return {
-      ...(summary.artifacts.includes("codex-harness-progress.json")
-        ? { harnessProgressPath: paths.codexHarnessProgress }
-        : {}),
       reportPath:
         summary.status === "completed" ? paths.reportMarkdown : undefined,
       runDirectory: paths.root,

@@ -7,6 +7,10 @@ import {
   runSpecFile,
 } from "@gaia/runtime";
 import type { ServerWorkflowOptions } from "@gaia/runtime/server-workflows";
+import {
+  acceptServerRun,
+  continueServerRun,
+} from "@gaia/runtime/server-workflows";
 import { Deferred, Effect, FileSystem, Layer, Schema } from "effect";
 import {
   HttpClient,
@@ -91,7 +95,7 @@ describe("local run api http boundary", () => {
       }),
     );
 
-    it.effect("serves allowlisted artifacts through JSON envelopes only", () =>
+    it.effect("serves logical artifacts through JSON envelopes only", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
@@ -100,16 +104,58 @@ describe("local run api http boundary", () => {
         const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
 
         const response = yield* HttpClient.get(
-          `/runs/${summary.runId}/artifacts/report.json`,
+          `/runs/${summary.runId}/artifacts/report-json`,
+        ).pipe(Effect.provide(testServerLayer(cwd)));
+        const inputResponse = yield* HttpClient.get(
+          `/runs/${summary.runId}/artifacts/input`,
         ).pipe(Effect.provide(testServerLayer(cwd)));
         const body = yield* responseJsonObject(response);
+        const inputBody = yield* responseJsonObject(inputResponse);
         const data = getObject(body, "data");
+        const inputData = getObject(inputBody, "data");
 
         assert.strictEqual(response.status, 200);
-        assert.strictEqual(getString(data, "artifactName"), "report.json");
+        assert.strictEqual(inputResponse.status, 200);
+        assert.strictEqual(getString(data, "artifactName"), "report-json");
         assert.strictEqual(getString(data, "contentType"), "application/json");
         assert.include(getString(data, "body"), summary.runId);
+        assert.strictEqual(getString(inputData, "artifactName"), "input");
+        assert.strictEqual(getString(inputData, "contentType"), "text/markdown");
       }),
+    );
+
+    it.effect("streams a server-created run from replayed events to terminal close", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const accepted = yield* acceptServerRun({
+          specMarkdown: "Stream this server run to completion.\n",
+        }, {
+          rootDirectory: cwd,
+        });
+
+        yield* continueServerRun(accepted.runId, { rootDirectory: cwd });
+        const response = yield* HttpClient.get(
+          `/runs/${accepted.runId}/events/stream`,
+        ).pipe(Effect.provide(testServerLayer(cwd)));
+        const text = yield* response.text;
+        const events = parseSseDataEvents(text);
+        const firstEvent = events[0];
+        const lastEvent = events.at(-1);
+
+        assert.strictEqual(response.status, 200);
+        if (firstEvent === undefined || lastEvent === undefined) {
+          assert.fail("Expected stream to emit run events.");
+        }
+
+        assert.strictEqual(getString(firstEvent, "type"), "RUN_CREATED");
+        assert.strictEqual(getString(lastEvent, "type"), "REPORT_COMPLETED");
+        assert.deepEqual(
+          events.map((event) => getNumber(event, "sequence")),
+          Array.from({ length: events.length }, (_, index) => index + 1),
+        );
+      }),
+      20_000,
     );
 
     it.effect("accepts Markdown content durably before returning", () =>
@@ -221,6 +267,9 @@ describe("local run api http boundary", () => {
         const badArtifact = yield* HttpClient.get(
           "/runs/run-V7kP9sQ2xY/artifacts/..%2Fevents.jsonl",
         ).pipe(Effect.provide(layer));
+        const unknownArtifact = yield* HttpClient.get(
+          "/runs/run-V7kP9sQ2xY/artifacts/report.json",
+        ).pipe(Effect.provide(layer));
         const post = yield* HttpClientRequest.post("/runs").pipe(
           HttpClient.execute,
           Effect.provide(layer),
@@ -241,6 +290,10 @@ describe("local run api http boundary", () => {
           badArtifact,
           "bad artifact",
         );
+        const unknownArtifactBody = yield* responseJsonObject(
+          unknownArtifact,
+          "unknown artifact",
+        );
         const postBody = yield* responseJsonObject(post, "post runs");
         const putBody = yield* responseJsonObject(put, "put run");
         const malformedPathBody = yield* responseJsonObject(
@@ -249,6 +302,7 @@ describe("local run api http boundary", () => {
         );
         const badRunError = getObject(badRunBody, "error");
         const badArtifactError = getObject(badArtifactBody, "error");
+        const unknownArtifactError = getObject(unknownArtifactBody, "error");
         const postError = getObject(postBody, "error");
         const putError = getObject(putBody, "error");
         const malformedPathError = getObject(malformedPathBody, "error");
@@ -257,6 +311,11 @@ describe("local run api http boundary", () => {
         assert.strictEqual(getString(badRunError, "code"), "InvalidRunId");
         assert.strictEqual(badArtifact.status, 404);
         assert.strictEqual(getString(badArtifactError, "code"), "ArtifactNotAllowed");
+        assert.strictEqual(unknownArtifact.status, 404);
+        assert.strictEqual(
+          getString(unknownArtifactError, "code"),
+          "ArtifactNotAllowed",
+        );
         assert.strictEqual(post.status, 400);
         assert.strictEqual(getString(postError, "code"), "InvalidRequest");
         assert.strictEqual(put.status, 405);
@@ -305,6 +364,33 @@ function responseJsonObject(
       );
     }),
   );
+}
+
+function parseSseDataEvents(
+  text: string,
+): ReadonlyArray<Readonly<Record<string, unknown>>> {
+  return text
+    .trim()
+    .split(/\r?\n\r?\n/u)
+    .flatMap((block) => {
+      const dataLines = block
+        .split(/\r?\n/u)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).trimStart());
+
+      if (dataLines.length === 0) {
+        return [];
+      }
+
+      const parsed: unknown = JSON.parse(dataLines.join("\n"));
+      if (!isJsonObject(parsed)) {
+        throw new Error(
+          `Expected SSE data event to be an object: ${dataLines.join("\n")}.`,
+        );
+      }
+
+      return [parsed];
+    });
 }
 
 function postCreateRun(
