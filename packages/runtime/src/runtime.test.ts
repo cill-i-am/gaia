@@ -1607,6 +1607,51 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("owns rejected Codex progress recorder promises until process exit", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const config = makeCodexHarnessConfig({
+          command: execPath,
+          timeoutMs: 1_000,
+        });
+        let observations = 0;
+
+        const error = yield* Effect.flip(
+          nodeCodexCommandRunner({
+            args: [
+              "-e",
+              "process.stdout.write('hello'); setTimeout(() => process.stdout.write('done'), 150);",
+            ],
+            command: config.command,
+            cwd,
+            progressPath: `${cwd}/codex-harness-progress.json`,
+            recordProgress: () => {
+              observations += 1;
+              return observations === 1
+                ? Promise.reject(
+                    makeRuntimeError({
+                      code: "TestCodexProgressWriteFailed",
+                      message: "Test progress recorder failed.",
+                      recoverable: true,
+                    }),
+                  )
+                : Promise.resolve();
+            },
+            stdin: "",
+            timeoutMs: config.timeoutMs,
+          }),
+        );
+
+        assert.isAtLeast(observations, 1);
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "TestCodexProgressWriteFailed");
+          assert.isTrue(error.recoverable);
+        }
+      }),
+    );
+
     it.effect("runs the Codex harness through the workflow seam", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

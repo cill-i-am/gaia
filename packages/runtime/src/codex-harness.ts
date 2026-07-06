@@ -195,6 +195,14 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
     try: () =>
       new Promise<CodexCommandResult>((resolve, reject) => {
         const pendingProgressWrites = new Set<Promise<void>>();
+        let progressWriteFailed = false;
+        let progressWriteFailure: unknown;
+        const recordProgressWriteFailure = (cause: unknown) => {
+          if (!progressWriteFailed) {
+            progressWriteFailed = true;
+            progressWriteFailure = cause;
+          }
+        };
         const observeOutput = (
           stream: CodexCommandOutputStream,
           chunk: Buffer | string,
@@ -207,6 +215,7 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
           const recordProgress = input.recordProgress;
           const pending = Promise.resolve()
             .then(() => recordProgress({ bytes, stream }))
+            .catch(recordProgressWriteFailure)
             .finally(() => pendingProgressWrites.delete(pending));
           pendingProgressWrites.add(pending);
         };
@@ -220,6 +229,11 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
             );
             if (rejected?.status === "rejected") {
               fail(rejected.reason);
+              return;
+            }
+
+            if (progressWriteFailed) {
+              fail(progressWriteFailure);
               return;
             }
 
