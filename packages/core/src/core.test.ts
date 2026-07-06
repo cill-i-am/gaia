@@ -1,6 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  EvidencePromotion,
+  EvidencePromotionDogfoodSummary,
+  EvidencePromotionPullRequestSummary,
+  EvidencePromotionReportPaths,
+  EvidencePromotionVerificationSummary,
+  PromotedEvidenceItem,
   makeRunEvent,
+  parseEvidencePromotion,
   parseMarkdownSpec,
   parseRunId,
   replayRunEvents,
@@ -21,6 +28,56 @@ describe("core contracts", () => {
 
     assert.strictEqual(spec.title, "Smoke test");
     assert.strictEqual(spec.body, "Do the smallest thing.");
+  });
+
+  it("parses JSON-safe evidence promotion summaries", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const promotion = EvidencePromotion.make({
+      artifactPath: ".gaia/promoted/run-V7kP9sQ2xY/evidence-promotion.json",
+      cleanupStatus: "not-completed",
+      dogfood: EvidencePromotionDogfoodSummary.make({
+        artifactPath: "dogfood-retrospective.json",
+        findingCount: 0,
+        status: "clean",
+        summary: "No findings.",
+      }),
+      generatedAt: "2026-07-06T12:00:00.000Z",
+      markdown: "# Evidence Promotion run-V7kP9sQ2xY\n",
+      markdownPath: ".gaia/promoted/run-V7kP9sQ2xY/evidence-promotion.md",
+      promotionStatus: "pending-promotion",
+      pullRequest: EvidencePromotionPullRequestSummary.make({
+        artifactPaths: [],
+        status: "skipped",
+        summary: "No PR evidence.",
+      }),
+      reportPaths: EvidencePromotionReportPaths.make({
+        dogfoodRetrospectivePath: "dogfood-retrospective.json",
+        reportJsonPath: "report.json",
+        reportMarkdownPath: "report.md",
+        workerPlanPath: "worker-plan.md",
+      }),
+      runId,
+      selectedEvidence: [
+        PromotedEvidenceItem.make({
+          label: "Run report",
+          path: "report.md",
+          status: "pending-promotion",
+          summary: "Report selected before cleanup.",
+        }),
+      ],
+      verification: EvidencePromotionVerificationSummary.make({
+        checkedArtifacts: ["workspace/output.txt"],
+        path: "verification-result.json",
+        status: "passed",
+      }),
+      version: 1,
+    });
+
+    const serialized: unknown = JSON.parse(JSON.stringify(promotion));
+
+    assert.strictEqual(parseEvidencePromotion(serialized).runId, runId);
+    assert.strictEqual(promotion.cleanupStatus, "not-completed");
+    assert.strictEqual(promotion.promotionStatus, "pending-promotion");
   });
 
   it("replays the durable event log to the current state", () => {

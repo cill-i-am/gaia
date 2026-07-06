@@ -2125,6 +2125,16 @@ function gitHubPrCommentArtifacts(paths: RunPaths, runId: RunId) {
         path: `${evidenceRoot}/dogfood-retrospective.json`,
       },
       {
+        exists: yield* fs.exists(paths.evidencePromotionJson),
+        label: "Evidence promotion",
+        path: `${evidenceRoot}/evidence-promotion.json`,
+      },
+      {
+        exists: yield* fs.exists(paths.evidencePromotionMarkdown),
+        label: "Evidence promotion Markdown",
+        path: `${evidenceRoot}/evidence-promotion.md`,
+      },
+      {
         exists: yield* fs.exists(paths.githubRemediationSpec),
         label: "Remediation spec",
         path: `${evidenceRoot}/remediation-spec.md`,
@@ -2781,6 +2791,24 @@ function copyRunArtifacts(
       yield* fs.copyFile(
         paths.workspacePrGate,
         path.join(evidencePath, "workspace-pr-gate.json"),
+      );
+    }
+
+    const hasEvidencePromotion = yield* fs.exists(paths.evidencePromotionJson);
+    if (hasEvidencePromotion) {
+      yield* fs.copyFile(
+        paths.evidencePromotionJson,
+        path.join(evidencePath, "evidence-promotion.json"),
+      );
+    }
+
+    const hasEvidencePromotionMarkdown = yield* fs.exists(
+      paths.evidencePromotionMarkdown,
+    );
+    if (hasEvidencePromotionMarkdown) {
+      yield* fs.copyFile(
+        paths.evidencePromotionMarkdown,
+        path.join(evidencePath, "evidence-promotion.md"),
       );
     }
   }).pipe(

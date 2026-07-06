@@ -64,6 +64,8 @@ describe("local run read api", () => {
         assert.strictEqual(run.status, "completed");
         assert.isAbove(run.eventCount, 0);
         assert.include(run.artifacts, "report.json");
+        assert.include(run.artifacts, "evidence-promotion.json");
+        assert.include(run.artifacts, "evidence-promotion.md");
         assert.strictEqual(events.runId, summary.runId);
         assert.strictEqual(events.events.length, run.eventCount);
         assert.strictEqual(events.events[0]?.type, "RUN_CREATED");
@@ -98,6 +100,11 @@ describe("local run read api", () => {
           "report.json",
           { rootDirectory: cwd },
         );
+        const promotion = yield* readLocalRunArtifact(
+          summary.runId,
+          "evidence-promotion.md",
+          { rootDirectory: cwd },
+        );
         const rejected = yield* Effect.flip(
           readLocalRunArtifact(summary.runId, "../events.jsonl", {
             rootDirectory: cwd,
@@ -107,6 +114,8 @@ describe("local run read api", () => {
         assert.strictEqual(report.artifactName, "report.json");
         assert.strictEqual(report.contentType, "application/json");
         assert.include(report.body, summary.runId);
+        assert.strictEqual(promotion.contentType, "text/markdown");
+        assert.include(promotion.body, `# Evidence Promotion ${summary.runId}`);
         assert.deepEqual(rejected, {
           artifactName: "../events.jsonl",
           code: "ArtifactNotAllowed",

@@ -1,6 +1,7 @@
 import {
   RunReport,
   type DogfoodRetrospective,
+  type EvidencePromotion,
   type RunId,
   type RunSpec,
 } from "@gaia/core";
@@ -16,6 +17,7 @@ const encodeRunReport = Schema.encodeSync(RunReportJson);
 
 export function writeReport(input: {
   readonly paths: RunPaths;
+  readonly evidencePromotion?: EvidencePromotion | undefined;
   readonly runId: RunId;
   readonly skillManifest: SkillManifest;
   readonly spec: RunSpec;
@@ -43,6 +45,8 @@ export function writeReport(input: {
           ? ["codex-harness-progress.json"]
           : []),
         "dogfood-retrospective.json",
+        "evidence-promotion.json",
+        "evidence-promotion.md",
         "worker.log",
         "verification.log",
         "workspace/output.txt",
@@ -61,7 +65,7 @@ export function writeReport(input: {
 
     yield* fs.writeFileString(
       input.paths.reportMarkdown,
-      markdownReport(report, input.retrospective),
+      markdownReport(report, input.retrospective, input.evidencePromotion),
     );
     yield* fs.writeFileString(
       input.paths.reportJson,
@@ -75,6 +79,7 @@ export function writeReport(input: {
 function markdownReport(
   report: RunReport,
   retrospective: DogfoodRetrospective | undefined,
+  evidencePromotion: EvidencePromotion | undefined,
 ): string {
   const artifacts = report.artifacts
     .map((artifact) => `- ${artifact}`)
@@ -99,6 +104,24 @@ function markdownReport(
                 (finding) => `- ${finding.category}: ${finding.summary}`,
               )),
         ].join("\n");
+  const promotionSection =
+    evidencePromotion === undefined
+      ? "Promotion artifact: evidence-promotion.json"
+      : [
+          "Promotion artifact: evidence-promotion.json",
+          "Promotion Markdown: evidence-promotion.md",
+          "",
+          `Promotion status: ${evidencePromotion.promotionStatus}`,
+          `Cleanup status: ${evidencePromotion.cleanupStatus}`,
+          "",
+          "Selected evidence:",
+          ...evidencePromotion.selectedEvidence.map(
+            (evidence) => `- ${evidence.status}: ${evidence.label}`,
+          ),
+          "",
+          "Cleanup guidance:",
+          "Raw run state is disposable only after the promoted Markdown has been copied into Linear/PR evidence or the promotion status is otherwise marked complete.",
+        ].join("\n");
 
   return `# Gaia Run ${report.runId}
 
@@ -115,6 +138,10 @@ ${selectedSkills}
 ## Dogfood Retrospective
 
 ${retrospectiveSection}
+
+## Evidence Promotion
+
+${promotionSection}
 
 ## Evidence
 

@@ -103,6 +103,14 @@ const artifactDefinitions: Readonly<Record<string, ArtifactDefinition>> = {
     contentType: "application/json",
     path: (paths) => paths.evidenceReviewerSession,
   },
+  "evidence-promotion.json": {
+    contentType: "application/json",
+    path: (paths) => paths.evidencePromotionJson,
+  },
+  "evidence-promotion.md": {
+    contentType: "text/markdown",
+    path: (paths) => paths.evidencePromotionMarkdown,
+  },
   "github-feedback.json": {
     contentType: "application/json",
     path: (paths) => paths.githubFeedback,

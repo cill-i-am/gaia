@@ -1,4 +1,17 @@
 export {
+  EvidencePromotion,
+  EvidencePromotionCleanupStatusSchema,
+  EvidencePromotionDogfoodSummary,
+  EvidencePromotionPullRequestSummary,
+  EvidencePromotionReportPaths,
+  EvidencePromotionStatusSchema,
+  EvidencePromotionVerificationSummary,
+  PromotedEvidenceItem,
+  parseEvidencePromotion,
+  type EvidencePromotionCleanupStatus,
+  type EvidencePromotionStatus,
+} from "./evidence-promotion.js";
+export {
   EventTypeSchema,
   FailureStageSchema,
   GaiaFailure,
