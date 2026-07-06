@@ -901,6 +901,10 @@ function renderFailure(failure: FailureOutput) {
 }
 
 function renderSummary(summary: CommandSummary) {
+  const harnessProgressLine =
+    summary.harnessProgressPath === undefined
+      ? undefined
+      : `harness progress: ${summary.harnessProgressPath}`;
   const reportLine =
     summary.reportPath === undefined ? undefined : `report: ${summary.reportPath}`;
   const lines = [
@@ -909,7 +913,9 @@ function renderSummary(summary: CommandSummary) {
     `run: ${summary.runDirectory}`,
   ];
 
-  return reportLine === undefined ? lines.join("\n") : [...lines, reportLine].join("\n");
+  return [...lines, harnessProgressLine, reportLine]
+    .filter((line): line is string => line !== undefined)
+    .join("\n");
 }
 
 function renderRunList(summaries: ReadonlyArray<CommandSummary>) {

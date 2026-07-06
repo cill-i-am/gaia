@@ -279,6 +279,9 @@ function commandSummaryFromLocalRun(
     const summary = toLocalRunSummary(run);
     const paths = yield* makeRunPaths(summary.runId, { rootDirectory });
     return {
+      ...(summary.artifacts.includes("codex-harness-progress.json")
+        ? { harnessProgressPath: paths.codexHarnessProgress }
+        : {}),
       reportPath:
         summary.status === "completed" ? paths.reportMarkdown : undefined,
       runDirectory: paths.root,

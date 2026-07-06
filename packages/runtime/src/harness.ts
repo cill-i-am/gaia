@@ -7,8 +7,12 @@ import {
   makeCodexCommandArgs,
   makeCodexHarnessPrompt,
   nodeCodexCommandRunner,
+  CodexHarnessProgress,
+  encodeCodexHarnessProgress,
   type CodexCommandResult,
+  type CodexHarnessProgressStatus,
   type CodexHarnessOptions,
+  type CodexCommandOutputObservation,
 } from "./codex-harness.js";
 import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
@@ -60,6 +64,7 @@ export function makeProcessHarnessConfig(
 export class HarnessRunRequest extends Schema.Class<HarnessRunRequest>(
   "HarnessRunRequest",
 )({
+  codexHarnessProgressPath: Schema.NonEmptyString,
   harnessName: HarnessNameSchema,
   runId: RunIdSchema,
   resolvedSkillPaths: Schema.Array(Schema.NonEmptyString),
@@ -249,12 +254,83 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
           path.dirname(request.workerResultPath),
           "codex-last-message.md",
         );
+        const startedAt = new Date().toISOString();
+        let progress = CodexHarnessProgress.make({
+          command: options.config.command,
+          cwd: request.workspacePath,
+          lastMessagePath: path.basename(lastMessagePath),
+          observedOutputBytes: 0,
+          progressPath: path.basename(request.codexHarnessProgressPath),
+          runId: request.runId,
+          startedAt,
+          status: "running",
+          terminal: false,
+          timeoutMs: options.config.timeoutMs,
+          updatedAt: startedAt,
+          version: 1,
+        });
+        const writeProgress = (nextProgress: CodexHarnessProgress) =>
+          fs.writeFileString(
+            request.codexHarnessProgressPath,
+            `${JSON.stringify(encodeCodexHarnessProgress(nextProgress), null, 2)}\n`,
+          );
+        const recordOutputProgress = (
+          observation: CodexCommandOutputObservation,
+        ) => {
+          const observedAt = new Date().toISOString();
+          progress = CodexHarnessProgress.make({
+            command: progress.command,
+            cwd: progress.cwd,
+            lastMessagePath: progress.lastMessagePath,
+            lastObservedOutputAt: observedAt,
+            lastObservedOutputStream: observation.stream,
+            observedOutputBytes:
+              progress.observedOutputBytes + observation.bytes,
+            progressPath: progress.progressPath,
+            runId: progress.runId,
+            startedAt: progress.startedAt,
+            status: "running",
+            terminal: false,
+            timeoutMs: progress.timeoutMs,
+            updatedAt: observedAt,
+            version: progress.version,
+          });
+
+          return Effect.runPromise(writeProgress(progress));
+        };
+        const recordTerminalProgress = (
+          status: Exclude<CodexHarnessProgressStatus, "running">,
+        ) =>
+          Effect.gen(function* () {
+            const updatedAt = new Date().toISOString();
+            progress = CodexHarnessProgress.make({
+              command: progress.command,
+              cwd: progress.cwd,
+              lastMessagePath: progress.lastMessagePath,
+              ...codexObservedOutput(progress),
+              observedOutputBytes: progress.observedOutputBytes,
+              progressPath: progress.progressPath,
+              runId: progress.runId,
+              stallClassification:
+                progress.lastObservedOutputAt === undefined
+                  ? "no-progress"
+                  : "progress-observed",
+              startedAt: progress.startedAt,
+              status,
+              terminal: true,
+              timeoutMs: progress.timeoutMs,
+              updatedAt,
+              version: progress.version,
+            });
+            yield* writeProgress(progress);
+          });
 
         yield* fs.writeFileString(
           request.workerLogPath,
           `Codex harness started: ${options.config.command}\n`,
           { flag: "a" },
         );
+        yield* writeProgress(progress);
 
         const beforeWorkspace = yield* snapshotWorkspace(request.workspacePath);
         const execution = yield* runner({
@@ -265,6 +341,8 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
           }),
           command: options.config.command,
           cwd: request.workspacePath,
+          progressPath: request.codexHarnessProgressPath,
+          recordProgress: recordOutputProgress,
           stdin: makeCodexHarnessPrompt({
             resolvedSkillPaths: request.resolvedSkillPaths,
             runId: request.runId,
@@ -275,7 +353,13 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
             workspacePath: request.workspacePath,
           }),
           timeoutMs: options.config.timeoutMs,
-        });
+        }).pipe(
+          Effect.catchTag("GaiaRuntimeError", (error) =>
+            recordTerminalProgress(
+              codexProgressStatusFromError(error),
+            ).pipe(Effect.flatMap(() => Effect.fail(error))),
+          ),
+        );
         yield* fs.writeFileString(
           request.workerLogPath,
           formatCodexOutput(execution),
@@ -283,6 +367,7 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
         );
 
         if (execution.exitCode !== 0) {
+          yield* recordTerminalProgress("command-failed");
           return yield* Effect.fail(
             makeRuntimeError({
               code: "CodexCommandFailed",
@@ -294,6 +379,7 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
 
         const lastMessageExists = yield* fs.exists(lastMessagePath);
         if (!lastMessageExists) {
+          yield* recordTerminalProgress("last-message-missing");
           return yield* Effect.fail(
             makeRuntimeError({
               code: "CodexLastMessageMissing",
@@ -323,6 +409,7 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
 
         yield* requireDeclaredOutputArtifacts(request, result);
         yield* writeHarnessRunResult(request, result);
+        yield* recordTerminalProgress("completed");
         yield* fs.writeFileString(
           request.workerLogPath,
           "Codex harness completed.\n",
@@ -342,6 +429,34 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
           ),
         ),
       ),
+  };
+}
+
+function codexProgressStatusFromError(
+  error: GaiaRuntimeError,
+): Exclude<CodexHarnessProgressStatus, "running"> {
+  if (error.code === "CodexCommandTimedOut") {
+    return "timed-out";
+  }
+
+  if (error.code === "CodexLastMessageMissing") {
+    return "last-message-missing";
+  }
+
+  return "command-failed";
+}
+
+function codexObservedOutput(progress: CodexHarnessProgress) {
+  if (
+    progress.lastObservedOutputAt === undefined ||
+    progress.lastObservedOutputStream === undefined
+  ) {
+    return {};
+  }
+
+  return {
+    lastObservedOutputAt: progress.lastObservedOutputAt,
+    lastObservedOutputStream: progress.lastObservedOutputStream,
   };
 }
 
