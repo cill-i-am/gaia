@@ -149,6 +149,34 @@ describe("local run api http boundary", () => {
       }),
     );
 
+    it.effect("rejects path-bearing and unknown create request shapes", () =>
+      Effect.gen(function* () {
+        const layer = testServerLayer(".");
+        const pathBearing = yield* createRunRequestFromPayload({
+          browserEvidenceTargetUrl: "http://127.0.0.1:3000",
+          codexHarness: { command: "codex" },
+          processHarness: { command: "node", args: ["harness.mjs"] },
+          profile: "dogfood",
+          skillManifestSource: "skills.json",
+          specMarkdown: "Only Markdown content is accepted here.\n",
+          workspaceSource: ".",
+        }).pipe(Effect.provide(layer));
+        const unknownOptions = yield* createRunRequestFromPayload({
+          options: { workspaceSource: "." },
+          specMarkdown: "Unknown option bags are rejected too.\n",
+        }).pipe(Effect.provide(layer));
+        const pathBearingBody = yield* responseJsonObject(pathBearing);
+        const unknownOptionsBody = yield* responseJsonObject(unknownOptions);
+        const pathBearingError = getObject(pathBearingBody, "error");
+        const unknownOptionsError = getObject(unknownOptionsBody, "error");
+
+        assert.strictEqual(pathBearing.status, 400);
+        assert.strictEqual(getString(pathBearingError, "code"), "InvalidRequest");
+        assert.strictEqual(unknownOptions.status, 400);
+        assert.strictEqual(getString(unknownOptionsError, "code"), "InvalidRequest");
+      }),
+    );
+
     it.effect("returns typed 409 while a server-created run is active", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -287,8 +315,12 @@ function postCreateRun(
 }
 
 function createRunRequest(specMarkdown: string) {
+  return createRunRequestFromPayload({ specMarkdown });
+}
+
+function createRunRequestFromPayload(payload: unknown) {
   return HttpClientRequest.post("/runs").pipe(
-    HttpClientRequest.bodyJsonUnsafe({ specMarkdown }),
+    HttpClientRequest.bodyJsonUnsafe(payload),
     HttpClient.execute,
   );
 }

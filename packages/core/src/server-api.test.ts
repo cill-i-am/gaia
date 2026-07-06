@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
-import { LocalGaiaServerOpenApi } from "./server-api.js";
+import { Schema } from "effect";
+import { CreateRunRequest, LocalGaiaServerOpenApi } from "./server-api.js";
 
 describe("LocalGaiaServerApi contract", () => {
   it("publishes health and run read paths", () => {
@@ -108,6 +109,28 @@ describe("LocalGaiaServerApi contract", () => {
     });
     assert.isObject(stream);
     assert.strictEqual(stream?.encoding, "sse");
+  });
+
+  it("rejects path-bearing and unknown create request fields at decode", () => {
+    const decodeCreateRunRequest = Schema.decodeUnknownSync(CreateRunRequest);
+
+    assert.doesNotThrow(() =>
+      decodeCreateRunRequest({
+        specMarkdown: "Create the run from Markdown content only.\n",
+      }),
+    );
+    assert.throws(() =>
+      decodeCreateRunRequest({
+        specMarkdown: "Do not accept local file or harness options.\n",
+        workspaceSource: ".",
+      }),
+    );
+    assert.throws(() =>
+      decodeCreateRunRequest({
+        options: { profile: "default" },
+        specMarkdown: "Do not accept unknown option bags.\n",
+      }),
+    );
   });
 });
 

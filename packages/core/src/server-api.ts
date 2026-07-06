@@ -332,6 +332,8 @@ export class CreateRunRequest extends Schema.Class<CreateRunRequest>(
 )({
   specMarkdown: Schema.NonEmptyString,
   title: Schema.optionalKey(Schema.NonEmptyString),
+}, {
+  parseOptions: { onExcessProperty: "error" },
 }) {}
 
 export class CreateRunAcceptedResponse extends Schema.Class<CreateRunAcceptedResponse>(
