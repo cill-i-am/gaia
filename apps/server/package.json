@@ -13,8 +13,15 @@
   },
   "dependencies": {
     "@effect/platform-node": "^4.0.0-beta.93",
+    "@gaia/core": "workspace:*",
     "@gaia/runtime": "workspace:*",
     "effect": "^4.0.0-beta.93"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/main.ts",
+      "import": "./src/main.ts"
+    }
   },
   "devDependencies": {
     "@effect/vitest": "^4.0.0-beta.93",

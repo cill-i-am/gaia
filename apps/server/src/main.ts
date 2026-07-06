@@ -1,82 +1,85 @@
 #!/usr/bin/env node
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import { createServer, type IncomingMessage } from "node:http";
-import { Effect } from "effect";
-import { handleLocalRunApiRequest } from "./api.js";
+import { NodeHttpServer } from "@effect/platform-node";
+import type { ServerMetadata } from "@gaia/core";
+import { Effect, Layer } from "effect";
+import * as Console from "effect/Console";
+import { HttpServer } from "effect/unstable/http";
+import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
+import { makeLocalGaiaServerLayer } from "./api.js";
+import {
+  appendServerLog,
+  removeServerMetadata,
+  serverMetadataFromAddress,
+  writeServerMetadata,
+  type LocalServerIdentity,
+} from "./discovery.js";
 
-type ServerConfig = {
-  readonly host: string;
+export type ServerConfig = {
+  readonly host: "127.0.0.1";
   readonly port: number;
   readonly rootDirectory: string;
 };
 
-const defaultConfig: ServerConfig = {
+export const defaultServerConfig = {
   host: "127.0.0.1",
-  port: 8787,
+  port: 0,
   rootDirectory: process.cwd(),
-};
+} satisfies ServerConfig;
 
-const program = Effect.gen(function* () {
-  const config = parseArgs(process.argv.slice(2));
-  const server = createServer((request, response) => {
-    const webRequest = toWebRequest(request, config);
-    const effect = handleLocalRunApiRequest(webRequest, {
-      rootDirectory: config.rootDirectory,
-    }).pipe(Effect.provide(NodeServices.layer));
-
-    Effect.runPromise(effect)
-      .then((webResponse) => writeWebResponse(response, webResponse))
-      .catch(() => {
-        response.writeHead(500, {
-          "content-type": "application/json; charset=utf-8",
-        });
-        response.end(
-          JSON.stringify({
-            error: {
-              code: "InternalServerError",
-              message: "Local Gaia API request failed.",
-              recoverable: false,
-            },
-            status: "error",
-          }),
-        );
-      });
+export function runLocalGaiaServer(input: {
+  readonly onReady?: ((metadata: ServerMetadata) => Effect.Effect<void>) | undefined;
+  readonly port?: number | undefined;
+  readonly rootDirectory?: string | undefined;
+}): Effect.Effect<void, unknown> {
+  const identity = makeServerIdentity({
+    host: defaultServerConfig.host,
+    rootDirectory: input.rootDirectory ?? defaultServerConfig.rootDirectory,
   });
-
-  yield* Effect.tryPromise({
-    try: () =>
-      new Promise<void>((resolve) => {
-        server.listen(config.port, config.host, () => resolve());
-      }),
-    catch: () => new Error("Local Gaia API server failed to start."),
+  const port = input.port ?? defaultServerConfig.port;
+  const nodeLayer = NodeHttpServer.layer(createServer, {
+    host: identity.host,
+    port,
   });
-  console.log(
-    `Gaia local API listening on http://${config.host}:${config.port} for ${config.rootDirectory}`,
+  const serverLayer = makeLocalGaiaServerLayer(identity).pipe(
+    Layer.provideMerge(nodeLayer),
   );
-});
 
-NodeRuntime.runMain(program);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* HttpServer.HttpServer;
+      const metadata = yield* serverMetadataFromAddress(identity, server.address);
+      yield* writeServerMetadata(metadata);
+      yield* Effect.addFinalizer(() =>
+        removeServerMetadata(metadata).pipe(Effect.orElseSucceed(() => undefined)),
+      );
+      yield* appendServerLog(
+        metadata.workspaceRoot,
+        `${metadata.startedAt} ${metadata.serverId} listening ${metadata.url}`,
+      );
+      if (input.onReady !== undefined) {
+        yield* input.onReady(metadata);
+      }
+      yield* Console.log(
+        `Gaia local API listening on ${metadata.url}`,
+      );
+      yield* Console.log(`workspace: ${metadata.workspaceRoot}`);
+      yield* Effect.never;
+    }).pipe(Effect.provide(serverLayer)),
+  );
+}
 
-function parseArgs(args: ReadonlyArray<string>): ServerConfig {
-  let host = defaultConfig.host;
-  let port = defaultConfig.port;
-  let rootDirectory = defaultConfig.rootDirectory;
+export function parseServerArgs(args: ReadonlyArray<string>): ServerConfig {
+  let port = defaultServerConfig.port;
+  let rootDirectory = defaultServerConfig.rootDirectory;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     const next = args[index + 1];
-    if (arg === "--host" && next !== undefined) {
-      host = next;
-      index += 1;
-      continue;
-    }
-
     if (arg === "--port" && next !== undefined) {
-      const parsed = Number.parseInt(next, 10);
-      if (Number.isFinite(parsed)) {
-        port = parsed;
-      }
+      port = parsePort(next);
       index += 1;
       continue;
     }
@@ -84,37 +87,44 @@ function parseArgs(args: ReadonlyArray<string>): ServerConfig {
     if (arg === "--root" && next !== undefined) {
       rootDirectory = next;
       index += 1;
+      continue;
+    }
+
+    if (arg === "--host") {
+      throw new Error("GAIA-12 only supports loopback host 127.0.0.1.");
     }
   }
 
-  return { host, port, rootDirectory };
+  return {
+    host: defaultServerConfig.host,
+    port,
+    rootDirectory,
+  };
 }
 
-function toWebRequest(request: IncomingMessage, config: ServerConfig) {
-  const headers = new Headers();
-  for (const [key, value] of Object.entries(request.headers)) {
-    if (typeof value === "string") {
-      headers.set(key, value);
-    } else if (Array.isArray(value)) {
-      headers.set(key, value.join(", "));
-    }
+function makeServerIdentity(input: {
+  readonly host: "127.0.0.1";
+  readonly rootDirectory: string;
+}): LocalServerIdentity {
+  return {
+    host: input.host,
+    pid: process.pid,
+    rootDirectory: input.rootDirectory,
+    serverId: `srv_${randomUUID()}`,
+    startedAt: new Date().toISOString(),
+  };
+}
+
+function parsePort(input: string): number {
+  const parsed = /^\d+$/u.test(input) ? Number(input) : Number.NaN;
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65_535) {
+    throw new Error(`Invalid port: ${input}`);
   }
 
-  const path = request.url ?? "/";
-  return new Request(`http://${config.host}:${config.port}${path}`, {
-    headers,
-    method: request.method ?? "GET",
-  });
+  return parsed;
 }
 
-function writeWebResponse(
-  response: import("node:http").ServerResponse,
-  webResponse: Response,
-) {
-  response.statusCode = webResponse.status;
-  webResponse.headers.forEach((value, key) => response.setHeader(key, value));
-  webResponse
-    .text()
-    .then((body) => response.end(body))
-    .catch(() => response.end());
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const config = parseServerArgs(process.argv.slice(2));
+  runLocalGaiaServer(config).pipe(NodeRuntime.runMain);
 }

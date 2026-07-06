@@ -16,6 +16,7 @@
     "@effect/platform-node": "^4.0.0-beta.93",
     "@gaia/core": "workspace:*",
     "@gaia/runtime": "workspace:*",
+    "@gaia/server": "workspace:*",
     "effect": "^4.0.0-beta.93"
   },
   "devDependencies": {

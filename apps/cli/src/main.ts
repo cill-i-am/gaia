@@ -39,6 +39,7 @@ import {
   makeCodexReviewer,
   makeCodexReviewerConfig,
   makeCodexHarnessConfig,
+  makeRuntimeError,
   makeProcessHarnessConfig,
   parseHarnessName,
   preflightGitHubPublish,
@@ -56,6 +57,7 @@ import {
   watchGitHubChecks,
   watchGitHubFeedback,
 } from "@gaia/runtime";
+import { runLocalGaiaServer } from "@gaia/server";
 import {
   readLocalRunArtifactFromServer,
   readLocalRunEventsFromServer,
@@ -105,6 +107,10 @@ const serverUrl = Flag.string("server-url").pipe(
   Flag.withDescription(
     "Opt into read-only CLI reads through an already-running local Gaia API server.",
   ),
+  Flag.optional,
+);
+const serverPort = Flag.string("port").pipe(
+  Flag.withDescription("Bind the foreground local Gaia server to an explicit loopback port."),
   Flag.optional,
 );
 const workspaceSource = Flag.string("workspace-source").pipe(
@@ -573,6 +579,24 @@ const collectBrowserEvidenceCommand = Command.make("collect-browser-evidence", {
   ),
 );
 
+const serverCommand = Command.make("server", { port: serverPort }).pipe(
+  Command.withDescription("Start the local Gaia API server in the foreground."),
+  Command.withHandler(({ port }) =>
+    renderEffect(
+      parseServerPortFlag(port).pipe(
+        Effect.flatMap((parsedPort) =>
+          runLocalGaiaServer({
+            rootDirectory: invocationRoot(),
+            ...(parsedPort === undefined ? {} : { port: parsedPort }),
+          }),
+        ),
+      ),
+      false,
+      () => "",
+    ),
+  ),
+);
+
 const cli = Command.make("gaia").pipe(
   Command.withDescription("Gaia software-factory control plane prototype."),
   Command.withSubcommands([
@@ -583,6 +607,7 @@ const cli = Command.make("gaia").pipe(
     list,
     events,
     artifact,
+    serverCommand,
     collectBrowserEvidenceCommand,
     preflightGithub,
     previewPr,
@@ -756,6 +781,37 @@ function resolveRunProfilePath(input: string) {
 
 function serverUrlInput(serverUrl: string | undefined) {
   return serverUrl === undefined ? {} : { serverUrl };
+}
+
+function parseServerPortFlag(
+  port: Option.Option<string>,
+): Effect.Effect<number | undefined, GaiaRuntimeError> {
+  if (Option.isNone(port)) {
+    return Effect.succeed<number | undefined>(undefined);
+  }
+
+  if (!/^\d+$/u.test(port.value)) {
+    return Effect.fail(
+      makeRuntimeError({
+        code: "InvalidServerPort",
+        message: `Invalid local server port: ${port.value}`,
+        recoverable: false,
+      }),
+    );
+  }
+
+  const parsed = Number(port.value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65_535) {
+    return Effect.fail(
+      makeRuntimeError({
+        code: "InvalidServerPort",
+        message: `Invalid local server port: ${port.value}`,
+        recoverable: false,
+      }),
+    );
+  }
+
+  return Effect.succeed<number | undefined>(parsed);
 }
 
 function readStatus(input: {

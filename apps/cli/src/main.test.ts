@@ -1,12 +1,11 @@
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it, layer } from "@effect/vitest";
+import type { ServerMetadata } from "@gaia/core";
 import { runSpecFile } from "@gaia/runtime";
-import { Effect, FileSystem } from "effect";
+import { runLocalGaiaServer } from "@gaia/server";
+import { Deferred, Effect, Fiber, FileSystem } from "effect";
 import { execFile } from "node:child_process";
-import { createServer, type IncomingMessage } from "node:http";
-import { once } from "node:events";
 import { promisify } from "node:util";
-import { handleLocalRunApiRequest } from "../../server/src/api.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -126,6 +125,20 @@ describe("gaia CLI local server read parity", () => {
         }),
       20_000,
     );
+
+    it.effect("rejects malformed foreground server ports", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-port-" });
+        const failed = yield* runGaia(cwd, ["server", "--port", "12345abc"], {
+          timeoutMs: 3_000,
+        });
+
+        expect(failed.exitCode).toBe(1);
+        expect(failed.stdout).toContain("InvalidServerPort");
+        expect(failed.stdout).not.toContain("Gaia local API listening");
+      }),
+    );
   });
 });
 
@@ -136,7 +149,7 @@ type CliResult = {
 };
 
 type TestServer = {
-  readonly close: () => Promise<void>;
+  readonly close: Effect.Effect<void>;
   readonly url: string;
 };
 
@@ -152,53 +165,30 @@ function createRunStore(specBody: string) {
 }
 
 function startLocalRunServer(rootDirectory: string) {
-  return Effect.promise(async () => {
-    const server = createServer((nodeRequest, nodeResponse) => {
-      handleTestRunApiRequest(nodeRequest, rootDirectory).then(
-        async (response) => {
-          nodeResponse.statusCode = response.status;
-          response.headers.forEach((value: string, key: string) => {
-            nodeResponse.setHeader(key, value);
-          });
-          nodeResponse.end(await response.text());
-        },
-        (error: unknown) => {
-          nodeResponse.statusCode = 500;
-          nodeResponse.end(error instanceof Error ? error.message : "server failed");
-        },
-      );
-    });
-
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    const address = server.address();
-    if (address === null || typeof address === "string") {
-      throw new Error("Local test server did not bind to a TCP port.");
-    }
-
+  return Effect.gen(function* () {
+    const ready = yield* Deferred.make<ServerMetadata>();
+    const fiber = yield* runLocalGaiaServer({
+      onReady: (metadata) => Deferred.succeed(ready, metadata).pipe(Effect.asVoid),
+      rootDirectory,
+    }).pipe(Effect.forkScoped);
+    const startupFailed = Fiber.await(fiber).pipe(
+      Effect.flatMap((exit) =>
+        Effect.fail(new Error(`Local test server exited before ready: ${exit._tag}.`)),
+      ),
+    );
+    const metadata = yield* Deferred.await(ready).pipe(
+      Effect.raceFirst(startupFailed),
+      Effect.timeout("5 seconds"),
+    );
     return {
-      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
-      url: `http://127.0.0.1:${address.port}`,
+      close: Fiber.interrupt(fiber).pipe(Effect.asVoid),
+      url: metadata.url,
     } satisfies TestServer;
   });
 }
 
 function stopServer(server: TestServer) {
-  return Effect.promise(() => server.close());
-}
-
-async function handleTestRunApiRequest(
-  nodeRequest: IncomingMessage,
-  rootDirectory: string,
-) {
-  const host = nodeRequest.headers.host ?? "127.0.0.1";
-  const method = nodeRequest.method ?? "GET";
-  const request = new Request(`http://${host}${nodeRequest.url ?? "/"}`, { method });
-  return await Effect.runPromise(
-    handleLocalRunApiRequest(request, { rootDirectory }).pipe(
-      Effect.provide(NodeServices.layer),
-    ),
-  );
+  return server.close;
 }
 
 function runGaiaJson(cwd: string, args: ReadonlyArray<string>) {
@@ -210,7 +200,11 @@ function runGaiaJson(cwd: string, args: ReadonlyArray<string>) {
   );
 }
 
-function runGaia(cwd: string, args: ReadonlyArray<string>) {
+function runGaia(
+  cwd: string,
+  args: ReadonlyArray<string>,
+  options: { readonly timeoutMs?: number } = {},
+) {
   return Effect.promise(async () => {
     const result = await execFileAsync("pnpm", [
       "--dir",
@@ -225,6 +219,7 @@ function runGaia(cwd: string, args: ReadonlyArray<string>) {
         ...process.env,
         INIT_CWD: cwd,
       },
+      timeout: options.timeoutMs,
     }).then(
       ({ stdout, stderr }) =>
         ({

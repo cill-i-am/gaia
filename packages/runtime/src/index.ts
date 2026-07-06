@@ -174,7 +174,13 @@ export {
   type HarnessName,
   type ProcessHarnessCommand,
 } from "./harness.js";
-export { makeRunPaths, runRelative, runRootDirectory, type RunPaths } from "./paths.js";
+export {
+  makeRunPaths,
+  makeRunStorePaths,
+  runRelative,
+  runRootDirectory,
+  type RunPaths,
+} from "./paths.js";
 export {
   listLocalRuns,
   readLocalRun,
