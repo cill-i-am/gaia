@@ -1,14 +1,11 @@
 import {
   CreateRunAcceptedResponse,
   CreateRunRequest,
-  EventTypeSchema,
-  HealthResponse,
-  LocalRunApiErrorStatusSchema,
-  LocalRunArtifactIdSchema,
-  LocalRunReadDiagnosticCodeSchema,
-  RunEvent,
+  LocalRunApiErrorEnvelope,
+  LocalRunArtifactDto,
+  LocalRunEventsDto,
+  LocalRunSummaryDto,
   RunIdSchema,
-  RunStateSchema,
   ServerMetadata,
 } from "@gaia/core";
 import {
@@ -20,98 +17,26 @@ import {
   type LocalRunEvents,
   type LocalRunSummary,
 } from "@gaia/runtime";
-import { Effect, FileSystem, Schema } from "effect";
+import { Cause, Effect, FileSystem, Option, Predicate, Schema } from "effect";
+import { HttpClient, HttpClientError } from "effect/unstable/http";
 import { type ChildProcess, spawn } from "node:child_process";
 import { closeSync, openSync, unlinkSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  createRunFromLocalServerProtocol,
+  getRunArtifactFromLocalServerProtocol,
+  getRunEventsFromLocalServerProtocol,
+  getRunFromLocalServerProtocol,
+  healthFromLocalServerProtocol,
+  listRunsFromLocalServerProtocol,
+  LocalGaiaServerProtocolClientLive,
+  type LocalGaiaServerProtocolError,
+} from "./local-server-protocol-client.js";
 
-const fetchTimeoutMs = 2_000;
 const autostartWaitAttempts = 50;
 const autostartWaitDelay = "100 millis";
-
-const LocalRunStatusSchema = Schema.Literals([
-  "completed",
-  "failed",
-  "running",
-] as const);
-const LocalRunArtifactContentTypeSchema = Schema.Literals([
-  "application/json",
-  "text/markdown",
-  "text/plain",
-] as const);
-
-class LocalRunReadDiagnosticDto extends Schema.Class<LocalRunReadDiagnosticDto>(
-  "LocalRunReadDiagnosticDto",
-)({
-  artifactName: Schema.optionalKey(Schema.String),
-  code: LocalRunReadDiagnosticCodeSchema,
-  message: Schema.String,
-  pathSegment: Schema.optionalKey(Schema.String),
-  recoverable: Schema.Boolean,
-  runId: Schema.optionalKey(RunIdSchema),
-}) {}
-
-class LocalRunApiErrorDto extends Schema.Class<LocalRunApiErrorDto>(
-  "LocalRunApiErrorDto",
-)({
-  artifactName: Schema.optionalKey(Schema.String),
-  code: LocalRunReadDiagnosticCodeSchema,
-  message: Schema.String,
-  pathSegment: Schema.optionalKey(Schema.String),
-  recoverable: Schema.Boolean,
-  runId: Schema.optionalKey(RunIdSchema),
-  status: LocalRunApiErrorStatusSchema,
-}) {}
-
-class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
-  "LocalRunSummaryDto",
-)({
-  artifacts: Schema.Array(LocalRunArtifactIdSchema),
-  createdAt: Schema.String,
-  eventCount: Schema.Number,
-  latestEventType: EventTypeSchema,
-  runId: RunIdSchema,
-  state: RunStateSchema,
-  status: LocalRunStatusSchema,
-  updatedAt: Schema.String,
-}) {}
-
-class LocalRunListDto extends Schema.Class<LocalRunListDto>("LocalRunListDto")({
-  diagnostics: Schema.Array(LocalRunReadDiagnosticDto),
-  runs: Schema.Array(LocalRunSummaryDto),
-}) {}
-
-class LocalRunEventsDto extends Schema.Class<LocalRunEventsDto>(
-  "LocalRunEventsDto",
-)({
-  events: Schema.Array(RunEvent),
-  runId: RunIdSchema,
-}) {}
-
-class LocalRunArtifactDto extends Schema.Class<LocalRunArtifactDto>(
-  "LocalRunArtifactDto",
-)({
-  artifactName: LocalRunArtifactIdSchema,
-  body: Schema.String,
-  contentType: LocalRunArtifactContentTypeSchema,
-  runId: RunIdSchema,
-}) {}
-
-const decodeJsonObject = Schema.decodeUnknownSync(
-  Schema.Record(Schema.String, Schema.Unknown),
-);
-const decodeLocalRunList = Schema.decodeUnknownSync(LocalRunListDto);
-const decodeLocalRunSummary = Schema.decodeUnknownSync(LocalRunSummaryDto);
-const decodeLocalRunEvents = Schema.decodeUnknownSync(LocalRunEventsDto);
-const decodeLocalRunArtifact = Schema.decodeUnknownSync(LocalRunArtifactDto);
-const decodeLocalRunApiError = Schema.decodeUnknownSync(LocalRunApiErrorDto);
-const decodeCreateRunRequest = Schema.decodeUnknownSync(CreateRunRequest);
-const decodeCreateRunAcceptedResponse = Schema.decodeUnknownSync(
-  CreateRunAcceptedResponse,
-);
-const decodeHealthResponse = Schema.decodeUnknownSync(HealthResponse);
 const decodeRunId = Schema.decodeUnknownSync(RunIdSchema);
 const decodeServerMetadata = Schema.decodeUnknownSync(ServerMetadata);
 
@@ -120,27 +45,19 @@ export type ServerRunAcceptedSummary =
     readonly serverUrl: string;
   };
 
-type ParsedServerEnvelope =
-  | {
-      readonly data: unknown;
-      readonly status: "partial" | "success";
-    }
-  | {
-      readonly error: LocalRunApiErrorDto;
-      readonly status: "error";
-    };
-
 export function listRunsFromServer(input: {
   readonly rootDirectory: string;
   readonly serverUrl: string;
 }) {
   return Effect.gen(function* () {
-    const list = yield* getServerData({
+    const response = yield* requestServer({
       dataName: "run list",
-      decode: decodeLocalRunList,
-      path: "/runs",
+      effect: listRunsFromLocalServerProtocol({
+        serverUrl: input.serverUrl,
+      }),
       serverUrl: input.serverUrl,
     });
+    const list = response.data;
     const summaries: Array<CommandSummary> = [];
     for (const run of list.runs) {
       summaries.push(yield* commandSummaryFromLocalRun(run, input.rootDirectory));
@@ -158,14 +75,16 @@ export function statusRunFromServer(input: {
   return Effect.gen(function* () {
     const runId =
       input.runId ?? (yield* latestRunIdFromPointer(input.rootDirectory));
-    const run = yield* getServerData({
+    const response = yield* requestServer({
       dataName: "run status",
-      decode: decodeLocalRunSummary,
-      path: `/runs/${encodeURIComponent(runId)}`,
+      effect: getRunFromLocalServerProtocol({
+        runId,
+        serverUrl: input.serverUrl,
+      }),
       serverUrl: input.serverUrl,
     });
 
-    return yield* commandSummaryFromLocalRun(run, input.rootDirectory);
+    return yield* commandSummaryFromLocalRun(response.data, input.rootDirectory);
   });
 }
 
@@ -173,12 +92,14 @@ export function readLocalRunEventsFromServer(input: {
   readonly runId: string;
   readonly serverUrl: string;
 }) {
-  return getServerData({
+  return requestServer({
     dataName: "run events",
-    decode: (value) => toLocalRunEvents(decodeLocalRunEvents(value)),
-    path: `/runs/${encodeURIComponent(input.runId)}/events`,
+    effect: getRunEventsFromLocalServerProtocol({
+      runId: input.runId,
+      serverUrl: input.serverUrl,
+    }),
     serverUrl: input.serverUrl,
-  });
+  }).pipe(Effect.map((response) => toLocalRunEvents(response.data)));
 }
 
 export function readLocalRunArtifactFromServer(input: {
@@ -186,12 +107,15 @@ export function readLocalRunArtifactFromServer(input: {
   readonly runId: string;
   readonly serverUrl: string;
 }) {
-  return getServerData({
+  return requestServer({
     dataName: "run artifact",
-    decode: (value) => toLocalRunArtifact(decodeLocalRunArtifact(value)),
-    path: `/runs/${encodeURIComponent(input.runId)}/artifacts/${encodeURIComponent(input.artifactName)}`,
+    effect: getRunArtifactFromLocalServerProtocol({
+      artifactName: input.artifactName,
+      runId: input.runId,
+      serverUrl: input.serverUrl,
+    }),
     serverUrl: input.serverUrl,
-  });
+  }).pipe(Effect.map((response) => toLocalRunArtifact(response.data)));
 }
 
 export function createRunFromServer(input: {
@@ -211,16 +135,22 @@ export function createRunFromServer(input: {
         }),
       ),
     );
-    const payload = yield* decodeServerData(
-      { specMarkdown },
-      decodeCreateRunRequest,
-      "create run request",
+    const payload = yield* CreateRunRequest.makeEffect({ specMarkdown }).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "LocalRunApiInvalidResponse",
+          message: "Local Gaia API returned invalid create run request data.",
+          recoverable: false,
+        }),
+      ),
     );
-    const accepted = yield* postServerJson({
+    const accepted = yield* requestServer({
       dataName: "create run response",
-      decode: decodeCreateRunAcceptedResponse,
-      payload,
-      path: "/runs",
+      effect: createRunFromLocalServerProtocol({
+        payload,
+        serverUrl: input.serverUrl,
+      }),
       serverUrl: input.serverUrl,
     });
 
@@ -286,30 +216,20 @@ function latestRunIdFromPointer(rootDirectory: string) {
   });
 }
 
-function getServerData<A>(input: {
+function requestServer<A>(input: {
   readonly dataName: string;
-  readonly decode: (value: unknown) => A;
-  readonly path: string;
+  readonly effect: Effect.Effect<
+    A,
+    LocalGaiaServerProtocolError,
+    HttpClient.HttpClient
+  >;
   readonly serverUrl: string;
 }) {
-  return Effect.gen(function* () {
-    const response = yield* fetchServerJson(input.serverUrl, input.path);
-    const envelope = yield* parseEnvelope(response, input.dataName);
-    if (envelope.status === "error") {
-      return yield* Effect.fail(runtimeErrorFromDiagnostic(envelope.error));
-    }
-
-    return yield* decodeServerData(envelope.data, input.decode, input.dataName);
-  });
-}
-
-function fetchServerJson(serverUrl: string, pathname: string) {
-  return fetchServerJsonResponse({
-    method: "GET",
-    path: pathname,
-    serverUrl,
-  }).pipe(
-    Effect.map((response) => response.body),
+  return input.effect.pipe(
+    Effect.provide(LocalGaiaServerProtocolClientLive),
+    Effect.mapError((error) =>
+      runtimeErrorFromProtocolFailure(error, input.serverUrl, input.dataName),
+    ),
   );
 }
 
@@ -374,103 +294,69 @@ function tryAcquireAutostartLock(lockPath: string): AutostartLock | undefined {
   }
 }
 
-function postServerJson<A>(input: {
-  readonly dataName: string;
-  readonly decode: (value: unknown) => A;
-  readonly path: string;
-  readonly payload: unknown;
-  readonly serverUrl: string;
-}) {
-  return Effect.gen(function* () {
-    const response = yield* fetchServerJsonResponse({
-      body: JSON.stringify(input.payload),
-      method: "POST",
-      path: input.path,
-      serverUrl: input.serverUrl,
-    });
-    if (!response.ok) {
-      const error = yield* decodeServerData(
-        response.body,
-        decodeLocalRunApiError,
-        "create run error",
-      );
-      return yield* Effect.fail(runtimeErrorFromDiagnostic(error));
-    }
-
-    return yield* decodeServerData(response.body, input.decode, input.dataName);
-  });
-}
-
-function fetchServerJsonResponse(input: {
-  readonly body?: string | undefined;
-  readonly method: "GET" | "POST";
-  readonly path: string;
-  readonly serverUrl: string;
-}) {
-  return Effect.tryPromise({
-    try: async () => {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
-      const init =
-        input.body === undefined
-          ? { method: input.method, signal: controller.signal }
-          : {
-              body: input.body,
-              headers: { "content-type": "application/json" },
-              method: input.method,
-              signal: controller.signal,
-            };
-      try {
-        const response = await fetch(serverEndpoint(input.serverUrl, input.path), init);
-        return {
-          body: await response.json(),
-          ok: response.ok,
-        };
-      } finally {
-        clearTimeout(timeout);
-      }
-    },
-    catch: (cause) =>
-      makeRuntimeError({
-        cause,
-        code: "LocalRunApiUnavailable",
-        message: `Local Gaia API server is unavailable at ${input.serverUrl}. Direct runtime reads remain available without --server.`,
-        recoverable: true,
-      }),
-  });
-}
-
-function parseEnvelope(
-  input: unknown,
+function runtimeErrorFromProtocolFailure(
+  error: LocalGaiaServerProtocolError,
+  serverUrl: string,
   dataName: string,
-): Effect.Effect<ParsedServerEnvelope, ReturnType<typeof makeRuntimeError>> {
-  return Effect.try({
-    try: () => {
-      const envelope = decodeJsonObject(input);
-      const status = envelope["status"];
-      if (status === "success" || status === "partial") {
-        return {
-          data: envelope["data"],
-          status,
-        };
-      }
+) {
+  const apiError = Schema.decodeUnknownOption(LocalRunApiErrorEnvelope)(error);
+  if (Option.isSome(apiError)) {
+    return runtimeErrorFromDiagnostic(apiError.value);
+  }
 
-      if (typeof status === "number") {
-        return {
-          error: decodeLocalRunApiError(envelope),
-          status: "error",
-        };
-      }
+  if (HttpClientError.isHttpClientError(error) || Cause.isTimeoutError(error)) {
+    return makeRuntimeError({
+      cause: error,
+      code: "LocalRunApiUnavailable",
+      message: `Local Gaia API server is unavailable at ${serverUrl}. Direct runtime reads remain available without --server.`,
+      recoverable: true,
+    });
+  }
 
-      throw new Error("Envelope status is missing or invalid.");
-    },
-    catch: (cause) =>
-      makeRuntimeError({
-        cause,
-        code: "LocalRunApiInvalidResponse",
-        message: `Local Gaia API returned an invalid ${dataName} envelope.`,
-        recoverable: false,
-      }),
+  if (isProtocolParameterError(error)) {
+    return runtimeErrorFromParameterFailure(error);
+  }
+
+  return makeRuntimeError({
+    cause: error,
+    code: "LocalRunApiInvalidResponse",
+    message: `Local Gaia API returned invalid ${dataName} data.`,
+    recoverable: false,
+  });
+}
+
+function isProtocolParameterError(
+  error: LocalGaiaServerProtocolError,
+): error is Extract<
+  LocalGaiaServerProtocolError,
+  { readonly _tag: "LocalGaiaServerProtocolParameterError" }
+> {
+  return (
+    Predicate.hasProperty(error, "_tag") &&
+    error._tag === "LocalGaiaServerProtocolParameterError"
+  );
+}
+
+function runtimeErrorFromParameterFailure(
+  error: Extract<
+    LocalGaiaServerProtocolError,
+    { readonly _tag: "LocalGaiaServerProtocolParameterError" }
+  >,
+) {
+  if (error.parameter === "runId") {
+    return makeRuntimeError({
+      cause: error.cause,
+      code: "InvalidRunId",
+      message: "Requested run id is not a valid Gaia run id.",
+      recoverable: false,
+    });
+  }
+
+  return makeRuntimeError({
+    cause: error.cause,
+    code: "ArtifactNotAllowed",
+    message: "Artifact is not allowlisted for local API reads.",
+    recoverable: false,
   });
 }
 
@@ -492,7 +378,7 @@ function decodeServerData<A>(
 }
 
 function commandSummaryFromLocalRun(
-  run: LocalRunSummaryDto,
+  run: typeof LocalRunSummaryDto.Type,
   rootDirectory: string,
 ) {
   return Effect.gen(function* () {
@@ -509,7 +395,7 @@ function commandSummaryFromLocalRun(
   });
 }
 
-function toLocalRunSummary(input: LocalRunSummaryDto) {
+function toLocalRunSummary(input: typeof LocalRunSummaryDto.Type) {
   return {
     artifacts: input.artifacts,
     createdAt: input.createdAt,
@@ -522,14 +408,14 @@ function toLocalRunSummary(input: LocalRunSummaryDto) {
   } satisfies LocalRunSummary;
 }
 
-function toLocalRunEvents(input: LocalRunEventsDto) {
+function toLocalRunEvents(input: typeof LocalRunEventsDto.Type) {
   return {
     events: input.events,
     runId: input.runId,
   } satisfies LocalRunEvents;
 }
 
-function toLocalRunArtifact(input: LocalRunArtifactDto) {
+function toLocalRunArtifact(input: typeof LocalRunArtifactDto.Type) {
   return {
     artifactName: input.artifactName,
     body: input.body,
@@ -538,21 +424,14 @@ function toLocalRunArtifact(input: LocalRunArtifactDto) {
   } satisfies LocalRunArtifact;
 }
 
-function runtimeErrorFromDiagnostic(diagnostic: LocalRunApiErrorDto) {
+function runtimeErrorFromDiagnostic(
+  diagnostic: typeof LocalRunApiErrorEnvelope.Type,
+) {
   return makeRuntimeError({
     code: diagnostic.code,
     message: diagnostic.message,
     recoverable: diagnostic.recoverable,
   });
-}
-
-function serverEndpoint(serverUrl: string, pathname: string) {
-  const url = new URL(pathname, normalizedServerUrl(serverUrl));
-  return url.toString();
-}
-
-function normalizedServerUrl(serverUrl: string) {
-  return serverUrl.endsWith("/") ? serverUrl : `${serverUrl}/`;
 }
 
 function readUsableMetadata(rootDirectory: string) {
@@ -621,26 +500,11 @@ function probeServerHealth(metadata: ServerMetadata) {
       );
     }
 
-    const response = yield* fetchServerJsonResponse({
-      method: "GET",
-      path: "/health",
+    return yield* requestServer({
+      dataName: "health response",
+      effect: healthFromLocalServerProtocol({ serverUrl }),
       serverUrl,
     });
-    if (!response.ok) {
-      return yield* Effect.fail(
-        makeRuntimeError({
-          code: "LocalRunApiUnavailable",
-          message: `Local Gaia API server is unavailable at ${serverUrl}.`,
-          recoverable: true,
-        }),
-      );
-    }
-
-    return yield* decodeServerData(
-      response.body,
-      decodeHealthResponse,
-      "health response",
-    );
   });
 }
 
