@@ -4,6 +4,11 @@ import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { HarnessNameSchema, type HarnessName } from "./harness.js";
 import type { RunPaths } from "./paths.js";
 import {
+  WorkerPlanInferredRecommendations,
+  inferSkillReviewStack,
+  markdownInferredRecommendations,
+} from "./skill-review-inference.js";
+import {
   WorkerPlanAgentInstruction,
   WorkerPlanLikelyFile,
   WorkerPlanPlanningContext,
@@ -15,6 +20,7 @@ import {
 
 export {
   WorkerPlanAgentInstruction,
+  WorkerPlanInferredRecommendations,
   WorkerPlanLikelyFile,
   WorkerPlanPlanningContext,
   WorkerPlanSimilarTest,
@@ -50,6 +56,7 @@ export class WorkerPlan extends Schema.Class<WorkerPlan>("WorkerPlan")({
   domainReferences: Schema.Array(WorkerPlanDomainReference),
   expectedArtifacts: Schema.Array(Schema.NonEmptyString),
   harnessName: HarnessNameSchema,
+  inferredRecommendations: WorkerPlanInferredRecommendations,
   likelyTouchedSurfaces: Schema.Array(Schema.NonEmptyString),
   nonGoals: Schema.Array(Schema.NonEmptyString),
   planningContext: WorkerPlanPlanningContext,
@@ -82,11 +89,18 @@ export function writeWorkerPlan(input: {
       verificationChecks: derived.verificationChecks,
       workspaceRoot: input.paths.workspace,
     });
+    const inferredRecommendations = inferSkillReviewStack({
+      domainReferences: derived.domainReferences,
+      likelyTouchedSurfaces: derived.likelyTouchedSurfaces,
+      planningContext,
+      verificationChecks: derived.verificationChecks,
+    });
     const plan = WorkerPlan.make({
       acceptanceCriteria: derived.acceptanceCriteria,
       domainReferences: derived.domainReferences,
       expectedArtifacts: ["workspace/output.txt", "worker-result.json"],
       harnessName: input.harnessName,
+      inferredRecommendations,
       likelyTouchedSurfaces: derived.likelyTouchedSurfaces,
       nonGoals: derived.nonGoals,
       planningContext,
@@ -212,6 +226,9 @@ function markdownPlan(plan: WorkerPlan) {
     plan.domainReferences.map(formatDomainReference),
   );
   const planningContext = markdownPlanningContext(plan.planningContext);
+  const inferredRecommendations = markdownInferredRecommendations(
+    plan.inferredRecommendations,
+  );
   const verificationChecks = markdownList(
     plan.verificationChecks.map(formatVerificationCheck),
   );
@@ -246,6 +263,10 @@ ${domainReferences}
 ## Reference-First Planning Context
 
 ${planningContext}
+
+## Inferred Recommendations
+
+${inferredRecommendations}
 
 ## Verification
 
