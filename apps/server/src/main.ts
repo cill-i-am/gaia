@@ -1,120 +1,118 @@
 #!/usr/bin/env node
-import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import { createServer, type IncomingMessage } from "node:http";
-import { Effect } from "effect";
-import { handleLocalRunApiRequest } from "./api.js";
+import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import { createServer } from "node:http";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
+import { makeLocalGaiaServerLayer } from "./api.js";
+import {
+  loopbackHost,
+  makeServerLifecycleLayer,
+  type LocalGaiaServerConfig,
+} from "./discovery.js";
 
-type ServerConfig = {
-  readonly host: string;
-  readonly port: number;
-  readonly rootDirectory: string;
+export type LocalGaiaServerOptions = {
+  readonly port?: number;
+  readonly rootDirectory?: string;
+  readonly serverId?: string;
+  readonly startedAt?: string;
 };
 
-const defaultConfig: ServerConfig = {
-  host: "127.0.0.1",
-  port: 8787,
-  rootDirectory: process.cwd(),
-};
-
-const program = Effect.gen(function* () {
-  const config = parseArgs(process.argv.slice(2));
-  const server = createServer((request, response) => {
-    const webRequest = toWebRequest(request, config);
-    const effect = handleLocalRunApiRequest(webRequest, {
-      rootDirectory: config.rootDirectory,
-    }).pipe(Effect.provide(NodeServices.layer));
-
-    Effect.runPromise(effect)
-      .then((webResponse) => writeWebResponse(response, webResponse))
-      .catch(() => {
-        response.writeHead(500, {
-          "content-type": "application/json; charset=utf-8",
-        });
-        response.end(
-          JSON.stringify({
-            error: {
-              code: "InternalServerError",
-              message: "Local Gaia API request failed.",
-              recoverable: false,
-            },
-            status: "error",
-          }),
-        );
-      });
+export function runLocalGaiaServer(options: LocalGaiaServerOptions = {}) {
+  const config = makeServerConfig(options);
+  const port = options.port ?? 0;
+  const platform = NodeHttpServer.layer(createServer, {
+    host: loopbackHost,
+    port,
   });
+  const app = Layer.mergeAll(
+    makeLocalGaiaServerLayer(config),
+    makeServerLifecycleLayer(config),
+  ).pipe(Layer.provide(platform));
 
-  yield* Effect.tryPromise({
-    try: () =>
-      new Promise<void>((resolve) => {
-        server.listen(config.port, config.host, () => resolve());
-      }),
-    catch: () => new Error("Local Gaia API server failed to start."),
-  });
-  console.log(
-    `Gaia local API listening on http://${config.host}:${config.port} for ${config.rootDirectory}`,
-  );
-});
+  return Layer.launch(app);
+}
 
-NodeRuntime.runMain(program);
-
-function parseArgs(args: ReadonlyArray<string>): ServerConfig {
-  let host = defaultConfig.host;
-  let port = defaultConfig.port;
-  let rootDirectory = defaultConfig.rootDirectory;
+export function parseArgs(args: ReadonlyArray<string>): LocalGaiaServerOptions {
+  let port: number | undefined;
+  let rootDirectory: string | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     const next = args[index + 1];
-    if (arg === "--host" && next !== undefined) {
-      host = next;
-      index += 1;
-      continue;
+
+    if (arg === "--help" || arg === "-h") {
+      printHelp();
+      process.exit(0);
     }
 
-    if (arg === "--port" && next !== undefined) {
-      const parsed = Number.parseInt(next, 10);
-      if (Number.isFinite(parsed)) {
-        port = parsed;
+    if (arg === "--port") {
+      if (next === undefined) {
+        throw new Error("--port requires a numeric value.");
       }
+
+      port = parsePort(next);
       index += 1;
       continue;
     }
 
-    if (arg === "--root" && next !== undefined) {
-      rootDirectory = next;
+    if (arg === "--root") {
+      if (next === undefined) {
+        throw new Error("--root requires a workspace path.");
+      }
+
+      rootDirectory = path.resolve(next);
       index += 1;
+      continue;
     }
+
+    throw new Error(`Unknown gaia server option '${arg}'.`);
   }
 
-  return { host, port, rootDirectory };
+  return {
+    ...(port === undefined ? {} : { port }),
+    ...(rootDirectory === undefined ? {} : { rootDirectory }),
+  };
 }
 
-function toWebRequest(request: IncomingMessage, config: ServerConfig) {
-  const headers = new Headers();
-  for (const [key, value] of Object.entries(request.headers)) {
-    if (typeof value === "string") {
-      headers.set(key, value);
-    } else if (Array.isArray(value)) {
-      headers.set(key, value.join(", "));
-    }
+function makeServerConfig(options: LocalGaiaServerOptions): LocalGaiaServerConfig {
+  return {
+    rootDirectory: path.resolve(
+      options.rootDirectory ?? process.env["INIT_CWD"] ?? process.cwd(),
+    ),
+    serverId: options.serverId ?? `srv_${randomUUID()}`,
+    startedAt: options.startedAt ?? new Date().toISOString(),
+  };
+}
+
+function parsePort(input: string) {
+  if (!/^(?:0|[1-9]\d*)$/u.test(input)) {
+    throw new Error("--port must be an integer from 0 to 65535.");
   }
 
-  const path = request.url ?? "/";
-  return new Request(`http://${config.host}:${config.port}${path}`, {
-    headers,
-    method: request.method ?? "GET",
-  });
+  const port = Number.parseInt(input, 10);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error("--port must be an integer from 0 to 65535.");
+  }
+
+  return port;
 }
 
-function writeWebResponse(
-  response: import("node:http").ServerResponse,
-  webResponse: Response,
-) {
-  response.statusCode = webResponse.status;
-  webResponse.headers.forEach((value, key) => response.setHeader(key, value));
-  webResponse
-    .text()
-    .then((body) => response.end(body))
-    .catch(() => response.end());
+function printHelp() {
+  console.log(`Usage: gaia-server [--port <port>] [--root <workspace>]
+
+Start a foreground loopback-only Gaia local API server.
+
+Options:
+  --port <port>       Bind an explicit loopback port. Defaults to a dynamic port.
+  --root <workspace>  Workspace root. Defaults to INIT_CWD or the current directory.
+`);
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  NodeRuntime.runMain(
+    Effect.suspend(() => runLocalGaiaServer(parseArgs(process.argv.slice(2)))),
+  );
 }

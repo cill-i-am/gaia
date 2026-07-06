@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { runLocalGaiaServer } from "@gaia/server";
 import type {
   BrowserEvidenceRecord,
   BrowserEvidenceRequirement,
@@ -104,6 +105,12 @@ const json = Flag.boolean("json").pipe(
 const serverUrl = Flag.string("server-url").pipe(
   Flag.withDescription(
     "Opt into read-only CLI reads through an already-running local Gaia API server.",
+  ),
+  Flag.optional,
+);
+const serverPort = Flag.integer("port").pipe(
+  Flag.withDescription(
+    "Bind an explicit loopback port. Defaults to a dynamic port.",
   ),
   Flag.optional,
 );
@@ -324,6 +331,11 @@ const artifact = Command.make("artifact", {
       renderRunArtifact,
     ),
   ),
+);
+
+const server = Command.make("server", { port: serverPort }).pipe(
+  Command.withDescription("Start a foreground loopback-only Gaia local API server."),
+  Command.withHandler(({ port }) => runServerCommand(port)),
 );
 
 const publishPr = Command.make("publish-pr", { baseBranch, json, runId }).pipe(
@@ -580,6 +592,7 @@ const cli = Command.make("gaia").pipe(
     doctorCommand,
     resume,
     status,
+    server,
     list,
     events,
     artifact,
@@ -756,6 +769,29 @@ function resolveRunProfilePath(input: string) {
 
 function serverUrlInput(serverUrl: string | undefined) {
   return serverUrl === undefined ? {} : { serverUrl };
+}
+
+function runServerCommand(port: Option.Option<number>) {
+  const portValue = Option.getOrUndefined(port);
+  if (
+    portValue !== undefined &&
+    (!Number.isInteger(portValue) || portValue < 0 || portValue > 65535)
+  ) {
+    return Console.log(
+      "Gaia command failed: --port must be an integer from 0 to 65535.",
+    ).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          process.exitCode = 1;
+        }),
+      ),
+    );
+  }
+
+  return runLocalGaiaServer({
+    rootDirectory: invocationRoot(),
+    ...(portValue === undefined ? {} : { port: portValue }),
+  });
 }
 
 function readStatus(input: {

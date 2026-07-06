@@ -1,12 +1,13 @@
-import { NodeServices } from "@effect/platform-node";
+import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import { describe, expect, it, layer } from "@effect/vitest";
 import { runSpecFile } from "@gaia/runtime";
-import { Effect, FileSystem } from "effect";
+import { Context, Effect, FileSystem, Layer } from "effect";
+import { HttpServer } from "effect/unstable/http";
 import { execFile } from "node:child_process";
-import { createServer, type IncomingMessage } from "node:http";
-import { once } from "node:events";
+import { createServer } from "node:http";
 import { promisify } from "node:util";
-import { handleLocalRunApiRequest } from "../../server/src/api.js";
+import { makeLocalGaiaServerLayer } from "../../server/src/api.js";
+import { loopbackHost } from "../../server/src/discovery.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -17,34 +18,33 @@ describe("gaia CLI local server read parity", () => {
       () =>
         Effect.gen(function* () {
           const cwd = yield* createRunStore("CLI server parity.");
-          const server = yield* startLocalRunServer(cwd);
-          try {
-            const directList = yield* runGaiaJson(cwd, ["list", "--json"]);
-            const serverList = yield* runGaiaJson(cwd, [
-              "list",
-              "--json",
-              "--server-url",
-              server.url,
-            ]);
-            const runId = getRunId(directList);
-            const directStatus = yield* runGaiaJson(cwd, [
-              "status",
-              runId,
-              "--json",
-            ]);
-            const serverStatus = yield* runGaiaJson(cwd, [
-              "status",
-              runId,
-              "--json",
-              "--server-url",
-              server.url,
-            ]);
+          yield* withLocalRunServer(cwd, (server) =>
+            Effect.gen(function* () {
+              const directList = yield* runGaiaJson(cwd, ["list", "--json"]);
+              const serverList = yield* runGaiaJson(cwd, [
+                "list",
+                "--json",
+                "--server-url",
+                server.url,
+              ]);
+              const runId = getRunId(directList);
+              const directStatus = yield* runGaiaJson(cwd, [
+                "status",
+                runId,
+                "--json",
+              ]);
+              const serverStatus = yield* runGaiaJson(cwd, [
+                "status",
+                runId,
+                "--json",
+                "--server-url",
+                server.url,
+              ]);
 
-            expect(serverList).toEqual(directList);
-            expect(serverStatus).toEqual(directStatus);
-          } finally {
-            yield* stopServer(server);
-          }
+              expect(serverList).toEqual(directList);
+              expect(serverStatus).toEqual(directStatus);
+            }),
+          );
         }),
       20_000,
     );
@@ -58,40 +58,39 @@ describe("gaia CLI local server read parity", () => {
           );
           const directList = yield* runGaiaJson(cwd, ["list", "--json"]);
           const runId = getRunId(directList);
-          const server = yield* startLocalRunServer(cwd);
-          try {
-            const directEvents = yield* runGaiaJson(cwd, [
-              "events",
-              runId,
-              "--json",
-            ]);
-            const serverEvents = yield* runGaiaJson(cwd, [
-              "events",
-              runId,
-              "--json",
-              "--server-url",
-              server.url,
-            ]);
-            const directArtifact = yield* runGaiaJson(cwd, [
-              "artifact",
-              runId,
-              "report.json",
-              "--json",
-            ]);
-            const serverArtifact = yield* runGaiaJson(cwd, [
-              "artifact",
-              runId,
-              "report.json",
-              "--json",
-              "--server-url",
-              server.url,
-            ]);
+          yield* withLocalRunServer(cwd, (server) =>
+            Effect.gen(function* () {
+              const directEvents = yield* runGaiaJson(cwd, [
+                "events",
+                runId,
+                "--json",
+              ]);
+              const serverEvents = yield* runGaiaJson(cwd, [
+                "events",
+                runId,
+                "--json",
+                "--server-url",
+                server.url,
+              ]);
+              const directArtifact = yield* runGaiaJson(cwd, [
+                "artifact",
+                runId,
+                "report.json",
+                "--json",
+              ]);
+              const serverArtifact = yield* runGaiaJson(cwd, [
+                "artifact",
+                runId,
+                "report.json",
+                "--json",
+                "--server-url",
+                server.url,
+              ]);
 
-            expect(serverEvents).toEqual(directEvents);
-            expect(serverArtifact).toEqual(directArtifact);
-          } finally {
-            yield* stopServer(server);
-          }
+              expect(serverEvents).toEqual(directEvents);
+              expect(serverArtifact).toEqual(directArtifact);
+            }),
+          );
         }),
       20_000,
     );
@@ -136,7 +135,6 @@ type CliResult = {
 };
 
 type TestServer = {
-  readonly close: () => Promise<void>;
   readonly url: string;
 };
 
@@ -151,53 +149,36 @@ function createRunStore(specBody: string) {
   });
 }
 
-function startLocalRunServer(rootDirectory: string) {
-  return Effect.promise(async () => {
-    const server = createServer((nodeRequest, nodeResponse) => {
-      handleTestRunApiRequest(nodeRequest, rootDirectory).then(
-        async (response) => {
-          nodeResponse.statusCode = response.status;
-          response.headers.forEach((value: string, key: string) => {
-            nodeResponse.setHeader(key, value);
-          });
-          nodeResponse.end(await response.text());
-        },
-        (error: unknown) => {
-          nodeResponse.statusCode = 500;
-          nodeResponse.end(error instanceof Error ? error.message : "server failed");
-        },
-      );
-    });
-
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    const address = server.address();
-    if (address === null || typeof address === "string") {
-      throw new Error("Local test server did not bind to a TCP port.");
-    }
-
-    return {
-      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
-      url: `http://127.0.0.1:${address.port}`,
-    } satisfies TestServer;
-  });
-}
-
-function stopServer(server: TestServer) {
-  return Effect.promise(() => server.close());
-}
-
-async function handleTestRunApiRequest(
-  nodeRequest: IncomingMessage,
+function withLocalRunServer<A, E, R>(
   rootDirectory: string,
+  use: (server: TestServer) => Effect.Effect<A, E, R>,
 ) {
-  const host = nodeRequest.headers.host ?? "127.0.0.1";
-  const method = nodeRequest.method ?? "GET";
-  const request = new Request(`http://${host}${nodeRequest.url ?? "/"}`, { method });
-  return await Effect.runPromise(
-    handleLocalRunApiRequest(request, { rootDirectory }).pipe(
-      Effect.provide(NodeServices.layer),
-    ),
+  return Effect.scopedWith((scope) =>
+    Effect.gen(function* () {
+      const context = yield* Layer.buildWithScope(
+        makeLocalGaiaServerLayer({
+          rootDirectory,
+          serverId: "srv_cli_test",
+          startedAt: "2026-07-06T10:00:00.000Z",
+        }).pipe(
+          Layer.provideMerge(
+            NodeHttpServer.layer(createServer, {
+              host: loopbackHost,
+              port: 0,
+            }),
+          ),
+        ),
+        scope,
+      );
+      const server = Context.get(context, HttpServer.HttpServer);
+      if (server.address._tag !== "TcpAddress") {
+        return yield* Effect.fail(new Error("Test server did not bind to TCP."));
+      }
+
+      return yield* use({
+        url: `http://${loopbackHost}:${server.address.port}`,
+      });
+    }),
   );
 }
 

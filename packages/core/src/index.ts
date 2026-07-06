@@ -34,4 +34,5 @@ export {
   type DogfoodFindingSeverity,
 } from "./retrospective.js";
 export { RunIdSchema, parseRunId, type RunId } from "./run-id.js";
+export * from "./server-api.js";
 export { RunSpec, SpecFrontmatter, parseMarkdownSpec } from "./spec.js";

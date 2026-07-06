@@ -1,268 +1,312 @@
-import type {
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import {
+  ApiBadRequest,
+  ApiConflict,
+  ApiInternalServerError,
+  ApiMethodNotAllowed,
+  ApiNotFound,
+  HealthResponse,
+  LocalGaiaServerApi,
   LocalRunArtifact,
-  LocalRunDetail,
+  LocalRunArtifactSuccess,
+  LocalRunDetailSuccess,
   LocalRunEvents,
+  LocalRunEventsSuccess,
   LocalRunList,
+  LocalRunListPartial,
+  LocalRunListSuccess,
   LocalRunReadDiagnostic,
-} from "@gaia/runtime";
+  LocalRunSummary,
+  type LocalRunReadDiagnosticCodeSchema,
+} from "@gaia/core";
 import {
   listLocalRuns,
   readLocalRun,
   readLocalRunArtifact,
   readLocalRunEvents,
+  type LocalRunArtifact as RuntimeLocalRunArtifact,
+  type LocalRunEvents as RuntimeLocalRunEvents,
+  type LocalRunReadDiagnostic as RuntimeLocalRunReadDiagnostic,
+  type LocalRunSummary as RuntimeLocalRunSummary,
 } from "@gaia/runtime";
-import { Cause, Effect, FileSystem, Path } from "effect";
+import { Cause, Effect, Layer } from "effect";
+import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { serverMetadata, type LocalGaiaServerConfig } from "./discovery.js";
 
-export type LocalRunApiOptions = {
-  readonly rootDirectory?: string;
-};
+type ApiErrorResponse =
+  | ApiBadRequest
+  | ApiConflict
+  | ApiInternalServerError
+  | ApiMethodNotAllowed
+  | ApiNotFound;
 
-export type LocalRunApiSuccess<T> = {
-  readonly data: T;
-  readonly status: "success";
-};
+function makeHealthLive(config: LocalGaiaServerConfig) {
+  return HttpApiBuilder.group(
+    LocalGaiaServerApi,
+    "health",
+    (handlers) =>
+      handlers.handle("health", () =>
+        Effect.gen(function* () {
+          const server = yield* HttpServer.HttpServer;
+          return HealthResponse.make({
+            server: serverMetadata(config, server),
+            status: "ok",
+          });
+        })),
+  );
+}
 
-export type LocalRunApiPartial<T> = {
-  readonly data: T;
-  readonly diagnostics: ReadonlyArray<LocalRunReadDiagnostic>;
-  readonly status: "partial";
-};
+function makeRunsLive(config: LocalGaiaServerConfig) {
+  return HttpApiBuilder.group(LocalGaiaServerApi, "runs", (handlers) =>
+    handlers
+      .handle("listRuns", () =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            listLocalRuns({
+              rootDirectory: config.rootDirectory,
+            }),
+          );
+          if (exit._tag === "Failure") {
+            return yield* Effect.fail(apiErrorFromCause(exit.cause));
+          }
 
-export type LocalRunApiError = {
-  readonly error: LocalRunReadDiagnostic | MethodNotAllowedDiagnostic | NotFoundDiagnostic;
-  readonly status: "error";
-};
+          const runs = exit.value;
+          const data = LocalRunList.make({
+            diagnostics: runs.diagnostics.map(localRunReadDiagnostic),
+            runs: runs.runs.map(localRunSummary),
+          });
 
-export type MethodNotAllowedDiagnostic = {
-  readonly code: "MethodNotAllowed";
-  readonly message: string;
-  readonly recoverable: false;
-};
+          if (runs.diagnostics.length === 0) {
+            return LocalRunListSuccess.make({ data, status: "success" });
+          }
 
-export type NotFoundDiagnostic = {
-  readonly code: "EndpointNotFound";
-  readonly message: string;
-  readonly recoverable: false;
-};
+          return LocalRunListPartial.make({
+            data,
+            diagnostics: data.diagnostics,
+            status: "partial",
+          });
+        }))
+      .handle("createRun", () =>
+        Effect.fail(
+          ApiMethodNotAllowed.make({
+            error: LocalRunReadDiagnostic.make({
+              code: "MethodNotAllowed",
+              message: "Run creation is not implemented in this server slice.",
+              recoverable: false,
+            }),
+            status: "error",
+          }),
+        ))
+      .handle("getRun", ({ params }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            readLocalRun(params.runId, { rootDirectory: config.rootDirectory }),
+          );
 
-export type LocalRunApiEnvelope<T> =
-  | LocalRunApiError
-  | LocalRunApiPartial<T>
-  | LocalRunApiSuccess<T>;
+          if (exit._tag === "Success") {
+            return LocalRunDetailSuccess.make({
+              data: localRunSummary(exit.value),
+              status: "success",
+            });
+          }
 
-export function handleLocalRunApiRequest(
-  request: Request,
-  options: LocalRunApiOptions = {},
-): Effect.Effect<
-  globalThis.Response,
-  unknown,
-  FileSystem.FileSystem | Path.Path
-> {
-  return Effect.gen(function* () {
-    const url = new URL(request.url);
-    const route = parseRoute(url.pathname);
+          return yield* Effect.fail(apiErrorFromCause(exit.cause));
+        }))
+      .handle("getRunEvents", ({ params }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            readLocalRunEvents(params.runId, {
+              rootDirectory: config.rootDirectory,
+            }),
+          );
 
-    if (request.method !== "GET") {
-      return jsonResponse(
-        {
-          error: {
-            code: "MethodNotAllowed",
-            message: "Local Gaia API is read-only.",
-            recoverable: false,
-          },
-          status: "error",
-        } satisfies LocalRunApiError,
-        405,
-      );
-    }
+          if (exit._tag === "Success") {
+            return LocalRunEventsSuccess.make({
+              data: localRunEvents(exit.value),
+              status: "success",
+            });
+          }
 
-    if (route._tag === "ListRuns") {
-      const runs = yield* listLocalRuns(options);
-      const status = runs.diagnostics.length === 0 ? "success" : "partial";
-      if (status === "success") {
-        return jsonResponse({
-          data: runs,
-          status,
-        } satisfies LocalRunApiSuccess<LocalRunList>);
-      }
+          return yield* Effect.fail(apiErrorFromCause(exit.cause));
+        }))
+      .handle("streamRunEvents", () =>
+        Effect.fail(
+          ApiMethodNotAllowed.make({
+            error: LocalRunReadDiagnostic.make({
+              code: "MethodNotAllowed",
+              message: "Event streaming is not implemented in this server slice.",
+              recoverable: false,
+            }),
+            status: "error",
+          }),
+        ))
+      .handle("getArtifact", ({ params }) =>
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(
+            readLocalRunArtifact(params.runId, params.artifactId, {
+              rootDirectory: config.rootDirectory,
+            }),
+          );
 
-      return jsonResponse({
-        data: runs,
-        diagnostics: runs.diagnostics,
-        status,
-      } satisfies LocalRunApiPartial<LocalRunList>);
-    }
+          if (exit._tag === "Success") {
+            return LocalRunArtifactSuccess.make({
+              data: localRunArtifact(exit.value),
+              status: "success",
+            });
+          }
 
-    if (route._tag === "ReadRun") {
-      const exit = yield* Effect.exit(readLocalRun(route.runId, options));
-      if (exit._tag === "Success") {
-        return jsonResponse({
-          data: exit.value,
-          status: "success",
-        } satisfies LocalRunApiSuccess<LocalRunDetail>);
-      }
+          return yield* Effect.fail(apiErrorFromCause(exit.cause));
+        })),
+  );
+}
 
-      return diagnosticResponse(exit.cause, 422);
-    }
+export function makeLocalGaiaServerLayer(config: LocalGaiaServerConfig) {
+  const handlers = Layer.mergeAll(makeHealthLive(config), makeRunsLive(config));
+  const api = Layer.mergeAll(
+    HttpApiBuilder.layer(LocalGaiaServerApi).pipe(Layer.provide(handlers)),
+    makeNotFoundLive(),
+  );
 
-    if (route._tag === "ReadEvents") {
-      const exit = yield* Effect.exit(readLocalRunEvents(route.runId, options));
-      if (exit._tag === "Success") {
-        return jsonResponse({
-          data: exit.value,
-          status: "success",
-        } satisfies LocalRunApiSuccess<LocalRunEvents>);
-      }
+  return HttpRouter.serve(api, {
+    disableListenLog: true,
+    disableLogger: true,
+  }).pipe(Layer.provide(NodeServices.layer));
+}
 
-      return diagnosticResponse(exit.cause, 422);
-    }
+function makeNotFoundLive() {
+  return HttpRouter.add("*", "/*", endpointNotFoundResponse());
+}
 
-    if (route._tag === "ReadArtifact") {
-      const exit = yield* Effect.exit(
-        readLocalRunArtifact(route.runId, route.artifactName, options),
-      );
-      if (exit._tag === "Success") {
-        return jsonResponse({
-          data: exit.value,
-          status: "success",
-        } satisfies LocalRunApiSuccess<LocalRunArtifact>);
-      }
+function endpointNotFoundResponse() {
+  return HttpServerResponse.jsonUnsafe(
+    ApiNotFound.make({
+      error: LocalRunReadDiagnostic.make({
+        code: "EndpointNotFound",
+        message: "Endpoint does not exist.",
+        recoverable: false,
+      }),
+      status: "error",
+    }),
+    { status: 404 },
+  );
+}
 
-      return diagnosticResponse(exit.cause, 404);
-    }
-
-    return jsonResponse(
-      {
-        error: {
-          code: "EndpointNotFound",
-          message: "Endpoint does not exist.",
-          recoverable: false,
-        },
-        status: "error",
-      } satisfies LocalRunApiError,
-      404,
-    );
+function localRunSummary(run: RuntimeLocalRunSummary) {
+  return LocalRunSummary.make({
+    artifacts: [...run.artifacts],
+    createdAt: run.createdAt,
+    eventCount: run.eventCount,
+    latestEventType: run.latestEventType,
+    runId: run.runId,
+    state: run.state,
+    status: run.status,
+    updatedAt: run.updatedAt,
   });
 }
 
-type Route =
-  | { readonly _tag: "ListRuns" }
-  | { readonly _tag: "NotFound" }
-  | { readonly _tag: "ReadArtifact"; readonly artifactName: string; readonly runId: string }
-  | { readonly _tag: "ReadEvents"; readonly runId: string }
-  | { readonly _tag: "ReadRun"; readonly runId: string };
-
-function parseRoute(pathname: string): Route {
-  const segments = decodePathSegments(pathname);
-  if (segments === undefined) {
-    return { _tag: "NotFound" };
-  }
-
-  if (segments.length === 1 && segments[0] === "runs") {
-    return { _tag: "ListRuns" };
-  }
-
-  if (segments.length === 2 && segments[0] === "runs") {
-    const runId = segments[1];
-    if (runId !== undefined) {
-      return { _tag: "ReadRun", runId };
-    }
-  }
-
-  if (segments.length === 3 && segments[0] === "runs" && segments[2] === "events") {
-    const runId = segments[1];
-    if (runId !== undefined) {
-      return { _tag: "ReadEvents", runId };
-    }
-  }
-
-  if (segments.length === 4 && segments[0] === "runs" && segments[2] === "artifacts") {
-    const runId = segments[1];
-    const artifactName = segments[3];
-    if (runId !== undefined && artifactName !== undefined) {
-      return { _tag: "ReadArtifact", artifactName, runId };
-    }
-  }
-
-  return { _tag: "NotFound" };
+function localRunEvents(events: RuntimeLocalRunEvents) {
+  return LocalRunEvents.make({
+    events: [...events.events],
+    runId: events.runId,
+  });
 }
 
-function decodePathSegments(pathname: string): ReadonlyArray<string> | undefined {
-  const segments: Array<string> = [];
-  for (const segment of pathname.split("/")) {
-    if (segment.length === 0) {
-      continue;
-    }
+function localRunArtifact(artifact: RuntimeLocalRunArtifact) {
+  return LocalRunArtifact.make({
+    artifactName: artifact.artifactName,
+    body: artifact.body,
+    contentType: artifact.contentType,
+    runId: artifact.runId,
+  });
+}
 
-    try {
-      segments.push(decodeURIComponent(segment));
-    } catch {
-      return undefined;
+function localRunReadDiagnostic(diagnostic: RuntimeLocalRunReadDiagnostic) {
+  return LocalRunReadDiagnostic.make({
+    ...(diagnostic.artifactName === undefined
+      ? {}
+      : { artifactName: diagnostic.artifactName }),
+    code: diagnostic.code,
+    message: diagnostic.message,
+    ...(diagnostic.pathSegment === undefined
+      ? {}
+      : { pathSegment: diagnostic.pathSegment }),
+    recoverable: diagnostic.recoverable,
+    ...(diagnostic.runId === undefined ? {} : { runId: diagnostic.runId }),
+  });
+}
+
+function apiErrorFromCause(cause: Cause.Cause<unknown>): ApiErrorResponse {
+  return apiErrorFromDiagnostic(diagnosticFromCause(cause));
+}
+
+function diagnosticFromCause(cause: Cause.Cause<unknown>) {
+  for (const reason of cause.reasons) {
+    if (Cause.isFailReason(reason) && isRuntimeDiagnostic(reason.error)) {
+      return localRunReadDiagnostic(reason.error);
     }
   }
 
-  return segments;
-}
-
-function diagnosticResponse(cause: unknown, fallbackStatus: number) {
-  const diagnostic = causeToDiagnostic(cause);
-  return jsonResponse(
-    {
-      error: diagnostic,
-      status: "error",
-    } satisfies LocalRunApiError,
-    diagnosticStatus(diagnostic, fallbackStatus),
-  );
-}
-
-function causeToDiagnostic(cause: unknown): LocalRunReadDiagnostic {
-  if (Cause.isCause(cause)) {
-    for (const reason of cause.reasons) {
-      if (Cause.isFailReason(reason) && isDiagnostic(reason.error)) {
-        return reason.error;
-      }
-    }
-  }
-
-  return {
+  return LocalRunReadDiagnostic.make({
     code: "RunUnreadable",
     message: "Run could not be read from events.jsonl.",
     recoverable: false,
-  };
+  });
 }
 
-function isDiagnostic(input: unknown): input is LocalRunReadDiagnostic {
-  return (
-    typeof input === "object" &&
-    input !== null &&
-    "code" in input &&
-    "message" in input &&
-    "recoverable" in input
-  );
-}
-
-function diagnosticStatus(
-  diagnostic: LocalRunReadDiagnostic,
-  fallbackStatus: number,
-): number {
+function apiErrorFromDiagnostic(diagnostic: LocalRunReadDiagnostic): ApiErrorResponse {
   if (diagnostic.code === "InvalidRunId") {
-    return 400;
+    return ApiBadRequest.make({ error: diagnostic, status: "error" });
   }
 
   if (
     diagnostic.code === "ArtifactNotAllowed" ||
     diagnostic.code === "ArtifactNotFound" ||
+    diagnostic.code === "EndpointNotFound" ||
     diagnostic.code === "RunNotFound"
   ) {
-    return 404;
+    return ApiNotFound.make({ error: diagnostic, status: "error" });
   }
 
-  return fallbackStatus;
+  if (diagnostic.code === "MethodNotAllowed") {
+    return ApiMethodNotAllowed.make({ error: diagnostic, status: "error" });
+  }
+
+  return ApiInternalServerError.make({ error: diagnostic, status: "error" });
 }
 
-function jsonResponse(body: LocalRunApiEnvelope<unknown>, status = 200) {
-  return new Response(JSON.stringify(body), {
-    headers: { "content-type": "application/json; charset=utf-8" },
-    status,
-  });
+function isRuntimeDiagnostic(
+  input: unknown,
+): input is RuntimeLocalRunReadDiagnostic {
+  if (typeof input !== "object" || input === null) {
+    return false;
+  }
+
+  if (
+    !("code" in input) ||
+    !("message" in input) ||
+    !("recoverable" in input)
+  ) {
+    return false;
+  }
+
+  return (
+    isDiagnosticCode(input.code) &&
+    typeof input.message === "string" &&
+    typeof input.recoverable === "boolean"
+  );
+}
+
+function isDiagnosticCode(
+  code: unknown,
+): code is typeof LocalRunReadDiagnosticCodeSchema.Type {
+  return (
+    code === "ArtifactNotAllowed" ||
+    code === "ArtifactNotFound" ||
+    code === "InvalidRunDirectory" ||
+    code === "InvalidRunId" ||
+    code === "RunHasNoEvents" ||
+    code === "RunNotFound" ||
+    code === "RunUnreadable"
+  );
 }

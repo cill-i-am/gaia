@@ -5,6 +5,12 @@
   "bin": {
     "gaia-server": "./dist/main.mjs"
   },
+  "exports": {
+    ".": {
+      "types": "./src/main.ts",
+      "import": "./src/main.ts"
+    }
+  },
   "scripts": {
     "build": "tsdown",
     "check": "tsc --noEmit",
@@ -13,6 +19,7 @@
   },
   "dependencies": {
     "@effect/platform-node": "^4.0.0-beta.93",
+    "@gaia/core": "workspace:*",
     "@gaia/runtime": "workspace:*",
     "effect": "^4.0.0-beta.93"
   },

@@ -1,11 +1,35 @@
-import { NodeServices } from "@effect/platform-node";
-import { assert, describe, it, layer } from "@effect/vitest";
-import { Effect, FileSystem } from "effect";
+import { NodeHttpServer } from "@effect/platform-node";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, describe, layer } from "@effect/vitest";
 import { runSpecFile } from "@gaia/runtime";
-import { handleLocalRunApiRequest } from "./api.js";
+import { Effect, FileSystem, Layer } from "effect";
+import {
+  HttpBody,
+  HttpClient,
+  type HttpClientResponse,
+} from "effect/unstable/http";
+import { makeLocalGaiaServerLayer } from "./api.js";
 
-describe("local run api http boundary", () => {
+describe("local Gaia server HttpApi boundary", () => {
   layer(NodeServices.layer)((it) => {
+    it.effect("serves health with workspace identity through NodeHttpServer", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const response = yield* request(cwd, HttpClient.get("/health"));
+        const body = yield* responseJsonObject(response);
+        const server = getObject(body, "server");
+
+        assert.strictEqual(response.status, 200);
+        assert.strictEqual(getString(body, "status"), "ok");
+        assert.strictEqual(getString(server, "workspaceRoot"), cwd);
+        assert.strictEqual(getString(server, "gaiaRoot"), `${cwd}/.gaia`);
+        assert.strictEqual(getString(server, "host"), "127.0.0.1");
+        assert.isAbove(getNumber(server, "port"), 0);
+        assert.include(getString(server, "url"), "http://127.0.0.1:");
+      }),
+    );
+
     it.effect("returns run summaries with partial diagnostics", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -15,10 +39,7 @@ describe("local run api http boundary", () => {
         const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
         yield* fs.makeDirectory(`${cwd}/.gaia/runs/run-not-valid`);
 
-        const response = yield* handleLocalRunApiRequest(
-          new Request("http://127.0.0.1/runs"),
-          { rootDirectory: cwd },
-        );
+        const response = yield* request(cwd, HttpClient.get("/runs"));
         const body = yield* responseJsonObject(response);
         const data = getObject(body, "data");
         const runs = getArray(data, "runs");
@@ -29,7 +50,10 @@ describe("local run api http boundary", () => {
         assert.strictEqual(response.status, 200);
         assert.strictEqual(getString(body, "status"), "partial");
         assert.strictEqual(getString(firstRun, "runId"), summary.runId);
-        assert.strictEqual(getString(firstDiagnostic, "code"), "InvalidRunDirectory");
+        assert.strictEqual(
+          getString(firstDiagnostic, "code"),
+          "InvalidRunDirectory",
+        );
       }),
     );
 
@@ -41,13 +65,13 @@ describe("local run api http boundary", () => {
         yield* fs.writeFileString(specPath, "Serve events.\n");
         const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
 
-        const detailResponse = yield* handleLocalRunApiRequest(
-          new Request(`http://127.0.0.1/runs/${summary.runId}`),
-          { rootDirectory: cwd },
+        const detailResponse = yield* request(
+          cwd,
+          HttpClient.get(`/runs/${summary.runId}`),
         );
-        const eventsResponse = yield* handleLocalRunApiRequest(
-          new Request(`http://127.0.0.1/runs/${summary.runId}/events`),
-          { rootDirectory: cwd },
+        const eventsResponse = yield* request(
+          cwd,
+          HttpClient.get(`/runs/${summary.runId}/events`),
         );
         const detail = yield* responseJsonObject(detailResponse);
         const events = yield* responseJsonObject(eventsResponse);
@@ -59,7 +83,10 @@ describe("local run api http boundary", () => {
         assert.strictEqual(eventsResponse.status, 200);
         assert.strictEqual(getString(detailData, "runId"), summary.runId);
         assert.strictEqual(getString(eventsData, "runId"), summary.runId);
-        assert.strictEqual(eventItems.length, getNumber(detailData, "eventCount"));
+        assert.strictEqual(
+          eventItems.length,
+          getNumber(detailData, "eventCount"),
+        );
       }),
     );
 
@@ -71,9 +98,9 @@ describe("local run api http boundary", () => {
         yield* fs.writeFileString(specPath, "Serve artifacts.\n");
         const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
 
-        const response = yield* handleLocalRunApiRequest(
-          new Request(`http://127.0.0.1/runs/${summary.runId}/artifacts/report.json`),
-          { rootDirectory: cwd },
+        const response = yield* request(
+          cwd,
+          HttpClient.get(`/runs/${summary.runId}/artifacts/report.json`),
         );
         const body = yield* responseJsonObject(response);
         const data = getObject(body, "data");
@@ -85,58 +112,93 @@ describe("local run api http boundary", () => {
       }),
     );
 
-    it.effect("rejects malformed ids, path-like artifacts, and mutation methods", () =>
-      Effect.gen(function* () {
-        const badRun = yield* handleLocalRunApiRequest(
-          new Request("http://127.0.0.1/runs/not-a-run"),
-          { rootDirectory: "." },
-        );
-        const badArtifact = yield* handleLocalRunApiRequest(
-          new Request("http://127.0.0.1/runs/run-V7kP9sQ2xY/artifacts/..%2Fevents.jsonl"),
-          { rootDirectory: "." },
-        );
-        const post = yield* handleLocalRunApiRequest(
-          new Request("http://127.0.0.1/runs", { method: "POST" }),
-          { rootDirectory: "." },
-        );
-        const malformedPath = yield* handleLocalRunApiRequest(
-          new Request("http://127.0.0.1/runs/%E0%A4%A"),
-          { rootDirectory: "." },
-        );
-        const badRunBody = yield* responseJsonObject(badRun);
-        const badArtifactBody = yield* responseJsonObject(badArtifact);
-        const postBody = yield* responseJsonObject(post);
-        const malformedPathBody = yield* responseJsonObject(malformedPath);
-        const badRunError = getObject(badRunBody, "error");
-        const badArtifactError = getObject(badArtifactBody, "error");
-        const postError = getObject(postBody, "error");
-        const malformedPathError = getObject(malformedPathBody, "error");
+    it.effect(
+      "rejects malformed ids, path-like artifacts, and future mutations/streams",
+      () =>
+        Effect.gen(function* () {
+          const badRun = yield* request(".", HttpClient.get("/runs/not-a-run"));
+          const badArtifact = yield* request(
+            ".",
+            HttpClient.get("/runs/run-V7kP9sQ2xY/artifacts/..%2Fevents.jsonl"),
+          );
+          const post = yield* request(
+            ".",
+            HttpClient.post("/runs", {
+              body: HttpBody.jsonUnsafe({
+                specMarkdown: "Not implemented here.",
+              }),
+            }),
+          );
+          const stream = yield* request(
+            ".",
+            HttpClient.get("/runs/run-V7kP9sQ2xY/events/stream"),
+          );
+          const unknown = yield* request(".", HttpClient.get("/not-found"));
+          const badRunBody = yield* responseJsonObject(badRun);
+          const badArtifactBody = yield* responseJsonObject(badArtifact);
+          const postBody = yield* responseJsonObject(post);
+          const streamBody = yield* responseJsonObject(stream);
+          const unknownBody = yield* responseJsonObject(unknown);
+          const badRunError = getObject(badRunBody, "error");
+          const badArtifactError = getObject(badArtifactBody, "error");
+          const postError = getObject(postBody, "error");
+          const streamError = getObject(streamBody, "error");
+          const unknownError = getObject(unknownBody, "error");
 
-        assert.strictEqual(badRun.status, 400);
-        assert.strictEqual(getString(badRunError, "code"), "InvalidRunId");
-        assert.strictEqual(badArtifact.status, 404);
-        assert.strictEqual(getString(badArtifactError, "code"), "ArtifactNotAllowed");
-        assert.strictEqual(post.status, 405);
-        assert.strictEqual(getString(postError, "code"), "MethodNotAllowed");
-        assert.strictEqual(malformedPath.status, 404);
-        assert.strictEqual(getString(malformedPathError, "code"), "EndpointNotFound");
-      }),
+          assert.strictEqual(badRun.status, 400);
+          assert.strictEqual(getString(badRunError, "code"), "InvalidRunId");
+          assert.strictEqual(badArtifact.status, 404);
+          assert.strictEqual(
+            getString(badArtifactError, "code"),
+            "ArtifactNotAllowed",
+          );
+          assert.strictEqual(post.status, 405);
+          assert.strictEqual(getString(postError, "code"), "MethodNotAllowed");
+          assert.strictEqual(stream.status, 405);
+          assert.strictEqual(
+            getString(streamError, "code"),
+            "MethodNotAllowed",
+          );
+          assert.strictEqual(unknown.status, 404);
+          assert.strictEqual(
+            getString(unknownError, "code"),
+            "EndpointNotFound",
+          );
+        }),
     );
   });
 });
 
-function responseJsonObject(response: Response) {
-  return Effect.tryPromise({
-    try: async () => {
-      const parsed: unknown = JSON.parse(await response.text());
+function request<E, R>(
+  rootDirectory: string,
+  effect: Effect.Effect<
+    HttpClientResponse.HttpClientResponse,
+    E,
+    R | HttpClient.HttpClient
+  >,
+) {
+  return effect.pipe(Effect.provide(testServerLayer(rootDirectory)));
+}
+
+function testServerLayer(rootDirectory: string) {
+  return makeLocalGaiaServerLayer({
+    rootDirectory,
+    serverId: "srv_test",
+    startedAt: "2026-07-06T10:00:00.000Z",
+  }).pipe(Layer.provideMerge(NodeHttpServer.layerTest));
+}
+
+function responseJsonObject(response: HttpClientResponse.HttpClientResponse) {
+  return response.json.pipe(
+    Effect.flatMap((parsed) => {
       if (isJsonObject(parsed)) {
-        return parsed;
+        return Effect.succeed(parsed);
       }
 
-      throw new Error("Response JSON was not an object.");
-    },
-    catch: () => new Error("Response was not JSON."),
-  });
+      return Effect.fail(new Error("Response JSON was not an object."));
+    }),
+    Effect.mapError(() => new Error("Response was not JSON.")),
+  );
 }
 
 function getObject(

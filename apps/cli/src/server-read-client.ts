@@ -1,8 +1,9 @@
 import {
-  EventTypeSchema,
-  RunEvent,
-  RunIdSchema,
-  RunStateSchema,
+  LocalRunArtifact as LocalRunArtifactDto,
+  LocalRunEvents as LocalRunEventsDto,
+  LocalRunList as LocalRunListDto,
+  LocalRunReadDiagnostic as LocalRunReadDiagnosticDto,
+  LocalRunSummary as LocalRunSummaryDto,
 } from "@gaia/core";
 import {
   makeRunPaths,
@@ -10,75 +11,9 @@ import {
   type CommandSummary,
   type LocalRunArtifact,
   type LocalRunEvents,
-  type LocalRunReadDiagnostic,
   type LocalRunSummary,
 } from "@gaia/runtime";
 import { Effect, Schema } from "effect";
-
-const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
-    "ArtifactNotAllowed",
-    "ArtifactNotFound",
-    "InvalidRunDirectory",
-    "InvalidRunId",
-    "RunHasNoEvents",
-    "RunNotFound",
-    "RunUnreadable",
-  ] as const);
-const LocalRunStatusSchema = Schema.Literals([
-  "completed",
-  "failed",
-  "running",
-] as const);
-const LocalRunArtifactContentTypeSchema = Schema.Literals([
-  "application/json",
-  "text/markdown",
-  "text/plain",
-] as const);
-
-class LocalRunReadDiagnosticDto extends Schema.Class<LocalRunReadDiagnosticDto>(
-  "LocalRunReadDiagnosticDto",
-)({
-  artifactName: Schema.optionalKey(Schema.String),
-  code: LocalRunReadDiagnosticCodeSchema,
-  message: Schema.String,
-  pathSegment: Schema.optionalKey(Schema.String),
-  recoverable: Schema.Boolean,
-  runId: Schema.optionalKey(RunIdSchema),
-}) {}
-
-class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
-  "LocalRunSummaryDto",
-)({
-  artifacts: Schema.Array(Schema.String),
-  createdAt: Schema.String,
-  eventCount: Schema.Number,
-  latestEventType: EventTypeSchema,
-  runId: RunIdSchema,
-  state: RunStateSchema,
-  status: LocalRunStatusSchema,
-  updatedAt: Schema.String,
-}) {}
-
-class LocalRunListDto extends Schema.Class<LocalRunListDto>("LocalRunListDto")({
-  diagnostics: Schema.Array(LocalRunReadDiagnosticDto),
-  runs: Schema.Array(LocalRunSummaryDto),
-}) {}
-
-class LocalRunEventsDto extends Schema.Class<LocalRunEventsDto>(
-  "LocalRunEventsDto",
-)({
-  events: Schema.Array(RunEvent),
-  runId: RunIdSchema,
-}) {}
-
-class LocalRunArtifactDto extends Schema.Class<LocalRunArtifactDto>(
-  "LocalRunArtifactDto",
-)({
-  artifactName: Schema.String,
-  body: Schema.String,
-  contentType: LocalRunArtifactContentTypeSchema,
-  runId: RunIdSchema,
-}) {}
 
 const decodeJsonObject = Schema.decodeUnknownSync(
   Schema.Record(Schema.String, Schema.Unknown),
@@ -97,7 +32,7 @@ type ParsedServerEnvelope =
       readonly status: "partial" | "success";
     }
   | {
-      readonly error: LocalRunReadDiagnostic;
+      readonly error: LocalRunReadDiagnosticDto;
       readonly status: "error";
     };
 
@@ -237,7 +172,7 @@ function parseEnvelope(
 
       if (status === "error") {
         return {
-          error: toLocalRunDiagnostic(decodeLocalRunDiagnostic(envelope["error"])),
+          error: decodeLocalRunDiagnostic(envelope["error"]),
           status,
         };
       }
@@ -321,24 +256,7 @@ function toLocalRunArtifact(input: LocalRunArtifactDto) {
   } satisfies LocalRunArtifact;
 }
 
-function toLocalRunDiagnostic(
-  input: LocalRunReadDiagnosticDto,
-): LocalRunReadDiagnostic {
-  return {
-    ...(input.artifactName === undefined
-      ? {}
-      : { artifactName: input.artifactName }),
-    code: input.code,
-    message: input.message,
-    ...(input.pathSegment === undefined
-      ? {}
-      : { pathSegment: input.pathSegment }),
-    recoverable: input.recoverable,
-    ...(input.runId === undefined ? {} : { runId: input.runId }),
-  };
-}
-
-function runtimeErrorFromDiagnostic(diagnostic: LocalRunReadDiagnostic) {
+function runtimeErrorFromDiagnostic(diagnostic: LocalRunReadDiagnosticDto) {
   return makeRuntimeError({
     code: diagnostic.code,
     message: diagnostic.message,
