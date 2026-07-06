@@ -73,6 +73,7 @@ import {
   prepareWorkspace,
   type WorkspaceSource,
 } from "./workspace.js";
+import { encodeWorkspaceDiffSummaryJson } from "./workspace-snapshot.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -232,11 +233,19 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
         ...(harnessResult.browserTargetUrl === undefined
           ? {}
           : { browserTargetUrl: harnessResult.browserTargetUrl }),
+        changedWorkspacePaths: harnessResult.changedWorkspacePaths,
         harnessName: harnessResult.harnessName,
         outputArtifacts: harnessResult.outputArtifacts,
         ...(previewDeploymentTargetUrl === undefined
           ? {}
           : { previewDeploymentUrl: previewDeploymentTargetUrl }),
+        ...(harnessResult.workspaceDiff === undefined
+          ? {}
+          : {
+              workspaceDiff: encodeWorkspaceDiffSummaryJson(
+                harnessResult.workspaceDiff,
+              ),
+            }),
         workerResultPath: harnessResult.resultPath,
       },
       type: "WORKER_COMPLETED",

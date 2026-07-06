@@ -50,6 +50,7 @@ import {
   type GitHubCommandRunner,
 } from "./github-publisher.js";
 import {
+  HarnessRunResult,
   codexHarnessName,
   makeProcessHarnessConfig,
   parseHarnessName,
@@ -84,6 +85,11 @@ import {
 } from "./workflows.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
 import { verifyHarnessOutput } from "./verifier.js";
+
+const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
+const parseHarnessRunResultJson = Schema.decodeUnknownSync(
+  HarnessRunResultJson,
+);
 
 describe("runtime workflows", () => {
   layer(NodeServices.layer)((it) => {
@@ -1799,6 +1805,86 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("summarizes generated workspace churn in harness evidence", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const scriptPath = `${cwd}/process-harness.mjs`;
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          scriptPath,
+          [
+            "import { mkdirSync, writeFileSync } from 'node:fs';",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/src`, { recursive: true });",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/node_modules/noisy`, { recursive: true });",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/dist/assets`, { recursive: true });",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/.turbo/cache`, { recursive: true });",
+            "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness ${process.env.GAIA_RUN_ID}\\n`);",
+            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/README.md`, '# Product change\\n');",
+            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/src/feature.ts`, 'export const enabled = true;\\n');",
+            "for (let index = 0; index < 80; index += 1) {",
+            "  writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/node_modules/noisy/file-${index}.js`, `module.exports = ${index};\\n`);",
+            "  writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/dist/assets/chunk-${index}.js`, `console.log(${index});\\n`);",
+            "}",
+            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/.turbo/cache/trace.log`, 'cache metadata\\n');",
+          ].join("\n"),
+        );
+        yield* fs.writeFileString(specPath, "Run with generated churn.\n");
+
+        const summary = yield* runSpecFile(specPath, {
+          harnessName: parseHarnessName("process"),
+          processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+          rootDirectory: cwd,
+        });
+
+        const harnessResult = parseHarnessRunResultJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/worker-result.json`,
+            ),
+          ),
+        );
+        const evidenceReview = yield* fs.readFileString(
+          `${summary.runDirectory}/evidence-review.md`,
+        );
+        const workspaceDiff = harnessResult.workspaceDiff;
+        const encoded = JSON.stringify(harnessResult);
+
+        assert.isDefined(workspaceDiff);
+        if (workspaceDiff === undefined) {
+          assert.fail("Expected process harness to write workspace diff evidence.");
+        }
+        assert.deepEqual(harnessResult.changedWorkspacePaths, [
+          "README.md",
+          "output.txt",
+          "src/feature.ts",
+        ]);
+        assert.deepEqual(workspaceDiff.productChangedPaths, [
+          "README.md",
+          "output.txt",
+          "src/feature.ts",
+        ]);
+        assert.deepEqual(
+          workspaceDiff.omittedGeneratedPaths.map((entry) => entry.path),
+          [".turbo", "dist", "node_modules"],
+        );
+        assert.include(
+          workspaceDiff.omittedGeneratedPaths[0]?.reason,
+          "generated",
+        );
+        assert.isBelow(encoded.length, 5_000);
+        assert.notInclude(encoded, "node_modules/noisy/file-79.js");
+        assert.notInclude(encoded, "dist/assets/chunk-79.js");
+        assert.notInclude(encoded, ".turbo/cache/trace.log");
+        assert.include(evidenceReview, "Workspace product changes (3)");
+        assert.include(
+          evidenceReview,
+          "Generated workspace paths omitted from product diff evidence (3)",
+        );
+        assert.include(evidenceReview, "node_modules");
+      }),
+    );
+
     it.effect("fails fast when the process harness command is missing", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -2128,6 +2214,59 @@ describe("runtime workflows", () => {
             ["git", "checkout"],
           ],
         );
+      }),
+    );
+
+    it.effect("copies bounded workspace diff evidence into a GitHub evidence PR", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const scriptPath = `${cwd}/process-harness.mjs`;
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          scriptPath,
+          [
+            "import { mkdirSync, writeFileSync } from 'node:fs';",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/node_modules/noisy`, { recursive: true });",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/dist`, { recursive: true });",
+            "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness ${process.env.GAIA_RUN_ID}\\n`);",
+            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/src.ts`, 'export const changed = true;\\n');",
+            "for (let index = 0; index < 80; index += 1) {",
+            "  writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/node_modules/noisy/file-${index}.js`, `module.exports = ${index};\\n`);",
+            "  writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/dist/chunk-${index}.js`, `console.log(${index});\\n`);",
+            "}",
+          ].join("\n"),
+        );
+        yield* fs.writeFileString(specPath, "Publish bounded evidence.\n");
+        const summary = yield* runSpecFile(specPath, {
+          harnessName: parseHarnessName("process"),
+          processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+          rootDirectory: cwd,
+        });
+        const commands: Array<GitHubCommandInput> = [];
+        const runner = githubPublishingRunner(commands, {
+          prUrl: "https://github.com/cill-i-am/gaia/pull/789\n",
+        });
+
+        const pr = yield* publishRunToGitHub(summary.runId, {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+
+        const copiedWorkerResult = yield* fs.readFileString(
+          `${cwd}/gaia-runs/${summary.runId}/worker-result.json`,
+        );
+        assert.strictEqual(
+          pr.prUrl,
+          "https://github.com/cill-i-am/gaia/pull/789",
+        );
+        assert.include(copiedWorkerResult, '"workspaceDiff": {');
+        assert.include(copiedWorkerResult, '"src.ts"');
+        assert.include(copiedWorkerResult, '"node_modules"');
+        assert.include(copiedWorkerResult, '"dist"');
+        assert.notInclude(copiedWorkerResult, "node_modules/noisy/file-79.js");
+        assert.notInclude(copiedWorkerResult, "dist/chunk-79.js");
+        assert.isBelow(copiedWorkerResult.length, 5_000);
       }),
     );
 
