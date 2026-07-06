@@ -2446,6 +2446,97 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("reports the active PR-loop operation when the run store is locked", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Lock with metadata.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        yield* fs.makeDirectory(store.lock);
+        yield* fs.writeFileString(
+          `${store.lock}/metadata.json`,
+          `${JSON.stringify({
+            acquiredAt: "2026-07-05T10:00:00.000Z",
+            nextSafeAction: "Wait for the active command, then rerun pnpm gaia pr-loop.",
+            operation: "GitHub CI watch",
+            version: 1,
+          })}\n`,
+        );
+
+        const error = yield* Effect.flip(
+          watchGitHubFeedback(run.runId, "1", {
+            commandRunner: recordingGitHubRunner([], () => ({
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify(prFeedbackView()),
+            })),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "RunStoreLocked");
+          assert.isTrue(error.recoverable);
+          assert.include(error.message, "GitHub CI watch");
+          assert.include(error.message, "rerun pnpm gaia pr-loop");
+        }
+      }),
+    );
+
+    it.effect("reuses GitHub check evidence for the same run, PR, and head", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Idempotent checks.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const runner = recordingGitHubRunner([], (input) => {
+          const args = input.args.join(" ");
+          if (args === "pr view 1 --json headRefOid") {
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify({ headRefOid: "abc123" }),
+            };
+          }
+
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify([
+              {
+                link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                name: "check",
+                state: "SUCCESS",
+                workflow: "CI",
+              },
+            ]),
+          };
+        });
+
+        const first = yield* recordGitHubChecks(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const second = yield* recordGitHubChecks(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const events = yield* readRunEvents(fs, run.runDirectory);
+
+        assert.strictEqual(second.snapshotPath, first.snapshotPath);
+        assert.strictEqual(second.watchStatePath, first.watchStatePath);
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_CHECKS_RECORDED")
+            .length,
+          1,
+        );
+      }),
+    );
+
     it.effect("waits for pending GitHub checks before recording", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -2456,7 +2547,16 @@ describe("runtime workflows", () => {
         let checksCalls = 0;
 
         const recorded = yield* recordGitHubChecks(run.runId, "1", {
-          commandRunner: recordingGitHubRunner([], () => {
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (!input.args.join(" ").startsWith("pr checks")) {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify({ headRefOid: "abc123" }),
+              };
+            }
+
+            const state = checksCalls === 0 ? "PENDING" : "SUCCESS";
             checksCalls += 1;
             return {
               exitCode: 0,
@@ -2465,7 +2565,7 @@ describe("runtime workflows", () => {
                 {
                   link: "https://github.com/cill-i-am/gaia/actions/runs/1",
                   name: "check",
-                  state: checksCalls === 1 ? "PENDING" : "SUCCESS",
+                  state,
                   workflow: "CI",
                 },
               ]),
@@ -2493,8 +2593,10 @@ describe("runtime workflows", () => {
         let checksCalls = 0;
 
         const recorded = yield* recordGitHubChecks(run.runId, "1", {
-          commandRunner: recordingGitHubRunner([], () => {
-            checksCalls += 1;
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (input.args.join(" ").startsWith("pr checks")) {
+              checksCalls += 1;
+            }
             return {
               exitCode: 0,
               stderr: "",
@@ -2804,6 +2906,44 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("reuses PR feedback evidence for the same run, PR, and head", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Idempotent PR feedback.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const runner = recordingGitHubRunner([], () => ({
+          exitCode: 0,
+          stderr: "",
+          stdout: JSON.stringify(
+            prFeedbackView({
+              headRefOid: "abc123",
+              reviewDecision: "APPROVED",
+            }),
+          ),
+        }));
+
+        const first = yield* watchGitHubFeedback(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const second = yield* watchGitHubFeedback(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const events = yield* readRunEvents(fs, run.runDirectory);
+
+        assert.strictEqual(second.feedbackPath, first.feedbackPath);
+        assert.strictEqual(second.status, first.status);
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_FEEDBACK_RECORDED")
+            .length,
+          1,
+        );
+      }),
+    );
+
     it.effect("coordinates changes requested and failed CI as ordered blockers", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -2959,6 +3099,139 @@ describe("runtime workflows", () => {
         assert.strictEqual(summary.nextAction, "ready-for-merge-decision");
         assert.strictEqual(summary.blockerCount, 0);
         assert.strictEqual(summary.blockers.length, 0);
+      }),
+    );
+
+    it.effect("reuses PR-loop evidence for the same run, PR, and head", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Idempotent PR loop.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const runner = recordingGitHubRunner([], (input) => {
+          const args = input.args.join(" ");
+          if (args === "pr view 1 --json headRefOid") {
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify({ headRefOid: "abc123" }),
+            };
+          }
+
+          if (args.startsWith("pr checks")) {
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify([
+                {
+                  link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                  name: "test",
+                  state: "SUCCESS",
+                  workflow: "CI",
+                },
+              ]),
+            };
+          }
+
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify(
+              prFeedbackView({
+                headRefOid: "abc123",
+                reviewDecision: "APPROVED",
+              }),
+            ),
+          };
+        });
+
+        const first = yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const second = yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const events = yield* readRunEvents(fs, run.runDirectory);
+
+        assert.strictEqual(second.checksPath, first.checksPath);
+        assert.strictEqual(second.feedbackPath, first.feedbackPath);
+        assert.strictEqual(second.statePath, first.statePath);
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_CHECKS_RECORDED")
+            .length,
+          1,
+        );
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_FEEDBACK_RECORDED")
+            .length,
+          1,
+        );
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_PR_LOOP_RECORDED")
+            .length,
+          1,
+        );
+      }),
+    );
+
+    it.effect("rejects PR-loop evidence from mismatched PR heads", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Reject mismatched PR heads.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const error = yield* Effect.flip(
+          coordinateGitHubPrLoop(run.runId, "1", {
+            commandRunner: recordingGitHubRunner([], (input) => {
+              const args = input.args.join(" ");
+              if (args === "pr view 1 --json headRefOid") {
+                return {
+                  exitCode: 0,
+                  stderr: "",
+                  stdout: JSON.stringify({ headRefOid: "checks-head" }),
+                };
+              }
+
+              if (args.startsWith("pr checks")) {
+                return {
+                  exitCode: 0,
+                  stderr: "",
+                  stdout: JSON.stringify([
+                    {
+                      link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                      name: "test",
+                      state: "SUCCESS",
+                      workflow: "CI",
+                    },
+                  ]),
+                };
+              }
+
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify(
+                  prFeedbackView({
+                    headRefOid: "feedback-head",
+                    reviewDecision: "APPROVED",
+                  }),
+                ),
+              };
+            }),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "GitHubPrHeadMismatch");
+          assert.isTrue(error.recoverable);
+        }
       }),
     );
 
@@ -3568,6 +3841,7 @@ function writeFrontendRunProfile(
 function prFeedbackView(
   input: Readonly<{
     comments?: ReadonlyArray<unknown>;
+    headRefOid?: string;
     isDraft?: boolean;
     latestReviews?: ReadonlyArray<unknown>;
     reviewDecision?: string | null;
@@ -3576,6 +3850,7 @@ function prFeedbackView(
 ) {
   return {
     comments: input.comments ?? [],
+    ...(input.headRefOid === undefined ? {} : { headRefOid: input.headRefOid }),
     isDraft: input.isDraft ?? false,
     latestReviews: input.latestReviews ?? [],
     reviewDecision: input.reviewDecision ?? null,

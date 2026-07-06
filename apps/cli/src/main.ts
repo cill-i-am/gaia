@@ -1011,6 +1011,7 @@ function renderGitHubPublishPreview(summary: GitHubPublishPreview) {
 function renderGitHubChecksSummary(summary: GitHubChecksSummary) {
   const lines = [
     `checks: ${summary.status}`,
+    `outcome: ${gitHubChecksOutcome(summary.status)}`,
     `pr: ${summary.pr}`,
     `count: ${summary.checks.length}`,
   ];
@@ -1030,8 +1031,10 @@ function renderGitHubChecksSummary(summary: GitHubChecksSummary) {
 function renderGitHubChecksRecord(record: GitHubChecksRecord) {
   const lines = [
     `checks: ${record.status}`,
+    `outcome: ${gitHubChecksOutcome(record.status)}`,
     `run: ${record.runId}`,
     `pr: ${record.pr}`,
+    ...(record.headSha === undefined ? [] : [`head: ${record.headSha}`]),
     `attempts: ${record.attempts}`,
     `terminal: ${record.terminal}`,
     `snapshot: ${record.snapshotPath}`,
@@ -1053,8 +1056,10 @@ function renderGitHubChecksRecord(record: GitHubChecksRecord) {
 function renderGitHubCiWatchSummary(summary: GitHubCiWatchSummary) {
   const lines = [
     `ci watch: ${summary.status}`,
+    `outcome: ${gitHubChecksOutcome(summary.status)}`,
     `run: ${summary.runId}`,
     `pr: ${summary.pr}`,
+    ...(summary.headSha === undefined ? [] : [`head: ${summary.headSha}`]),
     `source: ${summary.source}`,
     `attempts: ${summary.attempts}`,
     `terminal: ${summary.terminal}`,
@@ -1081,8 +1086,10 @@ function renderGitHubPrFeedbackSummary(summary: GitHubPrFeedbackSummary) {
       : summary.reviewDecision;
   const lines = [
     `pr feedback: ${summary.status}`,
+    `outcome: ${gitHubFeedbackOutcome(summary.status)}`,
     `run: ${summary.runId}`,
     `pr: ${summary.pr}`,
+    ...(summary.headSha === undefined ? [] : [`head: ${summary.headSha}`]),
     `next action: ${summary.nextAction}`,
     `feedback: ${summary.feedbackPath}`,
     `review decision: ${reviewDecision}`,
@@ -1105,8 +1112,10 @@ function renderGitHubPrFeedbackSummary(summary: GitHubPrFeedbackSummary) {
 function renderGitHubPrLoopSummary(summary: GitHubPrLoopSummary) {
   const lines = [
     `pr loop: ${summary.status}`,
+    `outcome: ${gitHubPrLoopOutcome(summary)}`,
     `run: ${summary.runId}`,
     `pr: ${summary.pr}`,
+    ...(summary.headSha === undefined ? [] : [`head: ${summary.headSha}`]),
     `next action: ${summary.nextAction}`,
     `state: ${summary.statePath}`,
     `checks: ${summary.checksStatus} (${summary.checksPath})`,
@@ -1125,6 +1134,58 @@ function renderGitHubPrLoopSummary(summary: GitHubPrLoopSummary) {
         `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`,
     ),
   ].join("\n");
+}
+
+function gitHubChecksOutcome(status: GitHubChecksSummary["status"]) {
+  switch (status) {
+    case "failed":
+      return "failed";
+    case "no-checks":
+      return "no-checks";
+    case "passed":
+      return "green";
+    case "pending":
+      return "pending";
+  }
+}
+
+function gitHubFeedbackOutcome(status: GitHubPrFeedbackSummary["status"]) {
+  switch (status) {
+    case "awaiting-review":
+      return "awaiting-review";
+    case "changes-requested":
+    case "comments":
+      return "blocked";
+    case "clear":
+      return "green";
+  }
+}
+
+function gitHubPrLoopOutcome(summary: GitHubPrLoopSummary) {
+  if (summary.checksStatus === "failed") {
+    return "failed";
+  }
+
+  if (
+    summary.feedbackStatus === "changes-requested" ||
+    summary.feedbackStatus === "comments"
+  ) {
+    return "blocked";
+  }
+
+  if (summary.feedbackStatus === "awaiting-review") {
+    return "awaiting-review";
+  }
+
+  if (summary.checksStatus === "no-checks") {
+    return "no-checks";
+  }
+
+  if (summary.status === "ready") {
+    return "green";
+  }
+
+  return "waiting";
 }
 
 function renderGitHubPrCommentSummary(summary: GitHubPrCommentSummary) {
