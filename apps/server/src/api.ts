@@ -20,11 +20,14 @@ import {
 } from "@gaia/core";
 import type { LocalRunReadDiagnostic } from "@gaia/runtime/run-read-api";
 import {
-  listLocalRuns,
-  readLocalRun,
   readLocalRunArtifact,
   readLocalRunEvents,
 } from "@gaia/runtime/run-read-api";
+import {
+  GaiaRuntimeError,
+  makeLocalRunReadIndex,
+  type LocalRunReadIndex,
+} from "@gaia/runtime";
 import { Cause, Context, Effect, FileSystem, Layer, Path, Stream } from "effect";
 import type { Generator } from "effect/unstable/http/Etag";
 import type { HttpPlatform } from "effect/unstable/http/HttpPlatform";
@@ -41,7 +44,6 @@ import {
   type ServerRunAcceptance,
   type ServerWorkflowOptions,
 } from "@gaia/runtime/server-workflows";
-import { GaiaRuntimeError } from "@gaia/runtime";
 import {
   appendServerLog,
   serverMetadataFromAddress,
@@ -55,6 +57,7 @@ import {
 } from "./server-state.js";
 
 type LocalServerConfigValue = LocalServerIdentity & {
+  readonly runIndex: LocalRunReadIndex;
   readonly runRegistry: ServerRunRegistryService;
   readonly workflowOptions: ServerWorkflowOptions;
 };
@@ -92,9 +95,7 @@ export const RunsLive = HttpApiBuilder.group(
       .handle("listRuns", () =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
-          const runs = yield* listLocalRuns({
-            rootDirectory: identity.rootDirectory,
-          }).pipe(Effect.mapError((error) => internalApiError(error)));
+          const runs = yield* identity.runIndex.list;
           if (runs.diagnostics.length === 0) {
             return LocalRunListSuccessEnvelope.make({
               data: runs,
@@ -138,6 +139,7 @@ export const RunsLive = HttpApiBuilder.group(
           }
 
           const accepted = acceptedExit.value;
+          yield* identity.runIndex.refreshRun(accepted.runId);
           yield* reservation.markAccepted(accepted.runId);
           yield* forkServerContinuation({
             accepted,
@@ -161,9 +163,7 @@ export const RunsLive = HttpApiBuilder.group(
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
           const exit = yield* Effect.exit(
-            readLocalRun(params.runId, {
-              rootDirectory: identity.rootDirectory,
-            }),
+            identity.runIndex.read(params.runId),
           );
           if (exit._tag === "Success") {
             return LocalRunDetailSuccessEnvelope.make({
@@ -242,7 +242,7 @@ export function makeLocalGaiaServerLayer(
   workflowOptions: ServerWorkflowOptions = {},
 ): Layer.Layer<
   never,
-  never,
+  unknown,
   | FileSystem.FileSystem
   | Path.Path
   | HttpServer.HttpServer
@@ -251,13 +251,18 @@ export function makeLocalGaiaServerLayer(
 > {
   const configLayer = Layer.effect(
     LocalServerConfig,
-    makeServerRunRegistry().pipe(
-      Effect.map((runRegistry) => ({
+    Effect.gen(function* () {
+      const runIndex = yield* makeLocalRunReadIndex({
+        rootDirectory: identity.rootDirectory,
+      });
+      const runRegistry = yield* makeServerRunRegistry();
+      return {
         ...identity,
+        runIndex,
         runRegistry,
         workflowOptions,
-      })),
-    ),
+      } satisfies LocalServerConfigValue;
+    }),
   );
 
   return HttpRouter.serve(LocalGaiaServerApiLayer, {
@@ -712,6 +717,9 @@ function forkServerContinuation(input: {
         input.identity.rootDirectory,
         `${new Date().toISOString()} ${input.identity.serverId} run ${input.accepted.runId} failed ${error.code}`,
       ).pipe(Effect.ignore),
+    ),
+    Effect.ensuring(
+      input.identity.runIndex.refreshRun(input.accepted.runId).pipe(Effect.ignore),
     ),
     Effect.ensuring(input.reservation.clear),
     Effect.matchEffect({
