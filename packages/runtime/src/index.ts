@@ -287,6 +287,7 @@ export {
 export { VerificationResult, verifyHarnessOutput } from "./verifier.js";
 export {
   WorkerPlan,
+  WorkerPlanVerificationCheck,
   parseWorkerPlanJson,
   writeWorkerPlan,
 } from "./worker-plan.js";
@@ -299,6 +300,10 @@ export {
   type WorkspaceSource,
   type WorkspaceSourcePath,
 } from "./workspace.js";
+export {
+  WorkspaceDiffOmittedGeneratedPath,
+  WorkspaceDiffSummary,
+} from "./workspace-snapshot.js";
 export {
   listRuns,
   collectBrowserEvidence,

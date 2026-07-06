@@ -86,6 +86,7 @@ export function makeCodexReviewerPrompt(input: CodexReviewerPromptInput) {
     input.request.specBody,
     "Artifacts to inspect:",
     ...phaseArtifacts.map((artifact) => `- ${artifact}`),
+    "Inspect the worker plan acceptance criteria, non-goals, likely touched surfaces, verification checks, and stop conditions.",
     "Decision contract:",
     "First line must be exactly one of:",
     "Status: approved",

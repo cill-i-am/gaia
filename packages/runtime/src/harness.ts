@@ -16,7 +16,12 @@ import {
 } from "./codex-harness.js";
 import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
-import { changedPaths, snapshotWorkspace } from "./workspace-snapshot.js";
+import {
+  diffWorkspaceSnapshots,
+  productOnlyWorkspaceDiff,
+  snapshotWorkspace,
+  WorkspaceDiffSummary,
+} from "./workspace-snapshot.js";
 
 export const HarnessNameSchema = Schema.NonEmptyString.pipe(
   Schema.brand("HarnessName"),
@@ -87,6 +92,7 @@ export class HarnessRunResult extends Schema.Class<HarnessRunResult>(
   runId: RunIdSchema,
   status: Schema.Literal("completed"),
   summary: Schema.NonEmptyString,
+  workspaceDiff: Schema.optionalKey(WorkspaceDiffSummary),
 }) {}
 
 class ProcessHarnessDeclaration extends Schema.Class<ProcessHarnessDeclaration>(
@@ -130,8 +136,9 @@ const fakeHarness: GaiaHarness = {
         { flag: "a" },
       );
       yield* fs.writeFileString(request.workspaceOutputPath, output);
+      const workspaceDiff = productOnlyWorkspaceDiff(["output.txt"]);
       const result = HarnessRunResult.make({
-        changedWorkspacePaths: ["output.txt"],
+        changedWorkspacePaths: workspaceDiff.productChangedPaths,
         exitCode: 0,
         harnessName: request.harnessName,
         outputArtifacts: ["workspace/output.txt"],
@@ -139,6 +146,7 @@ const fakeHarness: GaiaHarness = {
         runId: request.runId,
         status: "completed",
         summary: `Fake harness completed "${request.specTitle}".`,
+        workspaceDiff,
       });
       yield* requireDeclaredOutputArtifacts(request, result);
       yield* fs.writeFileString(
@@ -182,7 +190,7 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
         const execution = yield* runProcessHarnessCommand(config, request);
         const declaration = yield* readProcessHarnessDeclaration(request);
         const afterWorkspace = yield* snapshotWorkspace(request.workspacePath);
-        const changedWorkspacePaths = changedPaths(
+        const workspaceDiff = diffWorkspaceSnapshots(
           beforeWorkspace,
           afterWorkspace,
         );
@@ -199,7 +207,7 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
           ...(declaration.previewDeploymentUrl === undefined
             ? {}
             : { previewDeploymentUrl: declaration.previewDeploymentUrl }),
-          changedWorkspacePaths,
+          changedWorkspacePaths: workspaceDiff.productChangedPaths,
           exitCode: execution.exitCode,
           harnessName: request.harnessName,
           outputArtifacts: ["workspace/output.txt"],
@@ -207,6 +215,7 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
           runId: request.runId,
           status: "completed",
           summary: `Process harness completed "${request.specTitle}".`,
+          workspaceDiff,
         });
 
         yield* requireDeclaredOutputArtifacts(request, result);
@@ -382,12 +391,12 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
         }
 
         const afterWorkspace = yield* snapshotWorkspace(request.workspacePath);
-        const changedWorkspacePaths = changedPaths(
+        const workspaceDiff = diffWorkspaceSnapshots(
           beforeWorkspace,
           afterWorkspace,
         );
         const result = HarnessRunResult.make({
-          changedWorkspacePaths,
+          changedWorkspacePaths: workspaceDiff.productChangedPaths,
           exitCode: execution.exitCode,
           harnessName: request.harnessName,
           outputArtifacts: ["workspace/output.txt"],
@@ -395,6 +404,7 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
           runId: request.runId,
           status: "completed",
           summary: `Codex harness completed "${request.specTitle}".`,
+          workspaceDiff,
         });
 
         yield* requireDeclaredOutputArtifacts(request, result);

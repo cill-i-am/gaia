@@ -16,7 +16,12 @@ import { parseBrowserEvidenceJson } from "./browser-evidence.js";
 import { VerificationResult } from "./verifier.js";
 import { parseWorkerPlanJson } from "./worker-plan.js";
 import { WorkspacePreparationResult } from "./workspace.js";
-import { changedPaths, snapshotWorkspace } from "./workspace-snapshot.js";
+import {
+  changedPaths,
+  snapshotWorkspace,
+  type WorkspaceDiffSummary,
+  type WorkspaceSnapshot,
+} from "./workspace-snapshot.js";
 
 export const ReviewerNameSchema = Schema.NonEmptyString.pipe(
   Schema.brand("ReviewerName"),
@@ -161,8 +166,8 @@ const deterministicReviewer: GaiaReviewer = {
 };
 
 function requireReviewerDidNotMutateWorkspace(
-  beforeWorkspace: ReadonlyMap<string, string>,
-  afterWorkspace: ReadonlyMap<string, string>,
+  beforeWorkspace: WorkspaceSnapshot,
+  afterWorkspace: WorkspaceSnapshot,
   reviewer: GaiaReviewer,
 ) {
   const mutatedPaths = changedPaths(beforeWorkspace, afterWorkspace);
@@ -200,6 +205,16 @@ function reviewPlan(request: ReviewRunRequest) {
           severity: "info",
         }),
         ReviewFinding.make({
+          message: [
+            `Plan includes ${countLabel(workerPlan.acceptanceCriteria.length, "acceptance criterion", "acceptance criteria")},`,
+            `${countLabel(workerPlan.nonGoals.length, "non-goal", "non-goals")},`,
+            `${countLabel(workerPlan.likelyTouchedSurfaces.length, "likely touched surface", "likely touched surfaces")},`,
+            `${countLabel(workerPlan.verificationChecks.length, "verification check", "verification checks")},`,
+            `and ${countLabel(workerPlan.stopConditions.length, "stop condition", "stop conditions")}.`,
+          ].join(" "),
+          severity: "info",
+        }),
+        ReviewFinding.make({
           message: `Workspace source is ${workspaceManifest.source}.`,
           severity: "info",
         }),
@@ -212,6 +227,10 @@ function reviewPlan(request: ReviewRunRequest) {
       summary: "Plan review approved the spec and workspace contract.",
     });
   });
+}
+
+function countLabel(count: number, singular: string, plural: string) {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 function reviewEvidence(request: ReviewRunRequest) {
@@ -246,6 +265,7 @@ function reviewEvidence(request: ReviewRunRequest) {
           message: `Browser evidence ${browserEvidence.status} for ${browserEvidence.pages.length} page(s).`,
           severity: browserEvidence.status === "failed" ? "warning" : "info",
         }),
+        ...workspaceDiffFindings(harnessResult.workspaceDiff),
       ],
       phase: "evidence",
       resultPath: "evidence-review.json",
@@ -255,6 +275,55 @@ function reviewEvidence(request: ReviewRunRequest) {
       summary: "Evidence review approved worker and verification artifacts.",
     });
   });
+}
+
+function workspaceDiffFindings(
+  workspaceDiff: WorkspaceDiffSummary | undefined,
+) {
+  if (workspaceDiff === undefined) {
+    return [];
+  }
+
+  const findings = [
+    ReviewFinding.make({
+      message: `Workspace product changes (${workspaceDiff.productChangedPathCount}): ${formatPathPreview(workspaceDiff.productChangedPaths)}.`,
+      severity: "info",
+    }),
+  ];
+
+  if (workspaceDiff.omittedGeneratedPathCount > 0) {
+    findings.push(
+      ReviewFinding.make({
+        message: `Generated workspace paths omitted from product diff evidence (${workspaceDiff.omittedGeneratedPathCount}): ${formatGeneratedPathSummaries(workspaceDiff)}.`,
+        severity: "info",
+      }),
+    );
+  }
+
+  return findings;
+}
+
+function formatPathPreview(paths: ReadonlyArray<string>) {
+  if (paths.length === 0) {
+    return "none";
+  }
+
+  const previewLimit = 20;
+  const preview = paths.slice(0, previewLimit).join(", ");
+  const remainingCount = paths.length - previewLimit;
+
+  return remainingCount > 0
+    ? `${preview}, and ${remainingCount} more`
+    : preview;
+}
+
+function formatGeneratedPathSummaries(workspaceDiff: WorkspaceDiffSummary) {
+  return workspaceDiff.omittedGeneratedPaths
+    .map(
+      (entry) =>
+        `${entry.path} (${entry.changedFileCount} file(s); ${entry.reason})`,
+    )
+    .join("; ");
 }
 
 function decodeJsonArtifact<T>(

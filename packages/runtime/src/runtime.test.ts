@@ -51,6 +51,7 @@ import {
   type GitHubCommandRunner,
 } from "./github-publisher.js";
 import {
+  HarnessRunResult,
   codexHarnessName,
   makeProcessHarnessConfig,
   parseHarnessName,
@@ -72,6 +73,7 @@ import {
   type GaiaReviewer,
 } from "./reviewer.js";
 import { parseReviewerSessionEvidenceJson } from "./reviewer-session-evidence.js";
+import { parseWorkerPlanJson } from "./worker-plan.js";
 import {
   localRunProfileSource,
   parseRunProfileJson,
@@ -86,6 +88,11 @@ import {
 } from "./workflows.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
 import { verifyHarnessOutput } from "./verifier.js";
+
+const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
+const parseHarnessRunResultJson = Schema.decodeUnknownSync(
+  HarnessRunResultJson,
+);
 
 describe("runtime workflows", () => {
   layer(NodeServices.layer)((it) => {
@@ -158,6 +165,105 @@ describe("runtime workflows", () => {
 
         const resumed = yield* resumeRun(summary.runId, { rootDirectory: cwd });
         assert.strictEqual(resumed.status, "completed");
+      }),
+    );
+
+    it.effect("writes a spec-derived worker plan for review", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          specPath,
+          [
+            "---",
+            "title: Rich worker plan",
+            "---",
+            "",
+            "Goal:",
+            "- Replace generic worker planning with a spec-derived plan artifact.",
+            "",
+            "Acceptance criteria:",
+            "- worker-plan.json lists spec acceptance criteria.",
+            "- worker-plan.md is readable without opening input.md.",
+            "",
+            "Non-goals:",
+            "- Do not add live reviewer threads.",
+            "",
+            "Likely touched surfaces:",
+            "- packages/runtime/src/worker-plan.ts",
+            "- packages/runtime/src/reviewer.ts",
+            "",
+            "Verification:",
+            "- `pnpm --filter @gaia/runtime test` passes.",
+            "- Existing fake harness smoke remains intact.",
+            "",
+            "Stop conditions:",
+            "- Stop if the spec omits testable acceptance criteria.",
+            "",
+          ].join("\n"),
+        );
+
+        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const workerPlan = parseWorkerPlanJson(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/worker-plan.json`),
+          ),
+        );
+        const workerPlanMarkdown = yield* fs.readFileString(
+          `${summary.runDirectory}/worker-plan.md`,
+        );
+        const planReview = yield* fs.readFileString(
+          `${summary.runDirectory}/plan-review.md`,
+        );
+
+        assert.deepEqual(workerPlan.acceptanceCriteria, [
+          "worker-plan.json lists spec acceptance criteria.",
+          "worker-plan.md is readable without opening input.md.",
+        ]);
+        assert.deepEqual(workerPlan.nonGoals, [
+          "Do not add live reviewer threads.",
+        ]);
+        assert.deepEqual(workerPlan.likelyTouchedSurfaces, [
+          "packages/runtime/src/worker-plan.ts",
+          "packages/runtime/src/reviewer.ts",
+        ]);
+        assert.deepEqual(
+          workerPlan.verificationChecks.map((check) => check.expectation),
+          [
+            "`pnpm --filter @gaia/runtime test` passes.",
+            "Existing fake harness smoke remains intact.",
+          ],
+        );
+        assert.strictEqual(
+          workerPlan.verificationChecks[0]?.command,
+          "pnpm --filter @gaia/runtime test",
+        );
+        assert.deepEqual(workerPlan.stopConditions, [
+          "Stop if the spec omits testable acceptance criteria.",
+        ]);
+        assert.include(
+          workerPlanMarkdown,
+          "worker-plan.json lists spec acceptance criteria.",
+        );
+        assert.include(workerPlanMarkdown, "Do not add live reviewer threads.");
+        assert.include(
+          workerPlanMarkdown,
+          "packages/runtime/src/worker-plan.ts",
+        );
+        assert.include(
+          workerPlanMarkdown,
+          "`pnpm --filter @gaia/runtime test` passes.",
+        );
+        assert.include(
+          workerPlanMarkdown,
+          "Stop if the spec omits testable acceptance criteria.",
+        );
+        assert.include(
+          workerPlanMarkdown,
+          "Replace generic worker planning with a spec-derived plan artifact.",
+        );
+        assert.include(planReview, "2 acceptance criteria");
       }),
     );
 
@@ -1903,6 +2009,10 @@ describe("runtime workflows", () => {
             command.stdin,
             "Do not write, edit, delete, move, or create files.",
           );
+          assert.include(
+            command.stdin,
+            "Inspect the worker plan acceptance criteria, non-goals, likely touched surfaces, verification checks, and stop conditions.",
+          );
           assert.include(command.stdin, "Status: approved");
           assert.include(command.stdin, "Summary: ");
           if (codexReviewPhaseFromPrompt(command.stdin) === "evidence") {
@@ -2035,6 +2145,86 @@ describe("runtime workflows", () => {
         assert.include(harnessResult, '"changed.txt"');
         assert.include(harnessResult, '"output.txt"');
         assert.include(harnessResult, '"exitCode": 0');
+      }),
+    );
+
+    it.effect("summarizes generated workspace churn in harness evidence", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const scriptPath = `${cwd}/process-harness.mjs`;
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          scriptPath,
+          [
+            "import { mkdirSync, writeFileSync } from 'node:fs';",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/src`, { recursive: true });",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/node_modules/noisy`, { recursive: true });",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/dist/assets`, { recursive: true });",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/.turbo/cache`, { recursive: true });",
+            "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness ${process.env.GAIA_RUN_ID}\\n`);",
+            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/README.md`, '# Product change\\n');",
+            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/src/feature.ts`, 'export const enabled = true;\\n');",
+            "for (let index = 0; index < 80; index += 1) {",
+            "  writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/node_modules/noisy/file-${index}.js`, `module.exports = ${index};\\n`);",
+            "  writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/dist/assets/chunk-${index}.js`, `console.log(${index});\\n`);",
+            "}",
+            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/.turbo/cache/trace.log`, 'cache metadata\\n');",
+          ].join("\n"),
+        );
+        yield* fs.writeFileString(specPath, "Run with generated churn.\n");
+
+        const summary = yield* runSpecFile(specPath, {
+          harnessName: parseHarnessName("process"),
+          processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+          rootDirectory: cwd,
+        });
+
+        const harnessResult = parseHarnessRunResultJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${summary.runDirectory}/worker-result.json`,
+            ),
+          ),
+        );
+        const evidenceReview = yield* fs.readFileString(
+          `${summary.runDirectory}/evidence-review.md`,
+        );
+        const workspaceDiff = harnessResult.workspaceDiff;
+        const encoded = JSON.stringify(harnessResult);
+
+        assert.isDefined(workspaceDiff);
+        if (workspaceDiff === undefined) {
+          assert.fail("Expected process harness to write workspace diff evidence.");
+        }
+        assert.deepEqual(harnessResult.changedWorkspacePaths, [
+          "README.md",
+          "output.txt",
+          "src/feature.ts",
+        ]);
+        assert.deepEqual(workspaceDiff.productChangedPaths, [
+          "README.md",
+          "output.txt",
+          "src/feature.ts",
+        ]);
+        assert.deepEqual(
+          workspaceDiff.omittedGeneratedPaths.map((entry) => entry.path),
+          [".turbo", "dist", "node_modules"],
+        );
+        assert.include(
+          workspaceDiff.omittedGeneratedPaths[0]?.reason,
+          "generated",
+        );
+        assert.isBelow(encoded.length, 5_000);
+        assert.notInclude(encoded, "node_modules/noisy/file-79.js");
+        assert.notInclude(encoded, "dist/assets/chunk-79.js");
+        assert.notInclude(encoded, ".turbo/cache/trace.log");
+        assert.include(evidenceReview, "Workspace product changes (3)");
+        assert.include(
+          evidenceReview,
+          "Generated workspace paths omitted from product diff evidence (3)",
+        );
+        assert.include(evidenceReview, "node_modules");
       }),
     );
 
@@ -2370,6 +2560,59 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("copies bounded workspace diff evidence into a GitHub evidence PR", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const scriptPath = `${cwd}/process-harness.mjs`;
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(
+          scriptPath,
+          [
+            "import { mkdirSync, writeFileSync } from 'node:fs';",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/node_modules/noisy`, { recursive: true });",
+            "mkdirSync(`${process.env.GAIA_WORKSPACE_PATH}/dist`, { recursive: true });",
+            "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness ${process.env.GAIA_RUN_ID}\\n`);",
+            "writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/src.ts`, 'export const changed = true;\\n');",
+            "for (let index = 0; index < 80; index += 1) {",
+            "  writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/node_modules/noisy/file-${index}.js`, `module.exports = ${index};\\n`);",
+            "  writeFileSync(`${process.env.GAIA_WORKSPACE_PATH}/dist/chunk-${index}.js`, `console.log(${index});\\n`);",
+            "}",
+          ].join("\n"),
+        );
+        yield* fs.writeFileString(specPath, "Publish bounded evidence.\n");
+        const summary = yield* runSpecFile(specPath, {
+          harnessName: parseHarnessName("process"),
+          processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+          rootDirectory: cwd,
+        });
+        const commands: Array<GitHubCommandInput> = [];
+        const runner = githubPublishingRunner(commands, {
+          prUrl: "https://github.com/cill-i-am/gaia/pull/789\n",
+        });
+
+        const pr = yield* publishRunToGitHub(summary.runId, {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+
+        const copiedWorkerResult = yield* fs.readFileString(
+          `${cwd}/gaia-runs/${summary.runId}/worker-result.json`,
+        );
+        assert.strictEqual(
+          pr.prUrl,
+          "https://github.com/cill-i-am/gaia/pull/789",
+        );
+        assert.include(copiedWorkerResult, '"workspaceDiff": {');
+        assert.include(copiedWorkerResult, '"src.ts"');
+        assert.include(copiedWorkerResult, '"node_modules"');
+        assert.include(copiedWorkerResult, '"dist"');
+        assert.notInclude(copiedWorkerResult, "node_modules/noisy/file-79.js");
+        assert.notInclude(copiedWorkerResult, "dist/chunk-79.js");
+        assert.isBelow(copiedWorkerResult.length, 5_000);
+      }),
+    );
+
     it.effect("refuses to publish a run from a dirty worktree", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -2685,6 +2928,97 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("reports the active PR-loop operation when the run store is locked", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Lock with metadata.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        yield* fs.makeDirectory(store.lock);
+        yield* fs.writeFileString(
+          `${store.lock}/metadata.json`,
+          `${JSON.stringify({
+            acquiredAt: "2026-07-05T10:00:00.000Z",
+            nextSafeAction: "Wait for the active command, then rerun pnpm gaia pr-loop.",
+            operation: "GitHub CI watch",
+            version: 1,
+          })}\n`,
+        );
+
+        const error = yield* Effect.flip(
+          watchGitHubFeedback(run.runId, "1", {
+            commandRunner: recordingGitHubRunner([], () => ({
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify(prFeedbackView()),
+            })),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "RunStoreLocked");
+          assert.isTrue(error.recoverable);
+          assert.include(error.message, "GitHub CI watch");
+          assert.include(error.message, "rerun pnpm gaia pr-loop");
+        }
+      }),
+    );
+
+    it.effect("reuses GitHub check evidence for the same run, PR, and head", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Idempotent checks.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const runner = recordingGitHubRunner([], (input) => {
+          const args = input.args.join(" ");
+          if (args === "pr view 1 --json headRefOid") {
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify({ headRefOid: "abc123" }),
+            };
+          }
+
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify([
+              {
+                link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                name: "check",
+                state: "SUCCESS",
+                workflow: "CI",
+              },
+            ]),
+          };
+        });
+
+        const first = yield* recordGitHubChecks(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const second = yield* recordGitHubChecks(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const events = yield* readRunEvents(fs, run.runDirectory);
+
+        assert.strictEqual(second.snapshotPath, first.snapshotPath);
+        assert.strictEqual(second.watchStatePath, first.watchStatePath);
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_CHECKS_RECORDED")
+            .length,
+          1,
+        );
+      }),
+    );
+
     it.effect("waits for pending GitHub checks before recording", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -2695,7 +3029,16 @@ describe("runtime workflows", () => {
         let checksCalls = 0;
 
         const recorded = yield* recordGitHubChecks(run.runId, "1", {
-          commandRunner: recordingGitHubRunner([], () => {
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (!input.args.join(" ").startsWith("pr checks")) {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify({ headRefOid: "abc123" }),
+              };
+            }
+
+            const state = checksCalls === 0 ? "PENDING" : "SUCCESS";
             checksCalls += 1;
             return {
               exitCode: 0,
@@ -2704,7 +3047,7 @@ describe("runtime workflows", () => {
                 {
                   link: "https://github.com/cill-i-am/gaia/actions/runs/1",
                   name: "check",
-                  state: checksCalls === 1 ? "PENDING" : "SUCCESS",
+                  state,
                   workflow: "CI",
                 },
               ]),
@@ -2732,8 +3075,10 @@ describe("runtime workflows", () => {
         let checksCalls = 0;
 
         const recorded = yield* recordGitHubChecks(run.runId, "1", {
-          commandRunner: recordingGitHubRunner([], () => {
-            checksCalls += 1;
+          commandRunner: recordingGitHubRunner([], (input) => {
+            if (input.args.join(" ").startsWith("pr checks")) {
+              checksCalls += 1;
+            }
             return {
               exitCode: 0,
               stderr: "",
@@ -3043,6 +3388,44 @@ describe("runtime workflows", () => {
       }),
     );
 
+    it.effect("reuses PR feedback evidence for the same run, PR, and head", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Idempotent PR feedback.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const runner = recordingGitHubRunner([], () => ({
+          exitCode: 0,
+          stderr: "",
+          stdout: JSON.stringify(
+            prFeedbackView({
+              headRefOid: "abc123",
+              reviewDecision: "APPROVED",
+            }),
+          ),
+        }));
+
+        const first = yield* watchGitHubFeedback(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const second = yield* watchGitHubFeedback(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const events = yield* readRunEvents(fs, run.runDirectory);
+
+        assert.strictEqual(second.feedbackPath, first.feedbackPath);
+        assert.strictEqual(second.status, first.status);
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_FEEDBACK_RECORDED")
+            .length,
+          1,
+        );
+      }),
+    );
+
     it.effect("coordinates changes requested and failed CI as ordered blockers", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -3198,6 +3581,139 @@ describe("runtime workflows", () => {
         assert.strictEqual(summary.nextAction, "ready-for-merge-decision");
         assert.strictEqual(summary.blockerCount, 0);
         assert.strictEqual(summary.blockers.length, 0);
+      }),
+    );
+
+    it.effect("reuses PR-loop evidence for the same run, PR, and head", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Idempotent PR loop.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const runner = recordingGitHubRunner([], (input) => {
+          const args = input.args.join(" ");
+          if (args === "pr view 1 --json headRefOid") {
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify({ headRefOid: "abc123" }),
+            };
+          }
+
+          if (args.startsWith("pr checks")) {
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify([
+                {
+                  link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                  name: "test",
+                  state: "SUCCESS",
+                  workflow: "CI",
+                },
+              ]),
+            };
+          }
+
+          return {
+            exitCode: 0,
+            stderr: "",
+            stdout: JSON.stringify(
+              prFeedbackView({
+                headRefOid: "abc123",
+                reviewDecision: "APPROVED",
+              }),
+            ),
+          };
+        });
+
+        const first = yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const second = yield* coordinateGitHubPrLoop(run.runId, "1", {
+          commandRunner: runner,
+          rootDirectory: cwd,
+        });
+        const events = yield* readRunEvents(fs, run.runDirectory);
+
+        assert.strictEqual(second.checksPath, first.checksPath);
+        assert.strictEqual(second.feedbackPath, first.feedbackPath);
+        assert.strictEqual(second.statePath, first.statePath);
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_CHECKS_RECORDED")
+            .length,
+          1,
+        );
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_FEEDBACK_RECORDED")
+            .length,
+          1,
+        );
+        assert.strictEqual(
+          events.filter((event) => event.type === "GITHUB_PR_LOOP_RECORDED")
+            .length,
+          1,
+        );
+      }),
+    );
+
+    it.effect("rejects PR-loop evidence from mismatched PR heads", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const specPath = `${cwd}/spec.md`;
+        yield* fs.writeFileString(specPath, "Reject mismatched PR heads.\n");
+        const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+        const error = yield* Effect.flip(
+          coordinateGitHubPrLoop(run.runId, "1", {
+            commandRunner: recordingGitHubRunner([], (input) => {
+              const args = input.args.join(" ");
+              if (args === "pr view 1 --json headRefOid") {
+                return {
+                  exitCode: 0,
+                  stderr: "",
+                  stdout: JSON.stringify({ headRefOid: "checks-head" }),
+                };
+              }
+
+              if (args.startsWith("pr checks")) {
+                return {
+                  exitCode: 0,
+                  stderr: "",
+                  stdout: JSON.stringify([
+                    {
+                      link: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                      name: "test",
+                      state: "SUCCESS",
+                      workflow: "CI",
+                    },
+                  ]),
+                };
+              }
+
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify(
+                  prFeedbackView({
+                    headRefOid: "feedback-head",
+                    reviewDecision: "APPROVED",
+                  }),
+                ),
+              };
+            }),
+            rootDirectory: cwd,
+          }),
+        );
+
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError) {
+          assert.strictEqual(error.code, "GitHubPrHeadMismatch");
+          assert.isTrue(error.recoverable);
+        }
       }),
     );
 
@@ -3807,6 +4323,7 @@ function writeFrontendRunProfile(
 function prFeedbackView(
   input: Readonly<{
     comments?: ReadonlyArray<unknown>;
+    headRefOid?: string;
     isDraft?: boolean;
     latestReviews?: ReadonlyArray<unknown>;
     reviewDecision?: string | null;
@@ -3815,6 +4332,7 @@ function prFeedbackView(
 ) {
   return {
     comments: input.comments ?? [],
+    ...(input.headRefOid === undefined ? {} : { headRefOid: input.headRefOid }),
     isDraft: input.isDraft ?? false,
     latestReviews: input.latestReviews ?? [],
     reviewDecision: input.reviewDecision ?? null,
