@@ -13,5 +13,11 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    proxy: {
+      "/gaia-api": {
+        target: process.env.VITE_GAIA_SERVER_URL ?? "http://127.0.0.1:8765",
+        rewrite: (path) => path.replace(/^\/gaia-api/u, ""),
+      },
+    },
   },
 });
