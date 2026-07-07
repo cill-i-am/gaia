@@ -200,6 +200,10 @@ export {
   type LocalRunSummary,
 } from "./run-read-api.js";
 export {
+  makeLocalRunReadIndex,
+  type LocalRunReadIndex,
+} from "./run-read-index.js";
+export {
   ReviewerFindingInput,
   ReviewerFindingRelevanceInput,
   ReviewerFindingRelevanceInputKindSchema,

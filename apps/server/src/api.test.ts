@@ -11,6 +11,7 @@ import {
   acceptServerRun,
   continueServerRun,
 } from "@gaia/runtime/server-workflows";
+import { makeRunStorePaths } from "@gaia/runtime/paths";
 import { Deferred, Effect, FileSystem, Layer, Schema } from "effect";
 import {
   HttpClient,
@@ -182,6 +183,58 @@ describe("local run api http boundary", () => {
         assert.strictEqual(getString(getObject(firstEvent, "payload"), "source"), "server");
       }),
       20_000,
+    );
+
+    it.effect("indexes server-created runs for list and detail reads", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const layer = testServerLayer(cwd);
+        yield* Effect.gen(function* () {
+          const response = yield* createRunRequest(
+            "Create and index through the local server.\n",
+          );
+          const body = yield* responseJsonObject(response);
+          const runId = getString(body, "runId");
+
+          const listResponse = yield* HttpClient.get("/runs");
+          const detailResponse = yield* HttpClient.get(`/runs/${runId}`);
+          const listBody = yield* responseJsonObject(listResponse);
+          const detailBody = yield* responseJsonObject(detailResponse);
+          const listRun = getObjectFromArray(
+            getArray(getObject(listBody, "data"), "runs"),
+            0,
+          );
+          const detail = getObject(detailBody, "data");
+
+          assert.strictEqual(response.status, 202);
+          assert.strictEqual(listResponse.status, 200);
+          assert.strictEqual(detailResponse.status, 200);
+          assert.strictEqual(getString(listRun, "runId"), runId);
+          assert.strictEqual(getString(detail, "runId"), runId);
+          assert.isAtLeast(getNumber(detail, "eventCount"), 1);
+        }).pipe(Effect.provide(layer));
+      }),
+      20_000,
+    );
+
+    it.effect("preserves parseable bad-run detail diagnostics through the index", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        yield* fs.makeDirectory(`${store.runsRoot}/run-L84-kMhLY8`, {
+          recursive: true,
+        });
+
+        const response = yield* HttpClient.get("/runs/run-L84-kMhLY8").pipe(
+          Effect.provide(testServerLayer(cwd)),
+        );
+        const body = yield* responseJsonObject(response);
+
+        assert.strictEqual(response.status, 422);
+        assertApiError(body, "RunHasNoEvents", 422);
+      }),
     );
 
     it.effect("returns typed 400 for invalid Markdown content", () =>
