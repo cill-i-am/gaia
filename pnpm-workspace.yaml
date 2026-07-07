@@ -13,3 +13,5 @@ minimumReleaseAgeExclude:
   - '@turbo/windows-64@2.10.3'
   - '@turbo/windows-arm64@2.10.3'
   - turbo@2.10.3
+  - '@xyflow/react@12.11.2'
+  - '@xyflow/system@0.0.79'
