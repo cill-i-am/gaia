@@ -341,6 +341,190 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
+  it("compares two runs while comparison selection keeps the primary canvas selected", async () => {
+    const firstRunId = parseRunId("run-4444444444");
+    const secondRunId = parseRunId("run-5555555555");
+    const thirdRunId = parseRunId("run-6666666666");
+    renderDashboardWithQueries({
+      eventsByRunId: {
+        [firstRunId]: [
+          makeRunEvent({
+            runId: firstRunId,
+            sequence: 1,
+            timestamp: "2026-07-07T12:00:00.000Z",
+            type: "RUN_CREATED",
+          }),
+          makeRunEvent({
+            payload: { workerResultPath: "worker-result.md" },
+            runId: firstRunId,
+            sequence: 2,
+            timestamp: "2026-07-07T12:01:00.000Z",
+            type: "WORKER_COMPLETED",
+          }),
+          makeRunEvent({
+            payload: { phase: "evidence" },
+            runId: firstRunId,
+            sequence: 3,
+            timestamp: "2026-07-07T12:02:00.000Z",
+            type: "REVIEW_COMPLETED",
+          }),
+          makeRunEvent({
+            runId: firstRunId,
+            sequence: 4,
+            timestamp: "2026-07-07T12:03:00.000Z",
+            type: "VERIFICATION_COMPLETED",
+          }),
+          makeRunEvent({
+            runId: firstRunId,
+            sequence: 5,
+            timestamp: "2026-07-07T12:05:00.000Z",
+            type: "REPORT_COMPLETED",
+          }),
+        ],
+        [secondRunId]: [
+          makeRunEvent({
+            runId: secondRunId,
+            sequence: 1,
+            timestamp: "2026-07-07T12:00:00.000Z",
+            type: "RUN_CREATED",
+          }),
+          makeRunEvent({
+            payload: { failure: { message: "Harness failed" } },
+            runId: secondRunId,
+            sequence: 2,
+            timestamp: "2026-07-07T12:04:00.000Z",
+            type: "RUN_FAILED",
+          }),
+        ],
+        [thirdRunId]: [
+          makeRunEvent({
+            runId: thirdRunId,
+            sequence: 1,
+            timestamp: "2026-07-07T12:10:00.000Z",
+            type: "RUN_CREATED",
+          }),
+        ],
+      },
+      runs: [
+        localRunSummary({
+          artifacts: [
+            "input",
+            "worker-result",
+            "evidence-review",
+            "verification-result",
+            "report",
+            "report-json",
+          ],
+          eventCount: 5,
+          latestEventType: "REPORT_COMPLETED",
+          runId: firstRunId,
+          state: "completed",
+          status: "completed",
+          updatedAt: "2026-07-07T12:05:00.000Z",
+        }),
+        localRunSummary({
+          artifacts: ["input", "worker-log"],
+          eventCount: 2,
+          latestEventType: "RUN_FAILED",
+          runId: secondRunId,
+          state: "failed",
+          status: "failed",
+          updatedAt: "2026-07-07T12:04:00.000Z",
+        }),
+        localRunSummary({
+          artifacts: [],
+          eventCount: 3,
+          latestEventType: "RUN_CREATED",
+          runId: thirdRunId,
+          state: "created",
+          status: "running",
+          updatedAt: "2026-07-07T12:10:30.000Z",
+        }),
+      ],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("run-compare-panel").textContent).toContain(
+        "key differences",
+      );
+    });
+
+    const primarySelect = screen.getByTestId(
+      "run-compare-primary-select",
+    ) as HTMLSelectElement;
+    const comparisonSelect = screen.getByTestId(
+      "run-compare-comparison-select",
+    ) as HTMLSelectElement;
+
+    expect(primarySelect.value).toBe("run-4444444444");
+    expect(comparisonSelect.value).toBe("run-5555555555");
+    const statusMetric = await screen.findByTestId(
+      "run-compare-metric-status",
+    );
+    expect(statusMetric.textContent).toContain("Completed");
+    expect(statusMetric.textContent).toContain("Failed");
+    expect(screen.getByTestId("run-compare-artifact-delta").textContent).toContain(
+      "Primary only",
+    );
+    expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
+      "Comparison: check outcome unavailable",
+    );
+    expect(screen.getByTestId("selected-run-title").textContent).toBe(
+      "run-4444444444",
+    );
+    expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
+      "#5 · 2026-07-07T12:05:00.000Z",
+    );
+
+    fireEvent.change(comparisonSelect, {
+      target: { value: "run-6666666666" },
+    });
+
+    await waitFor(() => {
+      expect(
+        (
+          screen.getByTestId(
+            "run-compare-comparison-select",
+          ) as HTMLSelectElement
+        ).value,
+      ).toBe("run-6666666666");
+      expect(screen.getByTestId("selected-run-title").textContent).toBe(
+        "run-4444444444",
+      );
+      expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
+        "#5 · 2026-07-07T12:05:00.000Z",
+      );
+      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
+        "Comparison: 3 events reported, 1 loaded",
+      );
+      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
+        "Comparison: no artifacts exposed",
+      );
+      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
+        "Comparison: report outcome unavailable",
+      );
+      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
+        "Comparison: check outcome unavailable",
+      );
+      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
+        "Comparison: review outcome unavailable",
+      );
+    });
+
+    fireEvent.change(primarySelect, {
+      target: { value: "run-5555555555" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-run-title").textContent).toBe(
+        "run-5555555555",
+      );
+      expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
+        "#2 · 2026-07-07T12:04:00.000Z",
+      );
+    });
+  });
+
   it("renders the online empty state from typed runs data", async () => {
     renderDashboardWithQueries({ runs: [] });
 
