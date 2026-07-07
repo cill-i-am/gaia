@@ -1,4 +1,6 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import * as React from "react";
 import {
   HeadContent,
   Outlet,
@@ -30,13 +32,26 @@ function RootComponent() {
 }
 
 function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
+  const [queryClient] = React.useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            refetchOnWindowFocus: false,
+          },
+        },
+      }),
+  );
+
   return (
     <html lang="en">
       <head>
         <HeadContent />
       </head>
       <body>
-        <div id="root">{children}</div>
+        <QueryClientProvider client={queryClient}>
+          <div id="root">{children}</div>
+        </QueryClientProvider>
         <Scripts />
       </body>
     </html>

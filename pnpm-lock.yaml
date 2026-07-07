@@ -57,6 +57,9 @@ importers:
       '@fontsource-variable/geist':
         specifier: ^5.2.9
         version: 5.2.9
+      '@gaia/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@tanstack/react-query':
         specifier: ^5.101.2
         version: 5.101.2(react@19.2.7)
@@ -75,6 +78,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      effect:
+        specifier: 4.0.0-beta.93
+        version: 4.0.0-beta.93
       effect-query:
         specifier: ^1.0.0
         version: 1.0.0(@tanstack/react-query@5.101.2(react@19.2.7))(effect@4.0.0-beta.93)(react@19.2.7)

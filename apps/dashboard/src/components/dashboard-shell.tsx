@@ -6,6 +6,8 @@ import {
   type Node,
   type NodeMouseHandler,
 } from "@xyflow/react";
+import { useQuery } from "@tanstack/react-query";
+import type { LocalRunSummaryDto } from "@gaia/core";
 import {
   ActivityIcon,
   BoxIcon,
@@ -14,6 +16,7 @@ import {
   GitBranchIcon,
   InspectIcon,
   SearchIcon,
+  ServerIcon,
   WorkflowIcon,
 } from "lucide-react";
 import * as React from "react";
@@ -27,6 +30,14 @@ import {
   type RunNode,
   type RunStatus,
 } from "@/dashboard-model";
+import {
+  defaultLocalGaiaServerUrl,
+  type DashboardGaiaClientError,
+} from "@/lib/local-gaia-client";
+import {
+  localGaiaHealthQueryOptions,
+  localGaiaRunsQueryOptions,
+} from "@/lib/local-gaia-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -91,8 +102,34 @@ function roleLabel(node: RunNode) {
   return `${node.role[0]?.toUpperCase() ?? ""}${node.role.slice(1)}`;
 }
 
+type ServerConnectionState = {
+  readonly health: "checking" | "offline" | "online";
+  readonly liveRuns: ReadonlyArray<typeof LocalRunSummaryDto.Type>;
+  readonly message: string;
+  readonly serverUrl: string;
+};
+
 export function DashboardShell() {
   const initialRun = getInitialRun();
+  const serverUrl = defaultLocalGaiaServerUrl;
+  const healthQuery = useQuery(localGaiaHealthQueryOptions({ serverUrl }));
+  const runsQuery = useQuery(localGaiaRunsQueryOptions({ serverUrl }));
+  const liveRuns = runsQuery.data?.data.runs ?? [];
+  const serverConnection: ServerConnectionState = {
+    health: healthQuery.isSuccess
+      ? "online"
+      : healthQuery.isPending || runsQuery.isPending
+        ? "checking"
+        : "offline",
+    liveRuns,
+    message: connectionMessage({
+      healthError: healthQuery.error,
+      healthStatus: healthQuery.data?.status,
+      runCount: liveRuns.length,
+      runsError: runsQuery.error,
+    }),
+    serverUrl,
+  };
   const [selectedRunId, setSelectedRunId] = React.useState<string>(
     initialRun.id,
   );
@@ -115,9 +152,16 @@ export function DashboardShell() {
       <SidebarProvider
         className="h-svh min-h-0 flex-col overflow-hidden bg-background text-sm lg:flex-row"
       >
-        <RunConsole selectedRun={selectedRun} onSelectRun={selectRun} />
+        <RunConsole
+          selectedRun={selectedRun}
+          serverConnection={serverConnection}
+          onSelectRun={selectRun}
+        />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <TopBar selectedRun={selectedRun} />
+          <TopBar
+            selectedRun={selectedRun}
+            serverConnection={serverConnection}
+          />
           <DesktopWorkspace
             selectedNode={selectedNode}
             selectedRun={selectedRun}
@@ -136,9 +180,11 @@ export function DashboardShell() {
 
 function RunConsole({
   selectedRun,
+  serverConnection,
   onSelectRun,
 }: {
   readonly selectedRun: DashboardRun;
+  readonly serverConnection: ServerConnectionState;
   readonly onSelectRun: (run: DashboardRun) => void;
 }) {
   return (
@@ -167,7 +213,60 @@ function RunConsole({
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>Local runs</SidebarGroupLabel>
+          <SidebarGroupLabel>Server</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <div className="flex flex-col gap-2 rounded-md border bg-sidebar-accent/40 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <ServerIcon className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="truncate text-sm font-medium">
+                    {serverConnection.serverUrl}
+                  </span>
+                </div>
+                <Badge variant={serverBadgeVariant(serverConnection.health)}>
+                  {serverConnection.health}
+                </Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {serverConnection.message}
+              </p>
+            </div>
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel>API runs</SidebarGroupLabel>
+          <SidebarGroupContent>
+            {serverConnection.liveRuns.length === 0 ? (
+              <p className="px-2 py-1 text-xs text-muted-foreground">
+                No local server runs loaded.
+              </p>
+            ) : (
+              <SidebarMenu>
+                {serverConnection.liveRuns.map((run) => (
+                  <SidebarMenuItem key={run.runId}>
+                    <SidebarMenuButton
+                      className="h-auto items-start gap-3 py-2"
+                      disabled
+                    >
+                      <WorkflowIcon />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium">
+                          {run.runId}
+                        </span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {run.latestEventType} · {run.eventCount} events
+                        </span>
+                      </span>
+                    </SidebarMenuButton>
+                    <SidebarMenuBadge>{run.status}</SidebarMenuBadge>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            )}
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel>Shell fixtures</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {dashboardRuns.map((run) => (
@@ -197,14 +296,22 @@ function RunConsole({
       <SidebarFooter className="border-t">
         <div className="flex items-center justify-between gap-3">
           <span className="text-xs text-muted-foreground">Server state</span>
-          <Badge variant="outline">Placeholder</Badge>
+          <Badge variant={serverBadgeVariant(serverConnection.health)}>
+            {serverConnection.liveRuns.length} runs
+          </Badge>
         </div>
       </SidebarFooter>
     </Sidebar>
   );
 }
 
-function TopBar({ selectedRun }: { readonly selectedRun: DashboardRun }) {
+function TopBar({
+  selectedRun,
+  serverConnection,
+}: {
+  readonly selectedRun: DashboardRun;
+  readonly serverConnection: ServerConnectionState;
+}) {
   return (
     <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b px-3">
       <div className="flex min-w-0 items-center gap-2">
@@ -217,6 +324,9 @@ function TopBar({ selectedRun }: { readonly selectedRun: DashboardRun }) {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        <Badge variant={serverBadgeVariant(serverConnection.health)}>
+          API {serverConnection.health}
+        </Badge>
         <Badge variant={statusBadgeVariant(selectedRun.status)}>
           {statusLabels[selectedRun.status]}
         </Badge>
@@ -546,4 +656,69 @@ function toFlowEdges(run: DashboardRun): Array<Edge> {
     type: "smoothstep",
     animated: edge.target === "browser",
   }));
+}
+
+function serverBadgeVariant(
+  health: ServerConnectionState["health"],
+): "destructive" | "outline" | "secondary" {
+  if (health === "offline") {
+    return "destructive";
+  }
+
+  if (health === "online") {
+    return "secondary";
+  }
+
+  return "outline";
+}
+
+function connectionMessage(input: {
+  readonly healthError: unknown;
+  readonly healthStatus: string | undefined;
+  readonly runCount: number;
+  readonly runsError: unknown;
+}) {
+  if (input.healthStatus === "ok") {
+    return `${input.runCount} runs loaded through LocalGaiaServerApi.`;
+  }
+
+  const failure = dashboardQueryFailure(input.healthError ?? input.runsError);
+  if (failure?._tag === "DashboardGaiaApiError") {
+    return `${failure.error.code}: ${failure.error.message}`;
+  }
+
+  if (failure?._tag === "DashboardGaiaHttpClientError") {
+    return "Local server is not reachable.";
+  }
+
+  if (failure?._tag === "DashboardGaiaTimeoutError") {
+    return "Local server request timed out.";
+  }
+
+  return "Checking local server.";
+}
+
+function dashboardQueryFailure(
+  error: unknown,
+): DashboardGaiaClientError | undefined {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("failure" in error)
+  ) {
+    return undefined;
+  }
+
+  const failure = error.failure;
+  if (
+    typeof failure === "object" &&
+    failure !== null &&
+    "_tag" in failure &&
+    typeof failure._tag === "string" &&
+    failure._tag.startsWith("DashboardGaia")
+  ) {
+    return failure as DashboardGaiaClientError;
+  }
+
+  return undefined;
 }
