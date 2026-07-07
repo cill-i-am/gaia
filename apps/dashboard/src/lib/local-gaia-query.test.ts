@@ -5,6 +5,7 @@ import { createEffectQuery } from "effect-query";
 import { FetchHttpClient } from "effect/unstable/http";
 
 import {
+  getRunArtifactFromDashboardGaiaClient,
   getRunFromDashboardGaiaClient,
   listRunsFromDashboardGaiaClient,
 } from "@/lib/local-gaia-client";
@@ -52,12 +53,14 @@ describe("local Gaia query options", () => {
       listRunsFromDashboardGaiaClient({
         serverUrl: "http://127.0.0.1:4321",
       }).pipe(
-        Effect.provide(recordingFetchLayer(requests, () =>
-          jsonResponse({
-            data: { diagnostics: [], runs: [] },
-            status: "success",
-          }),
-        )),
+        Effect.provide(
+          recordingFetchLayer(requests, () =>
+            jsonResponse({
+              data: { diagnostics: [], runs: [] },
+              status: "success",
+            }),
+          ),
+        ),
       ),
     );
 
@@ -71,18 +74,20 @@ describe("local Gaia query options", () => {
         runId: "run-1234567890",
         serverUrl: "http://127.0.0.1:4321",
       }).pipe(
-        Effect.provide(recordingFetchLayer([], () =>
-          jsonResponse(
-            {
-              code: "RunNotFound",
-              message: "Run was not found.",
-              recoverable: false,
-              runId: "run-1234567890",
-              status: 404,
-            },
-            { status: 404 },
+        Effect.provide(
+          recordingFetchLayer([], () =>
+            jsonResponse(
+              {
+                code: "RunNotFound",
+                message: "Run was not found.",
+                recoverable: false,
+                runId: "run-1234567890",
+                status: 404,
+              },
+              { status: 404 },
+            ),
           ),
-        )),
+        ),
         Effect.flip,
       ),
     );
@@ -92,6 +97,69 @@ describe("local Gaia query options", () => {
       expect(error.error.status).toBe(404);
       expect(error.error.code).toBe("RunNotFound");
       expect(error.error.message).toBe("Run was not found.");
+    }
+  });
+
+  it("reads allowlisted artifacts through the shared HttpApi contract", async () => {
+    const requests: Array<string> = [];
+    const result = await Effect.runPromise(
+      getRunArtifactFromDashboardGaiaClient({
+        artifactId: "report",
+        runId: "run-1234567890",
+        serverUrl: "http://127.0.0.1:4321",
+      }).pipe(
+        Effect.provide(
+          recordingFetchLayer(requests, () =>
+            jsonResponse({
+              data: {
+                artifactName: "report",
+                body: "# Report\n\nAll checks passed.\n",
+                contentType: "text/markdown",
+                runId: "run-1234567890",
+              },
+              status: "success",
+            }),
+          ),
+        ),
+      ),
+    );
+
+    expect(requests).toEqual([
+      "GET http://127.0.0.1:4321/runs/run-1234567890/artifacts/report",
+    ]);
+    expect(result.data.artifactName).toBe("report");
+    expect(result.data.body).toContain("All checks passed.");
+  });
+
+  it("rejects unknown artifact identifiers before issuing a request", async () => {
+    const requests: Array<string> = [];
+    const error = await Effect.runPromise(
+      getRunArtifactFromDashboardGaiaClient({
+        artifactId: "not-allowlisted",
+        runId: "run-1234567890",
+        serverUrl: "http://127.0.0.1:4321",
+      }).pipe(
+        Effect.provide(
+          recordingFetchLayer(requests, () =>
+            jsonResponse({
+              data: {
+                artifactName: "report",
+                body: "",
+                contentType: "text/plain",
+                runId: "run-1234567890",
+              },
+              status: "success",
+            }),
+          ),
+        ),
+        Effect.flip,
+      ),
+    );
+
+    expect(requests).toEqual([]);
+    expect(error._tag).toBe("DashboardGaiaParameterError");
+    if (error._tag === "DashboardGaiaParameterError") {
+      expect(error.parameter).toBe("artifactId");
     }
   });
 
@@ -129,9 +197,7 @@ describe("local Gaia query options", () => {
           throw new Error("Expected fetchQuery to fail.");
         },
         (error: unknown) => {
-          expect(effectQueryFailure(error)?._tag).toBe(
-            "DashboardGaiaApiError",
-          );
+          expect(effectQueryFailure(error)?._tag).toBe("DashboardGaiaApiError");
         },
       );
   });
@@ -172,13 +238,10 @@ describe("local Gaia query options", () => {
       throw new Error("Expected create-run mutationFn to be defined.");
     }
 
-    const result = await mutation.mutationFn(
-      createRunInput,
-      {
-        client: new QueryClient(),
-        meta: undefined,
-      },
-    );
+    const result = await mutation.mutationFn(createRunInput, {
+      client: new QueryClient(),
+      meta: undefined,
+    });
 
     expect(requests).toEqual(["POST http://127.0.0.1:4321/runs"]);
     expect(bodies).toEqual([createRunInput]);
@@ -212,20 +275,12 @@ function jsonResponse(body: unknown, init: ResponseInit = {}) {
 }
 
 function effectQueryFailure(error: unknown) {
-  if (
-    typeof error !== "object" ||
-    error === null ||
-    !("failure" in error)
-  ) {
+  if (typeof error !== "object" || error === null || !("failure" in error)) {
     return undefined;
   }
 
   const failure = error.failure;
-  if (
-    typeof failure === "object" &&
-    failure !== null &&
-    "_tag" in failure
-  ) {
+  if (typeof failure === "object" && failure !== null && "_tag" in failure) {
     return failure;
   }
 
