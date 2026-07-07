@@ -264,7 +264,7 @@ export function DashboardShell() {
   }
 
   return (
-    <TooltipProvider delayDuration={250}>
+    <TooltipProvider delay={250}>
       <SidebarProvider className="h-svh min-h-0 flex-col overflow-hidden bg-background text-sm lg:flex-row">
         <RunConsole
           selectedRunId={selectedRunId}
@@ -342,18 +342,20 @@ function RunConsole({
             <h1 className="truncate text-base font-semibold">Gaia Dashboard</h1>
           </div>
           <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                aria-label="Refresh local runs"
-                disabled={runConsole.isLoading}
-                onClick={onRefresh}
-                size="icon"
-                variant="outline"
-              >
-                <RefreshCwIcon
-                  className={cn(runConsole.isLoading && "animate-spin")}
+            <TooltipTrigger
+              render={
+                <Button
+                  aria-label="Refresh local runs"
+                  disabled={runConsole.isLoading}
+                  onClick={onRefresh}
+                  size="icon"
+                  variant="outline"
                 />
-              </Button>
+              }
+            >
+              <RefreshCwIcon
+                className={cn(runConsole.isLoading && "animate-spin")}
+              />
             </TooltipTrigger>
             <TooltipContent>Refresh local runs</TooltipContent>
           </Tooltip>

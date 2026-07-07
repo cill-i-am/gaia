@@ -489,6 +489,12 @@ function installBrowserApiPolyfills() {
 
   globalThis.ResizeObserver = TestResizeObserver;
   window.ResizeObserver = TestResizeObserver;
+  if (!("getAnimations" in Element.prototype)) {
+    Object.defineProperty(Element.prototype, "getAnimations", {
+      configurable: true,
+      value: () => [],
+    });
+  }
   window.matchMedia = (query) => ({
     addEventListener() {},
     addListener() {},
