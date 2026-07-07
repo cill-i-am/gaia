@@ -331,7 +331,7 @@ function RunConsole({
   return (
     <Sidebar
       collapsible="none"
-      className="run-console-sidebar h-full shrink-0 border-r max-lg:border-r-0 max-lg:border-b"
+      className="run-console-sidebar h-full shrink-0 overflow-hidden border-r max-lg:overflow-y-auto max-lg:border-r-0 max-lg:border-b"
     >
       <SidebarHeader className="gap-3 border-b">
         <div className="flex items-center justify-between gap-3">
@@ -643,8 +643,8 @@ function MobileWorkspace({
   readonly onSelectNode: (nodeId: string) => void;
 }) {
   return (
-    <section className="flex min-h-0 flex-1 flex-col lg:hidden">
-      <div className="min-h-[22rem] flex-1 border-b">
+    <section className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:hidden">
+      <div className="min-h-[22rem] shrink-0 border-b">
         <RunCanvas
           queryState={runCanvas}
           selectedNode={selectedNode}
@@ -652,7 +652,7 @@ function MobileWorkspace({
           onSelectNode={onSelectNode}
         />
       </div>
-      <div className="min-h-0 flex-1 border-b">
+      <div className="min-h-[24rem] shrink-0 border-b">
         <EvidenceStudio
           selectedNode={selectedNode}
           selectedRun={selectedRun}
