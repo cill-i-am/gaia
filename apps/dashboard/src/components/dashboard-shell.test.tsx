@@ -215,6 +215,9 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByTestId("selected-run-title").textContent).toBe(
       "run-1111111111",
     );
+    expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
+      "#2 · 2026-07-07T12:01:00.000Z",
+    );
     expect(await screen.findAllByText("Run root")).not.toHaveLength(0);
     const workerLabels = await screen.findAllByText("Worker lane");
     expect(workerLabels).not.toHaveLength(0);
@@ -259,11 +262,28 @@ describe("DashboardShell Run Console", () => {
       ).not.toHaveLength(0);
     });
 
+    fireEvent.change(screen.getByTestId("run-replay-range"), {
+      target: { value: "0" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
+        "#1 · 2026-07-07T12:00:00.000Z",
+      );
+      expect(
+        firstElement(screen.getAllByTestId("event-strip-event-1")).textContent,
+      ).toContain("Replay point");
+      expect(screen.getAllByText("Replay point")).not.toHaveLength(0);
+    });
+
     fireEvent.click(secondRow);
 
     await waitFor(() => {
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
         "run-2222222222",
+      );
+      expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
+        "Select a run with public events.",
       );
     });
   });

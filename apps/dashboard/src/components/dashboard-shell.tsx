@@ -14,6 +14,8 @@ import {
   AlertCircleIcon,
   BoxIcon,
   BracesIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   CircleDotIcon,
   GitBranchIcon,
   InspectIcon,
@@ -29,9 +31,11 @@ import {
   type DashboardEvent,
   type DashboardRun,
   type EvidenceTab,
+  type RunReplayState,
   type RunNode,
   type RunStatus,
   buildRunCanvasModel,
+  buildRunReplayState,
   eventTypeLabel,
   eventsForNode,
   getInitialNode,
@@ -202,6 +206,17 @@ export function DashboardShell() {
       }),
     [selectedRunEvents, selectedRunSummary],
   );
+  const [requestedReplayIndex, setRequestedReplayIndex] = React.useState<
+    number | undefined
+  >();
+  const replayState = React.useMemo(
+    () =>
+      buildRunReplayState({
+        requestedIndex: requestedReplayIndex,
+        run: selectedRun,
+      }),
+    [requestedReplayIndex, selectedRun],
+  );
   const serverConnection: ServerConnectionState = {
     runConsole,
     selectedRun: selectedConsoleRun,
@@ -261,6 +276,16 @@ export function DashboardShell() {
   function selectRun(runId: string) {
     setRequestedSelectedRunId(runId);
     setSelectedNodeId(undefined);
+    setRequestedReplayIndex(undefined);
+  }
+
+  function selectReplayIndex(index: number) {
+    setRequestedReplayIndex(index);
+
+    const event = selectedRun.events[index];
+    if (event !== undefined) {
+      setSelectedNodeId(event.id);
+    }
   }
 
   return (
@@ -277,9 +302,15 @@ export function DashboardShell() {
             selectedRun={selectedRun}
             serverConnection={serverConnection}
           />
+          <RunReplayScrubber
+            replayState={replayState}
+            selectedRun={selectedRun}
+            onSelectReplayIndex={selectReplayIndex}
+          />
           <DesktopWorkspace
             runCanvas={runCanvas}
             runEventStream={runEventStream}
+            replayState={replayState}
             selectedConsoleRun={selectedConsoleRun}
             selectedNode={selectedNode}
             selectedRun={selectedRun}
@@ -289,6 +320,7 @@ export function DashboardShell() {
           <MobileWorkspace
             runCanvas={runCanvas}
             runEventStream={runEventStream}
+            replayState={replayState}
             selectedConsoleRun={selectedConsoleRun}
             selectedNode={selectedNode}
             selectedRun={selectedRun}
@@ -298,6 +330,118 @@ export function DashboardShell() {
         </main>
       </SidebarProvider>
     </TooltipProvider>
+  );
+}
+
+function RunReplayScrubber({
+  replayState,
+  selectedRun,
+  onSelectReplayIndex,
+}: {
+  readonly replayState: RunReplayState;
+  readonly selectedRun: DashboardRun;
+  readonly onSelectReplayIndex: (index: number) => void;
+}) {
+  const currentStep = replayState.currentStep;
+  const previousIndex = Math.max(replayState.currentIndex - 1, 0);
+  const nextIndex = Math.min(
+    replayState.currentIndex + 1,
+    Math.max(replayState.steps.length - 1, 0),
+  );
+  const isDisabled = replayState.steps.length === 0;
+  const handleReplayRangeInput = (
+    event: React.FormEvent<HTMLInputElement>,
+  ) => onSelectReplayIndex(Number(event.currentTarget.value));
+
+  return (
+    <section
+      className="shrink-0 border-b bg-background px-3 py-2"
+      data-testid="run-replay-scrubber"
+    >
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+        <div className="flex min-w-0 items-center justify-between gap-3 lg:w-72 lg:justify-start">
+          <div className="min-w-0">
+            <p className="text-xs font-medium uppercase text-muted-foreground">
+              Run Replay
+            </p>
+            <p className="truncate text-sm font-medium">
+              {currentStep?.event.label ?? "No ordered events"}
+            </p>
+          </div>
+          <Badge variant={isDisabled ? "outline" : "secondary"}>
+            {currentStep?.progressLabel ?? "Idle"}
+          </Badge>
+        </div>
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  aria-label="Previous replay event"
+                  disabled={isDisabled || replayState.currentIndex === 0}
+                  onClick={() => onSelectReplayIndex(previousIndex)}
+                  size="icon"
+                  variant="outline"
+                />
+              }
+            >
+              <ChevronLeftIcon />
+            </TooltipTrigger>
+            <TooltipContent>Previous replay event</TooltipContent>
+          </Tooltip>
+          <input
+            aria-label="Replay event position"
+            className="h-2 min-w-0 flex-1 cursor-pointer accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+            data-testid="run-replay-range"
+            disabled={isDisabled}
+            max={Math.max(replayState.steps.length - 1, 0)}
+            min={0}
+            onChange={handleReplayRangeInput}
+            onInput={handleReplayRangeInput}
+            type="range"
+            value={replayState.currentIndex}
+          />
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  aria-label="Next replay event"
+                  disabled={
+                    isDisabled ||
+                    replayState.currentIndex >= replayState.steps.length - 1
+                  }
+                  onClick={() => onSelectReplayIndex(nextIndex)}
+                  size="icon"
+                  variant="outline"
+                />
+              }
+            >
+              <ChevronRightIcon />
+            </TooltipTrigger>
+            <TooltipContent>Next replay event</TooltipContent>
+          </Tooltip>
+        </div>
+        <div className="flex min-w-0 flex-wrap items-center gap-2 lg:w-80 lg:justify-end">
+          <Badge variant="outline">
+            {selectedRun.events.length} ordered events
+          </Badge>
+          <Badge variant="outline">
+            {Math.round(replayState.progressPercent)}% replayed
+          </Badge>
+          <Badge variant="outline">
+            {replayState.visibleArtifactIds.length} artifacts reached
+          </Badge>
+          <span
+            className="min-w-0 truncate text-xs text-muted-foreground"
+            data-testid="run-replay-current-event"
+          >
+            {currentStep === undefined
+              ? "Select a run with public events."
+              : `#${currentStep.event.sequence} · ${currentStep.event.timestamp}`}
+          </span>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -577,6 +721,7 @@ function TopBar({
 function DesktopWorkspace({
   runCanvas,
   runEventStream,
+  replayState,
   selectedConsoleRun,
   selectedRun,
   selectedNode,
@@ -585,6 +730,7 @@ function DesktopWorkspace({
 }: {
   readonly runCanvas: RunCanvasQueryState;
   readonly runEventStream: RunEventStreamState;
+  readonly replayState: RunReplayState;
   readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedRun: DashboardRun;
   readonly selectedNode: RunNode | undefined;
@@ -599,6 +745,7 @@ function DesktopWorkspace({
             <ResizablePanel defaultSize="68%" minSize="44%">
               <RunCanvas
                 queryState={runCanvas}
+                replayState={replayState}
                 selectedNode={selectedNode}
                 selectedRun={selectedRun}
                 onSelectNode={onSelectNode}
@@ -607,6 +754,7 @@ function DesktopWorkspace({
             <ResizableHandle withHandle />
             <ResizablePanel defaultSize="32%" minSize="24%">
               <EvidenceStudio
+                replayState={replayState}
                 selectedNode={selectedNode}
                 selectedRun={selectedRun}
                 serverUrl={serverUrl}
@@ -617,6 +765,7 @@ function DesktopWorkspace({
         <ResizableHandle withHandle />
         <ResizablePanel defaultSize="24%" minSize="16%" maxSize="34%">
           <EventStrip
+            replayState={replayState}
             selectedConsoleRun={selectedConsoleRun}
             selectedRun={selectedRun}
             streamState={runEventStream}
@@ -630,6 +779,7 @@ function DesktopWorkspace({
 function MobileWorkspace({
   runCanvas,
   runEventStream,
+  replayState,
   selectedConsoleRun,
   selectedRun,
   selectedNode,
@@ -638,6 +788,7 @@ function MobileWorkspace({
 }: {
   readonly runCanvas: RunCanvasQueryState;
   readonly runEventStream: RunEventStreamState;
+  readonly replayState: RunReplayState;
   readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedRun: DashboardRun;
   readonly selectedNode: RunNode | undefined;
@@ -649,6 +800,7 @@ function MobileWorkspace({
       <div className="min-h-[22rem] shrink-0 border-b">
         <RunCanvas
           queryState={runCanvas}
+          replayState={replayState}
           selectedNode={selectedNode}
           selectedRun={selectedRun}
           onSelectNode={onSelectNode}
@@ -656,6 +808,7 @@ function MobileWorkspace({
       </div>
       <div className="min-h-[24rem] shrink-0 border-b">
         <EvidenceStudio
+          replayState={replayState}
           selectedNode={selectedNode}
           selectedRun={selectedRun}
           serverUrl={serverUrl}
@@ -663,6 +816,7 @@ function MobileWorkspace({
       </div>
       <div className="h-40 shrink-0">
         <EventStrip
+          replayState={replayState}
           selectedConsoleRun={selectedConsoleRun}
           selectedRun={selectedRun}
           streamState={runEventStream}
@@ -674,18 +828,20 @@ function MobileWorkspace({
 
 function RunCanvas({
   queryState,
+  replayState,
   selectedRun,
   selectedNode,
   onSelectNode,
 }: {
   readonly queryState: RunCanvasQueryState;
+  readonly replayState: RunReplayState;
   readonly selectedRun: DashboardRun;
   readonly selectedNode: RunNode | undefined;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
   const nodes = React.useMemo(
-    () => toFlowNodes(selectedRun, selectedNode?.id),
-    [selectedRun, selectedNode?.id],
+    () => toFlowNodes(selectedRun, selectedNode?.id, replayState),
+    [replayState, selectedRun, selectedNode?.id],
   );
   const edges = React.useMemo(() => toFlowEdges(selectedRun), [selectedRun]);
   const handleNodeClick = React.useCallback<NodeMouseHandler>(
@@ -759,10 +915,12 @@ function RunCanvas({
 }
 
 function EvidenceStudio({
+  replayState,
   selectedNode,
   selectedRun,
   serverUrl,
 }: {
+  readonly replayState: RunReplayState;
   readonly selectedNode: RunNode | undefined;
   readonly selectedRun: DashboardRun;
   readonly serverUrl: string;
@@ -878,6 +1036,7 @@ function EvidenceStudio({
         <ScrollArea className="min-h-0 flex-1">
           <TabsContent className="m-0 p-3" value="summary">
             <EvidenceSummary
+              replayState={replayState}
               relatedEvents={relatedEvents}
               selectedNode={selectedNode}
             />
@@ -885,6 +1044,7 @@ function EvidenceStudio({
           <TabsContent className="m-0 p-3" value="events">
             <EvidenceEvents
               events={relatedEvents}
+              replayState={replayState}
               selectedNode={selectedNode}
             />
           </TabsContent>
@@ -904,6 +1064,11 @@ function EvidenceStudio({
             <pre className="overflow-auto rounded-md bg-muted p-3 text-xs">
               {stringifyJson({
                 node: selectedNode,
+                replay: {
+                  activeEventId: replayState.activeEventId,
+                  activeSequence: replayState.activeSequence,
+                  visibleEventIds: replayState.visibleEventIds,
+                },
                 relatedEvents,
                 runId: selectedRun.id,
               })}
@@ -916,12 +1081,20 @@ function EvidenceStudio({
 }
 
 function EvidenceSummary({
+  replayState,
   relatedEvents,
   selectedNode,
 }: {
+  readonly replayState: RunReplayState;
   readonly relatedEvents: ReadonlyArray<DashboardEvent>;
   readonly selectedNode: RunNode;
 }) {
+  const visibleRelatedEvents = relatedEvents.filter((event) =>
+    replayState.visibleEventIds.includes(event.id),
+  );
+  const isSelectedNodeReached =
+    relatedEvents.length === 0 || visibleRelatedEvents.length > 0;
+
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -931,6 +1104,29 @@ function EvidenceSummary({
         <h3 className="mt-1 text-lg font-semibold">{selectedNode.label}</h3>
         <p className="mt-2 text-sm text-muted-foreground">
           {selectedNode.summary}
+        </p>
+      </div>
+      <Separator />
+      <div
+        className="rounded-md border bg-background p-3"
+        data-testid="evidence-replay-context"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-medium uppercase text-muted-foreground">
+              Replay context
+            </p>
+            <p className="mt-1 truncate text-sm font-medium">
+              {replayState.currentStep?.event.label ?? "No active replay event"}
+            </p>
+          </div>
+          <Badge variant={isSelectedNodeReached ? "secondary" : "outline"}>
+            {isSelectedNodeReached ? "Reached" : "Ahead"}
+          </Badge>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          {visibleRelatedEvents.length} of {relatedEvents.length} related events
+          are visible at the selected replay point.
         </p>
       </div>
       <Separator />
@@ -993,9 +1189,11 @@ function EvidenceList({
 
 function EvidenceEvents({
   events,
+  replayState,
   selectedNode,
 }: {
   readonly events: ReadonlyArray<DashboardEvent>;
+  readonly replayState: RunReplayState;
   readonly selectedNode: RunNode;
 }) {
   if (events.length === 0) {
@@ -1018,7 +1216,11 @@ function EvidenceEvents({
     <div className="flex flex-col gap-3">
       {events.map((event) => (
         <section
-          className="rounded-md border bg-background p-3"
+          className={cn(
+            "rounded-md border bg-background p-3",
+            event.id === replayState.activeEventId && "ring-2 ring-ring",
+            replayState.futureEventIds.includes(event.id) && "opacity-55",
+          )}
           data-testid={`evidence-event-${event.sequence}`}
           key={event.id}
         >
@@ -1036,6 +1238,12 @@ function EvidenceEvents({
           <Separator className="my-3" />
           <div className="flex flex-wrap gap-2">
             <Badge variant="outline">{event.type}</Badge>
+            {event.id === replayState.activeEventId ? (
+              <Badge variant="secondary">Replay point</Badge>
+            ) : null}
+            {replayState.futureEventIds.includes(event.id) ? (
+              <Badge variant="outline">Not reached</Badge>
+            ) : null}
             {event.artifactHints.map((artifactId) => (
               <Badge key={artifactId} variant="secondary">
                 {artifactLabel(artifactId)}
@@ -1180,10 +1388,12 @@ function Metric({
 }
 
 function EventStrip({
+  replayState,
   selectedConsoleRun,
   selectedRun,
   streamState,
 }: {
+  readonly replayState: RunReplayState;
   readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedRun: DashboardRun;
   readonly streamState: RunEventStreamState;
@@ -1222,7 +1432,13 @@ function EventStrip({
           <div className="flex min-w-max gap-2 p-3">
             {selectedRun.events.map((event) => (
               <div
-                className="flex w-72 shrink-0 flex-col gap-2 rounded-md border bg-background p-3"
+                className={cn(
+                  "flex w-72 shrink-0 flex-col gap-2 rounded-md border bg-background p-3",
+                  event.id === replayState.activeEventId &&
+                    "ring-2 ring-ring",
+                  replayState.futureEventIds.includes(event.id) &&
+                    "opacity-55",
+                )}
                 data-testid={`event-strip-event-${event.sequence}`}
                 key={event.id}
               >
@@ -1237,6 +1453,9 @@ function EventStrip({
                 <p className="truncate text-sm font-medium">{event.label}</p>
                 <div className="flex flex-wrap gap-1">
                   <Badge variant="outline">#{event.sequence}</Badge>
+                  {event.id === replayState.activeEventId ? (
+                    <Badge variant="secondary">Replay point</Badge>
+                  ) : null}
                   {event.artifactHints.map((artifactId) => (
                     <Badge key={artifactId} variant="secondary">
                       {artifactLabel(artifactId)}
@@ -1454,7 +1673,11 @@ function eventStripDisplay({
 function toFlowNodes(
   run: DashboardRun,
   selectedNodeId: string | undefined,
+  replayState: RunReplayState,
 ): Array<Node<{ label: React.ReactNode }>> {
+  const futureEventIds = new Set(replayState.futureEventIds);
+  const visibleEventIds = new Set(replayState.visibleEventIds);
+
   return run.nodes.map((node) => ({
     id: node.id,
     position: node.position,
@@ -1476,6 +1699,11 @@ function toFlowNodes(
     type: node.role === "orchestrator" ? "input" : "default",
     className: cn(
       "rounded-lg border bg-background px-2 py-1 shadow-sm",
+      node.id === replayState.activeEventId && "ring-2 ring-primary",
+      node.eventIds.length > 0 &&
+        !node.eventIds.some((eventId) => visibleEventIds.has(eventId)) &&
+        "opacity-50",
+      node.role === "event" && futureEventIds.has(node.id) && "opacity-50",
       node.id === selectedNodeId && "ring-2 ring-ring",
     ),
   }));
