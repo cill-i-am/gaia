@@ -28,6 +28,7 @@ export const localGaiaQueryKeys = {
 };
 
 const localGaiaEffectQuery = createEffectQuery(DashboardGaiaFetchClientLive);
+type LocalGaiaEffectQuery = typeof localGaiaEffectQuery;
 
 export function localGaiaHealthQueryOptions(
   config: DashboardGaiaClientConfig,
@@ -85,8 +86,9 @@ export function localGaiaRunArtifactQueryOptions(
 
 export function localGaiaCreateRunMutationOptions(
   config: DashboardGaiaClientConfig,
+  effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery,
 ) {
-  return localGaiaEffectQuery.mutationOptions({
+  return effectQuery.mutationOptions({
     mutationKey: [...localGaiaQueryKeys.all, "create-run"] as const,
     mutationFn: (input: {
       readonly specMarkdown: string;

@@ -9,6 +9,7 @@ import {
   listRunsFromDashboardGaiaClient,
 } from "@/lib/local-gaia-client";
 import {
+  localGaiaCreateRunMutationOptions,
   localGaiaHealthQueryOptions,
   localGaiaQueryKeys,
   localGaiaRunArtifactQueryOptions,
@@ -133,6 +134,55 @@ describe("local Gaia query options", () => {
           );
         },
       );
+  });
+
+  it("creates Markdown runs through the exported effect-query mutation options", async () => {
+    const requests: Array<string> = [];
+    const bodies: Array<unknown> = [];
+    const createRunInput = {
+      specMarkdown: "# Mutation proof\n\nRun the focused test.\n",
+      title: "Mutation proof",
+    };
+    const createRunResponse = {
+      acceptedAt: "2026-07-07T00:00:00.000Z",
+      runId: "run-1234567890",
+      status: "accepted",
+      urls: {
+        eventStream: "/runs/run-1234567890/events/stream",
+        events: "/runs/run-1234567890/events",
+        run: "/runs/run-1234567890",
+      },
+    };
+    const effectQuery = createEffectQuery(
+      recordingFetchLayer(requests, async (request) => {
+        const body: unknown = await request.json();
+        bodies.push(body);
+        return jsonResponse(createRunResponse, { status: 202 });
+      }),
+    );
+    const mutation = localGaiaCreateRunMutationOptions(
+      {
+        serverUrl: "http://127.0.0.1:4321",
+      },
+      effectQuery,
+    );
+
+    expect(typeof mutation.mutationFn).toBe("function");
+    if (mutation.mutationFn === undefined) {
+      throw new Error("Expected create-run mutationFn to be defined.");
+    }
+
+    const result = await mutation.mutationFn(
+      createRunInput,
+      {
+        client: new QueryClient(),
+        meta: undefined,
+      },
+    );
+
+    expect(requests).toEqual(["POST http://127.0.0.1:4321/runs"]);
+    expect(bodies).toEqual([createRunInput]);
+    expect(result).toEqual(createRunResponse);
   });
 });
 
