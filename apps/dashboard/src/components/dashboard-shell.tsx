@@ -17,6 +17,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CircleDotIcon,
+  GitCompareArrowsIcon,
   GitBranchIcon,
   InspectIcon,
   RefreshCwIcon,
@@ -43,6 +44,11 @@ import {
   mergeRunEvents,
   stateLabel,
 } from "@/run-canvas-model";
+import {
+  buildRunCompareModel,
+  type RunCompareModel,
+  type RunCompareSignal,
+} from "@/run-compare-model";
 import { defaultLocalGaiaServerUrl } from "@/lib/local-gaia-client";
 import {
   localGaiaHealthQueryOptions,
@@ -120,8 +126,38 @@ function statusBadgeVariant(status: RunStatus) {
   return "outline";
 }
 
+function signalBadgeVariant(
+  signal: RunCompareSignal | undefined,
+): "destructive" | "outline" | "secondary" {
+  if (signal?.state === "failed") {
+    return "destructive";
+  }
+
+  if (signal?.state === "available") {
+    return "secondary";
+  }
+
+  return "outline";
+}
+
 function roleLabel(node: RunNode) {
   return `${node.role[0]?.toUpperCase() ?? ""}${node.role.slice(1)}`;
+}
+
+function reconcileComparisonRunId(input: {
+  readonly primaryRunId: string | undefined;
+  readonly requestedComparisonRunId: string | undefined;
+  readonly runs: ReadonlyArray<RunConsoleRun>;
+}) {
+  if (
+    input.requestedComparisonRunId !== undefined &&
+    input.requestedComparisonRunId !== input.primaryRunId &&
+    input.runs.some((run) => run.id === input.requestedComparisonRunId)
+  ) {
+    return input.requestedComparisonRunId;
+  }
+
+  return input.runs.find((run) => run.id !== input.primaryRunId)?.id;
 }
 
 type ServerConnectionState = {
@@ -163,12 +199,22 @@ export function DashboardShell() {
     requestedSelectedRunId,
     runConsole.runs,
   );
+  const [requestedComparisonRunId, setRequestedComparisonRunId] =
+    React.useState<string | undefined>();
+  const comparisonRunId = reconcileComparisonRunId({
+    primaryRunId: selectedRunId,
+    requestedComparisonRunId,
+    runs: runConsole.runs,
+  });
   const selectedConsoleRun = selectedRunFromConsoleState(
     selectedRunId,
     runConsole.runs,
   );
   const selectedRunSummaryFromList = runsQuery.data?.data.runs.find(
     (run) => run.runId === selectedRunId,
+  );
+  const comparisonRunSummaryFromList = runsQuery.data?.data.runs.find(
+    (run) => run.runId === comparisonRunId,
   );
   const selectedRunDetailQuery = useQuery(
     localGaiaRunQueryOptions({
@@ -179,6 +225,18 @@ export function DashboardShell() {
   const selectedRunEventsQuery = useQuery(
     localGaiaRunEventsQueryOptions({
       runId: selectedRunId ?? "",
+      serverUrl,
+    }),
+  );
+  const comparisonRunDetailQuery = useQuery(
+    localGaiaRunQueryOptions({
+      runId: comparisonRunId ?? "",
+      serverUrl,
+    }),
+  );
+  const comparisonRunEventsQuery = useQuery(
+    localGaiaRunEventsQueryOptions({
+      runId: comparisonRunId ?? "",
       serverUrl,
     }),
   );
@@ -198,6 +256,8 @@ export function DashboardShell() {
   );
   const selectedRunSummary =
     selectedRunDetailQuery.data?.data ?? selectedRunSummaryFromList;
+  const comparisonRunSummary =
+    comparisonRunDetailQuery.data?.data ?? comparisonRunSummaryFromList;
   const selectedRun = React.useMemo(
     () =>
       buildRunCanvasModel({
@@ -216,6 +276,21 @@ export function DashboardShell() {
         run: selectedRun,
       }),
     [requestedReplayIndex, selectedRun],
+  );
+  const runCompare = React.useMemo(
+    () =>
+      buildRunCompareModel({
+        comparisonEvents: comparisonRunEventsQuery.data?.data.events ?? [],
+        comparisonRun: comparisonRunSummary,
+        primaryEvents: selectedRunEvents,
+        primaryRun: selectedRunSummary,
+      }),
+    [
+      comparisonRunEventsQuery.data?.data.events,
+      comparisonRunSummary,
+      selectedRunEvents,
+      selectedRunSummary,
+    ],
   );
   const serverConnection: ServerConnectionState = {
     runConsole,
@@ -270,6 +345,13 @@ export function DashboardShell() {
       );
     }
 
+    if (comparisonRunId !== undefined) {
+      refreshes.push(
+        comparisonRunDetailQuery.refetch(),
+        comparisonRunEventsQuery.refetch(),
+      );
+    }
+
     void Promise.all(refreshes);
   }
 
@@ -306,6 +388,19 @@ export function DashboardShell() {
             replayState={replayState}
             selectedRun={selectedRun}
             onSelectReplayIndex={selectReplayIndex}
+          />
+          <RunComparePanel
+            comparisonRunId={comparisonRunId}
+            comparisonRunIsLoading={
+              comparisonRunId !== undefined &&
+              (comparisonRunDetailQuery.isPending ||
+                comparisonRunEventsQuery.isPending)
+            }
+            primaryRunId={selectedRunId}
+            runCompare={runCompare}
+            runs={runConsole.runs}
+            onSelectComparisonRun={setRequestedComparisonRunId}
+            onSelectPrimaryRun={selectRun}
           />
           <DesktopWorkspace
             runCanvas={runCanvas}
@@ -442,6 +537,284 @@ function RunReplayScrubber({
         </div>
       </div>
     </section>
+  );
+}
+
+function RunComparePanel({
+  comparisonRunId,
+  comparisonRunIsLoading,
+  primaryRunId,
+  runCompare,
+  runs,
+  onSelectComparisonRun,
+  onSelectPrimaryRun,
+}: {
+  readonly comparisonRunId: string | undefined;
+  readonly comparisonRunIsLoading: boolean;
+  readonly primaryRunId: string | undefined;
+  readonly runCompare: RunCompareModel;
+  readonly runs: ReadonlyArray<RunConsoleRun>;
+  readonly onSelectComparisonRun: (runId: string | undefined) => void;
+  readonly onSelectPrimaryRun: (runId: string) => void;
+}) {
+  const canCompare = runs.length >= 2;
+  const comparisonOptions = runs.filter((run) => run.id !== primaryRunId);
+
+  return (
+    <section
+      className="shrink-0 border-b bg-background px-3 py-2"
+      data-testid="run-compare-panel"
+    >
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+          <div className="flex min-w-0 items-start gap-2">
+            <GitCompareArrowsIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0">
+              <p className="text-xs font-medium uppercase text-muted-foreground">
+                Run Compare
+              </p>
+              <p className="truncate text-sm font-medium">
+                {runCompare.summary}
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 xl:w-[34rem]">
+            <RunSelectControl
+              label="Primary"
+              testId="run-compare-primary-select"
+              value={primaryRunId ?? ""}
+              runs={runs}
+              disabled={runs.length === 0}
+              onChange={(runId) => {
+                if (runId.length > 0) {
+                  onSelectPrimaryRun(runId);
+                }
+              }}
+            />
+            <RunSelectControl
+              label="Comparison"
+              testId="run-compare-comparison-select"
+              value={comparisonRunId ?? ""}
+              runs={comparisonOptions}
+              disabled={!canCompare}
+              onChange={(runId) =>
+                onSelectComparisonRun(runId.length === 0 ? undefined : runId)
+              }
+            />
+          </div>
+        </div>
+        {!canCompare ? (
+          <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            At least two local runs are required for side-by-side comparison.
+          </div>
+        ) : comparisonRunIsLoading ? (
+          <div
+            className="grid gap-2 md:grid-cols-2 xl:grid-cols-5"
+            data-testid="run-compare-loading"
+          >
+            <Skeleton className="h-20 w-full" />
+            <Skeleton className="h-20 w-full" />
+            <Skeleton className="h-20 w-full" />
+            <Skeleton className="h-20 w-full" />
+            <Skeleton className="h-20 w-full" />
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <div
+              className="grid gap-2 md:grid-cols-2 xl:grid-cols-5"
+              data-testid="run-compare-metrics"
+            >
+              {runCompare.metrics.map((metric) => (
+                <RunCompareMetricTile key={metric.label} metric={metric} />
+              ))}
+            </div>
+            <div className="grid gap-2 xl:grid-cols-[1fr_1fr_1fr_1.2fr]">
+              <RunCompareSignalTile
+                label="Primary signals"
+                report={runCompare.primary?.reportSignal}
+                checks={runCompare.primary?.checkSignal}
+                review={runCompare.primary?.reviewSignal}
+              />
+              <RunCompareSignalTile
+                label="Comparison signals"
+                report={runCompare.comparison?.reportSignal}
+                checks={runCompare.comparison?.checkSignal}
+                review={runCompare.comparison?.reviewSignal}
+              />
+              <ArtifactDelta delta={runCompare.artifactDelta} />
+              <MissingDataList items={runCompare.missingData} />
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function RunSelectControl({
+  disabled,
+  label,
+  runs,
+  testId,
+  value,
+  onChange,
+}: {
+  readonly disabled: boolean;
+  readonly label: string;
+  readonly runs: ReadonlyArray<RunConsoleRun>;
+  readonly testId: string;
+  readonly value: string;
+  readonly onChange: (runId: string) => void;
+}) {
+  return (
+    <label className="flex min-w-0 items-center gap-2">
+      <span className="shrink-0 text-xs font-medium text-muted-foreground">
+        {label}
+      </span>
+      <select
+        className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-sm"
+        data-testid={testId}
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        value={value}
+      >
+        {runs.length === 0 ? <option value="">Unavailable</option> : null}
+        {runs.map((run) => (
+          <option key={run.id} value={run.id}>
+            {run.title}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function RunCompareMetricTile({
+  metric,
+}: {
+  readonly metric: RunCompareModel["metrics"][number];
+}) {
+  return (
+    <div
+      className="min-w-0 rounded-md border bg-background p-2"
+      data-testid={`run-compare-metric-${metric.label.toLowerCase()}`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <p className="truncate text-xs font-medium text-muted-foreground">
+          {metric.label}
+        </p>
+        <Badge variant={metric.isDifferent ? "outline" : "secondary"}>
+          {metric.isDifferent ? "Different" : "Same"}
+        </Badge>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+        <div className="min-w-0">
+          <p className="text-muted-foreground">Primary</p>
+          <p className="truncate font-medium">{metric.primaryValue}</p>
+        </div>
+        <div className="min-w-0">
+          <p className="text-muted-foreground">Comparison</p>
+          <p className="truncate font-medium">{metric.comparisonValue}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RunCompareSignalTile({
+  checks,
+  label,
+  report,
+  review,
+}: {
+  readonly checks: RunCompareSignal | undefined;
+  readonly label: string;
+  readonly report: RunCompareSignal | undefined;
+  readonly review: RunCompareSignal | undefined;
+}) {
+  return (
+    <div className="rounded-md border bg-background p-2">
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      <div className="mt-2 flex flex-wrap gap-1">
+        <SignalBadge label="Report" signal={report} />
+        <SignalBadge label="Checks" signal={checks} />
+        <SignalBadge label="Review" signal={review} />
+      </div>
+    </div>
+  );
+}
+
+function SignalBadge({
+  label,
+  signal,
+}: {
+  readonly label: string;
+  readonly signal: RunCompareSignal | undefined;
+}) {
+  return (
+    <Badge variant={signalBadgeVariant(signal)}>
+      {label}: {signal?.label ?? "Unavailable"}
+    </Badge>
+  );
+}
+
+function ArtifactDelta({
+  delta,
+}: {
+  readonly delta: RunCompareModel["artifactDelta"];
+}) {
+  return (
+    <div className="rounded-md border bg-background p-2">
+      <p className="text-xs font-medium text-muted-foreground">
+        Artifact availability
+      </p>
+      <div className="mt-2 flex flex-wrap gap-1">
+        <Badge variant="secondary">{delta.shared.length} shared</Badge>
+        <Badge variant="outline">{delta.primaryOnly.length} primary only</Badge>
+        <Badge variant="outline">
+          {delta.comparisonOnly.length} comparison only
+        </Badge>
+      </div>
+      <p
+        className="mt-2 truncate text-xs text-muted-foreground"
+        data-testid="run-compare-artifact-delta"
+      >
+        {artifactDeltaLabel(delta)}
+      </p>
+    </div>
+  );
+}
+
+function MissingDataList({
+  items,
+}: {
+  readonly items: ReadonlyArray<string>;
+}) {
+  return (
+    <div className="rounded-md border bg-background p-2">
+      <p className="text-xs font-medium text-muted-foreground">
+        Missing or unavailable
+      </p>
+      {items.length === 0 ? (
+        <p
+          className="mt-2 text-xs text-muted-foreground"
+          data-testid="run-compare-missing-data"
+        >
+          No missing public comparison data.
+        </p>
+      ) : (
+        <ul
+          className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground"
+          data-testid="run-compare-missing-data"
+        >
+          {items.slice(0, 4).map((item) => (
+            <li className="truncate" key={item}>
+              {item}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -1786,6 +2159,21 @@ function dashboardFailureMessage(
   return fallback;
 }
 
+function artifactDeltaLabel(delta: RunCompareModel["artifactDelta"]) {
+  const labels = [
+    delta.primaryOnly.length > 0
+      ? `Primary only: ${delta.primaryOnly.join(", ")}`
+      : undefined,
+    delta.comparisonOnly.length > 0
+      ? `Comparison only: ${delta.comparisonOnly.join(", ")}`
+      : undefined,
+  ].filter(isPresent);
+
+  return labels.length === 0
+    ? "Both runs expose the same artifact names."
+    : labels.join(" · ");
+}
+
 function artifactLabel(artifactId: string) {
   return artifactId
     .split("-")
@@ -1799,4 +2187,8 @@ function stringifyJson(value: unknown) {
   } catch {
     return "Unable to serialize raw data.";
   }
+}
+
+function isPresent<T>(value: T | undefined): value is T {
+  return value !== undefined;
 }
