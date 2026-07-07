@@ -807,7 +807,7 @@ function MissingDataList({
           className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground"
           data-testid="run-compare-missing-data"
         >
-          {items.slice(0, 4).map((item) => (
+          {items.map((item) => (
             <li className="truncate" key={item}>
               {item}
             </li>

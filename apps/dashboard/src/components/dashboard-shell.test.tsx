@@ -432,8 +432,8 @@ describe("DashboardShell Run Console", () => {
           updatedAt: "2026-07-07T12:04:00.000Z",
         }),
         localRunSummary({
-          artifacts: ["input"],
-          eventCount: 1,
+          artifacts: [],
+          eventCount: 3,
           latestEventType: "RUN_CREATED",
           runId: thirdRunId,
           state: "created",
@@ -493,6 +493,21 @@ describe("DashboardShell Run Console", () => {
       );
       expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
         "#5 · 2026-07-07T12:05:00.000Z",
+      );
+      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
+        "Comparison: 3 events reported, 1 loaded",
+      );
+      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
+        "Comparison: no artifacts exposed",
+      );
+      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
+        "Comparison: report outcome unavailable",
+      );
+      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
+        "Comparison: check outcome unavailable",
+      );
+      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
+        "Comparison: review outcome unavailable",
       );
     });
 
