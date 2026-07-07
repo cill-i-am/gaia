@@ -3,7 +3,10 @@ import { RunIdSchema, makeRunEvent } from "@gaia/core";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { buildRunCanvasModel } from "@/run-canvas-model";
+import {
+  buildRunCanvasModel,
+  buildRunReplayState,
+} from "@/run-canvas-model";
 
 describe("run canvas model", () => {
   it("derives a run graph from ordered events and exposed artifacts", () => {
@@ -135,6 +138,91 @@ describe("run canvas model", () => {
     expect(model.nodes).toEqual([]);
     expect(model.events).toEqual([]);
     expect(model.title).toBe("No local run selected");
+  });
+
+  it("derives replay state from ordered dashboard events", () => {
+    const runId = parseRunId("run-3333333333");
+    const model = buildRunCanvasModel({
+      run: localRunSummary({
+        eventCount: 3,
+        runId,
+      }),
+      events: [
+        makeRunEvent({
+          runId,
+          sequence: 1,
+          timestamp: "2026-07-07T12:00:00.000Z",
+          type: "RUN_CREATED",
+        }),
+        makeRunEvent({
+          runId,
+          sequence: 2,
+          timestamp: "2026-07-07T12:01:00.000Z",
+          type: "WORKER_STARTED",
+        }),
+        makeRunEvent({
+          runId,
+          sequence: 3,
+          timestamp: "2026-07-07T12:02:00.000Z",
+          type: "WORKER_COMPLETED",
+        }),
+      ],
+    });
+
+    const replayState = buildRunReplayState({
+      requestedIndex: 1,
+      run: model,
+    });
+
+    expect(replayState.currentStep?.label).toBe("2: Worker Started");
+    expect(replayState.activeEventId).toBe("event:2:WORKER_STARTED");
+    expect(replayState.visibleEventIds).toEqual([
+      "event:1:RUN_CREATED",
+      "event:2:WORKER_STARTED",
+    ]);
+    expect(replayState.futureEventIds).toEqual([
+      "event:3:WORKER_COMPLETED",
+    ]);
+    expect(replayState.visibleArtifactIds).toEqual([
+      "input",
+      "worker-plan",
+    ]);
+    expect(Math.round(replayState.progressPercent)).toBe(50);
+  });
+
+  it("defaults replay to the latest event and clamps requested positions", () => {
+    const runId = parseRunId("run-4444444444");
+    const model = buildRunCanvasModel({
+      run: localRunSummary({
+        eventCount: 2,
+        runId,
+      }),
+      events: [
+        makeRunEvent({
+          runId,
+          sequence: 1,
+          timestamp: "2026-07-07T12:00:00.000Z",
+          type: "RUN_CREATED",
+        }),
+        makeRunEvent({
+          runId,
+          sequence: 2,
+          timestamp: "2026-07-07T12:01:00.000Z",
+          type: "REPORT_COMPLETED",
+        }),
+      ],
+    });
+
+    expect(
+      buildRunReplayState({ requestedIndex: undefined, run: model })
+        .activeSequence,
+    ).toBe(2);
+    expect(
+      buildRunReplayState({ requestedIndex: -99, run: model }).activeSequence,
+    ).toBe(1);
+    expect(
+      buildRunReplayState({ requestedIndex: 99, run: model }).activeSequence,
+    ).toBe(2);
   });
 });
 

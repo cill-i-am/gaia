@@ -65,6 +65,25 @@ export type DashboardRun = {
   readonly events: ReadonlyArray<DashboardEvent>;
 };
 
+export type RunReplayStep = {
+  readonly event: DashboardEvent;
+  readonly index: number;
+  readonly label: string;
+  readonly progressLabel: string;
+};
+
+export type RunReplayState = {
+  readonly activeEventId: string | undefined;
+  readonly activeSequence: number | undefined;
+  readonly currentIndex: number;
+  readonly currentStep: RunReplayStep | undefined;
+  readonly futureEventIds: ReadonlyArray<string>;
+  readonly progressPercent: number;
+  readonly steps: ReadonlyArray<RunReplayStep>;
+  readonly visibleArtifactIds: ReadonlyArray<DashboardArtifactId>;
+  readonly visibleEventIds: ReadonlyArray<string>;
+};
+
 export function buildRunCanvasModel(input: {
   readonly events: ReadonlyArray<RunEvent>;
   readonly run: typeof LocalRunSummaryDto.Type | undefined;
@@ -161,6 +180,60 @@ export function buildRunCanvasModel(input: {
   };
 }
 
+export function buildRunReplayState(input: {
+  readonly requestedIndex: number | undefined;
+  readonly run: DashboardRun;
+}): RunReplayState {
+  const steps = input.run.events.map((event, index) => ({
+    event,
+    index,
+    label: `${event.sequence}: ${event.label}`,
+    progressLabel: `Step ${index + 1} of ${input.run.events.length}`,
+  }));
+
+  if (steps.length === 0) {
+    return {
+      activeEventId: undefined,
+      activeSequence: undefined,
+      currentIndex: 0,
+      currentStep: undefined,
+      futureEventIds: [],
+      progressPercent: 0,
+      steps,
+      visibleArtifactIds: [],
+      visibleEventIds: [],
+    };
+  }
+
+  const currentIndex =
+    input.requestedIndex === undefined
+      ? steps.length - 1
+      : clampIndex(input.requestedIndex, steps.length - 1);
+  const currentStep = steps[currentIndex];
+  const visibleSteps = steps.slice(0, currentIndex + 1);
+  const futureSteps = steps.slice(currentIndex + 1);
+  const visibleArtifactIds = new Set<DashboardArtifactId>();
+
+  for (const step of visibleSteps) {
+    for (const artifactId of step.event.artifactHints) {
+      visibleArtifactIds.add(artifactId);
+    }
+  }
+
+  return {
+    activeEventId: currentStep?.event.id,
+    activeSequence: currentStep?.event.sequence,
+    currentIndex,
+    currentStep,
+    futureEventIds: futureSteps.map((step) => step.event.id),
+    progressPercent:
+      steps.length === 1 ? 100 : (currentIndex / (steps.length - 1)) * 100,
+    steps,
+    visibleArtifactIds: [...visibleArtifactIds],
+    visibleEventIds: visibleSteps.map((step) => step.event.id),
+  };
+}
+
 export function getInitialNode(run: DashboardRun): RunNode | undefined {
   return run.nodes[0];
 }
@@ -213,6 +286,14 @@ export function stateLabel(state: string) {
   return state
     .replace(/[A-Z]/gu, (match) => ` ${match}`)
     .replace(/^./u, (match) => match.toUpperCase());
+}
+
+function clampIndex(index: number, maxIndex: number) {
+  if (!Number.isFinite(index)) {
+    return maxIndex;
+  }
+
+  return Math.min(Math.max(Math.trunc(index), 0), maxIndex);
 }
 
 function emptyRunCanvasModel(): DashboardRun {
