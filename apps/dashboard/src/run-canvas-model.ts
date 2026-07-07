@@ -1,8 +1,14 @@
-import type { LocalRunSummaryDto, RunEvent } from "@gaia/core";
+import type {
+  LocalRunArtifactIdSchema,
+  LocalRunSummaryDto,
+  RunEvent,
+} from "@gaia/core";
 
 export type RunStatus = "running" | "reviewing" | "blocked" | "complete";
 
 export type EvidenceTab = "summary" | "events" | "artifacts" | "raw";
+
+export type DashboardArtifactId = typeof LocalRunArtifactIdSchema.Type;
 
 export type RunNodeRole =
   | "orchestrator"
@@ -15,9 +21,14 @@ export type RunNodeRole =
 
 export type DashboardEvent = {
   readonly id: string;
+  readonly artifactHints: ReadonlyArray<DashboardArtifactId>;
+  readonly payload: typeof RunEvent.Type.payload;
+  readonly sequence: number;
   readonly time: string;
+  readonly timestamp: string;
   readonly label: string;
   readonly tone: RunStatus;
+  readonly type: typeof RunEvent.Type.type;
 };
 
 export type RunNode = {
@@ -27,7 +38,9 @@ export type RunNode = {
   readonly status: RunStatus;
   readonly summary: string;
   readonly evidence: ReadonlyArray<string>;
-  readonly artifacts: ReadonlyArray<string>;
+  readonly eventIds: ReadonlyArray<string>;
+  readonly artifacts: ReadonlyArray<DashboardArtifactId>;
+  readonly raw: unknown;
   readonly position: {
     readonly x: number;
     readonly y: number;
@@ -78,7 +91,11 @@ export function buildRunCanvasModel(input: {
       `${input.run.artifacts.length} allowlisted artifacts exposed`,
       "Codex thread identities are not exposed by the current API.",
     ],
+    eventIds: input.events.map(eventNodeId),
     artifacts: input.run.artifacts,
+    raw: {
+      run: input.run,
+    },
     position: { x: 0, y: 190 },
   });
 
@@ -119,7 +136,7 @@ export function buildRunCanvasModel(input: {
   }
 
   const artifactNodes = input.run.artifacts.map((artifact, index) =>
-    artifactNode(artifact, index, status),
+    artifactNode(artifact, index, status, input.events),
   );
   nodes.push(...artifactNodes);
   for (const node of artifactNodes) {
@@ -140,17 +157,48 @@ export function buildRunCanvasModel(input: {
     updatedAt: input.run.updatedAt,
     nodes,
     edges,
-    events: input.events.map((event) => ({
-      id: eventNodeId(event),
-      time: timeLabel(event.timestamp),
-      label: eventTypeLabel(event.type),
-      tone: eventStatus(event),
-    })),
+    events: input.events.map(toDashboardEvent),
   };
 }
 
 export function getInitialNode(run: DashboardRun): RunNode | undefined {
   return run.nodes[0];
+}
+
+export function eventsForNode(
+  run: DashboardRun,
+  node: RunNode,
+): ReadonlyArray<DashboardEvent> {
+  if (node.role === "orchestrator") {
+    return run.events;
+  }
+
+  const eventIds = new Set(node.eventIds);
+  return run.events.filter((event) => eventIds.has(event.id));
+}
+
+export function mergeRunEvents(input: {
+  readonly historical: ReadonlyArray<RunEvent>;
+  readonly live: ReadonlyArray<RunEvent>;
+}): ReadonlyArray<RunEvent> {
+  const eventsByIdentity = new Map<string, RunEvent>();
+
+  for (const event of [...input.historical, ...input.live]) {
+    eventsByIdentity.set(eventIdentity(event), event);
+  }
+
+  return [...eventsByIdentity.values()].sort((left, right) => {
+    const sequenceDelta = left.sequence - right.sequence;
+    if (sequenceDelta !== 0) {
+      return sequenceDelta;
+    }
+
+    return left.timestamp.localeCompare(right.timestamp);
+  });
+}
+
+export function isTerminalRunEvent(event: RunEvent): boolean {
+  return event.type === "REPORT_COMPLETED" || event.type === "RUN_FAILED";
 }
 
 export function eventTypeLabel(eventType: string) {
@@ -196,8 +244,18 @@ function supportedLaneNodes(
       status: "complete",
       summary:
         "The public API exposes an input artifact for this run. Full spec text stays behind the allowlisted artifact read.",
-      evidence: ["Artifact: input", "Relationship source: public artifact list"],
+      evidence: [
+        "Artifact: input",
+        "Relationship source: public artifact list",
+      ],
+      eventIds: events
+        .filter((event) => eventArtifactHints(event).includes("input"))
+        .map(eventNodeId),
       artifacts: ["input"],
+      raw: {
+        artifactId: "input",
+        relationshipSource: "public artifact list",
+      },
       position: { x: 320, y: 30 },
     });
   }
@@ -216,7 +274,13 @@ function supportedLaneNodes(
       summary:
         "Worker activity is inferred from durable worker events and worker artifacts. No private thread identity is exposed.",
       evidence: matchingEventLabels(events, "WORKER"),
-      artifacts: run.artifacts.filter((artifact) => artifact.startsWith("worker")),
+      eventIds: matchingEventIds(events, "WORKER"),
+      artifacts: run.artifacts.filter((artifact) =>
+        artifact.startsWith("worker"),
+      ),
+      raw: {
+        relationshipSource: "public worker events and artifacts",
+      },
       position: { x: 320, y: 170 },
     });
   }
@@ -236,7 +300,13 @@ function supportedLaneNodes(
       summary:
         "Reviewer activity is inferred from review events and review artifacts. Reviewer/spec thread relationships are unavailable in the current API.",
       evidence: matchingEventLabels(events, "REVIEW"),
-      artifacts: run.artifacts.filter((artifact) => artifact.includes("review")),
+      eventIds: matchingEventIds(events, "REVIEW"),
+      artifacts: run.artifacts.filter((artifact) =>
+        artifact.includes("review"),
+      ),
+      raw: {
+        relationshipSource: "public review events and artifacts",
+      },
       position: { x: 320, y: 310 },
     });
   }
@@ -249,8 +319,12 @@ function supportedLaneNodes(
     summary:
       "The current public API exposes run events and artifacts, not Codex thread IDs, private relationships, or chain-of-thought.",
     evidence: ["API gap: thread identity and pair metadata are not exposed"],
+    eventIds: [],
     artifacts: [],
-      position: { x: 320, y: 430 },
+    raw: {
+      unavailable: ["thread IDs", "private relationships", "chain-of-thought"],
+    },
+    position: { x: 320, y: 430 },
   });
 
   return nodes;
@@ -267,6 +341,15 @@ function matchingEventLabels(
   return labels.length > 0 ? labels : ["No matching event recorded"];
 }
 
+function matchingEventIds(
+  events: ReadonlyArray<RunEvent>,
+  prefix: string,
+): ReadonlyArray<string> {
+  return events
+    .filter((event) => event.type.startsWith(prefix))
+    .map(eventNodeId);
+}
+
 function eventNode(event: RunEvent, index: number): RunNode {
   const column = Math.floor(index / 6);
   const row = index % 6;
@@ -278,18 +361,24 @@ function eventNode(event: RunEvent, index: number): RunNode {
     status: eventStatus(event),
     summary: `Event ${event.sequence} was recorded at ${event.timestamp}.`,
     evidence: eventEvidence(event),
+    eventIds: [eventNodeId(event)],
     artifacts: eventArtifactHints(event),
+    raw: event,
     position: { x: 650 + column * 250, y: 30 + row * 86 },
   };
 }
 
 function artifactNode(
-  artifact: string,
+  artifact: DashboardArtifactId,
   index: number,
   status: RunStatus,
+  events: ReadonlyArray<RunEvent>,
 ): RunNode {
   const column = Math.floor(index / 8);
   const row = index % 8;
+  const eventIds = events
+    .filter((event) => eventArtifactHints(event).includes(artifact))
+    .map(eventNodeId);
 
   return {
     id: `artifact:${artifact}`,
@@ -298,13 +387,18 @@ function artifactNode(
     status,
     summary: `${artifact} is exposed through the allowlisted local artifact API for this run.`,
     evidence: [`GET /runs/:runId/artifacts/${artifact}`],
+    eventIds,
     artifacts: [artifact],
+    raw: {
+      artifactId: artifact,
+      eventIds,
+    },
     position: { x: 1_170 + column * 250, y: 30 + row * 66 },
   };
 }
 
 function artifactSource(
-  artifact: string | undefined,
+  artifact: DashboardArtifactId | undefined,
   events: ReadonlyArray<RunEvent>,
   fallback: string,
 ) {
@@ -319,7 +413,9 @@ function artifactSource(
   return source === undefined ? fallback : eventNodeId(source);
 }
 
-function eventArtifactHints(event: RunEvent): ReadonlyArray<string> {
+function eventArtifactHints(
+  event: RunEvent,
+): ReadonlyArray<DashboardArtifactId> {
   switch (event.type) {
     case "RUN_CREATED":
       return ["input"];
@@ -352,6 +448,24 @@ function eventEvidence(event: RunEvent): ReadonlyArray<string> {
 
 function eventNodeId(event: RunEvent) {
   return `event:${event.sequence}:${event.type}`;
+}
+
+function eventIdentity(event: RunEvent) {
+  return `${event.sequence}:${event.type}:${event.timestamp}`;
+}
+
+function toDashboardEvent(event: RunEvent): DashboardEvent {
+  return {
+    id: eventNodeId(event),
+    artifactHints: eventArtifactHints(event),
+    payload: event.payload,
+    sequence: event.sequence,
+    timestamp: event.timestamp,
+    time: timeLabel(event.timestamp),
+    label: eventTypeLabel(event.type),
+    tone: eventStatus(event),
+    type: event.type,
+  };
 }
 
 function eventStatus(event: RunEvent): RunStatus {

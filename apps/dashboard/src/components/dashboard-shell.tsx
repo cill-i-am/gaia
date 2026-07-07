@@ -7,6 +7,8 @@ import {
   type NodeMouseHandler,
 } from "@xyflow/react";
 import { useQuery } from "@tanstack/react-query";
+import { RunEvent, type LocalRunArtifactDto } from "@gaia/core";
+import { Option, Schema } from "effect";
 import {
   ActivityIcon,
   AlertCircleIcon,
@@ -23,18 +25,24 @@ import {
 import * as React from "react";
 
 import {
+  type DashboardArtifactId,
+  type DashboardEvent,
   type DashboardRun,
   type EvidenceTab,
   type RunNode,
   type RunStatus,
   buildRunCanvasModel,
   eventTypeLabel,
+  eventsForNode,
   getInitialNode,
+  isTerminalRunEvent,
+  mergeRunEvents,
   stateLabel,
 } from "@/run-canvas-model";
 import { defaultLocalGaiaServerUrl } from "@/lib/local-gaia-client";
 import {
   localGaiaHealthQueryOptions,
+  localGaiaRunArtifactQueryOptions,
   localGaiaRunEventsQueryOptions,
   localGaiaRunQueryOptions,
   localGaiaRunsQueryOptions,
@@ -170,15 +178,29 @@ export function DashboardShell() {
       serverUrl,
     }),
   );
+  const runEventStream = useRunEventStream({
+    enabled:
+      selectedRunId !== undefined && selectedConsoleRun?.isTerminal === false,
+    runId: selectedRunId,
+    serverUrl,
+  });
+  const selectedRunEvents = React.useMemo(
+    () =>
+      mergeRunEvents({
+        historical: selectedRunEventsQuery.data?.data.events ?? [],
+        live: runEventStream.events,
+      }),
+    [selectedRunEventsQuery.data?.data.events, runEventStream.events],
+  );
   const selectedRunSummary =
     selectedRunDetailQuery.data?.data ?? selectedRunSummaryFromList;
   const selectedRun = React.useMemo(
     () =>
       buildRunCanvasModel({
-        events: selectedRunEventsQuery.data?.data.events ?? [],
+        events: selectedRunEvents,
         run: selectedRunSummary,
       }),
-    [selectedRunEventsQuery.data?.data.events, selectedRunSummary],
+    [selectedRunEvents, selectedRunSummary],
   );
   const serverConnection: ServerConnectionState = {
     runConsole,
@@ -197,6 +219,28 @@ export function DashboardShell() {
       selectedRunId !== undefined &&
       (selectedRunDetailQuery.isPending || selectedRunEventsQuery.isPending),
   };
+  const terminalStreamEventKey =
+    runEventStream.terminalEvent === undefined
+      ? undefined
+      : `${runEventStream.terminalEvent.sequence}:${runEventStream.terminalEvent.type}`;
+  const refetchRuns = runsQuery.refetch;
+  const refetchSelectedRunDetail = selectedRunDetailQuery.refetch;
+  const refetchSelectedRunEvents = selectedRunEventsQuery.refetch;
+
+  React.useEffect(() => {
+    if (terminalStreamEventKey === undefined) {
+      return;
+    }
+
+    void refetchRuns();
+    void refetchSelectedRunDetail();
+    void refetchSelectedRunEvents();
+  }, [
+    refetchRuns,
+    refetchSelectedRunDetail,
+    refetchSelectedRunEvents,
+    terminalStreamEventKey,
+  ]);
 
   function refreshRunConsole() {
     const refreshes: Array<Promise<unknown>> = [
@@ -221,9 +265,7 @@ export function DashboardShell() {
 
   return (
     <TooltipProvider delayDuration={250}>
-      <SidebarProvider
-        className="h-svh min-h-0 flex-col overflow-hidden bg-background text-sm lg:flex-row"
-      >
+      <SidebarProvider className="h-svh min-h-0 flex-col overflow-hidden bg-background text-sm lg:flex-row">
         <RunConsole
           selectedRunId={selectedRunId}
           serverConnection={serverConnection}
@@ -237,14 +279,20 @@ export function DashboardShell() {
           />
           <DesktopWorkspace
             runCanvas={runCanvas}
+            runEventStream={runEventStream}
+            selectedConsoleRun={selectedConsoleRun}
             selectedNode={selectedNode}
             selectedRun={selectedRun}
+            serverUrl={serverUrl}
             onSelectNode={setSelectedNodeId}
           />
           <MobileWorkspace
             runCanvas={runCanvas}
+            runEventStream={runEventStream}
+            selectedConsoleRun={selectedConsoleRun}
             selectedNode={selectedNode}
             selectedRun={selectedRun}
+            serverUrl={serverUrl}
             onSelectNode={setSelectedNodeId}
           />
         </main>
@@ -488,7 +536,10 @@ function TopBar({
       <div className="flex min-w-0 items-center gap-2">
         <SidebarTrigger className="lg:hidden" />
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium" data-testid="selected-run-title">
+          <p
+            className="truncate text-sm font-medium"
+            data-testid="selected-run-title"
+          >
             {selectedConsoleRun?.title ?? selectedRun.title}
           </p>
           <p className="truncate text-xs text-muted-foreground">
@@ -509,7 +560,8 @@ function TopBar({
               : localRunBadgeVariant(selectedConsoleRun.status)
           }
         >
-          {selectedConsoleRun?.terminalLabel ?? statusLabels[selectedRun.status]}
+          {selectedConsoleRun?.terminalLabel ??
+            statusLabels[selectedRun.status]}
         </Badge>
         <Button size="sm" variant="outline">
           <GitBranchIcon data-icon="inline-start" />
@@ -522,13 +574,19 @@ function TopBar({
 
 function DesktopWorkspace({
   runCanvas,
+  runEventStream,
+  selectedConsoleRun,
   selectedRun,
   selectedNode,
+  serverUrl,
   onSelectNode,
 }: {
   readonly runCanvas: RunCanvasQueryState;
+  readonly runEventStream: RunEventStreamState;
+  readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedRun: DashboardRun;
   readonly selectedNode: RunNode | undefined;
+  readonly serverUrl: string;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
   return (
@@ -546,13 +604,21 @@ function DesktopWorkspace({
             </ResizablePanel>
             <ResizableHandle withHandle />
             <ResizablePanel defaultSize="32%" minSize="24%">
-              <EvidenceStudio selectedNode={selectedNode} />
+              <EvidenceStudio
+                selectedNode={selectedNode}
+                selectedRun={selectedRun}
+                serverUrl={serverUrl}
+              />
             </ResizablePanel>
           </ResizablePanelGroup>
         </ResizablePanel>
         <ResizableHandle withHandle />
         <ResizablePanel defaultSize="24%" minSize="16%" maxSize="34%">
-          <EventStrip selectedRun={selectedRun} />
+          <EventStrip
+            selectedConsoleRun={selectedConsoleRun}
+            selectedRun={selectedRun}
+            streamState={runEventStream}
+          />
         </ResizablePanel>
       </ResizablePanelGroup>
     </section>
@@ -561,13 +627,19 @@ function DesktopWorkspace({
 
 function MobileWorkspace({
   runCanvas,
+  runEventStream,
+  selectedConsoleRun,
   selectedRun,
   selectedNode,
+  serverUrl,
   onSelectNode,
 }: {
   readonly runCanvas: RunCanvasQueryState;
+  readonly runEventStream: RunEventStreamState;
+  readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedRun: DashboardRun;
   readonly selectedNode: RunNode | undefined;
+  readonly serverUrl: string;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
   return (
@@ -581,10 +653,18 @@ function MobileWorkspace({
         />
       </div>
       <div className="min-h-0 flex-1 border-b">
-        <EvidenceStudio selectedNode={selectedNode} />
+        <EvidenceStudio
+          selectedNode={selectedNode}
+          selectedRun={selectedRun}
+          serverUrl={serverUrl}
+        />
       </div>
       <div className="h-40 shrink-0">
-        <EventStrip selectedRun={selectedRun} />
+        <EventStrip
+          selectedConsoleRun={selectedConsoleRun}
+          selectedRun={selectedRun}
+          streamState={runEventStream}
+        />
       </div>
     </section>
   );
@@ -622,7 +702,7 @@ function RunCanvas({
         </div>
         <Badge variant="outline">{selectedRun.nodes.length} nodes</Badge>
       </div>
-      <div className="min-h-0 flex-1 bg-muted/20">
+      <div className="min-h-0 flex-1 overflow-hidden bg-muted/20">
         {queryState.detailError !== undefined ||
         queryState.eventsError !== undefined ? (
           <Empty data-testid="run-canvas-error">
@@ -678,10 +758,41 @@ function RunCanvas({
 
 function EvidenceStudio({
   selectedNode,
+  selectedRun,
+  serverUrl,
 }: {
   readonly selectedNode: RunNode | undefined;
+  readonly selectedRun: DashboardRun;
+  readonly serverUrl: string;
 }) {
   const [tab, setTab] = React.useState<EvidenceTab>("summary");
+  const artifactIds = selectedNode?.artifacts ?? [];
+  const artifactKey = artifactIds.join("|");
+  const [requestedArtifactId, setRequestedArtifactId] = React.useState<
+    DashboardArtifactId | undefined
+  >();
+  const selectedArtifactId =
+    requestedArtifactId !== undefined &&
+    artifactIds.includes(requestedArtifactId)
+      ? requestedArtifactId
+      : artifactIds[0];
+  const selectedRunId =
+    selectedRun.id === "no-run-selected" ? "" : selectedRun.id;
+  const artifactQuery = useQuery(
+    localGaiaRunArtifactQueryOptions({
+      artifactId: selectedArtifactId ?? "",
+      runId: selectedRunId,
+      serverUrl,
+    }),
+  );
+
+  React.useEffect(() => {
+    setRequestedArtifactId((current) =>
+      current !== undefined && artifactIds.includes(current)
+        ? current
+        : artifactIds[0],
+    );
+  }, [artifactKey, selectedNode?.id]);
 
   if (selectedNode === undefined) {
     return (
@@ -710,6 +821,8 @@ function EvidenceStudio({
     );
   }
 
+  const relatedEvents = eventsForNode(selectedRun, selectedNode);
+
   return (
     <aside className="flex size-full min-h-0 flex-col">
       <div className="flex h-11 shrink-0 items-center justify-between gap-3 border-b px-3">
@@ -719,9 +832,12 @@ function EvidenceStudio({
             {selectedNode.label}
           </p>
         </div>
-        <Badge variant={statusBadgeVariant(selectedNode.status)}>
-          {statusLabels[selectedNode.status]}
-        </Badge>
+        <div className="flex shrink-0 items-center gap-2">
+          <Badge variant="outline">{roleLabel(selectedNode)}</Badge>
+          <Badge variant={statusBadgeVariant(selectedNode.status)}>
+            {statusLabels[selectedNode.status]}
+          </Badge>
+        </div>
       </div>
       <Tabs
         className="min-h-0 flex-1 gap-0"
@@ -759,17 +875,36 @@ function EvidenceStudio({
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <TabsContent className="m-0 p-3" value="summary">
-            <EvidenceSummary selectedNode={selectedNode} />
+            <EvidenceSummary
+              relatedEvents={relatedEvents}
+              selectedNode={selectedNode}
+            />
           </TabsContent>
           <TabsContent className="m-0 p-3" value="events">
-            <EvidenceList items={selectedNode.evidence} />
+            <EvidenceEvents
+              events={relatedEvents}
+              selectedNode={selectedNode}
+            />
           </TabsContent>
           <TabsContent className="m-0 p-3" value="artifacts">
-            <EvidenceList items={selectedNode.artifacts} />
+            <EvidenceArtifacts
+              artifact={artifactQuery.data?.data}
+              artifactFailure={dashboardQueryFailure(artifactQuery.error)}
+              artifactIds={artifactIds}
+              isLoading={
+                artifactQuery.isPending && selectedArtifactId !== undefined
+              }
+              selectedArtifactId={selectedArtifactId}
+              onSelectArtifact={setRequestedArtifactId}
+            />
           </TabsContent>
           <TabsContent className="m-0 p-3" value="raw">
             <pre className="overflow-auto rounded-md bg-muted p-3 text-xs">
-              {JSON.stringify(selectedNode, null, 2)}
+              {stringifyJson({
+                node: selectedNode,
+                relatedEvents,
+                runId: selectedRun.id,
+              })}
             </pre>
           </TabsContent>
         </ScrollArea>
@@ -778,7 +913,13 @@ function EvidenceStudio({
   );
 }
 
-function EvidenceSummary({ selectedNode }: { readonly selectedNode: RunNode }) {
+function EvidenceSummary({
+  relatedEvents,
+  selectedNode,
+}: {
+  readonly relatedEvents: ReadonlyArray<DashboardEvent>;
+  readonly selectedNode: RunNode;
+}) {
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -794,12 +935,45 @@ function EvidenceSummary({ selectedNode }: { readonly selectedNode: RunNode }) {
       <div className="grid grid-cols-2 gap-3">
         <Metric label="Role" value={roleLabel(selectedNode)} />
         <Metric label="Status" value={statusLabels[selectedNode.status]} />
+        <Metric label="Events" value={String(relatedEvents.length)} />
+        <Metric
+          label="Artifacts"
+          value={String(selectedNode.artifacts.length)}
+        />
       </div>
+      <Separator />
+      <EvidenceList
+        emptyDescription="This node has no additional public evidence strings."
+        emptyTitle="No evidence notes"
+        items={selectedNode.evidence}
+      />
     </div>
   );
 }
 
-function EvidenceList({ items }: { readonly items: ReadonlyArray<string> }) {
+function EvidenceList({
+  emptyDescription,
+  emptyTitle,
+  items,
+}: {
+  readonly emptyDescription: string;
+  readonly emptyTitle: string;
+  readonly items: ReadonlyArray<string>;
+}) {
+  if (items.length === 0) {
+    return (
+      <Empty className="min-h-40 border">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <InspectIcon />
+          </EmptyMedia>
+          <EmptyTitle>{emptyTitle}</EmptyTitle>
+          <EmptyDescription>{emptyDescription}</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
+
   return (
     <ul className="flex flex-col gap-2">
       {items.map((item) => (
@@ -812,6 +986,179 @@ function EvidenceList({ items }: { readonly items: ReadonlyArray<string> }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+function EvidenceEvents({
+  events,
+  selectedNode,
+}: {
+  readonly events: ReadonlyArray<DashboardEvent>;
+  readonly selectedNode: RunNode;
+}) {
+  if (events.length === 0) {
+    return (
+      <Empty className="min-h-48 border" data-testid="evidence-events-empty">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <ActivityIcon />
+          </EmptyMedia>
+          <EmptyTitle>No related events</EmptyTitle>
+          <EmptyDescription>
+            {selectedNode.label} has no ordered public events attached.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {events.map((event) => (
+        <section
+          className="rounded-md border bg-background p-3"
+          data-testid={`evidence-event-${event.sequence}`}
+          key={event.id}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium">{event.label}</p>
+              <p className="truncate text-xs text-muted-foreground">
+                Sequence {event.sequence} · {event.timestamp}
+              </p>
+            </div>
+            <Badge variant={statusBadgeVariant(event.tone)}>
+              {statusLabels[event.tone]}
+            </Badge>
+          </div>
+          <Separator className="my-3" />
+          <div className="flex flex-wrap gap-2">
+            <Badge variant="outline">{event.type}</Badge>
+            {event.artifactHints.map((artifactId) => (
+              <Badge key={artifactId} variant="secondary">
+                {artifactLabel(artifactId)}
+              </Badge>
+            ))}
+          </div>
+          <pre className="mt-3 max-h-44 overflow-auto rounded-md bg-muted p-3 text-xs">
+            {stringifyJson(event.payload)}
+          </pre>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function EvidenceArtifacts({
+  artifact,
+  artifactFailure,
+  artifactIds,
+  isLoading,
+  selectedArtifactId,
+  onSelectArtifact,
+}: {
+  readonly artifact: typeof LocalRunArtifactDto.Type | undefined;
+  readonly artifactFailure: ReturnType<typeof dashboardQueryFailure>;
+  readonly artifactIds: ReadonlyArray<DashboardArtifactId>;
+  readonly isLoading: boolean;
+  readonly selectedArtifactId: DashboardArtifactId | undefined;
+  readonly onSelectArtifact: (artifactId: DashboardArtifactId) => void;
+}) {
+  if (artifactIds.length === 0) {
+    return (
+      <Empty className="min-h-48 border" data-testid="evidence-artifacts-empty">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <BoxIcon />
+          </EmptyMedia>
+          <EmptyTitle>No artifacts exposed</EmptyTitle>
+          <EmptyDescription>
+            This node has no allowlisted artifacts in the public run detail.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-2">
+        {artifactIds.map((artifactId) => (
+          <Button
+            key={artifactId}
+            size="sm"
+            variant={artifactId === selectedArtifactId ? "default" : "outline"}
+            onClick={() => onSelectArtifact(artifactId)}
+          >
+            <BoxIcon data-icon="inline-start" />
+            {artifactLabel(artifactId)}
+          </Button>
+        ))}
+      </div>
+      <Separator />
+      {isLoading ? (
+        <div
+          className="flex flex-col gap-3"
+          data-testid="evidence-artifact-loading"
+        >
+          <Skeleton className="h-6 w-40" />
+          <Skeleton className="h-40 w-full" />
+        </div>
+      ) : artifactFailure !== undefined ? (
+        <Empty
+          className="min-h-48 border"
+          data-testid="evidence-artifact-error"
+        >
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <AlertCircleIcon />
+            </EmptyMedia>
+            <EmptyTitle>Artifact unavailable</EmptyTitle>
+            <EmptyDescription>
+              {dashboardFailureMessage(
+                artifactFailure,
+                "The selected artifact could not be loaded.",
+              )}
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : artifact === undefined ? (
+        <Empty
+          className="min-h-48 border"
+          data-testid="evidence-artifact-empty"
+        >
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <BoxIcon />
+            </EmptyMedia>
+            <EmptyTitle>Select an artifact</EmptyTitle>
+            <EmptyDescription>
+              Choose an allowlisted artifact to read it through the Gaia API.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <section
+          className="rounded-md border bg-background"
+          data-testid="evidence-artifact-content"
+        >
+          <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium">
+                {artifactLabel(artifact.artifactName)}
+              </p>
+              <p className="truncate text-xs text-muted-foreground">
+                {artifact.contentType}
+              </p>
+            </div>
+            <Badge variant="secondary">Loaded</Badge>
+          </div>
+          <pre className="max-h-72 overflow-auto p-3 text-xs">
+            {artifact.body}
+          </pre>
+        </section>
+      )}
+    </div>
   );
 }
 
@@ -830,35 +1177,276 @@ function Metric({
   );
 }
 
-function EventStrip({ selectedRun }: { readonly selectedRun: DashboardRun }) {
+function EventStrip({
+  selectedConsoleRun,
+  selectedRun,
+  streamState,
+}: {
+  readonly selectedConsoleRun: RunConsoleRun | undefined;
+  readonly selectedRun: DashboardRun;
+  readonly streamState: RunEventStreamState;
+}) {
+  const streamDisplay = eventStripDisplay({
+    selectedConsoleRun,
+    selectedRun,
+    streamState,
+  });
+
   return (
     <section className="flex size-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center justify-between gap-3 border-b px-3">
-        <h2 className="truncate text-sm font-semibold">Live Event Strip</h2>
-        <Badge variant="outline">Static</Badge>
-      </div>
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex min-w-max gap-2 p-3">
-          {selectedRun.events.map((event) => (
-            <div
-              className="flex w-72 shrink-0 flex-col gap-2 rounded-md border bg-background p-3"
-              key={event.id}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-muted-foreground">
-                  {event.time}
-                </span>
-                <Badge variant={statusBadgeVariant(event.tone)}>
-                  {statusLabels[event.tone]}
-                </Badge>
-              </div>
-              <p className="text-sm font-medium">{event.label}</p>
-            </div>
-          ))}
+        <div className="flex min-w-0 items-center gap-2">
+          <h2 className="truncate text-sm font-semibold">Live Event Strip</h2>
+          <span className="truncate text-xs text-muted-foreground">
+            {streamDisplay.message}
+          </span>
         </div>
-      </ScrollArea>
+        <Badge variant={streamDisplay.variant}>{streamDisplay.label}</Badge>
+      </div>
+      {selectedRun.events.length === 0 ? (
+        <Empty className="min-h-0 flex-1" data-testid="event-strip-empty">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <ActivityIcon />
+            </EmptyMedia>
+            <EmptyTitle>No run events</EmptyTitle>
+            <EmptyDescription>
+              Select a run with ordered events to populate the strip.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="flex min-w-max gap-2 p-3">
+            {selectedRun.events.map((event) => (
+              <div
+                className="flex w-72 shrink-0 flex-col gap-2 rounded-md border bg-background p-3"
+                data-testid={`event-strip-event-${event.sequence}`}
+                key={event.id}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    {event.time}
+                  </span>
+                  <Badge variant={statusBadgeVariant(event.tone)}>
+                    {statusLabels[event.tone]}
+                  </Badge>
+                </div>
+                <p className="truncate text-sm font-medium">{event.label}</p>
+                <div className="flex flex-wrap gap-1">
+                  <Badge variant="outline">#{event.sequence}</Badge>
+                  {event.artifactHints.map((artifactId) => (
+                    <Badge key={artifactId} variant="secondary">
+                      {artifactLabel(artifactId)}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </ScrollArea>
+      )}
     </section>
   );
+}
+
+type RunEventStreamStatus =
+  | "idle"
+  | "connecting"
+  | "open"
+  | "closed"
+  | "terminal"
+  | "unavailable"
+  | "error";
+
+type RunEventStreamState = {
+  readonly events: ReadonlyArray<RunEvent>;
+  readonly message: string;
+  readonly status: RunEventStreamStatus;
+  readonly terminalEvent: RunEvent | undefined;
+};
+
+function useRunEventStream({
+  enabled,
+  runId,
+  serverUrl,
+}: {
+  readonly enabled: boolean;
+  readonly runId: string | undefined;
+  readonly serverUrl: string;
+}): RunEventStreamState {
+  const [state, setState] = React.useState<RunEventStreamState>({
+    events: [],
+    message: "Select an active run to stream events.",
+    status: "idle",
+    terminalEvent: undefined,
+  });
+
+  React.useEffect(() => {
+    if (!enabled || runId === undefined) {
+      setState({
+        events: [],
+        message: "No active event stream.",
+        status: "idle",
+        terminalEvent: undefined,
+      });
+      return;
+    }
+
+    if (typeof EventSource === "undefined") {
+      setState({
+        events: [],
+        message: "Browser EventSource is unavailable.",
+        status: "unavailable",
+        terminalEvent: undefined,
+      });
+      return;
+    }
+
+    const source = new EventSource(runEventStreamUrl(serverUrl, runId));
+    setState({
+      events: [],
+      message: "Connecting to run event stream.",
+      status: "connecting",
+      terminalEvent: undefined,
+    });
+
+    source.onopen = () => {
+      setState((current) => ({
+        ...current,
+        message: "Listening for live run events.",
+        status: "open",
+      }));
+    };
+
+    source.onerror = () => {
+      source.close();
+      setState((current) => ({
+        ...current,
+        message: "Run event stream disconnected.",
+        status: "error",
+      }));
+    };
+
+    source.onmessage = (message) => {
+      const event = parseStreamMessage(message);
+      if (event === undefined) {
+        source.close();
+        setState((current) => ({
+          ...current,
+          message: "Run event stream returned an invalid event.",
+          status: "error",
+        }));
+        return;
+      }
+
+      const isTerminal = isTerminalRunEvent(event);
+      setState((current) => ({
+        events: mergeRunEvents({
+          historical: current.events,
+          live: [event],
+        }),
+        message: isTerminal
+          ? "Terminal event received; stream closed."
+          : "Listening for live run events.",
+        status: isTerminal ? "terminal" : "open",
+        terminalEvent: isTerminal ? event : current.terminalEvent,
+      }));
+
+      if (isTerminal) {
+        source.close();
+      }
+    };
+
+    return () => source.close();
+  }, [enabled, runId, serverUrl]);
+
+  return state;
+}
+
+function runEventStreamUrl(serverUrl: string, runId: string) {
+  const baseUrl = serverUrl.endsWith("/") ? serverUrl.slice(0, -1) : serverUrl;
+  return `${baseUrl}/runs/${encodeURIComponent(runId)}/events/stream`;
+}
+
+function parseStreamMessage(
+  message: MessageEvent<string>,
+): RunEvent | undefined {
+  try {
+    const parsedJson: unknown = JSON.parse(message.data);
+    const parsedEvent = Schema.decodeUnknownOption(RunEvent)(parsedJson);
+    return Option.isSome(parsedEvent) ? parsedEvent.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function eventStripDisplay({
+  selectedConsoleRun,
+  selectedRun,
+  streamState,
+}: {
+  readonly selectedConsoleRun: RunConsoleRun | undefined;
+  readonly selectedRun: DashboardRun;
+  readonly streamState: RunEventStreamState;
+}): {
+  readonly label: string;
+  readonly message: string;
+  readonly variant: "destructive" | "outline" | "secondary";
+} {
+  if (selectedRun.id === "no-run-selected") {
+    return {
+      label: "Idle",
+      message: "No selected run.",
+      variant: "outline",
+    };
+  }
+
+  if (selectedConsoleRun?.isTerminal === true) {
+    return {
+      label: "Snapshot",
+      message: "Completed run; showing ordered event history.",
+      variant: "secondary",
+    };
+  }
+
+  if (streamState.status === "error" || streamState.status === "unavailable") {
+    return {
+      label: "Unavailable",
+      message: streamState.message,
+      variant: "destructive",
+    };
+  }
+
+  if (streamState.status === "terminal" || streamState.status === "closed") {
+    return {
+      label: "Closed",
+      message: streamState.message,
+      variant: "secondary",
+    };
+  }
+
+  if (streamState.status === "connecting") {
+    return {
+      label: "Connecting",
+      message: streamState.message,
+      variant: "outline",
+    };
+  }
+
+  if (streamState.status === "open") {
+    return {
+      label: "Live",
+      message: streamState.message,
+      variant: "secondary",
+    };
+  }
+
+  return {
+    label: "Idle",
+    message: "No active event stream.",
+    variant: "outline",
+  };
 }
 
 function toFlowNodes(
@@ -939,6 +1527,16 @@ type RunCanvasQueryState = {
 function runCanvasErrorMessage(state: RunCanvasQueryState) {
   const failure = state.detailError ?? state.eventsError;
 
+  return dashboardFailureMessage(
+    failure,
+    "The selected run could not be loaded.",
+  );
+}
+
+function dashboardFailureMessage(
+  failure: ReturnType<typeof dashboardQueryFailure>,
+  fallback: string,
+) {
   if (failure?._tag === "DashboardGaiaApiError") {
     return `${failure.error.code}: ${failure.error.message}`;
   }
@@ -955,5 +1553,20 @@ function runCanvasErrorMessage(state: RunCanvasQueryState) {
     return "Local server is not reachable.";
   }
 
-  return "The selected run could not be loaded.";
+  return fallback;
+}
+
+function artifactLabel(artifactId: string) {
+  return artifactId
+    .split("-")
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+}
+
+function stringifyJson(value: unknown) {
+  try {
+    return JSON.stringify(value, null, 2) ?? "";
+  } catch {
+    return "Unable to serialize raw data.";
+  }
 }
