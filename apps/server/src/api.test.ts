@@ -11,6 +11,7 @@ import {
   acceptServerRun,
   continueServerRun,
 } from "@gaia/runtime/server-workflows";
+import { makeRunStorePaths } from "@gaia/runtime/paths";
 import { Deferred, Effect, FileSystem, Layer, Schema } from "effect";
 import {
   HttpClient,
@@ -215,6 +216,25 @@ describe("local run api http boundary", () => {
         }).pipe(Effect.provide(layer));
       }),
       20_000,
+    );
+
+    it.effect("preserves parseable bad-run detail diagnostics through the index", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        yield* fs.makeDirectory(`${store.runsRoot}/run-L84-kMhLY8`, {
+          recursive: true,
+        });
+
+        const response = yield* HttpClient.get("/runs/run-L84-kMhLY8").pipe(
+          Effect.provide(testServerLayer(cwd)),
+        );
+        const body = yield* responseJsonObject(response);
+
+        assert.strictEqual(response.status, 422);
+        assertApiError(body, "RunHasNoEvents", 422);
+      }),
     );
 
     it.effect("returns typed 400 for invalid Markdown content", () =>

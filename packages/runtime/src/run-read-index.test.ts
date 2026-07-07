@@ -66,6 +66,28 @@ describe("local run read index", () => {
       }),
     );
 
+    it.effect("preserves parseable bad-run diagnostics for detail reads", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-run-index-" });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        yield* fs.makeDirectory(`${store.runsRoot}/run-L84-kMhLY8`, {
+          recursive: true,
+        });
+
+        const index = yield* makeLocalRunReadIndex({ rootDirectory: cwd });
+        const diagnostic = yield* Effect.flip(index.read("run-L84-kMhLY8"));
+
+        assert.strictEqual(diagnostic.code, "RunHasNoEvents");
+        assert.strictEqual(
+          diagnostic.message,
+          "Run has no events.jsonl records.",
+        );
+        assert.strictEqual(diagnostic.recoverable, false);
+        assert.strictEqual(diagnostic.runId, "run-L84-kMhLY8");
+      }),
+    );
+
     it.effect("removes stale indexed runs when a targeted refresh finds them missing", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
