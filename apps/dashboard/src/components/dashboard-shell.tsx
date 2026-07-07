@@ -7,14 +7,15 @@ import {
   type NodeMouseHandler,
 } from "@xyflow/react";
 import { useQuery } from "@tanstack/react-query";
-import type { LocalRunSummaryDto } from "@gaia/core";
 import {
   ActivityIcon,
+  AlertCircleIcon,
   BoxIcon,
   BracesIcon,
   CircleDotIcon,
   GitBranchIcon,
   InspectIcon,
+  RefreshCwIcon,
   SearchIcon,
   ServerIcon,
   WorkflowIcon,
@@ -22,7 +23,6 @@ import {
 import * as React from "react";
 
 import {
-  dashboardRuns,
   getInitialNode,
   getInitialRun,
   type DashboardRun,
@@ -32,12 +32,18 @@ import {
 } from "@/dashboard-model";
 import {
   defaultLocalGaiaServerUrl,
-  type DashboardGaiaClientError,
 } from "@/lib/local-gaia-client";
 import {
   localGaiaHealthQueryOptions,
   localGaiaRunsQueryOptions,
 } from "@/lib/local-gaia-query";
+import {
+  buildRunConsoleState,
+  reconcileSelectedRunId,
+  selectedRunFromConsoleState,
+  type RunConsoleRun,
+  type RunConsoleState,
+} from "@/run-console-model";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -70,6 +76,7 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
@@ -103,10 +110,8 @@ function roleLabel(node: RunNode) {
 }
 
 type ServerConnectionState = {
-  readonly health: "checking" | "offline" | "online";
-  readonly liveRuns: ReadonlyArray<typeof LocalRunSummaryDto.Type>;
-  readonly message: string;
-  readonly serverUrl: string;
+  readonly runConsole: RunConsoleState;
+  readonly selectedRun: RunConsoleRun | undefined;
 };
 
 export function DashboardShell() {
@@ -114,27 +119,45 @@ export function DashboardShell() {
   const serverUrl = defaultLocalGaiaServerUrl;
   const healthQuery = useQuery(localGaiaHealthQueryOptions({ serverUrl }));
   const runsQuery = useQuery(localGaiaRunsQueryOptions({ serverUrl }));
-  const liveRuns = runsQuery.data?.data.runs ?? [];
-  const serverConnection: ServerConnectionState = {
-    health: healthQuery.isSuccess
-      ? "online"
-      : healthQuery.isPending || runsQuery.isPending
-        ? "checking"
-        : "offline",
-    liveRuns,
-    message: connectionMessage({
-      healthError: healthQuery.error,
-      healthStatus: healthQuery.data?.status,
-      runCount: liveRuns.length,
-      runsError: runsQuery.error,
-    }),
-    serverUrl,
-  };
-  const [selectedRunId, setSelectedRunId] = React.useState<string>(
-    initialRun.id,
+  const runConsole = React.useMemo(
+    () =>
+      buildRunConsoleState({
+        healthError: healthQuery.error,
+        healthPending: healthQuery.isPending,
+        healthStatus: healthQuery.data?.status,
+        runs: runsQuery.data?.data.runs ?? [],
+        runsDiagnostics: runsQuery.data?.data.diagnostics ?? [],
+        runsError: runsQuery.error,
+        runsPending: runsQuery.isPending,
+        serverUrl,
+      }),
+    [
+      healthQuery.data?.status,
+      healthQuery.error,
+      healthQuery.isPending,
+      runsQuery.data?.data.diagnostics,
+      runsQuery.data?.data.runs,
+      runsQuery.error,
+      runsQuery.isPending,
+      serverUrl,
+    ],
   );
-  const selectedRun =
-    dashboardRuns.find((run) => run.id === selectedRunId) ?? initialRun;
+  const [requestedSelectedRunId, setRequestedSelectedRunId] = React.useState<
+    string | undefined
+  >();
+  const selectedRunId = reconcileSelectedRunId(
+    requestedSelectedRunId,
+    runConsole.runs,
+  );
+  const selectedConsoleRun = selectedRunFromConsoleState(
+    selectedRunId,
+    runConsole.runs,
+  );
+  const serverConnection: ServerConnectionState = {
+    runConsole,
+    selectedRun: selectedConsoleRun,
+  };
+  const selectedRun = initialRun;
   const [selectedNodeId, setSelectedNodeId] = React.useState(
     getInitialNode(selectedRun).id,
   );
@@ -142,9 +165,8 @@ export function DashboardShell() {
     selectedRun.nodes.find((node) => node.id === selectedNodeId) ??
     getInitialNode(selectedRun);
 
-  function selectRun(run: DashboardRun) {
-    setSelectedRunId(run.id);
-    setSelectedNodeId(getInitialNode(run).id);
+  function refreshRunConsole() {
+    void Promise.all([healthQuery.refetch(), runsQuery.refetch()]);
   }
 
   return (
@@ -153,9 +175,10 @@ export function DashboardShell() {
         className="h-svh min-h-0 flex-col overflow-hidden bg-background text-sm lg:flex-row"
       >
         <RunConsole
-          selectedRun={selectedRun}
+          selectedRunId={selectedRunId}
           serverConnection={serverConnection}
-          onSelectRun={selectRun}
+          onRefresh={refreshRunConsole}
+          onSelectRun={setRequestedSelectedRunId}
         />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           <TopBar
@@ -179,14 +202,32 @@ export function DashboardShell() {
 }
 
 function RunConsole({
-  selectedRun,
+  selectedRunId,
   serverConnection,
+  onRefresh,
   onSelectRun,
 }: {
-  readonly selectedRun: DashboardRun;
+  readonly selectedRunId: string | undefined;
   readonly serverConnection: ServerConnectionState;
-  readonly onSelectRun: (run: DashboardRun) => void;
+  readonly onRefresh: () => void;
+  readonly onSelectRun: (runId: string) => void;
 }) {
+  const [filter, setFilter] = React.useState("");
+  const runConsole = serverConnection.runConsole;
+  const visibleRuns = React.useMemo(() => {
+    const normalizedFilter = filter.trim().toLowerCase();
+    if (normalizedFilter.length === 0) {
+      return runConsole.runs;
+    }
+
+    return runConsole.runs.filter((run) =>
+      [run.id, run.latestEventLabel, run.specHint, run.stateLabel, run.status]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedFilter),
+    );
+  }, [filter, runConsole.runs]);
+
   return (
     <Sidebar
       collapsible="none"
@@ -202,14 +243,31 @@ function RunConsole({
           </div>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button size="icon" variant="outline" aria-label="Filter runs">
-                <SearchIcon />
+              <Button
+                aria-label="Refresh local runs"
+                disabled={runConsole.isLoading}
+                onClick={onRefresh}
+                size="icon"
+                variant="outline"
+              >
+                <RefreshCwIcon
+                  className={cn(runConsole.isLoading && "animate-spin")}
+                />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Filter runs</TooltipContent>
+            <TooltipContent>Refresh local runs</TooltipContent>
           </Tooltip>
         </div>
-        <Input aria-label="Search runs" placeholder="Search local runs" />
+        <div className="relative">
+          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            aria-label="Search runs"
+            className="pl-8"
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="Search local runs"
+            value={filter}
+          />
+        </div>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
@@ -220,88 +278,147 @@ function RunConsole({
                 <div className="flex min-w-0 items-center gap-2">
                   <ServerIcon className="size-4 shrink-0 text-muted-foreground" />
                   <span className="truncate text-sm font-medium">
-                    {serverConnection.serverUrl}
+                    {runConsole.serverUrl}
                   </span>
                 </div>
-                <Badge variant={serverBadgeVariant(serverConnection.health)}>
-                  {serverConnection.health}
+                <Badge variant={serverBadgeVariant(runConsole.health)}>
+                  {runConsole.health}
                 </Badge>
               </div>
-              <p className="text-xs text-muted-foreground">
-                {serverConnection.message}
+              <p
+                className="text-xs text-muted-foreground"
+                data-testid="run-console-server-message"
+              >
+                {runConsole.message}
               </p>
             </div>
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup>
-          <SidebarGroupLabel>API runs</SidebarGroupLabel>
+          <SidebarGroupLabel>Local runs</SidebarGroupLabel>
           <SidebarGroupContent>
-            {serverConnection.liveRuns.length === 0 ? (
-              <p className="px-2 py-1 text-xs text-muted-foreground">
-                No local server runs loaded.
-              </p>
-            ) : (
-              <SidebarMenu>
-                {serverConnection.liveRuns.map((run) => (
-                  <SidebarMenuItem key={run.runId}>
-                    <SidebarMenuButton
-                      className="h-auto items-start gap-3 py-2"
-                      disabled
-                    >
-                      <WorkflowIcon />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate font-medium">
-                          {run.runId}
-                        </span>
-                        <span className="block truncate text-xs text-muted-foreground">
-                          {run.latestEventType} · {run.eventCount} events
-                        </span>
-                      </span>
-                    </SidebarMenuButton>
-                    <SidebarMenuBadge>{run.status}</SidebarMenuBadge>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            )}
-          </SidebarGroupContent>
-        </SidebarGroup>
-        <SidebarGroup>
-          <SidebarGroupLabel>Shell fixtures</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {dashboardRuns.map((run) => (
-                <SidebarMenuItem key={run.id}>
-                  <SidebarMenuButton
-                    className="h-auto items-start gap-3 py-2"
-                    isActive={run.id === selectedRun.id}
-                    onClick={() => onSelectRun(run)}
-                  >
-                    <WorkflowIcon />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium">
-                        {run.title}
-                      </span>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {run.branch}
-                      </span>
-                    </span>
-                  </SidebarMenuButton>
-                  <SidebarMenuBadge>{run.updatedAt}</SidebarMenuBadge>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
+            <RunConsoleRuns
+              runs={visibleRuns}
+              selectedRunId={selectedRunId}
+              state={runConsole}
+              onSelectRun={onSelectRun}
+            />
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter className="border-t">
         <div className="flex items-center justify-between gap-3">
           <span className="text-xs text-muted-foreground">Server state</span>
-          <Badge variant={serverBadgeVariant(serverConnection.health)}>
-            {serverConnection.liveRuns.length} runs
+          <Badge variant={serverBadgeVariant(runConsole.health)}>
+            {runConsole.runs.length} runs
           </Badge>
         </div>
       </SidebarFooter>
     </Sidebar>
+  );
+}
+
+function RunConsoleRuns({
+  runs,
+  selectedRunId,
+  state,
+  onSelectRun,
+}: {
+  readonly runs: ReadonlyArray<RunConsoleRun>;
+  readonly selectedRunId: string | undefined;
+  readonly state: RunConsoleState;
+  readonly onSelectRun: (runId: string) => void;
+}) {
+  if (state.isLoading) {
+    return (
+      <div className="flex flex-col gap-2 px-2 py-1">
+        <Skeleton className="h-16 w-full" />
+        <Skeleton className="h-16 w-full" />
+        <Skeleton className="h-16 w-full" />
+      </div>
+    );
+  }
+
+  if (state.isError) {
+    return (
+      <Empty className="min-h-44 border" data-testid="run-console-error">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <AlertCircleIcon />
+          </EmptyMedia>
+          <EmptyTitle>Local server unavailable</EmptyTitle>
+          <EmptyDescription>{state.message}</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
+
+  if (state.isEmpty) {
+    return (
+      <Empty className="min-h-44 border" data-testid="run-console-empty">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <WorkflowIcon />
+          </EmptyMedia>
+          <EmptyTitle>No local runs</EmptyTitle>
+          <EmptyDescription>
+            Start a Gaia run and refresh the console to inspect it here.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
+
+  if (runs.length === 0) {
+    return (
+      <Empty className="min-h-36 border" data-testid="run-console-filter-empty">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <SearchIcon />
+          </EmptyMedia>
+          <EmptyTitle>No matching runs</EmptyTitle>
+          <EmptyDescription>
+            Clear the search filter to return to the local run list.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
+
+  return (
+    <SidebarMenu>
+      {runs.map((run) => (
+        <SidebarMenuItem key={run.id}>
+          <SidebarMenuButton
+            className="h-auto items-start gap-3 py-2"
+            data-testid={`run-console-row-${run.id}`}
+            isActive={run.id === selectedRunId}
+            onClick={() => onSelectRun(run.id)}
+          >
+            <WorkflowIcon />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate font-medium">{run.title}</span>
+              <span className="block truncate text-xs text-muted-foreground">
+                {run.specHint}
+              </span>
+              <span className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
+                <span>{run.statusLabel}</span>
+                <span aria-hidden="true">·</span>
+                <span>{run.latestEventLabel}</span>
+                <span aria-hidden="true">·</span>
+                <span>{run.eventCount} events</span>
+                <span aria-hidden="true">·</span>
+                <span>{run.artifactCount} artifacts</span>
+              </span>
+              <span className="mt-1 block truncate text-xs text-muted-foreground">
+                Updated {run.updatedAtLabel}
+              </span>
+            </span>
+          </SidebarMenuButton>
+          <SidebarMenuBadge>{run.terminalLabel}</SidebarMenuBadge>
+        </SidebarMenuItem>
+      ))}
+    </SidebarMenu>
   );
 }
 
@@ -312,23 +429,35 @@ function TopBar({
   readonly selectedRun: DashboardRun;
   readonly serverConnection: ServerConnectionState;
 }) {
+  const selectedConsoleRun = serverConnection.selectedRun;
+
   return (
     <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b px-3">
       <div className="flex min-w-0 items-center gap-2">
         <SidebarTrigger className="lg:hidden" />
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium">{selectedRun.title}</p>
+          <p className="truncate text-sm font-medium" data-testid="selected-run-title">
+            {selectedConsoleRun?.title ?? selectedRun.title}
+          </p>
           <p className="truncate text-xs text-muted-foreground">
-            {selectedRun.id} · {selectedRun.branch}
+            {selectedConsoleRun === undefined
+              ? `${selectedRun.id} · ${selectedRun.branch}`
+              : `${selectedConsoleRun.stateLabel} · ${selectedConsoleRun.latestEventLabel}`}
           </p>
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <Badge variant={serverBadgeVariant(serverConnection.health)}>
-          API {serverConnection.health}
+        <Badge variant={serverBadgeVariant(serverConnection.runConsole.health)}>
+          API {serverConnection.runConsole.health}
         </Badge>
-        <Badge variant={statusBadgeVariant(selectedRun.status)}>
-          {statusLabels[selectedRun.status]}
+        <Badge
+          variant={
+            selectedConsoleRun === undefined
+              ? statusBadgeVariant(selectedRun.status)
+              : localRunBadgeVariant(selectedConsoleRun.status)
+          }
+        >
+          {selectedConsoleRun?.terminalLabel ?? statusLabels[selectedRun.status]}
         </Badge>
         <Button size="sm" variant="outline">
           <GitBranchIcon data-icon="inline-start" />
@@ -659,7 +788,7 @@ function toFlowEdges(run: DashboardRun): Array<Edge> {
 }
 
 function serverBadgeVariant(
-  health: ServerConnectionState["health"],
+  health: RunConsoleState["health"],
 ): "destructive" | "outline" | "secondary" {
   if (health === "offline") {
     return "destructive";
@@ -672,53 +801,16 @@ function serverBadgeVariant(
   return "outline";
 }
 
-function connectionMessage(input: {
-  readonly healthError: unknown;
-  readonly healthStatus: string | undefined;
-  readonly runCount: number;
-  readonly runsError: unknown;
-}) {
-  if (input.healthStatus === "ok") {
-    return `${input.runCount} runs loaded through LocalGaiaServerApi.`;
+function localRunBadgeVariant(
+  status: RunConsoleRun["status"],
+): "destructive" | "outline" | "secondary" {
+  if (status === "failed") {
+    return "destructive";
   }
 
-  const failure = dashboardQueryFailure(input.healthError ?? input.runsError);
-  if (failure?._tag === "DashboardGaiaApiError") {
-    return `${failure.error.code}: ${failure.error.message}`;
+  if (status === "completed") {
+    return "secondary";
   }
 
-  if (failure?._tag === "DashboardGaiaHttpClientError") {
-    return "Local server is not reachable.";
-  }
-
-  if (failure?._tag === "DashboardGaiaTimeoutError") {
-    return "Local server request timed out.";
-  }
-
-  return "Checking local server.";
-}
-
-function dashboardQueryFailure(
-  error: unknown,
-): DashboardGaiaClientError | undefined {
-  if (
-    typeof error !== "object" ||
-    error === null ||
-    !("failure" in error)
-  ) {
-    return undefined;
-  }
-
-  const failure = error.failure;
-  if (
-    typeof failure === "object" &&
-    failure !== null &&
-    "_tag" in failure &&
-    typeof failure._tag === "string" &&
-    failure._tag.startsWith("DashboardGaia")
-  ) {
-    return failure as DashboardGaiaClientError;
-  }
-
-  return undefined;
+  return "outline";
 }
