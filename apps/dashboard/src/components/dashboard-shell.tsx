@@ -23,22 +23,25 @@ import {
 import * as React from "react";
 
 import {
-  getInitialNode,
-  getInitialRun,
   type DashboardRun,
   type EvidenceTab,
   type RunNode,
   type RunStatus,
-} from "@/dashboard-model";
-import {
-  defaultLocalGaiaServerUrl,
-} from "@/lib/local-gaia-client";
+  buildRunCanvasModel,
+  eventTypeLabel,
+  getInitialNode,
+  stateLabel,
+} from "@/run-canvas-model";
+import { defaultLocalGaiaServerUrl } from "@/lib/local-gaia-client";
 import {
   localGaiaHealthQueryOptions,
+  localGaiaRunEventsQueryOptions,
+  localGaiaRunQueryOptions,
   localGaiaRunsQueryOptions,
 } from "@/lib/local-gaia-query";
 import {
   buildRunConsoleState,
+  dashboardQueryFailure,
   reconcileSelectedRunId,
   selectedRunFromConsoleState,
   type RunConsoleRun,
@@ -115,7 +118,6 @@ type ServerConnectionState = {
 };
 
 export function DashboardShell() {
-  const initialRun = getInitialRun();
   const serverUrl = defaultLocalGaiaServerUrl;
   const healthQuery = useQuery(localGaiaHealthQueryOptions({ serverUrl }));
   const runsQuery = useQuery(localGaiaRunsQueryOptions({ serverUrl }));
@@ -153,20 +155,68 @@ export function DashboardShell() {
     selectedRunId,
     runConsole.runs,
   );
+  const selectedRunSummaryFromList = runsQuery.data?.data.runs.find(
+    (run) => run.runId === selectedRunId,
+  );
+  const selectedRunDetailQuery = useQuery(
+    localGaiaRunQueryOptions({
+      runId: selectedRunId ?? "",
+      serverUrl,
+    }),
+  );
+  const selectedRunEventsQuery = useQuery(
+    localGaiaRunEventsQueryOptions({
+      runId: selectedRunId ?? "",
+      serverUrl,
+    }),
+  );
+  const selectedRunSummary =
+    selectedRunDetailQuery.data?.data ?? selectedRunSummaryFromList;
+  const selectedRun = React.useMemo(
+    () =>
+      buildRunCanvasModel({
+        events: selectedRunEventsQuery.data?.data.events ?? [],
+        run: selectedRunSummary,
+      }),
+    [selectedRunEventsQuery.data?.data.events, selectedRunSummary],
+  );
   const serverConnection: ServerConnectionState = {
     runConsole,
     selectedRun: selectedConsoleRun,
   };
-  const selectedRun = initialRun;
-  const [selectedNodeId, setSelectedNodeId] = React.useState(
-    getInitialNode(selectedRun).id,
-  );
+  const [selectedNodeId, setSelectedNodeId] = React.useState<
+    string | undefined
+  >();
   const selectedNode =
     selectedRun.nodes.find((node) => node.id === selectedNodeId) ??
     getInitialNode(selectedRun);
+  const runCanvas = {
+    detailError: dashboardQueryFailure(selectedRunDetailQuery.error),
+    eventsError: dashboardQueryFailure(selectedRunEventsQuery.error),
+    isLoading:
+      selectedRunId !== undefined &&
+      (selectedRunDetailQuery.isPending || selectedRunEventsQuery.isPending),
+  };
 
   function refreshRunConsole() {
-    void Promise.all([healthQuery.refetch(), runsQuery.refetch()]);
+    const refreshes: Array<Promise<unknown>> = [
+      healthQuery.refetch(),
+      runsQuery.refetch(),
+    ];
+
+    if (selectedRunId !== undefined) {
+      refreshes.push(
+        selectedRunDetailQuery.refetch(),
+        selectedRunEventsQuery.refetch(),
+      );
+    }
+
+    void Promise.all(refreshes);
+  }
+
+  function selectRun(runId: string) {
+    setRequestedSelectedRunId(runId);
+    setSelectedNodeId(undefined);
   }
 
   return (
@@ -178,7 +228,7 @@ export function DashboardShell() {
           selectedRunId={selectedRunId}
           serverConnection={serverConnection}
           onRefresh={refreshRunConsole}
-          onSelectRun={setRequestedSelectedRunId}
+          onSelectRun={selectRun}
         />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           <TopBar
@@ -186,11 +236,13 @@ export function DashboardShell() {
             serverConnection={serverConnection}
           />
           <DesktopWorkspace
+            runCanvas={runCanvas}
             selectedNode={selectedNode}
             selectedRun={selectedRun}
             onSelectNode={setSelectedNodeId}
           />
           <MobileWorkspace
+            runCanvas={runCanvas}
             selectedNode={selectedNode}
             selectedRun={selectedRun}
             onSelectNode={setSelectedNodeId}
@@ -441,7 +493,7 @@ function TopBar({
           </p>
           <p className="truncate text-xs text-muted-foreground">
             {selectedConsoleRun === undefined
-              ? `${selectedRun.id} · ${selectedRun.branch}`
+              ? selectedRun.id
               : `${selectedConsoleRun.stateLabel} · ${selectedConsoleRun.latestEventLabel}`}
           </p>
         </div>
@@ -469,12 +521,14 @@ function TopBar({
 }
 
 function DesktopWorkspace({
+  runCanvas,
   selectedRun,
   selectedNode,
   onSelectNode,
 }: {
+  readonly runCanvas: RunCanvasQueryState;
   readonly selectedRun: DashboardRun;
-  readonly selectedNode: RunNode;
+  readonly selectedNode: RunNode | undefined;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
   return (
@@ -484,6 +538,7 @@ function DesktopWorkspace({
           <ResizablePanelGroup orientation="horizontal">
             <ResizablePanel defaultSize="68%" minSize="44%">
               <RunCanvas
+                queryState={runCanvas}
                 selectedNode={selectedNode}
                 selectedRun={selectedRun}
                 onSelectNode={onSelectNode}
@@ -505,18 +560,21 @@ function DesktopWorkspace({
 }
 
 function MobileWorkspace({
+  runCanvas,
   selectedRun,
   selectedNode,
   onSelectNode,
 }: {
+  readonly runCanvas: RunCanvasQueryState;
   readonly selectedRun: DashboardRun;
-  readonly selectedNode: RunNode;
+  readonly selectedNode: RunNode | undefined;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
   return (
     <section className="flex min-h-0 flex-1 flex-col lg:hidden">
       <div className="min-h-[22rem] flex-1 border-b">
         <RunCanvas
+          queryState={runCanvas}
           selectedNode={selectedNode}
           selectedRun={selectedRun}
           onSelectNode={onSelectNode}
@@ -533,17 +591,19 @@ function MobileWorkspace({
 }
 
 function RunCanvas({
+  queryState,
   selectedRun,
   selectedNode,
   onSelectNode,
 }: {
+  readonly queryState: RunCanvasQueryState;
   readonly selectedRun: DashboardRun;
-  readonly selectedNode: RunNode;
+  readonly selectedNode: RunNode | undefined;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
   const nodes = React.useMemo(
-    () => toFlowNodes(selectedRun, selectedNode.id),
-    [selectedRun, selectedNode.id],
+    () => toFlowNodes(selectedRun, selectedNode?.id),
+    [selectedRun, selectedNode?.id],
   );
   const edges = React.useMemo(() => toFlowEdges(selectedRun), [selectedRun]);
   const handleNodeClick = React.useCallback<NodeMouseHandler>(
@@ -563,15 +623,39 @@ function RunCanvas({
         <Badge variant="outline">{selectedRun.nodes.length} nodes</Badge>
       </div>
       <div className="min-h-0 flex-1 bg-muted/20">
-        {selectedRun.nodes.length === 0 ? (
+        {queryState.detailError !== undefined ||
+        queryState.eventsError !== undefined ? (
+          <Empty data-testid="run-canvas-error">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <AlertCircleIcon />
+              </EmptyMedia>
+              <EmptyTitle>Run canvas unavailable</EmptyTitle>
+              <EmptyDescription>
+                {runCanvasErrorMessage(queryState)}
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : queryState.isLoading ? (
+          <div
+            className="grid size-full place-items-center p-6"
+            data-testid="run-canvas-loading"
+          >
+            <div className="flex w-full max-w-xl flex-col gap-3">
+              <Skeleton className="h-20 w-56" />
+              <Skeleton className="ml-32 h-20 w-64" />
+              <Skeleton className="ml-auto h-20 w-56" />
+            </div>
+          </div>
+        ) : selectedRun.nodes.length === 0 ? (
           <Empty>
             <EmptyHeader>
               <EmptyMedia variant="icon">
                 <WorkflowIcon />
               </EmptyMedia>
-              <EmptyTitle>No run graph</EmptyTitle>
+              <EmptyTitle>No run selected</EmptyTitle>
               <EmptyDescription>
-                Select a run with recorded events to populate the canvas.
+                Select a local run to populate the canvas from public run data.
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -592,8 +676,39 @@ function RunCanvas({
   );
 }
 
-function EvidenceStudio({ selectedNode }: { readonly selectedNode: RunNode }) {
+function EvidenceStudio({
+  selectedNode,
+}: {
+  readonly selectedNode: RunNode | undefined;
+}) {
   const [tab, setTab] = React.useState<EvidenceTab>("summary");
+
+  if (selectedNode === undefined) {
+    return (
+      <aside className="flex size-full min-h-0 flex-col">
+        <div className="flex h-11 shrink-0 items-center justify-between gap-3 border-b px-3">
+          <div className="min-w-0">
+            <h2 className="truncate text-sm font-semibold">Evidence Studio</h2>
+            <p className="truncate text-xs text-muted-foreground">
+              Select a canvas node
+            </p>
+          </div>
+          <Badge variant="outline">Idle</Badge>
+        </div>
+        <Empty className="min-h-0 flex-1" data-testid="evidence-studio-empty">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <InspectIcon />
+            </EmptyMedia>
+            <EmptyTitle>No node selected</EmptyTitle>
+            <EmptyDescription>
+              Select a run canvas node to inspect its public evidence.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      </aside>
+    );
+  }
 
   return (
     <aside className="flex size-full min-h-0 flex-col">
@@ -748,14 +863,14 @@ function EventStrip({ selectedRun }: { readonly selectedRun: DashboardRun }) {
 
 function toFlowNodes(
   run: DashboardRun,
-  selectedNodeId: string,
+  selectedNodeId: string | undefined,
 ): Array<Node<{ label: React.ReactNode }>> {
   return run.nodes.map((node) => ({
     id: node.id,
     position: node.position,
     data: {
       label: (
-        <div className="flex min-w-48 flex-col gap-2 text-left">
+        <div className="flex min-w-52 max-w-64 flex-col gap-2 text-left">
           <div className="flex items-center justify-between gap-3">
             <span className="truncate text-sm font-semibold">{node.label}</span>
             <Badge variant={statusBadgeVariant(node.status)}>
@@ -783,7 +898,7 @@ function toFlowEdges(run: DashboardRun): Array<Edge> {
     target: edge.target,
     label: edge.label,
     type: "smoothstep",
-    animated: edge.target === "browser",
+    animated: edge.label === "then",
   }));
 }
 
@@ -813,4 +928,32 @@ function localRunBadgeVariant(
   }
 
   return "outline";
+}
+
+type RunCanvasQueryState = {
+  readonly detailError: ReturnType<typeof dashboardQueryFailure>;
+  readonly eventsError: ReturnType<typeof dashboardQueryFailure>;
+  readonly isLoading: boolean;
+};
+
+function runCanvasErrorMessage(state: RunCanvasQueryState) {
+  const failure = state.detailError ?? state.eventsError;
+
+  if (failure?._tag === "DashboardGaiaApiError") {
+    return `${failure.error.code}: ${failure.error.message}`;
+  }
+
+  if (failure?._tag === "DashboardGaiaParameterError") {
+    return `Invalid ${failure.parameter} parameter.`;
+  }
+
+  if (failure?._tag === "DashboardGaiaTimeoutError") {
+    return "Local server request timed out.";
+  }
+
+  if (failure?._tag === "DashboardGaiaHttpClientError") {
+    return "Local server is not reachable.";
+  }
+
+  return "The selected run could not be loaded.";
 }

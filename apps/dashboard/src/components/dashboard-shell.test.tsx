@@ -8,7 +8,7 @@ import type {
   LocalRunApiErrorEnvelope,
   LocalRunSummaryDto,
 } from "@gaia/core";
-import { RunIdSchema } from "@gaia/core";
+import { RunIdSchema, makeRunEvent } from "@gaia/core";
 import {
   cleanup,
   fireEvent,
@@ -23,9 +23,11 @@ import { DashboardShell } from "@/components/dashboard-shell";
 import type { DashboardGaiaClientError } from "@/lib/local-gaia-client";
 
 const queryFixture = vi.hoisted((): {
+  eventsByRunId: Record<string, ReadonlyArray<unknown>>;
   healthError?: unknown;
   runs: ReadonlyArray<unknown>;
 } => ({
+  eventsByRunId: {},
   healthError: undefined,
   runs: [],
 }));
@@ -66,6 +68,44 @@ vi.mock("@/lib/local-gaia-query", () => ({
     queryKey: ["local-gaia", "runs"] as const,
     retry: false,
   }),
+  localGaiaRunQueryOptions: (config: { readonly runId: string }) => ({
+    enabled: config.runId.length > 0,
+    queryFn: () => {
+      const run = queryFixture.runs.find(
+        (candidate) =>
+          typeof candidate === "object" &&
+          candidate !== null &&
+          "runId" in candidate &&
+          candidate.runId === config.runId,
+      );
+
+      return Promise.resolve({
+        data: run,
+        status: "success",
+      });
+    },
+    queryKey: ["local-gaia", "runs", "detail", config.runId] as const,
+    retry: false,
+  }),
+  localGaiaRunEventsQueryOptions: (config: { readonly runId: string }) => ({
+    enabled: config.runId.length > 0,
+    queryFn: () =>
+      Promise.resolve({
+        data: {
+          events: queryFixture.eventsByRunId[config.runId] ?? [],
+          runId: config.runId,
+        },
+        status: "success",
+      }),
+    queryKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "events",
+    ] as const,
+    retry: false,
+  }),
 }));
 
 beforeEach(() => {
@@ -78,10 +118,29 @@ afterEach(() => {
 
 describe("DashboardShell Run Console", () => {
   it("renders typed runs data and updates selected run state on row click", async () => {
+    const firstRunId = parseRunId("run-1111111111");
+    const secondRunId = parseRunId("run-2222222222");
     renderDashboardWithQueries({
+      eventsByRunId: {
+        [firstRunId]: [
+          makeRunEvent({
+            payload: { specPath: "input.md" },
+            runId: firstRunId,
+            sequence: 1,
+            timestamp: "2026-07-07T12:00:00.000Z",
+            type: "RUN_CREATED",
+          }),
+          makeRunEvent({
+            runId: firstRunId,
+            sequence: 2,
+            timestamp: "2026-07-07T12:01:00.000Z",
+            type: "WORKER_STARTED",
+          }),
+        ],
+      },
       runs: [
         localRunSummary({
-          runId: parseRunId("run-1111111111"),
+          runId: firstRunId,
           status: "running",
           state: "runningWorker",
           latestEventType: "WORKER_STARTED",
@@ -89,7 +148,7 @@ describe("DashboardShell Run Console", () => {
           updatedAt: "2026-07-07T12:30:00.000Z",
         }),
         localRunSummary({
-          runId: parseRunId("run-2222222222"),
+          runId: secondRunId,
           status: "completed",
           state: "completed",
           latestEventType: "REPORT_COMPLETED",
@@ -115,6 +174,27 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByTestId("selected-run-title").textContent).toBe(
       "run-1111111111",
     );
+    expect(await screen.findAllByText("Run root")).not.toHaveLength(0);
+    const workerLabels = await screen.findAllByText("Worker lane");
+    expect(workerLabels).not.toHaveLength(0);
+    expect(screen.getAllByText("Thread identities unavailable")).not.toHaveLength(
+      0,
+    );
+
+    const workerLabel = workerLabels[0];
+    if (workerLabel === undefined) {
+      throw new Error("Expected a worker lane node.");
+    }
+
+    fireEvent.click(workerLabel);
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(
+          "Worker activity is inferred from durable worker events and worker artifacts. No private thread identity is exposed.",
+        ),
+      ).not.toHaveLength(0);
+    });
 
     fireEvent.click(secondRow);
 
@@ -135,7 +215,7 @@ describe("DashboardShell Run Console", () => {
       "0 runs loaded through LocalGaiaServerApi.",
     );
     expect(screen.getByTestId("selected-run-title").textContent).toBe(
-      "GAIA-38 dashboard shell",
+      "No local run selected",
     );
   });
 
@@ -163,9 +243,11 @@ describe("DashboardShell Run Console", () => {
 });
 
 function renderDashboardWithQueries(input: {
+  readonly eventsByRunId?: Record<string, ReadonlyArray<unknown>>;
   readonly healthError?: DashboardGaiaClientError;
   readonly runs: ReadonlyArray<typeof LocalRunSummaryDto.Type>;
 }) {
+  queryFixture.eventsByRunId = input.eventsByRunId ?? {};
   queryFixture.healthError = input.healthError;
   queryFixture.runs = input.runs;
 
