@@ -2,6 +2,10 @@ import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it, layer } from "@effect/vitest";
 import type { ServerMetadata } from "@gaia/core";
 import { runSpecFile } from "@gaia/runtime";
+import {
+  acceptFactoryRun,
+  continueServerRun,
+} from "@gaia/runtime/server-workflows";
 import { runLocalGaiaServer } from "@gaia/server";
 import { Deferred, Effect, Fiber, FileSystem } from "effect";
 import { execFile } from "node:child_process";
@@ -16,7 +20,7 @@ describe("gaia CLI local server read parity", () => {
       "matches direct list and status JSON output when opted into server reads",
       () =>
         Effect.gen(function* () {
-          const cwd = yield* createRunStore("CLI server parity.");
+          const cwd = yield* createFactoryRunStore("CLI server parity.");
           const server = yield* startLocalRunServer(cwd);
           try {
             const directList = yield* runGaiaJson(cwd, ["list", "--json"]);
@@ -53,7 +57,7 @@ describe("gaia CLI local server read parity", () => {
       "matches direct events and artifact JSON output when opted into server reads",
       () =>
         Effect.gen(function* () {
-          const cwd = yield* createRunStore(
+          const cwd = yield* createFactoryRunStore(
             "CLI server event and artifact parity.",
           );
           const directList = yield* runGaiaJson(cwd, ["list", "--json"]);
@@ -225,8 +229,8 @@ describe("gaia CLI local server read parity", () => {
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-latest-" });
-          yield* createSpecRun(cwd, "First latest candidate.\n");
-          yield* createSpecRun(cwd, "Second latest candidate.\n");
+          yield* createFactoryRun(cwd, "First latest candidate.\n");
+          yield* createFactoryRun(cwd, "Second latest candidate.\n");
           const directList = yield* runGaiaJson(cwd, ["list", "--json"]);
           const runIds = getRunIds(directList);
           const selected = runIds[1] ?? runIds[0];
@@ -259,7 +263,7 @@ describe("gaia CLI local server read parity", () => {
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
-          const sourceRoot = yield* createRunStore("Explicit URL source.");
+          const sourceRoot = yield* createFactoryRunStore("Explicit URL source.");
           const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-url-" });
           const sourceRunId = getRunId(yield* runGaiaJson(sourceRoot, [
             "list",
@@ -446,6 +450,33 @@ function createRunStore(specBody: string) {
     const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-" });
     yield* createSpecRun(cwd, specBody);
     return cwd;
+  });
+}
+
+function createFactoryRunStore(specBody: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-" });
+    yield* createFactoryRun(cwd, specBody);
+    return cwd;
+  });
+}
+
+function createFactoryRun(cwd: string, specBody: string) {
+  return Effect.gen(function* () {
+    const accepted = yield* acceptFactoryRun(
+      {
+        workflow: "issueDelivery",
+        workItem: {
+          description: specBody,
+          kind: "issue",
+          title: "CLI server parity",
+        },
+      },
+      { rootDirectory: cwd },
+    );
+    yield* continueServerRun(accepted.runId, { rootDirectory: cwd });
+    return accepted;
   });
 }
 

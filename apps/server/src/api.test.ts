@@ -1,17 +1,18 @@
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
+import { parseRunId } from "@gaia/core";
 import {
   ReviewResult,
   ReviewerNameSchema,
   type GaiaReviewer,
-  runSpecFile,
 } from "@gaia/runtime";
 import type { ServerWorkflowOptions } from "@gaia/runtime/server-workflows";
 import {
+  acceptFactoryRun,
   acceptServerRun,
   continueServerRun,
 } from "@gaia/runtime/server-workflows";
-import { makeRunStorePaths } from "@gaia/runtime/paths";
+import { makeRunPaths, makeRunStorePaths } from "@gaia/runtime/paths";
 import { Deferred, Effect, FileSystem, Layer, Schema } from "effect";
 import {
   HttpClient,
@@ -41,13 +42,13 @@ describe("local run api http boundary", () => {
       }),
     );
 
-    it.effect("returns run summaries with partial diagnostics", () =>
+    it.effect("returns factory run summaries with partial diagnostics", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
-        const specPath = `${cwd}/spec.md`;
-        yield* fs.writeFileString(specPath, "Serve runs.\n");
-        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          rootDirectory: cwd,
+        });
         yield* fs.makeDirectory(`${cwd}/.gaia/runs/run-not-valid`);
 
         const response = yield* HttpClient.get("/runs").pipe(
@@ -62,25 +63,31 @@ describe("local run api http boundary", () => {
 
         assert.strictEqual(response.status, 200);
         assert.strictEqual(getString(body, "status"), "success");
-        assert.strictEqual(getString(firstRun, "runId"), summary.runId);
+        assert.strictEqual(getString(firstRun, "runId"), accepted.runId);
+        assert.strictEqual(getString(firstRun, "workflow"), "issueDelivery");
+        assert.strictEqual(
+          getString(getObject(firstRun, "rootWorkItem"), "title"),
+          "Wire LocalGaiaServerApi factory endpoints",
+        );
+        assert.strictEqual(getNumber(getObject(firstRun, "counts"), "agents"), 5);
         assert.strictEqual(getString(firstDiagnostic, "code"), "InvalidRunDirectory");
       }),
     );
 
-    it.effect("returns run detail and event envelopes", () =>
+    it.effect("returns factory run detail and internal event envelopes", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
-        const specPath = `${cwd}/spec.md`;
-        yield* fs.writeFileString(specPath, "Serve events.\n");
-        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          rootDirectory: cwd,
+        });
 
         const layer = testServerLayer(cwd);
-        const detailResponse = yield* HttpClient.get(`/runs/${summary.runId}`).pipe(
+        const detailResponse = yield* HttpClient.get(`/runs/${accepted.runId}`).pipe(
           Effect.provide(layer),
         );
         const eventsResponse = yield* HttpClient.get(
-          `/runs/${summary.runId}/events`,
+          `/runs/${accepted.runId}/events`,
         ).pipe(Effect.provide(layer));
         const detail = yield* responseJsonObject(detailResponse);
         const events = yield* responseJsonObject(eventsResponse);
@@ -90,8 +97,9 @@ describe("local run api http boundary", () => {
 
         assert.strictEqual(detailResponse.status, 200);
         assert.strictEqual(eventsResponse.status, 200);
-        assert.strictEqual(getString(detailData, "runId"), summary.runId);
-        assert.strictEqual(getString(eventsData, "runId"), summary.runId);
+        assert.strictEqual(getString(detailData, "runId"), accepted.runId);
+        assert.strictEqual(getString(eventsData, "runId"), accepted.runId);
+        assert.strictEqual(getNumber(getObject(detailData, "counts"), "agents"), 5);
         assert.strictEqual(
           eventItems.length,
           getNumber(getObject(detailData, "counts"), "activity"),
@@ -99,32 +107,40 @@ describe("local run api http boundary", () => {
       }),
     );
 
-    it.effect("serves logical artifacts through JSON envelopes only", () =>
+    it.effect("serves factory artifact catalogs and bodies through JSON envelopes only", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
-        const specPath = `${cwd}/spec.md`;
-        yield* fs.writeFileString(specPath, "Serve artifacts.\n");
-        const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          rootDirectory: cwd,
+        });
+        yield* continueServerRun(accepted.runId, { rootDirectory: cwd });
 
-        const response = yield* HttpClient.get(
-          `/runs/${summary.runId}/artifacts/report-json`,
+        const catalogResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/artifacts`,
         ).pipe(Effect.provide(testServerLayer(cwd)));
-        const inputResponse = yield* HttpClient.get(
-          `/runs/${summary.runId}/artifacts/input`,
+        const bodyResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/artifacts/report-json`,
         ).pipe(Effect.provide(testServerLayer(cwd)));
-        const body = yield* responseJsonObject(response);
-        const inputBody = yield* responseJsonObject(inputResponse);
+        const catalogBody = yield* responseJsonObject(catalogResponse);
+        const body = yield* responseJsonObject(bodyResponse);
+        const artifacts = getArray(getObject(catalogBody, "data"), "artifacts");
+        const reportMetadata = artifacts
+          .map((artifact) => {
+            if (!isJsonObject(artifact)) {
+              throw new Error("Expected artifact metadata to be an object.");
+            }
+            return artifact;
+          })
+          .find((artifact) => getString(artifact, "artifactId") === "report-json");
         const data = getObject(body, "data");
-        const inputData = getObject(inputBody, "data");
 
-        assert.strictEqual(response.status, 200);
-        assert.strictEqual(inputResponse.status, 200);
+        assert.strictEqual(catalogResponse.status, 200);
+        assert.strictEqual(bodyResponse.status, 200);
+        assert.isDefined(reportMetadata);
         assert.strictEqual(getString(data, "artifactId"), "report-json");
         assert.strictEqual(getString(data, "contentType"), "application/json");
-        assert.include(getString(data, "body"), summary.runId);
-        assert.strictEqual(getString(inputData, "artifactId"), "input");
-        assert.strictEqual(getString(inputData, "contentType"), "text/markdown");
+        assert.include(getString(data, "body"), accepted.runId);
       }),
     );
 
@@ -173,50 +189,12 @@ describe("local run api http boundary", () => {
         );
         const body = yield* responseJsonObject(response);
         const runId = getString(body, "runId");
-        const detail = yield* HttpClient.get(`/runs/${runId}`).pipe(
-          Effect.provide(layer),
-        );
-        const detailBody = yield* responseJsonObject(detail);
-        const detailData = getObject(detailBody, "data");
+        const paths = yield* makeRunPaths(parseRunId(runId), { rootDirectory: cwd });
+        const persistedInput = yield* fs.readFileString(paths.input);
 
         assert.strictEqual(response.status, 202);
-        assert.strictEqual(detail.status, 200);
         assert.strictEqual(getString(body, "status"), "accepted");
-        assert.strictEqual(getString(detailData, "runId"), runId);
-        assert.isAtLeast(getNumber(getObject(detailData, "counts"), "activity"), 1);
-      }),
-      20_000,
-    );
-
-    it.effect("indexes server-created runs for list and detail reads", () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
-        const layer = testServerLayer(cwd);
-        yield* Effect.gen(function* () {
-          const response = yield* createRunRequest(
-            "Create and index through the local server.\n",
-          );
-          const body = yield* responseJsonObject(response);
-          const runId = getString(body, "runId");
-
-          const listResponse = yield* HttpClient.get("/runs");
-          const detailResponse = yield* HttpClient.get(`/runs/${runId}`);
-          const listBody = yield* responseJsonObject(listResponse);
-          const detailBody = yield* responseJsonObject(detailResponse);
-          const listRun = getObjectFromArray(
-            getArray(getObject(listBody, "data"), "runs"),
-            0,
-          );
-          const detail = getObject(detailBody, "data");
-
-          assert.strictEqual(response.status, 202);
-          assert.strictEqual(listResponse.status, 200);
-          assert.strictEqual(detailResponse.status, 200);
-          assert.strictEqual(getString(listRun, "runId"), runId);
-          assert.strictEqual(getString(detail, "runId"), runId);
-          assert.isAtLeast(getNumber(getObject(detail, "counts"), "activity"), 1);
-        }).pipe(Effect.provide(layer));
+        assert.strictEqual(persistedInput, "Create through the local server.\n");
       }),
       20_000,
     );
@@ -234,9 +212,9 @@ describe("local run api http boundary", () => {
           assert.strictEqual(initialResponse.status, 200);
           assert.deepEqual(getArray(getObject(initialBody, "data"), "runs"), []);
 
-          const specPath = `${cwd}/external.md`;
-          yield* fs.writeFileString(specPath, "Created outside the server.\n");
-          const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+          const summary = yield* acceptFactoryRun(factoryCreateInput(), {
+            rootDirectory: cwd,
+          });
 
           const listResponse = yield* HttpClient.get("/runs");
           const detailResponse = yield* HttpClient.get(`/runs/${summary.runId}`);
@@ -252,10 +230,108 @@ describe("local run api http boundary", () => {
           assert.strictEqual(detailResponse.status, 200);
           assert.strictEqual(getString(listRun, "runId"), summary.runId);
           assert.strictEqual(getString(detail, "runId"), summary.runId);
-          assert.strictEqual(getString(detail, "state"), "succeeded");
+          assert.strictEqual(getString(detail, "state"), "running");
         }).pipe(Effect.provide(layer));
       }),
       20_000,
+    );
+
+    it.effect("returns factory graph, activity, agent activity, and artifact bodies", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          rootDirectory: cwd,
+        });
+        yield* continueServerRun(accepted.runId, { rootDirectory: cwd });
+        const layer = testServerLayer(cwd);
+
+        const graphResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/factory-graph`,
+        ).pipe(Effect.provide(layer));
+        const activityResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/activity`,
+        ).pipe(Effect.provide(layer));
+        const agentActivityResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/agents/agent-worker/activity`,
+        ).pipe(Effect.provide(layer));
+        const artifactResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/artifacts/worker-plan`,
+        ).pipe(Effect.provide(layer));
+        const graph = getObject(yield* responseJsonObject(graphResponse), "data");
+        const activity = getObject(
+          yield* responseJsonObject(activityResponse),
+          "data",
+        );
+        const agentActivity = getObject(
+          yield* responseJsonObject(agentActivityResponse),
+          "data",
+        );
+        const artifact = getObject(
+          yield* responseJsonObject(artifactResponse),
+          "data",
+        );
+
+        assert.strictEqual(graphResponse.status, 200);
+        assert.strictEqual(activityResponse.status, 200);
+        assert.strictEqual(agentActivityResponse.status, 200);
+        assert.strictEqual(artifactResponse.status, 200);
+        assert.strictEqual(getString(graph, "workflow"), "issueDelivery");
+        assert.lengthOf(getArray(graph, "agents"), 5);
+        assert.isAtLeast(getArray(activity, "activities").length, 1);
+        assert.deepEqual(
+          getArray(agentActivity, "activities").map((item) =>
+            getString(asJsonObject(item), "kind"),
+          ),
+          ["WORKER_STARTED", "WORKER_COMPLETED"],
+        );
+        assert.strictEqual(getString(artifact, "artifactId"), "worker-plan");
+        assert.include(getString(artifact, "body"), accepted.runId);
+      }),
+      20_000,
+    );
+
+    it.effect("returns typed diagnostics for missing agents and corrupt projections", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          rootDirectory: cwd,
+        });
+        const paths = yield* makeRunPaths(accepted.runId, { rootDirectory: cwd });
+        const layer = testServerLayer(cwd);
+
+        const missingAgentResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/agents/agent-missing/activity`,
+        ).pipe(Effect.provide(layer));
+        yield* fs.writeFileString(paths.factoryGraph, "{ not json");
+        const rebuiltGraphResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/factory-graph`,
+        ).pipe(Effect.provide(layer));
+        const missingAgentBody = yield* responseJsonObject(missingAgentResponse);
+        const rebuiltGraph = getObject(
+          yield* responseJsonObject(rebuiltGraphResponse),
+          "data",
+        );
+        const diagnostics = getArray(rebuiltGraph, "diagnostics");
+
+        assert.strictEqual(missingAgentResponse.status, 404);
+        assertApiError(missingAgentBody, "FactoryAgentNotFound", 404);
+        assert.strictEqual(rebuiltGraphResponse.status, 200);
+        assert.deepInclude(
+          diagnostics
+            .map(asJsonObject)
+            .filter((diagnostic) => typeof diagnostic["sourceId"] === "string")
+            .map((diagnostic) => ({
+              code: getString(diagnostic, "code"),
+              sourceId: getString(diagnostic, "sourceId"),
+            })),
+          {
+            code: "FactoryGraphIndexInvalid",
+            sourceId: "factory-graph.json",
+          },
+        );
+      }),
     );
 
     it.effect("refreshes external malformed run diagnostics on list and detail reads", () =>
@@ -392,12 +468,18 @@ describe("local run api http boundary", () => {
         const badRun = yield* HttpClient.get("/runs/not-a-run").pipe(
           Effect.provide(layer),
         );
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          rootDirectory: cwd,
+        });
+        const artifactLayer = testServerLayer(cwd);
         const badArtifact = yield* HttpClient.get(
-          "/runs/run-V7kP9sQ2xY/artifacts/..%2Fevents.jsonl",
-        ).pipe(Effect.provide(layer));
+          `/runs/${accepted.runId}/artifacts/..%2Fevents.jsonl`,
+        ).pipe(Effect.provide(artifactLayer));
         const unknownArtifact = yield* HttpClient.get(
-          "/runs/run-V7kP9sQ2xY/artifacts/report.json",
-        ).pipe(Effect.provide(layer));
+          `/runs/${accepted.runId}/artifacts/report.json`,
+        ).pipe(Effect.provide(artifactLayer));
         const post = yield* HttpClientRequest.post("/runs").pipe(
           HttpClient.execute,
           Effect.provide(layer),
@@ -432,9 +514,9 @@ describe("local run api http boundary", () => {
         assert.strictEqual(badRun.status, 400);
         assertApiError(badRunBody, "InvalidRunId", 400);
         assert.strictEqual(badArtifact.status, 404);
-        assertApiError(badArtifactBody, "ArtifactNotAllowed", 404);
+        assertApiError(badArtifactBody, "ArtifactNotFound", 404);
         assert.strictEqual(unknownArtifact.status, 404);
-        assertApiError(unknownArtifactBody, "ArtifactNotAllowed", 404);
+        assertApiError(unknownArtifactBody, "ArtifactNotFound", 404);
         assert.strictEqual(post.status, 400);
         assertApiError(postBody, "InvalidRequest", 400);
         assert.strictEqual(put.status, 405);
@@ -549,6 +631,24 @@ function createRunRequestFromPayload(payload: unknown) {
   );
 }
 
+function factoryCreateInput() {
+  return {
+    workflow: "issueDelivery",
+    workItem: {
+      description: "Deliver the server endpoint slice.",
+      externalRefs: [
+        {
+          id: "GAIA-67",
+          provider: "linear",
+          url: "https://linear.app/tskr/issue/GAIA-67",
+        },
+      ],
+      kind: "issue",
+      title: "Wire LocalGaiaServerApi factory endpoints",
+    },
+  } as const;
+}
+
 function pausingReviewer(release: Deferred.Deferred<void>): GaiaReviewer {
   const reviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
     "pausing-server-reviewer",
@@ -612,6 +712,14 @@ function getObjectFromArray(
   }
 
   throw new Error(`Expected array item ${index} to be an object.`);
+}
+
+function asJsonObject(input: unknown): Readonly<Record<string, unknown>> {
+  if (isJsonObject(input)) {
+    return input;
+  }
+
+  throw new Error("Expected value to be an object.");
 }
 
 function getString(input: Readonly<Record<string, unknown>>, key: string): string {
