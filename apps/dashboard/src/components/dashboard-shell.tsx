@@ -1627,14 +1627,19 @@ function EvidenceStudio({
   const artifactIds = nodeArtifacts.map((artifact) => artifact.artifactId);
   const artifactIdStrings = artifactIds.map((artifactId) => String(artifactId));
   const artifactKey = artifactIdStrings.join("|");
-  const [requestedArtifactId, setRequestedArtifactId] = React.useState<
-    string | undefined
+  const [requestedArtifact, setRequestedArtifact] = React.useState<
+    | {
+        readonly artifactId: string;
+        readonly nodeId: string;
+      }
+    | undefined
   >();
   const selectedArtifactId =
-    requestedArtifactId !== undefined &&
-    artifactIdStrings.includes(requestedArtifactId)
-      ? requestedArtifactId
-      : artifactIdStrings[0];
+    requestedArtifact !== undefined &&
+    requestedArtifact.nodeId === selectedNode?.id &&
+    artifactIdStrings.includes(requestedArtifact.artifactId)
+      ? requestedArtifact.artifactId
+      : undefined;
   const selectedRunId =
     selectedRun.id === "no-run-selected" ? "" : selectedRun.id;
   const artifactQuery = useQuery(
@@ -1646,10 +1651,12 @@ function EvidenceStudio({
   );
 
   React.useEffect(() => {
-    setRequestedArtifactId((current) =>
-      current !== undefined && artifactIdStrings.includes(current)
+    setRequestedArtifact((current) =>
+      current !== undefined &&
+      current.nodeId === selectedNode?.id &&
+      artifactIdStrings.includes(current.artifactId)
         ? current
-        : artifactIdStrings[0],
+        : undefined,
     );
   }, [artifactKey, selectedNode?.id]);
 
@@ -1764,7 +1771,12 @@ function EvidenceStudio({
                 artifactQuery.isPending && selectedArtifactId !== undefined
               }
               selectedArtifactId={selectedArtifactId}
-              onSelectArtifact={setRequestedArtifactId}
+              onSelectArtifact={(artifactId) =>
+                setRequestedArtifact({
+                  artifactId,
+                  nodeId: selectedNode.id,
+                })
+              }
             />
           </TabsContent>
           <TabsContent className="m-0 p-3" value="raw">

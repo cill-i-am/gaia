@@ -38,6 +38,10 @@ const queryFixture = vi.hoisted(
     artifactsByRunId: Record<string, Record<string, unknown>>;
     factoryActivitiesByRunId: Record<string, ReadonlyArray<unknown>>;
     factoryAgentActivitiesByRunId: Record<string, Record<string, ReadonlyArray<unknown>>>;
+    factoryArtifactBodyRequests: Array<{
+      readonly artifactId: string;
+      readonly runId: string;
+    }>;
     factoryArtifactBodiesByRunId: Record<string, Record<string, unknown>>;
     factoryArtifactsByRunId: Record<string, ReadonlyArray<unknown>>;
     factoryGraphsByRunId: Record<string, unknown>;
@@ -50,6 +54,7 @@ const queryFixture = vi.hoisted(
     artifactsByRunId: {},
     factoryActivitiesByRunId: {},
     factoryAgentActivitiesByRunId: {},
+    factoryArtifactBodyRequests: [],
     factoryArtifactBodiesByRunId: {},
     factoryArtifactsByRunId: {},
     factoryGraphsByRunId: {},
@@ -244,8 +249,13 @@ vi.mock("@/lib/local-gaia-query", () => ({
     readonly runId: string;
   }) => ({
     enabled: config.runId.length > 0 && config.artifactId.length > 0,
-    queryFn: () =>
-      Promise.resolve({
+    queryFn: () => {
+      queryFixture.factoryArtifactBodyRequests.push({
+        artifactId: config.artifactId,
+        runId: config.runId,
+      });
+
+      return Promise.resolve({
         data: queryFixture.factoryArtifactBodiesByRunId[config.runId]?.[
           config.artifactId
         ] ?? {
@@ -255,7 +265,8 @@ vi.mock("@/lib/local-gaia-query", () => ({
           runId: config.runId,
         },
         status: "success",
-      }),
+      });
+    },
     queryKey: [
       "local-gaia",
       "runs",
@@ -370,10 +381,20 @@ describe("DashboardShell Run Console", () => {
       fireEvent.mouseUp(artifactsTab);
       fireEvent.click(artifactsTab);
     }
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "Code summary" })).not.toHaveLength(0);
+      expect(screen.getAllByText("Select an artifact")).not.toHaveLength(0);
+    });
+    expect(queryFixture.factoryArtifactBodyRequests).toEqual([]);
+
     fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Code summary" })));
 
     await waitFor(() => {
       expect(screen.getAllByText("Worker summary body from the factory artifact endpoint.")).not.toHaveLength(0);
+    });
+    expect(queryFixture.factoryArtifactBodyRequests).toContainEqual({
+      artifactId,
+      runId,
     });
   });
 
@@ -1007,6 +1028,7 @@ function renderDashboardWithQueries(input: {
   readonly runsError?: DashboardGaiaClientError;
 }) {
   queryFixture.artifactsByRunId = input.artifactsByRunId ?? {};
+  queryFixture.factoryArtifactBodyRequests = [];
   const defaultFactoryData = defaultFactoryDataForRuns(input.runs);
   queryFixture.factoryActivitiesByRunId =
     input.factoryActivitiesByRunId ?? defaultFactoryData.activitiesByRunId;
