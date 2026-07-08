@@ -1,6 +1,11 @@
 import {
   CreateRunRequest,
+  FactoryActivitySuccessEnvelope,
+  FactoryAgentIdSchema,
+  FactoryArtifactListSuccessEnvelope,
   FactoryArtifactIdSchema,
+  FactoryArtifactSuccessEnvelope,
+  FactoryGraphSuccessEnvelope,
   FactoryRunDetailDto,
   FactoryRunSummaryDto,
   LocalGaiaServerApi,
@@ -34,7 +39,7 @@ export type DashboardGaiaClientError =
   | {
       readonly _tag: "DashboardGaiaParameterError";
       readonly cause: Schema.SchemaError;
-      readonly parameter: "artifactId" | "createRun" | "runId";
+      readonly parameter: "agentId" | "artifactId" | "createRun" | "runId";
     }
   | {
       readonly _tag: "DashboardGaiaTimeoutError";
@@ -59,6 +64,18 @@ const decodeLocalRunDetailSuccess = Schema.decodeUnknownEffect(
 );
 const decodeLocalRunArtifactSuccess = Schema.decodeUnknownEffect(
   LocalRunArtifactSuccessEnvelope,
+);
+const decodeFactoryGraphSuccess = Schema.decodeUnknownEffect(
+  FactoryGraphSuccessEnvelope,
+);
+const decodeFactoryActivitySuccess = Schema.decodeUnknownEffect(
+  FactoryActivitySuccessEnvelope,
+);
+const decodeFactoryArtifactListSuccess = Schema.decodeUnknownEffect(
+  FactoryArtifactListSuccessEnvelope,
+);
+const decodeFactoryArtifactSuccess = Schema.decodeUnknownEffect(
+  FactoryArtifactSuccessEnvelope,
 );
 
 export function healthFromDashboardGaiaClient(
@@ -108,6 +125,87 @@ export function getRunEventsFromDashboardGaiaClient(
     Effect.gen(function* () {
       const runId = yield* decodeRunIdParameter(config.runId);
       return yield* client.runs.getRunEvents({ params: { runId } });
+    }),
+  );
+}
+
+export function getFactoryGraphFromDashboardGaiaClient(
+  config: DashboardGaiaClientConfig & { readonly runId: string },
+) {
+  return withDashboardGaiaClient(config, (client) =>
+    Effect.gen(function* () {
+      const runId = yield* decodeRunIdParameter(config.runId);
+      const response = yield* client.runs.getFactoryGraph({
+        params: { runId },
+      });
+      return yield* decodeFactoryGraphSuccess(response);
+    }),
+  );
+}
+
+export function getFactoryRunActivityFromDashboardGaiaClient(
+  config: DashboardGaiaClientConfig & { readonly runId: string },
+) {
+  return withDashboardGaiaClient(config, (client) =>
+    Effect.gen(function* () {
+      const runId = yield* decodeRunIdParameter(config.runId);
+      const response = yield* client.runs.getRunActivity({
+        params: { runId },
+      });
+      return yield* decodeFactoryActivitySuccess(response);
+    }),
+  );
+}
+
+export function getFactoryAgentActivityFromDashboardGaiaClient(
+  config: DashboardGaiaClientConfig & {
+    readonly agentId: string;
+    readonly runId: string;
+  },
+) {
+  return withDashboardGaiaClient(config, (client) =>
+    Effect.gen(function* () {
+      const runId = yield* decodeRunIdParameter(config.runId);
+      const agentId = yield* decodeAgentIdParameter(config.agentId);
+      const response = yield* client.runs.getAgentActivity({
+        params: { agentId, runId },
+      });
+      return yield* decodeFactoryActivitySuccess(response);
+    }),
+  );
+}
+
+export function listFactoryArtifactsFromDashboardGaiaClient(
+  config: DashboardGaiaClientConfig & { readonly runId: string },
+) {
+  return withDashboardGaiaClient(config, (client) =>
+    Effect.gen(function* () {
+      const runId = yield* decodeRunIdParameter(config.runId);
+      const response = yield* client.runs.listRunArtifacts({
+        params: { runId },
+      });
+      return yield* decodeFactoryArtifactListSuccess(response);
+    }),
+  );
+}
+
+export function getFactoryArtifactFromDashboardGaiaClient(
+  config: DashboardGaiaClientConfig & {
+    readonly artifactId: string;
+    readonly runId: string;
+  },
+) {
+  return withDashboardGaiaClient(config, (client) =>
+    Effect.gen(function* () {
+      const runId = yield* decodeRunIdParameter(config.runId);
+      const artifactId = yield* decodeArtifactIdParameter(config.artifactId);
+      const response = yield* client.runs.getRunArtifact({
+        params: {
+          artifactId,
+          runId,
+        },
+      });
+      return yield* decodeFactoryArtifactSuccess(response);
     }),
   );
 }
@@ -199,6 +297,12 @@ function decodeRunIdParameter(input: string) {
   );
 }
 
+function decodeAgentIdParameter(input: string) {
+  return Schema.decodeUnknownEffect(FactoryAgentIdSchema)(input).pipe(
+    Effect.mapError((cause) => parameterError("agentId", cause)),
+  );
+}
+
 function decodeArtifactIdParameter(input: string) {
   return Schema.decodeUnknownEffect(FactoryArtifactIdSchema)(input).pipe(
     Effect.mapError((cause) => parameterError("artifactId", cause)),
@@ -272,7 +376,7 @@ function legacyEventTypeFromFactoryState(
 }
 
 function parameterError(
-  parameter: "artifactId" | "createRun" | "runId",
+  parameter: "agentId" | "artifactId" | "createRun" | "runId",
   cause: Schema.SchemaError,
 ): DashboardGaiaClientError {
   return {

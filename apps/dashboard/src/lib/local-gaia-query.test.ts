@@ -6,12 +6,22 @@ import { FetchHttpClient } from "effect/unstable/http";
 
 import {
   defaultLocalGaiaServerUrl,
+  getFactoryArtifactFromDashboardGaiaClient,
+  getFactoryGraphFromDashboardGaiaClient,
+  getFactoryRunActivityFromDashboardGaiaClient,
+  getFactoryAgentActivityFromDashboardGaiaClient,
   getRunArtifactFromDashboardGaiaClient,
   getRunFromDashboardGaiaClient,
+  listFactoryArtifactsFromDashboardGaiaClient,
   listRunsFromDashboardGaiaClient,
 } from "@/lib/local-gaia-client";
 import {
   localGaiaCreateRunMutationOptions,
+  localGaiaFactoryAgentActivityQueryOptions,
+  localGaiaFactoryArtifactQueryOptions,
+  localGaiaFactoryArtifactsQueryOptions,
+  localGaiaFactoryGraphQueryOptions,
+  localGaiaFactoryRunActivityQueryOptions,
   localGaiaHealthQueryOptions,
   localGaiaQueryKeys,
   localGaiaRunArtifactQueryOptions,
@@ -36,6 +46,28 @@ describe("local Gaia query options", () => {
       runId: "run-1234567890",
       serverUrl: "http://127.0.0.1:4321",
     });
+    const graph = localGaiaFactoryGraphQueryOptions({
+      runId: "run-1234567890",
+      serverUrl: "http://127.0.0.1:4321",
+    });
+    const runActivity = localGaiaFactoryRunActivityQueryOptions({
+      runId: "run-1234567890",
+      serverUrl: "http://127.0.0.1:4321",
+    });
+    const agentActivity = localGaiaFactoryAgentActivityQueryOptions({
+      agentId: "agent-worker",
+      runId: "run-1234567890",
+      serverUrl: "http://127.0.0.1:4321",
+    });
+    const artifactCatalog = localGaiaFactoryArtifactsQueryOptions({
+      runId: "run-1234567890",
+      serverUrl: "http://127.0.0.1:4321",
+    });
+    const factoryArtifact = localGaiaFactoryArtifactQueryOptions({
+      artifactId: "artifact-plan",
+      runId: "run-1234567890",
+      serverUrl: "http://127.0.0.1:4321",
+    });
 
     expect(health.queryKey).toEqual(localGaiaQueryKeys.health());
     expect(runs.queryKey).toEqual(localGaiaQueryKeys.runs());
@@ -47,9 +79,83 @@ describe("local Gaia query options", () => {
       "artifact",
       "report",
     ]);
+    expect(graph.queryKey).toEqual([
+      "local-gaia",
+      "runs",
+      "detail",
+      "run-1234567890",
+      "factory-graph",
+    ]);
+    expect(runActivity.queryKey).toEqual([
+      "local-gaia",
+      "runs",
+      "detail",
+      "run-1234567890",
+      "activity",
+    ]);
+    expect(agentActivity.queryKey).toEqual([
+      "local-gaia",
+      "runs",
+      "detail",
+      "run-1234567890",
+      "agents",
+      "agent-worker",
+      "activity",
+    ]);
+    expect(artifactCatalog.queryKey).toEqual([
+      "local-gaia",
+      "runs",
+      "detail",
+      "run-1234567890",
+      "artifacts",
+    ]);
+    expect(factoryArtifact.queryKey).toEqual([
+      "local-gaia",
+      "runs",
+      "detail",
+      "run-1234567890",
+      "artifacts",
+      "artifact-plan",
+    ]);
     expect(artifact.enabled).toBe(true);
+    expect(graph.enabled).toBe(true);
+    expect(runActivity.enabled).toBe(true);
+    expect(agentActivity.enabled).toBe(true);
+    expect(artifactCatalog.enabled).toBe(true);
+    expect(factoryArtifact.enabled).toBe(true);
     expect(typeof health.queryFn).toBe("function");
     expect(typeof runs.queryFn).toBe("function");
+  });
+
+  it("disables factory query options until identifiers parse", () => {
+    const graph = localGaiaFactoryGraphQueryOptions({
+      runId: "",
+      serverUrl: "http://127.0.0.1:4321",
+    });
+    const agentActivity = localGaiaFactoryAgentActivityQueryOptions({
+      agentId: "",
+      runId: "run-1234567890",
+      serverUrl: "http://127.0.0.1:4321",
+    });
+
+    expect(graph.enabled).toBe(false);
+    expect(graph.queryKey).toEqual([
+      "local-gaia",
+      "runs",
+      "detail",
+      "invalid-run-id",
+      "factory-graph",
+    ]);
+    expect(agentActivity.enabled).toBe(false);
+    expect(agentActivity.queryKey).toEqual([
+      "local-gaia",
+      "runs",
+      "detail",
+      "run-1234567890",
+      "agents",
+      "invalid-agent-id",
+      "activity",
+    ]);
   });
 
   it("decodes run lists through the shared HttpApi contract", async () => {
@@ -102,6 +208,114 @@ describe("local Gaia query options", () => {
       expect(error.error.status).toBe(404);
       expect(error.error.code).toBe("RunNotFound");
       expect(error.error.message).toBe("Run was not found.");
+    }
+  });
+
+  it("reads factory graph, activity, artifact catalog, and artifact body resources", async () => {
+    const requests: Array<string> = [];
+    const result = await Effect.runPromise(
+      Effect.all({
+        activity: getFactoryRunActivityFromDashboardGaiaClient({
+          runId: "run-1234567890",
+          serverUrl: "http://127.0.0.1:4321",
+        }),
+        agentActivity: getFactoryAgentActivityFromDashboardGaiaClient({
+          agentId: "agent-worker",
+          runId: "run-1234567890",
+          serverUrl: "http://127.0.0.1:4321",
+        }),
+        artifact: getFactoryArtifactFromDashboardGaiaClient({
+          artifactId: "artifact-plan",
+          runId: "run-1234567890",
+          serverUrl: "http://127.0.0.1:4321",
+        }),
+        artifacts: listFactoryArtifactsFromDashboardGaiaClient({
+          runId: "run-1234567890",
+          serverUrl: "http://127.0.0.1:4321",
+        }),
+        graph: getFactoryGraphFromDashboardGaiaClient({
+          runId: "run-1234567890",
+          serverUrl: "http://127.0.0.1:4321",
+        }),
+      }).pipe(
+        Effect.provide(
+          recordingFetchLayer(requests, (request) => {
+            switch (request.url) {
+              case "http://127.0.0.1:4321/runs/run-1234567890/factory-graph":
+                return jsonResponse(factoryGraphEnvelope);
+              case "http://127.0.0.1:4321/runs/run-1234567890/activity":
+              case "http://127.0.0.1:4321/runs/run-1234567890/agents/agent-worker/activity":
+                return jsonResponse(activityEnvelope);
+              case "http://127.0.0.1:4321/runs/run-1234567890/artifacts":
+                return jsonResponse(artifactListEnvelope);
+              case "http://127.0.0.1:4321/runs/run-1234567890/artifacts/artifact-plan":
+                return jsonResponse(artifactBodyEnvelope);
+              default:
+                return jsonResponse(
+                  {
+                    code: "EndpointNotFound",
+                    message: "Unexpected test URL.",
+                    recoverable: false,
+                    status: 404,
+                  },
+                  { status: 404 },
+                );
+            }
+          }),
+        ),
+      ),
+    );
+
+    expect(requests).toEqual([
+      "GET http://127.0.0.1:4321/runs/run-1234567890/activity",
+      "GET http://127.0.0.1:4321/runs/run-1234567890/agents/agent-worker/activity",
+      "GET http://127.0.0.1:4321/runs/run-1234567890/artifacts/artifact-plan",
+      "GET http://127.0.0.1:4321/runs/run-1234567890/artifacts",
+      "GET http://127.0.0.1:4321/runs/run-1234567890/factory-graph",
+    ]);
+    expect(result.graph.data.agents[0]?.id).toBe("agent-worker");
+    expect(result.activity.data.activities[0]?.activityId).toBe(
+      "activity-worker",
+    );
+    expect(result.agentActivity.data.activities[0]?.agentId).toBe(
+      "agent-worker",
+    );
+    expect(result.artifacts.data.artifacts[0]?.artifactId).toBe(
+      "artifact-plan",
+    );
+    expect(result.artifact.data.body).toContain("Plan body");
+  });
+
+  it("maps factory client API failures into a tagged dashboard query error", async () => {
+    const error = await Effect.runPromise(
+      getFactoryAgentActivityFromDashboardGaiaClient({
+        agentId: "missing-agent",
+        runId: "run-1234567890",
+        serverUrl: "http://127.0.0.1:4321",
+      }).pipe(
+        Effect.provide(
+          recordingFetchLayer([], () =>
+            jsonResponse(
+              {
+                code: "FactoryAgentNotFound",
+                message: "Factory agent was not found.",
+                pathSegment: "missing-agent",
+                recoverable: false,
+                runId: "run-1234567890",
+                status: 404,
+              },
+              { status: 404 },
+            ),
+          ),
+        ),
+        Effect.flip,
+      ),
+    );
+
+    expect(error._tag).toBe("DashboardGaiaApiError");
+    if (error._tag === "DashboardGaiaApiError") {
+      expect(error.error.status).toBe(404);
+      expect(error.error.code).toBe("FactoryAgentNotFound");
     }
   });
 
@@ -301,3 +515,92 @@ function effectQueryFailure(error: unknown) {
 
   return undefined;
 }
+
+const factoryGraphEnvelope = {
+  data: {
+    agents: [
+      {
+        artifactCount: 1,
+        id: "agent-worker",
+        role: "worker",
+        state: "running",
+        title: "Worker",
+        workItemId: "work-root",
+      },
+    ],
+    diagnostics: [],
+    edges: [],
+    linkedArtifacts: [
+      {
+        artifactId: "artifact-plan",
+        contentType: "text/markdown",
+        createdAt: "2026-07-08T12:00:00.000Z",
+        kind: "plan",
+        label: "Worker plan",
+        ownerAgentId: "agent-worker",
+        visibility: "run",
+      },
+    ],
+    runId: "run-1234567890",
+    version: 1,
+    workflow: "issueDelivery",
+    workItems: [
+      {
+        externalRefs: [],
+        id: "work-root",
+        kind: "issue",
+        title: "FactoryGraph dashboard model",
+      },
+    ],
+  },
+  status: "success",
+} as const;
+
+const activityEnvelope = {
+  data: {
+    activities: [
+      {
+        activityId: "activity-worker",
+        agentId: "agent-worker",
+        artifactIds: ["artifact-plan"],
+        kind: "worker.progress",
+        label: "Worker produced a plan",
+        runId: "run-1234567890",
+        sequence: 1,
+        state: "running",
+        timestamp: "2026-07-08T12:00:00.000Z",
+        workItemId: "work-root",
+      },
+    ],
+    runId: "run-1234567890",
+  },
+  status: "success",
+} as const;
+
+const artifactListEnvelope = {
+  data: {
+    artifacts: [
+      {
+        artifactId: "artifact-plan",
+        contentType: "text/markdown",
+        createdAt: "2026-07-08T12:00:00.000Z",
+        kind: "plan",
+        label: "Worker plan",
+        ownerAgentId: "agent-worker",
+        visibility: "run",
+      },
+    ],
+    runId: "run-1234567890",
+  },
+  status: "success",
+} as const;
+
+const artifactBodyEnvelope = {
+  data: {
+    artifactId: "artifact-plan",
+    body: "# Plan body\n",
+    contentType: "text/markdown",
+    runId: "run-1234567890",
+  },
+  status: "success",
+} as const;
