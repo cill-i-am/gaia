@@ -17,6 +17,8 @@ import {
 export type LocalRunReadDiagnosticCode =
   | "ArtifactNotAllowed"
   | "ArtifactNotFound"
+  | "FactoryAgentNotFound"
+  | "FactoryGraphNotFound"
   | "InvalidRunDirectory"
   | "InvalidRunId"
   | "RunHasNoEvents"

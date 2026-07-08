@@ -200,6 +200,24 @@ export {
   type LocalRunSummary,
 } from "./run-read-api.js";
 export {
+  listFactoryRunArtifacts,
+  readFactoryAgentActivity,
+  readFactoryGraph,
+  readFactoryRunActivity,
+  readFactoryRunArtifact,
+} from "./factory-run-read-api.js";
+export {
+  rebuildFactoryRunIndexes,
+  readFactoryRunIndexes,
+  writeInitialFactoryRunIndexes,
+  type FactoryActivityIndex,
+  type FactoryArtifactBody,
+  type FactoryArtifactIndex,
+  type FactoryGraphProjection,
+  type FactoryProjectionIndexes,
+  type FactoryRunCreateInput,
+} from "./factory-run-store.js";
+export {
   makeLocalRunReadIndex,
   type LocalRunReadIndex,
 } from "./run-read-index.js";
