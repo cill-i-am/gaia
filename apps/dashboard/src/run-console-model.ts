@@ -6,7 +6,12 @@ import type {
 
 import type { DashboardGaiaClientError } from "@/lib/local-gaia-client";
 
-export type RunConsoleHealth = "checking" | "offline" | "online";
+export type RunConsoleHealth =
+  | "checking"
+  | "offline"
+  | "online"
+  | "reconnecting"
+  | "stale";
 
 export type RunConsoleRun = {
   readonly artifactCount: number;
@@ -28,6 +33,7 @@ export type RunConsoleRun = {
 
 export type RunConsoleState = {
   readonly diagnostics: ReadonlyArray<typeof LocalRunReadDiagnosticDto.Type>;
+  readonly hasStaleData: boolean;
   readonly health: RunConsoleHealth;
   readonly isEmpty: boolean;
   readonly isError: boolean;
@@ -39,29 +45,50 @@ export type RunConsoleState = {
 
 export function buildRunConsoleState(input: {
   readonly healthError: unknown;
+  readonly healthFetching?: boolean;
   readonly healthPending: boolean;
   readonly healthStatus: string | undefined;
   readonly runs: ReadonlyArray<typeof LocalRunSummaryDto.Type>;
   readonly runsDiagnostics: ReadonlyArray<typeof LocalRunReadDiagnosticDto.Type>;
   readonly runsError: unknown;
+  readonly runsFetching?: boolean;
   readonly runsPending: boolean;
   readonly serverUrl: string;
 }): RunConsoleState {
   const runs = input.runs.map(toRunConsoleRun);
-  const health = healthFromQuerySnapshot(input);
-  const isLoading = input.healthPending || input.runsPending;
   const failure = dashboardQueryFailure(input.healthError ?? input.runsError);
-  const isError = failure !== undefined || health === "offline";
+  const hasStaleData = runs.length > 0 && failure !== undefined;
+  const health = healthFromQuerySnapshot({
+    failure,
+    hasRuns: runs.length > 0,
+    healthFetching: input.healthFetching ?? false,
+    healthPending: input.healthPending,
+    healthStatus: input.healthStatus,
+    runsFetching: input.runsFetching ?? false,
+    runsPending: input.runsPending,
+  });
+  const isLoading = input.healthPending || input.runsPending;
+  const isError =
+    !hasStaleData && (failure !== undefined || health === "offline");
 
   return {
     diagnostics: input.runsDiagnostics,
+    hasStaleData,
     health,
-    isEmpty: !isLoading && !isError && runs.length === 0,
+    isEmpty:
+      !isLoading &&
+      !isError &&
+      runs.length === 0 &&
+      input.runsDiagnostics.length === 0,
     isError,
     isLoading,
     message: connectionMessage({
       failure,
+      hasStaleData,
       healthStatus: input.healthStatus,
+      isFetching:
+        (input.healthFetching ?? false) || (input.runsFetching ?? false),
+      partialDiagnosticCount: input.runsDiagnostics.length,
       runCount: runs.length,
     }),
     runs,
@@ -143,11 +170,23 @@ function toRunConsoleRun(
 }
 
 function healthFromQuerySnapshot(input: {
+  readonly failure: DashboardGaiaClientError | undefined;
+  readonly hasRuns: boolean;
+  readonly healthFetching: boolean;
   readonly healthPending: boolean;
   readonly healthStatus: string | undefined;
+  readonly runsFetching: boolean;
   readonly runsPending: boolean;
 }) {
+  if (input.failure !== undefined && input.hasRuns) {
+    return "stale";
+  }
+
   if (input.healthStatus === "ok") {
+    if (input.healthFetching || input.runsFetching) {
+      return "reconnecting";
+    }
+
     return "online";
   }
 
@@ -160,10 +199,25 @@ function healthFromQuerySnapshot(input: {
 
 function connectionMessage(input: {
   readonly failure: DashboardGaiaClientError | undefined;
+  readonly hasStaleData: boolean;
   readonly healthStatus: string | undefined;
+  readonly isFetching: boolean;
+  readonly partialDiagnosticCount: number;
   readonly runCount: number;
 }) {
+  if (input.hasStaleData && input.failure !== undefined) {
+    return `Showing ${runCountLabel(input.runCount, "cached")}; latest refresh failed: ${failureSummary(input.failure)}`;
+  }
+
   if (input.healthStatus === "ok") {
+    if (input.isFetching && input.runCount > 0) {
+      return `Refreshing local server; showing ${runCountLabel(input.runCount, "cached")}.`;
+    }
+
+    if (input.partialDiagnosticCount > 0) {
+      return `${runCountLabel(input.runCount)} loaded with ${diagnosticCountLabel(input.partialDiagnosticCount)}.`;
+    }
+
     return `${input.runCount} runs loaded through LocalGaiaServerApi.`;
   }
 
@@ -180,6 +234,37 @@ function connectionMessage(input: {
   }
 
   return "Checking local server.";
+}
+
+function runCountLabel(count: number, modifier?: string) {
+  const noun = count === 1 ? "run" : "runs";
+  return modifier === undefined
+    ? `${count} ${noun}`
+    : `${count} ${modifier} ${noun}`;
+}
+
+function diagnosticCountLabel(count: number) {
+  return count === 1 ? "1 diagnostic" : `${count} diagnostics`;
+}
+
+function failureSummary(failure: DashboardGaiaClientError) {
+  if (failure._tag === "DashboardGaiaApiError") {
+    return apiErrorMessage(failure.error);
+  }
+
+  if (failure._tag === "DashboardGaiaTimeoutError") {
+    return "request timed out.";
+  }
+
+  if (failure._tag === "DashboardGaiaHttpClientError") {
+    return "server is not reachable.";
+  }
+
+  if (failure._tag === "DashboardGaiaParameterError") {
+    return `invalid ${failure.parameter} parameter.`;
+  }
+
+  return "unexpected dashboard client error.";
 }
 
 function apiErrorMessage(error: typeof LocalRunApiErrorEnvelope.Type) {
