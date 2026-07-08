@@ -1,8 +1,13 @@
 import {
   CreateRunRequest,
   FactoryArtifactIdSchema,
+  FactoryRunDetailDto,
+  FactoryRunSummaryDto,
   LocalGaiaServerApi,
   LocalRunApiErrorEnvelope,
+  LocalRunArtifactSuccessEnvelope,
+  LocalRunDetailSuccessEnvelope,
+  LocalRunListSuccessEnvelope,
   RunIdSchema,
 } from "@gaia/core";
 import { Cause, Effect, Option, Schema } from "effect";
@@ -46,6 +51,16 @@ export type DashboardGaiaClientConfig = {
 
 export const DashboardGaiaFetchClientLive = FetchHttpClient.layer;
 
+const decodeLocalRunListSuccess = Schema.decodeUnknownEffect(
+  LocalRunListSuccessEnvelope,
+);
+const decodeLocalRunDetailSuccess = Schema.decodeUnknownEffect(
+  LocalRunDetailSuccessEnvelope,
+);
+const decodeLocalRunArtifactSuccess = Schema.decodeUnknownEffect(
+  LocalRunArtifactSuccessEnvelope,
+);
+
 export function healthFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig,
 ) {
@@ -58,7 +73,16 @@ export function listRunsFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig,
 ) {
   return withDashboardGaiaClient(config, (client) =>
-    client.runs.listRuns(undefined),
+    Effect.gen(function* () {
+      const response = yield* client.runs.listRuns(undefined);
+      return yield* decodeLocalRunListSuccess({
+        data: {
+          diagnostics: response.data.diagnostics,
+          runs: response.data.runs.map(legacyRunSummaryFromFactoryRun),
+        },
+        status: "success",
+      });
+    }),
   );
 }
 
@@ -68,7 +92,11 @@ export function getRunFromDashboardGaiaClient(
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
       const runId = yield* decodeRunIdParameter(config.runId);
-      return yield* client.runs.getRun({ params: { runId } });
+      const response = yield* client.runs.getRun({ params: { runId } });
+      return yield* decodeLocalRunDetailSuccess({
+        data: legacyRunSummaryFromFactoryRun(response.data),
+        status: "success",
+      });
     }),
   );
 }
@@ -99,7 +127,21 @@ export function getRunArtifactFromDashboardGaiaClient(
           artifactId,
           runId,
         },
-      });
+      }).pipe(
+        Effect.flatMap((response) =>
+          decodeLocalRunArtifactSuccess({
+            data: {
+              artifactName: response.data.artifactId,
+              body: response.data.body,
+              contentType: response.data.contentType,
+              runId: response.data.runId,
+            },
+            status: "success",
+          }).pipe(
+            Effect.mapError((cause) => parameterError("artifactId", cause)),
+          ),
+        ),
+      );
     }),
   );
 }
@@ -161,6 +203,72 @@ function decodeArtifactIdParameter(input: string) {
   return Schema.decodeUnknownEffect(FactoryArtifactIdSchema)(input).pipe(
     Effect.mapError((cause) => parameterError("artifactId", cause)),
   );
+}
+
+function legacyRunSummaryFromFactoryRun(
+  run: typeof FactoryRunSummaryDto.Type | typeof FactoryRunDetailDto.Type,
+) {
+  return {
+    artifacts: [],
+    createdAt: run.createdAt,
+    eventCount: run.counts.activity,
+    latestEventType: legacyEventTypeFromFactoryState(run.state),
+    runId: run.runId,
+    state: legacyRunStateFromFactoryState(run.state),
+    status: legacyStatusFromFactoryState(run.state),
+    updatedAt: run.updatedAt,
+  };
+}
+
+function legacyStatusFromFactoryState(state: typeof FactoryRunSummaryDto.Type.state) {
+  switch (state) {
+    case "succeeded":
+      return "completed";
+    case "canceled":
+    case "failed":
+      return "failed";
+    case "blocked":
+    case "pending":
+    case "running":
+    case "unknown":
+      return "running";
+  }
+}
+
+function legacyRunStateFromFactoryState(
+  state: typeof FactoryRunSummaryDto.Type.state,
+) {
+  switch (state) {
+    case "succeeded":
+      return "completed";
+    case "canceled":
+    case "failed":
+      return "failed";
+    case "blocked":
+    case "running":
+      return "runningWorker";
+    case "pending":
+    case "unknown":
+      return "created";
+  }
+}
+
+function legacyEventTypeFromFactoryState(
+  state: typeof FactoryRunSummaryDto.Type.state,
+) {
+  switch (state) {
+    case "succeeded":
+      return "REPORT_COMPLETED";
+    case "canceled":
+    case "failed":
+      return "RUN_FAILED";
+    case "blocked":
+    case "running":
+      return "WORKER_STARTED";
+    case "pending":
+    case "unknown":
+      return "RUN_CREATED";
+  }
 }
 
 function parameterError(

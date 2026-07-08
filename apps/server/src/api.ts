@@ -1,5 +1,12 @@
 import {
   CreateRunAcceptedResponse,
+  FactoryArtifactBodyDto,
+  FactoryArtifactSuccessEnvelope,
+  FactoryRunDetailDto,
+  FactoryRunDetailSuccessEnvelope,
+  FactoryRunListDto,
+  FactoryRunListSuccessEnvelope,
+  FactoryRunSummaryDto,
   HealthResponse,
   LocalGaiaServerApi,
   LocalRunApiBadRequest,
@@ -9,16 +16,17 @@ import {
   LocalRunApiMethodNotAllowed,
   LocalRunApiNotFound,
   LocalRunApiUnprocessable,
-  LocalRunArtifactSuccessEnvelope,
-  LocalRunDetailSuccessEnvelope,
   LocalRunEventsSuccessEnvelope,
-  LocalRunListPartialEnvelope,
-  LocalRunListSuccessEnvelope,
   type LocalRunApiError,
   LocalRunReadDiagnosticDto,
   type RunEvent,
 } from "@gaia/core";
-import type { LocalRunReadDiagnostic } from "@gaia/runtime/run-read-api";
+import type {
+  LocalRunArtifact,
+  LocalRunList,
+  LocalRunReadDiagnostic,
+  LocalRunSummary,
+} from "@gaia/runtime/run-read-api";
 import {
   readLocalRunArtifact,
   readLocalRunEvents,
@@ -28,7 +36,7 @@ import {
   makeLocalRunReadIndex,
   type LocalRunReadIndex,
 } from "@gaia/runtime";
-import { Cause, Context, Effect, FileSystem, Layer, Path, Stream } from "effect";
+import { Cause, Context, Effect, FileSystem, Layer, Path, Schema, Stream } from "effect";
 import type { Generator } from "effect/unstable/http/Etag";
 import type { HttpPlatform } from "effect/unstable/http/HttpPlatform";
 import {
@@ -67,6 +75,11 @@ export class LocalServerConfig extends Context.Service<
   LocalServerConfigValue
 >()("@gaia/server/LocalServerConfig") {}
 
+const decodeFactoryRunSummary = Schema.decodeUnknownSync(FactoryRunSummaryDto);
+const decodeFactoryRunDetail = Schema.decodeUnknownSync(FactoryRunDetailDto);
+const decodeFactoryRunList = Schema.decodeUnknownSync(FactoryRunListDto);
+const decodeFactoryArtifactBody = Schema.decodeUnknownSync(FactoryArtifactBodyDto);
+
 export const HealthLive = HttpApiBuilder.group(
   LocalGaiaServerApi,
   "health",
@@ -99,17 +112,9 @@ export const RunsLive = HttpApiBuilder.group(
             Effect.mapError((error) => internalApiError(error)),
           );
           const runs = yield* identity.runIndex.list;
-          if (runs.diagnostics.length === 0) {
-            return LocalRunListSuccessEnvelope.make({
-              data: runs,
-              status: "success",
-            });
-          }
-
-          return LocalRunListPartialEnvelope.make({
-            data: runs,
-            diagnostics: runs.diagnostics,
-            status: "partial",
+          return FactoryRunListSuccessEnvelope.make({
+            data: factoryRunListFromLocalRuns(runs),
+            status: "success",
           });
         }),
       )
@@ -174,8 +179,8 @@ export const RunsLive = HttpApiBuilder.group(
             identity.runIndex.read(params.runId),
           );
           if (exit._tag === "Success") {
-            return LocalRunDetailSuccessEnvelope.make({
-              data: exit.value,
+            return FactoryRunDetailSuccessEnvelope.make({
+              data: factoryRunDetailFromLocalRun(exit.value),
               status: "success",
             });
           }
@@ -276,8 +281,8 @@ export const RunsLive = HttpApiBuilder.group(
             }),
           );
           if (exit._tag === "Success") {
-            return LocalRunArtifactSuccessEnvelope.make({
-              data: exit.value,
+            return FactoryArtifactSuccessEnvelope.make({
+              data: factoryArtifactBodyFromLocalArtifact(exit.value),
               status: "success",
             });
           }
@@ -327,6 +332,83 @@ export function makeLocalGaiaServerLayer(
   }).pipe(
     Layer.provide(configLayer),
   );
+}
+
+function factoryRunListFromLocalRuns(
+  runs: LocalRunList,
+): typeof FactoryRunListDto.Type {
+  return decodeFactoryRunList({
+    diagnostics: runs.diagnostics.map((diagnostic) => ({
+      code: diagnostic.code,
+      message: diagnostic.message,
+      recoverable: diagnostic.recoverable,
+      ...(diagnostic.pathSegment === undefined
+        ? {}
+        : { sourceId: diagnostic.pathSegment }),
+    })),
+    runs: runs.runs.map(factoryRunSummaryFromLocalRun),
+  });
+}
+
+function factoryRunDetailFromLocalRun(
+  run: LocalRunSummary,
+): typeof FactoryRunDetailDto.Type {
+  return decodeFactoryRunDetail({
+    ...factoryRunSummaryFromLocalRun(run),
+    urls: {
+      activity: `/runs/${run.runId}/activity`,
+      artifacts: `/runs/${run.runId}/artifacts`,
+      factoryGraph: `/runs/${run.runId}/factory-graph`,
+      run: `/runs/${run.runId}`,
+    },
+  });
+}
+
+function factoryRunSummaryFromLocalRun(
+  run: LocalRunSummary,
+): typeof FactoryRunSummaryDto.Type {
+  return decodeFactoryRunSummary({
+    counts: {
+      activity: run.eventCount,
+      agents: 0,
+      artifacts: run.artifacts.length,
+      workItems: 1,
+    },
+    createdAt: run.createdAt,
+    rootWorkItem: {
+      id: `work-item-${run.runId}`,
+      kind: "issue",
+      title: `Run ${run.runId}`,
+    },
+    runId: run.runId,
+    state: factoryAgentStateFromLocalStatus(run.status),
+    updatedAt: run.updatedAt,
+    workflow: "issueDelivery",
+  });
+}
+
+function factoryArtifactBodyFromLocalArtifact(
+  artifact: LocalRunArtifact,
+): typeof FactoryArtifactBodyDto.Type {
+  return decodeFactoryArtifactBody({
+    artifactId: artifact.artifactName,
+    body: artifact.body,
+    contentType: artifact.contentType,
+    runId: artifact.runId,
+  });
+}
+
+function factoryAgentStateFromLocalStatus(
+  status: LocalRunSummary["status"],
+) {
+  switch (status) {
+    case "completed":
+      return "succeeded";
+    case "failed":
+      return "failed";
+    case "running":
+      return "running";
+  }
 }
 
 function structuredServerErrors<E, R>(

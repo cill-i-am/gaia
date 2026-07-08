@@ -117,7 +117,7 @@ describe("local Gaia query options", () => {
           recordingFetchLayer(requests, () =>
             jsonResponse({
               data: {
-                artifactName: "report",
+                artifactId: "report",
                 body: "# Report\n\nAll checks passed.\n",
                 contentType: "text/markdown",
                 runId: "run-1234567890",

@@ -40,6 +40,10 @@ describe("LocalGaiaServerApi contract", () => {
       "200",
       "500",
     ]);
+    assertJsonSchemaRef(
+      paths["/runs"]?.get?.responses["200"],
+      "#/components/schemas/FactoryRunListSuccessEnvelope",
+    );
     assert.deepEqual(responseStatuses(paths["/runs"]?.post?.responses), [
       "202",
       "400",
@@ -55,6 +59,10 @@ describe("LocalGaiaServerApi contract", () => {
       "422",
       "500",
     ]);
+    assertJsonSchemaRef(
+      paths["/runs/{runId}"]?.get?.responses["200"],
+      "#/components/schemas/FactoryRunDetailSuccessEnvelope",
+    );
     assert.deepEqual(
       responseStatuses(paths["/runs/{runId}/factory-graph"]?.get?.responses),
       ["200", "400", "404", "422", "500"],
@@ -76,6 +84,10 @@ describe("LocalGaiaServerApi contract", () => {
         paths["/runs/{runId}/artifacts/{artifactId}"]?.get?.responses,
       ),
       ["200", "400", "404", "422", "500"],
+    );
+    assertJsonSchemaRef(
+      paths["/runs/{runId}/artifacts/{artifactId}"]?.get?.responses["200"],
+      "#/components/schemas/FactoryArtifactSuccessEnvelope",
     );
     assertJsonSchemaRef(
       paths["/runs/{runId}"]?.get?.responses["400"],

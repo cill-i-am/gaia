@@ -440,7 +440,7 @@ export const RunsGroup = HttpApiGroup.make("runs")
   .add(
     HttpApiEndpoint.get("listRuns", "/runs", {
       error: LocalRunInternalErrorResponse,
-      success: LocalRunListResponse,
+      success: FactoryRunListSuccessEnvelope,
     }),
   )
   .add(
@@ -456,7 +456,7 @@ export const RunsGroup = HttpApiGroup.make("runs")
       params: {
         runId: RunIdSchema,
       },
-      success: LocalRunDetailSuccessEnvelope,
+      success: FactoryRunDetailSuccessEnvelope,
     }),
   )
   .add(
@@ -521,7 +521,7 @@ export const RunsGroup = HttpApiGroup.make("runs")
         artifactId: FactoryArtifactIdSchema,
         runId: RunIdSchema,
       },
-      success: LocalRunArtifactSuccessEnvelope,
+      success: FactoryArtifactSuccessEnvelope,
     }),
   );
 
