@@ -583,7 +583,7 @@ function RunComparePanel({
 
   return (
     <section
-      className="shrink-0 border-b bg-background px-3 py-2"
+      className="shrink-0 border-b bg-background px-3 py-2 lg:max-h-[34svh] lg:overflow-y-auto"
       data-testid="run-compare-panel"
     >
       <div className="flex flex-col gap-3">
