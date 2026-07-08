@@ -1,7 +1,12 @@
 import {
+  FactoryActivitySuccessEnvelope,
   CreateRunAcceptedResponse,
-  FactoryArtifactBodyDto,
+  FactoryArtifactListSuccessEnvelope,
   FactoryArtifactSuccessEnvelope,
+  FactoryGraphDto,
+  FactoryGraphSuccessEnvelope,
+  FactoryActivityListDto,
+  FactoryArtifactListDto,
   FactoryRunDetailDto,
   FactoryRunDetailSuccessEnvelope,
   FactoryRunListDto,
@@ -22,15 +27,10 @@ import {
   type RunEvent,
 } from "@gaia/core";
 import type {
-  LocalRunArtifact,
   LocalRunList,
   LocalRunReadDiagnostic,
-  LocalRunSummary,
 } from "@gaia/runtime/run-read-api";
-import {
-  readLocalRunArtifact,
-  readLocalRunEvents,
-} from "@gaia/runtime/run-read-api";
+import { readLocalRunEvents } from "@gaia/runtime/run-read-api";
 import {
   GaiaRuntimeError,
   makeLocalRunReadIndex,
@@ -47,11 +47,18 @@ import {
 } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import {
-  acceptServerRun,
+  acceptFactoryRun,
   continueServerRun,
   type ServerRunAcceptance,
   type ServerWorkflowOptions,
 } from "@gaia/runtime/server-workflows";
+import {
+  listFactoryRunArtifacts,
+  readFactoryAgentActivity,
+  readFactoryGraph,
+  readFactoryRunActivity,
+  readFactoryRunArtifact,
+} from "@gaia/runtime/factory-run-read-api";
 import {
   appendServerLog,
   serverMetadataFromAddress,
@@ -78,7 +85,6 @@ export class LocalServerConfig extends Context.Service<
 const decodeFactoryRunSummary = Schema.decodeUnknownSync(FactoryRunSummaryDto);
 const decodeFactoryRunDetail = Schema.decodeUnknownSync(FactoryRunDetailDto);
 const decodeFactoryRunList = Schema.decodeUnknownSync(FactoryRunListDto);
-const decodeFactoryArtifactBody = Schema.decodeUnknownSync(FactoryArtifactBodyDto);
 
 export const HealthLive = HttpApiBuilder.group(
   LocalGaiaServerApi,
@@ -112,8 +118,9 @@ export const RunsLive = HttpApiBuilder.group(
             Effect.mapError((error) => internalApiError(error)),
           );
           const runs = yield* identity.runIndex.list;
+          const factoryRuns = yield* factoryRunListFromLocalRuns(identity, runs);
           return FactoryRunListSuccessEnvelope.make({
-            data: factoryRunListFromLocalRuns(runs),
+            data: factoryRuns,
             status: "success",
           });
         }),
@@ -135,10 +142,7 @@ export const RunsLive = HttpApiBuilder.group(
             Effect.mapError((error) => activeRunConflictApiError(error)),
           );
           const acceptedExit = yield* Effect.exit(
-            acceptServerRun({
-              specMarkdown: payload.workItem.description,
-              title: payload.workItem.title,
-            }, {
+            acceptFactoryRun(payload, {
               ...identity.workflowOptions,
               rootDirectory: identity.rootDirectory,
             }),
@@ -175,12 +179,10 @@ export const RunsLive = HttpApiBuilder.group(
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
           yield* identity.runIndex.refreshRun(params.runId);
-          const exit = yield* Effect.exit(
-            identity.runIndex.read(params.runId),
-          );
+          const exit = yield* Effect.exit(readFactoryRunProjection(identity, params.runId));
           if (exit._tag === "Success") {
             return FactoryRunDetailSuccessEnvelope.make({
-              data: factoryRunDetailFromLocalRun(exit.value),
+              data: factoryRunDetailFromProjection(exit.value),
               status: "success",
             });
           }
@@ -188,52 +190,77 @@ export const RunsLive = HttpApiBuilder.group(
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
         }),
       )
-      .handle("getFactoryGraph", () =>
-        Effect.fail(
-          LocalRunApiNotFound.make({
-            code: "FactoryGraphNotFound",
-            message:
-              "Factory graph projection is not available until the runtime projection slice is implemented.",
-            recoverable: true,
-            status: 404,
-          }),
-        ),
+      .handle("getFactoryGraph", ({ params }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(
+            readFactoryGraph(params.runId, {
+              rootDirectory: identity.rootDirectory,
+            }),
+          );
+          if (exit._tag === "Success") {
+            return FactoryGraphSuccessEnvelope.make({
+              data: exit.value,
+              status: "success",
+            });
+          }
+
+          return yield* Effect.fail(readApiErrorFromCause(exit.cause));
+        }),
       )
-      .handle("getRunActivity", () =>
-        Effect.fail(
-          LocalRunApiNotFound.make({
-            code: "EndpointNotFound",
-            message:
-              "Factory activity projection is not available until the runtime projection slice is implemented.",
-            recoverable: true,
-            status: 404,
-          }),
-        ),
+      .handle("getRunActivity", ({ params }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(
+            readFactoryRunActivity(params.runId, {
+              rootDirectory: identity.rootDirectory,
+            }),
+          );
+          if (exit._tag === "Success") {
+            return FactoryActivitySuccessEnvelope.make({
+              data: exit.value,
+              status: "success",
+            });
+          }
+
+          return yield* Effect.fail(readApiErrorFromCause(exit.cause));
+        }),
       )
       .handle("getAgentActivity", ({ params }) =>
-        Effect.fail(
-          LocalRunApiNotFound.make({
-            code: "FactoryAgentNotFound",
-            message:
-              "Factory agent activity projection is not available until the runtime projection slice is implemented.",
-            pathSegment: params.agentId,
-            recoverable: true,
-            runId: params.runId,
-            status: 404,
-          }),
-        ),
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(
+            readFactoryAgentActivity(params.runId, params.agentId, {
+              rootDirectory: identity.rootDirectory,
+            }),
+          );
+          if (exit._tag === "Success") {
+            return FactoryActivitySuccessEnvelope.make({
+              data: exit.value,
+              status: "success",
+            });
+          }
+
+          return yield* Effect.fail(readApiErrorFromCause(exit.cause));
+        }),
       )
       .handle("listRunArtifacts", ({ params }) =>
-        Effect.fail(
-          LocalRunApiNotFound.make({
-            code: "EndpointNotFound",
-            message:
-              "Factory artifact catalog is not available until the runtime projection slice is implemented.",
-            recoverable: true,
-            runId: params.runId,
-            status: 404,
-          }),
-        ),
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(
+            listFactoryRunArtifacts(params.runId, {
+              rootDirectory: identity.rootDirectory,
+            }),
+          );
+          if (exit._tag === "Success") {
+            return FactoryArtifactListSuccessEnvelope.make({
+              data: exit.value,
+              status: "success",
+            });
+          }
+
+          return yield* Effect.fail(readApiErrorFromCause(exit.cause));
+        }),
       )
       .handle("getRunEvents", ({ params }) =>
         Effect.gen(function* () {
@@ -276,13 +303,13 @@ export const RunsLive = HttpApiBuilder.group(
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
           const exit = yield* Effect.exit(
-            readLocalRunArtifact(params.runId, params.artifactId, {
+            readFactoryRunArtifact(params.runId, params.artifactId, {
               rootDirectory: identity.rootDirectory,
             }),
           );
           if (exit._tag === "Success") {
             return FactoryArtifactSuccessEnvelope.make({
-              data: factoryArtifactBodyFromLocalArtifact(exit.value),
+              data: exit.value,
               status: "success",
             });
           }
@@ -334,81 +361,194 @@ export function makeLocalGaiaServerLayer(
   );
 }
 
+type FactoryRunProjection = {
+  readonly activity: typeof FactoryActivityListDto.Type;
+  readonly artifacts: typeof FactoryArtifactListDto.Type;
+  readonly graph: typeof FactoryGraphDto.Type;
+};
+type FactoryListDiagnostic = typeof FactoryGraphDto.Type["diagnostics"][number];
+
 function factoryRunListFromLocalRuns(
+  identity: LocalServerConfigValue,
   runs: LocalRunList,
-): typeof FactoryRunListDto.Type {
-  return decodeFactoryRunList({
-    diagnostics: runs.diagnostics.map((diagnostic) => ({
-      code: diagnostic.code,
-      message: diagnostic.message,
-      recoverable: diagnostic.recoverable,
-      ...(diagnostic.pathSegment === undefined
-        ? {}
-        : { sourceId: diagnostic.pathSegment }),
-    })),
-    runs: runs.runs.map(factoryRunSummaryFromLocalRun),
+): Effect.Effect<typeof FactoryRunListDto.Type, never, FileSystem.FileSystem | Path.Path> {
+  return Effect.gen(function* () {
+    const summaries: Array<typeof FactoryRunSummaryDto.Type> = [];
+    const diagnostics: Array<FactoryListDiagnostic> = runs.diagnostics.map(
+      factoryListDiagnosticFromLocalRead,
+    );
+
+    for (const run of runs.runs) {
+      const projectionExit = yield* Effect.exit(
+        readFactoryRunProjection(identity, run.runId),
+      );
+      if (projectionExit._tag === "Success") {
+        summaries.push(factoryRunSummaryFromProjection(projectionExit.value));
+        continue;
+      }
+
+      diagnostics.push(
+        factoryListDiagnosticFromApiDiagnostic(
+          causeToDiagnostic(projectionExit.cause),
+          run.runId,
+        ),
+      );
+    }
+
+    return decodeFactoryRunList({
+      diagnostics,
+      runs: summaries,
+    });
   });
 }
 
-function factoryRunDetailFromLocalRun(
-  run: LocalRunSummary,
-): typeof FactoryRunDetailDto.Type {
-  return decodeFactoryRunDetail({
-    ...factoryRunSummaryFromLocalRun(run),
-    urls: {
-      activity: `/runs/${run.runId}/activity`,
-      artifacts: `/runs/${run.runId}/artifacts`,
-      factoryGraph: `/runs/${run.runId}/factory-graph`,
-      run: `/runs/${run.runId}`,
-    },
+function readFactoryRunProjection(
+  identity: LocalServerConfigValue,
+  runId: string,
+): Effect.Effect<FactoryRunProjection, unknown, FileSystem.FileSystem | Path.Path> {
+  return Effect.gen(function* () {
+    const options = { rootDirectory: identity.rootDirectory };
+    const graph = yield* readFactoryGraph(runId, options);
+    const activity = yield* readFactoryRunActivity(runId, options);
+    const artifacts = yield* listFactoryRunArtifacts(runId, options);
+    if (graph.workItems[0] === undefined) {
+      return yield* Effect.fail({
+        code: "FactoryGraphNotFound",
+        message: "Factory graph projection does not contain a root work item.",
+        recoverable: false,
+        runId: graph.runId,
+      } satisfies LocalRunReadDiagnostic);
+    }
+
+    return { activity, artifacts, graph };
   });
 }
 
-function factoryRunSummaryFromLocalRun(
-  run: LocalRunSummary,
-): typeof FactoryRunSummaryDto.Type {
-  return decodeFactoryRunSummary({
-    counts: {
-      activity: run.eventCount,
-      agents: 0,
-      artifacts: run.artifacts.length,
-      workItems: 1,
-    },
-    createdAt: run.createdAt,
-    rootWorkItem: {
-      id: `work-item-${run.runId}`,
-      kind: "issue",
-      title: `Run ${run.runId}`,
-    },
-    runId: run.runId,
-    state: factoryAgentStateFromLocalStatus(run.status),
-    updatedAt: run.updatedAt,
-    workflow: "issueDelivery",
-  });
-}
-
-function factoryArtifactBodyFromLocalArtifact(
-  artifact: LocalRunArtifact,
-): typeof FactoryArtifactBodyDto.Type {
-  return decodeFactoryArtifactBody({
-    artifactId: artifact.artifactName,
-    body: artifact.body,
-    contentType: artifact.contentType,
-    runId: artifact.runId,
-  });
-}
-
-function factoryAgentStateFromLocalStatus(
-  status: LocalRunSummary["status"],
+function factoryListDiagnosticFromLocalRead(
+  diagnostic: LocalRunReadDiagnostic,
 ) {
-  switch (status) {
-    case "completed":
-      return "succeeded";
-    case "failed":
-      return "failed";
-    case "running":
-      return "running";
+  return {
+    code: diagnostic.code,
+    message: diagnostic.message,
+    recoverable: diagnostic.recoverable,
+    ...(diagnostic.pathSegment === undefined
+      ? {}
+      : { sourceId: diagnostic.pathSegment }),
+    ...(diagnostic.runId === undefined ? {} : { sourceId: diagnostic.runId }),
+  };
+}
+
+function factoryListDiagnosticFromApiDiagnostic(
+  diagnostic: ApiDiagnostic,
+  fallbackSourceId: string,
+) {
+  return {
+    code: diagnostic.code,
+    message: diagnostic.message,
+    recoverable: diagnostic.recoverable,
+    sourceId:
+      diagnostic.runId ??
+      diagnostic.pathSegment ??
+      diagnostic.artifactName ??
+      fallbackSourceId,
+  };
+}
+
+function factoryRunSummaryFromProjection(
+  projection: FactoryRunProjection,
+): typeof FactoryRunSummaryDto.Type {
+  const rootWorkItem = projection.graph.workItems[0];
+  if (rootWorkItem === undefined) {
+    throw new Error("Factory graph must contain a root work item.");
   }
+
+  return decodeFactoryRunSummary({
+    activeAgent: activeFactoryAgentSummary(projection),
+    counts: {
+      activity: projection.activity.activities.length,
+      agents: projection.graph.agents.length,
+      artifacts: projection.artifacts.artifacts.length,
+      workItems: projection.graph.workItems.length,
+    },
+    createdAt:
+      projection.activity.activities[0]?.timestamp ?? new Date(0).toISOString(),
+    rootWorkItem: {
+      id: rootWorkItem.id,
+      kind: rootWorkItem.kind,
+      title: rootWorkItem.title,
+    },
+    runId: projection.graph.runId,
+    state: factoryRunState(projection),
+    updatedAt:
+      projection.activity.activities.at(-1)?.timestamp ?? new Date(0).toISOString(),
+    workflow: projection.graph.workflow,
+  });
+}
+
+function factoryRunDetailFromProjection(
+  projection: FactoryRunProjection,
+): typeof FactoryRunDetailDto.Type {
+  const summary = factoryRunSummaryFromProjection(projection);
+  return decodeFactoryRunDetail({
+    ...summary,
+    urls: {
+      activity: `/runs/${projection.graph.runId}/activity`,
+      artifacts: `/runs/${projection.graph.runId}/artifacts`,
+      factoryGraph: `/runs/${projection.graph.runId}/factory-graph`,
+      run: `/runs/${projection.graph.runId}`,
+    },
+  });
+}
+
+function activeFactoryAgentSummary(projection: FactoryRunProjection) {
+  const runningAgent = projection.graph.agents.find(
+    (agent) => agent.state === "running",
+  );
+  const latestAgentId = projection.activity.activities
+    .slice()
+    .reverse()
+    .find((activity) => activity.agentId !== undefined)?.agentId;
+  const latestAgent = projection.graph.agents.find(
+    (agent) => agent.id === latestAgentId,
+  );
+  const fallbackAgent = projection.graph.agents.find(
+    (agent) => agent.role === "orchestrator",
+  );
+  const agent = runningAgent ?? latestAgent ?? fallbackAgent;
+  if (agent === undefined) {
+    return undefined;
+  }
+
+  return {
+    id: agent.id,
+    role: agent.role,
+    state: agent.state,
+    ...(agent.subState === undefined ? {} : { subState: agent.subState }),
+    title: agent.title,
+  };
+}
+
+function factoryRunState(projection: FactoryRunProjection) {
+  if (projection.graph.agents.some((agent) => agent.state === "failed")) {
+    return "failed";
+  }
+  if (projection.graph.agents.some((agent) => agent.state === "canceled")) {
+    return "canceled";
+  }
+  if (projection.graph.agents.some((agent) => agent.state === "blocked")) {
+    return "blocked";
+  }
+  if (
+    projection.graph.agents.some(
+      (agent) => agent.role === "orchestrator" && agent.state === "succeeded",
+    )
+  ) {
+    return "succeeded";
+  }
+  if (projection.graph.agents.some((agent) => agent.state === "running")) {
+    return "running";
+  }
+  return "pending";
 }
 
 function structuredServerErrors<E, R>(
