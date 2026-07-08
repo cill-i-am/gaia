@@ -7,6 +7,19 @@ import {
   OpenApi,
 } from "effect/unstable/httpapi";
 import { EventTypeSchema, RunEvent, RunStateSchema } from "./events.js";
+import {
+  FactoryActivityListDto,
+  FactoryAgentIdSchema,
+  FactoryArtifactBodyDto,
+  FactoryArtifactIdSchema,
+  FactoryArtifactListDto,
+  FactoryExternalRefDto,
+  FactoryGraphDto,
+  FactoryRunDetailDto,
+  FactoryRunListDto,
+  FactoryRunSummaryDto,
+  FactoryWorkflowIdSchema,
+} from "./factory-graph.js";
 import { RunIdSchema } from "./run-id.js";
 
 export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
@@ -14,6 +27,8 @@ export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "ArtifactNotAllowed",
   "ArtifactNotFound",
   "EndpointNotFound",
+  "FactoryAgentNotFound",
+  "FactoryGraphNotFound",
   "InvalidRunDirectory",
   "InvalidRunId",
   "InvalidRequest",
@@ -35,6 +50,8 @@ const NotFoundDiagnosticCodeSchema = Schema.Literals([
   "ArtifactNotAllowed",
   "ArtifactNotFound",
   "EndpointNotFound",
+  "FactoryAgentNotFound",
+  "FactoryGraphNotFound",
   "RunNotFound",
 ] as const);
 const MethodNotAllowedDiagnosticCodeSchema = Schema.Literals([
@@ -70,18 +87,23 @@ const diagnosticFields = {
   runId: Schema.optionalKey(RunIdSchema),
 };
 
+export const ServerHostSchema = Schema.Literal("127.0.0.1");
+
+/** Legacy local run status retained for existing non-product dashboard consumers. */
 export const LocalRunStatusSchema = Schema.Literals([
   "completed",
   "failed",
   "running",
 ] as const);
 
+/** Legacy artifact content types retained for existing non-product dashboard consumers. */
 export const LocalRunArtifactContentTypeSchema = Schema.Literals([
   "application/json",
   "text/markdown",
   "text/plain",
 ] as const);
 
+/** Legacy artifact identifiers retained for existing non-product dashboard consumers. */
 export const LocalRunArtifactIdSchema = Schema.Literals([
   "input",
   "worker-plan",
@@ -103,8 +125,6 @@ export const LocalRunArtifactIdSchema = Schema.Literals([
   "snapshots",
 ] as const).annotate({ identifier: "LocalRunArtifactId" });
 
-export const ServerHostSchema = Schema.Literal("127.0.0.1");
-
 export class LocalRunReadDiagnosticDto extends Schema.Class<LocalRunReadDiagnosticDto>(
   "LocalRunReadDiagnosticDto",
 )({
@@ -116,6 +136,7 @@ export class LocalRunReadDiagnosticDto extends Schema.Class<LocalRunReadDiagnost
   runId: Schema.optionalKey(RunIdSchema),
 }) {}
 
+/** Legacy run summary retained until downstream dashboard/server slices migrate. */
 export class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
   "LocalRunSummaryDto",
 )({
@@ -131,6 +152,7 @@ export class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
   updatedAt: Schema.NonEmptyString,
 }) {}
 
+/** Legacy run list retained until downstream dashboard/server slices migrate. */
 export class LocalRunListDto extends Schema.Class<LocalRunListDto>(
   "LocalRunListDto",
 )({
@@ -138,6 +160,7 @@ export class LocalRunListDto extends Schema.Class<LocalRunListDto>(
   runs: Schema.Array(LocalRunSummaryDto),
 }) {}
 
+/** Legacy internal event read retained but excluded from product OpenAPI. */
 export class LocalRunEventsDto extends Schema.Class<LocalRunEventsDto>(
   "LocalRunEventsDto",
 )({
@@ -145,6 +168,7 @@ export class LocalRunEventsDto extends Schema.Class<LocalRunEventsDto>(
   runId: RunIdSchema,
 }) {}
 
+/** Legacy artifact body retained until first-class artifact metadata is wired downstream. */
 export class LocalRunArtifactDto extends Schema.Class<LocalRunArtifactDto>(
   "LocalRunArtifactDto",
 )({
@@ -176,10 +200,38 @@ export class LocalRunDetailSuccessEnvelope extends Schema.Class<LocalRunDetailSu
   status: Schema.Literal("success"),
 }) {}
 
-export class LocalRunEventsSuccessEnvelope extends Schema.Class<LocalRunEventsSuccessEnvelope>(
-  "LocalRunEventsSuccessEnvelope",
+export class FactoryRunListSuccessEnvelope extends Schema.Class<FactoryRunListSuccessEnvelope>(
+  "FactoryRunListSuccessEnvelope",
 )({
-  data: LocalRunEventsDto,
+  data: FactoryRunListDto,
+  status: Schema.Literal("success"),
+}) {}
+
+export class FactoryRunDetailSuccessEnvelope extends Schema.Class<FactoryRunDetailSuccessEnvelope>(
+  "FactoryRunDetailSuccessEnvelope",
+)({
+  data: FactoryRunDetailDto,
+  status: Schema.Literal("success"),
+}) {}
+
+export class FactoryGraphSuccessEnvelope extends Schema.Class<FactoryGraphSuccessEnvelope>(
+  "FactoryGraphSuccessEnvelope",
+)({
+  data: FactoryGraphDto,
+  status: Schema.Literal("success"),
+}) {}
+
+export class FactoryActivitySuccessEnvelope extends Schema.Class<FactoryActivitySuccessEnvelope>(
+  "FactoryActivitySuccessEnvelope",
+)({
+  data: FactoryActivityListDto,
+  status: Schema.Literal("success"),
+}) {}
+
+export class FactoryArtifactListSuccessEnvelope extends Schema.Class<FactoryArtifactListSuccessEnvelope>(
+  "FactoryArtifactListSuccessEnvelope",
+)({
+  data: FactoryArtifactListDto,
   status: Schema.Literal("success"),
 }) {}
 
@@ -187,6 +239,20 @@ export class LocalRunArtifactSuccessEnvelope extends Schema.Class<LocalRunArtifa
   "LocalRunArtifactSuccessEnvelope",
 )({
   data: LocalRunArtifactDto,
+  status: Schema.Literal("success"),
+}) {}
+
+export class FactoryArtifactSuccessEnvelope extends Schema.Class<FactoryArtifactSuccessEnvelope>(
+  "FactoryArtifactSuccessEnvelope",
+)({
+  data: FactoryArtifactBodyDto,
+  status: Schema.Literal("success"),
+}) {}
+
+export class LocalRunEventsSuccessEnvelope extends Schema.Class<LocalRunEventsSuccessEnvelope>(
+  "LocalRunEventsSuccessEnvelope",
+)({
+  data: LocalRunEventsDto,
   status: Schema.Literal("success"),
 }) {}
 
@@ -271,18 +337,18 @@ export const LocalRunReadErrorResponse = [
   LocalRunApiInternalServerErrorResponse,
 ] as const;
 
-export const LocalRunCreateErrorResponse = [
-  LocalRunApiBadRequestResponse,
-  LocalRunApiMethodNotAllowedResponse,
-  LocalRunApiConflictResponse,
-  LocalRunApiUnprocessableResponse,
-  LocalRunApiInternalServerErrorResponse,
-] as const;
-
 export const LocalRunStreamErrorResponse = [
   LocalRunApiBadRequestResponse,
   LocalRunApiNotFoundResponse,
   LocalRunApiMethodNotAllowedResponse,
+  LocalRunApiUnprocessableResponse,
+  LocalRunApiInternalServerErrorResponse,
+] as const;
+
+export const LocalRunCreateErrorResponse = [
+  LocalRunApiBadRequestResponse,
+  LocalRunApiMethodNotAllowedResponse,
+  LocalRunApiConflictResponse,
   LocalRunApiUnprocessableResponse,
   LocalRunApiInternalServerErrorResponse,
 ] as const;
@@ -322,11 +388,24 @@ export class HealthResponse extends Schema.Class<HealthResponse>(
   workspaceRoot: Schema.NonEmptyString,
 }) {}
 
+/** Work item body for the fresh issue delivery run create command. */
+export class CreateRunIssueWorkItemRequest extends Schema.Class<CreateRunIssueWorkItemRequest>(
+  "CreateRunIssueWorkItemRequest",
+)({
+  description: Schema.NonEmptyString,
+  externalRefs: Schema.optionalKey(Schema.Array(FactoryExternalRefDto)),
+  kind: Schema.Literal("issue"),
+  title: Schema.NonEmptyString,
+}, {
+  parseOptions: { onExcessProperty: "error" },
+}) {}
+
+/** Fresh factory-run create body for the issueDelivery workflow. */
 export class CreateRunRequest extends Schema.Class<CreateRunRequest>(
   "CreateRunRequest",
 )({
-  specMarkdown: Schema.NonEmptyString,
-  title: Schema.optionalKey(Schema.NonEmptyString),
+  workflow: FactoryWorkflowIdSchema,
+  workItem: CreateRunIssueWorkItemRequest,
 }, {
   parseOptions: { onExcessProperty: "error" },
 }) {}
@@ -338,8 +417,9 @@ export class CreateRunAcceptedResponse extends Schema.Class<CreateRunAcceptedRes
   runId: RunIdSchema,
   status: Schema.Literal("accepted"),
   urls: Schema.Struct({
-    eventStream: Schema.NonEmptyString,
-    events: Schema.NonEmptyString,
+    activity: Schema.NonEmptyString,
+    artifacts: Schema.NonEmptyString,
+    factoryGraph: Schema.NonEmptyString,
     run: Schema.NonEmptyString,
   }),
 }) {}
@@ -380,13 +460,22 @@ export const RunsGroup = HttpApiGroup.make("runs")
     }),
   )
   .add(
+    HttpApiEndpoint.get("getFactoryGraph", "/runs/:runId/factory-graph", {
+      error: LocalRunReadErrorResponse,
+      params: {
+        runId: RunIdSchema,
+      },
+      success: FactoryGraphSuccessEnvelope,
+    }),
+  )
+  .add(
     HttpApiEndpoint.get("getRunEvents", "/runs/:runId/events", {
       error: LocalRunReadErrorResponse,
       params: {
         runId: RunIdSchema,
       },
       success: LocalRunEventsSuccessEnvelope,
-    }),
+    }).annotate(OpenApi.Exclude, true),
   )
   .add(
     HttpApiEndpoint.get("streamRunEvents", "/runs/:runId/events/stream", {
@@ -395,13 +484,41 @@ export const RunsGroup = HttpApiGroup.make("runs")
         runId: RunIdSchema,
       },
       success: RunEventStreamResponse,
+    }).annotate(OpenApi.Exclude, true),
+  )
+  .add(
+    HttpApiEndpoint.get("getRunActivity", "/runs/:runId/activity", {
+      error: LocalRunReadErrorResponse,
+      params: {
+        runId: RunIdSchema,
+      },
+      success: FactoryActivitySuccessEnvelope,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("getAgentActivity", "/runs/:runId/agents/:agentId/activity", {
+      error: LocalRunReadErrorResponse,
+      params: {
+        agentId: FactoryAgentIdSchema,
+        runId: RunIdSchema,
+      },
+      success: FactoryActivitySuccessEnvelope,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("listRunArtifacts", "/runs/:runId/artifacts", {
+      error: LocalRunReadErrorResponse,
+      params: {
+        runId: RunIdSchema,
+      },
+      success: FactoryArtifactListSuccessEnvelope,
     }),
   )
   .add(
     HttpApiEndpoint.get("getRunArtifact", "/runs/:runId/artifacts/:artifactId", {
       error: LocalRunReadErrorResponse,
       params: {
-        artifactId: LocalRunArtifactIdSchema,
+        artifactId: FactoryArtifactIdSchema,
         runId: RunIdSchema,
       },
       success: LocalRunArtifactSuccessEnvelope,

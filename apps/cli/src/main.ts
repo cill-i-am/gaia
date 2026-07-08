@@ -1147,7 +1147,7 @@ function renderServerRunAccepted(summary: ServerRunAcceptedSummary) {
     `accepted: ${summary.runId}`,
     `server: ${summary.serverUrl}`,
     `run: ${summary.urls.run}`,
-    `events: ${summary.urls.events}`,
+    `activity: ${summary.urls.activity}`,
   ].join("\n");
 }
 

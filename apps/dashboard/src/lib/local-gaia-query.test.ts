@@ -136,11 +136,11 @@ describe("local Gaia query options", () => {
     expect(result.data.body).toContain("All checks passed.");
   });
 
-  it("rejects unknown artifact identifiers before issuing a request", async () => {
+  it("rejects empty artifact identifiers before issuing a request", async () => {
     const requests: Array<string> = [];
     const error = await Effect.runPromise(
       getRunArtifactFromDashboardGaiaClient({
-        artifactId: "not-allowlisted",
+        artifactId: "",
         runId: "run-1234567890",
         serverUrl: "http://127.0.0.1:4321",
       }).pipe(
@@ -219,8 +219,9 @@ describe("local Gaia query options", () => {
       runId: "run-1234567890",
       status: "accepted",
       urls: {
-        eventStream: "/runs/run-1234567890/events/stream",
-        events: "/runs/run-1234567890/events",
+        activity: "/runs/run-1234567890/activity",
+        artifacts: "/runs/run-1234567890/artifacts",
+        factoryGraph: "/runs/run-1234567890/factory-graph",
         run: "/runs/run-1234567890",
       },
     };
@@ -249,7 +250,16 @@ describe("local Gaia query options", () => {
     });
 
     expect(requests).toEqual(["POST http://127.0.0.1:4321/runs"]);
-    expect(bodies).toEqual([createRunInput]);
+    expect(bodies).toEqual([
+      {
+        workflow: "issueDelivery",
+        workItem: {
+          description: createRunInput.specMarkdown,
+          kind: "issue",
+          title: createRunInput.title,
+        },
+      },
+    ]);
     expect(result).toEqual(createRunResponse);
   });
 });

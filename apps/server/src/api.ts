@@ -130,7 +130,10 @@ export const RunsLive = HttpApiBuilder.group(
             Effect.mapError((error) => activeRunConflictApiError(error)),
           );
           const acceptedExit = yield* Effect.exit(
-            acceptServerRun(payload, {
+            acceptServerRun({
+              specMarkdown: payload.workItem.description,
+              title: payload.workItem.title,
+            }, {
               ...identity.workflowOptions,
               rootDirectory: identity.rootDirectory,
             }),
@@ -155,8 +158,9 @@ export const RunsLive = HttpApiBuilder.group(
             runId: accepted.runId,
             status: "accepted",
             urls: {
-              eventStream: `/runs/${accepted.runId}/events/stream`,
-              events: `/runs/${accepted.runId}/events`,
+              activity: `/runs/${accepted.runId}/activity`,
+              artifacts: `/runs/${accepted.runId}/artifacts`,
+              factoryGraph: `/runs/${accepted.runId}/factory-graph`,
               run: `/runs/${accepted.runId}`,
             },
           });
@@ -178,6 +182,53 @@ export const RunsLive = HttpApiBuilder.group(
 
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
         }),
+      )
+      .handle("getFactoryGraph", () =>
+        Effect.fail(
+          LocalRunApiNotFound.make({
+            code: "FactoryGraphNotFound",
+            message:
+              "Factory graph projection is not available until the runtime projection slice is implemented.",
+            recoverable: true,
+            status: 404,
+          }),
+        ),
+      )
+      .handle("getRunActivity", () =>
+        Effect.fail(
+          LocalRunApiNotFound.make({
+            code: "EndpointNotFound",
+            message:
+              "Factory activity projection is not available until the runtime projection slice is implemented.",
+            recoverable: true,
+            status: 404,
+          }),
+        ),
+      )
+      .handle("getAgentActivity", ({ params }) =>
+        Effect.fail(
+          LocalRunApiNotFound.make({
+            code: "FactoryAgentNotFound",
+            message:
+              "Factory agent activity projection is not available until the runtime projection slice is implemented.",
+            pathSegment: params.agentId,
+            recoverable: true,
+            runId: params.runId,
+            status: 404,
+          }),
+        ),
+      )
+      .handle("listRunArtifacts", ({ params }) =>
+        Effect.fail(
+          LocalRunApiNotFound.make({
+            code: "EndpointNotFound",
+            message:
+              "Factory artifact catalog is not available until the runtime projection slice is implemented.",
+            recoverable: true,
+            runId: params.runId,
+            status: 404,
+          }),
+        ),
       )
       .handle("getRunEvents", ({ params }) =>
         Effect.gen(function* () {
@@ -377,6 +428,8 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
     case "ArtifactNotAllowed":
     case "ArtifactNotFound":
     case "EndpointNotFound":
+    case "FactoryAgentNotFound":
+    case "FactoryGraphNotFound":
     case "RunNotFound":
       return 404;
     case "MethodNotAllowed":
@@ -473,6 +526,18 @@ function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
         code: "EndpointNotFound",
         status: 404,
       });
+    case "FactoryAgentNotFound":
+      return LocalRunApiNotFound.make({
+        ...diagnostic,
+        code: "FactoryAgentNotFound",
+        status: 404,
+      });
+    case "FactoryGraphNotFound":
+      return LocalRunApiNotFound.make({
+        ...diagnostic,
+        code: "FactoryGraphNotFound",
+        status: 404,
+      });
     case "RunNotFound":
       return LocalRunApiNotFound.make({
         ...diagnostic,
@@ -553,6 +618,18 @@ function apiError(
       return LocalRunApiNotFound.make({
         ...diagnostic,
         code: "EndpointNotFound",
+        status: 404,
+      });
+    case "FactoryAgentNotFound":
+      return LocalRunApiNotFound.make({
+        ...diagnostic,
+        code: "FactoryAgentNotFound",
+        status: 404,
+      });
+    case "FactoryGraphNotFound":
+      return LocalRunApiNotFound.make({
+        ...diagnostic,
+        code: "FactoryGraphNotFound",
         status: 404,
       });
     case "RunNotFound":
@@ -671,6 +748,8 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
     case "ArtifactNotAllowed":
     case "ArtifactNotFound":
     case "EndpointNotFound":
+    case "FactoryAgentNotFound":
+    case "FactoryGraphNotFound":
     case "RunNotFound":
     case "InternalServerError":
       return internalApiError(diagnostic);

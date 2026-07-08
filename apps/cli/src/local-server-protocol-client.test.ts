@@ -39,7 +39,12 @@ describe("local server protocol client", () => {
       const requests: Array<string> = [];
       const bodies: Array<unknown> = [];
       const payload = yield* CreateRunRequest.makeEffect({
-        specMarkdown: "Create through the typed client.\n",
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Create through the typed client.\n",
+          kind: "issue",
+          title: "Typed client request",
+        },
       });
       const result = yield* createRunFromLocalServerProtocol({
         payload,
@@ -54,8 +59,9 @@ describe("local server protocol client", () => {
               runId: "run-1234567890",
               status: "accepted",
               urls: {
-                eventStream: "/runs/run-1234567890/events/stream",
-                events: "/runs/run-1234567890/events",
+                activity: "/runs/run-1234567890/activity",
+                artifacts: "/runs/run-1234567890/artifacts",
+                factoryGraph: "/runs/run-1234567890/factory-graph",
                 run: "/runs/run-1234567890",
               },
             },
@@ -66,7 +72,16 @@ describe("local server protocol client", () => {
 
       assert.strictEqual(result.runId, "run-1234567890");
       assert.deepEqual(requests, ["POST http://127.0.0.1:4321/runs"]);
-      assert.deepEqual(bodies, [{ specMarkdown: "Create through the typed client.\n" }]);
+      assert.deepEqual(bodies, [
+        {
+          workflow: "issueDelivery",
+          workItem: {
+            description: "Create through the typed client.\n",
+            kind: "issue",
+            title: "Typed client request",
+          },
+        },
+      ]);
     }),
   );
 
@@ -110,7 +125,7 @@ describe("local server protocol client", () => {
         serverUrl: "http://127.0.0.1:4321",
       }).pipe(Effect.flip);
       const invalidArtifact = yield* readLocalRunArtifactFromServer({
-        artifactName: "../events.jsonl",
+        artifactName: "",
         runId: "run-1234567890",
         serverUrl: "http://127.0.0.1:4321",
       }).pipe(Effect.flip);

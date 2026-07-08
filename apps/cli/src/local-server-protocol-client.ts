@@ -1,7 +1,7 @@
 import {
   CreateRunRequest,
+  FactoryArtifactIdSchema,
   LocalGaiaServerApi,
-  LocalRunArtifactIdSchema,
   type LocalRunApiError,
   RunIdSchema,
 } from "@gaia/core";
@@ -142,7 +142,7 @@ function decodeRunIdParameter(input: string) {
 }
 
 function decodeArtifactIdParameter(input: string) {
-  return Schema.decodeUnknownEffect(LocalRunArtifactIdSchema)(input).pipe(
+  return Schema.decodeUnknownEffect(FactoryArtifactIdSchema)(input).pipe(
     Effect.mapError((cause) => protocolParameterError("artifactId", cause)),
   );
 }

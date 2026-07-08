@@ -135,7 +135,14 @@ export function createRunFromServer(input: {
         }),
       ),
     );
-    const payload = yield* CreateRunRequest.makeEffect({ specMarkdown }).pipe(
+    const payload = yield* CreateRunRequest.makeEffect({
+      workflow: "issueDelivery",
+      workItem: {
+        description: specMarkdown,
+        kind: "issue",
+        title: path.basename(input.specPath),
+      },
+    }).pipe(
       Effect.mapError((cause) =>
         makeRuntimeError({
           cause,

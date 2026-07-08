@@ -1,8 +1,8 @@
 import {
   CreateRunRequest,
+  FactoryArtifactIdSchema,
   LocalGaiaServerApi,
   LocalRunApiErrorEnvelope,
-  LocalRunArtifactIdSchema,
   RunIdSchema,
 } from "@gaia/core";
 import { Cause, Effect, Option, Schema } from "effect";
@@ -113,8 +113,12 @@ export function createRunFromDashboardGaiaClient(
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
       const payload = yield* CreateRunRequest.makeEffect({
-        specMarkdown: config.specMarkdown,
-        ...(config.title === undefined ? {} : { title: config.title }),
+        workflow: "issueDelivery",
+        workItem: {
+          description: config.specMarkdown,
+          kind: "issue",
+          title: config.title ?? "Dashboard issue delivery run",
+        },
       }).pipe(
         Effect.mapError((cause) =>
           parameterError("createRun", cause),
@@ -154,7 +158,7 @@ function decodeRunIdParameter(input: string) {
 }
 
 function decodeArtifactIdParameter(input: string) {
-  return Schema.decodeUnknownEffect(LocalRunArtifactIdSchema)(input).pipe(
+  return Schema.decodeUnknownEffect(FactoryArtifactIdSchema)(input).pipe(
     Effect.mapError((cause) => parameterError("artifactId", cause)),
   );
 }

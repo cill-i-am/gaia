@@ -170,17 +170,17 @@ describe("local run api http boundary", () => {
         );
         const body = yield* responseJsonObject(response);
         const runId = getString(body, "runId");
-        const events = yield* HttpClient.get(`/runs/${runId}/events`).pipe(
+        const detail = yield* HttpClient.get(`/runs/${runId}`).pipe(
           Effect.provide(layer),
         );
-        const eventsBody = yield* responseJsonObject(events);
-        const eventItems = getArray(getObject(eventsBody, "data"), "events");
-        const firstEvent = getObjectFromArray(eventItems, 0);
+        const detailBody = yield* responseJsonObject(detail);
+        const detailData = getObject(detailBody, "data");
 
         assert.strictEqual(response.status, 202);
+        assert.strictEqual(detail.status, 200);
         assert.strictEqual(getString(body, "status"), "accepted");
-        assert.strictEqual(getString(firstEvent, "type"), "RUN_CREATED");
-        assert.strictEqual(getString(getObject(firstEvent, "payload"), "source"), "server");
+        assert.strictEqual(getString(detailData, "runId"), runId);
+        assert.isAtLeast(getNumber(detailData, "eventCount"), 1);
       }),
       20_000,
     );
@@ -529,7 +529,14 @@ function postCreateRun(
 }
 
 function createRunRequest(specMarkdown: string) {
-  return createRunRequestFromPayload({ specMarkdown });
+  return createRunRequestFromPayload({
+    workflow: "issueDelivery",
+    workItem: {
+      description: specMarkdown,
+      kind: "issue",
+      title: "Server API test run",
+    },
+  });
 }
 
 function createRunRequestFromPayload(payload: unknown) {
