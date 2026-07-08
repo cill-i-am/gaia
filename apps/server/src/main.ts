@@ -13,6 +13,7 @@ import { makeLocalGaiaServerLayer } from "./api.js";
 import {
   appendServerLog,
   removeServerMetadata,
+  serverDiscoveryPaths,
   serverMetadataFromAddress,
   writeServerMetadata,
   type LocalServerIdentity,
@@ -60,9 +61,10 @@ export function runLocalGaiaServer(input: {
         yield* Effect.addFinalizer(() =>
           removeServerMetadata(metadata).pipe(Effect.orElseSucceed(() => undefined)),
         );
+        const discoveryPaths = yield* serverDiscoveryPaths(metadata.workspaceRoot);
         yield* appendServerLog(
           metadata.workspaceRoot,
-          `${metadata.startedAt} ${metadata.serverId} listening ${metadata.url}`,
+          `${metadata.startedAt} listening ${metadata.url} serverId=${metadata.serverId} pid=${metadata.pid} workspaceRoot=${metadata.workspaceRoot} metadata=${discoveryPaths.serverJson}`,
         );
         if (input.onReady !== undefined) {
           yield* input.onReady(metadata);

@@ -178,6 +178,11 @@ export function ensureLocalServer(input: {
         return afterLock.url;
       }
 
+      const diagnostic = yield* rejectedServerMetadataDiagnostic(rootDirectory);
+      if (diagnostic !== undefined) {
+        yield* appendServerLog(rootDirectory, diagnostic);
+      }
+
       const startedProcess = yield* startLocalServerProcess(rootDirectory);
       const started = yield* waitForUsableMetadata(rootDirectory, startedProcess).pipe(
         Effect.matchEffect({
@@ -467,6 +472,46 @@ function readUsableMetadata(rootDirectory: string) {
   });
 }
 
+function rejectedServerMetadataDiagnostic(rootDirectory: string) {
+  return Effect.gen(function* () {
+    const metadata = yield* readServerMetadata(rootDirectory);
+    if (metadata === undefined) {
+      return undefined;
+    }
+
+    const currentRoot = yield* canonicalRoot(rootDirectory);
+    const metadataRoot = yield* canonicalRoot(metadata.workspaceRoot);
+    const summary = serverMetadataSummary(metadata);
+    const timestamp = new Date().toISOString();
+    const expectedUrl = trustedMetadataUrl(metadata);
+    if (expectedUrl === undefined || metadata.url !== expectedUrl) {
+      return `${timestamp} discarding untrusted local server metadata ${summary}; expected loopback url from host/port; starting replacement server`;
+    }
+
+    if (metadataRoot !== currentRoot) {
+      return `${timestamp} discarding wrong-root local server metadata ${summary} expectedWorkspaceRoot=${rootDirectory}; starting replacement server`;
+    }
+
+    const health = yield* probeServerHealth(metadata).pipe(
+      Effect.orElseSucceed(() => undefined),
+    );
+    if (health === undefined) {
+      return `${timestamp} discarding stale local server metadata ${summary}; health probe failed; starting replacement server`;
+    }
+
+    const healthRoot = yield* canonicalRoot(health.workspaceRoot);
+    if (healthRoot !== currentRoot) {
+      return `${timestamp} discarding wrong-root local server metadata ${summary} healthWorkspaceRoot=${health.workspaceRoot} expectedWorkspaceRoot=${rootDirectory}; starting replacement server`;
+    }
+
+    if (health.serverId !== metadata.serverId || health.url !== expectedUrl) {
+      return `${timestamp} discarding stale local server metadata ${summary} healthServerId=${health.serverId} healthUrl=${health.url}; starting replacement server`;
+    }
+
+    return undefined;
+  });
+}
+
 function readServerMetadata(rootDirectory: string) {
   return Effect.gen(function* () {
     const paths = yield* serverPaths(rootDirectory);
@@ -485,6 +530,19 @@ function readServerMetadata(rootDirectory: string) {
       ),
     );
   });
+}
+
+function appendServerLog(rootDirectory: string, line: string) {
+  return Effect.gen(function* () {
+    const paths = yield* serverPaths(rootDirectory);
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(paths.gaiaRoot, { recursive: true });
+    yield* fs.writeFileString(paths.serverLog, `${line}\n`, { flag: "a" });
+  });
+}
+
+function serverMetadataSummary(metadata: ServerMetadata) {
+  return `serverId=${metadata.serverId} pid=${metadata.pid} url=${metadata.url} workspaceRoot=${metadata.workspaceRoot}`;
 }
 
 function probeServerHealth(metadata: ServerMetadata) {

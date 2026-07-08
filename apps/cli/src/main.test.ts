@@ -304,7 +304,7 @@ describe("gaia CLI local server read parity", () => {
               serverId: "srv_stale",
               startedAt: "2026-07-06T00:00:00.000Z",
               updatedAt: "2026-07-06T00:00:00.000Z",
-              url: "http://example.com:1",
+              url: "http://127.0.0.1:1",
               version: 1,
               workspaceRoot: cwd,
             }, null, 2)}\n`,
@@ -313,12 +313,17 @@ describe("gaia CLI local server read parity", () => {
           try {
             const list = yield* runGaiaJson(cwd, ["list", "--server", "--json"]);
             const metadata = yield* readServerMetadata(cwd);
+            const log = yield* fs.readFileString(`${cwd}/.gaia/server.log`);
 
             expect(list).toEqual([]);
             expect(metadata.serverId).not.toBe("srv_stale");
             expect(yield* canonicalPath(getObjectString(metadata, "workspaceRoot"))).toBe(
               yield* canonicalPath(cwd),
             );
+            expect(log).toContain("discarding stale local server metadata");
+            expect(log).toContain("serverId=srv_stale");
+            expect(log).toContain("pid=999999");
+            expect(log).toContain("starting replacement server");
           } finally {
             yield* stopAutostartedServer(cwd);
           }
@@ -343,12 +348,17 @@ describe("gaia CLI local server read parity", () => {
 
             const list = yield* runGaiaJson(cwd, ["list", "--server", "--json"]);
             const metadata = yield* readServerMetadata(cwd);
+            const log = yield* fs.readFileString(`${cwd}/.gaia/server.log`);
 
             expect(list).toEqual([]);
             expect(yield* canonicalPath(getObjectString(metadata, "workspaceRoot"))).toBe(
               yield* canonicalPath(cwd),
             );
             expect(metadata.serverId).not.toBe(wrongServer.serverId);
+            expect(log).toContain("discarding wrong-root local server metadata");
+            expect(log).toContain(`serverId=${wrongServer.serverId}`);
+            expect(log).toContain("expectedWorkspaceRoot=");
+            expect(log).toContain("starting replacement server");
           } finally {
             yield* stopServer(wrongServer);
             yield* stopAutostartedServer(cwd);

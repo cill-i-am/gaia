@@ -28,6 +28,10 @@ describe("local Gaia server process", () => {
         assert.strictEqual(health["serverId"], metadata.serverId);
         assert.strictEqual(health["workspaceRoot"], cwd);
         assert.include(log, metadata.url);
+        assert.include(log, `serverId=${metadata.serverId}`);
+        assert.include(log, `pid=${metadata.pid}`);
+        assert.include(log, `workspaceRoot=${cwd}`);
+        assert.include(log, "metadata=");
 
         yield* server.close;
         assert.isFalse(yield* fs.exists(`${cwd}/.gaia/server.json`));
