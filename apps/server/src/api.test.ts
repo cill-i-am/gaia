@@ -218,6 +218,82 @@ describe("local run api http boundary", () => {
       20_000,
     );
 
+    it.effect("refreshes externally created runs on list and detail reads", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const layer = testServerLayer(cwd);
+
+        yield* Effect.gen(function* () {
+          const initialResponse = yield* HttpClient.get("/runs");
+          const initialBody = yield* responseJsonObject(initialResponse);
+
+          assert.strictEqual(initialResponse.status, 200);
+          assert.deepEqual(getArray(getObject(initialBody, "data"), "runs"), []);
+
+          const specPath = `${cwd}/external.md`;
+          yield* fs.writeFileString(specPath, "Created outside the server.\n");
+          const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+          const listResponse = yield* HttpClient.get("/runs");
+          const detailResponse = yield* HttpClient.get(`/runs/${summary.runId}`);
+          const listBody = yield* responseJsonObject(listResponse);
+          const detailBody = yield* responseJsonObject(detailResponse);
+          const listRun = getObjectFromArray(
+            getArray(getObject(listBody, "data"), "runs"),
+            0,
+          );
+          const detail = getObject(detailBody, "data");
+
+          assert.strictEqual(listResponse.status, 200);
+          assert.strictEqual(detailResponse.status, 200);
+          assert.strictEqual(getString(listRun, "runId"), summary.runId);
+          assert.strictEqual(getString(detail, "runId"), summary.runId);
+          assert.strictEqual(getString(detail, "latestEventType"), "REPORT_COMPLETED");
+        }).pipe(Effect.provide(layer));
+      }),
+      20_000,
+    );
+
+    it.effect("refreshes external malformed run diagnostics on list and detail reads", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        const layer = testServerLayer(cwd);
+
+        yield* Effect.gen(function* () {
+          const initialResponse = yield* HttpClient.get("/runs");
+          const initialBody = yield* responseJsonObject(initialResponse);
+
+          assert.strictEqual(initialResponse.status, 200);
+          assert.deepEqual(getArray(getObject(initialBody, "data"), "runs"), []);
+
+          yield* fs.makeDirectory(`${store.runsRoot}/run-not-valid`, {
+            recursive: true,
+          });
+          yield* fs.makeDirectory(`${store.runsRoot}/run-L84-kMhLY8`);
+
+          const listResponse = yield* HttpClient.get("/runs");
+          const detailResponse = yield* HttpClient.get("/runs/run-L84-kMhLY8");
+          const listBody = yield* responseJsonObject(listResponse);
+          const detailBody = yield* responseJsonObject(detailResponse);
+          const diagnostics = getArray(listBody, "diagnostics");
+
+          assert.strictEqual(listResponse.status, 200);
+          assert.strictEqual(getString(listBody, "status"), "partial");
+          assert.sameMembers(
+            diagnostics.map((_, index) =>
+              getString(getObjectFromArray(diagnostics, index), "code"),
+            ),
+            ["InvalidRunDirectory", "RunHasNoEvents"],
+          );
+          assert.strictEqual(detailResponse.status, 422);
+          assertApiError(detailBody, "RunHasNoEvents", 422);
+        }).pipe(Effect.provide(layer));
+      }),
+    );
+
     it.effect("preserves parseable bad-run detail diagnostics through the index", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

@@ -95,6 +95,9 @@ export const RunsLive = HttpApiBuilder.group(
       .handle("listRuns", () =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
+          yield* identity.runIndex.rebuild.pipe(
+            Effect.mapError((error) => internalApiError(error)),
+          );
           const runs = yield* identity.runIndex.list;
           if (runs.diagnostics.length === 0) {
             return LocalRunListSuccessEnvelope.make({
@@ -162,6 +165,7 @@ export const RunsLive = HttpApiBuilder.group(
       .handle("getRun", ({ params }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
+          yield* identity.runIndex.refreshRun(params.runId);
           const exit = yield* Effect.exit(
             identity.runIndex.read(params.runId),
           );

@@ -66,6 +66,27 @@ describe("local run read index", () => {
       }),
     );
 
+    it.effect("rebuilds diagnostics for bad run directories created after startup", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-run-index-" });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        const index = yield* makeLocalRunReadIndex({ rootDirectory: cwd });
+
+        yield* fs.makeDirectory(`${store.runsRoot}/run-not-valid`, {
+          recursive: true,
+        });
+        yield* fs.makeDirectory(`${store.runsRoot}/run-L84-kMhLY8`);
+        yield* index.rebuild;
+        const list = yield* index.list;
+
+        assert.deepEqual(
+          list.diagnostics.map((diagnostic) => diagnostic.code).sort(),
+          ["InvalidRunDirectory", "RunHasNoEvents"],
+        );
+      }),
+    );
+
     it.effect("preserves parseable bad-run diagnostics for detail reads", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -84,6 +105,24 @@ describe("local run read index", () => {
           "Run has no events.jsonl records.",
         );
         assert.strictEqual(diagnostic.recoverable, false);
+        assert.strictEqual(diagnostic.runId, "run-L84-kMhLY8");
+      }),
+    );
+
+    it.effect("refreshes parseable bad-run diagnostics created after startup", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-run-index-" });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        const index = yield* makeLocalRunReadIndex({ rootDirectory: cwd });
+
+        yield* fs.makeDirectory(`${store.runsRoot}/run-L84-kMhLY8`, {
+          recursive: true,
+        });
+        yield* index.refreshRun("run-L84-kMhLY8");
+        const diagnostic = yield* Effect.flip(index.read("run-L84-kMhLY8"));
+
+        assert.strictEqual(diagnostic.code, "RunHasNoEvents");
         assert.strictEqual(diagnostic.runId, "run-L84-kMhLY8");
       }),
     );
