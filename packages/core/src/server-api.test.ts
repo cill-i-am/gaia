@@ -3,24 +3,30 @@ import { Schema } from "effect";
 import { CreateRunRequest, LocalGaiaServerOpenApi } from "./server-api.js";
 
 describe("LocalGaiaServerApi contract", () => {
-  it("publishes health and run read paths", () => {
+  it("publishes fresh factory run paths", () => {
     const paths = LocalGaiaServerOpenApi.paths;
 
     assert.containsAllKeys(paths, [
       "/health",
       "/runs",
       "/runs/{runId}",
-      "/runs/{runId}/events",
-      "/runs/{runId}/events/stream",
+      "/runs/{runId}/activity",
+      "/runs/{runId}/agents/{agentId}/activity",
       "/runs/{runId}/artifacts/{artifactId}",
+      "/runs/{runId}/artifacts",
+      "/runs/{runId}/factory-graph",
     ]);
     assert.isObject(paths["/health"]?.get);
     assert.isObject(paths["/runs"]?.get);
     assert.isObject(paths["/runs"]?.post);
     assert.isObject(paths["/runs/{runId}"]?.get);
-    assert.isObject(paths["/runs/{runId}/events"]?.get);
-    assert.isObject(paths["/runs/{runId}/events/stream"]?.get);
+    assert.isUndefined(paths["/runs/{runId}/events"]);
+    assert.isUndefined(paths["/runs/{runId}/events/stream"]);
+    assert.isObject(paths["/runs/{runId}/activity"]?.get);
+    assert.isObject(paths["/runs/{runId}/agents/{agentId}/activity"]?.get);
+    assert.isObject(paths["/runs/{runId}/artifacts"]?.get);
     assert.isObject(paths["/runs/{runId}/artifacts/{artifactId}"]?.get);
+    assert.isObject(paths["/runs/{runId}/factory-graph"]?.get);
   });
 
   it("keeps success and error statuses explicit", () => {
@@ -34,6 +40,10 @@ describe("LocalGaiaServerApi contract", () => {
       "200",
       "500",
     ]);
+    assertJsonSchemaRef(
+      paths["/runs"]?.get?.responses["200"],
+      "#/components/schemas/FactoryRunListSuccessEnvelope",
+    );
     assert.deepEqual(responseStatuses(paths["/runs"]?.post?.responses), [
       "202",
       "400",
@@ -49,19 +59,35 @@ describe("LocalGaiaServerApi contract", () => {
       "422",
       "500",
     ]);
+    assertJsonSchemaRef(
+      paths["/runs/{runId}"]?.get?.responses["200"],
+      "#/components/schemas/FactoryRunDetailSuccessEnvelope",
+    );
     assert.deepEqual(
-      responseStatuses(paths["/runs/{runId}/events"]?.get?.responses),
+      responseStatuses(paths["/runs/{runId}/factory-graph"]?.get?.responses),
       ["200", "400", "404", "422", "500"],
     );
     assert.deepEqual(
-      responseStatuses(paths["/runs/{runId}/events/stream"]?.get?.responses),
-      ["200", "400", "404", "405", "422", "500"],
+      responseStatuses(paths["/runs/{runId}/activity"]?.get?.responses),
+      ["200", "400", "404", "422", "500"],
+    );
+    assert.deepEqual(
+      responseStatuses(paths["/runs/{runId}/agents/{agentId}/activity"]?.get?.responses),
+      ["200", "400", "404", "422", "500"],
+    );
+    assert.deepEqual(
+      responseStatuses(paths["/runs/{runId}/artifacts"]?.get?.responses),
+      ["200", "400", "404", "422", "500"],
     );
     assert.deepEqual(
       responseStatuses(
         paths["/runs/{runId}/artifacts/{artifactId}"]?.get?.responses,
       ),
       ["200", "400", "404", "422", "500"],
+    );
+    assertJsonSchemaRef(
+      paths["/runs/{runId}/artifacts/{artifactId}"]?.get?.responses["200"],
+      "#/components/schemas/FactoryArtifactSuccessEnvelope",
     );
     assertJsonSchemaRef(
       paths["/runs/{runId}"]?.get?.responses["400"],
@@ -77,25 +103,26 @@ describe("LocalGaiaServerApi contract", () => {
     );
   });
 
-  it("models logical artifact path params and SSE metadata", () => {
+  it("models factory graph path params and schemas", () => {
     const artifactParameters =
       LocalGaiaServerOpenApi.paths["/runs/{runId}/artifacts/{artifactId}"]?.get
         ?.parameters;
-    const streamResponse =
-      LocalGaiaServerOpenApi.paths["/runs/{runId}/events/stream"]?.get
-        ?.responses["200"];
-    const stream =
-      streamResponse?.content?.["text/event-stream"]?.["x-effect-stream"];
+    const agentActivityParameters =
+      LocalGaiaServerOpenApi.paths["/runs/{runId}/agents/{agentId}/activity"]?.get
+        ?.parameters;
 
     if (!Array.isArray(artifactParameters)) {
       assert.fail("Expected artifact endpoint parameters.");
+    }
+    if (!Array.isArray(agentActivityParameters)) {
+      assert.fail("Expected agent activity endpoint parameters.");
     }
 
     assert.deepInclude(artifactParameters, {
       in: "path",
       name: "artifactId",
       required: true,
-      schema: { $ref: "#/components/schemas/LocalRunArtifactId" },
+      schema: { $ref: "#/components/schemas/FactoryArtifactId" },
     });
     assert.deepInclude(artifactParameters, {
       in: "path",
@@ -107,30 +134,23 @@ describe("LocalGaiaServerApi contract", () => {
       allOf: [{ pattern: "^run-[A-Za-z0-9_-]{10}$" }],
       type: "string",
     });
-    assert.isObject(stream);
-    assert.strictEqual(stream?.encoding, "sse");
+    assert.deepInclude(agentActivityParameters, {
+      in: "path",
+      name: "agentId",
+      required: true,
+      schema: { $ref: "#/components/schemas/FactoryAgentId" },
+    });
     assert.deepEqual(
-      LocalGaiaServerOpenApi.components?.schemas?.LocalRunArtifactId,
+      LocalGaiaServerOpenApi.components?.schemas?.FactoryAgentRole,
       {
         enum: [
-          "input",
-          "worker-plan",
-          "reviewer-findings",
-          "plan-review",
-          "worker-log",
-          "worker-result",
-          "verification-result",
-          "evidence-review",
-          "evidence-promotion",
-          "evidence-promotion-markdown",
-          "factory-retro",
-          "factory-retro-markdown",
-          "factory-scorecard",
-          "factory-scorecard-markdown",
-          "report",
-          "report-json",
-          "events",
-          "snapshots",
+          "orchestrator",
+          "worker",
+          "reviewer",
+          "tester",
+          "ciWatcher",
+          "researcher",
+          "unknown",
         ],
         type: "string",
       },
@@ -146,6 +166,8 @@ describe("LocalGaiaServerApi contract", () => {
               "ArtifactNotAllowed",
               "ArtifactNotFound",
               "EndpointNotFound",
+              "FactoryAgentNotFound",
+              "FactoryGraphNotFound",
               "RunNotFound",
             ],
             type: "string",
@@ -162,24 +184,55 @@ describe("LocalGaiaServerApi contract", () => {
     );
   });
 
-  it("rejects path-bearing and unknown create request fields at decode", () => {
+  it("accepts only fresh issue delivery create requests", () => {
     const decodeCreateRunRequest = Schema.decodeUnknownSync(CreateRunRequest);
 
     assert.doesNotThrow(() =>
       decodeCreateRunRequest({
-        specMarkdown: "Create the run from Markdown content only.\n",
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Implement the contract slice.",
+          externalRefs: [{ id: "GAIA-65", provider: "linear" }],
+          kind: "issue",
+          title: "Define FactoryGraph contracts",
+        },
       }),
     );
     assert.throws(() =>
       decodeCreateRunRequest({
-        specMarkdown: "Do not accept local file or harness options.\n",
-        workspaceSource: ".",
+        specMarkdown: "Legacy body is not accepted.\n",
       }),
     );
     assert.throws(() =>
       decodeCreateRunRequest({
-        options: { profile: "default" },
-        specMarkdown: "Do not accept unknown option bags.\n",
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Projects are a later slice.",
+          kind: "project",
+          title: "Project delivery",
+        },
+      }),
+    );
+    assert.throws(() =>
+      decodeCreateRunRequest({
+        profile: "default",
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Unknown top-level fields fail loudly.",
+          kind: "issue",
+          title: "Define FactoryGraph contracts",
+        },
+      }),
+    );
+    assert.throws(() =>
+      decodeCreateRunRequest({
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Unknown nested fields fail loudly.",
+          kind: "issue",
+          title: "Define FactoryGraph contracts",
+          workspaceSource: ".",
+        },
       }),
     );
   });

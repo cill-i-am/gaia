@@ -1,10 +1,12 @@
 import {
   CreateRunAcceptedResponse,
   CreateRunRequest,
+  FactoryArtifactBodyDto,
+  FactoryRunDetailDto,
+  FactoryRunSummaryDto,
   LocalRunApiErrorEnvelope,
   LocalRunArtifactDto,
   LocalRunEventsDto,
-  LocalRunSummaryDto,
   RunIdSchema,
   ServerMetadata,
 } from "@gaia/core";
@@ -38,6 +40,7 @@ import {
 const autostartWaitAttempts = 50;
 const autostartWaitDelay = "100 millis";
 const decodeRunId = Schema.decodeUnknownSync(RunIdSchema);
+const decodeLocalRunArtifact = Schema.decodeUnknownSync(LocalRunArtifactDto);
 const decodeServerMetadata = Schema.decodeUnknownSync(ServerMetadata);
 
 export type ServerRunAcceptedSummary =
@@ -135,7 +138,14 @@ export function createRunFromServer(input: {
         }),
       ),
     );
-    const payload = yield* CreateRunRequest.makeEffect({ specMarkdown }).pipe(
+    const payload = yield* CreateRunRequest.makeEffect({
+      workflow: "issueDelivery",
+      workItem: {
+        description: specMarkdown,
+        kind: "issue",
+        title: path.basename(input.specPath),
+      },
+    }).pipe(
       Effect.mapError((cause) =>
         makeRuntimeError({
           cause,
@@ -383,7 +393,7 @@ function decodeServerData<A>(
 }
 
 function commandSummaryFromLocalRun(
-  run: typeof LocalRunSummaryDto.Type,
+  run: typeof FactoryRunSummaryDto.Type | typeof FactoryRunDetailDto.Type,
   rootDirectory: string,
 ) {
   return Effect.gen(function* () {
@@ -400,15 +410,17 @@ function commandSummaryFromLocalRun(
   });
 }
 
-function toLocalRunSummary(input: typeof LocalRunSummaryDto.Type) {
+function toLocalRunSummary(
+  input: typeof FactoryRunSummaryDto.Type | typeof FactoryRunDetailDto.Type,
+) {
   return {
-    artifacts: input.artifacts,
+    artifacts: [],
     createdAt: input.createdAt,
-    eventCount: input.eventCount,
-    latestEventType: input.latestEventType,
+    eventCount: input.counts.activity,
+    latestEventType: legacyEventTypeFromFactoryState(input.state),
     runId: input.runId,
-    state: input.state,
-    status: input.status,
+    state: legacyRunStateFromFactoryState(input.state),
+    status: legacyStatusFromFactoryState(input.state),
     updatedAt: input.updatedAt,
   } satisfies LocalRunSummary;
 }
@@ -420,13 +432,71 @@ function toLocalRunEvents(input: typeof LocalRunEventsDto.Type) {
   } satisfies LocalRunEvents;
 }
 
-function toLocalRunArtifact(input: typeof LocalRunArtifactDto.Type) {
-  return {
-    artifactName: input.artifactName,
+function toLocalRunArtifact(input: typeof FactoryArtifactBodyDto.Type) {
+  const artifact = decodeLocalRunArtifact({
+    artifactName: input.artifactId,
     body: input.body,
     contentType: input.contentType,
     runId: input.runId,
+  });
+
+  return {
+    artifactName: artifact.artifactName,
+    body: artifact.body,
+    contentType: artifact.contentType,
+    runId: artifact.runId,
   } satisfies LocalRunArtifact;
+}
+
+function legacyStatusFromFactoryState(state: typeof FactoryRunSummaryDto.Type.state) {
+  switch (state) {
+    case "succeeded":
+      return "completed";
+    case "canceled":
+    case "failed":
+      return "failed";
+    case "blocked":
+    case "pending":
+    case "running":
+    case "unknown":
+      return "running";
+  }
+}
+
+function legacyRunStateFromFactoryState(
+  state: typeof FactoryRunSummaryDto.Type.state,
+) {
+  switch (state) {
+    case "succeeded":
+      return "completed";
+    case "canceled":
+    case "failed":
+      return "failed";
+    case "blocked":
+    case "running":
+      return "runningWorker";
+    case "pending":
+    case "unknown":
+      return "created";
+  }
+}
+
+function legacyEventTypeFromFactoryState(
+  state: typeof FactoryRunSummaryDto.Type.state,
+) {
+  switch (state) {
+    case "succeeded":
+      return "REPORT_COMPLETED";
+    case "canceled":
+    case "failed":
+      return "RUN_FAILED";
+    case "blocked":
+    case "running":
+      return "WORKER_STARTED";
+    case "pending":
+    case "unknown":
+      return "RUN_CREATED";
+  }
 }
 
 function runtimeErrorFromDiagnostic(

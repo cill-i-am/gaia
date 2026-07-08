@@ -57,11 +57,11 @@ describe("local run api http boundary", () => {
         const data = getObject(body, "data");
         const runs = getArray(data, "runs");
         const firstRun = getObjectFromArray(runs, 0);
-        const diagnostics = getArray(body, "diagnostics");
+        const diagnostics = getArray(data, "diagnostics");
         const firstDiagnostic = getObjectFromArray(diagnostics, 0);
 
         assert.strictEqual(response.status, 200);
-        assert.strictEqual(getString(body, "status"), "partial");
+        assert.strictEqual(getString(body, "status"), "success");
         assert.strictEqual(getString(firstRun, "runId"), summary.runId);
         assert.strictEqual(getString(firstDiagnostic, "code"), "InvalidRunDirectory");
       }),
@@ -92,7 +92,10 @@ describe("local run api http boundary", () => {
         assert.strictEqual(eventsResponse.status, 200);
         assert.strictEqual(getString(detailData, "runId"), summary.runId);
         assert.strictEqual(getString(eventsData, "runId"), summary.runId);
-        assert.strictEqual(eventItems.length, getNumber(detailData, "eventCount"));
+        assert.strictEqual(
+          eventItems.length,
+          getNumber(getObject(detailData, "counts"), "activity"),
+        );
       }),
     );
 
@@ -117,10 +120,10 @@ describe("local run api http boundary", () => {
 
         assert.strictEqual(response.status, 200);
         assert.strictEqual(inputResponse.status, 200);
-        assert.strictEqual(getString(data, "artifactName"), "report-json");
+        assert.strictEqual(getString(data, "artifactId"), "report-json");
         assert.strictEqual(getString(data, "contentType"), "application/json");
         assert.include(getString(data, "body"), summary.runId);
-        assert.strictEqual(getString(inputData, "artifactName"), "input");
+        assert.strictEqual(getString(inputData, "artifactId"), "input");
         assert.strictEqual(getString(inputData, "contentType"), "text/markdown");
       }),
     );
@@ -170,17 +173,17 @@ describe("local run api http boundary", () => {
         );
         const body = yield* responseJsonObject(response);
         const runId = getString(body, "runId");
-        const events = yield* HttpClient.get(`/runs/${runId}/events`).pipe(
+        const detail = yield* HttpClient.get(`/runs/${runId}`).pipe(
           Effect.provide(layer),
         );
-        const eventsBody = yield* responseJsonObject(events);
-        const eventItems = getArray(getObject(eventsBody, "data"), "events");
-        const firstEvent = getObjectFromArray(eventItems, 0);
+        const detailBody = yield* responseJsonObject(detail);
+        const detailData = getObject(detailBody, "data");
 
         assert.strictEqual(response.status, 202);
+        assert.strictEqual(detail.status, 200);
         assert.strictEqual(getString(body, "status"), "accepted");
-        assert.strictEqual(getString(firstEvent, "type"), "RUN_CREATED");
-        assert.strictEqual(getString(getObject(firstEvent, "payload"), "source"), "server");
+        assert.strictEqual(getString(detailData, "runId"), runId);
+        assert.isAtLeast(getNumber(getObject(detailData, "counts"), "activity"), 1);
       }),
       20_000,
     );
@@ -212,7 +215,7 @@ describe("local run api http boundary", () => {
           assert.strictEqual(detailResponse.status, 200);
           assert.strictEqual(getString(listRun, "runId"), runId);
           assert.strictEqual(getString(detail, "runId"), runId);
-          assert.isAtLeast(getNumber(detail, "eventCount"), 1);
+          assert.isAtLeast(getNumber(getObject(detail, "counts"), "activity"), 1);
         }).pipe(Effect.provide(layer));
       }),
       20_000,
@@ -249,7 +252,7 @@ describe("local run api http boundary", () => {
           assert.strictEqual(detailResponse.status, 200);
           assert.strictEqual(getString(listRun, "runId"), summary.runId);
           assert.strictEqual(getString(detail, "runId"), summary.runId);
-          assert.strictEqual(getString(detail, "latestEventType"), "REPORT_COMPLETED");
+          assert.strictEqual(getString(detail, "state"), "succeeded");
         }).pipe(Effect.provide(layer));
       }),
       20_000,
@@ -278,10 +281,10 @@ describe("local run api http boundary", () => {
           const detailResponse = yield* HttpClient.get("/runs/run-L84-kMhLY8");
           const listBody = yield* responseJsonObject(listResponse);
           const detailBody = yield* responseJsonObject(detailResponse);
-          const diagnostics = getArray(listBody, "diagnostics");
+          const diagnostics = getArray(getObject(listBody, "data"), "diagnostics");
 
           assert.strictEqual(listResponse.status, 200);
-          assert.strictEqual(getString(listBody, "status"), "partial");
+          assert.strictEqual(getString(listBody, "status"), "success");
           assert.sameMembers(
             diagnostics.map((_, index) =>
               getString(getObjectFromArray(diagnostics, index), "code"),
@@ -529,7 +532,14 @@ function postCreateRun(
 }
 
 function createRunRequest(specMarkdown: string) {
-  return createRunRequestFromPayload({ specMarkdown });
+  return createRunRequestFromPayload({
+    workflow: "issueDelivery",
+    workItem: {
+      description: specMarkdown,
+      kind: "issue",
+      title: "Server API test run",
+    },
+  });
 }
 
 function createRunRequestFromPayload(payload: unknown) {
