@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   LocalRunApiErrorEnvelope,
   LocalRunArtifactDto,
+  LocalRunReadDiagnosticDto,
   LocalRunSummaryDto,
 } from "@gaia/core";
 import { RunIdSchema, makeRunEvent } from "@gaia/core";
@@ -27,11 +28,15 @@ const queryFixture = vi.hoisted(
     eventsByRunId: Record<string, ReadonlyArray<unknown>>;
     healthError?: unknown;
     runs: ReadonlyArray<unknown>;
+    runsDiagnostics: ReadonlyArray<unknown>;
+    runsError?: unknown;
   } => ({
     artifactsByRunId: {},
     eventsByRunId: {},
     healthError: undefined,
     runs: [],
+    runsDiagnostics: [],
+    runsError: undefined,
   }),
 );
 
@@ -60,14 +65,21 @@ vi.mock("@/lib/local-gaia-query", () => ({
     retry: false,
   }),
   localGaiaRunsQueryOptions: () => ({
-    queryFn: () =>
-      Promise.resolve({
+    queryFn: () => {
+      if (queryFixture.runsError !== undefined) {
+        return Promise.reject({ failure: queryFixture.runsError });
+      }
+
+      return Promise.resolve({
         data: {
-          diagnostics: [],
+          diagnostics: queryFixture.runsDiagnostics,
           runs: queryFixture.runs,
         },
-        status: "success",
-      }),
+        diagnostics: queryFixture.runsDiagnostics,
+        status:
+          queryFixture.runsDiagnostics.length > 0 ? "partial" : "success",
+      });
+    },
     queryKey: ["local-gaia", "runs"] as const,
     retry: false,
   }),
@@ -684,6 +696,103 @@ describe("DashboardShell Run Console", () => {
       "InternalServerError: Local API failed.",
     );
   });
+
+  it("preserves visible runs and marks them stale after a refresh failure", async () => {
+    const runId = parseRunId("run-7777777777");
+    renderDashboardWithQueries({
+      runs: [
+        localRunSummary({
+          eventCount: 3,
+          latestEventType: "WORKER_STARTED",
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+    });
+
+    expect(
+      await screen.findByTestId("run-console-row-run-7777777777"),
+    ).toBeTruthy();
+
+    queryFixture.healthError = {
+      _tag: "DashboardGaiaHttpClientError",
+      error: {},
+    };
+    fireEvent.click(screen.getByRole("button", { name: "Refresh local runs" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("API stale")).toBeTruthy();
+      expect(screen.getByTestId("run-console-stale-data").textContent).toContain(
+        "Cached run data is being preserved",
+      );
+      expect(
+        screen.getByTestId("run-console-row-run-7777777777").textContent,
+      ).toContain("Worker Started");
+      expect(screen.queryByTestId("run-console-error")).toBeNull();
+    });
+  });
+
+  it("surfaces partial run-list diagnostics beside valid runs", async () => {
+    const runId = parseRunId("run-8888888888");
+    renderDashboardWithQueries({
+      runs: [
+        localRunSummary({
+          eventCount: 12,
+          latestEventType: "REPORT_COMPLETED",
+          runId,
+          state: "completed",
+          status: "completed",
+        }),
+      ],
+      runsDiagnostics: [
+        localRunDiagnostic({
+          code: "InvalidRunDirectory",
+          message: "Run directory name is invalid.",
+          pathSegment: "run-not-valid",
+        }),
+        localRunDiagnostic({
+          code: "RunHasNoEvents",
+          message: "Run has no events.jsonl entries.",
+          runId: parseRunId("run-L84-kMhLY8"),
+        }),
+      ],
+    });
+
+    const diagnostics = await screen.findByTestId("run-console-diagnostics");
+
+    expect(diagnostics.textContent).toContain("Run index diagnostics");
+    expect(diagnostics.textContent).toContain("InvalidRunDirectory");
+    expect(diagnostics.textContent).toContain("run-not-valid");
+    expect(diagnostics.textContent).toContain("RunHasNoEvents");
+    expect(diagnostics.textContent).toContain("run-L84-kMhLY8");
+    expect(screen.getByTestId("run-console-server-message").textContent).toBe(
+      "1 run loaded with 2 diagnostics.",
+    );
+    expect(screen.getByTestId("run-console-row-run-8888888888")).toBeTruthy();
+  });
+
+  it("shows diagnostics even when no valid runs can be listed", async () => {
+    renderDashboardWithQueries({
+      runs: [],
+      runsDiagnostics: [
+        localRunDiagnostic({
+          code: "InvalidRunDirectory",
+          message: "Run directory name is invalid.",
+          pathSegment: "run-not-valid",
+        }),
+      ],
+    });
+
+    const diagnostics = await screen.findByTestId("run-console-diagnostics");
+
+    expect(diagnostics.textContent).toContain("InvalidRunDirectory");
+    expect(diagnostics.textContent).toContain("run-not-valid");
+    expect(screen.getByTestId("run-console-diagnostic-empty").textContent).toContain(
+      "No valid local runs",
+    );
+    expect(screen.queryByTestId("run-console-empty")).toBeNull();
+  });
 });
 
 function renderDashboardWithQueries(input: {
@@ -694,11 +803,17 @@ function renderDashboardWithQueries(input: {
   readonly eventsByRunId?: Record<string, ReadonlyArray<unknown>>;
   readonly healthError?: DashboardGaiaClientError;
   readonly runs: ReadonlyArray<typeof LocalRunSummaryDto.Type>;
+  readonly runsDiagnostics?: ReadonlyArray<
+    typeof LocalRunReadDiagnosticDto.Type
+  >;
+  readonly runsError?: DashboardGaiaClientError;
 }) {
   queryFixture.artifactsByRunId = input.artifactsByRunId ?? {};
   queryFixture.eventsByRunId = input.eventsByRunId ?? {};
   queryFixture.healthError = input.healthError;
   queryFixture.runs = input.runs;
+  queryFixture.runsDiagnostics = input.runsDiagnostics ?? [];
+  queryFixture.runsError = input.runsError;
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -753,6 +868,17 @@ function localRunApiError(
     message: "Local API failed.",
     recoverable: false,
     status: 500,
+    ...input,
+  };
+}
+
+function localRunDiagnostic(
+  input: Partial<typeof LocalRunReadDiagnosticDto.Type>,
+): typeof LocalRunReadDiagnosticDto.Type {
+  return {
+    code: "RunUnreadable",
+    message: "Run could not be read.",
+    recoverable: true,
     ...input,
   };
 }

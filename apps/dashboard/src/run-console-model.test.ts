@@ -1,5 +1,6 @@
 import type {
   LocalRunApiErrorEnvelope,
+  LocalRunReadDiagnosticDto,
   LocalRunSummaryDto,
 } from "@gaia/core";
 import { RunIdSchema } from "@gaia/core";
@@ -87,6 +88,128 @@ describe("run console model", () => {
     expect(reconcileSelectedRunId("run-1234567890", state.runs)).toBeUndefined();
   });
 
+  it("marks cached runs as reconnecting while a refresh is in flight", () => {
+    const state = buildRunConsoleState({
+      healthError: undefined,
+      healthFetching: true,
+      healthPending: false,
+      healthStatus: "ok",
+      runs: [
+        localRunSummary({
+          runId: parseRunId("run-1234567890"),
+          status: "completed",
+          state: "completed",
+          latestEventType: "REPORT_COMPLETED",
+        }),
+      ],
+      runsDiagnostics: [],
+      runsError: undefined,
+      runsFetching: true,
+      runsPending: false,
+      serverUrl: "/gaia-api",
+    });
+
+    expect(state.health).toBe("reconnecting");
+    expect(state.hasStaleData).toBe(false);
+    expect(state.isError).toBe(false);
+    expect(state.message).toBe(
+      "Refreshing local server; showing 1 cached run.",
+    );
+  });
+
+  it("preserves cached runs while clearly marking stale refresh failures", () => {
+    const state = buildRunConsoleState({
+      healthError: {
+        failure: {
+          _tag: "DashboardGaiaHttpClientError",
+          error: {},
+        },
+      },
+      healthPending: false,
+      healthStatus: "ok",
+      runs: [
+        localRunSummary({
+          runId: parseRunId("run-1234567890"),
+          status: "running",
+          state: "runningWorker",
+          latestEventType: "WORKER_STARTED",
+        }),
+      ],
+      runsDiagnostics: [],
+      runsError: undefined,
+      runsPending: false,
+      serverUrl: "/gaia-api",
+    });
+
+    expect(state.health).toBe("stale");
+    expect(state.hasStaleData).toBe(true);
+    expect(state.isError).toBe(false);
+    expect(state.runs).toHaveLength(1);
+    expect(state.message).toBe(
+      "Showing 1 cached run; latest refresh failed: server is not reachable.",
+    );
+  });
+
+  it("reports partial run diagnostics without hiding valid runs", () => {
+    const state = buildRunConsoleState({
+      healthError: undefined,
+      healthPending: false,
+      healthStatus: "ok",
+      runs: [
+        localRunSummary({
+          runId: parseRunId("run-1234567890"),
+          status: "completed",
+          state: "completed",
+          latestEventType: "REPORT_COMPLETED",
+        }),
+      ],
+      runsDiagnostics: [
+        localRunDiagnostic({
+          code: "InvalidRunDirectory",
+          message: "Run directory name is invalid.",
+          pathSegment: "run-not-valid",
+        }),
+        localRunDiagnostic({
+          code: "RunHasNoEvents",
+          message: "Run has no events.jsonl entries.",
+          runId: parseRunId("run-L84-kMhLY8"),
+        }),
+      ],
+      runsError: undefined,
+      runsPending: false,
+      serverUrl: "/gaia-api",
+    });
+
+    expect(state.health).toBe("online");
+    expect(state.isError).toBe(false);
+    expect(state.diagnostics).toHaveLength(2);
+    expect(state.message).toBe("1 run loaded with 2 diagnostics.");
+  });
+
+  it("keeps malformed-only partial diagnostics out of the empty state", () => {
+    const state = buildRunConsoleState({
+      healthError: undefined,
+      healthPending: false,
+      healthStatus: "ok",
+      runs: [],
+      runsDiagnostics: [
+        localRunDiagnostic({
+          code: "InvalidRunDirectory",
+          message: "Run directory name is invalid.",
+          pathSegment: "run-not-valid",
+        }),
+      ],
+      runsError: undefined,
+      runsPending: false,
+      serverUrl: "/gaia-api",
+    });
+
+    expect(state.health).toBe("online");
+    expect(state.isEmpty).toBe(false);
+    expect(state.diagnostics).toHaveLength(1);
+    expect(state.message).toBe("0 runs loaded with 1 diagnostic.");
+  });
+
   it("surfaces typed local API errors as error-state copy", () => {
     const state = buildRunConsoleState({
       healthError: undefined,
@@ -139,6 +262,17 @@ function localRunApiError(
     message: "Local API failed.",
     recoverable: false,
     status: 500,
+    ...input,
+  };
+}
+
+function localRunDiagnostic(
+  input: Partial<typeof LocalRunReadDiagnosticDto.Type>,
+): typeof LocalRunReadDiagnosticDto.Type {
+  return {
+    code: "RunUnreadable",
+    message: "Run could not be read.",
+    recoverable: true,
     ...input,
   };
 }

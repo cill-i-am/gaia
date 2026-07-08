@@ -15,8 +15,7 @@ import { HttpApiClient } from "effect/unstable/httpapi";
 
 const fetchTimeoutMs = 2_000;
 
-export const defaultLocalGaiaServerUrl =
-  import.meta.env.VITE_GAIA_SERVER_URL ?? "/gaia-api";
+export const defaultLocalGaiaServerUrl = "/gaia-api";
 
 export type DashboardGaiaClientError =
   | {

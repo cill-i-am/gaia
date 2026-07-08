@@ -181,21 +181,25 @@ export function DashboardShell() {
     () =>
       buildRunConsoleState({
         healthError: healthQuery.error,
+        healthFetching: healthQuery.isFetching,
         healthPending: healthQuery.isPending,
         healthStatus: healthQuery.data?.status,
         runs: runsQuery.data?.data.runs ?? [],
         runsDiagnostics: runsQuery.data?.data.diagnostics ?? [],
         runsError: runsQuery.error,
+        runsFetching: runsQuery.isFetching,
         runsPending: runsQuery.isPending,
         serverUrl,
       }),
     [
       healthQuery.data?.status,
       healthQuery.error,
+      healthQuery.isFetching,
       healthQuery.isPending,
       runsQuery.data?.data.diagnostics,
       runsQuery.data?.data.runs,
       runsQuery.error,
+      runsQuery.isFetching,
       runsQuery.isPending,
       serverUrl,
     ],
@@ -1022,6 +1026,29 @@ function RunConsoleRuns({
     );
   }
 
+  if (state.diagnostics.length > 0 && state.runs.length === 0) {
+    return (
+      <div className="flex flex-col gap-2">
+        <RunConsoleDurabilityNotices state={state} />
+        <Empty
+          className="min-h-36 border"
+          data-testid="run-console-diagnostic-empty"
+        >
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <AlertCircleIcon />
+            </EmptyMedia>
+            <EmptyTitle>No valid local runs</EmptyTitle>
+            <EmptyDescription>
+              The local server returned run index diagnostics, but no readable
+              run summaries.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      </div>
+    );
+  }
+
   if (runs.length === 0) {
     return (
       <Empty className="min-h-36 border" data-testid="run-console-filter-empty">
@@ -1039,39 +1066,91 @@ function RunConsoleRuns({
   }
 
   return (
-    <SidebarMenu>
-      {runs.map((run) => (
-        <SidebarMenuItem key={run.id}>
-          <SidebarMenuButton
-            className="h-auto items-start gap-3 py-2"
-            data-testid={`run-console-row-${run.id}`}
-            isActive={run.id === selectedRunId}
-            onClick={() => onSelectRun(run.id)}
-          >
-            <WorkflowIcon />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate font-medium">{run.title}</span>
-              <span className="block truncate text-xs text-muted-foreground">
-                {run.specHint}
+    <div className="flex flex-col gap-2">
+      <RunConsoleDurabilityNotices state={state} />
+      <SidebarMenu>
+        {runs.map((run) => (
+          <SidebarMenuItem key={run.id}>
+            <SidebarMenuButton
+              className="h-auto items-start gap-3 py-2"
+              data-testid={`run-console-row-${run.id}`}
+              isActive={run.id === selectedRunId}
+              onClick={() => onSelectRun(run.id)}
+            >
+              <WorkflowIcon />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">{run.title}</span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {run.specHint}
+                </span>
+                <span className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
+                  <span>{run.statusLabel}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{run.latestEventLabel}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{run.eventCount} events</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{run.artifactCount} artifacts</span>
+                </span>
+                <span className="mt-1 block truncate text-xs text-muted-foreground">
+                  Updated {run.updatedAtLabel}
+                </span>
               </span>
-              <span className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
-                <span>{run.statusLabel}</span>
-                <span aria-hidden="true">·</span>
-                <span>{run.latestEventLabel}</span>
-                <span aria-hidden="true">·</span>
-                <span>{run.eventCount} events</span>
-                <span aria-hidden="true">·</span>
-                <span>{run.artifactCount} artifacts</span>
-              </span>
-              <span className="mt-1 block truncate text-xs text-muted-foreground">
-                Updated {run.updatedAtLabel}
-              </span>
-            </span>
-          </SidebarMenuButton>
-          <SidebarMenuBadge>{run.terminalLabel}</SidebarMenuBadge>
-        </SidebarMenuItem>
-      ))}
-    </SidebarMenu>
+            </SidebarMenuButton>
+            <SidebarMenuBadge>{run.terminalLabel}</SidebarMenuBadge>
+          </SidebarMenuItem>
+        ))}
+      </SidebarMenu>
+    </div>
+  );
+}
+
+function RunConsoleDurabilityNotices({
+  state,
+}: {
+  readonly state: RunConsoleState;
+}) {
+  if (!state.hasStaleData && state.diagnostics.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="flex flex-col gap-2 px-2" data-testid="run-console-notices">
+      {state.hasStaleData ? (
+        <div
+          className="flex items-start gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+          data-testid="run-console-stale-data"
+        >
+          <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0">
+            Cached run data is being preserved while the latest refresh is
+            unavailable. Treat timestamps and active state as stale until the
+            API reconnects.
+          </span>
+        </div>
+      ) : null}
+      {state.diagnostics.length > 0 ? (
+        <section
+          className="rounded-md border bg-background px-3 py-2 text-xs"
+          data-testid="run-console-diagnostics"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <p className="font-medium">Run index diagnostics</p>
+            <Badge variant="outline">{state.diagnostics.length}</Badge>
+          </div>
+          <ul className="mt-2 flex flex-col gap-1 text-muted-foreground">
+            {state.diagnostics.map((diagnostic, index) => (
+              <li
+                className="min-w-0 truncate"
+                key={`${diagnostic.code}:${diagnostic.runId ?? diagnostic.pathSegment ?? index}`}
+              >
+                {diagnosticLabel(diagnostic)}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </div>
   );
 }
 
@@ -2360,6 +2439,17 @@ function localRunBadgeVariant(
   }
 
   return "outline";
+}
+
+function diagnosticLabel(
+  diagnostic: RunConsoleState["diagnostics"][number],
+) {
+  const target =
+    diagnostic.runId ?? diagnostic.pathSegment ?? diagnostic.artifactName;
+
+  return target === undefined
+    ? `${diagnostic.code}: ${diagnostic.message}`
+    : `${diagnostic.code} (${target}): ${diagnostic.message}`;
 }
 
 function provenanceBadgeVariant(

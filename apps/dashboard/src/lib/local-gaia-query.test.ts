@@ -5,6 +5,7 @@ import { createEffectQuery } from "effect-query";
 import { FetchHttpClient } from "effect/unstable/http";
 
 import {
+  defaultLocalGaiaServerUrl,
   getRunArtifactFromDashboardGaiaClient,
   getRunFromDashboardGaiaClient,
   listRunsFromDashboardGaiaClient,
@@ -19,6 +20,10 @@ import {
 } from "@/lib/local-gaia-query";
 
 describe("local Gaia query options", () => {
+  it("keeps browser dashboard requests on the same-origin proxy path", () => {
+    expect(defaultLocalGaiaServerUrl).toBe("/gaia-api");
+  });
+
   it("constructs stable TanStack Query options through effect-query", () => {
     const health = localGaiaHealthQueryOptions({
       serverUrl: "http://127.0.0.1:4321",
