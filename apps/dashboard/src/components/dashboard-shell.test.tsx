@@ -288,6 +288,128 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
+  it("shows provenance mode and navigates claim sources to events and artifacts", async () => {
+    const runId = parseRunId("run-1212121212");
+    const view = renderDashboardWithQueries({
+      eventsByRunId: {
+        [runId]: [
+          makeRunEvent({
+            payload: { specPath: "input.md" },
+            runId,
+            sequence: 1,
+            timestamp: "2026-07-07T12:00:00.000Z",
+            type: "RUN_CREATED",
+          }),
+          makeRunEvent({
+            payload: { workerResultPath: "worker-result.md" },
+            runId,
+            sequence: 2,
+            timestamp: "2026-07-07T12:01:00.000Z",
+            type: "WORKER_COMPLETED",
+          }),
+          makeRunEvent({
+            runId,
+            sequence: 3,
+            timestamp: "2026-07-07T12:02:00.000Z",
+            type: "VERIFICATION_COMPLETED",
+          }),
+          makeRunEvent({
+            payload: { reportPath: "report.md" },
+            runId,
+            sequence: 4,
+            timestamp: "2026-07-07T12:03:00.000Z",
+            type: "REPORT_COMPLETED",
+          }),
+        ],
+      },
+      runs: [
+        localRunSummary({
+          artifacts: [
+            "input",
+            "worker-plan",
+            "worker-result",
+            "verification-result",
+            "report",
+            "report-json",
+          ],
+          eventCount: 4,
+          latestEventType: "REPORT_COMPLETED",
+          runId,
+          state: "completed",
+          status: "completed",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+    fireEvent.click(screen.getByTestId("provenance-mode-toggle"));
+
+    expect(
+      firstElement(await screen.findAllByTestId("run-canvas-provenance-callout"))
+        .textContent,
+    ).toContain(
+      "supporting events, artifacts, reports, or raw public API fields",
+    );
+    expect(await screen.findAllByText("Worker lane")).not.toHaveLength(0);
+
+    const workerNode = view.container.querySelector('[data-id="lane:worker"]');
+    if (workerNode === null) {
+      throw new Error("Expected a worker lane node.");
+    }
+    fireEvent.click(workerNode);
+
+    const provenancePanel = firstElement(
+      await screen.findAllByTestId("evidence-provenance-panel"),
+    );
+    expect(provenancePanel.textContent).toContain(
+      "Why the dashboard says this",
+    );
+    expect(
+      firstElement(
+        screen.getAllByTestId("provenance-claim-node-status:lane:worker"),
+      ).textContent,
+    ).toContain("Proven");
+
+    fireEvent.click(
+      firstElement(
+        screen.getAllByRole("button", { name: "Show Worker Completed" }),
+      ),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("evidence-event-2").textContent).toContain(
+        "Worker Completed",
+      );
+    });
+
+    fireEvent.click(workerNode);
+    fireEvent.click(
+      firstElement(screen.getAllByRole("button", { name: "Show Worker Plan" })),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("evidence-artifact-content").textContent,
+      ).toContain("worker-plan artifact body");
+    });
+
+    const threadIdentityNode = view.container.querySelector(
+      '[data-id="relationship:thread-identity"]',
+    );
+    if (threadIdentityNode === null) {
+      throw new Error("Expected a thread identity unavailable node.");
+    }
+    fireEvent.click(threadIdentityNode);
+
+    await waitFor(() => {
+      expect(
+        firstElement(
+          screen.getAllByTestId("provenance-claim-thread-identity"),
+        ).textContent,
+      ).toContain("Unsupported by current public API");
+    });
+  });
+
   it("closes the live event stream after a terminal Gaia event", async () => {
     const eventSource = installMockEventSource();
     const runId = parseRunId("run-3333333333");

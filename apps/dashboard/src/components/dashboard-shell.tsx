@@ -17,9 +17,11 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CircleDotIcon,
-  GitCompareArrowsIcon,
   GitBranchIcon,
+  GitCompareArrowsIcon,
+  HelpCircleIcon,
   InspectIcon,
+  LinkIcon,
   RefreshCwIcon,
   SearchIcon,
   ServerIcon,
@@ -49,6 +51,12 @@ import {
   type RunCompareModel,
   type RunCompareSignal,
 } from "@/run-compare-model";
+import {
+  buildEvidenceProvenanceModel,
+  type EvidenceProvenanceModel,
+  type ProvenanceAvailability,
+  type ProvenanceSource,
+} from "@/provenance-model";
 import { defaultLocalGaiaServerUrl } from "@/lib/local-gaia-client";
 import {
   localGaiaHealthQueryOptions,
@@ -201,6 +209,8 @@ export function DashboardShell() {
   );
   const [requestedComparisonRunId, setRequestedComparisonRunId] =
     React.useState<string | undefined>();
+  const [provenanceModeEnabled, setProvenanceModeEnabled] =
+    React.useState(false);
   const comparisonRunId = reconcileComparisonRunId({
     primaryRunId: selectedRunId,
     requestedComparisonRunId,
@@ -372,17 +382,21 @@ export function DashboardShell() {
 
   return (
     <TooltipProvider delay={250}>
-      <SidebarProvider className="h-svh min-h-0 flex-col overflow-hidden bg-background text-sm lg:flex-row">
+      <SidebarProvider className="h-svh min-h-0 flex-col overflow-y-auto bg-background text-sm lg:flex-row lg:overflow-hidden">
         <RunConsole
           selectedRunId={selectedRunId}
           serverConnection={serverConnection}
           onRefresh={refreshRunConsole}
           onSelectRun={selectRun}
         />
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col lg:overflow-hidden">
           <TopBar
+            provenanceModeEnabled={provenanceModeEnabled}
             selectedRun={selectedRun}
             serverConnection={serverConnection}
+            onToggleProvenanceMode={() =>
+              setProvenanceModeEnabled((enabled) => !enabled)
+            }
           />
           <RunReplayScrubber
             replayState={replayState}
@@ -397,6 +411,7 @@ export function DashboardShell() {
                 comparisonRunEventsQuery.isPending)
             }
             primaryRunId={selectedRunId}
+            provenanceModeEnabled={provenanceModeEnabled}
             runCompare={runCompare}
             runs={runConsole.runs}
             onSelectComparisonRun={setRequestedComparisonRunId}
@@ -405,7 +420,9 @@ export function DashboardShell() {
           <DesktopWorkspace
             runCanvas={runCanvas}
             runEventStream={runEventStream}
+            provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
+            runCompare={runCompare}
             selectedConsoleRun={selectedConsoleRun}
             selectedNode={selectedNode}
             selectedRun={selectedRun}
@@ -415,7 +432,9 @@ export function DashboardShell() {
           <MobileWorkspace
             runCanvas={runCanvas}
             runEventStream={runEventStream}
+            provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
+            runCompare={runCompare}
             selectedConsoleRun={selectedConsoleRun}
             selectedNode={selectedNode}
             selectedRun={selectedRun}
@@ -544,6 +563,7 @@ function RunComparePanel({
   comparisonRunId,
   comparisonRunIsLoading,
   primaryRunId,
+  provenanceModeEnabled,
   runCompare,
   runs,
   onSelectComparisonRun,
@@ -552,6 +572,7 @@ function RunComparePanel({
   readonly comparisonRunId: string | undefined;
   readonly comparisonRunIsLoading: boolean;
   readonly primaryRunId: string | undefined;
+  readonly provenanceModeEnabled: boolean;
   readonly runCompare: RunCompareModel;
   readonly runs: ReadonlyArray<RunConsoleRun>;
   readonly onSelectComparisonRun: (runId: string | undefined) => void;
@@ -603,6 +624,19 @@ function RunComparePanel({
             />
           </div>
         </div>
+        {provenanceModeEnabled ? (
+          <div
+            className="flex items-start gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+            data-testid="run-compare-provenance-callout"
+          >
+            <HelpCircleIcon className="mt-0.5 shrink-0" />
+            <span className="min-w-0">
+              Compare claims are derived from public run summaries, loaded event
+              lists, and allowlisted artifact names. Missing rows are labelled
+              unavailable instead of inferred.
+            </span>
+          </div>
+        ) : null}
         {!canCompare ? (
           <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
             At least two local runs are required for side-by-side comparison.
@@ -1042,11 +1076,15 @@ function RunConsoleRuns({
 }
 
 function TopBar({
+  provenanceModeEnabled,
   selectedRun,
   serverConnection,
+  onToggleProvenanceMode,
 }: {
+  readonly provenanceModeEnabled: boolean;
   readonly selectedRun: DashboardRun;
   readonly serverConnection: ServerConnectionState;
+  readonly onToggleProvenanceMode: () => void;
 }) {
   const selectedConsoleRun = serverConnection.selectedRun;
 
@@ -1069,6 +1107,16 @@ function TopBar({
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        <Button
+          aria-pressed={provenanceModeEnabled}
+          data-testid="provenance-mode-toggle"
+          onClick={onToggleProvenanceMode}
+          size="sm"
+          variant={provenanceModeEnabled ? "default" : "outline"}
+        >
+          <HelpCircleIcon data-icon="inline-start" />
+          Provenance
+        </Button>
         <Badge variant={serverBadgeVariant(serverConnection.runConsole.health)}>
           API {serverConnection.runConsole.health}
         </Badge>
@@ -1094,7 +1142,9 @@ function TopBar({
 function DesktopWorkspace({
   runCanvas,
   runEventStream,
+  provenanceModeEnabled,
   replayState,
+  runCompare,
   selectedConsoleRun,
   selectedRun,
   selectedNode,
@@ -1103,7 +1153,9 @@ function DesktopWorkspace({
 }: {
   readonly runCanvas: RunCanvasQueryState;
   readonly runEventStream: RunEventStreamState;
+  readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
+  readonly runCompare: RunCompareModel;
   readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedRun: DashboardRun;
   readonly selectedNode: RunNode | undefined;
@@ -1117,6 +1169,7 @@ function DesktopWorkspace({
           <ResizablePanelGroup orientation="horizontal">
             <ResizablePanel defaultSize="68%" minSize="44%">
               <RunCanvas
+                provenanceModeEnabled={provenanceModeEnabled}
                 queryState={runCanvas}
                 replayState={replayState}
                 selectedNode={selectedNode}
@@ -1127,10 +1180,13 @@ function DesktopWorkspace({
             <ResizableHandle withHandle />
             <ResizablePanel defaultSize="32%" minSize="24%">
               <EvidenceStudio
+                provenanceModeEnabled={provenanceModeEnabled}
                 replayState={replayState}
+                runCompare={runCompare}
                 selectedNode={selectedNode}
                 selectedRun={selectedRun}
                 serverUrl={serverUrl}
+                onSelectNode={onSelectNode}
               />
             </ResizablePanel>
           </ResizablePanelGroup>
@@ -1152,7 +1208,9 @@ function DesktopWorkspace({
 function MobileWorkspace({
   runCanvas,
   runEventStream,
+  provenanceModeEnabled,
   replayState,
+  runCompare,
   selectedConsoleRun,
   selectedRun,
   selectedNode,
@@ -1161,7 +1219,9 @@ function MobileWorkspace({
 }: {
   readonly runCanvas: RunCanvasQueryState;
   readonly runEventStream: RunEventStreamState;
+  readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
+  readonly runCompare: RunCompareModel;
   readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedRun: DashboardRun;
   readonly selectedNode: RunNode | undefined;
@@ -1169,9 +1229,10 @@ function MobileWorkspace({
   readonly onSelectNode: (nodeId: string) => void;
 }) {
   return (
-    <section className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:hidden">
+    <section className="flex min-h-0 flex-col lg:hidden">
       <div className="min-h-[22rem] shrink-0 border-b">
         <RunCanvas
+          provenanceModeEnabled={provenanceModeEnabled}
           queryState={runCanvas}
           replayState={replayState}
           selectedNode={selectedNode}
@@ -1181,10 +1242,13 @@ function MobileWorkspace({
       </div>
       <div className="min-h-[24rem] shrink-0 border-b">
         <EvidenceStudio
+          provenanceModeEnabled={provenanceModeEnabled}
           replayState={replayState}
+          runCompare={runCompare}
           selectedNode={selectedNode}
           selectedRun={selectedRun}
           serverUrl={serverUrl}
+          onSelectNode={onSelectNode}
         />
       </div>
       <div className="h-40 shrink-0">
@@ -1200,12 +1264,14 @@ function MobileWorkspace({
 }
 
 function RunCanvas({
+  provenanceModeEnabled,
   queryState,
   replayState,
   selectedRun,
   selectedNode,
   onSelectNode,
 }: {
+  readonly provenanceModeEnabled: boolean;
   readonly queryState: RunCanvasQueryState;
   readonly replayState: RunReplayState;
   readonly selectedRun: DashboardRun;
@@ -1213,8 +1279,14 @@ function RunCanvas({
   readonly onSelectNode: (nodeId: string) => void;
 }) {
   const nodes = React.useMemo(
-    () => toFlowNodes(selectedRun, selectedNode?.id, replayState),
-    [replayState, selectedRun, selectedNode?.id],
+    () =>
+      toFlowNodes(
+        selectedRun,
+        selectedNode?.id,
+        replayState,
+        provenanceModeEnabled,
+      ),
+    [provenanceModeEnabled, replayState, selectedRun, selectedNode?.id],
   );
   const edges = React.useMemo(() => toFlowEdges(selectedRun), [selectedRun]);
   const handleNodeClick = React.useCallback<NodeMouseHandler>(
@@ -1231,8 +1303,26 @@ function RunCanvas({
             Thread and evidence relationships for the selected run
           </p>
         </div>
-        <Badge variant="outline">{selectedRun.nodes.length} nodes</Badge>
+        <div className="flex shrink-0 items-center gap-2">
+          {provenanceModeEnabled ? (
+            <Badge variant="secondary">Provenance</Badge>
+          ) : null}
+          <Badge variant="outline">{selectedRun.nodes.length} nodes</Badge>
+        </div>
       </div>
+      {provenanceModeEnabled && selectedRun.nodes.length > 0 ? (
+        <div
+          className="flex shrink-0 items-start gap-2 border-b bg-background px-3 py-2 text-xs text-muted-foreground"
+          data-testid="run-canvas-provenance-callout"
+        >
+          <HelpCircleIcon className="mt-0.5 shrink-0" />
+          <span className="min-w-0">
+            Select any canvas claim, then use Evidence Studio provenance links
+            to jump to supporting events, artifacts, reports, or raw public API
+            fields.
+          </span>
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-hidden bg-muted/20">
         {queryState.detailError !== undefined ||
         queryState.eventsError !== undefined ? (
@@ -1288,15 +1378,21 @@ function RunCanvas({
 }
 
 function EvidenceStudio({
+  provenanceModeEnabled,
   replayState,
+  runCompare,
   selectedNode,
   selectedRun,
   serverUrl,
+  onSelectNode,
 }: {
+  readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
+  readonly runCompare: RunCompareModel;
   readonly selectedNode: RunNode | undefined;
   readonly selectedRun: DashboardRun;
   readonly serverUrl: string;
+  readonly onSelectNode: (nodeId: string) => void;
 }) {
   const [tab, setTab] = React.useState<EvidenceTab>("summary");
   const artifactIds = selectedNode?.artifacts ?? [];
@@ -1355,6 +1451,35 @@ function EvidenceStudio({
   }
 
   const relatedEvents = eventsForNode(selectedRun, selectedNode);
+  const provenance = buildEvidenceProvenanceModel({
+    relatedEvents,
+    replayState,
+    runCompare,
+    selectedNode,
+    selectedRun,
+  });
+
+  function selectProvenanceSource(source: ProvenanceSource) {
+    const target = source.target;
+    if (target === undefined) {
+      return;
+    }
+
+    if (target.type === "event") {
+      onSelectNode(target.eventId);
+      setTab("events");
+      return;
+    }
+
+    if (target.type === "artifact") {
+      onSelectNode(`artifact:${target.artifactId}`);
+      setRequestedArtifactId(target.artifactId);
+      setTab("artifacts");
+      return;
+    }
+
+    setTab("raw");
+  }
 
   return (
     <aside className="flex size-full min-h-0 flex-col">
@@ -1409,9 +1534,12 @@ function EvidenceStudio({
         <ScrollArea className="min-h-0 flex-1">
           <TabsContent className="m-0 p-3" value="summary">
             <EvidenceSummary
+              provenance={provenance}
+              provenanceModeEnabled={provenanceModeEnabled}
               replayState={replayState}
               relatedEvents={relatedEvents}
               selectedNode={selectedNode}
+              onSelectProvenanceSource={selectProvenanceSource}
             />
           </TabsContent>
           <TabsContent className="m-0 p-3" value="events">
@@ -1443,6 +1571,7 @@ function EvidenceStudio({
                   visibleEventIds: replayState.visibleEventIds,
                 },
                 relatedEvents,
+                provenance: provenanceModeEnabled ? provenance : undefined,
                 runId: selectedRun.id,
               })}
             </pre>
@@ -1454,13 +1583,19 @@ function EvidenceStudio({
 }
 
 function EvidenceSummary({
+  provenance,
+  provenanceModeEnabled,
   replayState,
   relatedEvents,
   selectedNode,
+  onSelectProvenanceSource,
 }: {
+  readonly provenance: EvidenceProvenanceModel;
+  readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
   readonly relatedEvents: ReadonlyArray<DashboardEvent>;
   readonly selectedNode: RunNode;
+  readonly onSelectProvenanceSource: (source: ProvenanceSource) => void;
 }) {
   const visibleRelatedEvents = relatedEvents.filter((event) =>
     replayState.visibleEventIds.includes(event.id),
@@ -1480,6 +1615,15 @@ function EvidenceSummary({
         </p>
       </div>
       <Separator />
+      {provenanceModeEnabled ? (
+        <>
+          <ProvenancePanel
+            provenance={provenance}
+            onSelectSource={onSelectProvenanceSource}
+          />
+          <Separator />
+        </>
+      ) : null}
       <div
         className="rounded-md border bg-background p-3"
         data-testid="evidence-replay-context"
@@ -1557,6 +1701,90 @@ function EvidenceList({
         </li>
       ))}
     </ul>
+  );
+}
+
+function ProvenancePanel({
+  provenance,
+  onSelectSource,
+}: {
+  readonly provenance: EvidenceProvenanceModel;
+  readonly onSelectSource: (source: ProvenanceSource) => void;
+}) {
+  return (
+    <section
+      className="flex flex-col gap-3"
+      data-testid="evidence-provenance-panel"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium uppercase text-muted-foreground">
+            Provenance
+          </p>
+          <p className="mt-1 truncate text-sm font-medium">
+            Why the dashboard says this
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+          <Badge variant="secondary">{provenance.supportedCount} proven</Badge>
+          <Badge variant="outline">
+            {provenance.unavailableCount} unavailable
+          </Badge>
+          <Badge variant="outline">
+            {provenance.unsupportedCount} unsupported
+          </Badge>
+        </div>
+      </div>
+      <div className="flex flex-col gap-2">
+        {provenance.claims.map((claim) => (
+          <section
+            className="rounded-md border bg-background p-3"
+            data-testid={`provenance-claim-${claim.id}`}
+            key={claim.id}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{claim.label}</p>
+                <p className="mt-1 truncate text-xs text-muted-foreground">
+                  {claim.value}
+                </p>
+              </div>
+              <Badge variant={provenanceBadgeVariant(claim.availability)}>
+                {provenanceAvailabilityLabel(claim.availability)}
+              </Badge>
+            </div>
+            <div className="mt-3 flex flex-col gap-2">
+              {claim.sources.map((source, index) => (
+                <div
+                  className="flex min-w-0 items-center gap-2 rounded-md border bg-muted/30 px-2 py-2"
+                  key={`${source.kind}:${source.label}:${index}`}
+                >
+                  <Badge variant="outline">{sourceKindLabel(source.kind)}</Badge>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-medium">
+                      {source.label}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {source.detail}
+                    </p>
+                  </div>
+                  <Button
+                    aria-label={`Show ${source.label}`}
+                    disabled={source.target === undefined}
+                    onClick={() => onSelectSource(source)}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <LinkIcon data-icon="inline-start" />
+                    Source
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -2047,39 +2275,52 @@ function toFlowNodes(
   run: DashboardRun,
   selectedNodeId: string | undefined,
   replayState: RunReplayState,
+  provenanceModeEnabled: boolean,
 ): Array<Node<{ label: React.ReactNode }>> {
   const futureEventIds = new Set(replayState.futureEventIds);
   const visibleEventIds = new Set(replayState.visibleEventIds);
 
-  return run.nodes.map((node) => ({
-    id: node.id,
-    position: node.position,
-    data: {
-      label: (
-        <div className="flex min-w-52 max-w-64 flex-col gap-2 text-left">
-          <div className="flex items-center justify-between gap-3">
-            <span className="truncate text-sm font-semibold">{node.label}</span>
-            <Badge variant={statusBadgeVariant(node.status)}>
-              {statusLabels[node.status]}
-            </Badge>
+  return run.nodes.map((node) => {
+    const sourceCount = Math.max(
+      node.eventIds.length + node.artifacts.length + node.evidence.length,
+      1,
+    );
+
+    return {
+      id: node.id,
+      position: node.position,
+      data: {
+        label: (
+          <div className="flex min-w-52 max-w-64 flex-col gap-2 text-left">
+            <div className="flex items-center justify-between gap-3">
+              <span className="truncate text-sm font-semibold">
+                {node.label}
+              </span>
+              <Badge variant={statusBadgeVariant(node.status)}>
+                {statusLabels[node.status]}
+              </Badge>
+            </div>
+            <span className="text-xs text-muted-foreground">
+              {roleLabel(node)}
+            </span>
+            {provenanceModeEnabled ? (
+              <Badge variant="outline">Why: {sourceCount} sources</Badge>
+            ) : null}
           </div>
-          <span className="text-xs text-muted-foreground">
-            {roleLabel(node)}
-          </span>
-        </div>
+        ),
+      },
+      type: node.role === "orchestrator" ? "input" : "default",
+      className: cn(
+        "rounded-lg border bg-background px-2 py-1 shadow-sm",
+        node.id === replayState.activeEventId && "ring-2 ring-primary",
+        node.eventIds.length > 0 &&
+          !node.eventIds.some((eventId) => visibleEventIds.has(eventId)) &&
+          "opacity-50",
+        node.role === "event" && futureEventIds.has(node.id) && "opacity-50",
+        node.id === selectedNodeId && "ring-2 ring-ring",
       ),
-    },
-    type: node.role === "orchestrator" ? "input" : "default",
-    className: cn(
-      "rounded-lg border bg-background px-2 py-1 shadow-sm",
-      node.id === replayState.activeEventId && "ring-2 ring-primary",
-      node.eventIds.length > 0 &&
-        !node.eventIds.some((eventId) => visibleEventIds.has(eventId)) &&
-        "opacity-50",
-      node.role === "event" && futureEventIds.has(node.id) && "opacity-50",
-      node.id === selectedNodeId && "ring-2 ring-ring",
-    ),
-  }));
+    };
+  });
 }
 
 function toFlowEdges(run: DashboardRun): Array<Edge> {
@@ -2119,6 +2360,39 @@ function localRunBadgeVariant(
   }
 
   return "outline";
+}
+
+function provenanceBadgeVariant(
+  availability: ProvenanceAvailability,
+): "destructive" | "outline" | "secondary" {
+  if (availability === "supported") {
+    return "secondary";
+  }
+
+  if (availability === "unsupported") {
+    return "destructive";
+  }
+
+  return "outline";
+}
+
+function provenanceAvailabilityLabel(availability: ProvenanceAvailability) {
+  if (availability === "supported") {
+    return "Proven";
+  }
+
+  if (availability === "unsupported") {
+    return "Unsupported";
+  }
+
+  return "Unavailable";
+}
+
+function sourceKindLabel(kind: ProvenanceSource["kind"]) {
+  return kind
+    .split("-")
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
 }
 
 type RunCanvasQueryState = {
