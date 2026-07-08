@@ -2,12 +2,23 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
+  FactoryActivityDto,
+  FactoryArtifactBodyDto,
+  FactoryArtifactDto,
+  FactoryGraphDto,
   LocalRunApiErrorEnvelope,
   LocalRunArtifactDto,
   LocalRunReadDiagnosticDto,
   LocalRunSummaryDto,
 } from "@gaia/core";
-import { RunIdSchema, makeRunEvent } from "@gaia/core";
+import {
+  FactoryActivityIdSchema,
+  FactoryAgentIdSchema,
+  FactoryArtifactIdSchema,
+  FactoryWorkItemIdSchema,
+  RunIdSchema,
+  makeRunEvent,
+} from "@gaia/core";
 import {
   act,
   cleanup,
@@ -25,6 +36,15 @@ import type { DashboardGaiaClientError } from "@/lib/local-gaia-client";
 const queryFixture = vi.hoisted(
   (): {
     artifactsByRunId: Record<string, Record<string, unknown>>;
+    factoryActivitiesByRunId: Record<string, ReadonlyArray<unknown>>;
+    factoryAgentActivitiesByRunId: Record<string, Record<string, ReadonlyArray<unknown>>>;
+    factoryArtifactBodyRequests: Array<{
+      readonly artifactId: string;
+      readonly runId: string;
+    }>;
+    factoryArtifactBodiesByRunId: Record<string, Record<string, unknown>>;
+    factoryArtifactsByRunId: Record<string, ReadonlyArray<unknown>>;
+    factoryGraphsByRunId: Record<string, unknown>;
     eventsByRunId: Record<string, ReadonlyArray<unknown>>;
     healthError?: unknown;
     runs: ReadonlyArray<unknown>;
@@ -32,6 +52,12 @@ const queryFixture = vi.hoisted(
     runsError?: unknown;
   } => ({
     artifactsByRunId: {},
+    factoryActivitiesByRunId: {},
+    factoryAgentActivitiesByRunId: {},
+    factoryArtifactBodyRequests: [],
+    factoryArtifactBodiesByRunId: {},
+    factoryArtifactsByRunId: {},
+    factoryGraphsByRunId: {},
     eventsByRunId: {},
     healthError: undefined,
     runs: [],
@@ -145,6 +171,112 @@ vi.mock("@/lib/local-gaia-query", () => ({
     ] as const,
     retry: false,
   }),
+  localGaiaFactoryGraphQueryOptions: (config: { readonly runId: string }) => ({
+    enabled: config.runId.length > 0,
+    queryFn: () =>
+      Promise.resolve({
+        data: queryFixture.factoryGraphsByRunId[config.runId],
+        status: "success",
+      }),
+    queryKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "factory-graph",
+    ] as const,
+    retry: false,
+  }),
+  localGaiaFactoryRunActivityQueryOptions: (config: {
+    readonly runId: string;
+  }) => ({
+    enabled: config.runId.length > 0,
+    queryFn: () =>
+      Promise.resolve({
+        data: {
+          activities: queryFixture.factoryActivitiesByRunId[config.runId] ?? [],
+          runId: config.runId,
+        },
+        status: "success",
+      }),
+    queryKey: ["local-gaia", "runs", "detail", config.runId, "activity"] as const,
+    retry: false,
+  }),
+  localGaiaFactoryAgentActivityQueryOptions: (config: {
+    readonly agentId: string;
+    readonly runId: string;
+  }) => ({
+    enabled: config.runId.length > 0 && config.agentId.length > 0,
+    queryFn: () =>
+      Promise.resolve({
+        data: {
+          activities:
+            queryFixture.factoryAgentActivitiesByRunId[config.runId]?.[
+              config.agentId
+            ] ?? [],
+          runId: config.runId,
+        },
+        status: "success",
+      }),
+    queryKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "agents",
+      config.agentId,
+      "activity",
+    ] as const,
+    retry: false,
+  }),
+  localGaiaFactoryArtifactsQueryOptions: (config: {
+    readonly runId: string;
+  }) => ({
+    enabled: config.runId.length > 0,
+    queryFn: () =>
+      Promise.resolve({
+        data: {
+          artifacts: queryFixture.factoryArtifactsByRunId[config.runId] ?? [],
+          runId: config.runId,
+        },
+        status: "success",
+      }),
+    queryKey: ["local-gaia", "runs", "detail", config.runId, "artifacts"] as const,
+    retry: false,
+  }),
+  localGaiaFactoryArtifactQueryOptions: (config: {
+    readonly artifactId: string;
+    readonly runId: string;
+  }) => ({
+    enabled: config.runId.length > 0 && config.artifactId.length > 0,
+    queryFn: () => {
+      queryFixture.factoryArtifactBodyRequests.push({
+        artifactId: config.artifactId,
+        runId: config.runId,
+      });
+
+      return Promise.resolve({
+        data: queryFixture.factoryArtifactBodiesByRunId[config.runId]?.[
+          config.artifactId
+        ] ?? {
+          artifactId: config.artifactId,
+          body: `${config.artifactId} factory artifact body`,
+          contentType: "text/markdown",
+          runId: config.runId,
+        },
+        status: "success",
+      });
+    },
+    queryKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "artifacts",
+      config.artifactId,
+    ] as const,
+    retry: false,
+  }),
 }));
 
 beforeEach(() => {
@@ -156,6 +288,116 @@ afterEach(() => {
 });
 
 describe("DashboardShell Run Console", () => {
+  it("renders FactoryGraph topology and agent evidence from public factory reads", async () => {
+    const runId = parseRunId("run-9090909090");
+    const workerId = agentId("agent-worker");
+    const artifactId = artifactIdValue("artifact-summary");
+    const view = renderDashboardWithQueries({
+      factoryActivitiesByRunId: {
+        [runId]: [
+          factoryActivity({
+            activityId: activityId("activity-root"),
+            label: "Issue delivery graph created",
+            runId,
+            workItemId: workItemId("work-root"),
+          }),
+        ],
+      },
+      factoryAgentActivitiesByRunId: {
+        [runId]: {
+          [workerId]: [
+            factoryActivity({
+              activityId: activityId("activity-worker"),
+              agentId: workerId,
+              artifactIds: [artifactId],
+              label: "Worker produced code summary",
+              runId,
+            }),
+          ],
+        },
+      },
+      factoryArtifactBodiesByRunId: {
+        [runId]: {
+          [artifactId]: factoryArtifactBody({
+            artifactId,
+            body: "Worker summary body from the factory artifact endpoint.",
+            runId,
+          }),
+        },
+      },
+      factoryArtifactsByRunId: {
+        [runId]: [
+          factoryArtifact({
+            artifactId,
+            label: "Code summary",
+            ownerAgentId: workerId,
+          }),
+        ],
+      },
+      factoryGraphsByRunId: {
+        [runId]: factoryGraph({
+          runId,
+          workerArtifactId: artifactId,
+          workerId,
+        }),
+      },
+      runs: [
+        localRunSummary({
+          artifacts: [],
+          eventCount: 0,
+          latestEventType: "RUN_CREATED",
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+
+    expect(await screen.findAllByText("Refactor dashboard canvas")).not.toHaveLength(0);
+    expect(await screen.findAllByText("Issue orchestrator")).not.toHaveLength(0);
+    expect(await screen.findAllByText("Worker")).not.toHaveLength(0);
+    expect(screen.queryByText("Run root")).toBeNull();
+    expect(screen.queryByText("Worker lane")).toBeNull();
+    expect(screen.queryByTestId("event-strip-event-1")).toBeNull();
+
+    const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
+    if (workerNode === null) {
+      throw new Error("Expected a worker FactoryGraph node.");
+    }
+    fireEvent.click(workerNode);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
+      expect(screen.getAllByText("Code summary")).not.toHaveLength(0);
+    });
+
+    for (const artifactsTab of screen.getAllByRole("tab", {
+      name: "Artifacts",
+    })) {
+      fireEvent.pointerDown(artifactsTab);
+      fireEvent.mouseDown(artifactsTab);
+      fireEvent.mouseUp(artifactsTab);
+      fireEvent.click(artifactsTab);
+    }
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "Code summary" })).not.toHaveLength(0);
+      expect(screen.getAllByText("Select an artifact")).not.toHaveLength(0);
+    });
+    expect(queryFixture.factoryArtifactBodyRequests).toEqual([]);
+
+    fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Code summary" })));
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Worker summary body from the factory artifact endpoint.")).not.toHaveLength(0);
+    });
+    expect(queryFixture.factoryArtifactBodyRequests).toContainEqual({
+      artifactId,
+      runId,
+    });
+  });
+
   it("renders typed runs data and updates selected run state on row click", async () => {
     const firstRunId = parseRunId("run-1111111111");
     const secondRunId = parseRunId("run-2222222222");
@@ -230,26 +472,20 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
       "#2 · 2026-07-07T12:01:00.000Z",
     );
-    expect(await screen.findAllByText("Run root")).not.toHaveLength(0);
-    const workerLabels = await screen.findAllByText("Worker lane");
+    expect(await screen.findAllByText("Refactor dashboard canvas")).not.toHaveLength(0);
+    const workerLabels = await screen.findAllByText("Worker");
     expect(workerLabels).not.toHaveLength(0);
-    expect(
-      screen.getAllByText("Thread identities unavailable"),
-    ).not.toHaveLength(0);
+    expect(screen.queryByText("Run root")).toBeNull();
 
-    const workerNode = view.container.querySelector('[data-id="lane:worker"]');
+    const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
     if (workerNode === null) {
-      throw new Error("Expected a worker lane node.");
+      throw new Error("Expected a worker FactoryGraph node.");
     }
 
     fireEvent.click(workerNode);
 
     await waitFor(() => {
-      expect(
-        screen.getAllByText(
-          "Worker activity is inferred from durable worker events and worker artifacts. No private thread identity is exposed.",
-        ),
-      ).not.toHaveLength(0);
+      expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
     });
     for (const artifactsTab of screen.getAllByRole("tab", {
       name: "Artifacts",
@@ -261,16 +497,16 @@ describe("DashboardShell Run Console", () => {
     }
     await waitFor(() => {
       expect(
-        screen.getAllByRole("button", { name: "Worker Plan" }),
+        screen.getAllByRole("button", { name: "Code summary" }),
       ).not.toHaveLength(0);
     });
     fireEvent.click(
-      firstElement(screen.getAllByRole("button", { name: "Worker Plan" })),
+      firstElement(screen.getAllByRole("button", { name: "Code summary" })),
     );
 
     await waitFor(() => {
       expect(
-        screen.getAllByText("Worker plan body from the allowlisted API."),
+        screen.getAllByText("artifact-summary factory artifact body"),
       ).not.toHaveLength(0);
     });
 
@@ -300,7 +536,7 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
-  it("shows provenance mode and navigates claim sources to events and artifacts", async () => {
+  it("shows provenance mode around FactoryGraph topology and evidence", async () => {
     const runId = parseRunId("run-1212121212");
     const view = renderDashboardWithQueries({
       eventsByRunId: {
@@ -359,14 +595,12 @@ describe("DashboardShell Run Console", () => {
     expect(
       firstElement(await screen.findAllByTestId("run-canvas-provenance-callout"))
         .textContent,
-    ).toContain(
-      "supporting events, artifacts, reports, or raw public API fields",
-    );
-    expect(await screen.findAllByText("Worker lane")).not.toHaveLength(0);
+    ).toContain("public FactoryGraph projection");
+    expect(await screen.findAllByText("Worker")).not.toHaveLength(0);
 
-    const workerNode = view.container.querySelector('[data-id="lane:worker"]');
+    const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
     if (workerNode === null) {
-      throw new Error("Expected a worker lane node.");
+      throw new Error("Expected a worker FactoryGraph node.");
     }
     fireEvent.click(workerNode);
 
@@ -374,51 +608,25 @@ describe("DashboardShell Run Console", () => {
       await screen.findAllByTestId("evidence-provenance-panel"),
     );
     expect(provenancePanel.textContent).toContain(
-      "Why the dashboard says this",
-    );
-    expect(
-      firstElement(
-        screen.getAllByTestId("provenance-claim-node-status:lane:worker"),
-      ).textContent,
-    ).toContain("Proven");
-
-    fireEvent.click(
-      firstElement(
-        screen.getAllByRole("button", { name: "Show Worker Completed" }),
-      ),
+      "FactoryGraph topology is provided by the public graph endpoint",
     );
 
-    await waitFor(() => {
-      expect(screen.getByTestId("evidence-event-2").textContent).toContain(
-        "Worker Completed",
-      );
-    });
-
-    fireEvent.click(workerNode);
-    fireEvent.click(
-      firstElement(screen.getAllByRole("button", { name: "Show Worker Plan" })),
-    );
-
-    await waitFor(() => {
-      expect(
-        screen.getByTestId("evidence-artifact-content").textContent,
-      ).toContain("worker-plan artifact body");
-    });
-
-    const threadIdentityNode = view.container.querySelector(
-      '[data-id="relationship:thread-identity"]',
-    );
-    if (threadIdentityNode === null) {
-      throw new Error("Expected a thread identity unavailable node.");
+    for (const artifactsTab of screen.getAllByRole("tab", {
+      name: "Artifacts",
+    })) {
+      fireEvent.pointerDown(artifactsTab);
+      fireEvent.mouseDown(artifactsTab);
+      fireEvent.mouseUp(artifactsTab);
+      fireEvent.click(artifactsTab);
     }
-    fireEvent.click(threadIdentityNode);
-
+    fireEvent.click(
+      firstElement(screen.getAllByRole("button", { name: "Code summary" })),
+    );
     await waitFor(() => {
       expect(
-        firstElement(
-          screen.getAllByTestId("provenance-claim-thread-identity"),
-        ).textContent,
-      ).toContain("Unsupported by current public API");
+        firstElement(screen.getAllByTestId("evidence-artifact-content"))
+          .textContent,
+      ).toContain("artifact-summary factory artifact body");
     });
   });
 
@@ -801,6 +1009,17 @@ function renderDashboardWithQueries(input: {
     Record<string, typeof LocalRunArtifactDto.Type>
   >;
   readonly eventsByRunId?: Record<string, ReadonlyArray<unknown>>;
+  readonly factoryActivitiesByRunId?: Record<string, ReadonlyArray<typeof FactoryActivityDto.Type>>;
+  readonly factoryAgentActivitiesByRunId?: Record<
+    string,
+    Record<string, ReadonlyArray<typeof FactoryActivityDto.Type>>
+  >;
+  readonly factoryArtifactBodiesByRunId?: Record<
+    string,
+    Record<string, typeof FactoryArtifactBodyDto.Type>
+  >;
+  readonly factoryArtifactsByRunId?: Record<string, ReadonlyArray<typeof FactoryArtifactDto.Type>>;
+  readonly factoryGraphsByRunId?: Record<string, typeof FactoryGraphDto.Type>;
   readonly healthError?: DashboardGaiaClientError;
   readonly runs: ReadonlyArray<typeof LocalRunSummaryDto.Type>;
   readonly runsDiagnostics?: ReadonlyArray<
@@ -809,6 +1028,20 @@ function renderDashboardWithQueries(input: {
   readonly runsError?: DashboardGaiaClientError;
 }) {
   queryFixture.artifactsByRunId = input.artifactsByRunId ?? {};
+  queryFixture.factoryArtifactBodyRequests = [];
+  const defaultFactoryData = defaultFactoryDataForRuns(input.runs);
+  queryFixture.factoryActivitiesByRunId =
+    input.factoryActivitiesByRunId ?? defaultFactoryData.activitiesByRunId;
+  queryFixture.factoryAgentActivitiesByRunId =
+    input.factoryAgentActivitiesByRunId ??
+    defaultFactoryData.agentActivitiesByRunId;
+  queryFixture.factoryArtifactBodiesByRunId =
+    input.factoryArtifactBodiesByRunId ??
+    defaultFactoryData.artifactBodiesByRunId;
+  queryFixture.factoryArtifactsByRunId =
+    input.factoryArtifactsByRunId ?? defaultFactoryData.artifactsByRunId;
+  queryFixture.factoryGraphsByRunId =
+    input.factoryGraphsByRunId ?? defaultFactoryData.graphsByRunId;
   queryFixture.eventsByRunId = input.eventsByRunId ?? {};
   queryFixture.healthError = input.healthError;
   queryFixture.runs = input.runs;
@@ -885,6 +1118,220 @@ function localRunDiagnostic(
 
 function parseRunId(value: string): typeof RunIdSchema.Type {
   return Schema.decodeUnknownSync(RunIdSchema)(value);
+}
+
+function defaultFactoryDataForRuns(
+  runs: ReadonlyArray<typeof LocalRunSummaryDto.Type>,
+) {
+  const workerId = agentId("agent-worker");
+  const workerArtifactId = artifactIdValue("artifact-summary");
+  const activitiesByRunId: Record<string, ReadonlyArray<typeof FactoryActivityDto.Type>> =
+    {};
+  const agentActivitiesByRunId: Record<
+    string,
+    Record<string, ReadonlyArray<typeof FactoryActivityDto.Type>>
+  > = {};
+  const artifactBodiesByRunId: Record<
+    string,
+    Record<string, typeof FactoryArtifactBodyDto.Type>
+  > = {};
+  const artifactsByRunId: Record<string, ReadonlyArray<typeof FactoryArtifactDto.Type>> =
+    {};
+  const graphsByRunId: Record<string, typeof FactoryGraphDto.Type> = {};
+
+  for (const run of runs) {
+    activitiesByRunId[run.runId] = [
+      factoryActivity({
+        activityId: activityId("activity-root"),
+        label: "FactoryGraph topology available",
+        runId: run.runId,
+        workItemId: workItemId("work-root"),
+      }),
+    ];
+    agentActivitiesByRunId[run.runId] = {
+      [workerId]: [
+        factoryActivity({
+          activityId: activityId("activity-worker"),
+          agentId: workerId,
+          artifactIds: [workerArtifactId],
+          label: "Worker produced code summary",
+          runId: run.runId,
+        }),
+      ],
+    };
+    artifactBodiesByRunId[run.runId] = {
+      [workerArtifactId]: factoryArtifactBody({
+        artifactId: workerArtifactId,
+        body: "artifact-summary factory artifact body",
+        runId: run.runId,
+      }),
+    };
+    artifactsByRunId[run.runId] = [
+      factoryArtifact({
+        artifactId: workerArtifactId,
+        label: "Code summary",
+        ownerAgentId: workerId,
+      }),
+    ];
+    graphsByRunId[run.runId] = factoryGraph({
+      runId: run.runId,
+      workerArtifactId,
+      workerId,
+    });
+  }
+
+  return {
+    activitiesByRunId,
+    agentActivitiesByRunId,
+    artifactBodiesByRunId,
+    artifactsByRunId,
+    graphsByRunId,
+  };
+}
+
+function activityId(value: string): typeof FactoryActivityDto.Type.activityId {
+  return Schema.decodeUnknownSync(FactoryActivityIdSchema)(value);
+}
+
+function agentId(value: string): typeof FactoryAgentIdSchema.Type {
+  return Schema.decodeUnknownSync(FactoryAgentIdSchema)(value);
+}
+
+function artifactIdValue(value: string): typeof FactoryArtifactIdSchema.Type {
+  return Schema.decodeUnknownSync(FactoryArtifactIdSchema)(value);
+}
+
+function workItemId(value: string): typeof FactoryWorkItemIdSchema.Type {
+  return Schema.decodeUnknownSync(FactoryWorkItemIdSchema)(value);
+}
+
+function factoryActivity(
+  input: Partial<typeof FactoryActivityDto.Type> & {
+    readonly activityId: typeof FactoryActivityDto.Type.activityId;
+    readonly label: string;
+    readonly runId: typeof RunIdSchema.Type;
+  },
+): typeof FactoryActivityDto.Type {
+  return {
+    artifactIds: [],
+    kind: "factory.activity",
+    sequence: 1,
+    state: "running",
+    timestamp: "2026-07-08T12:00:00.000Z",
+    ...input,
+    activityId: input.activityId,
+    label: input.label,
+    runId: input.runId,
+  };
+}
+
+function factoryArtifact(
+  input: Partial<typeof FactoryArtifactDto.Type> & {
+    readonly artifactId: typeof FactoryArtifactDto.Type.artifactId;
+    readonly label: string;
+    readonly ownerAgentId: typeof FactoryArtifactDto.Type.ownerAgentId;
+  },
+): typeof FactoryArtifactDto.Type {
+  return {
+    contentType: "text/markdown",
+    createdAt: "2026-07-08T12:01:00.000Z",
+    kind: "codeSummary",
+    visibility: "run",
+    ...input,
+    artifactId: input.artifactId,
+    label: input.label,
+    ownerAgentId: input.ownerAgentId,
+  };
+}
+
+function factoryArtifactBody(
+  input: Partial<typeof FactoryArtifactBodyDto.Type> & {
+    readonly artifactId: typeof FactoryArtifactBodyDto.Type.artifactId;
+    readonly body: string;
+    readonly runId: typeof RunIdSchema.Type;
+  },
+): typeof FactoryArtifactBodyDto.Type {
+  return {
+    contentType: "text/markdown",
+    ...input,
+    artifactId: input.artifactId,
+    body: input.body,
+    runId: input.runId,
+  };
+}
+
+function factoryGraph(input: {
+  readonly runId: typeof RunIdSchema.Type;
+  readonly workerArtifactId: typeof FactoryArtifactDto.Type.artifactId;
+  readonly workerId: typeof FactoryArtifactDto.Type.ownerAgentId;
+}): typeof FactoryGraphDto.Type {
+  const rootWorkItemId = workItemId("work-root");
+  const orchestratorId = agentId("agent-orchestrator");
+
+  return {
+    agents: [
+      {
+        artifactCount: 0,
+        id: orchestratorId,
+        role: "orchestrator",
+        state: "running",
+        subState: "coordinating issue delivery",
+        title: "Issue orchestrator",
+        workItemId: rootWorkItemId,
+      },
+      {
+        artifactCount: 1,
+        id: input.workerId,
+        latestActivityId: activityId("activity-worker"),
+        parentAgentId: orchestratorId,
+        role: "worker",
+        state: "succeeded",
+        subState: "code summary ready",
+        title: "Worker",
+        workItemId: rootWorkItemId,
+      },
+    ],
+    diagnostics: [],
+    edges: [
+      {
+        id: "edge-owns",
+        sourceId: "agent-orchestrator",
+        targetId: "work-root",
+        type: "owns",
+      },
+      {
+        id: "edge-spawned",
+        sourceId: "agent-orchestrator",
+        targetId: "agent-worker",
+        type: "spawned",
+      },
+      {
+        id: "edge-produced",
+        sourceId: "agent-worker",
+        targetId: input.workerArtifactId,
+        type: "produced",
+      },
+    ],
+    linkedArtifacts: [
+      factoryArtifact({
+        artifactId: input.workerArtifactId,
+        label: "Code summary",
+        ownerAgentId: input.workerId,
+      }),
+    ],
+    runId: input.runId,
+    version: 1,
+    workflow: "issueDelivery",
+    workItems: [
+      {
+        description: "Replace legacy event-node canvas with FactoryGraph topology.",
+        externalRefs: [],
+        id: rootWorkItemId,
+        kind: "issue",
+        title: "Refactor dashboard canvas",
+      },
+    ],
+  };
 }
 
 type MockEventSourceInstance = {

@@ -7,7 +7,12 @@ import {
   type NodeMouseHandler,
 } from "@xyflow/react";
 import { useQuery } from "@tanstack/react-query";
-import { RunEvent, type LocalRunArtifactDto } from "@gaia/core";
+import {
+  type FactoryActivityDto,
+  type FactoryArtifactBodyDto,
+  type FactoryArtifactDto,
+  RunEvent,
+} from "@gaia/core";
 import { Option, Schema } from "effect";
 import {
   ActivityIcon,
@@ -21,7 +26,6 @@ import {
   GitCompareArrowsIcon,
   HelpCircleIcon,
   InspectIcon,
-  LinkIcon,
   RefreshCwIcon,
   SearchIcon,
   ServerIcon,
@@ -30,37 +34,40 @@ import {
 import * as React from "react";
 
 import {
-  type DashboardArtifactId,
-  type DashboardEvent,
   type DashboardRun,
   type EvidenceTab,
   type RunReplayState,
-  type RunNode,
   type RunStatus,
   buildRunCanvasModel,
   buildRunReplayState,
   eventTypeLabel,
-  eventsForNode,
-  getInitialNode,
   isTerminalRunEvent,
   mergeRunEvents,
   stateLabel,
 } from "@/run-canvas-model";
 import {
+  buildFactoryCanvasModel,
+  type FactoryCanvasModel,
+  type FactoryCanvasNode,
+} from "@/factory-canvas-model";
+import {
+  factoryAgentRoleVisual,
+  factoryAgentStateBadgeVariant,
+  factoryAgentStateLabel,
+} from "@/factory-agent-visuals";
+import {
   buildRunCompareModel,
   type RunCompareModel,
   type RunCompareSignal,
 } from "@/run-compare-model";
-import {
-  buildEvidenceProvenanceModel,
-  type EvidenceProvenanceModel,
-  type ProvenanceAvailability,
-  type ProvenanceSource,
-} from "@/provenance-model";
 import { defaultLocalGaiaServerUrl } from "@/lib/local-gaia-client";
 import {
+  localGaiaFactoryAgentActivityQueryOptions,
+  localGaiaFactoryArtifactQueryOptions,
+  localGaiaFactoryArtifactsQueryOptions,
+  localGaiaFactoryGraphQueryOptions,
+  localGaiaFactoryRunActivityQueryOptions,
   localGaiaHealthQueryOptions,
-  localGaiaRunArtifactQueryOptions,
   localGaiaRunEventsQueryOptions,
   localGaiaRunQueryOptions,
   localGaiaRunsQueryOptions,
@@ -148,10 +155,6 @@ function signalBadgeVariant(
   return "outline";
 }
 
-function roleLabel(node: RunNode) {
-  return `${node.role[0]?.toUpperCase() ?? ""}${node.role.slice(1)}`;
-}
-
 function reconcileComparisonRunId(input: {
   readonly primaryRunId: string | undefined;
   readonly requestedComparisonRunId: string | undefined;
@@ -236,6 +239,24 @@ export function DashboardShell() {
       serverUrl,
     }),
   );
+  const selectedFactoryGraphQuery = useQuery(
+    localGaiaFactoryGraphQueryOptions({
+      runId: selectedRunId ?? "",
+      serverUrl,
+    }),
+  );
+  const selectedFactoryRunActivityQuery = useQuery(
+    localGaiaFactoryRunActivityQueryOptions({
+      runId: selectedRunId ?? "",
+      serverUrl,
+    }),
+  );
+  const selectedFactoryArtifactsQuery = useQuery(
+    localGaiaFactoryArtifactsQueryOptions({
+      runId: selectedRunId ?? "",
+      serverUrl,
+    }),
+  );
   const selectedRunEventsQuery = useQuery(
     localGaiaRunEventsQueryOptions({
       runId: selectedRunId ?? "",
@@ -313,15 +334,29 @@ export function DashboardShell() {
   const [selectedNodeId, setSelectedNodeId] = React.useState<
     string | undefined
   >();
-  const selectedNode =
-    selectedRun.nodes.find((node) => node.id === selectedNodeId) ??
-    getInitialNode(selectedRun);
+  const selectedFactoryCanvas = React.useMemo(
+    () =>
+      selectedFactoryGraphQuery.data?.data === undefined
+        ? undefined
+        : buildFactoryCanvasModel(selectedFactoryGraphQuery.data.data),
+    [selectedFactoryGraphQuery.data?.data],
+  );
+  const selectedFactoryNode =
+    selectedFactoryCanvas?.nodes.find((node) => node.id === selectedNodeId) ??
+    selectedFactoryCanvas?.nodes[0];
+  const selectedFactoryAgentActivityQuery = useQuery(
+    localGaiaFactoryAgentActivityQueryOptions({
+      agentId:
+        selectedFactoryNode?.kind === "agent" ? selectedFactoryNode.rawId : "",
+      runId: selectedRunId ?? "",
+      serverUrl,
+    }),
+  );
   const runCanvas = {
-    detailError: dashboardQueryFailure(selectedRunDetailQuery.error),
-    eventsError: dashboardQueryFailure(selectedRunEventsQuery.error),
+    diagnostics: selectedFactoryCanvas?.diagnostics ?? [],
+    graphError: dashboardQueryFailure(selectedFactoryGraphQuery.error),
     isLoading:
-      selectedRunId !== undefined &&
-      (selectedRunDetailQuery.isPending || selectedRunEventsQuery.isPending),
+      selectedRunId !== undefined && selectedFactoryGraphQuery.isPending,
   };
   const terminalStreamEventKey =
     runEventStream.terminalEvent === undefined
@@ -330,6 +365,10 @@ export function DashboardShell() {
   const refetchRuns = runsQuery.refetch;
   const refetchSelectedRunDetail = selectedRunDetailQuery.refetch;
   const refetchSelectedRunEvents = selectedRunEventsQuery.refetch;
+  const refetchSelectedFactoryGraph = selectedFactoryGraphQuery.refetch;
+  const refetchSelectedFactoryRunActivity =
+    selectedFactoryRunActivityQuery.refetch;
+  const refetchSelectedFactoryArtifacts = selectedFactoryArtifactsQuery.refetch;
 
   React.useEffect(() => {
     if (terminalStreamEventKey === undefined) {
@@ -339,7 +378,13 @@ export function DashboardShell() {
     void refetchRuns();
     void refetchSelectedRunDetail();
     void refetchSelectedRunEvents();
+    void refetchSelectedFactoryGraph();
+    void refetchSelectedFactoryRunActivity();
+    void refetchSelectedFactoryArtifacts();
   }, [
+    refetchSelectedFactoryArtifacts,
+    refetchSelectedFactoryGraph,
+    refetchSelectedFactoryRunActivity,
     refetchRuns,
     refetchSelectedRunDetail,
     refetchSelectedRunEvents,
@@ -354,6 +399,9 @@ export function DashboardShell() {
 
     if (selectedRunId !== undefined) {
       refreshes.push(
+        selectedFactoryArtifactsQuery.refetch(),
+        selectedFactoryGraphQuery.refetch(),
+        selectedFactoryRunActivityQuery.refetch(),
         selectedRunDetailQuery.refetch(),
         selectedRunEventsQuery.refetch(),
       );
@@ -422,25 +470,73 @@ export function DashboardShell() {
             onSelectPrimaryRun={selectRun}
           />
           <DesktopWorkspace
+            activityFailure={dashboardQueryFailure(
+              selectedFactoryAgentActivityQuery.error ??
+                selectedFactoryRunActivityQuery.error,
+            )}
+            artifacts={
+              selectedFactoryArtifactsQuery.data?.data.artifacts ??
+              selectedFactoryGraphQuery.data?.data.linkedArtifacts ??
+              []
+            }
+            artifactsFailure={dashboardQueryFailure(
+              selectedFactoryArtifactsQuery.error,
+            )}
+            factoryActivities={
+              selectedFactoryNode?.kind === "agent"
+                ? (selectedFactoryAgentActivityQuery.data?.data.activities ??
+                  [])
+                : nodeScopedRunActivities({
+                    activities:
+                      selectedFactoryRunActivityQuery.data?.data.activities ??
+                      [],
+                    node: selectedFactoryNode,
+                  })
+            }
+            factoryCanvas={selectedFactoryCanvas}
             runCanvas={runCanvas}
             runEventStream={runEventStream}
             provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
             runCompare={runCompare}
             selectedConsoleRun={selectedConsoleRun}
-            selectedNode={selectedNode}
+            selectedFactoryNode={selectedFactoryNode}
             selectedRun={selectedRun}
             serverUrl={serverUrl}
             onSelectNode={setSelectedNodeId}
           />
           <MobileWorkspace
+            activityFailure={dashboardQueryFailure(
+              selectedFactoryAgentActivityQuery.error ??
+                selectedFactoryRunActivityQuery.error,
+            )}
+            artifacts={
+              selectedFactoryArtifactsQuery.data?.data.artifacts ??
+              selectedFactoryGraphQuery.data?.data.linkedArtifacts ??
+              []
+            }
+            artifactsFailure={dashboardQueryFailure(
+              selectedFactoryArtifactsQuery.error,
+            )}
+            factoryActivities={
+              selectedFactoryNode?.kind === "agent"
+                ? (selectedFactoryAgentActivityQuery.data?.data.activities ??
+                  [])
+                : nodeScopedRunActivities({
+                    activities:
+                      selectedFactoryRunActivityQuery.data?.data.activities ??
+                      [],
+                    node: selectedFactoryNode,
+                  })
+            }
+            factoryCanvas={selectedFactoryCanvas}
             runCanvas={runCanvas}
             runEventStream={runEventStream}
             provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
             runCompare={runCompare}
             selectedConsoleRun={selectedConsoleRun}
-            selectedNode={selectedNode}
+            selectedFactoryNode={selectedFactoryNode}
             selectedRun={selectedRun}
             serverUrl={serverUrl}
             onSelectNode={setSelectedNodeId}
@@ -1219,25 +1315,35 @@ function TopBar({
 }
 
 function DesktopWorkspace({
+  activityFailure,
+  artifacts,
+  artifactsFailure,
+  factoryActivities,
+  factoryCanvas,
   runCanvas,
   runEventStream,
   provenanceModeEnabled,
   replayState,
   runCompare,
   selectedConsoleRun,
+  selectedFactoryNode,
   selectedRun,
-  selectedNode,
   serverUrl,
   onSelectNode,
 }: {
+  readonly activityFailure: ReturnType<typeof dashboardQueryFailure>;
+  readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
+  readonly artifactsFailure: ReturnType<typeof dashboardQueryFailure>;
+  readonly factoryActivities: ReadonlyArray<typeof FactoryActivityDto.Type>;
+  readonly factoryCanvas: FactoryCanvasModel | undefined;
   readonly runCanvas: RunCanvasQueryState;
   readonly runEventStream: RunEventStreamState;
   readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
   readonly selectedConsoleRun: RunConsoleRun | undefined;
+  readonly selectedFactoryNode: FactoryCanvasNode | undefined;
   readonly selectedRun: DashboardRun;
-  readonly selectedNode: RunNode | undefined;
   readonly serverUrl: string;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
@@ -1248,24 +1354,26 @@ function DesktopWorkspace({
           <ResizablePanelGroup orientation="horizontal">
             <ResizablePanel defaultSize="68%" minSize="44%">
               <RunCanvas
+                factoryCanvas={factoryCanvas}
                 provenanceModeEnabled={provenanceModeEnabled}
                 queryState={runCanvas}
-                replayState={replayState}
-                selectedNode={selectedNode}
-                selectedRun={selectedRun}
+                selectedNode={selectedFactoryNode}
                 onSelectNode={onSelectNode}
               />
             </ResizablePanel>
             <ResizableHandle withHandle />
             <ResizablePanel defaultSize="32%" minSize="24%">
               <EvidenceStudio
+                activityFailure={activityFailure}
+                artifacts={artifacts}
+                artifactsFailure={artifactsFailure}
+                factoryActivities={factoryActivities}
                 provenanceModeEnabled={provenanceModeEnabled}
                 replayState={replayState}
                 runCompare={runCompare}
-                selectedNode={selectedNode}
+                selectedNode={selectedFactoryNode}
                 selectedRun={selectedRun}
                 serverUrl={serverUrl}
-                onSelectNode={onSelectNode}
               />
             </ResizablePanel>
           </ResizablePanelGroup>
@@ -1285,25 +1393,35 @@ function DesktopWorkspace({
 }
 
 function MobileWorkspace({
+  activityFailure,
+  artifacts,
+  artifactsFailure,
+  factoryActivities,
+  factoryCanvas,
   runCanvas,
   runEventStream,
   provenanceModeEnabled,
   replayState,
   runCompare,
   selectedConsoleRun,
+  selectedFactoryNode,
   selectedRun,
-  selectedNode,
   serverUrl,
   onSelectNode,
 }: {
+  readonly activityFailure: ReturnType<typeof dashboardQueryFailure>;
+  readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
+  readonly artifactsFailure: ReturnType<typeof dashboardQueryFailure>;
+  readonly factoryActivities: ReadonlyArray<typeof FactoryActivityDto.Type>;
+  readonly factoryCanvas: FactoryCanvasModel | undefined;
   readonly runCanvas: RunCanvasQueryState;
   readonly runEventStream: RunEventStreamState;
   readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
   readonly selectedConsoleRun: RunConsoleRun | undefined;
+  readonly selectedFactoryNode: FactoryCanvasNode | undefined;
   readonly selectedRun: DashboardRun;
-  readonly selectedNode: RunNode | undefined;
   readonly serverUrl: string;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
@@ -1311,23 +1429,25 @@ function MobileWorkspace({
     <section className="flex min-h-0 flex-col lg:hidden">
       <div className="min-h-[22rem] shrink-0 border-b">
         <RunCanvas
+          factoryCanvas={factoryCanvas}
           provenanceModeEnabled={provenanceModeEnabled}
           queryState={runCanvas}
-          replayState={replayState}
-          selectedNode={selectedNode}
-          selectedRun={selectedRun}
+          selectedNode={selectedFactoryNode}
           onSelectNode={onSelectNode}
         />
       </div>
       <div className="min-h-[24rem] shrink-0 border-b">
         <EvidenceStudio
+          activityFailure={activityFailure}
+          artifacts={artifacts}
+          artifactsFailure={artifactsFailure}
+          factoryActivities={factoryActivities}
           provenanceModeEnabled={provenanceModeEnabled}
           replayState={replayState}
           runCompare={runCompare}
-          selectedNode={selectedNode}
+          selectedNode={selectedFactoryNode}
           selectedRun={selectedRun}
           serverUrl={serverUrl}
-          onSelectNode={onSelectNode}
         />
       </div>
       <div className="h-40 shrink-0">
@@ -1343,31 +1463,29 @@ function MobileWorkspace({
 }
 
 function RunCanvas({
+  factoryCanvas,
   provenanceModeEnabled,
   queryState,
-  replayState,
-  selectedRun,
   selectedNode,
   onSelectNode,
 }: {
+  readonly factoryCanvas: FactoryCanvasModel | undefined;
   readonly provenanceModeEnabled: boolean;
   readonly queryState: RunCanvasQueryState;
-  readonly replayState: RunReplayState;
-  readonly selectedRun: DashboardRun;
-  readonly selectedNode: RunNode | undefined;
+  readonly selectedNode: FactoryCanvasNode | undefined;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
   const nodes = React.useMemo(
     () =>
-      toFlowNodes(
-        selectedRun,
-        selectedNode?.id,
-        replayState,
-        provenanceModeEnabled,
-      ),
-    [provenanceModeEnabled, replayState, selectedRun, selectedNode?.id],
+      factoryCanvas === undefined
+        ? []
+        : toFactoryFlowNodes(factoryCanvas, selectedNode?.id, provenanceModeEnabled),
+    [factoryCanvas, provenanceModeEnabled, selectedNode?.id],
   );
-  const edges = React.useMemo(() => toFlowEdges(selectedRun), [selectedRun]);
+  const edges = React.useMemo(
+    () => (factoryCanvas === undefined ? [] : toFactoryFlowEdges(factoryCanvas)),
+    [factoryCanvas],
+  );
   const handleNodeClick = React.useCallback<NodeMouseHandler>(
     (_event, node) => onSelectNode(node.id),
     [onSelectNode],
@@ -1379,32 +1497,46 @@ function RunCanvas({
         <div className="min-w-0">
           <h2 className="truncate text-sm font-semibold">Run Canvas</h2>
           <p className="truncate text-xs text-muted-foreground">
-            Thread and evidence relationships for the selected run
+            FactoryGraph topology for the selected run
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {provenanceModeEnabled ? (
             <Badge variant="secondary">Provenance</Badge>
           ) : null}
-          <Badge variant="outline">{selectedRun.nodes.length} nodes</Badge>
+          <Badge variant="outline">{factoryCanvas?.nodes.length ?? 0} nodes</Badge>
         </div>
       </div>
-      {provenanceModeEnabled && selectedRun.nodes.length > 0 ? (
+      {provenanceModeEnabled && (factoryCanvas?.nodes.length ?? 0) > 0 ? (
         <div
           className="flex shrink-0 items-start gap-2 border-b bg-background px-3 py-2 text-xs text-muted-foreground"
           data-testid="run-canvas-provenance-callout"
         >
           <HelpCircleIcon className="mt-0.5 shrink-0" />
           <span className="min-w-0">
-            Select any canvas claim, then use Evidence Studio provenance links
-            to jump to supporting events, artifacts, reports, or raw public API
-            fields.
+            Canvas topology comes from the public FactoryGraph projection.
+            Activity and artifacts stay in Evidence Studio for the selected
+            node.
           </span>
         </div>
       ) : null}
+      {factoryCanvas?.diagnostics.length ? (
+        <div
+          className="flex shrink-0 flex-col gap-1 border-b bg-background px-3 py-2 text-xs text-muted-foreground"
+          data-testid="run-canvas-diagnostics"
+        >
+          {factoryCanvas.diagnostics.map((diagnostic) => (
+            <div className="flex min-w-0 items-center gap-2" key={diagnostic.code}>
+              <AlertCircleIcon className="size-3.5 shrink-0" />
+              <span className="truncate">
+                {diagnostic.code}: {diagnostic.message}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-hidden bg-muted/20">
-        {queryState.detailError !== undefined ||
-        queryState.eventsError !== undefined ? (
+        {queryState.graphError !== undefined ? (
           <Empty data-testid="run-canvas-error">
             <EmptyHeader>
               <EmptyMedia variant="icon">
@@ -1427,15 +1559,16 @@ function RunCanvas({
               <Skeleton className="ml-auto h-20 w-56" />
             </div>
           </div>
-        ) : selectedRun.nodes.length === 0 ? (
+        ) : factoryCanvas === undefined || factoryCanvas.nodes.length === 0 ? (
           <Empty>
             <EmptyHeader>
               <EmptyMedia variant="icon">
                 <WorkflowIcon />
               </EmptyMedia>
-              <EmptyTitle>No run selected</EmptyTitle>
+              <EmptyTitle>No FactoryGraph topology</EmptyTitle>
               <EmptyDescription>
-                Select a local run to populate the canvas from public run data.
+                Select a local run with public FactoryGraph data to populate the
+                canvas.
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -1457,37 +1590,60 @@ function RunCanvas({
 }
 
 function EvidenceStudio({
+  activityFailure,
+  artifacts,
+  artifactsFailure,
+  factoryActivities,
   provenanceModeEnabled,
   replayState,
   runCompare,
   selectedNode,
   selectedRun,
   serverUrl,
-  onSelectNode,
 }: {
+  readonly activityFailure: ReturnType<typeof dashboardQueryFailure>;
+  readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
+  readonly artifactsFailure: ReturnType<typeof dashboardQueryFailure>;
+  readonly factoryActivities: ReadonlyArray<typeof FactoryActivityDto.Type>;
   readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
-  readonly selectedNode: RunNode | undefined;
+  readonly selectedNode: FactoryCanvasNode | undefined;
   readonly selectedRun: DashboardRun;
   readonly serverUrl: string;
-  readonly onSelectNode: (nodeId: string) => void;
 }) {
   const [tab, setTab] = React.useState<EvidenceTab>("summary");
-  const artifactIds = selectedNode?.artifacts ?? [];
-  const artifactKey = artifactIds.join("|");
-  const [requestedArtifactId, setRequestedArtifactId] = React.useState<
-    DashboardArtifactId | undefined
+  const nodeArtifacts = React.useMemo(
+    () =>
+      selectedNode === undefined
+        ? []
+        : factoryArtifactsForNode({
+            activities: factoryActivities,
+            artifacts,
+            node: selectedNode,
+          }),
+    [artifacts, factoryActivities, selectedNode],
+  );
+  const artifactIds = nodeArtifacts.map((artifact) => artifact.artifactId);
+  const artifactIdStrings = artifactIds.map((artifactId) => String(artifactId));
+  const artifactKey = artifactIdStrings.join("|");
+  const [requestedArtifact, setRequestedArtifact] = React.useState<
+    | {
+        readonly artifactId: string;
+        readonly nodeId: string;
+      }
+    | undefined
   >();
   const selectedArtifactId =
-    requestedArtifactId !== undefined &&
-    artifactIds.includes(requestedArtifactId)
-      ? requestedArtifactId
-      : artifactIds[0];
+    requestedArtifact !== undefined &&
+    requestedArtifact.nodeId === selectedNode?.id &&
+    artifactIdStrings.includes(requestedArtifact.artifactId)
+      ? requestedArtifact.artifactId
+      : undefined;
   const selectedRunId =
     selectedRun.id === "no-run-selected" ? "" : selectedRun.id;
   const artifactQuery = useQuery(
-    localGaiaRunArtifactQueryOptions({
+    localGaiaFactoryArtifactQueryOptions({
       artifactId: selectedArtifactId ?? "",
       runId: selectedRunId,
       serverUrl,
@@ -1495,10 +1651,12 @@ function EvidenceStudio({
   );
 
   React.useEffect(() => {
-    setRequestedArtifactId((current) =>
-      current !== undefined && artifactIds.includes(current)
+    setRequestedArtifact((current) =>
+      current !== undefined &&
+      current.nodeId === selectedNode?.id &&
+      artifactIdStrings.includes(current.artifactId)
         ? current
-        : artifactIds[0],
+        : undefined,
     );
   }, [artifactKey, selectedNode?.id]);
 
@@ -1529,36 +1687,7 @@ function EvidenceStudio({
     );
   }
 
-  const relatedEvents = eventsForNode(selectedRun, selectedNode);
-  const provenance = buildEvidenceProvenanceModel({
-    relatedEvents,
-    replayState,
-    runCompare,
-    selectedNode,
-    selectedRun,
-  });
-
-  function selectProvenanceSource(source: ProvenanceSource) {
-    const target = source.target;
-    if (target === undefined) {
-      return;
-    }
-
-    if (target.type === "event") {
-      onSelectNode(target.eventId);
-      setTab("events");
-      return;
-    }
-
-    if (target.type === "artifact") {
-      onSelectNode(`artifact:${target.artifactId}`);
-      setRequestedArtifactId(target.artifactId);
-      setTab("artifacts");
-      return;
-    }
-
-    setTab("raw");
-  }
+  const roleVisual = factoryAgentRoleVisual(selectedNode.role);
 
   return (
     <aside className="flex size-full min-h-0 flex-col">
@@ -1570,9 +1699,11 @@ function EvidenceStudio({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <Badge variant="outline">{roleLabel(selectedNode)}</Badge>
-          <Badge variant={statusBadgeVariant(selectedNode.status)}>
-            {statusLabels[selectedNode.status]}
+          <Badge variant="outline">
+            {selectedNode.kind === "agent" ? roleVisual.label : "Work item"}
+          </Badge>
+          <Badge variant={factoryAgentStateBadgeVariant(selectedNode.state)}>
+            {factoryAgentStateLabel(selectedNode.state)}
           </Badge>
         </div>
       </div>
@@ -1598,7 +1729,7 @@ function EvidenceStudio({
             </TabsTrigger>
             <TabsTrigger value="events">
               <ActivityIcon data-icon="inline-start" />
-              Events
+              Activity
             </TabsTrigger>
             <TabsTrigger value="artifacts">
               <BoxIcon data-icon="inline-start" />
@@ -1612,32 +1743,40 @@ function EvidenceStudio({
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <TabsContent className="m-0 p-3" value="summary">
-            <EvidenceSummary
-              provenance={provenance}
+            <FactoryEvidenceSummary
+              activities={factoryActivities}
+              activityFailure={activityFailure}
+              artifactFailure={artifactsFailure}
+              artifacts={nodeArtifacts}
               provenanceModeEnabled={provenanceModeEnabled}
               replayState={replayState}
-              relatedEvents={relatedEvents}
+              runCompare={runCompare}
               selectedNode={selectedNode}
-              onSelectProvenanceSource={selectProvenanceSource}
             />
           </TabsContent>
           <TabsContent className="m-0 p-3" value="events">
-            <EvidenceEvents
-              events={relatedEvents}
-              replayState={replayState}
+            <FactoryEvidenceActivity
+              activities={factoryActivities}
+              activityFailure={activityFailure}
               selectedNode={selectedNode}
             />
           </TabsContent>
           <TabsContent className="m-0 p-3" value="artifacts">
-            <EvidenceArtifacts
+            <FactoryEvidenceArtifacts
               artifact={artifactQuery.data?.data}
               artifactFailure={dashboardQueryFailure(artifactQuery.error)}
-              artifactIds={artifactIds}
+              artifacts={nodeArtifacts}
+              artifactsFailure={artifactsFailure}
               isLoading={
                 artifactQuery.isPending && selectedArtifactId !== undefined
               }
               selectedArtifactId={selectedArtifactId}
-              onSelectArtifact={setRequestedArtifactId}
+              onSelectArtifact={(artifactId) =>
+                setRequestedArtifact({
+                  artifactId,
+                  nodeId: selectedNode.id,
+                })
+              }
             />
           </TabsContent>
           <TabsContent className="m-0 p-3" value="raw">
@@ -1649,8 +1788,8 @@ function EvidenceStudio({
                   activeSequence: replayState.activeSequence,
                   visibleEventIds: replayState.visibleEventIds,
                 },
-                relatedEvents,
-                provenance: provenanceModeEnabled ? provenance : undefined,
+                activities: factoryActivities,
+                compare: provenanceModeEnabled ? runCompare.summary : undefined,
                 runId: selectedRun.id,
               })}
             </pre>
@@ -1661,47 +1800,96 @@ function EvidenceStudio({
   );
 }
 
-function EvidenceSummary({
-  provenance,
+function FactoryEvidenceSummary({
+  activities,
+  activityFailure,
+  artifactFailure,
+  artifacts,
   provenanceModeEnabled,
   replayState,
-  relatedEvents,
+  runCompare,
   selectedNode,
-  onSelectProvenanceSource,
 }: {
-  readonly provenance: EvidenceProvenanceModel;
+  readonly activities: ReadonlyArray<typeof FactoryActivityDto.Type>;
+  readonly activityFailure: ReturnType<typeof dashboardQueryFailure>;
+  readonly artifactFailure: ReturnType<typeof dashboardQueryFailure>;
+  readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
   readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
-  readonly relatedEvents: ReadonlyArray<DashboardEvent>;
-  readonly selectedNode: RunNode;
-  readonly onSelectProvenanceSource: (source: ProvenanceSource) => void;
+  readonly runCompare: RunCompareModel;
+  readonly selectedNode: FactoryCanvasNode;
 }) {
-  const visibleRelatedEvents = relatedEvents.filter((event) =>
-    replayState.visibleEventIds.includes(event.id),
-  );
-  const isSelectedNodeReached =
-    relatedEvents.length === 0 || visibleRelatedEvents.length > 0;
+  const roleVisual = factoryAgentRoleVisual(selectedNode.role);
+  const RoleIcon = roleVisual.Icon;
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <p className="text-xs font-medium uppercase text-muted-foreground">
-          Selected node
-        </p>
-        <h3 className="mt-1 text-lg font-semibold">{selectedNode.label}</h3>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {selectedNode.summary}
-        </p>
+      <div className="flex items-start gap-3">
+        <div
+          className={cn(
+            "grid size-9 shrink-0 place-items-center rounded-md border",
+            selectedNode.kind === "agent"
+              ? roleVisual.accentClassName
+              : "border-border bg-muted/40 text-muted-foreground",
+          )}
+        >
+          <RoleIcon className="size-4" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-xs font-medium uppercase text-muted-foreground">
+            Selected {selectedNode.kind === "agent" ? "agent" : "work item"}
+          </p>
+          <h3 className="mt-1 text-lg font-semibold">{selectedNode.label}</h3>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {selectedNode.summary}
+          </p>
+        </div>
       </div>
       <Separator />
       {provenanceModeEnabled ? (
-        <>
-          <ProvenancePanel
-            provenance={provenance}
-            onSelectSource={onSelectProvenanceSource}
-          />
-          <Separator />
-        </>
+        <div
+          className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground"
+          data-testid="evidence-provenance-panel"
+        >
+          FactoryGraph topology is provided by the public graph endpoint.
+          Activity and artifact bodies are fetched through node-scoped public
+          reads instead of private run files.
+        </div>
+      ) : null}
+      <div className="grid grid-cols-2 gap-3">
+        <Metric
+          label={selectedNode.kind === "agent" ? "Role" : "Kind"}
+          value={selectedNode.kind === "agent" ? roleVisual.label : String(selectedNode.type)}
+        />
+        <Metric
+          label="State"
+          value={factoryAgentStateLabel(selectedNode.state)}
+        />
+        <Metric label="Activity" value={String(activities.length)} />
+        <Metric label="Artifacts" value={String(artifacts.length)} />
+      </div>
+      <Separator />
+      {activityFailure !== undefined || artifactFailure !== undefined ? (
+        <div className="flex flex-col gap-2">
+          {activityFailure !== undefined ? (
+            <DiagnosticCallout
+              message={dashboardFailureMessage(
+                activityFailure,
+                "Activity could not be loaded.",
+              )}
+              title="Activity unavailable"
+            />
+          ) : null}
+          {artifactFailure !== undefined ? (
+            <DiagnosticCallout
+              message={dashboardFailureMessage(
+                artifactFailure,
+                "Artifact catalog could not be loaded.",
+              )}
+              title="Artifacts unavailable"
+            />
+          ) : null}
+        </div>
       ) : null}
       <div
         className="rounded-md border bg-background p-3"
@@ -1713,179 +1901,88 @@ function EvidenceSummary({
               Replay context
             </p>
             <p className="mt-1 truncate text-sm font-medium">
-              {replayState.currentStep?.event.label ?? "No active replay event"}
+              {replayState.currentStep?.event.label ??
+                "FactoryGraph topology selected"}
             </p>
           </div>
-          <Badge variant={isSelectedNodeReached ? "secondary" : "outline"}>
-            {isSelectedNodeReached ? "Reached" : "Ahead"}
-          </Badge>
+          <Badge variant="outline">{runCompare.summary}</Badge>
         </div>
         <p className="mt-2 text-xs text-muted-foreground">
-          {visibleRelatedEvents.length} of {relatedEvents.length} related events
-          are visible at the selected replay point.
+          Replay and compare remain available as run-level evidence. The canvas
+          selection is scoped to FactoryGraph topology.
         </p>
       </div>
       <Separator />
-      <div className="grid grid-cols-2 gap-3">
-        <Metric label="Role" value={roleLabel(selectedNode)} />
-        <Metric label="Status" value={statusLabels[selectedNode.status]} />
-        <Metric label="Events" value={String(relatedEvents.length)} />
-        <Metric
-          label="Artifacts"
-          value={String(selectedNode.artifacts.length)}
+      <div className="flex flex-col gap-2">
+        <p className="text-xs font-medium uppercase text-muted-foreground">
+          Recent activity
+        </p>
+        <EvidenceList
+          emptyDescription="This node has no public activity entries yet."
+          emptyTitle="No activity"
+          items={activities.slice(0, 4).map((activity) => activity.label)}
+        />
+      </div>
+      <Separator />
+      <div className="flex flex-col gap-2">
+        <p className="text-xs font-medium uppercase text-muted-foreground">
+          Linked artifacts
+        </p>
+        <EvidenceList
+          emptyDescription="This node has no public artifacts linked yet."
+          emptyTitle="No artifacts"
+          items={artifacts.map((artifact) => artifact.label)}
         />
       </div>
       <Separator />
       <EvidenceList
-        emptyDescription="This node has no additional public evidence strings."
-        emptyTitle="No evidence notes"
-        items={selectedNode.evidence}
+        emptyDescription="This node has no additional FactoryGraph references."
+        emptyTitle="No graph references"
+        items={[
+          selectedNode.latestActivityId === undefined
+            ? undefined
+            : `Latest activity: ${selectedNode.latestActivityId}`,
+          selectedNode.artifactIds.length === 0
+            ? undefined
+            : `Linked artifacts: ${selectedNode.artifactIds.join(", ")}`,
+        ].filter(isPresent)}
       />
     </div>
   );
 }
 
-function EvidenceList({
-  emptyDescription,
-  emptyTitle,
-  items,
+function FactoryEvidenceActivity({
+  activities,
+  activityFailure,
+  selectedNode,
 }: {
-  readonly emptyDescription: string;
-  readonly emptyTitle: string;
-  readonly items: ReadonlyArray<string>;
+  readonly activities: ReadonlyArray<typeof FactoryActivityDto.Type>;
+  readonly activityFailure: ReturnType<typeof dashboardQueryFailure>;
+  readonly selectedNode: FactoryCanvasNode;
 }) {
-  if (items.length === 0) {
+  if (activityFailure !== undefined) {
     return (
-      <Empty className="min-h-40 border">
-        <EmptyHeader>
-          <EmptyMedia variant="icon">
-            <InspectIcon />
-          </EmptyMedia>
-          <EmptyTitle>{emptyTitle}</EmptyTitle>
-          <EmptyDescription>{emptyDescription}</EmptyDescription>
-        </EmptyHeader>
-      </Empty>
+      <DiagnosticCallout
+        message={dashboardFailureMessage(
+          activityFailure,
+          "Activity could not be loaded.",
+        )}
+        title="Activity unavailable"
+      />
     );
   }
 
-  return (
-    <ul className="flex flex-col gap-2">
-      {items.map((item) => (
-        <li
-          className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm"
-          key={item}
-        >
-          <CircleDotIcon className="size-3 text-muted-foreground" />
-          <span className="min-w-0 truncate">{item}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function ProvenancePanel({
-  provenance,
-  onSelectSource,
-}: {
-  readonly provenance: EvidenceProvenanceModel;
-  readonly onSelectSource: (source: ProvenanceSource) => void;
-}) {
-  return (
-    <section
-      className="flex flex-col gap-3"
-      data-testid="evidence-provenance-panel"
-    >
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            Provenance
-          </p>
-          <p className="mt-1 truncate text-sm font-medium">
-            Why the dashboard says this
-          </p>
-        </div>
-        <div className="flex shrink-0 flex-wrap justify-end gap-1">
-          <Badge variant="secondary">{provenance.supportedCount} proven</Badge>
-          <Badge variant="outline">
-            {provenance.unavailableCount} unavailable
-          </Badge>
-          <Badge variant="outline">
-            {provenance.unsupportedCount} unsupported
-          </Badge>
-        </div>
-      </div>
-      <div className="flex flex-col gap-2">
-        {provenance.claims.map((claim) => (
-          <section
-            className="rounded-md border bg-background p-3"
-            data-testid={`provenance-claim-${claim.id}`}
-            key={claim.id}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{claim.label}</p>
-                <p className="mt-1 truncate text-xs text-muted-foreground">
-                  {claim.value}
-                </p>
-              </div>
-              <Badge variant={provenanceBadgeVariant(claim.availability)}>
-                {provenanceAvailabilityLabel(claim.availability)}
-              </Badge>
-            </div>
-            <div className="mt-3 flex flex-col gap-2">
-              {claim.sources.map((source, index) => (
-                <div
-                  className="flex min-w-0 items-center gap-2 rounded-md border bg-muted/30 px-2 py-2"
-                  key={`${source.kind}:${source.label}:${index}`}
-                >
-                  <Badge variant="outline">{sourceKindLabel(source.kind)}</Badge>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs font-medium">
-                      {source.label}
-                    </p>
-                    <p className="truncate text-xs text-muted-foreground">
-                      {source.detail}
-                    </p>
-                  </div>
-                  <Button
-                    aria-label={`Show ${source.label}`}
-                    disabled={source.target === undefined}
-                    onClick={() => onSelectSource(source)}
-                    size="sm"
-                    variant="outline"
-                  >
-                    <LinkIcon data-icon="inline-start" />
-                    Source
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </section>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function EvidenceEvents({
-  events,
-  replayState,
-  selectedNode,
-}: {
-  readonly events: ReadonlyArray<DashboardEvent>;
-  readonly replayState: RunReplayState;
-  readonly selectedNode: RunNode;
-}) {
-  if (events.length === 0) {
+  if (activities.length === 0) {
     return (
       <Empty className="min-h-48 border" data-testid="evidence-events-empty">
         <EmptyHeader>
           <EmptyMedia variant="icon">
             <ActivityIcon />
           </EmptyMedia>
-          <EmptyTitle>No related events</EmptyTitle>
+          <EmptyTitle>No node activity</EmptyTitle>
           <EmptyDescription>
-            {selectedNode.label} has no ordered public events attached.
+            {selectedNode.label} has no activity exposed by the public factory
+            activity endpoint.
           </EmptyDescription>
         </EmptyHeader>
       </Empty>
@@ -1894,76 +1991,80 @@ function EvidenceEvents({
 
   return (
     <div className="flex flex-col gap-3">
-      {events.map((event) => (
+      {activities.map((activity) => (
         <section
-          className={cn(
-            "rounded-md border bg-background p-3",
-            event.id === replayState.activeEventId && "ring-2 ring-ring",
-            replayState.futureEventIds.includes(event.id) && "opacity-55",
-          )}
-          data-testid={`evidence-event-${event.sequence}`}
-          key={event.id}
+          className="rounded-md border bg-background p-3"
+          data-testid={`evidence-activity-${activity.sequence}`}
+          key={activity.activityId}
         >
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <p className="truncate text-sm font-medium">{event.label}</p>
+              <p className="truncate text-sm font-medium">{activity.label}</p>
               <p className="truncate text-xs text-muted-foreground">
-                Sequence {event.sequence} · {event.timestamp}
+                Sequence {activity.sequence} · {activity.timestamp}
               </p>
             </div>
-            <Badge variant={statusBadgeVariant(event.tone)}>
-              {statusLabels[event.tone]}
+            <Badge variant={factoryAgentStateBadgeVariant(activity.state)}>
+              {factoryAgentStateLabel(activity.state)}
             </Badge>
           </div>
-          <Separator className="my-3" />
-          <div className="flex flex-wrap gap-2">
-            <Badge variant="outline">{event.type}</Badge>
-            {event.id === replayState.activeEventId ? (
-              <Badge variant="secondary">Replay point</Badge>
-            ) : null}
-            {replayState.futureEventIds.includes(event.id) ? (
-              <Badge variant="outline">Not reached</Badge>
-            ) : null}
-            {event.artifactHints.map((artifactId) => (
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Badge variant="outline">{activity.kind}</Badge>
+            {activity.subState === undefined ? null : (
+              <Badge variant="secondary">{activity.subState}</Badge>
+            )}
+            {activity.artifactIds.map((artifactId) => (
               <Badge key={artifactId} variant="secondary">
-                {artifactLabel(artifactId)}
+                {factoryArtifactLabel(String(artifactId))}
               </Badge>
             ))}
           </div>
-          <pre className="mt-3 max-h-44 overflow-auto rounded-md bg-muted p-3 text-xs">
-            {stringifyJson(event.payload)}
-          </pre>
         </section>
       ))}
     </div>
   );
 }
 
-function EvidenceArtifacts({
+function FactoryEvidenceArtifacts({
   artifact,
   artifactFailure,
-  artifactIds,
+  artifacts,
+  artifactsFailure,
   isLoading,
   selectedArtifactId,
   onSelectArtifact,
 }: {
-  readonly artifact: typeof LocalRunArtifactDto.Type | undefined;
+  readonly artifact: typeof FactoryArtifactBodyDto.Type | undefined;
   readonly artifactFailure: ReturnType<typeof dashboardQueryFailure>;
-  readonly artifactIds: ReadonlyArray<DashboardArtifactId>;
+  readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
+  readonly artifactsFailure: ReturnType<typeof dashboardQueryFailure>;
   readonly isLoading: boolean;
-  readonly selectedArtifactId: DashboardArtifactId | undefined;
-  readonly onSelectArtifact: (artifactId: DashboardArtifactId) => void;
+  readonly selectedArtifactId: string | undefined;
+  readonly onSelectArtifact: (artifactId: string) => void;
 }) {
-  if (artifactIds.length === 0) {
+  if (artifactsFailure !== undefined) {
+    return (
+      <DiagnosticCallout
+        message={dashboardFailureMessage(
+          artifactsFailure,
+          "Artifact catalog could not be loaded.",
+        )}
+        title="Artifacts unavailable"
+      />
+    );
+  }
+
+  if (artifacts.length === 0) {
     return (
       <Empty className="min-h-48 border" data-testid="evidence-artifacts-empty">
         <EmptyHeader>
           <EmptyMedia variant="icon">
             <BoxIcon />
           </EmptyMedia>
-          <EmptyTitle>No artifacts exposed</EmptyTitle>
+          <EmptyTitle>No artifacts linked</EmptyTitle>
           <EmptyDescription>
-            This node has no allowlisted artifacts in the public run detail.
+            This FactoryGraph node has no produced or linked artifacts exposed
+            by the public API.
           </EmptyDescription>
         </EmptyHeader>
       </Empty>
@@ -1973,15 +2074,17 @@ function EvidenceArtifacts({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap gap-2">
-        {artifactIds.map((artifactId) => (
+        {artifacts.map((item) => (
           <Button
-            key={artifactId}
+            key={item.artifactId}
             size="sm"
-            variant={artifactId === selectedArtifactId ? "default" : "outline"}
-            onClick={() => onSelectArtifact(artifactId)}
+            variant={
+              item.artifactId === selectedArtifactId ? "default" : "outline"
+            }
+            onClick={() => onSelectArtifact(item.artifactId)}
           >
             <BoxIcon data-icon="inline-start" />
-            {artifactLabel(artifactId)}
+            {item.label}
           </Button>
         ))}
       </div>
@@ -2023,7 +2126,7 @@ function EvidenceArtifacts({
             </EmptyMedia>
             <EmptyTitle>Select an artifact</EmptyTitle>
             <EmptyDescription>
-              Choose an allowlisted artifact to read it through the Gaia API.
+              Choose a linked artifact to read it through the Gaia API.
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -2035,7 +2138,7 @@ function EvidenceArtifacts({
           <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
             <div className="min-w-0">
               <p className="truncate text-sm font-medium">
-                {artifactLabel(artifact.artifactName)}
+                {factoryArtifactLabel(artifact.artifactId)}
               </p>
               <p className="truncate text-xs text-muted-foreground">
                 {artifact.contentType}
@@ -2049,6 +2152,65 @@ function EvidenceArtifacts({
         </section>
       )}
     </div>
+  );
+}
+
+function DiagnosticCallout({
+  message,
+  title,
+}: {
+  readonly message: string;
+  readonly title: string;
+}) {
+  return (
+    <div
+      className="flex items-start gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+      data-testid="factory-diagnostic-callout"
+    >
+      <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0" />
+      <span className="min-w-0">
+        <span className="font-medium text-foreground">{title}: </span>
+        {message}
+      </span>
+    </div>
+  );
+}
+
+function EvidenceList({
+  emptyDescription,
+  emptyTitle,
+  items,
+}: {
+  readonly emptyDescription: string;
+  readonly emptyTitle: string;
+  readonly items: ReadonlyArray<string>;
+}) {
+  if (items.length === 0) {
+    return (
+      <Empty className="min-h-40 border">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <InspectIcon />
+          </EmptyMedia>
+          <EmptyTitle>{emptyTitle}</EmptyTitle>
+          <EmptyDescription>{emptyDescription}</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
+
+  return (
+    <ul className="flex flex-col gap-2">
+      {items.map((item) => (
+        <li
+          className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm"
+          key={item}
+        >
+          <CircleDotIcon className="size-3 text-muted-foreground" />
+          <span className="min-w-0 truncate">{item}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -2350,66 +2512,82 @@ function eventStripDisplay({
   };
 }
 
-function toFlowNodes(
-  run: DashboardRun,
+function toFactoryFlowNodes(
+  model: FactoryCanvasModel,
   selectedNodeId: string | undefined,
-  replayState: RunReplayState,
   provenanceModeEnabled: boolean,
 ): Array<Node<{ label: React.ReactNode }>> {
-  const futureEventIds = new Set(replayState.futureEventIds);
-  const visibleEventIds = new Set(replayState.visibleEventIds);
-
-  return run.nodes.map((node) => {
+  return model.nodes.map((node) => {
+    const roleVisual = factoryAgentRoleVisual(node.role);
+    const RoleIcon = roleVisual.Icon;
     const sourceCount = Math.max(
-      node.eventIds.length + node.artifacts.length + node.evidence.length,
+      node.artifactIds.length + (node.latestActivityId === undefined ? 0 : 1),
       1,
     );
 
     return {
-      id: node.id,
-      position: node.position,
+      className: cn(
+        "rounded-lg border bg-background px-2 py-1 shadow-sm",
+        node.id === selectedNodeId && "ring-2 ring-ring",
+      ),
       data: {
         label: (
-          <div className="flex min-w-52 max-w-64 flex-col gap-2 text-left">
-            <div className="flex items-center justify-between gap-3">
-              <span className="truncate text-sm font-semibold">
-                {node.label}
-              </span>
-              <Badge variant={statusBadgeVariant(node.status)}>
-                {statusLabels[node.status]}
+          <div className="flex min-w-56 max-w-72 flex-col gap-2 text-left">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className={cn(
+                    "grid size-7 shrink-0 place-items-center rounded-md border",
+                    node.kind === "agent"
+                      ? roleVisual.accentClassName
+                      : "border-border bg-muted/40 text-muted-foreground",
+                  )}
+                >
+                  <RoleIcon className="size-3.5" />
+                </span>
+                <span className="min-w-0 truncate text-sm font-semibold">
+                  {node.label}
+                </span>
+              </div>
+              <Badge variant={factoryAgentStateBadgeVariant(node.state)}>
+                {factoryAgentStateLabel(node.state)}
               </Badge>
             </div>
-            <span className="text-xs text-muted-foreground">
-              {roleLabel(node)}
+            <span className="truncate text-xs text-muted-foreground">
+              {node.kind === "agent" ? roleVisual.label : String(node.type)}
+              {node.summary.length > 0 ? ` · ${node.summary}` : ""}
             </span>
-            {provenanceModeEnabled ? (
-              <Badge variant="outline">Why: {sourceCount} sources</Badge>
-            ) : null}
+            <div className="flex flex-wrap gap-1">
+              {node.artifactCount > 0 ? (
+                <Badge variant="secondary">
+                  {node.artifactCount} artifacts
+                </Badge>
+              ) : null}
+              {node.latestActivityId === undefined ? null : (
+                <Badge variant="outline">Activity linked</Badge>
+              )}
+              {provenanceModeEnabled ? (
+                <Badge variant="outline">Why: {sourceCount} refs</Badge>
+              ) : null}
+            </div>
           </div>
         ),
       },
-      type: node.role === "orchestrator" ? "input" : "default",
-      className: cn(
-        "rounded-lg border bg-background px-2 py-1 shadow-sm",
-        node.id === replayState.activeEventId && "ring-2 ring-primary",
-        node.eventIds.length > 0 &&
-          !node.eventIds.some((eventId) => visibleEventIds.has(eventId)) &&
-          "opacity-50",
-        node.role === "event" && futureEventIds.has(node.id) && "opacity-50",
-        node.id === selectedNodeId && "ring-2 ring-ring",
-      ),
+      id: node.id,
+      position: node.position,
+      type: node.kind === "workItem" ? "input" : "default",
     };
   });
 }
 
-function toFlowEdges(run: DashboardRun): Array<Edge> {
-  return run.edges.map((edge) => ({
+function toFactoryFlowEdges(model: FactoryCanvasModel): Array<Edge> {
+  return model.edges.map((edge) => ({
+    animated: edge.label === "spawned",
     id: edge.id,
+    label: edge.label,
     source: edge.source,
     target: edge.target,
-    label: edge.label,
     type: "smoothstep",
-    animated: edge.label === "then",
   }));
 }
 
@@ -2452,51 +2630,57 @@ function diagnosticLabel(
     : `${diagnostic.code} (${target}): ${diagnostic.message}`;
 }
 
-function provenanceBadgeVariant(
-  availability: ProvenanceAvailability,
-): "destructive" | "outline" | "secondary" {
-  if (availability === "supported") {
-    return "secondary";
-  }
-
-  if (availability === "unsupported") {
-    return "destructive";
-  }
-
-  return "outline";
-}
-
-function provenanceAvailabilityLabel(availability: ProvenanceAvailability) {
-  if (availability === "supported") {
-    return "Proven";
-  }
-
-  if (availability === "unsupported") {
-    return "Unsupported";
-  }
-
-  return "Unavailable";
-}
-
-function sourceKindLabel(kind: ProvenanceSource["kind"]) {
-  return kind
-    .split("-")
-    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
-    .join(" ");
-}
-
 type RunCanvasQueryState = {
-  readonly detailError: ReturnType<typeof dashboardQueryFailure>;
-  readonly eventsError: ReturnType<typeof dashboardQueryFailure>;
+  readonly diagnostics: FactoryCanvasModel["diagnostics"];
+  readonly graphError: ReturnType<typeof dashboardQueryFailure>;
   readonly isLoading: boolean;
 };
 
 function runCanvasErrorMessage(state: RunCanvasQueryState) {
-  const failure = state.detailError ?? state.eventsError;
-
   return dashboardFailureMessage(
-    failure,
-    "The selected run could not be loaded.",
+    state.graphError,
+    "The selected FactoryGraph could not be loaded.",
+  );
+}
+
+function nodeScopedRunActivities(input: {
+  readonly activities: ReadonlyArray<typeof FactoryActivityDto.Type>;
+  readonly node: FactoryCanvasNode | undefined;
+}) {
+  if (input.node === undefined) {
+    return [];
+  }
+
+  if (input.node.kind === "agent") {
+    return input.activities.filter(
+      (activity) => activity.agentId === input.node?.rawId,
+    );
+  }
+
+  return input.activities.filter(
+    (activity) => activity.workItemId === input.node?.rawId,
+  );
+}
+
+function factoryArtifactsForNode(input: {
+  readonly activities: ReadonlyArray<typeof FactoryActivityDto.Type>;
+  readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
+  readonly node: FactoryCanvasNode;
+}) {
+  const activityArtifactIds = new Set(
+    input.activities.flatMap((activity) =>
+      activity.artifactIds.map((artifactId) => String(artifactId)),
+    ),
+  );
+  const nodeArtifactIds = new Set([
+    ...input.node.artifactIds.map((artifactId) => String(artifactId)),
+    ...activityArtifactIds,
+  ]);
+
+  return input.artifacts.filter(
+    (artifact) =>
+      nodeArtifactIds.has(String(artifact.artifactId)) ||
+      (input.node.kind === "agent" && artifact.ownerAgentId === input.node.rawId),
   );
 }
 
@@ -2539,6 +2723,13 @@ function artifactDeltaLabel(delta: RunCompareModel["artifactDelta"]) {
 }
 
 function artifactLabel(artifactId: string) {
+  return artifactId
+    .split("-")
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+}
+
+function factoryArtifactLabel(artifactId: string) {
   return artifactId
     .split("-")
     .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
