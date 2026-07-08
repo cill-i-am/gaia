@@ -18,6 +18,10 @@
     "./server-workflows": {
       "types": "./src/server-workflows.ts",
       "import": "./src/server-workflows.ts"
+    },
+    "./factory-run-read-api": {
+      "types": "./src/factory-run-read-api.ts",
+      "import": "./src/factory-run-read-api.ts"
     }
   },
   "scripts": {

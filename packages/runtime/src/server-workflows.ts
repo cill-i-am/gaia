@@ -11,6 +11,10 @@ import { Effect, FileSystem, Path } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
+  writeInitialFactoryRunIndexes,
+  type FactoryRunCreateInput,
+} from "./factory-run-store.js";
+import {
   makeRunPaths,
   makeRunStorePaths,
   type RunPaths,
@@ -54,6 +58,21 @@ export function acceptServerRun(
       operation: "Gaia server run acceptance",
     },
   ).pipe(Effect.mapError(toServerWorkflowError("ServerRunAcceptFailed")));
+}
+
+export function acceptFactoryRun(
+  input: FactoryRunCreateInput,
+  options: ServerWorkflowOptions = {},
+) {
+  return withRunStoreLock(
+    options,
+    acceptFactoryRunUnlocked(input, options),
+    {
+      nextSafeAction:
+        "Wait for the active Gaia factory run acceptance to finish, then retry.",
+      operation: "Gaia factory run acceptance",
+    },
+  ).pipe(Effect.mapError(toServerWorkflowError("FactoryRunAcceptFailed")));
 }
 
 function acceptServerRunUnlocked(
@@ -117,6 +136,111 @@ function acceptServerRunUnlocked(
               message: "Gaia server could not append RUN_CREATED.",
               recoverable: true,
             }),
+      ),
+    );
+
+    return {
+      acceptedAt: event.timestamp,
+      eventSequence: event.sequence,
+      runDirectory: paths.root,
+      runId,
+    } satisfies ServerRunAcceptance;
+  });
+}
+
+function acceptFactoryRunUnlocked(
+  input: FactoryRunCreateInput,
+  options: ServerWorkflowOptions,
+): Effect.Effect<
+  ServerRunAcceptance,
+  GaiaRuntimeError,
+  FileSystem.FileSystem | Path.Path
+> {
+  return Effect.gen(function* () {
+    yield* parseServerSpec({
+      specMarkdown: input.workItem.description,
+      title: input.workItem.title,
+    });
+
+    const runId = yield* generateRunId;
+    const paths = yield* makeRunPaths(runId, options);
+    const fs = yield* FileSystem.FileSystem;
+
+    yield* fs.makeDirectory(paths.root, { recursive: true }).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "FactoryRunAcceptFailed",
+          message: "Gaia server could not create the accepted factory run directory.",
+          recoverable: true,
+        }),
+      ),
+    );
+    yield* fs.writeFileString(paths.input, input.workItem.description).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "FactoryRunAcceptFailed",
+          message: "Gaia server could not persist the accepted factory run input.",
+          recoverable: true,
+        }),
+      ),
+    );
+    yield* fs.writeFileString(paths.latest, runId).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "FactoryRunAcceptFailed",
+          message: "Gaia server could not update the latest-run pointer.",
+          recoverable: true,
+        }),
+      ),
+    );
+    const { event } = yield* appendEvent(runId, paths, {
+      payload: {
+        source: "server",
+        specPath: "input.md",
+        workflow: input.workflow,
+        workItem: {
+          description: input.workItem.description,
+          ...(input.workItem.externalRefs === undefined
+            ? {}
+            : {
+                externalRefs: input.workItem.externalRefs.map((ref) => ({
+                  id: ref.id,
+                  provider: ref.provider,
+                  ...(ref.url === undefined ? {} : { url: ref.url }),
+                })),
+              }),
+          kind: input.workItem.kind,
+          title: input.workItem.title,
+        },
+      },
+      type: "RUN_CREATED",
+    }).pipe(
+      Effect.mapError((cause) =>
+        cause instanceof GaiaRuntimeError
+          ? cause
+          : makeRuntimeError({
+              cause,
+              code: "FactoryRunAcceptFailed",
+              message: "Gaia server could not append factory RUN_CREATED.",
+              recoverable: true,
+            }),
+      ),
+    );
+
+    yield* writeInitialFactoryRunIndexes({
+      paths,
+      runId,
+    }).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "FactoryRunProjectionWriteFailed",
+          message: "Gaia server could not write initial factory run projections.",
+          recoverable: true,
+        }),
       ),
     );
 

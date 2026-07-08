@@ -22,6 +22,10 @@ export type RunPaths = {
   readonly evidenceReviewResult: string;
   readonly evidenceReviewerSession: string;
   readonly events: string;
+  readonly factoryActivityIndex: string;
+  readonly factoryArtifactsDirectory: string;
+  readonly factoryArtifactsIndex: string;
+  readonly factoryGraph: string;
   readonly factoryRetroJson: string;
   readonly factoryRetroMarkdown: string;
   readonly factoryScorecardJson: string;
@@ -104,6 +108,10 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
         "evidence-reviewer-session.json",
       ),
       events: path.join(root, "events.jsonl"),
+      factoryActivityIndex: path.join(root, "activity-index.json"),
+      factoryArtifactsDirectory: path.join(root, "artifacts"),
+      factoryArtifactsIndex: path.join(root, "artifacts", "index.json"),
+      factoryGraph: path.join(root, "factory-graph.json"),
       factoryRetroJson: path.join(promotedEvidenceDirectory, "factory-retro.json"),
       factoryRetroMarkdown: path.join(
         promotedEvidenceDirectory,
