@@ -1,0 +1,315 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-08T09:09:46Z",
+  "title": "Design System: Gaia Dashboard",
+  "extensions": {
+    "colorMeta": {
+      "background": {
+        "role": "neutral",
+        "displayName": "Workspace White",
+        "canonical": "oklch(1 0 0)",
+        "tonalRamp": [
+          "oklch(0.15 0 0)",
+          "oklch(0.28 0 0)",
+          "oklch(0.43 0 0)",
+          "oklch(0.58 0 0)",
+          "oklch(0.72 0 0)",
+          "oklch(0.85 0 0)",
+          "oklch(0.94 0 0)",
+          "oklch(1 0 0)"
+        ]
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "Command Text",
+        "canonical": "oklch(0.145 0 0)",
+        "tonalRamp": [
+          "oklch(0.12 0 0)",
+          "oklch(0.145 0 0)",
+          "oklch(0.24 0 0)",
+          "oklch(0.36 0 0)",
+          "oklch(0.5 0 0)",
+          "oklch(0.66 0 0)",
+          "oklch(0.82 0 0)",
+          "oklch(0.96 0 0)"
+        ]
+      },
+      "surface-muted": {
+        "role": "neutral",
+        "displayName": "Muted Instrument Layer",
+        "canonical": "oklch(0.97 0 0)",
+        "tonalRamp": [
+          "oklch(0.18 0 0)",
+          "oklch(0.3 0 0)",
+          "oklch(0.44 0 0)",
+          "oklch(0.6 0 0)",
+          "oklch(0.74 0 0)",
+          "oklch(0.87 0 0)",
+          "oklch(0.94 0 0)",
+          "oklch(0.97 0 0)"
+        ]
+      },
+      "surface-sidebar": {
+        "role": "neutral",
+        "displayName": "Console Rail",
+        "canonical": "oklch(0.985 0 0)",
+        "tonalRamp": [
+          "oklch(0.18 0 0)",
+          "oklch(0.32 0 0)",
+          "oklch(0.46 0 0)",
+          "oklch(0.62 0 0)",
+          "oklch(0.77 0 0)",
+          "oklch(0.9 0 0)",
+          "oklch(0.965 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Precision Border",
+        "canonical": "oklch(0.922 0 0)",
+        "tonalRamp": [
+          "oklch(0.2 0 0)",
+          "oklch(0.34 0 0)",
+          "oklch(0.48 0 0)",
+          "oklch(0.62 0 0)",
+          "oklch(0.76 0 0)",
+          "oklch(0.86 0 0)",
+          "oklch(0.922 0 0)",
+          "oklch(0.97 0 0)"
+        ]
+      },
+      "primary": {
+        "role": "primary",
+        "displayName": "Command Ink",
+        "canonical": "oklch(0.205 0 0)",
+        "tonalRamp": [
+          "oklch(0.12 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.32 0 0)",
+          "oklch(0.46 0 0)",
+          "oklch(0.6 0 0)",
+          "oklch(0.74 0 0)",
+          "oklch(0.88 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "muted-foreground": {
+        "role": "neutral",
+        "displayName": "Operator Gray",
+        "canonical": "oklch(0.556 0 0)",
+        "tonalRamp": [
+          "oklch(0.18 0 0)",
+          "oklch(0.3 0 0)",
+          "oklch(0.44 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.66 0 0)",
+          "oklch(0.78 0 0)",
+          "oklch(0.88 0 0)",
+          "oklch(0.96 0 0)"
+        ]
+      },
+      "destructive": {
+        "role": "error",
+        "displayName": "Diagnostic Red",
+        "canonical": "oklch(0.577 0.245 27.325)",
+        "tonalRamp": [
+          "oklch(0.18 0.08 27.325)",
+          "oklch(0.3 0.13 27.325)",
+          "oklch(0.44 0.2 27.325)",
+          "oklch(0.577 0.245 27.325)",
+          "oklch(0.68 0.19 27.325)",
+          "oklch(0.78 0.13 27.325)",
+          "oklch(0.88 0.07 27.325)",
+          "oklch(0.95 0.03 27.325)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "title": {
+        "displayName": "Title",
+        "purpose": "Product title, selected run title, and primary row labels."
+      },
+      "panel-heading": {
+        "displayName": "Panel Heading",
+        "purpose": "Compact headings for Run Canvas, Evidence Studio, replay, and compare panels."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default UI copy, controls, rows, and evidence descriptions."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Small structural labels, metadata, and badge text."
+      },
+      "data": {
+        "displayName": "Data",
+        "purpose": "Raw JSON, event payloads, and code-like evidence only."
+      }
+    },
+    "shadows": [
+      {
+        "name": "state-lift",
+        "value": "0 1px 2px 0 rgb(0 0 0 / 0.05)",
+        "purpose": "Active tabs or floating sidebar shells only."
+      },
+      {
+        "name": "overlay-lift",
+        "value": "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)",
+        "purpose": "Mobile sheets and overlay surfaces only."
+      }
+    ],
+    "motion": [
+      {
+        "name": "state-quick",
+        "value": "150ms ease-out",
+        "purpose": "Hover, focus, and small affordance changes."
+      },
+      {
+        "name": "panel-standard",
+        "value": "200ms ease-in-out",
+        "purpose": "Sidebar, sheet, and panel transitions."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "instant or opacity-only",
+        "purpose": "Reduced-motion fallback for non-essential transitions."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "narrow-stack",
+        "value": "max-width: 1023px"
+      },
+      {
+        "name": "desktop-workspace",
+        "value": "min-width: 1024px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Command Ink action for current selection or a real primary command.",
+      "html": "<button class=\"ds-button-primary\">Provenance</button>",
+      "css": ".ds-button-primary { display: inline-flex; align-items: center; justify-content: center; height: 32px; padding: 0 10px; border: 1px solid transparent; border-radius: 10px; background: var(--primary); color: var(--primary-foreground); font: 500 14px/1.45 var(--font-sans, 'Geist Variable', sans-serif); white-space: nowrap; transition: background-color 150ms ease-out, border-color 150ms ease-out, box-shadow 150ms ease-out, transform 150ms ease-out; } .ds-button-primary:hover { background: color-mix(in oklch, var(--primary), var(--background) 20%); } .ds-button-primary:active { transform: translateY(1px); } .ds-button-primary:focus-visible { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring), transparent 50%); }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Default utility button for refresh, source navigation, and secondary actions.",
+      "html": "<button class=\"ds-button-outline\">Source</button>",
+      "css": ".ds-button-outline { display: inline-flex; align-items: center; justify-content: center; height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--background); color: var(--foreground); font: 500 14px/1.45 var(--font-sans, 'Geist Variable', sans-serif); white-space: nowrap; transition: background-color 150ms ease-out, color 150ms ease-out, border-color 150ms ease-out, box-shadow 150ms ease-out, transform 150ms ease-out; } .ds-button-outline:hover { background: var(--muted); color: var(--foreground); } .ds-button-outline:active { transform: translateY(1px); } .ds-button-outline:focus-visible { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring), transparent 50%); }"
+    },
+    {
+      "name": "Secondary Badge",
+      "kind": "chip",
+      "refersTo": "badge-secondary",
+      "description": "Compact status/count chip for real state, evidence, or availability.",
+      "html": "<span class=\"ds-badge-secondary\">3 proven</span>",
+      "css": ".ds-badge-secondary { display: inline-flex; align-items: center; justify-content: center; height: 20px; width: fit-content; padding: 2px 8px; border: 1px solid transparent; border-radius: 9999px; background: var(--secondary); color: var(--secondary-foreground); font: 500 12px/1.35 var(--font-sans, 'Geist Variable', sans-serif); white-space: nowrap; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Compact command-center field for run search and small selectors.",
+      "html": "<input class=\"ds-input\" placeholder=\"Search local runs\" />",
+      "css": ".ds-input { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; padding: 4px 10px; border: 1px solid var(--input); border-radius: 10px; background: transparent; color: var(--foreground); font: 400 14px/1.45 var(--font-sans, 'Geist Variable', sans-serif); transition: border-color 150ms ease-out, box-shadow 150ms ease-out, background-color 150ms ease-out; } .ds-input::placeholder { color: var(--muted-foreground); } .ds-input:focus-visible { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring), transparent 50%); } .ds-input:disabled { opacity: 0.5; cursor: not-allowed; background: color-mix(in oklch, var(--input), transparent 50%); }"
+    },
+    {
+      "name": "Run Console Row",
+      "kind": "nav",
+      "description": "Dense row that selects a run without turning each run into a card.",
+      "html": "<button class=\"ds-run-row\"><span class=\"ds-run-row-icon\">◇</span><span class=\"ds-run-row-copy\"><strong>run_01</strong><small>complete · 42 events · 5 artifacts</small><small>Updated just now</small></span><span class=\"ds-run-row-badge\">done</span></button>",
+      "css": ".ds-run-row { display: flex; width: 100%; min-width: 0; align-items: flex-start; gap: 12px; padding: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--sidebar-foreground, var(--foreground)); text-align: left; font: 400 14px/1.45 var(--font-sans, 'Geist Variable', sans-serif); transition: background-color 150ms ease-out, color 150ms ease-out, box-shadow 150ms ease-out; } .ds-run-row:hover, .ds-run-row[data-active='true'] { background: var(--sidebar-accent, var(--muted)); color: var(--sidebar-accent-foreground, var(--foreground)); } .ds-run-row:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--sidebar-ring, var(--ring)); } .ds-run-row-icon { flex: 0 0 auto; color: var(--muted-foreground); } .ds-run-row-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; } .ds-run-row-copy strong, .ds-run-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-run-row-copy small { color: var(--muted-foreground); font-size: 12px; } .ds-run-row-badge { flex: 0 0 auto; border-radius: 8px; padding: 2px 6px; color: var(--muted-foreground); font-size: 12px; }"
+    },
+    {
+      "name": "Evidence Claim Card",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Flat proof card connecting a visible claim to its public source.",
+      "html": "<section class=\"ds-claim-card\"><div class=\"ds-claim-head\"><div><strong>Event count</strong><small>12 related / 42 loaded</small></div><span>supported</span></div><div class=\"ds-source-row\"><b>event</b><span>GET /runs/:runId/events</span><button>Source</button></div></section>",
+      "css": ".ds-claim-card { display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); color: var(--foreground); font: 400 14px/1.45 var(--font-sans, 'Geist Variable', sans-serif); } .ds-claim-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; } .ds-claim-head strong, .ds-claim-head small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-claim-head small { margin-top: 4px; color: var(--muted-foreground); font-size: 12px; } .ds-claim-head span { border: 1px solid var(--border); border-radius: 9999px; padding: 2px 8px; font-size: 12px; font-weight: 500; } .ds-source-row { display: flex; min-width: 0; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in oklch, var(--muted), transparent 70%); padding: 8px; font-size: 12px; } .ds-source-row b { border: 1px solid var(--border); border-radius: 9999px; padding: 2px 6px; font-weight: 500; } .ds-source-row span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); } .ds-source-row button { height: 28px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); color: var(--foreground); font-size: 12px; }"
+    },
+    {
+      "name": "Run Canvas Node",
+      "kind": "custom",
+      "description": "Compact operational canvas node for real run/event/artifact claims.",
+      "html": "<article class=\"ds-canvas-node\"><header><strong>Worker lane</strong><span>reviewing</span></header><p>Derived from public run detail and ordered events.</p><footer>8 events · 2 artifacts</footer></article>",
+      "css": ".ds-canvas-node { width: 220px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); color: var(--foreground); font: 400 12px/1.45 var(--font-sans, 'Geist Variable', sans-serif); } .ds-canvas-node header { display: flex; align-items: center; justify-content: space-between; gap: 8px; } .ds-canvas-node strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; } .ds-canvas-node span { border: 1px solid var(--border); border-radius: 9999px; padding: 2px 6px; color: var(--muted-foreground); font-size: 12px; } .ds-canvas-node p { margin: 8px 0 0; color: var(--muted-foreground); } .ds-canvas-node footer { margin-top: 10px; color: var(--muted-foreground); font-size: 12px; }"
+    },
+    {
+      "name": "Tooltip",
+      "kind": "custom",
+      "description": "Compact Base UI tooltip for icon-only command buttons.",
+      "html": "<span class=\"ds-tooltip\">Refresh local runs</span>",
+      "css": ".ds-tooltip { display: inline-flex; width: fit-content; max-width: 320px; align-items: center; gap: 6px; border-radius: 8px; background: var(--foreground); color: var(--background); padding: 6px 12px; font: 400 12px/1.35 var(--font-sans, 'Geist Variable', sans-serif); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Factory Control Room",
+    "overview": "Gaia Dashboard is a compact command center for a local software factory. The surface should feel precise, spatial, and trustworthy: a place where an operator can see a run, inspect state-machine progress, scrub events, compare two runs, and jump from a visible claim to its supporting evidence without the UI inventing anything.\n\nThe system is intentionally restrained. It borrows Cloudflare's canvas discipline for relationships, Linear and Codex's quiet operator density, and v0's crisp component confidence, but it refuses generic SaaS dashboards, decorative analytics, and placeholder theater. The design must make real run state easier to understand; it must not simulate agent intelligence that the public API does not expose.",
+    "keyCharacteristics": [
+      "Single-screen operator workspace: Run Console, Run Canvas, Evidence Studio, replay, compare, provenance, and live events stay connected.",
+      "Neutral-first command surface with state-rich badges and focused interaction.",
+      "Borders, tonal layers, and resize seams carry structure more than shadows.",
+      "Canvas-first spatial reasoning, with compact cards and honest unavailable states.",
+      "High density, low drama: every visible element should pay rent."
+    ],
+    "rules": [
+      {
+        "name": "The Real Signal Rule",
+        "body": "Color marks state, selection, evidence, or failure. Never use color as decoration.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Accent Rule",
+        "body": "Command Ink is the accent. Do not add purple, blue, or gradient accents to make the app feel more \"AI\".",
+        "section": "colors"
+      },
+      {
+        "name": "The No Display Type Rule",
+        "body": "This is an operator tool, not a landing page. Large display headlines and fluid hero typography are prohibited.",
+        "section": "typography"
+      },
+      {
+        "name": "The Label Discipline Rule",
+        "body": "Uppercase labels are allowed for small structural headers only. They must not become decorative eyebrows.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-By-Default Rule",
+        "body": "A panel at rest gets a border or tonal layer, not a drop shadow.",
+        "section": "elevation"
+      },
+      {
+        "name": "The No Ghost Card Rule",
+        "body": "Do not pair a one-pixel border with a soft decorative shadow on dashboard panels.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep the dashboard as a single-screen operator workspace.",
+      "Do use the Run Canvas as the spatial center when relationship data exists.",
+      "Do show unsupported or unavailable claims honestly.",
+      "Do use badges only for real state, counts, evidence, health, or availability.",
+      "Do preserve keyboard focus, visible rings, and WCAG AA text contrast.",
+      "Do prefer dense rows, separators, and resizable panels over decorative cards.",
+      "Do keep future harness selection visible as product direction without implementing fake controls before the API exists."
+    ],
+    "donts": [
+      "Don't make this a generic SaaS dashboard.",
+      "Don't create card soup.",
+      "Don't show fake metrics, fake data, placeholder theater, or invented hidden agent state.",
+      "Don't use terminal cosplay.",
+      "Don't add redundant information just to fill space.",
+      "Don't add gradient text, purple AI glow, glassmorphism, bokeh, or decorative grid backgrounds outside the actual canvas.",
+      "Don't change server/API behavior during UI polish.",
+      "Don't expose hidden `.gaia` state, private filesystem paths, or raw hidden reasoning as a visual shortcut."
+    ]
+  }
+}
