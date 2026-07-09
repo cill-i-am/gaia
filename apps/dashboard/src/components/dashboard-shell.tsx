@@ -279,6 +279,10 @@ function runArtifactCountLabel(input: {
   return "0 artifacts";
 }
 
+function runEventCountLabel(count: number) {
+  return `${count} ${count === 1 ? "event" : "events"}`;
+}
+
 function artifactNoun(count: number) {
   return count === 1 ? "artifact" : "artifacts";
 }
@@ -1324,7 +1328,14 @@ function RunConsole({
     }
 
     return runConsole.runs.filter((run) =>
-      [run.id, run.latestEventLabel, run.specHint, run.stateLabel, run.status]
+      [
+        run.id,
+        run.latestEventLabel,
+        run.specHint ?? "",
+        run.stateLabel,
+        run.status,
+        run.statusLabel,
+      ]
         .join(" ")
         .toLowerCase()
         .includes(normalizedFilter),
@@ -1361,10 +1372,13 @@ function RunConsole({
           </Tooltip>
         </div>
         <div className="relative">
-          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <SearchIcon
+            className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+            data-testid="run-console-search-icon"
+          />
           <Input
             aria-label="Search runs"
-            className="pl-8"
+            className="h-8 pl-8"
             onChange={(event) => setFilter(event.target.value)}
             placeholder="Search local runs"
             value={filter}
@@ -1717,7 +1731,7 @@ function RunConsoleRuns({
           return (
             <SidebarMenuItem key={run.id}>
               <SidebarMenuButton
-                className="h-auto items-start gap-3 py-2"
+                className="h-auto items-start gap-2.5 px-2 py-1.5"
                 data-testid={`run-console-row-${run.id}`}
                 isActive={run.id === selectedRunId}
                 onClick={() => onSelectRun(run.id)}
@@ -1725,24 +1739,26 @@ function RunConsoleRuns({
                 <WorkflowIcon />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium">{run.title}</span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {run.specHint}
-                  </span>
-                  <span className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
+                  {run.specHint === undefined ? null : (
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {run.specHint}
+                    </span>
+                  )}
+                  <span className="mt-0.5 flex flex-wrap gap-1 text-xs text-muted-foreground">
                     <span>{run.statusLabel}</span>
                     <span aria-hidden="true">·</span>
                     <span>{run.latestEventLabel}</span>
                     <span aria-hidden="true">·</span>
-                    <span>{run.eventCount} events</span>
+                    <span>{runEventCountLabel(run.eventCount)}</span>
                     <span aria-hidden="true">·</span>
                     <span>{artifactCountLabel}</span>
                   </span>
-                  <span className="mt-1 block truncate text-xs text-muted-foreground">
+                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                     Updated {run.updatedAtLabel}
                   </span>
                 </span>
               </SidebarMenuButton>
-              <SidebarMenuBadge>{run.terminalLabel}</SidebarMenuBadge>
+              <SidebarMenuBadge>{run.statusLabel}</SidebarMenuBadge>
             </SidebarMenuItem>
           );
         })}
@@ -1814,7 +1830,7 @@ function CommandHeader({
 }) {
   const selectedConsoleRun = serverConnection.selectedRun;
   const selectedStatusLabel =
-    selectedConsoleRun?.terminalLabel ?? statusLabels[selectedRun.status];
+    selectedConsoleRun?.statusLabel ?? statusLabels[selectedRun.status];
 
   return (
     <header className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-b px-3 py-2">

@@ -23,6 +23,7 @@ describe("run console model", () => {
       updatedAt: "2026-07-07T12:30:00.000Z",
     });
     const secondRun = localRunSummary({
+      artifacts: [],
       runId: parseRunId("run-abcdefghij"),
       status: "completed",
       state: "completed",
@@ -45,15 +46,15 @@ describe("run console model", () => {
     expect(state.runs[0]).toMatchObject({
       id: "run-1234567890",
       latestEventLabel: "Worker Started",
-      specHint: "Markdown input artifact available",
+      specHint: "Input artifact available",
       stateLabel: "Running Worker",
       statusLabel: "Running",
-      terminalLabel: "Active",
       title: "run-1234567890",
     });
     expect(state.runs[1]).toMatchObject({
       id: "run-abcdefghij",
-      terminalLabel: "Terminal",
+      specHint: undefined,
+      statusLabel: "Completed",
     });
     expect(reconcileSelectedRunId(undefined, state.runs)).toBe(
       "run-1234567890",
@@ -86,6 +87,52 @@ describe("run console model", () => {
     expect(state.isError).toBe(false);
     expect(state.message).toBe("0 runs loaded through LocalGaiaServerApi.");
     expect(reconcileSelectedRunId("run-1234567890", state.runs)).toBeUndefined();
+  });
+
+  it("labels failed runs by public status without terminality copy", () => {
+    const state = buildRunConsoleState({
+      healthError: undefined,
+      healthPending: false,
+      healthStatus: "ok",
+      runs: [
+        localRunSummary({
+          artifacts: [],
+          runId: parseRunId("run-failed0000"),
+          status: "failed",
+          state: "failed",
+          latestEventType: "RUN_FAILED",
+        }),
+      ],
+      runsDiagnostics: [],
+      runsError: undefined,
+      runsPending: false,
+      serverUrl: "/gaia-api",
+    });
+
+    expect(state.runs[0]).toMatchObject({
+      hasError: true,
+      specHint: undefined,
+      statusLabel: "Failed",
+    });
+  });
+
+  it("keeps loading distinct from empty and offline states", () => {
+    const state = buildRunConsoleState({
+      healthError: undefined,
+      healthPending: true,
+      healthStatus: undefined,
+      runs: [],
+      runsDiagnostics: [],
+      runsError: undefined,
+      runsPending: true,
+      serverUrl: "/gaia-api",
+    });
+
+    expect(state.health).toBe("checking");
+    expect(state.isLoading).toBe(true);
+    expect(state.isEmpty).toBe(false);
+    expect(state.isError).toBe(false);
+    expect(state.message).toBe("Checking local server.");
   });
 
   it("marks cached runs as reconnecting while a refresh is in flight", () => {

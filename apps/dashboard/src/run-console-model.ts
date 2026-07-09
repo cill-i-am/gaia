@@ -21,11 +21,10 @@ export type RunConsoleRun = {
   readonly id: string;
   readonly isTerminal: boolean;
   readonly latestEventLabel: string;
-  readonly specHint: string;
+  readonly specHint: string | undefined;
   readonly stateLabel: string;
   readonly status: typeof LocalRunSummaryDto.Type.status;
   readonly statusLabel: string;
-  readonly terminalLabel: "Active" | "Error" | "Terminal";
   readonly title: string;
   readonly updatedAt: string;
   readonly updatedAtLabel: string;
@@ -153,16 +152,11 @@ function toRunConsoleRun(
     isTerminal: run.status !== "running",
     latestEventLabel: eventTypeLabel(run.latestEventType),
     specHint: run.artifacts.includes("input")
-      ? "Markdown input artifact available"
-      : "Spec title not exposed by local API",
+      ? "Input artifact available"
+      : undefined,
     stateLabel: stateLabel(run.state),
     status: run.status,
     statusLabel: statusLabel(run.status),
-    terminalLabel: hasError
-      ? "Error"
-      : run.status === "running"
-        ? "Active"
-        : "Terminal",
     title: run.runId,
     updatedAt: run.updatedAt,
     updatedAtLabel: timeLabel(run.updatedAt),
