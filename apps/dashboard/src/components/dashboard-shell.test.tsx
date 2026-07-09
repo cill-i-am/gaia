@@ -54,7 +54,9 @@ const queryFixture = vi.hoisted(
       readonly artifactId: string;
       readonly runId: string;
     }>;
+    factoryArtifactBodyErrorsByRunId: Record<string, Record<string, unknown>>;
     factoryArtifactBodiesByRunId: Record<string, Record<string, unknown>>;
+    factoryArtifactErrorsByRunId: Record<string, unknown>;
     factoryArtifactsByRunId: Record<string, ReadonlyArray<unknown>>;
     factoryGraphsByRunId: Record<string, unknown>;
     createRunError: unknown;
@@ -73,7 +75,9 @@ const queryFixture = vi.hoisted(
     factoryActivitiesByRunId: {},
     factoryAgentActivitiesByRunId: {},
     factoryArtifactBodyRequests: [],
+    factoryArtifactBodyErrorsByRunId: {},
     factoryArtifactBodiesByRunId: {},
+    factoryArtifactErrorsByRunId: {},
     factoryArtifactsByRunId: {},
     factoryGraphsByRunId: {},
     createRunError: undefined,
@@ -297,14 +301,20 @@ vi.mock("@/lib/local-gaia-query", () => ({
     readonly runId: string;
   }) => ({
     enabled: config.runId.length > 0,
-    queryFn: () =>
-      Promise.resolve({
+    queryFn: () => {
+      const error = queryFixture.factoryArtifactErrorsByRunId[config.runId];
+      if (error !== undefined) {
+        return Promise.reject({ failure: error });
+      }
+
+      return Promise.resolve({
         data: {
           artifacts: queryFixture.factoryArtifactsByRunId[config.runId] ?? [],
           runId: config.runId,
         },
         status: "success",
-      }),
+      });
+    },
     queryKey: ["local-gaia", "runs", "detail", config.runId, "artifacts"] as const,
     retry: false,
   }),
@@ -318,6 +328,12 @@ vi.mock("@/lib/local-gaia-query", () => ({
         artifactId: config.artifactId,
         runId: config.runId,
       });
+      const error = queryFixture.factoryArtifactBodyErrorsByRunId[
+        config.runId
+      ]?.[config.artifactId];
+      if (error !== undefined) {
+        return Promise.reject({ failure: error });
+      }
 
       return Promise.resolve({
         data: queryFixture.factoryArtifactBodiesByRunId[config.runId]?.[
@@ -430,6 +446,7 @@ describe("DashboardShell Run Console", () => {
     expect(screen.queryByTestId("event-strip-event-1")).toBeNull();
     expect(screen.queryByTestId("run-replay-scrubber")).toBeNull();
     expect(screen.queryByTestId("run-compare-panel")).toBeNull();
+    expect(screen.getAllByText("No node selected")).not.toHaveLength(0);
     expect(screen.getByTestId("command-rail-footer").textContent).toContain(
       "/gaia-api",
     );
@@ -467,6 +484,131 @@ describe("DashboardShell Run Console", () => {
     expect(queryFixture.factoryArtifactBodyRequests).toContainEqual({
       artifactId,
       runId,
+    });
+  });
+
+  it("shows typed artifact body failures without reading hidden files", async () => {
+    const runId = parseRunId("run-9191919191");
+    const workerId = agentId("agent-worker");
+    const artifactId = artifactIdValue("artifact-summary");
+    const view = renderDashboardWithQueries({
+      factoryArtifactBodyErrorsByRunId: {
+        [runId]: {
+          [artifactId]: {
+            _tag: "DashboardGaiaApiError",
+            error: localRunApiError({
+              code: "ArtifactNotFound",
+              message: "Factory artifact was not found.",
+              status: 404,
+            }),
+          },
+        },
+      },
+      factoryArtifactsByRunId: {
+        [runId]: [
+          factoryArtifact({
+            artifactId,
+            label: "Code summary",
+            ownerAgentId: workerId,
+          }),
+        ],
+      },
+      factoryGraphsByRunId: {
+        [runId]: factoryGraph({
+          runId,
+          workerArtifactId: artifactId,
+          workerId,
+        }),
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+    await screen.findAllByText("Worker");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+    fireEvent.click(workerNode);
+
+    for (const artifactsTab of screen.getAllByRole("tab", {
+      name: "Artifacts",
+    })) {
+      fireEvent.click(artifactsTab);
+    }
+    fireEvent.click(
+      firstElement(screen.getAllByRole("button", { name: "Code summary" })),
+    );
+
+    const error = await screen.findAllByTestId("evidence-artifact-error");
+    expect(firstElement(error).textContent).toContain(
+      "ArtifactNotFound: Factory artifact was not found.",
+    );
+    expect(queryFixture.factoryArtifactBodyRequests).toContainEqual({
+      artifactId,
+      runId,
+    });
+  });
+
+  it("shows artifact catalog unavailability for a selected agent", async () => {
+    const runId = parseRunId("run-9292929292");
+    const view = renderDashboardWithQueries({
+      factoryArtifactErrorsByRunId: {
+        [runId]: {
+          _tag: "DashboardGaiaApiError",
+          error: localRunApiError({
+            code: "InternalServerError",
+            message: "Artifact catalog could not be read.",
+            status: 500,
+          }),
+        },
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+    await screen.findAllByText("Worker");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+    fireEvent.click(workerNode);
+
+    await waitFor(() => {
+      expect(
+        screen
+          .getAllByTestId("factory-diagnostic-callout")
+          .some((callout) =>
+            callout.textContent?.includes("Artifacts unavailable"),
+          ),
+      ).toBe(true);
+      expect(
+        screen
+          .getAllByTestId("factory-diagnostic-callout")
+          .some((callout) =>
+            callout.textContent?.includes(
+              "InternalServerError: Artifact catalog could not be read.",
+            ),
+          ),
+      ).toBe(true);
     });
   });
 
@@ -1216,9 +1358,17 @@ function renderDashboardWithQueries(input: {
     string,
     Record<string, ReadonlyArray<typeof FactoryActivityDto.Type>>
   >;
+  readonly factoryArtifactBodyErrorsByRunId?: Record<
+    string,
+    Record<string, DashboardGaiaClientError>
+  >;
   readonly factoryArtifactBodiesByRunId?: Record<
     string,
     Record<string, typeof FactoryArtifactBodyDto.Type>
+  >;
+  readonly factoryArtifactErrorsByRunId?: Record<
+    string,
+    DashboardGaiaClientError
   >;
   readonly factoryArtifactsByRunId?: Record<string, ReadonlyArray<typeof FactoryArtifactDto.Type>>;
   readonly factoryGraphsByRunId?: Record<string, typeof FactoryGraphDto.Type>;
@@ -1236,6 +1386,8 @@ function renderDashboardWithQueries(input: {
   queryFixture.createRunInputs = [];
   queryFixture.createRunPromise = input.createRunPromise;
   queryFixture.factoryArtifactBodyRequests = [];
+  queryFixture.factoryArtifactBodyErrorsByRunId =
+    input.factoryArtifactBodyErrorsByRunId ?? {};
   const defaultFactoryData = defaultFactoryDataForRuns(input.runs);
   queryFixture.factoryActivitiesByRunId =
     input.factoryActivitiesByRunId ?? defaultFactoryData.activitiesByRunId;
@@ -1247,6 +1399,8 @@ function renderDashboardWithQueries(input: {
     defaultFactoryData.artifactBodiesByRunId;
   queryFixture.factoryArtifactsByRunId =
     input.factoryArtifactsByRunId ?? defaultFactoryData.artifactsByRunId;
+  queryFixture.factoryArtifactErrorsByRunId =
+    input.factoryArtifactErrorsByRunId ?? {};
   queryFixture.factoryGraphsByRunId =
     input.factoryGraphsByRunId ?? defaultFactoryData.graphsByRunId;
   queryFixture.eventsByRunId = input.eventsByRunId ?? {};

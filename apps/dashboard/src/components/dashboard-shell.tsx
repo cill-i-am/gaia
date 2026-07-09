@@ -53,6 +53,12 @@ import {
   type FactoryCanvasNode,
 } from "@/factory-canvas-model";
 import {
+  buildSelectedNodeInspectorModel,
+  type InspectorNotice,
+  type InspectorResource,
+  type SelectedNodeInspectorModel,
+} from "@/selected-node-inspector-model";
+import {
   factoryAgentRoleVisual,
   factoryAgentStateBadgeVariant,
   factoryAgentStateLabel,
@@ -361,8 +367,7 @@ export function DashboardShell() {
     ],
   );
   const selectedFactoryNode =
-    selectedFactoryCanvas?.nodes.find((node) => node.id === selectedNodeId) ??
-    selectedFactoryCanvas?.nodes[0];
+    selectedFactoryCanvas?.nodes.find((node) => node.id === selectedNodeId);
   const selectedFactoryAgentActivityQuery = useQuery(
     localGaiaFactoryAgentActivityQueryOptions({
       agentId:
@@ -377,6 +382,128 @@ export function DashboardShell() {
     isLoading:
       selectedRunId !== undefined && selectedFactoryGraphQuery.isPending,
   };
+  const activityFailure = dashboardQueryFailure(
+    selectedFactoryAgentActivityQuery.error ??
+      selectedFactoryRunActivityQuery.error,
+  );
+  const artifactsFailure = dashboardQueryFailure(
+    selectedFactoryArtifactsQuery.error,
+  );
+  const inspectorActivityResource = React.useMemo<
+    InspectorResource<typeof FactoryActivityDto.Type>
+  >(() => {
+    if (selectedRunId === undefined || selectedFactoryNode === undefined) {
+      return { data: [], status: "ready" };
+    }
+
+    if (selectedFactoryNode.kind === "agent") {
+      if (selectedFactoryAgentActivityQuery.isPending) {
+        return {
+          message: "Agent activity is loading from the public agent endpoint.",
+          status: "loading",
+        };
+      }
+
+      if (activityFailure !== undefined) {
+        return {
+          message: dashboardFailureMessage(
+            activityFailure,
+            "Agent activity could not be loaded.",
+          ),
+          status: "error",
+        };
+      }
+
+      return {
+        data: selectedFactoryAgentActivityQuery.data?.data.activities ?? [],
+        status: "ready",
+      };
+    }
+
+    if (selectedFactoryRunActivityQuery.isPending) {
+      return {
+        message: "Run activity is loading from the public run endpoint.",
+        status: "loading",
+      };
+    }
+
+    if (activityFailure !== undefined) {
+      return {
+        message: dashboardFailureMessage(
+          activityFailure,
+          "Run activity could not be loaded.",
+        ),
+        status: "error",
+      };
+    }
+
+    return {
+      data: selectedFactoryRunActivityQuery.data?.data.activities ?? [],
+      status: "ready",
+    };
+  }, [
+    activityFailure,
+    selectedFactoryAgentActivityQuery.data?.data.activities,
+    selectedFactoryAgentActivityQuery.isPending,
+    selectedFactoryNode,
+    selectedFactoryRunActivityQuery.data?.data.activities,
+    selectedFactoryRunActivityQuery.isPending,
+    selectedRunId,
+  ]);
+  const inspectorArtifactResource = React.useMemo<
+    InspectorResource<typeof FactoryArtifactDto.Type>
+  >(() => {
+    if (selectedRunId === undefined || selectedFactoryNode === undefined) {
+      return { data: [], status: "ready" };
+    }
+
+    if (selectedFactoryArtifactsQuery.isPending) {
+      return {
+        message: "Artifact catalog is loading from the public artifact endpoint.",
+        status: "loading",
+      };
+    }
+
+    if (artifactsFailure !== undefined) {
+      return {
+        message: dashboardFailureMessage(
+          artifactsFailure,
+          "Artifact catalog could not be loaded.",
+        ),
+        status: "error",
+      };
+    }
+
+    return {
+      data: selectedFactoryArtifactsQuery.data?.data.artifacts ?? [],
+      status: "ready",
+    };
+  }, [
+    artifactsFailure,
+    selectedFactoryArtifactsQuery.data?.data.artifacts,
+    selectedFactoryArtifactsQuery.isPending,
+    selectedFactoryNode,
+    selectedRunId,
+  ]);
+  const selectedNodeInspector = React.useMemo(
+    () =>
+      buildSelectedNodeInspectorModel({
+        activity: inspectorActivityResource,
+        artifactCatalog: inspectorArtifactResource,
+        graph: selectedFactoryGraphQuery.data?.data,
+        graphIsLoading: runCanvas.isLoading,
+        selectedNode: selectedFactoryNode,
+        selectedRunId,
+      }),
+    [
+      inspectorActivityResource,
+      inspectorArtifactResource,
+      runCanvas.isLoading,
+      selectedFactoryGraphQuery.data?.data,
+      selectedFactoryNode,
+      selectedRunId,
+    ],
+  );
   const terminalStreamEventKey =
     runEventStream.terminalEvent === undefined
       ? undefined
@@ -502,30 +629,8 @@ export function DashboardShell() {
             onSelectReplayIndex={selectReplayIndex}
           />
           <DesktopWorkspace
-            activityFailure={dashboardQueryFailure(
-              selectedFactoryAgentActivityQuery.error ??
-                selectedFactoryRunActivityQuery.error,
-            )}
-            artifacts={
-              selectedFactoryArtifactsQuery.data?.data.artifacts ??
-              selectedFactoryGraphQuery.data?.data.linkedArtifacts ??
-              []
-            }
-            artifactsFailure={dashboardQueryFailure(
-              selectedFactoryArtifactsQuery.error,
-            )}
-            factoryActivities={
-              selectedFactoryNode?.kind === "agent"
-                ? (selectedFactoryAgentActivityQuery.data?.data.activities ??
-                  [])
-                : nodeScopedRunActivities({
-                    activities:
-                      selectedFactoryRunActivityQuery.data?.data.activities ??
-                      [],
-                    node: selectedFactoryNode,
-                  })
-            }
             factoryCanvas={selectedFactoryCanvas}
+            inspector={selectedNodeInspector}
             runCanvas={runCanvas}
             provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
@@ -536,30 +641,8 @@ export function DashboardShell() {
             onSelectNode={setSelectedNodeId}
           />
           <MobileWorkspace
-            activityFailure={dashboardQueryFailure(
-              selectedFactoryAgentActivityQuery.error ??
-                selectedFactoryRunActivityQuery.error,
-            )}
-            artifacts={
-              selectedFactoryArtifactsQuery.data?.data.artifacts ??
-              selectedFactoryGraphQuery.data?.data.linkedArtifacts ??
-              []
-            }
-            artifactsFailure={dashboardQueryFailure(
-              selectedFactoryArtifactsQuery.error,
-            )}
-            factoryActivities={
-              selectedFactoryNode?.kind === "agent"
-                ? (selectedFactoryAgentActivityQuery.data?.data.activities ??
-                  [])
-                : nodeScopedRunActivities({
-                    activities:
-                      selectedFactoryRunActivityQuery.data?.data.activities ??
-                      [],
-                    node: selectedFactoryNode,
-                  })
-            }
             factoryCanvas={selectedFactoryCanvas}
+            inspector={selectedNodeInspector}
             runCanvas={runCanvas}
             provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
@@ -1665,11 +1748,8 @@ function secondaryCommandTitle(mode: CommandMode) {
 }
 
 function DesktopWorkspace({
-  activityFailure,
-  artifacts,
-  artifactsFailure,
-  factoryActivities,
   factoryCanvas,
+  inspector,
   runCanvas,
   provenanceModeEnabled,
   replayState,
@@ -1679,11 +1759,8 @@ function DesktopWorkspace({
   serverUrl,
   onSelectNode,
 }: {
-  readonly activityFailure: ReturnType<typeof dashboardQueryFailure>;
-  readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
-  readonly artifactsFailure: ReturnType<typeof dashboardQueryFailure>;
-  readonly factoryActivities: ReadonlyArray<typeof FactoryActivityDto.Type>;
   readonly factoryCanvas: FactoryCanvasModel | undefined;
+  readonly inspector: SelectedNodeInspectorModel;
   readonly runCanvas: RunCanvasQueryState;
   readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
@@ -1708,14 +1785,10 @@ function DesktopWorkspace({
         <ResizableHandle withHandle />
         <ResizablePanel defaultSize="32%" minSize="24%">
           <EvidenceStudio
-            activityFailure={activityFailure}
-            artifacts={artifacts}
-            artifactsFailure={artifactsFailure}
-            factoryActivities={factoryActivities}
+            inspector={inspector}
             provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
             runCompare={runCompare}
-            selectedNode={selectedFactoryNode}
             selectedRun={selectedRun}
             serverUrl={serverUrl}
           />
@@ -1726,11 +1799,8 @@ function DesktopWorkspace({
 }
 
 function MobileWorkspace({
-  activityFailure,
-  artifacts,
-  artifactsFailure,
-  factoryActivities,
   factoryCanvas,
+  inspector,
   runCanvas,
   provenanceModeEnabled,
   replayState,
@@ -1740,11 +1810,8 @@ function MobileWorkspace({
   serverUrl,
   onSelectNode,
 }: {
-  readonly activityFailure: ReturnType<typeof dashboardQueryFailure>;
-  readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
-  readonly artifactsFailure: ReturnType<typeof dashboardQueryFailure>;
-  readonly factoryActivities: ReadonlyArray<typeof FactoryActivityDto.Type>;
   readonly factoryCanvas: FactoryCanvasModel | undefined;
+  readonly inspector: SelectedNodeInspectorModel;
   readonly runCanvas: RunCanvasQueryState;
   readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
@@ -1767,14 +1834,10 @@ function MobileWorkspace({
       </div>
       <div className="min-h-[24rem] shrink-0 border-b">
         <EvidenceStudio
-          activityFailure={activityFailure}
-          artifacts={artifacts}
-          artifactsFailure={artifactsFailure}
-          factoryActivities={factoryActivities}
+          inspector={inspector}
           provenanceModeEnabled={provenanceModeEnabled}
           replayState={replayState}
           runCompare={runCompare}
-          selectedNode={selectedFactoryNode}
           selectedRun={selectedRun}
           serverUrl={serverUrl}
         />
@@ -1910,41 +1973,57 @@ function RunCanvas({
   );
 }
 
+function selectedInspectorNodeId(model: SelectedNodeInspectorModel) {
+  return model.kind === "agent" || model.kind === "workItem"
+    ? model.node.id
+    : undefined;
+}
+
+function emptyInspectorBadge(reason: Extract<
+  SelectedNodeInspectorModel,
+  { readonly kind: "empty" }
+>["reason"]) {
+  if (reason === "loading") {
+    return "Loading";
+  }
+
+  if (reason === "no-run") {
+    return "No run";
+  }
+
+  return "Idle";
+}
+
+function noticeFor(
+  model: Extract<
+    SelectedNodeInspectorModel,
+    { readonly kind: "agent" | "workItem" }
+  >,
+  prefix: "Activity" | "Artifacts",
+) {
+  return model.notices.find((notice) => notice.title.startsWith(prefix));
+}
+
 function EvidenceStudio({
-  activityFailure,
-  artifacts,
-  artifactsFailure,
-  factoryActivities,
+  inspector,
   provenanceModeEnabled,
   replayState,
   runCompare,
-  selectedNode,
   selectedRun,
   serverUrl,
 }: {
-  readonly activityFailure: ReturnType<typeof dashboardQueryFailure>;
-  readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
-  readonly artifactsFailure: ReturnType<typeof dashboardQueryFailure>;
-  readonly factoryActivities: ReadonlyArray<typeof FactoryActivityDto.Type>;
+  readonly inspector: SelectedNodeInspectorModel;
   readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
-  readonly selectedNode: FactoryCanvasNode | undefined;
   readonly selectedRun: DashboardRun;
   readonly serverUrl: string;
 }) {
   const [tab, setTab] = React.useState<EvidenceTab>("summary");
-  const nodeArtifacts = React.useMemo(
-    () =>
-      selectedNode === undefined
-        ? []
-        : factoryArtifactsForNode({
-            activities: factoryActivities,
-            artifacts,
-            node: selectedNode,
-          }),
-    [artifacts, factoryActivities, selectedNode],
-  );
+  const nodeArtifacts =
+    inspector.kind === "agent" || inspector.kind === "workItem"
+      ? inspector.artifacts
+      : [];
   const artifactIds = nodeArtifacts.map((artifact) => artifact.artifactId);
   const artifactIdStrings = artifactIds.map((artifactId) => String(artifactId));
   const artifactKey = artifactIdStrings.join("|");
@@ -1957,7 +2036,7 @@ function EvidenceStudio({
   >();
   const selectedArtifactId =
     requestedArtifact !== undefined &&
-    requestedArtifact.nodeId === selectedNode?.id &&
+    requestedArtifact.nodeId === selectedInspectorNodeId(inspector) &&
     artifactIdStrings.includes(requestedArtifact.artifactId)
       ? requestedArtifact.artifactId
       : undefined;
@@ -1974,40 +2053,39 @@ function EvidenceStudio({
   React.useEffect(() => {
     setRequestedArtifact((current) =>
       current !== undefined &&
-      current.nodeId === selectedNode?.id &&
+      current.nodeId === selectedInspectorNodeId(inspector) &&
       artifactIdStrings.includes(current.artifactId)
         ? current
         : undefined,
     );
-  }, [artifactKey, selectedNode?.id]);
+  }, [artifactKey, inspector]);
 
-  if (selectedNode === undefined) {
+  if (inspector.kind === "empty") {
     return (
       <aside className="flex size-full min-h-0 flex-col">
         <div className="flex h-11 shrink-0 items-center justify-between gap-3 border-b px-3">
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold">Evidence Studio</h2>
             <p className="truncate text-xs text-muted-foreground">
-              Select a canvas node
+              {inspector.title}
             </p>
           </div>
-          <Badge variant="outline">Idle</Badge>
+          <Badge variant="outline">{emptyInspectorBadge(inspector.reason)}</Badge>
         </div>
         <Empty className="min-h-0 flex-1" data-testid="evidence-studio-empty">
           <EmptyHeader>
             <EmptyMedia variant="icon">
               <InspectIcon />
             </EmptyMedia>
-            <EmptyTitle>No node selected</EmptyTitle>
-            <EmptyDescription>
-              Select a run canvas node to inspect its public evidence.
-            </EmptyDescription>
+            <EmptyTitle>{inspector.title}</EmptyTitle>
+            <EmptyDescription>{inspector.message}</EmptyDescription>
           </EmptyHeader>
         </Empty>
       </aside>
     );
   }
 
+  const selectedNode = inspector.node;
   const roleVisual = factoryAgentRoleVisual(selectedNode.role);
 
   return (
@@ -2065,21 +2143,18 @@ function EvidenceStudio({
         <ScrollArea className="min-h-0 flex-1">
           <TabsContent className="m-0 p-3" value="summary">
             <FactoryEvidenceSummary
-              activities={factoryActivities}
-              activityFailure={activityFailure}
-              artifactFailure={artifactsFailure}
-              artifacts={nodeArtifacts}
+              inspector={inspector}
               provenanceModeEnabled={provenanceModeEnabled}
               replayState={replayState}
               runCompare={runCompare}
-              selectedNode={selectedNode}
             />
           </TabsContent>
           <TabsContent className="m-0 p-3" value="events">
             <FactoryEvidenceActivity
-              activities={factoryActivities}
-              activityFailure={activityFailure}
-              selectedNode={selectedNode}
+              activities={inspector.activity}
+              status={inspector.activityStatus}
+              notice={noticeFor(inspector, "Activity")}
+              selectedNode={inspector.node}
             />
           </TabsContent>
           <TabsContent className="m-0 p-3" value="artifacts">
@@ -2087,7 +2162,8 @@ function EvidenceStudio({
               artifact={artifactQuery.data?.data}
               artifactFailure={dashboardQueryFailure(artifactQuery.error)}
               artifacts={nodeArtifacts}
-              artifactsFailure={artifactsFailure}
+              catalogNotice={noticeFor(inspector, "Artifacts")}
+              catalogStatus={inspector.artifactStatus}
               isLoading={
                 artifactQuery.isPending && selectedArtifactId !== undefined
               }
@@ -2095,7 +2171,7 @@ function EvidenceStudio({
               onSelectArtifact={(artifactId) =>
                 setRequestedArtifact({
                   artifactId,
-                  nodeId: selectedNode.id,
+                  nodeId: inspector.node.id,
                 })
               }
             />
@@ -2109,8 +2185,9 @@ function EvidenceStudio({
                   activeSequence: replayState.activeSequence,
                   visibleEventIds: replayState.visibleEventIds,
                 },
-                activities: factoryActivities,
+                activities: inspector.activity,
                 compare: provenanceModeEnabled ? runCompare.summary : undefined,
+                inspectorKind: inspector.kind,
                 runId: selectedRun.id,
               })}
             </pre>
@@ -2122,26 +2199,41 @@ function EvidenceStudio({
 }
 
 function FactoryEvidenceSummary({
-  activities,
-  activityFailure,
-  artifactFailure,
-  artifacts,
+  inspector,
   provenanceModeEnabled,
   replayState,
   runCompare,
-  selectedNode,
 }: {
-  readonly activities: ReadonlyArray<typeof FactoryActivityDto.Type>;
-  readonly activityFailure: ReturnType<typeof dashboardQueryFailure>;
-  readonly artifactFailure: ReturnType<typeof dashboardQueryFailure>;
-  readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
+  readonly inspector: Extract<
+    SelectedNodeInspectorModel,
+    { readonly kind: "agent" | "workItem" }
+  >;
   readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
-  readonly selectedNode: FactoryCanvasNode;
 }) {
+  const selectedNode = inspector.node;
   const roleVisual = factoryAgentRoleVisual(selectedNode.role);
   const RoleIcon = roleVisual.Icon;
+  const summaryItems =
+    inspector.kind === "agent"
+      ? [
+          `Role: ${roleVisual.label}`,
+          `State: ${factoryAgentStateLabel(inspector.agent.state)}`,
+          inspector.agent.subState === undefined
+            ? undefined
+            : `Sub-state: ${inspector.agent.subState}`,
+          `Work item: ${inspector.agent.workItemId}`,
+          "Agent query: unavailable in this prototype",
+        ]
+      : [
+          `Kind: ${inspector.workItem.kind}`,
+          `Linked agents: ${countLabel(inspector.agents.length, "agent", "agents")}`,
+          inspector.workItem.description === undefined
+            ? undefined
+            : inspector.workItem.description,
+          "Agent chat/query: unavailable in this prototype",
+        ];
 
   return (
     <div className="flex flex-col gap-4">
@@ -2167,6 +2259,12 @@ function FactoryEvidenceSummary({
         </div>
       </div>
       <Separator />
+      <EvidenceList
+        emptyDescription="This selection has no additional public context."
+        emptyTitle="No context"
+        items={summaryItems.filter(isPresent)}
+      />
+      <Separator />
       {provenanceModeEnabled ? (
         <div
           className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground"
@@ -2177,39 +2275,15 @@ function FactoryEvidenceSummary({
           reads instead of private run files.
         </div>
       ) : null}
-      <div className="grid grid-cols-2 gap-3">
-        <Metric
-          label={selectedNode.kind === "agent" ? "Role" : "Kind"}
-          value={selectedNode.kind === "agent" ? roleVisual.label : String(selectedNode.type)}
-        />
-        <Metric
-          label="State"
-          value={factoryAgentStateLabel(selectedNode.state)}
-        />
-        <Metric label="Activity" value={String(activities.length)} />
-        <Metric label="Artifacts" value={String(artifacts.length)} />
-      </div>
-      <Separator />
-      {activityFailure !== undefined || artifactFailure !== undefined ? (
+      {inspector.notices.length > 0 ? (
         <div className="flex flex-col gap-2">
-          {activityFailure !== undefined ? (
+          {inspector.notices.map((notice) => (
             <DiagnosticCallout
-              message={dashboardFailureMessage(
-                activityFailure,
-                "Activity could not be loaded.",
-              )}
-              title="Activity unavailable"
+              key={`${notice.title}:${notice.message}`}
+              message={notice.message}
+              title={notice.title}
             />
-          ) : null}
-          {artifactFailure !== undefined ? (
-            <DiagnosticCallout
-              message={dashboardFailureMessage(
-                artifactFailure,
-                "Artifact catalog could not be loaded.",
-              )}
-              title="Artifacts unavailable"
-            />
-          ) : null}
+          ))}
         </div>
       ) : null}
       <div
@@ -2241,7 +2315,7 @@ function FactoryEvidenceSummary({
         <EvidenceList
           emptyDescription="This node has no public activity entries yet."
           emptyTitle="No activity"
-          items={activities.slice(0, 4).map((activity) => activity.label)}
+          items={inspector.activity.slice(0, 4).map((activity) => activity.label)}
         />
       </div>
       <Separator />
@@ -2252,7 +2326,7 @@ function FactoryEvidenceSummary({
         <EvidenceList
           emptyDescription="This node has no public artifacts linked yet."
           emptyTitle="No artifacts"
-          items={artifacts.map((artifact) => artifact.label)}
+          items={inspector.artifacts.map((artifact) => artifact.label)}
         />
       </div>
       <Separator />
@@ -2274,21 +2348,30 @@ function FactoryEvidenceSummary({
 
 function FactoryEvidenceActivity({
   activities,
-  activityFailure,
+  notice,
   selectedNode,
+  status,
 }: {
   readonly activities: ReadonlyArray<typeof FactoryActivityDto.Type>;
-  readonly activityFailure: ReturnType<typeof dashboardQueryFailure>;
+  readonly notice: InspectorNotice | undefined;
   readonly selectedNode: FactoryCanvasNode;
+  readonly status: InspectorResource<typeof FactoryActivityDto.Type>["status"];
 }) {
-  if (activityFailure !== undefined) {
+  if (status === "loading") {
+    return (
+      <div className="flex flex-col gap-3" data-testid="evidence-events-loading">
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-20 w-full" />
+      </div>
+    );
+  }
+
+  if (status === "error" || status === "unavailable") {
     return (
       <DiagnosticCallout
-        message={dashboardFailureMessage(
-          activityFailure,
-          "Activity could not be loaded.",
-        )}
-        title="Activity unavailable"
+        message={notice?.message ?? "Activity could not be loaded."}
+        title={notice?.title ?? "Activity unavailable"}
       />
     );
   }
@@ -2350,7 +2433,8 @@ function FactoryEvidenceArtifacts({
   artifact,
   artifactFailure,
   artifacts,
-  artifactsFailure,
+  catalogNotice,
+  catalogStatus,
   isLoading,
   selectedArtifactId,
   onSelectArtifact,
@@ -2358,19 +2442,31 @@ function FactoryEvidenceArtifacts({
   readonly artifact: typeof FactoryArtifactBodyDto.Type | undefined;
   readonly artifactFailure: ReturnType<typeof dashboardQueryFailure>;
   readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
-  readonly artifactsFailure: ReturnType<typeof dashboardQueryFailure>;
+  readonly catalogNotice: InspectorNotice | undefined;
+  readonly catalogStatus: InspectorResource<
+    typeof FactoryArtifactDto.Type
+  >["status"];
   readonly isLoading: boolean;
   readonly selectedArtifactId: string | undefined;
   readonly onSelectArtifact: (artifactId: string) => void;
 }) {
-  if (artifactsFailure !== undefined) {
+  if (catalogStatus === "loading") {
+    return (
+      <div
+        className="flex flex-col gap-3"
+        data-testid="evidence-artifacts-loading"
+      >
+        <Skeleton className="h-8 w-44" />
+        <Skeleton className="h-28 w-full" />
+      </div>
+    );
+  }
+
+  if (catalogStatus === "error" || catalogStatus === "unavailable") {
     return (
       <DiagnosticCallout
-        message={dashboardFailureMessage(
-          artifactsFailure,
-          "Artifact catalog could not be loaded.",
-        )}
-        title="Artifacts unavailable"
+        message={catalogNotice?.message ?? "Artifact catalog could not be loaded."}
+        title={catalogNotice?.title ?? "Artifacts unavailable"}
       />
     );
   }
@@ -2532,21 +2628,6 @@ function EvidenceList({
         </li>
       ))}
     </ul>
-  );
-}
-
-function Metric({
-  label,
-  value,
-}: {
-  readonly label: string;
-  readonly value: string;
-}) {
-  return (
-    <div className="rounded-md border bg-background p-3">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="mt-1 truncate text-sm font-medium">{value}</p>
-    </div>
   );
 }
 
@@ -2970,47 +3051,6 @@ function runCanvasErrorMessage(state: RunCanvasQueryState) {
   return dashboardFailureMessage(
     state.graphError,
     "The selected FactoryGraph could not be loaded.",
-  );
-}
-
-function nodeScopedRunActivities(input: {
-  readonly activities: ReadonlyArray<typeof FactoryActivityDto.Type>;
-  readonly node: FactoryCanvasNode | undefined;
-}) {
-  if (input.node === undefined) {
-    return [];
-  }
-
-  if (input.node.kind === "agent") {
-    return input.activities.filter(
-      (activity) => activity.agentId === input.node?.rawId,
-    );
-  }
-
-  return input.activities.filter(
-    (activity) => activity.workItemId === input.node?.rawId,
-  );
-}
-
-function factoryArtifactsForNode(input: {
-  readonly activities: ReadonlyArray<typeof FactoryActivityDto.Type>;
-  readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
-  readonly node: FactoryCanvasNode;
-}) {
-  const activityArtifactIds = new Set(
-    input.activities.flatMap((activity) =>
-      activity.artifactIds.map((artifactId) => String(artifactId)),
-    ),
-  );
-  const nodeArtifactIds = new Set([
-    ...input.node.artifactIds.map((artifactId) => String(artifactId)),
-    ...activityArtifactIds,
-  ]);
-
-  return input.artifacts.filter(
-    (artifact) =>
-      nodeArtifactIds.has(String(artifact.artifactId)) ||
-      (input.node.kind === "agent" && artifact.ownerAgentId === input.node.rawId),
   );
 }
 
