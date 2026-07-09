@@ -5,8 +5,8 @@
     .version = "0.1.0",
     .icons = .{ "assets/icon.png" },
     .platforms = .{ "macos", "linux" },
-    .permissions = .{},
-    .capabilities = .{ "webview" },
+    .permissions = .{ "command", "window", "dialog" },
+    .capabilities = .{ "webview", "js_bridge", "menus", "shortcuts", "dialog" },
     .frontend = .{
         .dist = "dist",
         .entry = "index.html",
@@ -25,7 +25,6 @@
                 "zero://inline",
                 "http://127.0.0.1:3000",
                 "http://localhost:3000",
-                "http://127.0.0.1:8765",
             },
             .external_links = .{ .action = "deny" },
         },
@@ -34,5 +33,22 @@
     .cef = .{ .dir = "third_party/cef/macos", .auto_install = false },
     .windows = .{
         .{ .label = "main", .title = "Gaia Native Shell", .width = 1280, .height = 860, .restore_state = true },
+    },
+    .commands = .{
+        .{ .id = "gaia.focus-dashboard", .title = "Focus Dashboard" },
+        .{ .id = "gaia.show-native-status", .title = "Show Native Status" },
+    },
+    .menus = .{
+        .{
+            .title = "Gaia",
+            .items = .{
+                .{ .label = "Focus Dashboard", .command = "gaia.focus-dashboard", .key = "1", .modifiers = .{ "primary" } },
+                .{ .label = "Native Status", .command = "gaia.show-native-status", .key = "i", .modifiers = .{ "primary", "shift" } },
+            },
+        },
+    },
+    .shortcuts = .{
+        .{ .id = "gaia.focus-dashboard", .key = "1", .modifiers = .{ "primary" } },
+        .{ .id = "gaia.show-native-status", .key = "i", .modifiers = .{ "primary", "shift" } },
     },
 }

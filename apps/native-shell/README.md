@@ -63,6 +63,36 @@ The package scripts use the workspace-local `@native-sdk/cli`. The generated
 Zig build also defaults `-Dnative-sdk-path` to `node_modules/@native-sdk/cli`
 inside this workspace package.
 
+## Desktop Chrome And Bridge
+
+The shell declares a small desktop command catalog in `app.zon`:
+
+- `gaia.focus-dashboard` focuses the dashboard window.
+- `gaia.show-native-status` opens a native status dialog when the current
+  platform supports message dialogs. Unsupported hosts report the Native SDK
+  error name in the bridge status instead of silently pretending success.
+
+The same command ids are available from the native Gaia menu and app-level
+shortcuts. The bridge exposes one app-defined status command:
+
+```js
+await window.zero.invoke("gaia.native.status", {});
+```
+
+That command returns only small JSON-safe shell metadata: platform, web engine,
+the native command catalog, whether Gaia data crosses the bridge, and the last
+native command event. Gaia run data, graph data, artifacts, activity, health,
+and streams stay on `LocalGaiaServerApi`.
+
+The built-in bridge policy is default-deny and explicitly allows only:
+
+- `native-sdk.command.invoke`
+- `native-sdk.command.list`
+- `native-sdk.platform.supports`
+
+Filesystem, OS URL/path, clipboard, credentials, and dialog built-ins are not
+available through the bridge.
+
 ## Static Assets Status
 
 Native SDK requires `frontend.dist` to be a local manifest-relative asset
@@ -84,10 +114,10 @@ requirement.
 
 ## Security Boundary
 
-This app declares only the `webview` capability and no native permissions. Run
-data remains on the public `LocalGaiaServerApi` HTTP path. The app does not
-register app bridge handlers, does not read `.gaia`, and does not introduce a
-server lifecycle manager.
+This app declares WebView, JavaScript bridge, menu, shortcut, and dialog
+capabilities for the narrow desktop shell affordances above. It does not read
+`.gaia`, does not expose broad filesystem or OS bridge commands, and does not
+introduce a server lifecycle manager.
 
 Allowed navigation origins are intentionally narrow:
 

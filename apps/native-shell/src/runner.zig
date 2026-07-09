@@ -34,6 +34,7 @@ pub const RunOptions = struct {
     commands: ?[]const native_sdk.Command = null,
     menus: ?[]const native_sdk.Menu = null,
     shortcuts: ?[]const native_sdk.Shortcut = null,
+    propagate_dispatch_errors: bool = false,
 
     fn appInfo(self: RunOptions, buffers: *StateBuffers) native_sdk.AppInfo {
         var info: native_sdk.AppInfo = .{
@@ -295,6 +296,7 @@ fn runNull(app: native_sdk.App, options: RunOptions, init: std.process.Init) !vo
         .window_state_store = store,
         .environ = init.minimal.environ,
     });
+    if (options.propagate_dispatch_errors) runtime.dispatch_error_policy = .propagate;
 
     try runtime.run(app);
 }
@@ -344,6 +346,7 @@ fn runMacos(app: native_sdk.App, options: RunOptions, init: std.process.Init) !v
         .window_state_store = store,
         .environ = init.minimal.environ,
     });
+    if (options.propagate_dispatch_errors) runtime.dispatch_error_policy = .propagate;
 
     try runtime.run(app);
 }
@@ -393,6 +396,7 @@ fn runLinux(app: native_sdk.App, options: RunOptions, init: std.process.Init) !v
         .window_state_store = store,
         .environ = init.minimal.environ,
     });
+    if (options.propagate_dispatch_errors) runtime.dispatch_error_policy = .propagate;
 
     try runtime.run(app);
 }
@@ -442,6 +446,7 @@ fn runWindows(app: native_sdk.App, options: RunOptions, init: std.process.Init) 
         .window_state_store = store,
         .environ = init.minimal.environ,
     });
+    if (options.propagate_dispatch_errors) runtime.dispatch_error_policy = .propagate;
 
     try runtime.run(app);
 }

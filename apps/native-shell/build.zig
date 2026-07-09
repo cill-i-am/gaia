@@ -88,6 +88,7 @@ pub fn build(b: *std.Build) void {
     const app_mod = localModule(b, target, optimize, "src/main.zig");
     app_mod.addImport("native_sdk", native_sdk_mod);
     app_mod.addImport("runner", runner_mod);
+    app_mod.addImport("build_options", options_mod);
     const exe = b.addExecutable(.{
         .name = app_exe_name,
         .root_module = app_mod,
