@@ -1,6 +1,9 @@
 .DS_Store
 .gaia/
 .turbo/
+.zig-cache/
 coverage/
 dist/
 node_modules/
+zig-out/
+apps/native-shell/third_party/cef/
