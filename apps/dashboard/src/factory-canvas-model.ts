@@ -113,6 +113,26 @@ const issueDeliveryExpectedEdges: ReadonlyArray<{
   },
 ];
 
+const factoryAgentRoleLabels = {
+  ciWatcher: "CI watcher",
+  orchestrator: "Orchestrator",
+  researcher: "Researcher",
+  reviewer: "Reviewer",
+  tester: "Tester",
+  unknown: "Unknown agent",
+  worker: "Worker",
+} satisfies Record<FactoryAgentRole, string>;
+
+const factoryAgentStateCopy = {
+  blocked: "blocked",
+  canceled: "canceled",
+  failed: "failed",
+  pending: "pending",
+  running: "running",
+  succeeded: "succeeded",
+  unknown: "status unknown",
+} satisfies Record<FactoryAgentState, string>;
+
 export function buildFactoryCanvasModel(
   graph: typeof FactoryGraphDto.Type,
   options: {
@@ -156,7 +176,7 @@ export function buildFactoryCanvasModel(
       rawId: agent.id,
       role: agent.role,
       state: agent.state,
-      summary: agent.subState ?? `${agent.role} is ${agent.state}`,
+      summary: agent.subState ?? factoryAgentSummary(agent),
       type: agent.role,
       position,
     };
@@ -182,6 +202,10 @@ export function buildFactoryCanvasModel(
     title: graph.workItems[0]?.title ?? graph.runId,
     workflow: graph.workflow,
   };
+}
+
+function factoryAgentSummary(agent: FactoryGraphAgent) {
+  return `${factoryAgentRoleLabels[agent.role]} ${factoryAgentStateCopy[agent.state]}`;
 }
 
 function diagnosticsForGraph(

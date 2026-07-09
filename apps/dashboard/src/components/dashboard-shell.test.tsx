@@ -474,15 +474,7 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByRole("button", { name: "New run" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Provenance" })).toBeNull();
     expect(screen.queryByText("No node selected")).toBeNull();
-    expect(screen.getByTestId("evidence-studio-panel").getAttribute("aria-hidden")).toBe(
-      "true",
-    );
-    expect(screen.getByTestId("evidence-studio-panel").getAttribute("data-slot")).toBe(
-      "canvas-inspector-sheet",
-    );
-    expect(screen.getByTestId("evidence-studio-panel").getAttribute("data-state")).toBe(
-      "closed",
-    );
+    expect(screen.queryByTestId("evidence-studio-panel")).toBeNull();
     expect(screen.getByTestId("command-rail-footer").textContent).toContain(
       "/gaia-api",
     );
@@ -509,17 +501,12 @@ describe("DashboardShell Run Console", () => {
     await waitFor(() => {
       expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
       expect(screen.getAllByText("Code summary")).not.toHaveLength(0);
-      expect(screen.getByTestId("evidence-studio-panel").getAttribute("aria-hidden")).toBe(
-        "false",
+      expect(screen.getByTestId("evidence-studio-panel").getAttribute("data-slot")).toBe(
+        "sheet-content",
       );
-      expect(screen.getByTestId("evidence-studio-panel").getAttribute("data-state")).toBe(
-        "open",
-      );
-      expect(
-        view.container.querySelector('[data-slot="canvas-inspector-sheet-content"]'),
-      ).not.toBeNull();
       const summaryIconClassName =
-        view.container
+        screen
+          .getByTestId("evidence-studio-panel")
           .querySelector('[data-slot="factory-evidence-summary-icon"]')
           ?.getAttribute("class") ?? "";
       expect(summaryIconClassName).toContain("border-border");
@@ -527,6 +514,18 @@ describe("DashboardShell Run Console", () => {
         /rose|amber|sky|cyan|emerald|indigo/,
       );
     });
+    expect(screen.getByTestId("evidence-studio-panel").textContent).not.toContain(
+      "Role:",
+    );
+    expect(screen.getByTestId("evidence-studio-panel").textContent).not.toContain(
+      "State:",
+    );
+    expect(screen.getByTestId("evidence-studio-panel").textContent).not.toContain(
+      "Work item:",
+    );
+    expect(screen.getByTestId("evidence-studio-panel").textContent).toContain(
+      "Operator note",
+    );
 
     for (const artifactsTab of screen.getAllByRole("tab", {
       name: "Artifacts",
@@ -555,10 +554,16 @@ describe("DashboardShell Run Console", () => {
     fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Close Evidence Studio" })));
 
     await waitFor(() => {
-      expect(screen.getByTestId("evidence-studio-panel").getAttribute("aria-hidden")).toBe(
-        "true",
-      );
+      expect(screen.queryByTestId("evidence-studio-panel")).toBeNull();
       expect(screen.queryByText("Worker produced code summary")).toBeNull();
+    });
+
+    fireEvent.click(workerNode);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("evidence-studio-panel").textContent).toContain(
+        "Worker produced code summary",
+      );
     });
   });
 
@@ -741,8 +746,8 @@ describe("DashboardShell Run Console", () => {
         screen.getAllByText("Worker B produced implementation summary"),
       ).not.toHaveLength(0);
       expect(
-        screen.getByTestId("evidence-studio-panel").getAttribute("aria-hidden"),
-      ).toBe("false");
+        screen.getByTestId("evidence-studio-panel").getAttribute("data-slot"),
+      ).toBe("sheet-content");
     });
   });
 
@@ -1150,8 +1155,8 @@ describe("DashboardShell Run Console", () => {
       );
       expect(
         firstElement(screen.getAllByTestId("event-strip-event-1")).textContent,
-      ).toContain("Replay point");
-      expect(screen.getAllByText("Replay point")).not.toHaveLength(0);
+      ).toContain("Replay");
+      expect(screen.getAllByText("Replay")).not.toHaveLength(0);
     });
 
     fireEvent.click(secondRow);

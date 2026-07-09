@@ -107,6 +107,14 @@ describe("factory canvas model", () => {
     });
   });
 
+  it("uses operator copy instead of generated role-state grammar when sub-state is absent", () => {
+    const model = buildFactoryCanvasModel(factoryGraphFixture());
+    const worker = model.nodes.find((node) => node.id === "agent:agent-worker");
+
+    expect(worker?.summary).toBe("Worker succeeded");
+    expect(worker?.summary).not.toBe("worker is succeeded");
+  });
+
   it("surfaces empty and unavailable graph diagnostics without inventing nodes", () => {
     const model = buildFactoryCanvasModel(
       FactoryGraphDto.make({

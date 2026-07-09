@@ -104,13 +104,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
-  CanvasInspectorSheet,
-  CanvasInspectorSheetContent,
-  CanvasInspectorSheetDescription,
-  CanvasInspectorSheetHeader,
-  CanvasInspectorSheetTitle,
-} from "@/components/ui/canvas-inspector-sheet";
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -128,6 +121,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import {
   Sidebar,
   SidebarContent,
@@ -804,27 +804,23 @@ export function DashboardShell() {
           >
             <DesktopWorkspace
               factoryCanvas={selectedFactoryCanvas}
-              inspector={selectedNodeInspector}
               runCanvas={runCanvas}
-              replayState={replayState}
-              runCompare={runCompare}
               selectedFactoryNode={selectedFactoryNode}
-              selectedRun={selectedRun}
-              serverUrl={serverUrl}
-              onClearNode={() => setSelectedNodeId(undefined)}
               onSelectNode={setSelectedNodeId}
             />
             <MobileWorkspace
               factoryCanvas={selectedFactoryCanvas}
-              inspector={selectedNodeInspector}
               runCanvas={runCanvas}
+              selectedFactoryNode={selectedFactoryNode}
+              onSelectNode={setSelectedNodeId}
+            />
+            <EvidenceStudioSheet
+              inspector={selectedNodeInspector}
               replayState={replayState}
               runCompare={runCompare}
-              selectedFactoryNode={selectedFactoryNode}
               selectedRun={selectedRun}
               serverUrl={serverUrl}
-              onClearNode={() => setSelectedNodeId(undefined)}
-              onSelectNode={setSelectedNodeId}
+              onClose={() => setSelectedNodeId(undefined)}
             />
             <SecondaryCommandPanel
               commandMode={commandMode}
@@ -2018,29 +2014,15 @@ function secondaryCommandTitle(mode: CommandMode) {
 
 function DesktopWorkspace({
   factoryCanvas,
-  inspector,
   runCanvas,
-  replayState,
-  runCompare,
   selectedFactoryNode,
-  selectedRun,
-  serverUrl,
-  onClearNode,
   onSelectNode,
 }: {
   readonly factoryCanvas: FactoryCanvasModel | undefined;
-  readonly inspector: SelectedNodeInspectorModel;
   readonly runCanvas: RunCanvasQueryState;
-  readonly replayState: RunReplayState;
-  readonly runCompare: RunCompareModel;
   readonly selectedFactoryNode: FactoryCanvasNode | undefined;
-  readonly selectedRun: DashboardRun;
-  readonly serverUrl: string;
-  readonly onClearNode: () => void;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
-  const isInspectorOpen = inspector.kind !== "empty";
-
   return (
     <section className="relative hidden size-full min-h-0 overflow-hidden lg:block">
       <RunCanvas
@@ -2049,46 +2031,19 @@ function DesktopWorkspace({
         selectedNode={selectedFactoryNode}
         onSelectNode={onSelectNode}
       />
-      <CanvasInspectorSheet
-        data-testid="evidence-studio-panel"
-        open={isInspectorOpen}
-      >
-        {isInspectorOpen ? (
-          <EvidenceStudio
-            inspector={inspector}
-            replayState={replayState}
-            runCompare={runCompare}
-            selectedRun={selectedRun}
-            serverUrl={serverUrl}
-            onClose={onClearNode}
-          />
-        ) : null}
-      </CanvasInspectorSheet>
     </section>
   );
 }
 
 function MobileWorkspace({
   factoryCanvas,
-  inspector,
   runCanvas,
-  replayState,
-  runCompare,
   selectedFactoryNode,
-  selectedRun,
-  serverUrl,
-  onClearNode,
   onSelectNode,
 }: {
   readonly factoryCanvas: FactoryCanvasModel | undefined;
-  readonly inspector: SelectedNodeInspectorModel;
   readonly runCanvas: RunCanvasQueryState;
-  readonly replayState: RunReplayState;
-  readonly runCompare: RunCompareModel;
   readonly selectedFactoryNode: FactoryCanvasNode | undefined;
-  readonly selectedRun: DashboardRun;
-  readonly serverUrl: string;
-  readonly onClearNode: () => void;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
   return (
@@ -2101,19 +2056,54 @@ function MobileWorkspace({
           onSelectNode={onSelectNode}
         />
       </div>
-      {inspector.kind === "empty" ? null : (
-        <div className="h-[24rem] shrink-0 border-b">
+    </section>
+  );
+}
+
+function EvidenceStudioSheet({
+  inspector,
+  replayState,
+  runCompare,
+  selectedRun,
+  serverUrl,
+  onClose,
+}: {
+  readonly inspector: SelectedNodeInspectorModel;
+  readonly replayState: RunReplayState;
+  readonly runCompare: RunCompareModel;
+  readonly selectedRun: DashboardRun;
+  readonly serverUrl: string;
+  readonly onClose: () => void;
+}) {
+  const isOpen = inspector.kind !== "empty";
+
+  return (
+    <Sheet
+      open={isOpen}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          onClose();
+        }
+      }}
+    >
+      {isOpen ? (
+        <SheetContent
+          className="gap-0 p-0 data-[side=right]:w-[min(30rem,calc(100vw-1rem))] data-[side=right]:sm:max-w-[30rem]"
+          data-testid="evidence-studio-panel"
+          showCloseButton={false}
+          side="right"
+        >
           <EvidenceStudio
             inspector={inspector}
             replayState={replayState}
             runCompare={runCompare}
             selectedRun={selectedRun}
             serverUrl={serverUrl}
-            onClose={onClearNode}
+            onClose={onClose}
           />
-        </div>
-      )}
-    </section>
+        </SheetContent>
+      ) : null}
+    </Sheet>
   );
 }
 
@@ -2291,15 +2281,13 @@ function EvidenceStudio({
   const roleVisual = factoryAgentRoleVisual(selectedNode.role);
 
   return (
-    <CanvasInspectorSheetContent>
-      <CanvasInspectorSheetHeader>
+    <div className="flex size-full min-h-0 flex-col">
+      <SheetHeader className="flex-row items-center justify-between gap-3 border-b px-3 py-3">
         <div className="min-w-0">
-          <CanvasInspectorSheetTitle>
-            Evidence Studio
-          </CanvasInspectorSheetTitle>
-          <CanvasInspectorSheetDescription>
+          <SheetTitle>Evidence Studio</SheetTitle>
+          <SheetDescription className="truncate">
             {selectedNode.label}
-          </CanvasInspectorSheetDescription>
+          </SheetDescription>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Badge variant="outline">
@@ -2318,7 +2306,7 @@ function EvidenceStudio({
             <XIcon />
           </Button>
         </div>
-      </CanvasInspectorSheetHeader>
+      </SheetHeader>
       <Tabs
         className="min-h-0 flex-1 gap-0"
         onValueChange={(value) => {
@@ -2333,8 +2321,8 @@ function EvidenceStudio({
         }}
         value={tab}
       >
-        <div className="border-b px-3 py-2">
-          <TabsList variant="line">
+        <div className="overflow-x-auto border-b px-3 py-2">
+          <TabsList className="min-w-max" variant="line">
             <TabsTrigger value="summary">
               <InspectIcon data-icon="inline-start" />
               Summary
@@ -2402,7 +2390,7 @@ function EvidenceStudio({
           </TabsContent>
         </ScrollArea>
       </Tabs>
-    </CanvasInspectorSheetContent>
+    </div>
   );
 }
 
@@ -2417,29 +2405,60 @@ function FactoryEvidenceSummary({
   const selectedNode = inspector.node;
   const roleVisual = factoryAgentRoleVisual(selectedNode.role);
   const RoleIcon = roleVisual.Icon;
-  const summaryItems =
+  const summaryFacts =
     inspector.kind === "agent"
       ? [
-          `Role: ${roleVisual.label}`,
-          `State: ${factoryAgentStateLabel(inspector.agent.state)}`,
           inspector.agent.subState === undefined
             ? undefined
-            : `Sub-state: ${inspector.agent.subState}`,
-          `Work item: ${inspector.agent.workItemId}`,
-          "Agent query: unavailable in this prototype",
+            : {
+                label: "Operator note",
+                value: inspector.agent.subState,
+              },
+          {
+            label: "Activity",
+            value: countLabel(inspector.activity.length, "entry", "entries"),
+          },
+          {
+            label: "Artifacts",
+            value: countLabel(
+              inspector.artifacts.length,
+              "artifact",
+              "artifacts",
+            ),
+          },
+          {
+            label: "Query",
+            value: "Unavailable in this prototype",
+          },
         ]
       : [
-          `Kind: ${inspector.workItem.kind}`,
-          `Linked agents: ${countLabel(inspector.agents.length, "agent", "agents")}`,
           inspector.workItem.description === undefined
             ? undefined
-            : inspector.workItem.description,
-          "Agent chat/query: unavailable in this prototype",
+            : {
+                label: "Description",
+                value: inspector.workItem.description,
+              },
+          {
+            label: "Linked agents",
+            value: countLabel(inspector.agents.length, "agent", "agents"),
+          },
+          {
+            label: "Artifacts",
+            value: countLabel(
+              inspector.artifacts.length,
+              "artifact",
+              "artifacts",
+            ),
+          },
+          {
+            label: "Query",
+            value: "Unavailable in this prototype",
+          },
         ];
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-start gap-3">
+      <div className="flex items-center gap-3">
         <div
           className="grid size-9 shrink-0 place-items-center rounded-md border border-border bg-background text-muted-foreground"
           data-slot="factory-evidence-summary-icon"
@@ -2451,18 +2470,9 @@ function FactoryEvidenceSummary({
             Selected {selectedNode.kind === "agent" ? "agent" : "work item"}
           </p>
           <h3 className="mt-1 text-lg font-semibold">{selectedNode.label}</h3>
-          <p className="mt-2 text-sm text-muted-foreground">
-            {selectedNode.summary}
-          </p>
         </div>
       </div>
-      <Separator />
-      <EvidenceList
-        emptyDescription="This selection has no additional public context."
-        emptyTitle="No context"
-        items={summaryItems.filter(isPresent)}
-      />
-      <Separator />
+      <SummaryFacts facts={summaryFacts.filter(isPresent)} />
       {inspector.notices.length > 0 ? (
         <div className="flex flex-col gap-2">
           {inspector.notices.map((notice) => (
@@ -2474,31 +2484,18 @@ function FactoryEvidenceSummary({
           ))}
         </div>
       ) : null}
-      <div className="flex flex-col gap-2">
-        <p className="text-xs font-medium uppercase text-muted-foreground">
-          Recent activity
-        </p>
-        <EvidenceList
-          emptyDescription="This node has no public activity entries yet."
-          emptyTitle="No activity"
-          items={inspector.activity.slice(0, 4).map((activity) => activity.label)}
-        />
-      </div>
-      <Separator />
-      <div className="flex flex-col gap-2">
-        <p className="text-xs font-medium uppercase text-muted-foreground">
-          Linked artifacts
-        </p>
-        <EvidenceList
-          emptyDescription="This node has no public artifacts linked yet."
-          emptyTitle="No artifacts"
-          items={inspector.artifacts.map((artifact) => artifact.label)}
-        />
-      </div>
-      <Separator />
-      <EvidenceList
-        emptyDescription="This node has no additional FactoryGraph references."
-        emptyTitle="No graph references"
+      <EvidenceSummarySection
+        emptyText="No public activity entries yet."
+        items={inspector.activity.slice(0, 4).map((activity) => activity.label)}
+        title="Recent activity"
+      />
+      <EvidenceSummarySection
+        emptyText="No public artifacts linked yet."
+        items={inspector.artifacts.map((artifact) => artifact.label)}
+        title="Linked artifacts"
+      />
+      <EvidenceSummarySection
+        emptyText="No additional FactoryGraph references."
         items={[
           selectedNode.latestActivityId === undefined
             ? undefined
@@ -2507,8 +2504,72 @@ function FactoryEvidenceSummary({
             ? undefined
             : `Linked artifacts: ${selectedNode.artifactIds.join(", ")}`,
         ].filter(isPresent)}
+        title="Graph references"
       />
     </div>
+  );
+}
+
+function SummaryFacts({
+  facts,
+}: {
+  readonly facts: ReadonlyArray<{
+    readonly label: string;
+    readonly value: string;
+  }>;
+}) {
+  if (facts.length === 0) {
+    return (
+      <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
+        No additional public context.
+      </p>
+    );
+  }
+
+  return (
+    <dl className="grid gap-2 sm:grid-cols-2">
+      {facts.map((fact) => (
+        <div
+          className="min-w-0 rounded-md border bg-muted/20 px-3 py-2"
+          key={`${fact.label}:${fact.value}`}
+        >
+          <dt className="text-xs font-medium uppercase text-muted-foreground">
+            {fact.label}
+          </dt>
+          <dd className="mt-1 truncate text-sm">{fact.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function EvidenceSummarySection({
+  emptyText,
+  items,
+  title,
+}: {
+  readonly emptyText: string;
+  readonly items: ReadonlyArray<string>;
+  readonly title: string;
+}) {
+  return (
+    <section className="flex flex-col gap-2">
+      <p className="text-xs font-medium uppercase text-muted-foreground">
+        {title}
+      </p>
+      {items.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{emptyText}</p>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {items.map((item) => (
+            <li className="flex items-center gap-2 text-sm" key={item}>
+              <CircleDotIcon className="size-3 text-muted-foreground" />
+              <span className="min-w-0 truncate">{item}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -2560,34 +2621,44 @@ function FactoryEvidenceActivity({
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col">
       {activities.map((activity) => (
         <section
-          className="rounded-md border bg-background p-3"
+          className="border-b py-3 last:border-b-0"
           data-testid={`evidence-activity-${activity.sequence}`}
           key={activity.activityId}
         >
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium">{activity.label}</p>
-              <p className="truncate text-xs text-muted-foreground">
-                Sequence {activity.sequence} · {activity.timestamp}
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 shrink-0 font-mono text-xs text-muted-foreground">
+              #{activity.sequence}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center justify-between gap-3">
+                <p className="truncate text-sm font-medium">{activity.label}</p>
+                <Badge
+                  className="shrink-0"
+                  variant={factoryAgentStateBadgeVariant(activity.state)}
+                >
+                  {factoryAgentStateLabel(activity.state)}
+                </Badge>
+              </div>
+              <p className="mt-1 truncate text-xs text-muted-foreground">
+                {activity.timestamp} · {activity.kind}
               </p>
+              {activity.subState === undefined ? null : (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {activity.subState}
+                </p>
+              )}
+              {activity.artifactIds.length === 0 ? null : (
+                <p className="mt-2 truncate text-xs text-muted-foreground">
+                  Artifacts:{" "}
+                  {activity.artifactIds
+                    .map((artifactId) => factoryArtifactLabel(String(artifactId)))
+                    .join(", ")}
+                </p>
+              )}
             </div>
-            <Badge variant={factoryAgentStateBadgeVariant(activity.state)}>
-              {factoryAgentStateLabel(activity.state)}
-            </Badge>
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Badge variant="outline">{activity.kind}</Badge>
-            {activity.subState === undefined ? null : (
-              <Badge variant="secondary">{activity.subState}</Badge>
-            )}
-            {activity.artifactIds.map((artifactId) => (
-              <Badge key={artifactId} variant="secondary">
-                {factoryArtifactLabel(String(artifactId))}
-              </Badge>
-            ))}
           </div>
         </section>
       ))}
@@ -2759,44 +2830,6 @@ function DiagnosticCallout({
   );
 }
 
-function EvidenceList({
-  emptyDescription,
-  emptyTitle,
-  items,
-}: {
-  readonly emptyDescription: string;
-  readonly emptyTitle: string;
-  readonly items: ReadonlyArray<string>;
-}) {
-  if (items.length === 0) {
-    return (
-      <Empty className="min-h-40 border">
-        <EmptyHeader>
-          <EmptyMedia variant="icon">
-            <InspectIcon />
-          </EmptyMedia>
-          <EmptyTitle>{emptyTitle}</EmptyTitle>
-          <EmptyDescription>{emptyDescription}</EmptyDescription>
-        </EmptyHeader>
-      </Empty>
-    );
-  }
-
-  return (
-    <ul className="flex flex-col gap-2">
-      {items.map((item) => (
-        <li
-          className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm"
-          key={item}
-        >
-          <CircleDotIcon className="size-3 text-muted-foreground" />
-          <span className="min-w-0 truncate">{item}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 function EventStrip({
   onClose,
   replayState,
@@ -2863,8 +2896,9 @@ function EventStrip({
           <div className="flex min-w-max gap-2 p-3">
             {selectedRun.events.map((event) => (
               <div
+                aria-label={eventStripEventLabel(event, replayState)}
                 className={cn(
-                  "flex w-72 shrink-0 flex-col gap-2 rounded-md border bg-background p-3",
+                  "flex w-56 shrink-0 flex-col gap-1.5 rounded-md border bg-background p-3",
                   event.id === replayState.activeEventId &&
                     "ring-2 ring-ring",
                   replayState.futureEventIds.includes(event.id) &&
@@ -2873,26 +2907,30 @@ function EventStrip({
                 data-testid={`event-strip-event-${event.sequence}`}
                 key={event.id}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-muted-foreground">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="font-mono text-foreground">
+                    #{event.sequence}
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span className="truncate">
                     {event.time}
                   </span>
-                  <Badge variant={statusBadgeVariant(event.tone)}>
-                    {statusLabels[event.tone]}
-                  </Badge>
                 </div>
                 <p className="truncate text-sm font-medium">{event.label}</p>
-                <div className="flex flex-wrap gap-1">
-                  <Badge variant="outline">#{event.sequence}</Badge>
+                <p className="truncate text-xs text-muted-foreground">
+                  {statusLabels[event.tone]}
                   {event.id === replayState.activeEventId ? (
-                    <Badge variant="secondary">Replay point</Badge>
+                    <span className="font-medium text-foreground">
+                      {" "}
+                      · Replay
+                    </span>
                   ) : null}
-                  {event.artifactHints.map((artifactId) => (
-                    <Badge key={artifactId} variant="secondary">
-                      {artifactLabel(artifactId)}
-                    </Badge>
-                  ))}
-                </div>
+                </p>
+                {event.artifactHints.length === 0 ? null : (
+                  <p className="truncate text-xs text-muted-foreground">
+                    Artifacts: {eventArtifactSummary(event.artifactHints)}
+                  </p>
+                )}
               </div>
             ))}
           </div>
@@ -2900,6 +2938,29 @@ function EventStrip({
       )}
     </section>
   );
+}
+
+function eventStripEventLabel(
+  event: DashboardRun["events"][number],
+  replayState: RunReplayState,
+) {
+  const artifactText =
+    event.artifactHints.length === 0
+      ? "No artifact hints."
+      : `Artifacts: ${eventArtifactSummary(event.artifactHints)}.`;
+  const replayText =
+    event.id === replayState.activeEventId ? " Replay position." : "";
+
+  return `Event ${event.sequence}: ${event.label}. ${statusLabels[event.tone]}. ${artifactText}${replayText}`;
+}
+
+function eventArtifactSummary(artifactHints: ReadonlyArray<string>) {
+  const visibleArtifacts = artifactHints.slice(0, 2).map(artifactLabel);
+  const hiddenCount = artifactHints.length - visibleArtifacts.length;
+
+  return hiddenCount > 0
+    ? `${visibleArtifacts.join(", ")} +${hiddenCount} artifacts`
+    : visibleArtifacts.join(", ");
 }
 
 type RunEventStreamStatus =
