@@ -146,6 +146,12 @@ importers:
         specifier: ^4.1.9
         version: 4.1.9(@types/node@24.13.2)(jsdom@29.1.1)(vite@8.1.3(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.5)(yaml@2.9.0))
 
+  apps/native-shell:
+    devDependencies:
+      '@native-sdk/cli':
+        specifier: 0.4.0
+        version: 0.4.0
+
   apps/server:
     dependencies:
       '@effect/platform-node':
@@ -772,6 +778,54 @@ packages:
     peerDependencies:
       '@emnapi/core': ^1.7.1
       '@emnapi/runtime': ^1.7.1
+
+  '@native-sdk/cli-darwin-arm64@0.4.0':
+    resolution: {integrity: sha512-/HdeaKmV3FvewWbwNvIfn0CWpoZ/gYcWihMVXLD9niCeHvVsfYVeEyDYTrby/e6TzRP5A8Foo+ej4pqKcH8zkA==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@native-sdk/cli-darwin-x64@0.4.0':
+    resolution: {integrity: sha512-3e5wdM6eB/3pfJ5qORsn/qwYpf8bqygbQybC+vpqM+qJ+4PcbvMeGs5m8jIFkez1K7k8w6NciOeS7Ymbp7Sp0A==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@native-sdk/cli-linux-arm64-gnu@0.4.0':
+    resolution: {integrity: sha512-EmavjQsEDMuOyDUAXys7AAI9Ej6wRKoQF6jYxjYdF3V7jDlpSesOPvTgcsf9F+Kcuwv6ZO4n5a1apjwNa4UGNQ==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@native-sdk/cli-linux-arm64-musl@0.4.0':
+    resolution: {integrity: sha512-GqOrHhdMO/YDJpX4poT39OoRDl37NWTqLkyDQ5JYaCG+un8yja7CZ+/9aYifMH1W4eexS5+aBnxACPB85j7dkA==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@native-sdk/cli-linux-x64-gnu@0.4.0':
+    resolution: {integrity: sha512-w4LPtpMBNWz69XlbCMLl9jPD/9giLUNQiJdsuLq5OLRKNML3UFP2wvDSfe2GxkVwbnf6zCyTnG5svAdi6nyGXw==}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@native-sdk/cli-linux-x64-musl@0.4.0':
+    resolution: {integrity: sha512-hIKqhTI544ORuxIThMTUvCDkRJ6c+jB22bilsoZOYbwIX8AaiegNcbUzTVgRMtyNschaWiJ1vD4CbtWtBu+y/A==}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@native-sdk/cli-win32-arm64@0.4.0':
+    resolution: {integrity: sha512-HCk5TowxccDtAobDqEYZCqNiy21PyYLcLQClQSCR5q+cpt/Jc7A02+7Sqf3wlpnNkMTB8K9fkrBAjwWznAmdbA==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@native-sdk/cli-win32-x64@0.4.0':
+    resolution: {integrity: sha512-K+gcbbdsUWYd27SEwqe7MbJXQbxiDTonQdDt2kk9MC3eJDR9hpOfTj4ERpceyvU3tImHwulchEMwdhwo6UjAyg==}
+    cpu: [x64]
+    os: [win32]
+
+  '@native-sdk/cli@0.4.0':
+    resolution: {integrity: sha512-HD9MJ4HvpHx0jdGu2+8RrqxHYa9ABFs1HowxJIqd3vUB2KyJAy343lKgzYy5dL8YByKka/iudacRFGBvZcTg/g==}
+    hasBin: true
 
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
@@ -3717,6 +3771,41 @@ snapshots:
       '@emnapi/runtime': 1.11.1
       '@tybys/wasm-util': 0.10.3
     optional: true
+
+  '@native-sdk/cli-darwin-arm64@0.4.0':
+    optional: true
+
+  '@native-sdk/cli-darwin-x64@0.4.0':
+    optional: true
+
+  '@native-sdk/cli-linux-arm64-gnu@0.4.0':
+    optional: true
+
+  '@native-sdk/cli-linux-arm64-musl@0.4.0':
+    optional: true
+
+  '@native-sdk/cli-linux-x64-gnu@0.4.0':
+    optional: true
+
+  '@native-sdk/cli-linux-x64-musl@0.4.0':
+    optional: true
+
+  '@native-sdk/cli-win32-arm64@0.4.0':
+    optional: true
+
+  '@native-sdk/cli-win32-x64@0.4.0':
+    optional: true
+
+  '@native-sdk/cli@0.4.0':
+    optionalDependencies:
+      '@native-sdk/cli-darwin-arm64': 0.4.0
+      '@native-sdk/cli-darwin-x64': 0.4.0
+      '@native-sdk/cli-linux-arm64-gnu': 0.4.0
+      '@native-sdk/cli-linux-arm64-musl': 0.4.0
+      '@native-sdk/cli-linux-x64-gnu': 0.4.0
+      '@native-sdk/cli-linux-x64-musl': 0.4.0
+      '@native-sdk/cli-win32-arm64': 0.4.0
+      '@native-sdk/cli-win32-x64': 0.4.0
 
   '@nodelib/fs.scandir@2.1.5':
     dependencies:
