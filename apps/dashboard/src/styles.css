@@ -3,6 +3,14 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
 
+@font-face {
+  font-display: swap;
+  font-family: "Geist Pixel Square";
+  font-style: normal;
+  font-weight: 500;
+  src: url("./assets/fonts/GeistPixel-Square.woff2") format("woff2");
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
@@ -130,9 +138,77 @@
 }
 
 @layer components {
+  .gaia-logo-wordmark {
+    font-family:
+      "Geist Pixel Square", "Geist Mono", ui-monospace, SFMono-Regular,
+      Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 1rem;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
   .run-console-sidebar {
     flex-basis: 20rem;
     width: 20rem;
+  }
+
+  .react-flow__node.factory-flow-node,
+  .react-flow__node-default.factory-flow-node,
+  .react-flow__node-input.factory-flow-node {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    color: inherit;
+    padding: 0;
+  }
+
+  .react-flow__node.factory-flow-node.selected,
+  .react-flow__node.factory-flow-node:focus {
+    box-shadow: none;
+    outline: none;
+  }
+
+  .react-flow__edge.factory-flow-edge .react-flow__edge-path {
+    stroke: color-mix(in oklch, var(--foreground) 26%, transparent);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.35;
+  }
+
+  .react-flow__edge.factory-flow-edge-unselected .react-flow__edge-path {
+    stroke: color-mix(in oklch, var(--foreground) 14%, transparent);
+    stroke-width: 1.1;
+  }
+
+  .react-flow__edge.factory-flow-edge-selected .react-flow__edge-path {
+    stroke: color-mix(in oklch, var(--foreground) 72%, transparent);
+    stroke-width: 1.8;
+  }
+
+  .react-flow__edge.factory-flow-edge-active .react-flow__edge-path {
+    stroke: var(--foreground);
+    stroke-dasharray: 8 5;
+    stroke-width: 2;
+  }
+
+  .react-flow__edge.animated.factory-flow-edge-active
+    .react-flow__edge-path {
+    animation: factory-flow-edge-dash 700ms linear infinite;
+  }
+
+  @keyframes factory-flow-edge-dash {
+    to {
+      stroke-dashoffset: -13;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .react-flow__edge.animated.factory-flow-edge-active
+      .react-flow__edge-path {
+      animation: none;
+    }
   }
 
   @media (max-width: 1023px) {

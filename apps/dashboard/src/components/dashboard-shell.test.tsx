@@ -30,7 +30,11 @@ import {
 import { Schema } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DashboardShell } from "@/components/dashboard-shell";
+import {
+  DashboardShell,
+  factoryFlowEdgeClassName,
+  shouldAnimateFactoryEdge,
+} from "@/components/dashboard-shell";
 import type { DashboardGaiaClientError } from "@/lib/local-gaia-client";
 
 type CreateRunAcceptedFixture = {
@@ -44,6 +48,8 @@ type CreateRunAcceptedFixture = {
     readonly run: string;
   };
 };
+
+type FactoryAgentState = (typeof FactoryGraphDto.Type)["agents"][number]["state"];
 
 const queryFixture = vi.hoisted(
   (): {
@@ -443,33 +449,81 @@ describe("DashboardShell Run Console", () => {
 
     await screen.findByTestId("selected-run-title");
 
-    expect(await screen.findAllByText("Refactor dashboard canvas")).not.toHaveLength(0);
+    expect(screen.getByRole("heading", { name: "GAIA" }).className).toContain(
+      "gaia-logo-wordmark",
+    );
     expect(await screen.findAllByText("Issue orchestrator")).not.toHaveLength(0);
     expect(await screen.findAllByText("Worker")).not.toHaveLength(0);
     expect(await screen.findAllByText("Reviewer")).not.toHaveLength(0);
     expect(await screen.findAllByText("Tester")).not.toHaveLength(0);
     expect(await screen.findAllByText("CI watcher")).not.toHaveLength(0);
+    expect(screen.queryByText("Run Canvas")).toBeNull();
+    expect(
+      screen.queryByText("FactoryGraph topology for the selected run"),
+    ).toBeNull();
+    expect(screen.queryByText("6 nodes")).toBeNull();
     expect(screen.queryByText("Run root")).toBeNull();
     expect(screen.queryByText("Worker lane")).toBeNull();
     expect(screen.queryByTestId("event-strip-event-1")).toBeNull();
     expect(screen.queryByTestId("run-replay-scrubber")).toBeNull();
     expect(screen.queryByTestId("run-compare-panel")).toBeNull();
     expect(screen.queryByTestId("source-detail-panel")).toBeNull();
+    expect(screen.queryByTestId("issue-delivery-intake-form")).toBeNull();
+    expect(screen.getByRole("button", { name: "New run" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Provenance" })).toBeNull();
-    expect(screen.getAllByText("No node selected")).not.toHaveLength(0);
+    expect(screen.queryByText("No node selected")).toBeNull();
+    expect(screen.getByTestId("evidence-studio-panel").getAttribute("aria-hidden")).toBe(
+      "true",
+    );
+    expect(screen.getByTestId("evidence-studio-panel").getAttribute("data-slot")).toBe(
+      "canvas-inspector-sheet",
+    );
+    expect(screen.getByTestId("evidence-studio-panel").getAttribute("data-state")).toBe(
+      "closed",
+    );
     expect(screen.getByTestId("command-rail-footer").textContent).toContain(
       "/gaia-api",
     );
+    expect(view.container.querySelector('[data-id^="work-item:"]')).toBeNull();
 
     const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
     if (workerNode === null) {
       throw new Error("Expected a worker FactoryGraph node.");
     }
+    expect(workerNode.getAttribute("class")).toContain("h-36");
+    expect(workerNode.getAttribute("class")).toContain("w-80");
+    expect(workerNode.querySelector('[data-slot="card"]')).not.toBeNull();
+    expect(workerNode.textContent).toContain("implements changes");
+    expect(workerNode.textContent).not.toContain("Activity linked");
+    expect(workerNode.textContent).not.toContain("activities");
+    const workerNodeIconClassName =
+      workerNode.querySelector("svg")?.parentElement?.getAttribute("class") ?? "";
+    expect(workerNodeIconClassName).toContain("border-border");
+    expect(workerNodeIconClassName).not.toMatch(
+      /rose|amber|sky|cyan|emerald|indigo/,
+    );
     fireEvent.click(workerNode);
 
     await waitFor(() => {
       expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
       expect(screen.getAllByText("Code summary")).not.toHaveLength(0);
+      expect(screen.getByTestId("evidence-studio-panel").getAttribute("aria-hidden")).toBe(
+        "false",
+      );
+      expect(screen.getByTestId("evidence-studio-panel").getAttribute("data-state")).toBe(
+        "open",
+      );
+      expect(
+        view.container.querySelector('[data-slot="canvas-inspector-sheet-content"]'),
+      ).not.toBeNull();
+      const summaryIconClassName =
+        view.container
+          .querySelector('[data-slot="factory-evidence-summary-icon"]')
+          ?.getAttribute("class") ?? "";
+      expect(summaryIconClassName).toContain("border-border");
+      expect(summaryIconClassName).not.toMatch(
+        /rose|amber|sky|cyan|emerald|indigo/,
+      );
     });
 
     for (const artifactsTab of screen.getAllByRole("tab", {
@@ -495,6 +549,54 @@ describe("DashboardShell Run Console", () => {
       artifactId,
       runId,
     });
+
+    fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Close Evidence Studio" })));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("evidence-studio-panel").getAttribute("aria-hidden")).toBe(
+        "true",
+      );
+      expect(screen.queryByText("Worker produced code summary")).toBeNull();
+    });
+  });
+
+  it("animates FactoryGraph edges only when connected work is running", () => {
+    expect(shouldAnimateFactoryEdge("running", "succeeded")).toBe(true);
+    expect(shouldAnimateFactoryEdge("succeeded", "running")).toBe(true);
+    expect(shouldAnimateFactoryEdge("succeeded", "succeeded")).toBe(false);
+    expect(shouldAnimateFactoryEdge("succeeded", "unknown")).toBe(false);
+    expect(shouldAnimateFactoryEdge("unknown", undefined)).toBe(false);
+  });
+
+  it("styles FactoryGraph connectors by selected path and active work", () => {
+    expect(
+      factoryFlowEdgeClassName({
+        animated: false,
+        hasSelectedNode: false,
+        selectedPath: false,
+      }),
+    ).toBe("factory-flow-edge");
+    expect(
+      factoryFlowEdgeClassName({
+        animated: false,
+        hasSelectedNode: true,
+        selectedPath: false,
+      }),
+    ).toContain("factory-flow-edge-unselected");
+    expect(
+      factoryFlowEdgeClassName({
+        animated: false,
+        hasSelectedNode: true,
+        selectedPath: true,
+      }),
+    ).toContain("factory-flow-edge-selected");
+    expect(
+      factoryFlowEdgeClassName({
+        animated: true,
+        hasSelectedNode: true,
+        selectedPath: true,
+      }),
+    ).toContain("factory-flow-edge-active");
   });
 
   it("uses selected FactoryGraph artifacts instead of a misleading zero artifact rail count", async () => {
@@ -818,10 +920,37 @@ describe("DashboardShell Run Console", () => {
       "run-1111111111",
     );
     fireEvent.click(screen.getByRole("button", { name: "Replay" }));
+    expect(
+      screen.queryByText(
+        "Opened on demand; the FactoryGraph canvas remains the primary workspace.",
+      ),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Close replay" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close replay" }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("run-replay-scrubber")).toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Replay" }));
     expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
-      "#2 · 2026-07-07T12:01:00.000Z",
+      "Event #2",
     );
-    expect(await screen.findAllByText("Refactor dashboard canvas")).not.toHaveLength(0);
+    const replayScrubber = screen.getByTestId("run-replay-scrubber");
+    expect(screen.getByTestId("run-replay-playback-toggle")).toHaveProperty(
+      "ariaLabel",
+      "Play replay from beginning",
+    );
+    expect(replayScrubber.textContent).not.toContain("ordered events");
+    expect(replayScrubber.textContent).not.toContain("artifacts reached");
+    fireEvent.click(screen.getByTestId("run-replay-playback-toggle"));
+    await waitFor(() => {
+      expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
+        "Event #1",
+      );
+    });
+    fireEvent.click(screen.getByTestId("run-replay-playback-toggle"));
+    expect(await screen.findAllByText("Issue orchestrator")).not.toHaveLength(0);
+    expect(screen.queryByText("Refactor dashboard canvas")).toBeNull();
     const workerLabels = await screen.findAllByText("Worker");
     expect(workerLabels).not.toHaveLength(0);
     expect(screen.queryByText("Run root")).toBeNull();
@@ -865,7 +994,7 @@ describe("DashboardShell Run Console", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
-        "#1 · 2026-07-07T12:00:00.000Z",
+        "Event #1",
       );
       expect(
         firstElement(screen.getAllByTestId("event-strip-event-1")).textContent,
@@ -883,50 +1012,11 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
-  it("opens source detail on demand without replacing the selected-node inspector", async () => {
+  it("keeps source/raw detail inside Evidence Studio instead of a top-level source mode", async () => {
     const runId = parseRunId("run-1212121212");
     const view = renderDashboardWithQueries({
-      eventsByRunId: {
-        [runId]: [
-          makeRunEvent({
-            payload: { specPath: "input.md" },
-            runId,
-            sequence: 1,
-            timestamp: "2026-07-07T12:00:00.000Z",
-            type: "RUN_CREATED",
-          }),
-          makeRunEvent({
-            payload: { workerResultPath: "worker-result.md" },
-            runId,
-            sequence: 2,
-            timestamp: "2026-07-07T12:01:00.000Z",
-            type: "WORKER_COMPLETED",
-          }),
-          makeRunEvent({
-            runId,
-            sequence: 3,
-            timestamp: "2026-07-07T12:02:00.000Z",
-            type: "VERIFICATION_COMPLETED",
-          }),
-          makeRunEvent({
-            payload: { reportPath: "report.md" },
-            runId,
-            sequence: 4,
-            timestamp: "2026-07-07T12:03:00.000Z",
-            type: "REPORT_COMPLETED",
-          }),
-        ],
-      },
       runs: [
         localRunSummary({
-          artifacts: [
-            "input",
-            "worker-plan",
-            "worker-result",
-            "verification-result",
-            "report",
-            "report-json",
-          ],
           eventCount: 4,
           latestEventType: "REPORT_COMPLETED",
           runId,
@@ -937,12 +1027,9 @@ describe("DashboardShell Run Console", () => {
     });
 
     await screen.findByTestId("selected-run-title");
+
+    expect(screen.queryByRole("button", { name: "Source" })).toBeNull();
     expect(screen.queryByTestId("source-detail-panel")).toBeNull();
-
-    fireEvent.click(screen.getByTestId("source-detail-toggle"));
-
-    expect(await screen.findByTestId("source-detail-panel")).toBeTruthy();
-    expect(screen.queryByTestId("run-canvas-provenance-callout")).toBeNull();
     expect(await screen.findAllByText("Worker")).not.toHaveLength(0);
 
     const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
@@ -951,38 +1038,9 @@ describe("DashboardShell Run Console", () => {
     }
     fireEvent.click(workerNode);
 
-    const sourcePanel = await screen.findByTestId("source-detail-panel");
-    expect(sourcePanel.textContent).toContain(
-      "GET /runs/run-1212121212/factory-graph",
-    );
-    expect(
-      screen.getByTestId("source-detail-selected-node").textContent,
-    ).toContain("agent:agent-worker");
-    expect(
-      screen.getByTestId("source-detail-activity").textContent,
-    ).toContain("/agents/agent-worker/activity");
-
-    fireEvent.click(screen.getByRole("button", { name: "Close command mode" }));
-
     await waitFor(() => {
-      expect(screen.queryByTestId("source-detail-panel")).toBeNull();
       expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
     });
-
-    expect(
-      screen.queryByTestId("evidence-provenance-panel"),
-    ).toBeNull();
-    expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
-
-    fireEvent.click(screen.getByTestId("source-detail-toggle"));
-    expect(
-      await screen.findByTestId("source-detail-panel"),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Close command mode" }));
-
-    await waitFor(() =>
-      expect(screen.queryByTestId("source-detail-panel")).toBeNull(),
-    );
 
     for (const artifactsTab of screen.getAllByRole("tab", {
       name: "Artifacts",
@@ -1225,7 +1283,7 @@ describe("DashboardShell Run Console", () => {
       );
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Close command mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close compare" }));
 
     await waitFor(() => {
       expect(screen.queryByTestId("run-compare-panel")).toBeNull();
@@ -1257,9 +1315,14 @@ describe("DashboardShell Run Console", () => {
     const empty = await screen.findByTestId("run-console-empty");
 
     expect(empty.textContent).toContain("No local runs");
-    expect(screen.getByTestId("run-console-server-message").textContent).toBe(
-      "0 runs loaded through LocalGaiaServerApi.",
+    expect(screen.getByTestId("run-console-server-status").textContent).toContain(
+      "/gaia-api",
     );
+    expect(screen.getByLabelText("Server status: /gaia-api online")).toBeTruthy();
+    expect(screen.getByTestId("run-console-server-status").textContent).not.toContain(
+      "online",
+    );
+    expect(screen.queryByTestId("run-console-server-message")).toBeNull();
     expect(screen.getByTestId("selected-run-title").textContent).toBe(
       "No local run selected",
     );
@@ -1268,6 +1331,7 @@ describe("DashboardShell Run Console", () => {
   it("creates an issue-delivery run from the command rail and selects the refreshed run", async () => {
     renderDashboardWithQueries({ runs: [] });
 
+    fireEvent.click(screen.getByRole("button", { name: "New run" }));
     fireEvent.change(await screen.findByLabelText("Issue title"), {
       target: { value: "  Ship dashboard intake  " },
     });
@@ -1299,6 +1363,7 @@ describe("DashboardShell Run Console", () => {
   it("validates issue-delivery intake before creating a run", async () => {
     renderDashboardWithQueries({ runs: [] });
 
+    fireEvent.click(screen.getByRole("button", { name: "New run" }));
     fireEvent.submit(await screen.findByTestId("issue-delivery-intake-form"));
 
     expect(queryFixture.createRunInputs).toEqual([]);
@@ -1317,6 +1382,7 @@ describe("DashboardShell Run Console", () => {
       runs: [],
     });
 
+    fireEvent.click(screen.getByRole("button", { name: "New run" }));
     fireEvent.change(await screen.findByLabelText("Issue title"), {
       target: { value: "Pending intake" },
     });
@@ -1352,13 +1418,7 @@ describe("DashboardShell Run Console", () => {
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
         "run-1010101010",
       );
-      expect(
-        (
-          screen.getByRole("button", {
-            name: "Create run",
-          }) as HTMLButtonElement
-        ).disabled,
-      ).toBe(false);
+      expect(screen.queryByTestId("issue-delivery-intake-form")).toBeNull();
     });
   });
 
@@ -1375,6 +1435,7 @@ describe("DashboardShell Run Console", () => {
       runs: [],
     });
 
+    fireEvent.click(screen.getByRole("button", { name: "New run" }));
     fireEvent.change(await screen.findByLabelText("Issue title"), {
       target: { value: "Duplicate issue" },
     });
@@ -1409,9 +1470,12 @@ describe("DashboardShell Run Console", () => {
     expect(error.textContent).toContain(
       "InternalServerError: Local API failed.",
     );
-    expect(screen.getByTestId("run-console-server-message").textContent).toBe(
-      "InternalServerError: Local API failed.",
+    expect(screen.getByLabelText("Server status: /gaia-api offline")).toBeTruthy();
+    expect(screen.getByTestId("run-console-server-status").textContent).not.toContain(
+      "offline",
     );
+    expect(screen.queryByTestId("run-console-server-message")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "New run" }));
     expect(screen.getByTestId("issue-delivery-intake-offline").textContent).toContain(
       "Local server unavailable",
     );
@@ -1446,7 +1510,8 @@ describe("DashboardShell Run Console", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh local runs" }));
 
     await waitFor(() => {
-      expect(screen.getByTestId("command-rail-footer").textContent).toContain(
+      expect(screen.getByLabelText("Server status: /gaia-api stale")).toBeTruthy();
+      expect(screen.getByTestId("command-rail-footer").textContent).not.toContain(
         "stale",
       );
       expect(screen.getByTestId("run-console-stale-data").textContent).toContain(
@@ -1459,7 +1524,7 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
-  it("surfaces partial run-list diagnostics beside valid runs", async () => {
+  it("keeps partial run-list diagnostics out of the normal run list", async () => {
     const runId = parseRunId("run-8888888888");
     renderDashboardWithQueries({
       runs: [
@@ -1485,17 +1550,14 @@ describe("DashboardShell Run Console", () => {
       ],
     });
 
-    const diagnostics = await screen.findByTestId("run-console-diagnostics");
-
-    expect(diagnostics.textContent).toContain("Run index diagnostics");
-    expect(diagnostics.textContent).toContain("InvalidRunDirectory");
-    expect(diagnostics.textContent).toContain("run-not-valid");
-    expect(diagnostics.textContent).toContain("RunHasNoEvents");
-    expect(diagnostics.textContent).toContain("run-L84-kMhLY8");
-    expect(screen.getByTestId("run-console-server-message").textContent).toBe(
-      "1 run loaded with 2 diagnostics.",
+    expect(
+      await screen.findByTestId("run-console-row-run-8888888888"),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("run-console-diagnostics")).toBeNull();
+    expect(screen.queryByTestId("run-console-server-message")).toBeNull();
+    expect(screen.getByTestId("command-rail-footer").textContent).not.toContain(
+      "diagnostics",
     );
-    expect(screen.getByTestId("run-console-row-run-8888888888")).toBeTruthy();
   });
 
   it("shows diagnostics even when no valid runs can be listed", async () => {
@@ -1802,6 +1864,13 @@ function factoryArtifactBody(
 }
 
 function factoryGraph(input: {
+  readonly agentStates?: {
+    readonly ciWatcher?: FactoryAgentState;
+    readonly orchestrator?: FactoryAgentState;
+    readonly reviewer?: FactoryAgentState;
+    readonly tester?: FactoryAgentState;
+    readonly worker?: FactoryAgentState;
+  };
   readonly linkedArtifacts?: ReadonlyArray<typeof FactoryArtifactDto.Type>;
   readonly runId: typeof RunIdSchema.Type;
   readonly workerArtifactCount?: number;
@@ -1820,7 +1889,7 @@ function factoryGraph(input: {
         artifactCount: 0,
         id: orchestratorId,
         role: "orchestrator",
-        state: "running",
+        state: input.agentStates?.orchestrator ?? "running",
         subState: "coordinating issue delivery",
         title: "Issue orchestrator",
         workItemId: rootWorkItemId,
@@ -1831,7 +1900,7 @@ function factoryGraph(input: {
         latestActivityId: activityId("activity-worker"),
         parentAgentId: orchestratorId,
         role: "worker",
-        state: "succeeded",
+        state: input.agentStates?.worker ?? "succeeded",
         subState: "code summary ready",
         title: "Worker",
         workItemId: rootWorkItemId,
@@ -1841,7 +1910,7 @@ function factoryGraph(input: {
         id: reviewerId,
         parentAgentId: input.workerId,
         role: "reviewer",
-        state: "pending",
+        state: input.agentStates?.reviewer ?? "pending",
         subState: "waiting for worker evidence",
         title: "Reviewer",
         workItemId: rootWorkItemId,
@@ -1851,7 +1920,7 @@ function factoryGraph(input: {
         id: testerId,
         parentAgentId: reviewerId,
         role: "tester",
-        state: "pending",
+        state: input.agentStates?.tester ?? "pending",
         subState: "browser verification queued",
         title: "Tester",
         workItemId: rootWorkItemId,
@@ -1861,7 +1930,7 @@ function factoryGraph(input: {
         id: ciWatcherId,
         parentAgentId: testerId,
         role: "ciWatcher",
-        state: "unknown",
+        state: input.agentStates?.ciWatcher ?? "unknown",
         subState: "CI evidence unavailable",
         title: "CI watcher",
         workItemId: rootWorkItemId,

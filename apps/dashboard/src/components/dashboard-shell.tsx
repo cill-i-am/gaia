@@ -1,8 +1,10 @@
 import {
   Background,
   Controls,
+  Position,
   ReactFlow,
   type Edge,
+  type FitViewOptions,
   type Node,
   type NodeMouseHandler,
 } from "@xyflow/react";
@@ -23,10 +25,11 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CircleDotIcon,
+  CirclePlusIcon,
   GitCompareArrowsIcon,
-  HelpCircleIcon,
   InspectIcon,
   LoaderCircleIcon,
+  PauseIcon,
   type LucideIcon,
   PlayIcon,
   RefreshCwIcon,
@@ -94,6 +97,27 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  Card,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  CanvasInspectorSheet,
+  CanvasInspectorSheetContent,
+  CanvasInspectorSheetDescription,
+  CanvasInspectorSheetHeader,
+  CanvasInspectorSheetTitle,
+} from "@/components/ui/canvas-inspector-sheet";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -102,11 +126,6 @@ import {
 } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -122,6 +141,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
+  SidebarRail,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -275,7 +295,7 @@ type ServerConnectionState = {
   readonly selectedRun: RunConsoleRun | undefined;
 };
 
-type CommandMode = "activity" | "compare" | "inspect" | "replay" | "source";
+type CommandMode = "activity" | "compare" | "inspect" | "replay";
 
 type SelectedRunArtifactEvidence =
   | { readonly status: "loading" }
@@ -419,6 +439,7 @@ export function DashboardShell() {
   const [requestedReplayIndex, setRequestedReplayIndex] = React.useState<
     number | undefined
   >();
+  const [isReplayPlaying, setIsReplayPlaying] = React.useState(false);
   const replayState = React.useMemo(
     () =>
       buildRunReplayState({
@@ -469,7 +490,6 @@ export function DashboardShell() {
     }),
   );
   const runCanvas = {
-    diagnostics: selectedFactoryCanvas?.diagnostics ?? [],
     graphError: dashboardQueryFailure(selectedFactoryGraphQuery.error),
     isLoading:
       selectedRunId !== undefined && selectedFactoryGraphQuery.isPending,
@@ -685,6 +705,7 @@ export function DashboardShell() {
     setRequestedSelectedRunId(runId);
     setSelectedNodeId(undefined);
     setRequestedReplayIndex(undefined);
+    setIsReplayPlaying(false);
     setCommandMode("inspect");
   }
 
@@ -706,6 +727,54 @@ export function DashboardShell() {
     }
   }
 
+  function toggleReplayPlayback() {
+    if (isReplayPlaying) {
+      setIsReplayPlaying(false);
+      return;
+    }
+
+    if (replayState.steps.length <= 1) {
+      return;
+    }
+
+    if (replayState.currentIndex >= replayState.steps.length - 1) {
+      selectReplayIndex(0);
+    }
+
+    setIsReplayPlaying(true);
+  }
+
+  React.useEffect(() => {
+    if (commandMode !== "replay") {
+      setIsReplayPlaying(false);
+    }
+  }, [commandMode]);
+
+  React.useEffect(() => {
+    if (!isReplayPlaying) {
+      return;
+    }
+
+    if (
+      replayState.steps.length <= 1 ||
+      replayState.currentIndex >= replayState.steps.length - 1
+    ) {
+      setIsReplayPlaying(false);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      const nextIndex = replayState.currentIndex + 1;
+      selectReplayIndex(nextIndex);
+
+      if (nextIndex >= replayState.steps.length - 1) {
+        setIsReplayPlaying(false);
+      }
+    }, 1200);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isReplayPlaying, replayState.currentIndex, replayState.steps.length]);
+
   return (
     <TooltipProvider delay={250}>
       <SidebarProvider className="min-h-svh flex-col overflow-x-clip bg-background text-sm lg:h-svh lg:min-h-0 lg:flex-row lg:overflow-hidden">
@@ -725,49 +794,57 @@ export function DashboardShell() {
             serverConnection={serverConnection}
             onSelectCommandMode={setCommandMode}
           />
-          <SecondaryCommandPanel
-            commandMode={commandMode}
-            comparisonRunId={comparisonRunId}
-            comparisonRunIsLoading={
-              comparisonRunId !== undefined &&
-              (comparisonRunDetailQuery.isPending ||
-                comparisonRunEventsQuery.isPending)
-            }
-            inspector={selectedNodeInspector}
-            primaryRunId={selectedRunId}
-            replayState={replayState}
-            runCompare={runCompare}
-            runEventStream={runEventStream}
-            runs={runConsole.runs}
-            selectedConsoleRun={selectedConsoleRun}
-            selectedRun={selectedRun}
-            onSelectCommandMode={setCommandMode}
-            onSelectComparisonRun={setRequestedComparisonRunId}
-            onSelectPrimaryRun={selectRun}
-            onSelectReplayIndex={selectReplayIndex}
-          />
-          <DesktopWorkspace
-            factoryCanvas={selectedFactoryCanvas}
-            inspector={selectedNodeInspector}
-            runCanvas={runCanvas}
-            replayState={replayState}
-            runCompare={runCompare}
-            selectedFactoryNode={selectedFactoryNode}
-            selectedRun={selectedRun}
-            serverUrl={serverUrl}
-            onSelectNode={setSelectedNodeId}
-          />
-          <MobileWorkspace
-            factoryCanvas={selectedFactoryCanvas}
-            inspector={selectedNodeInspector}
-            runCanvas={runCanvas}
-            replayState={replayState}
-            runCompare={runCompare}
-            selectedFactoryNode={selectedFactoryNode}
-            selectedRun={selectedRun}
-            serverUrl={serverUrl}
-            onSelectNode={setSelectedNodeId}
-          />
+          <section
+            className="relative min-h-0 flex-1 overflow-hidden"
+            data-testid="workspace-shell"
+          >
+            <DesktopWorkspace
+              factoryCanvas={selectedFactoryCanvas}
+              inspector={selectedNodeInspector}
+              runCanvas={runCanvas}
+              replayState={replayState}
+              runCompare={runCompare}
+              selectedFactoryNode={selectedFactoryNode}
+              selectedRun={selectedRun}
+              serverUrl={serverUrl}
+              onClearNode={() => setSelectedNodeId(undefined)}
+              onSelectNode={setSelectedNodeId}
+            />
+            <MobileWorkspace
+              factoryCanvas={selectedFactoryCanvas}
+              inspector={selectedNodeInspector}
+              runCanvas={runCanvas}
+              replayState={replayState}
+              runCompare={runCompare}
+              selectedFactoryNode={selectedFactoryNode}
+              selectedRun={selectedRun}
+              serverUrl={serverUrl}
+              onClearNode={() => setSelectedNodeId(undefined)}
+              onSelectNode={setSelectedNodeId}
+            />
+            <SecondaryCommandPanel
+              commandMode={commandMode}
+              comparisonRunId={comparisonRunId}
+              comparisonRunIsLoading={
+                comparisonRunId !== undefined &&
+                (comparisonRunDetailQuery.isPending ||
+                  comparisonRunEventsQuery.isPending)
+              }
+              isReplayPlaying={isReplayPlaying}
+              primaryRunId={selectedRunId}
+              replayState={replayState}
+              runCompare={runCompare}
+              runEventStream={runEventStream}
+              runs={runConsole.runs}
+              selectedConsoleRun={selectedConsoleRun}
+              selectedRun={selectedRun}
+              onSelectCommandMode={setCommandMode}
+              onSelectComparisonRun={setRequestedComparisonRunId}
+              onSelectPrimaryRun={selectRun}
+              onSelectReplayIndex={selectReplayIndex}
+              onToggleReplayPlayback={toggleReplayPlayback}
+            />
+          </section>
         </main>
       </SidebarProvider>
     </TooltipProvider>
@@ -775,13 +852,17 @@ export function DashboardShell() {
 }
 
 function RunReplayScrubber({
+  isPlaying,
   replayState,
-  selectedRun,
+  onClose,
   onSelectReplayIndex,
+  onTogglePlayback,
 }: {
+  readonly isPlaying: boolean;
   readonly replayState: RunReplayState;
-  readonly selectedRun: DashboardRun;
+  readonly onClose: () => void;
   readonly onSelectReplayIndex: (index: number) => void;
+  readonly onTogglePlayback: () => void;
 }) {
   const currentStep = replayState.currentStep;
   const previousIndex = Math.max(replayState.currentIndex - 1, 0);
@@ -790,6 +871,16 @@ function RunReplayScrubber({
     Math.max(replayState.steps.length - 1, 0),
   );
   const isDisabled = replayState.steps.length === 0;
+  const canPlay = replayState.steps.length > 1;
+  const playbackLabel = isPlaying
+    ? "Pause replay"
+    : replayState.currentIndex >= replayState.steps.length - 1
+      ? "Play replay from beginning"
+      : "Play replay";
+  const currentEventPosition =
+    currentStep === undefined
+      ? "Select a run with public events."
+      : `Event #${currentStep.event.sequence}`;
   const handleReplayRangeInput = (
     event: React.FormEvent<HTMLInputElement>,
   ) => onSelectReplayIndex(Number(event.currentTarget.value));
@@ -799,21 +890,60 @@ function RunReplayScrubber({
       className="shrink-0 border-b bg-background px-3 py-2"
       data-testid="run-replay-scrubber"
     >
-      <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
-        <div className="flex min-w-0 items-center justify-between gap-3 lg:w-72 lg:justify-start">
+      <div className="flex min-w-0 flex-col gap-2">
+        <div className="flex min-w-0 items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-xs font-medium uppercase text-muted-foreground">
-              Run Replay
-            </p>
             <p className="truncate text-sm font-medium">
               {currentStep?.event.label ?? "No ordered events"}
             </p>
+            <span
+              className="block truncate text-xs text-muted-foreground"
+              data-testid="run-replay-current-event"
+              title={currentStep?.event.timestamp}
+            >
+              {currentEventPosition}
+            </span>
           </div>
-          <Badge variant={isDisabled ? "outline" : "secondary"}>
-            {currentStep?.progressLabel ?? "Idle"}
-          </Badge>
+          <div className="flex shrink-0 items-center gap-2">
+            <Badge variant={isDisabled ? "outline" : "secondary"}>
+              {currentStep?.progressLabel ?? "Idle"}
+            </Badge>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    aria-label="Close replay"
+                    onClick={onClose}
+                    size="icon-sm"
+                    variant="ghost"
+                  />
+                }
+              >
+                <XIcon />
+              </TooltipTrigger>
+              <TooltipContent>Close replay</TooltipContent>
+            </Tooltip>
+          </div>
         </div>
         <div className="flex min-w-0 flex-1 items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  aria-label={playbackLabel}
+                  aria-pressed={isPlaying}
+                  data-testid="run-replay-playback-toggle"
+                  disabled={!canPlay}
+                  onClick={onTogglePlayback}
+                  size="icon"
+                  variant={isPlaying ? "secondary" : "outline"}
+                />
+              }
+            >
+              {isPlaying ? <PauseIcon /> : <PlayIcon />}
+            </TooltipTrigger>
+            <TooltipContent>{playbackLabel}</TooltipContent>
+          </Tooltip>
           <Tooltip>
             <TooltipTrigger
               render={
@@ -832,7 +962,7 @@ function RunReplayScrubber({
           </Tooltip>
           <input
             aria-label="Replay event position"
-            className="h-2 min-w-0 flex-1 cursor-pointer accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-3 min-w-0 flex-1 cursor-pointer accent-primary disabled:cursor-not-allowed disabled:opacity-50"
             data-testid="run-replay-range"
             disabled={isDisabled}
             max={Math.max(replayState.steps.length - 1, 0)}
@@ -862,25 +992,6 @@ function RunReplayScrubber({
             <TooltipContent>Next replay event</TooltipContent>
           </Tooltip>
         </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-2 lg:w-80 lg:justify-end">
-          <Badge variant="outline">
-            {selectedRun.events.length} ordered events
-          </Badge>
-          <Badge variant="outline">
-            {Math.round(replayState.progressPercent)}% replayed
-          </Badge>
-          <Badge variant="outline">
-            {replayState.visibleArtifactIds.length} artifacts reached
-          </Badge>
-          <span
-            className="min-w-0 truncate text-xs text-muted-foreground"
-            data-testid="run-replay-current-event"
-          >
-            {currentStep === undefined
-              ? "Select a run with public events."
-              : `#${currentStep.event.sequence} · ${currentStep.event.timestamp}`}
-          </span>
-        </div>
       </div>
     </section>
   );
@@ -892,6 +1003,7 @@ function RunComparePanel({
   primaryRunId,
   runCompare,
   runs,
+  onClose,
   onSelectComparisonRun,
   onSelectPrimaryRun,
 }: {
@@ -900,6 +1012,7 @@ function RunComparePanel({
   readonly primaryRunId: string | undefined;
   readonly runCompare: RunCompareModel;
   readonly runs: ReadonlyArray<RunConsoleRun>;
+  readonly onClose: () => void;
   readonly onSelectComparisonRun: (runId: string | undefined) => void;
   readonly onSelectPrimaryRun: (runId: string) => void;
 }) {
@@ -908,7 +1021,7 @@ function RunComparePanel({
 
   return (
     <section
-      className="shrink-0 border-b bg-background px-3 py-2 lg:max-h-[34svh] lg:overflow-y-auto"
+      className="shrink-0 bg-background px-3 py-2"
       data-testid="run-compare-panel"
     >
       <div className="flex flex-col gap-3">
@@ -924,29 +1037,46 @@ function RunComparePanel({
               </p>
             </div>
           </div>
-          <div className="grid gap-2 sm:grid-cols-2 xl:w-[34rem]">
-            <RunSelectControl
-              label="Primary"
-              testId="run-compare-primary-select"
-              value={primaryRunId ?? ""}
-              runs={runs}
-              disabled={runs.length === 0}
-              onChange={(runId) => {
-                if (runId.length > 0) {
-                  onSelectPrimaryRun(runId);
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start xl:min-w-[37rem]">
+            <div className="grid flex-1 gap-2 sm:grid-cols-2">
+              <RunSelectControl
+                label="Primary"
+                testId="run-compare-primary-select"
+                value={primaryRunId ?? ""}
+                runs={runs}
+                disabled={runs.length === 0}
+                onChange={(runId) => {
+                  if (runId.length > 0) {
+                    onSelectPrimaryRun(runId);
+                  }
+                }}
+              />
+              <RunSelectControl
+                label="Comparison"
+                testId="run-compare-comparison-select"
+                value={comparisonRunId ?? ""}
+                runs={comparisonOptions}
+                disabled={!canCompare}
+                onChange={(runId) =>
+                  onSelectComparisonRun(runId.length === 0 ? undefined : runId)
                 }
-              }}
-            />
-            <RunSelectControl
-              label="Comparison"
-              testId="run-compare-comparison-select"
-              value={comparisonRunId ?? ""}
-              runs={comparisonOptions}
-              disabled={!canCompare}
-              onChange={(runId) =>
-                onSelectComparisonRun(runId.length === 0 ? undefined : runId)
-              }
-            />
+              />
+            </div>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    aria-label="Close compare"
+                    onClick={onClose}
+                    size="icon-sm"
+                    variant="ghost"
+                  />
+                }
+              >
+                <XIcon />
+              </TooltipTrigger>
+              <TooltipContent>Close compare</TooltipContent>
+            </Tooltip>
           </div>
         </div>
         {!canCompare ? (
@@ -994,119 +1124,6 @@ function RunComparePanel({
         )}
       </div>
     </section>
-  );
-}
-
-function SourceDetailPanel({
-  inspector,
-  selectedRun,
-}: {
-  readonly inspector: SelectedNodeInspectorModel;
-  readonly selectedRun: DashboardRun;
-}) {
-  const selectedRunId =
-    selectedRun.id === "no-run-selected" ? undefined : selectedRun.id;
-
-  if (inspector.kind === "empty") {
-    return (
-      <section
-        className="flex flex-col gap-3 p-3"
-        data-testid="source-detail-panel"
-      >
-        <DiagnosticCallout
-          message={inspector.message}
-          title={inspector.title}
-        />
-        <SourceDetailRows
-          rows={[
-            {
-              label: "Run",
-              value: selectedRunId ?? "No selected run",
-            },
-            {
-              label: "Topology",
-              value: "Select a run and node to inspect public FactoryGraph sources.",
-            },
-          ]}
-        />
-      </section>
-    );
-  }
-
-  const node = inspector.node;
-  const activityEndpoint =
-    inspector.kind === "agent"
-      ? `GET /runs/${selectedRunId ?? ":runId"}/agents/${inspector.agent.id}/activity`
-      : `GET /runs/${selectedRunId ?? ":runId"}/activity`;
-  const rows = [
-    {
-      label: "Selected node",
-      value: `${node.kind}:${node.rawId}`,
-    },
-    {
-      label: "Topology",
-      value: `GET /runs/${selectedRunId ?? ":runId"}/factory-graph`,
-    },
-    {
-      label: "Activity",
-      value: `${activityEndpoint} (${inspector.activityStatus}, ${inspector.activity.length} entries)`,
-    },
-    {
-      label: "Artifacts",
-      value: `GET /runs/${selectedRunId ?? ":runId"}/artifacts (${inspector.artifactStatus}, ${inspector.artifacts.length} linked)`,
-    },
-    {
-      label: "Artifact bodies",
-      value:
-        "Read on demand from GET /runs/:runId/artifacts/:artifactId after choosing an inspector artifact.",
-    },
-    {
-      label: "Private state",
-      value: "No hidden .gaia reads or raw local files are used by this view.",
-    },
-  ];
-
-  return (
-    <section
-      className="grid gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]"
-      data-testid="source-detail-panel"
-    >
-      <SourceDetailRows rows={rows} />
-      <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
-        <p className="font-medium text-foreground">Selected-node detail</p>
-        <p className="mt-2">
-          The inspector owns source detail through Summary, Activity, Artifacts,
-          and Raw tabs. This panel keeps source context reachable without
-          turning it into a separate canvas mode.
-        </p>
-      </div>
-    </section>
-  );
-}
-
-function SourceDetailRows({
-  rows,
-}: {
-  readonly rows: ReadonlyArray<{
-    readonly label: string;
-    readonly value: string;
-  }>;
-}) {
-  return (
-    <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-      {rows.map((row) => (
-        <div
-          className="min-w-0 rounded-md border bg-background p-2"
-          data-testid={`source-detail-${row.label.toLowerCase().replaceAll(" ", "-")}`}
-          key={row.label}
-        >
-          <p className="text-xs font-medium text-muted-foreground">
-            {row.label}
-          </p>
-          <p className="mt-1 truncate text-sm">{row.value}</p>
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -1298,6 +1315,7 @@ function RunConsole({
   readonly onSelectRun: (runId: string) => void;
 }) {
   const [filter, setFilter] = React.useState("");
+  const [createRunDialogOpen, setCreateRunDialogOpen] = React.useState(false);
   const runConsole = serverConnection.runConsole;
   const visibleRuns = React.useMemo(() => {
     const normalizedFilter = filter.trim().toLowerCase();
@@ -1315,16 +1333,13 @@ function RunConsole({
 
   return (
     <Sidebar
-      collapsible="none"
+      collapsible="offcanvas"
       className="run-console-sidebar h-full shrink-0 overflow-hidden border-r max-lg:h-auto max-lg:w-full max-lg:overflow-y-auto max-lg:border-r-0 max-lg:border-b"
     >
       <SidebarHeader className="gap-3 border-b">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-xs font-medium uppercase text-muted-foreground">
-              Run Console
-            </p>
-            <h1 className="truncate text-base font-semibold">Gaia Dashboard</h1>
+            <h1 className="gaia-logo-wordmark truncate">GAIA</h1>
           </div>
           <Tooltip>
             <TooltipTrigger
@@ -1358,14 +1373,38 @@ function RunConsole({
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>Issue delivery</SidebarGroupLabel>
+          <SidebarGroupLabel>Runs</SidebarGroupLabel>
           <SidebarGroupContent>
-            <IssueDeliveryIntake
-              error={createRunError}
-              isPending={createRunIsPending}
-              runConsole={runConsole}
-              onCreateIssueDeliveryRun={onCreateIssueDeliveryRun}
-            />
+            <Dialog
+              onOpenChange={setCreateRunDialogOpen}
+              open={createRunDialogOpen}
+            >
+              <Button
+                className="w-full justify-start"
+                onClick={() => setCreateRunDialogOpen(true)}
+                variant="outline"
+              >
+                <CirclePlusIcon data-icon="inline-start" />
+                New run
+              </Button>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>New run</DialogTitle>
+                  <DialogDescription>
+                    Issue-delivery only. Gaia creates the root issue work item.
+                  </DialogDescription>
+                </DialogHeader>
+                <IssueDeliveryIntake
+                  error={createRunError}
+                  isPending={createRunIsPending}
+                  runConsole={runConsole}
+                  onCreateIssueDeliveryRun={async (input) => {
+                    await onCreateIssueDeliveryRun(input);
+                    setCreateRunDialogOpen(false);
+                  }}
+                />
+              </DialogContent>
+            </Dialog>
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup>
@@ -1385,28 +1424,51 @@ function RunConsole({
       </SidebarContent>
       <SidebarFooter className="border-t" data-testid="command-rail-footer">
         <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between gap-3">
+          <div
+            className={cn(
+              "flex items-center justify-between gap-3 rounded-md border px-2 py-1.5",
+              serverStatusPillClassName(runConsole.health),
+            )}
+            data-testid="run-console-server-status"
+          >
             <div className="flex min-w-0 items-center gap-2">
-              <ServerIcon className="shrink-0 text-muted-foreground" />
+              <ServerIcon className="shrink-0" />
               <span className="truncate text-xs font-medium">
                 {runConsole.serverUrl}
               </span>
             </div>
-            <Badge variant={serverBadgeVariant(runConsole.health)}>
-              {runConsole.health}
-            </Badge>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Badge
+                    aria-label={serverStatusAccessibleLabel(runConsole)}
+                    aria-live="polite"
+                    className={cn(
+                      "size-5 gap-0 rounded-full px-0",
+                      serverStatusBadgeClassName(runConsole.health),
+                    )}
+                    role="status"
+                    tabIndex={0}
+                    variant="outline"
+                  />
+                }
+              >
+                {runConsole.health === "checking" ||
+                runConsole.health === "reconnecting" ? (
+                  <LoaderCircleIcon className="animate-spin" />
+                ) : (
+                  <span
+                    aria-hidden="true"
+                    className="size-1.5 rounded-full bg-current"
+                  />
+                )}
+              </TooltipTrigger>
+              <TooltipContent>{serverStatusTooltip(runConsole)}</TooltipContent>
+            </Tooltip>
           </div>
-          <p
-            className="line-clamp-2 text-xs text-muted-foreground"
-            data-testid="run-console-server-message"
-          >
-            {runConsole.message}
-          </p>
-          <Badge variant={serverBadgeVariant(runConsole.health)}>
-            {runConsole.runs.length} runs
-          </Badge>
         </div>
       </SidebarFooter>
+      <SidebarRail />
     </Sidebar>
   );
 }
@@ -1460,19 +1522,10 @@ function IssueDeliveryIntake({
 
   return (
     <form
-      className="flex flex-col gap-3 rounded-md border bg-background p-2"
+      className="flex flex-col gap-3"
       data-testid="issue-delivery-intake-form"
       onSubmit={handleSubmit}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-sm font-medium">Create run</p>
-          <p className="line-clamp-2 text-xs text-muted-foreground">
-            Issue-delivery only. Gaia creates the root issue work item.
-          </p>
-        </div>
-        <Badge variant="outline">issueDelivery</Badge>
-      </div>
       <div className="flex flex-col gap-2">
         <div className="flex flex-col gap-1.5" data-invalid={titleError}>
           <Label className="text-xs" htmlFor="issue-delivery-title">
@@ -1652,7 +1705,7 @@ function RunConsoleRuns({
 
   return (
     <div className="flex flex-col gap-2">
-      <RunConsoleDurabilityNotices state={state} />
+      {state.hasStaleData ? <RunConsoleStaleDataNotice /> : null}
       <SidebarMenu>
         {runs.map((run) => {
           const artifactCountLabel = runArtifactCountLabel({
@@ -1703,46 +1756,47 @@ function RunConsoleDurabilityNotices({
 }: {
   readonly state: RunConsoleState;
 }) {
-  if (!state.hasStaleData && state.diagnostics.length === 0) {
+  if (state.diagnostics.length === 0) {
     return null;
   }
 
   return (
     <div className="flex flex-col gap-2 px-2" data-testid="run-console-notices">
-      {state.hasStaleData ? (
-        <div
-          className="flex items-start gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
-          data-testid="run-console-stale-data"
-        >
-          <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0" />
-          <span className="min-w-0">
-            Cached run data is being preserved while the latest refresh is
-            unavailable. Treat timestamps and active state as stale until the
-            API reconnects.
-          </span>
+      <section
+        className="rounded-md border bg-background px-3 py-2 text-xs"
+        data-testid="run-console-diagnostics"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <p className="font-medium">Run index diagnostics</p>
+          <Badge variant="outline">{state.diagnostics.length}</Badge>
         </div>
-      ) : null}
-      {state.diagnostics.length > 0 ? (
-        <section
-          className="rounded-md border bg-background px-3 py-2 text-xs"
-          data-testid="run-console-diagnostics"
-        >
-          <div className="flex items-center justify-between gap-3">
-            <p className="font-medium">Run index diagnostics</p>
-            <Badge variant="outline">{state.diagnostics.length}</Badge>
-          </div>
-          <ul className="mt-2 flex flex-col gap-1 text-muted-foreground">
-            {state.diagnostics.map((diagnostic, index) => (
-              <li
-                className="min-w-0 truncate"
-                key={`${diagnostic.code}:${diagnostic.runId ?? diagnostic.pathSegment ?? index}`}
-              >
-                {diagnosticLabel(diagnostic)}
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
+        <ul className="mt-2 flex flex-col gap-1 text-muted-foreground">
+          {state.diagnostics.map((diagnostic, index) => (
+            <li
+              className="min-w-0 truncate"
+              key={`${diagnostic.code}:${diagnostic.runId ?? diagnostic.pathSegment ?? index}`}
+            >
+              {diagnosticLabel(diagnostic)}
+            </li>
+          ))}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+function RunConsoleStaleDataNotice() {
+  return (
+    <div
+      className="mx-2 flex items-start gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+      data-testid="run-console-stale-data"
+    >
+      <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0" />
+      <span className="min-w-0">
+        Cached run data is being preserved while the latest refresh is
+        unavailable. Treat timestamps and active state as stale until the API
+        reconnects.
+      </span>
     </div>
   );
 }
@@ -1765,7 +1819,7 @@ function CommandHeader({
   return (
     <header className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-b px-3 py-2">
       <div className="flex min-w-0 items-center gap-2">
-        <SidebarTrigger className="lg:hidden" />
+        <SidebarTrigger aria-label="Toggle run console sidebar" size="icon" />
         <div className="min-w-0">
           <p
             className="truncate text-sm font-medium"
@@ -1811,14 +1865,6 @@ function CommandHeader({
           mode="activity"
           onSelectCommandMode={onSelectCommandMode}
         />
-        <CommandModeButton
-          icon={HelpCircleIcon}
-          isActive={commandMode === "source"}
-          label="Source"
-          mode="source"
-          onSelectCommandMode={onSelectCommandMode}
-          testId="source-detail-toggle"
-        />
       </div>
     </header>
   );
@@ -1857,7 +1903,7 @@ function SecondaryCommandPanel({
   commandMode,
   comparisonRunId,
   comparisonRunIsLoading,
-  inspector,
+  isReplayPlaying,
   primaryRunId,
   replayState,
   runCompare,
@@ -1869,11 +1915,12 @@ function SecondaryCommandPanel({
   onSelectComparisonRun,
   onSelectPrimaryRun,
   onSelectReplayIndex,
+  onToggleReplayPlayback,
 }: {
   readonly commandMode: CommandMode;
   readonly comparisonRunId: string | undefined;
   readonly comparisonRunIsLoading: boolean;
-  readonly inspector: SelectedNodeInspectorModel;
+  readonly isReplayPlaying: boolean;
   readonly primaryRunId: string | undefined;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
@@ -1885,6 +1932,7 @@ function SecondaryCommandPanel({
   readonly onSelectComparisonRun: (runId: string | undefined) => void;
   readonly onSelectPrimaryRun: (runId: string) => void;
   readonly onSelectReplayIndex: (index: number) => void;
+  readonly onToggleReplayPlayback: () => void;
 }) {
   if (commandMode === "inspect") {
     return null;
@@ -1892,35 +1940,18 @@ function SecondaryCommandPanel({
 
   return (
     <section
-      className="max-h-[36svh] shrink-0 overflow-y-auto border-b bg-background"
+      aria-label={`${secondaryCommandTitle(commandMode)} panel`}
+      className="absolute inset-x-0 top-0 z-30 max-h-[min(28rem,52svh)] overflow-y-auto border-b bg-background shadow-lg animate-in fade-in-0 slide-in-from-top-2 duration-200 motion-reduce:animate-none"
       data-testid={`secondary-command-panel-${commandMode}`}
     >
-      <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">
-            {secondaryCommandTitle(commandMode)}
-          </p>
-          <p className="truncate text-xs text-muted-foreground">
-            Opened on demand; the FactoryGraph canvas remains the primary
-            workspace.
-          </p>
-        </div>
-        <Button
-          aria-label="Close command mode"
-          onClick={() => onSelectCommandMode("inspect")}
-          size="sm"
-          variant="outline"
-        >
-          <XIcon data-icon="inline-start" />
-          Close
-        </Button>
-      </div>
       {commandMode === "replay" ? (
         <div className="flex flex-col">
           <RunReplayScrubber
+            isPlaying={isReplayPlaying}
             replayState={replayState}
-            selectedRun={selectedRun}
+            onClose={() => onSelectCommandMode("inspect")}
             onSelectReplayIndex={onSelectReplayIndex}
+            onTogglePlayback={onToggleReplayPlayback}
           />
           <div className="h-40">
             <EventStrip
@@ -1938,11 +1969,10 @@ function SecondaryCommandPanel({
           primaryRunId={primaryRunId}
           runCompare={runCompare}
           runs={runs}
+          onClose={() => onSelectCommandMode("inspect")}
           onSelectComparisonRun={onSelectComparisonRun}
           onSelectPrimaryRun={onSelectPrimaryRun}
         />
-      ) : commandMode === "source" ? (
-        <SourceDetailPanel inspector={inspector} selectedRun={selectedRun} />
       ) : (
         <div className="h-40">
           <EventStrip
@@ -1950,6 +1980,7 @@ function SecondaryCommandPanel({
             selectedConsoleRun={selectedConsoleRun}
             selectedRun={selectedRun}
             streamState={runEventStream}
+            onClose={() => onSelectCommandMode("inspect")}
           />
         </div>
       )}
@@ -1966,10 +1997,6 @@ function secondaryCommandTitle(mode: CommandMode) {
     return "Run replay";
   }
 
-  if (mode === "source") {
-    return "Source detail";
-  }
-
   return "Run activity";
 }
 
@@ -1982,6 +2009,7 @@ function DesktopWorkspace({
   selectedFactoryNode,
   selectedRun,
   serverUrl,
+  onClearNode,
   onSelectNode,
 }: {
   readonly factoryCanvas: FactoryCanvasModel | undefined;
@@ -1992,30 +2020,34 @@ function DesktopWorkspace({
   readonly selectedFactoryNode: FactoryCanvasNode | undefined;
   readonly selectedRun: DashboardRun;
   readonly serverUrl: string;
+  readonly onClearNode: () => void;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
+  const isInspectorOpen = inspector.kind !== "empty";
+
   return (
-    <section className="hidden min-h-0 flex-1 lg:block">
-      <ResizablePanelGroup orientation="horizontal">
-        <ResizablePanel defaultSize="68%" minSize="44%">
-          <RunCanvas
-            factoryCanvas={factoryCanvas}
-            queryState={runCanvas}
-            selectedNode={selectedFactoryNode}
-            onSelectNode={onSelectNode}
-          />
-        </ResizablePanel>
-        <ResizableHandle withHandle />
-        <ResizablePanel defaultSize="32%" minSize="24%">
+    <section className="relative hidden size-full min-h-0 overflow-hidden lg:block">
+      <RunCanvas
+        factoryCanvas={factoryCanvas}
+        queryState={runCanvas}
+        selectedNode={selectedFactoryNode}
+        onSelectNode={onSelectNode}
+      />
+      <CanvasInspectorSheet
+        data-testid="evidence-studio-panel"
+        open={isInspectorOpen}
+      >
+        {isInspectorOpen ? (
           <EvidenceStudio
             inspector={inspector}
             replayState={replayState}
             runCompare={runCompare}
             selectedRun={selectedRun}
             serverUrl={serverUrl}
+            onClose={onClearNode}
           />
-        </ResizablePanel>
-      </ResizablePanelGroup>
+        ) : null}
+      </CanvasInspectorSheet>
     </section>
   );
 }
@@ -2029,6 +2061,7 @@ function MobileWorkspace({
   selectedFactoryNode,
   selectedRun,
   serverUrl,
+  onClearNode,
   onSelectNode,
 }: {
   readonly factoryCanvas: FactoryCanvasModel | undefined;
@@ -2039,10 +2072,11 @@ function MobileWorkspace({
   readonly selectedFactoryNode: FactoryCanvasNode | undefined;
   readonly selectedRun: DashboardRun;
   readonly serverUrl: string;
+  readonly onClearNode: () => void;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
   return (
-    <section className="flex min-h-0 flex-col lg:hidden">
+    <section className="flex size-full min-h-0 flex-col overflow-y-auto lg:hidden">
       <div className="h-[22rem] shrink-0 border-b">
         <RunCanvas
           factoryCanvas={factoryCanvas}
@@ -2051,15 +2085,18 @@ function MobileWorkspace({
           onSelectNode={onSelectNode}
         />
       </div>
-      <div className="h-[24rem] shrink-0 border-b">
-        <EvidenceStudio
-          inspector={inspector}
-          replayState={replayState}
-          runCompare={runCompare}
-          selectedRun={selectedRun}
-          serverUrl={serverUrl}
-        />
-      </div>
+      {inspector.kind === "empty" ? null : (
+        <div className="h-[24rem] shrink-0 border-b">
+          <EvidenceStudio
+            inspector={inspector}
+            replayState={replayState}
+            runCompare={runCompare}
+            selectedRun={selectedRun}
+            serverUrl={serverUrl}
+            onClose={onClearNode}
+          />
+        </div>
+      )}
     </section>
   );
 }
@@ -2075,50 +2112,34 @@ function RunCanvas({
   readonly selectedNode: FactoryCanvasNode | undefined;
   readonly onSelectNode: (nodeId: string) => void;
 }) {
+  const handleNodeSelect = React.useCallback(
+    (nodeId: string) => onSelectNode(nodeId),
+    [onSelectNode],
+  );
   const nodes = React.useMemo(
     () =>
       factoryCanvas === undefined
         ? []
-        : toFactoryFlowNodes(factoryCanvas, selectedNode?.id),
-    [factoryCanvas, selectedNode?.id],
+        : toFactoryFlowNodes(factoryCanvas, selectedNode?.id, handleNodeSelect),
+    [factoryCanvas, handleNodeSelect, selectedNode?.id],
   );
   const edges = React.useMemo(
-    () => (factoryCanvas === undefined ? [] : toFactoryFlowEdges(factoryCanvas)),
-    [factoryCanvas],
+    () =>
+      factoryCanvas === undefined
+        ? []
+        : toFactoryFlowEdges(factoryCanvas, selectedNode?.id),
+    [factoryCanvas, selectedNode?.id],
   );
   const handleNodeClick = React.useCallback<NodeMouseHandler>(
-    (_event, node) => onSelectNode(node.id),
-    [onSelectNode],
+    (_event, node) => handleNodeSelect(node.id),
+    [handleNodeSelect],
   );
 
   return (
-    <section className="flex size-full min-h-0 flex-col">
-      <div className="flex h-11 shrink-0 items-center justify-between gap-3 border-b px-3">
-        <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold">Run Canvas</h2>
-          <p className="truncate text-xs text-muted-foreground">
-            FactoryGraph topology for the selected run
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Badge variant="outline">{factoryCanvas?.nodes.length ?? 0} nodes</Badge>
-        </div>
-      </div>
-      {factoryCanvas?.diagnostics.length ? (
-        <div
-          className="flex shrink-0 flex-col gap-1 border-b bg-background px-3 py-2 text-xs text-muted-foreground"
-          data-testid="run-canvas-diagnostics"
-        >
-          {factoryCanvas.diagnostics.map((diagnostic) => (
-            <div className="flex min-w-0 items-center gap-2" key={diagnostic.code}>
-              <AlertCircleIcon className="size-3.5 shrink-0" />
-              <span className="truncate">
-                {diagnostic.code}: {diagnostic.message}
-              </span>
-            </div>
-          ))}
-        </div>
-      ) : null}
+    <section
+      aria-label="FactoryGraph canvas"
+      className="flex size-full min-h-0 flex-col"
+    >
       <div className="min-h-0 flex-1 overflow-hidden bg-muted/20">
         {queryState.graphError !== undefined ? (
           <Empty data-testid="run-canvas-error">
@@ -2160,6 +2181,7 @@ function RunCanvas({
           <ReactFlow
             edges={edges}
             fitView
+            fitViewOptions={factoryFlowFitViewOptions}
             nodes={nodes}
             nodesDraggable={false}
             onNodeClick={handleNodeClick}
@@ -2179,21 +2201,6 @@ function selectedInspectorNodeId(model: SelectedNodeInspectorModel) {
     : undefined;
 }
 
-function emptyInspectorBadge(reason: Extract<
-  SelectedNodeInspectorModel,
-  { readonly kind: "empty" }
->["reason"]) {
-  if (reason === "loading") {
-    return "Loading";
-  }
-
-  if (reason === "no-run") {
-    return "No run";
-  }
-
-  return "Idle";
-}
-
 function noticeFor(
   model: Extract<
     SelectedNodeInspectorModel,
@@ -2210,12 +2217,14 @@ function EvidenceStudio({
   runCompare,
   selectedRun,
   serverUrl,
+  onClose,
 }: {
   readonly inspector: SelectedNodeInspectorModel;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
   readonly selectedRun: DashboardRun;
   readonly serverUrl: string;
+  readonly onClose: () => void;
 }) {
   const [tab, setTab] = React.useState<EvidenceTab>("summary");
   const nodeArtifacts =
@@ -2259,41 +2268,22 @@ function EvidenceStudio({
   }, [artifactKey, inspector]);
 
   if (inspector.kind === "empty") {
-    return (
-      <aside className="flex size-full min-h-0 flex-col">
-        <div className="flex h-11 shrink-0 items-center justify-between gap-3 border-b px-3">
-          <div className="min-w-0">
-            <h2 className="truncate text-sm font-semibold">Evidence Studio</h2>
-            <p className="truncate text-xs text-muted-foreground">
-              {inspector.title}
-            </p>
-          </div>
-          <Badge variant="outline">{emptyInspectorBadge(inspector.reason)}</Badge>
-        </div>
-        <Empty className="min-h-0 flex-1" data-testid="evidence-studio-empty">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <InspectIcon />
-            </EmptyMedia>
-            <EmptyTitle>{inspector.title}</EmptyTitle>
-            <EmptyDescription>{inspector.message}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      </aside>
-    );
+    return null;
   }
 
   const selectedNode = inspector.node;
   const roleVisual = factoryAgentRoleVisual(selectedNode.role);
 
   return (
-    <aside className="flex size-full min-h-0 flex-col">
-      <div className="flex h-11 shrink-0 items-center justify-between gap-3 border-b px-3">
+    <CanvasInspectorSheetContent>
+      <CanvasInspectorSheetHeader>
         <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold">Evidence Studio</h2>
-          <p className="truncate text-xs text-muted-foreground">
+          <CanvasInspectorSheetTitle>
+            Evidence Studio
+          </CanvasInspectorSheetTitle>
+          <CanvasInspectorSheetDescription>
             {selectedNode.label}
-          </p>
+          </CanvasInspectorSheetDescription>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Badge variant="outline">
@@ -2302,8 +2292,17 @@ function EvidenceStudio({
           <Badge variant={factoryAgentStateBadgeVariant(selectedNode.state)}>
             {factoryAgentStateLabel(selectedNode.state)}
           </Badge>
+          <Button
+            aria-label="Close Evidence Studio"
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+            onClick={onClose}
+          >
+            <XIcon />
+          </Button>
         </div>
-      </div>
+      </CanvasInspectorSheetHeader>
       <Tabs
         className="min-h-0 flex-1 gap-0"
         onValueChange={(value) => {
@@ -2387,7 +2386,7 @@ function EvidenceStudio({
           </TabsContent>
         </ScrollArea>
       </Tabs>
-    </aside>
+    </CanvasInspectorSheetContent>
   );
 }
 
@@ -2426,12 +2425,8 @@ function FactoryEvidenceSummary({
     <div className="flex flex-col gap-4">
       <div className="flex items-start gap-3">
         <div
-          className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-md border",
-            selectedNode.kind === "agent"
-              ? roleVisual.accentClassName
-              : "border-border bg-muted/40 text-muted-foreground",
-          )}
+          className="grid size-9 shrink-0 place-items-center rounded-md border border-border bg-background text-muted-foreground"
+          data-slot="factory-evidence-summary-icon"
         >
           <RoleIcon className="size-4" />
         </div>
@@ -2787,11 +2782,13 @@ function EvidenceList({
 }
 
 function EventStrip({
+  onClose,
   replayState,
   selectedConsoleRun,
   selectedRun,
   streamState,
 }: {
+  readonly onClose?: () => void;
   readonly replayState: RunReplayState;
   readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedRun: DashboardRun;
@@ -2812,7 +2809,26 @@ function EventStrip({
             {streamDisplay.message}
           </span>
         </div>
-        <Badge variant={streamDisplay.variant}>{streamDisplay.label}</Badge>
+        <div className="flex shrink-0 items-center gap-2">
+          <Badge variant={streamDisplay.variant}>{streamDisplay.label}</Badge>
+          {onClose === undefined ? null : (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    aria-label="Close activity"
+                    onClick={onClose}
+                    size="icon-sm"
+                    variant="ghost"
+                  />
+                }
+              >
+                <XIcon />
+              </TooltipTrigger>
+              <TooltipContent>Close activity</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
       </div>
       {selectedRun.events.length === 0 ? (
         <Empty className="min-h-0 flex-1" data-testid="event-strip-empty">
@@ -3072,95 +3088,228 @@ function eventStripDisplay({
 function toFactoryFlowNodes(
   model: FactoryCanvasModel,
   selectedNodeId: string | undefined,
+  onSelectNode: (nodeId: string) => void,
 ): Array<Node<{ label: React.ReactNode }>> {
   return model.nodes.map((node) => {
     const roleVisual = factoryAgentRoleVisual(node.role);
     const RoleIcon = roleVisual.Icon;
+    const metric = factoryNodeMetric(node);
 
     return {
       className: cn(
-        "rounded-lg border bg-background px-2 py-1 shadow-sm",
+        "factory-flow-node h-36 w-80 rounded-xl border-0 bg-transparent p-0 shadow-none",
         node.id === selectedNodeId && "ring-2 ring-ring",
       ),
       data: {
         label: (
-          <div className="flex min-w-56 max-w-72 flex-col gap-2 text-left">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-2">
-                <span
-                  className={cn(
-                    "grid size-7 shrink-0 place-items-center rounded-md border",
-                    node.kind === "agent"
-                      ? roleVisual.accentClassName
-                      : "border-border bg-muted/40 text-muted-foreground",
-                  )}
-                >
-                  <RoleIcon className="size-3.5" />
+          <button
+            aria-label={`Inspect ${node.label}`}
+            className="nodrag nopan size-full cursor-pointer overflow-hidden rounded-xl text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onSelectNode(node.id);
+            }}
+          >
+            <Card className="size-full gap-0 border border-border py-0 shadow-none ring-0 [--card-spacing:--spacing(3)]">
+              <CardHeader className="flex min-h-24 flex-row items-center gap-3 px-4 py-4">
+                <span className="grid size-10 shrink-0 place-items-center rounded-lg border border-border bg-background text-muted-foreground">
+                  <RoleIcon className="size-5" />
                 </span>
-                <span className="min-w-0 truncate text-sm font-semibold">
-                  {node.label}
+                <div className="min-w-0 flex-1">
+                  <CardTitle className="truncate text-base font-semibold leading-tight">
+                    {node.label}
+                  </CardTitle>
+                  <CardDescription className="truncate">
+                    {roleVisual.description}
+                  </CardDescription>
+                </div>
+              </CardHeader>
+              <CardFooter className="mt-auto h-12 justify-between gap-3 px-4 py-0">
+                <span className="min-w-0 truncate font-mono text-xs uppercase tracking-[0.08em] text-muted-foreground">
+                  {factoryNodeFooterLabel(node)}
                 </span>
-              </div>
-              <Badge variant={factoryAgentStateBadgeVariant(node.state)}>
-                {factoryAgentStateLabel(node.state)}
-              </Badge>
-            </div>
-            <span className="truncate text-xs text-muted-foreground">
-              {node.kind === "agent" ? roleVisual.label : String(node.type)}
-              {node.summary.length > 0 ? ` · ${node.summary}` : ""}
-            </span>
-            <div className="flex flex-wrap gap-1">
-              {node.artifactCount > 0 ? (
-                <Badge variant="secondary">
-                  {node.artifactCount} artifacts
-                </Badge>
-              ) : null}
-              {node.latestActivityId === undefined ? null : (
-                <Badge variant="outline">Activity linked</Badge>
-              )}
-              {node.activityCount > 0 ? (
-                <Badge variant="outline">
-                  {countLabel(node.activityCount, "activity", "activities")}
-                </Badge>
-              ) : null}
-            </div>
-          </div>
+                {metric === undefined ? null : (
+                  <Badge
+                    aria-label={metric.accessibleLabel}
+                    className="min-w-7 justify-center rounded-md px-2 font-mono tabular-nums"
+                    title={metric.accessibleLabel}
+                    variant="secondary"
+                  >
+                    {metric.value}
+                  </Badge>
+                )}
+              </CardFooter>
+            </Card>
+          </button>
         ),
       },
       id: node.id,
       position: node.position,
-      type: node.kind === "workItem" ? "input" : "default",
+      sourcePosition: Position.Bottom,
+      style: factoryFlowNodeStyle,
+      targetPosition: Position.Top,
+      type: "default",
     };
   });
 }
 
-function toFactoryFlowEdges(model: FactoryCanvasModel): Array<Edge> {
-  return model.edges.map((edge) => ({
-    animated: edge.label === "spawned",
-    id: edge.id,
-    label: edge.label,
-    source: edge.source,
-    target: edge.target,
-    type: "smoothstep",
-  }));
+function factoryNodeFooterLabel(node: FactoryCanvasNode) {
+  return factoryAgentStateLabel(node.state);
+}
+
+function factoryNodeMetric(node: FactoryCanvasNode):
+  | {
+      readonly accessibleLabel: string;
+      readonly value: number;
+    }
+  | undefined {
+  if (node.artifactCount > 0) {
+    return {
+      accessibleLabel: countLabel(node.artifactCount, "artifact", "artifacts"),
+      value: node.artifactCount,
+    };
+  }
+
+  if (node.activityCount > 0) {
+    return {
+      accessibleLabel: countLabel(node.activityCount, "activity", "activities"),
+      value: node.activityCount,
+    };
+  }
+
+  return undefined;
+}
+
+const factoryFlowNodeStyle = {
+  backgroundColor: "transparent",
+  border: 0,
+  boxShadow: "none",
+  height: 144,
+  padding: 0,
+  width: 320,
+} satisfies React.CSSProperties;
+
+const factoryFlowFitViewOptions = {
+  maxZoom: 1,
+  minZoom: 0.72,
+  padding: 0.16,
+} satisfies FitViewOptions;
+
+function toFactoryFlowEdges(
+  model: FactoryCanvasModel,
+  selectedNodeId: string | undefined,
+): Array<Edge> {
+  const stateByNodeId = new Map(model.nodes.map((node) => [node.id, node.state]));
+
+  return model.edges.map((edge) => {
+    const sourceState = stateByNodeId.get(edge.source);
+    const targetState = stateByNodeId.get(edge.target);
+    const animated = shouldAnimateFactoryEdge(sourceState, targetState);
+    const selectedPath =
+      selectedNodeId !== undefined &&
+      (edge.source === selectedNodeId || edge.target === selectedNodeId);
+
+    return {
+      animated,
+      className: factoryFlowEdgeClassName({
+        animated,
+        hasSelectedNode: selectedNodeId !== undefined,
+        selectedPath,
+      }),
+      id: edge.id,
+      interactionWidth: 28,
+      pathOptions: {
+        borderRadius: 10,
+        offset: 24,
+      },
+      selectable: false,
+      source: edge.source,
+      target: edge.target,
+      type: "smoothstep",
+    };
+  });
+}
+
+type FactoryCanvasNodeState = FactoryCanvasModel["nodes"][number]["state"];
+
+export function shouldAnimateFactoryEdge(
+  sourceState: FactoryCanvasNodeState | undefined,
+  targetState: FactoryCanvasNodeState | undefined,
+) {
+  return sourceState === "running" || targetState === "running";
+}
+
+export function factoryFlowEdgeClassName(input: {
+  readonly animated: boolean;
+  readonly hasSelectedNode: boolean;
+  readonly selectedPath: boolean;
+}) {
+  return cn(
+    "factory-flow-edge",
+    input.animated && "factory-flow-edge-active",
+    input.selectedPath && "factory-flow-edge-selected",
+    input.hasSelectedNode &&
+      !input.selectedPath &&
+      "factory-flow-edge-unselected",
+  );
 }
 
 function countLabel(count: number, singular: string, plural: string) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
-function serverBadgeVariant(
-  health: RunConsoleState["health"],
-): "destructive" | "outline" | "secondary" {
-  if (health === "offline") {
-    return "destructive";
-  }
-
+function serverStatusPillClassName(health: RunConsoleState["health"]) {
   if (health === "online") {
-    return "secondary";
+    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-950";
   }
 
-  return "outline";
+  if (health === "offline") {
+    return "border-destructive/30 bg-destructive/10 text-destructive";
+  }
+
+  return "border-amber-500/30 bg-amber-500/10 text-amber-950";
+}
+
+function serverStatusBadgeClassName(health: RunConsoleState["health"]) {
+  if (health === "online") {
+    return "border-emerald-500/40 bg-emerald-500/10 text-emerald-900";
+  }
+
+  if (health === "offline") {
+    return "border-destructive/40 bg-destructive/10 text-destructive";
+  }
+
+  return "border-amber-500/40 bg-amber-500/10 text-amber-900";
+}
+
+function serverStatusLabel(health: RunConsoleState["health"]) {
+  if (health === "online") {
+    return "online";
+  }
+
+  if (health === "offline") {
+    return "offline";
+  }
+
+  if (health === "stale") {
+    return "stale";
+  }
+
+  if (health === "reconnecting") {
+    return "reconnecting";
+  }
+
+  return "checking";
+}
+
+function serverStatusAccessibleLabel(runConsole: RunConsoleState) {
+  return `Server status: ${runConsole.serverUrl} ${serverStatusLabel(runConsole.health)}`;
+}
+
+function serverStatusTooltip(runConsole: RunConsoleState) {
+  const label = serverStatusLabel(runConsole.health);
+  return `${runConsole.serverUrl} is ${label}`;
 }
 
 function localRunBadgeVariant(
@@ -3189,7 +3338,6 @@ function diagnosticLabel(
 }
 
 type RunCanvasQueryState = {
-  readonly diagnostics: FactoryCanvasModel["diagnostics"];
   readonly graphError: ReturnType<typeof dashboardQueryFailure>;
   readonly isLoading: boolean;
 };

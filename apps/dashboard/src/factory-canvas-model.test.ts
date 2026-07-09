@@ -12,13 +12,12 @@ import { describe, expect, it } from "vitest";
 import { buildFactoryCanvasModel } from "@/factory-canvas-model";
 
 describe("factory canvas model", () => {
-  it("projects FactoryGraph topology into work item and agent nodes only", () => {
+  it("projects FactoryGraph topology into agent nodes only", () => {
     const graph = factoryGraphFixture();
     const model = buildFactoryCanvasModel(graph);
 
     expect(model.id).toBe("run-1234567890");
     expect(model.nodes.map((node) => node.id)).toEqual([
-      "work-item:work-root",
       "agent:agent-orchestrator",
       "agent:agent-worker",
       "agent:agent-reviewer",
@@ -26,7 +25,6 @@ describe("factory canvas model", () => {
       "agent:agent-ci-watcher",
     ]);
     expect(model.nodes.map((node) => node.kind)).toEqual([
-      "workItem",
       "agent",
       "agent",
       "agent",
@@ -34,12 +32,18 @@ describe("factory canvas model", () => {
       "agent",
     ]);
     expect(model.nodes.map((node) => node.lane)).toEqual([
-      "work",
       "orchestration",
       "implementation",
       "review",
       "verification",
       "ci",
+    ]);
+    expect(model.nodes.map((node) => node.position)).toEqual([
+      { x: 0, y: 0 },
+      { x: 0, y: 224 },
+      { x: 0, y: 448 },
+      { x: 0, y: 672 },
+      { x: 0, y: 896 },
     ]);
     expect(model.diagnostics).toEqual([]);
     expect(model.nodes.some((node) => node.id.startsWith("artifact:"))).toBe(
@@ -48,13 +52,10 @@ describe("factory canvas model", () => {
     expect(model.nodes.some((node) => node.id.startsWith("event:"))).toBe(
       false,
     );
+    expect(model.nodes.some((node) => node.id.startsWith("work-item:"))).toBe(
+      false,
+    );
     expect(model.edges).toEqual([
-      {
-        id: "edge:edge-owns",
-        label: "owns",
-        source: "work-item:work-root",
-        target: "agent:agent-orchestrator",
-      },
       {
         id: "edge:edge-spawned",
         label: "spawned",
@@ -87,7 +88,9 @@ describe("factory canvas model", () => {
       activities: factoryActivitiesFixture(),
     });
     const worker = model.nodes.find((node) => node.id === "agent:agent-worker");
-    const workItem = model.nodes.find((node) => node.id === "work-item:work-root");
+    const orchestrator = model.nodes.find(
+      (node) => node.id === "agent:agent-orchestrator",
+    );
 
     expect(worker).toMatchObject({
       activityCount: 1,
@@ -96,7 +99,7 @@ describe("factory canvas model", () => {
       latestActivityId: "activity-worker",
       role: "worker",
     });
-    expect(workItem).toMatchObject({
+    expect(orchestrator).toMatchObject({
       activityCount: 1,
       artifactCount: 1,
       artifactIds: ["artifact-plan"],
@@ -184,7 +187,6 @@ describe("factory canvas model", () => {
     const model = buildFactoryCanvasModel(graph);
 
     expect(model.nodes.map((node) => node.id)).toEqual([
-      "work-item:work-root",
       "agent:agent-orchestrator",
       "agent:agent-worker",
     ]);

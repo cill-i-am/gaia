@@ -56,14 +56,16 @@ export type FactoryCanvasModel = {
   readonly workflow: typeof FactoryGraphDto.Type.workflow;
 };
 
+const factoryCanvasRowGap = 224;
+
 const issueDeliveryRoleLayout = {
-  ciWatcher: { lane: "ci", order: 5, x: 1300, y: 0 },
-  orchestrator: { lane: "orchestration", order: 1, x: 260, y: 0 },
-  researcher: { lane: "research", order: 6, x: 260, y: 180 },
-  reviewer: { lane: "review", order: 3, x: 780, y: 0 },
-  tester: { lane: "verification", order: 4, x: 1040, y: 0 },
-  unknown: { lane: "unknown", order: 90, x: 260, y: 360 },
-  worker: { lane: "implementation", order: 2, x: 520, y: 0 },
+  ciWatcher: { lane: "ci", order: 5, x: 0, y: factoryCanvasRowGap * 4 },
+  orchestrator: { lane: "orchestration", order: 1, x: 0, y: 0 },
+  researcher: { lane: "research", order: 6, x: 0, y: factoryCanvasRowGap * 5 },
+  reviewer: { lane: "review", order: 3, x: 0, y: factoryCanvasRowGap * 2 },
+  tester: { lane: "verification", order: 4, x: 0, y: factoryCanvasRowGap * 3 },
+  unknown: { lane: "unknown", order: 90, x: 0, y: factoryCanvasRowGap * 6 },
+  worker: { lane: "implementation", order: 2, x: 0, y: factoryCanvasRowGap },
 } satisfies Record<
   FactoryAgentRole,
   {
@@ -74,20 +76,16 @@ const issueDeliveryRoleLayout = {
   }
 >;
 
-type IssueDeliveryExpectedEdgeEndpoint =
-  | { readonly kind: "agentRole"; readonly role: FactoryAgentRole }
-  | { readonly kind: "workItem" };
+type IssueDeliveryExpectedEdgeEndpoint = {
+  readonly kind: "agentRole";
+  readonly role: FactoryAgentRole;
+};
 
 const issueDeliveryExpectedEdges: ReadonlyArray<{
   readonly source: IssueDeliveryExpectedEdgeEndpoint;
   readonly target: IssueDeliveryExpectedEdgeEndpoint;
   readonly type: FactoryRelationshipType;
 }> = [
-  {
-    source: { kind: "workItem" as const },
-    target: { kind: "agentRole" as const, role: "orchestrator" as const },
-    type: "owns" as const,
-  },
   {
     source: { kind: "agentRole" as const, role: "orchestrator" as const },
     target: { kind: "agentRole" as const, role: "worker" as const },
@@ -117,9 +115,6 @@ export function buildFactoryCanvasModel(
   } = {},
 ): FactoryCanvasModel {
   const activities = options.activities ?? [];
-  const workItems = [...graph.workItems].sort((left, right) =>
-    String(left.id).localeCompare(String(right.id)),
-  );
   const agents = [...graph.agents].sort((left, right) => {
     const orderDelta =
       issueDeliveryRoleLayout[left.role].order -
@@ -130,68 +125,43 @@ export function buildFactoryCanvasModel(
       : orderDelta;
   });
 
-  const nodes = [
-    ...workItems.map((workItem, index) => {
-      const scopedActivities = activities.filter(
-        (activity) => activity.workItemId === workItem.id,
-      );
-      const artifactIds = activityArtifactIds(scopedActivities);
+  const nodes = agents.map((agent, index) => {
+    const scopedActivities = activities.filter(
+      (activity) => activity.agentId === agent.id,
+    );
+    const linkedArtifactIds = graph.linkedArtifacts
+      .filter((artifact) => artifact.ownerAgentId === agent.id)
+      .map((artifact) => String(artifact.artifactId));
+    const artifactIds = uniqueStrings([
+      ...linkedArtifactIds,
+      ...activityArtifactIds(scopedActivities),
+    ]);
+    const layout = issueDeliveryRoleLayout[agent.role];
+    const duplicateRoleOffset = agents
+      .slice(0, index)
+      .filter((candidate) => candidate.role === agent.role).length;
 
-      return {
-        activityCount: scopedActivities.length,
-        id: workItemNodeId(workItem.id),
-        artifactCount: artifactIds.length,
-        artifactIds,
-        kind: "workItem" as const,
-        lane: "work" as const,
-        label: workItem.title,
-        latestActivityId: latestActivityId(scopedActivities),
-        rawId: workItem.id,
-        role: undefined,
-        state: undefined,
-        summary: workItem.description ?? `${workItem.kind} work item`,
-        type: workItem.kind,
-        position: { x: 0, y: index * 180 },
-      };
-    }),
-    ...agents.map((agent, index) => {
-      const scopedActivities = activities.filter(
-        (activity) => activity.agentId === agent.id,
-      );
-      const linkedArtifactIds = graph.linkedArtifacts
-        .filter((artifact) => artifact.ownerAgentId === agent.id)
-        .map((artifact) => String(artifact.artifactId));
-      const artifactIds = uniqueStrings([
-        ...linkedArtifactIds,
-        ...activityArtifactIds(scopedActivities),
-      ]);
-      const layout = issueDeliveryRoleLayout[agent.role];
-      const duplicateRoleOffset = agents
-        .slice(0, index)
-        .filter((candidate) => candidate.role === agent.role).length;
-
-      return {
-        activityCount: scopedActivities.length,
-        id: agentNodeId(agent.id),
-        artifactCount: Math.max(agent.artifactCount, artifactIds.length),
-        artifactIds,
-        kind: "agent" as const,
-        lane: layout.lane,
-        label: agent.title,
-        latestActivityId:
-          agent.latestActivityId ?? latestActivityId(scopedActivities),
-        rawId: agent.id,
-        role: agent.role,
-        state: agent.state,
-        summary: agent.subState ?? `${agent.role} is ${agent.state}`,
-        type: agent.role,
-        position: {
-          x: layout.x,
-          y: layout.y + duplicateRoleOffset * 150,
-        },
-      };
-    }),
-  ] satisfies ReadonlyArray<FactoryCanvasNode>;
+    return {
+      activityCount: scopedActivities.length,
+      id: agentNodeId(agent.id),
+      artifactCount: Math.max(agent.artifactCount, artifactIds.length),
+      artifactIds,
+      kind: "agent" as const,
+      lane: layout.lane,
+      label: agent.title,
+      latestActivityId:
+        agent.latestActivityId ?? latestActivityId(scopedActivities),
+      rawId: agent.id,
+      role: agent.role,
+      state: agent.state,
+      summary: agent.subState ?? `${agent.role} is ${agent.state}`,
+      type: agent.role,
+      position: {
+        x: layout.x,
+        y: layout.y + duplicateRoleOffset * factoryCanvasRowGap,
+      },
+    };
+  }) satisfies ReadonlyArray<FactoryCanvasNode>;
   const canvasNodeIds = new Set<string>(nodes.map((node) => node.rawId));
   const edges = graph.edges
     .filter(
@@ -201,8 +171,8 @@ export function buildFactoryCanvasModel(
     .map((edge) => ({
       id: `edge:${edge.id}`,
       label: edge.type,
-      source: canvasNodeId(edge.sourceId, graph),
-      target: canvasNodeId(edge.targetId, graph),
+      source: agentNodeId(edge.sourceId),
+      target: agentNodeId(edge.targetId),
     }));
 
   return {
@@ -224,7 +194,7 @@ function diagnosticsForGraph(
   if (nodes.length === 0) {
     diagnostics.push({
       code: "FactoryGraphEmpty",
-      message: "Factory graph has no work item or agent topology nodes.",
+      message: "Factory graph has no agent topology nodes.",
       recoverable: true,
     });
   }
@@ -282,14 +252,8 @@ function issueDeliveryDiagnostics(
   }
 
   for (const expectedEdge of issueDeliveryExpectedEdges) {
-    const sourceId =
-      expectedEdge.source.kind === "workItem"
-        ? rootWorkItem?.id
-        : agentByRole.get(expectedEdge.source.role)?.id;
-    const targetId =
-      expectedEdge.target.kind === "workItem"
-        ? rootWorkItem?.id
-        : agentByRole.get(expectedEdge.target.role)?.id;
+    const sourceId = agentByRole.get(expectedEdge.source.role)?.id;
+    const targetId = agentByRole.get(expectedEdge.target.role)?.id;
 
     if (sourceId === undefined || targetId === undefined) {
       continue;
@@ -336,16 +300,6 @@ function uniqueStrings(values: ReadonlyArray<string>) {
   return [...new Set(values)];
 }
 
-function canvasNodeId(rawId: string, graph: typeof FactoryGraphDto.Type) {
-  return graph.workItems.some((workItem) => workItem.id === rawId)
-    ? workItemNodeId(rawId)
-    : agentNodeId(rawId);
-}
-
 function agentNodeId(id: string) {
   return `agent:${id}`;
-}
-
-function workItemNodeId(id: string) {
-  return `work-item:${id}`;
 }

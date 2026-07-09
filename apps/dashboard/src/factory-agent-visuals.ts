@@ -1,11 +1,11 @@
 import type { LucideIcon } from "lucide-react";
 import {
-  ActivityIcon,
-  AlertCircleIcon,
-  CircleDotIcon,
+  BotIcon,
+  FlaskConicalIcon,
   HelpCircleIcon,
-  InspectIcon,
+  RadarIcon,
   SearchIcon,
+  ShieldCheckIcon,
   WorkflowIcon,
 } from "lucide-react";
 
@@ -26,44 +26,44 @@ type FactoryAgentStateVisual = {
 export const factoryAgentRoleVisuals = {
   ciWatcher: {
     accentClassName: "border-cyan-500/40 bg-cyan-500/10 text-cyan-900",
-    description: "Watches external check status and CI evidence.",
-    Icon: ActivityIcon,
+    description: "monitors & self-heals",
+    Icon: RadarIcon,
     label: "CI watcher",
   },
   orchestrator: {
     accentClassName: "border-emerald-500/40 bg-emerald-500/10 text-emerald-900",
-    description: "Coordinates issue delivery and spawned agents.",
+    description: "plans & coordinates",
     Icon: WorkflowIcon,
     label: "Orchestrator",
   },
   researcher: {
     accentClassName: "border-indigo-500/40 bg-indigo-500/10 text-indigo-900",
-    description: "Collects research or product context for the run.",
+    description: "gathers context",
     Icon: SearchIcon,
     label: "Researcher",
   },
   reviewer: {
     accentClassName: "border-amber-500/40 bg-amber-500/10 text-amber-900",
-    description: "Reviews implementation evidence and findings.",
-    Icon: InspectIcon,
+    description: "checks spec adherence",
+    Icon: ShieldCheckIcon,
     label: "Reviewer",
   },
   tester: {
     accentClassName: "border-sky-500/40 bg-sky-500/10 text-sky-900",
-    description: "Runs verification and browser evidence checks.",
-    Icon: CircleDotIcon,
+    description: "verifies behavior",
+    Icon: FlaskConicalIcon,
     label: "Tester",
   },
   unknown: {
     accentClassName: "border-muted bg-muted/30 text-muted-foreground",
-    description: "Role is unavailable in the public factory graph.",
+    description: "role unavailable",
     Icon: HelpCircleIcon,
     label: "Unknown",
   },
   worker: {
     accentClassName: "border-rose-500/40 bg-rose-500/10 text-rose-900",
-    description: "Implements the assigned work item.",
-    Icon: AlertCircleIcon,
+    description: "implements changes",
+    Icon: BotIcon,
     label: "Worker",
   },
 } satisfies Record<FactoryAgentRole, FactoryAgentRoleVisual>;
