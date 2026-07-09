@@ -33,6 +33,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardShell } from "@/components/dashboard-shell";
 import type { DashboardGaiaClientError } from "@/lib/local-gaia-client";
 
+type CreateRunAcceptedFixture = {
+  readonly acceptedAt: string;
+  readonly runId: string;
+  readonly status: "accepted";
+  readonly urls: {
+    readonly activity: string;
+    readonly artifacts: string;
+    readonly factoryGraph: string;
+    readonly run: string;
+  };
+};
+
 const queryFixture = vi.hoisted(
   (): {
     artifactsByRunId: Record<string, Record<string, unknown>>;
@@ -45,6 +57,12 @@ const queryFixture = vi.hoisted(
     factoryArtifactBodiesByRunId: Record<string, Record<string, unknown>>;
     factoryArtifactsByRunId: Record<string, ReadonlyArray<unknown>>;
     factoryGraphsByRunId: Record<string, unknown>;
+    createRunError: unknown;
+    createRunInputs: Array<{
+      readonly description: string;
+      readonly title: string;
+    }>;
+    createRunPromise: Promise<CreateRunAcceptedFixture> | undefined;
     eventsByRunId: Record<string, ReadonlyArray<unknown>>;
     healthError?: unknown;
     runs: ReadonlyArray<unknown>;
@@ -58,6 +76,9 @@ const queryFixture = vi.hoisted(
     factoryArtifactBodiesByRunId: {},
     factoryArtifactsByRunId: {},
     factoryGraphsByRunId: {},
+    createRunError: undefined,
+    createRunInputs: [],
+    createRunPromise: undefined,
     eventsByRunId: {},
     healthError: undefined,
     runs: [],
@@ -67,6 +88,49 @@ const queryFixture = vi.hoisted(
 );
 
 vi.mock("@/lib/local-gaia-query", () => ({
+  localGaiaCreateRunMutationOptions: () => ({
+    mutationFn: async (input: {
+      readonly description: string;
+      readonly title: string;
+    }) => {
+      queryFixture.createRunInputs.push(input);
+      if (queryFixture.createRunError !== undefined) {
+        return Promise.reject({ failure: queryFixture.createRunError });
+      }
+
+      const result =
+        queryFixture.createRunPromise === undefined
+          ? {
+              acceptedAt: "2026-07-09T00:00:00.000Z",
+              runId: "run-9999999999",
+              status: "accepted" as const,
+              urls: {
+                activity: "/runs/run-9999999999/activity",
+                artifacts: "/runs/run-9999999999/artifacts",
+                factoryGraph: "/runs/run-9999999999/factory-graph",
+                run: "/runs/run-9999999999",
+              },
+            }
+          : await queryFixture.createRunPromise;
+
+      queryFixture.runs = [
+        {
+          artifacts: [],
+          createdAt: result.acceptedAt,
+          eventCount: 0,
+          latestEventType: "RUN_CREATED",
+          runId: result.runId,
+          state: "created",
+          status: "running",
+          updatedAt: result.acceptedAt,
+        },
+        ...queryFixture.runs,
+      ];
+
+      return result;
+    },
+    mutationKey: ["local-gaia", "create-run"] as const,
+  }),
   localGaiaHealthQueryOptions: () => ({
     queryFn: () => {
       if (queryFixture.healthError !== undefined) {
@@ -882,6 +946,131 @@ describe("DashboardShell Run Console", () => {
     );
   });
 
+  it("creates an issue-delivery run from the command rail and selects the refreshed run", async () => {
+    renderDashboardWithQueries({ runs: [] });
+
+    fireEvent.change(await screen.findByLabelText("Issue title"), {
+      target: { value: "  Ship dashboard intake  " },
+    });
+    fireEvent.change(screen.getByLabelText("Issue description"), {
+      target: {
+        value:
+          "  Add a command-rail intake and select the created factory run.  ",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create run" }));
+
+    await waitFor(() => {
+      expect(queryFixture.createRunInputs).toEqual([
+        {
+          description:
+            "Add a command-rail intake and select the created factory run.",
+          title: "Ship dashboard intake",
+        },
+      ]);
+      expect(
+        screen.getByTestId("run-console-row-run-9999999999"),
+      ).toBeTruthy();
+      expect(screen.getByTestId("selected-run-title").textContent).toBe(
+        "run-9999999999",
+      );
+    });
+  });
+
+  it("validates issue-delivery intake before creating a run", async () => {
+    renderDashboardWithQueries({ runs: [] });
+
+    fireEvent.submit(await screen.findByTestId("issue-delivery-intake-form"));
+
+    expect(queryFixture.createRunInputs).toEqual([]);
+    expect(screen.getByText("Enter an issue title.")).toBeTruthy();
+    expect(screen.getByText("Enter an issue description.")).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Create run" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  it("disables duplicate issue-delivery submissions while create-run is pending", async () => {
+    const createRun = deferred<CreateRunAcceptedFixture>();
+    renderDashboardWithQueries({
+      createRunPromise: createRun.promise,
+      runs: [],
+    });
+
+    fireEvent.change(await screen.findByLabelText("Issue title"), {
+      target: { value: "Pending intake" },
+    });
+    fireEvent.change(screen.getByLabelText("Issue description"), {
+      target: { value: "Keep duplicate submissions disabled." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create run" }));
+
+    await waitFor(() => {
+      expect(
+        (
+          screen.getByRole("button", {
+            name: "Creating run",
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(true);
+    });
+    expect(queryFixture.createRunInputs).toHaveLength(1);
+
+    createRun.resolve({
+      acceptedAt: "2026-07-09T00:01:00.000Z",
+      runId: "run-1010101010",
+      status: "accepted",
+      urls: {
+        activity: "/runs/run-1010101010/activity",
+        artifacts: "/runs/run-1010101010/artifacts",
+        factoryGraph: "/runs/run-1010101010/factory-graph",
+        run: "/runs/run-1010101010",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-run-title").textContent).toBe(
+        "run-1010101010",
+      );
+      expect(
+        (
+          screen.getByRole("button", {
+            name: "Create run",
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false);
+    });
+  });
+
+  it("renders typed create-run failures without adding fake runs", async () => {
+    renderDashboardWithQueries({
+      createRunError: {
+        _tag: "DashboardGaiaApiError",
+        error: localRunApiError({
+          code: "InvalidRequest",
+          message: "Issue title is already in use.",
+          status: 400,
+        }),
+      },
+      runs: [],
+    });
+
+    fireEvent.change(await screen.findByLabelText("Issue title"), {
+      target: { value: "Duplicate issue" },
+    });
+    fireEvent.change(screen.getByLabelText("Issue description"), {
+      target: { value: "This should surface the typed API failure." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create run" }));
+
+    const error = await screen.findByTestId("issue-delivery-intake-error");
+    expect(error.textContent).toContain(
+      "InvalidRequest: Issue title is already in use.",
+    );
+    expect(screen.queryByTestId("run-console-row-run-9999999999")).toBeNull();
+  });
+
   it("renders typed API errors as the offline error state", async () => {
     renderDashboardWithQueries({
       healthError: {
@@ -904,6 +1093,13 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByTestId("run-console-server-message").textContent).toBe(
       "InternalServerError: Local API failed.",
     );
+    expect(screen.getByTestId("issue-delivery-intake-offline").textContent).toContain(
+      "Local server unavailable",
+    );
+    expect(
+      (screen.getByRole("button", { name: "Create run" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 
   it("preserves visible runs and marks them stale after a refresh failure", async () => {
@@ -1023,6 +1219,8 @@ function renderDashboardWithQueries(input: {
   >;
   readonly factoryArtifactsByRunId?: Record<string, ReadonlyArray<typeof FactoryArtifactDto.Type>>;
   readonly factoryGraphsByRunId?: Record<string, typeof FactoryGraphDto.Type>;
+  readonly createRunError?: DashboardGaiaClientError;
+  readonly createRunPromise?: Promise<CreateRunAcceptedFixture>;
   readonly healthError?: DashboardGaiaClientError;
   readonly runs: ReadonlyArray<typeof LocalRunSummaryDto.Type>;
   readonly runsDiagnostics?: ReadonlyArray<
@@ -1031,6 +1229,9 @@ function renderDashboardWithQueries(input: {
   readonly runsError?: DashboardGaiaClientError;
 }) {
   queryFixture.artifactsByRunId = input.artifactsByRunId ?? {};
+  queryFixture.createRunError = input.createRunError;
+  queryFixture.createRunInputs = [];
+  queryFixture.createRunPromise = input.createRunPromise;
   queryFixture.factoryArtifactBodyRequests = [];
   const defaultFactoryData = defaultFactoryDataForRuns(input.runs);
   queryFixture.factoryActivitiesByRunId =
@@ -1380,6 +1581,15 @@ function firstElement<T>(items: ReadonlyArray<T>): T {
   }
 
   return item;
+}
+
+function deferred<T>() {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+
+  return { promise, resolve };
 }
 
 function installBrowserApiPolyfills() {

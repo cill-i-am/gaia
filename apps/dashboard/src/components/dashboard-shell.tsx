@@ -6,7 +6,7 @@ import {
   type Node,
   type NodeMouseHandler,
 } from "@xyflow/react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   type FactoryActivityDto,
   type FactoryArtifactBodyDto,
@@ -25,7 +25,9 @@ import {
   GitCompareArrowsIcon,
   HelpCircleIcon,
   InspectIcon,
+  LoaderCircleIcon,
   type LucideIcon,
+  PlayIcon,
   RefreshCwIcon,
   SearchIcon,
   ServerIcon,
@@ -67,6 +69,7 @@ import {
   localGaiaFactoryArtifactsQueryOptions,
   localGaiaFactoryGraphQueryOptions,
   localGaiaFactoryRunActivityQueryOptions,
+  localGaiaCreateRunMutationOptions,
   localGaiaHealthQueryOptions,
   localGaiaRunEventsQueryOptions,
   localGaiaRunQueryOptions,
@@ -90,6 +93,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -114,6 +118,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
   TooltipContent,
@@ -182,6 +187,9 @@ export function DashboardShell() {
   const serverUrl = defaultLocalGaiaServerUrl;
   const healthQuery = useQuery(localGaiaHealthQueryOptions({ serverUrl }));
   const runsQuery = useQuery(localGaiaRunsQueryOptions({ serverUrl }));
+  const createRunMutation = useMutation(
+    localGaiaCreateRunMutationOptions({ serverUrl }),
+  );
   const runConsole = React.useMemo(
     () =>
       buildRunConsoleState({
@@ -429,6 +437,15 @@ export function DashboardShell() {
     setCommandMode("inspect");
   }
 
+  async function createIssueDeliveryRun(input: {
+    readonly description: string;
+    readonly title: string;
+  }) {
+    const result = await createRunMutation.mutateAsync(input);
+    await runsQuery.refetch();
+    selectRun(result.runId);
+  }
+
   function selectReplayIndex(index: number) {
     setRequestedReplayIndex(index);
 
@@ -444,7 +461,10 @@ export function DashboardShell() {
         <RunConsole
           selectedRunId={selectedRunId}
           serverConnection={serverConnection}
+          createRunError={dashboardQueryFailure(createRunMutation.error)}
+          createRunIsPending={createRunMutation.isPending}
           onRefresh={refreshRunConsole}
+          onCreateIssueDeliveryRun={createIssueDeliveryRun}
           onSelectRun={selectRun}
         />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col lg:overflow-hidden">
@@ -955,13 +975,22 @@ function MissingDataList({
 }
 
 function RunConsole({
+  createRunError,
+  createRunIsPending,
   selectedRunId,
   serverConnection,
+  onCreateIssueDeliveryRun,
   onRefresh,
   onSelectRun,
 }: {
+  readonly createRunError: ReturnType<typeof dashboardQueryFailure>;
+  readonly createRunIsPending: boolean;
   readonly selectedRunId: string | undefined;
   readonly serverConnection: ServerConnectionState;
+  readonly onCreateIssueDeliveryRun: (input: {
+    readonly description: string;
+    readonly title: string;
+  }) => Promise<void>;
   readonly onRefresh: () => void;
   readonly onSelectRun: (runId: string) => void;
 }) {
@@ -1026,6 +1055,17 @@ function RunConsole({
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
+          <SidebarGroupLabel>Issue delivery</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <IssueDeliveryIntake
+              error={createRunError}
+              isPending={createRunIsPending}
+              runConsole={runConsole}
+              onCreateIssueDeliveryRun={onCreateIssueDeliveryRun}
+            />
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup>
           <SidebarGroupLabel>Local runs</SidebarGroupLabel>
           <SidebarGroupContent>
             <RunConsoleRuns
@@ -1062,6 +1102,153 @@ function RunConsole({
         </div>
       </SidebarFooter>
     </Sidebar>
+  );
+}
+
+function IssueDeliveryIntake({
+  error,
+  isPending,
+  runConsole,
+  onCreateIssueDeliveryRun,
+}: {
+  readonly error: ReturnType<typeof dashboardQueryFailure>;
+  readonly isPending: boolean;
+  readonly runConsole: RunConsoleState;
+  readonly onCreateIssueDeliveryRun: (input: {
+    readonly description: string;
+    readonly title: string;
+  }) => Promise<void>;
+}) {
+  const [description, setDescription] = React.useState("");
+  const [submitted, setSubmitted] = React.useState(false);
+  const [title, setTitle] = React.useState("");
+  const normalizedDescription = description.trim();
+  const normalizedTitle = title.trim();
+  const titleError = submitted && normalizedTitle.length === 0;
+  const descriptionError =
+    submitted && normalizedDescription.length === 0;
+  const isOffline = runConsole.health === "offline";
+  const canSubmit =
+    !isPending &&
+    !isOffline &&
+    normalizedDescription.length > 0 &&
+    normalizedTitle.length > 0;
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitted(true);
+
+    if (!canSubmit) {
+      return;
+    }
+
+    try {
+      await onCreateIssueDeliveryRun({
+        description: normalizedDescription,
+        title: normalizedTitle,
+      });
+    } catch {
+      // React Query retains the typed mutation error for rendering below.
+    }
+  }
+
+  return (
+    <form
+      className="flex flex-col gap-3 rounded-md border bg-background p-2"
+      data-testid="issue-delivery-intake-form"
+      onSubmit={handleSubmit}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Create run</p>
+          <p className="line-clamp-2 text-xs text-muted-foreground">
+            Issue-delivery only. Gaia creates the root issue work item.
+          </p>
+        </div>
+        <Badge variant="outline">issueDelivery</Badge>
+      </div>
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-1.5" data-invalid={titleError}>
+          <Label className="text-xs" htmlFor="issue-delivery-title">
+            Issue title
+          </Label>
+          <Input
+            aria-describedby={
+              titleError ? "issue-delivery-title-error" : undefined
+            }
+            aria-invalid={titleError}
+            disabled={isPending || isOffline}
+            id="issue-delivery-title"
+            onChange={(event) => setTitle(event.currentTarget.value)}
+            placeholder="Linear issue or delivery title"
+            value={title}
+          />
+          {titleError ? (
+            <p
+              className="text-xs text-destructive"
+              id="issue-delivery-title-error"
+            >
+              Enter an issue title.
+            </p>
+          ) : null}
+        </div>
+        <div
+          className="flex flex-col gap-1.5"
+          data-invalid={descriptionError}
+        >
+          <Label className="text-xs" htmlFor="issue-delivery-description">
+            Issue description
+          </Label>
+          <Textarea
+            aria-describedby={
+              descriptionError
+                ? "issue-delivery-description-error"
+                : undefined
+            }
+            aria-invalid={descriptionError}
+            className="max-h-36 min-h-24 resize-y"
+            disabled={isPending || isOffline}
+            id="issue-delivery-description"
+            onChange={(event) => setDescription(event.currentTarget.value)}
+            placeholder="Describe the issue-delivery work to run"
+            value={description}
+          />
+          {descriptionError ? (
+            <p
+              className="text-xs text-destructive"
+              id="issue-delivery-description-error"
+            >
+              Enter an issue description.
+            </p>
+          ) : null}
+        </div>
+      </div>
+      {isOffline ? (
+        <p
+          className="rounded-md border bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground"
+          data-testid="issue-delivery-intake-offline"
+        >
+          Local server unavailable. Reconnect LocalGaiaServerApi before creating
+          a run.
+        </p>
+      ) : null}
+      {error === undefined ? null : (
+        <p
+          className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive"
+          data-testid="issue-delivery-intake-error"
+        >
+          {dashboardFailureMessage(error, "Create run failed.")}
+        </p>
+      )}
+      <Button disabled={!canSubmit} size="sm" type="submit">
+        {isPending ? (
+          <LoaderCircleIcon className="animate-spin" data-icon="inline-start" />
+        ) : (
+          <PlayIcon data-icon="inline-start" />
+        )}
+        {isPending ? "Creating run" : "Create run"}
+      </Button>
+    </form>
   );
 }
 

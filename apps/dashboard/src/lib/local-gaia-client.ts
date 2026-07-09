@@ -246,8 +246,8 @@ export function getRunArtifactFromDashboardGaiaClient(
 
 export function createRunFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig & {
-    readonly specMarkdown: string;
-    readonly title?: string;
+    readonly description: string;
+    readonly title: string;
   },
 ) {
   return withDashboardGaiaClient(config, (client) =>
@@ -255,9 +255,9 @@ export function createRunFromDashboardGaiaClient(
       const payload = yield* CreateRunRequest.makeEffect({
         workflow: "issueDelivery",
         workItem: {
-          description: config.specMarkdown,
+          description: config.description,
           kind: "issue",
-          title: config.title ?? "Dashboard issue delivery run",
+          title: config.title,
         },
       }).pipe(
         Effect.mapError((cause) =>
