@@ -913,9 +913,14 @@ describe("DashboardShell Run Console", () => {
     expect(firstRow.textContent).toContain("run-1111111111");
     expect(firstRow.textContent).toContain("Running");
     expect(firstRow.textContent).toContain("Worker Started");
+    expect(firstRow.textContent).toContain("Input artifact available");
     expect(secondRow.textContent).toContain("run-2222222222");
     expect(secondRow.textContent).toContain("Completed");
     expect(secondRow.textContent).toContain("Report Completed");
+    expect(secondRow.textContent).not.toContain(
+      "Spec title not exposed by local API",
+    );
+    expect(screen.queryByText("Terminal")).toBeNull();
     expect(screen.getByTestId("selected-run-title").textContent).toBe(
       "run-1111111111",
     );
@@ -1009,6 +1014,65 @@ describe("DashboardShell Run Console", () => {
         "run-2222222222",
       );
       expect(screen.queryByTestId("run-replay-current-event")).toBeNull();
+    });
+  });
+
+  it("keeps Run Console search and row copy public, compact, and filterable", async () => {
+    const view = renderDashboardWithQueries({
+      runs: [
+        localRunSummary({
+          artifacts: ["input"],
+          eventCount: 1,
+          latestEventType: "WORKER_STARTED",
+          runId: parseRunId("run-search0001"),
+          state: "runningWorker",
+          status: "running",
+        }),
+        localRunSummary({
+          artifacts: [],
+          eventCount: 1,
+          latestEventType: "RUN_FAILED",
+          runId: parseRunId("run-search0002"),
+          state: "failed",
+          status: "failed",
+        }),
+      ],
+    });
+
+    const searchInput = await screen.findByLabelText("Search runs");
+    const searchIcon = view.container.querySelector(
+      '[data-testid="run-console-search-icon"]',
+    );
+    expect(searchIcon?.getAttribute("class")).toContain("size-4");
+    expect(searchInput.getAttribute("class")).toContain("h-8");
+
+    const firstRow = await screen.findByTestId(
+      "run-console-row-run-search0001",
+    );
+    const secondRow = await screen.findByTestId(
+      "run-console-row-run-search0002",
+    );
+
+    expect(firstRow.textContent).toContain("Input artifact available");
+    expect(
+      secondRow.textContent,
+    ).not.toContain("Spec title not exposed by local API");
+    expect(secondRow.textContent).toContain("Failed");
+    expect(screen.queryByText("Terminal")).toBeNull();
+
+    fireEvent.change(searchInput, {
+      target: { value: "spec title not exposed" },
+    });
+
+    expect(await screen.findByTestId("run-console-filter-empty")).toBeTruthy();
+    expect(screen.queryByTestId("run-console-row-run-search0001")).toBeNull();
+    expect(screen.queryByTestId("run-console-row-run-search0002")).toBeNull();
+
+    fireEvent.change(searchInput, { target: { value: "failed" } });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("run-console-row-run-search0002")).toBeTruthy();
+      expect(screen.queryByTestId("run-console-row-run-search0001")).toBeNull();
     });
   });
 
