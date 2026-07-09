@@ -422,6 +422,9 @@ describe("DashboardShell Run Console", () => {
     expect(await screen.findAllByText("Refactor dashboard canvas")).not.toHaveLength(0);
     expect(await screen.findAllByText("Issue orchestrator")).not.toHaveLength(0);
     expect(await screen.findAllByText("Worker")).not.toHaveLength(0);
+    expect(await screen.findAllByText("Reviewer")).not.toHaveLength(0);
+    expect(await screen.findAllByText("Tester")).not.toHaveLength(0);
+    expect(await screen.findAllByText("CI watcher")).not.toHaveLength(0);
     expect(screen.queryByText("Run root")).toBeNull();
     expect(screen.queryByText("Worker lane")).toBeNull();
     expect(screen.queryByTestId("event-strip-event-1")).toBeNull();
@@ -1471,6 +1474,9 @@ function factoryGraph(input: {
 }): typeof FactoryGraphDto.Type {
   const rootWorkItemId = workItemId("work-root");
   const orchestratorId = agentId("agent-orchestrator");
+  const reviewerId = agentId("agent-reviewer");
+  const testerId = agentId("agent-tester");
+  const ciWatcherId = agentId("agent-ci-watcher");
 
   return {
     agents: [
@@ -1494,13 +1500,43 @@ function factoryGraph(input: {
         title: "Worker",
         workItemId: rootWorkItemId,
       },
+      {
+        artifactCount: 0,
+        id: reviewerId,
+        parentAgentId: input.workerId,
+        role: "reviewer",
+        state: "pending",
+        subState: "waiting for worker evidence",
+        title: "Reviewer",
+        workItemId: rootWorkItemId,
+      },
+      {
+        artifactCount: 0,
+        id: testerId,
+        parentAgentId: reviewerId,
+        role: "tester",
+        state: "pending",
+        subState: "browser verification queued",
+        title: "Tester",
+        workItemId: rootWorkItemId,
+      },
+      {
+        artifactCount: 0,
+        id: ciWatcherId,
+        parentAgentId: testerId,
+        role: "ciWatcher",
+        state: "unknown",
+        subState: "CI evidence unavailable",
+        title: "CI watcher",
+        workItemId: rootWorkItemId,
+      },
     ],
     diagnostics: [],
     edges: [
       {
         id: "edge-owns",
-        sourceId: "agent-orchestrator",
-        targetId: "work-root",
+        sourceId: "work-root",
+        targetId: "agent-orchestrator",
         type: "owns",
       },
       {
@@ -1508,6 +1544,24 @@ function factoryGraph(input: {
         sourceId: "agent-orchestrator",
         targetId: "agent-worker",
         type: "spawned",
+      },
+      {
+        id: "edge-reviewed",
+        sourceId: "agent-worker",
+        targetId: "agent-reviewer",
+        type: "reviewed",
+      },
+      {
+        id: "edge-tested",
+        sourceId: "agent-reviewer",
+        targetId: "agent-tester",
+        type: "tested",
+      },
+      {
+        id: "edge-watched",
+        sourceId: "agent-tester",
+        targetId: "agent-ci-watcher",
+        type: "watched",
       },
       {
         id: "edge-produced",

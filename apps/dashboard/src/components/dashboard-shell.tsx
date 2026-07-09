@@ -351,8 +351,14 @@ export function DashboardShell() {
     () =>
       selectedFactoryGraphQuery.data?.data === undefined
         ? undefined
-        : buildFactoryCanvasModel(selectedFactoryGraphQuery.data.data),
-    [selectedFactoryGraphQuery.data?.data],
+        : buildFactoryCanvasModel(selectedFactoryGraphQuery.data.data, {
+            activities:
+              selectedFactoryRunActivityQuery.data?.data.activities ?? [],
+          }),
+    [
+      selectedFactoryGraphQuery.data?.data,
+      selectedFactoryRunActivityQuery.data?.data.activities,
+    ],
   );
   const selectedFactoryNode =
     selectedFactoryCanvas?.nodes.find((node) => node.id === selectedNodeId) ??
@@ -2881,6 +2887,11 @@ function toFactoryFlowNodes(
               {node.latestActivityId === undefined ? null : (
                 <Badge variant="outline">Activity linked</Badge>
               )}
+              {node.activityCount > 0 ? (
+                <Badge variant="outline">
+                  {countLabel(node.activityCount, "activity", "activities")}
+                </Badge>
+              ) : null}
               {provenanceModeEnabled ? (
                 <Badge variant="outline">Why: {sourceCount} refs</Badge>
               ) : null}
@@ -2904,6 +2915,10 @@ function toFactoryFlowEdges(model: FactoryCanvasModel): Array<Edge> {
     target: edge.target,
     type: "smoothstep",
   }));
+}
+
+function countLabel(count: number, singular: string, plural: string) {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 function serverBadgeVariant(
