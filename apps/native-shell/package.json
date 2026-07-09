@@ -1,0 +1,15 @@
+{
+  "name": "@gaia/native-shell",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "native doctor --manifest app.zon",
+    "native:build": "native build",
+    "native:dev": "native dev",
+    "native:doctor": "native doctor --manifest app.zon",
+    "native:test": "native test"
+  },
+  "devDependencies": {
+    "@native-sdk/cli": "0.4.0"
+  }
+}

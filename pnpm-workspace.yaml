@@ -15,3 +15,12 @@ minimumReleaseAgeExclude:
   - turbo@2.10.3
   - '@xyflow/react@12.11.2'
   - '@xyflow/system@0.0.79'
+  - '@native-sdk/cli-darwin-arm64@0.4.0'
+  - '@native-sdk/cli-darwin-x64@0.4.0'
+  - '@native-sdk/cli-linux-arm64-gnu@0.4.0'
+  - '@native-sdk/cli-linux-arm64-musl@0.4.0'
+  - '@native-sdk/cli-linux-x64-gnu@0.4.0'
+  - '@native-sdk/cli-linux-x64-musl@0.4.0'
+  - '@native-sdk/cli-win32-arm64@0.4.0'
+  - '@native-sdk/cli-win32-x64@0.4.0'
+  - '@native-sdk/cli@0.4.0'
