@@ -22,10 +22,10 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CircleDotIcon,
-  GitBranchIcon,
   GitCompareArrowsIcon,
   HelpCircleIcon,
   InspectIcon,
+  type LucideIcon,
   RefreshCwIcon,
   SearchIcon,
   ServerIcon,
@@ -176,6 +176,8 @@ type ServerConnectionState = {
   readonly selectedRun: RunConsoleRun | undefined;
 };
 
+type CommandMode = "activity" | "compare" | "inspect" | "provenance" | "replay";
+
 export function DashboardShell() {
   const serverUrl = defaultLocalGaiaServerUrl;
   const healthQuery = useQuery(localGaiaHealthQueryOptions({ serverUrl }));
@@ -216,13 +218,14 @@ export function DashboardShell() {
   );
   const [requestedComparisonRunId, setRequestedComparisonRunId] =
     React.useState<string | undefined>();
-  const [provenanceModeEnabled, setProvenanceModeEnabled] =
-    React.useState(false);
+  const [commandMode, setCommandMode] = React.useState<CommandMode>("inspect");
+  const provenanceModeEnabled = commandMode === "provenance";
   const comparisonRunId = reconcileComparisonRunId({
     primaryRunId: selectedRunId,
     requestedComparisonRunId,
     runs: runConsole.runs,
   });
+  const comparisonModeEnabled = commandMode === "compare";
   const selectedConsoleRun = selectedRunFromConsoleState(
     selectedRunId,
     runConsole.runs,
@@ -265,19 +268,21 @@ export function DashboardShell() {
   );
   const comparisonRunDetailQuery = useQuery(
     localGaiaRunQueryOptions({
-      runId: comparisonRunId ?? "",
+      runId: comparisonModeEnabled ? (comparisonRunId ?? "") : "",
       serverUrl,
     }),
   );
   const comparisonRunEventsQuery = useQuery(
     localGaiaRunEventsQueryOptions({
-      runId: comparisonRunId ?? "",
+      runId: comparisonModeEnabled ? (comparisonRunId ?? "") : "",
       serverUrl,
     }),
   );
   const runEventStream = useRunEventStream({
     enabled:
-      selectedRunId !== undefined && selectedConsoleRun?.isTerminal === false,
+      commandMode === "activity" &&
+      selectedRunId !== undefined &&
+      selectedConsoleRun?.isTerminal === false,
     runId: selectedRunId,
     serverUrl,
   });
@@ -421,6 +426,7 @@ export function DashboardShell() {
     setRequestedSelectedRunId(runId);
     setSelectedNodeId(undefined);
     setRequestedReplayIndex(undefined);
+    setCommandMode("inspect");
   }
 
   function selectReplayIndex(index: number) {
@@ -442,20 +448,14 @@ export function DashboardShell() {
           onSelectRun={selectRun}
         />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col lg:overflow-hidden">
-          <TopBar
-            provenanceModeEnabled={provenanceModeEnabled}
+          <CommandHeader
+            commandMode={commandMode}
             selectedRun={selectedRun}
             serverConnection={serverConnection}
-            onToggleProvenanceMode={() =>
-              setProvenanceModeEnabled((enabled) => !enabled)
-            }
+            onSelectCommandMode={setCommandMode}
           />
-          <RunReplayScrubber
-            replayState={replayState}
-            selectedRun={selectedRun}
-            onSelectReplayIndex={selectReplayIndex}
-          />
-          <RunComparePanel
+          <SecondaryCommandPanel
+            commandMode={commandMode}
             comparisonRunId={comparisonRunId}
             comparisonRunIsLoading={
               comparisonRunId !== undefined &&
@@ -464,10 +464,16 @@ export function DashboardShell() {
             }
             primaryRunId={selectedRunId}
             provenanceModeEnabled={provenanceModeEnabled}
+            replayState={replayState}
             runCompare={runCompare}
+            runEventStream={runEventStream}
             runs={runConsole.runs}
+            selectedConsoleRun={selectedConsoleRun}
+            selectedRun={selectedRun}
+            onSelectCommandMode={setCommandMode}
             onSelectComparisonRun={setRequestedComparisonRunId}
             onSelectPrimaryRun={selectRun}
+            onSelectReplayIndex={selectReplayIndex}
           />
           <DesktopWorkspace
             activityFailure={dashboardQueryFailure(
@@ -495,11 +501,9 @@ export function DashboardShell() {
             }
             factoryCanvas={selectedFactoryCanvas}
             runCanvas={runCanvas}
-            runEventStream={runEventStream}
             provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
             runCompare={runCompare}
-            selectedConsoleRun={selectedConsoleRun}
             selectedFactoryNode={selectedFactoryNode}
             selectedRun={selectedRun}
             serverUrl={serverUrl}
@@ -531,11 +535,9 @@ export function DashboardShell() {
             }
             factoryCanvas={selectedFactoryCanvas}
             runCanvas={runCanvas}
-            runEventStream={runEventStream}
             provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
             runCompare={runCompare}
-            selectedConsoleRun={selectedConsoleRun}
             selectedFactoryNode={selectedFactoryNode}
             selectedRun={selectedRun}
             serverUrl={serverUrl}
@@ -1024,30 +1026,6 @@ function RunConsole({
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>Server</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <div className="flex flex-col gap-2 rounded-md border bg-sidebar-accent/40 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <ServerIcon className="size-4 shrink-0 text-muted-foreground" />
-                  <span className="truncate text-sm font-medium">
-                    {runConsole.serverUrl}
-                  </span>
-                </div>
-                <Badge variant={serverBadgeVariant(runConsole.health)}>
-                  {runConsole.health}
-                </Badge>
-              </div>
-              <p
-                className="text-xs text-muted-foreground"
-                data-testid="run-console-server-message"
-              >
-                {runConsole.message}
-              </p>
-            </div>
-          </SidebarGroupContent>
-        </SidebarGroup>
-        <SidebarGroup>
           <SidebarGroupLabel>Local runs</SidebarGroupLabel>
           <SidebarGroupContent>
             <RunConsoleRuns
@@ -1059,9 +1037,25 @@ function RunConsole({
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter className="border-t">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-xs text-muted-foreground">Server state</span>
+      <SidebarFooter className="border-t" data-testid="command-rail-footer">
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <ServerIcon className="shrink-0 text-muted-foreground" />
+              <span className="truncate text-xs font-medium">
+                {runConsole.serverUrl}
+              </span>
+            </div>
+            <Badge variant={serverBadgeVariant(runConsole.health)}>
+              {runConsole.health}
+            </Badge>
+          </div>
+          <p
+            className="line-clamp-2 text-xs text-muted-foreground"
+            data-testid="run-console-server-message"
+          >
+            {runConsole.message}
+          </p>
           <Badge variant={serverBadgeVariant(runConsole.health)}>
             {runConsole.runs.length} runs
           </Badge>
@@ -1250,21 +1244,23 @@ function RunConsoleDurabilityNotices({
   );
 }
 
-function TopBar({
-  provenanceModeEnabled,
+function CommandHeader({
+  commandMode,
   selectedRun,
   serverConnection,
-  onToggleProvenanceMode,
+  onSelectCommandMode,
 }: {
-  readonly provenanceModeEnabled: boolean;
+  readonly commandMode: CommandMode;
   readonly selectedRun: DashboardRun;
   readonly serverConnection: ServerConnectionState;
-  readonly onToggleProvenanceMode: () => void;
+  readonly onSelectCommandMode: (mode: CommandMode) => void;
 }) {
   const selectedConsoleRun = serverConnection.selectedRun;
+  const selectedStatusLabel =
+    selectedConsoleRun?.terminalLabel ?? statusLabels[selectedRun.status];
 
   return (
-    <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b px-3">
+    <header className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-b px-3 py-2">
       <div className="flex min-w-0 items-center gap-2">
         <SidebarTrigger className="lg:hidden" />
         <div className="min-w-0">
@@ -1281,20 +1277,7 @@ function TopBar({
           </p>
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <Button
-          aria-pressed={provenanceModeEnabled}
-          data-testid="provenance-mode-toggle"
-          onClick={onToggleProvenanceMode}
-          size="sm"
-          variant={provenanceModeEnabled ? "default" : "outline"}
-        >
-          <HelpCircleIcon data-icon="inline-start" />
-          Provenance
-        </Button>
-        <Badge variant={serverBadgeVariant(serverConnection.runConsole.health)}>
-          API {serverConnection.runConsole.health}
-        </Badge>
+      <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2">
         <Badge
           variant={
             selectedConsoleRun === undefined
@@ -1302,16 +1285,190 @@ function TopBar({
               : localRunBadgeVariant(selectedConsoleRun.status)
           }
         >
-          {selectedConsoleRun?.terminalLabel ??
-            statusLabels[selectedRun.status]}
+          {selectedStatusLabel}
         </Badge>
-        <Button size="sm" variant="outline">
-          <GitBranchIcon data-icon="inline-start" />
-          Draft PR
-        </Button>
+        <CommandModeButton
+          icon={InspectIcon}
+          isActive={commandMode === "inspect"}
+          label="Inspect"
+          mode="inspect"
+          onSelectCommandMode={onSelectCommandMode}
+        />
+        <CommandModeButton
+          icon={GitCompareArrowsIcon}
+          isActive={commandMode === "compare"}
+          label="Compare"
+          mode="compare"
+          onSelectCommandMode={onSelectCommandMode}
+        />
+        <CommandModeButton
+          icon={ChevronRightIcon}
+          isActive={commandMode === "replay"}
+          label="Replay"
+          mode="replay"
+          onSelectCommandMode={onSelectCommandMode}
+        />
+        <CommandModeButton
+          icon={ActivityIcon}
+          isActive={commandMode === "activity"}
+          label="Activity"
+          mode="activity"
+          onSelectCommandMode={onSelectCommandMode}
+        />
+        <CommandModeButton
+          icon={HelpCircleIcon}
+          isActive={commandMode === "provenance"}
+          label="Provenance"
+          mode="provenance"
+          onSelectCommandMode={onSelectCommandMode}
+          testId="provenance-mode-toggle"
+        />
       </div>
     </header>
   );
+}
+
+function CommandModeButton({
+  icon: Icon,
+  isActive,
+  label,
+  mode,
+  testId,
+  onSelectCommandMode,
+}: {
+  readonly icon: LucideIcon;
+  readonly isActive: boolean;
+  readonly label: string;
+  readonly mode: CommandMode;
+  readonly testId?: string;
+  readonly onSelectCommandMode: (mode: CommandMode) => void;
+}) {
+  return (
+    <Button
+      aria-pressed={isActive}
+      data-testid={testId}
+      onClick={() => onSelectCommandMode(mode)}
+      size="sm"
+      variant={isActive ? "default" : "outline"}
+    >
+      <Icon data-icon="inline-start" />
+      {label}
+    </Button>
+  );
+}
+
+function SecondaryCommandPanel({
+  commandMode,
+  comparisonRunId,
+  comparisonRunIsLoading,
+  primaryRunId,
+  provenanceModeEnabled,
+  replayState,
+  runCompare,
+  runEventStream,
+  runs,
+  selectedConsoleRun,
+  selectedRun,
+  onSelectCommandMode,
+  onSelectComparisonRun,
+  onSelectPrimaryRun,
+  onSelectReplayIndex,
+}: {
+  readonly commandMode: CommandMode;
+  readonly comparisonRunId: string | undefined;
+  readonly comparisonRunIsLoading: boolean;
+  readonly primaryRunId: string | undefined;
+  readonly provenanceModeEnabled: boolean;
+  readonly replayState: RunReplayState;
+  readonly runCompare: RunCompareModel;
+  readonly runEventStream: RunEventStreamState;
+  readonly runs: ReadonlyArray<RunConsoleRun>;
+  readonly selectedConsoleRun: RunConsoleRun | undefined;
+  readonly selectedRun: DashboardRun;
+  readonly onSelectCommandMode: (mode: CommandMode) => void;
+  readonly onSelectComparisonRun: (runId: string | undefined) => void;
+  readonly onSelectPrimaryRun: (runId: string) => void;
+  readonly onSelectReplayIndex: (index: number) => void;
+}) {
+  if (commandMode === "inspect" || commandMode === "provenance") {
+    return null;
+  }
+
+  return (
+    <section
+      className="max-h-[36svh] shrink-0 overflow-y-auto border-b bg-background"
+      data-testid={`secondary-command-panel-${commandMode}`}
+    >
+      <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold">
+            {secondaryCommandTitle(commandMode)}
+          </p>
+          <p className="truncate text-xs text-muted-foreground">
+            Opened on demand; the FactoryGraph canvas remains the primary
+            workspace.
+          </p>
+        </div>
+        <Button
+          onClick={() => onSelectCommandMode("inspect")}
+          size="sm"
+          variant="outline"
+        >
+          <InspectIcon data-icon="inline-start" />
+          Inspect
+        </Button>
+      </div>
+      {commandMode === "replay" ? (
+        <div className="flex flex-col">
+          <RunReplayScrubber
+            replayState={replayState}
+            selectedRun={selectedRun}
+            onSelectReplayIndex={onSelectReplayIndex}
+          />
+          <div className="h-40">
+            <EventStrip
+              replayState={replayState}
+              selectedConsoleRun={selectedConsoleRun}
+              selectedRun={selectedRun}
+              streamState={runEventStream}
+            />
+          </div>
+        </div>
+      ) : commandMode === "compare" ? (
+        <RunComparePanel
+          comparisonRunId={comparisonRunId}
+          comparisonRunIsLoading={comparisonRunIsLoading}
+          primaryRunId={primaryRunId}
+          provenanceModeEnabled={provenanceModeEnabled}
+          runCompare={runCompare}
+          runs={runs}
+          onSelectComparisonRun={onSelectComparisonRun}
+          onSelectPrimaryRun={onSelectPrimaryRun}
+        />
+      ) : (
+        <div className="h-40">
+          <EventStrip
+            replayState={replayState}
+            selectedConsoleRun={selectedConsoleRun}
+            selectedRun={selectedRun}
+            streamState={runEventStream}
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function secondaryCommandTitle(mode: CommandMode) {
+  if (mode === "compare") {
+    return "Run compare";
+  }
+
+  if (mode === "replay") {
+    return "Run replay";
+  }
+
+  return "Run activity";
 }
 
 function DesktopWorkspace({
@@ -1321,11 +1478,9 @@ function DesktopWorkspace({
   factoryActivities,
   factoryCanvas,
   runCanvas,
-  runEventStream,
   provenanceModeEnabled,
   replayState,
   runCompare,
-  selectedConsoleRun,
   selectedFactoryNode,
   selectedRun,
   serverUrl,
@@ -1337,11 +1492,9 @@ function DesktopWorkspace({
   readonly factoryActivities: ReadonlyArray<typeof FactoryActivityDto.Type>;
   readonly factoryCanvas: FactoryCanvasModel | undefined;
   readonly runCanvas: RunCanvasQueryState;
-  readonly runEventStream: RunEventStreamState;
   readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
-  readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedFactoryNode: FactoryCanvasNode | undefined;
   readonly selectedRun: DashboardRun;
   readonly serverUrl: string;
@@ -1349,42 +1502,29 @@ function DesktopWorkspace({
 }) {
   return (
     <section className="hidden min-h-0 flex-1 lg:block">
-      <ResizablePanelGroup orientation="vertical">
-        <ResizablePanel defaultSize="76%" minSize="52%">
-          <ResizablePanelGroup orientation="horizontal">
-            <ResizablePanel defaultSize="68%" minSize="44%">
-              <RunCanvas
-                factoryCanvas={factoryCanvas}
-                provenanceModeEnabled={provenanceModeEnabled}
-                queryState={runCanvas}
-                selectedNode={selectedFactoryNode}
-                onSelectNode={onSelectNode}
-              />
-            </ResizablePanel>
-            <ResizableHandle withHandle />
-            <ResizablePanel defaultSize="32%" minSize="24%">
-              <EvidenceStudio
-                activityFailure={activityFailure}
-                artifacts={artifacts}
-                artifactsFailure={artifactsFailure}
-                factoryActivities={factoryActivities}
-                provenanceModeEnabled={provenanceModeEnabled}
-                replayState={replayState}
-                runCompare={runCompare}
-                selectedNode={selectedFactoryNode}
-                selectedRun={selectedRun}
-                serverUrl={serverUrl}
-              />
-            </ResizablePanel>
-          </ResizablePanelGroup>
+      <ResizablePanelGroup orientation="horizontal">
+        <ResizablePanel defaultSize="68%" minSize="44%">
+          <RunCanvas
+            factoryCanvas={factoryCanvas}
+            provenanceModeEnabled={provenanceModeEnabled}
+            queryState={runCanvas}
+            selectedNode={selectedFactoryNode}
+            onSelectNode={onSelectNode}
+          />
         </ResizablePanel>
         <ResizableHandle withHandle />
-        <ResizablePanel defaultSize="24%" minSize="16%" maxSize="34%">
-          <EventStrip
+        <ResizablePanel defaultSize="32%" minSize="24%">
+          <EvidenceStudio
+            activityFailure={activityFailure}
+            artifacts={artifacts}
+            artifactsFailure={artifactsFailure}
+            factoryActivities={factoryActivities}
+            provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
-            selectedConsoleRun={selectedConsoleRun}
+            runCompare={runCompare}
+            selectedNode={selectedFactoryNode}
             selectedRun={selectedRun}
-            streamState={runEventStream}
+            serverUrl={serverUrl}
           />
         </ResizablePanel>
       </ResizablePanelGroup>
@@ -1399,11 +1539,9 @@ function MobileWorkspace({
   factoryActivities,
   factoryCanvas,
   runCanvas,
-  runEventStream,
   provenanceModeEnabled,
   replayState,
   runCompare,
-  selectedConsoleRun,
   selectedFactoryNode,
   selectedRun,
   serverUrl,
@@ -1415,11 +1553,9 @@ function MobileWorkspace({
   readonly factoryActivities: ReadonlyArray<typeof FactoryActivityDto.Type>;
   readonly factoryCanvas: FactoryCanvasModel | undefined;
   readonly runCanvas: RunCanvasQueryState;
-  readonly runEventStream: RunEventStreamState;
   readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
-  readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedFactoryNode: FactoryCanvasNode | undefined;
   readonly selectedRun: DashboardRun;
   readonly serverUrl: string;
@@ -1448,14 +1584,6 @@ function MobileWorkspace({
           selectedNode={selectedFactoryNode}
           selectedRun={selectedRun}
           serverUrl={serverUrl}
-        />
-      </div>
-      <div className="h-40 shrink-0">
-        <EventStrip
-          replayState={replayState}
-          selectedConsoleRun={selectedConsoleRun}
-          selectedRun={selectedRun}
-          streamState={runEventStream}
         />
       </div>
     </section>

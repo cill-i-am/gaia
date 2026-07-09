@@ -361,6 +361,11 @@ describe("DashboardShell Run Console", () => {
     expect(screen.queryByText("Run root")).toBeNull();
     expect(screen.queryByText("Worker lane")).toBeNull();
     expect(screen.queryByTestId("event-strip-event-1")).toBeNull();
+    expect(screen.queryByTestId("run-replay-scrubber")).toBeNull();
+    expect(screen.queryByTestId("run-compare-panel")).toBeNull();
+    expect(screen.getByTestId("command-rail-footer").textContent).toContain(
+      "/gaia-api",
+    );
 
     const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
     if (workerNode === null) {
@@ -469,6 +474,7 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByTestId("selected-run-title").textContent).toBe(
       "run-1111111111",
     );
+    fireEvent.click(screen.getByRole("button", { name: "Replay" }));
     expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
       "#2 · 2026-07-07T12:01:00.000Z",
     );
@@ -530,9 +536,7 @@ describe("DashboardShell Run Console", () => {
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
         "run-2222222222",
       );
-      expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
-        "Select a run with public events.",
-      );
+      expect(screen.queryByTestId("run-replay-current-event")).toBeNull();
     });
   });
 
@@ -655,6 +659,9 @@ describe("DashboardShell Run Console", () => {
         }),
       ],
     });
+
+    expect(eventSource.instances).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
 
     await waitFor(() => {
       expect(eventSource.instances).toHaveLength(1);
@@ -785,6 +792,8 @@ describe("DashboardShell Run Console", () => {
       ],
     });
 
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+
     await waitFor(() => {
       expect(screen.getByTestId("run-compare-panel").textContent).toContain(
         "key differences",
@@ -814,9 +823,6 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByTestId("selected-run-title").textContent).toBe(
       "run-4444444444",
     );
-    expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
-      "#5 · 2026-07-07T12:05:00.000Z",
-    );
 
     fireEvent.change(comparisonSelect, {
       target: { value: "run-6666666666" },
@@ -832,9 +838,6 @@ describe("DashboardShell Run Console", () => {
       ).toBe("run-6666666666");
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
         "run-4444444444",
-      );
-      expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
-        "#5 · 2026-07-07T12:05:00.000Z",
       );
       expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
         "Comparison: 3 events reported, 1 loaded",
@@ -861,9 +864,7 @@ describe("DashboardShell Run Console", () => {
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
         "run-5555555555",
       );
-      expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
-        "#2 · 2026-07-07T12:04:00.000Z",
-      );
+      expect(screen.queryByTestId("run-compare-panel")).toBeNull();
     });
   });
 
@@ -930,7 +931,9 @@ describe("DashboardShell Run Console", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh local runs" }));
 
     await waitFor(() => {
-      expect(screen.getByText("API stale")).toBeTruthy();
+      expect(screen.getByTestId("command-rail-footer").textContent).toContain(
+        "stale",
+      );
       expect(screen.getByTestId("run-console-stale-data").textContent).toContain(
         "Cached run data is being preserved",
       );
