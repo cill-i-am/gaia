@@ -32,6 +32,7 @@ import {
   SearchIcon,
   ServerIcon,
   WorkflowIcon,
+  XIcon,
 } from "lucide-react";
 import * as React from "react";
 
@@ -187,7 +188,7 @@ type ServerConnectionState = {
   readonly selectedRun: RunConsoleRun | undefined;
 };
 
-type CommandMode = "activity" | "compare" | "inspect" | "provenance" | "replay";
+type CommandMode = "activity" | "compare" | "inspect" | "replay" | "source";
 
 export function DashboardShell() {
   const serverUrl = defaultLocalGaiaServerUrl;
@@ -233,7 +234,6 @@ export function DashboardShell() {
   const [requestedComparisonRunId, setRequestedComparisonRunId] =
     React.useState<string | undefined>();
   const [commandMode, setCommandMode] = React.useState<CommandMode>("inspect");
-  const provenanceModeEnabled = commandMode === "provenance";
   const comparisonRunId = reconcileComparisonRunId({
     primaryRunId: selectedRunId,
     requestedComparisonRunId,
@@ -593,7 +593,7 @@ export function DashboardShell() {
 
   return (
     <TooltipProvider delay={250}>
-      <SidebarProvider className="h-svh min-h-0 flex-col overflow-y-auto bg-background text-sm lg:flex-row lg:overflow-hidden">
+      <SidebarProvider className="min-h-svh flex-col overflow-x-clip bg-background text-sm lg:h-svh lg:min-h-0 lg:flex-row lg:overflow-hidden">
         <RunConsole
           selectedRunId={selectedRunId}
           serverConnection={serverConnection}
@@ -618,8 +618,8 @@ export function DashboardShell() {
               (comparisonRunDetailQuery.isPending ||
                 comparisonRunEventsQuery.isPending)
             }
+            inspector={selectedNodeInspector}
             primaryRunId={selectedRunId}
-            provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
             runCompare={runCompare}
             runEventStream={runEventStream}
@@ -635,7 +635,6 @@ export function DashboardShell() {
             factoryCanvas={selectedFactoryCanvas}
             inspector={selectedNodeInspector}
             runCanvas={runCanvas}
-            provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
             runCompare={runCompare}
             selectedFactoryNode={selectedFactoryNode}
@@ -647,7 +646,6 @@ export function DashboardShell() {
             factoryCanvas={selectedFactoryCanvas}
             inspector={selectedNodeInspector}
             runCanvas={runCanvas}
-            provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
             runCompare={runCompare}
             selectedFactoryNode={selectedFactoryNode}
@@ -777,7 +775,6 @@ function RunComparePanel({
   comparisonRunId,
   comparisonRunIsLoading,
   primaryRunId,
-  provenanceModeEnabled,
   runCompare,
   runs,
   onSelectComparisonRun,
@@ -786,7 +783,6 @@ function RunComparePanel({
   readonly comparisonRunId: string | undefined;
   readonly comparisonRunIsLoading: boolean;
   readonly primaryRunId: string | undefined;
-  readonly provenanceModeEnabled: boolean;
   readonly runCompare: RunCompareModel;
   readonly runs: ReadonlyArray<RunConsoleRun>;
   readonly onSelectComparisonRun: (runId: string | undefined) => void;
@@ -838,19 +834,6 @@ function RunComparePanel({
             />
           </div>
         </div>
-        {provenanceModeEnabled ? (
-          <div
-            className="flex items-start gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
-            data-testid="run-compare-provenance-callout"
-          >
-            <HelpCircleIcon className="mt-0.5 shrink-0" />
-            <span className="min-w-0">
-              Compare claims are derived from public run summaries, loaded event
-              lists, and allowlisted artifact names. Missing rows are labelled
-              unavailable instead of inferred.
-            </span>
-          </div>
-        ) : null}
         {!canCompare ? (
           <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
             At least two local runs are required for side-by-side comparison.
@@ -896,6 +879,119 @@ function RunComparePanel({
         )}
       </div>
     </section>
+  );
+}
+
+function SourceDetailPanel({
+  inspector,
+  selectedRun,
+}: {
+  readonly inspector: SelectedNodeInspectorModel;
+  readonly selectedRun: DashboardRun;
+}) {
+  const selectedRunId =
+    selectedRun.id === "no-run-selected" ? undefined : selectedRun.id;
+
+  if (inspector.kind === "empty") {
+    return (
+      <section
+        className="flex flex-col gap-3 p-3"
+        data-testid="source-detail-panel"
+      >
+        <DiagnosticCallout
+          message={inspector.message}
+          title={inspector.title}
+        />
+        <SourceDetailRows
+          rows={[
+            {
+              label: "Run",
+              value: selectedRunId ?? "No selected run",
+            },
+            {
+              label: "Topology",
+              value: "Select a run and node to inspect public FactoryGraph sources.",
+            },
+          ]}
+        />
+      </section>
+    );
+  }
+
+  const node = inspector.node;
+  const activityEndpoint =
+    inspector.kind === "agent"
+      ? `GET /runs/${selectedRunId ?? ":runId"}/agents/${inspector.agent.id}/activity`
+      : `GET /runs/${selectedRunId ?? ":runId"}/activity`;
+  const rows = [
+    {
+      label: "Selected node",
+      value: `${node.kind}:${node.rawId}`,
+    },
+    {
+      label: "Topology",
+      value: `GET /runs/${selectedRunId ?? ":runId"}/factory-graph`,
+    },
+    {
+      label: "Activity",
+      value: `${activityEndpoint} (${inspector.activityStatus}, ${inspector.activity.length} entries)`,
+    },
+    {
+      label: "Artifacts",
+      value: `GET /runs/${selectedRunId ?? ":runId"}/artifacts (${inspector.artifactStatus}, ${inspector.artifacts.length} linked)`,
+    },
+    {
+      label: "Artifact bodies",
+      value:
+        "Read on demand from GET /runs/:runId/artifacts/:artifactId after choosing an inspector artifact.",
+    },
+    {
+      label: "Private state",
+      value: "No hidden .gaia reads or raw local files are used by this view.",
+    },
+  ];
+
+  return (
+    <section
+      className="grid gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]"
+      data-testid="source-detail-panel"
+    >
+      <SourceDetailRows rows={rows} />
+      <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+        <p className="font-medium text-foreground">Selected-node detail</p>
+        <p className="mt-2">
+          The inspector owns source detail through Summary, Activity, Artifacts,
+          and Raw tabs. This panel keeps source context reachable without
+          turning it into a separate canvas mode.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function SourceDetailRows({
+  rows,
+}: {
+  readonly rows: ReadonlyArray<{
+    readonly label: string;
+    readonly value: string;
+  }>;
+}) {
+  return (
+    <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+      {rows.map((row) => (
+        <div
+          className="min-w-0 rounded-md border bg-background p-2"
+          data-testid={`source-detail-${row.label.toLowerCase().replaceAll(" ", "-")}`}
+          key={row.label}
+        >
+          <p className="text-xs font-medium text-muted-foreground">
+            {row.label}
+          </p>
+          <p className="mt-1 truncate text-sm">{row.value}</p>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1105,7 +1201,7 @@ function RunConsole({
   return (
     <Sidebar
       collapsible="none"
-      className="run-console-sidebar h-full shrink-0 overflow-hidden border-r max-lg:overflow-y-auto max-lg:border-r-0 max-lg:border-b"
+      className="run-console-sidebar h-full shrink-0 overflow-hidden border-r max-lg:h-auto max-lg:w-full max-lg:overflow-y-auto max-lg:border-r-0 max-lg:border-b"
     >
       <SidebarHeader className="gap-3 border-b">
         <div className="flex items-center justify-between gap-3">
@@ -1556,7 +1652,7 @@ function CommandHeader({
           </p>
         </div>
       </div>
-      <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2">
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 max-lg:w-full max-lg:justify-start">
         <Badge
           variant={
             selectedConsoleRun === undefined
@@ -1566,13 +1662,6 @@ function CommandHeader({
         >
           {selectedStatusLabel}
         </Badge>
-        <CommandModeButton
-          icon={InspectIcon}
-          isActive={commandMode === "inspect"}
-          label="Inspect"
-          mode="inspect"
-          onSelectCommandMode={onSelectCommandMode}
-        />
         <CommandModeButton
           icon={GitCompareArrowsIcon}
           isActive={commandMode === "compare"}
@@ -1596,11 +1685,11 @@ function CommandHeader({
         />
         <CommandModeButton
           icon={HelpCircleIcon}
-          isActive={commandMode === "provenance"}
-          label="Provenance"
-          mode="provenance"
+          isActive={commandMode === "source"}
+          label="Source"
+          mode="source"
           onSelectCommandMode={onSelectCommandMode}
-          testId="provenance-mode-toggle"
+          testId="source-detail-toggle"
         />
       </div>
     </header>
@@ -1640,8 +1729,8 @@ function SecondaryCommandPanel({
   commandMode,
   comparisonRunId,
   comparisonRunIsLoading,
+  inspector,
   primaryRunId,
-  provenanceModeEnabled,
   replayState,
   runCompare,
   runEventStream,
@@ -1656,8 +1745,8 @@ function SecondaryCommandPanel({
   readonly commandMode: CommandMode;
   readonly comparisonRunId: string | undefined;
   readonly comparisonRunIsLoading: boolean;
+  readonly inspector: SelectedNodeInspectorModel;
   readonly primaryRunId: string | undefined;
-  readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
   readonly runEventStream: RunEventStreamState;
@@ -1669,7 +1758,7 @@ function SecondaryCommandPanel({
   readonly onSelectPrimaryRun: (runId: string) => void;
   readonly onSelectReplayIndex: (index: number) => void;
 }) {
-  if (commandMode === "inspect" || commandMode === "provenance") {
+  if (commandMode === "inspect") {
     return null;
   }
 
@@ -1689,12 +1778,13 @@ function SecondaryCommandPanel({
           </p>
         </div>
         <Button
+          aria-label="Close command mode"
           onClick={() => onSelectCommandMode("inspect")}
           size="sm"
           variant="outline"
         >
-          <InspectIcon data-icon="inline-start" />
-          Inspect
+          <XIcon data-icon="inline-start" />
+          Close
         </Button>
       </div>
       {commandMode === "replay" ? (
@@ -1718,12 +1808,13 @@ function SecondaryCommandPanel({
           comparisonRunId={comparisonRunId}
           comparisonRunIsLoading={comparisonRunIsLoading}
           primaryRunId={primaryRunId}
-          provenanceModeEnabled={provenanceModeEnabled}
           runCompare={runCompare}
           runs={runs}
           onSelectComparisonRun={onSelectComparisonRun}
           onSelectPrimaryRun={onSelectPrimaryRun}
         />
+      ) : commandMode === "source" ? (
+        <SourceDetailPanel inspector={inspector} selectedRun={selectedRun} />
       ) : (
         <div className="h-40">
           <EventStrip
@@ -1747,6 +1838,10 @@ function secondaryCommandTitle(mode: CommandMode) {
     return "Run replay";
   }
 
+  if (mode === "source") {
+    return "Source detail";
+  }
+
   return "Run activity";
 }
 
@@ -1754,7 +1849,6 @@ function DesktopWorkspace({
   factoryCanvas,
   inspector,
   runCanvas,
-  provenanceModeEnabled,
   replayState,
   runCompare,
   selectedFactoryNode,
@@ -1765,7 +1859,6 @@ function DesktopWorkspace({
   readonly factoryCanvas: FactoryCanvasModel | undefined;
   readonly inspector: SelectedNodeInspectorModel;
   readonly runCanvas: RunCanvasQueryState;
-  readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
   readonly selectedFactoryNode: FactoryCanvasNode | undefined;
@@ -1779,7 +1872,6 @@ function DesktopWorkspace({
         <ResizablePanel defaultSize="68%" minSize="44%">
           <RunCanvas
             factoryCanvas={factoryCanvas}
-            provenanceModeEnabled={provenanceModeEnabled}
             queryState={runCanvas}
             selectedNode={selectedFactoryNode}
             onSelectNode={onSelectNode}
@@ -1789,7 +1881,6 @@ function DesktopWorkspace({
         <ResizablePanel defaultSize="32%" minSize="24%">
           <EvidenceStudio
             inspector={inspector}
-            provenanceModeEnabled={provenanceModeEnabled}
             replayState={replayState}
             runCompare={runCompare}
             selectedRun={selectedRun}
@@ -1805,7 +1896,6 @@ function MobileWorkspace({
   factoryCanvas,
   inspector,
   runCanvas,
-  provenanceModeEnabled,
   replayState,
   runCompare,
   selectedFactoryNode,
@@ -1816,7 +1906,6 @@ function MobileWorkspace({
   readonly factoryCanvas: FactoryCanvasModel | undefined;
   readonly inspector: SelectedNodeInspectorModel;
   readonly runCanvas: RunCanvasQueryState;
-  readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
   readonly selectedFactoryNode: FactoryCanvasNode | undefined;
@@ -1826,19 +1915,17 @@ function MobileWorkspace({
 }) {
   return (
     <section className="flex min-h-0 flex-col lg:hidden">
-      <div className="min-h-[22rem] shrink-0 border-b">
+      <div className="h-[22rem] shrink-0 border-b">
         <RunCanvas
           factoryCanvas={factoryCanvas}
-          provenanceModeEnabled={provenanceModeEnabled}
           queryState={runCanvas}
           selectedNode={selectedFactoryNode}
           onSelectNode={onSelectNode}
         />
       </div>
-      <div className="min-h-[24rem] shrink-0 border-b">
+      <div className="h-[24rem] shrink-0 border-b">
         <EvidenceStudio
           inspector={inspector}
-          provenanceModeEnabled={provenanceModeEnabled}
           replayState={replayState}
           runCompare={runCompare}
           selectedRun={selectedRun}
@@ -1851,13 +1938,11 @@ function MobileWorkspace({
 
 function RunCanvas({
   factoryCanvas,
-  provenanceModeEnabled,
   queryState,
   selectedNode,
   onSelectNode,
 }: {
   readonly factoryCanvas: FactoryCanvasModel | undefined;
-  readonly provenanceModeEnabled: boolean;
   readonly queryState: RunCanvasQueryState;
   readonly selectedNode: FactoryCanvasNode | undefined;
   readonly onSelectNode: (nodeId: string) => void;
@@ -1866,8 +1951,8 @@ function RunCanvas({
     () =>
       factoryCanvas === undefined
         ? []
-        : toFactoryFlowNodes(factoryCanvas, selectedNode?.id, provenanceModeEnabled),
-    [factoryCanvas, provenanceModeEnabled, selectedNode?.id],
+        : toFactoryFlowNodes(factoryCanvas, selectedNode?.id),
+    [factoryCanvas, selectedNode?.id],
   );
   const edges = React.useMemo(
     () => (factoryCanvas === undefined ? [] : toFactoryFlowEdges(factoryCanvas)),
@@ -1888,25 +1973,9 @@ function RunCanvas({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {provenanceModeEnabled ? (
-            <Badge variant="secondary">Provenance</Badge>
-          ) : null}
           <Badge variant="outline">{factoryCanvas?.nodes.length ?? 0} nodes</Badge>
         </div>
       </div>
-      {provenanceModeEnabled && (factoryCanvas?.nodes.length ?? 0) > 0 ? (
-        <div
-          className="flex shrink-0 items-start gap-2 border-b bg-background px-3 py-2 text-xs text-muted-foreground"
-          data-testid="run-canvas-provenance-callout"
-        >
-          <HelpCircleIcon className="mt-0.5 shrink-0" />
-          <span className="min-w-0">
-            Canvas topology comes from the public FactoryGraph projection.
-            Activity and artifacts stay in Evidence Studio for the selected
-            node.
-          </span>
-        </div>
-      ) : null}
       {factoryCanvas?.diagnostics.length ? (
         <div
           className="flex shrink-0 flex-col gap-1 border-b bg-background px-3 py-2 text-xs text-muted-foreground"
@@ -2009,14 +2078,12 @@ function noticeFor(
 
 function EvidenceStudio({
   inspector,
-  provenanceModeEnabled,
   replayState,
   runCompare,
   selectedRun,
   serverUrl,
 }: {
   readonly inspector: SelectedNodeInspectorModel;
-  readonly provenanceModeEnabled: boolean;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
   readonly selectedRun: DashboardRun;
@@ -2145,12 +2212,7 @@ function EvidenceStudio({
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <TabsContent className="m-0 p-3" value="summary">
-            <FactoryEvidenceSummary
-              inspector={inspector}
-              provenanceModeEnabled={provenanceModeEnabled}
-              replayState={replayState}
-              runCompare={runCompare}
-            />
+            <FactoryEvidenceSummary inspector={inspector} />
           </TabsContent>
           <TabsContent className="m-0 p-3" value="events">
             <FactoryEvidenceActivity
@@ -2189,7 +2251,7 @@ function EvidenceStudio({
                   visibleEventIds: replayState.visibleEventIds,
                 },
                 activities: inspector.activity,
-                compare: provenanceModeEnabled ? runCompare.summary : undefined,
+                compare: runCompare.summary,
                 inspectorKind: inspector.kind,
                 runId: selectedRun.id,
               })}
@@ -2203,17 +2265,11 @@ function EvidenceStudio({
 
 function FactoryEvidenceSummary({
   inspector,
-  provenanceModeEnabled,
-  replayState,
-  runCompare,
 }: {
   readonly inspector: Extract<
     SelectedNodeInspectorModel,
     { readonly kind: "agent" | "workItem" }
   >;
-  readonly provenanceModeEnabled: boolean;
-  readonly replayState: RunReplayState;
-  readonly runCompare: RunCompareModel;
 }) {
   const selectedNode = inspector.node;
   const roleVisual = factoryAgentRoleVisual(selectedNode.role);
@@ -2268,16 +2324,6 @@ function FactoryEvidenceSummary({
         items={summaryItems.filter(isPresent)}
       />
       <Separator />
-      {provenanceModeEnabled ? (
-        <div
-          className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground"
-          data-testid="evidence-provenance-panel"
-        >
-          FactoryGraph topology is provided by the public graph endpoint.
-          Activity and artifact bodies are fetched through node-scoped public
-          reads instead of private run files.
-        </div>
-      ) : null}
       {inspector.notices.length > 0 ? (
         <div className="flex flex-col gap-2">
           {inspector.notices.map((notice) => (
@@ -2289,28 +2335,6 @@ function FactoryEvidenceSummary({
           ))}
         </div>
       ) : null}
-      <div
-        className="rounded-md border bg-background p-3"
-        data-testid="evidence-replay-context"
-      >
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-xs font-medium uppercase text-muted-foreground">
-              Replay context
-            </p>
-            <p className="mt-1 truncate text-sm font-medium">
-              {replayState.currentStep?.event.label ??
-                "FactoryGraph topology selected"}
-            </p>
-          </div>
-          <Badge variant="outline">{runCompare.summary}</Badge>
-        </div>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Replay and compare remain available as run-level evidence. The canvas
-          selection is scoped to FactoryGraph topology.
-        </p>
-      </div>
-      <Separator />
       <div className="flex flex-col gap-2">
         <p className="text-xs font-medium uppercase text-muted-foreground">
           Recent activity
@@ -2920,15 +2944,10 @@ function eventStripDisplay({
 function toFactoryFlowNodes(
   model: FactoryCanvasModel,
   selectedNodeId: string | undefined,
-  provenanceModeEnabled: boolean,
 ): Array<Node<{ label: React.ReactNode }>> {
   return model.nodes.map((node) => {
     const roleVisual = factoryAgentRoleVisual(node.role);
     const RoleIcon = roleVisual.Icon;
-    const sourceCount = Math.max(
-      node.artifactIds.length + (node.latestActivityId === undefined ? 0 : 1),
-      1,
-    );
 
     return {
       className: cn(
@@ -2975,9 +2994,6 @@ function toFactoryFlowNodes(
                 <Badge variant="outline">
                   {countLabel(node.activityCount, "activity", "activities")}
                 </Badge>
-              ) : null}
-              {provenanceModeEnabled ? (
-                <Badge variant="outline">Why: {sourceCount} refs</Badge>
               ) : null}
             </div>
           </div>

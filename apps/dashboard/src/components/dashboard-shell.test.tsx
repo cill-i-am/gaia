@@ -454,6 +454,8 @@ describe("DashboardShell Run Console", () => {
     expect(screen.queryByTestId("event-strip-event-1")).toBeNull();
     expect(screen.queryByTestId("run-replay-scrubber")).toBeNull();
     expect(screen.queryByTestId("run-compare-panel")).toBeNull();
+    expect(screen.queryByTestId("source-detail-panel")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Provenance" })).toBeNull();
     expect(screen.getAllByText("No node selected")).not.toHaveLength(0);
     expect(screen.getByTestId("command-rail-footer").textContent).toContain(
       "/gaia-api",
@@ -810,7 +812,7 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
-  it("shows provenance mode around FactoryGraph topology and evidence", async () => {
+  it("opens source detail on demand without replacing the selected-node inspector", async () => {
     const runId = parseRunId("run-1212121212");
     const view = renderDashboardWithQueries({
       eventsByRunId: {
@@ -864,12 +866,12 @@ describe("DashboardShell Run Console", () => {
     });
 
     await screen.findByTestId("selected-run-title");
-    fireEvent.click(screen.getByTestId("provenance-mode-toggle"));
+    expect(screen.queryByTestId("source-detail-panel")).toBeNull();
 
-    expect(
-      firstElement(await screen.findAllByTestId("run-canvas-provenance-callout"))
-        .textContent,
-    ).toContain("public FactoryGraph projection");
+    fireEvent.click(screen.getByTestId("source-detail-toggle"));
+
+    expect(await screen.findByTestId("source-detail-panel")).toBeTruthy();
+    expect(screen.queryByTestId("run-canvas-provenance-callout")).toBeNull();
     expect(await screen.findAllByText("Worker")).not.toHaveLength(0);
 
     const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
@@ -878,11 +880,37 @@ describe("DashboardShell Run Console", () => {
     }
     fireEvent.click(workerNode);
 
-    const provenancePanel = firstElement(
-      await screen.findAllByTestId("evidence-provenance-panel"),
+    const sourcePanel = await screen.findByTestId("source-detail-panel");
+    expect(sourcePanel.textContent).toContain(
+      "GET /runs/run-1212121212/factory-graph",
     );
-    expect(provenancePanel.textContent).toContain(
-      "FactoryGraph topology is provided by the public graph endpoint",
+    expect(
+      screen.getByTestId("source-detail-selected-node").textContent,
+    ).toContain("agent:agent-worker");
+    expect(
+      screen.getByTestId("source-detail-activity").textContent,
+    ).toContain("/agents/agent-worker/activity");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close command mode" }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("source-detail-panel")).toBeNull();
+      expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
+    });
+
+    expect(
+      screen.queryByTestId("evidence-provenance-panel"),
+    ).toBeNull();
+    expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
+
+    fireEvent.click(screen.getByTestId("source-detail-toggle"));
+    expect(
+      await screen.findByTestId("source-detail-panel"),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close command mode" }));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("source-detail-panel")).toBeNull(),
     );
 
     for (const artifactsTab of screen.getAllByRole("tab", {
@@ -1126,7 +1154,21 @@ describe("DashboardShell Run Console", () => {
       );
     });
 
-    fireEvent.change(primarySelect, {
+    fireEvent.click(screen.getByRole("button", { name: "Close command mode" }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("run-compare-panel")).toBeNull();
+      expect(screen.getByTestId("selected-run-title").textContent).toBe(
+        "run-4444444444",
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+    const reopenedPrimarySelect = await screen.findByTestId(
+      "run-compare-primary-select",
+    );
+
+    fireEvent.change(reopenedPrimarySelect, {
       target: { value: "run-5555555555" },
     });
 
