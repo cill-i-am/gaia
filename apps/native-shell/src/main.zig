@@ -431,7 +431,6 @@ test "native status rejects unexpected bridge payloads" {
         .source = .{},
     }, &output));
 }
-
 fn hasAllowedOrigin(origins: []const []const u8, origin: []const u8) bool {
     for (origins) |allowed| {
         if (std.mem.eql(u8, allowed, origin)) return true;
