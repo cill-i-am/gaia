@@ -20,8 +20,8 @@ missing Zig toolchain while still validating the manifest.
 
 ## Development
 
-Start the local Gaia server separately. The shell does not manage server
-lifecycle.
+Start the local Gaia server separately. The shell does not auto-start a server,
+daemonize Gaia, or supervise a background process.
 
 ```sh
 pnpm gaia server --port 8765
@@ -39,8 +39,17 @@ The Native SDK dev flow reads `app.zon`, starts
 `NATIVE_SDK_FRONTEND_URL`. If port 3000 is occupied, the shell dev flow fails
 instead of silently attaching to the wrong dashboard URL.
 
-The dashboard continues to call Gaia through `/gaia-api`, which the dashboard
-dev server proxies to `http://127.0.0.1:8765`.
+At launch, the shell performs one explicit health check against the configured
+local Gaia server and exposes the result in native window chrome:
+`Local API online` or `Local API unavailable`. The shell does not retry in the
+background; start or restart the server explicitly, then relaunch the shell or
+use the dashboard's own refresh affordance.
+
+The status check defaults to `http://127.0.0.1:8765/health`. Override the
+checked server with `GAIA_NATIVE_SERVER_URL`, or with `VITE_GAIA_SERVER_URL`
+when matching the dashboard dev proxy target. The dashboard itself continues to
+call Gaia through `/gaia-api`, which the dashboard dev server proxies to
+`http://127.0.0.1:8765`.
 
 ## Native Commands
 
@@ -75,9 +84,10 @@ requirement.
 
 ## Security Boundary
 
-This app declares only the `webview` capability and no native permissions. It
-does not register app bridge handlers, does not read `.gaia`, and does not
-introduce a server lifecycle manager.
+This app declares only the `webview` capability and no native permissions. Run
+data remains on the public `LocalGaiaServerApi` HTTP path. The app does not
+register app bridge handlers, does not read `.gaia`, and does not introduce a
+server lifecycle manager.
 
 Allowed navigation origins are intentionally narrow:
 
@@ -85,7 +95,8 @@ Allowed navigation origins are intentionally narrow:
 - `zero://inline`
 - `http://127.0.0.1:3000`
 - `http://localhost:3000`
-- `http://127.0.0.1:8765`
+- the configured dashboard origin
+- the configured local server origin
 
 External links are denied by default.
 
