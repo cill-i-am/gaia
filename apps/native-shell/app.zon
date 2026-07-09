@@ -13,7 +13,7 @@
         .spa_fallback = true,
         .dev = .{
             .url = "http://127.0.0.1:3000/",
-            .command = .{ "pnpm", "--filter", "@gaia/dashboard", "dev", "--", "--strictPort" },
+            .command = .{ "pnpm", "--filter", "@gaia/dashboard", "exec", "vite", "dev", "--host", "127.0.0.1", "--strictPort" },
             .ready_path = "/",
             .timeout_ms = 30000,
         },
