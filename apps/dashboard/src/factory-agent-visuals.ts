@@ -18,6 +18,11 @@ export type FactoryAgentRoleVisual = {
   readonly label: string;
 };
 
+type FactoryAgentStateVisual = {
+  readonly label: string;
+  readonly variant: "destructive" | "outline" | "secondary";
+};
+
 export const factoryAgentRoleVisuals = {
   ciWatcher: {
     accentClassName: "border-cyan-500/40 bg-cyan-500/10 text-cyan-900",
@@ -63,6 +68,16 @@ export const factoryAgentRoleVisuals = {
   },
 } satisfies Record<FactoryAgentRole, FactoryAgentRoleVisual>;
 
+const factoryAgentStateVisuals = {
+  blocked: { label: "Blocked", variant: "destructive" },
+  canceled: { label: "Canceled", variant: "destructive" },
+  failed: { label: "Failed", variant: "destructive" },
+  pending: { label: "Pending", variant: "outline" },
+  running: { label: "Running", variant: "outline" },
+  succeeded: { label: "Succeeded", variant: "secondary" },
+  unknown: { label: "Unknown", variant: "outline" },
+} satisfies Record<FactoryAgentState, FactoryAgentStateVisual>;
+
 export function factoryAgentRoleVisual(
   role: FactoryAgentRole | undefined,
 ): FactoryAgentRoleVisual {
@@ -74,22 +89,11 @@ export function factoryAgentStateLabel(state: FactoryAgentState | undefined) {
     return "Unknown";
   }
 
-  return state
-    .split(/(?=[A-Z])/)
-    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
-    .join(" ");
+  return factoryAgentStateVisuals[state].label;
 }
 
 export function factoryAgentStateBadgeVariant(
   state: FactoryAgentState | undefined,
 ): "destructive" | "outline" | "secondary" {
-  if (state === "failed" || state === "blocked") {
-    return "destructive";
-  }
-
-  if (state === "succeeded") {
-    return "secondary";
-  }
-
-  return "outline";
+  return state === undefined ? "outline" : factoryAgentStateVisuals[state].variant;
 }
