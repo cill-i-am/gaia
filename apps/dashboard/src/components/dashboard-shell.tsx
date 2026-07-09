@@ -3208,7 +3208,7 @@ const factoryFlowNodeStyle = {
 
 const factoryFlowFitViewOptions = {
   maxZoom: 1,
-  minZoom: 0.72,
+  minZoom: 0.4,
   padding: 0.16,
 } satisfies FitViewOptions;
 

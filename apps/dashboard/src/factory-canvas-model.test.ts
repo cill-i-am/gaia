@@ -197,6 +197,237 @@ describe("factory canvas model", () => {
       "FactoryGraphRelationshipUnavailable",
     ]);
   });
+
+  it("lays out duplicate role branches without node overlap", () => {
+    const graph = factoryGraphFixture({
+      agents: [
+        factoryAgent({
+          id: "agent-orchestrator",
+          role: "orchestrator",
+          state: "running",
+          title: "Issue orchestrator",
+        }),
+        factoryAgent({
+          id: "agent-worker-a",
+          parentAgentId: "agent-orchestrator",
+          role: "worker",
+          state: "running",
+          title: "Worker A",
+        }),
+        factoryAgent({
+          id: "agent-worker-b",
+          parentAgentId: "agent-orchestrator",
+          role: "worker",
+          state: "running",
+          title: "Worker B",
+        }),
+        factoryAgent({
+          id: "agent-worker-c",
+          parentAgentId: "agent-orchestrator",
+          role: "worker",
+          state: "running",
+          title: "Worker C",
+        }),
+        factoryAgent({
+          id: "agent-researcher",
+          parentAgentId: "agent-orchestrator",
+          role: "researcher",
+          state: "succeeded",
+          title: "Researcher",
+        }),
+        factoryAgent({
+          id: "agent-reviewer-a",
+          parentAgentId: "agent-worker-a",
+          role: "reviewer",
+          state: "pending",
+          title: "Reviewer A",
+        }),
+        factoryAgent({
+          id: "agent-reviewer-b",
+          parentAgentId: "agent-worker-c",
+          role: "reviewer",
+          state: "pending",
+          title: "Reviewer B",
+        }),
+        factoryAgent({
+          id: "agent-tester",
+          parentAgentId: "agent-reviewer-a",
+          role: "tester",
+          state: "pending",
+          title: "Tester",
+        }),
+        factoryAgent({
+          id: "agent-ci-watcher",
+          parentAgentId: "agent-tester",
+          role: "ciWatcher",
+          state: "unknown",
+          title: "CI watcher",
+        }),
+      ],
+      edges: [
+        factoryEdge(
+          "edge-spawned-a",
+          "agent-orchestrator",
+          "agent-worker-a",
+          "spawned",
+        ),
+        factoryEdge(
+          "edge-spawned-b",
+          "agent-orchestrator",
+          "agent-worker-b",
+          "spawned",
+        ),
+        factoryEdge(
+          "edge-spawned-c",
+          "agent-orchestrator",
+          "agent-worker-c",
+          "spawned",
+        ),
+        factoryEdge(
+          "edge-supports-research",
+          "agent-orchestrator",
+          "agent-researcher",
+          "supports",
+        ),
+        factoryEdge(
+          "edge-reviewed-a",
+          "agent-worker-a",
+          "agent-reviewer-a",
+          "reviewed",
+        ),
+        factoryEdge(
+          "edge-reviewed-b",
+          "agent-worker-b",
+          "agent-reviewer-a",
+          "reviewed",
+        ),
+        factoryEdge(
+          "edge-reviewed-c",
+          "agent-worker-c",
+          "agent-reviewer-b",
+          "reviewed",
+        ),
+        factoryEdge(
+          "edge-tested-a",
+          "agent-reviewer-a",
+          "agent-tester",
+          "tested",
+        ),
+        factoryEdge(
+          "edge-tested-b",
+          "agent-reviewer-b",
+          "agent-tester",
+          "tested",
+        ),
+        factoryEdge(
+          "edge-watched",
+          "agent-tester",
+          "agent-ci-watcher",
+          "watched",
+        ),
+      ],
+    });
+    const model = buildFactoryCanvasModel(graph);
+    const positionByRawId = positionsByRawId(model.nodes);
+
+    expectNoNodeOverlap(model.nodes);
+    expect(positionByRawId.get("agent-worker-a")?.y).toBe(
+      positionByRawId.get("agent-worker-b")?.y,
+    );
+    expect(positionByRawId.get("agent-worker-b")?.y).toBe(
+      positionByRawId.get("agent-worker-c")?.y,
+    );
+    expectHorizontalGap(
+      positionByRawId,
+      "agent-worker-a",
+      "agent-worker-b",
+    );
+    expectHorizontalGap(
+      positionByRawId,
+      "agent-worker-b",
+      "agent-worker-c",
+    );
+    expect(positionByRawId.get("agent-reviewer-a")?.y).toBeGreaterThan(
+      positionByRawId.get("agent-worker-a")?.y ?? Number.POSITIVE_INFINITY,
+    );
+    expect(positionByRawId.get("agent-tester")?.x).toBeGreaterThan(
+      Math.min(
+        positionByRawId.get("agent-reviewer-a")?.x ?? 0,
+        positionByRawId.get("agent-reviewer-b")?.x ?? 0,
+      ),
+    );
+    expect(positionByRawId.get("agent-tester")?.x).toBeLessThan(
+      Math.max(
+        positionByRawId.get("agent-reviewer-a")?.x ?? 0,
+        positionByRawId.get("agent-reviewer-b")?.x ?? 0,
+      ),
+    );
+    for (const edge of model.edges) {
+      const source = model.nodes.find((node) => node.id === edge.source);
+      const target = model.nodes.find((node) => node.id === edge.target);
+
+      expect(target?.position.y).toBeGreaterThan(
+        source?.position.y ?? Number.POSITIVE_INFINITY,
+      );
+    }
+  });
+
+  it("keeps sparse unknown-role topology stable without fake edges", () => {
+    const graph = factoryGraphFixture({
+      agents: [
+        factoryAgent({
+          id: "agent-orchestrator",
+          role: "orchestrator",
+          state: "running",
+          title: "Issue orchestrator",
+        }),
+        factoryAgent({
+          id: "agent-worker",
+          parentAgentId: "agent-orchestrator",
+          role: "worker",
+          state: "pending",
+          title: "Worker",
+        }),
+        factoryAgent({
+          id: "agent-unknown-a",
+          role: "unknown",
+          state: "unknown",
+          title: "Unknown lane A",
+        }),
+        factoryAgent({
+          id: "agent-unknown-b",
+          role: "unknown",
+          state: "unknown",
+          title: "Unknown lane B",
+        }),
+      ],
+      edges: [
+        {
+          id: "edge-owns",
+          sourceId: "work-root",
+          targetId: "agent-orchestrator",
+          type: "owns",
+        },
+      ],
+    });
+    const model = buildFactoryCanvasModel(graph);
+    const positionByRawId = positionsByRawId(model.nodes);
+
+    expect(model.edges).toEqual([]);
+    expectNoNodeOverlap(model.nodes);
+    expect(positionByRawId.get("agent-worker")?.y).toBeGreaterThan(
+      positionByRawId.get("agent-orchestrator")?.y ?? Number.POSITIVE_INFINITY,
+    );
+    expect(positionByRawId.get("agent-unknown-a")?.y).toBe(
+      positionByRawId.get("agent-unknown-b")?.y,
+    );
+    expect(positionByRawId.get("agent-unknown-a")?.y).toBeLessThan(700);
+    expectHorizontalGap(
+      positionByRawId,
+      "agent-unknown-a",
+      "agent-unknown-b",
+    );
+  });
 });
 
 function factoryActivitiesFixture() {
@@ -227,7 +458,48 @@ function factoryActivitiesFixture() {
   ];
 }
 
-function factoryGraphFixture(): typeof FactoryGraphDto.Type {
+function factoryAgent(input: {
+  readonly artifactCount?: number;
+  readonly id: string;
+  readonly latestActivityId?: string;
+  readonly parentAgentId?: string;
+  readonly role: typeof FactoryGraphDto.Type.agents[number]["role"];
+  readonly state: typeof FactoryGraphDto.Type.agents[number]["state"];
+  readonly title: string;
+}) {
+  return {
+    artifactCount: input.artifactCount ?? 0,
+    id: agentId(input.id),
+    ...(input.latestActivityId === undefined
+      ? {}
+      : { latestActivityId: activityId(input.latestActivityId) }),
+    ...(input.parentAgentId === undefined
+      ? {}
+      : { parentAgentId: agentId(input.parentAgentId) }),
+    role: input.role,
+    state: input.state,
+    title: input.title,
+    workItemId: workItemId("work-root"),
+  };
+}
+
+function factoryEdge(
+  id: string,
+  sourceId: string,
+  targetId: string,
+  type: typeof FactoryGraphDto.Type.edges[number]["type"],
+) {
+  return {
+    id,
+    sourceId,
+    targetId,
+    type,
+  };
+}
+
+function factoryGraphFixture(
+  input: Partial<typeof FactoryGraphDto.Type> = {},
+): typeof FactoryGraphDto.Type {
   return FactoryGraphDto.make({
     agents: [
       {
@@ -355,7 +627,66 @@ function factoryGraphFixture(): typeof FactoryGraphDto.Type {
         title: "Add dashboard FactoryGraph model",
       },
     ],
+    ...input,
   });
+}
+
+function positionsByRawId(
+  nodes: ReturnType<typeof buildFactoryCanvasModel>["nodes"],
+) {
+  return new Map(nodes.map((node) => [node.rawId, node.position]));
+}
+
+function expectHorizontalGap(
+  positions: ReadonlyMap<
+    string,
+    ReturnType<typeof buildFactoryCanvasModel>["nodes"][number]["position"]
+  >,
+  leftId: string,
+  rightId: string,
+) {
+  const left = positions.get(leftId);
+  const right = positions.get(rightId);
+
+  expect(left).toBeDefined();
+  expect(right).toBeDefined();
+  expect(Math.abs((right?.x ?? 0) - (left?.x ?? 0))).toBeGreaterThanOrEqual(
+    400,
+  );
+}
+
+function expectNoNodeOverlap(
+  nodes: ReturnType<typeof buildFactoryCanvasModel>["nodes"],
+) {
+  const boxes = nodes.map((node) => ({
+    bottom: node.position.y + 144,
+    id: node.id,
+    left: node.position.x,
+    right: node.position.x + 320,
+    top: node.position.y,
+  }));
+
+  for (let leftIndex = 0; leftIndex < boxes.length; leftIndex += 1) {
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < boxes.length;
+      rightIndex += 1
+    ) {
+      const left = boxes[leftIndex];
+      const right = boxes[rightIndex];
+      if (left === undefined || right === undefined) {
+        continue;
+      }
+
+      expect(
+        left.right <= right.left ||
+          right.right <= left.left ||
+          left.bottom <= right.top ||
+          right.bottom <= left.top,
+        `${left.id} should not overlap ${right.id}`,
+      ).toBe(true);
+    }
+  }
 }
 
 function activityId(value: string) {
