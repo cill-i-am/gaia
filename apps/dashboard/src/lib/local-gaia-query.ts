@@ -206,8 +206,8 @@ export function localGaiaCreateRunMutationOptions(
   return effectQuery.mutationOptions({
     mutationKey: [...localGaiaQueryKeys.all, "create-run"] as const,
     mutationFn: (input: {
-      readonly specMarkdown: string;
-      readonly title?: string;
+      readonly description: string;
+      readonly title: string;
     }) =>
       createRunFromDashboardGaiaClient({ ...config, ...input }),
   });

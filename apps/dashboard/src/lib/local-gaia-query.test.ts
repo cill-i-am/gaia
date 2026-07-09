@@ -421,11 +421,11 @@ describe("local Gaia query options", () => {
       );
   });
 
-  it("creates Markdown runs through the exported effect-query mutation options", async () => {
+  it("creates issue-delivery runs through the exported effect-query mutation options", async () => {
     const requests: Array<string> = [];
     const bodies: Array<unknown> = [];
     const createRunInput = {
-      specMarkdown: "# Mutation proof\n\nRun the focused test.\n",
+      description: "# Mutation proof\n\nRun the focused test.\n",
       title: "Mutation proof",
     };
     const createRunResponse = {
@@ -468,7 +468,7 @@ describe("local Gaia query options", () => {
       {
         workflow: "issueDelivery",
         workItem: {
-          description: createRunInput.specMarkdown,
+          description: createRunInput.description,
           kind: "issue",
           title: createRunInput.title,
         },
