@@ -497,6 +497,77 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
+  it("uses selected FactoryGraph artifacts instead of a misleading zero artifact rail count", async () => {
+    const runId = parseRunId("run-1515151515");
+    const workerId = agentId("agent-worker");
+    const orchestratorId = agentId("agent-orchestrator");
+    const graphArtifacts = Array.from({ length: 12 }, (_, index) => {
+      const artifactNumber = index + 1;
+
+      return factoryArtifact({
+        artifactId: artifactIdValue(`artifact-factory-${artifactNumber}`),
+        label: `Factory artifact ${artifactNumber}`,
+        ownerAgentId: index < 4 ? workerId : orchestratorId,
+      });
+    });
+    const workerArtifactId = firstElement(graphArtifacts).artifactId;
+    const view = renderDashboardWithQueries({
+      factoryArtifactsByRunId: {
+        [runId]: graphArtifacts,
+      },
+      factoryGraphsByRunId: {
+        [runId]: factoryGraph({
+          linkedArtifacts: graphArtifacts,
+          runId,
+          workerArtifactCount: 4,
+          workerArtifactId,
+          workerId,
+        }),
+      },
+      runs: [
+        localRunSummary({
+          artifacts: [],
+          eventCount: 3,
+          latestEventType: "RUN_CREATED",
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+    });
+
+    const row = await screen.findByTestId("run-console-row-run-1515151515");
+
+    await waitFor(() => {
+      expect(row.textContent).toContain("12 graph artifacts");
+      expect(row.textContent).not.toContain("0 artifacts");
+    });
+
+    const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
+    if (workerNode === null) {
+      throw new Error("Expected a worker FactoryGraph node.");
+    }
+    fireEvent.click(workerNode);
+
+    for (const artifactsTab of screen.getAllByRole("tab", {
+      name: "Artifacts",
+    })) {
+      fireEvent.pointerDown(artifactsTab);
+      fireEvent.mouseDown(artifactsTab);
+      fireEvent.mouseUp(artifactsTab);
+      fireEvent.click(artifactsTab);
+    }
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole("button", { name: "Factory artifact 4" }),
+      ).not.toHaveLength(0);
+      expect(
+        screen.queryByRole("button", { name: "Factory artifact 5" }),
+      ).toBeNull();
+    });
+  });
+
   it("shows typed artifact body failures without reading hidden files", async () => {
     const runId = parseRunId("run-9191919191");
     const workerId = agentId("agent-worker");
@@ -1731,7 +1802,9 @@ function factoryArtifactBody(
 }
 
 function factoryGraph(input: {
+  readonly linkedArtifacts?: ReadonlyArray<typeof FactoryArtifactDto.Type>;
   readonly runId: typeof RunIdSchema.Type;
+  readonly workerArtifactCount?: number;
   readonly workerArtifactId: typeof FactoryArtifactDto.Type.artifactId;
   readonly workerId: typeof FactoryArtifactDto.Type.ownerAgentId;
 }): typeof FactoryGraphDto.Type {
@@ -1753,7 +1826,7 @@ function factoryGraph(input: {
         workItemId: rootWorkItemId,
       },
       {
-        artifactCount: 1,
+        artifactCount: input.workerArtifactCount ?? 1,
         id: input.workerId,
         latestActivityId: activityId("activity-worker"),
         parentAgentId: orchestratorId,
@@ -1834,11 +1907,13 @@ function factoryGraph(input: {
       },
     ],
     linkedArtifacts: [
-      factoryArtifact({
-        artifactId: input.workerArtifactId,
-        label: "Code summary",
-        ownerAgentId: input.workerId,
-      }),
+      ...(input.linkedArtifacts ?? [
+        factoryArtifact({
+          artifactId: input.workerArtifactId,
+          label: "Code summary",
+          ownerAgentId: input.workerId,
+        }),
+      ]),
     ],
     runId: input.runId,
     version: 1,

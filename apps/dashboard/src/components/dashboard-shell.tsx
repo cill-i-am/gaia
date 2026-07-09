@@ -11,6 +11,7 @@ import {
   type FactoryActivityDto,
   type FactoryArtifactBodyDto,
   type FactoryArtifactDto,
+  type FactoryGraphDto,
   RunEvent,
 } from "@gaia/core";
 import { Option, Schema } from "effect";
@@ -183,12 +184,107 @@ function reconcileComparisonRunId(input: {
   return input.runs.find((run) => run.id !== input.primaryRunId)?.id;
 }
 
+function buildSelectedRunArtifactEvidence(input: {
+  readonly artifactCatalog: InspectorResource<typeof FactoryArtifactDto.Type>;
+  readonly canvas: FactoryCanvasModel | undefined;
+  readonly graph: typeof FactoryGraphDto.Type | undefined;
+  readonly graphIsLoading: boolean;
+}): SelectedRunArtifactEvidence {
+  if (input.graphIsLoading || input.artifactCatalog.status === "loading") {
+    return { status: "loading" };
+  }
+
+  const graphArtifactIds = new Set<string>();
+
+  for (const artifact of input.graph?.linkedArtifacts ?? []) {
+    graphArtifactIds.add(String(artifact.artifactId));
+  }
+
+  for (const node of input.canvas?.nodes ?? []) {
+    for (const artifactId of node.artifactIds) {
+      graphArtifactIds.add(artifactId);
+    }
+  }
+
+  if (graphArtifactIds.size > 0) {
+    return {
+      count: graphArtifactIds.size,
+      source: "factoryGraph",
+      status: "ready",
+    };
+  }
+
+  const catalogArtifacts =
+    input.artifactCatalog.status === "ready" ? input.artifactCatalog.data : [];
+  if (catalogArtifacts.length > 0) {
+    return {
+      count: uniqueArtifactCount(catalogArtifacts),
+      source: "artifactCatalog",
+      status: "ready",
+    };
+  }
+
+  return input.graph === undefined || input.artifactCatalog.status !== "ready"
+    ? { status: "unavailable" }
+    : { count: 0, source: "factoryGraph", status: "ready" };
+}
+
+function runArtifactCountLabel(input: {
+  readonly evidence: SelectedRunArtifactEvidence | undefined;
+  readonly run: RunConsoleRun;
+}) {
+  if (input.run.artifactCount > 0) {
+    return `${input.run.artifactCount} ${artifactNoun(input.run.artifactCount)}`;
+  }
+
+  if (input.evidence?.status === "ready") {
+    if (input.evidence.count > 0) {
+      const qualifier =
+        input.evidence.source === "factoryGraph" ? " graph" : "";
+
+      return `${input.evidence.count}${qualifier} ${artifactNoun(input.evidence.count)}`;
+    }
+
+    return "No graph artifacts";
+  }
+
+  if (input.evidence?.status === "loading") {
+    return "Artifacts loading";
+  }
+
+  if (input.evidence?.status === "unavailable") {
+    return "Artifacts unavailable";
+  }
+
+  return "0 artifacts";
+}
+
+function artifactNoun(count: number) {
+  return count === 1 ? "artifact" : "artifacts";
+}
+
+function uniqueArtifactCount(
+  artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>,
+) {
+  return new Set(artifacts.map((artifact) => String(artifact.artifactId))).size;
+}
+
 type ServerConnectionState = {
   readonly runConsole: RunConsoleState;
+  readonly selectedRunArtifactEvidence: SelectedRunArtifactEvidence | undefined;
   readonly selectedRun: RunConsoleRun | undefined;
 };
 
 type CommandMode = "activity" | "compare" | "inspect" | "replay" | "source";
+
+type SelectedRunArtifactEvidence =
+  | { readonly status: "loading" }
+  | {
+      readonly count: number;
+      readonly source: "artifactCatalog" | "factoryGraph";
+      readonly status: "ready";
+    }
+  | { readonly status: "unavailable" };
 
 export function DashboardShell() {
   const serverUrl = defaultLocalGaiaServerUrl;
@@ -346,10 +442,6 @@ export function DashboardShell() {
       selectedRunSummary,
     ],
   );
-  const serverConnection: ServerConnectionState = {
-    runConsole,
-    selectedRun: selectedConsoleRun,
-  };
   const [selectedNodeId, setSelectedNodeId] = React.useState<
     string | undefined
   >();
@@ -507,6 +599,29 @@ export function DashboardShell() {
       selectedRunId,
     ],
   );
+  const selectedRunArtifactEvidence = React.useMemo(
+    () =>
+      selectedRunId === undefined
+        ? undefined
+        : buildSelectedRunArtifactEvidence({
+            artifactCatalog: inspectorArtifactResource,
+            canvas: selectedFactoryCanvas,
+            graph: selectedFactoryGraphQuery.data?.data,
+            graphIsLoading: runCanvas.isLoading,
+          }),
+    [
+      inspectorArtifactResource,
+      runCanvas.isLoading,
+      selectedFactoryCanvas,
+      selectedFactoryGraphQuery.data?.data,
+      selectedRunId,
+    ],
+  );
+  const serverConnection: ServerConnectionState = {
+    runConsole,
+    selectedRun: selectedConsoleRun,
+    selectedRunArtifactEvidence,
+  };
   const terminalStreamEventKey =
     runEventStream.terminalEvent === undefined
       ? undefined
@@ -1258,6 +1373,9 @@ function RunConsole({
           <SidebarGroupContent>
             <RunConsoleRuns
               runs={visibleRuns}
+              selectedRunArtifactEvidence={
+                serverConnection.selectedRunArtifactEvidence
+              }
               selectedRunId={selectedRunId}
               state={runConsole}
               onSelectRun={onSelectRun}
@@ -1442,11 +1560,13 @@ function IssueDeliveryIntake({
 
 function RunConsoleRuns({
   runs,
+  selectedRunArtifactEvidence,
   selectedRunId,
   state,
   onSelectRun,
 }: {
   readonly runs: ReadonlyArray<RunConsoleRun>;
+  readonly selectedRunArtifactEvidence: SelectedRunArtifactEvidence | undefined;
   readonly selectedRunId: string | undefined;
   readonly state: RunConsoleState;
   readonly onSelectRun: (runId: string) => void;
@@ -1534,37 +1654,45 @@ function RunConsoleRuns({
     <div className="flex flex-col gap-2">
       <RunConsoleDurabilityNotices state={state} />
       <SidebarMenu>
-        {runs.map((run) => (
-          <SidebarMenuItem key={run.id}>
-            <SidebarMenuButton
-              className="h-auto items-start gap-3 py-2"
-              data-testid={`run-console-row-${run.id}`}
-              isActive={run.id === selectedRunId}
-              onClick={() => onSelectRun(run.id)}
-            >
-              <WorkflowIcon />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium">{run.title}</span>
-                <span className="block truncate text-xs text-muted-foreground">
-                  {run.specHint}
+        {runs.map((run) => {
+          const artifactCountLabel = runArtifactCountLabel({
+            evidence:
+              run.id === selectedRunId ? selectedRunArtifactEvidence : undefined,
+            run,
+          });
+
+          return (
+            <SidebarMenuItem key={run.id}>
+              <SidebarMenuButton
+                className="h-auto items-start gap-3 py-2"
+                data-testid={`run-console-row-${run.id}`}
+                isActive={run.id === selectedRunId}
+                onClick={() => onSelectRun(run.id)}
+              >
+                <WorkflowIcon />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium">{run.title}</span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {run.specHint}
+                  </span>
+                  <span className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
+                    <span>{run.statusLabel}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{run.latestEventLabel}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{run.eventCount} events</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{artifactCountLabel}</span>
+                  </span>
+                  <span className="mt-1 block truncate text-xs text-muted-foreground">
+                    Updated {run.updatedAtLabel}
+                  </span>
                 </span>
-                <span className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
-                  <span>{run.statusLabel}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>{run.latestEventLabel}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>{run.eventCount} events</span>
-                  <span aria-hidden="true">·</span>
-                  <span>{run.artifactCount} artifacts</span>
-                </span>
-                <span className="mt-1 block truncate text-xs text-muted-foreground">
-                  Updated {run.updatedAtLabel}
-                </span>
-              </span>
-            </SidebarMenuButton>
-            <SidebarMenuBadge>{run.terminalLabel}</SidebarMenuBadge>
-          </SidebarMenuItem>
-        ))}
+              </SidebarMenuButton>
+              <SidebarMenuBadge>{run.terminalLabel}</SidebarMenuBadge>
+            </SidebarMenuItem>
+          );
+        })}
       </SidebarMenu>
     </div>
   );
