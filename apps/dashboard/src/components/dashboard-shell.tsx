@@ -382,9 +382,11 @@ export function DashboardShell() {
     isLoading:
       selectedRunId !== undefined && selectedFactoryGraphQuery.isPending,
   };
-  const activityFailure = dashboardQueryFailure(
-    selectedFactoryAgentActivityQuery.error ??
-      selectedFactoryRunActivityQuery.error,
+  const agentActivityFailure = dashboardQueryFailure(
+    selectedFactoryAgentActivityQuery.error,
+  );
+  const runActivityFailure = dashboardQueryFailure(
+    selectedFactoryRunActivityQuery.error,
   );
   const artifactsFailure = dashboardQueryFailure(
     selectedFactoryArtifactsQuery.error,
@@ -404,10 +406,10 @@ export function DashboardShell() {
         };
       }
 
-      if (activityFailure !== undefined) {
+      if (agentActivityFailure !== undefined) {
         return {
           message: dashboardFailureMessage(
-            activityFailure,
+            agentActivityFailure,
             "Agent activity could not be loaded.",
           ),
           status: "error",
@@ -427,10 +429,10 @@ export function DashboardShell() {
       };
     }
 
-    if (activityFailure !== undefined) {
+    if (runActivityFailure !== undefined) {
       return {
         message: dashboardFailureMessage(
-          activityFailure,
+          runActivityFailure,
           "Run activity could not be loaded.",
         ),
         status: "error",
@@ -442,7 +444,8 @@ export function DashboardShell() {
       status: "ready",
     };
   }, [
-    activityFailure,
+    agentActivityFailure,
+    runActivityFailure,
     selectedFactoryAgentActivityQuery.data?.data.activities,
     selectedFactoryAgentActivityQuery.isPending,
     selectedFactoryNode,

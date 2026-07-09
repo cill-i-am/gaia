@@ -49,6 +49,7 @@ const queryFixture = vi.hoisted(
   (): {
     artifactsByRunId: Record<string, Record<string, unknown>>;
     factoryActivitiesByRunId: Record<string, ReadonlyArray<unknown>>;
+    factoryActivityErrorsByRunId: Record<string, unknown>;
     factoryAgentActivitiesByRunId: Record<string, Record<string, ReadonlyArray<unknown>>>;
     factoryArtifactBodyRequests: Array<{
       readonly artifactId: string;
@@ -73,6 +74,7 @@ const queryFixture = vi.hoisted(
   } => ({
     artifactsByRunId: {},
     factoryActivitiesByRunId: {},
+    factoryActivityErrorsByRunId: {},
     factoryAgentActivitiesByRunId: {},
     factoryArtifactBodyRequests: [],
     factoryArtifactBodyErrorsByRunId: {},
@@ -259,14 +261,20 @@ vi.mock("@/lib/local-gaia-query", () => ({
     readonly runId: string;
   }) => ({
     enabled: config.runId.length > 0,
-    queryFn: () =>
-      Promise.resolve({
+    queryFn: () => {
+      const error = queryFixture.factoryActivityErrorsByRunId[config.runId];
+      if (error !== undefined) {
+        return Promise.reject({ failure: error });
+      }
+
+      return Promise.resolve({
         data: {
           activities: queryFixture.factoryActivitiesByRunId[config.runId] ?? [],
           runId: config.runId,
         },
         status: "success",
-      }),
+      });
+    },
     queryKey: ["local-gaia", "runs", "detail", config.runId, "activity"] as const,
     retry: false,
   }),
@@ -609,6 +617,59 @@ describe("DashboardShell Run Console", () => {
             ),
           ),
       ).toBe(true);
+    });
+  });
+
+  it("renders selected agent activity when run activity fails", async () => {
+    const runId = parseRunId("run-9393939393");
+    const workerId = agentId("agent-worker");
+    const view = renderDashboardWithQueries({
+      factoryActivityErrorsByRunId: {
+        [runId]: {
+          _tag: "DashboardGaiaApiError",
+          error: localRunApiError({
+            code: "InternalServerError",
+            message: "Run activity could not be read.",
+            status: 500,
+          }),
+        },
+      },
+      factoryAgentActivitiesByRunId: {
+        [runId]: {
+          [workerId]: [
+            factoryActivity({
+              activityId: activityId("activity-worker-independent"),
+              agentId: workerId,
+              label: "Worker activity remains available",
+              runId,
+            }),
+          ],
+        },
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+    await screen.findAllByText("Worker");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+    fireEvent.click(workerNode);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Worker activity remains available")).not.toHaveLength(0);
+      expect(screen.queryByText("Run activity could not be read.")).toBeNull();
+      expect(screen.queryByText("Agent activity could not be loaded.")).toBeNull();
     });
   });
 
@@ -1354,6 +1415,10 @@ function renderDashboardWithQueries(input: {
   >;
   readonly eventsByRunId?: Record<string, ReadonlyArray<unknown>>;
   readonly factoryActivitiesByRunId?: Record<string, ReadonlyArray<typeof FactoryActivityDto.Type>>;
+  readonly factoryActivityErrorsByRunId?: Record<
+    string,
+    DashboardGaiaClientError
+  >;
   readonly factoryAgentActivitiesByRunId?: Record<
     string,
     Record<string, ReadonlyArray<typeof FactoryActivityDto.Type>>
@@ -1391,6 +1456,8 @@ function renderDashboardWithQueries(input: {
   const defaultFactoryData = defaultFactoryDataForRuns(input.runs);
   queryFixture.factoryActivitiesByRunId =
     input.factoryActivitiesByRunId ?? defaultFactoryData.activitiesByRunId;
+  queryFixture.factoryActivityErrorsByRunId =
+    input.factoryActivityErrorsByRunId ?? {};
   queryFixture.factoryAgentActivitiesByRunId =
     input.factoryAgentActivitiesByRunId ??
     defaultFactoryData.agentActivitiesByRunId;
