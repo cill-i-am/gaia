@@ -50,6 +50,8 @@ type CreateRunAcceptedFixture = {
 };
 
 type FactoryAgentState = (typeof FactoryGraphDto.Type)["agents"][number]["state"];
+type FactoryGraphAgent = (typeof FactoryGraphDto.Type)["agents"][number];
+type FactoryGraphEdge = (typeof FactoryGraphDto.Type)["edges"][number];
 
 const queryFixture = vi.hoisted(
   (): {
@@ -597,6 +599,151 @@ describe("DashboardShell Run Console", () => {
         selectedPath: true,
       }),
     ).toContain("factory-flow-edge-active");
+  });
+
+  it("renders duplicate-role branches and preserves selected agent handoff", async () => {
+    const runId = parseRunId("run-5353535353");
+    const orchestratorId = agentId("agent-orchestrator");
+    const workerAId = agentId("agent-worker-a");
+    const workerBId = agentId("agent-worker-b");
+    const reviewerId = agentId("agent-reviewer");
+    const workerBArtifactId = artifactIdValue("artifact-worker-b-summary");
+    const view = renderDashboardWithQueries({
+      factoryAgentActivitiesByRunId: {
+        [runId]: {
+          [workerBId]: [
+            factoryActivity({
+              activityId: activityId("activity-worker-b"),
+              agentId: workerBId,
+              artifactIds: [workerBArtifactId],
+              label: "Worker B produced implementation summary",
+              runId,
+            }),
+          ],
+        },
+      },
+      factoryArtifactsByRunId: {
+        [runId]: [
+          factoryArtifact({
+            artifactId: workerBArtifactId,
+            label: "Worker B summary",
+            ownerAgentId: workerBId,
+          }),
+        ],
+      },
+      factoryGraphsByRunId: {
+        [runId]: factoryGraph({
+          agents: [
+            {
+              artifactCount: 0,
+              id: orchestratorId,
+              role: "orchestrator",
+              state: "running",
+              subState: "coordinating duplicate workers",
+              title: "Issue orchestrator",
+              workItemId: workItemId("work-root"),
+            },
+            {
+              artifactCount: 0,
+              id: workerAId,
+              parentAgentId: orchestratorId,
+              role: "worker",
+              state: "running",
+              subState: "implementing first branch",
+              title: "Worker A",
+              workItemId: workItemId("work-root"),
+            },
+            {
+              artifactCount: 1,
+              id: workerBId,
+              parentAgentId: orchestratorId,
+              role: "worker",
+              state: "running",
+              subState: "implementing second branch",
+              title: "Worker B",
+              workItemId: workItemId("work-root"),
+            },
+            {
+              artifactCount: 0,
+              id: reviewerId,
+              parentAgentId: workerAId,
+              role: "reviewer",
+              state: "pending",
+              subState: "waiting for both worker branches",
+              title: "Reviewer",
+              workItemId: workItemId("work-root"),
+            },
+          ],
+          edges: [
+            factoryGraphEdge(
+              "edge-spawned-a",
+              "agent-orchestrator",
+              "agent-worker-a",
+              "spawned",
+            ),
+            factoryGraphEdge(
+              "edge-spawned-b",
+              "agent-orchestrator",
+              "agent-worker-b",
+              "spawned",
+            ),
+            factoryGraphEdge(
+              "edge-reviewed-a",
+              "agent-worker-a",
+              "agent-reviewer",
+              "reviewed",
+            ),
+            factoryGraphEdge(
+              "edge-reviewed-b",
+              "agent-worker-b",
+              "agent-reviewer",
+              "reviewed",
+            ),
+          ],
+          linkedArtifacts: [
+            factoryArtifact({
+              artifactId: workerBArtifactId,
+              label: "Worker B summary",
+              ownerAgentId: workerBId,
+            }),
+          ],
+          runId,
+          workerArtifactId: workerBArtifactId,
+          workerId: workerBId,
+        }),
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+    expect(await screen.findAllByText("Worker A")).not.toHaveLength(0);
+    expect(await screen.findAllByText("Worker B")).not.toHaveLength(0);
+    expect(view.container.querySelector('[data-id^="work-item:"]')).toBeNull();
+
+    const workerBNode = view.container.querySelector(
+      '[data-id="agent:agent-worker-b"]',
+    );
+    if (workerBNode === null) {
+      throw new Error("Expected duplicate worker FactoryGraph node.");
+    }
+
+    fireEvent.click(workerBNode);
+
+    await waitFor(() => {
+      expect(workerBNode.getAttribute("class")).toContain("ring-2");
+      expect(
+        screen.getAllByText("Worker B produced implementation summary"),
+      ).not.toHaveLength(0);
+      expect(
+        screen.getByTestId("evidence-studio-panel").getAttribute("aria-hidden"),
+      ).toBe("false");
+    });
   });
 
   it("uses selected FactoryGraph artifacts instead of a misleading zero artifact rail count", async () => {
@@ -1935,6 +2082,8 @@ function factoryGraph(input: {
     readonly tester?: FactoryAgentState;
     readonly worker?: FactoryAgentState;
   };
+  readonly agents?: ReadonlyArray<FactoryGraphAgent>;
+  readonly edges?: ReadonlyArray<FactoryGraphEdge>;
   readonly linkedArtifacts?: ReadonlyArray<typeof FactoryArtifactDto.Type>;
   readonly runId: typeof RunIdSchema.Type;
   readonly workerArtifactCount?: number;
@@ -1948,7 +2097,7 @@ function factoryGraph(input: {
   const ciWatcherId = agentId("agent-ci-watcher");
 
   return {
-    agents: [
+    agents: input.agents ?? [
       {
         artifactCount: 0,
         id: orchestratorId,
@@ -2001,7 +2150,7 @@ function factoryGraph(input: {
       },
     ],
     diagnostics: [],
-    edges: [
+    edges: input.edges ?? [
       {
         id: "edge-owns",
         sourceId: "work-root",
@@ -2060,6 +2209,20 @@ function factoryGraph(input: {
         title: "Refactor dashboard canvas",
       },
     ],
+  };
+}
+
+function factoryGraphEdge(
+  id: string,
+  sourceId: string,
+  targetId: string,
+  type: FactoryGraphEdge["type"],
+): FactoryGraphEdge {
+  return {
+    id,
+    sourceId,
+    targetId,
+    type,
   };
 }
 

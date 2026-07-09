@@ -56,23 +56,28 @@ export type FactoryCanvasModel = {
   readonly workflow: typeof FactoryGraphDto.Type.workflow;
 };
 
+type FactoryGraphAgent = (typeof FactoryGraphDto.Type)["agents"][number];
+
 const factoryCanvasRowGap = 224;
+const factoryCanvasColumnGap = 80;
+const factoryCanvasNodeWidth = 320;
+const factoryCanvasColumnStep =
+  factoryCanvasNodeWidth + factoryCanvasColumnGap;
 
 const issueDeliveryRoleLayout = {
-  ciWatcher: { lane: "ci", order: 5, x: 0, y: factoryCanvasRowGap * 4 },
-  orchestrator: { lane: "orchestration", order: 1, x: 0, y: 0 },
-  researcher: { lane: "research", order: 6, x: 0, y: factoryCanvasRowGap * 5 },
-  reviewer: { lane: "review", order: 3, x: 0, y: factoryCanvasRowGap * 2 },
-  tester: { lane: "verification", order: 4, x: 0, y: factoryCanvasRowGap * 3 },
-  unknown: { lane: "unknown", order: 90, x: 0, y: factoryCanvasRowGap * 6 },
-  worker: { lane: "implementation", order: 2, x: 0, y: factoryCanvasRowGap },
+  ciWatcher: { fallbackDepth: 4, lane: "ci", order: 5 },
+  orchestrator: { fallbackDepth: 0, lane: "orchestration", order: 1 },
+  researcher: { fallbackDepth: 5, lane: "research", order: 6 },
+  reviewer: { fallbackDepth: 2, lane: "review", order: 3 },
+  tester: { fallbackDepth: 3, lane: "verification", order: 4 },
+  unknown: { fallbackDepth: 6, lane: "unknown", order: 90 },
+  worker: { fallbackDepth: 1, lane: "implementation", order: 2 },
 } satisfies Record<
   FactoryAgentRole,
   {
+    readonly fallbackDepth: number;
     readonly lane: FactoryCanvasLane;
     readonly order: number;
-    readonly x: number;
-    readonly y: number;
   }
 >;
 
@@ -115,14 +120,10 @@ export function buildFactoryCanvasModel(
   } = {},
 ): FactoryCanvasModel {
   const activities = options.activities ?? [];
-  const agents = [...graph.agents].sort((left, right) => {
-    const orderDelta =
-      issueDeliveryRoleLayout[left.role].order -
-      issueDeliveryRoleLayout[right.role].order;
-
-    return orderDelta === 0
-      ? String(left.id).localeCompare(String(right.id))
-      : orderDelta;
+  const agents = [...graph.agents].sort(compareAgents);
+  const positionByAgentId = layoutFactoryAgents({
+    agents,
+    edges: graph.edges,
   });
 
   const nodes = agents.map((agent, index) => {
@@ -137,9 +138,10 @@ export function buildFactoryCanvasModel(
       ...activityArtifactIds(scopedActivities),
     ]);
     const layout = issueDeliveryRoleLayout[agent.role];
-    const duplicateRoleOffset = agents
-      .slice(0, index)
-      .filter((candidate) => candidate.role === agent.role).length;
+    const position = positionByAgentId.get(agent.id) ?? {
+      x: index * factoryCanvasColumnStep,
+      y: layout.fallbackDepth * factoryCanvasRowGap,
+    };
 
     return {
       activityCount: scopedActivities.length,
@@ -156,10 +158,7 @@ export function buildFactoryCanvasModel(
       state: agent.state,
       summary: agent.subState ?? `${agent.role} is ${agent.state}`,
       type: agent.role,
-      position: {
-        x: layout.x,
-        y: layout.y + duplicateRoleOffset * factoryCanvasRowGap,
-      },
+      position,
     };
   }) satisfies ReadonlyArray<FactoryCanvasNode>;
   const canvasNodeIds = new Set<string>(nodes.map((node) => node.rawId));
@@ -302,4 +301,306 @@ function uniqueStrings(values: ReadonlyArray<string>) {
 
 function agentNodeId(id: string) {
   return `agent:${id}`;
+}
+
+function layoutFactoryAgents(input: {
+  readonly agents: ReadonlyArray<FactoryGraphAgent>;
+  readonly edges: typeof FactoryGraphDto.Type.edges;
+}): ReadonlyMap<string, FactoryCanvasNode["position"]> {
+  const agentIds = new Set(input.agents.map((agent) => agent.id));
+  const links = layoutLinks({
+    agentIds,
+    agents: input.agents,
+    edges: input.edges,
+  });
+  const depthByAgentId = compactDepths(
+    layoutDepths({ agents: input.agents, links }),
+  );
+  const maxDepth = Math.max(0, ...depthByAgentId.values());
+  const positions = new Map<string, FactoryCanvasNode["position"]>();
+
+  for (let depth = 0; depth <= maxDepth; depth += 1) {
+    const layerAgents = input.agents.filter(
+      (agent) => depthByAgentId.get(agent.id) === depth,
+    );
+    if (layerAgents.length === 0) {
+      continue;
+    }
+
+    const desiredPositions = layerDesiredPositions({
+      agents: layerAgents,
+      links,
+      positions,
+    });
+
+    for (const position of placeLayer(desiredPositions)) {
+      positions.set(position.agent.id, {
+        x: position.x,
+        y: depth * factoryCanvasRowGap,
+      });
+    }
+  }
+
+  return positions;
+}
+
+type LayoutLink = {
+  readonly sourceId: string;
+  readonly targetId: string;
+};
+
+function layoutLinks(input: {
+  readonly agentIds: ReadonlySet<string>;
+  readonly agents: ReadonlyArray<FactoryGraphAgent>;
+  readonly edges: typeof FactoryGraphDto.Type.edges;
+}): ReadonlyArray<LayoutLink> {
+  const linksById = new Map<string, LayoutLink>();
+
+  for (const edge of input.edges) {
+    if (
+      edge.sourceId === edge.targetId ||
+      !input.agentIds.has(edge.sourceId) ||
+      !input.agentIds.has(edge.targetId)
+    ) {
+      continue;
+    }
+
+    linksById.set(`${edge.sourceId}->${edge.targetId}`, {
+      sourceId: edge.sourceId,
+      targetId: edge.targetId,
+    });
+  }
+
+  for (const agent of input.agents) {
+    if (
+      agent.parentAgentId === undefined ||
+      agent.parentAgentId === agent.id ||
+      !input.agentIds.has(agent.parentAgentId)
+    ) {
+      continue;
+    }
+
+    const linkId = `${agent.parentAgentId}->${agent.id}`;
+    if (!linksById.has(linkId)) {
+      linksById.set(linkId, {
+        sourceId: agent.parentAgentId,
+        targetId: agent.id,
+      });
+    }
+  }
+
+  return [...linksById.values()].sort((left, right) =>
+    layoutLinkSortKey(left).localeCompare(layoutLinkSortKey(right)),
+  );
+}
+
+function layoutDepths(input: {
+  readonly agents: ReadonlyArray<FactoryGraphAgent>;
+  readonly links: ReadonlyArray<LayoutLink>;
+}): ReadonlyMap<string, number> {
+  const agentById = new Map<string, FactoryGraphAgent>(
+    input.agents.map((agent) => [agent.id, agent]),
+  );
+  const incomingCount = new Map<string, number>(
+    input.agents.map((agent) => [agent.id, 0]),
+  );
+  const childrenByAgentId = new Map<string, Array<string>>();
+  const depthByAgentId = new Map<string, number>();
+
+  for (const agent of input.agents) {
+    const hasIncoming = input.links.some((link) => link.targetId === agent.id);
+    depthByAgentId.set(
+      agent.id,
+      hasIncoming ? 0 : issueDeliveryRoleLayout[agent.role].fallbackDepth,
+    );
+  }
+
+  for (const link of input.links) {
+    incomingCount.set(link.targetId, (incomingCount.get(link.targetId) ?? 0) + 1);
+    const children = childrenByAgentId.get(link.sourceId) ?? [];
+    children.push(link.targetId);
+    childrenByAgentId.set(link.sourceId, children);
+  }
+
+  const queue = input.agents
+    .filter((agent) => (incomingCount.get(agent.id) ?? 0) === 0)
+    .sort(compareAgents);
+
+  while (queue.length > 0) {
+    const agent = queue.shift();
+    if (agent === undefined) {
+      continue;
+    }
+
+    const sourceDepth =
+      depthByAgentId.get(agent.id) ??
+      issueDeliveryRoleLayout[agent.role].fallbackDepth;
+    const children = (childrenByAgentId.get(agent.id) ?? []).sort((left, right) =>
+      compareAgentsById(agentById, left, right),
+    );
+
+    for (const childId of children) {
+      const child = agentById.get(childId);
+      if (child === undefined) {
+        continue;
+      }
+
+      depthByAgentId.set(
+        childId,
+        Math.max(depthByAgentId.get(childId) ?? 0, sourceDepth + 1),
+      );
+      const nextIncomingCount = (incomingCount.get(childId) ?? 0) - 1;
+      incomingCount.set(childId, nextIncomingCount);
+      if (nextIncomingCount === 0) {
+        queue.push(child);
+        queue.sort(compareAgents);
+      }
+    }
+  }
+
+  const maxSettledDepth = Math.max(0, ...depthByAgentId.values());
+  for (const agent of input.agents) {
+    if ((incomingCount.get(agent.id) ?? 0) > 0) {
+      depthByAgentId.set(
+        agent.id,
+        maxSettledDepth + issueDeliveryRoleLayout[agent.role].fallbackDepth + 1,
+      );
+    }
+  }
+
+  return depthByAgentId;
+}
+
+function compactDepths(
+  depthByAgentId: ReadonlyMap<string, number>,
+): ReadonlyMap<string, number> {
+  const compactDepthByRawDepth = new Map(
+    [...new Set(depthByAgentId.values())]
+      .sort((left, right) => left - right)
+      .map((depth, index) => [depth, index]),
+  );
+
+  return new Map(
+    [...depthByAgentId.entries()].map(([agentId, depth]) => [
+      agentId,
+      compactDepthByRawDepth.get(depth) ?? depth,
+    ]),
+  );
+}
+
+type LayerDesiredPosition = {
+  readonly agent: FactoryGraphAgent;
+  readonly desiredX: number;
+};
+
+function layerDesiredPositions(input: {
+  readonly agents: ReadonlyArray<FactoryGraphAgent>;
+  readonly links: ReadonlyArray<LayoutLink>;
+  readonly positions: ReadonlyMap<string, FactoryCanvasNode["position"]>;
+}): ReadonlyArray<LayerDesiredPosition> {
+  const parentIdsByAgentId = new Map<string, Array<string>>();
+
+  for (const link of input.links) {
+    const parentIds = parentIdsByAgentId.get(link.targetId) ?? [];
+    parentIds.push(link.sourceId);
+    parentIdsByAgentId.set(link.targetId, parentIds);
+  }
+
+  return input.agents
+    .map((agent, index) => {
+      const parentXs = (parentIdsByAgentId.get(agent.id) ?? []).flatMap(
+        (parentId) => {
+          const position = input.positions.get(parentId);
+
+          return position === undefined ? [] : [position.x];
+        },
+      );
+
+      return {
+        agent,
+        desiredX:
+          parentXs.length === 0
+            ? centeredLayerX(input.agents.length, index)
+            : average(parentXs),
+      };
+    })
+    .sort((left, right) => {
+      const desiredDelta = left.desiredX - right.desiredX;
+      if (desiredDelta !== 0) {
+        return desiredDelta;
+      }
+
+      return compareAgents(left.agent, right.agent);
+    });
+}
+
+function placeLayer(
+  desiredPositions: ReadonlyArray<LayerDesiredPosition>,
+): ReadonlyArray<LayerDesiredPosition & { readonly x: number }> {
+  const placed: Array<LayerDesiredPosition & { readonly x: number }> = [];
+  let previousX: number | undefined;
+
+  for (const position of desiredPositions) {
+    const minimumX =
+      previousX === undefined
+        ? position.desiredX
+        : previousX + factoryCanvasColumnStep;
+    const x = Math.max(position.desiredX, minimumX);
+
+    placed.push({
+      ...position,
+      x,
+    });
+    previousX = x;
+  }
+
+  const shift =
+    average(desiredPositions.map((position) => position.desiredX)) -
+    average(placed.map((position) => position.x));
+
+  return placed.map((position) => ({
+    ...position,
+    x: position.x + shift,
+  }));
+}
+
+function centeredLayerX(count: number, index: number) {
+  return (index - (count - 1) / 2) * factoryCanvasColumnStep;
+}
+
+function average(values: ReadonlyArray<number>) {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function compareAgents(left: FactoryGraphAgent, right: FactoryGraphAgent) {
+  const orderDelta =
+    issueDeliveryRoleLayout[left.role].order -
+    issueDeliveryRoleLayout[right.role].order;
+
+  return orderDelta === 0
+    ? String(left.id).localeCompare(String(right.id))
+    : orderDelta;
+}
+
+function compareAgentsById(
+  agentById: ReadonlyMap<string, FactoryGraphAgent>,
+  leftId: string,
+  rightId: string,
+) {
+  const left = agentById.get(leftId);
+  const right = agentById.get(rightId);
+
+  if (left === undefined || right === undefined) {
+    return leftId.localeCompare(rightId);
+  }
+
+  return compareAgents(left, right);
+}
+
+function layoutLinkSortKey(link: LayoutLink) {
+  return `${link.sourceId}->${link.targetId}`;
 }
