@@ -478,6 +478,9 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByTestId("command-rail-footer").textContent).toContain(
       "/gaia-api",
     );
+    expect(screen.getByTestId("mobile-workspace-canvas").className).toContain(
+      "h-[30rem]",
+    );
     expect(view.container.querySelector('[data-id^="work-item:"]')).toBeNull();
 
     const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');

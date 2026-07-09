@@ -2048,9 +2048,13 @@ function MobileWorkspace({
 }) {
   return (
     <section className="flex size-full min-h-0 flex-col overflow-y-auto lg:hidden">
-      <div className="h-[22rem] shrink-0 border-b">
+      <div
+        className="h-[30rem] shrink-0 border-b"
+        data-testid="mobile-workspace-canvas"
+      >
         <RunCanvas
           factoryCanvas={factoryCanvas}
+          fitViewOptions={factoryFlowMobileFitViewOptions}
           queryState={runCanvas}
           selectedNode={selectedFactoryNode}
           onSelectNode={onSelectNode}
@@ -2108,12 +2112,14 @@ function EvidenceStudioSheet({
 }
 
 function RunCanvas({
+  fitViewOptions = factoryFlowFitViewOptions,
   factoryCanvas,
   queryState,
   selectedNode,
   onSelectNode,
 }: {
   readonly factoryCanvas: FactoryCanvasModel | undefined;
+  readonly fitViewOptions?: FitViewOptions;
   readonly queryState: RunCanvasQueryState;
   readonly selectedNode: FactoryCanvasNode | undefined;
   readonly onSelectNode: (nodeId: string) => void;
@@ -2187,7 +2193,7 @@ function RunCanvas({
           <ReactFlow
             edges={edges}
             fitView
-            fitViewOptions={factoryFlowFitViewOptions}
+            fitViewOptions={fitViewOptions}
             nodes={nodes}
             nodesDraggable={false}
             onNodeClick={handleNodeClick}
@@ -3271,6 +3277,12 @@ const factoryFlowFitViewOptions = {
   maxZoom: 1,
   minZoom: 0.4,
   padding: 0.16,
+} satisfies FitViewOptions;
+
+const factoryFlowMobileFitViewOptions = {
+  maxZoom: 0.9,
+  minZoom: 0.28,
+  padding: 0.22,
 } satisfies FitViewOptions;
 
 function toFactoryFlowEdges(
