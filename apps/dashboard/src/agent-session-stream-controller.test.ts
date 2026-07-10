@@ -21,9 +21,11 @@ describe("Agent session stream controller", () => {
       openSource: (_config, handlers) => {
         const index = sources.length;
         const source: AgentSessionEventSource = {
+          addEventListener: () => undefined,
           close: () => closed.push(index),
           onerror: handlers.onError,
           onmessage: null,
+          removeEventListener: () => undefined,
         };
         sources.push(source);
         return { close: source.close };

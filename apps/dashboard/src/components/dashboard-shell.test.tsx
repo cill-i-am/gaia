@@ -2679,11 +2679,21 @@ function factoryGraphEdge(
 }
 
 type MockEventSourceInstance = {
+  addEventListener: (
+    event: string,
+    listener: (event: MessageEvent<string>) => void,
+  ) => void;
   readonly close: ReturnType<typeof vi.fn>;
+  dispatchEventSourceEvent: (event: string, message: MessageEvent<string>) => void;
+  listenerCount: (event: string) => number;
   readonly url: string;
   onerror: ((event: Event) => void) | null;
   onmessage: ((event: MessageEvent<string>) => void) | null;
   onopen: ((event: Event) => void) | null;
+  removeEventListener: (
+    event: string,
+    listener: (event: MessageEvent<string>) => void,
+  ) => void;
 };
 
 function installMockEventSource() {
@@ -2691,12 +2701,39 @@ function installMockEventSource() {
 
   class TestEventSource implements MockEventSourceInstance {
     readonly close = vi.fn();
+    readonly #listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
     onerror: ((event: Event) => void) | null = null;
     onmessage: ((event: MessageEvent<string>) => void) | null = null;
     onopen: ((event: Event) => void) | null = null;
 
     constructor(readonly url: string) {
       instances.push(this);
+    }
+
+    addEventListener(
+      event: string,
+      listener: (message: MessageEvent<string>) => void,
+    ) {
+      const listeners = this.#listeners.get(event) ?? new Set();
+      listeners.add(listener);
+      this.#listeners.set(event, listeners);
+    }
+
+    dispatchEventSourceEvent(event: string, message: MessageEvent<string>) {
+      for (const listener of this.#listeners.get(event) ?? []) {
+        listener(message);
+      }
+    }
+
+    listenerCount(event: string) {
+      return this.#listeners.get(event)?.size ?? 0;
+    }
+
+    removeEventListener(
+      event: string,
+      listener: (message: MessageEvent<string>) => void,
+    ) {
+      this.#listeners.get(event)?.delete(listener);
     }
   }
 

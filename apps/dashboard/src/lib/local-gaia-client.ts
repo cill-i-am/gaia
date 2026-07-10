@@ -217,9 +217,17 @@ export function actOnAgentSessionFromDashboardGaiaClient(
 }
 
 export type AgentSessionEventSource = {
+  addEventListener(
+    event: "agent-session-update",
+    listener: (event: { readonly data: string; readonly lastEventId: string }) => void,
+  ): void;
   close(): void;
   onerror: ((event: unknown) => void) | null;
   onmessage: ((event: { readonly data: string; readonly lastEventId: string }) => void) | null;
+  removeEventListener(
+    event: "agent-session-update",
+    listener: (event: { readonly data: string; readonly lastEventId: string }) => void,
+  ): void;
 };
 
 /** Browser-owned SSE lifecycle. The caller closes on run/agent change or unmount. */
@@ -231,18 +239,23 @@ export function openAgentSessionEventSource(
   const query = config.afterSequence === undefined ? "" : `?afterSequence=${encodeURIComponent(String(config.afterSequence))}`;
   const baseUrl = normalizedServerUrl(config.serverUrl).replace(/\/$/u, "");
   const source = create(`${baseUrl}/runs/${encodeURIComponent(config.runId)}/agents/${encodeURIComponent(config.agentId)}/session/stream${query}`);
-  source.onmessage = (event) => {
+  const onSessionUpdate = (event: { readonly data: string; readonly lastEventId: string }) => {
     try {
       const update = decodeAgentSessionUpdate(JSON.parse(event.data));
       if (event.lastEventId !== "" && String(update.eventSequence) !== event.lastEventId) throw new Error("Gaia SSE event ID does not match its normalized sequence.");
       handlers.onUpdate(update);
     } catch (error) {
-      source.close();
+      close();
       handlers.onError(error);
     }
   };
+  const close = () => {
+    source.removeEventListener("agent-session-update", onSessionUpdate);
+    source.close();
+  };
+  source.addEventListener("agent-session-update", onSessionUpdate);
   source.onerror = handlers.onError;
-  return { close: () => source.close() };
+  return { close };
 }
 
 export function listFactoryArtifactsFromDashboardGaiaClient(

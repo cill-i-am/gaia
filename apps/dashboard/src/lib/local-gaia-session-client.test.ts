@@ -5,10 +5,9 @@ import {
 } from "./local-gaia-client.js";
 
 describe("local Gaia agent session SSE client", () => {
-  it("owns close lifecycle, parses normalized updates, and pins Gaia sequence IDs", () => {
+  it("subscribes to Gaia's named session event, cleans up, and pins sequence IDs", () => {
     let url = "";
-    let closed = 0;
-    const source: AgentSessionEventSource = { close: () => { closed += 1; }, onerror: null, onmessage: null };
+    const source = new TestAgentSessionEventSource();
     const updates: Array<number> = [];
     const errors: Array<unknown> = [];
     const handle = openAgentSessionEventSource(
@@ -17,15 +16,67 @@ describe("local Gaia agent session SSE client", () => {
       (input) => { url = input; return source; },
     );
     expect(url).toBe("/gaia-api/runs/run-1234567890/agents/agent-worker/session/stream?afterSequence=4");
-    source.onmessage?.({ data: JSON.stringify(update(6)), lastEventId: "6" });
+    expect(source.listenerCount("agent-session-update")).toBe(1);
+    expect(source.onmessage).toBeNull();
+
+    source.dispatch("agent-session-update", {
+      data: JSON.stringify(update(6)),
+      lastEventId: "6",
+    });
     expect(updates).toEqual([6]);
-    source.onmessage?.({ data: JSON.stringify(update(8)), lastEventId: "7" });
+
+    source.dispatch("agent-session-update", {
+      data: JSON.stringify(update(8)),
+      lastEventId: "7",
+    });
     expect(errors).toHaveLength(1);
-    expect(closed).toBe(1);
+    expect(source.closed).toBe(1);
+
     handle.close();
-    expect(closed).toBe(2);
+    expect(source.closed).toBe(2);
+    expect(source.listenerCount("agent-session-update")).toBe(0);
   });
 });
+
+class TestAgentSessionEventSource implements AgentSessionEventSource {
+  closed = 0;
+  onerror: ((event: unknown) => void) | null = null;
+  onmessage: ((event: { readonly data: string; readonly lastEventId: string }) => void) | null = null;
+  readonly #listeners = new Map<string, Set<(event: { readonly data: string; readonly lastEventId: string }) => void>>();
+
+  addEventListener(
+    event: string,
+    listener: (message: { readonly data: string; readonly lastEventId: string }) => void,
+  ) {
+    const listeners = this.#listeners.get(event) ?? new Set();
+    listeners.add(listener);
+    this.#listeners.set(event, listeners);
+  }
+
+  close() {
+    this.closed += 1;
+  }
+
+  dispatch(
+    event: string,
+    message: { readonly data: string; readonly lastEventId: string },
+  ) {
+    for (const listener of this.#listeners.get(event) ?? []) {
+      listener(message);
+    }
+  }
+
+  listenerCount(event: string) {
+    return this.#listeners.get(event)?.size ?? 0;
+  }
+
+  removeEventListener(
+    event: string,
+    listener: (message: { readonly data: string; readonly lastEventId: string }) => void,
+  ) {
+    this.#listeners.get(event)?.delete(listener);
+  }
+}
 
 function update(eventSequence: number) {
   const snapshot = {
