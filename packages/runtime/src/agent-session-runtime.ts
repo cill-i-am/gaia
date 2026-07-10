@@ -112,7 +112,7 @@ export function dispatchAgentSessionAction(input: {
   return Effect.gen(function* () {
     yield* expectRuntime(() => requireWorkerAgent(input.agentId));
     const paths = yield* makeRunPaths(input.runId, input.options ?? {});
-    const digest = actionDigest(input.action);
+    const digest = actionDigest(input.runId, input.agentId, input.action);
     const binding = actionBinding(input.agentId, input.action, digest);
     const prepared = yield* withRunEventSerialization(
       paths,
@@ -217,8 +217,37 @@ function actionBinding(agentId: string, action: AgentOperatorActionRequest, payl
   return { actionId: action.actionId, actionKind: action.kind, agentId, payloadDigest, sessionId: action.sessionId, ...(action.kind === "followUp" ? {} : { targetId: action.kind === "steer" || action.kind === "interrupt" ? action.turnId : action.interactionId }) } as const;
 }
 
-function actionDigest(action: AgentOperatorActionRequest) {
-  return createHash("sha256").update(canonicalJson(action)).digest("hex");
+function actionDigest(runId: RunId, agentId: string, action: AgentOperatorActionRequest) {
+  return createHash("sha256").update(canonicalJson(actionDigestBinding(runId, agentId, action))).digest("hex");
+}
+
+function actionDigestBinding(runId: RunId, agentId: string, action: AgentOperatorActionRequest) {
+  const base = {
+    actionId: action.actionId,
+    agentId,
+    kind: action.kind,
+    runId,
+    sessionId: action.sessionId,
+  };
+  switch (action.kind) {
+    case "followUp":
+      return base;
+    case "steer":
+    case "interrupt":
+      return { ...base, turnId: action.turnId };
+    case "approval":
+      return { ...base, decision: action.decision, interactionId: action.interactionId };
+    case "userInput":
+      return {
+        ...base,
+        answerShape: action.answers
+          .map(({ answers, questionId }) => ({ answerCount: answers.length, questionId }))
+          .toSorted((left, right) => left.questionId.localeCompare(right.questionId)),
+        interactionId: action.interactionId,
+      };
+    case "mcpElicitation":
+      return { ...base, action: action.action, contentProvided: action.content !== undefined, interactionId: action.interactionId };
+  }
 }
 
 function canonicalJson(value: unknown): string {

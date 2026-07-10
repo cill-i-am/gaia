@@ -23,7 +23,7 @@ import {
   readAgentSessionSnapshot,
   streamAgentSessionUpdates,
 } from "./agent-session-runtime.js";
-import { appendEvent, appendHarnessSessionEvent, appendHarnessSessionEventWithinSerialization, subscribeRunEventFeed, withRunEventSerialization } from "./event-store.js";
+import { appendEvent, appendHarnessSessionEvent, appendHarnessSessionEventWithinSerialization, readEvents, subscribeRunEventFeed, withRunEventSerialization } from "./event-store.js";
 import type { HarnessSession } from "./harness-session.js";
 import { makeRunPaths } from "./paths.js";
 
@@ -84,9 +84,10 @@ describe("agent session runtime", () => {
         yield* coordinator.register({ agentId: "agent-worker", runId, session: fakeSession(calls), sessionId });
         const action = { actionId: parseHarnessActionId("action-steer"), kind: "steer" as const, sessionId, text: "focus", turnId };
         const first = yield* dispatchAgentSessionAction({ action, agentId: "agent-worker", coordinator, options: { rootDirectory }, runId });
-        const second = yield* dispatchAgentSessionAction({ action, agentId: "agent-worker", coordinator, options: { rootDirectory }, runId });
+        const second = yield* dispatchAgentSessionAction({ action: { ...action, text: "different low-entropy operator text" }, agentId: "agent-worker", coordinator, options: { rootDirectory }, runId });
         expect(first.state).toBe("dispatchConfirmed");
         expect(second.state).toBe("dispatchConfirmed");
+        expect(second.payloadDigest).toBe(first.payloadDigest);
         expect(calls).toEqual(["focus"]);
       })),
     );
@@ -153,6 +154,44 @@ describe("agent session runtime", () => {
 
         const duplicate = yield* dispatchAgentSessionAction({ action: { actionId: parseHarnessActionId("action-duplicate"), decision: "decline", interactionId: commandInteractionId, kind: "approval", sessionId }, agentId: "agent-worker", coordinator, options: { rootDirectory }, runId }).pipe(Effect.exit);
         expect(duplicate._tag).toBe("Failure");
+      })),
+    );
+
+    it.effect("uses privacy-safe structural action digests for secret answers and MCP content", () =>
+      Effect.scoped(Effect.gen(function* () {
+        const rootDirectory = yield* setupRun(HarnessCapabilities.make({ ...capabilities, approvals: ["userInput", "mcpElicitation"], userQuestions: true }));
+        const paths = yield* makeRunPaths(runId, { rootDirectory });
+        const userInputInteractionId = parseHarnessInteractionId("interaction-secret-user-input");
+        const mcpInteractionId = parseHarnessInteractionId("interaction-secret-mcp");
+        const questionId = parseHarnessQuestionId("question-secret");
+        yield* appendHarnessSessionEvent(runId, paths, { kind: "turnStarted", sessionId, turnId });
+        yield* appendHarnessSessionEvent(runId, paths, { interaction: { interactionId: userInputInteractionId, itemId: parseHarnessItemId("item-secret-question"), kind: "userInput", questions: [{ options: [], prompt: "Token?", questionId, secret: true }], requestedAt: "2026-07-10T00:00:03.000Z", turnId }, kind: "interactionRequested", sessionId });
+        yield* appendHarnessSessionEvent(runId, paths, { interaction: { interactionId: mcpInteractionId, kind: "mcpElicitation", message: "Provide MCP content", mode: "form", requestedAt: "2026-07-10T00:00:04.000Z", serverName: "safe-mcp", turnId }, kind: "interactionRequested", sessionId });
+        const resolutions: unknown[] = [];
+        const coordinator = makeLiveHarnessSessionCoordinator();
+        yield* coordinator.register({ agentId: "agent-worker", runId, session: fakeSession([], resolutions), sessionId });
+
+        const userAction = { actionId: parseHarnessActionId("action-secret-answer"), answers: [{ answers: ["SECRET_ONE_TIME_CODE"], questionId }], interactionId: userInputInteractionId, kind: "userInput" as const, sessionId };
+        const first = yield* dispatchAgentSessionAction({ action: userAction, agentId: "agent-worker", coordinator, options: { rootDirectory }, runId });
+        const retry = yield* dispatchAgentSessionAction({ action: { ...userAction, answers: [{ answers: ["DIFFERENT_PASSWORD"], questionId }] }, agentId: "agent-worker", coordinator, options: { rootDirectory }, runId });
+        expect(retry.payloadDigest).toBe(first.payloadDigest);
+        expect(retry.eventSequence).toBe(first.eventSequence);
+        expect(resolutions).toHaveLength(1);
+
+        const structuralConflict = yield* dispatchAgentSessionAction({ action: { ...userAction, answers: [{ answers: ["SECRET_ONE_TIME_CODE", "SECOND_VALUE"], questionId }] }, agentId: "agent-worker", coordinator, options: { rootDirectory }, runId }).pipe(Effect.exit);
+        expect(structuralConflict._tag).toBe("Failure");
+
+        const mcpAction = { action: "submit" as const, actionId: parseHarnessActionId("action-secret-mcp"), content: "UNRESTRICTED_MCP_SECRET_CONTENT", interactionId: mcpInteractionId, kind: "mcpElicitation" as const, sessionId };
+        const mcp = yield* dispatchAgentSessionAction({ action: mcpAction, agentId: "agent-worker", coordinator, options: { rootDirectory }, runId });
+        const mcpRetry = yield* dispatchAgentSessionAction({ action: { ...mcpAction, content: "DIFFERENT_MCP_SECRET_CONTENT" }, agentId: "agent-worker", coordinator, options: { rootDirectory }, runId });
+        expect(mcpRetry.payloadDigest).toBe(mcp.payloadDigest);
+        expect(resolutions).toHaveLength(2);
+
+        const persisted = JSON.stringify(yield* readEvents(paths));
+        expect(persisted).not.toContain("SECRET_ONE_TIME_CODE");
+        expect(persisted).not.toContain("DIFFERENT_PASSWORD");
+        expect(persisted).not.toContain("UNRESTRICTED_MCP_SECRET_CONTENT");
+        expect(persisted).not.toContain("DIFFERENT_MCP_SECRET_CONTENT");
       })),
     );
 
@@ -224,6 +263,6 @@ function fakeSession(calls: string[], resolutions: unknown[] = []): HarnessSessi
 }
 
 function actionDigestForInterrupt(actionId: ReturnType<typeof parseHarnessActionId>) {
-  const canonical = `{"actionId":"${actionId}","kind":"interrupt","sessionId":"${sessionId}","turnId":"${turnId}"}`;
+  const canonical = `{"actionId":"${actionId}","agentId":"agent-worker","kind":"interrupt","runId":"${runId}","sessionId":"${sessionId}","turnId":"${turnId}"}`;
   return createHash("sha256").update(canonical).digest("hex");
 }
