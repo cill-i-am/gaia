@@ -52,7 +52,7 @@ describe("Codex App Server installed CLI smoke", () => {
       })).pipe(Effect.timeout("60 seconds")));
       expect(evidence).toEqual({ completed: true, sawItem: true });
     } finally {
-      await rm(root, { force: true, recursive: true });
+      await rm(root, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
     }
   }, 70_000);
 });

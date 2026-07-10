@@ -41,7 +41,7 @@ describe("Codex App Server connection", () => {
       const connection = yield* makeCodexAppServerConnection({ process: fake.process });
       const notifications: Array<string> = [];
       connection.onNotification(({ method }) => notifications.push(method));
-      for (const listener of fake.lines) listener(JSON.stringify({ method: "turn/started", params: {} }));
+      for (const listener of fake.lines) listener(JSON.stringify({ method: "turn/started", params: { threadId: "thr-1", turn: { id: "turn-1", status: "inProgress" } } }));
       for (const listener of fake.lines) listener(JSON.stringify({ method: "reasoning/text/delta", params: {} }));
       for (const listener of fake.lines) listener(JSON.stringify({ id: 40, method: "fs/read", params: {} }));
       expect(notifications).toEqual(["turn/started"]);
@@ -54,9 +54,9 @@ describe("Codex App Server connection", () => {
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const connection = yield* makeCodexAppServerConnection({ process: fake.process });
       const client = makeCodexAppServerClient(connection);
-      const fiber = yield* client.initialize({ name: "gaia", version: "0.1.0" }).pipe(Effect.forkChild);
+      const fiber = yield* client.initialize({ name: "gaia", title: "Gaia", version: "0.1.0" }).pipe(Effect.forkChild);
       yield* Effect.yieldNow;
-      for (const listener of fake.lines) listener(JSON.stringify({ id: 1, result: { userAgent: "codex" } }));
+      for (const listener of fake.lines) listener(JSON.stringify({ id: 1, result: { userAgent: "Codex Desktop/0.137.0 (test)", platformFamily: "unix", platformOs: "macos" } }));
       yield* Fiber.join(fiber);
       expect(fake.writes.map(({ method }) => method)).toEqual(["initialize", "initialized"]);
     })));
@@ -94,6 +94,29 @@ describe("Codex App Server connection", () => {
       yield* Effect.yieldNow;
       for (const listener of fake.errors) listener();
       return yield* Fiber.join(request);
+    })));
+    expect(exit._tag).toBe("Failure");
+  });
+
+  it("rejects an incompatible initialized server", async () => {
+    const fake = fakeProcess();
+    const exit = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const connection = yield* makeCodexAppServerConnection({ process: fake.process });
+      const client = makeCodexAppServerClient(connection);
+      const fiber = yield* client.initialize({ name: "gaia", title: "Gaia", version: "0.1.0" }).pipe(Effect.exit, Effect.forkChild);
+      yield* Effect.yieldNow;
+      for (const listener of fake.lines) listener(JSON.stringify({ id: 1, result: { userAgent: "Codex Desktop/0.136.0 (test)", platformFamily: "unix", platformOs: "macos" } }));
+      return yield* Fiber.join(fiber);
+    })));
+    expect(exit._tag).toBe("Failure");
+  });
+
+  it("returns a typed failure immediately when request write throws", async () => {
+    const fake = fakeProcess();
+    Object.defineProperty(fake.process, "write", { value: () => { throw new Error("closed"); } });
+    const exit = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const connection = yield* makeCodexAppServerConnection({ process: fake.process });
+      return yield* connection.request("initialize", {}, 10_000).pipe(Effect.exit);
     })));
     expect(exit._tag).toBe("Failure");
   });

@@ -4,29 +4,32 @@ import { Context, Effect, Layer, Option, Schema } from "effect";
 import {
   CodexAppServerInboundRequestSchema,
   CodexAppServerNotificationSchema,
+  CodexAppServerIncompatibilityError,
   CodexAppServerProcessExitError,
   CodexAppServerProtocolError,
   CodexAppServerResponseSchema,
   CodexAppServerTimeoutError,
   CodexAppServerTransportError,
-  CodexStableNotificationMethodSchema,
-  CodexStableServerRequestMethodSchema,
+  CodexNotificationSchema,
+  CodexServerRequestSchema,
+  InitializeResultSchema,
+  ThreadResultSchema,
+  TurnResultSchema,
+  TurnSteerResultSchema,
+  EmptyResultSchema,
+  CommandApprovalResponseSchema,
+  FileApprovalResponseSchema,
+  PermissionApprovalResponseSchema,
+  UserInputResponseSchema,
+  ElicitationResponseSchema,
+  supportedCodexCliVersion,
   type CodexAppServerError,
   type CodexRequestId,
-  type CodexStableNotificationMethod,
-  type CodexStableServerRequestMethod,
+  type CodexNotification,
+  type CodexServerRequest,
 } from "./codex-app-server-protocol.js";
 
 type JsonObject = Readonly<Record<string, Schema.Json>>;
-export interface CodexNotification {
-  readonly method: CodexStableNotificationMethod;
-  readonly params: JsonObject;
-}
-export interface CodexServerRequest {
-  readonly id: CodexRequestId;
-  readonly method: CodexStableServerRequestMethod;
-  readonly params: JsonObject;
-}
 export interface CodexAppServerConnection {
   readonly notify: (method: string, params?: JsonObject) => Effect.Effect<void, CodexAppServerError>;
   readonly onNotification: (listener: (notification: CodexNotification) => void) => () => void;
@@ -54,8 +57,8 @@ export interface CodexAppServerTransportOptions {
 const decodeResponse = Schema.decodeUnknownOption(CodexAppServerResponseSchema);
 const decodeRequest = Schema.decodeUnknownOption(CodexAppServerInboundRequestSchema);
 const decodeNotification = Schema.decodeUnknownOption(CodexAppServerNotificationSchema);
-const decodeRequestMethod = Schema.decodeUnknownOption(CodexStableServerRequestMethodSchema);
-const decodeNotificationMethod = Schema.decodeUnknownOption(CodexStableNotificationMethodSchema);
+const decodeServerRequest = Schema.decodeUnknownOption(CodexServerRequestSchema);
+const decodeCuratedNotification = Schema.decodeUnknownOption(CodexNotificationSchema);
 
 function nodeProcess(options: CodexAppServerTransportOptions): CodexAppServerProcess {
   const child: ChildProcessWithoutNullStreams = spawn(
@@ -128,18 +131,18 @@ export function makeCodexAppServerConnection(options: CodexAppServerTransportOpt
         }
         const request = decodeRequest(value);
         if (Option.isSome(request)) {
-          const method = decodeRequestMethod(request.value.method);
-          if (Option.isNone(method)) {
+          const decoded = decodeServerRequest(request.value);
+          if (Option.isNone(decoded)) {
             process.write(`${JSON.stringify({ id: request.value.id, error: { code: -32601, message: "Unsupported server request" } })}\n`);
             return;
           }
-          for (const listener of requestListeners) listener({ id: request.value.id, method: method.value, params: request.value.params ?? {} });
+          for (const listener of requestListeners) listener(decoded.value);
           return;
         }
         const notification = decodeNotification(value);
         if (Option.isSome(notification)) {
-          const method = decodeNotificationMethod(notification.value.method);
-          if (Option.isSome(method)) for (const listener of notificationListeners) listener({ method: method.value, params: notification.value.params ?? {} });
+          const decoded = decodeCuratedNotification(notification.value);
+          if (Option.isSome(decoded)) for (const listener of notificationListeners) listener(decoded.value);
         }
       });
       const removeExit = process.onExit((code) => failAll(new CodexAppServerProcessExitError({ code, stderr: process.stderr() })));
@@ -159,7 +162,13 @@ export function makeCodexAppServerConnection(options: CodexAppServerTransportOpt
             fail: (error) => { clearTimeout(timer); resume(Effect.fail(error)); },
             succeed: (result) => { clearTimeout(timer); resume(Effect.succeed(result)); },
           });
-          Effect.runSync(write({ id, method, params }));
+          try {
+            process.write(`${JSON.stringify({ id, method, params })}\n`);
+          } catch {
+            clearTimeout(timer);
+            pending.delete(id);
+            resume(Effect.fail(new CodexAppServerTransportError({ message: "Failed to write to Codex App Server" })));
+          }
           return Effect.sync(() => { clearTimeout(timer); pending.delete(id); });
         }),
         respond: (id, result) => write({ id, result }),
@@ -173,23 +182,35 @@ export function makeCodexAppServerConnection(options: CodexAppServerTransportOpt
 export class CodexAppServerConnectionService extends Context.Service<CodexAppServerConnectionService, CodexAppServerConnection>()("@gaia/runtime/CodexAppServerConnection") {}
 export const CodexAppServerConnectionLive = (options: CodexAppServerTransportOptions = {}) => Layer.effect(CodexAppServerConnectionService, makeCodexAppServerConnection(options));
 
-const objectResult = Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.Json));
 export function makeCodexAppServerClient(connection: CodexAppServerConnection) {
-  const requestObject = (method: string, params: JsonObject = {}) => connection.request(method, params).pipe(
-    Effect.flatMap((result) => objectResult(result).pipe(
+  const request = <S extends Schema.Top>(method: string, params: JsonObject, schema: S) => connection.request(method, params).pipe(
+    Effect.flatMap((result) => Schema.decodeUnknownEffect(schema)(result).pipe(
       Effect.mapError(() => new CodexAppServerProtocolError({ method, message: `Invalid ${method} response` })),
     )),
   );
   return {
-    initialize: (clientInfo: JsonObject) => requestObject("initialize", { clientInfo }).pipe(Effect.tap(() => connection.notify("initialized"))),
-    interruptTurn: (params: JsonObject) => requestObject("turn/interrupt", params),
+    initialize: (clientInfo: { readonly name: string; readonly title: string; readonly version: string }) => request("initialize", { clientInfo }, InitializeResultSchema).pipe(
+      Effect.flatMap((result) => result.userAgent.includes(`/${supportedCodexCliVersion} `)
+        ? Effect.succeed(result)
+        : Effect.fail(new CodexAppServerIncompatibilityError({ actualUserAgent: result.userAgent, supportedVersion: supportedCodexCliVersion }))),
+      Effect.tap(() => connection.notify("initialized")),
+    ),
+    interruptTurn: (params: { readonly threadId: string; readonly turnId: string }) => request("turn/interrupt", params, EmptyResultSchema),
     onNotification: connection.onNotification,
     onServerRequest: connection.onServerRequest,
-    readThread: (params: JsonObject) => requestObject("thread/read", params),
-    respond: connection.respond,
-    resumeThread: (params: JsonObject) => requestObject("thread/resume", params),
-    startThread: (params: JsonObject) => requestObject("thread/start", params),
-    startTurn: (params: JsonObject) => requestObject("turn/start", params),
-    steerTurn: (params: JsonObject) => requestObject("turn/steer", params),
+    readThread: (params: { readonly threadId: string; readonly includeTurns?: boolean }) => request("thread/read", params, ThreadResultSchema),
+    respondCommandApproval: (id: CodexRequestId, response: typeof CommandApprovalResponseSchema.Type) => Schema.decodeUnknownEffect(CommandApprovalResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(id, value))),
+    respondFileApproval: (id: CodexRequestId, response: typeof FileApprovalResponseSchema.Type) => Schema.decodeUnknownEffect(FileApprovalResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(id, value))),
+    respondPermissionApproval: (id: CodexRequestId, response: typeof PermissionApprovalResponseSchema.Type) => Schema.decodeUnknownEffect(PermissionApprovalResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(id, value as Schema.Json))),
+    respondUserInput: (id: CodexRequestId, response: typeof UserInputResponseSchema.Type) => Schema.decodeUnknownEffect(UserInputResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(id, value))),
+    respondElicitation: (id: CodexRequestId, response: typeof ElicitationResponseSchema.Type) => Schema.decodeUnknownEffect(ElicitationResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(id, value as Schema.Json))),
+    resumeThread: (params: { readonly threadId: string }) => request("thread/resume", params, ThreadResultSchema),
+    startThread: (params: { readonly approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never"; readonly cwd?: string; readonly ephemeral?: boolean; readonly model?: string; readonly sandbox?: "read-only" | "workspace-write" | "danger-full-access" }) => request("thread/start", params, ThreadResultSchema),
+    startTurn: (params: { readonly input: ReadonlyArray<{ readonly type: "text"; readonly text: string }>; readonly threadId: string }) => request("turn/start", params, TurnResultSchema),
+    steerTurn: (params: { readonly expectedTurnId: string; readonly input: ReadonlyArray<{ readonly type: "text"; readonly text: string }>; readonly threadId: string }) => request("turn/steer", params, TurnSteerResultSchema),
   } as const;
 }
+
+export type CodexAppServerClient = ReturnType<typeof makeCodexAppServerClient>;
+export class CodexAppServerClientService extends Context.Service<CodexAppServerClientService, CodexAppServerClient>()("@gaia/runtime/CodexAppServerClient") {}
+export const CodexAppServerClientLive = (options: CodexAppServerTransportOptions = {}) => Layer.effect(CodexAppServerClientService, makeCodexAppServerConnection(options).pipe(Effect.map(makeCodexAppServerClient)));

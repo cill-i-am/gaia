@@ -21,15 +21,10 @@ export {
 } from "./browser-evidence.js";
 export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 export {
-  CodexAppServerConnectionLive,
-  CodexAppServerConnectionService,
+  CodexAppServerClientLive,
+  CodexAppServerClientService,
   makeCodexAppServerClient,
-  makeCodexAppServerConnection,
-  type CodexAppServerConnection,
-  type CodexAppServerProcess,
-  type CodexAppServerTransportOptions,
-  type CodexNotification,
-  type CodexServerRequest,
+  type CodexAppServerClient,
 } from "./codex-app-server-client.js";
 export {
   CodexAppServerIncompatibilityError,
