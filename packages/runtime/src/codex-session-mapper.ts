@@ -1380,12 +1380,12 @@ function isPathDelimiter(
 
 function hasAbsolutePathPrefix(input: string, index: number): boolean {
   const first = input[index];
-  if (first === "/") return input[index + 1] !== "/";
+  if (first === "/") return true;
   if (first === "\\") return input[index + 1] === "\\";
   return (
     isAsciiLetter(first) &&
     input[index + 1] === ":" &&
-    input[index + 2] === "\\"
+    (input[index + 2] === "\\" || input[index + 2] === "/")
   );
 }
 
