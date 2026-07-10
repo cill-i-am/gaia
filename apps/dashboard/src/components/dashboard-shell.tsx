@@ -364,6 +364,8 @@ export function DashboardShell() {
     selectedRunId,
     runConsole.runs,
   );
+  const selectedRunShouldStream =
+    selectedRunId !== undefined && selectedConsoleRun?.isTerminal === false;
   const selectedRunSummaryFromList = runsQuery.data?.data.runs.find(
     (run) => run.runId === selectedRunId,
   );
@@ -413,10 +415,7 @@ export function DashboardShell() {
     }),
   );
   const runEventStream = useRunEventStream({
-    enabled:
-      commandMode === "activity" &&
-      selectedRunId !== undefined &&
-      selectedConsoleRun?.isTerminal === false,
+    enabled: selectedRunShouldStream,
     runId: selectedRunId,
     serverUrl,
   });
@@ -2492,12 +2491,18 @@ function FactoryEvidenceSummary({
       ) : null}
       <EvidenceSummarySection
         emptyText="No public activity entries yet."
-        items={inspector.activity.slice(0, 4).map((activity) => activity.label)}
+        items={inspector.activity.slice(0, 4).map((activity) => ({
+          key: factoryActivityKey(activity),
+          label: activity.label,
+        }))}
         title="Recent activity"
       />
       <EvidenceSummarySection
         emptyText="No public artifacts linked yet."
-        items={inspector.artifacts.map((artifact) => artifact.label)}
+        items={inspector.artifacts.map((artifact) => ({
+          key: String(artifact.artifactId),
+          label: artifact.label,
+        }))}
         title="Linked artifacts"
       />
       <EvidenceSummarySection
@@ -2509,7 +2514,9 @@ function FactoryEvidenceSummary({
           selectedNode.artifactIds.length === 0
             ? undefined
             : `Linked artifacts: ${selectedNode.artifactIds.join(", ")}`,
-        ].filter(isPresent)}
+        ]
+          .filter(isPresent)
+          .map((label) => ({ key: label, label }))}
         title="Graph references"
       />
     </div>
@@ -2555,7 +2562,10 @@ function EvidenceSummarySection({
   title,
 }: {
   readonly emptyText: string;
-  readonly items: ReadonlyArray<string>;
+  readonly items: ReadonlyArray<{
+    readonly key: string;
+    readonly label: string;
+  }>;
   readonly title: string;
 }) {
   return (
@@ -2568,9 +2578,9 @@ function EvidenceSummarySection({
       ) : (
         <ul className="flex flex-col gap-1.5">
           {items.map((item) => (
-            <li className="flex items-center gap-2 text-sm" key={item}>
+            <li className="flex items-center gap-2 text-sm" key={item.key}>
               <CircleDotIcon className="size-3 text-muted-foreground" />
-              <span className="min-w-0 truncate">{item}</span>
+              <span className="min-w-0 truncate">{item.label}</span>
             </li>
           ))}
         </ul>
@@ -2632,7 +2642,7 @@ function FactoryEvidenceActivity({
         <section
           className="border-b py-3 last:border-b-0"
           data-testid={`evidence-activity-${activity.sequence}`}
-          key={activity.activityId}
+          key={factoryActivityKey(activity)}
         >
           <div className="flex items-start gap-3">
             <span className="mt-0.5 shrink-0 font-mono text-xs text-muted-foreground">
@@ -3023,6 +3033,15 @@ function useRunEventStream({
     }
 
     const source = new EventSource(runEventStreamUrl(serverUrl, runId));
+    let sourceClosed = false;
+    const closeSource = () => {
+      if (sourceClosed) {
+        return;
+      }
+
+      source.close();
+      sourceClosed = true;
+    };
     setState({
       events: [],
       message: "Connecting to run event stream.",
@@ -3039,7 +3058,7 @@ function useRunEventStream({
     };
 
     source.onerror = () => {
-      source.close();
+      closeSource();
       setState((current) => ({
         ...current,
         message: "Run event stream disconnected.",
@@ -3050,7 +3069,7 @@ function useRunEventStream({
     source.onmessage = (message) => {
       const event = parseStreamMessage(message);
       if (event === undefined) {
-        source.close();
+        closeSource();
         setState((current) => ({
           ...current,
           message: "Run event stream returned an invalid event.",
@@ -3073,14 +3092,23 @@ function useRunEventStream({
       }));
 
       if (isTerminal) {
-        source.close();
+        closeSource();
       }
     };
 
-    return () => source.close();
+    return closeSource;
   }, [enabled, runId, serverUrl]);
 
   return state;
+}
+
+function factoryActivityKey(activity: typeof FactoryActivityDto.Type) {
+  return [
+    activity.activityId,
+    activity.sequence,
+    activity.kind,
+    activity.timestamp,
+  ].join(":");
 }
 
 function runEventStreamUrl(serverUrl: string, runId: string) {

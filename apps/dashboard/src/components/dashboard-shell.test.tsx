@@ -79,6 +79,7 @@ const queryFixture = vi.hoisted(
     runs: ReadonlyArray<unknown>;
     runsDiagnostics: ReadonlyArray<unknown>;
     runsError?: unknown;
+    runsRequestCount: number;
   } => ({
     artifactsByRunId: {},
     factoryActivitiesByRunId: {},
@@ -98,6 +99,7 @@ const queryFixture = vi.hoisted(
     runs: [],
     runsDiagnostics: [],
     runsError: undefined,
+    runsRequestCount: 0,
   }),
 );
 
@@ -170,6 +172,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
   }),
   localGaiaRunsQueryOptions: () => ({
     queryFn: () => {
+      queryFixture.runsRequestCount += 1;
       if (queryFixture.runsError !== undefined) {
         return Promise.reject({ failure: queryFixture.runsError });
       }
@@ -381,6 +384,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  delete (globalThis as { EventSource?: unknown }).EventSource;
+  delete (window as { EventSource?: unknown }).EventSource;
 });
 
 describe("DashboardShell Run Console", () => {
@@ -1003,6 +1008,123 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
+  it("renders duplicate review activity labels without React key warnings", async () => {
+    const consoleErrors = captureConsoleErrors();
+    const runId = parseRunId("run-9494949494");
+    const reviewerId = agentId("agent-reviewer");
+    const workerId = agentId("agent-worker");
+    const workerArtifactId = artifactIdValue("artifact-summary");
+    const reviewActivities = [
+      factoryActivity({
+        activityId: activityId("activity-review-plan-started"),
+        agentId: reviewerId,
+        kind: "REVIEW_STARTED",
+        label: "Review started",
+        runId,
+        sequence: 3,
+        state: "running",
+        subState: "plan",
+        timestamp: "2026-07-08T12:02:00.000Z",
+      }),
+      factoryActivity({
+        activityId: activityId("activity-review-plan-completed"),
+        agentId: reviewerId,
+        kind: "REVIEW_COMPLETED",
+        label: "Review completed",
+        runId,
+        sequence: 4,
+        state: "succeeded",
+        subState: "plan",
+        timestamp: "2026-07-08T12:03:00.000Z",
+      }),
+      factoryActivity({
+        activityId: activityId("activity-review-evidence-started"),
+        agentId: reviewerId,
+        kind: "REVIEW_STARTED",
+        label: "Review started",
+        runId,
+        sequence: 9,
+        state: "running",
+        subState: "evidence",
+        timestamp: "2026-07-08T12:08:00.000Z",
+      }),
+      factoryActivity({
+        activityId: activityId("activity-review-evidence-completed"),
+        agentId: reviewerId,
+        kind: "REVIEW_COMPLETED",
+        label: "Review completed",
+        runId,
+        sequence: 10,
+        state: "succeeded",
+        subState: "evidence",
+        timestamp: "2026-07-08T12:09:00.000Z",
+      }),
+    ];
+    try {
+      const view = renderDashboardWithQueries({
+        factoryAgentActivitiesByRunId: {
+          [runId]: {
+            [reviewerId]: reviewActivities,
+          },
+        },
+        factoryActivitiesByRunId: {
+          [runId]: reviewActivities,
+        },
+        factoryGraphsByRunId: {
+          [runId]: factoryGraph({
+            runId,
+            workerArtifactId,
+            workerId,
+          }),
+        },
+        runs: [
+          localRunSummary({
+            eventCount: 12,
+            latestEventType: "REPORT_COMPLETED",
+            runId,
+            state: "completed",
+            status: "completed",
+          }),
+        ],
+      });
+      await screen.findByTestId("selected-run-title");
+      const reviewerNode = await waitFor(() => {
+        const node = view.container.querySelector(
+          '[data-id="agent:agent-reviewer"]',
+        );
+        if (node === null) {
+          throw new Error("Expected a reviewer FactoryGraph node.");
+        }
+
+        return node;
+      });
+      fireEvent.click(reviewerNode);
+
+      for (const activityTab of screen.getAllByRole("tab", {
+        name: "Activity",
+      })) {
+        fireEvent.pointerDown(activityTab);
+        fireEvent.mouseDown(activityTab);
+        fireEvent.mouseUp(activityTab);
+        fireEvent.click(activityTab);
+      }
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Review started")).toHaveLength(2);
+        expect(screen.getAllByText("Review completed")).toHaveLength(2);
+      });
+      expect(consoleErrors.messages).not.toEqual(
+        expect.arrayContaining([
+          expect.stringContaining(
+            "Encountered two children with the same key",
+          ),
+        ]),
+      );
+    } finally {
+      consoleErrors.restore();
+    }
+  });
+
   it("renders typed runs data and updates selected run state on row click", async () => {
     const firstRunId = parseRunId("run-1111111111");
     const secondRunId = parseRunId("run-2222222222");
@@ -1280,19 +1402,25 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
-  it("closes the live event stream after a terminal Gaia event", async () => {
+  it("refreshes a selected active run to terminal state from the live stream", async () => {
     const eventSource = installMockEventSource();
     const runId = parseRunId("run-3333333333");
+    const createdEvent = makeRunEvent({
+      runId,
+      sequence: 1,
+      timestamp: "2026-07-07T12:00:00.000Z",
+      type: "RUN_CREATED",
+    });
+    const terminalEvent = makeRunEvent({
+      payload: { reportPath: "report.md" },
+      runId,
+      sequence: 2,
+      timestamp: "2026-07-07T12:01:00.000Z",
+      type: "REPORT_COMPLETED",
+    });
     renderDashboardWithQueries({
       eventsByRunId: {
-        [runId]: [
-          makeRunEvent({
-            runId,
-            sequence: 1,
-            timestamp: "2026-07-07T12:00:00.000Z",
-            type: "RUN_CREATED",
-          }),
-        ],
+        [runId]: [createdEvent],
       },
       runs: [
         localRunSummary({
@@ -1306,9 +1434,6 @@ describe("DashboardShell Run Console", () => {
       ],
     });
 
-    expect(eventSource.instances).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-
     await waitFor(() => {
       expect(eventSource.instances).toHaveLength(1);
     });
@@ -1316,24 +1441,69 @@ describe("DashboardShell Run Console", () => {
     const source = firstElement(eventSource.instances);
     act(() => {
       source.onopen?.(new Event("open"));
+    });
+
+    expect(queryFixture.runsRequestCount).toBe(1);
+    expect(screen.getByTestId("run-console-row-run-3333333333").textContent).toContain(
+      "Running",
+    );
+    expect(screen.getByTestId("run-console-row-run-3333333333").textContent).toContain(
+      "1 event",
+    );
+
+    act(() => {
+      queryFixture.eventsByRunId[runId] = [createdEvent, terminalEvent];
+      queryFixture.runs = [
+        localRunSummary({
+          artifacts: ["input", "report"],
+          eventCount: 2,
+          latestEventType: "REPORT_COMPLETED",
+          runId,
+          state: "completed",
+          status: "completed",
+          updatedAt: "2026-07-07T12:01:00.000Z",
+        }),
+      ];
       source.onmessage?.({
-        data: JSON.stringify(
-          makeRunEvent({
-            payload: { reportPath: "report.md" },
-            runId,
-            sequence: 2,
-            timestamp: "2026-07-07T12:01:00.000Z",
-            type: "REPORT_COMPLETED",
-          }),
-        ),
+        data: JSON.stringify(terminalEvent),
       } as MessageEvent<string>);
     });
 
     await waitFor(() => {
-      expect(source.close).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("run-console-row-run-3333333333").textContent).toContain(
+        "Completed",
+      );
+      expect(screen.getByTestId("run-console-row-run-3333333333").textContent).toContain(
+        "Report Completed",
+      );
+      expect(screen.getByTestId("run-console-row-run-3333333333").textContent).toContain(
+        "2 events",
+      );
       expect(screen.getAllByText("Report Completed")).not.toHaveLength(0);
-      expect(screen.getAllByText("Closed")).not.toHaveLength(0);
     });
+    expect(queryFixture.runsRequestCount).toBe(2);
+    expect(eventSource.instances).toHaveLength(1);
+    expect(source.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not subscribe to the live stream for already terminal runs", async () => {
+    const eventSource = installMockEventSource();
+    const runId = parseRunId("run-3434343434");
+    renderDashboardWithQueries({
+      runs: [
+        localRunSummary({
+          eventCount: 2,
+          latestEventType: "REPORT_COMPLETED",
+          runId,
+          state: "completed",
+          status: "completed",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("run-console-row-run-3434343434");
+
+    expect(eventSource.instances).toHaveLength(0);
   });
 
   it("compares two runs while comparison selection keeps the primary canvas selected", async () => {
@@ -1869,6 +2039,7 @@ function renderDashboardWithQueries(input: {
   queryFixture.runs = input.runs;
   queryFixture.runsDiagnostics = input.runsDiagnostics ?? [];
   queryFixture.runsError = input.runsError;
+  queryFixture.runsRequestCount = 0;
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -2286,6 +2457,21 @@ function deferred<T>() {
   });
 
   return { promise, resolve };
+}
+
+function captureConsoleErrors() {
+  const originalError = console.error;
+  const messages: Array<string> = [];
+  console.error = (...args: Array<unknown>) => {
+    messages.push(args.map(String).join(" "));
+  };
+
+  return {
+    messages,
+    restore: () => {
+      console.error = originalError;
+    },
+  };
 }
 
 function installBrowserApiPolyfills() {
