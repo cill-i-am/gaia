@@ -22,9 +22,19 @@ import {
 } from "./factory-graph.js";
 import { RunIdSchema } from "./run-id.js";
 import { HarnessExecutionSelection } from "./harness-execution.js";
+import {
+  AgentActionSuccessEnvelope,
+  AgentOperatorActionRequestSchema,
+  AgentSessionSnapshotSuccessEnvelope,
+  AgentSessionSseEventSchema,
+  AgentSessionUpdateDto,
+} from "./agent-session-api.js";
 
 export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
+  "AgentActionConflict",
+  "AgentSessionUnavailable",
+  "AgentStreamCursorConflict",
   "ArtifactNotAllowed",
   "ArtifactNotFound",
   "EndpointNotFound",
@@ -65,6 +75,8 @@ const MethodNotAllowedDiagnosticCodeSchema = Schema.Literals([
 ] as const);
 const ConflictDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
+  "AgentActionConflict",
+  "AgentStreamCursorConflict",
   "RunStoreLocked",
 ] as const);
 const UnprocessableDiagnosticCodeSchema = Schema.Literals([
@@ -73,6 +85,7 @@ const UnprocessableDiagnosticCodeSchema = Schema.Literals([
   "HarnessIncompatible",
   "HarnessProfileNotFound",
   "HarnessUnavailable",
+  "AgentSessionUnavailable",
   "InvalidRunDirectory",
   "RunHasNoEvents",
   "RunUnreadable",
@@ -441,6 +454,11 @@ export const RunEventStreamResponse = HttpApiSchema.StreamSse({
   error: LocalRunApiErrorEnvelope,
 });
 
+export const AgentSessionStreamResponse = HttpApiSchema.StreamSse({
+  events: AgentSessionSseEventSchema,
+  error: LocalRunApiErrorEnvelope,
+});
+
 export const HealthGroup = HttpApiGroup.make("health").add(
   HttpApiEndpoint.get("health", "/health", {
     error: LocalRunInternalErrorResponse,
@@ -515,6 +533,29 @@ export const RunsGroup = HttpApiGroup.make("runs")
         runId: RunIdSchema,
       },
       success: FactoryActivitySuccessEnvelope,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("getAgentSession", "/runs/:runId/agents/:agentId/session", {
+      error: LocalRunReadErrorResponse,
+      params: { agentId: FactoryAgentIdSchema, runId: RunIdSchema },
+      success: AgentSessionSnapshotSuccessEnvelope,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("streamAgentSession", "/runs/:runId/agents/:agentId/session/stream", {
+      error: [...LocalRunStreamErrorResponse, LocalRunApiConflictResponse],
+      params: { agentId: FactoryAgentIdSchema, runId: RunIdSchema },
+      query: { afterSequence: Schema.optionalKey(Schema.NumberFromString) },
+      success: AgentSessionStreamResponse,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("actOnAgentSession", "/runs/:runId/agents/:agentId/session/actions", {
+      error: [...LocalRunReadErrorResponse, LocalRunApiConflictResponse],
+      params: { agentId: FactoryAgentIdSchema, runId: RunIdSchema },
+      payload: AgentOperatorActionRequestSchema,
+      success: AgentActionSuccessEnvelope,
     }),
   )
   .add(

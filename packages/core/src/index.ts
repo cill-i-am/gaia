@@ -157,6 +157,24 @@ export {
 } from "./harness-session.js";
 export { RunReport, ReportStatusSchema, parseRunReport } from "./report.js";
 export {
+  AgentActionReceiptDto,
+  AgentActionStateSchema,
+  AgentActionSuccessEnvelope,
+  AgentOperatorActionRequestSchema,
+  AgentSessionSnapshotDto,
+  AgentSessionSnapshotSuccessEnvelope,
+  AgentSessionSseEventSchema,
+  AgentSessionUpdateDto,
+  ApprovalAgentActionRequest,
+  FollowUpAgentActionRequest,
+  InterruptAgentActionRequest,
+  McpElicitationAgentActionRequest,
+  SteerAgentActionRequest,
+  UserInputAgentActionRequest,
+  type AgentActionState,
+  type AgentOperatorActionRequest,
+} from "./agent-session-api.js";
+export {
   FactoryActivityDto,
   FactoryActivityIdSchema,
   FactoryActivityListDto,

@@ -326,6 +326,85 @@ describe("local run api http boundary", () => {
       20_000,
     );
 
+    it.effect("serves normalized agent session snapshots and selected-agent SSE without provider leakage", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        yield* continueServerRun(accepted.runId, {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        const layer = testServerLayer(cwd);
+
+        const snapshotResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/agents/agent-worker/session`,
+        ).pipe(Effect.provide(layer));
+        const streamResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/agents/agent-worker/session/stream`,
+        ).pipe(Effect.provide(layer));
+        const snapshotBody = yield* responseJsonObject(snapshotResponse);
+        const snapshot = getObject(snapshotBody, "data");
+        const streamText = yield* streamResponse.text;
+        const sse = parseSseBlocks(streamText);
+        const updates = sse.map(({ data }) => data);
+
+        assert.strictEqual(snapshotResponse.status, 200);
+        assert.strictEqual(getString(snapshotBody, "status"), "success");
+        assert.strictEqual(getString(snapshot, "runId"), accepted.runId);
+        assert.strictEqual(getString(snapshot, "agentId"), "agent-worker");
+        assert.notInclude(JSON.stringify(snapshot), "native-thread");
+        assert.notInclude(JSON.stringify(snapshot), "synthetic-stream");
+        assert.strictEqual(streamResponse.status, 200);
+        assert.isAtLeast(updates.length, 1);
+        assert.deepEqual(
+          sse.map(({ id }) => id),
+          updates.map((update) => String(getNumber(update, "eventSequence"))),
+        );
+        assert.deepEqual(
+          updates.map((update) => getNumber(update, "eventSequence")),
+          [...updates.map((update) => getNumber(update, "eventSequence"))].sort((left, right) => left - right),
+        );
+        assert.isTrue(getObjectFromArray(updates, updates.length - 1)["terminal"] === true);
+      }),
+      20_000,
+    );
+
+    it.effect("maps strict agent action conflicts to public 409 errors", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        yield* continueServerRun(accepted.runId, {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        const response = yield* HttpClientRequest.post(
+          `/runs/${accepted.runId}/agents/agent-worker/session/actions`,
+        ).pipe(
+          HttpClientRequest.bodyJsonUnsafe({
+            actionId: "action-server-follow-up",
+            kind: "followUp",
+            sessionId: `session-${accepted.runId}`,
+            text: "Continue safely.",
+          }),
+          HttpClient.execute,
+          Effect.provide(testServerLayer(cwd)),
+        );
+        const body = yield* responseJsonObject(response);
+
+        assert.strictEqual(response.status, 409);
+        assertApiError(body, "AgentActionConflict", 409);
+      }),
+      20_000,
+    );
+
     it.effect("returns typed diagnostics for missing agents and corrupt projections", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -640,10 +719,21 @@ function responseJsonObject(
 function parseSseDataEvents(
   text: string,
 ): ReadonlyArray<Readonly<Record<string, unknown>>> {
+  return parseSseBlocks(text).map(({ data }) => data);
+}
+
+function parseSseBlocks(
+  text: string,
+): ReadonlyArray<{ readonly data: Readonly<Record<string, unknown>>; readonly id: string | undefined }> {
   return text
     .trim()
     .split(/\r?\n\r?\n/u)
     .flatMap((block) => {
+      const id = block
+        .split(/\r?\n/u)
+        .find((line) => line.startsWith("id:"))
+        ?.slice("id:".length)
+        .trimStart();
       const dataLines = block
         .split(/\r?\n/u)
         .filter((line) => line.startsWith("data:"))
@@ -660,7 +750,7 @@ function parseSseDataEvents(
         );
       }
 
-      return [parsed];
+      return [{ data: parsed, id }];
     });
 }
 

@@ -1,4 +1,7 @@
 import {
+  AgentOperatorActionRequestSchema,
+  AgentSessionSnapshotSuccessEnvelope,
+  AgentSessionUpdateDto,
   CreateRunRequest,
   codexAppServerExecutionSelection,
   FactoryActivitySuccessEnvelope,
@@ -40,7 +43,7 @@ export type DashboardGaiaClientError =
   | {
       readonly _tag: "DashboardGaiaParameterError";
       readonly cause: Schema.SchemaError;
-      readonly parameter: "agentId" | "artifactId" | "createRun" | "runId";
+      readonly parameter: "action" | "agentId" | "artifactId" | "createRun" | "runId";
     }
   | {
       readonly _tag: "DashboardGaiaTimeoutError";
@@ -78,6 +81,10 @@ const decodeFactoryArtifactListSuccess = Schema.decodeUnknownEffect(
 const decodeFactoryArtifactSuccess = Schema.decodeUnknownEffect(
   FactoryArtifactSuccessEnvelope,
 );
+const decodeAgentSessionSnapshotSuccess = Schema.decodeUnknownEffect(
+  AgentSessionSnapshotSuccessEnvelope,
+);
+const decodeAgentSessionUpdate = Schema.decodeUnknownSync(AgentSessionUpdateDto);
 
 export function healthFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig,
@@ -174,6 +181,68 @@ export function getFactoryAgentActivityFromDashboardGaiaClient(
       return yield* decodeFactoryActivitySuccess(response);
     }),
   );
+}
+
+export function getAgentSessionFromDashboardGaiaClient(
+  config: DashboardGaiaClientConfig & { readonly agentId: string; readonly runId: string },
+) {
+  return withDashboardGaiaClient(config, (client) =>
+    Effect.gen(function* () {
+      const runId = yield* decodeRunIdParameter(config.runId);
+      const agentId = yield* decodeAgentIdParameter(config.agentId);
+      return yield* client.runs.getAgentSession({ params: { agentId, runId } }).pipe(Effect.flatMap(decodeAgentSessionSnapshotSuccess));
+    }),
+  );
+}
+
+export function actOnAgentSessionFromDashboardGaiaClient(
+  config: DashboardGaiaClientConfig & { readonly action: unknown; readonly agentId: string; readonly runId: string },
+) {
+  return withDashboardGaiaClient(config, (client) =>
+    Effect.gen(function* () {
+      const runId = yield* decodeRunIdParameter(config.runId);
+      const agentId = yield* decodeAgentIdParameter(config.agentId);
+      const payload = yield* Schema.decodeUnknownEffect(AgentOperatorActionRequestSchema)(config.action).pipe(Effect.mapError((cause) => parameterError("action", cause)));
+      const params = { agentId, runId };
+      switch (payload.kind) {
+        case "followUp": return yield* client.runs.actOnAgentSession({ params, payload });
+        case "steer": return yield* client.runs.actOnAgentSession({ params, payload });
+        case "interrupt": return yield* client.runs.actOnAgentSession({ params, payload });
+        case "approval": return yield* client.runs.actOnAgentSession({ params, payload });
+        case "userInput": return yield* client.runs.actOnAgentSession({ params, payload });
+        case "mcpElicitation": return yield* client.runs.actOnAgentSession({ params, payload });
+      }
+    }),
+  );
+}
+
+export type AgentSessionEventSource = {
+  close(): void;
+  onerror: ((event: unknown) => void) | null;
+  onmessage: ((event: { readonly data: string; readonly lastEventId: string }) => void) | null;
+};
+
+/** Browser-owned SSE lifecycle. The caller closes on run/agent change or unmount. */
+export function openAgentSessionEventSource(
+  config: DashboardGaiaClientConfig & { readonly afterSequence?: number; readonly agentId: string; readonly runId: string },
+  handlers: { readonly onError: (error: unknown) => void; readonly onUpdate: (update: typeof AgentSessionUpdateDto.Type) => void },
+  create: (url: string) => AgentSessionEventSource = (url) => new EventSource(url) as AgentSessionEventSource,
+) {
+  const query = config.afterSequence === undefined ? "" : `?afterSequence=${encodeURIComponent(String(config.afterSequence))}`;
+  const baseUrl = normalizedServerUrl(config.serverUrl).replace(/\/$/u, "");
+  const source = create(`${baseUrl}/runs/${encodeURIComponent(config.runId)}/agents/${encodeURIComponent(config.agentId)}/session/stream${query}`);
+  source.onmessage = (event) => {
+    try {
+      const update = decodeAgentSessionUpdate(JSON.parse(event.data));
+      if (event.lastEventId !== "" && String(update.eventSequence) !== event.lastEventId) throw new Error("Gaia SSE event ID does not match its normalized sequence.");
+      handlers.onUpdate(update);
+    } catch (error) {
+      source.close();
+      handlers.onError(error);
+    }
+  };
+  source.onerror = handlers.onError;
+  return { close: () => source.close() };
 }
 
 export function listFactoryArtifactsFromDashboardGaiaClient(
@@ -378,7 +447,7 @@ function legacyEventTypeFromFactoryState(
 }
 
 function parameterError(
-  parameter: "agentId" | "artifactId" | "createRun" | "runId",
+  parameter: "action" | "agentId" | "artifactId" | "createRun" | "runId",
   cause: Schema.SchemaError,
 ): DashboardGaiaClientError {
   return {

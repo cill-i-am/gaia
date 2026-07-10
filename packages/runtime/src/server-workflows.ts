@@ -44,6 +44,7 @@ import {
   type WorkerContinuationState,
 } from "./workflows.js";
 import { interactiveSessionHarness } from "./interactive-harness.js";
+import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
 import {
   localDirectoryWorkspaceSource,
   type WorkspaceSource,
@@ -56,6 +57,7 @@ const nanoid = customAlphabet(
 
 export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly harnessProviderRegistry?: HarnessProviderRegistry;
+  readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly workspaceSource?: WorkspaceSource;
 };
 
@@ -742,7 +744,10 @@ function factoryContinuationOptions(
       return {
         ...commonOptions,
         workerContinuationState: continuationState,
-        workerHarness: interactiveSessionHarness({ rootDirectory }),
+        workerHarness: interactiveSessionHarness({
+          rootDirectory,
+          ...(options.sessionCoordinator === undefined ? {} : { sessionCoordinator: options.sessionCoordinator }),
+        }),
       };
     }
 
@@ -780,6 +785,7 @@ function factoryContinuationOptions(
       workerHarness: interactiveSessionHarness({
         provider: resolved.provider,
         rootDirectory,
+        ...(options.sessionCoordinator === undefined ? {} : { sessionCoordinator: options.sessionCoordinator }),
       }),
     };
   });

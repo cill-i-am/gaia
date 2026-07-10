@@ -21,6 +21,13 @@ export {
 } from "./browser-evidence.js";
 export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 export {
+  dispatchAgentSessionAction,
+  makeLiveHarnessSessionCoordinator,
+  readAgentSessionSnapshot,
+  streamAgentSessionUpdates,
+  type LiveHarnessSessionCoordinator,
+} from "./agent-session-runtime.js";
+export {
   CodexAppServerClientLive,
   CodexAppServerClientService,
   makeCodexAppServerConnection,
@@ -142,6 +149,9 @@ export {
 export {
   appendEvent,
   appendHarnessSessionEvent,
+  appendHarnessSessionEventWithinSerialization,
+  subscribeRunEventFeed,
+  withRunEventSerialization,
   loadRun,
   readEvents,
   type AppendEventInput,
