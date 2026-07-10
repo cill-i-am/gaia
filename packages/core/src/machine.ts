@@ -145,6 +145,7 @@ export type RunMachineEvent =
       readonly pullRequest?: string;
       readonly status: string;
     }
+  | { readonly type: "HARNESS_SESSION_EVENT_RECORDED" }
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
@@ -678,6 +679,8 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
     case "REVIEW_STARTED":
     case "VERIFICATION_STARTED":
     case "WORKER_STARTED":
+      return { type: event.type };
+    case "HARNESS_SESSION_EVENT_RECORDED":
       return { type: event.type };
     case "REVIEW_COMPLETED":
       const reviewerSessionEvidencePath = getOptionalStringPayload(

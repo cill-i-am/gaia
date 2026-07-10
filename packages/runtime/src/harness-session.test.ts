@@ -1,0 +1,183 @@
+import {
+  HarnessCapabilities,
+  HarnessProviderDescriptor,
+  HarnessSessionSnapshot,
+  HarnessTurnSnapshot,
+  parseHarnessProviderId,
+  parseHarnessSessionId,
+  parseHarnessTurnId,
+  parseWorkspaceRelativePath,
+} from "@gaia/core";
+import { describe, expect, it } from "vitest";
+import { Effect, Option, Stream } from "effect";
+import {
+  startHarnessSession,
+  type HarnessProvider,
+  type HarnessSession,
+} from "./index.js";
+
+const sessionId = parseHarnessSessionId("session-synthetic");
+const turnId = parseHarnessTurnId("turn-synthetic");
+const capabilities = HarnessCapabilities.make({
+  approvals: [],
+  fileChangeEvents: false,
+  interruption: true,
+  resumableSessions: true,
+  review: false,
+  steering: false,
+  streamingMessages: true,
+  structuredOutput: false,
+  subagents: false,
+  toolEvents: false,
+  usageReporting: false,
+  userQuestions: false,
+});
+const descriptor = HarnessProviderDescriptor.make({
+  displayName: "Synthetic Stream Harness",
+  executionModes: ["local"],
+  providerId: parseHarnessProviderId("synthetic-stream"),
+});
+const snapshot = HarnessSessionSnapshot.make({
+  capabilities,
+  items: [],
+  pendingInteractions: [],
+  provider: descriptor,
+  recovered: false,
+  resolvedInteractions: [],
+  sessionId,
+  state: "running",
+  turns: [
+    HarnessTurnSnapshot.make({ status: "running", turnId }),
+  ],
+});
+
+function syntheticProvider(started: Array<string>): HarnessProvider {
+  const session: HarnessSession = {
+    events: Stream.fromIterable([
+      {
+        capabilities,
+        kind: "sessionStarted",
+        provider: descriptor,
+        sessionId,
+        state: "running",
+      },
+      {
+        kind: "turnStarted",
+        sessionId,
+        turnId,
+      },
+    ]),
+    interrupt: Option.some(Effect.void),
+    resolveInteraction: () => Effect.void,
+    send: () => Effect.void,
+    snapshot: Effect.succeed(snapshot),
+    steer: Option.none(),
+  };
+
+  return {
+    createSession: (request) => {
+      started.push(request.sessionId);
+      return Effect.succeed(session);
+    },
+    descriptor,
+    detect: Effect.succeed({
+      auth: { state: "notRequired" },
+      capabilities,
+      state: "available",
+      version: "1.0.0",
+    }),
+    resumeSession: () => Effect.succeed(session),
+  };
+}
+
+describe("provider-neutral harness session SPI", () => {
+  it("runs a synthetic non-Codex provider through the public session contract", async () => {
+    const started: Array<string> = [];
+    const provider = syntheticProvider(started);
+
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* startHarnessSession({
+            provider,
+            request: {
+              input: { text: "run the synthetic task" },
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("."),
+            },
+            requiredCapabilities: ["streamingMessages", "interruption"],
+          });
+          const events = yield* Stream.runCollect(session.events);
+          return {
+            events: Array.from(events),
+            snapshot: yield* session.snapshot,
+          };
+        }),
+      ),
+    );
+
+    expect(started).toEqual([sessionId]);
+    expect(result.events.map(({ kind }) => kind)).toEqual([
+      "sessionStarted",
+      "turnStarted",
+    ]);
+    expect(result.snapshot.provider.providerId).toBe("synthetic-stream");
+  });
+
+  it("fails a capability mismatch before provider dispatch", async () => {
+    const started: Array<string> = [];
+    const error = await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: syntheticProvider(started),
+          request: {
+            input: { text: "review" },
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("."),
+          },
+          requiredCapabilities: ["review"],
+        }).pipe(Effect.flip),
+      ),
+    );
+
+    expect(error._tag).toBe("HarnessCapabilityMismatchError");
+    if (error._tag !== "HarnessCapabilityMismatchError") {
+      throw new Error(`Unexpected error: ${error._tag}`);
+    }
+    expect(error.missing).toEqual(["review"]);
+    expect(started).toEqual([]);
+  });
+
+  it("rejects capability flags that contradict optional session operations", async () => {
+    const started: Array<string> = [];
+    const provider = syntheticProvider(started);
+    const contradictory: HarnessProvider = {
+      ...provider,
+      createSession: (request) =>
+        provider.createSession(request).pipe(
+          Effect.map((session) => ({ ...session, interrupt: Option.none() })),
+        ),
+    };
+
+    const error = await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: contradictory,
+          request: {
+            input: { text: "interruptible task" },
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("."),
+          },
+          requiredCapabilities: ["interruption"],
+        }).pipe(Effect.flip),
+      ),
+    );
+
+    expect(error._tag).toBe("HarnessSessionContractError");
+    if (error._tag !== "HarnessSessionContractError") {
+      throw new Error(`Unexpected error: ${error._tag}`);
+    }
+    expect(error.contradictions).toEqual(["interruption"]);
+    expect(started).toEqual([sessionId]);
+  });
+});

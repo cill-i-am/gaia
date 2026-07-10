@@ -34,10 +34,39 @@ export {
   CodexAppServerTransportError,
   type CodexAppServerError,
 } from "./codex-app-server-protocol.js";
+export {
+  CodexHarnessCapabilities,
+  CodexHarnessProviderDescriptor,
+  createCodexHarnessProvider,
+  makeInMemoryCodexHarnessCorrelationStore,
+  type CodexHarnessCorrelationStore,
+  type CodexHarnessOpaqueCorrelation,
+  type CodexHarnessProviderOptions,
+} from "./codex-harness-provider.js";
 export { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 export { writeEvidencePromotion } from "./evidence-promotion.js";
 export { writeFactoryRetro } from "./factory-retro.js";
 export { writeFactoryScorecard } from "./factory-scorecard.js";
+export {
+  HarnessActionError,
+  HarnessCapabilityMismatchError,
+  HarnessDetectionError,
+  HarnessIncompatibleError,
+  HarnessInput,
+  HarnessInteractionResponseSchema,
+  HarnessResumeError,
+  HarnessSessionContractError,
+  HarnessSessionError,
+  HarnessSessionResume,
+  HarnessSessionStart,
+  HarnessStartError,
+  HarnessUnavailableError,
+  resumeHarnessSession,
+  startHarnessSession,
+  type HarnessProvider,
+  type HarnessInteractionResponse,
+  type HarnessSession,
+} from "./harness-session.js";
 export {
   codexReviewerName,
   makeCodexReviewer,

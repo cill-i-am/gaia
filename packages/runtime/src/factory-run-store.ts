@@ -786,6 +786,7 @@ function updateStatesForEvent(
       states.set(roleFromFailureStage(event.payload["stage"]), "failed");
       return;
     case "BROWSER_EVIDENCE_RECORDED":
+    case "HARNESS_SESSION_EVENT_RECORDED":
     case "LINEAR_ISSUE_GRAPH_RECORDED":
     case "MERGE_DECISION_RECORDED":
     case "PREVIEW_DEPLOYMENT_RECORDED":
@@ -839,6 +840,7 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "LINEAR_ISSUE_GRAPH_RECORDED":
     case "MERGE_DECISION_RECORDED":
     case "PREVIEW_DEPLOYMENT_RECORDED":
+    case "HARNESS_SESSION_EVENT_RECORDED":
       return undefined;
   }
 }
@@ -915,6 +917,8 @@ function activityLabel(event: RunEvent): string {
       return "Linear issue graph recorded";
     case "MERGE_DECISION_RECORDED":
       return "Merge decision recorded";
+    case "HARNESS_SESSION_EVENT_RECORDED":
+      return "Harness session event recorded";
     case "RUN_FAILED":
       return "Factory run failed";
   }

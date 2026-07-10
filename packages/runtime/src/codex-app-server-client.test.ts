@@ -142,8 +142,8 @@ describe("Codex App Server connection", () => {
           expect(request.params.questions[0]).toMatchObject({ isOther: true, isSecret: false, options: [{ description: "Continue", label: "Yes" }] }); preserved += 1;
           Effect.runFork(client.respondUserInput(request, { answers: { q1: { answers: ["no"] } } }));
         } else {
-          expect(request.params).toEqual({ serverName: "test", threadId: "thr-1", turnId: null }); preserved += 1;
-          Effect.runFork(client.respondElicitation(request, { action: "decline" }));
+          expect(request.params).toMatchObject({ message: "Choose", mode: "form", serverName: "test", threadId: "thr-1", turnId: null }); preserved += 1;
+          Effect.runFork(client.respondElicitation(request, { _meta: null, action: "decline", content: null }));
         }
       });
       const base = { itemId: "item-1", startedAtMs: 1, threadId: "thr-1", turnId: "turn-1" };
@@ -152,7 +152,7 @@ describe("Codex App Server connection", () => {
         { id: 2, method: "item/fileChange/requestApproval", params: { ...base, grantRoot: "/tmp/project", reason: null } },
         { id: 3, method: "item/permissions/requestApproval", params: { ...base, cwd: "/tmp", environmentId: "env-1", permissions: {}, reason: "write" } },
         { id: 4, method: "item/tool/requestUserInput", params: { itemId: "item-1", threadId: "thr-1", turnId: "turn-1", questions: [{ header: "Choice", id: "q1", isOther: true, isSecret: false, options: [{ description: "Continue", label: "Yes" }], question: "Continue?" }] } },
-        { id: 5, method: "mcpServer/elicitation/request", params: { serverName: "test", threadId: "thr-1", turnId: null } },
+        { id: 5, method: "mcpServer/elicitation/request", params: { _meta: null, message: "Choose", mode: "form", requestedSchema: { properties: {}, type: "object" }, serverName: "test", threadId: "thr-1", turnId: null } },
       ];
       for (const fixture of fixtures) for (const listener of fake.lines) listener(JSON.stringify(fixture));
       yield* Effect.yieldNow;
