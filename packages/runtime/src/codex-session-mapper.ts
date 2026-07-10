@@ -1295,14 +1295,9 @@ function sanitizeText(
     .replace(
       /\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]+(?::[^\s/@]*)?@/giu,
       "[REDACTED-AUTHORITY]@",
-    )
-    .replace(
-      /"(?:\\\\|\/(?!\/)|[A-Za-z]:\\)(?:\\[^\r\n]|[^"\\\r\n])*"|'(?:\\\\|\/(?!\/)|[A-Za-z]:\\)(?:\\[^\r\n]|[^'\\\r\n])*'|`(?:\\\\|\/(?!\/)|[A-Za-z]:\\)(?:\\[^\r\n]|[^`\\\r\n])*`/gu,
-      (path) => {
-        const delimiter = path.slice(0, 1);
-        return `${delimiter}[absolute-path]${delimiter}`;
-      },
-    )
+    );
+  output = redactQuotedAbsolutePaths(output);
+  output = output
     .replace(
       /\\\\(?:\\ |[^\s`"'<>)}\],;])+/gu,
       "[absolute-path]",
@@ -1316,6 +1311,89 @@ function sanitizeText(
       "[absolute-path]",
     );
   return output.slice(0, limit);
+}
+
+function redactQuotedAbsolutePaths(input: string): string {
+  const fragments: Array<string> = [];
+  let copiedFrom = 0;
+  let cursor = 0;
+
+  while (cursor < input.length) {
+    const delimiter = input[cursor];
+    if (
+      !isPathDelimiter(delimiter) ||
+      !hasAbsolutePathPrefix(input, cursor + 1)
+    ) {
+      cursor += 1;
+      continue;
+    }
+
+    const openingIndex = cursor;
+    let boundaryIndex = input.length;
+    let closed = false;
+    let escaped = false;
+    cursor += 1;
+
+    while (cursor < input.length) {
+      const character = input[cursor];
+      if (character === "\r" || character === "\n") {
+        boundaryIndex = cursor;
+        break;
+      }
+      if (escaped) {
+        escaped = false;
+        cursor += 1;
+        continue;
+      }
+      if (character === "\\") {
+        escaped = true;
+        cursor += 1;
+        continue;
+      }
+      if (character === delimiter) {
+        boundaryIndex = cursor + 1;
+        closed = true;
+        break;
+      }
+      cursor += 1;
+    }
+
+    fragments.push(input.slice(copiedFrom, openingIndex));
+    fragments.push(
+      closed
+        ? `${delimiter}[absolute-path]${delimiter}`
+        : `${delimiter}[absolute-path]`,
+    );
+    copiedFrom = boundaryIndex;
+    cursor = boundaryIndex;
+  }
+
+  fragments.push(input.slice(copiedFrom));
+  return fragments.join("");
+}
+
+function isPathDelimiter(
+  value: string | undefined,
+): value is '"' | "'" | "`" {
+  return value === '"' || value === "'" || value === "`";
+}
+
+function hasAbsolutePathPrefix(input: string, index: number): boolean {
+  const first = input[index];
+  if (first === "/") return input[index + 1] !== "/";
+  if (first === "\\") return input[index + 1] === "\\";
+  return (
+    isAsciiLetter(first) &&
+    input[index + 1] === ":" &&
+    input[index + 2] === "\\"
+  );
+}
+
+function isAsciiLetter(value: string | undefined): boolean {
+  return (
+    value !== undefined &&
+    ((value >= "A" && value <= "Z") || (value >= "a" && value <= "z"))
+  );
 }
 
 function timestampFromMilliseconds(value: number): string {

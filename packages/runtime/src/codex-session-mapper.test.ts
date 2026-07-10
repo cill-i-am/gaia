@@ -1048,6 +1048,30 @@ describe("Codex App Server provider-neutral mapper", () => {
     expect(serialized).toContain("[credential]");
   });
 
+  it("redacts adversarial unterminated quoted paths within the mapper time budget", () => {
+    const subject = mapper();
+    subject.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "adversarial-path-thread" } },
+    });
+    const events = subject.mapNotification({
+      method: "item/completed",
+      params: {
+        item: {
+          id: "adversarial-path-item",
+          phase: "final_answer",
+          text: `"/a${String.raw`\"/a`.repeat(8_000)}`,
+          type: "agentMessage",
+        },
+        threadId: "adversarial-path-thread",
+        turnId: "adversarial-path-turn",
+      },
+    });
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain("/a");
+    expect(serialized.length).toBeLessThan(4_096);
+  }, 1_000);
+
   it("bounds adapter-local delta buffers before a provider can create unbounded item state", () => {
     const subject = createCodexSessionMapper({
       capabilities,
