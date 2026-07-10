@@ -4,7 +4,7 @@ import {
   parseHarnessEvent,
   parseRunEvent,
   parseRunSnapshot,
-  replayHarnessSession,
+  projectHarnessEvents,
   replayRunEvents,
   snapshotFromReplay,
   type EventType,
@@ -168,14 +168,19 @@ export function readEvents(paths: RunPaths) {
 }
 
 function validateHarnessEventHistories(events: ReadonlyArray<RunEvent>): void {
-  const sessionIds = new Set<HarnessSessionId>();
+  const eventsBySession = new Map<HarnessSessionId, Array<HarnessEvent>>();
   for (const event of events) {
     if (event.type !== "HARNESS_SESSION_EVENT_RECORDED") continue;
     const harnessEvent = parseHarnessEvent(event.payload.event);
-    sessionIds.add(harnessEvent.sessionId);
+    const sessionEvents = eventsBySession.get(harnessEvent.sessionId);
+    if (sessionEvents === undefined) {
+      eventsBySession.set(harnessEvent.sessionId, [harnessEvent]);
+    } else {
+      sessionEvents.push(harnessEvent);
+    }
   }
-  for (const sessionId of sessionIds) {
-    replayHarnessSession(events, sessionId);
+  for (const [sessionId, sessionEvents] of eventsBySession) {
+    projectHarnessEvents(sessionEvents, sessionId);
   }
 }
 

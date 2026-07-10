@@ -1296,12 +1296,30 @@ function sanitizeText(
       /\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]+(?::[^\s/@]*)?@/giu,
       "[REDACTED-AUTHORITY]@",
     )
-    .replace(/\\\\[^\s`"'<>)}\],;]+/gu, "[absolute-path]")
     .replace(
-      /(^|[^A-Za-z0-9_./])\/(?!\/)[^\s`"'<>)}\],;]+/gu,
+      /(["'`])\\\\[^"'`\r\n]+\1/gu,
+      "$1[absolute-path]$1",
+    )
+    .replace(
+      /(["'`])\/(?!\/)[^"'`\r\n]+\1/gu,
+      "$1[absolute-path]$1",
+    )
+    .replace(
+      /(["'`])[A-Za-z]:\\[^"'`\r\n]+\1/gu,
+      "$1[absolute-path]$1",
+    )
+    .replace(
+      /\\\\(?:\\ |[^\s`"'<>)}\],;])+/gu,
+      "[absolute-path]",
+    )
+    .replace(
+      /(^|[^A-Za-z0-9_./])\/(?!\/)(?:\\ |[^\s`"'<>)}\],;])+/gu,
       "$1[absolute-path]",
     )
-    .replace(/\b[A-Za-z]:\\\S+/gu, "[absolute-path]");
+    .replace(
+      /\b[A-Za-z]:\\(?:\\ |[^\s`"'<>)}\],;])+/gu,
+      "[absolute-path]",
+    );
   return output.slice(0, limit);
 }
 

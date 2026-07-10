@@ -1,10 +1,11 @@
 import {
   parseHarnessActionId,
+  parseHarnessInteractionId,
   parseHarnessSessionId,
   parseWorkspaceRelativePath,
 } from "@gaia/core";
 import { describe, expect, it } from "vitest";
-import { Effect, Stream } from "effect";
+import { Effect, Fiber, Option, Stream } from "effect";
 import {
   type CodexAppServerClient,
 } from "./codex-app-server-client.js";
@@ -590,6 +591,181 @@ describe("Codex HarnessProvider adapter", () => {
     expect(snapshot.failure).toMatchObject({
       code: "CodexAppServerTerminated",
       kind: "providerFailure",
+    });
+  });
+
+  it("terminates the live stream and action surface on a provider system error", async () => {
+    const fake = recordingClient();
+    const sessionId = parseHarnessSessionId("session-codex-system-terminal");
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* startHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: fake.client,
+              correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+              workspaceRoot: "/workspace",
+            }),
+            request: {
+              input: { text: "start" },
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          const observed: Array<unknown> = [];
+          const streamFiber = yield* session.events.pipe(
+            Stream.runForEach((event) =>
+              Effect.sync(() => {
+                observed.push(event);
+              }),
+            ),
+            Effect.exit,
+            Effect.forkChild,
+          );
+          yield* Effect.yieldNow;
+          for (const listener of fake.notifications) {
+            listener({
+              method: "thread/status/changed",
+              params: {
+                status: { type: "systemError" },
+                threadId: fake.threadId,
+              },
+            });
+            listener({
+              method: "warning",
+              params: {
+                message: "must be ignored after terminal failure",
+                threadId: fake.threadId,
+              },
+            });
+          }
+          const send = yield* session
+            .send({ text: "must not dispatch" })
+            .pipe(Effect.exit);
+          if (Option.isNone(session.steer) || Option.isNone(session.interrupt)) {
+            throw new Error("Expected Codex steering and interruption operations.");
+          }
+          const steer = yield* session.steer.value({ text: "must not steer" }).pipe(
+            Effect.exit,
+          );
+          const interrupt = yield* session.interrupt.value.pipe(Effect.exit);
+          const resolveInteraction = yield* session
+            .resolveInteraction({
+              actionId: parseHarnessActionId("action-terminal-resolution"),
+              decision: "decline",
+              interactionId: parseHarnessInteractionId(
+                "interaction-terminal-resolution",
+              ),
+              kind: "approval",
+            })
+            .pipe(Effect.exit);
+          const stream = yield* Fiber.join(streamFiber).pipe(
+            Effect.timeoutOption("1 second"),
+          );
+          return {
+            interrupt,
+            observed,
+            resolveInteraction,
+            send,
+            snapshot: yield* session.snapshot,
+            steer,
+            stream,
+          };
+        }),
+      ),
+    );
+
+    expect(Option.isSome(result.stream)).toBe(true);
+    if (Option.isNone(result.stream)) {
+      throw new Error("Expected the terminal session stream to close.");
+    }
+    expect(result.stream.value._tag).toBe("Failure");
+    expect(result.send._tag).toBe("Failure");
+    expect(result.steer._tag).toBe("Failure");
+    expect(result.interrupt._tag).toBe("Failure");
+    expect(result.resolveInteraction._tag).toBe("Failure");
+    expect(fake.starts).toHaveLength(2);
+    expect(result.snapshot.state).toBe("failed");
+    expect(result.snapshot.items).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "warning",
+          message: "must be ignored after terminal failure",
+        }),
+      ]),
+    );
+    expect(result.observed.at(-1)).toMatchObject({
+      failure: expect.objectContaining({ code: "CodexThreadSystemError" }),
+      kind: "sessionFailed",
+    });
+  });
+
+  it("terminates the live stream when safe projection rejects provider output", async () => {
+    const fake = recordingClient();
+    const sessionId = parseHarnessSessionId("session-codex-projection-terminal");
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* startHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: fake.client,
+              correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+              workspaceRoot: "/workspace",
+            }),
+            request: {
+              input: { text: "start" },
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          const observed: Array<unknown> = [];
+          const streamFiber = yield* session.events.pipe(
+            Stream.runForEach((event) =>
+              Effect.sync(() => {
+                observed.push(event);
+              }),
+            ),
+            Effect.exit,
+            Effect.forkChild,
+          );
+          yield* Effect.yieldNow;
+          for (let index = 0; index < 1_001; index += 1) {
+            for (const listener of fake.notifications) {
+              listener({
+                method: "item/agentMessage/delta",
+                params: {
+                  delta: "x",
+                  itemId: parseCodexItemId(`projection-item-${index}`),
+                  threadId: fake.threadId,
+                  turnId: fake.turnId,
+                },
+              });
+            }
+          }
+          return {
+            observed,
+            snapshot: yield* session.snapshot,
+            stream: yield* Fiber.join(streamFiber).pipe(
+              Effect.timeoutOption("1 second"),
+            ),
+          };
+        }),
+      ),
+    );
+
+    expect(Option.isSome(result.stream)).toBe(true);
+    if (Option.isNone(result.stream)) {
+      throw new Error("Expected projection rejection to close the stream.");
+    }
+    expect(result.stream.value._tag).toBe("Failure");
+    expect(result.snapshot.failure).toMatchObject({
+      code: "CodexProjectionRejected",
+    });
+    expect(result.observed.at(-1)).toMatchObject({
+      failure: expect.objectContaining({ code: "CodexProjectionRejected" }),
+      kind: "sessionFailed",
     });
   });
 

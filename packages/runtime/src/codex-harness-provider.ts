@@ -310,6 +310,8 @@ function makeCodexSession<E>(input: {
         sessionId: input.request.sessionId,
       });
       bufferFailed = true;
+      activeTurnId = undefined;
+      pendingRequests.clear();
       projectedEventBytes += harnessEventByteLength(failure);
       projectedEvents.push(failure);
       Queue.offerUnsafe(queue, failure);
@@ -349,6 +351,42 @@ function makeCodexSession<E>(input: {
       }
     };
 
+    const failLiveStream = (message: string) => {
+      Queue.failCauseUnsafe(
+        queue,
+        Cause.fail(
+          new HarnessSessionError({
+            message,
+            providerId: CodexHarnessProviderDescriptor.providerId,
+          }),
+        ),
+      );
+    };
+
+    const terminateSession = (
+      events: ReadonlyArray<HarnessEvent>,
+      message: string,
+    ) => {
+      if (adapterFailed || bufferFailed) return;
+      adapterFailed = true;
+      activeTurnId = undefined;
+      pendingRequests.clear();
+      emit(events);
+      if (!bufferFailed) failLiveStream(message);
+    };
+
+    const emitProviderEvents = (events: ReadonlyArray<HarnessEvent>) => {
+      if (adapterFailed || bufferFailed) return;
+      if (events.some((event) => event.kind === "sessionFailed")) {
+        terminateSession(
+          events,
+          "Codex session reached a terminal provider failure.",
+        );
+        return;
+      }
+      emit(events);
+    };
+
     const mapOrFail = (
       map: () => ReadonlyArray<HarnessEvent>,
     ): ReadonlyArray<HarnessEvent> => {
@@ -356,24 +394,26 @@ function makeCodexSession<E>(input: {
       try {
         return map();
       } catch {
-        adapterFailed = true;
-        emit([
-          parseHarnessEvent({
-            failure: {
-              code: "CodexProjectionRejected",
-              kind: "providerFailure",
-              message: "Codex emitted an event outside Gaia's safe projection limits.",
-              recoverable: false,
-            },
-            kind: "sessionFailed",
-            sessionId: input.request.sessionId,
-          }),
-        ]);
+        terminateSession(
+          [
+            parseHarnessEvent({
+              failure: {
+                code: "CodexProjectionRejected",
+                kind: "providerFailure",
+                message: "Codex emitted an event outside Gaia's safe projection limits.",
+                recoverable: false,
+              },
+              kind: "sessionFailed",
+              sessionId: input.request.sessionId,
+            }),
+          ],
+          "Codex session projection was rejected.",
+        );
         return [];
       }
     };
 
-    emit(
+    emitProviderEvents(
       mapOrFail(() => mapper.mapNotification({
         method: "thread/started",
         params: { thread: { id: input.nativeThreadId } },
@@ -405,7 +445,7 @@ function makeCodexSession<E>(input: {
             }
           }
         }
-        emit(events);
+        emitProviderEvents(events);
       },
     );
     const removeRequest = input.options.client.onServerRequest((request) => {
@@ -415,32 +455,24 @@ function makeCodexSession<E>(input: {
           pendingRequests.set(event.interaction.interactionId, request);
         }
       }
-      emit(events);
+      emitProviderEvents(events);
     });
     const removeTermination = input.options.client.onTermination(() => {
-      if (adapterFailed || bufferFailed) return;
-      adapterFailed = true;
       const message = "Codex App Server terminated before the session completed.";
-      emit([
-        parseHarnessEvent({
-          failure: {
-            code: "CodexAppServerTerminated",
-            kind: "providerFailure",
-            message,
-            recoverable: true,
-          },
-          kind: "sessionFailed",
-          sessionId: input.request.sessionId,
-        }),
-      ]);
-      Queue.failCauseUnsafe(
-        queue,
-        Cause.fail(
-          new HarnessSessionError({
-            message,
-            providerId: CodexHarnessProviderDescriptor.providerId,
+      terminateSession(
+        [
+          parseHarnessEvent({
+            failure: {
+              code: "CodexAppServerTerminated",
+              kind: "providerFailure",
+              message,
+              recoverable: true,
+            },
+            kind: "sessionFailed",
+            sessionId: input.request.sessionId,
           }),
-        ),
+        ],
+        message,
       );
     });
     yield* Effect.addFinalizer(() =>
@@ -457,41 +489,56 @@ function makeCodexSession<E>(input: {
       !adapterFailed &&
       !bufferFailed
     ) {
-      emit([
+      emitProviderEvents([
         parseHarnessEvent({
           kind: "sessionRecovered",
           sessionId: input.request.sessionId,
         }),
       ]);
-      emit(mapOrFail(() => mapper.mapRecoveredThread(input.recoveredThread)));
-      activeTurnId = [...(input.recoveredThread.turns ?? [])]
-        .reverse()
-        .find((turn) => turn.status === "inProgress")?.id;
+      emitProviderEvents(
+        mapOrFail(() => mapper.mapRecoveredThread(input.recoveredThread)),
+      );
+      if (!adapterFailed && !bufferFailed) {
+        activeTurnId = [...(input.recoveredThread.turns ?? [])]
+          .reverse()
+          .find((turn) => turn.status === "inProgress")?.id;
+      }
     }
 
-    if ("input" in input.request) {
+    if (
+      "input" in input.request &&
+      !adapterFailed &&
+      !bufferFailed
+    ) {
       const turn = yield* input.options.client
         .startTurn({
           input: [{ text: input.request.input.text, type: "text" }],
           threadId: input.nativeThreadId,
         })
         .pipe(Effect.mapError(initialTurnError));
-      activeTurnId = turn.turn.id;
-      emit(
-        mapOrFail(() => mapper.mapNotification({
-          method: "turn/started",
-          params: {
-            threadId: input.nativeThreadId,
-            turn: { id: turn.turn.id, status: "inProgress" },
-          },
-        })),
-      );
+      if (!adapterFailed && !bufferFailed) {
+        activeTurnId = turn.turn.id;
+        emitProviderEvents(
+          mapOrFail(() => mapper.mapNotification({
+            method: "turn/started",
+            params: {
+              threadId: input.nativeThreadId,
+              turn: { id: turn.turn.id, status: "inProgress" },
+            },
+          })),
+        );
+      }
     }
 
     const session: HarnessSession = {
       events: Stream.fromQueue(queue),
       interrupt: Option.some(
         Effect.suspend(() => {
+          if (adapterFailed || bufferFailed) {
+            return Effect.fail(
+              actionError("interrupt", "The Codex session is terminal."),
+            );
+          }
           if (activeTurnId === undefined) {
             return Effect.fail(actionError("interrupt", "No active Codex turn to interrupt."));
           }
@@ -513,6 +560,14 @@ function makeCodexSession<E>(input: {
             ),
           ),
           Effect.flatMap((parsedResponse) => {
+            if (adapterFailed || bufferFailed) {
+              return Effect.fail(
+                actionError(
+                  "resolveInteraction",
+                  "The Codex session is terminal.",
+                ),
+              );
+            }
             if (!interactionResponseWithinBudget(parsedResponse)) {
               return Effect.fail(
                 actionError(
@@ -538,6 +593,7 @@ function makeCodexSession<E>(input: {
             ).pipe(
               Effect.tap(() =>
                 Effect.sync(() => {
+                  if (adapterFailed || bufferFailed) return;
                   pendingRequests.delete(parsedResponse.interactionId);
                   const auditDecision =
                     parsedResponse.kind === "approval"
@@ -545,7 +601,7 @@ function makeCodexSession<E>(input: {
                       : parsedResponse.kind === "userInput"
                         ? "submit"
                         : parsedResponse.action;
-                  emit(
+                  emitProviderEvents(
                     mapper.resolveServerRequest(request.id, {
                       actionId: parsedResponse.actionId,
                       decision: auditDecision,
@@ -561,8 +617,13 @@ function makeCodexSession<E>(input: {
       send: (message) =>
         Schema.decodeUnknownEffect(HarnessInput)(message).pipe(
           Effect.mapError(() => actionError("send", "Codex follow-up input is invalid.")),
-          Effect.flatMap((parsedMessage) =>
-            input.options.client
+          Effect.flatMap((parsedMessage) => {
+            if (adapterFailed || bufferFailed) {
+              return Effect.fail(
+                actionError("send", "The Codex session is terminal."),
+              );
+            }
+            return input.options.client
               .startTurn({
                 input: [{ text: parsedMessage.text, type: "text" }],
                 threadId: input.nativeThreadId,
@@ -570,8 +631,9 @@ function makeCodexSession<E>(input: {
               .pipe(
                 Effect.tap((turn) =>
                   Effect.sync(() => {
+                    if (adapterFailed || bufferFailed) return;
                     activeTurnId = turn.turn.id;
-                    emit(
+                    emitProviderEvents(
                       mapOrFail(() =>
                         mapper.mapNotification({
                           method: "turn/started",
@@ -588,8 +650,8 @@ function makeCodexSession<E>(input: {
                 Effect.mapError(() =>
                   actionError("send", "Codex follow-up turn failed."),
                 ),
-              ),
-          ),
+              );
+          }),
         ),
       snapshot: Effect.try({
         try: () => projectHarnessEvents(projectedEvents, input.request.sessionId),
@@ -604,6 +666,11 @@ function makeCodexSession<E>(input: {
           Effect.mapError(() => actionError("steer", "Codex steering input is invalid.")),
           Effect.flatMap((parsedMessage) =>
             Effect.suspend(() => {
+              if (adapterFailed || bufferFailed) {
+                return Effect.fail(
+                  actionError("steer", "The Codex session is terminal."),
+                );
+              }
               if (activeTurnId === undefined) {
                 return Effect.fail(
                   actionError("steer", "No active Codex turn to steer."),

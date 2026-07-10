@@ -216,4 +216,48 @@ describe("harness session event persistence", () => {
       ).pipe(Effect.provide(NodeServices.layer)),
     );
   });
+
+  it("validates many independent harness histories without rescanning unrelated sessions", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-event-store-" });
+          const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+          yield* fs.makeDirectory(paths.root, { recursive: true });
+          const events = [
+            makeRunEvent({
+              payload: { specPath: "spec.md" },
+              runId,
+              sequence: 1,
+              timestamp: "2026-07-10T10:00:00.000Z",
+              type: "RUN_CREATED",
+            }),
+            ...Array.from({ length: 250 }, (_, index) =>
+              makeHarnessRunEvent({
+                event: {
+                  capabilities,
+                  kind: "sessionStarted",
+                  provider,
+                  sessionId: parseHarnessSessionId(`bulk-session-${index}`),
+                  state: "running",
+                },
+                runId,
+                sequence: index + 2,
+                timestamp: "2026-07-10T10:00:01.000Z",
+              }),
+            ),
+          ];
+          yield* fs.writeFileString(
+            paths.events,
+            `${events
+              .map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event)))
+              .join("\n")}\n`,
+          );
+
+          expect(yield* readEvents(paths)).toHaveLength(251);
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+  });
 });
