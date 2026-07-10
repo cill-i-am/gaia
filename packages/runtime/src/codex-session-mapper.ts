@@ -1297,7 +1297,7 @@ function sanitizeText(
       "[REDACTED-AUTHORITY]@",
     )
     .replace(
-      /"(?:\\\\|\/(?!\/)|[A-Za-z]:\\)[^"\r\n]+"|'(?:\\\\|\/(?!\/)|[A-Za-z]:\\)[^'\r\n]+'|`(?:\\\\|\/(?!\/)|[A-Za-z]:\\)[^`\r\n]+`/gu,
+      /"(?:\\\\|\/(?!\/)|[A-Za-z]:\\)(?:\\[^\r\n]|[^"\\\r\n])*"|'(?:\\\\|\/(?!\/)|[A-Za-z]:\\)(?:\\[^\r\n]|[^'\\\r\n])*'|`(?:\\\\|\/(?!\/)|[A-Za-z]:\\)(?:\\[^\r\n]|[^`\\\r\n])*`/gu,
       (path) => {
         const delimiter = path.slice(0, 1);
         return `${delimiter}[absolute-path]${delimiter}`;

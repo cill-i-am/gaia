@@ -1022,7 +1022,8 @@ describe("Codex App Server provider-neutral mapper", () => {
           phase: "final_answer",
           text:
             'path=/workspace/project/private-key-material {"client_secret":"value-one","openai_api_key":"value-two","clientSecret":"camel-one","refreshToken":"camel-two","apiKey":"camel-three"} read \\\\server\\share\\operator\\secret.txt and \\\\?\\C:\\operator\\secret.txt and "\\\\server\\share\\Operator Files\\secret.txt" and "/Users/John Doe/private.txt" and "\\\\?\\C:\\Operator Files\\secret.txt" and /Users/John\\ Doe/private.txt' +
-            " and \"/Users/O'Connor/private.txt\" and `/Users/O'Connor/private.txt` and '/Users/John \"Operator\"/private.txt'",
+            " and \"/Users/O'Connor/private.txt\" and `/Users/O'Connor/private.txt` and '/Users/John \"Operator\"/private.txt'" +
+            " and \"/Users/O\\\"Connor/private.txt\" and `/Users/O\\`Connor/private.txt` and '/Users/O\\'Connor/private.txt'",
           type: "agentMessage",
         },
         threadId: "redaction-thread",
