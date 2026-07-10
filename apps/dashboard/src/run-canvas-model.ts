@@ -528,7 +528,7 @@ function eventEvidence(event: RunEvent): ReadonlyArray<string> {
 }
 
 function eventNodeId(event: RunEvent) {
-  return `event:${event.sequence}:${event.type}`;
+  return `event:${event.sequence}:${event.type}:${event.timestamp}`;
 }
 
 function eventIdentity(event: RunEvent) {

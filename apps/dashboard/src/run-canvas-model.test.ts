@@ -77,8 +77,8 @@ describe("run canvas model", () => {
         "lane:worker",
         "lane:reviewer",
         "relationship:thread-identity",
-        "event:1:RUN_CREATED",
-        "event:5:REPORT_COMPLETED",
+        "event:1:RUN_CREATED:2026-07-07T12:00:00.000Z",
+        "event:5:REPORT_COMPLETED:2026-07-07T12:04:00.000Z",
         "artifact:input",
         "artifact:report-json",
       ]),
@@ -87,12 +87,12 @@ describe("run canvas model", () => {
       expect.arrayContaining([
         expect.objectContaining({
           label: "then",
-          source: "event:1:RUN_CREATED",
-          target: "event:2:WORKER_STARTED",
+          source: "event:1:RUN_CREATED:2026-07-07T12:00:00.000Z",
+          target: "event:2:WORKER_STARTED:2026-07-07T12:01:00.000Z",
         }),
         expect.objectContaining({
           label: "evidence",
-          source: "event:5:REPORT_COMPLETED",
+          source: "event:5:REPORT_COMPLETED:2026-07-07T12:04:00.000Z",
           target: "artifact:report-json",
         }),
       ]),
@@ -175,13 +175,15 @@ describe("run canvas model", () => {
     });
 
     expect(replayState.currentStep?.label).toBe("2: Worker Started");
-    expect(replayState.activeEventId).toBe("event:2:WORKER_STARTED");
+    expect(replayState.activeEventId).toBe(
+      "event:2:WORKER_STARTED:2026-07-07T12:01:00.000Z",
+    );
     expect(replayState.visibleEventIds).toEqual([
-      "event:1:RUN_CREATED",
-      "event:2:WORKER_STARTED",
+      "event:1:RUN_CREATED:2026-07-07T12:00:00.000Z",
+      "event:2:WORKER_STARTED:2026-07-07T12:01:00.000Z",
     ]);
     expect(replayState.futureEventIds).toEqual([
-      "event:3:WORKER_COMPLETED",
+      "event:3:WORKER_COMPLETED:2026-07-07T12:02:00.000Z",
     ]);
     expect(replayState.visibleArtifactIds).toEqual([
       "input",
