@@ -10,6 +10,8 @@ import {
   getFactoryGraphFromDashboardGaiaClient,
   getFactoryRunActivityFromDashboardGaiaClient,
   getFactoryAgentActivityFromDashboardGaiaClient,
+  actOnAgentSessionFromDashboardGaiaClient,
+  getAgentSessionFromDashboardGaiaClient,
   getRunArtifactFromDashboardGaiaClient,
   getRunFromDashboardGaiaClient,
   listFactoryArtifactsFromDashboardGaiaClient,
@@ -24,6 +26,8 @@ import {
   localGaiaFactoryGraphQueryOptions,
   localGaiaFactoryRunActivityQueryOptions,
   localGaiaHealthQueryOptions,
+  localGaiaAgentSessionActionMutationOptions,
+  localGaiaAgentSessionQueryOptions,
   localGaiaQueryKeys,
   localGaiaRunArtifactQueryOptions,
   localGaiaRunQueryOptions,
@@ -66,6 +70,11 @@ describe("local Gaia query options", () => {
     });
     const factoryArtifact = localGaiaFactoryArtifactQueryOptions({
       artifactId: "artifact-plan",
+      runId: "run-1234567890",
+      serverUrl: "http://127.0.0.1:4321",
+    });
+    const agentSession = localGaiaAgentSessionQueryOptions({
+      agentId: "agent-worker",
       runId: "run-1234567890",
       serverUrl: "http://127.0.0.1:4321",
     });
@@ -118,12 +127,22 @@ describe("local Gaia query options", () => {
       "artifacts",
       "artifact-plan",
     ]);
+    expect(agentSession.queryKey).toEqual([
+      "local-gaia",
+      "runs",
+      "detail",
+      "run-1234567890",
+      "agents",
+      "agent-worker",
+      "session",
+    ]);
     expect(artifact.enabled).toBe(true);
     expect(graph.enabled).toBe(true);
     expect(runActivity.enabled).toBe(true);
     expect(agentActivity.enabled).toBe(true);
     expect(artifactCatalog.enabled).toBe(true);
     expect(factoryArtifact.enabled).toBe(true);
+    expect(agentSession.enabled).toBe(true);
     expect(typeof health.queryFn).toBe("function");
     expect(typeof runs.queryFn).toBe("function");
   });
@@ -134,6 +153,11 @@ describe("local Gaia query options", () => {
       serverUrl: "http://127.0.0.1:4321",
     });
     const agentActivity = localGaiaFactoryAgentActivityQueryOptions({
+      agentId: "",
+      runId: "run-1234567890",
+      serverUrl: "http://127.0.0.1:4321",
+    });
+    const agentSession = localGaiaAgentSessionQueryOptions({
       agentId: "",
       runId: "run-1234567890",
       serverUrl: "http://127.0.0.1:4321",
@@ -156,6 +180,16 @@ describe("local Gaia query options", () => {
       "agents",
       "invalid-agent-id",
       "activity",
+    ]);
+    expect(agentSession.enabled).toBe(false);
+    expect(agentSession.queryKey).toEqual([
+      "local-gaia",
+      "runs",
+      "detail",
+      "run-1234567890",
+      "agents",
+      "invalid-agent-id",
+      "session",
     ]);
   });
 
@@ -285,6 +319,58 @@ describe("local Gaia query options", () => {
       "artifact-plan",
     );
     expect(result.artifact.data.body).toContain("Plan body");
+  });
+
+  it("reads agent session snapshots and posts finite operator actions through LocalGaiaServerApi", async () => {
+    const requests: Array<string> = [];
+    const bodies: Array<unknown> = [];
+    const result = await Effect.runPromise(
+      Effect.all({
+        action: actOnAgentSessionFromDashboardGaiaClient({
+          action: {
+            actionId: "action-steer-1",
+            kind: "steer",
+            sessionId: "session-run-1234567890",
+            text: "Focus on the failing dashboard test.",
+            turnId: "turn-1",
+          },
+          agentId: "agent-worker",
+          runId: "run-1234567890",
+          serverUrl: "http://127.0.0.1:4321",
+        }),
+        session: getAgentSessionFromDashboardGaiaClient({
+          agentId: "agent-worker",
+          runId: "run-1234567890",
+          serverUrl: "http://127.0.0.1:4321",
+        }),
+      }).pipe(
+        Effect.provide(
+          recordingFetchLayer(requests, async (request) => {
+            if (request.method === "POST") {
+              bodies.push(await request.json());
+              return jsonResponse(agentActionEnvelope);
+            }
+            return jsonResponse(agentSessionEnvelope);
+          }),
+        ),
+      ),
+    );
+
+    expect(requests).toEqual([
+      "POST http://127.0.0.1:4321/runs/run-1234567890/agents/agent-worker/session/actions",
+      "GET http://127.0.0.1:4321/runs/run-1234567890/agents/agent-worker/session",
+    ]);
+    expect(bodies).toEqual([
+      {
+        actionId: "action-steer-1",
+        kind: "steer",
+        sessionId: "session-run-1234567890",
+        text: "Focus on the failing dashboard test.",
+        turnId: "turn-1",
+      },
+    ]);
+    expect(result.session.data.state).toBe("running");
+    expect(result.action.data.state).toBe("dispatchConfirmed");
   });
 
   it("maps factory client API failures into a tagged dashboard query error", async () => {
@@ -478,6 +564,61 @@ describe("local Gaia query options", () => {
     ]);
     expect(result).toEqual(createRunResponse);
   });
+
+  it("creates agent session action mutations with stable keys", async () => {
+    const requests: Array<string> = [];
+    const bodies: Array<unknown> = [];
+    const effectQuery = createEffectQuery(
+      recordingFetchLayer(requests, async (request) => {
+        bodies.push(await request.json());
+        return jsonResponse(agentActionEnvelope);
+      }),
+    );
+    const mutation = localGaiaAgentSessionActionMutationOptions(
+      {
+        agentId: "agent-worker",
+        runId: "run-1234567890",
+        serverUrl: "http://127.0.0.1:4321",
+      },
+      effectQuery,
+    );
+
+    expect(mutation.mutationKey).toEqual([
+      "local-gaia",
+      "runs",
+      "detail",
+      "run-1234567890",
+      "agents",
+      "agent-worker",
+      "session",
+      "action",
+    ]);
+    if (mutation.mutationFn === undefined) {
+      throw new Error("Expected agent-session mutationFn to be defined.");
+    }
+
+    await mutation.mutationFn(
+      {
+        actionId: "action-interrupt-1",
+        kind: "interrupt",
+        sessionId: "session-run-1234567890",
+        turnId: "turn-1",
+      },
+      { client: new QueryClient(), meta: undefined },
+    );
+
+    expect(requests).toEqual([
+      "POST http://127.0.0.1:4321/runs/run-1234567890/agents/agent-worker/session/actions",
+    ]);
+    expect(bodies).toEqual([
+      {
+        actionId: "action-interrupt-1",
+        kind: "interrupt",
+        sessionId: "session-run-1234567890",
+        turnId: "turn-1",
+      },
+    ]);
+  });
 });
 
 function recordingFetchLayer(
@@ -604,6 +745,61 @@ const artifactBodyEnvelope = {
     body: "# Plan body\n",
     contentType: "text/markdown",
     runId: "run-1234567890",
+  },
+  status: "success",
+} as const;
+
+const sessionCapabilities = {
+  approvals: ["command", "fileChange", "permission", "userInput", "mcpElicitation"],
+  fileChangeEvents: true,
+  interruption: true,
+  resumableSessions: true,
+  review: false,
+  steering: true,
+  streamingMessages: true,
+  structuredOutput: false,
+  subagents: false,
+  toolEvents: true,
+  usageReporting: true,
+  userQuestions: true,
+} as const;
+
+const agentSessionEnvelope = {
+  data: {
+    agentId: "agent-worker",
+    capabilities: sessionCapabilities,
+    eventSequence: 7,
+    items: [
+      {
+        itemId: "item-message-1",
+        kind: "message",
+        phase: "commentary",
+        status: "completed",
+        text: "I am updating the Agent Inspector.",
+        turnId: "turn-1",
+      },
+    ],
+    pendingInteractions: [],
+    recovered: false,
+    resolvedInteractions: [],
+    runId: "run-1234567890",
+    sessionId: "session-run-1234567890",
+    state: "running",
+    turns: [{ status: "running", turnId: "turn-1" }],
+  },
+  status: "success",
+} as const;
+
+const agentActionEnvelope = {
+  data: {
+    actionId: "action-steer-1",
+    agentId: "agent-worker",
+    eventSequence: 8,
+    payloadDigest:
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    runId: "run-1234567890",
+    sessionId: "session-run-1234567890",
+    state: "dispatchConfirmed",
   },
   status: "success",
 } as const;

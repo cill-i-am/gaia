@@ -8,7 +8,9 @@ import { Option, Schema } from "effect";
 
 import {
   DashboardGaiaFetchClientLive,
+  actOnAgentSessionFromDashboardGaiaClient,
   createRunFromDashboardGaiaClient,
+  getAgentSessionFromDashboardGaiaClient,
   getFactoryAgentActivityFromDashboardGaiaClient,
   getFactoryArtifactFromDashboardGaiaClient,
   getFactoryGraphFromDashboardGaiaClient,
@@ -40,6 +42,20 @@ export const localGaiaQueryKeys = {
       input.agentId,
       "activity",
     ] as const,
+  agentSession: (input: {
+    readonly agentId: string;
+    readonly runId: string;
+  }) =>
+    [
+      ...localGaiaQueryKeys.run(input.runId),
+      "agents",
+      input.agentId,
+      "session",
+    ] as const,
+  agentSessionAction: (input: {
+    readonly agentId: string;
+    readonly runId: string;
+  }) => [...localGaiaQueryKeys.agentSession(input), "action"] as const,
   factoryArtifact: (input: {
     readonly artifactId: string;
     readonly runId: string;
@@ -166,6 +182,25 @@ export function localGaiaFactoryAgentActivityQueryOptions(
   });
 }
 
+export function localGaiaAgentSessionQueryOptions(
+  config: DashboardGaiaClientConfig & {
+    readonly agentId: string;
+    readonly runId: string;
+  },
+) {
+  const agentId = parseAgentId(config.agentId);
+  const runId = parseRunId(config.runId);
+  return localGaiaEffectQuery.queryOptions({
+    enabled: Option.isSome(runId) && Option.isSome(agentId),
+    queryKey: localGaiaQueryKeys.agentSession({
+      agentId: Option.getOrElse(agentId, () => "invalid-agent-id"),
+      runId: Option.getOrElse(runId, () => "invalid-run-id"),
+    }),
+    queryFn: () => getAgentSessionFromDashboardGaiaClient(config),
+    retry: false,
+  });
+}
+
 export function localGaiaFactoryArtifactsQueryOptions(
   config: DashboardGaiaClientConfig & { readonly runId: string },
 ) {
@@ -210,6 +245,23 @@ export function localGaiaCreateRunMutationOptions(
       readonly title: string;
     }) =>
       createRunFromDashboardGaiaClient({ ...config, ...input }),
+  });
+}
+
+export function localGaiaAgentSessionActionMutationOptions(
+  config: DashboardGaiaClientConfig & {
+    readonly agentId: string;
+    readonly runId: string;
+  },
+  effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery,
+) {
+  return effectQuery.mutationOptions({
+    mutationKey: localGaiaQueryKeys.agentSessionAction({
+      agentId: config.agentId,
+      runId: config.runId,
+    }),
+    mutationFn: (action: unknown) =>
+      actOnAgentSessionFromDashboardGaiaClient({ ...config, action }),
   });
 }
 

@@ -3,6 +3,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   FactoryActivityDto,
+  AgentActionReceiptDto,
+  AgentSessionSnapshotDto,
   FactoryArtifactBodyDto,
   FactoryArtifactDto,
   FactoryGraphDto,
@@ -18,6 +20,12 @@ import {
   FactoryWorkItemIdSchema,
   RunIdSchema,
   makeRunEvent,
+  parseHarnessActionId,
+  parseHarnessInteractionId,
+  parseHarnessItemId,
+  parseHarnessSessionId,
+  parseHarnessTurnId,
+  parseWorkspaceRelativePath,
 } from "@gaia/core";
 import { testFactoryExecution } from "@/test-factory-execution";
 import {
@@ -69,6 +77,12 @@ const queryFixture = vi.hoisted(
     factoryArtifactErrorsByRunId: Record<string, unknown>;
     factoryArtifactsByRunId: Record<string, ReadonlyArray<unknown>>;
     factoryGraphsByRunId: Record<string, unknown>;
+    agentSessionActionInputs: Array<{
+      readonly action: unknown;
+      readonly agentId: string;
+      readonly runId: string;
+    }>;
+    agentSessionsByRunId: Record<string, Record<string, unknown>>;
     createRunError: unknown;
     createRunInputs: Array<{
       readonly description: string;
@@ -92,6 +106,8 @@ const queryFixture = vi.hoisted(
     factoryArtifactErrorsByRunId: {},
     factoryArtifactsByRunId: {},
     factoryGraphsByRunId: {},
+    agentSessionActionInputs: [],
+    agentSessionsByRunId: {},
     createRunError: undefined,
     createRunInputs: [],
     createRunPromise: undefined,
@@ -317,6 +333,65 @@ vi.mock("@/lib/local-gaia-query", () => ({
     ] as const,
     retry: false,
   }),
+  localGaiaAgentSessionQueryOptions: (config: {
+    readonly agentId: string;
+    readonly runId: string;
+  }) => ({
+    enabled: config.runId.length > 0 && config.agentId.length > 0,
+    queryFn: () =>
+      Promise.resolve({
+        data:
+          queryFixture.agentSessionsByRunId[config.runId]?.[config.agentId] ??
+          undefined,
+        status: "success",
+      }),
+    queryKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "agents",
+      config.agentId,
+      "session",
+    ] as const,
+    retry: false,
+  }),
+  localGaiaAgentSessionActionMutationOptions: (config: {
+    readonly agentId: string;
+    readonly runId: string;
+  }) => ({
+    mutationFn: async (action: unknown) => {
+      queryFixture.agentSessionActionInputs.push({
+        action,
+        agentId: config.agentId,
+        runId: config.runId,
+      });
+      return {
+        data: agentActionReceipt({
+          actionId:
+            typeof action === "object" &&
+            action !== null &&
+            "actionId" in action &&
+            typeof action.actionId === "string"
+              ? parseHarnessActionId(action.actionId)
+              : parseHarnessActionId("action-fixture"),
+          agentId: agentId(config.agentId),
+          runId: parseRunId(config.runId),
+        }),
+        status: "success",
+      };
+    },
+    mutationKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "agents",
+      config.agentId,
+      "session",
+      "action",
+    ] as const,
+  }),
   localGaiaFactoryArtifactsQueryOptions: (config: {
     readonly runId: string;
   }) => ({
@@ -510,12 +585,12 @@ describe("DashboardShell Run Console", () => {
     await waitFor(() => {
       expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
       expect(screen.getAllByText("Code summary")).not.toHaveLength(0);
-      expect(screen.getByTestId("evidence-studio-panel").getAttribute("data-slot")).toBe(
+      expect(screen.getByTestId("agent-inspector-panel").getAttribute("data-slot")).toBe(
         "sheet-content",
       );
       const summaryIconClassName =
         screen
-          .getByTestId("evidence-studio-panel")
+          .getByTestId("agent-inspector-panel")
           .querySelector('[data-slot="factory-evidence-summary-icon"]')
           ?.getAttribute("class") ?? "";
       expect(summaryIconClassName).toContain("border-border");
@@ -523,17 +598,28 @@ describe("DashboardShell Run Console", () => {
         /rose|amber|sky|cyan|emerald|indigo/,
       );
     });
-    expect(screen.getByTestId("evidence-studio-panel").textContent).not.toContain(
+    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
       "Role:",
     );
-    expect(screen.getByTestId("evidence-studio-panel").textContent).not.toContain(
+    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
       "State:",
     );
-    expect(screen.getByTestId("evidence-studio-panel").textContent).not.toContain(
+    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
       "Work item:",
     );
-    expect(screen.getByTestId("evidence-studio-panel").textContent).toContain(
+    expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
       "Operator note",
+    );
+    expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+      "Agent Inspector",
+    );
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Session",
+      "Activity",
+      "Artifacts",
+    ]);
+    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
+      "Query",
     );
 
     for (const artifactsTab of screen.getAllByRole("tab", {
@@ -560,20 +646,106 @@ describe("DashboardShell Run Console", () => {
       runId,
     });
 
-    fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Close Evidence Studio" })));
+    fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Close Agent Inspector" })));
 
     await waitFor(() => {
-      expect(screen.queryByTestId("evidence-studio-panel")).toBeNull();
+      expect(screen.queryByTestId("agent-inspector-panel")).toBeNull();
       expect(screen.queryByText("Worker produced code summary")).toBeNull();
     });
 
     fireEvent.click(workerNode);
 
     await waitFor(() => {
-      expect(screen.getByTestId("evidence-studio-panel").textContent).toContain(
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
         "Worker produced code summary",
       );
     });
+  });
+
+  it("renders live Agent Inspector controls and finite pending interaction actions", async () => {
+    installMockEventSource();
+    const runId = parseRunId("run-7070707070");
+    const workerId = agentId("agent-worker");
+    const view = renderDashboardWithQueries({
+      agentSessionsByRunId: {
+        [runId]: {
+          [workerId]: agentSessionSnapshot({
+            agentId: workerId,
+            pendingInteractions: [
+              {
+                allowedDecisions: ["approve", "decline"],
+                command: "pnpm check",
+                interactionId: parseHarnessInteractionId("interaction-command"),
+                itemId: parseHarnessItemId("item-command-approval"),
+                kind: "commandApproval",
+                requestedAt: "2026-07-10T21:11:00.000Z",
+                turnId: parseHarnessTurnId("turn-1"),
+                workspacePath: parseWorkspaceRelativePath("."),
+              },
+            ],
+            runId,
+          }),
+        },
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+    fireEvent.click(workerNode);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+        "Agent Inspector",
+      );
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+        "Command approval",
+      );
+    });
+
+    const composer = screen.getByPlaceholderText("Steer the active turn");
+    fireEvent.change(composer, {
+      target: { value: "Keep the Inspector local-api only." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send steer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Interrupt turn" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve command approval" }));
+
+    await waitFor(() => {
+      expect(queryFixture.agentSessionActionInputs).toHaveLength(3);
+    });
+    expect(queryFixture.agentSessionActionInputs.map((input) => input.action)).toEqual([
+      expect.objectContaining({
+        kind: "steer",
+        sessionId: "session-run-7070707070",
+        text: "Keep the Inspector local-api only.",
+        turnId: "turn-1",
+      }),
+      expect.objectContaining({
+        kind: "interrupt",
+        sessionId: "session-run-7070707070",
+        turnId: "turn-1",
+      }),
+      expect.objectContaining({
+        decision: "approve",
+        interactionId: "interaction-command",
+        kind: "approval",
+        sessionId: "session-run-7070707070",
+      }),
+    ]);
+    expect(screen.queryByRole("button", { name: "Approve for session command approval" })).toBeNull();
   });
 
   it("animates FactoryGraph edges only when connected work is running", () => {
@@ -755,7 +927,7 @@ describe("DashboardShell Run Console", () => {
         screen.getAllByText("Worker B produced implementation summary"),
       ).not.toHaveLength(0);
       expect(
-        screen.getByTestId("evidence-studio-panel").getAttribute("data-slot"),
+        screen.getByTestId("agent-inspector-panel").getAttribute("data-slot"),
       ).toBe("sheet-content");
     });
   });
@@ -1354,7 +1526,7 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
-  it("keeps source/raw detail inside Evidence Studio instead of a top-level source mode", async () => {
+  it("keeps source details inside Agent Inspector instead of a top-level source mode", async () => {
     const runId = parseRunId("run-1212121212");
     const view = renderDashboardWithQueries({
       runs: [
@@ -2002,6 +2174,10 @@ function renderDashboardWithQueries(input: {
   >;
   readonly factoryArtifactsByRunId?: Record<string, ReadonlyArray<typeof FactoryArtifactDto.Type>>;
   readonly factoryGraphsByRunId?: Record<string, typeof FactoryGraphDto.Type>;
+  readonly agentSessionsByRunId?: Record<
+    string,
+    Record<string, typeof AgentSessionSnapshotDto.Type>
+  >;
   readonly createRunError?: DashboardGaiaClientError;
   readonly createRunPromise?: Promise<CreateRunAcceptedFixture>;
   readonly healthError?: DashboardGaiaClientError;
@@ -2035,6 +2211,9 @@ function renderDashboardWithQueries(input: {
     input.factoryArtifactErrorsByRunId ?? {};
   queryFixture.factoryGraphsByRunId =
     input.factoryGraphsByRunId ?? defaultFactoryData.graphsByRunId;
+  queryFixture.agentSessionActionInputs = [];
+  queryFixture.agentSessionsByRunId =
+    input.agentSessionsByRunId ?? defaultFactoryData.agentSessionsByRunId;
   queryFixture.eventsByRunId = input.eventsByRunId ?? {};
   queryFixture.healthError = input.healthError;
   queryFixture.runs = input.runs;
@@ -2132,6 +2311,10 @@ function defaultFactoryDataForRuns(
   const artifactsByRunId: Record<string, ReadonlyArray<typeof FactoryArtifactDto.Type>> =
     {};
   const graphsByRunId: Record<string, typeof FactoryGraphDto.Type> = {};
+  const agentSessionsByRunId: Record<
+    string,
+    Record<string, typeof AgentSessionSnapshotDto.Type>
+  > = {};
 
   for (const run of runs) {
     activitiesByRunId[run.runId] = [
@@ -2172,11 +2355,18 @@ function defaultFactoryDataForRuns(
       workerArtifactId,
       workerId,
     });
+    agentSessionsByRunId[run.runId] = {
+      [workerId]: agentSessionSnapshot({
+        agentId: workerId,
+        runId: run.runId,
+      }),
+    };
   }
 
   return {
     activitiesByRunId,
     agentActivitiesByRunId,
+    agentSessionsByRunId,
     artifactBodiesByRunId,
     artifactsByRunId,
     graphsByRunId,
@@ -2251,6 +2441,87 @@ function factoryArtifactBody(
     artifactId: input.artifactId,
     body: input.body,
     runId: input.runId,
+  };
+}
+
+function agentSessionSnapshot(
+  input: Partial<typeof AgentSessionSnapshotDto.Type> & {
+    readonly agentId: typeof AgentSessionSnapshotDto.Type.agentId;
+    readonly runId: typeof AgentSessionSnapshotDto.Type.runId;
+  },
+): typeof AgentSessionSnapshotDto.Type {
+  const { agentId: inputAgentId, runId: inputRunId, ...overrides } = input;
+  return {
+    agentId: inputAgentId,
+    capabilities: {
+      approvals: ["command", "fileChange", "permission", "userInput", "mcpElicitation"],
+      fileChangeEvents: true,
+      interruption: true,
+      resumableSessions: true,
+      review: false,
+      steering: true,
+      streamingMessages: true,
+      structuredOutput: false,
+      subagents: false,
+      toolEvents: true,
+      usageReporting: true,
+      userQuestions: true,
+    },
+    eventSequence: 6,
+    items: [
+      {
+        itemId: parseHarnessItemId("item-message-1"),
+        kind: "message",
+        phase: "commentary",
+        status: "completed",
+        text: "I am working through the Agent Inspector.",
+        turnId: parseHarnessTurnId("turn-1"),
+      },
+      {
+        itemId: parseHarnessItemId("item-plan-1"),
+        kind: "plan",
+        status: "completed",
+        steps: [
+          { status: "completed", step: "Read the public session projection" },
+          { status: "inProgress", step: "Wire Inspector controls" },
+        ],
+        turnId: parseHarnessTurnId("turn-1"),
+      },
+    ],
+    pendingInteractions: [],
+    recovered: false,
+    resolvedInteractions: [],
+    runId: inputRunId,
+    sessionId: parseHarnessSessionId(`session-${inputRunId}`),
+    state: "running",
+    turns: [{ status: "running", turnId: parseHarnessTurnId("turn-1") }],
+    ...overrides,
+  };
+}
+
+function agentActionReceipt(
+  input: Partial<typeof AgentActionReceiptDto.Type> & {
+    readonly actionId: typeof AgentActionReceiptDto.Type.actionId;
+    readonly agentId: typeof AgentActionReceiptDto.Type.agentId;
+    readonly runId: typeof AgentActionReceiptDto.Type.runId;
+  },
+): typeof AgentActionReceiptDto.Type {
+  const {
+    actionId: inputActionId,
+    agentId: inputAgentId,
+    runId: inputRunId,
+    ...overrides
+  } = input;
+  return {
+    actionId: inputActionId,
+    agentId: inputAgentId,
+    eventSequence: 9,
+    payloadDigest:
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    runId: inputRunId,
+    sessionId: parseHarnessSessionId(`session-${inputRunId}`),
+    state: "dispatchConfirmed",
+    ...overrides,
   };
 }
 
