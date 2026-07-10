@@ -20,6 +20,20 @@ export {
   type BrowserEvidenceTargetUrl,
 } from "./browser-evidence.js";
 export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
+export {
+  CodexAppServerClientLive,
+  CodexAppServerClientService,
+  makeCodexAppServerClient,
+  type CodexAppServerClient,
+} from "./codex-app-server-client.js";
+export {
+  CodexAppServerIncompatibilityError,
+  CodexAppServerProcessExitError,
+  CodexAppServerProtocolError,
+  CodexAppServerTimeoutError,
+  CodexAppServerTransportError,
+  type CodexAppServerError,
+} from "./codex-app-server-protocol.js";
 export { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 export { writeEvidencePromotion } from "./evidence-promotion.js";
 export { writeFactoryRetro } from "./factory-retro.js";
