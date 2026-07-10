@@ -1,10 +1,15 @@
 import {
+  makeHarnessRunEvent,
   makeRunEvent,
+  parseHarnessEvent,
   parseRunEvent,
   parseRunSnapshot,
+  projectHarnessEvents,
   replayRunEvents,
   snapshotFromReplay,
   type EventType,
+  type HarnessEvent,
+  type HarnessSessionId,
   RunEvent,
   type RunId,
   RunSnapshot,
@@ -15,7 +20,7 @@ import type { RunPaths } from "./paths.js";
 
 export type AppendEventInput = {
   readonly payload?: Readonly<Record<string, Schema.Json>>;
-  readonly type: EventType;
+  readonly type: Exclude<EventType, "HARNESS_SESSION_EVENT_RECORDED">;
 };
 
 export type LoadedRunState = {
@@ -29,6 +34,19 @@ export function appendEvent(
   input: AppendEventInput,
 ) {
   return Effect.gen(function* () {
+    if (
+      (input as { readonly type: EventType }).type ===
+      "HARNESS_SESSION_EVENT_RECORDED"
+    ) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "UnsafeHarnessEventAppend",
+          message:
+            "Harness session events must use the finite appendHarnessSessionEvent path.",
+          recoverable: false,
+        }),
+      );
+    }
     const existingEvents = yield* readEvents(paths);
     const sequence = existingEvents.length + 1;
     const timestamp = new Date().toISOString();
@@ -49,6 +67,34 @@ export function appendEvent(
           });
     const events = [...existingEvents, event];
     const snapshot = snapshotFromReplay(events);
+
+    yield* appendJsonLine(paths.events, Schema.encodeSync(RunEvent)(event));
+    yield* appendJsonLine(
+      paths.snapshots,
+      Schema.encodeSync(RunSnapshot)(snapshot),
+    );
+
+    return { event, snapshot };
+  });
+}
+
+/** Append one finite, bounded provider-neutral harness event to events.jsonl. */
+export function appendHarnessSessionEvent(
+  runId: RunId,
+  paths: RunPaths,
+  input: HarnessEvent,
+) {
+  return Effect.gen(function* () {
+    const existingEvents = yield* readEvents(paths);
+    const parsed = parseHarnessEvent(input);
+    const event = makeHarnessRunEvent({
+      event: parsed,
+      runId,
+      sequence: existingEvents.length + 1,
+      timestamp: new Date().toISOString(),
+    });
+    validateHarnessEventHistories([...existingEvents, event]);
+    const snapshot = snapshotFromReplay([...existingEvents, event]);
 
     yield* appendJsonLine(paths.events, Schema.encodeSync(RunEvent)(event));
     yield* appendJsonLine(
@@ -115,9 +161,27 @@ export function readEvents(paths: RunPaths) {
       expectedSequence += 1;
     }
 
+    validateHarnessEventHistories(events);
     replayRunEvents(events);
     return events;
   });
+}
+
+function validateHarnessEventHistories(events: ReadonlyArray<RunEvent>): void {
+  const eventsBySession = new Map<HarnessSessionId, Array<HarnessEvent>>();
+  for (const event of events) {
+    if (event.type !== "HARNESS_SESSION_EVENT_RECORDED") continue;
+    const harnessEvent = parseHarnessEvent(event.payload.event);
+    const sessionEvents = eventsBySession.get(harnessEvent.sessionId);
+    if (sessionEvents === undefined) {
+      eventsBySession.set(harnessEvent.sessionId, [harnessEvent]);
+    } else {
+      sessionEvents.push(harnessEvent);
+    }
+  }
+  for (const [sessionId, sessionEvents] of eventsBySession) {
+    projectHarnessEvents(sessionEvents, sessionId);
+  }
 }
 
 function readLatestSnapshot(paths: RunPaths) {
