@@ -37,6 +37,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { Schema } from "effect";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -810,9 +811,71 @@ describe("DashboardShell Run Console", () => {
         "Command approval",
       );
     });
-    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
-      "Agent session is connecting.",
-    );
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+        "I am working through the Agent Inspector.",
+      );
+      expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
+        "Agent session is connecting.",
+      );
+    });
+  });
+
+  it("reopens the agent session stream after StrictMode passive effect replay", async () => {
+    const eventSource = installMockEventSource();
+    const runId = parseRunId("run-7070707072");
+    const workerId = agentId("agent-worker");
+    const view = renderDashboardWithQueries({
+      agentSessionsByRunId: {
+        [runId]: {
+          [workerId]: agentSessionSnapshot({
+            agentId: workerId,
+            runId,
+            state: "waitingForOperator",
+          }),
+        },
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+      strictMode: true,
+    });
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+
+    fireEvent.click(workerNode);
+
+    await waitFor(() => {
+      const closedCount = eventSource.instances.filter(
+        (source) => source.close.mock.calls.length > 0,
+      ).length;
+      const activeCount = eventSource.instances.filter(
+        (source) =>
+          source.close.mock.calls.length === 0 &&
+          source.listenerCount("agent-session-update") === 1,
+      ).length;
+      expect(closedCount).toBeGreaterThanOrEqual(1);
+      expect(activeCount).toBe(1);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+        "I am working through the Agent Inspector.",
+      );
+      expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
+        "Agent session is connecting.",
+      );
+    });
   });
 
   it("animates FactoryGraph edges only when connected work is running", () => {
@@ -2253,6 +2316,7 @@ function renderDashboardWithQueries(input: {
     typeof LocalRunReadDiagnosticDto.Type
   >;
   readonly runsError?: DashboardGaiaClientError;
+  readonly strictMode?: boolean;
 }) {
   queryFixture.artifactsByRunId = input.artifactsByRunId ?? {};
   queryFixture.createRunError = input.createRunError;
@@ -2296,11 +2360,13 @@ function renderDashboardWithQueries(input: {
     },
   });
 
-  return render(
+  const tree = (
     <QueryClientProvider client={queryClient}>
       <DashboardShell />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+
+  return render(input.strictMode === true ? <StrictMode>{tree}</StrictMode> : tree);
 }
 
 function localRunSummary(

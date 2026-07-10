@@ -2302,8 +2302,12 @@ function AgentInspector({
   const streamController = React.useRef<
     ReturnType<typeof createAgentSessionStreamController> | undefined
   >(undefined);
-  if (streamController.current === undefined) {
-    streamController.current = createAgentSessionStreamController({
+  const getStreamController = React.useCallback(() => {
+    if (streamController.current !== undefined) {
+      return streamController.current;
+    }
+
+    const controller = createAgentSessionStreamController({
       onConnectionChange: setStreamConnection,
       onError: (error) =>
         setStreamError(error instanceof Error ? error.message : String(error)),
@@ -2313,7 +2317,9 @@ function AgentInspector({
       },
       serverUrl,
     });
-  }
+    streamController.current = controller;
+    return controller;
+  }, [serverUrl]);
 
   React.useEffect(() => {
     setStreamSession(undefined);
@@ -2328,14 +2334,13 @@ function AgentInspector({
   }, [sessionQuery.data?.data]);
 
   React.useEffect(() => {
-    const controller = streamController.current;
-    if (controller === undefined) return;
+    const controller = getStreamController();
     controller.sync({
       agentId: selectedAgentId === "" ? undefined : selectedAgentId,
       isOpen: inspector.kind === "agent",
       runId: selectedRunId === "" ? undefined : selectedRunId,
     });
-  }, [inspector.kind, selectedAgentId, selectedRunId]);
+  }, [getStreamController, inspector.kind, selectedAgentId, selectedRunId]);
 
   React.useEffect(
     () => () => {
