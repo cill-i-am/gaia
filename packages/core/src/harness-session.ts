@@ -371,6 +371,24 @@ const FileChangeApprovalSchema = Schema.Struct({
   requestedAt: IdTextSchema,
   turnId: HarnessTurnIdSchema,
 });
+const HarnessPermissionAccessSchema = Schema.Literals(
+  ["read", "write", "deny"] as const,
+);
+const HarnessPermissionPathSchema = Schema.Struct({
+  access: HarnessPermissionAccessSchema,
+  path: WorkspaceRelativePathSchema,
+});
+/** Finite audited permission scope shown to an operator before approval. */
+export const HarnessPermissionScopeSchema = Schema.Struct({
+  fileSystem: Schema.Array(HarnessPermissionPathSchema).pipe(
+    Schema.check(Schema.isMaxLength(200)),
+  ),
+  network: Schema.Literals(
+    ["notRequested", "enabled", "disabled", "unspecified"] as const,
+  ),
+});
+/** A finite audited permission scope safe for public projection. */
+export type HarnessPermissionScope = typeof HarnessPermissionScopeSchema.Type;
 const PermissionApprovalSchema = Schema.Struct({
   allowedDecisions: Schema.Array(ApprovalDecisionSchema).pipe(
     Schema.check(Schema.isMaxLength(4)),
@@ -379,6 +397,7 @@ const PermissionApprovalSchema = Schema.Struct({
   itemId: HarnessItemIdSchema,
   kind: Schema.Literal("permissionApproval"),
   requestedAt: IdTextSchema,
+  scope: HarnessPermissionScopeSchema,
   summary: BoundedTextSchema,
   turnId: HarnessTurnIdSchema,
 });
@@ -806,6 +825,11 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
       }
       return;
     case "sessionStateChanged":
+      if (event.state === "failed") {
+        throw new Error(
+          "A failed harness session must use a typed sessionFailed event.",
+        );
+      }
       projection.state = event.state;
       projection.terminal = isTerminalSessionState(event.state);
       if (projection.terminal) projection.pendingInteractions.clear();
@@ -831,6 +855,13 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
       return;
     case "interactionRequested":
       requireEventCapability(projection.capabilities, event);
+      if (
+        "turnId" in event.interaction &&
+        event.interaction.turnId !== undefined &&
+        !projection.turns.has(event.interaction.turnId)
+      ) {
+        throw new Error("Harness interaction references an unknown turn.");
+      }
       if (
         "turnId" in event.interaction &&
         event.interaction.turnId !== undefined &&
@@ -894,7 +925,10 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
       return;
     case "turnCompleted": {
       const turn = projection.turns.get(event.turnId);
-      if (turn === undefined || turn.terminal) {
+      if (turn === undefined) {
+        throw new Error("Harness turn completion references an unknown turn.");
+      }
+      if (turn.terminal) {
         return;
       }
       if (event.status === "failed" && event.failure === undefined) {
@@ -935,7 +969,10 @@ function applyItemDelta(
 ): void {
   const existing = projection.items.get(event.itemId);
   const turn = projection.turns.get(event.turnId);
-  if (existing?.final === true || turn?.terminal === true) {
+  if (turn === undefined) {
+    throw new Error("Harness item delta references an unknown turn.");
+  }
+  if (existing?.final === true || turn.terminal) {
     return;
   }
 
@@ -980,6 +1017,12 @@ function applyItemUpsert(
     throw new Error("Harness item turn does not match its event turn.");
   }
   const scopedTurnId = eventTurnId ?? itemTurnId;
+  if (
+    scopedTurnId !== undefined &&
+    !projection.turns.has(scopedTurnId)
+  ) {
+    throw new Error("Harness item references an unknown turn.");
+  }
   if (
     existing?.final === true ||
     (scopedTurnId !== undefined &&

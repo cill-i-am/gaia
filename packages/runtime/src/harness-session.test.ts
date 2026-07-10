@@ -11,6 +11,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { Effect, Option, Stream } from "effect";
 import {
+  resumeHarnessSession,
   startHarnessSession,
   type HarnessProvider,
   type HarnessSession,
@@ -179,5 +180,68 @@ describe("provider-neutral harness session SPI", () => {
     }
     expect(error.contradictions).toEqual(["interruption"]);
     expect(started).toEqual([sessionId]);
+  });
+
+  it("rejects optional operations that are callable without the matching capability", async () => {
+    const started: Array<string> = [];
+    const provider = syntheticProvider(started);
+    const contradictory: HarnessProvider = {
+      ...provider,
+      createSession: (request) =>
+        provider.createSession(request).pipe(
+          Effect.map((session) => ({
+            ...session,
+            steer: Option.some(() => Effect.void),
+          })),
+        ),
+    };
+
+    const error = await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: contradictory,
+          request: {
+            input: { text: "not steerable" },
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("."),
+          },
+          requiredCapabilities: [],
+        }).pipe(Effect.flip),
+      ),
+    );
+
+    expect(error._tag).toBe("HarnessSessionContractError");
+    if (error._tag !== "HarnessSessionContractError") {
+      throw new Error(`Unexpected error: ${error._tag}`);
+    }
+    expect(error.contradictions).toEqual(["steering"]);
+  });
+
+  it("fails resume capability mismatch before provider dispatch", async () => {
+    const resumed: Array<string> = [];
+    const base = syntheticProvider([]);
+    const provider: HarnessProvider = {
+      ...base,
+      resumeSession: (request) => {
+        resumed.push(request.sessionId);
+        return base.resumeSession(request);
+      },
+    };
+
+    const error = await Effect.runPromise(
+      Effect.scoped(
+        resumeHarnessSession({
+          provider,
+          request: {
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("."),
+          },
+          requiredCapabilities: ["review"],
+        }).pipe(Effect.flip),
+      ),
+    );
+
+    expect(error._tag).toBe("HarnessCapabilityMismatchError");
+    expect(resumed).toEqual([]);
   });
 });

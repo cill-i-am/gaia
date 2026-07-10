@@ -408,6 +408,82 @@ describe("provider-neutral harness contracts", () => {
     assert.throws(() => replayHarnessSession([startedAtSequenceTwo], sessionId));
   });
 
+  it("rejects failed state changes without a typed terminal failure", () => {
+    assert.throws(() =>
+      projectHarnessEvents(
+        [
+          {
+            capabilities,
+            kind: "sessionStarted",
+            provider,
+            sessionId,
+            state: "running",
+          },
+          {
+            kind: "sessionStateChanged",
+            sessionId,
+            state: "failed",
+          },
+        ],
+        sessionId,
+      ),
+    );
+  });
+
+  it("rejects turn-scoped items and interactions for turns that never started", () => {
+    const start: HarnessEvent = {
+      capabilities,
+      kind: "sessionStarted",
+      provider,
+      sessionId,
+      state: "running",
+    };
+    const invalidEvents: ReadonlyArray<HarnessEvent> = [
+      {
+        chunk: "orphan",
+        deltaKind: "message",
+        itemId,
+        kind: "itemDeltaRecorded",
+        sessionId,
+        turnId,
+      },
+      {
+        final: true,
+        item: {
+          itemId,
+          kind: "message",
+          phase: "final",
+          status: "completed",
+          text: "orphan",
+          turnId,
+        },
+        kind: "itemUpserted",
+        sessionId,
+        turnId,
+      },
+      {
+        interaction: {
+          allowedDecisions: ["decline"],
+          command: "pnpm test",
+          interactionId,
+          itemId,
+          kind: "commandApproval",
+          requestedAt: "2026-07-10T10:00:00.000Z",
+          turnId,
+          workspacePath: parseWorkspaceRelativePath("."),
+        },
+        kind: "interactionRequested",
+        sessionId,
+      },
+    ];
+
+    for (const invalidEvent of invalidEvents) {
+      assert.throws(() =>
+        projectHarnessEvents([start, invalidEvent], sessionId),
+      );
+    }
+  });
+
   it("uses authoritative run-event order instead of provider-local revisions", () => {
     const runEvents = [
       makeHarnessRunEvent({
@@ -433,7 +509,11 @@ describe("provider-neutral harness contracts", () => {
           timestamp: "2026-07-10T10:00:01.000Z",
       }),
     ];
-    const firstPayload = runEvents[0]!.payload.event;
+    const firstRunEvent = runEvents[0];
+    if (firstRunEvent === undefined) {
+      throw new Error("Expected the first harness run event.");
+    }
+    const firstPayload = firstRunEvent.payload.event;
     assert.strictEqual(
       typeof firstPayload === "object" &&
         firstPayload !== null &&
@@ -717,6 +797,7 @@ describe("provider-neutral harness contracts", () => {
           ...interactionBase,
           allowedDecisions: ["decline"],
           kind: "permissionApproval",
+          scope: { fileSystem: [], network: "notRequested" },
           summary: "permission",
         },
         kind: "interactionRequested",
@@ -777,6 +858,10 @@ describe("provider-neutral harness contracts", () => {
       ...unavailable,
       approvals: ["userInput"],
     });
+    const userInputCapabilityEvent = capabilityEvents[9];
+    if (userInputCapabilityEvent === undefined) {
+      throw new Error("Expected the user-input capability event fixture.");
+    }
     assert.throws(() =>
       replayHarnessSession(
         [
@@ -793,7 +878,7 @@ describe("provider-neutral harness contracts", () => {
             timestamp: "2026-07-10T10:00:00.000Z",
           }),
           makeHarnessRunEvent({
-            event: capabilityEvents[9]!,
+            event: userInputCapabilityEvent,
             runId,
             sequence: 2,
             timestamp: "2026-07-10T10:00:01.000Z",

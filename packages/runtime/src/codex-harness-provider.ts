@@ -227,9 +227,16 @@ export function createCodexHarnessProvider(
                 new HarnessResumeError({
                   message: "Codex App Server could not resume the session thread.",
                   providerId: CodexHarnessProviderDescriptor.providerId,
-                }),
+              }),
             ),
           );
+        if (thread.thread.id !== correlatedThreadId) {
+          return yield* new HarnessResumeError({
+            message:
+              "Codex resumed a thread that does not match stored session correlation.",
+            providerId: CodexHarnessProviderDescriptor.providerId,
+          });
+        }
         const recovered = yield* options.client
           .readThread({ includeTurns: true, threadId: thread.thread.id })
           .pipe(
@@ -396,10 +403,37 @@ function makeCodexSession<E>(input: {
       }
       emit(events);
     });
+    const removeTermination = input.options.client.onTermination(() => {
+      if (adapterFailed || bufferFailed) return;
+      adapterFailed = true;
+      const message = "Codex App Server terminated before the session completed.";
+      emit([
+        parseHarnessEvent({
+          failure: {
+            code: "CodexAppServerTerminated",
+            kind: "providerFailure",
+            message,
+            recoverable: true,
+          },
+          kind: "sessionFailed",
+          sessionId: input.request.sessionId,
+        }),
+      ]);
+      Queue.failCauseUnsafe(
+        queue,
+        Cause.fail(
+          new HarnessSessionError({
+            message,
+            providerId: CodexHarnessProviderDescriptor.providerId,
+          }),
+        ),
+      );
+    });
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         removeNotification();
         removeRequest();
+        removeTermination();
         yield* Queue.shutdown(queue);
       }),
     );
@@ -592,14 +626,24 @@ function respondToCodexRequest(
 ) {
   switch (request.method) {
     case "item/commandExecution/requestApproval":
-      if (response.kind !== "approval") return invalidInteractionResponse();
+      if (
+        response.kind !== "approval" ||
+        !mapper.approvalDecisionAllowed(request.id, response.decision)
+      ) {
+        return invalidInteractionResponse();
+      }
       return client
         .respondCommandApproval(request, {
           decision: mapApprovalDecision(response.decision),
         })
         .pipe(mapInteractionResponseError);
     case "item/fileChange/requestApproval":
-      if (response.kind !== "approval") return invalidInteractionResponse();
+      if (
+        response.kind !== "approval" ||
+        !mapper.approvalDecisionAllowed(request.id, response.decision)
+      ) {
+        return invalidInteractionResponse();
+      }
       return client
         .respondFileApproval(request, {
           decision: mapApprovalDecision(response.decision),
@@ -608,14 +652,19 @@ function respondToCodexRequest(
     case "item/permissions/requestApproval":
       if (
         response.kind !== "approval" ||
-        response.decision === "approveForSession"
+        response.decision === "approveForSession" ||
+        !mapper.approvalDecisionAllowed(request.id, response.decision)
       ) {
+        return invalidInteractionResponse();
+      }
+      const permissions = mapper.permissionApproval(request.id);
+      if (response.decision === "approve" && permissions === undefined) {
         return invalidInteractionResponse();
       }
       return client
         .respondPermissionApproval(request, {
           permissions:
-            response.decision === "approve" ? request.params.permissions : {},
+            response.decision === "approve" ? (permissions ?? {}) : {},
           scope: "turn",
         })
         .pipe(mapInteractionResponseError);

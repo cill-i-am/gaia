@@ -4,6 +4,7 @@ import {
   parseHarnessActionId,
   parseHarnessProviderId,
   parseHarnessSessionId,
+  projectHarnessEvents,
 } from "@gaia/core";
 import { describe, expect, it } from "vitest";
 import { createCodexSessionMapper } from "./codex-session-mapper.js";
@@ -349,7 +350,11 @@ describe("Codex App Server provider-neutral mapper", () => {
     ) {
       throw new Error("Expected a mapped user-input interaction.");
     }
-    const publicQuestionId = questionEvent.interaction.questions[0]!.questionId;
+    const publicQuestion = questionEvent.interaction.questions[0];
+    if (publicQuestion === undefined) {
+      throw new Error("Expected a mapped user-input question.");
+    }
+    const publicQuestionId = publicQuestion.questionId;
     expect(JSON.stringify(questions)).not.toContain("native-question-secret");
     expect(
       subject.mapUserInputAnswers("question-request-secret", [
@@ -482,6 +487,7 @@ describe("Codex App Server provider-neutral mapper", () => {
       params: {
         message:
           "AWS_SECRET_ACCESS_KEY=aws_topsecret DATABASE_URL=postgres://secret@host/db HOME=/home/operator FEATURE_FLAG=private { NODE_ENV: 'production' } Authorization: Basic dXNlcjpwYXNz x-api-key: arbitrary-secret {\"NODE_ENV\":\"json-production\",\"AWS_SECRET_ACCESS_KEY\":\"json-secret\",\"Authorization\":\"Basic anNvbi1iYXNpYw==\"} Read `/etc/passwd` and see,/opt/private plus /Volumes/private/file",
+        threadId: "privacy-thread",
       },
     });
     const serialized = JSON.stringify(events);
@@ -621,8 +627,9 @@ describe("Codex App Server provider-neutral mapper", () => {
       method: "item/permissions/requestApproval",
       params: {
         cwd: "/workspace/project",
+        environmentId: null,
         itemId: "resolved-item",
-        permissions: {},
+        permissions: { fileSystem: null, network: null },
         reason: "permission",
         startedAtMs: 1,
         threadId: "resolved-thread",
@@ -640,5 +647,338 @@ describe("Codex App Server provider-neutral mapper", () => {
         .map(({ kind }) => kind),
     ).toEqual(["interactionCancelled", "sessionStateChanged"]);
     expect(subject.mapServerRequest(requested)).toEqual([]);
+  });
+
+  it("maps live system errors to a typed terminal failure", () => {
+    const subject = mapper();
+    subject.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "system-error-thread" } },
+    });
+
+    expect(
+      subject.mapNotification({
+        method: "thread/status/changed",
+        params: {
+          status: { type: "systemError" },
+          threadId: "system-error-thread",
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        failure: expect.objectContaining({
+          code: "CodexThreadSystemError",
+          kind: "providerFailure",
+        }),
+        kind: "sessionFailed",
+      }),
+    ]);
+  });
+
+  it("routes warnings only to their owning thread and drops unscoped warnings", () => {
+    const subject = mapper();
+    subject.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "warning-owner" } },
+    });
+
+    expect(
+      subject.mapNotification({
+        method: "warning",
+        params: { message: "other", threadId: "warning-other" },
+      }),
+    ).toEqual([]);
+    expect(
+      subject.mapNotification({
+        method: "warning",
+        params: { message: "global", threadId: null },
+      }),
+    ).toEqual([]);
+    expect(
+      subject.mapNotification({
+        method: "warning",
+        params: { message: "owned", threadId: "warning-owner" },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        item: expect.objectContaining({ message: "owned" }),
+        kind: "itemUpserted",
+      }),
+    ]);
+  });
+
+  it("derives stable opaque item identity across recovery regardless of prior synthetic items", () => {
+    const live = mapper();
+    live.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "stable-thread" } },
+    });
+    live.mapNotification({
+      method: "warning",
+      params: { message: "pre-crash warning", threadId: "stable-thread" },
+    });
+    const liveItem = live.mapNotification({
+      method: "item/completed",
+      params: {
+        item: {
+          id: "stable-native-item",
+          phase: "final_answer",
+          text: "final",
+          type: "agentMessage",
+        },
+        threadId: "stable-thread",
+        turnId: "stable-turn",
+      },
+    }).find((event) => event.kind === "itemUpserted");
+
+    const recovered = mapper();
+    recovered.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "stable-thread" } },
+    });
+    const recoveredItem = recovered
+      .mapRecoveredThread({
+        id: "stable-thread",
+        status: { type: "idle" },
+        turns: [
+          {
+            id: "stable-turn",
+            items: [
+              {
+                id: "stable-native-item",
+                phase: "final_answer",
+                text: "final",
+                type: "agentMessage",
+              },
+            ],
+            status: "completed",
+          },
+        ],
+      })
+      .find((event) => event.kind === "itemUpserted");
+
+    expect(liveItem?.kind).toBe("itemUpserted");
+    expect(recoveredItem?.kind).toBe("itemUpserted");
+    if (liveItem?.kind !== "itemUpserted" || recoveredItem?.kind !== "itemUpserted") {
+      throw new Error("Expected mapped items.");
+    }
+    expect(recoveredItem.item.itemId).toBe(liveItem.item.itemId);
+  });
+
+  it("replays a pre-crash warning together with a newly recovered final item", () => {
+    const live = mapper();
+    const liveStart = live.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "combined-thread" } },
+    });
+    const warning = live.mapNotification({
+      method: "warning",
+      params: { message: "pre-crash", threadId: "combined-thread" },
+    });
+
+    const recovered = mapper();
+    const recoveredStart = recovered.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "combined-thread" } },
+    });
+    const recoveredEvents = recovered.mapRecoveredThread({
+      id: "combined-thread",
+      status: { type: "idle" },
+      turns: [
+        {
+          id: "combined-turn",
+          items: [
+            {
+              id: "missing-before-crash",
+              phase: "final_answer",
+              text: "authoritative recovered final",
+              type: "agentMessage",
+            },
+          ],
+          status: "completed",
+        },
+      ],
+    });
+    const snapshot = projectHarnessEvents(
+      [
+        ...liveStart,
+        ...warning,
+        ...recoveredStart,
+        { kind: "sessionRecovered", sessionId },
+        ...recoveredEvents,
+      ],
+      sessionId,
+    );
+
+    expect(snapshot.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "warning", message: "pre-crash" }),
+        expect.objectContaining({
+          kind: "message",
+          text: "authoritative recovered final",
+        }),
+      ]),
+    );
+  });
+
+  it("fails closed on unrepresentable approval scope and exposes audited permission scope", () => {
+    const subject = mapper();
+    subject.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "approval-thread" } },
+    });
+
+    const file = subject.mapServerRequest({
+      id: "outside-file",
+      method: "item/fileChange/requestApproval",
+      params: {
+        grantRoot: "/private/outside",
+        itemId: "file-item",
+        reason: "outside",
+        startedAtMs: 1,
+        threadId: "approval-thread",
+        turnId: "approval-turn",
+      },
+    });
+    const fileInteraction = file.find(
+      (event) => event.kind === "interactionRequested",
+    );
+    expect(fileInteraction).toMatchObject({
+      interaction: {
+        allowedDecisions: ["decline", "cancel"],
+        kind: "fileChangeApproval",
+        paths: [],
+      },
+    });
+
+    const command = subject.mapServerRequest({
+      id: "network-command",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        command: "curl example.com",
+        cwd: "/workspace/project",
+        itemId: "command-item",
+        networkApprovalContext: { host: "example.com" },
+        reason: "network",
+        startedAtMs: 2,
+        threadId: "approval-thread",
+        turnId: "approval-turn",
+      },
+    });
+    expect(
+      command.find((event) => event.kind === "interactionRequested"),
+    ).toMatchObject({
+      interaction: {
+        allowedDecisions: ["decline", "cancel"],
+        kind: "commandApproval",
+      },
+    });
+
+    const permission = subject.mapServerRequest({
+      id: "audited-permission",
+      method: "item/permissions/requestApproval",
+      params: {
+        cwd: "/workspace/project",
+        environmentId: null,
+        itemId: "permission-item",
+        permissions: {
+          fileSystem: {
+            entries: [
+              {
+                access: "write",
+                path: {
+                  path: "/workspace/project/src",
+                  type: "path",
+                },
+              },
+            ],
+            read: null,
+            write: null,
+          },
+          network: { enabled: false },
+        },
+        reason: "write src",
+        startedAtMs: 3,
+        threadId: "approval-thread",
+        turnId: "approval-turn",
+      },
+    });
+    expect(
+      permission.find((event) => event.kind === "interactionRequested"),
+    ).toMatchObject({
+      interaction: {
+        allowedDecisions: ["approve", "decline", "cancel"],
+        kind: "permissionApproval",
+        scope: {
+          fileSystem: [{ access: "write", path: "src" }],
+          network: "disabled",
+        },
+      },
+    });
+  });
+
+  it("redacts configured values before workspace normalization and structured credential keys", () => {
+    const subject = createCodexSessionMapper({
+      capabilities,
+      provider,
+      sensitiveValues: [
+        "/workspace/project/private-key-material",
+        "short-secret",
+      ],
+      sessionId,
+      workspaceRoot: "/workspace/project",
+    });
+    subject.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "redaction-thread" } },
+    });
+    const events = subject.mapNotification({
+      method: "item/completed",
+      params: {
+        item: {
+          id: "redaction-item",
+          phase: "final_answer",
+          text: 'path=/workspace/project/private-key-material {"client_secret":"value-one","openai_api_key":"value-two"}',
+          type: "agentMessage",
+        },
+        threadId: "redaction-thread",
+        turnId: "redaction-turn",
+      },
+    });
+    const serialized = JSON.stringify(events);
+
+    expect(serialized).not.toContain("private-key-material");
+    expect(serialized).not.toContain("value-one");
+    expect(serialized).not.toContain("value-two");
+    expect(serialized).toContain("[environment]");
+    expect(serialized).toContain("[credential]");
+  });
+
+  it("bounds adapter-local delta buffers before a provider can create unbounded item state", () => {
+    const subject = createCodexSessionMapper({
+      capabilities,
+      deltaFlushCharacters: 10_000,
+      provider,
+      sessionId,
+      workspaceRoot: "/workspace/project",
+    });
+    subject.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "delta-buffer-thread" } },
+    });
+
+    expect(() => {
+      for (let index = 0; index < 1_001; index += 1) {
+        subject.mapNotification({
+          method: "item/agentMessage/delta",
+          params: {
+            delta: "x",
+            itemId: `delta-item-${index}`,
+            threadId: "delta-buffer-thread",
+            turnId: "delta-buffer-turn",
+          },
+        });
+      }
+    }).toThrow();
   });
 });

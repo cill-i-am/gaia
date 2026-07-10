@@ -43,9 +43,7 @@ export const CodexThreadItemSchema = Schema.Union([
   Schema.Struct({
     aggregatedOutput: Schema.optionalKey(Schema.NullOr(Schema.String)),
     command: Schema.String,
-    commandActions: Schema.optionalKey(
-      Schema.Array(Schema.Json).pipe(Schema.check(Schema.isMaxLength(100))),
-    ),
+    commandActions: Schema.optionalKey(Schema.Array(Schema.Json)),
     cwd: Schema.String,
     durationMs: Schema.optionalKey(Schema.NullOr(Schema.Number)),
     exitCode: Schema.optionalKey(Schema.NullOr(Schema.Number)),
@@ -54,9 +52,7 @@ export const CodexThreadItemSchema = Schema.Union([
     type: Schema.Literal("commandExecution"),
   }),
   Schema.Struct({
-    changes: Schema.Array(CodexFileChange).pipe(
-      Schema.check(Schema.isMaxLength(200)),
-    ),
+    changes: Schema.Array(CodexFileChange),
     id: ItemId,
     status: Schema.Literals(["inProgress", "completed", "failed", "declined"] as const),
     type: Schema.Literal("fileChange"),
@@ -91,11 +87,7 @@ const TurnError = Schema.Struct({
 const Turn = Schema.Struct({
   error: Schema.optionalKey(Schema.NullOr(TurnError)),
   id: TurnId,
-  items: Schema.optionalKey(
-    Schema.Array(CodexThreadItemSchema).pipe(
-      Schema.check(Schema.isMaxLength(1_000)),
-    ),
-  ),
+  items: Schema.optionalKey(Schema.Array(CodexThreadItemSchema)),
   status: Schema.optionalKey(
     Schema.Literals(["completed", "interrupted", "failed", "inProgress"] as const),
   ),
@@ -110,14 +102,12 @@ export const CodexThreadSchema = Schema.Struct({
       Schema.Struct({
         activeFlags: Schema.Array(
           Schema.Literals(["waitingOnApproval", "waitingOnUserInput"] as const),
-        ).pipe(Schema.check(Schema.isMaxLength(2))),
+        ),
         type: Schema.Literal("active"),
       }),
     ]),
   ),
-  turns: Schema.optionalKey(
-    Schema.Array(Turn).pipe(Schema.check(Schema.isMaxLength(1_000))),
-  ),
+  turns: Schema.optionalKey(Schema.Array(Turn)),
 });
 export type CodexThread = typeof CodexThreadSchema.Type;
 const Thread = CodexThreadSchema;
@@ -154,11 +144,11 @@ const CommandRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.
   ...BaseInteraction,
   approvalId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   command: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  commandActions: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.Json).pipe(Schema.check(Schema.isMaxLength(100))))),
+  commandActions: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.Json))),
   cwd: Schema.optionalKey(Schema.NullOr(Schema.String)),
   networkApprovalContext: Schema.optionalKey(Schema.NullOr(Schema.Json)),
-  proposedExecpolicyAmendment: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String).pipe(Schema.check(Schema.isMaxLength(100))))),
-  proposedNetworkPolicyAmendments: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.Json).pipe(Schema.check(Schema.isMaxLength(100))))),
+  proposedExecpolicyAmendment: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+  proposedNetworkPolicyAmendments: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.Json))),
   reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
   startedAtMs: Schema.Number,
 }) });
@@ -168,12 +158,55 @@ const FileRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Lit
   reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
   startedAtMs: Schema.Number,
 }) });
+const AdditionalNetworkPermissionsSchema = Schema.Struct({
+  enabled: Schema.NullOr(Schema.Boolean),
+});
+const FileSystemPathSchema = Schema.Union([
+  Schema.Struct({ path: Schema.String, type: Schema.Literal("path") }),
+  Schema.Struct({ pattern: Schema.String, type: Schema.Literal("glob_pattern") }),
+  Schema.Struct({
+    type: Schema.Literal("special"),
+    value: Schema.Union([
+      Schema.Struct({ kind: Schema.Literal("root") }),
+      Schema.Struct({ kind: Schema.Literal("minimal") }),
+      Schema.Struct({
+        kind: Schema.Literal("project_roots"),
+        subpath: Schema.NullOr(Schema.String),
+      }),
+      Schema.Struct({ kind: Schema.Literal("tmpdir") }),
+      Schema.Struct({ kind: Schema.Literal("slash_tmp") }),
+      Schema.Struct({
+        kind: Schema.Literal("unknown"),
+        path: Schema.String,
+        subpath: Schema.NullOr(Schema.String),
+      }),
+    ]),
+  }),
+]);
+const FileSystemSandboxEntrySchema = Schema.Struct({
+  access: Schema.Literals(["read", "write", "deny"] as const),
+  path: FileSystemPathSchema,
+});
+const AdditionalFileSystemPermissionsSchema = Schema.Struct({
+  entries: Schema.optionalKey(Schema.Array(FileSystemSandboxEntrySchema)),
+  globScanMaxDepth: Schema.optionalKey(Schema.Number),
+  read: Schema.NullOr(Schema.Array(Schema.String)),
+  write: Schema.NullOr(Schema.Array(Schema.String)),
+});
+const RequestPermissionProfileSchema = Schema.Struct({
+  fileSystem: Schema.NullOr(AdditionalFileSystemPermissionsSchema),
+  network: Schema.NullOr(AdditionalNetworkPermissionsSchema),
+});
+const GrantedPermissionProfileSchema = Schema.Struct({
+  fileSystem: Schema.optionalKey(AdditionalFileSystemPermissionsSchema),
+  network: Schema.optionalKey(AdditionalNetworkPermissionsSchema),
+});
 const PermissionRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/permissions/requestApproval"), params: Schema.Struct({
   ...BaseInteraction,
   cwd: Schema.String,
-  environmentId: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  permissions: Schema.Json,
-  reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  environmentId: Schema.NullOr(Schema.String),
+  permissions: RequestPermissionProfileSchema,
+  reason: Schema.NullOr(Schema.String),
   startedAtMs: Schema.Number,
 }) });
 const UserInputOption = Schema.Struct({ description: Schema.String, label: Schema.String });
@@ -182,10 +215,10 @@ const UserInputQuestion = Schema.Struct({
   id: Schema.String,
   isOther: Schema.optionalKey(Schema.Boolean),
   isSecret: Schema.optionalKey(Schema.Boolean),
-  options: Schema.optionalKey(Schema.NullOr(Schema.Array(UserInputOption).pipe(Schema.check(Schema.isMaxLength(20))))),
+  options: Schema.optionalKey(Schema.NullOr(Schema.Array(UserInputOption))),
   question: Schema.String,
 });
-const UserInputRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/tool/requestUserInput"), params: Schema.Struct({ ...BaseInteraction, questions: Schema.Array(UserInputQuestion).pipe(Schema.check(Schema.isMaxLength(20))) }) });
+const UserInputRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/tool/requestUserInput"), params: Schema.Struct({ ...BaseInteraction, questions: Schema.Array(UserInputQuestion) }) });
 const ElicitationBase = {
   _meta: Schema.NullOr(Schema.Json),
   message: Schema.String,
@@ -228,7 +261,7 @@ export const CodexNotificationSchema = Schema.Union([
     Schema.Struct({ type: Schema.Literal("notLoaded") }),
     Schema.Struct({ type: Schema.Literal("idle") }),
     Schema.Struct({ type: Schema.Literal("systemError") }),
-    Schema.Struct({ activeFlags: Schema.Array(Schema.Literals(["waitingOnApproval", "waitingOnUserInput"] as const)).pipe(Schema.check(Schema.isMaxLength(2))), type: Schema.Literal("active") }),
+    Schema.Struct({ activeFlags: Schema.Array(Schema.Literals(["waitingOnApproval", "waitingOnUserInput"] as const)), type: Schema.Literal("active") }),
   ]) })),
   notification("turn/started", TurnParams), notification("turn/completed", TurnParams),
   notification("turn/diff/updated", Schema.Struct({ diff: Schema.String, threadId: ThreadId, turnId: TurnId })),
@@ -237,7 +270,7 @@ export const CodexNotificationSchema = Schema.Union([
     plan: Schema.Array(Schema.Struct({
       status: Schema.Literals(["pending", "inProgress", "completed"] as const),
       step: Schema.String,
-    })).pipe(Schema.check(Schema.isMaxLength(100))),
+    })),
     threadId: ThreadId,
     turnId: TurnId,
   })),
@@ -261,14 +294,37 @@ export const CodexNotificationSchema = Schema.Union([
     }),
     turnId: TurnId,
   })),
-  notification("warning", Schema.Struct({ message: Schema.String })), notification("error", Schema.Struct({ error: TurnError, threadId: ThreadId, turnId: TurnId, willRetry: Schema.Boolean })),
+  notification("warning", Schema.Struct({ message: Schema.String, threadId: Schema.NullOr(ThreadId) })), notification("error", Schema.Struct({ error: TurnError, threadId: ThreadId, turnId: TurnId, willRetry: Schema.Boolean })),
   notification("serverRequest/resolved", Schema.Struct({ requestId: CodexRequestIdSchema, threadId: ThreadId })),
 ]);
 export type CodexNotification = typeof CodexNotificationSchema.Type;
 
+/** True when a raw notification belongs to Gaia's curated stable subset. */
+export function isCuratedCodexNotificationMethod(method: string): boolean {
+  switch (method) {
+    case "thread/started":
+    case "thread/status/changed":
+    case "turn/started":
+    case "turn/completed":
+    case "turn/diff/updated":
+    case "turn/plan/updated":
+    case "item/started":
+    case "item/completed":
+    case "item/agentMessage/delta":
+    case "item/commandExecution/outputDelta":
+    case "thread/tokenUsage/updated":
+    case "warning":
+    case "error":
+    case "serverRequest/resolved":
+      return true;
+    default:
+      return false;
+  }
+}
+
 export const CommandApprovalResponseSchema = Schema.Struct({ decision: Schema.Literals(["accept", "acceptForSession", "decline", "cancel"] as const) });
 export const FileApprovalResponseSchema = CommandApprovalResponseSchema;
-export const PermissionApprovalResponseSchema = Schema.Struct({ permissions: Schema.Json, scope: Schema.optionalKey(Schema.Literals(["turn", "session"] as const)), strictAutoReview: Schema.optionalKey(Schema.NullOr(Schema.Boolean)) });
+export const PermissionApprovalResponseSchema = Schema.Struct({ permissions: GrantedPermissionProfileSchema, scope: Schema.Literals(["turn", "session"] as const), strictAutoReview: Schema.optionalKey(Schema.Boolean) });
 export const UserInputResponseSchema = Schema.Struct({ answers: Schema.Record(Schema.String, Schema.Struct({ answers: Schema.Array(Schema.String).pipe(Schema.check(Schema.isMaxLength(20))) })) });
 export const ElicitationResponseSchema = Schema.Struct({
   _meta: Schema.NullOr(Schema.Json),

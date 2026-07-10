@@ -13,8 +13,10 @@ import {
   parseCodexTurnId,
   parseCodexItemId,
   type CodexNotification,
+  type CodexAppServerError,
   type CodexServerRequest,
   CodexAppServerIncompatibilityError,
+  CodexAppServerTransportError,
 } from "./codex-app-server-protocol.js";
 import {
   createCodexHarnessProvider,
@@ -25,8 +27,11 @@ import { resumeHarnessSession, startHarnessSession } from "./harness-session.js"
 function recordingClient() {
   const notifications = new Set<(notification: CodexNotification) => void>();
   const requests = new Set<(request: CodexServerRequest) => void>();
+  const terminations = new Set<(error: CodexAppServerError) => void>();
   const starts: Array<unknown> = [];
   const initializations: Array<unknown> = [];
+  const fileResponses: Array<unknown> = [];
+  const permissionResponses: Array<unknown> = [];
   const reads: Array<unknown> = [];
   const threadId = parseCodexThreadId("native-thread-private");
   const turnId = parseCodexTurnId("native-turn-private");
@@ -38,6 +43,7 @@ function recordingClient() {
     interruptTurn: () => Effect.succeed({}),
     onNotification: (listener) => { notifications.add(listener); return () => notifications.delete(listener); },
     onServerRequest: (listener) => { requests.add(listener); return () => requests.delete(listener); },
+    onTermination: (listener) => { terminations.add(listener); return () => terminations.delete(listener); },
     readThread: (params) => {
       reads.push(params);
       return Effect.succeed({
@@ -46,8 +52,8 @@ function recordingClient() {
     },
     respondCommandApproval: () => Effect.void,
     respondElicitation: () => Effect.void,
-    respondFileApproval: () => Effect.void,
-    respondPermissionApproval: () => Effect.void,
+    respondFileApproval: (_request, response) => Effect.sync(() => { fileResponses.push(response); }),
+    respondPermissionApproval: (_request, response) => Effect.sync(() => { permissionResponses.push(response); }),
     respondUserInput: () => Effect.void,
     resumeThread: () => Effect.succeed({ thread: { id: threadId } }),
     startThread: (params) => { starts.push(params); return Effect.succeed({ thread: { id: threadId } }); },
@@ -56,11 +62,14 @@ function recordingClient() {
   } satisfies CodexAppServerClient;
   return {
     client,
+    fileResponses,
     initializations,
     notifications,
+    permissionResponses,
     reads,
     requests,
     starts,
+    terminations,
     threadId,
     turnId,
   };
@@ -212,6 +221,62 @@ describe("Codex HarnessProvider adapter", () => {
     expect(recovered.snapshot.state).toBe("idle");
   });
 
+  it("rejects a resumed native thread that differs from stored correlation before reading it", async () => {
+    const sessionId = parseHarnessSessionId("session-codex-resume-mismatch");
+    const correlationStore = makeInMemoryCodexHarnessCorrelationStore();
+    const first = recordingClient();
+    await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: first.client,
+            correlationStore,
+            workspaceRoot: "/workspace",
+          }),
+          request: {
+            input: { text: "start" },
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: ["resumableSessions"],
+        }),
+      ),
+    );
+
+    const second = recordingClient();
+    const mismatchedThreadId = parseCodexThreadId("different-native-thread");
+    const client: CodexAppServerClient = {
+      ...second.client,
+      resumeThread: () =>
+        Effect.succeed({ thread: { id: mismatchedThreadId } }),
+    };
+    const error = await Effect.runPromise(
+      Effect.scoped(
+        resumeHarnessSession({
+          provider: createCodexHarnessProvider({
+            client,
+            correlationStore,
+            workspaceRoot: "/workspace",
+          }),
+          request: {
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: [],
+        }).pipe(Effect.flip),
+      ),
+    );
+
+    expect(error._tag).toBe("HarnessResumeError");
+    if (error._tag !== "HarnessResumeError") {
+      throw new Error(`Unexpected error: ${error._tag}`);
+    }
+    expect(error.message).toBe(
+      "Codex resumed a thread that does not match stored session correlation.",
+    );
+    expect(second.reads).toEqual([]);
+  });
+
   it("reports initialize incompatibility instead of claiming availability", async () => {
     const fake = recordingClient();
     const client: CodexAppServerClient = {
@@ -290,7 +355,10 @@ describe("Codex HarnessProvider adapter", () => {
             for (const listener of fake.notifications) {
               listener({
                 method: "warning",
-                params: { message: `warning ${index}` },
+                params: {
+                  message: `warning ${index}`,
+                  threadId: fake.threadId,
+                },
               });
             }
           }
@@ -331,8 +399,9 @@ describe("Codex HarnessProvider adapter", () => {
               method: "item/permissions/requestApproval",
               params: {
                 cwd: "/workspace/project",
+                environmentId: null,
                 itemId: parseCodexItemId("native-permission-item"),
-                permissions: {},
+                permissions: { fileSystem: null, network: null },
                 reason: "permission",
                 startedAtMs: 1,
                 threadId: fake.threadId,
@@ -341,7 +410,11 @@ describe("Codex HarnessProvider adapter", () => {
             });
           }
           const waiting = yield* session.snapshot;
-          const interactionId = waiting.pendingInteractions[0]!.interactionId;
+          const pendingInteraction = waiting.pendingInteractions[0];
+          if (pendingInteraction === undefined) {
+            throw new Error("Expected a pending permission interaction.");
+          }
+          const interactionId = pendingInteraction.interactionId;
           const newerTurnId = parseCodexTurnId("native-newer-turn");
           for (const listener of fake.notifications) {
             listener({
@@ -375,5 +448,191 @@ describe("Codex HarnessProvider adapter", () => {
     expect(result.resolution._tag).toBe("Failure");
     expect(result.snapshot.pendingInteractions).toEqual([]);
     expect(result.snapshot.state).toBe("running");
+  });
+
+  it("fails the session with a typed terminal event when the shared client terminates", async () => {
+    const fake = recordingClient();
+    const sessionId = parseHarnessSessionId("session-codex-termination");
+    const snapshot = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* startHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: fake.client,
+              correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+              workspaceRoot: "/workspace",
+            }),
+            request: {
+              input: { text: "start" },
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          for (const listener of fake.terminations) {
+            listener(
+              new CodexAppServerTransportError({
+                message: "connection closed",
+              }),
+            );
+          }
+          return yield* session.snapshot;
+        }),
+      ),
+    );
+
+    expect(snapshot.state).toBe("failed");
+    expect(snapshot.failure).toMatchObject({
+      code: "CodexAppServerTerminated",
+      kind: "providerFailure",
+    });
+  });
+
+  it("rejects approval decisions that exceed the audited public scope before provider dispatch", async () => {
+    const fake = recordingClient();
+    const sessionId = parseHarnessSessionId("session-codex-audited-approval");
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* startHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: fake.client,
+              correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+              workspaceRoot: "/workspace",
+            }),
+            request: {
+              input: { text: "start" },
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          for (const listener of fake.requests) {
+            listener({
+              id: "outside-file-request",
+              method: "item/fileChange/requestApproval",
+              params: {
+                grantRoot: "/private/outside",
+                itemId: parseCodexItemId("outside-file-item"),
+                reason: "outside",
+                startedAtMs: 1,
+                threadId: fake.threadId,
+                turnId: fake.turnId,
+              },
+            });
+          }
+          const waiting = yield* session.snapshot;
+          const pendingInteraction = waiting.pendingInteractions[0];
+          if (pendingInteraction === undefined) {
+            throw new Error("Expected a pending file-change interaction.");
+          }
+          const interactionId = pendingInteraction.interactionId;
+          const resolution = yield* session
+            .resolveInteraction({
+              actionId: parseHarnessActionId("action-outside-approve"),
+              decision: "approve",
+              interactionId,
+              kind: "approval",
+            })
+            .pipe(Effect.exit);
+          return { resolution, snapshot: yield* session.snapshot };
+        }),
+      ),
+    );
+
+    expect(result.resolution._tag).toBe("Failure");
+    expect(fake.fileResponses).toEqual([]);
+    expect(result.snapshot.pendingInteractions[0]).toMatchObject({
+      allowedDecisions: ["decline", "cancel"],
+      kind: "fileChangeApproval",
+    });
+  });
+
+  it("constructs permission approval responses from the audited neutral scope", async () => {
+    const fake = recordingClient();
+    const sessionId = parseHarnessSessionId("session-codex-permission-response");
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* startHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: fake.client,
+              correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+              workspaceRoot: "/workspace",
+            }),
+            request: {
+              input: { text: "start" },
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          for (const listener of fake.requests) {
+            listener({
+              id: "permission-request",
+              method: "item/permissions/requestApproval",
+              params: {
+                cwd: "/workspace/project",
+                environmentId: null,
+                itemId: parseCodexItemId("permission-item"),
+                permissions: {
+                  fileSystem: {
+                    entries: [
+                      {
+                        access: "write",
+                        path: {
+                          path: "/workspace/project/src",
+                          type: "path",
+                        },
+                      },
+                    ],
+                    read: null,
+                    write: null,
+                  },
+                  network: { enabled: false },
+                },
+                reason: "write src",
+                startedAtMs: 1,
+                threadId: fake.threadId,
+                turnId: fake.turnId,
+              },
+            });
+          }
+          const waiting = yield* session.snapshot;
+          const pendingInteraction = waiting.pendingInteractions[0];
+          if (pendingInteraction === undefined) {
+            throw new Error("Expected a pending permission interaction.");
+          }
+          yield* session.resolveInteraction({
+            actionId: parseHarnessActionId("action-permission-approve"),
+            decision: "approve",
+            interactionId: pendingInteraction.interactionId,
+            kind: "approval",
+          });
+        }),
+      ),
+    );
+
+    expect(fake.permissionResponses).toEqual([
+      {
+        permissions: {
+          fileSystem: {
+            entries: [
+              {
+                access: "write",
+                path: {
+                  path: "/workspace/project/src",
+                  type: "path",
+                },
+              },
+            ],
+            read: null,
+            write: null,
+          },
+          network: { enabled: false },
+        },
+        scope: "turn",
+      },
+    ]);
   });
 });

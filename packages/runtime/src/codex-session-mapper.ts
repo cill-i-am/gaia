@@ -13,17 +13,20 @@ import {
   type HarnessItemId,
   type HarnessProviderDescriptor,
   type HarnessPendingInteraction,
+  type HarnessPermissionScope,
   type HarnessQuestionId,
   type HarnessSessionId,
   type HarnessTurnId,
   type WorkspaceRelativePath,
 } from "@gaia/core";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { Option, Schema } from "effect";
 import {
   CodexNotificationSchema,
   CodexServerRequestSchema,
   CodexThreadSchema,
+  PermissionApprovalResponseSchema,
   type CodexNotification,
   type CodexServerRequest,
   type CodexThreadItem,
@@ -42,6 +45,10 @@ export type CodexSessionMapperOptions = {
 
 /** Adapter-private mapper surface; all provider inputs remain unknown at this boundary. */
 export interface CodexSessionMapper {
+  readonly approvalDecisionAllowed: (
+    requestId: string | number,
+    decision: "approve" | "approveForSession" | "decline" | "cancel",
+  ) => boolean;
   readonly mapNotification: (input: unknown) => ReadonlyArray<HarnessEvent>;
   readonly mapServerRequest: (input: unknown) => ReadonlyArray<HarnessEvent>;
   readonly mapRecoveredThread: (input: unknown) => ReadonlyArray<HarnessEvent>;
@@ -52,6 +59,9 @@ export interface CodexSessionMapper {
       readonly questionId: HarnessQuestionId;
     }>,
   ) => Record<string, { readonly answers: ReadonlyArray<string> }> | undefined;
+  readonly permissionApproval: (
+    requestId: string | number,
+  ) => typeof PermissionApprovalResponseSchema.Type.permissions | undefined;
   readonly resolveServerRequest: (
     requestId: string | number,
     resolution: {
@@ -78,6 +88,8 @@ export function createCodexSessionMapper(
 ): CodexSessionMapper {
   const state = new MapperState(options);
   return {
+    approvalDecisionAllowed: (requestId, decision) =>
+      state.approvalDecisionAllowed(requestId, decision),
     mapNotification: (input) => {
       const decoded = decodeNotification(input);
       return Option.isNone(decoded) ? [] : state.mapNotification(decoded.value);
@@ -92,12 +104,18 @@ export function createCodexSessionMapper(
     },
     mapUserInputAnswers: (requestId, answers) =>
       state.mapUserInputAnswers(requestId, answers),
+    permissionApproval: (requestId) => state.permissionApproval(requestId),
     resolveServerRequest: (requestId, resolution) =>
       state.resolveServerRequest(requestId, resolution),
   };
 }
 
 class MapperState {
+  readonly #auditedPermissionGrants = new Map<
+    CodexRequestId,
+    typeof PermissionApprovalResponseSchema.Type.permissions
+  >();
+  #bufferedDeltaBytes = 0;
   readonly #deltaFlushCharacters: number;
   readonly #deltaEmittedCharacters = new Map<string, number>();
   readonly #finalItems = new Set<string>();
@@ -119,10 +137,7 @@ class MapperState {
   readonly #turnIds = new Map<string, HarnessTurnId>();
   readonly #usageItemIds = new Map<string, HarnessItemId>();
   #activeTurnId: string | undefined;
-  #interactionCounter = 0;
-  #itemCounter = 0;
   #threadId: string | undefined;
-  #turnCounter = 0;
 
   constructor(options: CodexSessionMapperOptions) {
     this.#options = options;
@@ -150,6 +165,20 @@ class MapperState {
       }
       case "thread/status/changed": {
         if (!this.#ownsThread(notification.params.threadId)) return [];
+        if (notification.params.status.type === "systemError") {
+          return [
+            this.#event({
+              failure: {
+                code: "CodexThreadSystemError",
+                kind: "providerFailure",
+                message: "Codex session entered a system error state.",
+                recoverable: true,
+              },
+              kind: "sessionFailed",
+              sessionId: this.#options.sessionId,
+            }),
+          ];
+        }
         const state = mapThreadStatus(notification.params.status);
         return state === undefined
           ? []
@@ -200,7 +229,10 @@ class MapperState {
       case "thread/tokenUsage/updated":
         return this.#mapUsage(notification);
       case "warning":
-        return this.#mapWarning(notification.params.message);
+        return notification.params.threadId !== null &&
+          this.#ownsThread(notification.params.threadId)
+          ? this.#mapWarning(notification.params.message)
+          : [];
       case "error":
         return this.#ownsThread(notification.params.threadId)
           ? this.#mapWarning(notification.params.error.message)
@@ -221,20 +253,22 @@ class MapperState {
       return [];
     }
 
-    const interactionId = this.#interactionId();
+    const interactionId = this.#interactionId(request);
     const interaction = this.#mapInteraction(request, interactionId);
     if (interaction === undefined) return [];
     this.#seenRequestIds.add(request.id);
-    const questionIds =
+    let questionIds: Map<HarnessQuestionId, string> | undefined;
+    if (
       request.method === "item/tool/requestUserInput" &&
       interaction.kind === "userInput"
-        ? new Map(
-            interaction.questions.map((question, index) => [
-              question.questionId,
-              request.params.questions[index]!.id,
-            ]),
-          )
-        : undefined;
+    ) {
+      questionIds = new Map();
+      for (const [index, question] of interaction.questions.entries()) {
+        const nativeQuestion = request.params.questions[index];
+        if (nativeQuestion === undefined) return [];
+        questionIds.set(question.questionId, nativeQuestion.id);
+      }
+    }
     this.#requestIds.set(request.id, {
       interaction,
       interactionId,
@@ -320,7 +354,7 @@ class MapperState {
       .reverse()
       .find((turn) => turn.status === "inProgress")?.id;
     const state = mapThreadStatus(thread.status ?? { type: "idle" });
-    if (state === "failed") {
+    if (thread.status?.type === "systemError") {
       events.push(
         this.#event({
           failure: {
@@ -367,6 +401,26 @@ class MapperState {
     return Object.fromEntries(nativeAnswers);
   }
 
+  approvalDecisionAllowed(
+    requestId: CodexRequestId,
+    decision: "approve" | "approveForSession" | "decline" | "cancel",
+  ): boolean {
+    const interaction = this.#requestIds.get(requestId)?.interaction;
+    return (
+      interaction !== undefined &&
+      (interaction.kind === "commandApproval" ||
+        interaction.kind === "fileChangeApproval" ||
+        interaction.kind === "permissionApproval") &&
+      interaction.allowedDecisions.includes(decision)
+    );
+  }
+
+  permissionApproval(
+    requestId: CodexRequestId,
+  ): typeof PermissionApprovalResponseSchema.Type.permissions | undefined {
+    return this.#auditedPermissionGrants.get(requestId);
+  }
+
   resolveServerRequest(
     requestId: string | number,
     resolution: {
@@ -389,6 +443,7 @@ class MapperState {
       resolution,
     );
     this.#requestIds.delete(requestId);
+    this.#auditedPermissionGrants.delete(requestId);
     return [
       this.#event({
         kind: "interactionResolved",
@@ -407,6 +462,7 @@ class MapperState {
     const pending = this.#requestIds.get(requestId);
     if (pending === undefined) return [];
     this.#requestIds.delete(requestId);
+    this.#auditedPermissionGrants.delete(requestId);
     return [
       this.#event({
         interactionId: pending.interactionId,
@@ -567,7 +623,7 @@ class MapperState {
     const key = notification.params.turnId;
     let itemId = this.#planItemIds.get(key);
     if (itemId === undefined) {
-      itemId = this.#newItemId();
+      itemId = this.#stableItemId(`plan:${key}`);
       this.#planItemIds.set(key, itemId);
     }
     return [
@@ -605,6 +661,7 @@ class MapperState {
         pending.interaction.turnId === turnId
       ) {
         this.#requestIds.delete(requestId);
+        this.#auditedPermissionGrants.delete(requestId);
         events.push(
           this.#event({
             interactionId: pending.interactionId,
@@ -640,7 +697,7 @@ class MapperState {
     if (final) {
       this.#finalItems.add(nativeItemId);
       this.#deltaEmittedCharacters.delete(nativeItemId);
-      this.#messageBuffers.delete(nativeItemId);
+      this.#deleteMessageBuffer(nativeItemId);
     }
     return [
       ...startEvents,
@@ -679,10 +736,10 @@ class MapperState {
       `${this.#messageBuffers.get(nativeItemId) ?? ""}${notification.params.delta}`,
     ).slice(0, remaining);
     if (nextBuffer.length < this.#deltaFlushCharacters) {
-      this.#messageBuffers.set(nativeItemId, nextBuffer);
+      this.#setMessageBuffer(nativeItemId, nextBuffer);
       return [];
     }
-    this.#messageBuffers.delete(nativeItemId);
+    this.#deleteMessageBuffer(nativeItemId);
     this.#deltaEmittedCharacters.set(nativeItemId, emitted + nextBuffer.length);
     const itemId = this.#itemId(nativeItemId);
     const turnId = this.#turnId(notification.params.turnId);
@@ -709,7 +766,7 @@ class MapperState {
     const nativeTurnId = notification.params.turnId;
     let itemId = this.#usageItemIds.get(nativeTurnId);
     if (itemId === undefined) {
-      itemId = this.#newItemId();
+      itemId = this.#stableItemId(`usage:${nativeTurnId}`);
       this.#usageItemIds.set(nativeTurnId, itemId);
     }
     const turnId = this.#turnId(notification.params.turnId);
@@ -739,7 +796,7 @@ class MapperState {
 
   #mapWarning(message: string): ReadonlyArray<HarnessEvent> {
     if (this.#threadId === undefined) return [];
-    const itemId = this.#newItemId();
+    const itemId = this.#stableItemId(`warning:${message}`);
     return [
       this.#event({
         final: true,
@@ -761,19 +818,26 @@ class MapperState {
     switch (request.method) {
       case "item/commandExecution/requestApproval": {
         const workspacePath = this.#relativePath(request.params.cwd ?? this.#options.workspaceRoot);
-        if (workspacePath === undefined) return undefined;
+        const audited =
+          workspacePath !== undefined &&
+          (request.params.networkApprovalContext === null ||
+            request.params.networkApprovalContext === undefined) &&
+          (request.params.proposedExecpolicyAmendment?.length ?? 0) === 0 &&
+          (request.params.proposedNetworkPolicyAmendments?.length ?? 0) === 0;
         return {
-          allowedDecisions: ["approve", "approveForSession", "decline", "cancel"] as const,
+          allowedDecisions: audited
+            ? (["approve", "approveForSession", "decline", "cancel"] as const)
+            : (["decline", "cancel"] as const),
           command: this.#text(request.params.command ?? "Command execution"),
           interactionId,
           itemId: this.#itemId(request.params.itemId),
           kind: "commandApproval" as const,
-          ...(request.params.reason === null || request.params.reason === undefined
-            ? {}
-            : { reason: this.#text(request.params.reason) }),
+          reason: audited
+            ? this.#text(request.params.reason ?? "Command execution approval")
+            : "Command scope could not be safely represented; approval is disabled.",
           requestedAt: timestampFromMilliseconds(request.params.startedAtMs),
           turnId: this.#turnId(request.params.turnId),
-          workspacePath,
+          workspacePath: workspacePath ?? parseWorkspaceRelativePath("."),
         };
       }
       case "item/fileChange/requestApproval": {
@@ -781,29 +845,51 @@ class MapperState {
           request.params.grantRoot === null || request.params.grantRoot === undefined
             ? undefined
             : this.#relativePath(request.params.grantRoot);
+        const audited =
+          request.params.grantRoot === null ||
+          request.params.grantRoot === undefined ||
+          grantRoot !== undefined;
         return {
-          allowedDecisions: ["approve", "approveForSession", "decline", "cancel"] as const,
+          allowedDecisions: audited
+            ? (["approve", "approveForSession", "decline", "cancel"] as const)
+            : (["decline", "cancel"] as const),
           interactionId,
           itemId: this.#itemId(request.params.itemId),
           kind: "fileChangeApproval" as const,
           paths: grantRoot === undefined ? [] : [grantRoot],
-          ...(request.params.reason === null || request.params.reason === undefined
-            ? {}
-            : { reason: this.#text(request.params.reason) }),
+          reason: audited
+            ? this.#text(request.params.reason ?? "File change approval")
+            : "File grant is outside the accepted workspace; approval is disabled.",
           requestedAt: timestampFromMilliseconds(request.params.startedAtMs),
           turnId: this.#turnId(request.params.turnId),
         };
       }
-      case "item/permissions/requestApproval":
+      case "item/permissions/requestApproval": {
+        const audited = this.#auditPermissionScope(request.params.permissions);
+        if (audited !== undefined) {
+          this.#auditedPermissionGrants.set(request.id, audited.grant);
+        }
         return {
-          allowedDecisions: ["approve", "decline", "cancel"] as const,
+          allowedDecisions:
+            audited === undefined
+              ? (["decline", "cancel"] as const)
+              : (["approve", "decline", "cancel"] as const),
           interactionId,
           itemId: this.#itemId(request.params.itemId),
           kind: "permissionApproval" as const,
           requestedAt: timestampFromMilliseconds(request.params.startedAtMs),
-          summary: this.#text(request.params.reason ?? "Additional permissions requested"),
+          scope:
+            audited?.scope ??
+            ({ fileSystem: [], network: "notRequested" } satisfies HarnessPermissionScope),
+          summary:
+            audited === undefined
+              ? "Permission scope could not be safely represented; approval is disabled."
+              : this.#text(
+                  request.params.reason ?? "Additional permissions requested",
+                ),
           turnId: this.#turnId(request.params.turnId),
         };
+      }
       case "item/tool/requestUserInput":
         return {
           interactionId,
@@ -970,9 +1056,8 @@ class MapperState {
   #turnId(nativeTurnId: string): HarnessTurnId {
     const existing = this.#turnIds.get(nativeTurnId);
     if (existing !== undefined) return existing;
-    this.#turnCounter += 1;
     const created = parseHarnessTurnId(
-      `${this.#options.sessionId}-turn-${this.#turnCounter}`,
+      `${this.#options.sessionId}-turn-${this.#opaqueId("turn", nativeTurnId)}`,
     );
     this.#turnIds.set(nativeTurnId, created);
     return created;
@@ -995,23 +1080,36 @@ class MapperState {
   #itemId(nativeItemId: string): HarnessItemId {
     const existing = this.#itemIds.get(nativeItemId);
     if (existing !== undefined) return existing;
-    const created = this.#newItemId();
+    const created = this.#stableItemId(`item:${nativeItemId}`);
     this.#itemIds.set(nativeItemId, created);
     return created;
   }
 
-  #newItemId(): HarnessItemId {
-    this.#itemCounter += 1;
+  #stableItemId(nativeKey: string): HarnessItemId {
     return parseHarnessItemId(
-      `${this.#options.sessionId}-item-${this.#itemCounter}`,
+      `${this.#options.sessionId}-item-${this.#opaqueId("item", nativeKey)}`,
     );
   }
 
-  #interactionId(): HarnessInteractionId {
-    this.#interactionCounter += 1;
+  #interactionId(request: CodexServerRequest): HarnessInteractionId {
+    const nativeKey = [
+      typeof request.id,
+      String(request.id),
+      request.method,
+      request.params.threadId,
+      request.params.turnId ?? "",
+      "itemId" in request.params ? request.params.itemId : "",
+    ].join("\0");
     return parseHarnessInteractionId(
-      `${this.#options.sessionId}-interaction-${this.#interactionCounter}`,
+      `${this.#options.sessionId}-interaction-${this.#opaqueId("interaction", nativeKey)}`,
     );
+  }
+
+  #opaqueId(kind: string, nativeId: string): string {
+    return createHash("sha256")
+      .update(`${this.#options.sessionId}\0${kind}\0${nativeId}`, "utf8")
+      .digest("base64url")
+      .slice(0, 22);
   }
 
   #relativePath(input: string): WorkspaceRelativePath | undefined {
@@ -1020,6 +1118,115 @@ class MapperState {
     const relative = path.relative(root, resolved);
     if (relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
     return parseWorkspaceRelativePath(relative === "" ? "." : relative.split(path.sep).join("/"));
+  }
+
+  #auditPermissionScope(
+    permissions: Extract<
+      CodexServerRequest,
+      { readonly method: "item/permissions/requestApproval" }
+    >["params"]["permissions"],
+  ):
+    | {
+        readonly grant: typeof PermissionApprovalResponseSchema.Type.permissions;
+        readonly scope: HarnessPermissionScope;
+      }
+    | undefined {
+    const fileSystem: Array<{
+      readonly access: "read" | "write" | "deny";
+      readonly path: WorkspaceRelativePath;
+    }> = [];
+    const addPath = (
+      absolutePath: string,
+      access: "read" | "write" | "deny",
+    ): boolean => {
+      const relative = this.#relativePath(absolutePath);
+      if (relative === undefined) return false;
+      if (
+        !fileSystem.some(
+          (entry) => entry.access === access && entry.path === relative,
+        )
+      ) {
+        fileSystem.push({ access, path: relative });
+      }
+      return true;
+    };
+
+    const nativeFileSystem = permissions.fileSystem;
+    if (nativeFileSystem !== null) {
+      if (nativeFileSystem.globScanMaxDepth !== undefined) return undefined;
+      for (const absolutePath of nativeFileSystem.read ?? []) {
+        if (!addPath(absolutePath, "read")) return undefined;
+      }
+      for (const absolutePath of nativeFileSystem.write ?? []) {
+        if (!addPath(absolutePath, "write")) return undefined;
+      }
+      for (const entry of nativeFileSystem.entries ?? []) {
+        if (
+          entry.path.type !== "path" ||
+          !addPath(entry.path.path, entry.access)
+        ) {
+          return undefined;
+        }
+      }
+    }
+    if (fileSystem.length > 200) return undefined;
+
+    const network =
+      permissions.network === null
+        ? ("notRequested" as const)
+        : permissions.network.enabled === true
+          ? ("enabled" as const)
+          : permissions.network.enabled === false
+            ? ("disabled" as const)
+            : ("unspecified" as const);
+    const grant: typeof PermissionApprovalResponseSchema.Type.permissions = {
+      ...(nativeFileSystem === null
+        ? {}
+        : {
+            fileSystem: {
+              entries: fileSystem.map((entry) => ({
+                access: entry.access,
+                path: {
+                  path: path.resolve(this.#options.workspaceRoot, entry.path),
+                  type: "path" as const,
+                },
+              })),
+              read: null,
+              write: null,
+            },
+          }),
+      ...(permissions.network === null
+        ? {}
+        : { network: { enabled: permissions.network.enabled } }),
+    };
+
+    return {
+      grant,
+      scope: { fileSystem, network },
+    };
+  }
+
+  #setMessageBuffer(nativeItemId: string, value: string): void {
+    const existing = this.#messageBuffers.get(nativeItemId);
+    if (existing === undefined && this.#messageBuffers.size >= 1_000) {
+      throw new Error("Codex delta buffer exceeded its item limit.");
+    }
+    const existingBytes =
+      existing === undefined ? 0 : new TextEncoder().encode(existing).byteLength;
+    const nextBytes = new TextEncoder().encode(value).byteLength;
+    const aggregate = this.#bufferedDeltaBytes - existingBytes + nextBytes;
+    if (aggregate > 1_048_576) {
+      throw new Error("Codex delta buffer exceeded its byte limit.");
+    }
+    this.#bufferedDeltaBytes = aggregate;
+    this.#messageBuffers.set(nativeItemId, value);
+  }
+
+  #deleteMessageBuffer(nativeItemId: string): void {
+    const existing = this.#messageBuffers.get(nativeItemId);
+    if (existing === undefined) return;
+    this.#bufferedDeltaBytes -= new TextEncoder().encode(existing).byteLength;
+    this.#messageBuffers.delete(nativeItemId);
   }
 
   #text(input: string): string {
@@ -1048,17 +1255,20 @@ function sanitizeText(
   options: CodexSessionMapperOptions,
   limit: number,
 ): string {
-  let output = input.split(options.workspaceRoot).join(".");
-  for (const sensitive of options.sensitiveValues ?? []) {
+  let output = input;
+  for (const sensitive of [...(options.sensitiveValues ?? [])].sort(
+    (left, right) => right.length - left.length,
+  )) {
     if (sensitive.length > 0) output = output.split(sensitive).join("[REDACTED]");
   }
+  output = output.split(options.workspaceRoot).join(".");
   output = output
     .replace(
       /(["']?)[A-Z_][A-Z0-9_]{1,63}\1\s*:\s*(?:"[^"]*"|'[^']*'|[^,\s}]+)/gu,
       "[environment]",
     )
     .replace(
-      /(["']?)(?:authorization|proxy-authorization|x-api-key|api-key|password|secret|token)\1\s*:\s*(?:"(?:Basic\s+|Bearer\s+)?[^"]*"|'(?:Basic\s+|Bearer\s+)?[^']*'|(?:Basic\s+|Bearer\s+)?[^,\s}]+)/giu,
+      /(["']?)(?:(?:[A-Za-z0-9]+[_-])*(?:authorization|proxy[_-]authorization|x[_-]api[_-]key|api[_-]key|password|secret|token))\1\s*:\s*(?:"(?:Basic\s+|Bearer\s+)?[^"]*"|'(?:Basic\s+|Bearer\s+)?[^']*'|(?:Basic\s+|Bearer\s+)?[^,\s}]+)/giu,
       "[credential]",
     )
     .replace(
@@ -1070,7 +1280,7 @@ function sanitizeText(
       "[environment]",
     )
     .replace(
-      /\b(?:authorization|proxy-authorization|x-api-key|api-key|password|secret|token)\s*:\s*(?:Basic\s+|Bearer\s+)?\S+/giu,
+      /\b(?:(?:[A-Za-z0-9]+[_-])*(?:authorization|proxy[_-]authorization|x[_-]api[_-]key|api[_-]key|password|secret|token))\s*:\s*(?:Basic\s+|Bearer\s+)?\S+/giu,
       "[credential]",
     )
     .replace(/\bBearer\s+\S+/giu, "Bearer [REDACTED]")
@@ -1108,8 +1318,6 @@ function mapThreadStatus(status: {
       return (status.activeFlags?.length ?? 0) > 0
         ? ("waitingForOperator" as const)
         : ("running" as const);
-    case "systemError":
-      return "failed" as const;
     default:
       return undefined;
   }

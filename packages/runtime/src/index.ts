@@ -124,7 +124,13 @@ export {
   type DoctorOptions,
   type DoctorStatus,
 } from "./doctor.js";
-export { appendEvent, loadRun, readEvents, type AppendEventInput } from "./event-store.js";
+export {
+  appendEvent,
+  appendHarnessSessionEvent,
+  loadRun,
+  readEvents,
+  type AppendEventInput,
+} from "./event-store.js";
 export {
   GitHubCheckRun,
   GitHubChecksRecord,

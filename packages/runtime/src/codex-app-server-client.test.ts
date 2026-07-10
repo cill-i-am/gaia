@@ -77,6 +77,26 @@ describe("Codex App Server connection", () => {
     expect(tags).toEqual(["Failure", "Failure"]);
   });
 
+  it("notifies scoped listeners when the process exits without pending RPCs", async () => {
+    const fake = fakeProcess();
+    const tags = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const observed: Array<string> = [];
+          connection.onTermination((error) => observed.push(error._tag));
+          for (const listener of fake.exits) listener(17);
+          for (const listener of fake.exits) listener(18);
+          return observed;
+        }),
+      ),
+    );
+
+    expect(tags).toEqual(["CodexAppServerProcessExitError"]);
+  });
+
   it("returns a typed timeout and ignores its late response", async () => {
     const fake = fakeProcess();
     const exit = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
@@ -150,7 +170,7 @@ describe("Codex App Server connection", () => {
       const fixtures = [
         { id: 1, method: "item/commandExecution/requestApproval", params: { ...base, approvalId: "approval-1", commandActions: [{ type: "read" }], cwd: "/tmp", networkApprovalContext: { host: "example.com" }, proposedExecpolicyAmendment: ["allow"], proposedNetworkPolicyAmendments: [{ host: "example.com" }], reason: "network" } },
         { id: 2, method: "item/fileChange/requestApproval", params: { ...base, grantRoot: "/tmp/project", reason: null } },
-        { id: 3, method: "item/permissions/requestApproval", params: { ...base, cwd: "/tmp", environmentId: "env-1", permissions: {}, reason: "write" } },
+        { id: 3, method: "item/permissions/requestApproval", params: { ...base, cwd: "/tmp", environmentId: "env-1", permissions: { fileSystem: null, network: null }, reason: "write" } },
         { id: 4, method: "item/tool/requestUserInput", params: { itemId: "item-1", threadId: "thr-1", turnId: "turn-1", questions: [{ header: "Choice", id: "q1", isOther: true, isSecret: false, options: [{ description: "Continue", label: "Yes" }], question: "Continue?" }] } },
         { id: 5, method: "mcpServer/elicitation/request", params: { _meta: null, message: "Choose", mode: "form", requestedSchema: { properties: {}, type: "object" }, serverName: "test", threadId: "thr-1", turnId: null } },
       ];
@@ -159,6 +179,100 @@ describe("Codex App Server connection", () => {
       expect(fake.writes.filter(({ result }) => result !== undefined)).toHaveLength(5);
       expect(preserved).toBe(5);
     })));
+  });
+
+  it("preserves warning targets and accepts source-exact large file-change notifications", async () => {
+    const fake = fakeProcess();
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const notifications: Array<unknown> = [];
+          connection.onNotification((notification) =>
+            notifications.push(notification),
+          );
+          for (const listener of fake.lines) {
+            listener(
+              JSON.stringify({
+                method: "warning",
+                params: { message: "owned", threadId: "thread-1" },
+              }),
+            );
+            listener(
+              JSON.stringify({
+                method: "item/completed",
+                params: {
+                  item: {
+                    changes: Array.from({ length: 201 }, (_, index) => ({
+                      diff: "+safe",
+                      kind: { type: "add" },
+                      path: `/workspace/src/file-${index}.ts`,
+                    })),
+                    id: "large-file-change",
+                    status: "completed",
+                    type: "fileChange",
+                  },
+                  threadId: "thread-1",
+                  turnId: "turn-1",
+                },
+              }),
+            );
+          }
+
+          expect(notifications).toHaveLength(2);
+          expect(notifications[0]).toMatchObject({
+            method: "warning",
+            params: { threadId: "thread-1" },
+          });
+          expect(notifications[1]).toMatchObject({
+            method: "item/completed",
+          });
+          const large = notifications[1] as {
+            readonly params: {
+              readonly item: { readonly changes: ReadonlyArray<unknown> };
+            };
+          };
+          expect(large.params.item.changes).toHaveLength(201);
+        }),
+      ),
+    );
+  });
+
+  it("turns malformed known notifications into a typed connection termination", async () => {
+    const fake = fakeProcess();
+    const observed = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const failures: Array<string> = [];
+          connection.onTermination((error) => failures.push(error._tag));
+          for (const listener of fake.lines) {
+            listener(
+              JSON.stringify({
+                method: "item/completed",
+                params: {
+                  item: {
+                    changes: "not-an-array",
+                    id: "bad-file-change",
+                    status: "completed",
+                    type: "fileChange",
+                  },
+                  threadId: "thread-1",
+                  turnId: "turn-1",
+                },
+              }),
+            );
+          }
+          return failures;
+        }),
+      ),
+    );
+
+    expect(observed).toEqual(["CodexAppServerProtocolError"]);
   });
 
   it("rejects invalid outbound params before transport write", async () => {

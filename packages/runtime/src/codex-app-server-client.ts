@@ -24,6 +24,7 @@ import {
   ElicitationResponseSchema,
   InitializeParamsSchema, ThreadStartParamsSchema, ThreadResumeParamsSchema, ThreadReadParamsSchema,
   TurnStartParamsSchema, TurnSteerParamsSchema, TurnInterruptParamsSchema,
+  isCuratedCodexNotificationMethod,
   supportedCodexCliVersion,
   type CodexAppServerError,
   type CodexRequestId,
@@ -40,6 +41,7 @@ export interface CodexAppServerConnection {
   readonly notify: (method: string, params?: JsonObject) => Effect.Effect<void, CodexAppServerError>;
   readonly onNotification: (listener: (notification: CodexNotification) => void) => () => void;
   readonly onServerRequest: (listener: (request: CodexServerRequest) => void) => () => void;
+  readonly onTermination: (listener: (error: CodexAppServerError) => void) => () => void;
   readonly request: (method: string, params?: unknown, timeoutMs?: number) => Effect.Effect<Schema.Json, CodexAppServerError>;
   readonly respond: (id: CodexRequestId, result: Schema.Json) => Effect.Effect<void, CodexAppServerError>;
 }
@@ -106,9 +108,11 @@ export function makeCodexAppServerConnection(options: CodexAppServerTransportOpt
       const process = options.process ?? nodeProcess(options);
       let nextId = 1;
       let closed = false;
+      let terminalError: CodexAppServerError | undefined;
       const pending = new Map<CodexRequestId, { readonly fail: (error: CodexAppServerError) => void; readonly succeed: (value: Schema.Json) => void }>();
       const notificationListeners = new Set<(value: CodexNotification) => void>();
       const requestListeners = new Set<(value: CodexServerRequest) => void>();
+      const terminationListeners = new Set<(error: CodexAppServerError) => void>();
 
       const write = (message: unknown) => Effect.try({
         try: () => process.write(`${JSON.stringify(message)}\n`),
@@ -117,10 +121,13 @@ export function makeCodexAppServerConnection(options: CodexAppServerTransportOpt
       const failAll = (error: CodexAppServerError) => {
         if (closed) return;
         closed = true;
+        terminalError = error;
         for (const entry of pending.values()) entry.fail(error);
         pending.clear();
+        for (const listener of terminationListeners) listener(error);
       };
       const removeLine = process.onLine((line) => {
+        if (closed) return;
         let value: unknown;
         try { value = JSON.parse(line); } catch {
           failAll(new CodexAppServerProtocolError({ message: "Invalid JSONL frame" }));
@@ -149,7 +156,17 @@ export function makeCodexAppServerConnection(options: CodexAppServerTransportOpt
         const notification = decodeNotification(value);
         if (Option.isSome(notification)) {
           const decoded = decodeCuratedNotification(notification.value);
-          if (Option.isSome(decoded)) for (const listener of notificationListeners) listener(decoded.value);
+          if (Option.isSome(decoded)) {
+            for (const listener of notificationListeners) listener(decoded.value);
+          } else if (
+            isCuratedCodexNotificationMethod(notification.value.method)
+          ) {
+            failAll(
+              new CodexAppServerProtocolError({
+                message: `Invalid ${notification.value.method} notification`,
+              }),
+            );
+          }
         }
       });
       const removeExit = process.onExit((code) => failAll(new CodexAppServerProcessExitError({ code, stderr: process.stderr() })));
@@ -159,7 +176,19 @@ export function makeCodexAppServerConnection(options: CodexAppServerTransportOpt
         notify: (method, params = {}) => write({ method, params }),
         onNotification: (listener) => { notificationListeners.add(listener); return () => notificationListeners.delete(listener); },
         onServerRequest: (listener) => { requestListeners.add(listener); return () => requestListeners.delete(listener); },
+        onTermination: (listener) => {
+          if (terminalError !== undefined) {
+            listener(terminalError);
+            return () => undefined;
+          }
+          terminationListeners.add(listener);
+          return () => terminationListeners.delete(listener);
+        },
         request: (method, params = {}, timeoutMs = 30_000) => Effect.callback<Schema.Json, CodexAppServerError>((resume) => {
+          if (terminalError !== undefined) {
+            resume(Effect.fail(terminalError));
+            return Effect.void;
+          }
           const id = nextId++;
           const timer = setTimeout(() => {
             if (!pending.delete(id)) return;
@@ -207,6 +236,7 @@ export function makeCodexAppServerClient(connection: CodexAppServerConnection) {
     interruptTurn: (params: TurnInterruptParams) => request("turn/interrupt", params, TurnInterruptParamsSchema, EmptyResultSchema),
     onNotification: connection.onNotification,
     onServerRequest: connection.onServerRequest,
+    onTermination: connection.onTermination,
     readThread: (params: ThreadReadParams) => request("thread/read", params, ThreadReadParamsSchema, ThreadResultSchema),
     respondCommandApproval: (request: CommandApprovalRequest, response: typeof CommandApprovalResponseSchema.Type) => Schema.decodeUnknownEffect(CommandApprovalResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(request.id, value))),
     respondFileApproval: (request: FileApprovalRequest, response: typeof FileApprovalResponseSchema.Type) => Schema.decodeUnknownEffect(FileApprovalResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(request.id, value))),
