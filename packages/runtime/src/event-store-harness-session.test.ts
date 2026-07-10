@@ -16,6 +16,7 @@ import { Effect, FileSystem, Schema } from "effect";
 import {
   appendEvent,
   appendHarnessSessionEvent,
+  loadRun,
   readEvents,
   type AppendEventInput,
 } from "./event-store.js";
@@ -212,6 +213,48 @@ describe("harness session event persistence", () => {
 
           const result = yield* readEvents(paths).pipe(Effect.exit);
           expect(result._tag).toBe("Failure");
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+  });
+
+  it("replays the authoritative event log when the derived snapshot trails it", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-event-store-" });
+          const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+          yield* fs.makeDirectory(paths.root, { recursive: true });
+          yield* appendEvent(runId, paths, {
+            payload: { specPath: "spec.md" },
+            type: "RUN_CREATED",
+          });
+
+          const event = makeHarnessRunEvent({
+            event: {
+              capabilities,
+              kind: "sessionStarted",
+              provider,
+              sessionId,
+              state: "running",
+            },
+            runId,
+            sequence: 2,
+            timestamp: "2026-07-10T10:00:01.000Z",
+          });
+          yield* fs.writeFileString(
+            paths.events,
+            `${JSON.stringify(Schema.encodeSync(RunEvent)(event))}\n`,
+            { flag: "a" },
+          );
+
+          const loaded = yield* loadRun(paths);
+          expect(loaded.events).toHaveLength(2);
+          expect(loaded.latestSnapshot).toMatchObject({
+            eventSequence: 2,
+            state: "preparingWorkspace",
+          });
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
     );

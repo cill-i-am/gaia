@@ -1,5 +1,12 @@
 import { assert, describe, it, layer } from "@effect/vitest";
 import { NodeServices } from "@effect/platform-node";
+import {
+  codexAppServerExecutionSelection,
+  HarnessCapabilities,
+  HarnessProviderDescriptor,
+  parseHarnessProviderId,
+  ResolvedHarnessExecution,
+} from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 import {
   ReviewFinding,
@@ -10,10 +17,13 @@ import {
 import { GaiaRuntimeError } from "./errors.js";
 import { readLocalRun, readLocalRunEvents } from "./run-read-api.js";
 import {
+  acceptFactoryRun,
   acceptServerRun,
   continueServerRun,
   reconcileInterruptedServerRuns,
 } from "./server-workflows.js";
+import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
+import type { HarnessProvider } from "./harness-session.js";
 
 describe("server workflows", () => {
   layer(NodeServices.layer)((it) => {
@@ -39,6 +49,51 @@ describe("server workflows", () => {
       }),
     );
 
+    it.effect("resolves and persists only safe execution metadata before accepting a factory run", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-factory-accept-" });
+        const registry = makeHarnessProviderRegistry([
+          {
+            profileId: codexAppServerExecutionSelection.harnessProfileId,
+            provider: acceptanceProvider,
+          },
+        ]);
+
+        const accepted = yield* acceptFactoryRun(
+          {
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery",
+            workItem: {
+              description: "Deliver through the selected provider.",
+              kind: "issue",
+              title: "Selected provider acceptance",
+            },
+          },
+          { harnessProviderRegistry: registry, rootDirectory: cwd },
+        );
+        const events = yield* readLocalRunEvents(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        const serialized = JSON.stringify(events.events[0]?.payload);
+
+        assert.deepEqual(events.events[0]?.payload["execution"], {
+          resolved: Schema.encodeSync(ResolvedHarnessExecution)(
+            ResolvedHarnessExecution.make({
+            capabilities: acceptanceCapabilities,
+            executionMode: "local",
+            harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
+            provider: acceptanceProvider.descriptor,
+            version: "synthetic-1",
+            }),
+          ),
+          selection: { harnessProfileId: "codexAppServer" },
+        });
+        assert.notInclude(serialized, "credential");
+        assert.notInclude(serialized, "/usr/local/bin");
+      }),
+    );
+
     it.effect("continues an accepted server run through the default workflow", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -56,6 +111,61 @@ describe("server workflows", () => {
         assert.strictEqual(summary.status, "completed");
         assert.strictEqual(read.status, "completed");
         assert.strictEqual(read.latestEventType, "REPORT_COMPLETED");
+      }),
+    );
+
+    it.effect("records a canonical failure when provider availability changes after acceptance", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-provider-change-" });
+        let providerAvailable = true;
+        const provider: HarnessProvider = {
+          ...acceptanceProvider,
+          detect: Effect.sync(() =>
+            providerAvailable
+              ? {
+                  auth: { state: "authenticated" },
+                  capabilities: acceptanceCapabilities,
+                  state: "available",
+                  version: "synthetic-1",
+                } as const
+              : { state: "missing" } as const,
+          ),
+        };
+        const registry = makeHarnessProviderRegistry([
+          {
+            profileId: codexAppServerExecutionSelection.harnessProfileId,
+            provider,
+          },
+        ]);
+        const accepted = yield* acceptFactoryRun(
+          {
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery",
+            workItem: {
+              description: "Fail when the accepted provider becomes unavailable.",
+              kind: "issue",
+              title: "Post-acceptance provider change",
+            },
+          },
+          { harnessProviderRegistry: registry, rootDirectory: cwd },
+        );
+        providerAvailable = false;
+
+        const continuation = yield* continueServerRun(accepted.runId, {
+          harnessProviderRegistry: registry,
+          rootDirectory: cwd,
+        }).pipe(Effect.exit);
+        const events = yield* readLocalRunEvents(accepted.runId, {
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(continuation._tag, "Failure");
+        assert.strictEqual(events.events.at(-1)?.type, "RUN_FAILED");
+        assert.strictEqual(
+          events.events.at(-1)?.payload["code"],
+          "HarnessUnavailable",
+        );
       }),
     );
 
@@ -108,6 +218,37 @@ describe("server workflows", () => {
     );
   });
 });
+
+const acceptanceCapabilities = HarnessCapabilities.make({
+  approvals: [],
+  fileChangeEvents: true,
+  interruption: true,
+  resumableSessions: true,
+  review: false,
+  steering: false,
+  streamingMessages: true,
+  structuredOutput: false,
+  subagents: false,
+  toolEvents: false,
+  usageReporting: false,
+  userQuestions: false,
+});
+
+const acceptanceProvider: HarnessProvider = {
+  createSession: () => Effect.die("not used during acceptance"),
+  descriptor: HarnessProviderDescriptor.make({
+    displayName: "Synthetic Harness",
+    executionModes: ["local"],
+    providerId: parseHarnessProviderId("synthetic"),
+  }),
+  detect: Effect.succeed({
+    auth: { state: "authenticated" },
+    capabilities: acceptanceCapabilities,
+    state: "available",
+    version: "synthetic-1",
+  }),
+  resumeSession: () => Effect.die("not used during acceptance"),
+};
 
 function blockingReviewer(): GaiaReviewer {
   const reviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(

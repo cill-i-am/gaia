@@ -21,6 +21,7 @@ import {
   FactoryWorkflowIdSchema,
 } from "./factory-graph.js";
 import { RunIdSchema } from "./run-id.js";
+import { HarnessExecutionSelection } from "./harness-execution.js";
 
 export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
@@ -29,6 +30,11 @@ export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "EndpointNotFound",
   "FactoryAgentNotFound",
   "FactoryGraphNotFound",
+  "HarnessAuthenticationRequired",
+  "HarnessCapabilityMismatch",
+  "HarnessIncompatible",
+  "HarnessProfileNotFound",
+  "HarnessUnavailable",
   "InvalidRunDirectory",
   "InvalidRunId",
   "InvalidRequest",
@@ -62,6 +68,11 @@ const ConflictDiagnosticCodeSchema = Schema.Literals([
   "RunStoreLocked",
 ] as const);
 const UnprocessableDiagnosticCodeSchema = Schema.Literals([
+  "HarnessAuthenticationRequired",
+  "HarnessCapabilityMismatch",
+  "HarnessIncompatible",
+  "HarnessProfileNotFound",
+  "HarnessUnavailable",
   "InvalidRunDirectory",
   "RunHasNoEvents",
   "RunUnreadable",
@@ -404,6 +415,7 @@ export class CreateRunIssueWorkItemRequest extends Schema.Class<CreateRunIssueWo
 export class CreateRunRequest extends Schema.Class<CreateRunRequest>(
   "CreateRunRequest",
 )({
+  execution: HarnessExecutionSelection,
   workflow: FactoryWorkflowIdSchema,
   workItem: CreateRunIssueWorkItemRequest,
 }, {

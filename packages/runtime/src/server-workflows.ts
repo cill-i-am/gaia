@@ -1,15 +1,31 @@
 import {
   parseMarkdownSpec,
+  HarnessExecutionSelection,
+  parseHarnessEvent,
+  parseHarnessSessionId,
   parseRunId,
+  ResolvedHarnessExecution,
   snapshotFromReplay,
   type GaiaFailure,
+  type RunEvent,
   type RunId,
   type RunState,
 } from "@gaia/core";
 import { customAlphabet } from "nanoid";
-import { Effect, FileSystem, Path } from "effect";
+import { Effect, FileSystem, Path, Schema } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
+import {
+  HarnessProfileNotFoundError,
+  issueDeliveryWorkerHarnessCapabilities,
+  type HarnessProviderRegistry,
+} from "./harness-provider-registry.js";
+import {
+  HarnessCapabilityMismatchError,
+  HarnessDetectionError,
+  HarnessIncompatibleError,
+  HarnessUnavailableError,
+} from "./harness-session.js";
 import {
   writeInitialFactoryRunIndexes,
   type FactoryRunCreateInput,
@@ -22,14 +38,36 @@ import {
 } from "./paths.js";
 import type { ReviewerRunOptions } from "./reviewer.js";
 import { withRunStoreLock } from "./run-store-lock.js";
-import { continueAcceptedRun, type CommandSummary } from "./workflows.js";
+import {
+  continueAcceptedRun,
+  type CommandSummary,
+  type WorkerContinuationState,
+} from "./workflows.js";
+import { interactiveSessionHarness } from "./interactive-harness.js";
+import {
+  localDirectoryWorkspaceSource,
+  type WorkspaceSource,
+} from "./workspace.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
   10,
 );
 
-export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions;
+export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
+  readonly harnessProviderRegistry?: HarnessProviderRegistry;
+  readonly workspaceSource?: WorkspaceSource;
+};
+
+const encodeResolvedHarnessExecution = Schema.encodeSync(
+  ResolvedHarnessExecution,
+);
+const decodeHarnessExecutionSelection = Schema.decodeUnknownSync(
+  HarnessExecutionSelection,
+);
+const decodeResolvedHarnessExecution = Schema.decodeUnknownSync(
+  ResolvedHarnessExecution,
+);
 
 export type ServerRunAcceptance = {
   readonly acceptedAt: string;
@@ -40,6 +78,7 @@ export type ServerRunAcceptance = {
 
 export type ServerRunReconciliation = {
   readonly reconciledRunIds: ReadonlyArray<RunId>;
+  readonly resumableRunIds: ReadonlyArray<RunId>;
 };
 
 export function acceptServerRun(
@@ -162,6 +201,23 @@ function acceptFactoryRunUnlocked(
       title: input.workItem.title,
     });
 
+    const registry = options.harnessProviderRegistry;
+    if (registry === undefined) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "HarnessProviderRegistryMissing",
+          message: "No harness provider registry is available for this run.",
+          recoverable: true,
+        }),
+      );
+    }
+    const resolved = yield* registry
+      .resolve(
+        input.execution,
+        issueDeliveryWorkerHarnessCapabilities,
+      )
+      .pipe(Effect.mapError(harnessAcceptanceError));
+
     const runId = yield* generateRunId;
     const paths = yield* makeRunPaths(runId, options);
     const fs = yield* FileSystem.FileSystem;
@@ -198,6 +254,12 @@ function acceptFactoryRunUnlocked(
     );
     const { event } = yield* appendEvent(runId, paths, {
       payload: {
+        execution: {
+          resolved: encodeResolvedHarnessExecution(resolved.execution),
+          selection: {
+            harnessProfileId: input.execution.harnessProfileId,
+          },
+        },
         source: "server",
         specPath: "input.md",
         workflow: input.workflow,
@@ -331,7 +393,18 @@ function continueServerRunUnlocked(
       title: runId,
     });
 
-    return yield* continueAcceptedRun(runId, paths, spec, options).pipe(
+    return yield* Effect.gen(function* () {
+      const continuationOptions =
+        firstEvent.payload["workflow"] === "issueDelivery"
+          ? yield* factoryContinuationOptions(firstEvent, loaded.events, options)
+          : options;
+      return yield* continueAcceptedRun(
+        runId,
+        paths,
+        spec,
+        continuationOptions,
+      );
+    }).pipe(
       Effect.mapError((error) =>
         error instanceof GaiaRuntimeError
           ? error
@@ -371,11 +444,15 @@ function reconcileInterruptedServerRunsUnlocked(
     const store = yield* makeRunStorePaths(options);
     const exists = yield* fs.exists(store.runsRoot);
     if (!exists) {
-      return { reconciledRunIds: [] } satisfies ServerRunReconciliation;
+      return {
+        reconciledRunIds: [],
+        resumableRunIds: [],
+      } satisfies ServerRunReconciliation;
     }
 
     const entries = yield* fs.readDirectory(store.runsRoot);
     const reconciledRunIds: Array<RunId> = [];
+    const resumableRunIds: Array<RunId> = [];
 
     for (const entry of entries.filter((item) => item.startsWith("run-"))) {
       const runId = parseRunIdSafely(entry);
@@ -403,6 +480,12 @@ function reconcileInterruptedServerRunsUnlocked(
         continue;
       }
 
+      if (firstEvent.payload["workflow"] === "issueDelivery") {
+        reconciledRunIds.push(runId);
+        resumableRunIds.push(runId);
+        continue;
+      }
+
       yield* appendEvent(runId, paths, {
         payload: failurePayload(
           makeRuntimeError({
@@ -418,7 +501,7 @@ function reconcileInterruptedServerRunsUnlocked(
       reconciledRunIds.push(runId);
     }
 
-    return { reconciledRunIds } satisfies ServerRunReconciliation;
+    return { reconciledRunIds, resumableRunIds } satisfies ServerRunReconciliation;
   });
 }
 
@@ -523,4 +606,225 @@ function toServerWorkflowError(code: string) {
           message: "Gaia server workflow failed.",
           recoverable: true,
         });
+}
+
+function harnessAcceptanceError(error: unknown): GaiaRuntimeError {
+  if (error instanceof HarnessProfileNotFoundError) {
+    return makeRuntimeError({
+      code: "HarnessProfileNotFound",
+      message: "The selected harness profile is not registered.",
+      recoverable: false,
+    });
+  }
+  if (error instanceof HarnessCapabilityMismatchError) {
+    return makeRuntimeError({
+      code: "HarnessCapabilityMismatch",
+      message: "The selected harness provider lacks required capabilities.",
+      recoverable: false,
+    });
+  }
+  if (error instanceof HarnessIncompatibleError) {
+    return makeRuntimeError({
+      code: "HarnessIncompatible",
+      message: "The selected harness provider version is incompatible.",
+      recoverable: false,
+    });
+  }
+  if (error instanceof HarnessUnavailableError) {
+    return makeRuntimeError({
+      code:
+        error.state === "authenticationRequired"
+          ? "HarnessAuthenticationRequired"
+          : "HarnessUnavailable",
+      message:
+        error.state === "authenticationRequired"
+          ? "The selected harness provider requires authentication."
+          : "The selected harness provider is unavailable.",
+      recoverable: true,
+    });
+  }
+  if (error instanceof HarnessDetectionError) {
+    return makeRuntimeError({
+      code: "HarnessUnavailable",
+      message: "The selected harness provider could not be detected.",
+      recoverable: true,
+    });
+  }
+  return makeRuntimeError({
+    code: "HarnessUnavailable",
+    message: "The selected harness provider could not be accepted.",
+    recoverable: true,
+  });
+}
+
+function factoryContinuationOptions(
+  firstEvent: RunEvent,
+  events: ReadonlyArray<RunEvent>,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    const execution = firstEvent.payload["execution"];
+    const acceptedExecution = yield* Effect.try({
+      try: () => ({
+        resolved: decodeResolvedHarnessExecution(
+          jsonObjectField(execution, "resolved"),
+        ),
+        selection: decodeHarnessExecutionSelection(
+          jsonObjectField(execution, "selection"),
+        ),
+      }),
+      catch: () =>
+        makeRuntimeError({
+          code: "HarnessExecutionSelectionUnreadable",
+          message: "Accepted run harness execution is missing or corrupt.",
+          recoverable: false,
+        }),
+    });
+    if (
+      acceptedExecution.selection.harnessProfileId !==
+      acceptedExecution.resolved.harnessProfileId
+    ) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "HarnessExecutionSelectionMismatch",
+          message: "Accepted run harness selection does not match its resolution.",
+          recoverable: false,
+        }),
+      );
+    }
+    const rootDirectory = options.rootDirectory ?? ".";
+    const commonOptions = {
+      ...options,
+      workspaceSource:
+        options.workspaceSource ?? localDirectoryWorkspaceSource(rootDirectory),
+    };
+    const sessionEvents = issueDeliveryWorkerSessionEvents(
+      firstEvent.runId,
+      events,
+    );
+    if (
+      sessionEvents.some(
+        (event) =>
+          event.kind === "sessionStarted" &&
+          event.provider.providerId !==
+            acceptedExecution.resolved.provider.providerId,
+      )
+    ) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "HarnessSessionProviderMismatch",
+          message:
+            "Persisted harness session does not match the accepted provider.",
+          recoverable: false,
+        }),
+      );
+    }
+    const continuationState = issueDeliveryWorkerContinuationState(
+      events,
+      sessionEvents,
+    );
+    if (continuationState === "invalid") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "HarnessWorkerCompletionMismatch",
+          message: "Persisted worker completion has no canonical completed turn.",
+          recoverable: false,
+        }),
+      );
+    }
+    if (continuationState === "completed") {
+      return {
+        ...commonOptions,
+        workerContinuationState: continuationState,
+      };
+    }
+    if (continuationState === "terminal") {
+      return {
+        ...commonOptions,
+        workerContinuationState: continuationState,
+        workerHarness: interactiveSessionHarness({ rootDirectory }),
+      };
+    }
+
+    const registry = options.harnessProviderRegistry;
+    if (registry === undefined) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "HarnessProviderRegistryMissing",
+          message: "No harness provider registry is available for this run.",
+          recoverable: true,
+        }),
+      );
+    }
+    const resolved = yield* registry
+      .resolve(
+        acceptedExecution.selection,
+        issueDeliveryWorkerHarnessCapabilities,
+      )
+      .pipe(Effect.mapError(harnessAcceptanceError));
+    if (
+      JSON.stringify(encodeResolvedHarnessExecution(resolved.execution)) !==
+      JSON.stringify(encodeResolvedHarnessExecution(acceptedExecution.resolved))
+    ) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "HarnessExecutionResolutionChanged",
+          message: "Resolved harness execution changed after run acceptance.",
+          recoverable: false,
+        }),
+      );
+    }
+    return {
+      ...commonOptions,
+      workerContinuationState: continuationState,
+      workerHarness: interactiveSessionHarness({
+        provider: resolved.provider,
+        rootDirectory,
+      }),
+    };
+  });
+}
+
+/** Replay table: no session -> start, live session -> resume, first terminal -> own it. */
+function issueDeliveryWorkerContinuationState(
+  events: ReadonlyArray<RunEvent>,
+  sessionEvents: ReadonlyArray<ReturnType<typeof parseHarnessEvent>>,
+): WorkerContinuationState | "invalid" {
+  const workerCompletionPersisted = events.some(
+    ({ type }) => type === "WORKER_COMPLETED",
+  );
+  const terminal = sessionEvents.find(
+    ({ kind }) => kind === "turnCompleted" || kind === "sessionFailed",
+  );
+  if (terminal === undefined) {
+    if (workerCompletionPersisted) return "invalid";
+    return sessionEvents.length === 0 ? "start" : "resume";
+  }
+  if (
+    terminal.kind === "turnCompleted" &&
+    terminal.status === "completed" &&
+    workerCompletionPersisted
+  ) {
+    return "completed";
+  }
+  return "terminal";
+}
+
+function issueDeliveryWorkerSessionEvents(
+  runId: RunId,
+  events: ReadonlyArray<RunEvent>,
+) {
+  const sessionId = parseHarnessSessionId(`session-${runId}`);
+  return events.flatMap((event) => {
+    if (event.type !== "HARNESS_SESSION_EVENT_RECORDED") return [];
+    const harnessEvent = parseHarnessEvent(event.payload.event);
+    return harnessEvent.sessionId === sessionId ? [harnessEvent] : [];
+  });
+}
+
+function jsonObjectField(value: Schema.Json | undefined, field: string): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return Object.getOwnPropertyDescriptor(value, field)?.value;
 }

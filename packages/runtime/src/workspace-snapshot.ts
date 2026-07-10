@@ -69,6 +69,24 @@ export type WorkspaceSnapshot = {
   readonly productFileDigests: ReadonlyMap<string, string>;
 };
 
+const PersistedWorkspaceSnapshot = Schema.Struct({
+  generatedPaths: Schema.Array(
+    Schema.Struct({
+      digest: Schema.String,
+      fileCount: Schema.Int,
+      path: Schema.String,
+      reason: Schema.String,
+    }),
+  ),
+  productFiles: Schema.Array(
+    Schema.Struct({ digest: Schema.String, path: Schema.String }),
+  ),
+  version: Schema.Literal(1),
+});
+const decodePersistedWorkspaceSnapshot = Schema.decodeUnknownSync(
+  PersistedWorkspaceSnapshot,
+);
+
 type GeneratedPathSnapshot = {
   readonly digest: string;
   readonly fileCount: number;
@@ -83,6 +101,45 @@ type GeneratedPathDigest = {
 
 export function snapshotWorkspace(workspacePath: string) {
   return snapshotDirectory(workspacePath, "");
+}
+
+/** Persist a private restart baseline without exposing absolute workspace paths. */
+export function writeWorkspaceSnapshot(
+  snapshotPath: string,
+  snapshot: WorkspaceSnapshot,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(
+      snapshotPath,
+      `${JSON.stringify({
+        generatedPaths: [...snapshot.generatedPathSummaries.values()],
+        productFiles: [...snapshot.productFileDigests].map(([path, digest]) => ({
+          digest,
+          path,
+        })),
+        version: 1,
+      })}\n`,
+    );
+  });
+}
+
+/** Read and validate the private workspace baseline used for crash recovery. */
+export function readWorkspaceSnapshot(snapshotPath: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const parsed = decodePersistedWorkspaceSnapshot(
+      JSON.parse(yield* fs.readFileString(snapshotPath)),
+    );
+    return {
+      generatedPathSummaries: new Map(
+        parsed.generatedPaths.map((entry) => [entry.path, entry]),
+      ),
+      productFileDigests: new Map(
+        parsed.productFiles.map((entry) => [entry.path, entry.digest]),
+      ),
+    } satisfies WorkspaceSnapshot;
+  });
 }
 
 export function changedPaths(

@@ -1,6 +1,10 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
-import { CreateRunRequest, LocalRunApiErrorEnvelope } from "@gaia/core";
+import {
+  codexAppServerExecutionSelection,
+  CreateRunRequest,
+  LocalRunApiErrorEnvelope,
+} from "@gaia/core";
 import { GaiaRuntimeError } from "@gaia/runtime";
 import { Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
@@ -39,6 +43,7 @@ describe("local server protocol client", () => {
       const requests: Array<string> = [];
       const bodies: Array<unknown> = [];
       const payload = yield* CreateRunRequest.makeEffect({
+        execution: codexAppServerExecutionSelection,
         workflow: "issueDelivery",
         workItem: {
           description: "Create through the typed client.\n",
@@ -74,6 +79,7 @@ describe("local server protocol client", () => {
       assert.deepEqual(requests, ["POST http://127.0.0.1:4321/runs"]);
       assert.deepEqual(bodies, [
         {
+          execution: { harnessProfileId: "codexAppServer" },
           workflow: "issueDelivery",
           workItem: {
             description: "Create through the typed client.\n",

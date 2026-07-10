@@ -35,6 +35,7 @@ export type RunPaths = {
   readonly githubFeedback: string;
   readonly githubPrComment: string;
   readonly githubRemediationSpec: string;
+  readonly harnessWorkspaceBaseline: string;
   readonly input: string;
   readonly latest: string;
   readonly linearIssueGraph: string;
@@ -130,6 +131,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       githubFeedback: path.join(root, "github-feedback.json"),
       githubPrComment: path.join(root, "github-pr-comment.md"),
       githubRemediationSpec: path.join(root, "remediation-spec.md"),
+      harnessWorkspaceBaseline: path.join(root, ".harness-workspace-baseline.json"),
       input: path.join(root, "input.md"),
       latest: store.latest,
       linearIssueGraph: path.join(root, "linear-issue-graph.json"),

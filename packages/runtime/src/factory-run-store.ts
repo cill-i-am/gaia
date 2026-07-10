@@ -5,6 +5,8 @@ import {
   FactoryArtifactIdSchema,
   FactoryArtifactListDto,
   FactoryGraphDto,
+  parseHarnessEvent,
+  ResolvedHarnessExecution,
   parseRunId,
   type EventType,
   type FactoryAgentRole,
@@ -70,6 +72,9 @@ type FactoryArtifactDefinitionInput = Omit<
 };
 
 const decodeCreateRunRequest = Schema.decodeUnknownSync(CreateRunRequest);
+const decodeResolvedHarnessExecution = Schema.decodeUnknownSync(
+  ResolvedHarnessExecution,
+);
 const decodeFactoryArtifactId = Schema.decodeUnknownSync(FactoryArtifactIdSchema);
 const decodeFactoryGraph = Schema.decodeUnknownSync(FactoryGraphDto);
 const encodeFactoryGraph = Schema.encodeSync(FactoryGraphDto);
@@ -367,6 +372,9 @@ function rebuildFactoryRunIndexesFromPaths(input: {
     }
 
     const createInput = yield* parseFactoryCreateInput(loadedExit.value.events);
+    const resolvedExecution = yield* parseFactoryResolvedExecution(
+      loadedExit.value.events,
+    );
     const artifactResult = yield* collectFactoryArtifacts({
       events: loadedExit.value.events,
       paths: input.paths,
@@ -387,6 +395,7 @@ function rebuildFactoryRunIndexesFromPaths(input: {
       createInput,
       diagnostics: [...input.additionalDiagnostics, ...artifactResult.diagnostics],
       events: loadedExit.value.events,
+      resolvedExecution,
       runId: input.runId,
     });
 
@@ -583,6 +592,7 @@ function parseFactoryCreateInput(
   try {
     return Effect.succeed(
       decodeCreateRunRequest({
+        execution: jsonObjectField(first.payload["execution"], "selection"),
         workflow: first.payload["workflow"],
         workItem: first.payload["workItem"],
       }),
@@ -598,12 +608,47 @@ function parseFactoryCreateInput(
   }
 }
 
+function parseFactoryResolvedExecution(
+  events: ReadonlyArray<RunEvent>,
+): Effect.Effect<typeof ResolvedHarnessExecution.Type, LocalRunReadDiagnostic> {
+  const first = events[0];
+  if (first === undefined) {
+    return Effect.fail(noEventsDiagnostic(undefined));
+  }
+  try {
+    return Effect.succeed(
+      decodeResolvedHarnessExecution(
+        jsonObjectField(first.payload["execution"], "resolved"),
+      ),
+    );
+  } catch {
+    return Effect.fail({
+      code: "FactoryGraphNotFound",
+      message:
+        "Run does not contain resolved harness execution metadata in its authoritative RUN_CREATED event.",
+      recoverable: false,
+      runId: first.runId,
+    } satisfies LocalRunReadDiagnostic);
+  }
+}
+
+function jsonObjectField(
+  value: Schema.Json | undefined,
+  field: string,
+): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return Object.getOwnPropertyDescriptor(value, field)?.value;
+}
+
 function buildFactoryGraph(input: {
   readonly activity: FactoryActivityIndex;
   readonly artifacts: ReadonlyArray<FactoryArtifactIndex["artifacts"][number]>;
   readonly createInput: FactoryRunCreateInput;
   readonly diagnostics: ReadonlyArray<FactoryProjectionDiagnostic>;
   readonly events: ReadonlyArray<RunEvent>;
+  readonly resolvedExecution: typeof ResolvedHarnessExecution.Type;
   readonly runId: RunId;
 }): FactoryGraphProjection {
   const agentStates = agentStatesFromEvents(input.events);
@@ -671,6 +716,7 @@ function buildFactoryGraph(input: {
         type: "watched",
       },
     ],
+    execution: input.resolvedExecution,
     linkedArtifacts: input.artifacts,
     runId: input.runId,
     version: 1,
@@ -765,6 +811,24 @@ function updateStatesForEvent(
     case "WORKER_COMPLETED":
       states.set("worker", "succeeded");
       return;
+    case "HARNESS_SESSION_EVENT_RECORDED": {
+      const harnessEvent = parseHarnessEvent(event.payload.event);
+      if (harnessEvent.kind === "sessionFailed") {
+        states.set("worker", "failed");
+      } else if (harnessEvent.kind === "turnCompleted") {
+        states.set(
+          "worker",
+          harnessEvent.status === "completed"
+            ? "succeeded"
+            : harnessEvent.status === "interrupted"
+              ? "canceled"
+              : "failed",
+        );
+      } else {
+        states.set("worker", "running");
+      }
+      return;
+    }
     case "VERIFICATION_STARTED":
       states.set("tester", "running");
       return;
@@ -786,7 +850,6 @@ function updateStatesForEvent(
       states.set(roleFromFailureStage(event.payload["stage"]), "failed");
       return;
     case "BROWSER_EVIDENCE_RECORDED":
-    case "HARNESS_SESSION_EVENT_RECORDED":
     case "LINEAR_ISSUE_GRAPH_RECORDED":
     case "MERGE_DECISION_RECORDED":
     case "PREVIEW_DEPLOYMENT_RECORDED":
@@ -823,6 +886,7 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
       return roleFromFailureStage(event.payload["stage"]);
     case "WORKER_STARTED":
     case "WORKER_COMPLETED":
+    case "HARNESS_SESSION_EVENT_RECORDED":
       return "worker";
     case "REVIEW_STARTED":
     case "REVIEW_COMPLETED":
@@ -840,7 +904,6 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "LINEAR_ISSUE_GRAPH_RECORDED":
     case "MERGE_DECISION_RECORDED":
     case "PREVIEW_DEPLOYMENT_RECORDED":
-    case "HARNESS_SESSION_EVENT_RECORDED":
       return undefined;
   }
 }
@@ -872,6 +935,16 @@ function subStateForEvent(event: RunEvent): string | undefined {
       return typeof event.payload["stage"] === "string"
         ? event.payload["stage"]
         : "failed";
+    case "HARNESS_SESSION_EVENT_RECORDED": {
+      const harnessEvent = parseHarnessEvent(event.payload.event);
+      if (harnessEvent.kind === "sessionStateChanged") {
+        return harnessEvent.state;
+      }
+      if (harnessEvent.kind === "turnCompleted") {
+        return harnessEvent.status;
+      }
+      return harnessEvent.kind;
+    }
     default:
       return undefined;
   }
@@ -918,9 +991,35 @@ function activityLabel(event: RunEvent): string {
     case "MERGE_DECISION_RECORDED":
       return "Merge decision recorded";
     case "HARNESS_SESSION_EVENT_RECORDED":
-      return "Harness session event recorded";
+      return harnessActivityLabel(parseHarnessEvent(event.payload.event));
     case "RUN_FAILED":
       return "Factory run failed";
+  }
+}
+
+function harnessActivityLabel(event: ReturnType<typeof parseHarnessEvent>) {
+  switch (event.kind) {
+    case "sessionStarted":
+      return "Harness session started";
+    case "sessionStateChanged":
+      return "Harness session state changed";
+    case "turnStarted":
+      return "Harness worker turn started";
+    case "itemDeltaRecorded":
+    case "itemUpserted":
+      return "Harness worker output updated";
+    case "interactionRequested":
+      return "Harness interaction requested";
+    case "interactionResolved":
+      return "Harness interaction resolved";
+    case "interactionCancelled":
+      return "Harness interaction canceled";
+    case "turnCompleted":
+      return `Harness worker turn ${event.status}`;
+    case "sessionRecovered":
+      return "Harness session recovered";
+    case "sessionFailed":
+      return "Harness session failed";
   }
 }
 

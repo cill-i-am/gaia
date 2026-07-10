@@ -6,6 +6,9 @@ import {
 } from "@gaia/core";
 import { describe, expect, it } from "vitest";
 import { Effect, Fiber, Option, Stream } from "effect";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   type CodexAppServerClient,
 } from "./codex-app-server-client.js";
@@ -21,6 +24,7 @@ import {
 } from "./codex-app-server-protocol.js";
 import {
   createCodexHarnessProvider,
+  makeFileCodexHarnessCorrelationStore,
   makeInMemoryCodexHarnessCorrelationStore,
 } from "./codex-harness-provider.js";
 import { resumeHarnessSession, startHarnessSession } from "./harness-session.js";
@@ -77,6 +81,50 @@ function recordingClient() {
 }
 
 describe("Codex HarnessProvider adapter", () => {
+  it("round-trips strict durable private correlation and rejects corrupt state", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gaia-codex-correlation-"));
+    const sessionId = parseHarnessSessionId("session-durable-correlation");
+    const store = makeFileCodexHarnessCorrelationStore(root);
+
+    await Effect.runPromise(
+      store.save(sessionId, { token: "opaque-native-correlation" }),
+    );
+    const reconstructed = makeFileCodexHarnessCorrelationStore(root);
+    await expect(Effect.runPromise(reconstructed.load(sessionId))).resolves.toEqual({
+      token: "opaque-native-correlation",
+    });
+
+    const directory = path.join(
+      root,
+      ".gaia",
+      "private",
+      "harness-correlations",
+    );
+    const [filename] = await readdir(directory);
+    expect(filename).toBeDefined();
+    const correlationPath = path.join(directory, filename ?? "missing");
+    const serialized = await readFile(correlationPath, "utf8");
+    expect(serialized).toContain('"harnessProfileId":"codexAppServer"');
+    expect(serialized).toContain('"providerId":"codex-app-server"');
+    await writeFile(correlationPath, '{"version":1,"token":"changed"}\n');
+
+    const corrupt = await Effect.runPromiseExit(reconstructed.load(sessionId));
+    expect(corrupt._tag).toBe("Failure");
+
+    await writeFile(
+      correlationPath,
+      `${JSON.stringify({
+        harnessProfileId: "codexAppServer",
+        providerId: "codex-app-server",
+        sessionId,
+        token: "x".repeat(20_000),
+        version: 1,
+      })}\n`,
+    );
+    const oversized = await Effect.runPromiseExit(reconstructed.load(sessionId));
+    expect(oversized._tag).toBe("Failure");
+  });
+
   it("implements the neutral SPI while keeping Codex correlation adapter-private", async () => {
     const fake = recordingClient();
     const sessionId = parseHarnessSessionId("session-codex-provider");

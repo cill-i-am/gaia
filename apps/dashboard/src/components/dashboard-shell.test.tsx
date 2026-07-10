@@ -19,6 +19,7 @@ import {
   RunIdSchema,
   makeRunEvent,
 } from "@gaia/core";
+import { testFactoryExecution } from "@/test-factory-execution";
 import {
   act,
   cleanup,
@@ -2328,6 +2329,7 @@ function factoryGraph(input: {
         workItemId: rootWorkItemId,
       },
     ],
+    execution: testFactoryExecution,
     diagnostics: [],
     edges: input.edges ?? [
       {

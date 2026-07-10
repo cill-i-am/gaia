@@ -34,6 +34,7 @@ export const parseHarnessName = Schema.decodeUnknownSync(HarnessNameSchema);
 export const defaultHarnessName = parseHarnessName("fake");
 export const processHarnessName = parseHarnessName("process");
 export const codexHarnessName = parseHarnessName("codex");
+export const codexAppServerHarnessName = parseHarnessName("codexAppServer");
 
 const processHarnessMaxBufferBytes = 10 * 1024 * 1024;
 const harnessContractVersion = "1";

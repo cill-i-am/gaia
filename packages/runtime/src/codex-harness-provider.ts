@@ -1,5 +1,6 @@
 import {
   HarnessCapabilities,
+  HarnessSessionIdSchema,
   HarnessSessionEventBudgetBytes,
   HarnessProviderDescriptor,
   parseHarnessEvent,
@@ -12,6 +13,8 @@ import {
   type HarnessSessionId,
 } from "@gaia/core";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import {
   Cause,
   Effect,
@@ -76,13 +79,22 @@ export const CodexHarnessProviderDescriptor = HarnessProviderDescriptor.make({
 export type CodexHarnessProviderOptions = {
   readonly client: CodexAppServerClient;
   readonly correlationStore: CodexHarnessCorrelationStore;
+  readonly detectionProbe?: Effect.Effect<HarnessDetection>;
   readonly sensitiveValues?: ReadonlyArray<string>;
   readonly workspaceRoot: string;
 };
 
 /** Opaque adapter token; callers persist it without interpreting its contents. */
+const CodexHarnessCorrelationTokenSchema = Schema.NonEmptyString.pipe(
+  Schema.check(
+    Schema.isMaxLength(4_096),
+    Schema.isPattern(/^[A-Za-z0-9_-]+$/u),
+  ),
+);
+
+/** Finite opaque adapter token persisted without exposing its native meaning. */
 export type CodexHarnessOpaqueCorrelation = {
-  readonly token: string;
+  readonly token: typeof CodexHarnessCorrelationTokenSchema.Type;
 };
 
 /** Adapter-owned persistence seam for opaque Codex session correlation. */
@@ -111,17 +123,103 @@ export function makeInMemoryCodexHarnessCorrelationStore(): CodexHarnessCorrelat
   };
 }
 
+class CodexHarnessCorrelationFile extends Schema.Class<CodexHarnessCorrelationFile>(
+  "CodexHarnessCorrelationFile",
+)({
+  harnessProfileId: Schema.Literal("codexAppServer"),
+  providerId: Schema.Literal("codex-app-server"),
+  sessionId: HarnessSessionIdSchema,
+  token: CodexHarnessCorrelationTokenSchema,
+  version: Schema.Literal(1),
+}, {
+  parseOptions: { onExcessProperty: "error" },
+}) {}
+const decodeCodexHarnessCorrelationFile = Schema.decodeUnknownSync(
+  CodexHarnessCorrelationFile,
+);
+const decodeCodexHarnessOpaqueCorrelation = Schema.decodeUnknownSync(
+  Schema.Struct({ token: CodexHarnessCorrelationTokenSchema }),
+);
+const correlationFileMaxBytes = 16_384;
+
+/** Durable adapter-private correlation store excluded from public run contracts. */
+export function makeFileCodexHarnessCorrelationStore(
+  rootDirectory: string,
+): CodexHarnessCorrelationStore {
+  const directory = path.join(rootDirectory, ".gaia", "private", "harness-correlations");
+  const correlationPath = (sessionId: HarnessSessionId) =>
+    path.join(
+      directory,
+      `${createHash("sha256").update(sessionId).digest("hex")}.json`,
+    );
+
+  return {
+    load: (sessionId) =>
+      Effect.tryPromise({
+        try: async () => {
+          try {
+            const target = correlationPath(sessionId);
+            if ((await stat(target)).size > correlationFileMaxBytes) {
+              throw new Error("Harness correlation file exceeds its size limit.");
+            }
+            const contents = await readFile(target, "utf8");
+            const parsed = decodeCodexHarnessCorrelationFile(
+              JSON.parse(contents),
+            );
+            if (parsed.sessionId !== sessionId) {
+              throw new Error("Harness correlation session does not match.");
+            }
+            return { token: parsed.token };
+          } catch (error) {
+            if (
+              typeof error === "object" &&
+              error !== null &&
+              "code" in error &&
+              error.code === "ENOENT"
+            ) {
+              return undefined;
+            }
+            throw error;
+          }
+        },
+        catch: (error) => error,
+      }),
+    save: (sessionId, correlation) =>
+      Effect.tryPromise({
+        try: async () => {
+          const parsedCorrelation = decodeCodexHarnessOpaqueCorrelation(
+            correlation,
+          );
+          await mkdir(directory, { recursive: true, mode: 0o700 });
+          const target = correlationPath(sessionId);
+          const temporary = `${target}.${process.pid}.tmp`;
+          await writeFile(
+            temporary,
+            `${JSON.stringify({
+              harnessProfileId: "codexAppServer",
+              providerId: "codex-app-server",
+              sessionId,
+              token: parsedCorrelation.token,
+              version: 1,
+            })}\n`,
+            { encoding: "utf8", mode: 0o600 },
+          );
+          await rename(temporary, target);
+        },
+        catch: (error) => error,
+      }),
+  };
+}
+
 /** Build the first rich HarnessProvider implementation over the landed GAIA-83 client. */
 export function createCodexHarnessProvider(
   options: CodexHarnessProviderOptions,
 ): HarnessProvider {
   let initializedDetection: HarnessDetection | undefined;
   const initializationSemaphore = Semaphore.makeUnsafe(1);
-  const detect = initializationSemaphore.withPermits(1)(
+  const initialize = initializationSemaphore.withPermits(1)(
     Effect.suspend(() => {
-      if (initializedDetection !== undefined) {
-        return Effect.succeed(initializedDetection);
-      }
+      if (initializedDetection !== undefined) return Effect.succeed(initializedDetection);
       return options.client
         .initialize({
           clientInfo: { name: "gaia", title: "Gaia", version: "0.1.0" },
@@ -140,6 +238,16 @@ export function createCodexHarnessProvider(
         );
     }),
   );
+  const detect = Effect.gen(function* () {
+    const probe = yield* (
+      options.detectionProbe ?? Effect.succeed(availableCodexDetection())
+    );
+    if (probe.state !== "available") return probe;
+    const initialized = yield* initialize;
+    return initialized.state === "available"
+      ? { ...probe, capabilities: CodexHarnessCapabilities }
+      : initialized;
+  });
 
   return {
     createSession: (request) =>
@@ -849,7 +957,9 @@ function detectionFromCodexError(error: CodexAppServerError): HarnessDetection {
 }
 
 function boundedVersion(userAgent: string): string {
-  const match = /\b(?:Codex|gaia)\/([^\s]+)/iu.exec(userAgent);
+  const match = /\b(?:Codex|gaia)\/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?:\s|$)/iu.exec(
+    userAgent,
+  );
   return (match?.[1] ?? "unknown").slice(0, 200);
 }
 

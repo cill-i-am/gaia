@@ -25,9 +25,12 @@ import type { CodexHarnessOptions } from "./codex-harness.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
   HarnessRunRequest,
+  HarnessRunResult,
+  codexAppServerHarnessName,
   codexHarnessName,
   defaultHarnessName,
   runHarness,
+  type GaiaHarness,
   type HarnessName,
   type ProcessHarnessConfig,
 } from "./harness.js";
@@ -85,6 +88,8 @@ const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
   10,
 );
+const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
+const decodeHarnessRunResult = Schema.decodeUnknownSync(HarnessRunResultJson);
 
 export type CommandSummary = {
   readonly harnessProgressPath?: string | undefined;
@@ -95,17 +100,25 @@ export type CommandSummary = {
   readonly status: "completed" | "failed" | "running";
 };
 
+export type WorkerContinuationState =
+  | "start"
+  | "resume"
+  | "terminal"
+  | "completed";
+
 export type WorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly browserEvidenceCollector?: BrowserEvidenceCollector;
   readonly browserEvidenceRequirement?: BrowserEvidenceRequirement;
   readonly browserEvidenceTargetUrl?: string;
   readonly codexHarness?: CodexHarnessOptions;
   readonly harnessName?: HarnessName;
+  readonly workerHarness?: GaiaHarness;
   readonly processHarness?: ProcessHarnessConfig;
   readonly skillInstaller?: SkillInstallerOptions;
   readonly skillManifestSource?: SkillManifestSource;
   readonly runProfileSource?: RunProfileSource;
   readonly workspaceSource?: WorkspaceSource;
+  readonly workerContinuationState?: WorkerContinuationState;
 };
 
 export type BrowserEvidenceCollectionOptions = RunStorageOptions & {
@@ -217,19 +230,22 @@ function executeAcceptedRun(input: {
       runProfile,
       spec,
     } = input;
-    const workspace = yield* prepareWorkspace(
-      paths,
-      options.workspaceSource ?? emptyWorkspaceSource(),
-    );
-    yield* appendEvent(runId, paths, {
-      payload: {
-        copiedFiles: workspace.copiedFiles,
-        workspaceManifestPath: workspace.manifestPath,
-        workspacePath: workspace.workspacePath,
-        workspaceSource: workspace.source,
-      },
-      type: "WORKSPACE_PREPARED",
-    });
+    const workerContinuationState = options.workerContinuationState ?? "start";
+    if (workerContinuationState === "start") {
+      const workspace = yield* prepareWorkspace(
+        paths,
+        options.workspaceSource ?? emptyWorkspaceSource(),
+      );
+      yield* appendEvent(runId, paths, {
+        payload: {
+          copiedFiles: workspace.copiedFiles,
+          workspaceManifestPath: workspace.manifestPath,
+          workspacePath: workspace.workspacePath,
+          workspaceSource: workspace.source,
+        },
+        type: "WORKSPACE_PREPARED",
+      });
+    }
     const skillManifest = yield* writeSkillManifest({
       paths,
       ...(options.skillManifestSource === undefined
@@ -264,7 +280,11 @@ function executeAcceptedRun(input: {
         recordRunFailure(runId, paths, "preparingWorkspace", error),
       ),
     );
-    const harnessName = options.harnessName ?? defaultHarnessName;
+    const harnessName =
+      options.workerHarness?.name ??
+      (workerContinuationState === "completed"
+        ? codexAppServerHarnessName
+        : options.harnessName ?? defaultHarnessName);
     const workerPlan = yield* writeWorkerPlan({
       harnessName,
       paths,
@@ -275,21 +295,23 @@ function executeAcceptedRun(input: {
         recordRunFailure(runId, paths, "reviewing", error),
       ),
     );
-    yield* runReviewPhase(runId, paths, spec, "plan", options);
-    yield* appendEvent(runId, paths, {
-      payload: {
-        harnessName,
-        ...(harnessName === codexHarnessName
-          ? {
-              harnessProgressPath: runRelative(
-                paths,
-                paths.codexHarnessProgress,
-              ),
-            }
-          : {}),
-      },
-      type: "WORKER_STARTED",
-    });
+    if (workerContinuationState === "start") {
+      yield* runReviewPhase(runId, paths, spec, "plan", options);
+      yield* appendEvent(runId, paths, {
+        payload: {
+          harnessName,
+          ...(harnessName === codexHarnessName
+            ? {
+                harnessProgressPath: runRelative(
+                  paths,
+                  paths.codexHarnessProgress,
+                ),
+              }
+            : {}),
+        },
+        type: "WORKER_STARTED",
+      });
+    }
     const harnessOptions = {
       ...(options.codexHarness === undefined
         ? {}
@@ -298,49 +320,55 @@ function executeAcceptedRun(input: {
         ? {}
         : { processHarness: options.processHarness }),
     };
-    const harnessResult = yield* runHarness(
-      HarnessRunRequest.make({
-        codexHarnessProgressPath: paths.codexHarnessProgress,
-        harnessName,
-        resolvedSkillPaths: [...resolvedSkillPaths(skillBundle)],
-        runId,
-        skillBundlePath: paths.skillBundle,
-        specBody: spec.body,
-        specTitle: spec.title,
-        workerLogPath: paths.workerLog,
-        workerResultPath: paths.workerResult,
-        workspaceOutputPath: paths.workspaceOutput,
-        workspacePath: paths.workspace,
-      }),
-      harnessOptions,
-    ).pipe(
-      Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "runningWorker", error),
-      ),
-    );
-    const previewDeploymentTargetUrl = harnessResult.previewDeploymentUrl;
-    yield* appendEvent(runId, paths, {
-      payload: {
-        ...(harnessResult.browserTargetUrl === undefined
-          ? {}
-          : { browserTargetUrl: harnessResult.browserTargetUrl }),
-        changedWorkspacePaths: harnessResult.changedWorkspacePaths,
-        harnessName: harnessResult.harnessName,
-        outputArtifacts: harnessResult.outputArtifacts,
-        ...(previewDeploymentTargetUrl === undefined
-          ? {}
-          : { previewDeploymentUrl: previewDeploymentTargetUrl }),
-        ...(harnessResult.workspaceDiff === undefined
-          ? {}
-          : {
-              workspaceDiff: encodeWorkspaceDiffSummaryJson(
-                harnessResult.workspaceDiff,
-              ),
-            }),
-        workerResultPath: harnessResult.resultPath,
-      },
-      type: "WORKER_COMPLETED",
+    const harnessRequest = HarnessRunRequest.make({
+      codexHarnessProgressPath: paths.codexHarnessProgress,
+      harnessName,
+      resolvedSkillPaths: [...resolvedSkillPaths(skillBundle)],
+      runId,
+      skillBundlePath: paths.skillBundle,
+      specBody: spec.body,
+      specTitle: spec.title,
+      workerLogPath: paths.workerLog,
+      workerResultPath: paths.workerResult,
+      workspaceOutputPath: paths.workspaceOutput,
+      workspacePath: paths.workspace,
     });
+    const harnessResult = yield* (
+      workerContinuationState === "completed"
+        ? readPersistedWorkerResult(runId, paths)
+        : options.workerHarness === undefined
+          ? runHarness(harnessRequest, harnessOptions)
+          : options.workerHarness.run(harnessRequest)
+      ).pipe(
+        Effect.catchTag("GaiaRuntimeError", (error) =>
+          recordRunFailure(runId, paths, "runningWorker", error),
+        ),
+      );
+    const previewDeploymentTargetUrl = harnessResult.previewDeploymentUrl;
+    if (workerContinuationState !== "completed") {
+      yield* appendEvent(runId, paths, {
+        payload: {
+          ...(harnessResult.browserTargetUrl === undefined
+            ? {}
+            : { browserTargetUrl: harnessResult.browserTargetUrl }),
+          changedWorkspacePaths: harnessResult.changedWorkspacePaths,
+          harnessName: harnessResult.harnessName,
+          outputArtifacts: harnessResult.outputArtifacts,
+          ...(previewDeploymentTargetUrl === undefined
+            ? {}
+            : { previewDeploymentUrl: previewDeploymentTargetUrl }),
+          ...(harnessResult.workspaceDiff === undefined
+            ? {}
+            : {
+                workspaceDiff: encodeWorkspaceDiffSummaryJson(
+                  harnessResult.workspaceDiff,
+                ),
+              }),
+          workerResultPath: harnessResult.resultPath,
+        },
+        type: "WORKER_COMPLETED",
+      });
+    }
     if (previewDeploymentTargetUrl !== undefined) {
       yield* recordPreviewDeployment(
         runId,
@@ -353,7 +381,10 @@ function executeAcceptedRun(input: {
       );
     }
     yield* appendEvent(runId, paths, { type: "VERIFICATION_STARTED" });
-    yield* verifyHarnessOutput(runId, paths).pipe(
+    yield* verifyHarnessOutput(runId, paths, {
+      requireLegacyWorkspaceMarker:
+        harnessName !== codexAppServerHarnessName,
+    }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
         recordRunFailure(runId, paths, "verifying", error),
       ),
@@ -460,6 +491,45 @@ function executeAcceptedRun(input: {
       state: snapshot.state,
       status: "completed",
     } satisfies CommandSummary;
+  });
+}
+
+function readPersistedWorkerResult(runId: RunId, paths: RunPaths) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const contents = yield* fs.readFileString(paths.workerResult).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "WorkerResultUnreadable",
+          message: "Persisted worker result is unavailable for downstream resume.",
+          recoverable: false,
+        }),
+      ),
+    );
+    const result = yield* Effect.try({
+      try: () => decodeHarnessRunResult(JSON.parse(contents)),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "WorkerResultUnreadable",
+          message: "Persisted worker result is unavailable for downstream resume.",
+          recoverable: false,
+        }),
+    });
+    if (
+      result.runId !== runId ||
+      result.harnessName !== codexAppServerHarnessName
+    ) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "WorkerResultMismatch",
+          message: "Persisted worker result does not match the accepted run.",
+          recoverable: false,
+        }),
+      );
+    }
+    return result;
   });
 }
 

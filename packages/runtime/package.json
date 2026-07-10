@@ -22,6 +22,10 @@
     "./factory-run-read-api": {
       "types": "./src/factory-run-read-api.ts",
       "import": "./src/factory-run-read-api.ts"
+    },
+    "./test-support": {
+      "types": "./src/test-support.ts",
+      "import": "./src/test-support.ts"
     }
   },
   "scripts": {

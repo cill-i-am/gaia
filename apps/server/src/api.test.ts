@@ -1,7 +1,8 @@
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
-import { parseRunId } from "@gaia/core";
+import { codexAppServerExecutionSelection, parseRunId } from "@gaia/core";
 import {
+  makeHarnessProviderRegistry,
   ReviewResult,
   ReviewerNameSchema,
   type GaiaReviewer,
@@ -13,6 +14,10 @@ import {
   continueServerRun,
 } from "@gaia/runtime/server-workflows";
 import { makeRunPaths, makeRunStorePaths } from "@gaia/runtime/paths";
+import {
+  makeTestHarnessProviderRegistry,
+  testHarnessProvider,
+} from "@gaia/runtime/test-support";
 import { Deferred, Effect, FileSystem, Layer, Schema } from "effect";
 import {
   HttpClient,
@@ -47,6 +52,7 @@ describe("local run api http boundary", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
         const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
           rootDirectory: cwd,
         });
         yield* fs.makeDirectory(`${cwd}/.gaia/runs/run-not-valid`);
@@ -79,6 +85,7 @@ describe("local run api http boundary", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
         const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
           rootDirectory: cwd,
         });
 
@@ -99,6 +106,12 @@ describe("local run api http boundary", () => {
         assert.strictEqual(eventsResponse.status, 200);
         assert.strictEqual(getString(detailData, "runId"), accepted.runId);
         assert.strictEqual(getString(eventsData, "runId"), accepted.runId);
+        assert.strictEqual(
+          getString(getObject(detailData, "execution"), "harnessProfileId"),
+          "codexAppServer",
+        );
+        assert.notInclude(JSON.stringify(detailData), "native-thread");
+        assert.notInclude(JSON.stringify(detailData), "/usr/local/bin");
         assert.strictEqual(getNumber(getObject(detailData, "counts"), "agents"), 5);
         assert.strictEqual(
           eventItems.length,
@@ -112,9 +125,13 @@ describe("local run api http boundary", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
         const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
           rootDirectory: cwd,
         });
-        yield* continueServerRun(accepted.runId, { rootDirectory: cwd });
+        yield* continueServerRun(accepted.runId, {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
 
         const catalogResponse = yield* HttpClient.get(
           `/runs/${accepted.runId}/artifacts`,
@@ -154,7 +171,10 @@ describe("local run api http boundary", () => {
           rootDirectory: cwd,
         });
 
-        yield* continueServerRun(accepted.runId, { rootDirectory: cwd });
+        yield* continueServerRun(accepted.runId, {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
         const response = yield* HttpClient.get(
           `/runs/${accepted.runId}/events/stream`,
         ).pipe(Effect.provide(testServerLayer(cwd)));
@@ -213,6 +233,7 @@ describe("local run api http boundary", () => {
           assert.deepEqual(getArray(getObject(initialBody, "data"), "runs"), []);
 
           const summary = yield* acceptFactoryRun(factoryCreateInput(), {
+            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
             rootDirectory: cwd,
           });
 
@@ -241,9 +262,13 @@ describe("local run api http boundary", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
         const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
           rootDirectory: cwd,
         });
-        yield* continueServerRun(accepted.runId, { rootDirectory: cwd });
+        yield* continueServerRun(accepted.runId, {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
         const layer = testServerLayer(cwd);
 
         const graphResponse = yield* HttpClient.get(
@@ -283,7 +308,17 @@ describe("local run api http boundary", () => {
           getArray(agentActivity, "activities").map((item) =>
             getString(asJsonObject(item), "kind"),
           ),
-          ["WORKER_STARTED", "WORKER_COMPLETED"],
+          [
+            "WORKER_STARTED",
+            "HARNESS_SESSION_EVENT_RECORDED",
+            "HARNESS_SESSION_EVENT_RECORDED",
+            "HARNESS_SESSION_EVENT_RECORDED",
+            "WORKER_COMPLETED",
+          ],
+        );
+        assert.strictEqual(
+          getString(getObject(graph, "execution"), "harnessProfileId"),
+          "codexAppServer",
         );
         assert.strictEqual(getString(artifact, "artifactId"), "worker-plan");
         assert.include(getString(artifact, "body"), accepted.runId);
@@ -296,6 +331,7 @@ describe("local run api http boundary", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
         const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
           rootDirectory: cwd,
         });
         const paths = yield* makeRunPaths(accepted.runId, { rootDirectory: cwd });
@@ -402,6 +438,36 @@ describe("local run api http boundary", () => {
       }),
     );
 
+    it.effect("rejects unavailable selected providers before acceptance without fallback", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-reject-" });
+        const registry = makeHarnessProviderRegistry([
+          {
+            profileId: codexAppServerExecutionSelection.harnessProfileId,
+            provider: {
+              ...testHarnessProvider,
+              detect: Effect.succeed({
+                state: "authenticationRequired",
+                version: "test-1",
+              }),
+            },
+          },
+        ]);
+
+        const response = yield* postCreateRun(
+          testServerLayer(cwd, { harnessProviderRegistry: registry }),
+          "This run must not fall back.\n",
+        );
+        const body = yield* responseJsonObject(response);
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+
+        assert.strictEqual(response.status, 422);
+        assertApiError(body, "HarnessAuthenticationRequired", 422);
+        assert.isFalse(yield* fs.exists(store.runsRoot));
+      }),
+    );
+
     it.effect("rejects path-bearing and unknown create request shapes", () =>
       Effect.gen(function* () {
         const layer = testServerLayer(".");
@@ -471,6 +537,7 @@ describe("local run api http boundary", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
         const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
           rootDirectory: cwd,
         });
         const artifactLayer = testServerLayer(cwd);
@@ -533,7 +600,10 @@ function testServerLayer(
   rootDirectory: string,
   workflowOptions: ServerWorkflowOptions = {},
 ) {
-  return makeLocalGaiaServerLayer(testIdentity(rootDirectory), workflowOptions).pipe(
+  return makeLocalGaiaServerLayer(testIdentity(rootDirectory), {
+    harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+    ...workflowOptions,
+  }).pipe(
     Layer.provideMerge(NodeHttpServer.layerTest),
   );
 }
@@ -615,6 +685,7 @@ function postCreateRun(
 
 function createRunRequest(specMarkdown: string) {
   return createRunRequestFromPayload({
+    execution: codexAppServerExecutionSelection,
     workflow: "issueDelivery",
     workItem: {
       description: specMarkdown,
@@ -633,6 +704,7 @@ function createRunRequestFromPayload(payload: unknown) {
 
 function factoryCreateInput() {
   return {
+    execution: codexAppServerExecutionSelection,
     workflow: "issueDelivery",
     workItem: {
       description: "Deliver the server endpoint slice.",

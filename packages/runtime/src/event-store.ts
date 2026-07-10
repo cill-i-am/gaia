@@ -3,7 +3,6 @@ import {
   makeRunEvent,
   parseHarnessEvent,
   parseRunEvent,
-  parseRunSnapshot,
   projectHarnessEvents,
   replayRunEvents,
   snapshotFromReplay,
@@ -75,7 +74,7 @@ export function appendEvent(
     );
 
     return { event, snapshot };
-  });
+  }).pipe(Effect.uninterruptible);
 }
 
 /** Append one finite, bounded provider-neutral harness event to events.jsonl. */
@@ -103,7 +102,7 @@ export function appendHarnessSessionEvent(
     );
 
     return { event, snapshot };
-  });
+  }).pipe(Effect.uninterruptible);
 }
 
 export function loadRun(
@@ -111,23 +110,8 @@ export function loadRun(
 ): Effect.Effect<LoadedRunState, unknown, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const events = yield* readEvents(paths);
-    const latestSnapshot = yield* readLatestSnapshot(paths);
-
-    if (events.length > 0 && latestSnapshot !== undefined) {
-      const replayed = snapshotFromReplay(events);
-      if (
-        replayed.eventSequence !== latestSnapshot.eventSequence ||
-        replayed.state !== latestSnapshot.state
-      ) {
-        return yield* Effect.fail(
-          makeRuntimeError({
-            code: "SnapshotReplayMismatch",
-            message: "Latest snapshot does not match replayed event log.",
-            recoverable: false,
-          }),
-        );
-      }
-    }
+    const latestSnapshot =
+      events.length === 0 ? undefined : snapshotFromReplay(events);
 
     return { events, latestSnapshot };
   });
@@ -182,25 +166,6 @@ function validateHarnessEventHistories(events: ReadonlyArray<RunEvent>): void {
   for (const [sessionId, sessionEvents] of eventsBySession) {
     projectHarnessEvents(sessionEvents, sessionId);
   }
-}
-
-function readLatestSnapshot(paths: RunPaths) {
-  return Effect.gen(function* () {
-    const text = yield* readOptionalFile(paths.snapshots);
-    if (text === undefined || text.trim().length === 0) {
-      return undefined;
-    }
-
-    const lines = text.trimEnd().split(/\r?\n/u);
-    const latestLine = lines.at(-1);
-    if (latestLine === undefined) {
-      return undefined;
-    }
-
-    return parseRunSnapshot(
-      parseJsonLine(latestLine, paths.snapshots, lines.length),
-    );
-  });
 }
 
 function appendJsonLine(path: string, value: unknown) {
