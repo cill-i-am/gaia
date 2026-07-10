@@ -248,6 +248,13 @@ export function createCodexHarnessProvider(
                 }),
             ),
           );
+        if (recovered.thread.id !== correlatedThreadId) {
+          return yield* new HarnessResumeError({
+            message:
+              "Codex read a thread that does not match stored session correlation.",
+            providerId: CodexHarnessProviderDescriptor.providerId,
+          });
+        }
         return yield* makeCodexSession({
           nativeThreadId: thread.thread.id,
           options,
@@ -345,7 +352,7 @@ function makeCodexSession<E>(input: {
     const mapOrFail = (
       map: () => ReadonlyArray<HarnessEvent>,
     ): ReadonlyArray<HarnessEvent> => {
-      if (adapterFailed) return [];
+      if (adapterFailed || bufferFailed) return [];
       try {
         return map();
       } catch {
@@ -365,6 +372,13 @@ function makeCodexSession<E>(input: {
         return [];
       }
     };
+
+    emit(
+      mapOrFail(() => mapper.mapNotification({
+        method: "thread/started",
+        params: { thread: { id: input.nativeThreadId } },
+      })),
+    );
 
     const removeNotification = input.options.client.onNotification(
       (notification) => {
@@ -438,13 +452,11 @@ function makeCodexSession<E>(input: {
       }),
     );
 
-    emit(
-      mapOrFail(() => mapper.mapNotification({
-        method: "thread/started",
-        params: { thread: { id: input.nativeThreadId } },
-      })),
-    );
-    if (input.recoveredThread !== undefined) {
+    if (
+      input.recoveredThread !== undefined &&
+      !adapterFailed &&
+      !bufferFailed
+    ) {
       emit([
         parseHarnessEvent({
           kind: "sessionRecovered",
@@ -770,7 +782,7 @@ function detectionFromCodexError(error: CodexAppServerError): HarnessDetection {
 }
 
 function boundedVersion(userAgent: string): string {
-  const match = /\bCodex\/([^\s]+)/u.exec(userAgent);
+  const match = /\b(?:Codex|gaia)\/([^\s]+)/iu.exec(userAgent);
   return (match?.[1] ?? "unknown").slice(0, 200);
 }
 

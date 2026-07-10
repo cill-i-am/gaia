@@ -6,6 +6,7 @@ import {
   makeHarnessRunEvent,
   missingHarnessCapabilities,
   parseHarnessActionId,
+  parseHarnessEvent,
   parseHarnessInteractionId,
   parseHarnessItemId,
   parseHarnessProviderId,
@@ -408,25 +409,22 @@ describe("provider-neutral harness contracts", () => {
     assert.throws(() => replayHarnessSession([startedAtSequenceTwo], sessionId));
   });
 
-  it("rejects failed state changes without a typed terminal failure", () => {
+  it("rejects failed starts and state changes without a typed terminal failure", () => {
     assert.throws(() =>
-      projectHarnessEvents(
-        [
-          {
-            capabilities,
-            kind: "sessionStarted",
-            provider,
-            sessionId,
-            state: "running",
-          },
-          {
-            kind: "sessionStateChanged",
-            sessionId,
-            state: "failed",
-          },
-        ],
+      parseHarnessEvent({
+        capabilities,
+        kind: "sessionStarted",
+        provider,
         sessionId,
-      ),
+        state: "failed",
+      }),
+    );
+    assert.throws(() =>
+      parseHarnessEvent({
+        kind: "sessionStateChanged",
+        sessionId,
+        state: "failed",
+      }),
     );
   });
 

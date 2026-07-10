@@ -277,6 +277,68 @@ describe("Codex HarnessProvider adapter", () => {
     expect(second.reads).toEqual([]);
   });
 
+  it("rejects a read native thread that differs from stored correlation", async () => {
+    const sessionId = parseHarnessSessionId("session-codex-read-mismatch");
+    const correlationStore = makeInMemoryCodexHarnessCorrelationStore();
+    const first = recordingClient();
+    await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: first.client,
+            correlationStore,
+            workspaceRoot: "/workspace",
+          }),
+          request: {
+            input: { text: "start" },
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: ["resumableSessions"],
+        }),
+      ),
+    );
+
+    const second = recordingClient();
+    const mismatchedThreadId = parseCodexThreadId("foreign-read-thread");
+    const client: CodexAppServerClient = {
+      ...second.client,
+      readThread: (params) =>
+        second.client.readThread(params).pipe(
+          Effect.map((result) => ({
+            thread: { ...result.thread, id: mismatchedThreadId },
+          })),
+        ),
+    };
+    const error = await Effect.runPromise(
+      Effect.scoped(
+        resumeHarnessSession({
+          provider: createCodexHarnessProvider({
+            client,
+            correlationStore,
+            workspaceRoot: "/workspace",
+          }),
+          request: {
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: [],
+        }).pipe(Effect.flip),
+      ),
+    );
+
+    expect(error._tag).toBe("HarnessResumeError");
+    if (error._tag !== "HarnessResumeError") {
+      throw new Error(`Unexpected error: ${error._tag}`);
+    }
+    expect(error.message).toBe(
+      "Codex read a thread that does not match stored session correlation.",
+    );
+    expect(second.reads).toEqual([
+      { includeTurns: true, threadId: second.threadId },
+    ]);
+  });
+
   it("reports initialize incompatibility instead of claiming availability", async () => {
     const fake = recordingClient();
     const client: CodexAppServerClient = {
@@ -302,6 +364,32 @@ describe("Codex HarnessProvider adapter", () => {
       version: "0.136.0",
     });
     expect(fake.starts).toEqual([]);
+  });
+
+  it("reports the Gaia originator version from an incompatibility", async () => {
+    const fake = recordingClient();
+    const client: CodexAppServerClient = {
+      ...fake.client,
+      initialize: () =>
+        Effect.fail(
+          new CodexAppServerIncompatibilityError({
+            actualUserAgent: "gaia/0.136.0 test",
+            supportedVersion: "0.137.0",
+          }),
+        ),
+    };
+    const detection = await Effect.runPromise(
+      createCodexHarnessProvider({
+        client,
+        correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+        workspaceRoot: "/workspace",
+      }).detect,
+    );
+
+    expect(detection).toMatchObject({
+      state: "incompatible",
+      version: "0.136.0",
+    });
   });
 
   it("shares one initialize handshake across concurrent detection", async () => {
@@ -332,10 +420,10 @@ describe("Codex HarnessProvider adapter", () => {
     expect(fake.initializations).toHaveLength(1);
   });
 
-  it("records an authoritative failure before exhausting the live event buffer", async () => {
+  it("records an authoritative failure and ignores provider input after exhausting the live event buffer", async () => {
     const fake = recordingClient();
     const sessionId = parseHarnessSessionId("session-codex-buffer-limit");
-    const snapshot = await Effect.runPromise(
+    const snapshots = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const session = yield* startHarnessSession({
@@ -362,16 +450,33 @@ describe("Codex HarnessProvider adapter", () => {
               });
             }
           }
-          return yield* session.snapshot;
+          const failed = yield* session.snapshot;
+          for (const listener of fake.notifications) {
+            listener({
+              method: "item/completed",
+              params: {
+                item: {
+                  id: parseCodexItemId("post-terminal-item"),
+                  phase: "final_answer",
+                  text: "must be ignored",
+                  type: "agentMessage",
+                },
+                threadId: fake.threadId,
+                turnId: parseCodexTurnId("post-terminal-turn"),
+              },
+            });
+          }
+          return { failed, afterProviderInput: yield* session.snapshot };
         }),
       ),
     );
 
-    expect(snapshot.state).toBe("failed");
-    expect(snapshot.failure).toMatchObject({
+    expect(snapshots.failed.state).toBe("failed");
+    expect(snapshots.failed.failure).toMatchObject({
       code: "CodexEventBufferExceeded",
       kind: "providerFailure",
     });
+    expect(snapshots.afterProviderInput).toEqual(snapshots.failed);
   });
 
   it("retires older-turn interactions without disturbing the newer active turn", async () => {
@@ -483,6 +588,69 @@ describe("Codex HarnessProvider adapter", () => {
 
     expect(snapshot.state).toBe("failed");
     expect(snapshot.failure).toMatchObject({
+      code: "CodexAppServerTerminated",
+      kind: "providerFailure",
+    });
+  });
+
+  it("records sessionStarted before synchronous termination replay during subscription", async () => {
+    const sessionId = parseHarnessSessionId("session-codex-late-subscription");
+    const correlationStore = makeInMemoryCodexHarnessCorrelationStore();
+    const first = recordingClient();
+    await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: first.client,
+            correlationStore,
+            workspaceRoot: "/workspace",
+          }),
+          request: {
+            input: { text: "start" },
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: ["resumableSessions"],
+        }),
+      ),
+    );
+
+    const second = recordingClient();
+    const client: CodexAppServerClient = {
+      ...second.client,
+      onTermination: (listener) => {
+        listener(
+          new CodexAppServerTransportError({ message: "already terminated" }),
+        );
+        return () => undefined;
+      },
+    };
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* resumeHarnessSession({
+            provider: createCodexHarnessProvider({
+              client,
+              correlationStore,
+              workspaceRoot: "/workspace",
+            }),
+            request: {
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          return yield* session.snapshot.pipe(Effect.exit);
+        }),
+      ),
+    );
+
+    expect(result._tag).toBe("Success");
+    if (result._tag !== "Success") {
+      throw new Error("Expected a projectable terminal session snapshot.");
+    }
+    expect(result.value.state).toBe("failed");
+    expect(result.value.failure).toMatchObject({
       code: "CodexAppServerTerminated",
       kind: "providerFailure",
     });

@@ -228,6 +228,15 @@ export const HarnessSessionStateSchema = Schema.Literals([
 ] as const);
 /** Current provider-neutral session lifecycle state. */
 export type HarnessSessionState = typeof HarnessSessionStateSchema.Type;
+const HarnessNonFailureSessionStateSchema = Schema.Literals([
+  "connecting",
+  "idle",
+  "running",
+  "waitingForOperator",
+  "interrupted",
+  "completed",
+  "unavailable",
+] as const);
 
 /** Finite lifecycle states exposed by provider-neutral turns. */
 export const HarnessTurnStatusSchema = Schema.Literals([
@@ -546,12 +555,12 @@ export const HarnessEventSchema = Schema.Union([
     capabilities: HarnessCapabilities,
     kind: Schema.Literal("sessionStarted"),
     provider: HarnessProviderDescriptor,
-    state: HarnessSessionStateSchema,
+    state: HarnessNonFailureSessionStateSchema,
   }),
   Schema.Struct({
     ...SessionEventBase,
     kind: Schema.Literal("sessionStateChanged"),
-    state: HarnessSessionStateSchema,
+    state: HarnessNonFailureSessionStateSchema,
   }),
   Schema.Struct({
     ...SessionEventBase,
@@ -825,11 +834,6 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
       }
       return;
     case "sessionStateChanged":
-      if (event.state === "failed") {
-        throw new Error(
-          "A failed harness session must use a typed sessionFailed event.",
-        );
-      }
       projection.state = event.state;
       projection.terminal = isTerminalSessionState(event.state);
       if (projection.terminal) projection.pendingInteractions.clear();

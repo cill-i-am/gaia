@@ -1,15 +1,15 @@
 import {
-  HarnessSessionEventBudgetBytes,
-  harnessEventByteLength,
   makeHarnessRunEvent,
   makeRunEvent,
   parseHarnessEvent,
   parseRunEvent,
   parseRunSnapshot,
+  replayHarnessSession,
   replayRunEvents,
   snapshotFromReplay,
   type EventType,
   type HarnessEvent,
+  type HarnessSessionId,
   RunEvent,
   type RunId,
   RunSnapshot,
@@ -93,7 +93,7 @@ export function appendHarnessSessionEvent(
       sequence: existingEvents.length + 1,
       timestamp: new Date().toISOString(),
     });
-    validateHarnessEventBudgets([...existingEvents, event]);
+    validateHarnessEventHistories([...existingEvents, event]);
     const snapshot = snapshotFromReplay([...existingEvents, event]);
 
     yield* appendJsonLine(paths.events, Schema.encodeSync(RunEvent)(event));
@@ -161,28 +161,21 @@ export function readEvents(paths: RunPaths) {
       expectedSequence += 1;
     }
 
-    validateHarnessEventBudgets(events);
+    validateHarnessEventHistories(events);
     replayRunEvents(events);
     return events;
   });
 }
 
-function validateHarnessEventBudgets(events: ReadonlyArray<RunEvent>): void {
-  const bytesBySession = new Map<string, number>();
+function validateHarnessEventHistories(events: ReadonlyArray<RunEvent>): void {
+  const sessionIds = new Set<HarnessSessionId>();
   for (const event of events) {
     if (event.type !== "HARNESS_SESSION_EVENT_RECORDED") continue;
     const harnessEvent = parseHarnessEvent(event.payload.event);
-    const next =
-      (bytesBySession.get(harnessEvent.sessionId) ?? 0) +
-      harnessEventByteLength(harnessEvent);
-    if (next > HarnessSessionEventBudgetBytes) {
-      throw makeRuntimeError({
-        code: "HarnessSessionEventBudgetExceeded",
-        message: "Harness session exceeds its cumulative event budget.",
-        recoverable: false,
-      });
-    }
-    bytesBySession.set(harnessEvent.sessionId, next);
+    sessionIds.add(harnessEvent.sessionId);
+  }
+  for (const sessionId of sessionIds) {
+    replayHarnessSession(events, sessionId);
   }
 }
 

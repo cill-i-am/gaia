@@ -294,7 +294,7 @@ export const CodexNotificationSchema = Schema.Union([
     }),
     turnId: TurnId,
   })),
-  notification("warning", Schema.Struct({ message: Schema.String, threadId: Schema.NullOr(ThreadId) })), notification("error", Schema.Struct({ error: TurnError, threadId: ThreadId, turnId: TurnId, willRetry: Schema.Boolean })),
+  notification("warning", Schema.Struct({ message: Schema.String, threadId: Schema.optionalKey(Schema.NullOr(ThreadId)) })), notification("error", Schema.Struct({ error: TurnError, threadId: ThreadId, turnId: TurnId, willRetry: Schema.Boolean })),
   notification("serverRequest/resolved", Schema.Struct({ requestId: CodexRequestIdSchema, threadId: ThreadId })),
 ]);
 export type CodexNotification = typeof CodexNotificationSchema.Type;

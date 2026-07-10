@@ -697,6 +697,12 @@ describe("Codex App Server provider-neutral mapper", () => {
     expect(
       subject.mapNotification({
         method: "warning",
+        params: { message: "global-omitted" },
+      }),
+    ).toEqual([]);
+    expect(
+      subject.mapNotification({
+        method: "warning",
         params: { message: "owned", threadId: "warning-owner" },
       }),
     ).toEqual([
@@ -821,6 +827,82 @@ describe("Codex App Server provider-neutral mapper", () => {
     );
   });
 
+  it("keeps every derived identifier within schema bounds for a maximum-length session ID", () => {
+    const maximumSessionId = parseHarnessSessionId("s".repeat(200));
+    const subject = createCodexSessionMapper({
+      capabilities,
+      provider,
+      sessionId: maximumSessionId,
+      workspaceRoot: "/workspace/project",
+    });
+    subject.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "maximum-id-thread" } },
+    });
+    const turnEvents = subject.mapNotification({
+      method: "turn/started",
+      params: {
+        threadId: "maximum-id-thread",
+        turn: { id: "maximum-id-turn", status: "inProgress" },
+      },
+    });
+    const itemEvents = subject.mapNotification({
+      method: "item/completed",
+      params: {
+        item: {
+          id: "maximum-id-item",
+          phase: "final_answer",
+          text: "done",
+          type: "agentMessage",
+        },
+        threadId: "maximum-id-thread",
+        turnId: "maximum-id-turn",
+      },
+    });
+    const interactionEvents = subject.mapServerRequest({
+      id: "maximum-id-request",
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "maximum-id-question-item",
+        questions: [
+          {
+            header: "Choice",
+            id: "native-question",
+            question: "Continue?",
+          },
+        ],
+        threadId: "maximum-id-thread",
+        turnId: "maximum-id-turn",
+      },
+    });
+
+    const turnStarted = turnEvents.find((event) => event.kind === "turnStarted");
+    const itemUpserted = itemEvents.find((event) => event.kind === "itemUpserted");
+    const interactionRequested = interactionEvents.find(
+      (event) => event.kind === "interactionRequested",
+    );
+    if (
+      turnStarted?.kind !== "turnStarted" ||
+      itemUpserted?.kind !== "itemUpserted" ||
+      interactionRequested?.kind !== "interactionRequested" ||
+      interactionRequested.interaction.kind !== "userInput"
+    ) {
+      throw new Error("Expected derived turn, item, and interaction identifiers.");
+    }
+    const question = interactionRequested.interaction.questions[0];
+    if (question === undefined) {
+      throw new Error("Expected a derived question identifier.");
+    }
+    for (const derivedId of [
+      turnStarted.turnId,
+      itemUpserted.item.itemId,
+      interactionRequested.interaction.interactionId,
+      question.questionId,
+    ]) {
+      expect(derivedId.length).toBeLessThanOrEqual(200);
+    }
+  });
+
   it("fails closed on unrepresentable approval scope and exposes audited permission scope", () => {
     const subject = mapper();
     subject.mapNotification({
@@ -938,7 +1020,7 @@ describe("Codex App Server provider-neutral mapper", () => {
         item: {
           id: "redaction-item",
           phase: "final_answer",
-          text: 'path=/workspace/project/private-key-material {"client_secret":"value-one","openai_api_key":"value-two"}',
+          text: 'path=/workspace/project/private-key-material {"client_secret":"value-one","openai_api_key":"value-two","clientSecret":"camel-one","refreshToken":"camel-two","apiKey":"camel-three"} read \\\\server\\share\\operator\\secret.txt and \\\\?\\C:\\operator\\secret.txt',
           type: "agentMessage",
         },
         threadId: "redaction-thread",
@@ -950,6 +1032,11 @@ describe("Codex App Server provider-neutral mapper", () => {
     expect(serialized).not.toContain("private-key-material");
     expect(serialized).not.toContain("value-one");
     expect(serialized).not.toContain("value-two");
+    expect(serialized).not.toContain("camel-one");
+    expect(serialized).not.toContain("camel-two");
+    expect(serialized).not.toContain("camel-three");
+    expect(serialized).not.toContain("server\\\\share");
+    expect(serialized).not.toContain("C:\\\\operator");
     expect(serialized).toContain("[environment]");
     expect(serialized).toContain("[credential]");
   });

@@ -229,7 +229,7 @@ class MapperState {
       case "thread/tokenUsage/updated":
         return this.#mapUsage(notification);
       case "warning":
-        return notification.params.threadId !== null &&
+        return typeof notification.params.threadId === "string" &&
           this.#ownsThread(notification.params.threadId)
           ? this.#mapWarning(notification.params.message)
           : [];
@@ -1057,7 +1057,7 @@ class MapperState {
     const existing = this.#turnIds.get(nativeTurnId);
     if (existing !== undefined) return existing;
     const created = parseHarnessTurnId(
-      `${this.#options.sessionId}-turn-${this.#opaqueId("turn", nativeTurnId)}`,
+      `turn-${this.#opaqueId("turn", nativeTurnId)}`,
     );
     this.#turnIds.set(nativeTurnId, created);
     return created;
@@ -1087,7 +1087,7 @@ class MapperState {
 
   #stableItemId(nativeKey: string): HarnessItemId {
     return parseHarnessItemId(
-      `${this.#options.sessionId}-item-${this.#opaqueId("item", nativeKey)}`,
+      `item-${this.#opaqueId("item", nativeKey)}`,
     );
   }
 
@@ -1101,7 +1101,7 @@ class MapperState {
       "itemId" in request.params ? request.params.itemId : "",
     ].join("\0");
     return parseHarnessInteractionId(
-      `${this.#options.sessionId}-interaction-${this.#opaqueId("interaction", nativeKey)}`,
+      `interaction-${this.#opaqueId("interaction", nativeKey)}`,
     );
   }
 
@@ -1264,11 +1264,15 @@ function sanitizeText(
   output = output.split(options.workspaceRoot).join(".");
   output = output
     .replace(
+      /(?<![A-Za-z0-9_])(["']?)(?:[A-Za-z][A-Za-z0-9]{0,31})?(?:Secret|Token|Password|[Aa]piKey|Authorization)\1\s*:\s*(?:"(?:Basic\s+|Bearer\s+)?[^"]*"|'(?:Basic\s+|Bearer\s+)?[^']*'|(?:Basic\s+|Bearer\s+)?[^,\s}]+)/gu,
+      "[credential]",
+    )
+    .replace(
       /(["']?)[A-Z_][A-Z0-9_]{1,63}\1\s*:\s*(?:"[^"]*"|'[^']*'|[^,\s}]+)/gu,
       "[environment]",
     )
     .replace(
-      /(["']?)(?:(?:[A-Za-z0-9]+[_-])*(?:authorization|proxy[_-]authorization|x[_-]api[_-]key|api[_-]key|password|secret|token))\1\s*:\s*(?:"(?:Basic\s+|Bearer\s+)?[^"]*"|'(?:Basic\s+|Bearer\s+)?[^']*'|(?:Basic\s+|Bearer\s+)?[^,\s}]+)/giu,
+      /(?<![A-Za-z0-9_-])(["']?)(?:(?:[A-Za-z0-9]{1,32}[_-]){0,4}(?:authorization|proxy[_-]authorization|x[_-]api[_-]key|api[_-]key|password|secret|token))\1\s*:\s*(?:"(?:Basic\s+|Bearer\s+)?[^"]*"|'(?:Basic\s+|Bearer\s+)?[^']*'|(?:Basic\s+|Bearer\s+)?[^,\s}]+)/giu,
       "[credential]",
     )
     .replace(
@@ -1280,7 +1284,7 @@ function sanitizeText(
       "[environment]",
     )
     .replace(
-      /\b(?:(?:[A-Za-z0-9]+[_-])*(?:authorization|proxy[_-]authorization|x[_-]api[_-]key|api[_-]key|password|secret|token))\s*:\s*(?:Basic\s+|Bearer\s+)?\S+/giu,
+      /\b(?:(?:[A-Za-z0-9]{1,32}[_-]){0,4}(?:authorization|proxy[_-]authorization|x[_-]api[_-]key|api[_-]key|password|secret|token))\s*:\s*(?:Basic\s+|Bearer\s+)?\S+/giu,
       "[credential]",
     )
     .replace(/\bBearer\s+\S+/giu, "Bearer [REDACTED]")
@@ -1292,6 +1296,7 @@ function sanitizeText(
       /\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]+(?::[^\s/@]*)?@/giu,
       "[REDACTED-AUTHORITY]@",
     )
+    .replace(/\\\\[^\s`"'<>)}\],;]+/gu, "[absolute-path]")
     .replace(
       /(^|[^A-Za-z0-9_./])\/(?!\/)[^\s`"'<>)}\],;]+/gu,
       "$1[absolute-path]",

@@ -190,14 +190,28 @@ describe("Codex App Server connection", () => {
             process: fake.process,
           });
           const notifications: Array<unknown> = [];
+          const terminations: Array<string> = [];
           connection.onNotification((notification) =>
             notifications.push(notification),
           );
+          connection.onTermination((error) => terminations.push(error._tag));
           for (const listener of fake.lines) {
             listener(
               JSON.stringify({
                 method: "warning",
                 params: { message: "owned", threadId: "thread-1" },
+              }),
+            );
+            listener(
+              JSON.stringify({
+                method: "warning",
+                params: { message: "global-omitted" },
+              }),
+            );
+            listener(
+              JSON.stringify({
+                method: "warning",
+                params: { message: "global-null", threadId: null },
               }),
             );
             listener(
@@ -221,15 +235,24 @@ describe("Codex App Server connection", () => {
             );
           }
 
-          expect(notifications).toHaveLength(2);
+          expect(terminations).toEqual([]);
+          expect(notifications).toHaveLength(4);
           expect(notifications[0]).toMatchObject({
             method: "warning",
             params: { threadId: "thread-1" },
           });
           expect(notifications[1]).toMatchObject({
+            method: "warning",
+            params: { message: "global-omitted" },
+          });
+          expect(notifications[2]).toMatchObject({
+            method: "warning",
+            params: { message: "global-null", threadId: null },
+          });
+          expect(notifications[3]).toMatchObject({
             method: "item/completed",
           });
-          const large = notifications[1] as {
+          const large = notifications[3] as {
             readonly params: {
               readonly item: { readonly changes: ReadonlyArray<unknown> };
             };
