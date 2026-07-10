@@ -748,6 +748,73 @@ describe("DashboardShell Run Console", () => {
     expect(screen.queryByRole("button", { name: "Approve for session command approval" })).toBeNull();
   });
 
+  it("keeps the cached agent session snapshot after closing and reselecting Inspector", async () => {
+    installMockEventSource();
+    const runId = parseRunId("run-7070707071");
+    const workerId = agentId("agent-worker");
+    const view = renderDashboardWithQueries({
+      agentSessionsByRunId: {
+        [runId]: {
+          [workerId]: agentSessionSnapshot({
+            agentId: workerId,
+            pendingInteractions: [
+              {
+                allowedDecisions: ["approve", "decline"],
+                command: "pnpm check",
+                interactionId: parseHarnessInteractionId("interaction-command"),
+                itemId: parseHarnessItemId("item-command-approval"),
+                kind: "commandApproval",
+                requestedAt: "2026-07-10T21:11:00.000Z",
+                turnId: parseHarnessTurnId("turn-1"),
+                workspacePath: parseWorkspaceRelativePath("."),
+              },
+            ],
+            runId,
+            state: "waitingForOperator",
+          }),
+        },
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+
+    fireEvent.click(workerNode);
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+        "Command approval",
+      );
+    });
+
+    fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Close Agent Inspector" })));
+    await waitFor(() => {
+      expect(screen.queryByTestId("agent-inspector-panel")).toBeNull();
+    });
+
+    fireEvent.click(workerNode);
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+        "Command approval",
+      );
+    });
+    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
+      "Agent session is connecting.",
+    );
+  });
+
   it("animates FactoryGraph edges only when connected work is running", () => {
     expect(shouldAnimateFactoryEdge("running", "succeeded")).toBe(true);
     expect(shouldAnimateFactoryEdge("succeeded", "running")).toBe(true);

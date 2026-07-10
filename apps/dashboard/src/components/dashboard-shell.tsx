@@ -2316,16 +2316,16 @@ function AgentInspector({
   }
 
   React.useEffect(() => {
-    if (sessionQuery.data?.data !== undefined) {
-      setStreamSession(sessionQuery.data.data);
-    }
-  }, [sessionQuery.data?.data]);
-
-  React.useEffect(() => {
     setStreamSession(undefined);
     setStreamError(undefined);
     setStreamConnection("connecting");
   }, [inspector.kind, selectedAgentId, selectedRunId]);
+
+  React.useEffect(() => {
+    if (sessionQuery.data?.data !== undefined) {
+      setStreamSession(sessionQuery.data.data);
+    }
+  }, [sessionQuery.data?.data]);
 
   React.useEffect(() => {
     const controller = streamController.current;
