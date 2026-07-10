@@ -38,10 +38,42 @@ export const TurnSteerResultSchema = Schema.Struct({ turnId: TurnId });
 export const EmptyResultSchema = Empty;
 
 const BaseInteraction = { itemId: ItemId, threadId: ThreadId, turnId: TurnId } as const;
-const CommandRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/commandExecution/requestApproval"), params: Schema.Struct({ ...BaseInteraction, command: Schema.optionalKey(Schema.NullOr(Schema.String)), startedAtMs: Schema.Number }) });
-const FileRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/fileChange/requestApproval"), params: Schema.Struct({ ...BaseInteraction, reason: Schema.optionalKey(Schema.NullOr(Schema.String)), startedAtMs: Schema.Number }) });
-const PermissionRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/permissions/requestApproval"), params: Schema.Struct({ ...BaseInteraction, cwd: Schema.String, permissions: Schema.Unknown, startedAtMs: Schema.Number }) });
-const UserInputRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/tool/requestUserInput"), params: Schema.Struct({ ...BaseInteraction, questions: Schema.Array(Schema.Struct({ header: Schema.String, id: Schema.String, question: Schema.String })) }) });
+const CommandRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/commandExecution/requestApproval"), params: Schema.Struct({
+  ...BaseInteraction,
+  approvalId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  command: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  commandActions: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.Json))),
+  cwd: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  networkApprovalContext: Schema.optionalKey(Schema.NullOr(Schema.Json)),
+  proposedExecpolicyAmendment: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+  proposedNetworkPolicyAmendments: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.Json))),
+  reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  startedAtMs: Schema.Number,
+}) });
+const FileRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/fileChange/requestApproval"), params: Schema.Struct({
+  ...BaseInteraction,
+  grantRoot: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  startedAtMs: Schema.Number,
+}) });
+const PermissionRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/permissions/requestApproval"), params: Schema.Struct({
+  ...BaseInteraction,
+  cwd: Schema.String,
+  environmentId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  permissions: Schema.Unknown,
+  reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  startedAtMs: Schema.Number,
+}) });
+const UserInputOption = Schema.Struct({ description: Schema.String, label: Schema.String });
+const UserInputQuestion = Schema.Struct({
+  header: Schema.String,
+  id: Schema.String,
+  isOther: Schema.optionalKey(Schema.Boolean),
+  isSecret: Schema.optionalKey(Schema.Boolean),
+  options: Schema.optionalKey(Schema.NullOr(Schema.Array(UserInputOption))),
+  question: Schema.String,
+});
+const UserInputRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/tool/requestUserInput"), params: Schema.Struct({ ...BaseInteraction, questions: Schema.Array(UserInputQuestion) }) });
 const ElicitationRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("mcpServer/elicitation/request"), params: Schema.Struct({ serverName: Schema.String, threadId: ThreadId, turnId: Schema.optionalKey(Schema.NullOr(TurnId)) }) });
 export const CodexServerRequestSchema = Schema.Union([CommandRequest, FileRequest, PermissionRequest, UserInputRequest, ElicitationRequest]);
 export type CodexServerRequest = typeof CodexServerRequestSchema.Type;

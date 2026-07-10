@@ -126,24 +126,38 @@ describe("Codex App Server connection", () => {
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const connection = yield* makeCodexAppServerConnection({ process: fake.process });
       const client = makeCodexAppServerClient(connection);
+      let preserved = 0;
       client.onServerRequest((request) => {
-        if (request.method === "item/commandExecution/requestApproval") Effect.runFork(client.respondCommandApproval(request, { decision: "decline" }));
-        else if (request.method === "item/fileChange/requestApproval") Effect.runFork(client.respondFileApproval(request, { decision: "decline" }));
-        else if (request.method === "item/permissions/requestApproval") Effect.runFork(client.respondPermissionApproval(request, { permissions: {}, scope: "turn" }));
-        else if (request.method === "item/tool/requestUserInput") Effect.runFork(client.respondUserInput(request, { answers: { q1: { answers: ["no"] } } }));
-        else Effect.runFork(client.respondElicitation(request, { action: "decline" }));
+        if (request.method === "item/commandExecution/requestApproval") {
+          expect(request.params).toMatchObject({ approvalId: "approval-1", commandActions: [{ type: "read" }], cwd: "/tmp", networkApprovalContext: { host: "example.com" }, proposedExecpolicyAmendment: ["allow"], proposedNetworkPolicyAmendments: [{ host: "example.com" }], reason: "network" });
+          preserved += 1;
+          Effect.runFork(client.respondCommandApproval(request, { decision: "decline" }));
+        } else if (request.method === "item/fileChange/requestApproval") {
+          expect(request.params.grantRoot).toBe("/tmp/project"); preserved += 1;
+          Effect.runFork(client.respondFileApproval(request, { decision: "decline" }));
+        } else if (request.method === "item/permissions/requestApproval") {
+          expect(request.params).toMatchObject({ environmentId: "env-1", reason: "write" }); preserved += 1;
+          Effect.runFork(client.respondPermissionApproval(request, { permissions: {}, scope: "turn" }));
+        } else if (request.method === "item/tool/requestUserInput") {
+          expect(request.params.questions[0]).toMatchObject({ isOther: true, isSecret: false, options: [{ description: "Continue", label: "Yes" }] }); preserved += 1;
+          Effect.runFork(client.respondUserInput(request, { answers: { q1: { answers: ["no"] } } }));
+        } else {
+          expect(request.params).toEqual({ serverName: "test", threadId: "thr-1", turnId: null }); preserved += 1;
+          Effect.runFork(client.respondElicitation(request, { action: "decline" }));
+        }
       });
       const base = { itemId: "item-1", startedAtMs: 1, threadId: "thr-1", turnId: "turn-1" };
       const fixtures = [
-        { id: 1, method: "item/commandExecution/requestApproval", params: base },
-        { id: 2, method: "item/fileChange/requestApproval", params: base },
-        { id: 3, method: "item/permissions/requestApproval", params: { ...base, cwd: "/tmp", permissions: {} } },
-        { id: 4, method: "item/tool/requestUserInput", params: { itemId: "item-1", threadId: "thr-1", turnId: "turn-1", questions: [{ header: "Choice", id: "q1", question: "Continue?" }] } },
-        { id: 5, method: "mcpServer/elicitation/request", params: { serverName: "test", threadId: "thr-1" } },
+        { id: 1, method: "item/commandExecution/requestApproval", params: { ...base, approvalId: "approval-1", commandActions: [{ type: "read" }], cwd: "/tmp", networkApprovalContext: { host: "example.com" }, proposedExecpolicyAmendment: ["allow"], proposedNetworkPolicyAmendments: [{ host: "example.com" }], reason: "network" } },
+        { id: 2, method: "item/fileChange/requestApproval", params: { ...base, grantRoot: "/tmp/project", reason: null } },
+        { id: 3, method: "item/permissions/requestApproval", params: { ...base, cwd: "/tmp", environmentId: "env-1", permissions: {}, reason: "write" } },
+        { id: 4, method: "item/tool/requestUserInput", params: { itemId: "item-1", threadId: "thr-1", turnId: "turn-1", questions: [{ header: "Choice", id: "q1", isOther: true, isSecret: false, options: [{ description: "Continue", label: "Yes" }], question: "Continue?" }] } },
+        { id: 5, method: "mcpServer/elicitation/request", params: { serverName: "test", threadId: "thr-1", turnId: null } },
       ];
       for (const fixture of fixtures) for (const listener of fake.lines) listener(JSON.stringify(fixture));
       yield* Effect.yieldNow;
       expect(fake.writes.filter(({ result }) => result !== undefined)).toHaveLength(5);
+      expect(preserved).toBe(5);
     })));
   });
 
