@@ -10,6 +10,7 @@ import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { buildFactoryCanvasModel } from "@/factory-canvas-model";
+import { testFactoryExecution } from "@/test-factory-execution";
 
 describe("factory canvas model", () => {
   it("projects FactoryGraph topology into agent nodes only", () => {
@@ -127,6 +128,7 @@ describe("factory canvas model", () => {
           },
         ],
         edges: [],
+        execution: testFactoryExecution,
         linkedArtifacts: [],
         runId: runId("run-empty00000"),
         version: 1,
@@ -170,6 +172,7 @@ describe("factory canvas model", () => {
           workItemId: workItemId("work-root"),
         },
       ],
+      execution: testFactoryExecution,
       diagnostics: [],
       edges: [
         {
@@ -509,6 +512,7 @@ function factoryGraphFixture(
   input: Partial<typeof FactoryGraphDto.Type> = {},
 ): typeof FactoryGraphDto.Type {
   return FactoryGraphDto.make({
+    execution: testFactoryExecution,
     agents: [
       {
         artifactCount: 0,

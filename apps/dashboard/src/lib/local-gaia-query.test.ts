@@ -15,6 +15,7 @@ import {
   listFactoryArtifactsFromDashboardGaiaClient,
   listRunsFromDashboardGaiaClient,
 } from "@/lib/local-gaia-client";
+import { testFactoryExecution } from "@/test-factory-execution";
 import {
   localGaiaCreateRunMutationOptions,
   localGaiaFactoryAgentActivityQueryOptions,
@@ -466,6 +467,7 @@ describe("local Gaia query options", () => {
     expect(requests).toEqual(["POST http://127.0.0.1:4321/runs"]);
     expect(bodies).toEqual([
       {
+        execution: { harnessProfileId: "codexAppServer" },
         workflow: "issueDelivery",
         workItem: {
           description: createRunInput.description,
@@ -530,6 +532,7 @@ const factoryGraphEnvelope = {
     ],
     diagnostics: [],
     edges: [],
+    execution: testFactoryExecution,
     linkedArtifacts: [
       {
         artifactId: "artifact-plan",

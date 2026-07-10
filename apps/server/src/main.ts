@@ -1,8 +1,20 @@
 #!/usr/bin/env node
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
-import type { ServerMetadata } from "@gaia/core";
-import { reconcileInterruptedServerRuns } from "@gaia/runtime/server-workflows";
+import { codexAppServerHarnessProfileId, type ServerMetadata } from "@gaia/core";
+import {
+  createCodexHarnessProvider,
+  detectInstalledCodexAppServer,
+  makeCodexAppServerClient,
+  makeCodexAppServerConnection,
+  makeFileCodexHarnessCorrelationStore,
+  makeHarnessProviderRegistry,
+  type HarnessProviderRegistry,
+} from "@gaia/runtime";
+import {
+  reconcileInterruptedServerRuns,
+} from "@gaia/runtime/server-workflows";
+import { makeTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
 import { Effect, Layer } from "effect";
 import * as Console from "effect/Console";
 import { HttpServer } from "effect/unstable/http";
@@ -23,15 +35,18 @@ export type ServerConfig = {
   readonly host: "127.0.0.1";
   readonly port: number;
   readonly rootDirectory: string;
+  readonly testHarness: boolean;
 };
 
 export const defaultServerConfig = {
   host: "127.0.0.1",
   port: 0,
   rootDirectory: process.cwd(),
+  testHarness: false,
 } satisfies ServerConfig;
 
 export function runLocalGaiaServer(input: {
+  readonly harnessProviderRegistry?: HarnessProviderRegistry | undefined;
   readonly onReady?: ((metadata: ServerMetadata) => Effect.Effect<void>) | undefined;
   readonly port?: number | undefined;
   readonly rootDirectory?: string | undefined;
@@ -45,15 +60,23 @@ export function runLocalGaiaServer(input: {
     host: identity.host,
     port,
   });
-  const serverLayer = makeLocalGaiaServerLayer(identity).pipe(
-    Layer.provideMerge(nodeLayer),
-  );
-
   return Effect.scoped(
     Effect.gen(function* () {
-      yield* reconcileInterruptedServerRuns({
+      const harnessProviderRegistry =
+        input.harnessProviderRegistry ??
+        (yield* makeProductionHarnessProviderRegistry(identity.rootDirectory));
+      const workflowOptions = {
+        harnessProviderRegistry,
         rootDirectory: identity.rootDirectory,
-      });
+      };
+      const reconciliation = yield* reconcileInterruptedServerRuns(
+        workflowOptions,
+      );
+      const serverLayer = makeLocalGaiaServerLayer(
+        identity,
+        workflowOptions,
+        reconciliation.resumableRunIds,
+      ).pipe(Layer.provideMerge(nodeLayer));
       yield* Effect.gen(function* () {
         const server = yield* HttpServer.HttpServer;
         const metadata = yield* serverMetadataFromAddress(identity, server.address);
@@ -79,9 +102,27 @@ export function runLocalGaiaServer(input: {
   ).pipe(Effect.provide(NodeServices.layer));
 }
 
+function makeProductionHarnessProviderRegistry(rootDirectory: string) {
+  return Effect.gen(function* () {
+    const connection = yield* makeCodexAppServerConnection({
+      cwd: rootDirectory,
+    });
+    const provider = createCodexHarnessProvider({
+      client: makeCodexAppServerClient(connection),
+      correlationStore: makeFileCodexHarnessCorrelationStore(rootDirectory),
+      detectionProbe: detectInstalledCodexAppServer,
+      workspaceRoot: rootDirectory,
+    });
+    return makeHarnessProviderRegistry([
+      { profileId: codexAppServerHarnessProfileId, provider },
+    ]);
+  });
+}
+
 export function parseServerArgs(args: ReadonlyArray<string>): ServerConfig {
   let port = defaultServerConfig.port;
   let rootDirectory = defaultServerConfig.rootDirectory;
+  let testHarness: boolean = defaultServerConfig.testHarness;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -101,12 +142,16 @@ export function parseServerArgs(args: ReadonlyArray<string>): ServerConfig {
     if (arg === "--host") {
       throw new Error("GAIA-12 only supports loopback host 127.0.0.1.");
     }
+    if (arg === "--test-harness") {
+      testHarness = true;
+    }
   }
 
   return {
     host: defaultServerConfig.host,
     port,
     rootDirectory,
+    testHarness,
   };
 }
 
@@ -134,5 +179,11 @@ function parsePort(input: string): number {
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const config = parseServerArgs(process.argv.slice(2));
-  runLocalGaiaServer(config).pipe(NodeRuntime.runMain);
+  runLocalGaiaServer({
+    ...(config.testHarness
+      ? { harnessProviderRegistry: makeTestHarnessProviderRegistry() }
+      : {}),
+    port: config.port,
+    rootDirectory: config.rootDirectory,
+  }).pipe(NodeRuntime.runMain);
 }

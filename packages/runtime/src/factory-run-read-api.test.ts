@@ -1,5 +1,6 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
+import { codexAppServerExecutionSelection } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 import {
   ReviewFinding,
@@ -19,6 +20,9 @@ import {
   readFactoryRunActivity,
   readFactoryRunArtifact,
 } from "./factory-run-read-api.js";
+import { makeTestHarnessProviderRegistry } from "./test-support.js";
+
+const harnessProviderRegistry = makeTestHarnessProviderRegistry();
 
 describe("factory run read api", () => {
   layer(NodeServices.layer)((it) => {
@@ -29,6 +33,7 @@ describe("factory run read api", () => {
 
         const accepted = yield* acceptFactoryRun(
           {
+            execution: codexAppServerExecutionSelection,
             workflow: "issueDelivery",
             workItem: {
               description: "Deliver GAIA-66 runtime projection.",
@@ -43,7 +48,7 @@ describe("factory run read api", () => {
               title: "Implement issueDelivery runtime projection",
             },
           },
-          { rootDirectory: cwd },
+          { harnessProviderRegistry, rootDirectory: cwd },
         );
 
         const graph = yield* readFactoryGraph(accepted.runId, {
@@ -141,10 +146,14 @@ describe("factory run read api", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-factory-run-" });
         const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry,
           rootDirectory: cwd,
         });
 
-        yield* continueServerRun(accepted.runId, { rootDirectory: cwd });
+        yield* continueServerRun(accepted.runId, {
+          harnessProviderRegistry,
+          rootDirectory: cwd,
+        });
         const graph = yield* readFactoryGraph(accepted.runId, {
           rootDirectory: cwd,
         });
@@ -191,7 +200,13 @@ describe("factory run read api", () => {
           workerActivity.activities.map(
             (activity: { readonly kind: string }) => activity.kind,
           ),
-          ["WORKER_STARTED", "WORKER_COMPLETED"],
+          [
+            "WORKER_STARTED",
+            "HARNESS_SESSION_EVENT_RECORDED",
+            "HARNESS_SESSION_EVENT_RECORDED",
+            "HARNESS_SESSION_EVENT_RECORDED",
+            "WORKER_COMPLETED",
+          ],
         );
         assert.deepInclude(
           artifacts.artifacts.map((artifact) => ({
@@ -218,11 +233,13 @@ describe("factory run read api", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-factory-run-" });
         const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry,
           rootDirectory: cwd,
         });
 
         yield* Effect.flip(
           continueServerRun(accepted.runId, {
+            harnessProviderRegistry,
             reviewer: blockingReviewer(),
             rootDirectory: cwd,
           }),
@@ -257,6 +274,7 @@ describe("factory run read api", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-factory-run-" });
         const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry,
           rootDirectory: cwd,
         });
         const paths = yield* makeRunPaths(accepted.runId, { rootDirectory: cwd });
@@ -309,6 +327,7 @@ describe("factory run read api", () => {
 
 function factoryCreateInput() {
   return {
+    execution: codexAppServerExecutionSelection,
     workflow: "issueDelivery",
     workItem: {
       description: "Deliver GAIA-66 runtime projection.",

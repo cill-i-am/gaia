@@ -17,6 +17,7 @@ const encodeVerificationResult = Schema.encodeSync(VerificationResultJson);
 export function verifyHarnessOutput(
   runId: typeof RunIdSchema.Type,
   paths: RunPaths,
+  options: { readonly requireLegacyWorkspaceMarker?: boolean } = {},
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -26,30 +27,36 @@ export function verifyHarnessOutput(
       { flag: "a" },
     );
 
-    const exists = yield* fs.exists(paths.workspaceOutput);
-    if (!exists) {
-      return yield* Effect.fail(
-        makeRuntimeError({
-          code: "VerificationArtifactMissing",
-          message: "Expected workspace/output.txt to exist.",
-          recoverable: true,
-        }),
-      );
-    }
+    const requireLegacyWorkspaceMarker =
+      options.requireLegacyWorkspaceMarker ?? true;
+    if (requireLegacyWorkspaceMarker) {
+      const exists = yield* fs.exists(paths.workspaceOutput);
+      if (!exists) {
+        return yield* Effect.fail(
+          makeRuntimeError({
+            code: "VerificationArtifactMissing",
+            message: "Expected workspace/output.txt to exist.",
+            recoverable: true,
+          }),
+        );
+      }
 
-    const output = yield* fs.readFileString(paths.workspaceOutput);
-    if (!output.includes(runId)) {
-      return yield* Effect.fail(
-        makeRuntimeError({
-          code: "VerificationMarkerMissing",
-          message: "Expected workspace/output.txt to include the run id.",
-          recoverable: true,
-        }),
-      );
+      const output = yield* fs.readFileString(paths.workspaceOutput);
+      if (!output.includes(runId)) {
+        return yield* Effect.fail(
+          makeRuntimeError({
+            code: "VerificationMarkerMissing",
+            message: "Expected workspace/output.txt to include the run id.",
+            recoverable: true,
+          }),
+        );
+      }
     }
 
     const result = VerificationResult.make({
-      checkedArtifacts: ["workspace/output.txt", "worker-result.json"],
+      checkedArtifacts: requireLegacyWorkspaceMarker
+        ? ["workspace/output.txt", "worker-result.json"]
+        : ["worker-result.json"],
       runId,
       status: "passed",
     });

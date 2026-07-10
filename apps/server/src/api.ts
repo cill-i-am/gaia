@@ -36,7 +36,7 @@ import {
   makeLocalRunReadIndex,
   type LocalRunReadIndex,
 } from "@gaia/runtime";
-import { Cause, Context, Effect, FileSystem, Layer, Path, Schema, Stream } from "effect";
+import { Cause, Context, Effect, FileSystem, Layer, Path, Schema, Scope, Stream } from "effect";
 import type { Generator } from "effect/unstable/http/Etag";
 import type { HttpPlatform } from "effect/unstable/http/HttpPlatform";
 import {
@@ -74,6 +74,7 @@ import {
 type LocalServerConfigValue = LocalServerIdentity & {
   readonly runIndex: LocalRunReadIndex;
   readonly runRegistry: ServerRunRegistryService;
+  readonly runScope: Scope.Scope;
   readonly workflowOptions: ServerWorkflowOptions;
 };
 
@@ -327,6 +328,7 @@ export const LocalGaiaServerApiLayer = HttpApiBuilder.layer(LocalGaiaServerApi).
 export function makeLocalGaiaServerLayer(
   identity: LocalServerIdentity,
   workflowOptions: ServerWorkflowOptions = {},
+  resumableRunIds: ReadonlyArray<string> = [],
 ): Layer.Layer<
   never,
   unknown,
@@ -343,10 +345,29 @@ export function makeLocalGaiaServerLayer(
         rootDirectory: identity.rootDirectory,
       });
       const runRegistry = yield* makeServerRunRegistry();
+      const runScope = yield* Scope.make();
+      yield* Effect.addFinalizer((exit) => Scope.close(runScope, exit));
+      for (const runId of resumableRunIds) {
+        yield* continueServerRun(runId, {
+          ...workflowOptions,
+          rootDirectory: identity.rootDirectory,
+        }).pipe(
+          Effect.matchEffect({
+            onFailure: (error) =>
+              appendServerLog(
+                identity.rootDirectory,
+                `${new Date().toISOString()} ${identity.serverId} resumed run ${runId} failed ${error.code}`,
+              ).pipe(Effect.ignore),
+            onSuccess: () => Effect.void,
+          }),
+          Effect.forkIn(runScope),
+        );
+      }
       return {
         ...identity,
         runIndex,
         runRegistry,
+        runScope,
         workflowOptions,
       } satisfies LocalServerConfigValue;
     }),
@@ -491,6 +512,7 @@ function factoryRunDetailFromProjection(
   const summary = factoryRunSummaryFromProjection(projection);
   return decodeFactoryRunDetail({
     ...summary,
+    execution: projection.graph.execution,
     urls: {
       activity: `/runs/${projection.graph.runId}/activity`,
       artifacts: `/runs/${projection.graph.runId}/artifacts`,
@@ -659,6 +681,11 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
     case "ActiveRunConflict":
     case "RunStoreLocked":
       return 409;
+    case "HarnessAuthenticationRequired":
+    case "HarnessCapabilityMismatch":
+    case "HarnessIncompatible":
+    case "HarnessProfileNotFound":
+    case "HarnessUnavailable":
     case "InvalidRunDirectory":
     case "RunHasNoEvents":
     case "RunUnreadable":
@@ -765,6 +792,16 @@ function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
         ...diagnostic,
         code: "RunNotFound",
         status: 404,
+      });
+    case "HarnessAuthenticationRequired":
+    case "HarnessCapabilityMismatch":
+    case "HarnessIncompatible":
+    case "HarnessProfileNotFound":
+    case "HarnessUnavailable":
+      return LocalRunApiUnprocessable.make({
+        ...diagnostic,
+        code: diagnostic.code,
+        status: 422,
       });
     case "InvalidRunDirectory":
       return LocalRunApiUnprocessable.make({
@@ -878,6 +915,16 @@ function apiError(
         code: "RunStoreLocked",
         status: 409,
       });
+    case "HarnessAuthenticationRequired":
+    case "HarnessCapabilityMismatch":
+    case "HarnessIncompatible":
+    case "HarnessProfileNotFound":
+    case "HarnessUnavailable":
+      return LocalRunApiUnprocessable.make({
+        ...diagnostic,
+        code: diagnostic.code,
+        status: 422,
+      });
     case "InvalidRunDirectory":
       return LocalRunApiUnprocessable.make({
         ...diagnostic,
@@ -949,6 +996,16 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
         code: "RunStoreLocked",
         status: 409,
       });
+    case "HarnessAuthenticationRequired":
+    case "HarnessCapabilityMismatch":
+    case "HarnessIncompatible":
+    case "HarnessProfileNotFound":
+    case "HarnessUnavailable":
+      return LocalRunApiUnprocessable.make({
+        ...diagnostic,
+        code: diagnostic.code,
+        status: 422,
+      });
     case "InvalidRunDirectory":
       return LocalRunApiUnprocessable.make({
         ...diagnostic,
@@ -992,6 +1049,16 @@ function apiErrorFromRuntimeError(error: GaiaRuntimeError): LocalRunCreateApiErr
         message: error.message,
         recoverable: error.recoverable,
       });
+    case "HarnessAuthenticationRequired":
+    case "HarnessCapabilityMismatch":
+    case "HarnessIncompatible":
+    case "HarnessProfileNotFound":
+    case "HarnessUnavailable":
+      return createApiError({
+        code: error.code,
+        message: error.message,
+        recoverable: error.recoverable,
+      });
     default:
       return internalApiError(error);
   }
@@ -1031,7 +1098,7 @@ function forkServerContinuation(input: {
       onFailure: () => Effect.void,
       onSuccess: () => Effect.void,
     }),
-    Effect.forkDetach,
+    Effect.forkIn(input.identity.runScope),
     Effect.asVoid,
   );
 }

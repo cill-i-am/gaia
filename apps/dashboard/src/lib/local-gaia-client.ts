@@ -1,5 +1,6 @@
 import {
   CreateRunRequest,
+  codexAppServerExecutionSelection,
   FactoryActivitySuccessEnvelope,
   FactoryAgentIdSchema,
   FactoryArtifactListSuccessEnvelope,
@@ -253,6 +254,7 @@ export function createRunFromDashboardGaiaClient(
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
       const payload = yield* CreateRunRequest.makeEffect({
+        execution: codexAppServerExecutionSelection,
         workflow: "issueDelivery",
         workItem: {
           description: config.description,

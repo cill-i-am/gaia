@@ -34,6 +34,30 @@ describe("FactoryGraph core contracts", () => {
           type: "owns",
         },
       ],
+      execution: {
+        capabilities: {
+          approvals: [],
+          fileChangeEvents: true,
+          interruption: true,
+          resumableSessions: true,
+          review: false,
+          steering: false,
+          streamingMessages: true,
+          structuredOutput: false,
+          subagents: false,
+          toolEvents: false,
+          usageReporting: false,
+          userQuestions: false,
+        },
+        executionMode: "local",
+        harnessProfileId: "codexAppServer",
+        provider: {
+          displayName: "Codex App Server",
+          executionModes: ["local"],
+          providerId: "codex-app-server",
+        },
+        version: "0.137.0",
+      },
       linkedArtifacts: [
         {
           artifactId: "artifact-worker-plan",

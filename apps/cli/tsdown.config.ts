@@ -1,9 +1,8 @@
 import { defineConfig } from "tsdown";
 
 export default defineConfig({
-  entry: ["src/main.ts"],
+  entry: { main: "src/bootstrap.ts" },
   format: ["esm"],
   sourcemap: true,
   dts: true,
 });
-

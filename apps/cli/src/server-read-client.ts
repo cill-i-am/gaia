@@ -1,6 +1,7 @@
 import {
   CreateRunAcceptedResponse,
   CreateRunRequest,
+  codexAppServerExecutionSelection,
   FactoryArtifactBodyDto,
   FactoryRunDetailDto,
   FactoryRunSummaryDto,
@@ -139,6 +140,7 @@ export function createRunFromServer(input: {
       ),
     );
     const payload = yield* CreateRunRequest.makeEffect({
+      execution: codexAppServerExecutionSelection,
       workflow: "issueDelivery",
       workItem: {
         description: specMarkdown,
@@ -740,16 +742,19 @@ function serverProcessCommand(rootDirectory: string) {
     const repoRoot = modulePath.slice(0, markerIndex);
     return {
       args: [
-        "--dir",
-        repoRoot,
-        "--filter",
-        "@gaia/server",
-        "dev",
-        "--",
+        path.join(repoRoot, "apps", "server", "src", "main.ts"),
         "--root",
         rootDirectory,
+        ...(process.env["VITEST"] === undefined ? [] : ["--test-harness"]),
       ],
-      command: "pnpm",
+      command: path.join(
+        repoRoot,
+        "apps",
+        "server",
+        "node_modules",
+        ".bin",
+        "tsx",
+      ),
     };
   }
 

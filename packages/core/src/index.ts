@@ -83,6 +83,15 @@ export {
   type RunMachineEvent,
 } from "./machine.js";
 export {
+  codexAppServerExecutionSelection,
+  codexAppServerHarnessProfileId,
+  HarnessExecutionSelection,
+  HarnessProfileIdSchema,
+  ResolvedHarnessExecution,
+  parseHarnessProfileId,
+  type HarnessProfileId,
+} from "./harness-execution.js";
+export {
   HarnessActionIdSchema,
   HarnessAuthStateSchema,
   HarnessCapabilities,

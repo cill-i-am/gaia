@@ -9,7 +9,7 @@
     "build": "tsdown",
     "check": "tsc --noEmit",
     "dev": "tsx src/main.ts --help",
-    "gaia": "tsx src/main.ts",
+    "gaia": "tsx src/bootstrap.ts",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {

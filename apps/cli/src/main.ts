@@ -67,6 +67,7 @@ import {
   statusRunFromServer,
   type ServerRunAcceptedSummary,
 } from "./server-read-client.js";
+import { parseServerPort } from "./server-port.js";
 import path from "node:path";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -803,18 +804,8 @@ function parseServerPortFlag(
     return Effect.succeed<number | undefined>(undefined);
   }
 
-  if (!/^\d+$/u.test(port.value)) {
-    return Effect.fail(
-      makeRuntimeError({
-        code: "InvalidServerPort",
-        message: `Invalid local server port: ${port.value}`,
-        recoverable: false,
-      }),
-    );
-  }
-
-  const parsed = Number(port.value);
-  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65_535) {
+  const parsed = parseServerPort(port.value);
+  if (parsed === undefined) {
     return Effect.fail(
       makeRuntimeError({
         code: "InvalidServerPort",

@@ -15,6 +15,7 @@ import {
   type InspectorResource,
 } from "@/selected-node-inspector-model";
 import type { FactoryCanvasNode } from "@/factory-canvas-model";
+import { testFactoryExecution } from "@/test-factory-execution";
 
 describe("selected node inspector model", () => {
   it("represents no-run, loading, and no-selection states honestly", () => {
@@ -234,6 +235,7 @@ function ready<T>(data: ReadonlyArray<T>): InspectorResource<T> {
 
 function graphFixture(): typeof FactoryGraphDto.Type {
   return FactoryGraphDto.make({
+    execution: testFactoryExecution,
     agents: [
       {
         artifactCount: 1,

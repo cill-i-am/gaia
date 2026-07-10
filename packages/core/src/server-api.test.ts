@@ -189,10 +189,46 @@ describe("LocalGaiaServerApi contract", () => {
 
     assert.doesNotThrow(() =>
       decodeCreateRunRequest({
+        execution: { harnessProfileId: "codexAppServer" },
         workflow: "issueDelivery",
         workItem: {
           description: "Implement the contract slice.",
           externalRefs: [{ id: "GAIA-65", provider: "linear" }],
+          kind: "issue",
+          title: "Define FactoryGraph contracts",
+        },
+      }),
+    );
+    assert.throws(() =>
+      decodeCreateRunRequest({
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Execution selection is required.",
+          kind: "issue",
+          title: "Define FactoryGraph contracts",
+        },
+      }),
+    );
+    assert.throws(() =>
+      decodeCreateRunRequest({
+        execution: { harnessProfileId: "fake" },
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Fake is not a production issue-delivery profile.",
+          kind: "issue",
+          title: "Define FactoryGraph contracts",
+        },
+      }),
+    );
+    assert.throws(() =>
+      decodeCreateRunRequest({
+        execution: {
+          command: "/usr/local/bin/codex",
+          harnessProfileId: "codexAppServer",
+        },
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Execution internals are not public request fields.",
           kind: "issue",
           title: "Define FactoryGraph contracts",
         },
@@ -205,6 +241,7 @@ describe("LocalGaiaServerApi contract", () => {
     );
     assert.throws(() =>
       decodeCreateRunRequest({
+        execution: { harnessProfileId: "codexAppServer" },
         workflow: "issueDelivery",
         workItem: {
           description: "Projects are a later slice.",
@@ -215,6 +252,7 @@ describe("LocalGaiaServerApi contract", () => {
     );
     assert.throws(() =>
       decodeCreateRunRequest({
+        execution: { harnessProfileId: "codexAppServer" },
         profile: "default",
         workflow: "issueDelivery",
         workItem: {
@@ -226,6 +264,7 @@ describe("LocalGaiaServerApi contract", () => {
     );
     assert.throws(() =>
       decodeCreateRunRequest({
+        execution: { harnessProfileId: "codexAppServer" },
         workflow: "issueDelivery",
         workItem: {
           description: "Unknown nested fields fail loudly.",

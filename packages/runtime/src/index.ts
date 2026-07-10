@@ -23,6 +23,7 @@ export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 export {
   CodexAppServerClientLive,
   CodexAppServerClientService,
+  makeCodexAppServerConnection,
   makeCodexAppServerClient,
   type CodexAppServerClient,
 } from "./codex-app-server-client.js";
@@ -38,15 +39,29 @@ export {
   CodexHarnessCapabilities,
   CodexHarnessProviderDescriptor,
   createCodexHarnessProvider,
+  makeFileCodexHarnessCorrelationStore,
   makeInMemoryCodexHarnessCorrelationStore,
   type CodexHarnessCorrelationStore,
   type CodexHarnessOpaqueCorrelation,
   type CodexHarnessProviderOptions,
 } from "./codex-harness-provider.js";
+export {
+  detectInstalledCodexAppServer,
+  makeCodexAppServerDetectionProbe,
+  type CodexDetectionProbeRunner,
+} from "./codex-provider-detection.js";
 export { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 export { writeEvidencePromotion } from "./evidence-promotion.js";
 export { writeFactoryRetro } from "./factory-retro.js";
 export { writeFactoryScorecard } from "./factory-scorecard.js";
+export {
+  HarnessProfileNotFoundError,
+  issueDeliveryWorkerHarnessCapabilities,
+  makeHarnessProviderRegistry,
+  type HarnessProviderRegistration,
+  type HarnessProviderRegistry,
+  type ResolvedHarnessProvider,
+} from "./harness-provider-registry.js";
 export {
   HarnessActionError,
   HarnessCapabilityMismatchError,

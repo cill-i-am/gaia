@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { RunIdSchema } from "./run-id.js";
+import { ResolvedHarnessExecution } from "./harness-execution.js";
 
 const NonNegativeInteger = Schema.Number.pipe(
   Schema.check(Schema.isInt({ identifier: "NonNegativeInteger" })),
@@ -235,6 +236,7 @@ export class FactoryGraphDto extends Schema.Class<FactoryGraphDto>(
   agents: Schema.Array(FactoryAgentDto),
   diagnostics: Schema.Array(FactoryGraphDiagnosticDto),
   edges: Schema.Array(FactoryEdgeDto),
+  execution: ResolvedHarnessExecution,
   linkedArtifacts: Schema.Array(FactoryArtifactDto),
   runId: RunIdSchema,
   version: Schema.Literal(1),
@@ -293,6 +295,7 @@ export class FactoryRunDetailDto extends Schema.Class<FactoryRunDetailDto>(
   activeAgent: Schema.optionalKey(FactoryRunAgentSummaryDto),
   counts: FactoryRunCountsDto,
   createdAt: Schema.NonEmptyString,
+  execution: ResolvedHarnessExecution,
   rootWorkItem: FactoryRootWorkItemSummaryDto,
   runId: RunIdSchema,
   state: FactoryAgentStateSchema,
