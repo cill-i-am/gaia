@@ -22,11 +22,17 @@ import {
   PermissionApprovalResponseSchema,
   UserInputResponseSchema,
   ElicitationResponseSchema,
+  InitializeParamsSchema, ThreadStartParamsSchema, ThreadResumeParamsSchema, ThreadReadParamsSchema,
+  TurnStartParamsSchema, TurnSteerParamsSchema, TurnInterruptParamsSchema,
   supportedCodexCliVersion,
   type CodexAppServerError,
   type CodexRequestId,
   type CodexNotification,
   type CodexServerRequest,
+  type InitializeParams, type ThreadStartParams, type ThreadResumeParams, type ThreadReadParams,
+  type TurnStartParams, type TurnSteerParams, type TurnInterruptParams,
+  type CommandApprovalRequest, type FileApprovalRequest, type PermissionApprovalRequest,
+  type UserInputRequest, type ElicitationRequest,
 } from "./codex-app-server-protocol.js";
 
 type JsonObject = Readonly<Record<string, Schema.Json>>;
@@ -34,7 +40,7 @@ export interface CodexAppServerConnection {
   readonly notify: (method: string, params?: JsonObject) => Effect.Effect<void, CodexAppServerError>;
   readonly onNotification: (listener: (notification: CodexNotification) => void) => () => void;
   readonly onServerRequest: (listener: (request: CodexServerRequest) => void) => () => void;
-  readonly request: (method: string, params?: JsonObject, timeoutMs?: number) => Effect.Effect<Schema.Json, CodexAppServerError>;
+  readonly request: (method: string, params?: unknown, timeoutMs?: number) => Effect.Effect<Schema.Json, CodexAppServerError>;
   readonly respond: (id: CodexRequestId, result: Schema.Json) => Effect.Effect<void, CodexAppServerError>;
 }
 
@@ -133,7 +139,8 @@ export function makeCodexAppServerConnection(options: CodexAppServerTransportOpt
         if (Option.isSome(request)) {
           const decoded = decodeServerRequest(request.value);
           if (Option.isNone(decoded)) {
-            process.write(`${JSON.stringify({ id: request.value.id, error: { code: -32601, message: "Unsupported server request" } })}\n`);
+            try { process.write(`${JSON.stringify({ id: request.value.id, error: { code: -32601, message: "Unsupported server request" } })}\n`); }
+            catch { failAll(new CodexAppServerTransportError({ message: "Failed to write to Codex App Server" })); }
             return;
           }
           for (const listener of requestListeners) listener(decoded.value);
@@ -183,31 +190,33 @@ export class CodexAppServerConnectionService extends Context.Service<CodexAppSer
 export const CodexAppServerConnectionLive = (options: CodexAppServerTransportOptions = {}) => Layer.effect(CodexAppServerConnectionService, makeCodexAppServerConnection(options));
 
 export function makeCodexAppServerClient(connection: CodexAppServerConnection) {
-  const request = <S extends Schema.Top>(method: string, params: JsonObject, schema: S) => connection.request(method, params).pipe(
+  const request = <P extends Schema.Top, S extends Schema.Top>(method: string, params: unknown, paramsSchema: P, schema: S) => Schema.decodeUnknownEffect(paramsSchema)(params).pipe(
+    Effect.mapError(() => new CodexAppServerProtocolError({ method, message: `Invalid ${method} params` })),
+    Effect.flatMap((parsed) => connection.request(method, parsed)),
     Effect.flatMap((result) => Schema.decodeUnknownEffect(schema)(result).pipe(
       Effect.mapError(() => new CodexAppServerProtocolError({ method, message: `Invalid ${method} response` })),
     )),
   );
   return {
-    initialize: (clientInfo: { readonly name: string; readonly title: string; readonly version: string }) => request("initialize", { clientInfo }, InitializeResultSchema).pipe(
+    initialize: (params: InitializeParams) => request("initialize", params, InitializeParamsSchema, InitializeResultSchema).pipe(
       Effect.flatMap((result) => result.userAgent.includes(`/${supportedCodexCliVersion} `)
         ? Effect.succeed(result)
         : Effect.fail(new CodexAppServerIncompatibilityError({ actualUserAgent: result.userAgent, supportedVersion: supportedCodexCliVersion }))),
       Effect.tap(() => connection.notify("initialized")),
     ),
-    interruptTurn: (params: { readonly threadId: string; readonly turnId: string }) => request("turn/interrupt", params, EmptyResultSchema),
+    interruptTurn: (params: TurnInterruptParams) => request("turn/interrupt", params, TurnInterruptParamsSchema, EmptyResultSchema),
     onNotification: connection.onNotification,
     onServerRequest: connection.onServerRequest,
-    readThread: (params: { readonly threadId: string; readonly includeTurns?: boolean }) => request("thread/read", params, ThreadResultSchema),
-    respondCommandApproval: (id: CodexRequestId, response: typeof CommandApprovalResponseSchema.Type) => Schema.decodeUnknownEffect(CommandApprovalResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(id, value))),
-    respondFileApproval: (id: CodexRequestId, response: typeof FileApprovalResponseSchema.Type) => Schema.decodeUnknownEffect(FileApprovalResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(id, value))),
-    respondPermissionApproval: (id: CodexRequestId, response: typeof PermissionApprovalResponseSchema.Type) => Schema.decodeUnknownEffect(PermissionApprovalResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(id, value as Schema.Json))),
-    respondUserInput: (id: CodexRequestId, response: typeof UserInputResponseSchema.Type) => Schema.decodeUnknownEffect(UserInputResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(id, value))),
-    respondElicitation: (id: CodexRequestId, response: typeof ElicitationResponseSchema.Type) => Schema.decodeUnknownEffect(ElicitationResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(id, value as Schema.Json))),
-    resumeThread: (params: { readonly threadId: string }) => request("thread/resume", params, ThreadResultSchema),
-    startThread: (params: { readonly approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never"; readonly cwd?: string; readonly ephemeral?: boolean; readonly model?: string; readonly sandbox?: "read-only" | "workspace-write" | "danger-full-access" }) => request("thread/start", params, ThreadResultSchema),
-    startTurn: (params: { readonly input: ReadonlyArray<{ readonly type: "text"; readonly text: string }>; readonly threadId: string }) => request("turn/start", params, TurnResultSchema),
-    steerTurn: (params: { readonly expectedTurnId: string; readonly input: ReadonlyArray<{ readonly type: "text"; readonly text: string }>; readonly threadId: string }) => request("turn/steer", params, TurnSteerResultSchema),
+    readThread: (params: ThreadReadParams) => request("thread/read", params, ThreadReadParamsSchema, ThreadResultSchema),
+    respondCommandApproval: (request: CommandApprovalRequest, response: typeof CommandApprovalResponseSchema.Type) => Schema.decodeUnknownEffect(CommandApprovalResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(request.id, value))),
+    respondFileApproval: (request: FileApprovalRequest, response: typeof FileApprovalResponseSchema.Type) => Schema.decodeUnknownEffect(FileApprovalResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(request.id, value))),
+    respondPermissionApproval: (request: PermissionApprovalRequest, response: typeof PermissionApprovalResponseSchema.Type) => Schema.decodeUnknownEffect(PermissionApprovalResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(request.id, value))),
+    respondUserInput: (request: UserInputRequest, response: typeof UserInputResponseSchema.Type) => Schema.decodeUnknownEffect(UserInputResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(request.id, value))),
+    respondElicitation: (request: ElicitationRequest, response: typeof ElicitationResponseSchema.Type) => Schema.decodeUnknownEffect(ElicitationResponseSchema)(response).pipe(Effect.flatMap((value) => connection.respond(request.id, value))),
+    resumeThread: (params: ThreadResumeParams) => request("thread/resume", params, ThreadResumeParamsSchema, ThreadResultSchema),
+    startThread: (params: ThreadStartParams) => request("thread/start", params, ThreadStartParamsSchema, ThreadResultSchema),
+    startTurn: (params: TurnStartParams) => request("turn/start", params, TurnStartParamsSchema, TurnResultSchema),
+    steerTurn: (params: TurnSteerParams) => request("turn/steer", params, TurnSteerParamsSchema, TurnSteerResultSchema),
   } as const;
 }
 

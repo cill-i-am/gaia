@@ -38,8 +38,8 @@ export const TurnSteerResultSchema = Schema.Struct({ turnId: TurnId });
 export const EmptyResultSchema = Empty;
 
 const BaseInteraction = { itemId: ItemId, threadId: ThreadId, turnId: TurnId } as const;
-const CommandRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/commandExecution/requestApproval"), params: Schema.Struct({ ...BaseInteraction, command: Schema.NullOr(Schema.String), startedAtMs: Schema.Number }) });
-const FileRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/fileChange/requestApproval"), params: Schema.Struct({ ...BaseInteraction, reason: Schema.NullOr(Schema.String), startedAtMs: Schema.Number }) });
+const CommandRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/commandExecution/requestApproval"), params: Schema.Struct({ ...BaseInteraction, command: Schema.optionalKey(Schema.NullOr(Schema.String)), startedAtMs: Schema.Number }) });
+const FileRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/fileChange/requestApproval"), params: Schema.Struct({ ...BaseInteraction, reason: Schema.optionalKey(Schema.NullOr(Schema.String)), startedAtMs: Schema.Number }) });
 const PermissionRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/permissions/requestApproval"), params: Schema.Struct({ ...BaseInteraction, cwd: Schema.String, permissions: Schema.Unknown, startedAtMs: Schema.Number }) });
 const UserInputRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("item/tool/requestUserInput"), params: Schema.Struct({ ...BaseInteraction, questions: Schema.Array(Schema.Struct({ header: Schema.String, id: Schema.String, question: Schema.String })) }) });
 const ElicitationRequest = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.Literal("mcpServer/elicitation/request"), params: Schema.Struct({ serverName: Schema.String, threadId: ThreadId, turnId: Schema.optionalKey(Schema.NullOr(TurnId)) }) });
@@ -65,9 +65,22 @@ export type CodexNotification = typeof CodexNotificationSchema.Type;
 
 export const CommandApprovalResponseSchema = Schema.Struct({ decision: Schema.Literals(["accept", "acceptForSession", "decline", "cancel"] as const) });
 export const FileApprovalResponseSchema = CommandApprovalResponseSchema;
-export const PermissionApprovalResponseSchema = Schema.Struct({ permissions: Schema.Unknown, scope: Schema.optionalKey(Schema.Literals(["turn", "session"] as const)), strictAutoReview: Schema.optionalKey(Schema.NullOr(Schema.Boolean)) });
+export const PermissionApprovalResponseSchema = Schema.Struct({ permissions: Schema.Json, scope: Schema.optionalKey(Schema.Literals(["turn", "session"] as const)), strictAutoReview: Schema.optionalKey(Schema.NullOr(Schema.Boolean)) });
 export const UserInputResponseSchema = Schema.Struct({ answers: Schema.Record(Schema.String, Schema.Struct({ answers: Schema.Array(Schema.String) })) });
-export const ElicitationResponseSchema = Schema.Struct({ action: Schema.Literals(["accept", "decline", "cancel"] as const), content: Schema.optionalKey(Schema.Unknown) });
+export const ElicitationResponseSchema = Schema.Struct({ action: Schema.Literals(["accept", "decline", "cancel"] as const), content: Schema.optionalKey(Schema.Json) });
+
+export type InitializeParams = typeof InitializeParamsSchema.Type;
+export type ThreadStartParams = typeof ThreadStartParamsSchema.Type;
+export type ThreadResumeParams = typeof ThreadResumeParamsSchema.Type;
+export type ThreadReadParams = typeof ThreadReadParamsSchema.Type;
+export type TurnStartParams = typeof TurnStartParamsSchema.Type;
+export type TurnSteerParams = typeof TurnSteerParamsSchema.Type;
+export type TurnInterruptParams = typeof TurnInterruptParamsSchema.Type;
+export type CommandApprovalRequest = Extract<CodexServerRequest, { readonly method: "item/commandExecution/requestApproval" }>;
+export type FileApprovalRequest = Extract<CodexServerRequest, { readonly method: "item/fileChange/requestApproval" }>;
+export type PermissionApprovalRequest = Extract<CodexServerRequest, { readonly method: "item/permissions/requestApproval" }>;
+export type UserInputRequest = Extract<CodexServerRequest, { readonly method: "item/tool/requestUserInput" }>;
+export type ElicitationRequest = Extract<CodexServerRequest, { readonly method: "mcpServer/elicitation/request" }>;
 
 export const CodexAppServerResponseSchema = Schema.Union([Schema.Struct({ id: CodexRequestIdSchema, result: Schema.Json }), Schema.Struct({ error: Schema.Struct({ code: Schema.Number, message: Schema.String }), id: CodexRequestIdSchema })]);
 export const CodexAppServerInboundRequestSchema = Schema.Struct({ id: CodexRequestIdSchema, method: Schema.String, params: Schema.optionalKey(Schema.Unknown) });

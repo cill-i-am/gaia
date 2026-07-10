@@ -30,7 +30,7 @@ describe("Codex App Server installed CLI smoke", () => {
           if (method === "item/started" || method === "item/completed") sawItem = true;
           if (method === "turn/completed") completed = true;
         });
-        yield* client.initialize({ name: "gaia", title: "Gaia", version: "0.1.0" });
+        yield* client.initialize({ clientInfo: { name: "gaia", title: "Gaia", version: "0.1.0" } });
         const started = yield* client.startThread({
           approvalPolicy: "never",
           cwd,

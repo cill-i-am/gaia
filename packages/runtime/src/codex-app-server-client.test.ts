@@ -54,7 +54,7 @@ describe("Codex App Server connection", () => {
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const connection = yield* makeCodexAppServerConnection({ process: fake.process });
       const client = makeCodexAppServerClient(connection);
-      const fiber = yield* client.initialize({ name: "gaia", title: "Gaia", version: "0.1.0" }).pipe(Effect.forkChild);
+      const fiber = yield* client.initialize({ clientInfo: { name: "gaia", title: "Gaia", version: "0.1.0" } }).pipe(Effect.forkChild);
       yield* Effect.yieldNow;
       for (const listener of fake.lines) listener(JSON.stringify({ id: 1, result: { userAgent: "Codex Desktop/0.137.0 (test)", platformFamily: "unix", platformOs: "macos" } }));
       yield* Fiber.join(fiber);
@@ -103,7 +103,7 @@ describe("Codex App Server connection", () => {
     const exit = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const connection = yield* makeCodexAppServerConnection({ process: fake.process });
       const client = makeCodexAppServerClient(connection);
-      const fiber = yield* client.initialize({ name: "gaia", title: "Gaia", version: "0.1.0" }).pipe(Effect.exit, Effect.forkChild);
+      const fiber = yield* client.initialize({ clientInfo: { name: "gaia", title: "Gaia", version: "0.1.0" } }).pipe(Effect.exit, Effect.forkChild);
       yield* Effect.yieldNow;
       for (const listener of fake.lines) listener(JSON.stringify({ id: 1, result: { userAgent: "Codex Desktop/0.136.0 (test)", platformFamily: "unix", platformOs: "macos" } }));
       return yield* Fiber.join(fiber);
@@ -117,6 +117,56 @@ describe("Codex App Server connection", () => {
     const exit = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const connection = yield* makeCodexAppServerConnection({ process: fake.process });
       return yield* connection.request("initialize", {}, 10_000).pipe(Effect.exit);
+    })));
+    expect(exit._tag).toBe("Failure");
+  });
+
+  it("routes all five generated stable request shapes and writes matching responses", async () => {
+    const fake = fakeProcess();
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const connection = yield* makeCodexAppServerConnection({ process: fake.process });
+      const client = makeCodexAppServerClient(connection);
+      client.onServerRequest((request) => {
+        if (request.method === "item/commandExecution/requestApproval") Effect.runFork(client.respondCommandApproval(request, { decision: "decline" }));
+        else if (request.method === "item/fileChange/requestApproval") Effect.runFork(client.respondFileApproval(request, { decision: "decline" }));
+        else if (request.method === "item/permissions/requestApproval") Effect.runFork(client.respondPermissionApproval(request, { permissions: {}, scope: "turn" }));
+        else if (request.method === "item/tool/requestUserInput") Effect.runFork(client.respondUserInput(request, { answers: { q1: { answers: ["no"] } } }));
+        else Effect.runFork(client.respondElicitation(request, { action: "decline" }));
+      });
+      const base = { itemId: "item-1", startedAtMs: 1, threadId: "thr-1", turnId: "turn-1" };
+      const fixtures = [
+        { id: 1, method: "item/commandExecution/requestApproval", params: base },
+        { id: 2, method: "item/fileChange/requestApproval", params: base },
+        { id: 3, method: "item/permissions/requestApproval", params: { ...base, cwd: "/tmp", permissions: {} } },
+        { id: 4, method: "item/tool/requestUserInput", params: { itemId: "item-1", threadId: "thr-1", turnId: "turn-1", questions: [{ header: "Choice", id: "q1", question: "Continue?" }] } },
+        { id: 5, method: "mcpServer/elicitation/request", params: { serverName: "test", threadId: "thr-1" } },
+      ];
+      for (const fixture of fixtures) for (const listener of fake.lines) listener(JSON.stringify(fixture));
+      yield* Effect.yieldNow;
+      expect(fake.writes.filter(({ result }) => result !== undefined)).toHaveLength(5);
+    })));
+  });
+
+  it("rejects invalid outbound params before transport write", async () => {
+    const fake = fakeProcess();
+    const exit = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const connection = yield* makeCodexAppServerConnection({ process: fake.process });
+      const client = makeCodexAppServerClient(connection);
+      return yield* client.startTurn({ threadId: 1, input: [] } as never).pipe(Effect.exit);
+    })));
+    expect(exit._tag).toBe("Failure");
+    expect(fake.writes).toHaveLength(0);
+  });
+
+  it("fails pending work through the typed channel when unknown-request rejection cannot be written", async () => {
+    const fake = fakeProcess();
+    const exit = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const connection = yield* makeCodexAppServerConnection({ process: fake.process });
+      const pending = yield* connection.request("initialize").pipe(Effect.exit, Effect.forkChild);
+      yield* Effect.yieldNow;
+      Object.defineProperty(fake.process, "write", { value: () => { throw new Error("closed"); } });
+      for (const listener of fake.lines) listener(JSON.stringify({ id: 99, method: "fs/read", params: {} }));
+      return yield* Fiber.join(pending);
     })));
     expect(exit._tag).toBe("Failure");
   });
