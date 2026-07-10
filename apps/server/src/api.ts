@@ -1,4 +1,6 @@
 import {
+  AgentActionSuccessEnvelope,
+  AgentSessionSnapshotSuccessEnvelope,
   FactoryActivitySuccessEnvelope,
   CreateRunAcceptedResponse,
   FactoryArtifactListSuccessEnvelope,
@@ -34,6 +36,10 @@ import { readLocalRunEvents } from "@gaia/runtime/run-read-api";
 import {
   GaiaRuntimeError,
   makeLocalRunReadIndex,
+  dispatchAgentSessionAction,
+  makeLiveHarnessSessionCoordinator,
+  readAgentSessionSnapshot,
+  streamAgentSessionUpdates,
   type LocalRunReadIndex,
 } from "@gaia/runtime";
 import { Cause, Context, Effect, FileSystem, Layer, Path, Schema, Scope, Stream } from "effect";
@@ -75,6 +81,7 @@ type LocalServerConfigValue = LocalServerIdentity & {
   readonly runIndex: LocalRunReadIndex;
   readonly runRegistry: ServerRunRegistryService;
   readonly runScope: Scope.Scope;
+  readonly sessionCoordinator: ReturnType<typeof makeLiveHarnessSessionCoordinator>;
   readonly workflowOptions: ServerWorkflowOptions;
 };
 
@@ -245,6 +252,32 @@ export const RunsLive = HttpApiBuilder.group(
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
         }),
       )
+      .handle("getAgentSession", ({ params }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(readAgentSessionSnapshot(params.runId, params.agentId, { rootDirectory: identity.rootDirectory }));
+          if (exit._tag === "Failure") return yield* Effect.fail(readApiErrorFromCause(exit.cause));
+          return AgentSessionSnapshotSuccessEnvelope.make({ data: exit.value, status: "success" });
+        }),
+      )
+      .handle("streamAgentSession", ({ params, query }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const stream = yield* streamAgentSessionUpdates(params.runId, params.agentId, query.afterSequence, { rootDirectory: identity.rootDirectory });
+          return stream.pipe(
+            Stream.map((update) => ({ data: update, event: "agent-session-update" as const, id: String(update.eventSequence) })),
+            Stream.mapError(streamApiError),
+          );
+        }).pipe(Effect.mapError((error) => actionApiErrorFromCause(Cause.fail(error)))),
+      )
+      .handle("actOnAgentSession", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(dispatchAgentSessionAction({ action: payload, agentId: params.agentId, coordinator: identity.sessionCoordinator, options: { rootDirectory: identity.rootDirectory }, runId: params.runId }));
+          if (exit._tag === "Failure") return yield* Effect.fail(actionApiErrorFromCause(exit.cause));
+          return AgentActionSuccessEnvelope.make({ data: exit.value, status: "success" });
+        }),
+      )
       .handle("listRunArtifacts", ({ params }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
@@ -345,12 +378,15 @@ export function makeLocalGaiaServerLayer(
         rootDirectory: identity.rootDirectory,
       });
       const runRegistry = yield* makeServerRunRegistry();
+      const sessionCoordinator = makeLiveHarnessSessionCoordinator();
+      yield* Effect.addFinalizer(() => sessionCoordinator.shutdown);
       const runScope = yield* Scope.make();
       yield* Effect.addFinalizer((exit) => Scope.close(runScope, exit));
       for (const runId of resumableRunIds) {
         yield* continueServerRun(runId, {
           ...workflowOptions,
           rootDirectory: identity.rootDirectory,
+          sessionCoordinator,
         }).pipe(
           Effect.matchEffect({
             onFailure: (error) =>
@@ -363,12 +399,14 @@ export function makeLocalGaiaServerLayer(
           Effect.forkIn(runScope),
         );
       }
+      const scopedWorkflowOptions = { ...workflowOptions, sessionCoordinator };
       return {
         ...identity,
         runIndex,
         runRegistry,
         runScope,
-        workflowOptions,
+        sessionCoordinator,
+        workflowOptions: scopedWorkflowOptions,
       } satisfies LocalServerConfigValue;
     }),
   );
@@ -644,7 +682,8 @@ function isAllowedMethod(method: string, url: string) {
     return true;
   }
 
-  return method === "POST" && pathnameFromUrl(url) === "/runs";
+  const path = pathnameFromUrl(url);
+  return method === "POST" && (path === "/runs" || /^\/runs\/[^/]+\/agents\/[^/]+\/session\/actions$/u.test(path));
 }
 
 function pathnameFromUrl(url: string) {
@@ -679,6 +718,8 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
     case "MethodNotAllowed":
       return 405;
     case "ActiveRunConflict":
+    case "AgentActionConflict":
+    case "AgentStreamCursorConflict":
     case "RunStoreLocked":
       return 409;
     case "HarnessAuthenticationRequired":
@@ -686,6 +727,7 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
     case "HarnessIncompatible":
     case "HarnessProfileNotFound":
     case "HarnessUnavailable":
+    case "AgentSessionUnavailable":
     case "InvalidRunDirectory":
     case "RunHasNoEvents":
     case "RunUnreadable":
@@ -715,6 +757,17 @@ function apiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunCreateApiError 
   return internalApiError(cause);
 }
 
+function actionApiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunActionApiError {
+  const diagnostic = causeToDiagnostic(cause);
+  switch (diagnostic.code) {
+    case "AgentActionConflict":
+    case "AgentStreamCursorConflict":
+      return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
+    default:
+      return readApiError(diagnostic);
+  }
+}
+
 function causeToDiagnostic(cause: Cause.Cause<unknown>): ApiDiagnostic {
   for (const reason of cause.reasons) {
     if (Cause.isFailReason(reason) && isRuntimeDiagnostic(reason.error)) {
@@ -722,6 +775,8 @@ function causeToDiagnostic(cause: Cause.Cause<unknown>): ApiDiagnostic {
     }
 
     if (Cause.isDieReason(reason)) {
+      const defect = "defect" in reason ? reason.defect : undefined;
+      if (isRuntimeDiagnostic(defect)) return defect;
       return {
         code: "InternalServerError",
         message: "Local Gaia API request failed.",
@@ -798,6 +853,7 @@ function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
     case "HarnessIncompatible":
     case "HarnessProfileNotFound":
     case "HarnessUnavailable":
+    case "AgentSessionUnavailable":
       return LocalRunApiUnprocessable.make({
         ...diagnostic,
         code: diagnostic.code,
@@ -822,6 +878,8 @@ function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
         status: 422,
       });
     case "ActiveRunConflict":
+    case "AgentActionConflict":
+    case "AgentStreamCursorConflict":
     case "RunStoreLocked":
     case "InternalServerError":
     case "MethodNotAllowed":
@@ -837,6 +895,16 @@ function methodNotAllowedApiError(
     code: "MethodNotAllowed",
     status: 405,
   });
+}
+
+function publicDiagnosticFields(diagnostic: ApiDiagnostic) {
+  return {
+    ...(diagnostic.artifactName === undefined ? {} : { artifactName: diagnostic.artifactName }),
+    message: diagnostic.message,
+    ...(diagnostic.pathSegment === undefined ? {} : { pathSegment: diagnostic.pathSegment }),
+    recoverable: diagnostic.recoverable,
+    ...(diagnostic.runId === undefined ? {} : { runId: diagnostic.runId }),
+  };
 }
 
 function apiError(
@@ -909,6 +977,9 @@ function apiError(
         code: "ActiveRunConflict",
         status: 409,
       });
+    case "AgentActionConflict":
+    case "AgentStreamCursorConflict":
+      return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
     case "RunStoreLocked":
       return LocalRunApiConflict.make({
         ...diagnostic,
@@ -920,6 +991,7 @@ function apiError(
     case "HarnessIncompatible":
     case "HarnessProfileNotFound":
     case "HarnessUnavailable":
+    case "AgentSessionUnavailable":
       return LocalRunApiUnprocessable.make({
         ...diagnostic,
         code: diagnostic.code,
@@ -990,6 +1062,9 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
         code: "ActiveRunConflict",
         status: 409,
       });
+    case "AgentActionConflict":
+    case "AgentStreamCursorConflict":
+      return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
     case "RunStoreLocked":
       return LocalRunApiConflict.make({
         ...diagnostic,
@@ -1001,6 +1076,7 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
     case "HarnessIncompatible":
     case "HarnessProfileNotFound":
     case "HarnessUnavailable":
+    case "AgentSessionUnavailable":
       return LocalRunApiUnprocessable.make({
         ...diagnostic,
         code: diagnostic.code,
@@ -1219,6 +1295,9 @@ type LocalRunCreateApiError =
   | typeof LocalRunApiConflict.Type
   | typeof LocalRunApiUnprocessable.Type
   | typeof LocalRunApiInternalServerError.Type;
+type LocalRunActionApiError =
+  | LocalRunReadApiError
+  | typeof LocalRunApiConflict.Type;
 
 function internalApiError(error: unknown): typeof LocalRunApiInternalServerError.Type {
   const message =

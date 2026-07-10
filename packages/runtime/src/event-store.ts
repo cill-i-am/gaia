@@ -13,7 +13,7 @@ import {
   type RunId,
   RunSnapshot,
 } from "@gaia/core";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, FileSystem, PartitionedSemaphore, Queue, Schema, Stream } from "effect";
 import { makeRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
 
@@ -27,7 +27,30 @@ export type LoadedRunState = {
   readonly latestSnapshot: RunSnapshot | undefined;
 };
 
+type RunSubscriber = {
+  overflowed: boolean;
+  readonly queue: Queue.Queue<RunEvent>;
+};
+const runEventSemaphore = PartitionedSemaphore.makeUnsafe<string>({ permits: 1 });
+const runSubscribers = new Map<string, Set<RunSubscriber>>();
+
+/** Serialize sequence allocation, persistence, validation, and publication per run log. */
+export function withRunEventSerialization<A, E, R>(
+  paths: RunPaths,
+  effect: Effect.Effect<A, E, R>,
+) {
+  return runEventSemaphore.withPermits(paths.events, 1)(effect);
+}
+
 export function appendEvent(
+  runId: RunId,
+  paths: RunPaths,
+  input: AppendEventInput,
+) {
+  return withRunEventSerialization(paths, appendEventWithinSerialization(runId, paths, input));
+}
+
+function appendEventWithinSerialization(
   runId: RunId,
   paths: RunPaths,
   input: AppendEventInput,
@@ -73,12 +96,25 @@ export function appendEvent(
       Schema.encodeSync(RunSnapshot)(snapshot),
     );
 
+    yield* publishRunEvent(paths, event);
     return { event, snapshot };
   }).pipe(Effect.uninterruptible);
 }
 
 /** Append one finite, bounded provider-neutral harness event to events.jsonl. */
 export function appendHarnessSessionEvent(
+  runId: RunId,
+  paths: RunPaths,
+  input: HarnessEvent,
+) {
+  return withRunEventSerialization(
+    paths,
+    appendHarnessSessionEventWithinSerialization(runId, paths, input),
+  );
+}
+
+/** Append while the caller already owns the per-run serialization permit. */
+export function appendHarnessSessionEventWithinSerialization(
   runId: RunId,
   paths: RunPaths,
   input: HarnessEvent,
@@ -100,9 +136,66 @@ export function appendHarnessSessionEvent(
       paths.snapshots,
       Schema.encodeSync(RunSnapshot)(snapshot),
     );
-
+    yield* publishRunEvent(paths, event);
     return { event, snapshot };
   }).pipe(Effect.uninterruptible);
+}
+
+/** Subscriber-first atomic snapshot used for gap-free backlog/live handoff. */
+export function subscribeRunEventFeed(paths: RunPaths, capacity = 256) {
+  return Effect.acquireRelease(
+    withRunEventSerialization(
+      paths,
+      Effect.gen(function* () {
+        const queue = yield* Queue.dropping<RunEvent>(capacity);
+        const subscriber: RunSubscriber = { overflowed: false, queue };
+        const subscribers = runSubscribers.get(paths.events) ?? new Set<RunSubscriber>();
+        subscribers.add(subscriber);
+        runSubscribers.set(paths.events, subscribers);
+        const backlog = yield* readEvents(paths);
+        return {
+          backlog,
+          highWater: backlog.at(-1)?.sequence ?? 0,
+          live: Stream.fromQueue(queue).pipe(
+            Stream.concat(
+              Stream.fromEffect(
+                Effect.suspend(() =>
+                  subscriber.overflowed
+                    ? Effect.fail(makeRuntimeError({ code: "RunEventFeedOverflow", message: "Run event subscriber exceeded its bounded capacity.", recoverable: true }))
+                    : Effect.void,
+                ),
+              ).pipe(Stream.drain),
+            ),
+          ),
+          subscriber,
+        };
+      }),
+    ),
+    ({ subscriber }) =>
+      withRunEventSerialization(
+        paths,
+        Effect.gen(function* () {
+          const subscribers = runSubscribers.get(paths.events);
+          subscribers?.delete(subscriber);
+          if (subscribers?.size === 0) runSubscribers.delete(paths.events);
+          yield* Queue.shutdown(subscriber.queue);
+        }),
+      ),
+  ).pipe(
+    Effect.map(({ subscriber: _subscriber, ...subscription }) => subscription),
+  );
+}
+
+function publishRunEvent(paths: RunPaths, event: RunEvent) {
+  return Effect.gen(function* () {
+    for (const subscriber of runSubscribers.get(paths.events) ?? []) {
+      const accepted = yield* Queue.offer(subscriber.queue, event);
+      if (!accepted) {
+        subscriber.overflowed = true;
+        yield* Queue.shutdown(subscriber.queue);
+      }
+    }
+  });
 }
 
 export function loadRun(

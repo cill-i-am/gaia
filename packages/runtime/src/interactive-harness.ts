@@ -21,6 +21,8 @@ import {
   startHarnessSession,
   type HarnessProvider,
 } from "./harness-session.js";
+import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
+import { issueDeliveryAgentIds } from "./factory-workflows.js";
 import { issueDeliveryWorkerHarnessCapabilities } from "./harness-provider-registry.js";
 import { makeRunPaths } from "./paths.js";
 import {
@@ -35,6 +37,7 @@ const encodeHarnessRunResult = Schema.encodeSync(HarnessRunResultJson);
 
 /** Adapt one provider-neutral interactive session into the existing worker stage. */
 export function interactiveSessionHarness(input: {
+  readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly provider?: HarnessProvider;
   readonly rootDirectory: string;
 }): GaiaHarness {
@@ -98,6 +101,14 @@ export function interactiveSessionHarness(input: {
                     },
                     requiredCapabilities: issueDeliveryWorkerHarnessCapabilities,
                   });
+              if (input.sessionCoordinator !== undefined) {
+                yield* input.sessionCoordinator.register({
+                  agentId: issueDeliveryAgentIds.worker,
+                  runId: request.runId,
+                  session,
+                  sessionId,
+                });
+              }
               const last = yield* session.events.pipe(
                 Stream.tap((event) =>
                   appendHarnessSessionEvent(request.runId, paths, event),

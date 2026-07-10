@@ -547,6 +547,14 @@ export const HarnessFailureSchema = Schema.Union([
 export type HarnessFailure = typeof HarnessFailureSchema.Type;
 
 const SessionEventBase = { sessionId: HarnessSessionIdSchema } as const;
+const OperatorActionBase = {
+  ...SessionEventBase,
+  actionId: HarnessActionIdSchema,
+  actionKind: Schema.Literals(["followUp", "steer", "interrupt", "approval", "userInput", "mcpElicitation"] as const),
+  agentId: IdTextSchema,
+  payloadDigest: Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))),
+  targetId: Schema.optionalKey(IdTextSchema),
+} as const;
 
 /** Finite authoritative event vocabulary used inside Gaia run events. */
 export const HarnessEventSchema = Schema.Union([
@@ -614,6 +622,10 @@ export const HarnessEventSchema = Schema.Union([
     failure: HarnessFailureSchema,
     kind: Schema.Literal("sessionFailed"),
   }),
+  Schema.Struct({ ...OperatorActionBase, kind: Schema.Literal("operatorActionIntentRecorded") }),
+  Schema.Struct({ ...OperatorActionBase, kind: Schema.Literal("operatorActionDispatchAttempted") }),
+  Schema.Struct({ ...OperatorActionBase, kind: Schema.Literal("operatorActionDispatchConfirmed") }),
+  Schema.Struct({ ...OperatorActionBase, kind: Schema.Literal("operatorActionDispatchFailed"), message: BoundedTextSchema }),
 ]);
 /** A decoded authoritative provider-neutral session event. */
 export type HarnessEvent = typeof HarnessEventSchema.Type;
@@ -963,6 +975,11 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
       projection.state = "failed";
       projection.terminal = true;
       projection.pendingInteractions.clear();
+      return;
+    case "operatorActionIntentRecorded":
+    case "operatorActionDispatchAttempted":
+    case "operatorActionDispatchConfirmed":
+    case "operatorActionDispatchFailed":
       return;
   }
 }

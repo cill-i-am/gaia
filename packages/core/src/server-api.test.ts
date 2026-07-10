@@ -12,6 +12,9 @@ describe("LocalGaiaServerApi contract", () => {
       "/runs/{runId}",
       "/runs/{runId}/activity",
       "/runs/{runId}/agents/{agentId}/activity",
+      "/runs/{runId}/agents/{agentId}/session",
+      "/runs/{runId}/agents/{agentId}/session/actions",
+      "/runs/{runId}/agents/{agentId}/session/stream",
       "/runs/{runId}/artifacts/{artifactId}",
       "/runs/{runId}/artifacts",
       "/runs/{runId}/factory-graph",
@@ -24,6 +27,9 @@ describe("LocalGaiaServerApi contract", () => {
     assert.isUndefined(paths["/runs/{runId}/events/stream"]);
     assert.isObject(paths["/runs/{runId}/activity"]?.get);
     assert.isObject(paths["/runs/{runId}/agents/{agentId}/activity"]?.get);
+    assert.isObject(paths["/runs/{runId}/agents/{agentId}/session"]?.get);
+    assert.isObject(paths["/runs/{runId}/agents/{agentId}/session/actions"]?.post);
+    assert.isObject(paths["/runs/{runId}/agents/{agentId}/session/stream"]?.get);
     assert.isObject(paths["/runs/{runId}/artifacts"]?.get);
     assert.isObject(paths["/runs/{runId}/artifacts/{artifactId}"]?.get);
     assert.isObject(paths["/runs/{runId}/factory-graph"]?.get);
@@ -74,6 +80,26 @@ describe("LocalGaiaServerApi contract", () => {
     assert.deepEqual(
       responseStatuses(paths["/runs/{runId}/agents/{agentId}/activity"]?.get?.responses),
       ["200", "400", "404", "422", "500"],
+    );
+    assert.deepEqual(
+      responseStatuses(paths["/runs/{runId}/agents/{agentId}/session"]?.get?.responses),
+      ["200", "400", "404", "422", "500"],
+    );
+    assertJsonSchemaRef(
+      paths["/runs/{runId}/agents/{agentId}/session"]?.get?.responses["200"],
+      "#/components/schemas/AgentSessionSnapshotSuccessEnvelope",
+    );
+    assert.deepEqual(
+      responseStatuses(paths["/runs/{runId}/agents/{agentId}/session/stream"]?.get?.responses),
+      ["200", "400", "404", "409", "405", "422", "500"].sort(),
+    );
+    assert.deepEqual(
+      responseStatuses(paths["/runs/{runId}/agents/{agentId}/session/actions"]?.post?.responses),
+      ["200", "400", "404", "409", "422", "500"],
+    );
+    assertJsonSchemaRef(
+      paths["/runs/{runId}/agents/{agentId}/session/actions"]?.post?.responses["200"],
+      "#/components/schemas/AgentActionSuccessEnvelope",
     );
     assert.deepEqual(
       responseStatuses(paths["/runs/{runId}/artifacts"]?.get?.responses),

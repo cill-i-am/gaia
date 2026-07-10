@@ -1020,6 +1020,14 @@ function harnessActivityLabel(event: ReturnType<typeof parseHarnessEvent>) {
       return "Harness session recovered";
     case "sessionFailed":
       return "Harness session failed";
+    case "operatorActionIntentRecorded":
+      return "Operator action recorded";
+    case "operatorActionDispatchAttempted":
+      return "Operator action dispatched";
+    case "operatorActionDispatchConfirmed":
+      return "Operator action confirmed";
+    case "operatorActionDispatchFailed":
+      return "Operator action failed";
   }
 }
 
