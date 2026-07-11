@@ -29,7 +29,7 @@ import {
 } from "./codex-harness-provider.js";
 import { resumeHarnessSession, startHarnessSession } from "./harness-session.js";
 
-function recordingClient() {
+function recordingClient(recoveredTurns: ReadonlyArray<{ readonly id: ReturnType<typeof parseCodexTurnId>; readonly status: "inProgress" | "completed" | "failed" }> = []) {
   const notifications = new Set<(notification: CodexNotification) => void>();
   const requests = new Set<(request: CodexServerRequest) => void>();
   const terminations = new Set<(error: CodexAppServerError) => void>();
@@ -52,7 +52,7 @@ function recordingClient() {
     readThread: (params) => {
       reads.push(params);
       return Effect.succeed({
-        thread: { id: threadId, status: { type: "idle" as const }, turns: [] },
+        thread: { id: threadId, status: { type: "idle" as const }, turns: [...recoveredTurns] },
       });
     },
     respondCommandApproval: () => Effect.void,
@@ -81,6 +81,15 @@ function recordingClient() {
 }
 
 describe("Codex HarnessProvider adapter", () => {
+  it.each(["inProgress", "completed", "failed"] as const)("replays the exact checkpointed %s turn without starting another turn", async (status) => {
+    const sessionId = parseHarnessSessionId(`session-exact-${status}`);
+    const store = makeInMemoryCodexHarnessCorrelationStore();
+    const first = recordingClient();
+    await Effect.runPromise(Effect.scoped(startHarnessSession({ provider: createCodexHarnessProvider({ client: first.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { input: { text: "start" }, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] })));
+    const second = recordingClient([{ id: first.turnId, status }]);
+    await Effect.runPromise(Effect.scoped(resumeHarnessSession({ provider: createCodexHarnessProvider({ client: second.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { expectedNativeTurnId: first.turnId, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] })));
+    expect(second.starts).toEqual([]);
+  });
   it("round-trips strict durable private correlation and rejects corrupt state", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "gaia-codex-correlation-"));
     const sessionId = parseHarnessSessionId("session-durable-correlation");

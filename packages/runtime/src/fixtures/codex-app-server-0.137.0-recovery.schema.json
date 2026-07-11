@@ -1,16 +1,38 @@
 {
-  "generatedBy": "codex-cli 0.137.0 app-server generate-json-schema --experimental",
+  "generatedBy": "codex-cli 0.137.0",
   "modelListResponse": {
-    "required": ["data"],
-    "modelRequired": ["defaultReasoningEffort", "description", "displayName", "hidden", "id", "isDefault", "model", "supportedReasoningEfforts"]
+    "modelRequired": [
+      "defaultReasoningEffort",
+      "description",
+      "displayName",
+      "hidden",
+      "id",
+      "isDefault",
+      "model",
+      "supportedReasoningEfforts"
+    ],
+    "required": [
+      "data"
+    ]
   },
+  "modelListResponseSha256": "3f5fa03c453f92565a2612e6b5dfee6a0454476e4363ef99604a009cba7944a2",
   "turnStartParams": {
-    "required": ["input", "threadId"],
     "properties": {
-      "clientUserMessageId": ["string", "null"],
+      "clientUserMessageId": [
+        "string",
+        "null"
+      ],
       "input": "array",
-      "model": ["string", "null"],
+      "model": [
+        "string",
+        "null"
+      ],
       "threadId": "string"
-    }
-  }
+    },
+    "required": [
+      "input",
+      "threadId"
+    ]
+  },
+  "turnStartParamsSha256": "deb954971814db0fd6d516514c7326a22c09d377982f0a994701691a5f20b3d6"
 }

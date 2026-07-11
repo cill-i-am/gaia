@@ -1,12 +1,15 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { NodeFileSystem, NodePath } from "@effect/platform-node";
 import { RunEvent, WorkerRecoveryAction, makeRunEvent, parseHarnessEvent, parseHarnessProfileId, parseHarnessSessionId, parseRunId } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { makeRunPaths } from "./paths.js";
 import { recoverWorkerSession, type WorkerRecoveryProvider } from "./worker-recovery.js";
+import { inspectRecoverableDeliveryWorktreeOwnership, parseDeliveryProvenance, prepareDeliveryWorktree, type DeliveryProvenance } from "./git-delivery.js";
+import { actOnWorkerRecovery } from "./server-workflows.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -25,27 +28,52 @@ function fixture() {
   return { root, runId, paths };
 }
 function run<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>) { return Effect.runPromise(effect.pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer))); }
+const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+async function realOwnedFixture() {
+  const f = fixture(); rmSync(f.paths.workspace, { recursive: true, force: true });
+  git(f.root, "init", "-b", "main"); git(f.root, "config", "user.email", "gaia@test.invalid"); git(f.root, "config", "user.name", "Gaia Test");
+  writeFileSync(path.join(f.root, "README.md"), "base\n"); git(f.root, "add", "README.md"); git(f.root, "commit", "-m", "base");
+  const remote = mkdtempSync(path.join(tmpdir(), "gaia-worker-recovery-remote-")); roots.push(remote); git(remote, "init", "--bare"); git(f.root, "remote", "add", "origin", remote); git(f.root, "push", "-u", "origin", "main");
+  const head = git(f.root, "rev-parse", "HEAD");
+  const provenance: DeliveryProvenance = { baseBranch: "main", baseRevision: head, headBranch: "gaia/run-1234567890", mode: "pullRequest", remote: "origin" };
+  const lines = readFileSync(f.paths.events, "utf8").trim().split("\n"); const created = JSON.parse(lines[0]!); created.payload.delivery = provenance; lines[0] = JSON.stringify(created); writeFileSync(f.paths.events, `${lines.join("\n").replaceAll("a".repeat(40), head)}\n`);
+  await run(prepareDeliveryWorktree({ options: { rootDirectory: f.root }, paths: f.paths, provenance }));
+  const validateWorkspace = () => Effect.gen(function* () { const latest = JSON.parse(readFileSync(f.paths.events, "utf8").split("\n")[0]!); const accepted = parseDeliveryProvenance(latest.payload.delivery); if (accepted._tag === "None") return yield* Effect.fail(new Error("invalid provenance")); yield* inspectRecoverableDeliveryWorktreeOwnership({ expectedHeads: [head], options: { rootDirectory: f.root }, paths: f.paths, provenance: accepted.value }); });
+  return { ...f, head, provenance, validateWorkspace };
+}
 const action = WorkerRecoveryAction.make({ actionId: "recover-1", expectedFailureSequence: 10, expectedSessionId: parseHarnessSessionId("session-run-1234567890"), harnessProfileId: parseHarnessProfileId("codexAppServer"), kind: "retryRecoverableWorkerFailure", model: "gpt-5.4" });
 
 describe("recoverWorkerSession", () => {
-  it.each(["path", "common-dir", "repository", "base", "branch-plan", "ownership-digest", "primary-identity", "cleanliness", "registration"])("rejects %s identity drift with zero events and zero provider calls", async () => {
-    const f = fixture(); const before = readFileSync(f.paths.events, "utf8"); let calls = 0;
+  it.each([
+    ["path", (f: Awaited<ReturnType<typeof realOwnedFixture>>, manifest: Record<string, unknown>) => { manifest.workspaceRoot = `${f.paths.workspace}-other`; }],
+    ["common-dir", (_f: Awaited<ReturnType<typeof realOwnedFixture>>, manifest: Record<string, unknown>) => { manifest.workspaceCommonDir = "/wrong/common"; }],
+    ["repository", (_f: Awaited<ReturnType<typeof realOwnedFixture>>, manifest: Record<string, unknown>) => { manifest.repositoryRoot = "/wrong/repository"; }],
+    ["base", (_f: Awaited<ReturnType<typeof realOwnedFixture>>, manifest: Record<string, unknown>) => { manifest.baseRevision = "b".repeat(40); }],
+    ["branch-plan", (f: Awaited<ReturnType<typeof realOwnedFixture>>) => { const lines = readFileSync(f.paths.events, "utf8").trim().split("\n"); const created = JSON.parse(lines[0]!); created.payload.delivery.headBranch = "gaia/other"; lines[0] = JSON.stringify(created); writeFileSync(f.paths.events, `${lines.join("\n")}\n`); }],
+    ["ownership-digest", (_f: Awaited<ReturnType<typeof realOwnedFixture>>, manifest: Record<string, unknown>) => { manifest.token = "wrong"; }],
+    ["primary-identity", (f: Awaited<ReturnType<typeof realOwnedFixture>>, manifest: Record<string, unknown>) => { manifest.workspaceRoot = f.root; }],
+    ["cleanliness", (f: Awaited<ReturnType<typeof realOwnedFixture>>) => { writeFileSync(path.join(f.paths.workspace, "dirty.txt"), "dirty\n"); }],
+    ["registration", (f: Awaited<ReturnType<typeof realOwnedFixture>>) => { git(f.root, "worktree", "remove", f.paths.workspace); mkdirSync(f.paths.workspace); }],
+  ] as const)("rejects real %s identity drift with zero events and zero provider calls", async (_name, mutate) => {
+    const f = await realOwnedFixture(); let calls = 0;
+    const manifest = JSON.parse(readFileSync(f.paths.deliveryOwnershipManifest, "utf8")); mutate(f, manifest); if (_name !== "cleanliness" && _name !== "registration" && _name !== "branch-plan") writeFileSync(f.paths.deliveryOwnershipManifest, JSON.stringify(manifest));
+    const before = readFileSync(f.paths.events, "utf8");
     const provider: WorkerRecoveryProvider = { listModels: () => Effect.sync(() => { calls++; return []; }), resumeThread: () => Effect.die("not called"), readThread: () => Effect.die("not called"), startTurn: () => Effect.die("not called") };
-    await expect(run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace: () => Effect.fail(new Error("identity drift")) }))).rejects.toBeTruthy();
+    await expect(run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace: f.validateWorkspace }))).rejects.toBeTruthy();
     expect(readFileSync(f.paths.events, "utf8")).toBe(before); expect(calls).toBe(0);
   });
 
-  it("runs the two-root A/B restart and non-mutation matrix without duplicate dispatch", async () => {
-    const f = fixture(); const rootA = process.cwd(); const beforeWorkspace = readFileSync(f.paths.events, "utf8"); let starts = 0;
+  it("runs the public server workflow A/B restart and non-mutation matrix against a real retained Git root", async () => {
+    const f = await realOwnedFixture(); const rootA = process.cwd(); const beforeHead = git(f.paths.workspace, "rev-parse", "HEAD"); const beforeStatus = git(f.paths.workspace, "status", "--porcelain"); const beforeCommon = git(f.paths.workspace, "rev-parse", "--path-format=absolute", "--git-common-dir"); const beforeInventory = git(f.root, "worktree", "list", "--porcelain"); let starts = 0;
     const provider: WorkerRecoveryProvider = { listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]), resumeThread: (threadId) => Effect.succeed({ threadId }), readThread: (threadId) => Effect.succeed({ active: false, systemError: true, threadId }), startTurn: () => Effect.sync(() => { starts++; return { turnId: "turn-recovery" }; }) };
-    const validateWorkspace = () => Effect.void;
     expect(rootA).not.toBe(f.root);
-    const confirmed = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace }));
+    const activate = (runId: string, request: typeof action) => recoverWorkerSession(runId, request, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace: f.validateWorkspace });
+    const confirmed = await run(actOnWorkerRecovery(f.runId, action, { rootDirectory: f.root, workerRecoveryActivator: activate }));
     expect(confirmed.state).toBe("dispatchConfirmed");
     if (confirmed.state !== "dispatchConfirmed") throw new Error("expected confirmed recovery");
-    const restarted = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace }));
+    const restarted = await run(actOnWorkerRecovery(f.runId, action, { rootDirectory: f.root, workerRecoveryActivator: activate }));
     expect(restarted).toMatchObject({ nativeTurnIdDigest: confirmed.nativeTurnIdDigest, state: "dispatchConfirmed" }); expect(starts).toBe(1);
-    expect(readFileSync(f.paths.events, "utf8")).toContain(beforeWorkspace.trim());
+    expect(git(f.paths.workspace, "rev-parse", "HEAD")).toBe(beforeHead); expect(git(f.paths.workspace, "status", "--porcelain")).toBe(beforeStatus); expect(git(f.paths.workspace, "rev-parse", "--path-format=absolute", "--git-common-dir")).toBe(beforeCommon); expect(git(f.root, "worktree", "list", "--porcelain")).toBe(beforeInventory);
   });
   it("preflights the same thread and dispatches exactly one explicit-model turn", async () => {
     const f = fixture(); const calls: string[] = [];

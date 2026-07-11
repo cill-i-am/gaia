@@ -364,10 +364,12 @@ export function createCodexHarnessProvider(
           });
         }
         if (request.expectedNativeTurnId !== undefined) {
-          const matches = (recovered.thread.turns ?? []).filter(({ id }) => id === request.expectedNativeTurnId);
-          if (matches.length !== 1 || matches[0]?.status !== "inProgress") {
+          const turns = recovered.thread.turns ?? [];
+          const matches = turns.filter(({ id }) => id === request.expectedNativeTurnId);
+          const exact = matches[0];
+          if (matches.length !== 1 || turns.at(-1)?.id !== request.expectedNativeTurnId || exact?.status === undefined || !["inProgress", "completed", "failed"].includes(exact.status)) {
             return yield* new HarnessResumeError({
-              message: "Codex recovered thread does not contain the exact checkpointed active turn.",
+              message: "Codex recovered thread does not end at the exact checkpointed turn.",
               providerId: CodexHarnessProviderDescriptor.providerId,
             });
           }
