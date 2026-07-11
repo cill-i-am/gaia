@@ -1,4 +1,5 @@
 import {
+  DeliveryFeedbackTrustPolicyV1,
   parseMarkdownSpec,
   HarnessExecutionSelection,
   parseHarnessEvent,
@@ -53,6 +54,7 @@ import {
 import {
   parseDeliveryProvenance,
   prepareDeliveryWorktree,
+  resolveDeliveryGitHubRepository,
   resolveDeliveryProvenance,
   type DeliveryProvenance,
   type GitDeliveryCommandRunner,
@@ -64,10 +66,10 @@ import {
 import type { GitHubCommandRunner } from "./github-publisher.js";
 import {
   continueDeliveryRemediation,
+  defaultDeliveryFeedbackTrustPolicy,
   type DeliveryPullRequestReader,
 } from "./delivery-remediation-coordinator.js";
 import type { DeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
-import type { DeliveryFeedbackTrustPolicyV1 } from "@gaia/core";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -881,6 +883,41 @@ function harnessAcceptanceError(error: unknown): GaiaRuntimeError {
   });
 }
 
+function acceptedDeliveryFeedbackTrustPolicy(
+  provenance: DeliveryProvenance,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    if (options.deliveryFeedbackTrustPolicy !== undefined) {
+      return yield* Effect.try({
+        try: () => Schema.decodeUnknownSync(DeliveryFeedbackTrustPolicyV1)(
+          options.deliveryFeedbackTrustPolicy,
+        ),
+        catch: (cause) => makeRuntimeError({
+          cause,
+          code: "DeliveryFeedbackTrustPolicyInvalid",
+          message: "Accepted delivery feedback trust policy is invalid.",
+          recoverable: false,
+        }),
+      });
+    }
+    const repository = yield* resolveDeliveryGitHubRepository({
+      rootDirectory: options.rootDirectory ?? ".",
+      ...(options.deliveryGitCommandRunner === undefined
+        ? {}
+        : { commandRunner: options.deliveryGitCommandRunner }),
+    }, provenance.remote);
+    return repository === undefined
+      ? DeliveryFeedbackTrustPolicyV1.make({
+          allowPullRequestAuthor: false,
+          trustedChecks: [],
+          trustedHumanLogins: [],
+          version: 1,
+        })
+      : defaultDeliveryFeedbackTrustPolicy(repository);
+  });
+}
+
 function factoryContinuationOptions(
   firstEvent: RunEvent,
   events: ReadonlyArray<RunEvent>,
@@ -902,10 +939,17 @@ function factoryContinuationOptions(
         provenance: delivery.provenance,
       });
       if (!events.some(({ type }) => type === "DELIVERY_STARTED")) {
+        const feedbackTrustPolicy = yield* acceptedDeliveryFeedbackTrustPolicy(
+          delivery.provenance,
+          options,
+        );
         yield* appendEvent(firstEvent.runId, paths, {
           payload: {
             delivery: {
               ...delivery.provenance,
+              feedbackTrustPolicy: Schema.encodeSync(
+                DeliveryFeedbackTrustPolicyV1,
+              )(feedbackTrustPolicy),
               mode: "pullRequest",
               stage: "delivering",
             },

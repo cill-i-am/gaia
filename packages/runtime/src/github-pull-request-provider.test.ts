@@ -216,6 +216,101 @@ describe("delivery GitHub pull request provider", () => {
     }),
   );
 
+  it.effect("retains bounded evidence but clears every remediation input when any surface is truncated", () =>
+    Effect.gen(function* () {
+      const surfaces = [
+        "comments",
+        "reviews",
+        "threads",
+        "thread comments",
+        "check suites",
+        "check runs",
+      ] as const;
+
+      for (const surface of surfaces) {
+        const result = yield* readGitHubPullRequest({
+          commandRunner: fixtureRunner([], truncatedFixture(surface)),
+          prNumber: 92,
+          repository: "cill-i-am/gaia",
+          rootDirectory: ".",
+          trustPolicy: trustPolicy(),
+        });
+        assert.deepEqual(result.remediationInputs, [], `${surface} truncation must fail closed`);
+        assert.isTrue(
+          result.observation.blockers.some(({ kind }) => kind === "feedbackTruncated"),
+          `${surface} truncation must remain operator-visible`,
+        );
+        assert.isAbove(result.observation.feedback.length, 0);
+        assert.isAbove(result.observation.checks.length, 0);
+      }
+    }),
+  );
+
+  it.effect("requires one exact trusted hosted-check identity before a pull request can be ready", () =>
+    Effect.gen(function* () {
+      const trusted = yield* readGitHubPullRequest({
+        commandRunner: fixtureRunner([], readyPullRequestFixture()),
+        prNumber: 92,
+        repository: "cill-i-am/gaia",
+        rootDirectory: ".",
+        trustPolicy: trustPolicy(),
+      });
+      assert.strictEqual(trusted.observation.status, "ready");
+
+      const mismatches = [
+        {
+          mutate: (fixture: PullRequestFixture) => {
+            fixtureParts(fixture).suite.app = { slug: "another-app" };
+          },
+          name: "app",
+        },
+        {
+          mutate: (fixture: PullRequestFixture) => {
+            fixtureParts(fixture).suite.workflowRun = {
+                workflow: { name: "Another Workflow" },
+              };
+          },
+          name: "workflow",
+        },
+        {
+          mutate: (fixture: PullRequestFixture) => {
+            fixtureParts(fixture).check.name = "another-check";
+          },
+          name: "name",
+        },
+      ];
+      for (const mismatch of mismatches) {
+        const fixture = readyPullRequestFixture();
+        mismatch.mutate(fixture);
+        const result = yield* readGitHubPullRequest({
+          commandRunner: fixtureRunner([], fixture),
+          prNumber: 92,
+          repository: "cill-i-am/gaia",
+          rootDirectory: ".",
+          trustPolicy: trustPolicy(),
+        });
+        assert.strictEqual(result.observation.checks[0]?.classification, "untrusted");
+        assert.isTrue(
+          result.observation.blockers.some(({ kind }) => kind === "missingHostedChecks"),
+          `wrong ${mismatch.name} must not satisfy hosted-check presence`,
+        );
+        assert.notStrictEqual(result.observation.status, "ready");
+        assert.deepEqual(result.remediationInputs, []);
+      }
+
+      const wrongHead = readyPullRequestFixture();
+      fixtureParts(wrongHead).commit.oid = "b".repeat(40);
+      const wrongHeadExit = yield* readGitHubPullRequest({
+        commandRunner: fixtureRunner([], wrongHead),
+        prNumber: 92,
+        repository: "cill-i-am/gaia",
+        rootDirectory: ".",
+        trustPolicy: trustPolicy(),
+      }).pipe(Effect.exit);
+      assert.strictEqual(wrongHeadExit._tag, "Failure");
+    }),
+  );
+
   it.effect("rejects excess provider response fields", () =>
     readGitHubPullRequest({
       commandRunner: fixtureRunner([], {
@@ -411,6 +506,76 @@ function pullRequestFixture() {
       },
     },
   };
+}
+
+type PullRequestFixture = ReturnType<typeof pullRequestFixture>;
+
+function readyPullRequestFixture() {
+  const fixture = pullRequestFixture();
+  const pr = fixture.data.repository.pullRequest;
+  pr.comments.nodes = [];
+  pr.reviews.nodes = [];
+  pr.reviewThreads.nodes = [];
+  pr.reviewDecision = "APPROVED";
+  fixtureParts(fixture).check.conclusion = "SUCCESS";
+  return fixture;
+}
+
+function truncatedFixture(
+  surface:
+    | "check runs"
+    | "check suites"
+    | "comments"
+    | "reviews"
+    | "thread comments"
+    | "threads",
+) {
+  const fixture = pullRequestFixture();
+  const pr = fixture.data.repository.pullRequest;
+  switch (surface) {
+    case "comments":
+      pr.comments.pageInfo.hasNextPage = true;
+      break;
+    case "reviews":
+      pr.reviews.pageInfo.hasNextPage = true;
+      break;
+    case "threads":
+      pr.reviewThreads.pageInfo.hasNextPage = true;
+      break;
+    case "thread comments":
+      fixtureThread(fixture).comments.pageInfo.hasNextPage = true;
+      break;
+    case "check suites":
+      fixtureParts(fixture).commit.checkSuites.pageInfo.hasNextPage = true;
+      break;
+    case "check runs":
+      fixtureParts(fixture).suite.checkRuns.pageInfo.hasNextPage = true;
+      break;
+  }
+  return fixture;
+}
+
+function fixtureParts(fixture: PullRequestFixture) {
+  const pr = fixture.data.repository.pullRequest;
+  const commit = pr.commits.nodes[0]?.commit;
+  const suite = commit?.checkSuites.nodes[0];
+  const check = suite?.checkRuns.nodes[0];
+  if (
+    commit === undefined ||
+    suite === undefined ||
+    check === undefined
+  ) {
+    throw new Error("Expected complete pull-request fixture surfaces.");
+  }
+  return { check, commit, pr, suite };
+}
+
+function fixtureThread(fixture: PullRequestFixture) {
+  const thread = fixture.data.repository.pullRequest.reviewThreads.nodes[0];
+  if (thread === undefined) {
+    throw new Error("Expected a pull-request review-thread fixture.");
+  }
+  return thread;
 }
 
 function controlledCommentFixture(input: {

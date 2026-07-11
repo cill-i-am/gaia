@@ -3,12 +3,14 @@ import { layer } from "@effect/vitest";
 import {
   DeliveryBlocker,
   DeliveryCheckObservation,
+  DeliveryFeedbackTrustPolicyV1,
   DeliveryPublicationAttempted,
   DeliveryPublicationConfirmed,
   DeliveryPublicationIntent,
   DeliveryPullRequestObservation,
   DeliveryRemediationDispatchAttempted,
   DeliveryRemediationIntent,
+  DeliveryTrustedCheckV1,
   HarnessCapabilities,
   HarnessExecutionSelection,
   HarnessProviderDescriptor,
@@ -17,6 +19,7 @@ import {
   encodeDeliveryPublicationJson,
   encodeDeliveryRemediationJson,
   parseDeliveryFeedbackId,
+  parseDeliveryPullRequestObservation,
   parseDeliveryRemediation,
   parseHarnessSessionId,
   parseHarnessItemId,
@@ -119,7 +122,13 @@ describe("delivery remediation coordinator", () => {
           type: "RUN_CREATED",
         });
         yield* appendEvent(runId, paths, {
-          payload: { delivery: { ...provenance, stage: "delivering" } },
+          payload: {
+            delivery: {
+              ...provenance,
+              feedbackTrustPolicy: feedbackTrustPolicyJson(),
+              stage: "delivering",
+            },
+          },
           type: "DELIVERY_STARTED",
         });
         const publicationIntent = DeliveryPublicationIntent.make({
@@ -370,7 +379,13 @@ describe("delivery remediation coordinator", () => {
           type: "RUN_CREATED",
         });
         yield* appendEvent(runId, paths, {
-          payload: { delivery: { ...provenance, stage: "delivering" } },
+          payload: {
+            delivery: {
+              ...provenance,
+              feedbackTrustPolicy: feedbackTrustPolicyJson(),
+              stage: "delivering",
+            },
+          },
           type: "DELIVERY_STARTED",
         });
         const publicationIntent = DeliveryPublicationIntent.make({
@@ -518,6 +533,160 @@ describe("delivery remediation coordinator", () => {
       })),
       20_000,
     );
+
+    it.effect("never reserves remediation from a truncated provider read", () =>
+      Effect.scoped(Effect.gen(function* () {
+        const seeded = yield* setupPublishedCoordinatorRun();
+        const feedbackId = parseDeliveryFeedbackId(
+          `feedback-comment-${"9".repeat(64)}`,
+        );
+        const provider = recordingProvider(seeded.paths.workspace);
+        const result = yield* continueDeliveryRemediation(runId, {
+          harnessProviderRegistry: makeHarnessProviderRegistry([{
+            profileId: codexAppServerHarnessProfileId,
+            provider,
+          }]),
+          pullRequestReader: () => Effect.succeed({
+            observation: DeliveryPullRequestObservation.make({
+              blockers: [
+                DeliveryBlocker.make({
+                  feedbackIds: [feedbackId],
+                  kind: "actionableFeedback",
+                  summary: "A bounded item would otherwise be actionable.",
+                }),
+                DeliveryBlocker.make({
+                  feedbackIds: [],
+                  kind: "feedbackTruncated",
+                  summary: "GitHub evidence exceeded Gaia's bounded read.",
+                }),
+              ],
+              checks: [],
+              draft: true,
+              feedback: [],
+              headSha: seeded.oldHead,
+              mergeability: "mergeable",
+              observedAt: "2026-07-11T11:10:00.000Z",
+              prNumber: 92,
+              prUrl: seeded.publication.prUrl,
+              repository: "cill-i-am/gaia",
+              snapshotDigest: "9".repeat(64),
+              status: "blocked",
+              version: 1,
+            }),
+            remediationInputs: [{
+              id: feedbackId,
+              kind: "comment" as const,
+              text: "A bounded first-page request.",
+            }],
+          }),
+          refreshWorkerResult: () => Effect.void,
+          reverify: () => Effect.fail(new Error("must not verify")),
+          rootDirectory: seeded.root,
+          sessionCoordinator: makeLiveHarnessSessionCoordinator(),
+        });
+
+        expect(result.remediation).toBeUndefined();
+        expect(provider.prompts).toHaveLength(0);
+        expect((yield* readEvents(seeded.paths)).filter(
+          ({ type }) => type === "DELIVERY_REMEDIATION_RECORDED",
+        )).toHaveLength(0);
+      })),
+      20_000,
+    );
+
+    it.effect("records an owned ExpectedHeadChanged blocker before returning from a third-head race", () =>
+      Effect.scoped(Effect.gen(function* () {
+        const seeded = yield* setupPublishedCoordinatorRun();
+        const thirdHead = "3".repeat(40);
+        const result = yield* continueDeliveryRemediation(runId, {
+          pullRequestReader: () => Effect.succeed({
+            observation: DeliveryPullRequestObservation.make({
+              blockers: [],
+              checks: [],
+              draft: true,
+              feedback: [],
+              headSha: thirdHead,
+              mergeability: "mergeable",
+              observedAt: "2026-07-11T11:11:00.000Z",
+              prNumber: 92,
+              prUrl: seeded.publication.prUrl,
+              repository: "cill-i-am/gaia",
+              snapshotDigest: "3".repeat(64),
+              status: "waiting",
+              version: 1,
+            }),
+            remediationInputs: [],
+          }),
+          rootDirectory: seeded.root,
+        });
+
+        expect(result.observation.headSha).toBe(seeded.oldHead);
+        expect(result.observation.blockers).toEqual([
+          expect.objectContaining({ kind: "expectedHeadChanged" }),
+        ]);
+        const events = yield* readEvents(seeded.paths);
+        const persisted = events.filter(
+          ({ type }) => type === "GITHUB_PR_LOOP_RECORDED",
+        ).map((event) =>
+          parseDeliveryPullRequestObservation(event.payload["observation"])
+        );
+        expect(persisted).toHaveLength(1);
+        expect(persisted[0]?.headSha).toBe(seeded.oldHead);
+        expect(persisted[0]?.blockers).toEqual([
+          expect.objectContaining({ kind: "expectedHeadChanged" }),
+        ]);
+        expect(events.filter(
+          ({ type }) => type === "DELIVERY_REMEDIATION_RECORDED",
+        )).toHaveLength(0);
+      })),
+      20_000,
+    );
+
+    it.effect("replays the accepted feedback trust policy and rejects restart drift", () =>
+      Effect.scoped(Effect.gen(function* () {
+        const seeded = yield* setupPublishedCoordinatorRun();
+        const observedPolicies: DeliveryFeedbackTrustPolicyV1[] = [];
+        const reader: DeliveryPullRequestReader = (input) => Effect.sync(() => {
+          observedPolicies.push(input.trustPolicy);
+          return {
+            observation: DeliveryPullRequestObservation.make({
+              blockers: [],
+              checks: [],
+              draft: true,
+              feedback: [],
+              headSha: seeded.oldHead,
+              mergeability: "mergeable",
+              observedAt: "2026-07-11T11:12:00.000Z",
+              prNumber: 92,
+              prUrl: seeded.publication.prUrl,
+              repository: "cill-i-am/gaia",
+              snapshotDigest: "8".repeat(64),
+              status: "waiting",
+              version: 1,
+            }),
+            remediationInputs: [],
+          };
+        });
+        yield* continueDeliveryRemediation(runId, {
+          pullRequestReader: reader,
+          rootDirectory: seeded.root,
+        });
+        expect(observedPolicies).toEqual([feedbackTrustPolicy()]);
+
+        const drifted = DeliveryFeedbackTrustPolicyV1.make({
+          ...feedbackTrustPolicy(),
+          trustedHumanLogins: ["mallory"],
+        });
+        const driftExit = yield* continueDeliveryRemediation(runId, {
+          pullRequestReader: reader,
+          rootDirectory: seeded.root,
+          trustPolicy: drifted,
+        }).pipe(Effect.exit);
+        expect(driftExit._tag).toBe("Failure");
+        expect(observedPolicies).toHaveLength(1);
+      })),
+      20_000,
+    );
   });
 
   it("bounds quoted feedback and keeps the control instructions outside it", () => {
@@ -532,6 +701,147 @@ describe("delivery remediation coordinator", () => {
     expect(prompt).toContain("Do not mutate GitHub");
   });
 });
+
+function setupPublishedCoordinatorRun() {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectory({ prefix: "gaia-remediation-seed-" });
+    const remote = yield* fs.makeTempDirectory({
+      prefix: "gaia-remediation-seed-remote-",
+    });
+    git(remote, ["init", "--bare"]);
+    git(root, ["init", "-b", "main"]);
+    git(root, ["config", "user.name", "Test"]);
+    git(root, ["config", "user.email", "test@example.com"]);
+    writeFileSync(`${root}/base.txt`, "base\n", "utf8");
+    git(root, ["add", "base.txt"]);
+    git(root, ["commit", "-m", "initial"]);
+    git(root, ["remote", "add", "origin", remote]);
+    git(root, ["push", "-u", "origin", "main"]);
+
+    const provenance = yield* resolveDeliveryProvenance(runId, {
+      rootDirectory: root,
+    });
+    const paths = yield* makeRunPaths(runId, { rootDirectory: root });
+    yield* fs.makeDirectory(paths.root, { recursive: true });
+    yield* prepareDeliveryWorktree({ options: { rootDirectory: root }, paths, provenance });
+    git(paths.workspace, ["switch", "-c", provenance.headBranch]);
+    git(paths.workspace, [
+      "push",
+      "origin",
+      `HEAD:refs/heads/${provenance.headBranch}`,
+    ]);
+    yield* fs.writeFileString(paths.input, "# Remediate\n\nObserve safely.\n");
+    const oldHead = git(paths.workspace, ["rev-parse", "HEAD"]);
+    const treeSha = git(paths.workspace, ["rev-parse", "HEAD^{tree}"]);
+    const resolved = ResolvedHarnessExecution.make({
+      capabilities,
+      executionMode: "local",
+      harnessProfileId: codexAppServerHarnessProfileId,
+      provider: descriptor,
+      version: "test-1",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: {
+        delivery: provenance,
+        execution: {
+          resolved: Schema.encodeSync(ResolvedHarnessExecution)(resolved),
+          selection: { harnessProfileId: codexAppServerHarnessProfileId },
+        },
+        source: "server",
+        specPath: "input.md",
+        workflow: "issueDelivery",
+      },
+      type: "RUN_CREATED",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: {
+        delivery: {
+          ...provenance,
+          feedbackTrustPolicy: feedbackTrustPolicyJson(),
+          stage: "delivering",
+        },
+      },
+      type: "DELIVERY_STARTED",
+    });
+    const publicationIntent = DeliveryPublicationIntent.make({
+      baseBranch: provenance.baseBranch,
+      baseRevision: provenance.baseRevision,
+      branchName: provenance.headBranch,
+      commitMessage: `feat: deliver ${runId}`,
+      commitTimestamp: "2026-07-11T11:00:00.000Z",
+      digestVersion: 1,
+      operationId: `delivery:${runId}:1`,
+      payloadDigest: "a".repeat(64),
+      sourcePaths: ["base.txt"],
+      state: "intentRecorded",
+      treeSha,
+    });
+    const publicationAttempted = DeliveryPublicationAttempted.make({
+      ...publicationIntent,
+      commitSha: oldHead,
+      state: "attempted",
+      treeSha,
+    });
+    const publication = DeliveryPublicationConfirmed.make({
+      ...publicationAttempted,
+      draft: true,
+      headSha: oldHead,
+      prNumber: 92,
+      prUrl: "https://github.com/cill-i-am/gaia/pull/92",
+      state: "confirmed",
+    });
+    for (const [type, value] of [
+      ["DELIVERY_PUBLICATION_INTENT_RECORDED", publicationIntent],
+      ["DELIVERY_PUBLICATION_ATTEMPTED", publicationAttempted],
+      ["DELIVERY_PUBLICATION_CONFIRMED", publication],
+    ] as const) {
+      yield* appendEvent(runId, paths, {
+        payload: { publication: encodeDeliveryPublicationJson(value) },
+        type,
+      });
+    }
+    const sessionId = parseHarnessSessionId(`session-${runId}`);
+    const turnId = parseHarnessTurnId("turn-initial");
+    yield* appendHarnessSessionEvent(runId, paths, {
+      capabilities,
+      kind: "sessionStarted",
+      provider: descriptor,
+      sessionId,
+      state: "running",
+    });
+    yield* appendHarnessSessionEvent(runId, paths, {
+      kind: "turnStarted",
+      sessionId,
+      turnId,
+    });
+    yield* appendHarnessSessionEvent(runId, paths, {
+      kind: "turnCompleted",
+      sessionId,
+      status: "completed",
+      turnId,
+    });
+    return { oldHead, paths, provenance, publication, root } as const;
+  });
+}
+
+function feedbackTrustPolicy() {
+  return DeliveryFeedbackTrustPolicyV1.make({
+    allowPullRequestAuthor: false,
+    trustedChecks: [DeliveryTrustedCheckV1.make({
+      appSlug: "github-actions",
+      name: "gaia-pr-ci",
+      repository: "cill-i-am/gaia",
+      workflow: "Gaia PR CI",
+    })],
+    trustedHumanLogins: ["alice"],
+    version: 1,
+  });
+}
+
+function feedbackTrustPolicyJson() {
+  return Schema.encodeSync(DeliveryFeedbackTrustPolicyV1)(feedbackTrustPolicy());
+}
 
 function recordingProvider(workspace: string): HarnessProvider & { readonly prompts: string[] } {
   const prompts: string[] = [];

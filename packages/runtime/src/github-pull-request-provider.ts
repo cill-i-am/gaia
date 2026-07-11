@@ -498,7 +498,7 @@ function normalizePullRequest(input: {
       status,
       version: 1,
     }),
-    remediationInputs,
+    remediationInputs: truncated ? [] : remediationInputs,
   };
 }
 
@@ -602,9 +602,12 @@ function blockersFor(input: {
       summary: "A trusted hosted check failed.",
     }));
   }
-  if (input.checks.length === 0) {
-    blockers.push(DeliveryBlocker.make({ feedbackIds: [], kind: "missingHostedChecks", summary: "No hosted checks were reported." }));
-  } else if (input.checks.some(({ state }) => state === "pending")) {
+  const trustedChecks = input.checks.filter(
+    ({ classification }) => classification !== "untrusted",
+  );
+  if (trustedChecks.length === 0) {
+    blockers.push(DeliveryBlocker.make({ feedbackIds: [], kind: "missingHostedChecks", summary: "No trusted hosted checks were reported." }));
+  } else if (trustedChecks.some(({ state }) => state === "pending")) {
     blockers.push(DeliveryBlocker.make({ feedbackIds: [], kind: "pendingCheck", summary: "Hosted checks are still pending." }));
   }
   if (input.draft) blockers.push(DeliveryBlocker.make({ feedbackIds: [], kind: "draftPullRequest", summary: "The pull request is still a draft." }));

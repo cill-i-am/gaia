@@ -109,6 +109,39 @@ export function resolveDeliveryProvenance(
   });
 }
 
+/** Resolve a safe owner/repository tuple when the accepted remote is GitHub. */
+export function resolveDeliveryGitHubRepository(
+  options: DeliveryWorkspaceOptions,
+  remote = defaultRemote,
+) {
+  const runner = options.commandRunner ?? nodeGitDeliveryCommandRunner;
+  return runGit(runner, options.rootDirectory, ["remote", "get-url", remote]).pipe(
+    Effect.map(({ stdout }) => {
+      const raw = stdout.trim();
+      try {
+        const url = new URL(raw);
+        const parts = stripGitSuffix(url.pathname).split("/").filter(Boolean);
+        if (
+          url.hostname.toLowerCase() !== "github.com" ||
+          parts.length !== 2 ||
+          !/^[A-Za-z0-9_.-]+$/u.test(parts[0] ?? "") ||
+          !/^[A-Za-z0-9_.-]+$/u.test(parts[1] ?? "")
+        ) {
+          return undefined;
+        }
+        return `${parts[0]}/${parts[1]}`;
+      } catch {
+        const scp = /^(?:[^@\s]+@)?github\.com:([^/\s]+)\/([^/\s]+)$/u.exec(
+          stripGitSuffix(raw),
+        );
+        return scp?.[1] === undefined || scp[2] === undefined
+          ? undefined
+          : `${scp[1]}/${scp[2]}`;
+      }
+    }),
+  );
+}
+
 export function prepareDeliveryWorktree(input: {
   readonly options: DeliveryWorkspaceOptions;
   readonly paths: RunPaths;

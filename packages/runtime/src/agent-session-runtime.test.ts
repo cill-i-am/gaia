@@ -243,7 +243,7 @@ describe("agent session runtime", () => {
       })),
     );
 
-    it.effect("replaces a live handle only with a newer generation and ignores its stale finalizer", () =>
+    it.effect("rejects a higher active generation and registers it only after lease release", () =>
       Effect.scoped(Effect.gen(function* () {
         const coordinator = makeLiveHarnessSessionCoordinator();
         const firstScope = yield* Scope.make();
@@ -255,17 +255,21 @@ describe("agent session runtime", () => {
         yield* coordinator.register({ ...identity, generation: 10, session: first }).pipe(
           Effect.provideService(Scope.Scope, firstScope),
         );
+        const activeHigher = yield* coordinator.register({
+          ...identity,
+          generation: 11,
+          session: second,
+        }).pipe(
+          Effect.provideService(Scope.Scope, secondScope),
+          Effect.exit,
+        );
+        expect(activeHigher._tag).toBe("Failure");
+        expect((yield* coordinator.get(identity))?.session).toBe(first);
+
+        yield* Scope.close(firstScope, Exit.void);
         yield* coordinator.register({ ...identity, generation: 11, session: second }).pipe(
           Effect.provideService(Scope.Scope, secondScope),
         );
-        const stale = yield* coordinator.register({ ...identity, generation: 10, session: first }).pipe(
-          Effect.provideService(Scope.Scope, firstScope),
-          Effect.exit,
-        );
-        expect(stale._tag).toBe("Failure");
-        expect((yield* coordinator.get(identity))?.session).toBe(second);
-
-        yield* Scope.close(firstScope, Exit.void);
         expect((yield* coordinator.get(identity))?.session).toBe(second);
         yield* Scope.close(secondScope, Exit.void);
         expect(yield* coordinator.get(identity)).toBeUndefined();

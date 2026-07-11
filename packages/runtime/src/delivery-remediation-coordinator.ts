@@ -17,6 +17,7 @@ import {
   ResolvedHarnessExecution,
   encodeDeliveryPullRequestObservationJson,
   encodeDeliveryRemediationJson,
+  parseDeliveryFeedbackTrustPolicy,
   parseDeliveryFeedbackId,
   parseDeliveryPublication,
   parseDeliveryPullRequestObservation,
@@ -115,6 +116,10 @@ export function continueDeliveryRemediation(
       const events = yield* readEvents(paths);
       const delivery = deliveryProjection(events);
       const remediation = optionalRemediation(delivery["remediation"]);
+      const trustPolicy = yield* acceptedFeedbackTrustPolicy(
+        delivery,
+        options.trustPolicy,
+      );
       return {
         delivery,
         events,
@@ -124,16 +129,16 @@ export function continueDeliveryRemediation(
           options.authorization,
         ),
         remediation,
+        trustPolicy,
       };
     }));
-    const { delivery, events, readerAuthorization } = initial;
+    const { delivery, events, readerAuthorization, trustPolicy } = initial;
     let { remediation } = initial;
     const publication = parseDeliveryPublication(requiredField(delivery, "publication"));
     if (publication.state !== "confirmed") {
       return yield* Effect.fail(remediationError("DeliveryObservationUnavailable", "Delivery has no confirmed pull request.", false));
     }
     const target = pullRequestTarget(publication.prUrl, publication.prNumber);
-    const trustPolicy = options.trustPolicy ?? defaultTrustPolicy(target.repository);
     const reader = options.pullRequestReader ?? readGitHubPullRequest;
     const readExit = yield* Effect.exit(reader({
       ...(readerAuthorization === undefined ? {} : { authorization: readerAuthorization }),
@@ -152,6 +157,9 @@ export function continueDeliveryRemediation(
           repository: target.repository,
           headSha: expectedHeadSha(publication.commitSha, remediation),
         });
+    if (read.observation.blockers.some(({ kind }) => kind === "feedbackTruncated")) {
+      read = { ...read, remediationInputs: [] };
+    }
     if (
       remediation?.attempt === 2 &&
       (remediation.state === "confirmed" || remediation.state === "failed") &&
@@ -159,14 +167,13 @@ export function continueDeliveryRemediation(
     ) {
       read = withBudgetExhausted(read);
     }
-    yield* recordObservation(runId, paths, delivery, read.observation);
-
     const expectedHead = expectedHeadSha(publication.commitSha, remediation);
     if (read.observation.headSha !== expectedHead) {
       if (
         remediation?.state === "pushAttempted" &&
         read.observation.headSha === remediation.commitSha
       ) {
+        yield* recordObservation(runId, paths, delivery, read.observation);
         remediation = yield* appendRemediation(
           runId,
           paths,
@@ -174,6 +181,20 @@ export function continueDeliveryRemediation(
         );
         return { observation: read.observation, remediation };
       }
+      const changedHead = expectedHeadChangedRead({
+        draft: publication.draft,
+        expectedHead,
+        now: options.now?.() ?? new Date(),
+        prNumber: target.prNumber,
+        prUrl: publication.prUrl,
+        repository: target.repository,
+      });
+      yield* recordObservation(
+        runId,
+        paths,
+        delivery,
+        changedHead.observation,
+      );
       if (remediation !== undefined && isActiveRemediation(remediation)) {
         remediation = yield* recordFailed(runId, paths, remediation, {
           code: "ExpectedHeadChanged",
@@ -181,8 +202,12 @@ export function continueDeliveryRemediation(
           recoverable: false,
         });
       }
-      return { observation: read.observation, ...(remediation === undefined ? {} : { remediation }) };
+      return {
+        observation: changedHead.observation,
+        ...(remediation === undefined ? {} : { remediation }),
+      };
     }
+    yield* recordObservation(runId, paths, delivery, read.observation);
 
     const actionableInputs = read.remediationInputs.slice(0, 20);
     if (remediation?.state === "outcomeUnknown") {
@@ -1063,7 +1088,7 @@ function pullRequestTarget(url: string, expectedNumber: number) {
   return { prNumber: number, repository: `${match[1]}/${match[2]}` };
 }
 
-function defaultTrustPolicy(repository: string) {
+export function defaultDeliveryFeedbackTrustPolicy(repository: string) {
   return DeliveryFeedbackTrustPolicyV1.make({
     allowPullRequestAuthor: false,
     trustedChecks: [DeliveryTrustedCheckV1.make({
@@ -1075,6 +1100,80 @@ function defaultTrustPolicy(repository: string) {
     trustedHumanLogins: [],
     version: 1,
   });
+}
+
+function acceptedFeedbackTrustPolicy(
+  delivery: Readonly<Record<string, unknown>>,
+  requested: DeliveryFeedbackTrustPolicyV1 | undefined,
+) {
+  return Effect.try({
+    try: () => {
+      const accepted = parseDeliveryFeedbackTrustPolicy(
+        requiredField(delivery, "feedbackTrustPolicy"),
+      );
+      if (
+        requested !== undefined &&
+        canonicalTrustPolicy(requested) !== canonicalTrustPolicy(accepted)
+      ) {
+        throw remediationError(
+          "DeliveryFeedbackTrustPolicyChanged",
+          "Delivery feedback trust policy changed after run acceptance.",
+          false,
+        );
+      }
+      return accepted;
+    },
+    catch: (cause) =>
+      cause instanceof GaiaRuntimeError
+        ? cause
+        : remediationError(
+            "DeliveryFeedbackTrustPolicyInvalid",
+            "Accepted delivery feedback trust policy is missing or invalid.",
+            false,
+            cause,
+          ),
+  });
+}
+
+function canonicalTrustPolicy(policy: DeliveryFeedbackTrustPolicyV1) {
+  return JSON.stringify(Schema.encodeSync(DeliveryFeedbackTrustPolicyV1)(policy));
+}
+
+function expectedHeadChangedRead(input: {
+  readonly draft: boolean;
+  readonly expectedHead: string;
+  readonly now: Date;
+  readonly prNumber: number;
+  readonly prUrl: string;
+  readonly repository: string;
+}): GitHubPullRequestRead {
+  const blocker = DeliveryBlocker.make({
+    feedbackIds: [],
+    kind: "expectedHeadChanged",
+    summary: "The pull-request head changed outside Gaia's owned remediation operation.",
+  });
+  return {
+    observation: DeliveryPullRequestObservation.make({
+      blockers: [blocker],
+      checks: [],
+      draft: input.draft,
+      feedback: [],
+      headSha: input.expectedHead,
+      mergeability: "unknown",
+      observedAt: input.now.toISOString(),
+      prNumber: input.prNumber,
+      prUrl: input.prUrl,
+      repository: input.repository,
+      snapshotDigest: createHash("sha256")
+        .update(
+          `github-expected-head-changed-v1\0${input.repository}\0${input.prNumber}\0${input.expectedHead}`,
+        )
+        .digest("hex"),
+      status: "blocked",
+      version: 1,
+    }),
+    remediationInputs: [],
+  };
 }
 
 function providerUnavailableRead(input: {

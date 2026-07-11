@@ -52,7 +52,7 @@ export function makeLiveHarnessSessionCoordinator() {
           const entryKey = key(entry);
           const generation = entry.generation ?? 1;
           const existing = sessions.get(entryKey);
-          if (existing !== undefined && generation <= existing.generation) {
+          if (existing !== undefined) {
             return yield* Effect.fail(makeRuntimeError({ code: "AgentSessionAlreadyLive", message: "The agent session already has a live handle.", recoverable: false }));
           }
           const lease = Symbol(entryKey);
