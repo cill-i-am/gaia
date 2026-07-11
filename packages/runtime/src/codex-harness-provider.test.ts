@@ -87,8 +87,19 @@ describe("Codex HarnessProvider adapter", () => {
     const first = recordingClient();
     await Effect.runPromise(Effect.scoped(startHarnessSession({ provider: createCodexHarnessProvider({ client: first.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { input: { text: "start" }, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] })));
     const second = recordingClient([{ id: first.turnId, status }]);
-    await Effect.runPromise(Effect.scoped(resumeHarnessSession({ provider: createCodexHarnessProvider({ client: second.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { expectedNativeTurnId: first.turnId, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] })));
+    const snapshot = await Effect.runPromise(Effect.scoped(Effect.gen(function* () { const session = yield* resumeHarnessSession({ provider: createCodexHarnessProvider({ client: second.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { expectedNativeTurnId: first.turnId, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] }); return yield* session.snapshot; })));
     expect(second.starts).toEqual([]);
+    expect(snapshot.turns).toHaveLength(1); expect(snapshot.turns[0]?.status).toBe(status === "inProgress" ? "running" : status);
+  });
+
+  it.each(["missing", "different", "duplicate", "unrelated-latest"] as const)("rejects %s checkpoint history without emitting or starting", async (variant) => {
+    const sessionId = parseHarnessSessionId(`session-reject-${variant}`); const store = makeInMemoryCodexHarnessCorrelationStore(); const first = recordingClient();
+    await Effect.runPromise(Effect.scoped(startHarnessSession({ provider: createCodexHarnessProvider({ client: first.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { input: { text: "start" }, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] })));
+    const other = parseCodexTurnId("other-turn");
+    const turns = variant === "missing" ? [] : variant === "different" ? [{ id: other, status: "completed" as const }] : variant === "duplicate" ? [{ id: first.turnId, status: "completed" as const }, { id: first.turnId, status: "completed" as const }] : [{ id: first.turnId, status: "completed" as const }, { id: other, status: "completed" as const }];
+    const second = recordingClient(turns);
+    const exit = await Effect.runPromise(Effect.scoped(resumeHarnessSession({ provider: createCodexHarnessProvider({ client: second.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { expectedNativeTurnId: first.turnId, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] }).pipe(Effect.exit)));
+    expect(exit._tag).toBe("Failure"); expect(second.starts).toEqual([]);
   });
   it("round-trips strict durable private correlation and rejects corrupt state", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "gaia-codex-correlation-"));

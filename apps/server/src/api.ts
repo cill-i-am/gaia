@@ -1062,7 +1062,8 @@ function isAllowedMethod(method: string, url: string) {
   return method === "POST" && (
     path === "/runs" ||
     /^\/runs\/[^/]+\/agents\/[^/]+\/session\/actions$/u.test(path) ||
-    /^\/runs\/[^/]+\/delivery\/actions$/u.test(path)
+    /^\/runs\/[^/]+\/delivery\/actions$/u.test(path) ||
+    /^\/runs\/[^/]+\/recovery\/actions$/u.test(path)
   );
 }
 
