@@ -1,0 +1,2 @@
+GAIA-93 controlled real merge smoke fixture.
+Targets a disposable base branch only; never main.
