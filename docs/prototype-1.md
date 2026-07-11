@@ -349,6 +349,15 @@ evidence-only PRs.
 the result to one of four states: `no-checks`, `pending`, `passed`, or `failed`.
 It is read-only and does not mutate the run log.
 
+Gaia PRs receive the hosted GitHub Actions check `gaia-pr-ci` from the
+`Gaia PR CI` workflow. The workflow runs on `pull_request` with read-only
+repository contents permission, activates `pnpm@11.7.0` through Corepack on
+Node.js 24, then runs `pnpm install --frozen-lockfile`, `pnpm check`,
+`pnpm test`, and `pnpm build`. The workflow sets `TURBO_CONCURRENCY=1` so those
+root Turbo commands run bounded package tasks in CI without changing the command
+surface. Any failed command fails the check; Gaia should not treat an absent
+hosted check as equivalent to a passing `gaia-pr-ci` result.
+
 `checks` records a check snapshot against a completed Gaia run. Each snapshot is
 written to `github-checks/checks-<event-sequence>.json`, then appended to
 `events.jsonl` as `GITHUB_CHECKS_RECORDED`. By default it records the current
