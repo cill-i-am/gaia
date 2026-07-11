@@ -464,10 +464,10 @@ export const runMachine = createMachine({
           : context.githubWatchStatePath,
     }),
     recordDeliveryReadyToPublish: assign({
-      delivery: ({ event }) =>
+      delivery: ({ context, event }) =>
         event.type === "DELIVERY_READY_TO_PUBLISH"
-          ? event.delivery
-          : undefined,
+          ? deliveryReadyToPublish(context.delivery, event.delivery)
+          : context.delivery,
       reportPath: ({ event }) =>
         event.type === "DELIVERY_READY_TO_PUBLISH"
           ? event.reportPath
@@ -964,6 +964,30 @@ function deliveryWithPublication(
     publication: encodeDeliveryPublicationJson(publication),
     stage: publicationStage(publication),
   };
+}
+
+function deliveryReadyToPublish(
+  delivery: Record<string, Schema.Json> | undefined,
+  ready: Record<string, Schema.Json>,
+): Record<string, Schema.Json> {
+  if (delivery === undefined || delivery["mode"] !== "pullRequest") {
+    throw new Error(
+      "Ready publication requires accepted pull-request delivery state.",
+    );
+  }
+  if (
+    ready["mode"] !== "pullRequest" ||
+    ready["stage"] !== "readyToPublish" ||
+    delivery["baseBranch"] !== ready["baseBranch"] ||
+    delivery["baseRevision"] !== ready["baseRevision"] ||
+    delivery["headBranch"] !== ready["headBranch"] ||
+    delivery["remote"] !== ready["remote"]
+  ) {
+    throw new Error(
+      "Ready publication identity does not match accepted delivery state.",
+    );
+  }
+  return { ...delivery, stage: "readyToPublish" };
 }
 
 function assertPublicationDeliveryIdentity(
