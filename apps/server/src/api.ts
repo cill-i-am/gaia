@@ -50,6 +50,7 @@ import {
   deliveryActionAuditSummary,
   parseWorkerRecoveryReceipt,
   workerRecoveryProjection,
+  type WorkerRecoveryAction,
 } from "@gaia/core";
 import type {
   LocalRunList,
@@ -115,6 +116,28 @@ type LocalServerConfigValue = LocalServerIdentity & {
   readonly subscribeDeliveryRunEventFeed: typeof subscribeRunEventFeed;
   readonly workflowOptions: ServerWorkflowOptions;
 };
+
+/** Finite recovery transaction: persist one receipt, then join its confirmed continuation. */
+export function executeWorkerRecoveryTransaction(input: {
+  readonly action: WorkerRecoveryAction;
+  readonly identity: LocalServerConfigValue;
+  readonly runId: string;
+}) {
+  return Effect.gen(function* () {
+    const receipt = yield* actOnWorkerRecovery(input.runId, input.action, {
+      ...input.identity.workflowOptions,
+      rootDirectory: input.identity.rootDirectory,
+    });
+    if (receipt.state === "dispatchConfirmed") {
+      yield* continueServerRun(input.runId, {
+        ...input.identity.workflowOptions,
+        rootDirectory: input.identity.rootDirectory,
+        sessionCoordinator: input.identity.sessionCoordinator,
+      }).pipe(Effect.ignore);
+    }
+    return receipt;
+  });
+}
 
 export class LocalServerConfig extends Context.Service<
   LocalServerConfig,
@@ -363,18 +386,8 @@ export const RunsLive = HttpApiBuilder.group(
       .handle("recoverWorker", ({ params, payload }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
-          const exit = yield* Effect.exit(actOnWorkerRecovery(params.runId, payload, {
-            ...identity.workflowOptions,
-            rootDirectory: identity.rootDirectory,
-          }));
+          const exit = yield* Effect.exit(executeWorkerRecoveryTransaction({ action: payload, identity, runId: params.runId }));
           if (exit._tag === "Failure") return yield* Effect.fail(actionApiErrorFromCause(exit.cause));
-          if (exit.value.state === "dispatchConfirmed") {
-            yield* continueServerRun(params.runId, {
-              ...identity.workflowOptions,
-              rootDirectory: identity.rootDirectory,
-              sessionCoordinator: identity.sessionCoordinator,
-            }).pipe(Effect.ignore, Effect.forkIn(identity.runScope));
-          }
           yield* identity.runIndex.refreshRun(params.runId);
           return WorkerRecoverySuccessEnvelope.make({ data: exit.value, status: "success" });
         }),
