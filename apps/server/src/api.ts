@@ -92,6 +92,7 @@ type LocalServerConfigValue = LocalServerIdentity & {
   readonly runRegistry: ServerRunRegistryService;
   readonly runScope: Scope.Scope;
   readonly sessionCoordinator: ReturnType<typeof makeLiveHarnessSessionCoordinator>;
+  readonly subscribeDeliveryRunEventFeed: typeof subscribeRunEventFeed;
   readonly workflowOptions: ServerWorkflowOptions;
 };
 
@@ -273,45 +274,14 @@ export const RunsLive = HttpApiBuilder.group(
       .handle("streamDeliverySnapshot", ({ params, query }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
-          const initialRead = yield* Effect.exit(
-            readLocalRunEvents(params.runId, {
+          const stream = yield* streamDeliveryUpdates(
+            params.runId,
+            query.afterSequence,
+            {
               rootDirectory: identity.rootDirectory,
-            }),
+              subscribeRunEventFeed: identity.subscribeDeliveryRunEventFeed,
+            },
           );
-          if (initialRead._tag === "Failure") {
-            return yield* Effect.fail(readApiErrorFromCause(initialRead.cause));
-          }
-          const highWater = initialRead.value.events.at(-1)?.sequence ?? 0;
-          if (
-            query.afterSequence !== undefined &&
-            (!Number.isInteger(query.afterSequence) || query.afterSequence < 1)
-          ) {
-            return yield* Effect.fail(
-              LocalRunApiBadRequest.make({
-                code: "InvalidRequest",
-                message: "Delivery stream cursor must be a positive Gaia sequence.",
-                recoverable: false,
-                status: 400,
-              }),
-            );
-          }
-          if (
-            query.afterSequence !== undefined &&
-            query.afterSequence > highWater
-          ) {
-            return yield* Effect.fail(
-              LocalRunApiConflict.make({
-                code: "DeliveryStreamCursorConflict",
-                message:
-                  "Delivery stream cursor is ahead of authoritative run history.",
-                recoverable: true,
-                status: 409,
-              }),
-            );
-          }
-          const stream = yield* streamDeliveryUpdates(params.runId, query.afterSequence, {
-            rootDirectory: identity.rootDirectory,
-          });
           return stream.pipe(
             Stream.map((update) => ({
               data: update,
@@ -450,6 +420,9 @@ export function makeLocalGaiaServerLayer(
   identity: LocalServerIdentity,
   workflowOptions: ServerWorkflowOptions = {},
   resumableRunIds: ReadonlyArray<string> = [],
+  options: {
+    readonly subscribeDeliveryRunEventFeed?: typeof subscribeRunEventFeed;
+  } = {},
 ): Layer.Layer<
   never,
   unknown,
@@ -494,6 +467,8 @@ export function makeLocalGaiaServerLayer(
         runRegistry,
         runScope,
         sessionCoordinator,
+        subscribeDeliveryRunEventFeed:
+          options.subscribeDeliveryRunEventFeed ?? subscribeRunEventFeed,
         workflowOptions: scopedWorkflowOptions,
       } satisfies LocalServerConfigValue;
     }),
@@ -596,7 +571,10 @@ function readDeliverySnapshot(
 function streamDeliveryUpdates(
   runId: RunId,
   afterSequence: number | undefined,
-  options: { readonly rootDirectory: string },
+  options: {
+    readonly rootDirectory: string;
+    readonly subscribeRunEventFeed: typeof subscribeRunEventFeed;
+  },
 ): Effect.Effect<Stream.Stream<typeof DeliverySnapshotDto.Type, GaiaRuntimeError>, GaiaRuntimeError, FileSystem.FileSystem | Path.Path | Scope.Scope> {
   return Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options).pipe(
@@ -609,7 +587,7 @@ function streamDeliveryUpdates(
         }),
       ),
     );
-    const subscription = yield* subscribeRunEventFeed(paths).pipe(
+    const subscription = yield* options.subscribeRunEventFeed(paths).pipe(
       Effect.mapError((cause) =>
         makeRuntimeError({
           cause,
@@ -619,6 +597,15 @@ function streamDeliveryUpdates(
         }),
       ),
     );
+    if (subscription.backlog.length === 0) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "RunHasNoEvents",
+          message: "Run does not have an events.jsonl history.",
+          recoverable: false,
+        }),
+      );
+    }
     if (afterSequence !== undefined && (!Number.isInteger(afterSequence) || afterSequence < 1)) {
       return yield* Effect.fail(makeRuntimeError({ code: "InvalidRequest", message: "Delivery stream cursor must be a positive Gaia sequence.", recoverable: false }));
     }

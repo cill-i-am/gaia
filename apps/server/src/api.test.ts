@@ -5,6 +5,7 @@ import {
   makeHarnessProviderRegistry,
   ReviewResult,
   ReviewerNameSchema,
+  subscribeRunEventFeed,
   type GaiaReviewer,
 } from "@gaia/runtime";
 import type { ServerWorkflowOptions } from "@gaia/runtime/server-workflows";
@@ -439,6 +440,78 @@ describe("local run api http boundary", () => {
       20_000,
     );
 
+    it.effect("opens one authoritative delivery event feed per stream connection", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({
+          prefix: "gaia-server-delivery-feed-",
+        });
+        const accepted = yield* acceptFactoryRun(
+          {
+            delivery: { mode: "pullRequest" },
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery",
+            workItem: {
+              description: "Count delivery stream event reads.",
+              kind: "issue",
+              title: "Delivery stream read count",
+            },
+          },
+          {
+            deliveryGitCommandRunner: recordingGitRunner(),
+            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            rootDirectory: cwd,
+          },
+        );
+        yield* continueServerRun(accepted.runId, {
+          deliveryGitCommandRunner: recordingGitRunner(),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        let deliveryEventReads = 0;
+        const layer = testServerLayer(
+          cwd,
+          { deliveryGitCommandRunner: recordingGitRunner() },
+          {
+            subscribeDeliveryRunEventFeed: (paths, capacity) => {
+              deliveryEventReads += 1;
+              return subscribeRunEventFeed(paths, capacity);
+            },
+          },
+        );
+
+        const streamResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/delivery/stream`,
+        ).pipe(Effect.provide(layer));
+        const streamBlocks = parseSseBlocks(yield* streamResponse.text);
+        const readsAfterSuccess = deliveryEventReads;
+        const lastSequence = getNumber(
+          getObjectFromArray(
+            streamBlocks.map(({ data }) => data),
+            streamBlocks.length - 1,
+          ),
+          "eventSequence",
+        );
+        const resumeResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/delivery/stream?afterSequence=${lastSequence - 1}`,
+        ).pipe(Effect.provide(layer));
+        yield* resumeResponse.text;
+        const readsAfterResume = deliveryEventReads;
+        const conflictResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/delivery/stream?afterSequence=999999`,
+        ).pipe(Effect.provide(layer));
+        yield* conflictResponse.text;
+
+        assert.strictEqual(streamResponse.status, 200);
+        assert.strictEqual(readsAfterSuccess, 1);
+        assert.strictEqual(resumeResponse.status, 200);
+        assert.strictEqual(readsAfterResume, 2);
+        assert.strictEqual(conflictResponse.status, 409);
+        assert.strictEqual(deliveryEventReads, 3);
+      }),
+      20_000,
+    );
+
 
     it.effect("maps strict agent action conflicts to public 409 errors", () =>
       Effect.gen(function* () {
@@ -745,11 +818,17 @@ describe("local run api http boundary", () => {
 function testServerLayer(
   rootDirectory: string,
   workflowOptions: ServerWorkflowOptions = {},
+  serverOptions: Parameters<typeof makeLocalGaiaServerLayer>[3] = {},
 ) {
-  return makeLocalGaiaServerLayer(testIdentity(rootDirectory), {
-    harnessProviderRegistry: makeTestHarnessProviderRegistry(),
-    ...workflowOptions,
-  }).pipe(
+  return makeLocalGaiaServerLayer(
+    testIdentity(rootDirectory),
+    {
+      harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+      ...workflowOptions,
+    },
+    [],
+    serverOptions,
+  ).pipe(
     Layer.provideMerge(NodeHttpServer.layerTest),
   );
 }

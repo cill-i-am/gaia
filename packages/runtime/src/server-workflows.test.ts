@@ -1,13 +1,14 @@
 import { assert, describe, it, layer } from "@effect/vitest";
 import { NodeServices } from "@effect/platform-node";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   codexAppServerExecutionSelection,
   HarnessCapabilities,
   HarnessProviderDescriptor,
+  parseRunId,
   parseHarnessProviderId,
   ResolvedHarnessExecution,
 } from "@gaia/core";
@@ -28,8 +29,9 @@ import {
 } from "./server-workflows.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import type { HarnessProvider } from "./harness-session.js";
+import { makeRunPaths } from "./paths.js";
 import { makeTestHarnessProviderRegistry } from "./test-support.js";
-import type { GitDeliveryCommandInput } from "./git-delivery.js";
+import { prepareDeliveryWorktree, type GitDeliveryCommandInput } from "./git-delivery.js";
 
 describe("server workflows", () => {
   layer(NodeServices.layer)((it) => {
@@ -428,6 +430,62 @@ describe("server workflows", () => {
       }),
     );
 
+    it.effect("fails closed when an unrelated same-head clone forges ownership evidence", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const smoke = makeDisposableGitRemote();
+        try {
+          const source = realpathSync(smoke.source);
+          const runId = parseRunId("run-WrongRepo1");
+          const paths = yield* makeRunPaths(runId, { rootDirectory: source });
+          const provenance = {
+            baseBranch: "main",
+            baseRevision: smoke.baseRevision,
+            headBranch: "gaia/run-WrongRepo1",
+            mode: "pullRequest" as const,
+            remote: "origin",
+          };
+          yield* fs.makeDirectory(paths.root, { recursive: true });
+
+          yield* prepareDeliveryWorktree({
+            options: { rootDirectory: source },
+            paths,
+            provenance,
+          });
+          const manifest = JSON.parse(
+            readFileSync(paths.deliveryOwnershipManifest, "utf8"),
+          ) as Record<string, unknown>;
+          rmSync(paths.workspace, { force: true, recursive: true });
+          git(smoke.root, "clone", smoke.bare, paths.workspace);
+          git(paths.workspace, "checkout", "--detach", smoke.baseRevision);
+          manifest["workspaceRoot"] = paths.workspace;
+          manifest["workspaceCommonDir"] = git(
+            paths.workspace,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+          );
+          writeFileSync(
+            paths.deliveryOwnershipManifest,
+            `${JSON.stringify(manifest, null, 2)}\n`,
+          );
+
+          const error = yield* Effect.flip(
+            prepareDeliveryWorktree({
+              options: { rootDirectory: source },
+              paths,
+              provenance,
+            }),
+          );
+
+          assert.instanceOf(error, GaiaRuntimeError);
+          assert.strictEqual(error.code, "DeliveryWorktreeIdentityMismatch");
+        } finally {
+          rmSync(smoke.root, { force: true, recursive: true });
+        }
+      }),
+    );
+
     it.effect("creates a real disposable detached git worktree without moving the primary checkout", () =>
       Effect.gen(function* () {
         const smoke = makeDisposableGitRemote();
@@ -634,6 +692,7 @@ function makeDisposableGitRemote() {
   git(source, "push", "-u", "origin", "main");
   return {
     baseRevision: git(source, "rev-parse", "origin/main"),
+    bare,
     root,
     source,
   };

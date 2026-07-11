@@ -139,6 +139,7 @@ export function prepareDeliveryWorktree(input: {
         manifest.repositoryCommonDir !== expectedRepository.repositoryCommonDir ||
         manifest.workspaceRoot !== input.paths.workspace ||
         manifest.workspaceCommonDir !== workspaceCommonDir ||
+        workspaceCommonDir !== expectedRepository.repositoryCommonDir ||
         manifest.baseRevision !== input.provenance.baseRevision ||
         manifest.token !== ownershipToken(input.provenance)
       ) {
