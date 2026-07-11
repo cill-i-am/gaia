@@ -14,7 +14,7 @@ const LiteralBranchName = Schema.String.pipe(
 );
 const GaiaOwnedBranchName = Schema.String.pipe(
   Schema.check(Schema.isMaxLength(240)),
-  Schema.check(Schema.isPattern(/^gaia\/(?!-)(?!.*(?:\.\.|@\{|\/\/))(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9])$/u)),
+  Schema.check(Schema.isPattern(/^gaia\/(?!-)(?!.*(?:\.\.|@\{|\/\/))(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9_-])$/u)),
 );
 const DeliveryRemoteName = Schema.String.pipe(
   Schema.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u)),

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import {
   DeliveryAcceptanceProvenancePolicyV1,
+  parseDeliveryProvenance,
   resolveDeliveryProvenance,
   type GitDeliveryCommandInput,
 } from "./git-delivery.js";
@@ -10,6 +11,18 @@ const root = "/tmp/gaia-93-provenance-policy";
 const oid = "a".repeat(40);
 
 describe("delivery acceptance provenance policy", () => {
+  it("accepts the canonical default owned branch when a run ID ends in a hyphen", () => {
+    const parsed = parseDeliveryProvenance({
+      baseBranch: "main",
+      baseRevision: "e".repeat(40),
+      headBranch: "gaia/run-9oVhWWBlV-",
+      mode: "pullRequest",
+      remote: "origin",
+    });
+
+    expect(parsed._tag).toBe("Some");
+  });
+
   it("resolves an explicit literal remote base and head with exact argv", async () => {
     const commands: GitDeliveryCommandInput[] = [];
     const policy = DeliveryAcceptanceProvenancePolicyV1.make({
