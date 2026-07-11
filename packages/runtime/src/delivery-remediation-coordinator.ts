@@ -188,11 +188,13 @@ export function continueDeliveryRemediation(
           remediation.authorizationDigest ===
             options.activationRequest.authorizationDigest;
         if (terminalReplay) {
-          const actionMatches = remediation.activationActionDigest !== undefined &&
+          const requestMatches = remediation.activationActionDigest !== undefined &&
             remediation.activationActionDigest ===
               deliveryRemediationActivationActionDigest(
                 options.activationRequest.actionIdempotencyKey,
-              );
+              ) &&
+            remediation.activationPredecessorDigest !== undefined &&
+            remediation.activationPredecessorDigest === eventDigest(predecessor);
           const observationValue = delivery["observation"];
           const observation = observationValue === undefined
             ? undefined
@@ -202,10 +204,10 @@ export function continueDeliveryRemediation(
             activationStore,
             remediation,
           );
-          if (!actionMatches) {
+          if (!requestMatches) {
             return yield* Effect.fail(remediationError(
               "DeliveryActionConflict",
-              "Controlled-remediation action identity changed after completion.",
+              "Controlled-remediation action identity or predecessor changed after completion.",
               true,
             ));
           }
@@ -1172,6 +1174,7 @@ function reserveRemediationIntent(input: {
             activationActionDigest: deliveryRemediationActivationActionDigest(
               activationEnvelope.actionIdempotencyKey,
             ),
+            activationPredecessorDigest: activationEnvelope.expectedPredecessorDigest,
             activationReceiptDigest: activationEnvelope.activationReceiptDigest,
           }),
       state: "intentRecorded",
@@ -1226,6 +1229,9 @@ function remediationBinding(remediation: DeliveryRemediation) {
     ...(remediation.activationActionDigest === undefined
       ? {}
       : { activationActionDigest: remediation.activationActionDigest }),
+    ...(remediation.activationPredecessorDigest === undefined
+      ? {}
+      : { activationPredecessorDigest: remediation.activationPredecessorDigest }),
     ...(remediation.activationReceiptDigest === undefined
       ? {}
       : { activationReceiptDigest: remediation.activationReceiptDigest }),

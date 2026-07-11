@@ -177,9 +177,11 @@ describe("delivery remediation contracts", () => {
 
   it("keeps private activation digests as immutable safe bindings", () => {
     const activationActionDigest = "d".repeat(64);
+    const activationPredecessorDigest = "a".repeat(64);
     const activationReceiptDigest = "e".repeat(64);
     const intent = DeliveryRemediationIntent.make({
       activationActionDigest,
+      activationPredecessorDigest,
       activationReceiptDigest,
       attempt: 1,
       authorizationDigest: "c".repeat(64),
@@ -204,6 +206,10 @@ describe("delivery remediation contracts", () => {
     assert.strictEqual(
       Object.getOwnPropertyDescriptor(encoded, "activationActionDigest")?.value,
       activationActionDigest,
+    );
+    assert.strictEqual(
+      Object.getOwnPropertyDescriptor(encoded, "activationPredecessorDigest")?.value,
+      activationPredecessorDigest,
     );
     assert.strictEqual(
       Object.getOwnPropertyDescriptor(encoded, "activationReceiptDigest")?.value,

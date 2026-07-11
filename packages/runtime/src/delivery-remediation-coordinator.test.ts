@@ -998,6 +998,7 @@ describe("delivery remediation coordinator", () => {
           activationActionDigest: deliveryRemediationActivationActionDigest(
             request.actionIdempotencyKey,
           ),
+          activationPredecessorDigest: envelope.expectedPredecessorDigest,
           activationReceiptDigest: envelope.activationReceiptDigest,
           attempt: 1,
           authorizationDigest: authorization.authorizationDigest,
@@ -1060,6 +1061,21 @@ describe("delivery remediation coordinator", () => {
           rootDirectory: seeded.root,
         }));
         expect(changed._tag).toBe("Failure");
+        expect(readerCalls).toBe(0);
+
+        const changedPredecessor = yield* Effect.exit(continueDeliveryRemediation(runId, {
+          activationRequest: DeliveryRemediationActivationActionRequest.make({
+            ...request,
+            expectedEventSequence: request.expectedEventSequence + 1,
+          }),
+          activationStore: store,
+          pullRequestReader: () => Effect.sync(() => {
+            readerCalls += 1;
+            throw new Error("Changed predecessor replay must not read GitHub.");
+          }),
+          rootDirectory: seeded.root,
+        }));
+        expect(changedPredecessor._tag).toBe("Failure");
         expect(readerCalls).toBe(0);
         expect(JSON.stringify(yield* readEvents(seeded.paths))).not.toContain(
           request.actionIdempotencyKey,
