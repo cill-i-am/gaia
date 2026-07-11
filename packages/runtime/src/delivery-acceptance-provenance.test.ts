@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import {
   DeliveryAcceptanceProvenancePolicyV1,
-  parseDeliveryAcceptanceProvenancePolicy,
   resolveDeliveryProvenance,
   type GitDeliveryCommandInput,
 } from "./git-delivery.js";
@@ -15,7 +14,7 @@ describe("delivery acceptance provenance policy", () => {
     const commands: GitDeliveryCommandInput[] = [];
     const policy = DeliveryAcceptanceProvenancePolicyV1.make({
       baseBranch: "gaia-93-smoke-base-abc123",
-      headBranch: "gaia-93-smoke-head-abc123",
+      headBranch: "gaia/gaia-93-smoke-head-abc123",
       remote: "origin",
       version: 1,
     });
@@ -48,23 +47,34 @@ describe("delivery acceptance provenance policy", () => {
   });
 
   for (const input of [
-    { baseBranch: "main", headBranch: "head", remote: "--upload-pack=bad", version: 1 },
-    { baseBranch: "main^{commit}", headBranch: "head", remote: "origin", version: 1 },
+    { baseBranch: "main", headBranch: "gaia/head", remote: "--upload-pack=bad", version: 1 },
+    { baseBranch: "main^{commit}", headBranch: "gaia/head", remote: "origin", version: 1 },
     { baseBranch: "main", headBranch: "refs/heads/injected", remote: "origin", version: 1 },
-    { baseBranch: "main", headBranch: "head", remote: "../repo", version: 1 },
-    { baseBranch: "main", headBranch: "head", remote: "origin", unexpected: true, version: 1 },
+    { baseBranch: "main", headBranch: "gaia/head", remote: "../repo", version: 1 },
+    { baseBranch: "main", headBranch: "gaia/head", remote: "https://github.com/cill-i-am/gaia", version: 1 },
+    { baseBranch: "main", headBranch: "gaia/head", remote: "git@github.com:cill-i-am/gaia", version: 1 },
+    { baseBranch: "main", headBranch: "gaia/head", remote: "origin:evil", version: 1 },
+    { baseBranch: "main", headBranch: "gaia/head", remote: "origin", unexpected: true, version: 1 },
+    { baseBranch: "main", headBranch: "main", remote: "origin", version: 1 },
+    { baseBranch: "main", headBranch: "feature/unrelated", remote: "origin", version: 1 },
+    { baseBranch: "main", headBranch: "gaia", remote: "origin", version: 1 },
+    { baseBranch: 42, headBranch: "gaia/head", remote: "origin", version: 1 },
+    { baseBranch: "main", headBranch: false, remote: "origin", version: 1 },
+    { baseBranch: "main", headBranch: "gaia/head", remote: ["origin"], version: 1 },
   ]) {
     it(`rejects hostile acceptance policy ${JSON.stringify(input)}`, async () => {
-      expect(() => parseDeliveryAcceptanceProvenancePolicy(input)).toThrow();
+      const commands: GitDeliveryCommandInput[] = [];
+      await expect(Effect.runPromise(resolveDeliveryProvenance("run-1234567890", { commandRunner: recording(commands), rootDirectory: root }, input))).rejects.toBeTruthy();
+      expect(commands).toEqual([]);
     });
   }
 
 
   it("rejects a same-branch topology before ref validation or fetch", async () => {
     const commands: GitDeliveryCommandInput[] = [];
-    const policy = DeliveryAcceptanceProvenancePolicyV1.make({ baseBranch: "same", headBranch: "same", remote: "origin", version: 1 });
+    const policy = { baseBranch: "gaia/same", headBranch: "gaia/same", remote: "origin", version: 1 };
     await expect(Effect.runPromise(resolveDeliveryProvenance("run-1234567890", { commandRunner: recording(commands), rootDirectory: root }, policy))).rejects.toMatchObject({ code: "DeliveryProvenanceTopologyInvalid" });
-    expect(commands.map(({ args }) => args)).toEqual([["rev-parse", "--show-toplevel"]]);
+    expect(commands).toEqual([]);
   });
 });
 

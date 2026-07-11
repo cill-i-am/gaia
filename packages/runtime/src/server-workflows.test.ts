@@ -314,7 +314,7 @@ describe("server workflows", () => {
         });
         const provenancePolicy = DeliveryAcceptanceProvenancePolicyV1.make({
           baseBranch: "gaia-93-smoke-base-acceptance",
-          headBranch: "gaia-93-smoke-head-acceptance",
+          headBranch: "gaia/gaia-93-smoke-head-acceptance",
           remote: "origin",
           version: 1,
         });
@@ -431,13 +431,13 @@ describe("server workflows", () => {
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-delivery-provenance-drift-" });
         const commands: Array<GitDeliveryCommandInput> = [];
         const gitRunner = recordingGitRunner(commands, { baseRevision: "e".repeat(40) });
-        const acceptedPolicy = DeliveryAcceptanceProvenancePolicyV1.make({ baseBranch: "gaia-93-smoke-base-drift", headBranch: "gaia-93-smoke-head-drift", remote: "origin", version: 1 });
+        const acceptedPolicy = DeliveryAcceptanceProvenancePolicyV1.make({ baseBranch: "gaia-93-smoke-base-drift", headBranch: "gaia/gaia-93-smoke-head-drift", remote: "origin", version: 1 });
         const accepted = yield* acceptFactoryRun({
           delivery: { mode: "pullRequest" }, execution: codexAppServerExecutionSelection, workflow: "issueDelivery",
           workItem: { description: "Reject provenance drift.", kind: "issue", title: "Provenance drift" },
         }, { deliveryAcceptanceProvenancePolicy: acceptedPolicy, deliveryGitCommandRunner: gitRunner, harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd });
         const countAfterAcceptance = commands.length;
-        const drifted = DeliveryAcceptanceProvenancePolicyV1.make({ ...acceptedPolicy, headBranch: "gaia-93-smoke-head-changed" });
+        const drifted = DeliveryAcceptanceProvenancePolicyV1.make({ ...acceptedPolicy, headBranch: "gaia/gaia-93-smoke-head-changed" });
         const exit = yield* continueServerRun(accepted.runId, { deliveryAcceptanceProvenancePolicy: drifted, deliveryGitCommandRunner: gitRunner, deliveryPublisher: recordingDeliveryPublisher([]), harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd }).pipe(Effect.exit);
         const events = yield* readLocalRunEvents(accepted.runId, { rootDirectory: cwd });
 

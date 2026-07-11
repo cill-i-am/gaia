@@ -10,7 +10,11 @@ const execFileAsync = promisify(execFile);
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
 const LiteralBranchName = Schema.String.pipe(
   Schema.check(Schema.isMaxLength(240)),
-  Schema.check(Schema.isPattern(/^(?!-)(?!refs\/)(?!.*(?:\.\.|@\{|\/\/))[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9]$/u)),
+  Schema.check(Schema.isPattern(/^(?!-)(?!refs\/)(?!.*(?:\.\.|@\{|\/\/))(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9])$/u)),
+);
+const GaiaOwnedBranchName = Schema.String.pipe(
+  Schema.check(Schema.isMaxLength(240)),
+  Schema.check(Schema.isPattern(/^gaia\/(?!-)(?!.*(?:\.\.|@\{|\/\/))(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9])$/u)),
 );
 
 export type GitDeliveryCommandInput = {
@@ -39,7 +43,7 @@ export class DeliveryAcceptanceProvenancePolicyV1 extends Schema.Class<DeliveryA
   "DeliveryAcceptanceProvenancePolicyV1",
 )({
   baseBranch: LiteralBranchName,
-  headBranch: LiteralBranchName,
+  headBranch: GaiaOwnedBranchName,
   remote: Schema.String.pipe(Schema.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u))),
   version: Schema.Literal(1),
 }, strict) {}
@@ -161,11 +165,9 @@ export const nodeGitDeliveryCommandRunner: GitDeliveryCommandRunner = (input) =>
 export function resolveDeliveryProvenance(
   runId: string,
   options: DeliveryWorkspaceOptions,
-  acceptancePolicy?: DeliveryAcceptanceProvenancePolicyV1,
+  acceptancePolicy?: unknown,
 ) {
   return Effect.gen(function* () {
-    const runner = options.commandRunner ?? nodeGitDeliveryCommandRunner;
-    yield* runGit(runner, options.rootDirectory, ["rev-parse", "--show-toplevel"]);
     const policy = acceptancePolicy === undefined
       ? undefined
       : parseDeliveryAcceptanceProvenancePolicy(acceptancePolicy);
@@ -175,6 +177,8 @@ export function resolveDeliveryProvenance(
     if (baseBranch === headBranch) {
       return yield* Effect.fail(makeRuntimeError({ code: "DeliveryProvenanceTopologyInvalid", message: "Delivery base and head branches must be distinct.", recoverable: false }));
     }
+    const runner = options.commandRunner ?? nodeGitDeliveryCommandRunner;
+    yield* runGit(runner, options.rootDirectory, ["rev-parse", "--show-toplevel"]);
     if (policy !== undefined) {
       yield* validateLiteralBranch(runner, options.rootDirectory, baseBranch);
       yield* validateLiteralBranch(runner, options.rootDirectory, headBranch);
