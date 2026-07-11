@@ -1,5 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
-import { DeliveryFeedbackTrustPolicyV1, DeliveryTrustedCheckV1 } from "@gaia/core";
+import {
+  DeliveryFeedbackTrustPolicyV1,
+  DeliveryTrustedCheckV1,
+  parseDeliveryFeedbackId,
+} from "@gaia/core";
 import { Effect } from "effect";
 
 import type {
@@ -8,6 +12,8 @@ import type {
 } from "./github-publisher.js";
 import {
   DeliveryFeedbackSmokeAuthorization,
+  deliveryFeedbackSmokeAuthorizationDigest,
+  makeDeliveryFeedbackSmokeAuthorization,
   readGitHubPullRequest,
 } from "./github-pull-request-provider.js";
 
@@ -61,35 +67,50 @@ describe("delivery GitHub pull request provider", () => {
     }),
   );
 
-  it.effect("authorizes only one exact controlled comment binding", () =>
+  it.effect("authorizes one exact tuple and rejects reuse against changed restart state", () =>
     Effect.gen(function* () {
-      const authorization = DeliveryFeedbackSmokeAuthorization.make({
-        actorLogin: "cill-i-am",
-        authorizationDigest: "b".repeat(64),
-        commentDatabaseId: "native-comment-104",
-        headSha,
-        prNumber: 92,
-        repository: "cill-i-am/gaia",
-      });
       const emptyPolicy = DeliveryFeedbackTrustPolicyV1.make({
         allowPullRequestAuthor: false,
         trustedChecks: [],
         trustedHumanLogins: [],
         version: 1,
       });
-      const accepted = yield* readGitHubPullRequest({
-        authorization,
+      const untrusted = yield* readGitHubPullRequest({
         commandRunner: fixtureRunner([], pullRequestFixture()),
         prNumber: 92,
         repository: "cill-i-am/gaia",
         rootDirectory: ".",
         trustPolicy: emptyPolicy,
       });
-      const wrongHead = yield* readGitHubPullRequest({
-        authorization: DeliveryFeedbackSmokeAuthorization.make({
-          ...authorization,
-          headSha: "c".repeat(40),
-        }),
+      const controlledFeedback = untrusted.observation.feedback.find(
+        ({ url }) =>
+          url ===
+          "https://github.com/cill-i-am/gaia/pull/92#issuecomment-104",
+      );
+      if (controlledFeedback === undefined) {
+        assert.fail("Expected the controlled feedback observation.");
+      }
+      assert.deepEqual(untrusted.remediationInputs, []);
+      assert.strictEqual(controlledFeedback.classification, "informational");
+      const authorizationInput = {
+        actorLogin: "cill-i-am",
+        actorType: "User" as const,
+        authorAssociation: "OWNER" as const,
+        commentDatabaseId: "native-comment-104",
+        contentDigest: controlledFeedback.contentDigest,
+        feedbackId: controlledFeedback.id,
+        headSha,
+        prNumber: 92,
+        repository: "cill-i-am/gaia",
+      };
+      const authorization =
+        makeDeliveryFeedbackSmokeAuthorization(authorizationInput);
+      assert.strictEqual(
+        authorization.authorizationDigest,
+        deliveryFeedbackSmokeAuthorizationDigest(authorization),
+      );
+      const accepted = yield* readGitHubPullRequest({
+        authorization,
         commandRunner: fixtureRunner([], pullRequestFixture()),
         prNumber: 92,
         repository: "cill-i-am/gaia",
@@ -101,14 +122,97 @@ describe("delivery GitHub pull request provider", () => {
         accepted.remediationInputs.map(({ kind, text }) => [kind, text]),
         [["comment", "Self-authored request."]],
       );
-      assert.deepEqual(wrongHead.remediationInputs, []);
-      assert.strictEqual(
-        wrongHead.observation.feedback.find(
-          ({ url }) => url === "https://github.com/cill-i-am/gaia/pull/92#issuecomment-104",
-        )?.classification,
-        "informational",
-      );
       assert.notInclude(JSON.stringify(accepted.observation), "native-comment-104");
+
+      const wrongStableId = makeDeliveryFeedbackSmokeAuthorization({
+        ...authorizationInput,
+        feedbackId: parseDeliveryFeedbackId(
+          `feedback-comment-${"0".repeat(64)}`,
+        ),
+      });
+      const mismatches = [
+        {
+          authorization,
+          fixture: controlledCommentFixture({
+            body: "<!-- gaia-remediation-request:v1 -->\nA different marked request.",
+          }),
+          name: "edited body",
+        },
+        {
+          authorization: wrongStableId,
+          fixture: pullRequestFixture(),
+          name: "stable feedback ID",
+        },
+        {
+          authorization,
+          fixture: controlledCommentFixture({
+            author: { __typename: "Bot", login: "cill-i-am" },
+          }),
+          name: "actor type",
+        },
+        {
+          authorization,
+          fixture: controlledCommentFixture({ authorAssociation: "MEMBER" }),
+          name: "association",
+        },
+        {
+          authorization: makeDeliveryFeedbackSmokeAuthorization({
+            ...authorizationInput,
+            commentDatabaseId: "another-native-comment",
+          }),
+          fixture: pullRequestFixture(),
+          name: "native ID",
+        },
+        {
+          authorization: makeDeliveryFeedbackSmokeAuthorization({
+            ...authorizationInput,
+            headSha: "c".repeat(40),
+          }),
+          fixture: pullRequestFixture(),
+          name: "head",
+        },
+        {
+          authorization: makeDeliveryFeedbackSmokeAuthorization({
+            ...authorizationInput,
+            actorLogin: "another-owner",
+          }),
+          fixture: pullRequestFixture(),
+          name: "login",
+        },
+        {
+          authorization: DeliveryFeedbackSmokeAuthorization.make({
+            ...authorization,
+            authorizationDigest: "b".repeat(64),
+          }),
+          fixture: pullRequestFixture(),
+          name: "authorization digest",
+        },
+      ];
+
+      for (const mismatch of mismatches) {
+        const denied = yield* readGitHubPullRequest({
+          authorization: mismatch.authorization,
+          commandRunner: fixtureRunner([], mismatch.fixture),
+          prNumber: 92,
+          repository: "cill-i-am/gaia",
+          rootDirectory: ".",
+          trustPolicy: emptyPolicy,
+        });
+        assert.deepEqual(
+          denied.remediationInputs,
+          [],
+          `${mismatch.name} must not produce remediation input`,
+        );
+        assert.strictEqual(
+          denied.observation.feedback.find(
+            ({ url }) =>
+              url ===
+              "https://github.com/cill-i-am/gaia/pull/92#issuecomment-104",
+          )?.classification,
+          "informational",
+          `${mismatch.name} must remain informational`,
+        );
+      }
     }),
   );
 
@@ -307,4 +411,21 @@ function pullRequestFixture() {
       },
     },
   };
+}
+
+function controlledCommentFixture(input: {
+  readonly author?: { readonly __typename: string; readonly login: string };
+  readonly authorAssociation?: string;
+  readonly body?: string;
+  readonly databaseId?: string;
+}) {
+  const fixture = pullRequestFixture();
+  const controlled = fixture.data.repository.pullRequest.comments.nodes.find(
+    ({ databaseId }) => databaseId === "native-comment-104",
+  );
+  if (controlled === undefined) {
+    throw new Error("Expected the controlled comment fixture.");
+  }
+  Object.assign(controlled, input);
+  return fixture;
 }

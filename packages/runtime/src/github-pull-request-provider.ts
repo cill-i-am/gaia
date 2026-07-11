@@ -1,6 +1,7 @@
 import {
   DeliveryBlocker,
   DeliveryCheckObservation,
+  DeliveryFeedbackIdSchema,
   DeliveryFeedbackObservation,
   DeliveryPullRequestObservation,
   parseDeliveryFeedbackId,
@@ -21,6 +22,38 @@ const evidenceMarker = "<!-- gaia:evidence-comment ";
 const maximumBodyCharacters = 16_384;
 const trustedAssociations = new Set(["COLLABORATOR", "MEMBER", "OWNER"]);
 const passingConclusions = new Set(["NEUTRAL", "SKIPPED", "SUCCESS"]);
+const DigestSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+);
+const GitShaSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
+);
+const LoginSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u),
+  ),
+);
+const RepositorySchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)),
+);
+const TrustedAssociationSchema = Schema.Literals([
+  "COLLABORATOR",
+  "MEMBER",
+  "OWNER",
+] as const);
+const DeliveryFeedbackSmokeAuthorizationInputSchema = Schema.Struct({
+  actorLogin: LoginSchema,
+  actorType: Schema.Literal("User"),
+  authorAssociation: TrustedAssociationSchema,
+  commentDatabaseId: Schema.Union([Schema.String, Schema.Number]),
+  contentDigest: DigestSchema,
+  feedbackId: DeliveryFeedbackIdSchema,
+  headSha: GitShaSchema,
+  prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+  repository: RepositorySchema,
+});
+type DeliveryFeedbackSmokeAuthorizationInput =
+  typeof DeliveryFeedbackSmokeAuthorizationInputSchema.Type;
 
 class RawActor extends Schema.Class<RawActor>("RawActor")({
   __typename: Schema.NonEmptyString,
@@ -31,19 +64,50 @@ class RawActor extends Schema.Class<RawActor>("RawActor")({
 export class DeliveryFeedbackSmokeAuthorization extends Schema.Class<DeliveryFeedbackSmokeAuthorization>(
   "DeliveryFeedbackSmokeAuthorization",
 )({
-  actorLogin: Schema.String.pipe(
-    Schema.check(Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u)),
-  ),
-  authorizationDigest: Schema.String.pipe(
-    Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
-  ),
-  commentDatabaseId: Schema.Union([Schema.String, Schema.Number]),
-  headSha: Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))),
-  prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-  repository: Schema.String.pipe(
-    Schema.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)),
-  ),
+  ...DeliveryFeedbackSmokeAuthorizationInputSchema.fields,
+  authorizationDigest: DigestSchema,
+  marker: Schema.Literal(remediationMarker),
+  version: Schema.Literal(1),
 }, strict) {}
+
+/** Create one exact, self-verifying acceptance-smoke authorization tuple. */
+export function makeDeliveryFeedbackSmokeAuthorization(
+  input: DeliveryFeedbackSmokeAuthorizationInput,
+) {
+  const binding = Schema.decodeUnknownSync(
+    DeliveryFeedbackSmokeAuthorizationInputSchema,
+    { onExcessProperty: "error" },
+  )(input);
+  const tuple = {
+    ...binding,
+    marker: remediationMarker,
+    version: 1,
+  } as const;
+  return DeliveryFeedbackSmokeAuthorization.make({
+    ...tuple,
+    authorizationDigest: deliveryFeedbackSmokeAuthorizationDigest(tuple),
+  });
+}
+
+/** Canonical domain-separated digest for an exact smoke authorization tuple. */
+export function deliveryFeedbackSmokeAuthorizationDigest(
+  input: Omit<DeliveryFeedbackSmokeAuthorization, "authorizationDigest">,
+) {
+  return stableHash([
+    "gaia-feedback-smoke-authorization-v1",
+    String(input.version),
+    input.repository,
+    String(input.prNumber),
+    input.headSha,
+    input.actorType,
+    input.actorLogin,
+    input.authorAssociation,
+    String(input.commentDatabaseId),
+    input.feedbackId,
+    input.contentDigest,
+    input.marker,
+  ].join("\0"));
+}
 
 const RawActorOrNull = Schema.NullOr(RawActor);
 const RawAssociation = Schema.Literals([
@@ -591,12 +655,31 @@ function controlledCommentAuthorization(
   comment: RawComment,
 ) {
   const authorization = input.authorization;
+  const actor = comment.author;
+  const observedFeedbackId = feedbackId({
+    kind: "comment",
+    nativeId: String(comment.databaseId),
+    prNumber: input.prNumber,
+    repository: input.repository,
+  });
   return authorization !== undefined &&
+    actor !== null &&
+    authorization.version === 1 &&
+    authorization.marker === remediationMarker &&
+    authorization.authorizationDigest ===
+      deliveryFeedbackSmokeAuthorizationDigest(authorization) &&
     authorization.repository === input.repository &&
     authorization.prNumber === input.prNumber &&
     authorization.headSha === input.pr.headRefOid &&
     String(authorization.commentDatabaseId) === String(comment.databaseId) &&
-    authorization.actorLogin.toLowerCase() === comment.author?.login.toLowerCase();
+    authorization.feedbackId === observedFeedbackId &&
+    authorization.contentDigest === stableHash(comment.body) &&
+    authorization.actorType === actor.__typename &&
+    actor.__typename === "User" &&
+    authorization.actorLogin === actor.login &&
+    authorization.authorAssociation === comment.authorAssociation &&
+    trustedAssociations.has(comment.authorAssociation) &&
+    hasRemediationMarker(comment.body);
 }
 
 function checkState(check: RawCheckRun): "failing" | "passing" | "pending" {

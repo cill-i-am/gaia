@@ -239,6 +239,9 @@ export {
   type GitHubPullRequestSelector,
 } from "./github-publisher.js";
 export {
+  DeliveryFeedbackSmokeAuthorization,
+  deliveryFeedbackSmokeAuthorizationDigest,
+  makeDeliveryFeedbackSmokeAuthorization,
   readGitHubPullRequest,
   type DeliveryRemediationInput,
   type GitHubPullRequestRead,
