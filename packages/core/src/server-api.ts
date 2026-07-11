@@ -30,6 +30,7 @@ import {
   AgentSessionUpdateDto,
 } from "./agent-session-api.js";
 import {
+  DeliveryFeedbackIdSchema,
   DeliveryPullRequestObservation,
   DeliveryRemediationSchema,
 } from "./delivery-remediation.js";
@@ -305,17 +306,66 @@ export const DeliveryRecoveryActionKindSchema = Schema.Literals([
   "retry",
 ] as const);
 
+const EventSequenceSchema = Schema.Number.pipe(
+  Schema.check(Schema.isInt({ identifier: "EventSequence" })),
+  Schema.check(Schema.isGreaterThanOrEqualTo(1)),
+);
+const DeliveryActionDigestSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+);
+const DeliveryActionGitShaSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
+);
+const DeliveryActionLoginSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u),
+  ),
+);
+const DeliveryActionRepositorySchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)),
+  Schema.check(Schema.isMaxLength(200)),
+);
+
 export class DeliveryRecoveryActionRequest extends Schema.Class<DeliveryRecoveryActionRequest>(
   "DeliveryRecoveryActionRequest",
 )({
-  expectedEventSequence: Schema.Number.pipe(
-    Schema.check(Schema.isInt({ identifier: "EventSequence" })),
-    Schema.check(Schema.isGreaterThanOrEqualTo(1)),
-  ),
+  expectedEventSequence: EventSequenceSchema,
   kind: DeliveryRecoveryActionKindSchema,
 }, { parseOptions: { onExcessProperty: "error" } }) {}
 
 export const DeliveryRecoveryActionRequestSchema = DeliveryRecoveryActionRequest;
+
+/** Exact operator-approved request for one controlled feedback activation. */
+export class DeliveryRemediationActivationActionRequest extends Schema.Class<DeliveryRemediationActivationActionRequest>(
+  "DeliveryRemediationActivationActionRequest",
+)({
+  actionIdempotencyKey: Schema.NonEmptyString.pipe(
+    Schema.check(Schema.isPattern(/^[A-Za-z0-9:_-]+$/u)),
+    Schema.check(Schema.isMaxLength(200)),
+  ),
+  actorLogin: DeliveryActionLoginSchema,
+  actorType: Schema.Literal("User"),
+  authorAssociation: Schema.Literals(["COLLABORATOR", "MEMBER", "OWNER"] as const),
+  authorizationDigest: DeliveryActionDigestSchema,
+  commentDatabaseId: Schema.String.pipe(
+    Schema.check(Schema.isPattern(/^[1-9]\d*$/u)),
+    Schema.check(Schema.isMaxLength(30)),
+  ),
+  contentDigest: DeliveryActionDigestSchema,
+  expectedEventSequence: EventSequenceSchema,
+  feedbackId: DeliveryFeedbackIdSchema,
+  headSha: DeliveryActionGitShaSchema,
+  kind: Schema.Literal("activateRemediation"),
+  marker: Schema.Literal("<!-- gaia-remediation-request:v1 -->"),
+  prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+  repository: DeliveryActionRepositorySchema,
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+
+export const DeliveryActionRequestSchema = Schema.Union([
+  DeliveryRecoveryActionRequest,
+  DeliveryRemediationActivationActionRequest,
+]);
+export type DeliveryActionRequest = typeof DeliveryActionRequestSchema.Type;
 
 const publicPublicationBase = {
   branchName: Schema.NonEmptyString.pipe(
@@ -744,7 +794,7 @@ export const RunsGroup = HttpApiGroup.make("runs")
     HttpApiEndpoint.post("actOnDelivery", "/runs/:runId/delivery/actions", {
       error: [...LocalRunReadErrorResponse, LocalRunApiConflictResponse],
       params: { runId: RunIdSchema },
-      payload: DeliveryRecoveryActionRequestSchema,
+      payload: DeliveryActionRequestSchema,
       success: DeliverySnapshotSuccessEnvelope,
     }),
   )

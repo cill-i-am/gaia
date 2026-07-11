@@ -72,6 +72,7 @@ import {
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import {
   actOnDeliveryPublication,
+  actOnDeliveryRemediation,
   acceptFactoryRun,
   continueServerRun,
   type ServerRunAcceptance,
@@ -308,11 +309,23 @@ export const RunsLive = HttpApiBuilder.group(
       .handle("actOnDelivery", ({ params, payload }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
+          const workflowOptions = {
+            ...identity.workflowOptions,
+            rootDirectory: identity.rootDirectory,
+          };
           const exit = yield* Effect.exit(
-            actOnDeliveryPublication(params.runId, payload, {
-              ...identity.workflowOptions,
-              rootDirectory: identity.rootDirectory,
-            }),
+            payload.kind === "activateRemediation"
+              ? (identity.workflowOptions.deliveryRemediationActivator ??
+                  actOnDeliveryRemediation)(
+                    params.runId,
+                    payload,
+                    workflowOptions,
+                  )
+              : actOnDeliveryPublication(
+                  params.runId,
+                  payload,
+                  workflowOptions,
+                ),
           );
           if (exit._tag === "Failure") {
             return yield* Effect.fail(actionApiErrorFromCause(exit.cause));

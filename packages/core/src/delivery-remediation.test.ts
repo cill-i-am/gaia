@@ -175,6 +175,37 @@ describe("delivery remediation contracts", () => {
     assert.throws(() => validateDeliveryRemediationTransition(intent, changed));
   });
 
+  it("keeps the private activation receipt as an immutable safe binding", () => {
+    const activationReceiptDigest = "e".repeat(64);
+    const intent = DeliveryRemediationIntent.make({
+      activationReceiptDigest,
+      attempt: 1,
+      authorizationDigest: "c".repeat(64),
+      commitTimestamp,
+      expectedHeadSha: oldHead,
+      feedbackDigest: digest,
+      feedbackIds: [feedbackId],
+      inputId: "remediation-run-1234567890-1",
+      operationId: "remediation:run-1234567890:1",
+      state: "intentRecorded",
+    });
+    const attempted = DeliveryRemediationDispatchAttempted.make({
+      ...intent,
+      activationReceiptDigest: "f".repeat(64),
+      state: "dispatchAttempted",
+    });
+
+    const encoded = encodeDeliveryRemediationJson(intent);
+    if (encoded === null || typeof encoded !== "object" || Array.isArray(encoded)) {
+      assert.fail("Expected an encoded remediation object.");
+    }
+    assert.strictEqual(
+      Object.getOwnPropertyDescriptor(encoded, "activationReceiptDigest")?.value,
+      activationReceiptDigest,
+    );
+    assert.throws(() => validateDeliveryRemediationTransition(intent, attempted));
+  });
+
   it("rejects reusing a one-shot authorization digest for a new attempt", () => {
     const authorizationDigest = "c".repeat(64);
     const intent = DeliveryRemediationIntent.make({

@@ -616,6 +616,50 @@ describe("local run api http boundary", () => {
       20_000,
     );
 
+    it.effect("routes controlled remediation activation through the existing live coordinator", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-activation-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        let usedLiveCoordinator = false;
+        let observedActionKey = "";
+        const layer = testServerLayer(cwd, {
+          deliveryRemediationActivator: (_runId, action, options) =>
+            Effect.sync(() => {
+              usedLiveCoordinator = options.sessionCoordinator !== undefined;
+              observedActionKey = action.actionIdempotencyKey;
+              return { observation: undefined };
+            }),
+        });
+        const request = deliveryActivationRequest(
+          accepted.eventSequence,
+        );
+        const response = yield* HttpClientRequest.post(
+          `/runs/${accepted.runId}/delivery/actions`,
+        ).pipe(
+          HttpClientRequest.bodyJsonUnsafe(request),
+          HttpClient.execute,
+          Effect.provide(layer),
+        );
+        const malformed = yield* HttpClientRequest.post(
+          `/runs/${accepted.runId}/delivery/actions`,
+        ).pipe(
+          HttpClientRequest.bodyJsonUnsafe({ ...request, prompt: "unsafe" }),
+          HttpClient.execute,
+          Effect.provide(layer),
+        );
+
+        assert.strictEqual(response.status, 200);
+        assert.strictEqual(malformed.status, 400);
+        assert.isTrue(usedLiveCoordinator);
+        assert.strictEqual(observedActionKey, request.actionIdempotencyKey);
+      }),
+      20_000,
+    );
+
     it.effect("projects privacy-safe PR feedback and the authoritative remediation re-arm sequence", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -1135,6 +1179,25 @@ function createRunRequestFromPayload(payload: unknown) {
     HttpClientRequest.bodyJsonUnsafe(payload),
     HttpClient.execute,
   );
+}
+
+function deliveryActivationRequest(expectedEventSequence: number) {
+  return {
+    actionIdempotencyKey: "activate-gaia-92-attempt-1",
+    actorLogin: "cill-i-am",
+    actorType: "User",
+    authorAssociation: "OWNER",
+    authorizationDigest: "a".repeat(64),
+    commentDatabaseId: "104",
+    contentDigest: "b".repeat(64),
+    expectedEventSequence,
+    feedbackId: `feedback-comment-${"c".repeat(64)}`,
+    headSha: "d".repeat(40),
+    kind: "activateRemediation",
+    marker: "<!-- gaia-remediation-request:v1 -->",
+    prNumber: 92,
+    repository: "cill-i-am/gaia",
+  } as const;
 }
 
 function factoryCreateInput() {

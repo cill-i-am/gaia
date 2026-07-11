@@ -1,5 +1,6 @@
 import {
   DeliveryFeedbackTrustPolicyV1,
+  type DeliveryRemediationActivationActionRequest,
   parseMarkdownSpec,
   HarnessExecutionSelection,
   parseHarnessEvent,
@@ -77,6 +78,7 @@ const nanoid = customAlphabet(
 );
 
 export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
+  readonly deliveryRemediationActivator?: DeliveryRemediationActionHandler;
   readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
   readonly deliveryPublicationCommandRunner?: GitHubCommandRunner;
   readonly deliveryPublisher?: typeof publishReadyDeliveryRun;
@@ -91,6 +93,12 @@ export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly workspaceSource?: WorkspaceSource;
 };
+
+export type DeliveryRemediationActionHandler = (
+  runId: string,
+  action: DeliveryRemediationActivationActionRequest,
+  options: ServerWorkflowOptions,
+) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
 
 const encodeResolvedHarnessExecution = Schema.encodeSync(
   ResolvedHarnessExecution,
@@ -542,6 +550,40 @@ export function actOnDeliveryPublication(
       operation: "Gaia delivery recovery action",
     },
   ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
+}
+
+/** Activate one exact controlled comment through the existing delivery coordinator. */
+export function actOnDeliveryRemediation(
+  runIdInput: string,
+  action: DeliveryRemediationActivationActionRequest,
+  options: ServerWorkflowOptions = {},
+) {
+  return Effect.gen(function* () {
+    const runId = yield* parseRunIdEffect(runIdInput);
+    return yield* continueDeliveryRemediation(runId, {
+      activationRequest: action,
+      ...(options.deliveryPublicationCommandRunner === undefined
+        ? {}
+        : { commandRunner: options.deliveryPublicationCommandRunner }),
+      ...(options.deliveryGitCommandRunner === undefined
+        ? {}
+        : { deliveryGitCommandRunner: options.deliveryGitCommandRunner }),
+      ...(options.deliveryPullRequestReader === undefined
+        ? {}
+        : { pullRequestReader: options.deliveryPullRequestReader }),
+      ...(options.deliveryFeedbackTrustPolicy === undefined
+        ? {}
+        : { trustPolicy: options.deliveryFeedbackTrustPolicy }),
+      ...(options.harnessProviderRegistry === undefined
+        ? {}
+        : { harnessProviderRegistry: options.harnessProviderRegistry }),
+      rootDirectory: options.rootDirectory ?? ".",
+      ...(options.sessionCoordinator === undefined
+        ? {}
+        : { sessionCoordinator: options.sessionCoordinator }),
+      verificationOptions: options,
+    });
+  }).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
 }
 
 function continueDeliveryPublication(

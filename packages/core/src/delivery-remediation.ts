@@ -211,6 +211,7 @@ export const encodeDeliveryPullRequestObservationJson = Schema.encodeSync(
 );
 
 const remediationBindingFields = {
+  activationReceiptDigest: Schema.optionalKey(DigestSchema),
   attempt: AttemptSchema,
   authorizationDigest: Schema.optionalKey(DigestSchema),
   commitTimestamp: Schema.String.pipe(
@@ -390,6 +391,7 @@ function sameRemediationBinding(
   right: DeliveryRemediation,
 ): boolean {
   return (
+    left.activationReceiptDigest === right.activationReceiptDigest &&
     left.attempt === right.attempt &&
     left.authorizationDigest === right.authorizationDigest &&
     left.expectedHeadSha === right.expectedHeadSha &&
