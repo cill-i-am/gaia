@@ -865,6 +865,17 @@ function updateStatesForEvent(
     case "DELIVERY_READY_TO_PUBLISH":
       states.set("orchestrator", "blocked");
       return;
+    case "DELIVERY_PUBLICATION_INTENT_RECORDED":
+    case "DELIVERY_PUBLICATION_ATTEMPTED":
+      states.set("orchestrator", "running");
+      return;
+    case "DELIVERY_PUBLICATION_CONFIRMED":
+    case "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN":
+      states.set("orchestrator", "blocked");
+      return;
+    case "DELIVERY_PUBLICATION_FAILED":
+      states.set("orchestrator", "failed");
+      return;
     case "RUN_FAILED":
       states.set("orchestrator", "failed");
       states.set(roleFromFailureStage(event.payload["stage"]), "failed");
@@ -903,6 +914,11 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "REPORT_STARTED":
     case "REPORT_COMPLETED":
     case "DELIVERY_READY_TO_PUBLISH":
+    case "DELIVERY_PUBLICATION_INTENT_RECORDED":
+    case "DELIVERY_PUBLICATION_ATTEMPTED":
+    case "DELIVERY_PUBLICATION_CONFIRMED":
+    case "DELIVERY_PUBLICATION_FAILED":
+    case "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN":
       return "orchestrator";
     case "RUN_FAILED":
       return roleFromFailureStage(event.payload["stage"]);
@@ -936,6 +952,15 @@ function subStateForEvent(event: RunEvent): string | undefined {
       return "delivering";
     case "DELIVERY_READY_TO_PUBLISH":
       return "readyToPublish";
+    case "DELIVERY_PUBLICATION_INTENT_RECORDED":
+    case "DELIVERY_PUBLICATION_ATTEMPTED":
+      return "publishing";
+    case "DELIVERY_PUBLICATION_CONFIRMED":
+      return "waitingForPr";
+    case "DELIVERY_PUBLICATION_FAILED":
+      return "publicationFailed";
+    case "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN":
+      return "publicationOutcomeUnknown";
     case "RUN_CREATED":
       return "accepted";
     case "WORKSPACE_PREPARED":
@@ -982,6 +1007,16 @@ function activityLabel(event: RunEvent): string {
       return "Delivery started";
     case "DELIVERY_READY_TO_PUBLISH":
       return "Ready to publish";
+    case "DELIVERY_PUBLICATION_INTENT_RECORDED":
+      return "Publication intent recorded";
+    case "DELIVERY_PUBLICATION_ATTEMPTED":
+      return "Publication attempted";
+    case "DELIVERY_PUBLICATION_CONFIRMED":
+      return "Draft pull request confirmed";
+    case "DELIVERY_PUBLICATION_FAILED":
+      return "Publication failed";
+    case "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN":
+      return "Publication outcome unknown";
     case "RUN_CREATED":
       return "Factory run accepted";
     case "WORKSPACE_PREPARED":

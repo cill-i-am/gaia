@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   codexAppServerExecutionSelection,
+  DeliveryPublicationConfirmed,
   HarnessCapabilities,
   HarnessProviderDescriptor,
   parseRunId,
@@ -226,6 +227,7 @@ describe("server workflows", () => {
         const gitRunner = recordingGitRunner(commands, {
           baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
         });
+        const publicationCalls: Array<string> = [];
 
         const accepted = yield* acceptFactoryRun(
           {
@@ -246,6 +248,7 @@ describe("server workflows", () => {
         );
         const summary = yield* continueServerRun(accepted.runId, {
           deliveryGitCommandRunner: gitRunner,
+          deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
           harnessProviderRegistry: makeTestHarnessProviderRegistry(),
           rootDirectory: cwd,
         });
@@ -255,6 +258,7 @@ describe("server workflows", () => {
         const serialized = JSON.stringify(events.events);
 
         assert.strictEqual(summary.state, "delivering");
+        assert.deepEqual(publicationCalls, [accepted.runId]);
         assert.strictEqual(events.events.at(-1)?.type, "DELIVERY_READY_TO_PUBLISH");
         assert.isTrue(
           commands.some(
@@ -491,6 +495,7 @@ describe("server workflows", () => {
         const smoke = makeDisposableGitRemote();
         try {
           const primaryBefore = gitState(smoke.source);
+          const publicationCalls: Array<string> = [];
           const accepted = yield* acceptFactoryRun(
             {
               delivery: { mode: "pullRequest" },
@@ -508,6 +513,7 @@ describe("server workflows", () => {
             },
           );
           const summary = yield* continueServerRun(accepted.runId, {
+            deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
             harnessProviderRegistry: makeTestHarnessProviderRegistry(),
             rootDirectory: smoke.source,
           });
@@ -517,6 +523,7 @@ describe("server workflows", () => {
           const primaryAfter = gitState(smoke.source);
 
           assert.strictEqual(summary.state, "delivering");
+          assert.deepEqual(publicationCalls, [accepted.runId]);
           assert.strictEqual(workspaceHead, smoke.baseRevision);
           assert.strictEqual(workspaceBranch, "");
           assert.deepEqual(primaryAfter, primaryBefore);
@@ -661,6 +668,12 @@ function recordingGitRunner(
       if (first === "fetch") {
         return { stderr: "", stdout: "" };
       }
+      if (first === "remote" && rest[0] === "get-url") {
+        return {
+          stderr: "",
+          stdout: "https://github.com/cill-i-am/gaia.git\n",
+        };
+      }
       if (first === "rev-parse" && rest[0] === "origin/main") {
         return { stderr: "", stdout: `${input.baseRevision}\n` };
       }
@@ -671,6 +684,31 @@ function recordingGitRunner(
         return { stderr: "", stdout: "" };
       }
       throw new Error(`Unexpected git command ${command.args.join(" ")}`);
+    });
+}
+
+function recordingDeliveryPublisher(calls: Array<string>) {
+  return (runId: ReturnType<typeof parseRunId>) =>
+    Effect.sync(() => {
+      calls.push(runId);
+      return DeliveryPublicationConfirmed.make({
+        baseBranch: "main",
+        baseRevision: "a".repeat(40),
+        branchName: `gaia/${runId}`,
+        commitMessage: `feat: deliver ${runId}`,
+        commitSha: "b".repeat(40),
+        commitTimestamp: "2026-07-11T00:00:00.000Z",
+        digestVersion: 1,
+        draft: true,
+        headSha: "b".repeat(40),
+        operationId: `publish-${runId}-1`,
+        payloadDigest: "c".repeat(64),
+        prNumber: 91,
+        prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+        sourcePaths: ["src/feature.ts"],
+        state: "confirmed",
+        treeSha: "d".repeat(40),
+      });
     });
 }
 

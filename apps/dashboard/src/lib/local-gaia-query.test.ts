@@ -20,6 +20,7 @@ import {
 import { testFactoryExecution } from "@/test-factory-execution";
 import {
   localGaiaCreateRunMutationOptions,
+  localGaiaDeliveryActionMutationOptions,
   localGaiaFactoryAgentActivityQueryOptions,
   localGaiaFactoryArtifactQueryOptions,
   localGaiaFactoryArtifactsQueryOptions,
@@ -512,6 +513,7 @@ describe("local Gaia query options", () => {
     const requests: Array<string> = [];
     const bodies: Array<unknown> = [];
     const createRunInput = {
+      deliveryMode: "pullRequest" as const,
       description: "# Mutation proof\n\nRun the focused test.\n",
       title: "Mutation proof",
     };
@@ -553,7 +555,7 @@ describe("local Gaia query options", () => {
     expect(requests).toEqual(["POST http://127.0.0.1:4321/runs"]);
     expect(bodies).toEqual([
       {
-        delivery: { mode: "local" },
+        delivery: { mode: "pullRequest" },
         execution: { harnessProfileId: "codexAppServer" },
         workflow: "issueDelivery",
         workItem: {
@@ -564,6 +566,55 @@ describe("local Gaia query options", () => {
       },
     ]);
     expect(result).toEqual(createRunResponse);
+  });
+
+  it("sends strict delivery recovery actions through the typed API client", async () => {
+    const requests: Array<string> = [];
+    const bodies: Array<unknown> = [];
+    const effectQuery = createEffectQuery(
+      recordingFetchLayer(requests, async (request) => {
+        bodies.push(await request.json());
+        return jsonResponse({
+          data: {
+            eventSequence: 10,
+            mode: "pullRequest",
+            provenance: {
+              baseBranch: "main",
+              baseRevision: "a".repeat(40),
+              headBranch: "gaia/run-1234567890",
+              remote: "origin",
+            },
+            recoveryActions: [],
+            runId: "run-1234567890",
+            stage: "publishing",
+            status: "publishing",
+          },
+          status: "success",
+        });
+      }),
+    );
+    const mutation = localGaiaDeliveryActionMutationOptions(
+      {
+        runId: "run-1234567890",
+        serverUrl: "http://127.0.0.1:4321",
+      },
+      effectQuery,
+    );
+    if (mutation.mutationFn === undefined) {
+      throw new Error("Expected delivery action mutationFn to be defined.");
+    }
+
+    await mutation.mutationFn(
+      { expectedEventSequence: 9, kind: "reconcile" },
+      { client: new QueryClient(), meta: undefined },
+    );
+
+    expect(requests).toEqual([
+      "POST http://127.0.0.1:4321/runs/run-1234567890/delivery/actions",
+    ]);
+    expect(bodies).toEqual([
+      { expectedEventSequence: 9, kind: "reconcile" },
+    ]);
   });
 
   it("creates agent session action mutations with stable keys", async () => {

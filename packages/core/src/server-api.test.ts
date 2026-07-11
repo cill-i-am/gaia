@@ -1,6 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Schema } from "effect";
-import { CreateRunRequest, LocalGaiaServerOpenApi } from "./server-api.js";
+import {
+  CreateRunRequest,
+  DeliveryRecoveryActionRequestSchema,
+  LocalGaiaServerOpenApi,
+} from "./server-api.js";
 
 describe("LocalGaiaServerApi contract", () => {
   it("publishes fresh factory run paths", () => {
@@ -18,6 +22,7 @@ describe("LocalGaiaServerApi contract", () => {
       "/runs/{runId}/artifacts/{artifactId}",
       "/runs/{runId}/artifacts",
       "/runs/{runId}/delivery",
+      "/runs/{runId}/delivery/actions",
       "/runs/{runId}/delivery/stream",
       "/runs/{runId}/factory-graph",
     ]);
@@ -33,6 +38,7 @@ describe("LocalGaiaServerApi contract", () => {
     assert.isObject(paths["/runs/{runId}/agents/{agentId}/session/actions"]?.post);
     assert.isObject(paths["/runs/{runId}/agents/{agentId}/session/stream"]?.get);
     assert.isObject(paths["/runs/{runId}/delivery"]?.get);
+    assert.isObject(paths["/runs/{runId}/delivery/actions"]?.post);
     assert.isObject(paths["/runs/{runId}/delivery/stream"]?.get);
     assert.isObject(paths["/runs/{runId}/artifacts"]?.get);
     assert.isObject(paths["/runs/{runId}/artifacts/{artifactId}"]?.get);
@@ -88,6 +94,10 @@ describe("LocalGaiaServerApi contract", () => {
     assertJsonSchemaRef(
       paths["/runs/{runId}/delivery"]?.get?.responses["200"],
       "#/components/schemas/DeliverySnapshotSuccessEnvelope",
+    );
+    assert.deepEqual(
+      responseStatuses(paths["/runs/{runId}/delivery/actions"]?.post?.responses),
+      ["200", "400", "404", "409", "422", "500"],
     );
     assert.deepEqual(
       responseStatuses(paths["/runs/{runId}/agents/{agentId}/activity"]?.get?.responses),
@@ -347,6 +357,26 @@ describe("LocalGaiaServerApi contract", () => {
           title: "Define FactoryGraph contracts",
           workspaceSource: ".",
         },
+      }),
+    );
+  });
+
+  it("strictly parses optimistic delivery recovery actions", () => {
+    const decode = Schema.decodeUnknownSync(
+      DeliveryRecoveryActionRequestSchema,
+    );
+
+    const action = decode({ expectedEventSequence: 9, kind: "reconcile" });
+    assert.strictEqual(action.expectedEventSequence, 9);
+    assert.strictEqual(action.kind, "reconcile");
+    assert.throws(() =>
+      decode({ expectedEventSequence: 0, kind: "retry" }),
+    );
+    assert.throws(() =>
+      decode({
+        expectedEventSequence: 9,
+        force: true,
+        kind: "retry",
       }),
     );
   });

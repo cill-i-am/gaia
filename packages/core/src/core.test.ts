@@ -5,6 +5,12 @@ import {
   EvidencePromotionPullRequestSummary,
   EvidencePromotionReportPaths,
   EvidencePromotionVerificationSummary,
+  DeliveryPublicationAttempted,
+  DeliveryPublicationConfirmed,
+  DeliveryPublicationFailed,
+  DeliveryPublicationIntent,
+  DeliveryPublicationOutcomeUnknown,
+  encodeDeliveryPublicationJson,
   FactoryRetro,
   FactoryRetroEntry,
   FactoryRetroSourceLink,
@@ -22,6 +28,7 @@ import {
   parseEvidencePromotion,
   parseFactoryRetro,
   parseFactoryLaneScorecard,
+  parseDeliveryPublication,
   parseMarkdownSpec,
   parseRunId,
   replayRunEvents,
@@ -557,6 +564,270 @@ describe("core contracts", () => {
     assert.strictEqual(ready.context.reportPath, "report.md");
     assert.notInclude(JSON.stringify(ready.context), "/Users/");
     assert.notInclude(JSON.stringify(ready.context), ".gaia/runs");
+  });
+
+  it("replays publication intent, attempt, and confirmation into waiting-for-PR", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const publicationBase = {
+      baseBranch: "main",
+      baseRevision: "a".repeat(40),
+      branchName: "gaia/run-V7kP9sQ2xY",
+      commitMessage: "feat: deliver run-V7kP9sQ2xY",
+      commitTimestamp: "2026-07-11T08:00:00.000Z",
+      digestVersion: 1 as const,
+      operationId: "publish-run-V7kP9sQ2xY-1",
+      payloadDigest: "b".repeat(64),
+      sourcePaths: ["src/delivery.ts"],
+      treeSha: "d".repeat(40),
+    };
+    const intent = DeliveryPublicationIntent.make({
+      ...publicationBase,
+      state: "intentRecorded",
+    });
+    const attempted = DeliveryPublicationAttempted.make({
+      ...publicationBase,
+      commitSha: "c".repeat(40),
+      state: "attempted",
+      treeSha: "d".repeat(40),
+    });
+    const confirmed = DeliveryPublicationConfirmed.make({
+      ...publicationBase,
+      commitSha: "c".repeat(40),
+      draft: true,
+      headSha: "c".repeat(40),
+      prNumber: 91,
+      prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+      state: "confirmed",
+      treeSha: "d".repeat(40),
+    });
+    const events = [
+      ...readyToPublishEvents(runId),
+      makeRunEvent({
+        payload: { publication: encodeDeliveryPublicationJson(intent) },
+        runId,
+        sequence: 7,
+        timestamp: "2026-07-11T08:00:00.000Z",
+        type: "DELIVERY_PUBLICATION_INTENT_RECORDED",
+      }),
+      makeRunEvent({
+        payload: { publication: encodeDeliveryPublicationJson(attempted) },
+        runId,
+        sequence: 8,
+        timestamp: "2026-07-11T08:00:01.000Z",
+        type: "DELIVERY_PUBLICATION_ATTEMPTED",
+      }),
+      makeRunEvent({
+        payload: { publication: encodeDeliveryPublicationJson(confirmed) },
+        runId,
+        sequence: 9,
+        timestamp: "2026-07-11T08:00:02.000Z",
+        type: "DELIVERY_PUBLICATION_CONFIRMED",
+      }),
+    ];
+
+    const publishing = snapshotFromReplay(events.slice(0, 8));
+    const waiting = snapshotFromReplay(events);
+
+    assert.strictEqual(
+      (publishing.context.delivery as { stage: string }).stage,
+      "publishing",
+    );
+    assert.strictEqual(
+      (waiting.context.delivery as { stage: string }).stage,
+      "waitingForPr",
+    );
+    assert.deepEqual(
+      (waiting.context.delivery as { publication: unknown }).publication,
+      encodeDeliveryPublicationJson(confirmed),
+    );
+  });
+
+  it("strictly parses publication payloads and rejects secret-bearing excess fields", () => {
+    const publication = {
+      baseBranch: "main",
+      baseRevision: "a".repeat(40),
+      branchName: "gaia/run-V7kP9sQ2xY",
+      commitMessage: "feat: deliver run-V7kP9sQ2xY",
+      commitTimestamp: "2026-07-11T08:00:00.000Z",
+      digestVersion: 1,
+      operationId: "publish-run-V7kP9sQ2xY-1",
+      payloadDigest: "b".repeat(64),
+      sourcePaths: ["src/delivery.ts"],
+      state: "intentRecorded",
+    } as const;
+
+    assert.deepEqual(
+      encodeDeliveryPublicationJson(parseDeliveryPublication(publication)),
+      publication,
+    );
+    assert.throws(() =>
+      parseDeliveryPublication({
+        ...publication,
+        reportText: "private report body",
+      }),
+    );
+    assert.throws(() =>
+      parseDeliveryPublication({
+        ...publication,
+        sourcePaths: ["../private.txt"],
+      }),
+    );
+  });
+
+  it("replays unknown, definitive failure, and explicit retry as distinct states", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const base = {
+      baseBranch: "main",
+      baseRevision: "a".repeat(40),
+      branchName: "gaia/run-V7kP9sQ2xY",
+      commitMessage: "feat: deliver run-V7kP9sQ2xY",
+      commitSha: "c".repeat(40),
+      commitTimestamp: "2026-07-11T08:00:00.000Z",
+      digestVersion: 1 as const,
+      operationId: "publish-run-V7kP9sQ2xY-1",
+      payloadDigest: "b".repeat(64),
+      sourcePaths: ["src/delivery.ts"],
+      treeSha: "d".repeat(40),
+    };
+    const intent = DeliveryPublicationIntent.make({
+      ...base,
+      state: "intentRecorded",
+    });
+    const attempted = DeliveryPublicationAttempted.make({
+      ...base,
+      state: "attempted",
+    });
+    const unknown = DeliveryPublicationOutcomeUnknown.make({
+      ...base,
+      code: "DeliveryPublicationOutcomeUnknown",
+      message: "External acceptance could not be confirmed.",
+      recoverable: true,
+      state: "outcomeUnknown",
+      step: "pullRequest",
+    });
+    const failed = DeliveryPublicationFailed.make({
+      ...base,
+      code: "DeliveryPullRequestNotCreated",
+      message: "Exact reconciliation proved no pull request exists.",
+      recoverable: true,
+      state: "failed",
+      step: "pullRequest",
+    });
+    const retryIntent = DeliveryPublicationIntent.make({
+      ...intent,
+      operationId: "publish-run-V7kP9sQ2xY-2",
+      payloadDigest: "e".repeat(64),
+    });
+    const events = [
+      ...readyToPublishEvents(runId),
+      ...[
+        ["DELIVERY_PUBLICATION_INTENT_RECORDED", intent],
+        ["DELIVERY_PUBLICATION_ATTEMPTED", attempted],
+        ["DELIVERY_PUBLICATION_OUTCOME_UNKNOWN", unknown],
+        ["DELIVERY_PUBLICATION_FAILED", failed],
+        ["DELIVERY_PUBLICATION_INTENT_RECORDED", retryIntent],
+      ].map(([type, publication], index) =>
+        makeRunEvent({
+          payload: {
+            publication: encodeDeliveryPublicationJson(
+              publication as typeof intent,
+            ),
+          },
+          runId,
+          sequence: index + 7,
+          timestamp: `2026-07-11T08:00:0${index}.000Z`,
+          type: type as "DELIVERY_PUBLICATION_INTENT_RECORDED",
+        }),
+      ),
+    ];
+
+    assert.strictEqual(
+      (snapshotFromReplay(events.slice(0, 9)).context.delivery as { stage: string })
+        .stage,
+      "publicationOutcomeUnknown",
+    );
+    assert.strictEqual(
+      (snapshotFromReplay(events.slice(0, 10)).context.delivery as { stage: string })
+        .stage,
+      "publicationFailed",
+    );
+    assert.strictEqual(
+      (snapshotFromReplay(events).context.delivery as { stage: string }).stage,
+      "publishing",
+    );
+  });
+
+  it("rejects conflicting publication reuse for the same operation ID", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const intent = DeliveryPublicationIntent.make({
+      baseBranch: "main",
+      baseRevision: "a".repeat(40),
+      branchName: "gaia/run-V7kP9sQ2xY",
+      commitMessage: "feat: deliver run-V7kP9sQ2xY",
+      commitTimestamp: "2026-07-11T08:00:00.000Z",
+      digestVersion: 1,
+      operationId: "publish-run-V7kP9sQ2xY-1",
+      payloadDigest: "b".repeat(64),
+      sourcePaths: ["src/delivery.ts"],
+      state: "intentRecorded",
+    });
+    const conflicting = DeliveryPublicationAttempted.make({
+      ...intent,
+      commitSha: "c".repeat(40),
+      payloadDigest: "e".repeat(64),
+      state: "attempted",
+      treeSha: "d".repeat(40),
+    });
+    const events = [
+      ...readyToPublishEvents(runId),
+      makeRunEvent({
+        payload: { publication: encodeDeliveryPublicationJson(intent) },
+        runId,
+        sequence: 7,
+        timestamp: "2026-07-11T08:00:00.000Z",
+        type: "DELIVERY_PUBLICATION_INTENT_RECORDED",
+      }),
+      makeRunEvent({
+        payload: { publication: encodeDeliveryPublicationJson(conflicting) },
+        runId,
+        sequence: 8,
+        timestamp: "2026-07-11T08:00:01.000Z",
+        type: "DELIVERY_PUBLICATION_ATTEMPTED",
+      }),
+    ];
+
+    assert.throws(() => snapshotFromReplay(events), /operation ID/u);
+  });
+
+  it("rejects publication identity outside accepted delivery provenance", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const intent = DeliveryPublicationIntent.make({
+      baseBranch: "main",
+      baseRevision: "a".repeat(40),
+      branchName: "gaia/run-WrongBrn01",
+      commitMessage: "feat: deliver run-V7kP9sQ2xY",
+      commitTimestamp: "2026-07-11T08:00:00.000Z",
+      digestVersion: 1,
+      operationId: "publish-run-V7kP9sQ2xY-1",
+      payloadDigest: "b".repeat(64),
+      sourcePaths: ["src/delivery.ts"],
+      state: "intentRecorded",
+    });
+    const events = [
+      ...readyToPublishEvents(runId),
+      makeRunEvent({
+        payload: { publication: encodeDeliveryPublicationJson(intent) },
+        runId,
+        sequence: 7,
+        timestamp: "2026-07-11T08:00:00.000Z",
+        type: "DELIVERY_PUBLICATION_INTENT_RECORDED",
+      }),
+    ];
+
+    assert.throws(
+      () => snapshotFromReplay(events),
+      /accepted delivery provenance/u,
+    );
   });
 
   it("replays read-only review evidence paths", () => {
@@ -1332,3 +1603,60 @@ describe("core contracts", () => {
     assert.throws(() => replayRunEvents(events));
   });
 });
+
+function readyToPublishEvents(runId: ReturnType<typeof parseRunId>) {
+  const delivery = {
+    baseBranch: "main",
+    baseRevision: "a".repeat(40),
+    headBranch: `gaia/${runId}`,
+    mode: "pullRequest",
+    remote: "origin",
+  };
+  return [
+    makeRunEvent({
+      payload: { delivery, specPath: "input.md" },
+      runId,
+      sequence: 1,
+      timestamp: "2026-07-11T07:59:54.000Z",
+      type: "RUN_CREATED",
+    }),
+    makeRunEvent({
+      payload: { delivery: { ...delivery, stage: "delivering" } },
+      runId,
+      sequence: 2,
+      timestamp: "2026-07-11T07:59:55.000Z",
+      type: "DELIVERY_STARTED",
+    }),
+    makeRunEvent({
+      payload: { workspacePath: "workspace" },
+      runId,
+      sequence: 3,
+      timestamp: "2026-07-11T07:59:56.000Z",
+      type: "WORKSPACE_PREPARED",
+    }),
+    makeRunEvent({
+      payload: { workerResultPath: "worker-result.json" },
+      runId,
+      sequence: 4,
+      timestamp: "2026-07-11T07:59:57.000Z",
+      type: "WORKER_COMPLETED",
+    }),
+    makeRunEvent({
+      payload: { verificationResultPath: "verification-result.json" },
+      runId,
+      sequence: 5,
+      timestamp: "2026-07-11T07:59:58.000Z",
+      type: "VERIFICATION_COMPLETED",
+    }),
+    makeRunEvent({
+      payload: {
+        delivery: { ...delivery, stage: "readyToPublish" },
+        reportPath: "report.md",
+      },
+      runId,
+      sequence: 6,
+      timestamp: "2026-07-11T07:59:59.000Z",
+      type: "DELIVERY_READY_TO_PUBLISH",
+    }),
+  ];
+}

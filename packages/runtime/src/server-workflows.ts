@@ -3,6 +3,7 @@ import {
   HarnessExecutionSelection,
   parseHarnessEvent,
   parseHarnessSessionId,
+  parseDeliveryPublication,
   parseRunId,
   ResolvedHarnessExecution,
   snapshotFromReplay,
@@ -56,6 +57,11 @@ import {
   type DeliveryProvenance,
   type GitDeliveryCommandRunner,
 } from "./git-delivery.js";
+import {
+  publishReadyDeliveryRun,
+  retryFailedDeliveryPublication,
+} from "./delivery-publication.js";
+import type { GitHubCommandRunner } from "./github-publisher.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -64,6 +70,9 @@ const nanoid = customAlphabet(
 
 export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
+  readonly deliveryPublicationCommandRunner?: GitHubCommandRunner;
+  readonly deliveryPublisher?: typeof publishReadyDeliveryRun;
+  readonly deliveryRetryPublisher?: typeof retryFailedDeliveryPublication;
   readonly harnessProviderRegistry?: HarnessProviderRegistry;
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly workspaceSource?: WorkspaceSource;
@@ -393,6 +402,13 @@ function continueServerRunUnlocked(
       } satisfies CommandSummary;
     }
 
+    if (
+      firstEvent.payload["workflow"] === "issueDelivery" &&
+      isDeliveryPublicationReady(loaded.events)
+    ) {
+      return yield* continueDeliveryPublication(runId, paths, options);
+    }
+
     const fs = yield* FileSystem.FileSystem;
     const specMarkdown = yield* fs.readFileString(paths.input).pipe(
       Effect.mapError((cause) =>
@@ -409,7 +425,7 @@ function continueServerRunUnlocked(
       title: runId,
     });
 
-    return yield* Effect.gen(function* () {
+    const summary = yield* Effect.gen(function* () {
       const continuationOptions =
         firstEvent.payload["workflow"] === "issueDelivery"
           ? yield* factoryContinuationOptions(firstEvent, loaded.events, options)
@@ -435,7 +451,125 @@ function continueServerRunUnlocked(
         failServerRunIfNeeded(runId, paths, "runningWorker", error),
       ),
     );
+    if (
+      firstEvent.payload["workflow"] === "issueDelivery" &&
+      summary.state === "delivering"
+    ) {
+      const refreshed = yield* loadRun(paths);
+      if (isDeliveryPublicationReady(refreshed.events)) {
+        return yield* continueDeliveryPublication(runId, paths, options);
+      }
+    }
+    return summary;
   });
+}
+
+export function actOnDeliveryPublication(
+  runIdInput: string,
+  action: {
+    readonly expectedEventSequence: number;
+    readonly kind: "reconcile" | "retry";
+  },
+  options: ServerWorkflowOptions = {},
+) {
+  return withRunStoreLock(
+    options,
+    Effect.gen(function* () {
+      const runId = yield* parseRunIdEffect(runIdInput);
+      const paths = yield* makeRunPaths(runId, options);
+      const loaded = yield* loadRun(paths);
+      const lastSequence = loaded.events.at(-1)?.sequence ?? 0;
+      if (lastSequence !== action.expectedEventSequence) {
+        return yield* Effect.fail(
+          makeRuntimeError({
+            code: "DeliveryActionConflict",
+            message: "Delivery state changed before the recovery action was accepted.",
+            recoverable: true,
+          }),
+        );
+      }
+      const snapshot = snapshotFromReplay(loaded.events);
+      const delivery = snapshot.context["delivery"];
+      const publicationValue =
+        delivery !== null && typeof delivery === "object" && !Array.isArray(delivery)
+          ? Object.getOwnPropertyDescriptor(delivery, "publication")?.value
+          : undefined;
+      const publication =
+        publicationValue === undefined
+          ? undefined
+          : parseDeliveryPublication(publicationValue);
+      if (
+        publication === undefined ||
+        (action.kind === "reconcile" && publication.state !== "outcomeUnknown") ||
+        (action.kind === "retry" &&
+          (publication.state !== "failed" || !publication.recoverable))
+      ) {
+        return yield* Effect.fail(
+          makeRuntimeError({
+            code: "DeliveryActionConflict",
+            message: "The requested recovery action is not valid for current delivery state.",
+            recoverable: true,
+          }),
+        );
+      }
+      const publicationOptions = deliveryPublicationOptions(options);
+      return action.kind === "reconcile"
+        ? yield* (options.deliveryPublisher ?? publishReadyDeliveryRun)(
+            runId,
+            publicationOptions,
+          )
+        : yield* (options.deliveryRetryPublisher ?? retryFailedDeliveryPublication)(
+            runId,
+            publicationOptions,
+          );
+    }),
+    {
+      nextSafeAction: "Refresh delivery state before retrying the recovery action.",
+      operation: "Gaia delivery recovery action",
+    },
+  ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
+}
+
+function continueDeliveryPublication(
+  runId: RunId,
+  paths: RunPaths,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    yield* (options.deliveryPublisher ?? publishReadyDeliveryRun)(
+      runId,
+      deliveryPublicationOptions(options),
+    );
+    return {
+      reportPath: paths.reportMarkdown,
+      runDirectory: paths.root,
+      runId,
+      state: "delivering",
+      status: "running",
+    } satisfies CommandSummary;
+  });
+}
+
+function deliveryPublicationOptions(options: ServerWorkflowOptions) {
+  return {
+    rootDirectory: options.rootDirectory ?? ".",
+    ...(options.deliveryGitCommandRunner === undefined
+      ? {}
+      : { deliveryGitCommandRunner: options.deliveryGitCommandRunner }),
+    ...(options.deliveryPublicationCommandRunner === undefined
+      ? {}
+      : { commandRunner: options.deliveryPublicationCommandRunner }),
+  };
+}
+
+function isDeliveryPublicationReady(events: ReadonlyArray<RunEvent>) {
+  return events.some(
+    ({ type }) =>
+      type === "DELIVERY_READY_TO_PUBLISH" ||
+      type === "DELIVERY_PUBLICATION_INTENT_RECORDED" ||
+      type === "DELIVERY_PUBLICATION_ATTEMPTED" ||
+      type === "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN",
+  );
 }
 
 export function reconcileInterruptedServerRuns(

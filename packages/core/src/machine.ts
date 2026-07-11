@@ -1,6 +1,11 @@
 import * as Schema from "effect/Schema";
 import { assign, createActor, createMachine } from "xstate";
 import {
+  encodeDeliveryPublicationJson,
+  parseDeliveryPublication,
+  type DeliveryPublication,
+} from "./delivery-publication.js";
+import {
   FailureStageSchema,
   GaiaFailure,
   ReviewPhaseSchema,
@@ -68,6 +73,15 @@ export type RunMachineEvent =
       readonly type: "DELIVERY_READY_TO_PUBLISH";
       readonly delivery: Record<string, Schema.Json>;
       readonly reportPath: string | undefined;
+    }
+  | {
+      readonly type:
+        | "DELIVERY_PUBLICATION_INTENT_RECORDED"
+        | "DELIVERY_PUBLICATION_ATTEMPTED"
+        | "DELIVERY_PUBLICATION_CONFIRMED"
+        | "DELIVERY_PUBLICATION_FAILED"
+        | "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN";
+      readonly publication: DeliveryPublication;
     }
   | { readonly type: "WORKSPACE_PREPARED"; readonly workspacePath: string }
   | { readonly type: "REVIEW_STARTED" }
@@ -264,6 +278,21 @@ export const runMachine = createMachine({
     failed: {},
     delivering: {
       on: {
+        DELIVERY_PUBLICATION_ATTEMPTED: {
+          actions: "recordDeliveryPublication",
+        },
+        DELIVERY_PUBLICATION_CONFIRMED: {
+          actions: "recordDeliveryPublication",
+        },
+        DELIVERY_PUBLICATION_FAILED: {
+          actions: "recordDeliveryPublication",
+        },
+        DELIVERY_PUBLICATION_INTENT_RECORDED: {
+          actions: "recordDeliveryPublication",
+        },
+        DELIVERY_PUBLICATION_OUTCOME_UNKNOWN: {
+          actions: "recordDeliveryPublication",
+        },
         RUN_FAILED: {
           actions: "recordFailure",
           target: "failed",
@@ -405,6 +434,16 @@ export const runMachine = createMachine({
         event.type === "DELIVERY_READY_TO_PUBLISH"
           ? event.reportPath
           : undefined,
+    }),
+    recordDeliveryPublication: assign({
+      delivery: ({ context, event }) =>
+        event.type === "DELIVERY_PUBLICATION_INTENT_RECORDED" ||
+        event.type === "DELIVERY_PUBLICATION_ATTEMPTED" ||
+        event.type === "DELIVERY_PUBLICATION_CONFIRMED" ||
+        event.type === "DELIVERY_PUBLICATION_FAILED" ||
+        event.type === "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN"
+          ? deliveryWithPublication(context.delivery, event.publication)
+          : context.delivery,
     }),
     recordGitHubFeedback: assign({
       githubFeedbackCommentCount: ({ event }) =>
@@ -597,6 +636,7 @@ export const runMachine = createMachine({
 export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   const actor = createActor(runMachine).start();
   let expectedSequence = 1;
+  let publication: DeliveryPublication | undefined;
 
   for (const event of events) {
     if (event.sequence !== expectedSequence) {
@@ -605,11 +645,31 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       );
     }
 
+    if (isDeliveryPublicationEvent(event)) {
+      const next = parseDeliveryPublication(event.payload["publication"]);
+      assertPublicationDeliveryIdentity(
+        actor.getSnapshot().context.delivery,
+        next,
+      );
+      validatePublicationTransition(publication, next);
+      publication = next;
+    }
+
     actor.send(toMachineEvent(event));
     expectedSequence += 1;
   }
 
   return actor.getSnapshot();
+}
+
+function isDeliveryPublicationEvent(event: RunEvent) {
+  return (
+    event.type === "DELIVERY_PUBLICATION_INTENT_RECORDED" ||
+    event.type === "DELIVERY_PUBLICATION_ATTEMPTED" ||
+    event.type === "DELIVERY_PUBLICATION_CONFIRMED" ||
+    event.type === "DELIVERY_PUBLICATION_FAILED" ||
+    event.type === "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN"
+  );
 }
 
 export function snapshotFromReplay(events: ReadonlyArray<RunEvent>): RunSnapshot {
@@ -648,6 +708,15 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
     case "DELIVERY_STARTED":
       return {
         delivery: getJsonObjectPayload(event, "delivery"),
+        type: event.type,
+      };
+    case "DELIVERY_PUBLICATION_INTENT_RECORDED":
+    case "DELIVERY_PUBLICATION_ATTEMPTED":
+    case "DELIVERY_PUBLICATION_CONFIRMED":
+    case "DELIVERY_PUBLICATION_FAILED":
+    case "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN":
+      return {
+        publication: parseDeliveryPublication(event.payload["publication"]),
         type: event.type,
       };
     case "GITHUB_CHECKS_RECORDED":
@@ -798,6 +867,163 @@ function normalizeGitHubChecksStatus(status: string): string {
       return "green";
     default:
       return status;
+  }
+}
+
+function deliveryWithPublication(
+  delivery: Record<string, Schema.Json> | undefined,
+  publication: DeliveryPublication,
+): Record<string, Schema.Json> {
+  assertPublicationDeliveryIdentity(delivery, publication);
+  if (delivery === undefined) {
+    throw new Error("Publication requires accepted pull-request delivery state.");
+  }
+
+  const previousValue = delivery["publication"];
+  const previous =
+    previousValue === undefined
+      ? undefined
+      : parseDeliveryPublication(previousValue);
+  validatePublicationTransition(previous, publication);
+
+  return {
+    ...delivery,
+    publication: encodeDeliveryPublicationJson(publication),
+    stage: publicationStage(publication),
+  };
+}
+
+function assertPublicationDeliveryIdentity(
+  delivery: Record<string, Schema.Json> | undefined,
+  publication: DeliveryPublication,
+) {
+  if (delivery === undefined || delivery["mode"] !== "pullRequest") {
+    throw new Error("Publication requires accepted pull-request delivery state.");
+  }
+  if (
+    delivery["baseBranch"] !== publication.baseBranch ||
+    delivery["baseRevision"] !== publication.baseRevision ||
+    delivery["headBranch"] !== publication.branchName
+  ) {
+    throw new Error(
+      "Publication identity does not match accepted delivery provenance.",
+    );
+  }
+}
+
+function validatePublicationTransition(
+  previous: DeliveryPublication | undefined,
+  next: DeliveryPublication,
+) {
+  if (previous === undefined) {
+    if (next.state !== "intentRecorded") {
+      throw new Error("Publication must record intent before mutation.");
+    }
+    return;
+  }
+
+  if (next.state === "intentRecorded") {
+    if (
+      previous.state === "intentRecorded" &&
+      previous.operationId === next.operationId
+    ) {
+      assertPublicationBinding(previous, next);
+      if (
+        previous.treeSha !== undefined &&
+        previous.treeSha !== next.treeSha
+      ) {
+        throw new Error("Publication intent changed its prepared tree.");
+      }
+      return;
+    }
+    if (previous.state !== "failed" || previous.operationId === next.operationId) {
+      throw new Error("Publication intent cannot replace an active operation ID.");
+    }
+    return;
+  }
+
+  assertPublicationBinding(previous, next);
+  switch (next.state) {
+    case "attempted":
+      if (
+        previous.state !== "intentRecorded" &&
+        previous.state !== "outcomeUnknown"
+      ) {
+        throw new Error("Publication attempt requires matching intent.");
+      }
+      if (
+        previous.treeSha === undefined ||
+        previous.treeSha !== next.treeSha
+      ) {
+        throw new Error("Publication attempt changed the prepared tree.");
+      }
+      return;
+    case "confirmed":
+      if (
+        previous.state !== "attempted" &&
+        previous.state !== "outcomeUnknown"
+      ) {
+        throw new Error("Publication confirmation requires an attempted operation.");
+      }
+      if (
+        "commitSha" in previous &&
+        previous.commitSha !== undefined &&
+        previous.commitSha !== next.commitSha
+      ) {
+        throw new Error("Publication confirmation changed the owned commit.");
+      }
+      return;
+    case "failed":
+    case "outcomeUnknown":
+      if (
+        previous.state !== "intentRecorded" &&
+        previous.state !== "attempted" &&
+        previous.state !== "outcomeUnknown"
+      ) {
+        throw new Error("Publication outcome has no active operation.");
+      }
+      return;
+  }
+}
+
+function assertPublicationBinding(
+  previous: DeliveryPublication,
+  next: DeliveryPublication,
+) {
+  const previousBinding = publicationBinding(previous);
+  const nextBinding = publicationBinding(next);
+  if (JSON.stringify(previousBinding) !== JSON.stringify(nextBinding)) {
+    throw new Error(
+      "Publication operation ID is already bound to different immutable input.",
+    );
+  }
+}
+
+function publicationBinding(publication: DeliveryPublication) {
+  return {
+    baseBranch: publication.baseBranch,
+    baseRevision: publication.baseRevision,
+    branchName: publication.branchName,
+    commitMessage: publication.commitMessage,
+    commitTimestamp: publication.commitTimestamp,
+    digestVersion: publication.digestVersion,
+    operationId: publication.operationId,
+    payloadDigest: publication.payloadDigest,
+    sourcePaths: publication.sourcePaths,
+  };
+}
+
+function publicationStage(publication: DeliveryPublication) {
+  switch (publication.state) {
+    case "intentRecorded":
+    case "attempted":
+      return "publishing";
+    case "confirmed":
+      return "waitingForPr";
+    case "failed":
+      return "publicationFailed";
+    case "outcomeUnknown":
+      return "publicationOutcomeUnknown";
   }
 }
 

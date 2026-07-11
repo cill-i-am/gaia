@@ -9,6 +9,7 @@ import { Option, Schema } from "effect";
 import {
   DashboardGaiaFetchClientLive,
   actOnAgentSessionFromDashboardGaiaClient,
+  actOnDeliveryFromDashboardGaiaClient,
   createRunFromDashboardGaiaClient,
   getDeliverySnapshotFromDashboardGaiaClient,
   getAgentSessionFromDashboardGaiaClient,
@@ -73,6 +74,8 @@ export const localGaiaQueryKeys = {
     [...localGaiaQueryKeys.run(runId), "activity"] as const,
   delivery: (runId: string) =>
     [...localGaiaQueryKeys.run(runId), "delivery"] as const,
+  deliveryAction: (runId: string) =>
+    [...localGaiaQueryKeys.delivery(runId), "action"] as const,
   health: () => [...localGaiaQueryKeys.all, "health"] as const,
   run: (runId: string) =>
     [...localGaiaQueryKeys.runs(), "detail", runId] as const,
@@ -258,10 +261,22 @@ export function localGaiaCreateRunMutationOptions(
   return effectQuery.mutationOptions({
     mutationKey: [...localGaiaQueryKeys.all, "create-run"] as const,
     mutationFn: (input: {
+      readonly deliveryMode: "local" | "pullRequest";
       readonly description: string;
       readonly title: string;
     }) =>
       createRunFromDashboardGaiaClient({ ...config, ...input }),
+  });
+}
+
+export function localGaiaDeliveryActionMutationOptions(
+  config: DashboardGaiaClientConfig & { readonly runId: string },
+  effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery,
+) {
+  return effectQuery.mutationOptions({
+    mutationKey: localGaiaQueryKeys.deliveryAction(config.runId),
+    mutationFn: (action: unknown) =>
+      actOnDeliveryFromDashboardGaiaClient({ ...config, action }),
   });
 }
 

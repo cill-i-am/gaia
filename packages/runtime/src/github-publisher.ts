@@ -400,6 +400,39 @@ export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
   workspaceGate: Schema.optionalKey(WorkspacePrQualityGate),
 }) {}
 
+/** Strict normalized shape used to reconcile one owned draft pull request. */
+export class GitHubDraftPullRequestView extends Schema.Class<GitHubDraftPullRequestView>(
+  "GitHubDraftPullRequestView",
+)({
+  baseRefName: Schema.NonEmptyString,
+  body: Schema.String,
+  headRefName: Schema.NonEmptyString,
+  headRefOid: Schema.String.pipe(
+    Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
+  ),
+  isDraft: Schema.Boolean,
+  number: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+  state: Schema.NonEmptyString,
+  url: Schema.String.pipe(
+    Schema.check(
+      Schema.isPattern(
+        /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u,
+      ),
+    ),
+  ),
+}) {}
+
+const GitHubDraftPullRequestViews = Schema.Array(
+  GitHubDraftPullRequestView,
+).pipe(Schema.check(Schema.isMaxLength(10)));
+
+/** Parse bounded `gh pr list --json` output at the GitHub adapter boundary. */
+export function parseGitHubDraftPullRequestViewsJson(input: string) {
+  return Schema.decodeUnknownSync(GitHubDraftPullRequestViews)(
+    JSON.parse(input),
+  );
+}
+
 export class GitHubPreflightCheck extends Schema.Class<GitHubPreflightCheck>(
   "GitHubPreflightCheck",
 )({
@@ -559,6 +592,7 @@ export type GitHubCommandInput = {
   readonly args: ReadonlyArray<string>;
   readonly command: string;
   readonly cwd: string;
+  readonly env?: Readonly<Record<string, string>>;
 };
 
 export type GitHubCommandRunner = (
@@ -610,12 +644,13 @@ class GitHubChecksPending extends Schema.TaggedErrorClass<GitHubChecksPending>()
   },
 ) {}
 
-const nodeCommandRunner: GitHubCommandRunner = (input) =>
+export const nodeGitHubCommandRunner: GitHubCommandRunner = (input) =>
   Effect.tryPromise({
     try: () =>
       new Promise<CommandExecutionResult>((resolve, reject) => {
         execFile(input.command, [...input.args], {
           cwd: input.cwd,
+          env: { ...process.env, ...input.env },
           maxBuffer: commandMaxBufferBytes,
         }, (error, stdout, stderr) => {
           if (error !== null && error.code === undefined) {
@@ -648,7 +683,7 @@ export function preflightGitHubPublish(
     const rootDirectory = options.rootDirectory ?? ".";
     const baseBranch = options.baseBranch ?? defaultBaseBranch;
     const remoteName = options.remoteName ?? defaultRemoteName;
-    const runner = options.commandRunner ?? nodeCommandRunner;
+    const runner = options.commandRunner ?? nodeGitHubCommandRunner;
     const run = yield* statusRun(runIdInput, { rootDirectory });
 
     if (run.status !== "completed") {
@@ -749,7 +784,7 @@ export function publishRunToGitHub(
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
-    const runner = options.commandRunner ?? nodeCommandRunner;
+    const runner = options.commandRunner ?? nodeGitHubCommandRunner;
     const preflight = yield* preflightGitHubPublish(runIdInput, options);
     const branchName = `gaia/${preflight.runId}`;
     const paths = yield* makeRunPaths(preflight.runId, { rootDirectory });
@@ -906,7 +941,7 @@ export function publishWorkspaceRunToGitHub(
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
-    const runner = options.commandRunner ?? nodeCommandRunner;
+    const runner = options.commandRunner ?? nodeGitHubCommandRunner;
     const preflight = yield* preflightGitHubPublish(runIdInput, options);
     const branchName = `gaia/${preflight.runId}-workspace`;
     const paths = yield* makeRunPaths(preflight.runId, { rootDirectory });
@@ -997,7 +1032,7 @@ export function inspectGitHubChecks(
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
-    const runner = options.commandRunner ?? nodeCommandRunner;
+    const runner = options.commandRunner ?? nodeGitHubCommandRunner;
     const pr = yield* parseGitHubPullRequestSelectorEffect(prInput);
     const checked = yield* runCommand(runner, rootDirectory, "gh", [
       "pr",
@@ -1158,7 +1193,7 @@ function recordGitHubChecksUnlocked(
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
-    const runner = options.commandRunner ?? nodeCommandRunner;
+    const runner = options.commandRunner ?? nodeGitHubCommandRunner;
     const run = yield* statusRun(runIdInput, { rootDirectory });
 
     if (run.status !== "completed") {
@@ -1237,7 +1272,7 @@ function watchGitHubFeedbackUnlocked(
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
-    const runner = options.commandRunner ?? nodeCommandRunner;
+    const runner = options.commandRunner ?? nodeGitHubCommandRunner;
     const run = yield* statusRun(runIdInput, { rootDirectory });
 
     if (run.status !== "completed") {
@@ -1296,7 +1331,7 @@ function coordinateGitHubPrLoopUnlocked(
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
-    const runner = options.commandRunner ?? nodeCommandRunner;
+    const runner = options.commandRunner ?? nodeGitHubCommandRunner;
     const run = yield* statusRun(runIdInput, { rootDirectory });
 
     if (run.status !== "completed") {
@@ -1418,7 +1453,7 @@ function commentGitHubPullRequestUnlocked(
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
-    const runner = options.commandRunner ?? nodeCommandRunner;
+    const runner = options.commandRunner ?? nodeGitHubCommandRunner;
     const run = yield* statusRun(runIdInput, { rootDirectory });
 
     if (run.status !== "completed") {
@@ -1579,7 +1614,7 @@ function watchGitHubChecksUnlocked(
     ) {
       const headSha = yield* readOptionalGitHubPullRequestHeadSha(requestedPr, {
         rootDirectory,
-        runner: options.commandRunner ?? nodeCommandRunner,
+        runner: options.commandRunner ?? nodeGitHubCommandRunner,
       });
 
       if (headSha !== undefined && storedWatchState.headSha === headSha) {
