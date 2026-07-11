@@ -16,6 +16,7 @@ import {
 import { Effect, FileSystem } from "effect";
 import { appendEvent, readEvents } from "./event-store.js";
 import {
+  nodeGitDeliveryCommandRunner,
   prepareDeliveryWorktree,
   type DeliveryProvenance,
   type GitDeliveryCommandRunner,
@@ -140,9 +141,239 @@ describe("delivery publication", () => {
         );
         const body = yield* fs.readFileString(paths.deliveryPullRequestBody);
         assert.include(body, "<!-- gaia-delivery:v1");
-        assert.include(body, '"src/feature.ts"');
+        assert.include(body, '- ` "src/feature.ts" `');
         assert.notInclude(body, "harness only");
         assert.notInclude(body, rootDirectory);
+        for (const command of commands.filter(({ command }) => command === "gh")) {
+          const repositoryFlag = command.args.indexOf("--repo");
+          assert.strictEqual(
+            command.args[repositoryFlag + 1],
+            "github.com/cill-i-am/gaia",
+          );
+        }
+      }),
+    );
+
+    it.effect("scrubs ambient repository redirection at both command boundaries", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectory({ prefix: "gaia-command-env-" });
+        const owned = `${root}/owned`;
+        const redirected = `${root}/redirected`;
+        mkdirSync(owned);
+        mkdirSync(redirected);
+        git(owned, "init", "--initial-branch=main");
+        git(redirected, "init", "--initial-branch=main");
+        const canonicalOwned = yield* fs.realPath(owned);
+        const previous = Object.fromEntries(
+          [
+            "GH_HOST",
+            "GH_REPO",
+            "GIT_COMMON_DIR",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_DIR",
+            "GIT_GLOB_PATHSPECS",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_WORK_TREE",
+          ].map((key) => [key, process.env[key]]),
+        );
+        const restore = () => {
+          for (const [key, value] of Object.entries(previous)) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+          }
+        };
+
+        yield* Effect.gen(function* () {
+          process.env["GIT_DIR"] = `${redirected}/.git`;
+          process.env["GIT_WORK_TREE"] = redirected;
+          process.env["GIT_INDEX_FILE"] = `${redirected}/ambient-index`;
+          process.env["GIT_GLOB_PATHSPECS"] = "1";
+          process.env["GH_REPO"] = "octocat/Hello-World";
+          process.env["GH_HOST"] = "example.invalid";
+          process.env["GIT_CONFIG_COUNT"] = "1";
+          process.env["GIT_CONFIG_KEY_0"] = "core.worktree";
+          process.env["GIT_CONFIG_VALUE_0"] = redirected;
+
+          const delivery = yield* nodeGitDeliveryCommandRunner({
+            args: ["rev-parse", "--show-toplevel"],
+            cwd: owned,
+          });
+          const publication = yield* nodeGitHubCommandRunner({
+            args: ["rev-parse", "--show-toplevel"],
+            command: "git",
+            cwd: owned,
+            env: {
+              GH_REPO: "attacker/override",
+              GIT_COMMON_DIR: `${redirected}/.git`,
+              GIT_DIR: `${redirected}/.git`,
+              GIT_WORK_TREE: redirected,
+            },
+          });
+          const environment = yield* nodeGitHubCommandRunner({
+            args: [
+              "-e",
+              "process.stdout.write(JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([key]) => key === 'GH_HOST' || key === 'GH_REPO' || key === 'GIT_DIR' || key === 'GIT_WORK_TREE' || key === 'GIT_COMMON_DIR' || key === 'GIT_INDEX_FILE' || key === 'GIT_GLOB_PATHSPECS' || key === 'GIT_LITERAL_PATHSPECS' || key.startsWith('GIT_CONFIG_')))))",
+            ],
+            command: process.execPath,
+            cwd: owned,
+          });
+
+          assert.strictEqual(delivery.stdout.trim(), canonicalOwned);
+          assert.strictEqual(publication.stdout.trim(), canonicalOwned);
+          assert.deepEqual(JSON.parse(environment.stdout), {
+            GIT_LITERAL_PATHSPECS: "1",
+          });
+        }).pipe(Effect.ensuring(Effect.sync(restore)));
+      }),
+    );
+
+    it.effect("renders Markdown-active source paths as inert bounded text", () =>
+      Effect.gen(function* () {
+        const sourcePaths = [
+          "docs/![review](https:&#47;&#47;example.com/pixel).md",
+          "docs/[link](https:&#47;&#47;example.com).md",
+          "docs/`backticks`.md",
+          "docs/<img src=x onerror=alert(1)>.md",
+        ];
+        const fixture = yield* readyFixture(["output.txt", ...sourcePaths]);
+        const fs = yield* FileSystem.FileSystem;
+        const commands: Array<GitHubCommandInput> = [];
+        const publication = yield* publishReadyDeliveryRun(fixture.runId, {
+          commandRunner: publicationRunner(
+            commands,
+            fixture.paths.root,
+            fixture.provenance,
+            { sourcePaths },
+          ),
+          deliveryGitCommandRunner: fixture.deliveryGitCommandRunner,
+          rootDirectory: fixture.rootDirectory,
+        });
+        const body = yield* fs.readFileString(fixture.paths.deliveryPullRequestBody);
+
+        assert.strictEqual(publication.state, "confirmed");
+        assert.include(
+          body,
+          '- ` "docs/![review](https:&#47;&#47;example.com/pixel).md" `',
+        );
+        assert.include(body, '- `` "docs/`backticks`.md" ``');
+        assert.include(
+          body,
+          '- ` "docs/<img src=x onerror=alert(1)>.md" `',
+        );
+      }),
+    );
+
+    it.effect("rejects newline filenames before any publication mutation", () =>
+      Effect.gen(function* () {
+        const unsafePath = "docs/line\nbreak.md";
+        const fixture = yield* readyFixture(["output.txt", unsafePath]);
+        const commands: Array<GitHubCommandInput> = [];
+        const failure = yield* Effect.flip(
+          publishReadyDeliveryRun(fixture.runId, {
+            commandRunner: publicationRunner(
+              commands,
+              fixture.paths.root,
+              fixture.provenance,
+              { sourcePaths: [unsafePath] },
+            ),
+            deliveryGitCommandRunner: fixture.deliveryGitCommandRunner,
+            rootDirectory: fixture.rootDirectory,
+          }),
+        );
+
+        assert.instanceOf(failure, GaiaRuntimeError);
+        assert.strictEqual(failure.code, "DeliveryGitPathUnsafe");
+        assert.isFalse(commands.some(({ args }) => args[0] === "push"));
+        assert.isFalse(
+          commands.some(
+            ({ command, args }) =>
+              command === "gh" && args[0] === "pr" && args[1] === "create",
+          ),
+        );
+      }),
+    );
+
+    it.effect("records an oversized body failure before the remote push", () =>
+      Effect.gen(function* () {
+        const sourcePaths = Array.from(
+          { length: 22 },
+          (_, index) => `src/${"`".repeat(500)}-${index}.txt`,
+        );
+        const fixture = yield* readyFixture(["output.txt", ...sourcePaths]);
+        const commands: Array<GitHubCommandInput> = [];
+        const publication = yield* publishReadyDeliveryRun(fixture.runId, {
+          commandRunner: publicationRunner(
+            commands,
+            fixture.paths.root,
+            fixture.provenance,
+            { sourcePaths },
+          ),
+          deliveryGitCommandRunner: fixture.deliveryGitCommandRunner,
+          rootDirectory: fixture.rootDirectory,
+        });
+
+        assert.strictEqual(publication.state, "failed");
+        if (publication.state !== "failed") {
+          return assert.fail("Expected a durable body-size failure.");
+        }
+        assert.strictEqual(publication.code, "DeliveryPullRequestBodyTooLarge");
+        assert.strictEqual(publication.commitSha, commitSha);
+        assert.strictEqual(publication.treeSha, treeSha);
+        assert.isFalse(publication.recoverable);
+        assert.strictEqual(publication.step, "validation");
+        assert.strictEqual(
+          (yield* readEvents(fixture.paths)).at(-1)?.type,
+          "DELIVERY_PUBLICATION_FAILED",
+        );
+        assert.isFalse(commands.some(({ args }) => args[0] === "push"));
+        assert.isFalse(
+          commands.some(
+            ({ command, args }) =>
+              command === "gh" && args[0] === "pr" && args[1] === "create",
+          ),
+        );
+      }),
+    );
+
+    it.effect("excludes generated path segments at every nesting depth", () =>
+      Effect.gen(function* () {
+        const generatedPaths = [
+          "packages/core/dist/generated.js",
+          "apps/server/.gaia/private.json",
+          "packages/runtime/.turbo/cache.bin",
+          "vendor/node_modules/package/index.js",
+        ];
+        const fixture = yield* readyFixture([
+          "output.txt",
+          "src/feature.ts",
+          ...generatedPaths,
+        ]);
+        const commands: Array<GitHubCommandInput> = [];
+        const publication = yield* publishReadyDeliveryRun(fixture.runId, {
+          commandRunner: publicationRunner(
+            commands,
+            fixture.paths.root,
+            fixture.provenance,
+            { sourcePaths: ["src/feature.ts", ...generatedPaths] },
+          ),
+          deliveryGitCommandRunner: fixture.deliveryGitCommandRunner,
+          rootDirectory: fixture.rootDirectory,
+        });
+
+        assert.strictEqual(publication.state, "confirmed");
+        assert.deepEqual(publication.sourcePaths, ["src/feature.ts"]);
+        const add = commands.find(
+          ({ command, args }) => command === "git" && args[0] === "add",
+        );
+        assert.deepEqual(add?.args, ["add", "-A", "--", "src/feature.ts"]);
+        const body = readFileSync(fixture.paths.deliveryPullRequestBody, "utf8");
+        for (const generatedPath of generatedPaths) {
+          assert.notInclude(body, generatedPath);
+        }
       }),
     );
 
@@ -614,6 +845,7 @@ function publicationRunner(
     readonly pushedRemoteHead?: string;
     readonly remoteUnreadableAfterPush?: boolean;
     readonly remoteReadFailuresBeforeMutation?: number;
+    readonly sourcePaths?: ReadonlyArray<string>;
     readonly verifyDurableMutationIntents?: boolean;
   } = {},
 ): GitHubCommandRunner {
@@ -624,6 +856,10 @@ function publicationRunner(
   let commitTimestamp = options.persistedCommitTimestamp ?? "";
   let remoteReadFailuresBeforeMutation =
     options.remoteReadFailuresBeforeMutation ?? 0;
+  const sourcePaths = options.sourcePaths ?? ["src/feature.ts"];
+  const changedStatus = nameStatus(sourcePaths);
+  let committedPaths: ReadonlyArray<string> = sourcePaths;
+  let stagedPaths: ReadonlyArray<string> = [];
   return (input) => {
       commands.push(input);
       const args = input.args.join(" ");
@@ -658,8 +894,11 @@ function publicationRunner(
       }
       return Effect.sync(() => {
       if (input.command === "git") {
+        if (args === "remote get-url origin") {
+          return success("https://github.com/cill-i-am/gaia.git\n");
+        }
         if (args === `diff --name-status -z --find-renames ${baseRevision} --`) {
-          return success(options.diffOutput ?? "M\0src/feature.ts\0");
+          return success(options.diffOutput ?? changedStatus);
         }
         if (args === "ls-files --others --exclude-standard -z") {
           return success("");
@@ -673,12 +912,14 @@ function publicationRunner(
         }
         if (args === `diff --cached --name-status -z ${baseRevision} --`) {
           return success(
-            commands.some(({ command, args: commandArgs }) =>
-              command === "git" && commandArgs[0] === "add",
-            )
-              ? "M\0src/feature.ts\0"
-              : "",
+            stagedPaths.length > 0 ? nameStatus(stagedPaths) : "",
           );
+        }
+        if (input.args[0] === "add") {
+          const separator = input.args.indexOf("--");
+          stagedPaths = separator === -1 ? [] : input.args.slice(separator + 1);
+          committedPaths = stagedPaths;
+          return success("");
         }
         if (input.args.includes("commit")) {
           commitTimestamp = input.env?.GIT_AUTHOR_DATE ?? "";
@@ -706,7 +947,7 @@ function publicationRunner(
           );
         }
         if (args.startsWith("diff-tree --no-commit-id --name-status -z ")) {
-          return success("M\0src/feature.ts\0");
+          return success(nameStatus(committedPaths));
         }
         if (args.startsWith("ls-remote --heads ")) {
           return success(
@@ -771,7 +1012,9 @@ function publicationRunner(
     };
 }
 
-function readyFixture() {
+function readyFixture(
+  changedPaths: ReadonlyArray<string> = ["output.txt", "src/feature.ts"],
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const rootDirectory = yield* fs.makeTempDirectory({
@@ -799,7 +1042,7 @@ function readyFixture() {
       "export const delivered = true;\n",
     );
     yield* fs.writeFileString(paths.workspaceOutput, "harness only\n");
-    yield* writeReadyRun(runId, paths, provenance);
+    yield* writeReadyRun(runId, paths, provenance, changedPaths);
     return {
       deliveryGitCommandRunner,
       paths,
@@ -816,6 +1059,15 @@ function bareRemotePublicationRunner(
 ): GitHubCommandRunner {
   let prCreated = false;
   return (input) => {
+    if (
+      input.command === "git" &&
+      input.args[0] === "remote" &&
+      input.args[1] === "get-url"
+    ) {
+      return Effect.succeed(
+        success("https://github.com/cill-i-am/gaia.git\n"),
+      );
+    }
     if (input.command === "git") return nodeGitHubCommandRunner(input);
     if (input.command === "gh" && input.args[0] === "pr") {
       if (input.args[1] === "create") {
@@ -869,6 +1121,10 @@ function primaryGitState(cwd: string) {
 
 function success(stdout: string): CommandExecutionResult {
   return { exitCode: 0, stderr: "", stdout };
+}
+
+function nameStatus(paths: ReadonlyArray<string>) {
+  return paths.flatMap((path) => ["M", path]).join("\0") + "\0";
 }
 
 function lastEventType(runRoot: string) {

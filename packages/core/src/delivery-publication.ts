@@ -7,6 +7,14 @@ const DigestSchema = Schema.String.pipe(
 const GitShaSchema = Schema.String.pipe(
   Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
 );
+const generatedPathSegments = new Set([
+  ".gaia",
+  ".turbo",
+  "coverage",
+  "dist",
+  "gaia-runs",
+  "node_modules",
+]);
 const OperationIdSchema = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isPattern(/^[A-Za-z0-9:_-]+$/u)),
   Schema.check(Schema.isMaxLength(160)),
@@ -19,7 +27,11 @@ const SafePathSchema = Schema.NonEmptyString.pipe(
       !path.includes("\\") &&
       !/[\u0000-\u001f\u007f]/u.test(path) &&
       path.split("/").every(
-        (segment) => segment.length > 0 && segment !== "." && segment !== "..",
+        (segment) =>
+          segment.length > 0 &&
+          segment !== "." &&
+          segment !== ".." &&
+          !generatedPathSegments.has(segment),
       )
     ),
   ),

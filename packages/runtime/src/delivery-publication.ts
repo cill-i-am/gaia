@@ -69,16 +69,6 @@ export function publishReadyDeliveryRun(
     if (existing?.state === "failed") {
       return existing;
     }
-    if (existing?.state === "outcomeUnknown") {
-      return yield* reconcileUnknownPublication(
-        runId,
-        paths,
-        provenance,
-        existing,
-        runner,
-      );
-    }
-
     const candidateHead =
       existing?.state === "intentRecorded"
         ? yield* optionalLocalBranchHead(paths, existing.branchName, runner)
@@ -102,6 +92,22 @@ export function publishReadyDeliveryRun(
       paths,
       provenance,
     });
+    const repository = yield* githubRepositorySelector(
+      paths,
+      provenance,
+      runner,
+    );
+
+    if (existing?.state === "outcomeUnknown") {
+      return yield* reconcileUnknownPublication(
+        runId,
+        paths,
+        provenance,
+        repository,
+        existing,
+        runner,
+      );
+    }
 
     let attempted: DeliveryPublicationAttempted;
     if (existing?.state === "attempted") {
@@ -147,6 +153,7 @@ export function publishReadyDeliveryRun(
             runId,
             paths,
             provenance,
+            repository,
             existing,
             runner,
           );
@@ -158,6 +165,7 @@ export function publishReadyDeliveryRun(
           runId,
           paths,
           provenance,
+          repository,
           runner,
           events,
         );
@@ -177,6 +185,7 @@ export function publishReadyDeliveryRun(
       runId,
       paths,
       provenance,
+      repository,
       attempted,
       runner,
     );
@@ -234,6 +243,11 @@ export function retryFailedDeliveryPublication(
         paths,
         provenance,
       });
+      const repository = yield* githubRepositorySelector(
+        paths,
+        provenance,
+        runner,
+      );
       const sourcePaths = yield* verifiedSourcePaths(
         runId,
         paths,
@@ -265,6 +279,7 @@ export function retryFailedDeliveryPublication(
         runId,
         paths,
         provenance,
+        repository,
         intent,
         runner,
       );
@@ -281,6 +296,7 @@ export function retryFailedDeliveryPublication(
         runId,
         paths,
         provenance,
+        repository,
         attempted,
         runner,
       );
@@ -297,6 +313,11 @@ export function retryFailedDeliveryPublication(
       paths,
       provenance,
     });
+    const repository = yield* githubRepositorySelector(
+      paths,
+      provenance,
+      runner,
+    );
     const sourcePaths = yield* verifiedSourcePaths(
       runId,
       paths,
@@ -338,7 +359,12 @@ export function retryFailedDeliveryPublication(
         }),
       );
     }
-    const pullRequests = yield* readPullRequests(paths, existing, runner);
+    const pullRequests = yield* readPullRequests(
+      paths,
+      repository,
+      existing,
+      runner,
+    );
     if (pullRequests.length > 0) {
       return yield* Effect.fail(
         makeRuntimeError({
@@ -379,6 +405,7 @@ export function retryFailedDeliveryPublication(
       runId,
       paths,
       provenance,
+      repository,
       attempted,
       runner,
     );
@@ -389,6 +416,7 @@ function createIntent(
   runId: RunId,
   paths: RunPaths,
   provenance: DeliveryProvenance,
+  repository: string,
   runner: GitHubCommandRunner,
   events: ReadonlyArray<RunEvent>,
 ) {
@@ -433,6 +461,7 @@ function createIntent(
       runId,
       paths,
       provenance,
+      repository,
       intent,
       runner,
     );
@@ -443,6 +472,7 @@ function preflightPublicationTarget(
   runId: RunId,
   paths: RunPaths,
   provenance: DeliveryProvenance,
+  repository: string,
   intent: DeliveryPublicationIntent,
   runner: GitHubCommandRunner,
 ) {
@@ -468,7 +498,7 @@ function preflightPublicationTarget(
       });
     }
     const pullRequestsExit = yield* Effect.exit(
-      readPullRequests(paths, intent, runner),
+      readPullRequests(paths, repository, intent, runner),
     );
     if (pullRequestsExit._tag === "Failure") {
       return yield* recordFailedFromIntent(runId, paths, intent, {
@@ -917,10 +947,25 @@ function publishRemoteAndPullRequest(
   runId: RunId,
   paths: RunPaths,
   provenance: DeliveryProvenance,
+  repository: string,
   attempted: DeliveryPublicationAttempted,
   runner: GitHubCommandRunner,
 ) {
   return Effect.gen(function* () {
+    const bodyPreparation = yield* writePullRequestBody(paths, runId, attempted).pipe(
+      Effect.map(() => ({ _tag: "Ready" }) as const),
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        Effect.succeed({ _tag: "Failed", error } as const),
+      ),
+    );
+    if (bodyPreparation._tag === "Failed") {
+      return yield* recordFailed(runId, paths, attempted, {
+        code: bodyPreparation.error.code,
+        message: bodyPreparation.error.message,
+        recoverable: bodyPreparation.error.recoverable,
+        step: "validation",
+      });
+    }
     let remote = yield* observeRemoteHead(paths, provenance, runner);
     if (remote._tag === "Unavailable") {
       return yield* recordUnknown(runId, paths, attempted, "push");
@@ -954,9 +999,8 @@ function publishRemoteAndPullRequest(
       });
     }
 
-    yield* writePullRequestBody(paths, runId, attempted);
     let pullRequestsExit = yield* Effect.exit(
-      readPullRequests(paths, attempted, runner),
+      readPullRequests(paths, repository, attempted, runner),
     );
     if (pullRequestsExit._tag === "Failure") {
       return yield* recordUnknown(runId, paths, attempted, "reconciliation");
@@ -972,6 +1016,8 @@ function publishRemoteAndPullRequest(
       yield* runCommand(runner, paths.workspace, "gh", [
         "pr",
         "create",
+        "--repo",
+        repository,
         "--draft",
         "--base",
         attempted.baseBranch,
@@ -983,7 +1029,7 @@ function publishRemoteAndPullRequest(
         paths.deliveryPullRequestBody,
       ]).pipe(Effect.exit);
       pullRequestsExit = yield* Effect.exit(
-        readPullRequests(paths, attempted, runner),
+        readPullRequests(paths, repository, attempted, runner),
       );
       if (pullRequestsExit._tag === "Failure") {
         return unknown;
@@ -1020,6 +1066,7 @@ function reconcileUnknownPublication(
   runId: RunId,
   paths: RunPaths,
   provenance: DeliveryProvenance,
+  repository: string,
   unknown: DeliveryPublicationOutcomeUnknown,
   runner: GitHubCommandRunner,
 ) {
@@ -1035,7 +1082,7 @@ function reconcileUnknownPublication(
     const remote = yield* observeRemoteHead(paths, provenance, runner);
     if (remote._tag === "Unavailable") return unknown;
     const pullRequestsExit = yield* Effect.exit(
-      readPullRequests(paths, unknown, runner),
+      readPullRequests(paths, repository, unknown, runner),
     );
     if (pullRequestsExit._tag === "Failure") return unknown;
     const pullRequests = pullRequestsExit.value;
@@ -1094,6 +1141,7 @@ function reconcileUnknownPublication(
 
 function readPullRequests(
   paths: RunPaths,
+  repository: string,
   publication: PublicationMarkerInput,
   runner: GitHubCommandRunner,
 ) {
@@ -1101,6 +1149,8 @@ function readPullRequests(
     const result = yield* runRequired(runner, paths.workspace, "gh", [
       "pr",
       "list",
+      "--repo",
+      repository,
       "--head",
       publication.branchName,
       "--state",
@@ -1145,7 +1195,9 @@ function writePullRequestBody(
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const lines = publication.sourcePaths.map((path) => `- ${JSON.stringify(path)}`);
+    const lines = publication.sourcePaths.map(
+      (path) => `- ${markdownCodeSpan(JSON.stringify(path))}`,
+    );
     const body = [
       publicationMarker(publication),
       `## Gaia delivery ${runId}`,
@@ -1160,7 +1212,7 @@ function writePullRequestBody(
       "Generated run state and harness-only outputs are excluded.",
       "",
     ].join("\n");
-    if (body.length > 32_000) {
+    if (Buffer.byteLength(body, "utf8") > 32_000) {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "DeliveryPullRequestBodyTooLarge",
@@ -1169,8 +1221,26 @@ function writePullRequestBody(
         }),
       );
     }
-    yield* fs.writeFileString(paths.deliveryPullRequestBody, body);
+    yield* fs.writeFileString(paths.deliveryPullRequestBody, body).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "DeliveryPullRequestBodyWriteFailed",
+          message: "Gaia could not persist the safe pull-request body.",
+          recoverable: true,
+        }),
+      ),
+    );
   });
+}
+
+function markdownCodeSpan(value: string) {
+  let longestBacktickRun = 0;
+  for (const match of value.matchAll(/`+/gu)) {
+    longestBacktickRun = Math.max(longestBacktickRun, match[0].length);
+  }
+  const fence = "`".repeat(longestBacktickRun + 1);
+  return `${fence} ${value} ${fence}`;
 }
 
 function publicationMarker(publication: PublicationMarkerInput) {
@@ -1182,6 +1252,65 @@ type PublicationMarkerInput = {
   readonly operationId: string;
   readonly payloadDigest: string;
 };
+
+function githubRepositorySelector(
+  paths: RunPaths,
+  provenance: DeliveryProvenance,
+  runner: GitHubCommandRunner,
+) {
+  return Effect.gen(function* () {
+    const remote = yield* runRequired(runner, paths.workspace, "git", [
+      "remote",
+      "get-url",
+      provenance.remote,
+    ]);
+    return yield* parseEffect(
+      () => parseGitHubRepositorySelector(remote.stdout.trim()),
+      {
+        code: "DeliveryGitHubRepositoryInvalid",
+        message: "The accepted delivery remote is not an owned GitHub repository.",
+      },
+    );
+  });
+}
+
+function parseGitHubRepositorySelector(remote: string) {
+  const scp = remote.includes("://")
+    ? null
+    : /^(?:[^@\s/:]+@)?([^\s/:]+):([^\s?#]+)$/u.exec(remote);
+  let host: string;
+  let repositoryPath: string;
+  if (scp !== null) {
+    host = scp[1] ?? "";
+    repositoryPath = scp[2] ?? "";
+  } else {
+    const url = new URL(remote);
+    if (
+      !["git:", "http:", "https:", "ssh:"].includes(url.protocol) ||
+      url.password.length > 0 ||
+      url.search.length > 0 ||
+      url.hash.length > 0
+    ) {
+      throw new Error("Unsupported GitHub remote URL.");
+    }
+    host = url.hostname;
+    repositoryPath = url.pathname.replace(/^\//u, "");
+  }
+  const segments = repositoryPath.split("/");
+  const owner = segments[0];
+  const repository = segments[1]?.replace(/\.git$/u, "");
+  if (
+    host.toLowerCase() !== "github.com" ||
+    segments.length !== 2 ||
+    owner === undefined ||
+    repository === undefined ||
+    !/^[A-Za-z0-9_.-]+$/u.test(owner) ||
+    !/^[A-Za-z0-9_.-]+$/u.test(repository)
+  ) {
+    throw new Error("Unsupported GitHub repository identity.");
+  }
+  return `github.com/${owner}/${repository}`;
+}
 
 function observeRemoteHead(
   paths: RunPaths,
@@ -1574,9 +1703,8 @@ function requireSafeGitPath(path: string) {
 }
 
 function isExcluded(path: string, harnessPaths: ReadonlySet<string>) {
-  const root = path.split("/")[0];
-  return root !== undefined &&
-    (generatedRoots.has(root) || harnessPaths.has(path));
+  return harnessPaths.has(path) ||
+    path.split("/").some((segment) => generatedRoots.has(segment));
 }
 
 function uniqueSorted(values: ReadonlyArray<string>) {

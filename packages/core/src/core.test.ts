@@ -672,6 +672,12 @@ describe("core contracts", () => {
         sourcePaths: ["../private.txt"],
       }),
     );
+    assert.throws(() =>
+      parseDeliveryPublication({
+        ...publication,
+        sourcePaths: ["packages/core/dist/private.js"],
+      }),
+    );
   });
 
   it("replays unknown, definitive failure, and explicit retry as distinct states", () => {
@@ -797,6 +803,140 @@ describe("core contracts", () => {
     ];
 
     assert.throws(() => snapshotFromReplay(events), /operation ID/u);
+  });
+
+  it("preserves known tree and commit identity through every same-operation outcome", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const base = {
+      baseBranch: "main",
+      baseRevision: "a".repeat(40),
+      branchName: "gaia/run-V7kP9sQ2xY",
+      commitMessage: "feat: deliver run-V7kP9sQ2xY",
+      commitTimestamp: "2026-07-11T08:00:00.000Z",
+      digestVersion: 1 as const,
+      operationId: "publish-run-V7kP9sQ2xY-1",
+      payloadDigest: "b".repeat(64),
+      sourcePaths: ["src/delivery.ts"],
+    };
+    const intent = DeliveryPublicationIntent.make({
+      ...base,
+      state: "intentRecorded",
+      treeSha: "d".repeat(40),
+    });
+    const attempted = DeliveryPublicationAttempted.make({
+      ...base,
+      commitSha: "c".repeat(40),
+      state: "attempted",
+      treeSha: "d".repeat(40),
+    });
+    const conflictingOutcomes = [
+      DeliveryPublicationConfirmed.make({
+        ...attempted,
+        draft: true,
+        headSha: attempted.commitSha,
+        prNumber: 91,
+        prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+        state: "confirmed",
+        treeSha: "e".repeat(40),
+      }),
+      DeliveryPublicationOutcomeUnknown.make({
+        ...attempted,
+        code: "DeliveryPublicationOutcomeUnknown",
+        commitSha: "e".repeat(40),
+        message: "External acceptance could not be confirmed.",
+        recoverable: true,
+        state: "outcomeUnknown",
+        step: "push",
+      }),
+      DeliveryPublicationFailed.make({
+        ...base,
+        code: "DeliveryRemoteBranchConflict",
+        commitSha: attempted.commitSha,
+        message: "Remote ownership changed.",
+        recoverable: false,
+        state: "failed",
+        step: "push",
+      }),
+      DeliveryPublicationOutcomeUnknown.make({
+        ...base,
+        code: "DeliveryPublicationOutcomeUnknown",
+        message: "External acceptance could not be confirmed.",
+        recoverable: true,
+        state: "outcomeUnknown",
+        step: "pullRequest",
+        treeSha: attempted.treeSha,
+      }),
+    ];
+
+    for (const outcome of conflictingOutcomes) {
+      const events = [
+        ...readyToPublishEvents(runId),
+        ...[
+          ["DELIVERY_PUBLICATION_INTENT_RECORDED", intent],
+          ["DELIVERY_PUBLICATION_ATTEMPTED", attempted],
+          [
+            outcome.state === "confirmed"
+              ? "DELIVERY_PUBLICATION_CONFIRMED"
+              : outcome.state === "failed"
+                ? "DELIVERY_PUBLICATION_FAILED"
+                : "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN",
+            outcome,
+          ],
+        ].map(([type, publication], index) =>
+          makeRunEvent({
+            payload: {
+              publication: encodeDeliveryPublicationJson(
+                publication as typeof attempted,
+              ),
+            },
+            runId,
+            sequence: index + 7,
+            timestamp: `2026-07-11T08:00:0${index}.000Z`,
+            type: type as "DELIVERY_PUBLICATION_ATTEMPTED",
+          }),
+        ),
+      ];
+
+      assert.throws(() => snapshotFromReplay(events), /tree|commit/u);
+    }
+
+    const unknown = DeliveryPublicationOutcomeUnknown.make({
+      ...attempted,
+      code: "DeliveryPublicationOutcomeUnknown",
+      message: "External acceptance could not be confirmed.",
+      recoverable: true,
+      state: "outcomeUnknown",
+      step: "pullRequest",
+    });
+    const failedAfterUnknown = DeliveryPublicationFailed.make({
+      ...unknown,
+      code: "DeliveryPullRequestNotCreated",
+      commitSha: "e".repeat(40),
+      message: "No pull request exists.",
+      state: "failed",
+    });
+    const events = [
+      ...readyToPublishEvents(runId),
+      ...[
+        ["DELIVERY_PUBLICATION_INTENT_RECORDED", intent],
+        ["DELIVERY_PUBLICATION_ATTEMPTED", attempted],
+        ["DELIVERY_PUBLICATION_OUTCOME_UNKNOWN", unknown],
+        ["DELIVERY_PUBLICATION_FAILED", failedAfterUnknown],
+      ].map(([type, publication], index) =>
+        makeRunEvent({
+          payload: {
+            publication: encodeDeliveryPublicationJson(
+              publication as typeof attempted,
+            ),
+          },
+          runId,
+          sequence: index + 7,
+          timestamp: `2026-07-11T08:00:1${index}.000Z`,
+          type: type as "DELIVERY_PUBLICATION_ATTEMPTED",
+        }),
+      ),
+    ];
+    assert.throws(() => snapshotFromReplay(events), /commit/u);
   });
 
   it("rejects publication identity outside accepted delivery provenance", () => {

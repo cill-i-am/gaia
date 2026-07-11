@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { Effect, FileSystem, Schema } from "effect";
 import { makeRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
+import { repositoryCommandEnvironment } from "./repository-command-environment.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -69,6 +70,7 @@ export const nodeGitDeliveryCommandRunner: GitDeliveryCommandRunner = (input) =>
     try: async () => {
       const result = await execFileAsync("git", [...input.args], {
         cwd: input.cwd,
+        env: repositoryCommandEnvironment(),
         maxBuffer: 1024 * 1024,
       });
       return { stderr: result.stderr, stdout: result.stdout };

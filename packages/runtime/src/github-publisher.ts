@@ -11,6 +11,7 @@ import {
   type RunPaths,
   type RunStorageOptions,
 } from "./paths.js";
+import { repositoryCommandEnvironment } from "./repository-command-environment.js";
 import { withRunStoreLock } from "./run-store-lock.js";
 import { copyWorkspaceDirectoryContents } from "./workspace.js";
 import {
@@ -650,7 +651,7 @@ export const nodeGitHubCommandRunner: GitHubCommandRunner = (input) =>
       new Promise<CommandExecutionResult>((resolve, reject) => {
         execFile(input.command, [...input.args], {
           cwd: input.cwd,
-          env: { ...process.env, ...input.env },
+          env: repositoryCommandEnvironment(input.env),
           maxBuffer: commandMaxBufferBytes,
         }, (error, stdout, stderr) => {
           if (error !== null && error.code === undefined) {

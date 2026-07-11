@@ -943,6 +943,7 @@ function validatePublicationTransition(
   }
 
   assertPublicationBinding(previous, next);
+  assertMonotonicPublicationIdentity(previous, next);
   switch (next.state) {
     case "attempted":
       if (
@@ -996,6 +997,21 @@ function assertPublicationBinding(
     throw new Error(
       "Publication operation ID is already bound to different immutable input.",
     );
+  }
+}
+
+function assertMonotonicPublicationIdentity(
+  previous: DeliveryPublication,
+  next: DeliveryPublication,
+) {
+  if (previous.treeSha !== undefined && next.treeSha !== previous.treeSha) {
+    throw new Error("Publication changed or discarded its known treeSha.");
+  }
+  const previousCommit =
+    "commitSha" in previous ? previous.commitSha : undefined;
+  const nextCommit = "commitSha" in next ? next.commitSha : undefined;
+  if (previousCommit !== undefined && nextCommit !== previousCommit) {
+    throw new Error("Publication changed or discarded its known commitSha.");
   }
 }
 
