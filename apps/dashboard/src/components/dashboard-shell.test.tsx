@@ -87,8 +87,13 @@ const queryFixture = vi.hoisted(
     agentSessionsByRunId: Record<string, Record<string, unknown>>;
     createRunError: unknown;
     createRunInputs: Array<{
+      readonly deliveryMode: "local" | "pullRequest";
       readonly description: string;
       readonly title: string;
+    }>;
+    deliveryActionInputs: Array<{
+      readonly action: unknown;
+      readonly runId: string;
     }>;
     createRunPromise: Promise<CreateRunAcceptedFixture> | undefined;
     eventsByRunId: Record<string, ReadonlyArray<unknown>>;
@@ -114,6 +119,7 @@ const queryFixture = vi.hoisted(
     createRunError: undefined,
     createRunInputs: [],
     createRunPromise: undefined,
+    deliveryActionInputs: [],
     eventsByRunId: {},
     deliverySnapshotsByRunId: {},
     healthError: undefined,
@@ -127,6 +133,7 @@ const queryFixture = vi.hoisted(
 vi.mock("@/lib/local-gaia-query", () => ({
   localGaiaCreateRunMutationOptions: () => ({
     mutationFn: async (input: {
+      readonly deliveryMode: "local" | "pullRequest";
       readonly description: string;
       readonly title: string;
     }) => {
@@ -167,6 +174,25 @@ vi.mock("@/lib/local-gaia-query", () => ({
       return result;
     },
     mutationKey: ["local-gaia", "create-run"] as const,
+  }),
+  localGaiaDeliveryActionMutationOptions: (config: {
+    readonly runId: string;
+  }) => ({
+    mutationFn: async (action: unknown) => {
+      queryFixture.deliveryActionInputs.push({ action, runId: config.runId });
+      return {
+        data: queryFixture.deliverySnapshotsByRunId[config.runId],
+        status: "success",
+      };
+    },
+    mutationKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "delivery",
+      "action",
+    ] as const,
   }),
   localGaiaHealthQueryOptions: () => ({
     queryFn: () => {
@@ -250,6 +276,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
         data: queryFixture.deliverySnapshotsByRunId[config.runId] ?? {
           eventSequence: 0,
           mode: "local",
+          recoveryActions: [],
           runId: config.runId,
           stage: "unavailable",
           status: "unavailable",
@@ -2101,6 +2128,7 @@ describe("DashboardShell Run Console", () => {
     await waitFor(() => {
       expect(queryFixture.createRunInputs).toEqual([
         {
+          deliveryMode: "local",
           description:
             "Add a command-rail intake and select the created factory run.",
           title: "Ship dashboard intake",
@@ -2112,6 +2140,24 @@ describe("DashboardShell Run Console", () => {
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
         "run-9999999999",
       );
+    });
+  });
+
+  it("accepts draft PR delivery as an explicit intake mode", async () => {
+    renderDashboardWithQueries({ runs: [] });
+
+    fireEvent.click(screen.getByRole("button", { name: "New run" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Draft PR" }));
+    fireEvent.change(screen.getByLabelText("Issue title"), {
+      target: { value: "Publish verified delivery" },
+    });
+    fireEvent.change(screen.getByLabelText("Issue description"), {
+      target: { value: "Create one owned draft pull request." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create run" }));
+
+    await waitFor(() => {
+      expect(queryFixture.createRunInputs[0]?.deliveryMode).toBe("pullRequest");
     });
   });
 
@@ -2128,6 +2174,7 @@ describe("DashboardShell Run Console", () => {
             headBranch: "gaia/run-7777777777",
             remote: "origin",
           },
+          recoveryActions: [],
           runId,
           stage: "readyToPublish",
           status: "readyToPublish",
@@ -2150,6 +2197,156 @@ describe("DashboardShell Run Console", () => {
     });
     expect(screen.queryByRole("button", { name: /^Publish/u })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Merge/u })).toBeNull();
+  });
+
+  it("renders unknown publication state with one typed reconciliation action", async () => {
+    const runId = parseRunId("run-7777777777");
+    renderDashboardWithQueries({
+      deliverySnapshotsByRunId: {
+        [runId]: {
+          eventSequence: 9,
+          mode: "pullRequest",
+          provenance: {
+            baseBranch: "main",
+            baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+            headBranch: "gaia/run-7777777777",
+            remote: "origin",
+          },
+          publication: {
+            branchName: "gaia/run-7777777777",
+            code: "DeliveryPublicationOutcomeUnknown",
+            message: "Gaia could not confirm publication.",
+            recoverable: true,
+            state: "outcomeUnknown",
+            step: "pullRequest",
+          },
+          recoveryActions: ["reconcile"],
+          runId,
+          stage: "publicationOutcomeUnknown",
+          status: "publicationOutcomeUnknown",
+        },
+      },
+      runs: [
+        localRunSummary({
+          latestEventType: "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN",
+          runId,
+          state: "delivering",
+          status: "running",
+        }),
+      ],
+    });
+
+    expect(
+      (await screen.findByTestId("selected-run-delivery-status")).textContent,
+    ).toBe("Delivery: publication outcome unknown");
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile" }));
+
+    await waitFor(() => {
+      expect(queryFixture.deliveryActionInputs).toEqual([
+        {
+          action: { expectedEventSequence: 9, kind: "reconcile" },
+          runId,
+        },
+      ]);
+    });
+    expect(screen.queryByRole("button", { name: /^Merge/u })).toBeNull();
+  });
+
+  it("renders the confirmed draft PR receipt without merge controls", async () => {
+    const runId = parseRunId("run-7777777777");
+    renderDashboardWithQueries({
+      deliverySnapshotsByRunId: {
+        [runId]: {
+          eventSequence: 10,
+          mode: "pullRequest",
+          provenance: {
+            baseBranch: "main",
+            baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+            headBranch: "gaia/run-7777777777",
+            remote: "origin",
+          },
+          publication: {
+            branchName: "gaia/run-7777777777",
+            commitSha: "a".repeat(40),
+            draft: true,
+            prNumber: 91,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+            state: "confirmed",
+          },
+          recoveryActions: [],
+          runId,
+          stage: "waitingForPr",
+          status: "waitingForPr",
+        },
+      },
+      runs: [
+        localRunSummary({
+          latestEventType: "DELIVERY_PUBLICATION_CONFIRMED",
+          runId,
+          state: "delivering",
+          status: "running",
+        }),
+      ],
+    });
+
+    expect(
+      (await screen.findByTestId("selected-run-delivery-status")).textContent,
+    ).toBe("Delivery: draft PR #91 waiting");
+    expect(screen.getByRole("link", { name: "PR #91" }).getAttribute("href")).toBe(
+      "https://github.com/cill-i-am/gaia/pull/91",
+    );
+    expect(screen.queryByRole("button", { name: /^Merge/u })).toBeNull();
+  });
+
+  it("renders a definitive publication failure with only the advertised retry", async () => {
+    const runId = parseRunId("run-7777777777");
+    renderDashboardWithQueries({
+      deliverySnapshotsByRunId: {
+        [runId]: {
+          eventSequence: 11,
+          mode: "pullRequest",
+          provenance: {
+            baseBranch: "main",
+            baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+            headBranch: "gaia/run-7777777777",
+            remote: "origin",
+          },
+          publication: {
+            branchName: "gaia/run-7777777777",
+            code: "DeliveryPushNotAccepted",
+            commitSha: "a".repeat(40),
+            message: "Exact reconciliation proved the push was not accepted.",
+            recoverable: true,
+            state: "failed",
+            step: "push",
+          },
+          recoveryActions: ["retry"],
+          runId,
+          stage: "publicationFailed",
+          status: "publicationFailed",
+        },
+      },
+      runs: [
+        localRunSummary({
+          latestEventType: "DELIVERY_PUBLICATION_FAILED",
+          runId,
+          state: "delivering",
+          status: "running",
+        }),
+      ],
+    });
+
+    expect(
+      (await screen.findByTestId("selected-run-delivery-status")).textContent,
+    ).toBe("Delivery: publication failed (DeliveryPushNotAccepted)");
+    fireEvent.click(screen.getByRole("button", { name: "Retry publication" }));
+    await waitFor(() => {
+      expect(queryFixture.deliveryActionInputs[0]).toEqual({
+        action: { expectedEventSequence: 11, kind: "retry" },
+        runId,
+      });
+    });
+    expect(screen.queryByRole("button", { name: "Reconcile" })).toBeNull();
   });
 
   it("validates issue-delivery intake before creating a run", async () => {
@@ -2423,6 +2620,7 @@ function renderDashboardWithQueries(input: {
   queryFixture.createRunError = input.createRunError;
   queryFixture.createRunInputs = [];
   queryFixture.createRunPromise = input.createRunPromise;
+  queryFixture.deliveryActionInputs = [];
   queryFixture.factoryArtifactBodyRequests = [];
   queryFixture.factoryArtifactBodyErrorsByRunId =
     input.factoryArtifactBodyErrorsByRunId ?? {};

@@ -35,6 +35,7 @@ export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "AgentActionConflict",
   "AgentSessionUnavailable",
   "AgentStreamCursorConflict",
+  "DeliveryActionConflict",
   "DeliveryStreamCursorConflict",
   "ArtifactNotAllowed",
   "ArtifactNotFound",
@@ -78,6 +79,7 @@ const ConflictDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
   "AgentActionConflict",
   "AgentStreamCursorConflict",
+  "DeliveryActionConflict",
   "DeliveryStreamCursorConflict",
   "RunStoreLocked",
 ] as const);
@@ -284,8 +286,99 @@ export const DeliveryStatusSchema = Schema.Literals([
   "unavailable",
   "delivering",
   "readyToPublish",
+  "publishing",
+  "waitingForPr",
+  "publicationFailed",
+  "publicationOutcomeUnknown",
   "failed",
 ] as const);
+
+export const DeliveryRecoveryActionKindSchema = Schema.Literals([
+  "reconcile",
+  "retry",
+] as const);
+
+export class DeliveryRecoveryActionRequest extends Schema.Class<DeliveryRecoveryActionRequest>(
+  "DeliveryRecoveryActionRequest",
+)({
+  expectedEventSequence: Schema.Number.pipe(
+    Schema.check(Schema.isInt({ identifier: "EventSequence" })),
+    Schema.check(Schema.isGreaterThanOrEqualTo(1)),
+  ),
+  kind: DeliveryRecoveryActionKindSchema,
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+
+export const DeliveryRecoveryActionRequestSchema = DeliveryRecoveryActionRequest;
+
+const publicPublicationBase = {
+  branchName: Schema.NonEmptyString.pipe(
+    Schema.check(Schema.isMaxLength(240)),
+    Schema.check(Schema.isPattern(/^gaia\/run-[A-Za-z0-9_-]{10}$/u)),
+  ),
+} as const;
+const PublicGitShaSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
+);
+const PublicPullRequestUrlSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(
+      /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u,
+    ),
+  ),
+);
+
+export class DeliveryPublicationIntentDto extends Schema.Class<DeliveryPublicationIntentDto>(
+  "DeliveryPublicationIntentDto",
+)({
+  ...publicPublicationBase,
+  state: Schema.Literal("intentRecorded"),
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+
+export class DeliveryPublicationAttemptedDto extends Schema.Class<DeliveryPublicationAttemptedDto>(
+  "DeliveryPublicationAttemptedDto",
+)({
+  ...publicPublicationBase,
+  commitSha: PublicGitShaSchema,
+  state: Schema.Literal("attempted"),
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+
+export class DeliveryPublicationConfirmedDto extends Schema.Class<DeliveryPublicationConfirmedDto>(
+  "DeliveryPublicationConfirmedDto",
+)({
+  ...publicPublicationBase,
+  commitSha: PublicGitShaSchema,
+  draft: Schema.Literal(true),
+  prNumber: Schema.Int,
+  prUrl: PublicPullRequestUrlSchema,
+  state: Schema.Literal("confirmed"),
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+
+export class DeliveryPublicationFailureDto extends Schema.Class<DeliveryPublicationFailureDto>(
+  "DeliveryPublicationFailureDto",
+)({
+  ...publicPublicationBase,
+  code: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(160))),
+  commitSha: Schema.optionalKey(PublicGitShaSchema),
+  message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1_024))),
+  recoverable: Schema.Boolean,
+  state: Schema.Literals(["failed", "outcomeUnknown"] as const),
+  step: Schema.Literals([
+    "validation",
+    "commit",
+    "push",
+    "pullRequest",
+    "reconciliation",
+  ] as const),
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+
+export const DeliveryPublicationDto = Schema.Union([
+  DeliveryPublicationIntentDto,
+  DeliveryPublicationAttemptedDto,
+  DeliveryPublicationConfirmedDto,
+  DeliveryPublicationFailureDto,
+]).annotate({ identifier: "DeliveryPublicationDto" });
+
+export type DeliveryPublicationDto = typeof DeliveryPublicationDto.Type;
 
 export class DeliveryProvenanceDto extends Schema.Class<DeliveryProvenanceDto>(
   "DeliveryProvenanceDto",
@@ -302,6 +395,8 @@ export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   eventSequence: Schema.Number.pipe(Schema.check(Schema.isInt({ identifier: "EventSequence" }))),
   mode: DeliveryModeSchema,
   provenance: Schema.optionalKey(DeliveryProvenanceDto),
+  publication: Schema.optionalKey(DeliveryPublicationDto),
+  recoveryActions: Schema.Array(DeliveryRecoveryActionKindSchema),
   runId: RunIdSchema,
   stage: DeliveryStatusSchema,
   status: DeliveryStatusSchema,
@@ -628,6 +723,14 @@ export const RunsGroup = HttpApiGroup.make("runs")
       },
       query: { afterSequence: Schema.optionalKey(Schema.NumberFromString) },
       success: DeliverySnapshotStreamResponse,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("actOnDelivery", "/runs/:runId/delivery/actions", {
+      error: [...LocalRunReadErrorResponse, LocalRunApiConflictResponse],
+      params: { runId: RunIdSchema },
+      payload: DeliveryRecoveryActionRequestSchema,
+      success: DeliverySnapshotSuccessEnvelope,
     }),
   )
   .add(

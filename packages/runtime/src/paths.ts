@@ -67,6 +67,7 @@ export type RunPaths = {
   readonly workspacePrGate: string;
   readonly workspace: string;
   readonly deliveryOwnershipManifest: string;
+  readonly deliveryPullRequestBody: string;
   readonly workspaceManifest: string;
   readonly workspaceOutput: string;
 };
@@ -104,6 +105,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       codexHarnessProgress: path.join(root, "codex-harness-progress.json"),
       dogfoodRetrospective: path.join(root, "dogfood-retrospective.json"),
       deliveryOwnershipManifest: path.join(root, "delivery-ownership.json"),
+      deliveryPullRequestBody: path.join(root, "delivery-pr-body.md"),
       evidenceReviewMarkdown: path.join(root, "evidence-review.md"),
       evidenceReviewResult: path.join(root, "evidence-review.json"),
       evidenceReviewerSession: path.join(

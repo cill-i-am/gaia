@@ -4,6 +4,7 @@ import {
   AgentSessionUpdateDto,
   CreateRunRequest,
   DeliverySnapshotSuccessEnvelope,
+  DeliveryRecoveryActionRequestSchema,
   codexAppServerExecutionSelection,
   FactoryActivitySuccessEnvelope,
   FactoryAgentIdSchema,
@@ -44,7 +45,7 @@ export type DashboardGaiaClientError =
   | {
       readonly _tag: "DashboardGaiaParameterError";
       readonly cause: Schema.SchemaError;
-      readonly parameter: "action" | "agentId" | "artifactId" | "createRun" | "runId";
+      readonly parameter: "action" | "agentId" | "artifactId" | "createRun" | "deliveryAction" | "runId";
     }
   | {
       readonly _tag: "DashboardGaiaTimeoutError";
@@ -179,6 +180,28 @@ export function getDeliverySnapshotFromDashboardGaiaClient(
         params: { runId },
       });
       return yield* decodeDeliverySnapshotSuccess(response);
+    }),
+  );
+}
+
+export function actOnDeliveryFromDashboardGaiaClient(
+  config: DashboardGaiaClientConfig & {
+    readonly action: unknown;
+    readonly runId: string;
+  },
+) {
+  return withDashboardGaiaClient(config, (client) =>
+    Effect.gen(function* () {
+      const runId = yield* decodeRunIdParameter(config.runId);
+      const payload = yield* Schema.decodeUnknownEffect(
+        DeliveryRecoveryActionRequestSchema,
+      )(config.action).pipe(
+        Effect.mapError((cause) => parameterError("deliveryAction", cause)),
+      );
+      return yield* client.runs.actOnDelivery({
+        params: { runId },
+        payload,
+      });
     }),
   );
 }
@@ -347,6 +370,7 @@ export function getRunArtifactFromDashboardGaiaClient(
 
 export function createRunFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig & {
+    readonly deliveryMode: "local" | "pullRequest";
     readonly description: string;
     readonly title: string;
   },
@@ -354,7 +378,7 @@ export function createRunFromDashboardGaiaClient(
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
       const payload = yield* CreateRunRequest.makeEffect({
-        delivery: { mode: "local" },
+        delivery: { mode: config.deliveryMode },
         execution: codexAppServerExecutionSelection,
         workflow: "issueDelivery",
         workItem: {
@@ -479,7 +503,7 @@ function legacyEventTypeFromFactoryState(
 }
 
 function parameterError(
-  parameter: "action" | "agentId" | "artifactId" | "createRun" | "runId",
+  parameter: "action" | "agentId" | "artifactId" | "createRun" | "deliveryAction" | "runId",
   cause: Schema.SchemaError,
 ): DashboardGaiaClientError {
   return {

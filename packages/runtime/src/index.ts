@@ -21,6 +21,11 @@ export {
 } from "./browser-evidence.js";
 export { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 export {
+  publishReadyDeliveryRun,
+  retryFailedDeliveryPublication,
+  type DeliveryPublicationOptions,
+} from "./delivery-publication.js";
+export {
   dispatchAgentSessionAction,
   makeLiveHarnessSessionCoordinator,
   readAgentSessionSnapshot,
@@ -183,6 +188,7 @@ export {
   GitHubPreflightCheck,
   GitHubPreflightCheckNameSchema,
   GitHubPrSummary,
+  GitHubDraftPullRequestView,
   GitHubPublishModeSchema,
   GitHubPublishPreflightSummary,
   GitHubPublishPreview,
@@ -196,6 +202,7 @@ export {
   parseGitHubPrFeedbackJson,
   parseGitHubPrLoopStateJson,
   parseGitHubPullRequestSelector,
+  parseGitHubDraftPullRequestViewsJson,
   preflightGitHubPublish,
   previewGitHubPublish,
   publishRunToGitHub,
@@ -211,6 +218,7 @@ export {
   type GitHubCiWatchResultSource,
   type GitHubCommandInput,
   type GitHubCommandRunner,
+  nodeGitHubCommandRunner,
   type GitHubPrCommentOptions,
   type GitHubPrLoopBlockerKind,
   type GitHubPrLoopNextAction,

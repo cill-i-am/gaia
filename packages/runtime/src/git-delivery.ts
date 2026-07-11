@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { Effect, FileSystem, Schema } from "effect";
 import { makeRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
+import { repositoryCommandEnvironment } from "./repository-command-environment.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -44,6 +45,7 @@ export const parseDeliveryProvenance = Schema.decodeUnknownOption(
 const DeliveryOwnershipManifest = Schema.Struct({
   baseRevision: Schema.NonEmptyString,
   repositoryCommonDir: Schema.NonEmptyString,
+  remoteIdentity: Schema.NonEmptyString,
   repositoryRoot: Schema.NonEmptyString,
   token: Schema.NonEmptyString,
   version: Schema.Literal(1),
@@ -68,6 +70,7 @@ export const nodeGitDeliveryCommandRunner: GitDeliveryCommandRunner = (input) =>
     try: async () => {
       const result = await execFileAsync("git", [...input.args], {
         cwd: input.cwd,
+        env: repositoryCommandEnvironment(),
         maxBuffer: 1024 * 1024,
       });
       return { stderr: result.stderr, stdout: result.stdout };
@@ -116,42 +119,19 @@ export function prepareDeliveryWorktree(input: {
     const runner = input.options.commandRunner ?? nodeGitDeliveryCommandRunner;
     const exists = yield* fs.exists(input.paths.workspace);
     const expectedRepository = yield* repositoryIdentity(runner, input.options.rootDirectory);
+    const remoteIdentity = yield* repositoryRemoteIdentity(
+      runner,
+      input.options.rootDirectory,
+      input.provenance.remote,
+    );
 
     if (exists) {
-      const manifest = yield* readOwnershipManifest(input.paths.deliveryOwnershipManifest);
-      const head = (yield* runGit(runner, input.paths.workspace, [
-        "rev-parse",
-        "HEAD",
-      ])).stdout.trim();
-      const root = (yield* runGit(runner, input.paths.workspace, [
-        "rev-parse",
-        "--show-toplevel",
-      ])).stdout.trim();
-      const workspaceCommonDir = (yield* runGit(runner, input.paths.workspace, [
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-common-dir",
-      ])).stdout.trim();
-      if (
-        head !== input.provenance.baseRevision ||
-        root !== input.paths.workspace ||
-        manifest.repositoryRoot !== expectedRepository.repositoryRoot ||
-        manifest.repositoryCommonDir !== expectedRepository.repositoryCommonDir ||
-        manifest.workspaceRoot !== input.paths.workspace ||
-        manifest.workspaceCommonDir !== workspaceCommonDir ||
-        workspaceCommonDir !== expectedRepository.repositoryCommonDir ||
-        manifest.baseRevision !== input.provenance.baseRevision ||
-        manifest.token !== ownershipToken(input.provenance)
-      ) {
-        return yield* Effect.fail(
-          makeRuntimeError({
-            code: "DeliveryWorktreeIdentityMismatch",
-            message: "Persisted delivery worktree does not match the accepted run identity.",
-            recoverable: false,
-          }),
-        );
-      }
-      return;
+      return yield* inspectDeliveryWorktreeOwnership({
+        expectedHeads: [input.provenance.baseRevision],
+        options: input.options,
+        paths: input.paths,
+        provenance: input.provenance,
+      });
     }
 
     yield* runGit(runner, input.options.rootDirectory, [
@@ -168,7 +148,8 @@ export function prepareDeliveryWorktree(input: {
         baseRevision: input.provenance.baseRevision,
         repositoryCommonDir: expectedRepository.repositoryCommonDir,
         repositoryRoot: expectedRepository.repositoryRoot,
-        token: ownershipToken(input.provenance),
+        remoteIdentity,
+        token: ownershipToken(input.provenance, remoteIdentity),
         version: 1,
         workspaceCommonDir: workspaceIdentity.repositoryCommonDir,
         workspaceRoot: workspaceIdentity.repositoryRoot,
@@ -183,6 +164,95 @@ export function prepareDeliveryWorktree(input: {
         }),
       ),
     );
+  });
+}
+
+/** Verify persisted worktree ownership while allowing only canonical lifecycle heads. */
+export function inspectDeliveryWorktreeOwnership(input: {
+  readonly expectedHeads: ReadonlyArray<string>;
+  readonly options: DeliveryWorkspaceOptions;
+  readonly paths: RunPaths;
+  readonly provenance: DeliveryProvenance;
+}) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const runner = input.options.commandRunner ?? nodeGitDeliveryCommandRunner;
+    const expectedWorkspaceRoot = yield* fs.realPath(input.paths.workspace).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "DeliveryWorktreeIdentityMismatch",
+          message: "Persisted delivery worktree path could not be resolved.",
+          recoverable: false,
+        }),
+      ),
+    );
+    const expectedRepository = yield* repositoryIdentity(
+      runner,
+      input.options.rootDirectory,
+    );
+    const remoteIdentity = yield* repositoryRemoteIdentity(
+      runner,
+      input.options.rootDirectory,
+      input.provenance.remote,
+    );
+    const manifest = yield* readOwnershipManifest(
+      input.paths.deliveryOwnershipManifest,
+    );
+    const head = (yield* runGit(runner, input.paths.workspace, [
+      "rev-parse",
+      "HEAD",
+    ])).stdout.trim();
+    const root = (yield* runGit(runner, input.paths.workspace, [
+      "rev-parse",
+      "--show-toplevel",
+    ])).stdout.trim();
+    const canonicalRoot = yield* fs.realPath(root).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "DeliveryWorktreeIdentityMismatch",
+          message: "Persisted delivery worktree root could not be resolved.",
+          recoverable: false,
+        }),
+      ),
+    );
+    const canonicalManifestRoot = yield* fs.realPath(manifest.workspaceRoot).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "DeliveryWorktreeIdentityMismatch",
+          message: "Persisted delivery ownership root could not be resolved.",
+          recoverable: false,
+        }),
+      ),
+    );
+    const workspaceCommonDir = (yield* runGit(
+      runner,
+      input.paths.workspace,
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )).stdout.trim();
+    if (
+      !input.expectedHeads.includes(head) ||
+      canonicalRoot !== expectedWorkspaceRoot ||
+      manifest.repositoryRoot !== expectedRepository.repositoryRoot ||
+      manifest.repositoryCommonDir !== expectedRepository.repositoryCommonDir ||
+      manifest.remoteIdentity !== remoteIdentity ||
+      canonicalManifestRoot !== expectedWorkspaceRoot ||
+      manifest.workspaceCommonDir !== workspaceCommonDir ||
+      workspaceCommonDir !== expectedRepository.repositoryCommonDir ||
+      manifest.baseRevision !== input.provenance.baseRevision ||
+      manifest.token !== ownershipToken(input.provenance, remoteIdentity)
+    ) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryWorktreeIdentityMismatch",
+          message:
+            "Persisted delivery worktree does not match the accepted run identity.",
+          recoverable: false,
+        }),
+      );
+    }
   });
 }
 
@@ -236,6 +306,41 @@ function repositoryIdentity(
   });
 }
 
+function repositoryRemoteIdentity(
+  runner: GitDeliveryCommandRunner,
+  cwd: string,
+  remote: string,
+) {
+  return Effect.gen(function* () {
+    const raw = (
+      yield* runGit(runner, cwd, ["remote", "get-url", remote])
+    ).stdout.trim();
+    if (raw.length === 0 || /[\u0000-\u001f\u007f]/u.test(raw)) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryRemoteIdentityInvalid",
+          message: "Gaia could not resolve a safe delivery remote identity.",
+          recoverable: false,
+        }),
+      );
+    }
+    const scp = /^(?:[^@\s]+@)?([^:\s]+):(.+)$/u.exec(raw);
+    if (scp !== null) {
+      return `ssh://${scp[1]}/${stripGitSuffix(scp[2] ?? "")}`;
+    }
+    try {
+      const url = new URL(raw);
+      return `${url.protocol}//${url.host}${stripGitSuffix(url.pathname)}`;
+    } catch {
+      return stripGitSuffix(raw);
+    }
+  });
+}
+
+function stripGitSuffix(value: string) {
+  return value.replace(/\/?\.git\/?$/u, "").replace(/\/$/u, "");
+}
+
 function readOwnershipManifest(path: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -262,8 +367,11 @@ function readOwnershipManifest(path: string) {
   });
 }
 
-function ownershipToken(provenance: DeliveryProvenance) {
+function ownershipToken(
+  provenance: DeliveryProvenance,
+  remoteIdentity: string,
+) {
   return createHash("sha256")
-    .update(`${provenance.remote}\0${provenance.baseBranch}\0${provenance.baseRevision}\0${provenance.headBranch}`)
+    .update(`${remoteIdentity}\0${provenance.remote}\0${provenance.baseBranch}\0${provenance.baseRevision}\0${provenance.headBranch}`)
     .digest("hex");
 }

@@ -1,12 +1,22 @@
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
-import { codexAppServerExecutionSelection, parseRunId } from "@gaia/core";
+import {
+  codexAppServerExecutionSelection,
+  DeliveryPublicationAttempted,
+  DeliveryPublicationConfirmed,
+  DeliveryPublicationIntent,
+  DeliveryPublicationOutcomeUnknown,
+  encodeDeliveryPublicationJson,
+  parseRunId,
+} from "@gaia/core";
 import {
   makeHarnessProviderRegistry,
+  appendEvent,
   ReviewResult,
   ReviewerNameSchema,
   subscribeRunEventFeed,
   type GaiaReviewer,
+  type DeliveryPublicationOptions,
 } from "@gaia/runtime";
 import type { ServerWorkflowOptions } from "@gaia/runtime/server-workflows";
 import {
@@ -394,6 +404,7 @@ describe("local run api http boundary", () => {
         });
         yield* continueServerRun(accepted.runId, {
           deliveryGitCommandRunner: recordingGitRunner(),
+          deliveryPublisher: recordingDeliveryPublisher(),
           harnessProviderRegistry: makeTestHarnessProviderRegistry(),
           rootDirectory: cwd,
         });
@@ -429,8 +440,17 @@ describe("local run api http boundary", () => {
         );
         assert.strictEqual(
           getString(getObjectFromArray(updates, updates.length - 1), "stage"),
-          "readyToPublish",
+          "waitingForPr",
         );
+        const finalUpdate = getObjectFromArray(updates, updates.length - 1);
+        const publication = getObject(finalUpdate, "publication");
+        assert.strictEqual(getString(publication, "state"), "confirmed");
+        assert.strictEqual(
+          getString(publication, "prUrl"),
+          "https://github.com/cill-i-am/gaia/pull/91",
+        );
+        assert.notInclude(JSON.stringify(finalUpdate), "payloadDigest");
+        assert.notInclude(JSON.stringify(finalUpdate), cwd);
         assert.strictEqual(resumeResponse.status, 200);
         assert.strictEqual(resumeBlocks.length, 1);
         assert.strictEqual(resumeBlocks[0]?.id, String(lastSequence));
@@ -465,6 +485,7 @@ describe("local run api http boundary", () => {
         );
         yield* continueServerRun(accepted.runId, {
           deliveryGitCommandRunner: recordingGitRunner(),
+          deliveryPublisher: recordingDeliveryPublisher(),
           harnessProviderRegistry: makeTestHarnessProviderRegistry(),
           rootDirectory: cwd,
         });
@@ -508,6 +529,71 @@ describe("local run api http boundary", () => {
         assert.strictEqual(readsAfterResume, 2);
         assert.strictEqual(conflictResponse.status, 409);
         assert.strictEqual(deliveryEventReads, 3);
+      }),
+      20_000,
+    );
+
+    it.effect("projects publication recovery and rejects stale delivery actions", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({
+          prefix: "gaia-server-delivery-recovery-",
+        });
+        const accepted = yield* acceptFactoryRun(
+          {
+            delivery: { mode: "pullRequest" },
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery",
+            workItem: {
+              description: "Recover an ambiguous publication outcome.",
+              kind: "issue",
+              title: "Delivery recovery",
+            },
+          },
+          {
+            deliveryGitCommandRunner: recordingGitRunner(),
+            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            rootDirectory: cwd,
+          },
+        );
+        yield* continueServerRun(accepted.runId, {
+          deliveryGitCommandRunner: recordingGitRunner(),
+          deliveryPublisher: recordingUnknownDeliveryPublisher(),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        const layer = testServerLayer(cwd, {
+          deliveryPublisher: reconcilingDeliveryPublisher(),
+        });
+        const beforeResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/delivery`,
+        ).pipe(Effect.provide(layer));
+        const before = getObject(
+          yield* responseJsonObject(beforeResponse),
+          "data",
+        );
+        const sequence = getNumber(before, "eventSequence");
+        const staleResponse = yield* deliveryActionRequest(
+          accepted.runId,
+          sequence - 1,
+        ).pipe(HttpClient.execute, Effect.provide(layer));
+        const staleBody = yield* responseJsonObject(staleResponse);
+        const recoveryResponse = yield* deliveryActionRequest(
+          accepted.runId,
+          sequence,
+        ).pipe(HttpClient.execute, Effect.provide(layer));
+        const recovered = getObject(
+          yield* responseJsonObject(recoveryResponse),
+          "data",
+        );
+
+        assert.strictEqual(getString(before, "stage"), "publicationOutcomeUnknown");
+        assert.deepEqual(getArray(before, "recoveryActions"), ["reconcile"]);
+        assert.strictEqual(staleResponse.status, 409);
+        assertApiError(staleBody, "DeliveryActionConflict", 409);
+        assert.strictEqual(recoveryResponse.status, 200);
+        assert.strictEqual(getString(recovered, "stage"), "waitingForPr");
+        assert.deepEqual(getArray(recovered, "recoveryActions"), []);
       }),
       20_000,
     );
@@ -976,6 +1062,12 @@ function recordingGitRunner() {
       if (first === "fetch") {
         return { stderr: "", stdout: "" };
       }
+      if (first === "remote" && rest[0] === "get-url") {
+        return {
+          stderr: "",
+          stdout: "https://github.com/cill-i-am/gaia.git\n",
+        };
+      }
       if (first === "rev-parse" && rest[0] === "origin/main") {
         return { stderr: "", stdout: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92\n" };
       }
@@ -987,6 +1079,135 @@ function recordingGitRunner() {
       }
       throw new Error(`Unexpected git command ${command.args.join(" ")}`);
     });
+}
+
+function recordingDeliveryPublisher() {
+  return (
+    runId: ReturnType<typeof parseRunId>,
+    options: DeliveryPublicationOptions = {},
+  ) =>
+    Effect.gen(function* () {
+      const paths = yield* makeRunPaths(runId, options);
+      const fields = publicationTestFields(runId);
+      const intent = DeliveryPublicationIntent.make({
+        ...fields,
+        state: "intentRecorded",
+      });
+      const attempted = DeliveryPublicationAttempted.make({
+        ...fields,
+        commitSha: "b".repeat(40),
+        state: "attempted",
+        treeSha: "d".repeat(40),
+      });
+      const confirmed = DeliveryPublicationConfirmed.make({
+        ...attempted,
+        draft: true,
+        headSha: attempted.commitSha,
+        prNumber: 91,
+        prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+        state: "confirmed",
+      });
+      for (const [type, publication] of [
+        ["DELIVERY_PUBLICATION_INTENT_RECORDED", intent],
+        ["DELIVERY_PUBLICATION_ATTEMPTED", attempted],
+        ["DELIVERY_PUBLICATION_CONFIRMED", confirmed],
+      ] as const) {
+        yield* appendEvent(runId, paths, {
+          payload: { publication: encodeDeliveryPublicationJson(publication) },
+          type,
+        });
+      }
+      return confirmed;
+    });
+}
+
+function recordingUnknownDeliveryPublisher() {
+  return (
+    runId: ReturnType<typeof parseRunId>,
+    options: DeliveryPublicationOptions = {},
+  ) =>
+    Effect.gen(function* () {
+      const paths = yield* makeRunPaths(runId, options);
+      const fields = publicationTestFields(runId);
+      const intent = DeliveryPublicationIntent.make({
+        ...fields,
+        state: "intentRecorded",
+      });
+      const attempted = DeliveryPublicationAttempted.make({
+        ...fields,
+        commitSha: "b".repeat(40),
+        state: "attempted",
+        treeSha: "d".repeat(40),
+      });
+      const unknown = DeliveryPublicationOutcomeUnknown.make({
+        ...attempted,
+        code: "DeliveryPublicationOutcomeUnknown",
+        message: "Gaia could not confirm the external publication outcome.",
+        recoverable: true,
+        state: "outcomeUnknown",
+        step: "pullRequest",
+      });
+      for (const [type, publication] of [
+        ["DELIVERY_PUBLICATION_INTENT_RECORDED", intent],
+        ["DELIVERY_PUBLICATION_ATTEMPTED", attempted],
+        ["DELIVERY_PUBLICATION_OUTCOME_UNKNOWN", unknown],
+      ] as const) {
+        yield* appendEvent(runId, paths, {
+          payload: { publication: encodeDeliveryPublicationJson(publication) },
+          type,
+        });
+      }
+      return unknown;
+    });
+}
+
+function reconcilingDeliveryPublisher() {
+  return (
+    runId: ReturnType<typeof parseRunId>,
+    options: DeliveryPublicationOptions = {},
+  ) =>
+    Effect.gen(function* () {
+      const paths = yield* makeRunPaths(runId, options);
+      const confirmed = DeliveryPublicationConfirmed.make({
+        ...publicationTestFields(runId),
+        commitSha: "b".repeat(40),
+        draft: true,
+        headSha: "b".repeat(40),
+        prNumber: 91,
+        prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+        state: "confirmed",
+        treeSha: "d".repeat(40),
+      });
+      yield* appendEvent(runId, paths, {
+        payload: { publication: encodeDeliveryPublicationJson(confirmed) },
+        type: "DELIVERY_PUBLICATION_CONFIRMED",
+      });
+      return confirmed;
+    });
+}
+
+function publicationTestFields(runId: ReturnType<typeof parseRunId>) {
+  return {
+    baseBranch: "main",
+    baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+    branchName: `gaia/${runId}`,
+    commitMessage: `feat: deliver ${runId}`,
+    commitTimestamp: "2026-07-11T00:00:00.000Z",
+    digestVersion: 1 as const,
+    operationId: `publish-${runId}-1`,
+    payloadDigest: "c".repeat(64),
+    sourcePaths: ["src/feature.ts"],
+    treeSha: "d".repeat(40),
+  };
+}
+
+function deliveryActionRequest(runId: string, expectedEventSequence: number) {
+  return HttpClientRequest.post(`/runs/${runId}/delivery/actions`).pipe(
+    HttpClientRequest.bodyJsonUnsafe({
+      expectedEventSequence,
+      kind: "reconcile",
+    }),
+  );
 }
 
 function pausingReviewer(release: Deferred.Deferred<void>): GaiaReviewer {

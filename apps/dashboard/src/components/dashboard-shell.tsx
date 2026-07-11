@@ -28,6 +28,7 @@ import {
   ChevronRightIcon,
   CircleDotIcon,
   CirclePlusIcon,
+  ExternalLinkIcon,
   GitCompareArrowsIcon,
   InspectIcon,
   LoaderCircleIcon,
@@ -85,6 +86,7 @@ import {
 import { defaultLocalGaiaServerUrl } from "@/lib/local-gaia-client";
 import {
   localGaiaDeliveryQueryOptions,
+  localGaiaDeliveryActionMutationOptions,
   localGaiaFactoryAgentActivityQueryOptions,
   localGaiaFactoryArtifactQueryOptions,
   localGaiaFactoryArtifactsQueryOptions,
@@ -405,6 +407,12 @@ export function DashboardShell() {
   );
   const selectedDeliveryQuery = useQuery(
     localGaiaDeliveryQueryOptions({
+      runId: selectedRunId ?? "",
+      serverUrl,
+    }),
+  );
+  const deliveryActionMutation = useMutation(
+    localGaiaDeliveryActionMutationOptions({
       runId: selectedRunId ?? "",
       serverUrl,
     }),
@@ -733,12 +741,27 @@ export function DashboardShell() {
   }
 
   async function createIssueDeliveryRun(input: {
+    readonly deliveryMode: "local" | "pullRequest";
     readonly description: string;
     readonly title: string;
   }) {
     const result = await createRunMutation.mutateAsync(input);
     await runsQuery.refetch();
     selectRun(result.runId);
+  }
+
+  async function actOnDelivery(kind: "reconcile" | "retry") {
+    const snapshot = selectedDeliveryQuery.data?.data;
+    if (snapshot === undefined) return;
+    await deliveryActionMutation.mutateAsync({
+      expectedEventSequence: snapshot.eventSequence,
+      kind,
+    });
+    await Promise.all([
+      selectedDeliveryQuery.refetch(),
+      selectedRunEventsQuery.refetch(),
+      runsQuery.refetch(),
+    ]);
   }
 
   function selectReplayIndex(index: number) {
@@ -813,10 +836,15 @@ export function DashboardShell() {
         <main className="flex min-h-0 min-w-0 flex-1 flex-col lg:overflow-hidden">
           <CommandHeader
             commandMode={commandMode}
+            deliveryActionError={dashboardQueryFailure(
+              deliveryActionMutation.error,
+            )}
+            deliveryActionPending={deliveryActionMutation.isPending}
             deliverySnapshot={selectedDeliveryQuery.data?.data}
             selectedRun={selectedRun}
             serverConnection={serverConnection}
             onSelectCommandMode={setCommandMode}
+            onDeliveryAction={actOnDelivery}
           />
           <section
             className="relative min-h-0 flex-1 overflow-hidden"
@@ -1328,6 +1356,7 @@ function RunConsole({
   readonly selectedRunId: string | undefined;
   readonly serverConnection: ServerConnectionState;
   readonly onCreateIssueDeliveryRun: (input: {
+    readonly deliveryMode: "local" | "pullRequest";
     readonly description: string;
     readonly title: string;
   }) => Promise<void>;
@@ -1513,11 +1542,15 @@ function IssueDeliveryIntake({
   readonly isPending: boolean;
   readonly runConsole: RunConsoleState;
   readonly onCreateIssueDeliveryRun: (input: {
+    readonly deliveryMode: "local" | "pullRequest";
     readonly description: string;
     readonly title: string;
   }) => Promise<void>;
 }) {
   const [description, setDescription] = React.useState("");
+  const [deliveryMode, setDeliveryMode] = React.useState<
+    "local" | "pullRequest"
+  >("local");
   const [submitted, setSubmitted] = React.useState(false);
   const [title, setTitle] = React.useState("");
   const normalizedDescription = description.trim();
@@ -1542,6 +1575,7 @@ function IssueDeliveryIntake({
 
     try {
       await onCreateIssueDeliveryRun({
+        deliveryMode,
         description: normalizedDescription,
         title: normalizedTitle,
       });
@@ -1557,6 +1591,36 @@ function IssueDeliveryIntake({
       onSubmit={handleSubmit}
     >
       <div className="flex flex-col gap-2">
+        <fieldset className="flex flex-col gap-1.5">
+          <legend className="text-xs font-medium">Delivery</legend>
+          <div
+            aria-label="Delivery mode"
+            className="grid grid-cols-2 rounded-md border bg-muted/30 p-0.5"
+            role="radiogroup"
+          >
+            {([
+              ["local", "Local"],
+              ["pullRequest", "Draft PR"],
+            ] as const).map(([mode, label]) => (
+              <button
+                aria-checked={deliveryMode === mode}
+                className={cn(
+                  "h-7 rounded-sm px-2 text-xs font-medium transition-colors",
+                  deliveryMode === mode
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                disabled={isPending || isOffline}
+                key={mode}
+                onClick={() => setDeliveryMode(mode)}
+                role="radio"
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </fieldset>
         <div className="flex flex-col gap-1.5" data-invalid={titleError}>
           <Label className="text-xs" htmlFor="issue-delivery-title">
             Issue title
@@ -1835,16 +1899,22 @@ function RunConsoleStaleDataNotice() {
 
 function CommandHeader({
   commandMode,
+  deliveryActionError,
+  deliveryActionPending,
   deliverySnapshot,
   selectedRun,
   serverConnection,
   onSelectCommandMode,
+  onDeliveryAction,
 }: {
   readonly commandMode: CommandMode;
+  readonly deliveryActionError: ReturnType<typeof dashboardQueryFailure>;
+  readonly deliveryActionPending: boolean;
   readonly deliverySnapshot: typeof DeliverySnapshotDto.Type | undefined;
   readonly selectedRun: DashboardRun;
   readonly serverConnection: ServerConnectionState;
   readonly onSelectCommandMode: (mode: CommandMode) => void;
+  readonly onDeliveryAction: (kind: "reconcile" | "retry") => Promise<void>;
 }) {
   const selectedConsoleRun = serverConnection.selectedRun;
   const selectedStatusLabel =
@@ -1867,12 +1937,48 @@ function CommandHeader({
               : `${selectedConsoleRun.stateLabel} · ${selectedConsoleRun.latestEventLabel}`}
           </p>
           {deliverySnapshot !== undefined ? (
-            <p
-              className="truncate text-xs text-muted-foreground"
-              data-testid="selected-run-delivery-status"
-            >
-              {deliveryStatusLabel(deliverySnapshot)}
-            </p>
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+              <span
+                className="truncate"
+                data-testid="selected-run-delivery-status"
+              >
+                {deliveryStatusLabel(deliverySnapshot)}
+              </span>
+              {deliverySnapshot.publication?.state === "confirmed" ? (
+                <a
+                  className="inline-flex items-center gap-1 font-medium text-foreground hover:underline"
+                  href={deliverySnapshot.publication.prUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  PR #{deliverySnapshot.publication.prNumber}
+                  <ExternalLinkIcon className="size-3" />
+                </a>
+              ) : null}
+              {deliverySnapshot.recoveryActions.map((action) => (
+                <Button
+                  disabled={deliveryActionPending}
+                  key={action}
+                  onClick={() => void onDeliveryAction(action)}
+                  size="xs"
+                  variant="outline"
+                >
+                  <RefreshCwIcon
+                    className={cn(deliveryActionPending && "animate-spin")}
+                    data-icon="inline-start"
+                  />
+                  {action === "reconcile" ? "Reconcile" : "Retry publication"}
+                </Button>
+              ))}
+              {deliveryActionError === undefined ? null : (
+                <span className="text-destructive" role="alert">
+                  {dashboardFailureMessage(
+                    deliveryActionError,
+                    "Delivery recovery failed.",
+                  )}
+                </span>
+              )}
+            </div>
           ) : null}
         </div>
       </div>
@@ -1921,6 +2027,18 @@ function deliveryStatusLabel(snapshot: typeof DeliverySnapshotDto.Type) {
       return `Delivery: preparing ${snapshot.provenance?.headBranch ?? "worktree"}`;
     case "readyToPublish":
       return `Delivery: ready to publish from ${snapshot.provenance?.headBranch ?? "worktree"}`;
+    case "publishing":
+      return `Delivery: publishing ${snapshot.provenance?.headBranch ?? "worktree"}`;
+    case "waitingForPr":
+      return snapshot.publication?.state === "confirmed"
+        ? `Delivery: draft PR #${snapshot.publication.prNumber} waiting`
+        : "Delivery: waiting for draft PR";
+    case "publicationFailed":
+      return snapshot.publication?.state === "failed"
+        ? `Delivery: publication failed (${snapshot.publication.code})`
+        : "Delivery: publication failed";
+    case "publicationOutcomeUnknown":
+      return "Delivery: publication outcome unknown";
     case "failed":
       return "Delivery: failed";
     case "unavailable":

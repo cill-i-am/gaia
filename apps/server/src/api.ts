@@ -2,6 +2,11 @@ import {
   AgentActionSuccessEnvelope,
   AgentSessionSnapshotSuccessEnvelope,
   DeliveryModeSchema,
+  DeliveryPublicationDto,
+  DeliveryPublicationAttemptedDto,
+  DeliveryPublicationConfirmedDto,
+  DeliveryPublicationFailureDto,
+  DeliveryPublicationIntentDto,
   DeliveryProvenanceDto,
   DeliverySnapshotDto,
   DeliverySnapshotSuccessEnvelope,
@@ -33,6 +38,7 @@ import {
   LocalRunReadDiagnosticDto,
   type RunId,
   type RunEvent,
+  parseDeliveryPublication,
   snapshotFromReplay,
 } from "@gaia/core";
 import type {
@@ -63,6 +69,7 @@ import {
 } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import {
+  actOnDeliveryPublication,
   acceptFactoryRun,
   continueServerRun,
   type ServerRunAcceptance,
@@ -110,6 +117,7 @@ const decodeDeliveryProjection = Schema.decodeUnknownOption(
     baseRevision: Schema.NonEmptyString,
     headBranch: Schema.NonEmptyString,
     mode: DeliveryModeSchema,
+    publication: Schema.optionalKey(Schema.Json),
     remote: Schema.NonEmptyString,
     stage: DeliveryStatusSchema,
   }),
@@ -291,6 +299,30 @@ export const RunsLive = HttpApiBuilder.group(
             Stream.mapError(streamApiError),
           );
         }).pipe(Effect.mapError((error) => actionApiErrorFromCause(Cause.fail(error)))),
+      )
+      .handle("actOnDelivery", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(
+            actOnDeliveryPublication(params.runId, payload, {
+              ...identity.workflowOptions,
+              rootDirectory: identity.rootDirectory,
+            }),
+          );
+          if (exit._tag === "Failure") {
+            return yield* Effect.fail(actionApiErrorFromCause(exit.cause));
+          }
+          const snapshotExit = yield* Effect.exit(
+            readDeliverySnapshot(params.runId, identity.rootDirectory),
+          );
+          if (snapshotExit._tag === "Failure") {
+            return yield* Effect.fail(readApiErrorFromCause(snapshotExit.cause));
+          }
+          return DeliverySnapshotSuccessEnvelope.make({
+            data: snapshotExit.value,
+            status: "success",
+          });
+        }),
       )
       .handle("getAgentActivity", ({ params }) =>
         Effect.gen(function* () {
@@ -558,6 +590,7 @@ function readDeliverySnapshot(
       return DeliverySnapshotDto.make({
         eventSequence: 0,
         mode: "local",
+        recoveryActions: [],
         runId: events.runId,
         stage: "unavailable",
         status: "unavailable",
@@ -626,7 +659,10 @@ function streamDeliveryUpdates(
     return Stream.fromIterable(backlog).pipe(
       Stream.concat(live),
       Stream.takeUntil((update) =>
-        update.stage === "readyToPublish" || update.stage === "failed"
+        update.stage === "waitingForPr" ||
+        update.stage === "publicationFailed" ||
+        update.stage === "publicationOutcomeUnknown" ||
+        update.stage === "failed"
       ),
     );
   });
@@ -662,6 +698,7 @@ function deliveryUpdateFromEvents(
     return DeliverySnapshotDto.make({
       eventSequence,
       mode: "local",
+      recoveryActions: [],
       runId,
       stage: status,
       status,
@@ -669,14 +706,67 @@ function deliveryUpdateFromEvents(
   }
 
   const stage = snapshot.state === "failed" ? "failed" : delivery.stage;
+  const publication =
+    delivery.publication === undefined
+      ? undefined
+      : parseDeliveryPublication(delivery.publication);
   return DeliverySnapshotDto.make({
     eventSequence,
     mode: "pullRequest",
+    ...(publication === undefined
+      ? {}
+      : { publication: publicDeliveryPublication(publication) }),
     provenance: DeliveryProvenanceDto.make(delivery),
+    recoveryActions:
+      publication?.state === "outcomeUnknown"
+        ? ["reconcile"]
+        : publication?.state === "failed" && publication.recoverable
+          ? ["retry"]
+          : [],
     runId,
     stage,
     status: stage,
   });
+}
+
+function publicDeliveryPublication(
+  publication: ReturnType<typeof parseDeliveryPublication>,
+): DeliveryPublicationDto {
+  switch (publication.state) {
+    case "intentRecorded":
+      return DeliveryPublicationIntentDto.make({
+        branchName: publication.branchName,
+        state: publication.state,
+      });
+    case "attempted":
+      return DeliveryPublicationAttemptedDto.make({
+        branchName: publication.branchName,
+        commitSha: publication.commitSha,
+        state: publication.state,
+      });
+    case "confirmed":
+      return DeliveryPublicationConfirmedDto.make({
+        branchName: publication.branchName,
+        commitSha: publication.commitSha,
+        draft: true,
+        prNumber: publication.prNumber,
+        prUrl: publication.prUrl,
+        state: publication.state,
+      });
+    case "failed":
+    case "outcomeUnknown":
+      return DeliveryPublicationFailureDto.make({
+        branchName: publication.branchName,
+        code: publication.code,
+        ...(publication.commitSha === undefined
+          ? {}
+          : { commitSha: publication.commitSha }),
+        message: publication.message,
+        recoverable: publication.recoverable,
+        state: publication.state,
+        step: publication.step,
+      });
+  }
 }
 
 function factoryListDiagnosticFromLocalRead(
@@ -879,7 +969,11 @@ function isAllowedMethod(method: string, url: string) {
   }
 
   const path = pathnameFromUrl(url);
-  return method === "POST" && (path === "/runs" || /^\/runs\/[^/]+\/agents\/[^/]+\/session\/actions$/u.test(path));
+  return method === "POST" && (
+    path === "/runs" ||
+    /^\/runs\/[^/]+\/agents\/[^/]+\/session\/actions$/u.test(path) ||
+    /^\/runs\/[^/]+\/delivery\/actions$/u.test(path)
+  );
 }
 
 function pathnameFromUrl(url: string) {
@@ -915,6 +1009,7 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
       return 405;
     case "ActiveRunConflict":
     case "AgentActionConflict":
+    case "DeliveryActionConflict":
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
     case "RunStoreLocked":
@@ -958,6 +1053,7 @@ function actionApiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunActionApi
   const diagnostic = causeToDiagnostic(cause);
   switch (diagnostic.code) {
     case "AgentActionConflict":
+    case "DeliveryActionConflict":
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
       return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
@@ -1077,6 +1173,7 @@ function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
       });
     case "ActiveRunConflict":
     case "AgentActionConflict":
+    case "DeliveryActionConflict":
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
     case "RunStoreLocked":
@@ -1177,6 +1274,7 @@ function apiError(
         status: 409,
       });
     case "AgentActionConflict":
+    case "DeliveryActionConflict":
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
       return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
@@ -1263,6 +1361,7 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
         status: 409,
       });
     case "AgentActionConflict":
+    case "DeliveryActionConflict":
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
       return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
