@@ -128,6 +128,15 @@ export function makeDeliveryRemediationActivationEnvelope(input: {
   });
 }
 
+/** Privacy-safe public binding for one immutable operator action key. */
+export function deliveryRemediationActivationActionDigest(
+  actionIdempotencyKey: string,
+) {
+  return stableHash(
+    `gaia-remediation-activation-action-v1\0${actionIdempotencyKey}`,
+  );
+}
+
 /** Durable private store with exact-file cleanup only. */
 export function makeFileDeliveryRemediationActivationStore(
   rootDirectory: string,

@@ -39,6 +39,7 @@ import { Effect, FileSystem, Path as EffectPath, Schema, Stream } from "effect";
 
 import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
 import {
+  deliveryRemediationActivationActionDigest,
   deliveryRemediationActivationMatchesRequest,
   makeDeliveryRemediationActivationEnvelope,
   makeFileDeliveryRemediationActivationStore,
@@ -132,11 +133,6 @@ export function continueDeliveryRemediation(
       const events = yield* readEvents(paths);
       const delivery = deliveryProjection(events);
       const remediation = optionalRemediation(delivery["remediation"]);
-      yield* cleanupTerminalActivationFromStore(
-        runId,
-        activationStore,
-        remediation,
-      );
       const trustPolicy = yield* acceptedFeedbackTrustPolicy(
         delivery,
         options.trustPolicy,
@@ -191,6 +187,42 @@ export function continueDeliveryRemediation(
           !isActiveRemediation(remediation) &&
           remediation.authorizationDigest ===
             options.activationRequest.authorizationDigest;
+        if (terminalReplay) {
+          const actionMatches = remediation.activationActionDigest !== undefined &&
+            remediation.activationActionDigest ===
+              deliveryRemediationActivationActionDigest(
+                options.activationRequest.actionIdempotencyKey,
+              );
+          const observationValue = delivery["observation"];
+          const observation = observationValue === undefined
+            ? undefined
+            : parseDeliveryPullRequestObservation(observationValue);
+          yield* cleanupTerminalActivationFromStore(
+            runId,
+            activationStore,
+            remediation,
+          );
+          if (!actionMatches) {
+            return yield* Effect.fail(remediationError(
+              "DeliveryActionConflict",
+              "Controlled-remediation action identity changed after completion.",
+              true,
+            ));
+          }
+          if (observation === undefined) {
+            return yield* Effect.fail(remediationError(
+              "DeliveryObservationUnavailable",
+              "Controlled-remediation completion has no authoritative pull-request observation.",
+              false,
+            ));
+          }
+          return {
+            terminalReplay: {
+              observation,
+              remediation,
+            },
+          };
+        }
         if (
           !terminalReplay &&
           (activationEnvelope === undefined
@@ -207,6 +239,11 @@ export function continueDeliveryRemediation(
           ));
         }
       }
+      yield* cleanupTerminalActivationFromStore(
+        runId,
+        activationStore,
+        remediation,
+      );
       const authorization = activationEnvelope?.authorization ??
         requestedAuthorization ?? options.authorization;
       return {
@@ -226,8 +263,12 @@ export function continueDeliveryRemediation(
         remediation,
         trustPolicy,
         trustPolicyDigest,
+        terminalReplay: undefined,
       };
     }));
+    if (initial.terminalReplay !== undefined) {
+      return initial.terminalReplay;
+    }
     const {
       activationEnvelope,
       activationFailure,
@@ -1127,7 +1168,12 @@ function reserveRemediationIntent(input: {
       ...binding,
       ...(activationEnvelope === undefined
         ? {}
-        : { activationReceiptDigest: activationEnvelope.activationReceiptDigest }),
+        : {
+            activationActionDigest: deliveryRemediationActivationActionDigest(
+              activationEnvelope.actionIdempotencyKey,
+            ),
+            activationReceiptDigest: activationEnvelope.activationReceiptDigest,
+          }),
       state: "intentRecorded",
     });
     yield* appendEventWithinSerialization(input.runId, input.paths, {
@@ -1177,6 +1223,9 @@ function recordOutcomeUnknown(
 
 function remediationBinding(remediation: DeliveryRemediation) {
   return {
+    ...(remediation.activationActionDigest === undefined
+      ? {}
+      : { activationActionDigest: remediation.activationActionDigest }),
     ...(remediation.activationReceiptDigest === undefined
       ? {}
       : { activationReceiptDigest: remediation.activationReceiptDigest }),

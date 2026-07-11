@@ -19,6 +19,7 @@ import {
   ResolvedHarnessExecution,
   RunEvent,
   codexAppServerHarnessProfileId,
+  encodeDeliveryPullRequestObservationJson,
   encodeDeliveryPublicationJson,
   encodeDeliveryRemediationJson,
   parseDeliveryFeedbackId,
@@ -40,6 +41,7 @@ import { describe, expect, it } from "vitest";
 
 import { makeLiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
 import {
+  deliveryRemediationActivationActionDigest,
   deliveryRemediationActivationPathForTest,
   makeDeliveryRemediationActivationEnvelope,
   makeFileDeliveryRemediationActivationStore,
@@ -50,12 +52,14 @@ import {
   deliveryRemediationPushForTest,
   type DeliveryPullRequestReader,
 } from "./delivery-remediation-coordinator.js";
+import { GaiaRuntimeError } from "./errors.js";
 import { appendEvent, appendHarnessSessionEvent, readEvents } from "./event-store.js";
 import { prepareDeliveryWorktree, resolveDeliveryProvenance } from "./git-delivery.js";
 import { makeDeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import type { HarnessProvider, HarnessSession } from "./harness-session.js";
-import { makeRunPaths } from "./paths.js";
+import { makeRunPaths, makeRunStorePaths } from "./paths.js";
+import { actOnDeliveryRemediation } from "./server-workflows.js";
 
 const runId = parseRunId("run-Gaia92rt01");
 const capabilities = HarnessCapabilities.make({
@@ -546,7 +550,7 @@ describe("delivery remediation coordinator", () => {
         expect(restarted.remediation).toMatchObject({ attempt: 1, state: "failed" });
         expect(provider.prompts).toHaveLength(1);
         expect(observedAuthorizations.filter(Boolean)).toHaveLength(2);
-        expect(observedAuthorizations.at(-1)).toBeUndefined();
+        expect(observedAuthorizations).toHaveLength(2);
         const remediationEvents = (yield* readEvents(paths)).filter(
           ({ type }) => type === "DELIVERY_REMEDIATION_RECORDED",
         ).map((event) => parseDeliveryRemediation(event.payload["remediation"]));
@@ -568,6 +572,55 @@ describe("delivery remediation coordinator", () => {
         ))).toBe(false);
       })),
       20_000,
+    );
+
+    it.effect("rejects activation before coordinator access while the run store is owned", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectory({ prefix: "gaia-remediation-lock-" });
+        const store = yield* makeRunStorePaths({ rootDirectory: root });
+        yield* fs.makeDirectory(store.lock, { recursive: true });
+        yield* fs.writeFileString(
+          `${store.lock}/metadata.json`,
+          `${JSON.stringify({
+            acquiredAt: "2026-07-11T11:05:00.000Z",
+            nextSafeAction: "Wait for the active delivery action.",
+            operation: "Concurrent test mutation",
+            version: 1,
+          })}\n`,
+        );
+        let readerCalls = 0;
+        const error = yield* Effect.flip(actOnDeliveryRemediation(
+          runId,
+          DeliveryRemediationActivationActionRequest.make({
+            actionIdempotencyKey: "activate-gaia-92-locked",
+            actorLogin: "cill-i-am",
+            actorType: "User",
+            authorAssociation: "OWNER",
+            authorizationDigest: "a".repeat(64),
+            commentDatabaseId: "104",
+            contentDigest: "b".repeat(64),
+            expectedEventSequence: 1,
+            feedbackId: parseDeliveryFeedbackId(`feedback-comment-${"c".repeat(64)}`),
+            headSha: "d".repeat(40),
+            kind: "activateRemediation",
+            marker: "<!-- gaia-remediation-request:v1 -->",
+            prNumber: 92,
+            repository: "cill-i-am/gaia",
+          }),
+          {
+            deliveryPullRequestReader: () => Effect.sync(() => {
+              readerCalls += 1;
+              throw new Error("The coordinator must not be entered while locked.");
+            }),
+            rootDirectory: root,
+          },
+        ));
+
+        expect(error).toBeInstanceOf(GaiaRuntimeError);
+        expect(error).toMatchObject({ code: "RunStoreLocked" });
+        expect(readerCalls).toBe(0);
+      }),
     );
 
     it.effect("never reserves remediation from a truncated provider read", () =>
@@ -875,7 +928,7 @@ describe("delivery remediation coordinator", () => {
       20_000,
     );
 
-    it.effect("cleans a verified terminal envelope from replay before an unavailable live reread", () =>
+    it.effect("replays an exact terminal activation without external access and rejects a changed key after cleanup", () =>
       Effect.scoped(Effect.gen(function* () {
         const seeded = yield* setupPublishedCoordinatorRun();
         const feedbackId = parseDeliveryFeedbackId(
@@ -915,7 +968,36 @@ describe("delivery remediation coordinator", () => {
         });
         const store = makeFileDeliveryRemediationActivationStore(seeded.root);
         yield* store.save(envelope);
+        const observation = DeliveryPullRequestObservation.make({
+          blockers: [],
+          checks: [],
+          draft: true,
+          feedback: [],
+          headSha: seeded.oldHead,
+          mergeability: "mergeable",
+          observedAt: "2026-07-11T11:05:00.000Z",
+          prNumber: 92,
+          prUrl: seeded.publication.prUrl,
+          repository: "cill-i-am/gaia",
+          snapshotDigest: "6".repeat(64),
+          status: "waiting",
+          version: 1,
+        });
+        yield* appendEvent(runId, seeded.paths, {
+          payload: {
+            blockerCount: 0,
+            nextAction: observation.status,
+            observation: encodeDeliveryPullRequestObservationJson(observation),
+            prLoopPath: "pr-loop-state.json",
+            pullRequest: observation.prUrl,
+            status: observation.status,
+          },
+          type: "GITHUB_PR_LOOP_RECORDED",
+        });
         const intent = DeliveryRemediationIntent.make({
+          activationActionDigest: deliveryRemediationActivationActionDigest(
+            request.actionIdempotencyKey,
+          ),
           activationReceiptDigest: envelope.activationReceiptDigest,
           attempt: 1,
           authorizationDigest: authorization.authorizationDigest,
@@ -949,14 +1031,39 @@ describe("delivery remediation coordinator", () => {
         );
         expect(existsSync(target)).toBe(true);
 
+        let readerCalls = 0;
         const result = yield* continueDeliveryRemediation(runId, {
+          activationRequest: request,
           activationStore: store,
-          pullRequestReader: () => Effect.die("GitHub unavailable"),
+          pullRequestReader: () => Effect.sync(() => {
+            readerCalls += 1;
+            throw new Error("Terminal replay must not read GitHub.");
+          }),
           rootDirectory: seeded.root,
         });
 
         expect(result.remediation).toMatchObject({ state: "failed" });
+        expect(result.observation.snapshotDigest).toBe(observation.snapshotDigest);
+        expect(readerCalls).toBe(0);
         expect(existsSync(target)).toBe(false);
+
+        const changed = yield* Effect.exit(continueDeliveryRemediation(runId, {
+          activationRequest: DeliveryRemediationActivationActionRequest.make({
+            ...request,
+            actionIdempotencyKey: "activate-gaia-92-changed-after-terminal",
+          }),
+          activationStore: store,
+          pullRequestReader: () => Effect.sync(() => {
+            readerCalls += 1;
+            throw new Error("Changed terminal replay must not read GitHub.");
+          }),
+          rootDirectory: seeded.root,
+        }));
+        expect(changed._tag).toBe("Failure");
+        expect(readerCalls).toBe(0);
+        expect(JSON.stringify(yield* readEvents(seeded.paths))).not.toContain(
+          request.actionIdempotencyKey,
+        );
       })),
       20_000,
     );

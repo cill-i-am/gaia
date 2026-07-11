@@ -558,32 +558,40 @@ export function actOnDeliveryRemediation(
   action: DeliveryRemediationActivationActionRequest,
   options: ServerWorkflowOptions = {},
 ) {
-  return Effect.gen(function* () {
-    const runId = yield* parseRunIdEffect(runIdInput);
-    return yield* continueDeliveryRemediation(runId, {
-      activationRequest: action,
-      ...(options.deliveryPublicationCommandRunner === undefined
-        ? {}
-        : { commandRunner: options.deliveryPublicationCommandRunner }),
-      ...(options.deliveryGitCommandRunner === undefined
-        ? {}
-        : { deliveryGitCommandRunner: options.deliveryGitCommandRunner }),
-      ...(options.deliveryPullRequestReader === undefined
-        ? {}
-        : { pullRequestReader: options.deliveryPullRequestReader }),
-      ...(options.deliveryFeedbackTrustPolicy === undefined
-        ? {}
-        : { trustPolicy: options.deliveryFeedbackTrustPolicy }),
-      ...(options.harnessProviderRegistry === undefined
-        ? {}
-        : { harnessProviderRegistry: options.harnessProviderRegistry }),
-      rootDirectory: options.rootDirectory ?? ".",
-      ...(options.sessionCoordinator === undefined
-        ? {}
-        : { sessionCoordinator: options.sessionCoordinator }),
-      verificationOptions: options,
-    });
-  }).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
+  return withRunStoreLock(
+    options,
+    Effect.gen(function* () {
+      const runId = yield* parseRunIdEffect(runIdInput);
+      return yield* continueDeliveryRemediation(runId, {
+        activationRequest: action,
+        ...(options.deliveryPublicationCommandRunner === undefined
+          ? {}
+          : { commandRunner: options.deliveryPublicationCommandRunner }),
+        ...(options.deliveryGitCommandRunner === undefined
+          ? {}
+          : { deliveryGitCommandRunner: options.deliveryGitCommandRunner }),
+        ...(options.deliveryPullRequestReader === undefined
+          ? {}
+          : { pullRequestReader: options.deliveryPullRequestReader }),
+        ...(options.deliveryFeedbackTrustPolicy === undefined
+          ? {}
+          : { trustPolicy: options.deliveryFeedbackTrustPolicy }),
+        ...(options.harnessProviderRegistry === undefined
+          ? {}
+          : { harnessProviderRegistry: options.harnessProviderRegistry }),
+        rootDirectory: options.rootDirectory ?? ".",
+        ...(options.sessionCoordinator === undefined
+          ? {}
+          : { sessionCoordinator: options.sessionCoordinator }),
+        verificationOptions: options,
+      });
+    }),
+    {
+      nextSafeAction:
+        "Wait for the active delivery action to finish, then refresh before retrying.",
+      operation: "Gaia controlled remediation activation",
+    },
+  ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
 }
 
 function continueDeliveryPublication(

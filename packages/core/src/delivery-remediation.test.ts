@@ -175,9 +175,11 @@ describe("delivery remediation contracts", () => {
     assert.throws(() => validateDeliveryRemediationTransition(intent, changed));
   });
 
-  it("keeps the private activation receipt as an immutable safe binding", () => {
+  it("keeps private activation digests as immutable safe bindings", () => {
+    const activationActionDigest = "d".repeat(64);
     const activationReceiptDigest = "e".repeat(64);
     const intent = DeliveryRemediationIntent.make({
+      activationActionDigest,
       activationReceiptDigest,
       attempt: 1,
       authorizationDigest: "c".repeat(64),
@@ -191,7 +193,7 @@ describe("delivery remediation contracts", () => {
     });
     const attempted = DeliveryRemediationDispatchAttempted.make({
       ...intent,
-      activationReceiptDigest: "f".repeat(64),
+      activationActionDigest: "f".repeat(64),
       state: "dispatchAttempted",
     });
 
@@ -199,6 +201,10 @@ describe("delivery remediation contracts", () => {
     if (encoded === null || typeof encoded !== "object" || Array.isArray(encoded)) {
       assert.fail("Expected an encoded remediation object.");
     }
+    assert.strictEqual(
+      Object.getOwnPropertyDescriptor(encoded, "activationActionDigest")?.value,
+      activationActionDigest,
+    );
     assert.strictEqual(
       Object.getOwnPropertyDescriptor(encoded, "activationReceiptDigest")?.value,
       activationReceiptDigest,
