@@ -1,5 +1,9 @@
 import {
   DeliveryFeedbackTrustPolicyV1,
+  deliveryFeedbackRequiresApprovedReview,
+  type DeliveryMergeActionRequest,
+  type DeliveryEvaluateMergeReadinessActionRequest,
+  type DeliveryRetryCleanupActionRequest,
   type DeliveryRemediationActivationActionRequest,
   parseMarkdownSpec,
   HarnessExecutionSelection,
@@ -57,6 +61,7 @@ import {
   prepareDeliveryWorktree,
   resolveDeliveryGitHubRepository,
   resolveDeliveryProvenance,
+  type DeliveryAcceptanceProvenancePolicyV1,
   type DeliveryProvenance,
   type GitDeliveryCommandRunner,
 } from "./git-delivery.js";
@@ -71,6 +76,13 @@ import {
   type DeliveryPullRequestReader,
 } from "./delivery-remediation-coordinator.js";
 import type { DeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
+import {
+  coordinateDeliveryCleanup,
+  coordinateDeliveryMerge,
+  coordinateDeliveryMergeReadiness,
+  makeGitHubFreshMergeStateReader,
+  requiredCheckPolicyFromTrustPolicy,
+} from "./delivery-merge-coordinator.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -78,6 +90,8 @@ const nanoid = customAlphabet(
 );
 
 export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
+  readonly deliveryAcceptanceProvenancePolicy?: DeliveryAcceptanceProvenancePolicyV1;
+  readonly deliveryMergeActivator?: DeliveryMergeActionHandler;
   readonly deliveryRemediationActivator?: DeliveryRemediationActionHandler;
   readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
   readonly deliveryPublicationCommandRunner?: GitHubCommandRunner;
@@ -93,6 +107,33 @@ export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly workspaceSource?: WorkspaceSource;
 };
+
+export type DeliveryMergeActionHandler = (
+  runId: string,
+  action: DeliveryMergeActionRequest | DeliveryRetryCleanupActionRequest | DeliveryEvaluateMergeReadinessActionRequest,
+  options: ServerWorkflowOptions,
+) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
+
+export function actOnDeliveryMerge(
+  runIdInput: string,
+  action: DeliveryMergeActionRequest | DeliveryRetryCleanupActionRequest | DeliveryEvaluateMergeReadinessActionRequest,
+  options: ServerWorkflowOptions = {},
+) {
+  return Effect.gen(function* () {
+    const runId = yield* parseRunIdEffect(runIdInput);
+    const trustPolicy = options.deliveryFeedbackTrustPolicy ?? defaultDeliveryFeedbackTrustPolicy("unknown/unknown");
+    const coordinatorOptions = {
+      ...(options.deliveryPublicationCommandRunner === undefined ? {} : { commandRunner: options.deliveryPublicationCommandRunner }),
+      ...(options.deliveryFeedbackTrustPolicy === undefined ? {} : { requiredCheckPolicy: requiredCheckPolicyFromTrustPolicy(trustPolicy) }),
+      rootDirectory: options.rootDirectory ?? ".",
+    };
+    return action.kind === "merge"
+      ? yield* coordinateDeliveryMerge(runId, action, coordinatorOptions)
+      : action.kind === "evaluateMergeReadiness"
+        ? yield* coordinateDeliveryMergeReadiness(runId, action, coordinatorOptions)
+        : yield* coordinateDeliveryCleanup(runId, action, coordinatorOptions);
+  });
+}
 
 export type DeliveryRemediationActionHandler = (
   runId: string,
@@ -267,6 +308,9 @@ function acceptFactoryRunUnlocked(
       input.delivery ?? { mode: "local" },
       options,
     );
+    const deliveryFeedbackTrustPolicy = delivery.mode === "pullRequest"
+      ? yield* acceptedDeliveryFeedbackTrustPolicy(delivery, options)
+      : undefined;
 
     yield* fs.makeDirectory(paths.root, { recursive: true }).pipe(
       Effect.mapError((cause) =>
@@ -307,6 +351,9 @@ function acceptFactoryRunUnlocked(
           },
         },
         delivery,
+        ...(deliveryFeedbackTrustPolicy === undefined ? {} : {
+          deliveryFeedbackTrustPolicy: Schema.encodeSync(DeliveryFeedbackTrustPolicyV1)(deliveryFeedbackTrustPolicy),
+        }),
         source: "server",
         specPath: "input.md",
         workflow: input.workflow,
@@ -978,6 +1025,12 @@ function factoryContinuationOptions(
     const paths = yield* makeRunPaths(firstEvent.runId, options);
     const delivery = yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
     if (delivery.mode === "pullRequest") {
+      yield* assertAcceptedDeliveryProvenancePolicy(delivery.provenance, options.deliveryAcceptanceProvenancePolicy);
+      const feedbackTrustPolicy = yield* acceptedRunDeliveryFeedbackTrustPolicy(
+        firstEvent,
+        delivery.provenance,
+        options,
+      );
       yield* prepareDeliveryWorktree({
         options: {
           rootDirectory,
@@ -989,10 +1042,6 @@ function factoryContinuationOptions(
         provenance: delivery.provenance,
       });
       if (!events.some(({ type }) => type === "DELIVERY_STARTED")) {
-        const feedbackTrustPolicy = yield* acceptedDeliveryFeedbackTrustPolicy(
-          delivery.provenance,
-          options,
-        );
         yield* appendEvent(firstEvent.runId, paths, {
           payload: {
             delivery: {
@@ -1137,6 +1186,49 @@ function factoryContinuationOptions(
   });
 }
 
+function acceptedRunDeliveryFeedbackTrustPolicy(
+  firstEvent: RunEvent,
+  provenance: DeliveryProvenance,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    const persisted = firstEvent.payload["deliveryFeedbackTrustPolicy"];
+    const { deliveryFeedbackTrustPolicy: _requestedPolicy, ...legacyOptions } = options;
+    const accepted = persisted === undefined
+      ? yield* acceptedDeliveryFeedbackTrustPolicy(provenance, legacyOptions)
+      : yield* Effect.try({
+          try: () => Schema.decodeUnknownSync(DeliveryFeedbackTrustPolicyV1)(persisted),
+          catch: (cause) => makeRuntimeError({
+            cause,
+            code: "DeliveryFeedbackTrustPolicyInvalid",
+            message: "Accepted delivery feedback trust policy is invalid.",
+            recoverable: false,
+          }),
+        });
+    if (
+      options.deliveryFeedbackTrustPolicy !== undefined &&
+      canonicalDeliveryFeedbackTrustPolicy(options.deliveryFeedbackTrustPolicy) !== canonicalDeliveryFeedbackTrustPolicy(accepted)
+    ) {
+      return yield* Effect.fail(makeRuntimeError({
+        code: "DeliveryFeedbackTrustPolicyChanged",
+        message: "Delivery feedback trust policy changed after run acceptance.",
+        recoverable: false,
+      }));
+    }
+    return accepted;
+  });
+}
+
+function canonicalDeliveryFeedbackTrustPolicy(policy: DeliveryFeedbackTrustPolicyV1) {
+  return JSON.stringify({
+    allowPullRequestAuthor: policy.allowPullRequestAuthor,
+    requireApprovedReview: deliveryFeedbackRequiresApprovedReview(policy),
+    trustedChecks: policy.trustedChecks,
+    trustedHumanLogins: policy.trustedHumanLogins,
+    version: policy.version,
+  });
+}
+
 function acceptedDeliveryProvenance(
   runId: RunId,
   delivery: { readonly mode: "local" | "pullRequest" },
@@ -1144,7 +1236,7 @@ function acceptedDeliveryProvenance(
 ) {
   return Effect.gen(function* () {
     if (delivery.mode === "local") {
-      return { mode: "local" };
+      return { mode: "local" as const };
     }
     const rootDirectory = options.rootDirectory ?? ".";
     return yield* resolveDeliveryProvenance(runId, {
@@ -1152,8 +1244,22 @@ function acceptedDeliveryProvenance(
       ...(options.deliveryGitCommandRunner === undefined
         ? {}
         : { commandRunner: options.deliveryGitCommandRunner }),
-    });
+    }, options.deliveryAcceptanceProvenancePolicy);
   });
+}
+
+function assertAcceptedDeliveryProvenancePolicy(
+  provenance: DeliveryProvenance,
+  requested: DeliveryAcceptanceProvenancePolicyV1 | undefined,
+) {
+  if (requested === undefined) return Effect.void;
+  return requested.remote === provenance.remote && requested.baseBranch === provenance.baseBranch && requested.headBranch === provenance.headBranch
+    ? Effect.void
+    : Effect.fail(makeRuntimeError({
+        code: "DeliveryProvenancePolicyChanged",
+        message: "Delivery provenance policy changed after run acceptance.",
+        recoverable: false,
+      }));
 }
 
 function parseAcceptedDelivery(value: Schema.Json | undefined) {

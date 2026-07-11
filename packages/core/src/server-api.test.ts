@@ -4,6 +4,7 @@ import {
   CreateRunRequest,
   DeliveryActionRequestSchema,
   DeliveryRecoveryActionRequestSchema,
+  DeliverySnapshotDto,
   LocalGaiaServerOpenApi,
 } from "./server-api.js";
 
@@ -380,6 +381,36 @@ describe("LocalGaiaServerApi contract", () => {
         kind: "retry",
       }),
     );
+  });
+
+  it("requires the exact expected branch on merge actions", () => {
+    const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
+    const action = { actionId: "merge-1", expectedBranchName: "gaia/run-1234567890", expectedDecisionSequence: 9, expectedHeadSha: "a".repeat(40), expectedPolicyDigest: "b".repeat(64), expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/74", kind: "merge", mergeMethod: "merge" };
+    assert.strictEqual(decode(action).kind, "merge");
+    const { expectedBranchName: _expectedBranchName, ...missing } = action;
+    assert.throws(() => decode(missing));
+    assert.throws(() => decode({ ...action, expectedBranchName: "" }));
+  });
+
+  it("drops private cleanup provenance from parsed and serialized delivery snapshots", () => {
+    const hostile = "/HOSTILE/absolute/common-dir::PRIVATE_TOKEN_93";
+    const decode = Schema.decodeUnknownSync(DeliverySnapshotDto);
+    const encode = Schema.encodeSync(Schema.toCodecJson(DeliverySnapshotDto));
+    const snapshot = decode({
+      actionAudit: { cleanup: [], merge: [] },
+      eventSequence: 12,
+      mode: "pullRequest",
+      ownershipToken: hostile,
+      privateProvenance: { repositoryCommonDir: hostile, worktreePath: hostile },
+      recoveryActions: [],
+      runId: "run-1234567890",
+      stage: "cleanupRequired",
+      status: "cleanupRequired",
+    });
+    const serialized = JSON.stringify(encode(snapshot));
+    assert.notInclude(serialized, hostile);
+    assert.notInclude(serialized, "ownershipToken");
+    assert.notInclude(serialized, "privateProvenance");
   });
 
   it("strictly parses one exact controlled remediation activation", () => {

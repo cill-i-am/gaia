@@ -1310,6 +1310,16 @@ describe("delivery remediation coordinator", () => {
         });
         expect(observedPolicies).toEqual([feedbackTrustPolicy()]);
 
+        yield* continueDeliveryRemediation(runId, {
+          pullRequestReader: reader,
+          rootDirectory: seeded.root,
+          trustPolicy: DeliveryFeedbackTrustPolicyV1.make({
+            ...feedbackTrustPolicy(),
+            requireApprovedReview: true,
+          }),
+        });
+        expect(observedPolicies).toHaveLength(2);
+
         const drifted = DeliveryFeedbackTrustPolicyV1.make({
           ...feedbackTrustPolicy(),
           trustedHumanLogins: ["mallory"],
@@ -1320,7 +1330,7 @@ describe("delivery remediation coordinator", () => {
           trustPolicy: drifted,
         }).pipe(Effect.exit);
         expect(driftExit._tag).toBe("Failure");
-        expect(observedPolicies).toHaveLength(1);
+        expect(observedPolicies).toHaveLength(2);
       })),
       20_000,
     );

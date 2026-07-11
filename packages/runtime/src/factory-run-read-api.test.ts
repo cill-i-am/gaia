@@ -1,6 +1,6 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
-import { codexAppServerExecutionSelection } from "@gaia/core";
+import { codexAppServerExecutionSelection, DeliveryMergeReadinessDecision, encodeDeliveryMergeReadinessDecisionJson, parseRunId } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 import {
   ReviewFinding,
@@ -21,6 +21,7 @@ import {
   readFactoryRunArtifact,
 } from "./factory-run-read-api.js";
 import { makeTestHarnessProviderRegistry } from "./test-support.js";
+import { appendEvent } from "./event-store.js";
 
 const harnessProviderRegistry = makeTestHarnessProviderRegistry();
 
@@ -225,6 +226,20 @@ describe("factory run read api", () => {
         assert.strictEqual(workerPlan.artifactId, "worker-plan");
         assert.strictEqual(workerPlan.contentType, "application/json");
         assert.include(workerPlan.body, accepted.runId);
+      }),
+    );
+
+    it.effect("replays a readiness decision without reading remediation payload", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-factory-readiness-replay-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), { harnessProviderRegistry, rootDirectory: cwd });
+        const runId = parseRunId(accepted.runId);
+        const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+        const decision = DeliveryMergeReadinessDecision.make({ actionId: "readiness-1", approved: false, blockers: ["not ready"], branchName: "gaia/run-1234567890", headSha: "a".repeat(40), mergeMethod: "merge", payloadDigest: "b".repeat(64), policyDigest: "c".repeat(64), policyVersion: 1, prNumber: 74, prUrl: "https://github.com/cill-i-am/gaia/pull/74" });
+        yield* appendEvent(runId, paths, { payload: { decision: encodeDeliveryMergeReadinessDecisionJson(decision) }, type: "DELIVERY_MERGE_READINESS_RECORDED" });
+        const graph = yield* readFactoryGraph(runId, { rootDirectory: cwd });
+        assert.strictEqual(graph.runId, runId);
       }),
     );
 

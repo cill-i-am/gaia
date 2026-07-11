@@ -43,6 +43,11 @@ import {
   XIcon,
 } from "lucide-react";
 import * as React from "react";
+import {
+  createReadinessActionId,
+  mergeDecisionIdentity,
+} from "@/components/delivery-action-identity";
+import { DeliveryMergeConfirmation } from "@/components/delivery-merge-confirmation";
 
 import {
   type DashboardRun,
@@ -758,13 +763,10 @@ export function DashboardShell() {
     selectRun(result.runId);
   }
 
-  async function actOnDelivery(kind: "reconcile" | "retry") {
+  async function actOnDelivery(action: Parameters<typeof deliveryActionMutation.mutateAsync>[0]) {
     const snapshot = selectedDeliveryQuery.data?.data;
     if (snapshot === undefined) return;
-    await deliveryActionMutation.mutateAsync({
-      expectedEventSequence: snapshot.eventSequence,
-      kind,
-    });
+    await deliveryActionMutation.mutateAsync(typeof action === "string" ? { expectedEventSequence: snapshot.eventSequence, kind: action } : action);
     await Promise.all([
       selectedDeliveryQuery.refetch(),
       selectedRunEventsQuery.refetch(),
@@ -1923,8 +1925,17 @@ function CommandHeader({
   readonly selectedRun: DashboardRun;
   readonly serverConnection: ServerConnectionState;
   readonly onSelectCommandMode: (mode: CommandMode) => void;
-  readonly onDeliveryAction: (kind: "reconcile" | "retry") => Promise<void>;
+  readonly onDeliveryAction: (action: unknown) => Promise<void>;
 }) {
+  const mergeDecisionKey =
+    deliverySnapshot?.mergeDecision === undefined ||
+    deliverySnapshot.mergeDecisionSequence === undefined
+      ? "no-readiness-decision"
+      : mergeDecisionIdentity({
+          payloadDigest: deliverySnapshot.mergeDecision.payloadDigest,
+          sequence: deliverySnapshot.mergeDecisionSequence,
+        });
+  const mergeActionId = mergeDecisionKey;
   const selectedConsoleRun = serverConnection.selectedRun;
   const selectedStatusLabel =
     selectedConsoleRun?.statusLabel ?? statusLabels[selectedRun.status];
@@ -1982,11 +1993,45 @@ function CommandHeader({
                   <ExternalLinkIcon className="size-3" />
                 </a>
               ) : null}
+              {deliverySnapshot.publication?.state === "confirmed" && deliverySnapshot.mergeDecision?.approved !== true ? (
+                <div className="flex flex-wrap items-center gap-1" aria-label="Evaluate merge readiness">
+                  {(["merge", "squash", "rebase"] as const).map((method) => (
+                    <Button disabled={deliveryActionPending} key={method} onClick={() => void onDeliveryAction({ actionId: createReadinessActionId(), kind: "evaluateMergeReadiness", mergeMethod: method })} size="xs" variant="outline">
+                      Evaluate {method}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
+              {deliverySnapshot.publication?.state === "confirmed" && deliverySnapshot.mergeDecision?.approved === true && deliverySnapshot.mergeDecisionSequence !== undefined ? (
+                <DeliveryMergeConfirmation
+                  actionId={mergeActionId}
+                  branch={deliverySnapshot.mergeDecision.branchName}
+                  decisionSequence={deliverySnapshot.mergeDecisionSequence}
+                  disabled={deliverySnapshot.stage !== "awaitingMerge"}
+                  headSha={deliverySnapshot.mergeDecision.headSha}
+                  method={deliverySnapshot.mergeDecision.mergeMethod}
+                  onConfirm={() => onDeliveryAction({
+                    actionId: mergeActionId,
+                    expectedBranchName: deliverySnapshot.mergeDecision!.branchName,
+                    expectedDecisionSequence: deliverySnapshot.mergeDecisionSequence!,
+                    expectedHeadSha: deliverySnapshot.mergeDecision!.headSha,
+                    expectedPolicyDigest: deliverySnapshot.mergeDecision!.policyDigest,
+                    expectedPrUrl: deliverySnapshot.mergeDecision!.prUrl,
+                    kind: "merge",
+                    mergeMethod: deliverySnapshot.mergeDecision!.mergeMethod,
+                  })}
+                  pending={deliveryActionPending}
+                  prUrl={deliverySnapshot.mergeDecision.prUrl}
+                  {...(deliveryActionError === undefined ? {} : { error: dashboardFailureMessage(deliveryActionError, "Merge action failed.") })}
+                />
+              ) : null}
               {deliverySnapshot.recoveryActions.map((action) => (
                 <Button
                   disabled={deliveryActionPending}
                   key={action}
-                  onClick={() => void onDeliveryAction(action)}
+                  onClick={() => {
+                    void onDeliveryAction(deliveryRecoveryAction(deliverySnapshot, action));
+                  }}
                   size="xs"
                   variant="outline"
                 >
@@ -1994,7 +2039,7 @@ function CommandHeader({
                     className={cn(deliveryActionPending && "animate-spin")}
                     data-icon="inline-start"
                   />
-                  {action === "reconcile" ? "Reconcile" : "Retry publication"}
+                  {action === "reconcile" ? "Reconcile publication" : action === "retry" ? "Retry publication" : action === "reconcileMerge" ? "Reconcile merge" : "Retry cleanup"}
                 </Button>
               ))}
               {deliveryActionError === undefined ? null : (
@@ -2072,6 +2117,16 @@ function deliveryStatusLabel(snapshot: typeof DeliverySnapshotDto.Type) {
         : "Delivery: publication failed";
     case "publicationOutcomeUnknown":
       return "Delivery: publication outcome unknown";
+    case "awaitingMerge":
+      return "Delivery: awaiting merge";
+    case "merging":
+      return "Delivery: merging";
+    case "mergeReconciliationRequired":
+      return "Delivery: merge reconciliation required";
+    case "cleanupRequired":
+      return "Delivery: cleanup required";
+    case "completed":
+      return "Delivery: completed";
     case "failed":
       return "Delivery: failed";
     case "unavailable":
@@ -4241,6 +4296,13 @@ function stringifyJson(value: unknown) {
   } catch {
     return "Unable to serialize raw data.";
   }
+}
+
+export function deliveryRecoveryAction(snapshot: typeof DeliverySnapshotDto.Type, action: typeof snapshot.recoveryActions[number]) {
+  if (action === "reconcileMerge" && snapshot.activeMergeAction !== undefined) return { actionId: snapshot.activeMergeAction.actionId, expectedBranchName: snapshot.activeMergeAction.branchName, expectedDecisionSequence: snapshot.activeMergeAction.decisionSequence, expectedHeadSha: snapshot.activeMergeAction.expectedHeadSha, expectedPolicyDigest: snapshot.activeMergeAction.policyDigest, expectedPrUrl: snapshot.activeMergeAction.prUrl, kind: "merge" as const, mergeMethod: snapshot.activeMergeAction.mergeMethod };
+  if (action === "retryCleanup" && snapshot.activeCleanupAction !== undefined) return { actionId: snapshot.activeCleanupAction.actionId, expectedMergeCommitSha: snapshot.activeCleanupAction.mergeCommitSha, kind: "retryCleanup" as const };
+  if (action === "retryCleanup" && snapshot.latestMergeAction?.state === "dispatchConfirmed") return { actionId: `cleanup-${snapshot.latestMergeAction.actionId}`, expectedMergeCommitSha: snapshot.latestMergeAction.mergeCommitSha, kind: "retryCleanup" as const };
+  return action;
 }
 
 function isPresent<T>(value: T | undefined): value is T {

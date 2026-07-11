@@ -15,6 +15,17 @@ import {
   type DeliveryRemediation,
 } from "./delivery-remediation.js";
 import {
+  encodeDeliveryCleanupReceiptJson,
+  encodeDeliveryMergeReceiptJson,
+  parseDeliveryCleanupReceipt,
+  parseDeliveryMergeReceipt,
+  parseDeliveryMergeReadinessDecision,
+  encodeDeliveryMergeReadinessDecisionJson,
+  type DeliveryMergeReceipt,
+  deriveDeliveryMergeActionHistories,
+  deriveDeliveryCleanupActionHistories,
+} from "./delivery-merge.js";
+import {
   FailureStageSchema,
   GaiaFailure,
   ReviewPhaseSchema,
@@ -97,6 +108,10 @@ export type RunMachineEvent =
       readonly remediation: DeliveryRemediation;
       readonly type: "DELIVERY_REMEDIATION_RECORDED";
     }
+  | { readonly type: "DELIVERY_MERGE_RECORDED"; readonly mergeAction: DeliveryMergeReceipt }
+  | { readonly type: "DELIVERY_MERGE_READINESS_RECORDED"; readonly decision: ReturnType<typeof parseDeliveryMergeReadinessDecision>; readonly eventSequence: number }
+  | { readonly type: "DELIVERY_CLEANUP_RECORDED"; readonly cleanup: ReturnType<typeof parseDeliveryCleanupReceipt> }
+  | { readonly type: "DELIVERY_CLEANUP_PROVENANCE_RECORDED" | "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED" | "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED" }
   | { readonly type: "WORKSPACE_PREPARED"; readonly workspacePath: string }
   | { readonly type: "REVIEW_STARTED" }
   | {
@@ -327,6 +342,12 @@ export const runMachine = createMachine({
         DELIVERY_REMEDIATION_RECORDED: {
           actions: "recordDeliveryRemediation",
         },
+        DELIVERY_MERGE_RECORDED: { actions: "recordDeliveryMerge" },
+        DELIVERY_MERGE_READINESS_RECORDED: { actions: "recordDeliveryMergeReadiness" },
+        DELIVERY_CLEANUP_RECORDED: [
+          { actions: "recordDeliveryCleanup", guard: "cleanupCompleted", target: "completed" },
+          { actions: "recordDeliveryCleanup" },
+        ],
         RUN_FAILED: {
           actions: "recordFailure",
           target: "failed",
@@ -492,6 +513,21 @@ export const runMachine = createMachine({
               event.eventSequence,
             )
           : context.delivery,
+    }),
+    recordDeliveryMerge: assign({
+      delivery: ({ context, event }) => event.type === "DELIVERY_MERGE_RECORDED"
+        ? deliveryWithMerge(context.delivery, event.mergeAction)
+        : context.delivery,
+    }),
+    recordDeliveryMergeReadiness: assign({
+      delivery: ({ context, event }) => event.type === "DELIVERY_MERGE_READINESS_RECORDED" && context.delivery !== undefined
+        ? { ...context.delivery, mergeDecision: encodeDeliveryMergeReadinessDecisionJson(event.decision), mergeDecisionSequence: event.eventSequence, stage: event.decision.approved ? "awaitingMerge" : "waitingForPr" }
+        : context.delivery,
+    }),
+    recordDeliveryCleanup: assign({
+      delivery: ({ context, event }) => event.type === "DELIVERY_CLEANUP_RECORDED"
+        ? deliveryWithCleanup(context.delivery, event.cleanup)
+        : context.delivery,
     }),
     recordGitHubFeedback: assign({
       githubFeedbackCommentCount: ({ event }) =>
@@ -684,6 +720,9 @@ export const runMachine = createMachine({
         event.type === "WORKSPACE_PREPARED" ? event.workspacePath : undefined,
     }),
   },
+  guards: {
+    cleanupCompleted: ({ event }) => event.type === "DELIVERY_CLEANUP_RECORDED" && event.cleanup.state === "completed",
+  },
 });
 
 export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
@@ -691,6 +730,8 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   let expectedSequence = 1;
   let publication: DeliveryPublication | undefined;
   let remediation: DeliveryRemediation | undefined;
+  const mergeActions: Array<{ receipt: DeliveryMergeReceipt; sequence: number }> = [];
+  const cleanupActions: Array<{ receipt: ReturnType<typeof parseDeliveryCleanupReceipt>; sequence: number }> = [];
 
   for (const event of events) {
     if (event.sequence !== expectedSequence) {
@@ -715,6 +756,16 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       }
       validateDeliveryRemediationTransition(remediation, next);
       remediation = next;
+    }
+    if (event.type === "DELIVERY_MERGE_RECORDED") {
+      const next = parseDeliveryMergeReceipt(event.payload["mergeAction"]);
+      mergeActions.push({ receipt: next, sequence: event.sequence });
+      deriveDeliveryMergeActionHistories(mergeActions);
+    }
+    if (event.type === "DELIVERY_CLEANUP_RECORDED") {
+      if (deriveDeliveryMergeActionHistories(mergeActions).latest?.latest.state !== "dispatchConfirmed") throw new Error("Cleanup requires a confirmed merge.");
+      cleanupActions.push({ receipt: parseDeliveryCleanupReceipt(event.payload["cleanup"]), sequence: event.sequence });
+      deriveDeliveryCleanupActionHistories(cleanupActions);
     }
 
     actor.send(toMachineEvent(event));
@@ -787,6 +838,16 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         remediation: parseDeliveryRemediation(event.payload["remediation"]),
         type: event.type,
       };
+    case "DELIVERY_MERGE_RECORDED":
+      return { mergeAction: parseDeliveryMergeReceipt(event.payload["mergeAction"]), type: event.type };
+    case "DELIVERY_MERGE_READINESS_RECORDED":
+      return { decision: parseDeliveryMergeReadinessDecision(event.payload["decision"]), eventSequence: event.sequence, type: event.type };
+    case "DELIVERY_CLEANUP_RECORDED":
+      return { cleanup: parseDeliveryCleanupReceipt(event.payload["cleanup"]), type: event.type };
+    case "DELIVERY_CLEANUP_PROVENANCE_RECORDED":
+    case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
+    case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
+      return { type: event.type };
     case "GITHUB_CHECKS_RECORDED":
       const watchStatePath = getOptionalStringPayload(
         event,
@@ -965,6 +1026,35 @@ function deliveryWithPublication(
     stage: publicationStage(publication),
   };
 }
+
+function deliveryWithMerge(
+  delivery: Record<string, Schema.Json> | undefined,
+  mergeAction: DeliveryMergeReceipt,
+): Record<string, Schema.Json> {
+  if (delivery?.["mode"] !== "pullRequest") throw new Error("Merge requires pull-request delivery.");
+  return {
+    ...delivery,
+    stage: mergeAction.state === "dispatchConfirmed"
+      ? "cleanupRequired"
+      : mergeAction.state === "outcomeUnknown"
+        ? "mergeReconciliationRequired"
+        : mergeAction.state === "dispatchFailed"
+          ? "awaitingMerge"
+          : "merging",
+  };
+}
+
+function deliveryWithCleanup(
+  delivery: Record<string, Schema.Json> | undefined,
+  cleanup: ReturnType<typeof parseDeliveryCleanupReceipt>,
+): Record<string, Schema.Json> {
+  if (delivery?.["mode"] !== "pullRequest") throw new Error("Cleanup requires pull-request delivery.");
+  return {
+    ...delivery,
+    stage: cleanup.state === "completed" ? "completed" : "cleanupRequired",
+  };
+}
+
 
 function deliveryReadyToPublish(
   delivery: Record<string, Schema.Json> | undefined,

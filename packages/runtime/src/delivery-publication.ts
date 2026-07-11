@@ -16,6 +16,7 @@ import { Effect, FileSystem, Option, Schema } from "effect";
 import { appendEvent, readEvents } from "./event-store.js";
 import {
   inspectDeliveryWorktreeOwnership,
+  parseDeliveryProvenance,
   type DeliveryProvenance,
   type GitDeliveryCommandRunner,
 } from "./git-delivery.js";
@@ -62,7 +63,7 @@ export function publishReadyDeliveryRun(
     const events = yield* readEvents(paths);
     const snapshot = snapshotFromReplay(events);
     const delivery = yield* parseDelivery(snapshot.context["delivery"]);
-    const provenance = yield* parseProvenance(delivery, runId);
+    const provenance = yield* parseProvenance(delivery);
     const existing = optionalPublication(delivery["publication"]);
 
     if (existing?.state === "confirmed") return existing;
@@ -204,7 +205,7 @@ export function retryFailedDeliveryPublication(
     const events = yield* readEvents(paths);
     const snapshot = snapshotFromReplay(events);
     const delivery = yield* parseDelivery(snapshot.context["delivery"]);
-    const provenance = yield* parseProvenance(delivery, runId);
+    const provenance = yield* parseProvenance(delivery);
     const existing = optionalPublication(delivery["publication"]);
 
     if (existing === undefined) {
@@ -1501,42 +1502,15 @@ function nextPublicationOperationId(
   return `publish-${runId}-${operationIds.size + 1}`;
 }
 
-function parseProvenance(
-  delivery: Record<string, Schema.Json>,
-  runId: RunId,
-) {
+function parseProvenance(delivery: Record<string, Schema.Json>) {
   return Effect.gen(function* () {
     const provenance = yield* parseEffect(
-      () =>
-        Schema.decodeUnknownSync(
-          Schema.Struct({
-            baseBranch: Schema.NonEmptyString,
-            baseRevision: Schema.String.pipe(
-              Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
-            ),
-            headBranch: Schema.NonEmptyString,
-            mode: Schema.Literal("pullRequest"),
-            remote: Schema.NonEmptyString,
-          }),
-        )(delivery),
+      () => Option.getOrThrow(parseDeliveryProvenance(delivery)),
       {
         code: "DeliveryPolicyInvalid",
         message: "Accepted pull-request delivery provenance is invalid.",
       },
     );
-    if (
-      provenance.baseBranch !== "main" ||
-      provenance.headBranch !== `gaia/${runId}` ||
-      provenance.remote !== "origin"
-    ) {
-      return yield* Effect.fail(
-        makeRuntimeError({
-          code: "DeliveryPolicyInvalid",
-          message: "Accepted delivery provenance is not Gaia-owned policy.",
-          recoverable: false,
-        }),
-      );
-    }
     return provenance;
   });
 }

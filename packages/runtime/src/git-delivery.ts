@@ -1,12 +1,24 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
-import { Effect, FileSystem, Schema } from "effect";
+import { Data, Effect, FileSystem, Schema } from "effect";
 import { makeRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
 import { repositoryCommandEnvironment } from "./repository-command-environment.js";
 
 const execFileAsync = promisify(execFile);
+const strict = { parseOptions: { onExcessProperty: "error" as const } };
+const LiteralBranchName = Schema.String.pipe(
+  Schema.check(Schema.isMaxLength(240)),
+  Schema.check(Schema.isPattern(/^(?!-)(?!refs\/)(?!.*(?:\.\.|@\{|\/\/))(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9])$/u)),
+);
+const GaiaOwnedBranchName = Schema.String.pipe(
+  Schema.check(Schema.isMaxLength(240)),
+  Schema.check(Schema.isPattern(/^gaia\/(?!-)(?!.*(?:\.\.|@\{|\/\/))(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9_-])$/u)),
+);
+const DeliveryRemoteName = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u)),
+);
 
 export type GitDeliveryCommandInput = {
   readonly args: ReadonlyArray<string>;
@@ -30,13 +42,34 @@ export type DeliveryProvenance = {
   readonly remote: string;
 };
 
+export class DeliveryAcceptanceProvenancePolicyV1 extends Schema.Class<DeliveryAcceptanceProvenancePolicyV1>(
+  "DeliveryAcceptanceProvenancePolicyV1",
+)({
+  baseBranch: LiteralBranchName,
+  headBranch: GaiaOwnedBranchName,
+  remote: DeliveryRemoteName,
+  version: Schema.Literal(1),
+}, strict) {}
+
+export const parseDeliveryAcceptanceProvenancePolicy = Schema.decodeUnknownSync(
+  DeliveryAcceptanceProvenancePolicyV1,
+);
+
 export const DeliveryProvenanceSchema = Schema.Struct({
-  baseBranch: Schema.NonEmptyString,
-  baseRevision: Schema.NonEmptyString,
-  headBranch: Schema.NonEmptyString,
+  baseBranch: LiteralBranchName,
+  baseRevision: Schema.String.pipe(
+    Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
+  ),
+  headBranch: GaiaOwnedBranchName,
   mode: Schema.Literal("pullRequest"),
-  remote: Schema.NonEmptyString,
-});
+  remote: DeliveryRemoteName,
+}).pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (provenance) => provenance.baseBranch !== provenance.headBranch,
+    ),
+  ),
+);
 
 export const parseDeliveryProvenance = Schema.decodeUnknownOption(
   DeliveryProvenanceSchema,
@@ -56,6 +89,68 @@ const DeliveryOwnershipManifest = Schema.Struct({
 const parseDeliveryOwnershipManifest = Schema.decodeUnknownSync(
   DeliveryOwnershipManifest,
 );
+
+export type DeliveryOwnedCleanupResult = {
+  readonly branch: "absent" | "present";
+  readonly worktree: "absent" | "present";
+};
+export class DeliveryOwnedCleanupPartial extends Data.TaggedError("DeliveryOwnedCleanupPartial")<{
+  readonly branch: "absent" | "present";
+  readonly message: string;
+  readonly worktree: "absent" | "present";
+}> {}
+
+/** Remove only freshly re-proven run-owned resources, one resource at a time. */
+export function cleanupOwnedDeliveryResources(input: {
+  readonly branchName: string;
+  readonly expectedBranchOid: string;
+  readonly options: DeliveryWorkspaceOptions;
+  readonly paths: RunPaths;
+}) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const runner = input.options.commandRunner ?? nodeGitDeliveryCommandRunner;
+    const raw = yield* fs.readFileString(input.paths.deliveryOwnershipManifest).pipe(
+      Effect.mapError((cause) => makeRuntimeError({ cause, code: "DeliveryCleanupOwnershipUnavailable", message: "Durable worktree ownership evidence is unavailable.", recoverable: false })),
+    );
+    const manifest = parseDeliveryOwnershipManifest(JSON.parse(raw));
+    const repository = yield* repositoryIdentity(runner, input.options.rootDirectory);
+    if (repository.repositoryRoot !== manifest.repositoryRoot || repository.repositoryCommonDir !== manifest.repositoryCommonDir || manifest.workspaceRoot === manifest.repositoryRoot) {
+      return yield* cleanupFailure("DeliveryCleanupOwnershipMismatch", "Cleanup provenance does not match the current non-primary repository.");
+    }
+    let worktree: "absent" | "present" = (yield* fs.exists(manifest.workspaceRoot)) ? "present" : "absent";
+    const branchRef = `refs/heads/${input.branchName}`;
+    let branch: "absent" | "present" = (yield* runGitExit(runner, input.options.rootDirectory, ["show-ref", "--verify", "--quiet", branchRef])) ? "present" : "absent";
+    if (branch === "present") {
+      const oid = (yield* runGit(runner, input.options.rootDirectory, ["rev-parse", branchRef])).stdout.trim();
+      if (oid !== input.expectedBranchOid) return yield* cleanupFailure("DeliveryCleanupBranchMoved", "Owned local branch no longer points at the recorded expected head.");
+    }
+    if (worktree === "present") {
+      const workspace = yield* repositoryIdentity(runner, manifest.workspaceRoot);
+      const status = (yield* runGit(runner, manifest.workspaceRoot, ["status", "--porcelain"])).stdout;
+      const branchName = (yield* runGit(runner, manifest.workspaceRoot, ["branch", "--show-current"])).stdout.trim();
+      if (workspace.repositoryRoot !== manifest.workspaceRoot || workspace.repositoryCommonDir !== manifest.workspaceCommonDir || status.trim() !== "" || branchName !== input.branchName) {
+        return yield* cleanupFailure("DeliveryCleanupUnsafe", "Owned worktree is dirty, mismatched, or no longer proves the recorded branch.");
+      }
+      yield* runGit(runner, input.options.rootDirectory, ["worktree", "remove", manifest.workspaceRoot]);
+      worktree = "absent";
+    }
+    if (branch === "present") {
+      const deletion = yield* Effect.exit(runGit(runner, input.options.rootDirectory, ["update-ref", "-d", branchRef, input.expectedBranchOid]));
+      if (deletion._tag === "Failure") return yield* Effect.fail(new DeliveryOwnedCleanupPartial({ branch: "present", message: "Owned worktree was removed but exact branch CAS deletion failed.", worktree }));
+      branch = "absent";
+    }
+    return { branch, worktree } satisfies DeliveryOwnedCleanupResult;
+  });
+}
+
+function runGitExit(runner: GitDeliveryCommandRunner, cwd: string, args: ReadonlyArray<string>) {
+  return Effect.exit(runner({ args, cwd })).pipe(Effect.map((exit) => exit._tag === "Success"));
+}
+
+function cleanupFailure(code: string, message: string) {
+  return Effect.fail(makeRuntimeError({ code, message, recoverable: true }));
+}
 
 export type DeliveryWorkspaceOptions = {
   readonly commandRunner?: GitDeliveryCommandRunner;
@@ -81,14 +176,31 @@ export const nodeGitDeliveryCommandRunner: GitDeliveryCommandRunner = (input) =>
 export function resolveDeliveryProvenance(
   runId: string,
   options: DeliveryWorkspaceOptions,
+  acceptancePolicy?: unknown,
 ) {
   return Effect.gen(function* () {
+    const policy = acceptancePolicy === undefined
+      ? undefined
+      : parseDeliveryAcceptanceProvenancePolicy(acceptancePolicy);
+    const remote = policy?.remote ?? defaultRemote;
+    const baseBranch = policy?.baseBranch ?? defaultBaseBranch;
+    const headBranch = policy?.headBranch ?? `gaia/${runId}`;
+    if (baseBranch === headBranch) {
+      return yield* Effect.fail(makeRuntimeError({ code: "DeliveryProvenanceTopologyInvalid", message: "Delivery base and head branches must be distinct.", recoverable: false }));
+    }
     const runner = options.commandRunner ?? nodeGitDeliveryCommandRunner;
     yield* runGit(runner, options.rootDirectory, ["rev-parse", "--show-toplevel"]);
-    yield* runGit(runner, options.rootDirectory, ["fetch", defaultRemote, defaultBaseBranch]);
+    if (policy !== undefined) {
+      yield* validateLiteralBranch(runner, options.rootDirectory, baseBranch);
+      yield* validateLiteralBranch(runner, options.rootDirectory, headBranch);
+      yield* runGit(runner, options.rootDirectory, ["remote", "get-url", "--", remote]);
+      yield* runGit(runner, options.rootDirectory, ["fetch", "--no-tags", remote, `refs/heads/${baseBranch}:refs/remotes/${remote}/${baseBranch}`]);
+    } else {
+      yield* runGit(runner, options.rootDirectory, ["fetch", defaultRemote, defaultBaseBranch]);
+    }
     const baseRevision = (yield* runGit(runner, options.rootDirectory, [
       "rev-parse",
-      `${defaultRemote}/${defaultBaseBranch}`,
+      ...(policy === undefined ? [`${defaultRemote}/${defaultBaseBranch}`] : ["--verify", `refs/remotes/${remote}/${baseBranch}^{commit}`]),
     ])).stdout.trim();
     if (!/^[0-9a-f]{40}$/u.test(baseRevision)) {
       return yield* Effect.fail(
@@ -100,13 +212,20 @@ export function resolveDeliveryProvenance(
       );
     }
     return {
-      baseBranch: defaultBaseBranch,
+      baseBranch,
       baseRevision,
-      headBranch: `gaia/${runId}`,
+      headBranch,
       mode: "pullRequest",
-      remote: defaultRemote,
+      remote,
     } satisfies DeliveryProvenance;
   });
+}
+
+function validateLiteralBranch(runner: GitDeliveryCommandRunner, cwd: string, branch: string) {
+  if (/\.\.|@\{|[~^:?*\[\\\s\u0000-\u001f\u007f]/u.test(branch) || branch.startsWith("-") || branch.startsWith("refs/") || branch.includes("//")) {
+    return Effect.fail(makeRuntimeError({ code: "DeliveryBranchInvalid", message: "Delivery branch name is not a safe literal branch.", recoverable: false }));
+  }
+  return runGit(runner, cwd, ["check-ref-format", "--branch", branch]).pipe(Effect.asVoid);
 }
 
 /** Resolve a safe owner/repository tuple when the accepted remote is GitHub. */

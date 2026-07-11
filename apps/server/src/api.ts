@@ -37,11 +37,16 @@ import {
   type LocalRunApiError,
   LocalRunReadDiagnosticDto,
   type RunId,
-  type RunEvent,
+  RunEvent,
   parseDeliveryPublication,
   parseDeliveryPullRequestObservation,
   parseDeliveryRemediation,
+  parseDeliveryMergeReceipt,
+  parseDeliveryMergeReadinessDecision,
+  parseDeliveryCleanupReceipt,
   snapshotFromReplay,
+  deriveDeliveryActionHistoriesFromEvents,
+  deliveryActionAuditSummary,
 } from "@gaia/core";
 import type {
   LocalRunList,
@@ -73,6 +78,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import {
   actOnDeliveryPublication,
   actOnDeliveryRemediation,
+  actOnDeliveryMerge,
   acceptFactoryRun,
   continueServerRun,
   type ServerRunAcceptance,
@@ -123,6 +129,8 @@ const decodeDeliveryProjection = Schema.decodeUnknownOption(
     observation: Schema.optionalKey(Schema.Json),
     publication: Schema.optionalKey(Schema.Json),
     remediation: Schema.optionalKey(Schema.Json),
+    mergeDecision: Schema.optionalKey(Schema.Json),
+    mergeDecisionSequence: Schema.optionalKey(Schema.Int),
     remediationRearmSequence: Schema.optionalKey(Schema.Int),
     remote: Schema.NonEmptyString,
     stage: DeliveryStatusSchema,
@@ -321,6 +329,12 @@ export const RunsLive = HttpApiBuilder.group(
                     payload,
                     workflowOptions,
                   )
+              : payload.kind === "merge" || payload.kind === "retryCleanup" || payload.kind === "evaluateMergeReadiness"
+                ? (identity.workflowOptions.deliveryMergeActivator ?? actOnDeliveryMerge)(
+                    params.runId,
+                    payload,
+                    workflowOptions,
+                  )
               : actOnDeliveryPublication(
                   params.runId,
                   payload,
@@ -414,7 +428,7 @@ export const RunsLive = HttpApiBuilder.group(
           );
           if (exit._tag === "Success") {
             return LocalRunEventsSuccessEnvelope.make({
-              data: exit.value,
+              data: { ...exit.value, events: exit.value.events.map(publicRunEvent) },
               status: "success",
             });
           }
@@ -438,7 +452,7 @@ export const RunsLive = HttpApiBuilder.group(
           return streamRunEvents({
             rootDirectory: identity.rootDirectory,
             runId: params.runId,
-          }).pipe(Stream.provideContext(context));
+          }).pipe(Stream.map(publicRunEvent), Stream.provideContext(context));
         }),
       )
       .handle("getRunArtifact", ({ params }) =>
@@ -735,6 +749,14 @@ function deliveryUpdateFromEvents(
   const remediation = delivery.remediation === undefined
     ? undefined
     : parseDeliveryRemediation(delivery.remediation);
+  const actionHistories = deriveDeliveryActionHistoriesFromEvents(events);
+  const activeMergeAction = actionHistories.merge.active?.latest;
+  const latestMergeAction = actionHistories.merge.latest?.latest;
+  const mergeDecision = delivery.mergeDecision === undefined
+    ? undefined
+    : parseDeliveryMergeReadinessDecision(delivery.mergeDecision);
+  const activeCleanupAction = actionHistories.cleanup.active?.latest;
+  const latestCleanupAction = actionHistories.cleanup.latest?.latest;
   return DeliverySnapshotDto.make({
     eventSequence,
     mode: "pullRequest",
@@ -744,13 +766,24 @@ function deliveryUpdateFromEvents(
     ...(observation === undefined ? {} : { observation }),
     provenance: DeliveryProvenanceDto.make(delivery),
     recoveryActions:
-      publication?.state === "outcomeUnknown"
+      activeMergeAction?.state === "outcomeUnknown" || activeMergeAction?.state === "dispatchAttempted"
+        ? ["reconcileMerge"]
+        : delivery.stage === "cleanupRequired"
+          ? ["retryCleanup"]
+      : publication?.state === "outcomeUnknown"
         ? ["reconcile"]
         : publication?.state === "failed" && publication.recoverable
           ? ["retry"]
           : [],
     runId,
     ...(remediation === undefined ? {} : { remediation }),
+    ...(activeMergeAction === undefined ? {} : { activeMergeAction }),
+    ...(latestMergeAction === undefined ? {} : { latestMergeAction }),
+    ...(mergeDecision === undefined ? {} : { mergeDecision }),
+    ...(delivery.mergeDecisionSequence === undefined ? {} : { mergeDecisionSequence: delivery.mergeDecisionSequence }),
+    ...(activeCleanupAction === undefined ? {} : { activeCleanupAction }),
+    ...(latestCleanupAction === undefined ? {} : { latestCleanupAction }),
+    actionAudit: deliveryActionAuditSummary(actionHistories, 20),
     ...(delivery.remediationRearmSequence === undefined
       ? {}
       : { remediationRearmSequence: delivery.remediationRearmSequence }),
@@ -1006,6 +1039,18 @@ function isAllowedMethod(method: string, url: string) {
   );
 }
 
+const privateDeliveryEventTypes = new Set([
+  "DELIVERY_CLEANUP_PROVENANCE_RECORDED",
+  "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED",
+  "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED",
+]);
+
+function publicRunEvent(event: RunEvent): RunEvent {
+  return privateDeliveryEventTypes.has(event.type)
+    ? RunEvent.make({ ...event, payload: { redacted: true } })
+    : event;
+}
+
 function pathnameFromUrl(url: string) {
   try {
     return new URL(url).pathname;
@@ -1083,10 +1128,17 @@ function actionApiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunActionApi
   const diagnostic = causeToDiagnostic(cause);
   switch (diagnostic.code) {
     case "AgentActionConflict":
-    case "DeliveryActionConflict":
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
       return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
+    case "DeliveryActionConflict":
+      return LocalRunApiConflict.make({
+        code: diagnostic.code,
+        message: "Delivery action conflicts with the current authoritative run state.",
+        recoverable: true,
+        ...(diagnostic.runId === undefined ? {} : { runId: diagnostic.runId }),
+        status: 409,
+      });
     default:
       return readApiError(diagnostic);
   }

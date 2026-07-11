@@ -60,6 +60,7 @@ import {
 import { runLocalGaiaServer } from "@gaia/server";
 import {
   createRunFromServer,
+  evaluateMergeReadinessFromServer,
   ensureLocalServer,
   readLocalRunArtifactFromServer,
   readLocalRunEventsFromServer,
@@ -88,6 +89,7 @@ const linearIssueGraphFile = Argument.string("linear-issue-graph-file");
 const runId = Argument.string("run-id");
 const pullRequest = Argument.string("pull-request");
 const artifactName = Argument.string("artifact-name");
+const actionId = Argument.string("action-id");
 const optionalRunId = runId.pipe(Argument.optional);
 const optionalPullRequest = pullRequest.pipe(Argument.optional);
 const browserTargetUrl = Flag.string("url").pipe(
@@ -112,6 +114,12 @@ const serverUrl = Flag.string("server-url").pipe(
     "Opt into read-only CLI reads through an already-running local Gaia API server.",
   ),
   Flag.optional,
+);
+const readinessServerUrl = Flag.string("server-url").pipe(
+  Flag.withDescription("URL of the authoritative local Gaia server."),
+);
+const mergeReadinessMethod = Flag.choice("method", ["merge", "squash", "rebase"] as const).pipe(
+  Flag.withDescription("Explicit merge method to evaluate; no default is permitted."),
 );
 const serverMode = Flag.boolean("server").pipe(
   Flag.withDescription(
@@ -576,6 +584,23 @@ const mergeDecision = Command.make("merge-decision", {
   ),
 );
 
+const mergeReadiness = Command.make("merge-readiness", {
+  actionId,
+  json,
+  mergeReadinessMethod,
+  readinessServerUrl,
+  runId,
+}).pipe(
+  Command.withDescription("Evaluate exact-head merge readiness without executing a merge."),
+  Command.withHandler(({ actionId, json, mergeReadinessMethod, readinessServerUrl, runId }) =>
+    renderEffect(
+      evaluateMergeReadinessFromServer({ actionId, mergeMethod: mergeReadinessMethod, runId, serverUrl: readinessServerUrl }),
+      json,
+      (response) => renderMergeReadinessResponse(response.data),
+    ),
+  ),
+);
+
 const collectBrowserEvidenceCommand = Command.make("collect-browser-evidence", {
   browserTargetUrl,
   json,
@@ -636,6 +661,7 @@ const cli = Command.make("gaia").pipe(
     commentPr,
     linearIssue,
     mergeDecision,
+    mergeReadiness,
   ]),
 );
 
@@ -1527,6 +1553,17 @@ function renderMergeDecisionSummary(summary: MergeDecisionSummary) {
       (blocker) =>
         `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`,
     ),
+  ].join("\n");
+}
+
+function renderMergeReadinessResponse(snapshot: { readonly mergeDecision?: { readonly approved: boolean; readonly blockers: ReadonlyArray<string>; readonly mergeMethod: string }; readonly runId: string }) {
+  const decision = snapshot.mergeDecision;
+  if (decision === undefined) return `run: ${snapshot.runId}\nmerge readiness: unavailable`;
+  return [
+    `run: ${snapshot.runId}`,
+    `merge readiness: ${decision.approved ? "approved" : "blocked"}`,
+    `method: ${decision.mergeMethod}`,
+    `blockers: ${decision.blockers.length}`,
   ].join("\n");
 }
 

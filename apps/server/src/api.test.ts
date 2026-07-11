@@ -616,6 +616,118 @@ describe("local run api http boundary", () => {
       20_000,
     );
 
+    it.effect("rejects excess merge action fields and redacts private conflict causes", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-private-merge-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        const hostile = "/HOSTILE/absolute/common-dir::PRIVATE_TOKEN_93::refs/heads/forged";
+        const layer = testServerLayer(cwd, {
+          deliveryMergeActivator: () => Effect.fail({ code: "DeliveryActionConflict", message: hostile, recoverable: true }),
+        });
+        const request = (body: Record<string, unknown>) => HttpClientRequest.post(`/runs/${accepted.runId}/delivery/actions`).pipe(HttpClientRequest.bodyJsonUnsafe(body), HttpClient.execute, Effect.provide(layer));
+        const conflict = yield* request({ actionId: "readiness-1", kind: "evaluateMergeReadiness", mergeMethod: "merge" });
+        const conflictText = yield* conflict.text;
+        const excess = yield* request({ actionId: "readiness-1", kind: "evaluateMergeReadiness", mergeMethod: "merge", ownershipToken: hostile });
+        const excessText = yield* excess.text;
+
+        assert.strictEqual(conflict.status, 409);
+        assert.notInclude(conflictText, hostile);
+        assert.notInclude(conflictText, "PRIVATE_TOKEN_93");
+        assert.strictEqual(excess.status, 400);
+        assert.notInclude(excessText, hostile);
+      }),
+    );
+
+    it.effect("redacts private cleanup provenance from public event, activity, and artifact responses", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-private-events-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), { harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd });
+        const paths = yield* makeRunPaths(parseRunId(accepted.runId), { rootDirectory: cwd });
+        const hostile = "/HOSTILE/private/common-dir::PRIVATE_TOKEN_93::provider-secret::raw-cause";
+        const runId = parseRunId(accepted.runId);
+        yield* appendEvent(runId, paths, { payload: { provenance: { actionId: "cleanup-1", branchRef: "refs/heads/gaia/run-1234567890", expectedBranchOid: "a".repeat(40), mergeCommitSha: "b".repeat(40), ownershipDigest: "c".repeat(64), ownershipToken: hostile, payloadDigest: "d".repeat(64), providerId: hostile, rawCause: { nested: hostile }, repositoryCommonDir: hostile, repositoryRoot: hostile, runId: accepted.runId, version: 1, worktreeCommonDir: hostile, worktreePath: hostile } }, type: "DELIVERY_CLEANUP_PROVENANCE_RECORDED" });
+        yield* appendEvent(runId, paths, { payload: { checkpoint: { actionId: "cleanup-1", nested: { path: hostile, providerId: hostile }, payloadDigest: "d".repeat(64), resource: "worktree", state: "removalAttempted", version: 1 } }, type: "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED" });
+        yield* appendEvent(runId, paths, { payload: { checkpoint: { actionId: "merge-1", payloadDigest: "e".repeat(64), providerId: hostile, rawCause: { nested: hostile }, state: "reconciliationRequired", version: 1 } }, type: "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED" });
+        yield* appendEvent(runId, paths, { payload: { code: "fixture-terminal", message: "fixture terminal", recoverable: false, stage: "replaying" }, type: "RUN_FAILED" });
+        const layer = testServerLayer(cwd);
+        const eventsResponse = yield* HttpClient.get(`/runs/${accepted.runId}/events`).pipe(Effect.provide(layer));
+        const eventsBody = yield* responseJsonObject(eventsResponse);
+        const publicEvents = getArray(getObject(eventsBody, "data"), "events").map(asJsonObject);
+        const privateEvents = publicEvents.filter((event) => ["DELIVERY_CLEANUP_PROVENANCE_RECORDED", "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED", "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED"].includes(getString(event, "type")));
+        assert.strictEqual(eventsResponse.status, 200);
+        assert.lengthOf(privateEvents, 3);
+        for (const event of privateEvents) assert.deepEqual(getObject(event, "payload"), { redacted: true });
+
+        const activityResponse = yield* HttpClient.get(`/runs/${accepted.runId}/activity`).pipe(Effect.provide(layer));
+        const activityText = yield* activityResponse.text;
+        assert.strictEqual(activityResponse.status, 200);
+        assert.notInclude(activityText, hostile);
+
+        const streamResponse = yield* HttpClient.get(`/runs/${accepted.runId}/events/stream`).pipe(Effect.provide(layer));
+        const streamEvents = parseSseDataEvents(yield* streamResponse.text);
+        const privateStreamEvents = streamEvents.filter((event) => ["DELIVERY_CLEANUP_PROVENANCE_RECORDED", "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED", "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED"].includes(getString(event, "type")));
+        assert.strictEqual(streamResponse.status, 200);
+        assert.lengthOf(privateStreamEvents, 3);
+        for (const event of privateStreamEvents) assert.deepEqual(getObject(event, "payload"), { redacted: true });
+
+        const catalogResponse = yield* HttpClient.get(`/runs/${accepted.runId}/artifacts`).pipe(Effect.provide(layer));
+        const catalogText = yield* catalogResponse.text;
+        assert.strictEqual(catalogResponse.status, 200);
+        assert.notInclude(catalogText, '"artifactId":"events"');
+        assert.notInclude(catalogText, hostile);
+        const rawArtifactResponse = yield* HttpClient.get(`/runs/${accepted.runId}/artifacts/events`).pipe(Effect.provide(layer));
+        assert.strictEqual(rawArtifactResponse.status, 404);
+        for (const body of [JSON.stringify(eventsBody), activityText, JSON.stringify(streamEvents), catalogText, yield* rawArtifactResponse.text]) {
+          assert.notInclude(body, hostile);
+          assert.notInclude(body, "PRIVATE_TOKEN_93");
+        }
+      }),
+    );
+
+    it.effect("routes strict merge action families and maps immutable tuple conflicts", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-merge-matrix-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), { harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd });
+        const seen = new Set<string>(); let mutations = 0;
+        const layer = testServerLayer(cwd, {
+          deliveryMergeActivator: (_runId, action) => Effect.gen(function* () {
+            const key = JSON.stringify(action);
+            if (action.actionId.includes("conflict")) return yield* Effect.fail({ code: "DeliveryActionConflict", message: "immutable tuple changed", recoverable: true });
+            if (!seen.has(key)) { seen.add(key); mutations += 1; }
+            return action;
+          }),
+        });
+        const request = (body: Record<string, unknown>) => HttpClientRequest.post(`/runs/${accepted.runId}/delivery/actions`).pipe(HttpClientRequest.bodyJsonUnsafe(body), HttpClient.execute, Effect.provide(layer));
+        const actions = [
+          { actionId: "readiness-1", kind: "evaluateMergeReadiness", mergeMethod: "merge" },
+          { actionId: "merge-1", expectedBranchName: "gaia/run-1234567890", expectedDecisionSequence: 9, expectedHeadSha: "a".repeat(40), expectedPolicyDigest: "b".repeat(64), expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/74", kind: "merge", mergeMethod: "squash" },
+          { actionId: "cleanup-1", expectedMergeCommitSha: "c".repeat(40), kind: "retryCleanup" },
+        ];
+        for (const action of actions) {
+          const first = yield* request(action); const duplicate = yield* request(action);
+          assert.strictEqual(first.status, 200); assert.strictEqual(duplicate.status, 200);
+        }
+        assert.strictEqual(mutations, actions.length);
+        const conflicts = [
+          { ...actions[0]!, actionId: "conflict-readiness", mergeMethod: "rebase" },
+          { ...actions[1]!, actionId: "conflict-merge", expectedDecisionSequence: 8 },
+          { ...actions[1]!, actionId: "conflict-head", expectedHeadSha: "d".repeat(40) },
+          { ...actions[1]!, actionId: "conflict-pr", expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/75" },
+          { ...actions[2]!, actionId: "conflict-cleanup", expectedMergeCommitSha: "e".repeat(40) },
+        ];
+        for (const action of conflicts) {
+          const response = yield* request(action); const body = yield* responseJsonObject(response);
+          assert.strictEqual(response.status, 409); assertApiError(body, "DeliveryActionConflict", 409);
+        }
+      }),
+    );
+
     it.effect("routes controlled remediation activation through the existing live coordinator", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   codexAppServerExecutionSelection,
+  DeliveryFeedbackTrustPolicyV1,
   DeliveryPublicationConfirmed,
   HarnessCapabilities,
   HarnessProviderDescriptor,
@@ -33,6 +34,7 @@ import type { HarnessProvider } from "./harness-session.js";
 import { makeRunPaths } from "./paths.js";
 import { makeTestHarnessProviderRegistry } from "./test-support.js";
 import { prepareDeliveryWorktree, type GitDeliveryCommandInput } from "./git-delivery.js";
+import { DeliveryAcceptanceProvenancePolicyV1 } from "./git-delivery.js";
 
 describe("server workflows", () => {
   layer(NodeServices.layer)((it) => {
@@ -293,6 +295,155 @@ describe("server workflows", () => {
           stage: "delivering",
         });
         assert.notInclude(serialized, cwd);
+      }),
+    );
+
+    it.effect("persists explicit solo approval policy only at delivery acceptance", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-delivery-solo-policy-" });
+        const gitRunner = recordingGitRunner([], {
+          baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+        });
+        const trustPolicy = DeliveryFeedbackTrustPolicyV1.make({
+          allowPullRequestAuthor: false,
+          requireApprovedReview: false,
+          trustedChecks: [],
+          trustedHumanLogins: [],
+          version: 1,
+        });
+        const provenancePolicy = DeliveryAcceptanceProvenancePolicyV1.make({
+          baseBranch: "gaia-93-smoke-base-acceptance",
+          headBranch: "gaia/gaia-93-smoke-head-acceptance",
+          remote: "origin",
+          version: 1,
+        });
+        const accepted = yield* acceptFactoryRun({
+          delivery: { mode: "pullRequest" },
+          execution: codexAppServerExecutionSelection,
+          workflow: "issueDelivery",
+          workItem: { description: "Persist solo review authority.", kind: "issue", title: "Solo policy" },
+        }, {
+          deliveryAcceptanceProvenancePolicy: provenancePolicy,
+          deliveryFeedbackTrustPolicy: trustPolicy,
+          deliveryGitCommandRunner: gitRunner,
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        const acceptedEvents = yield* readLocalRunEvents(accepted.runId, { rootDirectory: cwd });
+        assert.deepInclude(acceptedEvents.events[0]?.payload, {
+          delivery: {
+            baseBranch: provenancePolicy.baseBranch,
+            baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+            headBranch: provenancePolicy.headBranch,
+            mode: "pullRequest",
+            remote: provenancePolicy.remote,
+          },
+          deliveryFeedbackTrustPolicy: {
+            allowPullRequestAuthor: false,
+            requireApprovedReview: false,
+            trustedChecks: [],
+            trustedHumanLogins: [],
+            version: 1,
+          },
+        });
+        yield* continueServerRun(accepted.runId, {
+          deliveryGitCommandRunner: gitRunner,
+          deliveryPublisher: recordingDeliveryPublisher([]),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        const events = yield* readLocalRunEvents(accepted.runId, { rootDirectory: cwd });
+        const deliveryStarted = events.events.find(({ type }) => type === "DELIVERY_STARTED");
+
+        assert.deepInclude(deliveryStarted?.payload["delivery"], {
+          feedbackTrustPolicy: {
+            allowPullRequestAuthor: false,
+            requireApprovedReview: false,
+            trustedChecks: [],
+            trustedHumanLogins: [],
+            version: 1,
+          },
+          headBranch: provenancePolicy.headBranch,
+        });
+        assert.lengthOf(events.events.filter(({ type }) => type === "DELIVERY_STARTED"), 1);
+      }),
+    );
+
+    it.effect("rejects a continuation policy mismatch before delivery starts or external work", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-delivery-policy-drift-" });
+        const commands: Array<GitDeliveryCommandInput> = [];
+        const gitRunner = recordingGitRunner(commands, { baseRevision: "e".repeat(40) });
+        const solo = DeliveryFeedbackTrustPolicyV1.make({ allowPullRequestAuthor: false, requireApprovedReview: false, trustedChecks: [], trustedHumanLogins: [], version: 1 });
+        const strict = DeliveryFeedbackTrustPolicyV1.make({ ...solo, requireApprovedReview: true });
+        const accepted = yield* acceptFactoryRun({
+          delivery: { mode: "pullRequest" },
+          execution: codexAppServerExecutionSelection,
+          workflow: "issueDelivery",
+          workItem: { description: "Reject policy drift.", kind: "issue", title: "Policy drift" },
+        }, { deliveryFeedbackTrustPolicy: solo, deliveryGitCommandRunner: gitRunner, harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd });
+        const commandCountAfterAcceptance = commands.length;
+        const exit = yield* continueServerRun(accepted.runId, {
+          deliveryFeedbackTrustPolicy: strict,
+          deliveryGitCommandRunner: gitRunner,
+          deliveryPublisher: recordingDeliveryPublisher([]),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        }).pipe(Effect.exit);
+        const events = yield* readLocalRunEvents(accepted.runId, { rootDirectory: cwd });
+
+        assert.strictEqual(exit._tag, "Failure");
+        if (exit._tag === "Failure") assert.include(String(exit.cause), "Delivery feedback trust policy changed after run acceptance.");
+        assert.strictEqual(commands.length, commandCountAfterAcceptance);
+        assert.lengthOf(events.events.filter(({ type }) => type === "DELIVERY_STARTED"), 0);
+      }),
+    );
+
+    it.effect("replays legacy RUN_CREATED without acceptance policy as strict", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-delivery-legacy-policy-" });
+        const gitRunner = recordingGitRunner([], { baseRevision: "e".repeat(40) });
+        const accepted = yield* acceptFactoryRun({
+          delivery: { mode: "pullRequest" },
+          execution: codexAppServerExecutionSelection,
+          workflow: "issueDelivery",
+          workItem: { description: "Replay legacy strict policy.", kind: "issue", title: "Legacy policy" },
+        }, { deliveryGitCommandRunner: gitRunner, harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd });
+        const paths = yield* makeRunPaths(parseRunId(accepted.runId), { rootDirectory: cwd });
+        const encoded = JSON.parse(yield* fs.readFileString(paths.events)) as { payload: Record<string, unknown> };
+        delete encoded.payload["deliveryFeedbackTrustPolicy"];
+        yield* fs.writeFileString(paths.events, `${JSON.stringify(encoded)}\n`);
+
+        yield* continueServerRun(accepted.runId, { deliveryGitCommandRunner: gitRunner, deliveryPublisher: recordingDeliveryPublisher([]), harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd });
+        const events = yield* readLocalRunEvents(accepted.runId, { rootDirectory: cwd });
+        const started = events.events.find(({ type }) => type === "DELIVERY_STARTED");
+        assert.notProperty(events.events[0]?.payload ?? {}, "deliveryFeedbackTrustPolicy");
+        assert.notProperty((started?.payload["delivery"] as Record<string, unknown>).feedbackTrustPolicy as Record<string, unknown>, "requireApprovedReview");
+      }),
+    );
+
+    it.effect("rejects provenance assertion drift before continuation git or events", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-delivery-provenance-drift-" });
+        const commands: Array<GitDeliveryCommandInput> = [];
+        const gitRunner = recordingGitRunner(commands, { baseRevision: "e".repeat(40) });
+        const acceptedPolicy = DeliveryAcceptanceProvenancePolicyV1.make({ baseBranch: "gaia-93-smoke-base-drift", headBranch: "gaia/gaia-93-smoke-head-drift", remote: "origin", version: 1 });
+        const accepted = yield* acceptFactoryRun({
+          delivery: { mode: "pullRequest" }, execution: codexAppServerExecutionSelection, workflow: "issueDelivery",
+          workItem: { description: "Reject provenance drift.", kind: "issue", title: "Provenance drift" },
+        }, { deliveryAcceptanceProvenancePolicy: acceptedPolicy, deliveryGitCommandRunner: gitRunner, harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd });
+        const countAfterAcceptance = commands.length;
+        const drifted = DeliveryAcceptanceProvenancePolicyV1.make({ ...acceptedPolicy, headBranch: "gaia/gaia-93-smoke-head-changed" });
+        const exit = yield* continueServerRun(accepted.runId, { deliveryAcceptanceProvenancePolicy: drifted, deliveryGitCommandRunner: gitRunner, deliveryPublisher: recordingDeliveryPublisher([]), harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd }).pipe(Effect.exit);
+        const events = yield* readLocalRunEvents(accepted.runId, { rootDirectory: cwd });
+
+        assert.strictEqual(exit._tag, "Failure");
+        assert.strictEqual(commands.length, countAfterAcceptance);
+        assert.lengthOf(events.events.filter(({ type }) => type === "DELIVERY_STARTED"), 0);
       }),
     );
 
@@ -690,13 +841,16 @@ function recordingGitRunner(
       if (first === "fetch") {
         return { stderr: "", stdout: "" };
       }
+      if (first === "check-ref-format" && rest[0] === "--branch") {
+        return { stderr: "", stdout: `${rest[1]}\n` };
+      }
       if (first === "remote" && rest[0] === "get-url") {
         return {
           stderr: "",
           stdout: "https://github.com/cill-i-am/gaia.git\n",
         };
       }
-      if (first === "rev-parse" && rest[0] === "origin/main") {
+      if (first === "rev-parse" && (rest[0] === "origin/main" || rest[0] === "--verify")) {
         return { stderr: "", stdout: `${input.baseRevision}\n` };
       }
       if (first === "rev-parse" && rest[0] === "HEAD") {

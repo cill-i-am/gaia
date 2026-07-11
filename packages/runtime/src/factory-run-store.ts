@@ -6,6 +6,9 @@ import {
   FactoryArtifactListDto,
   FactoryGraphDto,
   parseDeliveryRemediation,
+  parseDeliveryMergeReceipt,
+  parseDeliveryMergeReadinessDecision,
+  parseDeliveryCleanupReceipt,
   parseHarnessEvent,
   ResolvedHarnessExecution,
   parseRunId,
@@ -885,6 +888,25 @@ function updateStatesForEvent(
           : "running",
       );
       return;
+    case "DELIVERY_MERGE_READINESS_RECORDED":
+      parseDeliveryMergeReadinessDecision(event.payload["decision"]);
+      states.set("ciWatcher", "running");
+      return;
+    case "DELIVERY_MERGE_RECORDED": {
+      const state = parseDeliveryMergeReceipt(event.payload["mergeAction"]).state;
+      states.set("orchestrator", state === "dispatchFailed" ? "failed" : state === "dispatchConfirmed" ? "blocked" : "running");
+      return;
+    }
+    case "DELIVERY_CLEANUP_RECORDED": {
+      const state = parseDeliveryCleanupReceipt(event.payload["cleanup"]).state;
+      states.set("orchestrator", state === "completed" ? "succeeded" : "blocked");
+      return;
+    }
+    case "DELIVERY_CLEANUP_PROVENANCE_RECORDED":
+    case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
+    case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
+      states.set("orchestrator", "running");
+      return;
     case "RUN_FAILED":
       states.set("orchestrator", "failed");
       states.set(roleFromFailureStage(event.payload["stage"]), "failed");
@@ -929,6 +951,12 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "DELIVERY_PUBLICATION_FAILED":
     case "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN":
     case "DELIVERY_REMEDIATION_RECORDED":
+    case "DELIVERY_MERGE_READINESS_RECORDED":
+    case "DELIVERY_MERGE_RECORDED":
+    case "DELIVERY_CLEANUP_RECORDED":
+    case "DELIVERY_CLEANUP_PROVENANCE_RECORDED":
+    case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
+    case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
       return "orchestrator";
     case "RUN_FAILED":
       return roleFromFailureStage(event.payload["stage"]);
@@ -973,6 +1001,16 @@ function subStateForEvent(event: RunEvent): string | undefined {
       return "publicationOutcomeUnknown";
     case "DELIVERY_REMEDIATION_RECORDED":
       return "remediation";
+    case "DELIVERY_MERGE_READINESS_RECORDED":
+      return "awaitingMerge";
+    case "DELIVERY_MERGE_RECORDED":
+      return "merging";
+    case "DELIVERY_CLEANUP_RECORDED":
+      return "cleanup";
+    case "DELIVERY_CLEANUP_PROVENANCE_RECORDED":
+    case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
+    case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
+      return "checkpoint";
     case "RUN_CREATED":
       return "accepted";
     case "WORKSPACE_PREPARED":
@@ -1031,6 +1069,18 @@ function activityLabel(event: RunEvent): string {
       return "Publication outcome unknown";
     case "DELIVERY_REMEDIATION_RECORDED":
       return "Delivery remediation updated";
+    case "DELIVERY_MERGE_READINESS_RECORDED":
+      return "Delivery merge readiness recorded";
+    case "DELIVERY_MERGE_RECORDED":
+      return "Delivery merge updated";
+    case "DELIVERY_CLEANUP_RECORDED":
+      return "Delivery cleanup updated";
+    case "DELIVERY_CLEANUP_PROVENANCE_RECORDED":
+      return "Private cleanup provenance recorded";
+    case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
+      return "Cleanup resource checkpoint recorded";
+    case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
+      return "Merge provider checkpoint recorded";
     case "RUN_CREATED":
       return "Factory run accepted";
     case "WORKSPACE_PREPARED":
