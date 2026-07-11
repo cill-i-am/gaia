@@ -14,6 +14,8 @@ import {
   ResolvedHarnessExecution,
   snapshotFromReplay,
   type GaiaFailure,
+  type WorkerRecoveryAction,
+  type WorkerRecoveryReceipt,
   type RunEvent,
   type RunId,
   type RunState,
@@ -106,7 +108,14 @@ export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly harnessProviderRegistry?: HarnessProviderRegistry;
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly workspaceSource?: WorkspaceSource;
+  readonly workerRecoveryActivator?: (runId: string, action: WorkerRecoveryAction) => Effect.Effect<WorkerRecoveryReceipt, unknown, FileSystem.FileSystem | Path.Path>;
 };
+
+export function actOnWorkerRecovery(runId: string, action: WorkerRecoveryAction, options: ServerWorkflowOptions) {
+  return options.workerRecoveryActivator === undefined
+    ? Effect.fail(makeRuntimeError({ code: "DeliveryActionFailed", message: "Worker recovery is unavailable.", recoverable: false }))
+    : options.workerRecoveryActivator(runId, action);
+}
 
 export type DeliveryMergeActionHandler = (
   runId: string,

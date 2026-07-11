@@ -25,6 +25,7 @@ import {
   deriveDeliveryMergeActionHistories,
   deriveDeliveryCleanupActionHistories,
 } from "./delivery-merge.js";
+import { parseWorkerRecoveryReceipt, type WorkerRecoveryReceipt } from "./worker-recovery.js";
 import {
   FailureStageSchema,
   GaiaFailure,
@@ -197,6 +198,7 @@ export type RunMachineEvent =
       readonly status: string;
     }
   | { readonly type: "HARNESS_SESSION_EVENT_RECORDED" }
+  | { readonly type: "WORKER_RECOVERY_RECORDED"; readonly recovery: WorkerRecoveryReceipt }
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
@@ -305,7 +307,14 @@ export const runMachine = createMachine({
         },
       },
     },
-    failed: {},
+    failed: {
+      on: {
+        WORKER_RECOVERY_RECORDED: [
+          { guard: "workerRecoveryConfirmed", target: "runningWorker" },
+          {},
+        ],
+      },
+    },
     delivering: {
       on: {
         BROWSER_EVIDENCE_RECORDED: {
@@ -721,6 +730,7 @@ export const runMachine = createMachine({
     }),
   },
   guards: {
+    workerRecoveryConfirmed: ({ event }) => event.type === "WORKER_RECOVERY_RECORDED" && event.recovery.state === "dispatchConfirmed",
     cleanupCompleted: ({ event }) => event.type === "DELIVERY_CLEANUP_RECORDED" && event.cleanup.state === "completed",
   },
 });
@@ -941,6 +951,8 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
       return { type: event.type };
     case "HARNESS_SESSION_EVENT_RECORDED":
       return { type: event.type };
+    case "WORKER_RECOVERY_RECORDED":
+      return { recovery: parseWorkerRecoveryReceipt(event.payload["recovery"]), type: event.type };
     case "REVIEW_COMPLETED":
       const reviewerSessionEvidencePath = getOptionalStringPayload(
         event,

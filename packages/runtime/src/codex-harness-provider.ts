@@ -320,7 +320,7 @@ export function createCodexHarnessProvider(
             ),
           );
         const correlatedThreadId =
-          correlation === undefined ? undefined : decodeCorrelation(correlation);
+          correlation === undefined ? undefined : decodeCodexHarnessCorrelation(correlation);
         if (correlatedThreadId === undefined) {
           return yield* new HarnessResumeError({
             message: "Codex session correlation is unavailable for resume.",
@@ -991,7 +991,7 @@ function encodeCorrelation(threadId: CodexThreadId): CodexHarnessOpaqueCorrelati
   return { token: Buffer.from(threadId, "utf8").toString("base64url") };
 }
 
-function decodeCorrelation(
+export function decodeCodexHarnessCorrelation(
   correlation: CodexHarnessOpaqueCorrelation,
 ): CodexThreadId | undefined {
   try {

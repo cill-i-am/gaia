@@ -489,6 +489,21 @@ pnpm gaia doctor
 pnpm gaia doctor --json
 ```
 
+### Recoverable worker provider failure
+
+Server-created pull-request deliveries expose one strict worker-recovery action
+only after an initial Codex provider session fails recoverably. The action is
+bound to the exact run, failure sequence, public session, Codex profile, and an
+explicit model freshly validated through the pinned App Server `model/list`
+protocol. It does not create another run, worktree, branch, or Codex thread.
+
+Gaia reacquires and reads the correlated thread before recording the single
+`turn/start` attempt. If the provider accepts that mutation but Gaia cannot
+durably persist the returned native turn receipt, the recovery becomes
+`outcomeUnknown` and is never automatically retried. Recovery intent and
+dispatch are reported separately from an actively running worker. Native
+thread and turn identifiers remain private run evidence.
+
 It checks `.gaia` writability, git repository presence, GitHub CLI auth, Codex
 CLI availability, and Playwright Chromium availability. Missing optional tools
 produce warnings instead of failing the command.

@@ -22,6 +22,7 @@ import {
 } from "./factory-graph.js";
 import { RunIdSchema } from "./run-id.js";
 import { HarnessExecutionSelection } from "./harness-execution.js";
+import { WorkerRecoveryAction, WorkerRecoveryReceiptSchema } from "./worker-recovery.js";
 import {
   AgentActionSuccessEnvelope,
   AgentOperatorActionRequestSchema,
@@ -520,6 +521,11 @@ export class DeliverySnapshotSuccessEnvelope extends Schema.Class<DeliverySnapsh
   status: Schema.Literal("success"),
 }) {}
 
+export class WorkerRecoverySuccessEnvelope extends Schema.Class<WorkerRecoverySuccessEnvelope>("WorkerRecoverySuccessEnvelope")({
+  data: WorkerRecoveryReceiptSchema,
+  status: Schema.Literal("success"),
+}) {}
+
 export const DeliverySnapshotSseEventSchema = Schema.Struct({
   data: Schema.fromJsonString(DeliverySnapshotDto),
   event: Schema.Literal("delivery-update"),
@@ -842,6 +848,14 @@ export const RunsGroup = HttpApiGroup.make("runs")
       params: { runId: RunIdSchema },
       payload: DeliveryActionRequestSchema,
       success: DeliverySnapshotSuccessEnvelope,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("recoverWorker", "/runs/:runId/recovery/actions", {
+      error: [...LocalRunReadErrorResponse, LocalRunApiConflictResponse],
+      params: { runId: RunIdSchema },
+      payload: WorkerRecoveryAction,
+      success: WorkerRecoverySuccessEnvelope,
     }),
   )
   .add(

@@ -10,6 +10,7 @@ import {
   DeliveryProvenanceDto,
   DeliverySnapshotDto,
   DeliverySnapshotSuccessEnvelope,
+  WorkerRecoverySuccessEnvelope,
   DeliveryStatusSchema,
   FactoryActivitySuccessEnvelope,
   CreateRunAcceptedResponse,
@@ -79,6 +80,7 @@ import {
   actOnDeliveryPublication,
   actOnDeliveryRemediation,
   actOnDeliveryMerge,
+  actOnWorkerRecovery,
   acceptFactoryRun,
   continueServerRun,
   type ServerRunAcceptance,
@@ -354,6 +356,18 @@ export const RunsLive = HttpApiBuilder.group(
             data: snapshotExit.value,
             status: "success",
           });
+        }),
+      )
+      .handle("recoverWorker", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(actOnWorkerRecovery(params.runId, payload, {
+            ...identity.workflowOptions,
+            rootDirectory: identity.rootDirectory,
+          }));
+          if (exit._tag === "Failure") return yield* Effect.fail(actionApiErrorFromCause(exit.cause));
+          yield* identity.runIndex.refreshRun(params.runId);
+          return WorkerRecoverySuccessEnvelope.make({ data: exit.value, status: "success" });
         }),
       )
       .handle("getAgentActivity", ({ params }) =>

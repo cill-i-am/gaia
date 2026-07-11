@@ -50,6 +50,7 @@ export const EventTypeSchema = Schema.Literals([
   "LINEAR_ISSUE_GRAPH_RECORDED",
   "MERGE_DECISION_RECORDED",
   "HARNESS_SESSION_EVENT_RECORDED",
+  "WORKER_RECOVERY_RECORDED",
   "RUN_FAILED",
 ] as const);
 

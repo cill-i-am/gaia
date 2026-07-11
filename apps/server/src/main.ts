@@ -8,6 +8,10 @@ import {
   makeCodexAppServerClient,
   makeCodexAppServerConnection,
   makeFileCodexHarnessCorrelationStore,
+  decodeCodexHarnessCorrelation,
+  listCodexModels,
+  recoverWorkerSession,
+  parseCodexThreadId,
   makeHarnessProviderRegistry,
   type HarnessProviderRegistry,
 } from "@gaia/runtime";
@@ -21,6 +25,8 @@ import { HttpServer } from "effect/unstable/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { makeLocalGaiaServerLayer } from "./api.js";
 import {
   appendServerLog,
@@ -62,13 +68,15 @@ export function runLocalGaiaServer(input: {
   });
   return Effect.scoped(
     Effect.gen(function* () {
-      const harnessProviderRegistry =
-        input.harnessProviderRegistry ??
-        (yield* makeProductionHarnessProviderRegistry(identity.rootDirectory));
+      const production = input.harnessProviderRegistry === undefined
+        ? yield* makeProductionHarnessServices(identity.rootDirectory)
+        : undefined;
+      const harnessProviderRegistry = input.harnessProviderRegistry ?? production!.registry;
       const workflowOptions = {
         deliveryObservationEnabled: true,
         harnessProviderRegistry,
         rootDirectory: identity.rootDirectory,
+        ...(production === undefined ? {} : { workerRecoveryActivator: production.recover }),
       };
       const reconciliation = yield* reconcileInterruptedServerRuns(
         workflowOptions,
@@ -103,20 +111,49 @@ export function runLocalGaiaServer(input: {
   ).pipe(Effect.provide(NodeServices.layer));
 }
 
-function makeProductionHarnessProviderRegistry(rootDirectory: string) {
+function makeProductionHarnessServices(rootDirectory: string) {
   return Effect.gen(function* () {
     const connection = yield* makeCodexAppServerConnection({
       cwd: rootDirectory,
     });
+    const client = makeCodexAppServerClient(connection);
+    const correlationStore = makeFileCodexHarnessCorrelationStore(rootDirectory);
     const provider = createCodexHarnessProvider({
-      client: makeCodexAppServerClient(connection),
-      correlationStore: makeFileCodexHarnessCorrelationStore(rootDirectory),
+      client,
+      correlationStore,
       detectionProbe: detectInstalledCodexAppServer,
       workspaceRoot: rootDirectory,
     });
-    return makeHarnessProviderRegistry([
+    const registry = makeHarnessProviderRegistry([
       { profileId: codexAppServerHarnessProfileId, provider },
     ]);
+    const recover = (runId: string, action: Parameters<typeof recoverWorkerSession>[1]) => Effect.gen(function* () {
+      const correlation = yield* correlationStore.load(action.expectedSessionId);
+      const nativeThreadId = correlation === undefined ? undefined : decodeCodexHarnessCorrelation(correlation);
+      if (nativeThreadId === undefined) return yield* Effect.fail(new Error("Codex session correlation is unavailable."));
+      return yield* recoverWorkerSession(runId, action, {
+        nativeThreadId,
+        rootDirectory,
+        provider: {
+          listModels: () => listCodexModels(connection, { includeHidden: false }).pipe(Effect.map(({ data }) => data.map(({ hidden, id }) => ({ hidden, id })))),
+          readThread: (threadId) => client.readThread({ includeTurns: true, threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ active: thread.status?.type === "active", systemError: thread.status?.type === "systemError", threadId: thread.id }))),
+          resumeThread: (threadId) => client.resumeThread({ threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ threadId: thread.id }))),
+          startTurn: ({ model, threadId }) => client.startTurn({ input: [{ text: "Resume the retained worker task after the recoverable provider failure.", type: "text" }], model, threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ turn }) => ({ turnId: turn.id }))),
+        },
+        validateWorkspace: (workspacePath) => Effect.tryPromise({
+          try: async () => {
+            const run = promisify(execFile);
+            const [{ stdout: head }, { stdout: status }] = await Promise.all([
+              run("git", ["-C", workspacePath, "rev-parse", "HEAD"]),
+              run("git", ["-C", workspacePath, "status", "--porcelain"]),
+            ]);
+            if (head.trim().length !== 40 || status.trim().length !== 0) throw new Error("Retained worktree is not clean.");
+          },
+          catch: (cause) => cause,
+        }),
+      });
+    });
+    return { recover, registry };
   });
 }
 
