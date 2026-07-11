@@ -10,10 +10,12 @@ import {
 } from "@xyflow/react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
+  type AgentSessionSnapshotDto,
   type FactoryActivityDto,
   type FactoryArtifactBodyDto,
   type FactoryArtifactDto,
   type FactoryGraphDto,
+  type HarnessPendingInteraction,
   RunEvent,
 } from "@gaia/core";
 import { Option, Schema } from "effect";
@@ -21,7 +23,6 @@ import {
   ActivityIcon,
   AlertCircleIcon,
   BoxIcon,
-  BracesIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CircleDotIcon,
@@ -29,6 +30,7 @@ import {
   GitCompareArrowsIcon,
   InspectIcon,
   LoaderCircleIcon,
+  MessageSquareIcon,
   PauseIcon,
   type LucideIcon,
   PlayIcon,
@@ -42,7 +44,6 @@ import * as React from "react";
 
 import {
   type DashboardRun,
-  type EvidenceTab,
   type RunReplayState,
   type RunStatus,
   buildRunCanvasModel,
@@ -69,6 +70,13 @@ import {
   factoryAgentStateLabel,
 } from "@/factory-agent-visuals";
 import {
+  buildAgentInspectorSessionModel,
+  type AgentInspectorConnection,
+  type AgentInspectorPendingInteraction,
+  type AgentInspectorSessionModel,
+} from "@/agent-inspector-model";
+import { createAgentSessionStreamController } from "@/agent-session-stream-controller";
+import {
   buildRunCompareModel,
   type RunCompareModel,
   type RunCompareSignal,
@@ -80,6 +88,8 @@ import {
   localGaiaFactoryArtifactsQueryOptions,
   localGaiaFactoryGraphQueryOptions,
   localGaiaFactoryRunActivityQueryOptions,
+  localGaiaAgentSessionActionMutationOptions,
+  localGaiaAgentSessionQueryOptions,
   localGaiaCreateRunMutationOptions,
   localGaiaHealthQueryOptions,
   localGaiaRunEventsQueryOptions,
@@ -300,6 +310,7 @@ type ServerConnectionState = {
 };
 
 type CommandMode = "activity" | "compare" | "inspect" | "replay";
+type AgentInspectorTab = "activity" | "artifacts" | "session";
 
 type SelectedRunArtifactEvidence =
   | { readonly status: "loading" }
@@ -813,7 +824,7 @@ export function DashboardShell() {
               selectedFactoryNode={selectedFactoryNode}
               onSelectNode={setSelectedNodeId}
             />
-            <EvidenceStudioSheet
+            <AgentInspectorSheet
               inspector={selectedNodeInspector}
               replayState={replayState}
               runCompare={runCompare}
@@ -2063,7 +2074,7 @@ function MobileWorkspace({
   );
 }
 
-function EvidenceStudioSheet({
+function AgentInspectorSheet({
   inspector,
   replayState,
   runCompare,
@@ -2092,11 +2103,11 @@ function EvidenceStudioSheet({
       {isOpen ? (
         <SheetContent
           className="gap-0 p-0 data-[side=right]:w-[min(30rem,calc(100vw-1rem))] data-[side=right]:sm:max-w-[30rem]"
-          data-testid="evidence-studio-panel"
+          data-testid="agent-inspector-panel"
           showCloseButton={false}
           side="right"
         >
-          <EvidenceStudio
+          <AgentInspector
             inspector={inspector}
             replayState={replayState}
             runCompare={runCompare}
@@ -2222,7 +2233,7 @@ function noticeFor(
   return model.notices.find((notice) => notice.title.startsWith(prefix));
 }
 
-function EvidenceStudio({
+function AgentInspector({
   inspector,
   replayState,
   runCompare,
@@ -2237,7 +2248,7 @@ function EvidenceStudio({
   readonly serverUrl: string;
   readonly onClose: () => void;
 }) {
-  const [tab, setTab] = React.useState<EvidenceTab>("summary");
+  const [tab, setTab] = React.useState<AgentInspectorTab>("session");
   const nodeArtifacts =
     inspector.kind === "agent" || inspector.kind === "workItem"
       ? inspector.artifacts
@@ -2260,12 +2271,120 @@ function EvidenceStudio({
       : undefined;
   const selectedRunId =
     selectedRun.id === "no-run-selected" ? "" : selectedRun.id;
+  const selectedAgentId = inspector.kind === "agent" ? inspector.agent.id : "";
   const artifactQuery = useQuery(
     localGaiaFactoryArtifactQueryOptions({
       artifactId: selectedArtifactId ?? "",
       runId: selectedRunId,
       serverUrl,
     }),
+  );
+  const sessionQuery = useQuery(
+    localGaiaAgentSessionQueryOptions({
+      agentId: selectedAgentId,
+      runId: selectedRunId,
+      serverUrl,
+    }),
+  );
+  const sessionAction = useMutation(
+    localGaiaAgentSessionActionMutationOptions({
+      agentId: selectedAgentId,
+      runId: selectedRunId,
+      serverUrl,
+    }),
+  );
+  const [streamSession, setStreamSession] = React.useState<
+    typeof AgentSessionSnapshotDto.Type | undefined
+  >();
+  const [streamConnection, setStreamConnection] =
+    React.useState<AgentInspectorConnection>("connecting");
+  const [streamError, setStreamError] = React.useState<string | undefined>();
+  const streamController = React.useRef<
+    ReturnType<typeof createAgentSessionStreamController> | undefined
+  >(undefined);
+  const getStreamController = React.useCallback(() => {
+    if (streamController.current !== undefined) {
+      return streamController.current;
+    }
+
+    const controller = createAgentSessionStreamController({
+      onConnectionChange: setStreamConnection,
+      onError: (error) =>
+        setStreamError(error instanceof Error ? error.message : String(error)),
+      onUpdate: (update) => {
+        setStreamSession(update.snapshot);
+        setStreamError(undefined);
+      },
+      serverUrl,
+    });
+    streamController.current = controller;
+    return controller;
+  }, [serverUrl]);
+
+  React.useEffect(() => {
+    setStreamSession(undefined);
+    setStreamError(undefined);
+    setStreamConnection("connecting");
+  }, [inspector.kind, selectedAgentId, selectedRunId]);
+
+  React.useEffect(() => {
+    if (sessionQuery.data?.data !== undefined) {
+      setStreamSession(sessionQuery.data.data);
+    }
+  }, [sessionQuery.data?.data]);
+
+  React.useEffect(() => {
+    const controller = getStreamController();
+    controller.sync({
+      agentId: selectedAgentId === "" ? undefined : selectedAgentId,
+      isOpen: inspector.kind === "agent",
+      runId: selectedRunId === "" ? undefined : selectedRunId,
+    });
+  }, [getStreamController, inspector.kind, selectedAgentId, selectedRunId]);
+
+  React.useEffect(
+    () => () => {
+      streamController.current?.dispose();
+      streamController.current = undefined;
+    },
+    [],
+  );
+  const sessionConnection: AgentInspectorConnection =
+    inspector.kind !== "agent"
+      ? "unavailable"
+      : sessionQuery.isPending && streamSession === undefined
+      ? "connecting"
+      : sessionQuery.isError
+        ? "unavailable"
+        : streamConnection;
+  const sessionError =
+    inspector.kind === "agent"
+      ? dashboardQueryFailure(sessionQuery.error) === undefined
+        ? streamError
+        : dashboardFailureMessage(
+            dashboardQueryFailure(sessionQuery.error),
+            "Agent session could not be loaded.",
+          )
+      : "Live sessions are only available for factory agents.";
+  const sessionModel = buildAgentInspectorSessionModel({
+    connection: sessionConnection,
+    lastError: sessionError,
+    session: streamSession,
+  });
+  const actionCounter = React.useRef(0);
+  const nextActionId = React.useCallback(() => {
+    actionCounter.current += 1;
+    return `action-${selectedRunId}-${selectedAgentId}-${actionCounter.current}`;
+  }, [selectedAgentId, selectedRunId]);
+  const submitSessionAction = React.useCallback(
+    (action: unknown) => {
+      sessionAction.mutate(action, {
+        onSuccess: () => {
+          void sessionQuery.refetch();
+        },
+      });
+    },
+    [sessionAction, sessionQuery],
   );
 
   React.useEffect(() => {
@@ -2289,7 +2408,7 @@ function EvidenceStudio({
     <div className="flex size-full min-h-0 flex-col">
       <SheetHeader className="flex-row items-center justify-between gap-3 border-b px-3 py-3">
         <div className="min-w-0">
-          <SheetTitle>Evidence Studio</SheetTitle>
+          <SheetTitle>Agent Inspector</SheetTitle>
           <SheetDescription className="truncate">
             {selectedNode.label}
           </SheetDescription>
@@ -2302,13 +2421,14 @@ function EvidenceStudio({
             {factoryAgentStateLabel(selectedNode.state)}
           </Badge>
           <Button
-            aria-label="Close Evidence Studio"
+            aria-label="Close Agent Inspector"
             size="icon-sm"
             type="button"
             variant="ghost"
             onClick={onClose}
           >
             <XIcon />
+            <span className="sr-only">Close Agent Inspector</span>
           </Button>
         </div>
       </SheetHeader>
@@ -2316,10 +2436,9 @@ function EvidenceStudio({
         className="min-h-0 flex-1 gap-0"
         onValueChange={(value) => {
           if (
-            value === "summary" ||
-            value === "events" ||
-            value === "artifacts" ||
-            value === "raw"
+            value === "session" ||
+            value === "activity" ||
+            value === "artifacts"
           ) {
             setTab(value);
           }
@@ -2328,11 +2447,11 @@ function EvidenceStudio({
       >
         <div className="overflow-x-auto border-b px-3 py-2">
           <TabsList className="min-w-max" variant="line">
-            <TabsTrigger value="summary">
-              <InspectIcon data-icon="inline-start" />
-              Summary
+            <TabsTrigger value="session">
+              <MessageSquareIcon data-icon="inline-start" />
+              Session
             </TabsTrigger>
-            <TabsTrigger value="events">
+            <TabsTrigger value="activity">
               <ActivityIcon data-icon="inline-start" />
               Activity
             </TabsTrigger>
@@ -2340,17 +2459,65 @@ function EvidenceStudio({
               <BoxIcon data-icon="inline-start" />
               Artifacts
             </TabsTrigger>
-            <TabsTrigger value="raw">
-              <BracesIcon data-icon="inline-start" />
-              Raw
-            </TabsTrigger>
           </TabsList>
         </div>
         <ScrollArea className="min-h-0 flex-1">
-          <TabsContent className="m-0 p-3" value="summary">
+          <TabsContent className="m-0 p-3" value="session">
+            <AgentInspectorSession
+              model={sessionModel}
+              pendingRequests={streamSession?.pendingInteractions ?? []}
+              sessionId={streamSession?.sessionId}
+              onFollowUp={(text) =>
+                streamSession === undefined
+                  ? undefined
+                  : submitSessionAction({
+                      actionId: nextActionId(),
+                      kind: "followUp",
+                      sessionId: streamSession.sessionId,
+                      text,
+                    })
+              }
+              onInteraction={(interaction, action, value) => {
+                if (streamSession === undefined) return;
+                submitInteractionAction({
+                  action,
+                  actionId: nextActionId(),
+                  interaction,
+                  sessionId: streamSession.sessionId,
+                  submitSessionAction,
+                  value,
+                });
+              }}
+              onInterrupt={() => {
+                if (
+                  streamSession === undefined ||
+                  sessionModel.interrupt.turnId === undefined
+                ) {
+                  return;
+                }
+                submitSessionAction({
+                  actionId: nextActionId(),
+                  kind: "interrupt",
+                  sessionId: streamSession.sessionId,
+                  turnId: sessionModel.interrupt.turnId,
+                });
+              }}
+              onSteer={(text, turnId) =>
+                streamSession === undefined
+                  ? undefined
+                  : submitSessionAction({
+                      actionId: nextActionId(),
+                      kind: "steer",
+                      sessionId: streamSession.sessionId,
+                      text,
+                      turnId,
+                    })
+              }
+            />
+            <Separator className="my-4" />
             <FactoryEvidenceSummary inspector={inspector} />
           </TabsContent>
-          <TabsContent className="m-0 p-3" value="events">
+          <TabsContent className="m-0 p-3" value="activity">
             <FactoryEvidenceActivity
               activities={inspector.activity}
               status={inspector.activityStatus}
@@ -2377,26 +2544,285 @@ function EvidenceStudio({
               }
             />
           </TabsContent>
-          <TabsContent className="m-0 p-3" value="raw">
-            <pre className="overflow-auto rounded-md bg-muted p-3 text-xs">
-              {stringifyJson({
-                node: selectedNode,
-                replay: {
-                  activeEventId: replayState.activeEventId,
-                  activeSequence: replayState.activeSequence,
-                  visibleEventIds: replayState.visibleEventIds,
-                },
-                activities: inspector.activity,
-                compare: runCompare.summary,
-                inspectorKind: inspector.kind,
-                runId: selectedRun.id,
-              })}
-            </pre>
-          </TabsContent>
         </ScrollArea>
       </Tabs>
     </div>
   );
+}
+
+function AgentInspectorSession({
+  model,
+  pendingRequests,
+  sessionId,
+  onFollowUp,
+  onInteraction,
+  onInterrupt,
+  onSteer,
+}: {
+  readonly model: AgentInspectorSessionModel;
+  readonly pendingRequests: ReadonlyArray<HarnessPendingInteraction>;
+  readonly sessionId: string | undefined;
+  readonly onFollowUp: (text: string) => void;
+  readonly onInteraction: (
+    interaction: HarnessPendingInteraction,
+    action: string,
+    value: string,
+  ) => void;
+  readonly onInterrupt: () => void;
+  readonly onSteer: (text: string, turnId: string) => void;
+}) {
+  const [composerText, setComposerText] = React.useState("");
+  const canSubmit =
+    model.composer.mode !== "disabled" && composerText.trim().length > 0;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/20 px-3 py-2">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Live session</p>
+          <p className="mt-1 truncate text-xs text-muted-foreground">
+            {sessionId ?? "No public session identity"}
+          </p>
+          {model.notice === undefined ? null : (
+            <p className="mt-2 text-xs text-muted-foreground">{model.notice}</p>
+          )}
+        </div>
+        <Badge variant={model.status === "failed" ? "destructive" : "secondary"}>
+          {sessionStateLabel(model.status)}
+        </Badge>
+      </div>
+
+      {model.pendingInteractions.length === 0 ? null : (
+        <section className="flex flex-col gap-2">
+          <p className="text-xs font-medium uppercase text-muted-foreground">
+            Pending operator input
+          </p>
+          {model.pendingInteractions.map((interaction) => {
+            const request = pendingRequests.find(
+              (candidate) =>
+                candidate.interactionId === interaction.interactionId,
+            );
+            return (
+              <PendingInteractionCard
+                interaction={interaction}
+                key={interaction.interactionId}
+                request={request}
+                onInteraction={onInteraction}
+              />
+            );
+          })}
+        </section>
+      )}
+
+      <section className="flex flex-col gap-2">
+        <p className="text-xs font-medium uppercase text-muted-foreground">
+          Session activity
+        </p>
+        {model.timeline.length === 0 ? (
+          <Empty className="min-h-32 border">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <ActivityIcon />
+              </EmptyMedia>
+              <EmptyTitle>No live session activity</EmptyTitle>
+              <EmptyDescription>
+                Gaia has not exposed normalized session items for this agent.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <div className="flex flex-col">
+            {model.timeline.map((item) => (
+              <section className="border-b py-3 last:border-b-0" key={item.key}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{item.title}</p>
+                    {item.details === undefined || item.details === "" ? null : (
+                      <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded-md bg-muted px-3 py-2 text-xs">
+                        {item.details}
+                      </pre>
+                    )}
+                  </div>
+                  <Badge className="shrink-0" variant="outline">
+                    {item.status}
+                  </Badge>
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <Label htmlFor="agent-inspector-composer">
+          {model.composer.mode === "steer"
+            ? "Steer active turn"
+            : model.composer.mode === "followUp"
+              ? "Follow-up"
+              : "Operator message"}
+        </Label>
+        <Textarea
+          disabled={model.composer.mode === "disabled"}
+          id="agent-inspector-composer"
+          placeholder={model.composer.placeholder}
+          value={composerText}
+          onChange={(event) => setComposerText(event.currentTarget.value)}
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            disabled={!canSubmit}
+            type="button"
+            onClick={() => {
+              const text = composerText.trim();
+              if (model.composer.mode === "steer") {
+                onSteer(text, model.composer.turnId);
+              } else if (model.composer.mode === "followUp") {
+                onFollowUp(text);
+              }
+              setComposerText("");
+            }}
+          >
+            <MessageSquareIcon data-icon="inline-start" />
+            {model.composer.mode === "steer" ? "Send steer" : "Send follow-up"}
+          </Button>
+          <Button
+            disabled={!model.interrupt.enabled}
+            type="button"
+            variant="outline"
+            onClick={onInterrupt}
+          >
+            <PauseIcon data-icon="inline-start" />
+            Interrupt turn
+          </Button>
+          {model.composer.disabledReason === undefined ? null : (
+            <p className="text-xs text-muted-foreground">
+              {model.composer.disabledReason}
+            </p>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PendingInteractionCard({
+  interaction,
+  request,
+  onInteraction,
+}: {
+  readonly interaction: AgentInspectorPendingInteraction;
+  readonly request: HarnessPendingInteraction | undefined;
+  readonly onInteraction: (
+    interaction: HarnessPendingInteraction,
+    action: string,
+    value: string,
+  ) => void;
+}) {
+  const [value, setValue] = React.useState("");
+  const needsText =
+    request?.kind === "userInput" || request?.kind === "mcpElicitation";
+
+  return (
+    <section className="rounded-md border bg-background p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">{interaction.title}</p>
+          <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
+            {interaction.body}
+          </p>
+        </div>
+        <Badge variant="secondary">Waiting</Badge>
+      </div>
+      {needsText ? (
+        <Textarea
+          className="mt-3"
+          placeholder={
+            request?.kind === "userInput"
+              ? "Type operator response"
+              : "Optional bounded content"
+          }
+          value={value}
+          onChange={(event) => setValue(event.currentTarget.value)}
+        />
+      ) : null}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {interaction.actions.map((action) => (
+          <Button
+            disabled={request === undefined}
+            key={action}
+            size="sm"
+            type="button"
+            variant={action === "approve" || action === "submit" ? "default" : "outline"}
+            onClick={() => {
+              if (request !== undefined) {
+                onInteraction(request, action, value);
+                setValue("");
+              }
+            }}
+          >
+            {actionLabel(action, interaction.title)}
+          </Button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function submitInteractionAction(input: {
+  readonly action: string;
+  readonly actionId: string;
+  readonly interaction: HarnessPendingInteraction;
+  readonly sessionId: string;
+  readonly submitSessionAction: (action: unknown) => void;
+  readonly value: string;
+}) {
+  switch (input.interaction.kind) {
+    case "commandApproval":
+    case "fileChangeApproval":
+    case "permissionApproval":
+      input.submitSessionAction({
+        actionId: input.actionId,
+        decision: input.action,
+        interactionId: input.interaction.interactionId,
+        kind: "approval",
+        sessionId: input.sessionId,
+      });
+      return;
+    case "userInput":
+      input.submitSessionAction({
+        actionId: input.actionId,
+        answers: input.interaction.questions.map((question) => ({
+          answers: input.action === "submit" ? [input.value] : [],
+          questionId: question.questionId,
+        })),
+        interactionId: input.interaction.interactionId,
+        kind: "userInput",
+        sessionId: input.sessionId,
+      });
+      return;
+    case "mcpElicitation":
+      input.submitSessionAction({
+        action: input.action,
+        actionId: input.actionId,
+        ...(input.value.trim() === "" ? {} : { content: input.value.trim() }),
+        interactionId: input.interaction.interactionId,
+        kind: "mcpElicitation",
+        sessionId: input.sessionId,
+      });
+  }
+}
+
+function sessionStateLabel(status: AgentInspectorSessionModel["status"]) {
+  return status
+    .replace(/([A-Z])/gu, " $1")
+    .replace(/^./u, (first) => first.toUpperCase());
+}
+
+function actionLabel(action: string, title: string) {
+  const label = action
+    .replace(/([A-Z])/gu, " $1")
+    .replace(/^./u, (first) => first.toUpperCase());
+  return `${label} ${title.toLowerCase()}`;
 }
 
 function FactoryEvidenceSummary({
@@ -2431,10 +2857,6 @@ function FactoryEvidenceSummary({
               "artifacts",
             ),
           },
-          {
-            label: "Query",
-            value: "Unavailable in this prototype",
-          },
         ]
       : [
           inspector.workItem.description === undefined
@@ -2454,10 +2876,6 @@ function FactoryEvidenceSummary({
               "artifact",
               "artifacts",
             ),
-          },
-          {
-            label: "Query",
-            value: "Unavailable in this prototype",
           },
         ];
 

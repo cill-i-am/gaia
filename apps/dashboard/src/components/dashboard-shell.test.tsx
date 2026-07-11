@@ -3,6 +3,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   FactoryActivityDto,
+  AgentActionReceiptDto,
+  AgentSessionSnapshotDto,
   FactoryArtifactBodyDto,
   FactoryArtifactDto,
   FactoryGraphDto,
@@ -18,6 +20,13 @@ import {
   FactoryWorkItemIdSchema,
   RunIdSchema,
   makeRunEvent,
+  parseHarnessActionId,
+  parseHarnessInteractionId,
+  parseHarnessItemId,
+  parseHarnessQuestionId,
+  parseHarnessSessionId,
+  parseHarnessTurnId,
+  parseWorkspaceRelativePath,
 } from "@gaia/core";
 import { testFactoryExecution } from "@/test-factory-execution";
 import {
@@ -29,6 +38,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { Schema } from "effect";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -69,6 +79,12 @@ const queryFixture = vi.hoisted(
     factoryArtifactErrorsByRunId: Record<string, unknown>;
     factoryArtifactsByRunId: Record<string, ReadonlyArray<unknown>>;
     factoryGraphsByRunId: Record<string, unknown>;
+    agentSessionActionInputs: Array<{
+      readonly action: unknown;
+      readonly agentId: string;
+      readonly runId: string;
+    }>;
+    agentSessionsByRunId: Record<string, Record<string, unknown>>;
     createRunError: unknown;
     createRunInputs: Array<{
       readonly description: string;
@@ -92,6 +108,8 @@ const queryFixture = vi.hoisted(
     factoryArtifactErrorsByRunId: {},
     factoryArtifactsByRunId: {},
     factoryGraphsByRunId: {},
+    agentSessionActionInputs: [],
+    agentSessionsByRunId: {},
     createRunError: undefined,
     createRunInputs: [],
     createRunPromise: undefined,
@@ -317,6 +335,65 @@ vi.mock("@/lib/local-gaia-query", () => ({
     ] as const,
     retry: false,
   }),
+  localGaiaAgentSessionQueryOptions: (config: {
+    readonly agentId: string;
+    readonly runId: string;
+  }) => ({
+    enabled: config.runId.length > 0 && config.agentId.length > 0,
+    queryFn: () =>
+      Promise.resolve({
+        data:
+          queryFixture.agentSessionsByRunId[config.runId]?.[config.agentId] ??
+          undefined,
+        status: "success",
+      }),
+    queryKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "agents",
+      config.agentId,
+      "session",
+    ] as const,
+    retry: false,
+  }),
+  localGaiaAgentSessionActionMutationOptions: (config: {
+    readonly agentId: string;
+    readonly runId: string;
+  }) => ({
+    mutationFn: async (action: unknown) => {
+      queryFixture.agentSessionActionInputs.push({
+        action,
+        agentId: config.agentId,
+        runId: config.runId,
+      });
+      return {
+        data: agentActionReceipt({
+          actionId:
+            typeof action === "object" &&
+            action !== null &&
+            "actionId" in action &&
+            typeof action.actionId === "string"
+              ? parseHarnessActionId(action.actionId)
+              : parseHarnessActionId("action-fixture"),
+          agentId: agentId(config.agentId),
+          runId: parseRunId(config.runId),
+        }),
+        status: "success",
+      };
+    },
+    mutationKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "agents",
+      config.agentId,
+      "session",
+      "action",
+    ] as const,
+  }),
   localGaiaFactoryArtifactsQueryOptions: (config: {
     readonly runId: string;
   }) => ({
@@ -389,71 +466,135 @@ afterEach(() => {
   delete (window as { EventSource?: unknown }).EventSource;
 });
 
-describe("DashboardShell Run Console", () => {
-  it("renders FactoryGraph topology and agent evidence from public factory reads", async () => {
-    const runId = parseRunId("run-9090909090");
-    const workerId = agentId("agent-worker");
-    const artifactId = artifactIdValue("artifact-summary");
-    const view = renderDashboardWithQueries({
-      factoryActivitiesByRunId: {
-        [runId]: [
-          factoryActivity({
-            activityId: activityId("activity-root"),
-            label: "Issue delivery graph created",
-            runId,
-            workItemId: workItemId("work-root"),
-          }),
-        ],
-      },
-      factoryAgentActivitiesByRunId: {
-        [runId]: {
-          [workerId]: [
-            factoryActivity({
-              activityId: activityId("activity-worker"),
-              agentId: workerId,
-              artifactIds: [artifactId],
-              label: "Worker produced code summary",
-              runId,
-            }),
-          ],
-        },
-      },
-      factoryArtifactBodiesByRunId: {
-        [runId]: {
-          [artifactId]: factoryArtifactBody({
-            artifactId,
-            body: "Worker summary body from the factory artifact endpoint.",
-            runId,
-          }),
-        },
-      },
-      factoryArtifactsByRunId: {
-        [runId]: [
-          factoryArtifact({
-            artifactId,
-            label: "Code summary",
-            ownerAgentId: workerId,
-          }),
-        ],
-      },
-      factoryGraphsByRunId: {
-        [runId]: factoryGraph({
+function renderFactoryGraphEvidenceDashboard() {
+  const runId = parseRunId("run-9090909090");
+  const workerId = agentId("agent-worker");
+  const artifactId = artifactIdValue("artifact-summary");
+  const view = renderDashboardWithQueries({
+    factoryActivitiesByRunId: {
+      [runId]: [
+        factoryActivity({
+          activityId: activityId("activity-root"),
+          label: "Issue delivery graph created",
           runId,
-          workerArtifactId: artifactId,
-          workerId,
-        }),
-      },
-      runs: [
-        localRunSummary({
-          artifacts: [],
-          eventCount: 0,
-          latestEventType: "RUN_CREATED",
-          runId,
-          state: "runningWorker",
-          status: "running",
+          workItemId: workItemId("work-root"),
         }),
       ],
-    });
+    },
+    factoryAgentActivitiesByRunId: {
+      [runId]: {
+        [workerId]: [
+          factoryActivity({
+            activityId: activityId("activity-worker"),
+            agentId: workerId,
+            artifactIds: [artifactId],
+            label: "Worker produced code summary",
+            runId,
+          }),
+        ],
+      },
+    },
+    factoryArtifactBodiesByRunId: {
+      [runId]: {
+        [artifactId]: factoryArtifactBody({
+          artifactId,
+          body: "Worker summary body from the factory artifact endpoint.",
+          runId,
+        }),
+      },
+    },
+    factoryArtifactsByRunId: {
+      [runId]: [
+        factoryArtifact({
+          artifactId,
+          label: "Code summary",
+          ownerAgentId: workerId,
+        }),
+      ],
+    },
+    factoryGraphsByRunId: {
+      [runId]: factoryGraph({
+        runId,
+        workerArtifactId: artifactId,
+        workerId,
+      }),
+    },
+    runs: [
+      localRunSummary({
+        artifacts: [],
+        eventCount: 0,
+        latestEventType: "RUN_CREATED",
+        runId,
+        state: "runningWorker",
+        status: "running",
+      }),
+    ],
+  });
+
+  return { artifactId, runId, view };
+}
+
+function renderTypedRunsDashboard() {
+  const firstRunId = parseRunId("run-1111111111");
+  const secondRunId = parseRunId("run-2222222222");
+  const view = renderDashboardWithQueries({
+    artifactsByRunId: {
+      [firstRunId]: {
+        input: localRunArtifact({
+          artifactName: "input",
+          body: "# Smoke spec\n\nRun the fake harness.\n",
+          runId: firstRunId,
+        }),
+        "worker-plan": localRunArtifact({
+          artifactName: "worker-plan",
+          body: "Worker plan body from the allowlisted API.",
+          runId: firstRunId,
+        }),
+      },
+    },
+    eventsByRunId: {
+      [firstRunId]: [
+        makeRunEvent({
+          payload: { specPath: "input.md" },
+          runId: firstRunId,
+          sequence: 1,
+          timestamp: "2026-07-07T12:00:00.000Z",
+          type: "RUN_CREATED",
+        }),
+        makeRunEvent({
+          runId: firstRunId,
+          sequence: 2,
+          timestamp: "2026-07-07T12:01:00.000Z",
+          type: "WORKER_STARTED",
+        }),
+      ],
+    },
+    runs: [
+      localRunSummary({
+        runId: firstRunId,
+        status: "running",
+        state: "runningWorker",
+        latestEventType: "WORKER_STARTED",
+        eventCount: 5,
+        updatedAt: "2026-07-07T12:30:00.000Z",
+      }),
+      localRunSummary({
+        runId: secondRunId,
+        status: "completed",
+        state: "completed",
+        latestEventType: "REPORT_COMPLETED",
+        eventCount: 12,
+        updatedAt: "2026-07-07T12:35:00.000Z",
+      }),
+    ],
+  });
+
+  return { view };
+}
+
+describe("DashboardShell Run Console", () => {
+  it("renders FactoryGraph topology and agent evidence from public factory reads", async () => {
+    const { view } = renderFactoryGraphEvidenceDashboard();
 
     await screen.findByTestId("selected-run-title");
 
@@ -505,17 +646,29 @@ describe("DashboardShell Run Console", () => {
     expect(workerNodeIconClassName).not.toMatch(
       /rose|amber|sky|cyan|emerald|indigo/,
     );
+  });
+
+  it("preserves Agent Inspector artifact and activity evidence from public factory reads", async () => {
+    const { artifactId, runId, view } = renderFactoryGraphEvidenceDashboard();
+
+    await screen.findByTestId("selected-run-title");
+    expect(await screen.findAllByText("Worker")).not.toHaveLength(0);
+    const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
+    if (workerNode === null) {
+      throw new Error("Expected a worker FactoryGraph node.");
+    }
+
     fireEvent.click(workerNode);
 
     await waitFor(() => {
       expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
       expect(screen.getAllByText("Code summary")).not.toHaveLength(0);
-      expect(screen.getByTestId("evidence-studio-panel").getAttribute("data-slot")).toBe(
+      expect(screen.getByTestId("agent-inspector-panel").getAttribute("data-slot")).toBe(
         "sheet-content",
       );
       const summaryIconClassName =
         screen
-          .getByTestId("evidence-studio-panel")
+          .getByTestId("agent-inspector-panel")
           .querySelector('[data-slot="factory-evidence-summary-icon"]')
           ?.getAttribute("class") ?? "";
       expect(summaryIconClassName).toContain("border-border");
@@ -523,32 +676,52 @@ describe("DashboardShell Run Console", () => {
         /rose|amber|sky|cyan|emerald|indigo/,
       );
     });
-    expect(screen.getByTestId("evidence-studio-panel").textContent).not.toContain(
+    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
       "Role:",
     );
-    expect(screen.getByTestId("evidence-studio-panel").textContent).not.toContain(
+    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
       "State:",
     );
-    expect(screen.getByTestId("evidence-studio-panel").textContent).not.toContain(
+    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
       "Work item:",
     );
-    expect(screen.getByTestId("evidence-studio-panel").textContent).toContain(
+    expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
       "Operator note",
     );
+    expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+      "Agent Inspector",
+    );
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Session",
+      "Activity",
+      "Artifacts",
+    ]);
+    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
+      "Query",
+    );
+  });
 
-    for (const artifactsTab of screen.getAllByRole("tab", {
+  it("loads Agent Inspector artifact bodies from public factory reads", async () => {
+    const { artifactId, runId, view } = renderFactoryGraphEvidenceDashboard();
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+
+    fireEvent.click(workerNode);
+    await screen.findByTestId("agent-inspector-panel");
+    const artifactsTab = firstElement(screen.getAllByRole("tab", {
       name: "Artifacts",
-    })) {
-      fireEvent.pointerDown(artifactsTab);
-      fireEvent.mouseDown(artifactsTab);
-      fireEvent.mouseUp(artifactsTab);
-      fireEvent.click(artifactsTab);
-    }
+    }));
+    fireEvent.click(artifactsTab);
     await waitFor(() => {
       expect(screen.getAllByRole("button", { name: "Code summary" })).not.toHaveLength(0);
-      expect(screen.getAllByText("Select an artifact")).not.toHaveLength(0);
     });
-    expect(queryFixture.factoryArtifactBodyRequests).toEqual([]);
 
     fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Code summary" })));
 
@@ -559,19 +732,268 @@ describe("DashboardShell Run Console", () => {
       artifactId,
       runId,
     });
+  });
 
-    fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Close Evidence Studio" })));
+  it("preserves Agent Inspector selection after close and reselect", async () => {
+    const { view } = renderFactoryGraphEvidenceDashboard();
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+
+    fireEvent.click(workerNode);
+
+    await screen.findByTestId("agent-inspector-panel");
+
+    fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Close Agent Inspector" })));
 
     await waitFor(() => {
-      expect(screen.queryByTestId("evidence-studio-panel")).toBeNull();
+      expect(screen.queryByTestId("agent-inspector-panel")).toBeNull();
       expect(screen.queryByText("Worker produced code summary")).toBeNull();
     });
 
     fireEvent.click(workerNode);
 
     await waitFor(() => {
-      expect(screen.getByTestId("evidence-studio-panel").textContent).toContain(
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
         "Worker produced code summary",
+      );
+    });
+  });
+
+  it("renders live Agent Inspector controls and finite pending interaction actions", async () => {
+    installMockEventSource();
+    const runId = parseRunId("run-7070707070");
+    const workerId = agentId("agent-worker");
+    const view = renderDashboardWithQueries({
+      agentSessionsByRunId: {
+        [runId]: {
+          [workerId]: agentSessionSnapshot({
+            agentId: workerId,
+            pendingInteractions: [
+              {
+                allowedDecisions: ["approve", "decline"],
+                command: "pnpm check",
+                interactionId: parseHarnessInteractionId("interaction-command"),
+                itemId: parseHarnessItemId("item-command-approval"),
+                kind: "commandApproval",
+                requestedAt: "2026-07-10T21:11:00.000Z",
+                turnId: parseHarnessTurnId("turn-1"),
+                workspacePath: parseWorkspaceRelativePath("."),
+              },
+              {
+                interactionId: parseHarnessInteractionId("interaction-question"),
+                itemId: parseHarnessItemId("item-question"),
+                kind: "userInput",
+                questions: [
+                  {
+                    options: ["Continue", "Stop"],
+                    prompt: "Operator continuation",
+                    questionId: parseHarnessQuestionId("question-continuation"),
+                    secret: false,
+                  },
+                ],
+                requestedAt: "2026-07-10T21:12:00.000Z",
+                turnId: parseHarnessTurnId("turn-1"),
+              },
+            ],
+            runId,
+          }),
+        },
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+    fireEvent.click(workerNode);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+        "Agent Inspector",
+      );
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+        "Command approval",
+      );
+      expect(screen.getByRole("button", { name: "Submit operator input" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Decline operator input" })).toBeNull();
+    });
+
+    const composer = screen.getByPlaceholderText("Steer the active turn");
+    fireEvent.change(composer, {
+      target: { value: "Keep the Inspector local-api only." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send steer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Interrupt turn" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve command approval" }));
+
+    await waitFor(() => {
+      expect(queryFixture.agentSessionActionInputs).toHaveLength(3);
+    });
+    expect(queryFixture.agentSessionActionInputs.map((input) => input.action)).toEqual([
+      expect.objectContaining({
+        kind: "steer",
+        sessionId: "session-run-7070707070",
+        text: "Keep the Inspector local-api only.",
+        turnId: "turn-1",
+      }),
+      expect.objectContaining({
+        kind: "interrupt",
+        sessionId: "session-run-7070707070",
+        turnId: "turn-1",
+      }),
+      expect.objectContaining({
+        decision: "approve",
+        interactionId: "interaction-command",
+        kind: "approval",
+        sessionId: "session-run-7070707070",
+      }),
+    ]);
+    expect(screen.queryByRole("button", { name: "Approve for session command approval" })).toBeNull();
+  });
+
+  it("keeps the cached agent session snapshot after closing and reselecting Inspector", async () => {
+    installMockEventSource();
+    const runId = parseRunId("run-7070707071");
+    const workerId = agentId("agent-worker");
+    const view = renderDashboardWithQueries({
+      agentSessionsByRunId: {
+        [runId]: {
+          [workerId]: agentSessionSnapshot({
+            agentId: workerId,
+            pendingInteractions: [
+              {
+                allowedDecisions: ["approve", "decline"],
+                command: "pnpm check",
+                interactionId: parseHarnessInteractionId("interaction-command"),
+                itemId: parseHarnessItemId("item-command-approval"),
+                kind: "commandApproval",
+                requestedAt: "2026-07-10T21:11:00.000Z",
+                turnId: parseHarnessTurnId("turn-1"),
+                workspacePath: parseWorkspaceRelativePath("."),
+              },
+            ],
+            runId,
+            state: "waitingForOperator",
+          }),
+        },
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+
+    fireEvent.click(workerNode);
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+        "Command approval",
+      );
+    });
+
+    fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Close Agent Inspector" })));
+    await waitFor(() => {
+      expect(screen.queryByTestId("agent-inspector-panel")).toBeNull();
+    });
+
+    fireEvent.click(workerNode);
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+        "Command approval",
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+        "I am working through the Agent Inspector.",
+      );
+      expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
+        "Agent session is connecting.",
+      );
+    });
+  });
+
+  it("reopens the agent session stream after StrictMode passive effect replay", async () => {
+    const eventSource = installMockEventSource();
+    const runId = parseRunId("run-7070707072");
+    const workerId = agentId("agent-worker");
+    const view = renderDashboardWithQueries({
+      agentSessionsByRunId: {
+        [runId]: {
+          [workerId]: agentSessionSnapshot({
+            agentId: workerId,
+            runId,
+            state: "waitingForOperator",
+          }),
+        },
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "runningWorker",
+          status: "running",
+        }),
+      ],
+      strictMode: true,
+    });
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+
+    fireEvent.click(workerNode);
+
+    await waitFor(() => {
+      const closedCount = eventSource.instances.filter(
+        (source) => source.close.mock.calls.length > 0,
+      ).length;
+      const activeCount = eventSource.instances.filter(
+        (source) =>
+          source.close.mock.calls.length === 0 &&
+          source.listenerCount("agent-session-update") === 1,
+      ).length;
+      expect(closedCount).toBeGreaterThanOrEqual(1);
+      expect(activeCount).toBe(1);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+        "I am working through the Agent Inspector.",
+      );
+      expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
+        "Agent session is connecting.",
       );
     });
   });
@@ -755,7 +1177,7 @@ describe("DashboardShell Run Console", () => {
         screen.getAllByText("Worker B produced implementation summary"),
       ).not.toHaveLength(0);
       expect(
-        screen.getByTestId("evidence-studio-panel").getAttribute("data-slot"),
+        screen.getByTestId("agent-inspector-panel").getAttribute("data-slot"),
       ).toBe("sheet-content");
     });
   });
@@ -1127,59 +1549,7 @@ describe("DashboardShell Run Console", () => {
   });
 
   it("renders typed runs data and updates selected run state on row click", async () => {
-    const firstRunId = parseRunId("run-1111111111");
-    const secondRunId = parseRunId("run-2222222222");
-    const view = renderDashboardWithQueries({
-      artifactsByRunId: {
-        [firstRunId]: {
-          input: localRunArtifact({
-            artifactName: "input",
-            body: "# Smoke spec\n\nRun the fake harness.\n",
-            runId: firstRunId,
-          }),
-          "worker-plan": localRunArtifact({
-            artifactName: "worker-plan",
-            body: "Worker plan body from the allowlisted API.",
-            runId: firstRunId,
-          }),
-        },
-      },
-      eventsByRunId: {
-        [firstRunId]: [
-          makeRunEvent({
-            payload: { specPath: "input.md" },
-            runId: firstRunId,
-            sequence: 1,
-            timestamp: "2026-07-07T12:00:00.000Z",
-            type: "RUN_CREATED",
-          }),
-          makeRunEvent({
-            runId: firstRunId,
-            sequence: 2,
-            timestamp: "2026-07-07T12:01:00.000Z",
-            type: "WORKER_STARTED",
-          }),
-        ],
-      },
-      runs: [
-        localRunSummary({
-          runId: firstRunId,
-          status: "running",
-          state: "runningWorker",
-          latestEventType: "WORKER_STARTED",
-          eventCount: 5,
-          updatedAt: "2026-07-07T12:30:00.000Z",
-        }),
-        localRunSummary({
-          runId: secondRunId,
-          status: "completed",
-          state: "completed",
-          latestEventType: "REPORT_COMPLETED",
-          eventCount: 12,
-          updatedAt: "2026-07-07T12:35:00.000Z",
-        }),
-      ],
-    });
+    renderTypedRunsDashboard();
 
     const firstRow = await screen.findByTestId(
       "run-console-row-run-1111111111",
@@ -1202,6 +1572,20 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByTestId("selected-run-title").textContent).toBe(
       "run-1111111111",
     );
+    fireEvent.click(secondRow);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-run-title").textContent).toBe(
+        "run-2222222222",
+      );
+      expect(screen.queryByTestId("run-replay-current-event")).toBeNull();
+    });
+  });
+
+  it("opens typed run replay controls from public events", async () => {
+    renderTypedRunsDashboard();
+
+    await screen.findByTestId("run-console-row-run-1111111111");
     fireEvent.click(screen.getByRole("button", { name: "Replay" }));
     expect(
       screen.queryByText(
@@ -1213,7 +1597,12 @@ describe("DashboardShell Run Console", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("run-replay-scrubber")).toBeNull();
     });
+  });
 
+  it("plays typed run replay controls from public events", async () => {
+    renderTypedRunsDashboard();
+
+    await screen.findByTestId("run-console-row-run-1111111111");
     fireEvent.click(screen.getByRole("button", { name: "Replay" }));
     expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
       "Event #2",
@@ -1238,39 +1627,6 @@ describe("DashboardShell Run Console", () => {
     expect(workerLabels).not.toHaveLength(0);
     expect(screen.queryByText("Run root")).toBeNull();
 
-    const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
-    if (workerNode === null) {
-      throw new Error("Expected a worker FactoryGraph node.");
-    }
-
-    fireEvent.click(workerNode);
-
-    await waitFor(() => {
-      expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
-    });
-    for (const artifactsTab of screen.getAllByRole("tab", {
-      name: "Artifacts",
-    })) {
-      fireEvent.pointerDown(artifactsTab);
-      fireEvent.mouseDown(artifactsTab);
-      fireEvent.mouseUp(artifactsTab);
-      fireEvent.click(artifactsTab);
-    }
-    await waitFor(() => {
-      expect(
-        screen.getAllByRole("button", { name: "Code summary" }),
-      ).not.toHaveLength(0);
-    });
-    fireEvent.click(
-      firstElement(screen.getAllByRole("button", { name: "Code summary" })),
-    );
-
-    await waitFor(() => {
-      expect(
-        screen.getAllByText("artifact-summary factory artifact body"),
-      ).not.toHaveLength(0);
-    });
-
     fireEvent.change(screen.getByTestId("run-replay-range"), {
       target: { value: "0" },
     });
@@ -1283,15 +1639,6 @@ describe("DashboardShell Run Console", () => {
         firstElement(screen.getAllByTestId("event-strip-event-1")).textContent,
       ).toContain("Replay");
       expect(screen.getAllByText("Replay")).not.toHaveLength(0);
-    });
-
-    fireEvent.click(secondRow);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("selected-run-title").textContent).toBe(
-        "run-2222222222",
-      );
-      expect(screen.queryByTestId("run-replay-current-event")).toBeNull();
     });
   });
 
@@ -1354,7 +1701,7 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
-  it("keeps source/raw detail inside Evidence Studio instead of a top-level source mode", async () => {
+  it("keeps source details inside Agent Inspector instead of a top-level source mode", async () => {
     const runId = parseRunId("run-1212121212");
     const view = renderDashboardWithQueries({
       runs: [
@@ -2002,6 +2349,10 @@ function renderDashboardWithQueries(input: {
   >;
   readonly factoryArtifactsByRunId?: Record<string, ReadonlyArray<typeof FactoryArtifactDto.Type>>;
   readonly factoryGraphsByRunId?: Record<string, typeof FactoryGraphDto.Type>;
+  readonly agentSessionsByRunId?: Record<
+    string,
+    Record<string, typeof AgentSessionSnapshotDto.Type>
+  >;
   readonly createRunError?: DashboardGaiaClientError;
   readonly createRunPromise?: Promise<CreateRunAcceptedFixture>;
   readonly healthError?: DashboardGaiaClientError;
@@ -2010,6 +2361,7 @@ function renderDashboardWithQueries(input: {
     typeof LocalRunReadDiagnosticDto.Type
   >;
   readonly runsError?: DashboardGaiaClientError;
+  readonly strictMode?: boolean;
 }) {
   queryFixture.artifactsByRunId = input.artifactsByRunId ?? {};
   queryFixture.createRunError = input.createRunError;
@@ -2035,6 +2387,9 @@ function renderDashboardWithQueries(input: {
     input.factoryArtifactErrorsByRunId ?? {};
   queryFixture.factoryGraphsByRunId =
     input.factoryGraphsByRunId ?? defaultFactoryData.graphsByRunId;
+  queryFixture.agentSessionActionInputs = [];
+  queryFixture.agentSessionsByRunId =
+    input.agentSessionsByRunId ?? defaultFactoryData.agentSessionsByRunId;
   queryFixture.eventsByRunId = input.eventsByRunId ?? {};
   queryFixture.healthError = input.healthError;
   queryFixture.runs = input.runs;
@@ -2050,11 +2405,13 @@ function renderDashboardWithQueries(input: {
     },
   });
 
-  return render(
+  const tree = (
     <QueryClientProvider client={queryClient}>
       <DashboardShell />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+
+  return render(input.strictMode === true ? <StrictMode>{tree}</StrictMode> : tree);
 }
 
 function localRunSummary(
@@ -2132,6 +2489,10 @@ function defaultFactoryDataForRuns(
   const artifactsByRunId: Record<string, ReadonlyArray<typeof FactoryArtifactDto.Type>> =
     {};
   const graphsByRunId: Record<string, typeof FactoryGraphDto.Type> = {};
+  const agentSessionsByRunId: Record<
+    string,
+    Record<string, typeof AgentSessionSnapshotDto.Type>
+  > = {};
 
   for (const run of runs) {
     activitiesByRunId[run.runId] = [
@@ -2172,11 +2533,18 @@ function defaultFactoryDataForRuns(
       workerArtifactId,
       workerId,
     });
+    agentSessionsByRunId[run.runId] = {
+      [workerId]: agentSessionSnapshot({
+        agentId: workerId,
+        runId: run.runId,
+      }),
+    };
   }
 
   return {
     activitiesByRunId,
     agentActivitiesByRunId,
+    agentSessionsByRunId,
     artifactBodiesByRunId,
     artifactsByRunId,
     graphsByRunId,
@@ -2251,6 +2619,87 @@ function factoryArtifactBody(
     artifactId: input.artifactId,
     body: input.body,
     runId: input.runId,
+  };
+}
+
+function agentSessionSnapshot(
+  input: Partial<typeof AgentSessionSnapshotDto.Type> & {
+    readonly agentId: typeof AgentSessionSnapshotDto.Type.agentId;
+    readonly runId: typeof AgentSessionSnapshotDto.Type.runId;
+  },
+): typeof AgentSessionSnapshotDto.Type {
+  const { agentId: inputAgentId, runId: inputRunId, ...overrides } = input;
+  return {
+    agentId: inputAgentId,
+    capabilities: {
+      approvals: ["command", "fileChange", "permission", "userInput", "mcpElicitation"],
+      fileChangeEvents: true,
+      interruption: true,
+      resumableSessions: true,
+      review: false,
+      steering: true,
+      streamingMessages: true,
+      structuredOutput: false,
+      subagents: false,
+      toolEvents: true,
+      usageReporting: true,
+      userQuestions: true,
+    },
+    eventSequence: 6,
+    items: [
+      {
+        itemId: parseHarnessItemId("item-message-1"),
+        kind: "message",
+        phase: "commentary",
+        status: "completed",
+        text: "I am working through the Agent Inspector.",
+        turnId: parseHarnessTurnId("turn-1"),
+      },
+      {
+        itemId: parseHarnessItemId("item-plan-1"),
+        kind: "plan",
+        status: "completed",
+        steps: [
+          { status: "completed", step: "Read the public session projection" },
+          { status: "inProgress", step: "Wire Inspector controls" },
+        ],
+        turnId: parseHarnessTurnId("turn-1"),
+      },
+    ],
+    pendingInteractions: [],
+    recovered: false,
+    resolvedInteractions: [],
+    runId: inputRunId,
+    sessionId: parseHarnessSessionId(`session-${inputRunId}`),
+    state: "running",
+    turns: [{ status: "running", turnId: parseHarnessTurnId("turn-1") }],
+    ...overrides,
+  };
+}
+
+function agentActionReceipt(
+  input: Partial<typeof AgentActionReceiptDto.Type> & {
+    readonly actionId: typeof AgentActionReceiptDto.Type.actionId;
+    readonly agentId: typeof AgentActionReceiptDto.Type.agentId;
+    readonly runId: typeof AgentActionReceiptDto.Type.runId;
+  },
+): typeof AgentActionReceiptDto.Type {
+  const {
+    actionId: inputActionId,
+    agentId: inputAgentId,
+    runId: inputRunId,
+    ...overrides
+  } = input;
+  return {
+    actionId: inputActionId,
+    agentId: inputAgentId,
+    eventSequence: 9,
+    payloadDigest:
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    runId: inputRunId,
+    sessionId: parseHarnessSessionId(`session-${inputRunId}`),
+    state: "dispatchConfirmed",
+    ...overrides,
   };
 }
 
@@ -2408,11 +2857,21 @@ function factoryGraphEdge(
 }
 
 type MockEventSourceInstance = {
+  addEventListener: (
+    event: string,
+    listener: (event: MessageEvent<string>) => void,
+  ) => void;
   readonly close: ReturnType<typeof vi.fn>;
+  dispatchEventSourceEvent: (event: string, message: MessageEvent<string>) => void;
+  listenerCount: (event: string) => number;
   readonly url: string;
   onerror: ((event: Event) => void) | null;
   onmessage: ((event: MessageEvent<string>) => void) | null;
   onopen: ((event: Event) => void) | null;
+  removeEventListener: (
+    event: string,
+    listener: (event: MessageEvent<string>) => void,
+  ) => void;
 };
 
 function installMockEventSource() {
@@ -2420,12 +2879,39 @@ function installMockEventSource() {
 
   class TestEventSource implements MockEventSourceInstance {
     readonly close = vi.fn();
+    readonly #listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
     onerror: ((event: Event) => void) | null = null;
     onmessage: ((event: MessageEvent<string>) => void) | null = null;
     onopen: ((event: Event) => void) | null = null;
 
     constructor(readonly url: string) {
       instances.push(this);
+    }
+
+    addEventListener(
+      event: string,
+      listener: (message: MessageEvent<string>) => void,
+    ) {
+      const listeners = this.#listeners.get(event) ?? new Set();
+      listeners.add(listener);
+      this.#listeners.set(event, listeners);
+    }
+
+    dispatchEventSourceEvent(event: string, message: MessageEvent<string>) {
+      for (const listener of this.#listeners.get(event) ?? []) {
+        listener(message);
+      }
+    }
+
+    listenerCount(event: string) {
+      return this.#listeners.get(event)?.size ?? 0;
+    }
+
+    removeEventListener(
+      event: string,
+      listener: (message: MessageEvent<string>) => void,
+    ) {
+      this.#listeners.get(event)?.delete(listener);
     }
   }
 
