@@ -6,7 +6,7 @@ import {
   type RunEvent,
   type RunId,
 } from "@gaia/core";
-import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
+import { Effect, FileSystem, Option, Schema, Stream } from "effect";
 import nodePath from "node:path";
 import { appendHarnessSessionEvent, readEvents } from "./event-store.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
@@ -208,10 +208,6 @@ export function refreshInteractiveHarnessResult(input: {
     );
     const after = yield* snapshotWorkspace(input.workspacePath);
     const workspaceDiff = diffWorkspaceSnapshots(baseline, after);
-    const outputArtifacts = yield* existingWorkspaceArtifacts(
-      input.workspacePath,
-      workspaceDiff.productChangedPaths,
-    );
     const result = HarnessRunResult.make({
       changedWorkspacePaths: [
         ...workspaceDiff.productChangedPaths,
@@ -219,7 +215,10 @@ export function refreshInteractiveHarnessResult(input: {
       ].toSorted(),
       exitCode: 0,
       harnessName: codexAppServerHarnessName,
-      outputArtifacts,
+      // Interactive provider file changes are delivery source, not generated
+      // harness artifacts. Session file-change items already expose them for
+      // inspection; marking them as artifacts would exclude them from publish.
+      outputArtifacts: [],
       resultPath: "worker-result.json",
       runId: input.runId,
       status: "completed",
@@ -278,21 +277,4 @@ function isTerminalSessionEvent(
 function workspacePathFromRoot(rootDirectory: string, workspacePath: string) {
   const relative = nodePath.relative(rootDirectory, workspacePath);
   return parseWorkspaceRelativePath(relative);
-}
-
-function existingWorkspaceArtifacts(
-  workspacePath: string,
-  changedPaths: ReadonlyArray<string>,
-) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const artifacts: Array<string> = [];
-    for (const changedPath of changedPaths) {
-      if (yield* fs.exists(path.join(workspacePath, changedPath))) {
-        artifacts.push(`workspace/${changedPath}`);
-      }
-    }
-    return artifacts;
-  });
 }
