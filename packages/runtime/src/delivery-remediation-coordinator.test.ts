@@ -36,9 +36,11 @@ import {
   continueDeliveryRemediation,
   deliveryRemediationPromptForTest,
   deliveryRemediationPushForTest,
+  type DeliveryPullRequestReader,
 } from "./delivery-remediation-coordinator.js";
 import { appendEvent, appendHarnessSessionEvent, readEvents } from "./event-store.js";
 import { prepareDeliveryWorktree, resolveDeliveryProvenance } from "./git-delivery.js";
+import { makeDeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import type { HarnessProvider, HarnessSession } from "./harness-session.js";
 import { makeRunPaths } from "./paths.js";
@@ -321,6 +323,200 @@ describe("delivery remediation coordinator", () => {
         expect(raced).toBe(thirdHead);
         expect(racedPush).toBe(false);
       }),
+    );
+
+    it.effect("consumes one exact authorization before dispatch and rejects concurrent or restarted reuse", () =>
+      Effect.scoped(Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectory({ prefix: "gaia-remediation-authorization-" });
+        const remote = yield* fs.makeTempDirectory({ prefix: "gaia-remediation-authorization-remote-" });
+        git(remote, ["init", "--bare"]);
+        git(root, ["init", "-b", "main"]);
+        git(root, ["config", "user.name", "Test"]);
+        git(root, ["config", "user.email", "test@example.com"]);
+        writeFileSync(`${root}/base.txt`, "base\n", "utf8");
+        git(root, ["add", "base.txt"]);
+        git(root, ["commit", "-m", "initial"]);
+        git(root, ["remote", "add", "origin", remote]);
+        git(root, ["push", "-u", "origin", "main"]);
+
+        const provenance = yield* resolveDeliveryProvenance(runId, { rootDirectory: root });
+        const paths = yield* makeRunPaths(runId, { rootDirectory: root });
+        yield* fs.makeDirectory(paths.root, { recursive: true });
+        yield* prepareDeliveryWorktree({ options: { rootDirectory: root }, paths, provenance });
+        git(paths.workspace, ["switch", "-c", provenance.headBranch]);
+        git(paths.workspace, ["push", "origin", `HEAD:refs/heads/${provenance.headBranch}`]);
+        yield* fs.writeFileString(paths.input, "# Remediate\n\nFix the bounded feedback.\n");
+        const oldHead = git(paths.workspace, ["rev-parse", "HEAD"]);
+        const treeSha = git(paths.workspace, ["rev-parse", "HEAD^{tree}"]);
+        const resolved = ResolvedHarnessExecution.make({
+          capabilities,
+          executionMode: "local",
+          harnessProfileId: codexAppServerHarnessProfileId,
+          provider: descriptor,
+          version: "test-1",
+        });
+        yield* appendEvent(runId, paths, {
+          payload: {
+            delivery: provenance,
+            execution: {
+              resolved: Schema.encodeSync(ResolvedHarnessExecution)(resolved),
+              selection: { harnessProfileId: codexAppServerHarnessProfileId },
+            },
+            source: "server",
+            specPath: "input.md",
+            workflow: "issueDelivery",
+          },
+          type: "RUN_CREATED",
+        });
+        yield* appendEvent(runId, paths, {
+          payload: { delivery: { ...provenance, stage: "delivering" } },
+          type: "DELIVERY_STARTED",
+        });
+        const publicationIntent = DeliveryPublicationIntent.make({
+          baseBranch: provenance.baseBranch,
+          baseRevision: provenance.baseRevision,
+          branchName: provenance.headBranch,
+          commitMessage: `feat: deliver ${runId}`,
+          commitTimestamp: "2026-07-11T11:00:00.000Z",
+          digestVersion: 1,
+          operationId: `delivery:${runId}:1`,
+          payloadDigest: "a".repeat(64),
+          sourcePaths: ["base.txt"],
+          state: "intentRecorded",
+          treeSha,
+        });
+        const publicationAttempted = DeliveryPublicationAttempted.make({
+          ...publicationIntent,
+          commitSha: oldHead,
+          state: "attempted",
+          treeSha,
+        });
+        const publication = DeliveryPublicationConfirmed.make({
+          ...publicationAttempted,
+          draft: true,
+          headSha: oldHead,
+          prNumber: 92,
+          prUrl: "https://github.com/cill-i-am/gaia/pull/92",
+          state: "confirmed",
+        });
+        for (const [type, value] of [
+          ["DELIVERY_PUBLICATION_INTENT_RECORDED", publicationIntent],
+          ["DELIVERY_PUBLICATION_ATTEMPTED", publicationAttempted],
+          ["DELIVERY_PUBLICATION_CONFIRMED", publication],
+        ] as const) {
+          yield* appendEvent(runId, paths, {
+            payload: { publication: encodeDeliveryPublicationJson(value) },
+            type,
+          });
+        }
+        const sessionId = parseHarnessSessionId(`session-${runId}`);
+        const initialTurnId = parseHarnessTurnId("turn-initial");
+        yield* appendHarnessSessionEvent(runId, paths, {
+          capabilities,
+          kind: "sessionStarted",
+          provider: descriptor,
+          sessionId,
+          state: "running",
+        });
+        yield* appendHarnessSessionEvent(runId, paths, {
+          kind: "turnStarted",
+          sessionId,
+          turnId: initialTurnId,
+        });
+        yield* appendHarnessSessionEvent(runId, paths, {
+          kind: "turnCompleted",
+          sessionId,
+          status: "completed",
+          turnId: initialTurnId,
+        });
+
+        const feedbackId = parseDeliveryFeedbackId(
+          `feedback-comment-${"e".repeat(64)}`,
+        );
+        const authorization = makeDeliveryFeedbackSmokeAuthorization({
+          actorLogin: "cill-i-am",
+          actorType: "User",
+          authorAssociation: "OWNER",
+          commentDatabaseId: "native-comment-104",
+          contentDigest: "d".repeat(64),
+          feedbackId,
+          headSha: oldHead,
+          prNumber: 92,
+          repository: "cill-i-am/gaia",
+        });
+        const observedAuthorizations: Array<string | undefined> = [];
+        const reader: DeliveryPullRequestReader = (input) => Effect.sync(() => {
+          const authorized = input.authorization?.authorizationDigest ===
+            authorization.authorizationDigest;
+          observedAuthorizations.push(input.authorization?.authorizationDigest);
+          return {
+            observation: DeliveryPullRequestObservation.make({
+              blockers: authorized
+                ? [DeliveryBlocker.make({
+                    feedbackIds: [feedbackId],
+                    kind: "actionableFeedback",
+                    summary: "One controlled smoke comment is actionable.",
+                  })]
+                : [],
+              checks: [],
+              draft: true,
+              feedback: [],
+              headSha: oldHead,
+              mergeability: "mergeable",
+              observedAt: "2026-07-11T11:05:00.000Z",
+              prNumber: 92,
+              prUrl: publication.prUrl,
+              repository: "cill-i-am/gaia",
+              reviewDecision: "REVIEW_REQUIRED",
+              snapshotDigest: "b".repeat(64),
+              status: authorized ? "blocked" : "waiting",
+              version: 1,
+            }),
+            remediationInputs: authorized
+              ? [{ id: feedbackId, kind: "comment" as const, text: "Controlled request." }]
+              : [],
+          };
+        });
+        const provider = recordingProvider(paths.workspace);
+        const options = {
+          authorization,
+          harnessProviderRegistry: makeHarnessProviderRegistry([{
+            profileId: codexAppServerHarnessProfileId,
+            provider,
+          }]),
+          now: () => new Date("2026-07-11T11:05:00.000Z"),
+          pullRequestReader: reader,
+          refreshWorkerResult: () => Effect.void,
+          reverify: () => Effect.fail(new Error("Conclusive verification failure.")),
+          rootDirectory: root,
+          sessionCoordinator: makeLiveHarnessSessionCoordinator(),
+        };
+
+        const concurrent = yield* Effect.all([
+          continueDeliveryRemediation(runId, options),
+          continueDeliveryRemediation(runId, options),
+        ], { concurrency: "unbounded" });
+        expect(provider.prompts).toHaveLength(1);
+        expect(concurrent.some(({ remediation }) =>
+          remediation?.state === "failed" && remediation.recoverable
+        )).toBe(true);
+
+        const restarted = yield* continueDeliveryRemediation(runId, options);
+        expect(restarted.remediation).toMatchObject({ attempt: 1, state: "failed" });
+        expect(provider.prompts).toHaveLength(1);
+        expect(observedAuthorizations.filter(Boolean)).toHaveLength(2);
+        expect(observedAuthorizations.at(-1)).toBeUndefined();
+        const remediationEvents = (yield* readEvents(paths)).filter(
+          ({ type }) => type === "DELIVERY_REMEDIATION_RECORDED",
+        ).map((event) => parseDeliveryRemediation(event.payload["remediation"]));
+        expect(remediationEvents.filter(({ state }) => state === "intentRecorded"))
+          .toHaveLength(1);
+        expect(new Set(remediationEvents.flatMap(({ authorizationDigest }) =>
+          authorizationDigest === undefined ? [] : [authorizationDigest]
+        ))).toEqual(new Set([authorization.authorizationDigest]));
+      })),
+      20_000,
     );
   });
 

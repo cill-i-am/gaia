@@ -6,6 +6,7 @@ import {
   DeliveryRemediationCommitAttempted,
   DeliveryRemediationConfirmed,
   DeliveryRemediationDispatchAttempted,
+  DeliveryRemediationFailed,
   DeliveryRemediationIntent,
   DeliveryRemediationPushAttempted,
   DeliveryRemediationTurnCompleted,
@@ -172,6 +173,37 @@ describe("delivery remediation contracts", () => {
     });
 
     assert.throws(() => validateDeliveryRemediationTransition(intent, changed));
+  });
+
+  it("rejects reusing a one-shot authorization digest for a new attempt", () => {
+    const authorizationDigest = "c".repeat(64);
+    const intent = DeliveryRemediationIntent.make({
+      attempt: 1,
+      authorizationDigest,
+      commitTimestamp,
+      expectedHeadSha: oldHead,
+      feedbackDigest: digest,
+      feedbackIds: [feedbackId],
+      inputId: "remediation-run-1234567890-1",
+      operationId: "remediation:run-1234567890:1",
+      state: "intentRecorded",
+    });
+    const failed = DeliveryRemediationFailed.make({
+      ...intent,
+      code: "VerificationFailed",
+      message: "The first attempt failed conclusively.",
+      recoverable: true,
+      state: "failed",
+    });
+    const reused = DeliveryRemediationIntent.make({
+      ...intent,
+      attempt: 2,
+      inputId: "remediation-run-1234567890-2",
+      operationId: "remediation:run-1234567890:2",
+    });
+
+    assert.doesNotThrow(() => validateDeliveryRemediationTransition(intent, failed));
+    assert.throws(() => validateDeliveryRemediationTransition(failed, reused));
   });
 
   it("replays remediation and exposes the intent sequence as the re-arm cursor", () => {

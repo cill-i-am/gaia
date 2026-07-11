@@ -38,8 +38,10 @@ import { Effect, FileSystem, Path as EffectPath, Schema, Stream } from "effect";
 import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
 import {
   appendEvent,
+  appendEventWithinSerialization,
   appendHarnessSessionEvent,
   readEvents,
+  withRunEventSerialization,
 } from "./event-store.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import { issueDeliveryAgentIds } from "./factory-workflows.js";
@@ -109,8 +111,23 @@ export function continueDeliveryRemediation(
 ) {
   return Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options);
-    const events = yield* readEvents(paths);
-    const delivery = deliveryProjection(events);
+    const initial = yield* withRunEventSerialization(paths, Effect.gen(function* () {
+      const events = yield* readEvents(paths);
+      const delivery = deliveryProjection(events);
+      const remediation = optionalRemediation(delivery["remediation"]);
+      return {
+        delivery,
+        events,
+        readerAuthorization: availableFeedbackAuthorization(
+          events,
+          remediation,
+          options.authorization,
+        ),
+        remediation,
+      };
+    }));
+    const { delivery, events, readerAuthorization } = initial;
+    let { remediation } = initial;
     const publication = parseDeliveryPublication(requiredField(delivery, "publication"));
     if (publication.state !== "confirmed") {
       return yield* Effect.fail(remediationError("DeliveryObservationUnavailable", "Delivery has no confirmed pull request.", false));
@@ -118,9 +135,8 @@ export function continueDeliveryRemediation(
     const target = pullRequestTarget(publication.prUrl, publication.prNumber);
     const trustPolicy = options.trustPolicy ?? defaultTrustPolicy(target.repository);
     const reader = options.pullRequestReader ?? readGitHubPullRequest;
-    let remediation = optionalRemediation(delivery["remediation"]);
     const readExit = yield* Effect.exit(reader({
-      ...(options.authorization === undefined ? {} : { authorization: options.authorization }),
+      ...(readerAuthorization === undefined ? {} : { authorization: readerAuthorization }),
       ...(options.commandRunner === undefined ? {} : { commandRunner: options.commandRunner }),
       prNumber: target.prNumber,
       repository: target.repository,
@@ -192,27 +208,26 @@ export function continueDeliveryRemediation(
       if (actionableInputs.length === 0) {
         return { observation: read.observation, ...(remediation === undefined ? {} : { remediation }) };
       }
-      const attempt = (remediation?.attempt ?? 0) + 1;
       const now = options.now?.() ?? new Date();
       const commitTimestamp = new Date(Math.floor(now.getTime() / 1000) * 1000).toISOString();
       const feedbackIds = actionableInputs.map(({ id }) => parseDeliveryFeedbackId(id));
-      remediation = yield* appendRemediation(
-        runId,
+      const reservation = yield* reserveRemediationIntent({
+        ...(readerAuthorization === undefined ? {} : { authorization: readerAuthorization }),
+        commitTimestamp,
+        expectedHeadSha: read.observation.headSha,
+        feedbackDigest: read.observation.snapshotDigest,
+        feedbackIds,
         paths,
-        DeliveryRemediationIntent.make({
-          attempt,
-          ...(options.authorization === undefined
-            ? {}
-            : { authorizationDigest: options.authorization.authorizationDigest }),
-          commitTimestamp,
-          expectedHeadSha: read.observation.headSha,
-          feedbackDigest: read.observation.snapshotDigest,
-          feedbackIds,
-          inputId: `remediation-${runId}-${attempt}`,
-          operationId: `remediation:${runId}:${attempt}`,
-          state: "intentRecorded",
-        }),
-      );
+        predecessor: remediation,
+        runId,
+      });
+      remediation = reservation.remediation;
+      if (!reservation.created) {
+        return {
+          observation: read.observation,
+          ...(remediation === undefined ? {} : { remediation }),
+        };
+      }
     }
     if (remediation === undefined) {
       return yield* Effect.fail(remediationError("RemediationIntentMissing", "The remediation reservation was not created.", false));
@@ -370,7 +385,7 @@ export function continueDeliveryRemediation(
         return { observation: read.observation, remediation };
       }
       const confirmationExit = yield* Effect.exit(reader({
-        ...(options.authorization === undefined ? {} : { authorization: options.authorization }),
+        ...(readerAuthorization === undefined ? {} : { authorization: readerAuthorization }),
         ...(options.commandRunner === undefined ? {} : { commandRunner: options.commandRunner }),
         prNumber: target.prNumber,
         repository: target.repository,
@@ -834,6 +849,51 @@ function recordObservation(
   });
 }
 
+function reserveRemediationIntent(input: {
+  readonly authorization?: DeliveryFeedbackSmokeAuthorization;
+  readonly commitTimestamp: string;
+  readonly expectedHeadSha: string;
+  readonly feedbackDigest: string;
+  readonly feedbackIds: DeliveryRemediationIntent["feedbackIds"];
+  readonly paths: RunPaths;
+  readonly predecessor: DeliveryRemediation | undefined;
+  readonly runId: RunId;
+}) {
+  return withRunEventSerialization(input.paths, Effect.gen(function* () {
+    const events = yield* readEvents(input.paths);
+    const current = optionalRemediation(deliveryProjection(events)["remediation"]);
+    if (!sameReservationPredecessor(input.predecessor, current)) {
+      return { created: false as const, remediation: current };
+    }
+    if (
+      input.authorization !== undefined &&
+      authorizationDigestConsumed(events, input.authorization.authorizationDigest)
+    ) {
+      return { created: false as const, remediation: current };
+    }
+
+    const attempt = (current?.attempt ?? 0) + 1;
+    const intent = DeliveryRemediationIntent.make({
+      attempt,
+      ...(input.authorization === undefined
+        ? {}
+        : { authorizationDigest: input.authorization.authorizationDigest }),
+      commitTimestamp: input.commitTimestamp,
+      expectedHeadSha: input.expectedHeadSha,
+      feedbackDigest: input.feedbackDigest,
+      feedbackIds: input.feedbackIds,
+      inputId: `remediation-${input.runId}-${attempt}`,
+      operationId: `remediation:${input.runId}:${attempt}`,
+      state: "intentRecorded",
+    });
+    yield* appendEventWithinSerialization(input.runId, input.paths, {
+      payload: { remediation: encodeDeliveryRemediationJson(intent) },
+      type: "DELIVERY_REMEDIATION_RECORDED",
+    });
+    return { created: true as const, remediation: intent };
+  }));
+}
+
 function appendRemediation<A extends DeliveryRemediation>(
   runId: RunId,
   paths: RunPaths,
@@ -907,6 +967,44 @@ function expectedHeadSha(publicationHead: string, remediation: DeliveryRemediati
 
 function isActiveRemediation(remediation: DeliveryRemediation) {
   return remediation.state !== "confirmed" && remediation.state !== "failed" && remediation.state !== "outcomeUnknown";
+}
+
+function availableFeedbackAuthorization(
+  events: ReadonlyArray<RunEvent>,
+  remediation: DeliveryRemediation | undefined,
+  authorization: DeliveryFeedbackSmokeAuthorization | undefined,
+) {
+  if (authorization === undefined) return undefined;
+  if (!authorizationDigestConsumed(events, authorization.authorizationDigest)) {
+    return authorization;
+  }
+  return remediation !== undefined &&
+    isActiveRemediation(remediation) &&
+    remediation.authorizationDigest === authorization.authorizationDigest
+    ? authorization
+    : undefined;
+}
+
+function authorizationDigestConsumed(
+  events: ReadonlyArray<RunEvent>,
+  authorizationDigest: string,
+) {
+  return events.some((event) => {
+    if (event.type !== "DELIVERY_REMEDIATION_RECORDED") return false;
+    const remediation = parseDeliveryRemediation(event.payload["remediation"]);
+    return remediation.state === "intentRecorded" &&
+      remediation.authorizationDigest === authorizationDigest;
+  });
+}
+
+function sameReservationPredecessor(
+  expected: DeliveryRemediation | undefined,
+  current: DeliveryRemediation | undefined,
+) {
+  if (expected === undefined || current === undefined) return expected === current;
+  return expected.operationId === current.operationId &&
+    expected.attempt === current.attempt &&
+    expected.state === current.state;
 }
 
 function remediationIntentSequence(events: ReadonlyArray<RunEvent>, operationId: string) {

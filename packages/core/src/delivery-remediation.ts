@@ -355,6 +355,8 @@ export function validateDeliveryRemediationTransition(
       next.attempt !== previous.attempt + 1 ||
       next.operationId === previous.operationId ||
       next.inputId === previous.inputId ||
+      (next.authorizationDigest !== undefined &&
+        next.authorizationDigest === previous.authorizationDigest) ||
       previous.state === "confirmed" &&
         (next.expectedHeadSha !== previous.commitSha ||
           next.feedbackDigest === previous.feedbackDigest)
