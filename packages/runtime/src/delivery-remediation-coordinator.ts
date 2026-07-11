@@ -93,6 +93,7 @@ const generatedRoots = new Set([
 const remediationAuthorName = "Gaia Remediation";
 const remediationAuthorEmail = "remediation@gaia.local";
 const maxPromptBytes = 16_384;
+const remediationConfirmationAttempts = 3;
 
 export type DeliveryPullRequestReader = typeof readGitHubPullRequest;
 
@@ -621,13 +622,16 @@ export function continueDeliveryRemediation(
         });
         return { observation: read.observation, remediation };
       }
-      const confirmationExit = yield* Effect.exit(reader({
-        ...(readerAuthorization === undefined ? {} : { authorization: readerAuthorization }),
-        ...(options.commandRunner === undefined ? {} : { commandRunner: options.commandRunner }),
-        prNumber: target.prNumber,
-        repository: target.repository,
-        rootDirectory: paths.workspace,
-        trustPolicy,
+      const confirmationExit = yield* Effect.exit(readRemediationPushConfirmation({
+        oldHead: push.expectedHeadSha,
+        read: () => reader({
+          ...(readerAuthorization === undefined ? {} : { authorization: readerAuthorization }),
+          ...(options.commandRunner === undefined ? {} : { commandRunner: options.commandRunner }),
+          prNumber: target.prNumber,
+          repository: target.repository,
+          rootDirectory: paths.workspace,
+          trustPolicy,
+        }),
       }));
       if (confirmationExit._tag === "Failure") {
         remediation = yield* recordOutcomeUnknown(runId, paths, push, {
@@ -637,15 +641,29 @@ export function continueDeliveryRemediation(
         });
         return { observation: read.observation, remediation };
       }
-      yield* recordObservation(runId, paths, delivery, confirmationExit.value.observation);
       if (confirmationExit.value.observation.headSha !== push.commitSha) {
+        const changedHead = expectedHeadChangedRead({
+          draft: publication.draft,
+          expectedHead: push.commitSha,
+          now: options.now?.() ?? new Date(),
+          prNumber: target.prNumber,
+          prUrl: publication.prUrl,
+          repository: target.repository,
+        });
+        yield* recordObservation(
+          runId,
+          paths,
+          delivery,
+          changedHead.observation,
+        );
         remediation = yield* recordFailed(runId, paths, push, {
           code: "ExpectedHeadChanged",
           message: "GitHub did not confirm the expected remediation commit.",
           recoverable: false,
         });
-        return { observation: confirmationExit.value.observation, remediation };
+        return { observation: changedHead.observation, remediation };
       }
+      yield* recordObservation(runId, paths, delivery, confirmationExit.value.observation);
       remediation = yield* appendRemediation(
         runId,
         paths,
@@ -661,6 +679,25 @@ export function continueDeliveryRemediation(
       cleanupTerminalActivation(runId, options, result.remediation),
     ),
   );
+}
+
+function readRemediationPushConfirmation(input: {
+  readonly oldHead: string;
+  readonly read: () => ReturnType<DeliveryPullRequestReader>;
+}) {
+  return Effect.gen(function* () {
+    let attempt = 0;
+    while (true) {
+      attempt += 1;
+      const read = yield* input.read();
+      if (
+        read.observation.headSha !== input.oldHead ||
+        attempt >= remediationConfirmationAttempts
+      ) {
+        return read;
+      }
+    }
+  });
 }
 
 function runRemediationTurn(input: {

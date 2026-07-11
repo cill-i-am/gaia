@@ -9,9 +9,13 @@ import {
   DeliveryPublicationIntent,
   DeliveryPullRequestObservation,
   DeliveryRemediationActivationActionRequest,
+  DeliveryRemediationCommitAttempted,
   DeliveryRemediationDispatchAttempted,
   DeliveryRemediationFailed,
   DeliveryRemediationIntent,
+  DeliveryRemediationPushAttempted,
+  DeliveryRemediationTurnCompleted,
+  DeliveryRemediationVerified,
   DeliveryTrustedCheckV1,
   HarnessCapabilities,
   HarnessExecutionSelection,
@@ -55,6 +59,10 @@ import {
 import { GaiaRuntimeError } from "./errors.js";
 import { appendEvent, appendHarnessSessionEvent, readEvents } from "./event-store.js";
 import { prepareDeliveryWorktree, resolveDeliveryProvenance } from "./git-delivery.js";
+import {
+  nodeGitHubCommandRunner,
+  type GitHubCommandRunner,
+} from "./github-publisher.js";
 import { makeDeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import type { HarnessProvider, HarnessSession } from "./harness-session.js";
@@ -84,7 +92,7 @@ const descriptor = HarnessProviderDescriptor.make({
 
 describe("delivery remediation coordinator", () => {
   layer(NodeServices.layer)((it) => {
-    it.effect("resumes the same session, commits verified changes, and lease-pushes over the exact old head", () =>
+    it.effect("tolerates one stale old-head confirmation after the exact lease push", () =>
       Effect.scoped(Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const root = yield* fs.makeTempDirectory({ prefix: "gaia-remediation-root-" });
@@ -194,10 +202,13 @@ describe("delivery remediation coordinator", () => {
         yield* appendHarnessSessionEvent(runId, paths, { kind: "turnCompleted", sessionId, status: "completed", turnId: oldTurnId });
 
         let readCount = 0;
+        let pushCount = 0;
         const feedbackId = parseDeliveryFeedbackId(`feedback-check-${"f".repeat(64)}`);
         const reader = () => Effect.sync(() => {
           readCount += 1;
-          const headSha = readCount === 1 ? oldHead : git(paths.workspace, ["rev-parse", "HEAD"]);
+          const headSha = readCount <= 2
+            ? oldHead
+            : git(paths.workspace, ["rev-parse", "HEAD"]);
           const failing = readCount === 1;
           return {
             observation: DeliveryPullRequestObservation.make({
@@ -228,6 +239,12 @@ describe("delivery remediation coordinator", () => {
               : [],
           };
         });
+        const commandRunner: GitHubCommandRunner = (input) => {
+          if (input.command === "git" && input.args[0] === "push") {
+            pushCount += 1;
+          }
+          return nodeGitHubCommandRunner(input);
+        };
         const coordinator = makeLiveHarnessSessionCoordinator();
         const remediationIntent = DeliveryRemediationIntent.make({
           attempt: 1,
@@ -270,6 +287,7 @@ describe("delivery remediation coordinator", () => {
           turnId: parseHarnessTurnId("turn-remediation"),
         });
         const result = yield* continueDeliveryRemediation(runId, {
+          commandRunner,
           harnessProviderRegistry: makeHarnessProviderRegistry([{ profileId: codexAppServerHarnessProfileId, provider }]),
           now: () => new Date("2026-07-11T11:05:00.000Z"),
           pullRequestReader: reader,
@@ -280,6 +298,8 @@ describe("delivery remediation coordinator", () => {
         });
 
         expect(result.remediation).toMatchObject({ state: "confirmed" });
+        expect(readCount).toBe(3);
+        expect(pushCount).toBe(1);
         expect(provider.prompts).toHaveLength(1);
         expect(provider.prompts[0]).toContain("Hosted check gaia-pr-ci failed.");
         expect(git(root, ["ls-remote", "--heads", "origin", `refs/heads/${provenance.headBranch}`]).split(/\s/u)[0]).toBe(result.remediation !== undefined && "commitSha" in result.remediation ? result.remediation.commitSha : "");
@@ -345,6 +365,133 @@ describe("delivery remediation coordinator", () => {
         expect(raced).toBe(thirdHead);
         expect(racedPush).toBe(false);
       }),
+    );
+
+    it.effect("rejects a stable third head immediately after a successful lease push", () =>
+      Effect.scoped(Effect.gen(function* () {
+        const seeded = yield* setupPublishedCoordinatorRun();
+        writeFileSync(`${seeded.paths.workspace}/fix.txt`, "remediated\n", "utf8");
+        git(seeded.paths.workspace, ["add", "fix.txt"]);
+        git(seeded.paths.workspace, [
+          "-c", "user.name=Gaia Remediation",
+          "-c", "user.email=remediation@gaia.local",
+          "commit", "-m", "fix: prepare remediation confirmation race",
+        ]);
+        const newHead = git(seeded.paths.workspace, ["rev-parse", "HEAD"]);
+        const thirdHead = "3".repeat(40);
+        const feedbackId = parseDeliveryFeedbackId(`feedback-check-${"e".repeat(64)}`);
+        const intent = DeliveryRemediationIntent.make({
+          attempt: 1,
+          commitTimestamp: "2026-07-11T11:05:00.000Z",
+          expectedHeadSha: seeded.oldHead,
+          feedbackDigest: "b".repeat(64),
+          feedbackIds: [feedbackId],
+          inputId: `remediation-${runId}-1`,
+          operationId: `remediation:${runId}:1`,
+          state: "intentRecorded",
+        });
+        for (const remediation of [
+          intent,
+          DeliveryRemediationDispatchAttempted.make({
+            ...intent,
+            state: "dispatchAttempted",
+          }),
+          DeliveryRemediationTurnCompleted.make({
+            ...intent,
+            state: "turnCompleted",
+          }),
+          DeliveryRemediationVerified.make({
+            ...intent,
+            state: "verified",
+          }),
+          DeliveryRemediationCommitAttempted.make({
+            ...intent,
+            commitSha: newHead,
+            state: "commitAttempted",
+          }),
+          DeliveryRemediationPushAttempted.make({
+            ...intent,
+            commitSha: newHead,
+            state: "pushAttempted",
+          }),
+        ]) {
+          yield* appendEvent(runId, seeded.paths, {
+            payload: { remediation: encodeDeliveryRemediationJson(remediation) },
+            type: "DELIVERY_REMEDIATION_RECORDED",
+          });
+        }
+
+        let readCount = 0;
+        let pushCount = 0;
+        const commandRunner: GitHubCommandRunner = (input) => {
+          if (input.command === "git" && input.args[0] === "push") {
+            pushCount += 1;
+          }
+          return nodeGitHubCommandRunner(input);
+        };
+        const result = yield* continueDeliveryRemediation(runId, {
+          commandRunner,
+          pullRequestReader: () => Effect.sync(() => {
+            readCount += 1;
+            const headSha = readCount === 1 ? seeded.oldHead : thirdHead;
+            return {
+              observation: DeliveryPullRequestObservation.make({
+                blockers: [],
+                checks: [],
+                draft: true,
+                feedback: [],
+                headSha,
+                mergeability: "mergeable",
+                observedAt: `2026-07-11T11:05:0${readCount}.000Z`,
+                prNumber: 92,
+                prUrl: seeded.publication.prUrl,
+                repository: "cill-i-am/gaia",
+                snapshotDigest: String(readCount).repeat(64),
+                status: "waiting",
+                version: 1,
+              }),
+              remediationInputs: [],
+            };
+          }),
+          rootDirectory: seeded.root,
+        });
+
+        expect(result.observation.headSha).toBe(newHead);
+        expect(result.observation.blockers).toEqual([
+          expect.objectContaining({ kind: "expectedHeadChanged" }),
+        ]);
+        expect(result.remediation).toMatchObject({
+          code: "ExpectedHeadChanged",
+          recoverable: false,
+          state: "failed",
+        });
+        expect(readCount).toBe(2);
+        expect(pushCount).toBe(1);
+        expect(git(seeded.root, [
+          "ls-remote",
+          "--heads",
+          "origin",
+          `refs/heads/${seeded.provenance.headBranch}`,
+        ]).split(/\s/u)[0]).toBe(newHead);
+        const events = yield* readEvents(seeded.paths);
+        const observations = events.filter(
+          ({ type }) => type === "GITHUB_PR_LOOP_RECORDED",
+        ).map((event) =>
+          parseDeliveryPullRequestObservation(event.payload["observation"])
+        );
+        expect(observations.at(-1)).toMatchObject({
+          headSha: newHead,
+          blockers: [expect.objectContaining({ kind: "expectedHeadChanged" })],
+        });
+        expect(events.filter(
+          ({ type }) => type === "DELIVERY_REMEDIATION_RECORDED",
+        ).map((event) => parseDeliveryRemediation(event.payload["remediation"])).at(-1)).toMatchObject({
+          code: "ExpectedHeadChanged",
+          recoverable: false,
+          state: "failed",
+        });
+      })),
+      20_000,
     );
 
     it.effect("consumes one exact authorization before dispatch and rejects concurrent or restarted reuse", () =>
