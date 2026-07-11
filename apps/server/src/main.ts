@@ -140,14 +140,14 @@ function makeProductionHarnessServices(rootDirectory: string) {
           resumeThread: (threadId) => client.resumeThread({ threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ threadId: thread.id }))),
           startTurn: ({ model, threadId }) => client.startTurn({ input: [{ text: "Resume the retained worker task after the recoverable provider failure.", type: "text" }], model, threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ turn }) => ({ turnId: turn.id }))),
         },
-        validateWorkspace: (workspacePath) => Effect.tryPromise({
+        validateWorkspace: (workspacePath, expectedHead) => Effect.tryPromise({
           try: async () => {
             const run = promisify(execFile);
             const [{ stdout: head }, { stdout: status }] = await Promise.all([
               run("git", ["-C", workspacePath, "rev-parse", "HEAD"]),
               run("git", ["-C", workspacePath, "status", "--porcelain"]),
             ]);
-            if (head.trim().length !== 40 || status.trim().length !== 0) throw new Error("Retained worktree is not clean.");
+            if (head.trim() !== expectedHead || status.trim().length !== 0) throw new Error("Retained worktree identity changed.");
           },
           catch: (cause) => cause,
         }),

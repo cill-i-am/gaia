@@ -11,6 +11,7 @@ import {
   parseHarnessSessionId,
   parseDeliveryPublication,
   parseRunId,
+  parseWorkerRecoveryReceipt,
   ResolvedHarnessExecution,
   snapshotFromReplay,
   type GaiaFailure,
@@ -1314,15 +1315,22 @@ function issueDeliveryWorkerContinuationState(
   events: ReadonlyArray<RunEvent>,
   sessionEvents: ReadonlyArray<ReturnType<typeof parseHarnessEvent>>,
 ): WorkerContinuationState | "invalid" {
+  const recoverySequence = [...events].reverse().find((event) =>
+    event.type === "WORKER_RECOVERY_RECORDED" &&
+    parseWorkerRecoveryReceipt(event.payload["recovery"]).state === "dispatchConfirmed"
+  )?.sequence;
+  const relevantSessionEvents = recoverySequence === undefined
+    ? sessionEvents
+    : events.filter((event) => event.sequence > recoverySequence && event.type === "HARNESS_SESSION_EVENT_RECORDED").map((event) => parseHarnessEvent(event.payload.event));
   const workerCompletionPersisted = events.some(
     ({ type }) => type === "WORKER_COMPLETED",
   );
-  const terminal = sessionEvents.find(
+  const terminal = relevantSessionEvents.find(
     ({ kind }) => kind === "turnCompleted" || kind === "sessionFailed",
   );
   if (terminal === undefined) {
     if (workerCompletionPersisted) return "invalid";
-    return sessionEvents.length === 0 ? "start" : "resume";
+    return recoverySequence !== undefined || relevantSessionEvents.length > 0 ? "resume" : "start";
   }
   if (
     terminal.kind === "turnCompleted" &&

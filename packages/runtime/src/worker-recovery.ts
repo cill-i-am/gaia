@@ -17,7 +17,7 @@ export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryA
   readonly nativeThreadId: string;
   readonly provider: WorkerRecoveryProvider;
   readonly rootDirectory?: string;
-  readonly validateWorkspace: (workspacePath: string) => Effect.Effect<void, unknown>;
+  readonly validateWorkspace: (workspacePath: string, expectedHead: string) => Effect.Effect<void, unknown>;
 }) {
   return withRunStoreLock(input, Effect.gen(function* () {
     const runId = parseRunId(runIdInput);
@@ -29,16 +29,19 @@ export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryA
     if (prior?.state === "dispatchAttempted") return yield* record(runId, paths, { ...prior, code: "WorkerRecoveryOutcomeUnknown", message: "A prior dispatch has no durable native turn receipt.", state: "outcomeUnknown" });
     if (prior?.state === "dispatchConfirmed" || prior?.state === "failed" || prior?.state === "outcomeUnknown") return prior;
     assertEligible(loaded.events, action);
+    const accepted = loaded.events[0]?.payload["delivery"] as { baseRevision?: unknown } | undefined;
+    const expectedHead = typeof accepted?.baseRevision === "string" ? accepted.baseRevision : undefined;
+    if (expectedHead === undefined) return yield* conflict("Accepted delivery base is unavailable.");
     const models = yield* input.provider.listModels().pipe(Effect.mapError(() => failure("WorkerRecoveryModelCatalogUnavailable", "Codex model catalog is unavailable.")));
     if (!models.some((model) => model.id === action.model && !model.hidden)) return yield* failure("WorkerRecoveryModelUnavailable", "The explicitly selected Codex model is unavailable.");
     const base = { ...action, attempt: 1 as const, maxAttempts: 1 as const, payloadDigest };
     if (prior === undefined) yield* record(runId, paths, { ...base, state: "intentRecorded" });
     const preflight = yield* Effect.exit(Effect.gen(function* () {
-      yield* input.validateWorkspace(paths.workspace);
+      yield* input.validateWorkspace(paths.workspace, expectedHead);
       const resumed = yield* input.provider.resumeThread(input.nativeThreadId);
       const read = yield* input.provider.readThread(input.nativeThreadId);
       if (resumed.threadId !== input.nativeThreadId || read.threadId !== input.nativeThreadId || read.active || !read.systemError) return yield* Effect.fail(new Error("thread mismatch"));
-      yield* input.validateWorkspace(paths.workspace);
+      yield* input.validateWorkspace(paths.workspace, expectedHead);
     }));
     if (preflight._tag === "Failure") return yield* record(runId, paths, { ...base, code: "WorkerRecoveryPreflightFailed", message: "Worker recovery preflight failed conclusively.", state: "failed" });
     if (prior?.state !== "preflightConfirmed") yield* record(runId, paths, { ...base, state: "preflightConfirmed" });
@@ -55,9 +58,11 @@ export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryA
 
 function assertEligible(events: ReadonlyArray<{ readonly payload: Record<string, unknown>; readonly sequence: number; readonly type: string }>, action: WorkerRecoveryAction) {
   const failure = events.find((event) => event.sequence === action.expectedFailureSequence);
-  const session = [...events].reverse().find((event) => event.type === "HARNESS_SESSION_EVENT_RECORDED");
+  const failureIndex = events.findIndex((event) => event.sequence === action.expectedFailureSequence);
+  const session = failureIndex > 0 ? events[failureIndex - 1] : undefined;
   const harness = session === undefined ? undefined : parseHarnessEvent(session.payload["event"]);
-  if (failure?.type !== "RUN_FAILED" || failure.sequence !== action.expectedFailureSequence || failure.payload["recoverable"] !== true || failure.payload["stage"] !== "runningWorker" || harness?.kind !== "sessionFailed" || harness.failure.kind !== "providerFailure" || !harness.failure.recoverable || harness.sessionId !== action.expectedSessionId) throw makeRuntimeError({ code: "DeliveryActionConflict", message: "Run is not eligible for worker recovery.", recoverable: false });
+  const createdExecution = events[0]?.payload["execution"] as { selection?: { harnessProfileId?: unknown } } | undefined;
+  if (failureIndex !== events.length - 1 || failure?.type !== "RUN_FAILED" || failure.sequence !== action.expectedFailureSequence || failure.payload["recoverable"] !== true || failure.payload["stage"] !== "runningWorker" || session?.type !== "HARNESS_SESSION_EVENT_RECORDED" || harness?.kind !== "sessionFailed" || harness.failure.kind !== "providerFailure" || !harness.failure.recoverable || harness.sessionId !== action.expectedSessionId || createdExecution?.selection?.harnessProfileId !== action.harnessProfileId) throw makeRuntimeError({ code: "DeliveryActionConflict", message: "Run is not eligible for worker recovery.", recoverable: false });
 }
 
 function latestReceipt(events: ReadonlyArray<{ readonly payload: Record<string, unknown>; readonly type: string }>) {

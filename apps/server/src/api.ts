@@ -48,6 +48,8 @@ import {
   snapshotFromReplay,
   deriveDeliveryActionHistoriesFromEvents,
   deliveryActionAuditSummary,
+  parseWorkerRecoveryReceipt,
+  workerRecoveryProjection,
 } from "@gaia/core";
 import type {
   LocalRunList,
@@ -366,6 +368,13 @@ export const RunsLive = HttpApiBuilder.group(
             rootDirectory: identity.rootDirectory,
           }));
           if (exit._tag === "Failure") return yield* Effect.fail(actionApiErrorFromCause(exit.cause));
+          if (exit.value.state === "dispatchConfirmed") {
+            yield* continueServerRun(params.runId, {
+              ...identity.workflowOptions,
+              rootDirectory: identity.rootDirectory,
+              sessionCoordinator: identity.sessionCoordinator,
+            }).pipe(Effect.ignore, Effect.forkIn(identity.runScope));
+          }
           yield* identity.runIndex.refreshRun(params.runId);
           return WorkerRecoverySuccessEnvelope.make({ data: exit.value, status: "success" });
         }),
@@ -739,6 +748,8 @@ function deliveryUpdateFromEvents(
     Option.getOrUndefined,
   );
   const eventSequence = events.at(-1)?.sequence ?? 0;
+  const workerRecoveryEvent = [...events].reverse().find(({ type }) => type === "WORKER_RECOVERY_RECORDED");
+  const workerRecovery = workerRecoveryEvent === undefined ? undefined : parseWorkerRecoveryReceipt(workerRecoveryEvent.payload["recovery"]);
 
   if (delivery === undefined || delivery.mode === "local") {
     const status = snapshot.state === "failed" ? "failed" : snapshot.state === "completed" ? "readyToPublish" : "unavailable";
@@ -752,7 +763,8 @@ function deliveryUpdateFromEvents(
     });
   }
 
-  const stage = snapshot.state === "failed" ? "failed" : delivery.stage;
+  const recoveryStage = workerRecoveryProjection(workerRecovery);
+  const stage = recoveryStage === undefined ? (snapshot.state === "failed" ? "failed" : delivery.stage) : recoveryStage;
   const publication =
     delivery.publication === undefined
       ? undefined
@@ -803,6 +815,7 @@ function deliveryUpdateFromEvents(
       : { remediationRearmSequence: delivery.remediationRearmSequence }),
     stage,
     status: stage,
+    ...(workerRecovery === undefined ? {} : { workerRecovery }),
   });
 }
 

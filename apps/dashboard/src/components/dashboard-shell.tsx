@@ -2129,6 +2129,16 @@ function deliveryStatusLabel(snapshot: typeof DeliverySnapshotDto.Type) {
       return "Delivery: completed";
     case "failed":
       return "Delivery: failed";
+    case "runningWorker":
+      return "Delivery: recovered worker running";
+    case "workerRecoveryPending":
+      return "Delivery: worker recovery pending";
+    case "workerRecoveryDispatching":
+      return "Delivery: worker recovery dispatching";
+    case "workerRecoveryFailed":
+      return "Delivery: worker recovery failed";
+    case "workerRecoveryOutcomeUnknown":
+      return "Delivery: worker recovery outcome unknown";
     case "unavailable":
       return "Delivery: unavailable";
   }

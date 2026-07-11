@@ -128,6 +128,11 @@ export const ServerHostSchema = Schema.Literal("127.0.0.1");
 export const LocalRunStatusSchema = Schema.Literals([
   "completed",
   "failed",
+  "runningWorker",
+  "workerRecoveryPending",
+  "workerRecoveryDispatching",
+  "workerRecoveryFailed",
+  "workerRecoveryOutcomeUnknown",
   "running",
 ] as const);
 
@@ -306,6 +311,11 @@ export const DeliveryStatusSchema = Schema.Literals([
   "publicationFailed",
   "publicationOutcomeUnknown",
   "failed",
+  "runningWorker",
+  "workerRecoveryPending",
+  "workerRecoveryDispatching",
+  "workerRecoveryFailed",
+  "workerRecoveryOutcomeUnknown",
 ] as const);
 
 export const DeliveryRecoveryActionKindSchema = Schema.Literals([
@@ -512,6 +522,7 @@ export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   runId: RunIdSchema,
   stage: DeliveryStatusSchema,
   status: DeliveryStatusSchema,
+  workerRecovery: Schema.optionalKey(WorkerRecoveryReceiptSchema),
 }) {}
 
 export class DeliverySnapshotSuccessEnvelope extends Schema.Class<DeliverySnapshotSuccessEnvelope>(
