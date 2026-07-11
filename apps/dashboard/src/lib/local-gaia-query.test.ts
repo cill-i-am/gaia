@@ -553,6 +553,7 @@ describe("local Gaia query options", () => {
     expect(requests).toEqual(["POST http://127.0.0.1:4321/runs"]);
     expect(bodies).toEqual([
       {
+        delivery: { mode: "local" },
         execution: { harnessProfileId: "codexAppServer" },
         workflow: "issueDelivery",
         workItem: {

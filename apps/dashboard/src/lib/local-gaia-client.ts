@@ -3,6 +3,7 @@ import {
   AgentSessionSnapshotSuccessEnvelope,
   AgentSessionUpdateDto,
   CreateRunRequest,
+  DeliverySnapshotSuccessEnvelope,
   codexAppServerExecutionSelection,
   FactoryActivitySuccessEnvelope,
   FactoryAgentIdSchema,
@@ -80,6 +81,9 @@ const decodeFactoryArtifactListSuccess = Schema.decodeUnknownEffect(
 );
 const decodeFactoryArtifactSuccess = Schema.decodeUnknownEffect(
   FactoryArtifactSuccessEnvelope,
+);
+const decodeDeliverySnapshotSuccess = Schema.decodeUnknownEffect(
+  DeliverySnapshotSuccessEnvelope,
 );
 const decodeAgentSessionSnapshotSuccess = Schema.decodeUnknownEffect(
   AgentSessionSnapshotSuccessEnvelope,
@@ -161,6 +165,20 @@ export function getFactoryRunActivityFromDashboardGaiaClient(
         params: { runId },
       });
       return yield* decodeFactoryActivitySuccess(response);
+    }),
+  );
+}
+
+export function getDeliverySnapshotFromDashboardGaiaClient(
+  config: DashboardGaiaClientConfig & { readonly runId: string },
+) {
+  return withDashboardGaiaClient(config, (client) =>
+    Effect.gen(function* () {
+      const runId = yield* decodeRunIdParameter(config.runId);
+      const response = yield* client.runs.getDeliverySnapshot({
+        params: { runId },
+      });
+      return yield* decodeDeliverySnapshotSuccess(response);
     }),
   );
 }
@@ -336,6 +354,7 @@ export function createRunFromDashboardGaiaClient(
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
       const payload = yield* CreateRunRequest.makeEffect({
+        delivery: { mode: "local" },
         execution: codexAppServerExecutionSelection,
         workflow: "issueDelivery",
         workItem: {

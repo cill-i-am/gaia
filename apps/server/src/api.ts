@@ -1,6 +1,11 @@
 import {
   AgentActionSuccessEnvelope,
   AgentSessionSnapshotSuccessEnvelope,
+  DeliveryModeSchema,
+  DeliveryProvenanceDto,
+  DeliverySnapshotDto,
+  DeliverySnapshotSuccessEnvelope,
+  DeliveryStatusSchema,
   FactoryActivitySuccessEnvelope,
   CreateRunAcceptedResponse,
   FactoryArtifactListSuccessEnvelope,
@@ -26,7 +31,9 @@ import {
   LocalRunEventsSuccessEnvelope,
   type LocalRunApiError,
   LocalRunReadDiagnosticDto,
+  type RunId,
   type RunEvent,
+  snapshotFromReplay,
 } from "@gaia/core";
 import type {
   LocalRunList,
@@ -35,14 +42,17 @@ import type {
 import { readLocalRunEvents } from "@gaia/runtime/run-read-api";
 import {
   GaiaRuntimeError,
+  makeRuntimeError,
+  makeRunPaths,
   makeLocalRunReadIndex,
+  subscribeRunEventFeed,
   dispatchAgentSessionAction,
   makeLiveHarnessSessionCoordinator,
   readAgentSessionSnapshot,
   streamAgentSessionUpdates,
   type LocalRunReadIndex,
 } from "@gaia/runtime";
-import { Cause, Context, Effect, FileSystem, Layer, Path, Schema, Scope, Stream } from "effect";
+import { Cause, Context, Effect, FileSystem, Layer, Option, Path, Schema, Scope, Stream } from "effect";
 import type { Generator } from "effect/unstable/http/Etag";
 import type { HttpPlatform } from "effect/unstable/http/HttpPlatform";
 import {
@@ -82,6 +92,7 @@ type LocalServerConfigValue = LocalServerIdentity & {
   readonly runRegistry: ServerRunRegistryService;
   readonly runScope: Scope.Scope;
   readonly sessionCoordinator: ReturnType<typeof makeLiveHarnessSessionCoordinator>;
+  readonly subscribeDeliveryRunEventFeed: typeof subscribeRunEventFeed;
   readonly workflowOptions: ServerWorkflowOptions;
 };
 
@@ -93,6 +104,16 @@ export class LocalServerConfig extends Context.Service<
 const decodeFactoryRunSummary = Schema.decodeUnknownSync(FactoryRunSummaryDto);
 const decodeFactoryRunDetail = Schema.decodeUnknownSync(FactoryRunDetailDto);
 const decodeFactoryRunList = Schema.decodeUnknownSync(FactoryRunListDto);
+const decodeDeliveryProjection = Schema.decodeUnknownOption(
+  Schema.Struct({
+    baseBranch: Schema.NonEmptyString,
+    baseRevision: Schema.NonEmptyString,
+    headBranch: Schema.NonEmptyString,
+    mode: DeliveryModeSchema,
+    remote: Schema.NonEmptyString,
+    stage: DeliveryStatusSchema,
+  }),
+);
 
 export const HealthLive = HttpApiBuilder.group(
   LocalGaiaServerApi,
@@ -234,6 +255,43 @@ export const RunsLive = HttpApiBuilder.group(
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
         }),
       )
+      .handle("getDeliverySnapshot", ({ params }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(
+            readDeliverySnapshot(params.runId, identity.rootDirectory),
+          );
+          if (exit._tag === "Success") {
+            return DeliverySnapshotSuccessEnvelope.make({
+              data: exit.value,
+              status: "success",
+            });
+          }
+
+          return yield* Effect.fail(readApiErrorFromCause(exit.cause));
+        }),
+      )
+      .handle("streamDeliverySnapshot", ({ params, query }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const stream = yield* streamDeliveryUpdates(
+            params.runId,
+            query.afterSequence,
+            {
+              rootDirectory: identity.rootDirectory,
+              subscribeRunEventFeed: identity.subscribeDeliveryRunEventFeed,
+            },
+          );
+          return stream.pipe(
+            Stream.map((update) => ({
+              data: update,
+              event: "delivery-update" as const,
+              id: String(update.eventSequence),
+            })),
+            Stream.mapError(streamApiError),
+          );
+        }).pipe(Effect.mapError((error) => actionApiErrorFromCause(Cause.fail(error)))),
+      )
       .handle("getAgentActivity", ({ params }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
@@ -362,6 +420,9 @@ export function makeLocalGaiaServerLayer(
   identity: LocalServerIdentity,
   workflowOptions: ServerWorkflowOptions = {},
   resumableRunIds: ReadonlyArray<string> = [],
+  options: {
+    readonly subscribeDeliveryRunEventFeed?: typeof subscribeRunEventFeed;
+  } = {},
 ): Layer.Layer<
   never,
   unknown,
@@ -406,6 +467,8 @@ export function makeLocalGaiaServerLayer(
         runRegistry,
         runScope,
         sessionCoordinator,
+        subscribeDeliveryRunEventFeed:
+          options.subscribeDeliveryRunEventFeed ?? subscribeRunEventFeed,
         workflowOptions: scopedWorkflowOptions,
       } satisfies LocalServerConfigValue;
     }),
@@ -480,6 +543,139 @@ function readFactoryRunProjection(
     }
 
     return { activity, artifacts, graph };
+  });
+}
+
+function readDeliverySnapshot(
+  runId: RunId,
+  rootDirectory: string,
+): Effect.Effect<typeof DeliverySnapshotDto.Type, unknown, FileSystem.FileSystem | Path.Path> {
+  return Effect.gen(function* () {
+    const events = yield* readLocalRunEvents(runId, { rootDirectory });
+    const update = deliveryUpdateFromEvents(events.runId, events.events);
+
+    if (update === undefined) {
+      return DeliverySnapshotDto.make({
+        eventSequence: 0,
+        mode: "local",
+        runId: events.runId,
+        stage: "unavailable",
+        status: "unavailable",
+      });
+    }
+
+    return update;
+  });
+}
+
+function streamDeliveryUpdates(
+  runId: RunId,
+  afterSequence: number | undefined,
+  options: {
+    readonly rootDirectory: string;
+    readonly subscribeRunEventFeed: typeof subscribeRunEventFeed;
+  },
+): Effect.Effect<Stream.Stream<typeof DeliverySnapshotDto.Type, GaiaRuntimeError>, GaiaRuntimeError, FileSystem.FileSystem | Path.Path | Scope.Scope> {
+  return Effect.gen(function* () {
+    const paths = yield* makeRunPaths(runId, options).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "InvalidRunDirectory",
+          message: "Run directory could not be resolved.",
+          recoverable: false,
+        }),
+      ),
+    );
+    const subscription = yield* options.subscribeRunEventFeed(paths).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "RunUnreadable",
+          message: "Run could not be read from events.jsonl.",
+          recoverable: false,
+        }),
+      ),
+    );
+    if (subscription.backlog.length === 0) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "RunHasNoEvents",
+          message: "Run does not have an events.jsonl history.",
+          recoverable: false,
+        }),
+      );
+    }
+    if (afterSequence !== undefined && (!Number.isInteger(afterSequence) || afterSequence < 1)) {
+      return yield* Effect.fail(makeRuntimeError({ code: "InvalidRequest", message: "Delivery stream cursor must be a positive Gaia sequence.", recoverable: false }));
+    }
+    if (afterSequence !== undefined && afterSequence > subscription.highWater) {
+      return yield* Effect.fail(makeRuntimeError({ code: "DeliveryStreamCursorConflict", message: "Delivery stream cursor is ahead of authoritative run history.", recoverable: true }));
+    }
+    const cursor = afterSequence ?? 0;
+    const backlogEvents = subscription.backlog.filter((event) => event.sequence > cursor && event.sequence <= subscription.highWater);
+    const backlog = deliveryUpdatesFromEvents(runId, subscription.backlog, backlogEvents);
+    const live = subscription.live.pipe(
+      Stream.filter((event) => event.sequence > subscription.highWater),
+      Stream.mapAccum(() => subscription.backlog, (history, event) => {
+        const next = [...history, event];
+        const update = deliveryUpdateFromEvents(runId, next);
+        return [next, update === undefined || update.eventSequence !== event.sequence ? [] : [update]] as const;
+      }),
+    );
+    return Stream.fromIterable(backlog).pipe(
+      Stream.concat(live),
+      Stream.takeUntil((update) =>
+        update.stage === "readyToPublish" || update.stage === "failed"
+      ),
+    );
+  });
+}
+
+function deliveryUpdatesFromEvents(
+  runId: RunId,
+  history: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>,
+) {
+  return events.flatMap((event) => {
+    const update = deliveryUpdateFromEvents(
+      runId,
+      history.filter((candidate) => candidate.sequence <= event.sequence),
+    );
+    return update === undefined || update.eventSequence !== event.sequence ? [] : [update];
+  });
+}
+
+function deliveryUpdateFromEvents(
+  runId: RunId,
+  events: ReadonlyArray<RunEvent>,
+) {
+  if (events.length === 0) return undefined;
+  const snapshot = snapshotFromReplay(events);
+  const delivery = decodeDeliveryProjection(snapshot.context["delivery"]).pipe(
+    Option.getOrUndefined,
+  );
+  const eventSequence = events.at(-1)?.sequence ?? 0;
+
+  if (delivery === undefined || delivery.mode === "local") {
+    const status = snapshot.state === "failed" ? "failed" : snapshot.state === "completed" ? "readyToPublish" : "unavailable";
+    return DeliverySnapshotDto.make({
+      eventSequence,
+      mode: "local",
+      runId,
+      stage: status,
+      status,
+    });
+  }
+
+  const stage = snapshot.state === "failed" ? "failed" : delivery.stage;
+  return DeliverySnapshotDto.make({
+    eventSequence,
+    mode: "pullRequest",
+    provenance: DeliveryProvenanceDto.make(delivery),
+    runId,
+    stage,
+    status: stage,
   });
 }
 
@@ -720,6 +916,7 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
     case "ActiveRunConflict":
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
+    case "DeliveryStreamCursorConflict":
     case "RunStoreLocked":
       return 409;
     case "HarnessAuthenticationRequired":
@@ -762,6 +959,7 @@ function actionApiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunActionApi
   switch (diagnostic.code) {
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
+    case "DeliveryStreamCursorConflict":
       return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
     default:
       return readApiError(diagnostic);
@@ -880,6 +1078,7 @@ function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
     case "ActiveRunConflict":
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
+    case "DeliveryStreamCursorConflict":
     case "RunStoreLocked":
     case "InternalServerError":
     case "MethodNotAllowed":
@@ -979,6 +1178,7 @@ function apiError(
       });
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
+    case "DeliveryStreamCursorConflict":
       return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
     case "RunStoreLocked":
       return LocalRunApiConflict.make({
@@ -1064,6 +1264,7 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
       });
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
+    case "DeliveryStreamCursorConflict":
       return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
     case "RunStoreLocked":
       return LocalRunApiConflict.make({

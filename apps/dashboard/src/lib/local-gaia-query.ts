@@ -10,6 +10,7 @@ import {
   DashboardGaiaFetchClientLive,
   actOnAgentSessionFromDashboardGaiaClient,
   createRunFromDashboardGaiaClient,
+  getDeliverySnapshotFromDashboardGaiaClient,
   getAgentSessionFromDashboardGaiaClient,
   getFactoryAgentActivityFromDashboardGaiaClient,
   getFactoryArtifactFromDashboardGaiaClient,
@@ -70,6 +71,8 @@ export const localGaiaQueryKeys = {
     [...localGaiaQueryKeys.run(runId), "factory-graph"] as const,
   factoryRunActivity: (runId: string) =>
     [...localGaiaQueryKeys.run(runId), "activity"] as const,
+  delivery: (runId: string) =>
+    [...localGaiaQueryKeys.run(runId), "delivery"] as const,
   health: () => [...localGaiaQueryKeys.all, "health"] as const,
   run: (runId: string) =>
     [...localGaiaQueryKeys.runs(), "detail", runId] as const,
@@ -159,6 +162,20 @@ export function localGaiaFactoryRunActivityQueryOptions(
       Option.getOrElse(runId, () => "invalid-run-id"),
     ),
     queryFn: () => getFactoryRunActivityFromDashboardGaiaClient(config),
+    retry: false,
+  });
+}
+
+export function localGaiaDeliveryQueryOptions(
+  config: DashboardGaiaClientConfig & { readonly runId: string },
+) {
+  const runId = parseRunId(config.runId);
+  return localGaiaEffectQuery.queryOptions({
+    enabled: Option.isSome(runId),
+    queryKey: localGaiaQueryKeys.delivery(
+      Option.getOrElse(runId, () => "invalid-run-id"),
+    ),
+    queryFn: () => getDeliverySnapshotFromDashboardGaiaClient(config),
     retry: false,
   });
 }

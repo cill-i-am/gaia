@@ -140,6 +140,7 @@ export function createRunFromServer(input: {
       ),
     );
     const payload = yield* CreateRunRequest.makeEffect({
+      delivery: { mode: "local" },
       execution: codexAppServerExecutionSelection,
       workflow: "issueDelivery",
       workItem: {

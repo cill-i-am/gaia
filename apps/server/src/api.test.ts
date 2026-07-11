@@ -5,6 +5,7 @@ import {
   makeHarnessProviderRegistry,
   ReviewResult,
   ReviewerNameSchema,
+  subscribeRunEventFeed,
   type GaiaReviewer,
 } from "@gaia/runtime";
 import type { ServerWorkflowOptions } from "@gaia/runtime/server-workflows";
@@ -373,6 +374,145 @@ describe("local run api http boundary", () => {
       20_000,
     );
 
+    it.effect("streams delivery updates with resumable Gaia sequence SSE ids", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-delivery-" });
+        const accepted = yield* acceptFactoryRun({
+          delivery: { mode: "pullRequest" },
+          execution: codexAppServerExecutionSelection,
+          workflow: "issueDelivery",
+          workItem: {
+            description: "Stream delivery lifecycle.",
+            kind: "issue",
+            title: "Delivery stream",
+          },
+        }, {
+          deliveryGitCommandRunner: recordingGitRunner(),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        yield* continueServerRun(accepted.runId, {
+          deliveryGitCommandRunner: recordingGitRunner(),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        const layer = testServerLayer(cwd, {
+          deliveryGitCommandRunner: recordingGitRunner(),
+        });
+
+        const streamResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/delivery/stream`,
+        ).pipe(Effect.provide(layer));
+        const streamText = yield* streamResponse.text;
+        const sse = parseSseBlocks(streamText);
+        const updates = sse.map(({ data }) => data);
+        const lastSequence = getNumber(getObjectFromArray(updates, updates.length - 1), "eventSequence");
+        const resumeResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/delivery/stream?afterSequence=${lastSequence - 1}`,
+        ).pipe(Effect.provide(layer));
+        const resumeBlocks = parseSseBlocks(yield* resumeResponse.text);
+        const conflictResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/delivery/stream?afterSequence=999999`,
+        ).pipe(Effect.provide(layer));
+        const conflictBody = yield* responseJsonObject(conflictResponse);
+
+        assert.strictEqual(streamResponse.status, 200);
+        assert.isAtLeast(updates.length, 2);
+        assert.deepEqual(
+          sse.map(({ id }) => id),
+          updates.map((update) => String(getNumber(update, "eventSequence"))),
+        );
+        assert.deepEqual(
+          updates.map((update) => getNumber(update, "eventSequence")),
+          [...updates.map((update) => getNumber(update, "eventSequence"))].sort((left, right) => left - right),
+        );
+        assert.strictEqual(
+          getString(getObjectFromArray(updates, updates.length - 1), "stage"),
+          "readyToPublish",
+        );
+        assert.strictEqual(resumeResponse.status, 200);
+        assert.strictEqual(resumeBlocks.length, 1);
+        assert.strictEqual(resumeBlocks[0]?.id, String(lastSequence));
+        assert.strictEqual(conflictResponse.status, 409);
+        assertApiError(conflictBody, "DeliveryStreamCursorConflict", 409);
+      }),
+      20_000,
+    );
+
+    it.effect("opens one authoritative delivery event feed per stream connection", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({
+          prefix: "gaia-server-delivery-feed-",
+        });
+        const accepted = yield* acceptFactoryRun(
+          {
+            delivery: { mode: "pullRequest" },
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery",
+            workItem: {
+              description: "Count delivery stream event reads.",
+              kind: "issue",
+              title: "Delivery stream read count",
+            },
+          },
+          {
+            deliveryGitCommandRunner: recordingGitRunner(),
+            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            rootDirectory: cwd,
+          },
+        );
+        yield* continueServerRun(accepted.runId, {
+          deliveryGitCommandRunner: recordingGitRunner(),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        let deliveryEventReads = 0;
+        const layer = testServerLayer(
+          cwd,
+          { deliveryGitCommandRunner: recordingGitRunner() },
+          {
+            subscribeDeliveryRunEventFeed: (paths, capacity) => {
+              deliveryEventReads += 1;
+              return subscribeRunEventFeed(paths, capacity);
+            },
+          },
+        );
+
+        const streamResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/delivery/stream`,
+        ).pipe(Effect.provide(layer));
+        const streamBlocks = parseSseBlocks(yield* streamResponse.text);
+        const readsAfterSuccess = deliveryEventReads;
+        const lastSequence = getNumber(
+          getObjectFromArray(
+            streamBlocks.map(({ data }) => data),
+            streamBlocks.length - 1,
+          ),
+          "eventSequence",
+        );
+        const resumeResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/delivery/stream?afterSequence=${lastSequence - 1}`,
+        ).pipe(Effect.provide(layer));
+        yield* resumeResponse.text;
+        const readsAfterResume = deliveryEventReads;
+        const conflictResponse = yield* HttpClient.get(
+          `/runs/${accepted.runId}/delivery/stream?afterSequence=999999`,
+        ).pipe(Effect.provide(layer));
+        yield* conflictResponse.text;
+
+        assert.strictEqual(streamResponse.status, 200);
+        assert.strictEqual(readsAfterSuccess, 1);
+        assert.strictEqual(resumeResponse.status, 200);
+        assert.strictEqual(readsAfterResume, 2);
+        assert.strictEqual(conflictResponse.status, 409);
+        assert.strictEqual(deliveryEventReads, 3);
+      }),
+      20_000,
+    );
+
+
     it.effect("maps strict agent action conflicts to public 409 errors", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -678,11 +818,17 @@ describe("local run api http boundary", () => {
 function testServerLayer(
   rootDirectory: string,
   workflowOptions: ServerWorkflowOptions = {},
+  serverOptions: Parameters<typeof makeLocalGaiaServerLayer>[3] = {},
 ) {
-  return makeLocalGaiaServerLayer(testIdentity(rootDirectory), {
-    harnessProviderRegistry: makeTestHarnessProviderRegistry(),
-    ...workflowOptions,
-  }).pipe(
+  return makeLocalGaiaServerLayer(
+    testIdentity(rootDirectory),
+    {
+      harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+      ...workflowOptions,
+    },
+    [],
+    serverOptions,
+  ).pipe(
     Layer.provideMerge(NodeHttpServer.layerTest),
   );
 }
@@ -775,6 +921,7 @@ function postCreateRun(
 
 function createRunRequest(specMarkdown: string) {
   return createRunRequestFromPayload({
+    delivery: { mode: "local" },
     execution: codexAppServerExecutionSelection,
     workflow: "issueDelivery",
     workItem: {
@@ -794,6 +941,7 @@ function createRunRequestFromPayload(payload: unknown) {
 
 function factoryCreateInput() {
   return {
+    delivery: { mode: "local" },
     execution: codexAppServerExecutionSelection,
     workflow: "issueDelivery",
     workItem: {
@@ -809,6 +957,36 @@ function factoryCreateInput() {
       title: "Wire LocalGaiaServerApi factory endpoints",
     },
   } as const;
+}
+
+function recordingGitRunner() {
+  return (command: { readonly args: ReadonlyArray<string>; readonly cwd: string }) =>
+    Effect.sync(() => {
+      const [first, ...rest] = command.args;
+      if (first === "rev-parse" && rest[0] === "--show-toplevel") {
+        return { stderr: "", stdout: `${command.cwd}\n` };
+      }
+      if (
+        first === "rev-parse" &&
+        rest[0] === "--path-format=absolute" &&
+        rest[1] === "--git-common-dir"
+      ) {
+        return { stderr: "", stdout: `${command.cwd}/.git\n` };
+      }
+      if (first === "fetch") {
+        return { stderr: "", stdout: "" };
+      }
+      if (first === "rev-parse" && rest[0] === "origin/main") {
+        return { stderr: "", stdout: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92\n" };
+      }
+      if (first === "rev-parse" && rest[0] === "HEAD") {
+        return { stderr: "", stdout: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92\n" };
+      }
+      if (first === "worktree" && rest[0] === "add") {
+        return { stderr: "", stdout: "" };
+      }
+      throw new Error(`Unexpected git command ${command.args.join(" ")}`);
+    });
 }
 
 function pausingReviewer(release: Deferred.Deferred<void>): GaiaReviewer {

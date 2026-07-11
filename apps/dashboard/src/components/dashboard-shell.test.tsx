@@ -92,6 +92,7 @@ const queryFixture = vi.hoisted(
     }>;
     createRunPromise: Promise<CreateRunAcceptedFixture> | undefined;
     eventsByRunId: Record<string, ReadonlyArray<unknown>>;
+    deliverySnapshotsByRunId: Record<string, unknown>;
     healthError?: unknown;
     runs: ReadonlyArray<unknown>;
     runsDiagnostics: ReadonlyArray<unknown>;
@@ -114,6 +115,7 @@ const queryFixture = vi.hoisted(
     createRunInputs: [],
     createRunPromise: undefined,
     eventsByRunId: {},
+    deliverySnapshotsByRunId: {},
     healthError: undefined,
     runs: [],
     runsDiagnostics: [],
@@ -239,6 +241,22 @@ vi.mock("@/lib/local-gaia-query", () => ({
         status: "success",
       }),
     queryKey: ["local-gaia", "runs", "detail", config.runId, "events"] as const,
+    retry: false,
+  }),
+  localGaiaDeliveryQueryOptions: (config: { readonly runId: string }) => ({
+    enabled: config.runId.length > 0,
+    queryFn: () =>
+      Promise.resolve({
+        data: queryFixture.deliverySnapshotsByRunId[config.runId] ?? {
+          eventSequence: 0,
+          mode: "local",
+          runId: config.runId,
+          stage: "unavailable",
+          status: "unavailable",
+        },
+        status: "success",
+      }),
+    queryKey: ["local-gaia", "runs", "detail", config.runId, "delivery"] as const,
     retry: false,
   }),
   localGaiaRunArtifactQueryOptions: (config: {
@@ -2097,6 +2115,43 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
+  it("renders selected run delivery readiness without publish controls", async () => {
+    const runId = parseRunId("run-7777777777");
+    renderDashboardWithQueries({
+      deliverySnapshotsByRunId: {
+        [runId]: {
+          eventSequence: 6,
+          mode: "pullRequest",
+          provenance: {
+            baseBranch: "main",
+            baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+            headBranch: "gaia/run-7777777777",
+            remote: "origin",
+          },
+          runId,
+          stage: "readyToPublish",
+          status: "readyToPublish",
+        },
+      },
+      runs: [
+        localRunSummary({
+          latestEventType: "DELIVERY_READY_TO_PUBLISH",
+          runId,
+          state: "delivering",
+          status: "running",
+        }),
+      ],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-run-delivery-status").textContent).toBe(
+        "Delivery: ready to publish from gaia/run-7777777777",
+      );
+    });
+    expect(screen.queryByRole("button", { name: /^Publish/u })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Merge/u })).toBeNull();
+  });
+
   it("validates issue-delivery intake before creating a run", async () => {
     renderDashboardWithQueries({ runs: [] });
 
@@ -2326,6 +2381,7 @@ function renderDashboardWithQueries(input: {
     Record<string, typeof LocalRunArtifactDto.Type>
   >;
   readonly eventsByRunId?: Record<string, ReadonlyArray<unknown>>;
+  readonly deliverySnapshotsByRunId?: Record<string, unknown>;
   readonly factoryActivitiesByRunId?: Record<string, ReadonlyArray<typeof FactoryActivityDto.Type>>;
   readonly factoryActivityErrorsByRunId?: Record<
     string,
@@ -2391,6 +2447,7 @@ function renderDashboardWithQueries(input: {
   queryFixture.agentSessionsByRunId =
     input.agentSessionsByRunId ?? defaultFactoryData.agentSessionsByRunId;
   queryFixture.eventsByRunId = input.eventsByRunId ?? {};
+  queryFixture.deliverySnapshotsByRunId = input.deliverySnapshotsByRunId ?? {};
   queryFixture.healthError = input.healthError;
   queryFixture.runs = input.runs;
   queryFixture.runsDiagnostics = input.runsDiagnostics ?? [];

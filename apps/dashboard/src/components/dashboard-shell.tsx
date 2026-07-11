@@ -11,6 +11,7 @@ import {
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   type AgentSessionSnapshotDto,
+  type DeliverySnapshotDto,
   type FactoryActivityDto,
   type FactoryArtifactBodyDto,
   type FactoryArtifactDto,
@@ -83,6 +84,7 @@ import {
 } from "@/run-compare-model";
 import { defaultLocalGaiaServerUrl } from "@/lib/local-gaia-client";
 import {
+  localGaiaDeliveryQueryOptions,
   localGaiaFactoryAgentActivityQueryOptions,
   localGaiaFactoryArtifactQueryOptions,
   localGaiaFactoryArtifactsQueryOptions,
@@ -401,6 +403,12 @@ export function DashboardShell() {
       serverUrl,
     }),
   );
+  const selectedDeliveryQuery = useQuery(
+    localGaiaDeliveryQueryOptions({
+      runId: selectedRunId ?? "",
+      serverUrl,
+    }),
+  );
   const selectedFactoryArtifactsQuery = useQuery(
     localGaiaFactoryArtifactsQueryOptions({
       runId: selectedRunId ?? "",
@@ -698,6 +706,7 @@ export function DashboardShell() {
     if (selectedRunId !== undefined) {
       refreshes.push(
         selectedFactoryArtifactsQuery.refetch(),
+        selectedDeliveryQuery.refetch(),
         selectedFactoryGraphQuery.refetch(),
         selectedFactoryRunActivityQuery.refetch(),
         selectedRunDetailQuery.refetch(),
@@ -804,6 +813,7 @@ export function DashboardShell() {
         <main className="flex min-h-0 min-w-0 flex-1 flex-col lg:overflow-hidden">
           <CommandHeader
             commandMode={commandMode}
+            deliverySnapshot={selectedDeliveryQuery.data?.data}
             selectedRun={selectedRun}
             serverConnection={serverConnection}
             onSelectCommandMode={setCommandMode}
@@ -1825,11 +1835,13 @@ function RunConsoleStaleDataNotice() {
 
 function CommandHeader({
   commandMode,
+  deliverySnapshot,
   selectedRun,
   serverConnection,
   onSelectCommandMode,
 }: {
   readonly commandMode: CommandMode;
+  readonly deliverySnapshot: typeof DeliverySnapshotDto.Type | undefined;
   readonly selectedRun: DashboardRun;
   readonly serverConnection: ServerConnectionState;
   readonly onSelectCommandMode: (mode: CommandMode) => void;
@@ -1854,6 +1866,14 @@ function CommandHeader({
               ? selectedRun.id
               : `${selectedConsoleRun.stateLabel} · ${selectedConsoleRun.latestEventLabel}`}
           </p>
+          {deliverySnapshot !== undefined ? (
+            <p
+              className="truncate text-xs text-muted-foreground"
+              data-testid="selected-run-delivery-status"
+            >
+              {deliveryStatusLabel(deliverySnapshot)}
+            </p>
+          ) : null}
         </div>
       </div>
       <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 max-lg:w-full max-lg:justify-start">
@@ -1890,6 +1910,22 @@ function CommandHeader({
       </div>
     </header>
   );
+}
+
+function deliveryStatusLabel(snapshot: typeof DeliverySnapshotDto.Type) {
+  if (snapshot.mode === "local") {
+    return "Delivery: local run";
+  }
+  switch (snapshot.status) {
+    case "delivering":
+      return `Delivery: preparing ${snapshot.provenance?.headBranch ?? "worktree"}`;
+    case "readyToPublish":
+      return `Delivery: ready to publish from ${snapshot.provenance?.headBranch ?? "worktree"}`;
+    case "failed":
+      return "Delivery: failed";
+    case "unavailable":
+      return "Delivery: unavailable";
+  }
 }
 
 function CommandModeButton({

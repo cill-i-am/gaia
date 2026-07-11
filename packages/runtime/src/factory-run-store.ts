@@ -592,6 +592,9 @@ function parseFactoryCreateInput(
   try {
     return Effect.succeed(
       decodeCreateRunRequest({
+        ...(first.payload["delivery"] === undefined
+          ? { delivery: { mode: "local" } }
+          : { delivery: publicDeliveryFromPayload(first.payload["delivery"]) }),
         execution: jsonObjectField(first.payload["execution"], "selection"),
         workflow: first.payload["workflow"],
         workItem: first.payload["workItem"],
@@ -640,6 +643,17 @@ function jsonObjectField(
     return undefined;
   }
   return Object.getOwnPropertyDescriptor(value, field)?.value;
+}
+
+function publicDeliveryFromPayload(value: Schema.Json | undefined) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { mode: "local" };
+  }
+  const mode = Object.getOwnPropertyDescriptor(value, "mode")?.value;
+  if (mode === "local" || mode === "pullRequest") {
+    return { mode };
+  }
+  return { mode: "local" };
 }
 
 function buildFactoryGraph(input: {
@@ -794,7 +808,10 @@ function updateStatesForEvent(
   states: Map<FactoryAgentRole, FactoryAgentState>,
   event: RunEvent,
 ) {
-  switch (event.type) {
+    switch (event.type) {
+    case "DELIVERY_STARTED":
+      states.set("orchestrator", "running");
+      return;
     case "RUN_CREATED":
     case "WORKSPACE_PREPARED":
       states.set("orchestrator", "running");
@@ -845,6 +862,9 @@ function updateStatesForEvent(
     case "REPORT_COMPLETED":
       states.set("orchestrator", "succeeded");
       return;
+    case "DELIVERY_READY_TO_PUBLISH":
+      states.set("orchestrator", "blocked");
+      return;
     case "RUN_FAILED":
       states.set("orchestrator", "failed");
       states.set(roleFromFailureStage(event.payload["stage"]), "failed");
@@ -878,9 +898,11 @@ function roleFromFailureStage(stage: unknown): FactoryAgentRole {
 function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
   switch (event.type) {
     case "RUN_CREATED":
+    case "DELIVERY_STARTED":
     case "WORKSPACE_PREPARED":
     case "REPORT_STARTED":
     case "REPORT_COMPLETED":
+    case "DELIVERY_READY_TO_PUBLISH":
       return "orchestrator";
     case "RUN_FAILED":
       return roleFromFailureStage(event.payload["stage"]);
@@ -910,6 +932,10 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
 
 function subStateForEvent(event: RunEvent): string | undefined {
   switch (event.type) {
+    case "DELIVERY_STARTED":
+      return "delivering";
+    case "DELIVERY_READY_TO_PUBLISH":
+      return "readyToPublish";
     case "RUN_CREATED":
       return "accepted";
     case "WORKSPACE_PREPARED":
@@ -952,6 +978,10 @@ function subStateForEvent(event: RunEvent): string | undefined {
 
 function activityLabel(event: RunEvent): string {
   switch (event.type) {
+    case "DELIVERY_STARTED":
+      return "Delivery started";
+    case "DELIVERY_READY_TO_PUBLISH":
+      return "Ready to publish";
     case "RUN_CREATED":
       return "Factory run accepted";
     case "WORKSPACE_PREPARED":

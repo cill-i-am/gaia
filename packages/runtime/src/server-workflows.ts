@@ -12,7 +12,7 @@ import {
   type RunState,
 } from "@gaia/core";
 import { customAlphabet } from "nanoid";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
@@ -49,6 +49,13 @@ import {
   localDirectoryWorkspaceSource,
   type WorkspaceSource,
 } from "./workspace.js";
+import {
+  parseDeliveryProvenance,
+  prepareDeliveryWorktree,
+  resolveDeliveryProvenance,
+  type DeliveryProvenance,
+  type GitDeliveryCommandRunner,
+} from "./git-delivery.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -56,6 +63,7 @@ const nanoid = customAlphabet(
 );
 
 export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
+  readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
   readonly harnessProviderRegistry?: HarnessProviderRegistry;
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly workspaceSource?: WorkspaceSource;
@@ -223,6 +231,11 @@ function acceptFactoryRunUnlocked(
     const runId = yield* generateRunId;
     const paths = yield* makeRunPaths(runId, options);
     const fs = yield* FileSystem.FileSystem;
+    const delivery = yield* acceptedDeliveryProvenance(
+      runId,
+      input.delivery ?? { mode: "local" },
+      options,
+    );
 
     yield* fs.makeDirectory(paths.root, { recursive: true }).pipe(
       Effect.mapError((cause) =>
@@ -262,6 +275,7 @@ function acceptFactoryRunUnlocked(
             harnessProfileId: input.execution.harnessProfileId,
           },
         },
+        delivery,
         source: "server",
         specPath: "input.md",
         workflow: input.workflow,
@@ -564,6 +578,7 @@ function failureStageFromRunState(
   switch (state) {
     case "created":
       return "creating";
+    case "delivering":
     case "preparingWorkspace":
       return "preparingWorkspace";
     case "runningWorker":
@@ -665,6 +680,33 @@ function factoryContinuationOptions(
   options: ServerWorkflowOptions,
 ) {
   return Effect.gen(function* () {
+    const rootDirectory = options.rootDirectory ?? ".";
+    const paths = yield* makeRunPaths(firstEvent.runId, options);
+    const delivery = yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
+    if (delivery.mode === "pullRequest") {
+      yield* prepareDeliveryWorktree({
+        options: {
+          rootDirectory,
+          ...(options.deliveryGitCommandRunner === undefined
+            ? {}
+            : { commandRunner: options.deliveryGitCommandRunner }),
+        },
+        paths,
+        provenance: delivery.provenance,
+      });
+      if (!events.some(({ type }) => type === "DELIVERY_STARTED")) {
+        yield* appendEvent(firstEvent.runId, paths, {
+          payload: {
+            delivery: {
+              ...delivery.provenance,
+              mode: "pullRequest",
+              stage: "delivering",
+            },
+          },
+          type: "DELIVERY_STARTED",
+        });
+      }
+    }
     const execution = firstEvent.payload["execution"];
     const acceptedExecution = yield* Effect.try({
       try: () => ({
@@ -694,11 +736,14 @@ function factoryContinuationOptions(
         }),
       );
     }
-    const rootDirectory = options.rootDirectory ?? ".";
     const commonOptions = {
       ...options,
-      workspaceSource:
-        options.workspaceSource ?? localDirectoryWorkspaceSource(rootDirectory),
+      ...(delivery.mode === "pullRequest"
+        ? { deliveryProvenance: delivery.provenance }
+        : {}),
+      ...(delivery.mode === "local"
+        ? { workspaceSource: options.workspaceSource ?? localDirectoryWorkspaceSource(rootDirectory) }
+        : {}),
     };
     const sessionEvents = issueDeliveryWorkerSessionEvents(
       firstEvent.runId,
@@ -788,6 +833,63 @@ function factoryContinuationOptions(
         ...(options.sessionCoordinator === undefined ? {} : { sessionCoordinator: options.sessionCoordinator }),
       }),
     };
+  });
+}
+
+function acceptedDeliveryProvenance(
+  runId: RunId,
+  delivery: { readonly mode: "local" | "pullRequest" },
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    if (delivery.mode === "local") {
+      return { mode: "local" };
+    }
+    const rootDirectory = options.rootDirectory ?? ".";
+    return yield* resolveDeliveryProvenance(runId, {
+      rootDirectory,
+      ...(options.deliveryGitCommandRunner === undefined
+        ? {}
+        : { commandRunner: options.deliveryGitCommandRunner }),
+    });
+  });
+}
+
+function parseAcceptedDelivery(value: Schema.Json | undefined) {
+  return Effect.gen(function* () {
+    if (value === undefined) return { mode: "local" } as const;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryPolicyInvalid",
+          message: "Accepted delivery policy is invalid.",
+          recoverable: false,
+        }),
+      );
+    }
+    const delivery = value as Record<string, Schema.Json>;
+    const mode = delivery["mode"];
+    if (mode === "local") return { mode: "local" } as const;
+    if (mode !== "pullRequest") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryPolicyInvalid",
+          message: "Accepted delivery policy is invalid.",
+          recoverable: false,
+        }),
+      );
+    }
+    const provenance = parseDeliveryProvenance(delivery).pipe(Option.getOrUndefined);
+    if (provenance === undefined) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryWorktreeIdentityMismatch",
+          message: "Accepted pull-request delivery provenance is missing or invalid.",
+          recoverable: false,
+        }),
+      );
+    }
+    return { mode: "pullRequest", provenance } as const;
   });
 }
 
