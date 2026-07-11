@@ -2300,6 +2300,63 @@ describe("DashboardShell Run Console", () => {
     expect(screen.queryByRole("button", { name: /^Merge/u })).toBeNull();
   });
 
+  it("uses a fresh action identity for each deliberate readiness reevaluation", async () => {
+    const runId = parseRunId("run-7777777777");
+    renderDashboardWithQueries({
+      deliverySnapshotsByRunId: {
+        [runId]: {
+          eventSequence: 12,
+          mergeDecision: {
+            actionId: "readiness-blocked-1",
+            approved: false,
+            blockers: ["Required checks are pending."],
+            branchName: "gaia/run-7777777777",
+            headSha: "a".repeat(40),
+            mergeMethod: "squash",
+            payloadDigest: "b".repeat(64),
+            policyDigest: "c".repeat(64),
+            policyVersion: 1,
+            prNumber: 91,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+          },
+          mergeDecisionSequence: 12,
+          mode: "pullRequest",
+          provenance: {
+            baseBranch: "main",
+            baseRevision: "e".repeat(40),
+            headBranch: "gaia/run-7777777777",
+            remote: "origin",
+          },
+          publication: {
+            branchName: "gaia/run-7777777777",
+            commitSha: "a".repeat(40),
+            draft: true,
+            prNumber: 91,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+            state: "confirmed",
+          },
+          recoveryActions: [],
+          runId,
+          stage: "awaitingMerge",
+          status: "awaitingMerge",
+        },
+      },
+      runs: [localRunSummary({ runId, state: "delivering", status: "running" })],
+    });
+
+    const evaluate = await screen.findByRole("button", { name: "Evaluate squash" });
+    fireEvent.click(evaluate);
+    await waitFor(() => expect(queryFixture.deliveryActionInputs).toHaveLength(1));
+    fireEvent.click(evaluate);
+    await waitFor(() => expect(queryFixture.deliveryActionInputs).toHaveLength(2));
+
+    const first = queryFixture.deliveryActionInputs[0]?.action as { actionId: string };
+    const second = queryFixture.deliveryActionInputs[1]?.action as { actionId: string };
+    expect(first.actionId).not.toBe(second.actionId);
+    expect(first.actionId).toMatch(/^readiness-/u);
+    expect(second.actionId).toMatch(/^readiness-/u);
+  });
+
   it("renders CI, review, blocker, and remediation attempt state", async () => {
     const runId = parseRunId("run-7777777777");
     const feedbackId = parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`);

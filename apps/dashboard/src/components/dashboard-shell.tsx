@@ -43,6 +43,10 @@ import {
   XIcon,
 } from "lucide-react";
 import * as React from "react";
+import {
+  createReadinessActionId,
+  mergeDecisionIdentity,
+} from "@/components/delivery-action-identity";
 import { DeliveryMergeConfirmation } from "@/components/delivery-merge-confirmation";
 
 import {
@@ -1923,7 +1927,15 @@ function CommandHeader({
   readonly onSelectCommandMode: (mode: CommandMode) => void;
   readonly onDeliveryAction: (action: unknown) => Promise<void>;
 }) {
-  const mergeActionId = React.useId().replaceAll(":", "-");
+  const mergeDecisionKey =
+    deliverySnapshot?.mergeDecision === undefined ||
+    deliverySnapshot.mergeDecisionSequence === undefined
+      ? "no-readiness-decision"
+      : mergeDecisionIdentity({
+          payloadDigest: deliverySnapshot.mergeDecision.payloadDigest,
+          sequence: deliverySnapshot.mergeDecisionSequence,
+        });
+  const mergeActionId = mergeDecisionKey;
   const selectedConsoleRun = serverConnection.selectedRun;
   const selectedStatusLabel =
     selectedConsoleRun?.statusLabel ?? statusLabels[selectedRun.status];
@@ -1984,7 +1996,7 @@ function CommandHeader({
               {deliverySnapshot.publication?.state === "confirmed" && deliverySnapshot.mergeDecision?.approved !== true ? (
                 <div className="flex flex-wrap items-center gap-1" aria-label="Evaluate merge readiness">
                   {(["merge", "squash", "rebase"] as const).map((method) => (
-                    <Button disabled={deliveryActionPending} key={method} onClick={() => void onDeliveryAction({ actionId: `readiness-${mergeActionId}-${method}`, kind: "evaluateMergeReadiness", mergeMethod: method })} size="xs" variant="outline">
+                    <Button disabled={deliveryActionPending} key={method} onClick={() => void onDeliveryAction({ actionId: createReadinessActionId(), kind: "evaluateMergeReadiness", mergeMethod: method })} size="xs" variant="outline">
                       Evaluate {method}
                     </Button>
                   ))}
@@ -1992,14 +2004,14 @@ function CommandHeader({
               ) : null}
               {deliverySnapshot.publication?.state === "confirmed" && deliverySnapshot.mergeDecision?.approved === true && deliverySnapshot.mergeDecisionSequence !== undefined ? (
                 <DeliveryMergeConfirmation
-                  actionId={`merge-${mergeActionId}`}
+                  actionId={mergeActionId}
                   branch={deliverySnapshot.mergeDecision.branchName}
                   decisionSequence={deliverySnapshot.mergeDecisionSequence}
                   disabled={deliverySnapshot.stage !== "awaitingMerge"}
                   headSha={deliverySnapshot.mergeDecision.headSha}
                   method={deliverySnapshot.mergeDecision.mergeMethod}
                   onConfirm={() => onDeliveryAction({
-                    actionId: `merge-${mergeActionId}`,
+                    actionId: mergeActionId,
                     expectedBranchName: deliverySnapshot.mergeDecision!.branchName,
                     expectedDecisionSequence: deliverySnapshot.mergeDecisionSequence!,
                     expectedHeadSha: deliverySnapshot.mergeDecision!.headSha,
