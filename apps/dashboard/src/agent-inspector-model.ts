@@ -326,7 +326,7 @@ function pendingInteractionModel(
       };
     case "userInput":
       return {
-        actions: ["submit", "decline"],
+        actions: ["submit"],
         body: interaction.questions.map(questionSummary).join("\n"),
         interactionId: interaction.interactionId,
         kind: "userInput",

@@ -223,7 +223,7 @@ describe("Agent Inspector session model", () => {
         title: "Command approval",
       },
       {
-        actions: ["submit", "decline"],
+        actions: ["submit"],
         body: "How should activity be shown? Options: Keep activity, Hide activity\nEnter a token (secret)",
         interactionId: "interaction-question",
         kind: "userInput",

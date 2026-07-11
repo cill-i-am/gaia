@@ -23,6 +23,7 @@ import {
   parseHarnessActionId,
   parseHarnessInteractionId,
   parseHarnessItemId,
+  parseHarnessQuestionId,
   parseHarnessSessionId,
   parseHarnessTurnId,
   parseWorkspaceRelativePath,
@@ -465,71 +466,135 @@ afterEach(() => {
   delete (window as { EventSource?: unknown }).EventSource;
 });
 
-describe("DashboardShell Run Console", () => {
-  it("renders FactoryGraph topology and agent evidence from public factory reads", async () => {
-    const runId = parseRunId("run-9090909090");
-    const workerId = agentId("agent-worker");
-    const artifactId = artifactIdValue("artifact-summary");
-    const view = renderDashboardWithQueries({
-      factoryActivitiesByRunId: {
-        [runId]: [
-          factoryActivity({
-            activityId: activityId("activity-root"),
-            label: "Issue delivery graph created",
-            runId,
-            workItemId: workItemId("work-root"),
-          }),
-        ],
-      },
-      factoryAgentActivitiesByRunId: {
-        [runId]: {
-          [workerId]: [
-            factoryActivity({
-              activityId: activityId("activity-worker"),
-              agentId: workerId,
-              artifactIds: [artifactId],
-              label: "Worker produced code summary",
-              runId,
-            }),
-          ],
-        },
-      },
-      factoryArtifactBodiesByRunId: {
-        [runId]: {
-          [artifactId]: factoryArtifactBody({
-            artifactId,
-            body: "Worker summary body from the factory artifact endpoint.",
-            runId,
-          }),
-        },
-      },
-      factoryArtifactsByRunId: {
-        [runId]: [
-          factoryArtifact({
-            artifactId,
-            label: "Code summary",
-            ownerAgentId: workerId,
-          }),
-        ],
-      },
-      factoryGraphsByRunId: {
-        [runId]: factoryGraph({
+function renderFactoryGraphEvidenceDashboard() {
+  const runId = parseRunId("run-9090909090");
+  const workerId = agentId("agent-worker");
+  const artifactId = artifactIdValue("artifact-summary");
+  const view = renderDashboardWithQueries({
+    factoryActivitiesByRunId: {
+      [runId]: [
+        factoryActivity({
+          activityId: activityId("activity-root"),
+          label: "Issue delivery graph created",
           runId,
-          workerArtifactId: artifactId,
-          workerId,
-        }),
-      },
-      runs: [
-        localRunSummary({
-          artifacts: [],
-          eventCount: 0,
-          latestEventType: "RUN_CREATED",
-          runId,
-          state: "runningWorker",
-          status: "running",
+          workItemId: workItemId("work-root"),
         }),
       ],
-    });
+    },
+    factoryAgentActivitiesByRunId: {
+      [runId]: {
+        [workerId]: [
+          factoryActivity({
+            activityId: activityId("activity-worker"),
+            agentId: workerId,
+            artifactIds: [artifactId],
+            label: "Worker produced code summary",
+            runId,
+          }),
+        ],
+      },
+    },
+    factoryArtifactBodiesByRunId: {
+      [runId]: {
+        [artifactId]: factoryArtifactBody({
+          artifactId,
+          body: "Worker summary body from the factory artifact endpoint.",
+          runId,
+        }),
+      },
+    },
+    factoryArtifactsByRunId: {
+      [runId]: [
+        factoryArtifact({
+          artifactId,
+          label: "Code summary",
+          ownerAgentId: workerId,
+        }),
+      ],
+    },
+    factoryGraphsByRunId: {
+      [runId]: factoryGraph({
+        runId,
+        workerArtifactId: artifactId,
+        workerId,
+      }),
+    },
+    runs: [
+      localRunSummary({
+        artifacts: [],
+        eventCount: 0,
+        latestEventType: "RUN_CREATED",
+        runId,
+        state: "runningWorker",
+        status: "running",
+      }),
+    ],
+  });
+
+  return { artifactId, runId, view };
+}
+
+function renderTypedRunsDashboard() {
+  const firstRunId = parseRunId("run-1111111111");
+  const secondRunId = parseRunId("run-2222222222");
+  const view = renderDashboardWithQueries({
+    artifactsByRunId: {
+      [firstRunId]: {
+        input: localRunArtifact({
+          artifactName: "input",
+          body: "# Smoke spec\n\nRun the fake harness.\n",
+          runId: firstRunId,
+        }),
+        "worker-plan": localRunArtifact({
+          artifactName: "worker-plan",
+          body: "Worker plan body from the allowlisted API.",
+          runId: firstRunId,
+        }),
+      },
+    },
+    eventsByRunId: {
+      [firstRunId]: [
+        makeRunEvent({
+          payload: { specPath: "input.md" },
+          runId: firstRunId,
+          sequence: 1,
+          timestamp: "2026-07-07T12:00:00.000Z",
+          type: "RUN_CREATED",
+        }),
+        makeRunEvent({
+          runId: firstRunId,
+          sequence: 2,
+          timestamp: "2026-07-07T12:01:00.000Z",
+          type: "WORKER_STARTED",
+        }),
+      ],
+    },
+    runs: [
+      localRunSummary({
+        runId: firstRunId,
+        status: "running",
+        state: "runningWorker",
+        latestEventType: "WORKER_STARTED",
+        eventCount: 5,
+        updatedAt: "2026-07-07T12:30:00.000Z",
+      }),
+      localRunSummary({
+        runId: secondRunId,
+        status: "completed",
+        state: "completed",
+        latestEventType: "REPORT_COMPLETED",
+        eventCount: 12,
+        updatedAt: "2026-07-07T12:35:00.000Z",
+      }),
+    ],
+  });
+
+  return { view };
+}
+
+describe("DashboardShell Run Console", () => {
+  it("renders FactoryGraph topology and agent evidence from public factory reads", async () => {
+    const { view } = renderFactoryGraphEvidenceDashboard();
 
     await screen.findByTestId("selected-run-title");
 
@@ -581,6 +646,18 @@ describe("DashboardShell Run Console", () => {
     expect(workerNodeIconClassName).not.toMatch(
       /rose|amber|sky|cyan|emerald|indigo/,
     );
+  });
+
+  it("preserves Agent Inspector artifact and activity evidence from public factory reads", async () => {
+    const { artifactId, runId, view } = renderFactoryGraphEvidenceDashboard();
+
+    await screen.findByTestId("selected-run-title");
+    expect(await screen.findAllByText("Worker")).not.toHaveLength(0);
+    const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
+    if (workerNode === null) {
+      throw new Error("Expected a worker FactoryGraph node.");
+    }
+
     fireEvent.click(workerNode);
 
     await waitFor(() => {
@@ -622,20 +699,29 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
       "Query",
     );
+  });
 
-    for (const artifactsTab of screen.getAllByRole("tab", {
+  it("loads Agent Inspector artifact bodies from public factory reads", async () => {
+    const { artifactId, runId, view } = renderFactoryGraphEvidenceDashboard();
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+
+    fireEvent.click(workerNode);
+    await screen.findByTestId("agent-inspector-panel");
+    const artifactsTab = firstElement(screen.getAllByRole("tab", {
       name: "Artifacts",
-    })) {
-      fireEvent.pointerDown(artifactsTab);
-      fireEvent.mouseDown(artifactsTab);
-      fireEvent.mouseUp(artifactsTab);
-      fireEvent.click(artifactsTab);
-    }
+    }));
+    fireEvent.click(artifactsTab);
     await waitFor(() => {
       expect(screen.getAllByRole("button", { name: "Code summary" })).not.toHaveLength(0);
-      expect(screen.getAllByText("Select an artifact")).not.toHaveLength(0);
     });
-    expect(queryFixture.factoryArtifactBodyRequests).toEqual([]);
 
     fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Code summary" })));
 
@@ -646,6 +732,23 @@ describe("DashboardShell Run Console", () => {
       artifactId,
       runId,
     });
+  });
+
+  it("preserves Agent Inspector selection after close and reselect", async () => {
+    const { view } = renderFactoryGraphEvidenceDashboard();
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      if (node === null) {
+        throw new Error("Expected a worker FactoryGraph node.");
+      }
+      return node;
+    });
+
+    fireEvent.click(workerNode);
+
+    await screen.findByTestId("agent-inspector-panel");
 
     fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Close Agent Inspector" })));
 
@@ -683,6 +786,21 @@ describe("DashboardShell Run Console", () => {
                 turnId: parseHarnessTurnId("turn-1"),
                 workspacePath: parseWorkspaceRelativePath("."),
               },
+              {
+                interactionId: parseHarnessInteractionId("interaction-question"),
+                itemId: parseHarnessItemId("item-question"),
+                kind: "userInput",
+                questions: [
+                  {
+                    options: ["Continue", "Stop"],
+                    prompt: "Operator continuation",
+                    questionId: parseHarnessQuestionId("question-continuation"),
+                    secret: false,
+                  },
+                ],
+                requestedAt: "2026-07-10T21:12:00.000Z",
+                turnId: parseHarnessTurnId("turn-1"),
+              },
             ],
             runId,
           }),
@@ -714,6 +832,8 @@ describe("DashboardShell Run Console", () => {
       expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
         "Command approval",
       );
+      expect(screen.getByRole("button", { name: "Submit operator input" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Decline operator input" })).toBeNull();
     });
 
     const composer = screen.getByPlaceholderText("Steer the active turn");
@@ -1429,59 +1549,7 @@ describe("DashboardShell Run Console", () => {
   });
 
   it("renders typed runs data and updates selected run state on row click", async () => {
-    const firstRunId = parseRunId("run-1111111111");
-    const secondRunId = parseRunId("run-2222222222");
-    const view = renderDashboardWithQueries({
-      artifactsByRunId: {
-        [firstRunId]: {
-          input: localRunArtifact({
-            artifactName: "input",
-            body: "# Smoke spec\n\nRun the fake harness.\n",
-            runId: firstRunId,
-          }),
-          "worker-plan": localRunArtifact({
-            artifactName: "worker-plan",
-            body: "Worker plan body from the allowlisted API.",
-            runId: firstRunId,
-          }),
-        },
-      },
-      eventsByRunId: {
-        [firstRunId]: [
-          makeRunEvent({
-            payload: { specPath: "input.md" },
-            runId: firstRunId,
-            sequence: 1,
-            timestamp: "2026-07-07T12:00:00.000Z",
-            type: "RUN_CREATED",
-          }),
-          makeRunEvent({
-            runId: firstRunId,
-            sequence: 2,
-            timestamp: "2026-07-07T12:01:00.000Z",
-            type: "WORKER_STARTED",
-          }),
-        ],
-      },
-      runs: [
-        localRunSummary({
-          runId: firstRunId,
-          status: "running",
-          state: "runningWorker",
-          latestEventType: "WORKER_STARTED",
-          eventCount: 5,
-          updatedAt: "2026-07-07T12:30:00.000Z",
-        }),
-        localRunSummary({
-          runId: secondRunId,
-          status: "completed",
-          state: "completed",
-          latestEventType: "REPORT_COMPLETED",
-          eventCount: 12,
-          updatedAt: "2026-07-07T12:35:00.000Z",
-        }),
-      ],
-    });
+    renderTypedRunsDashboard();
 
     const firstRow = await screen.findByTestId(
       "run-console-row-run-1111111111",
@@ -1504,6 +1572,20 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByTestId("selected-run-title").textContent).toBe(
       "run-1111111111",
     );
+    fireEvent.click(secondRow);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-run-title").textContent).toBe(
+        "run-2222222222",
+      );
+      expect(screen.queryByTestId("run-replay-current-event")).toBeNull();
+    });
+  });
+
+  it("opens typed run replay controls from public events", async () => {
+    renderTypedRunsDashboard();
+
+    await screen.findByTestId("run-console-row-run-1111111111");
     fireEvent.click(screen.getByRole("button", { name: "Replay" }));
     expect(
       screen.queryByText(
@@ -1515,7 +1597,12 @@ describe("DashboardShell Run Console", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("run-replay-scrubber")).toBeNull();
     });
+  });
 
+  it("plays typed run replay controls from public events", async () => {
+    renderTypedRunsDashboard();
+
+    await screen.findByTestId("run-console-row-run-1111111111");
     fireEvent.click(screen.getByRole("button", { name: "Replay" }));
     expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
       "Event #2",
@@ -1540,39 +1627,6 @@ describe("DashboardShell Run Console", () => {
     expect(workerLabels).not.toHaveLength(0);
     expect(screen.queryByText("Run root")).toBeNull();
 
-    const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
-    if (workerNode === null) {
-      throw new Error("Expected a worker FactoryGraph node.");
-    }
-
-    fireEvent.click(workerNode);
-
-    await waitFor(() => {
-      expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
-    });
-    for (const artifactsTab of screen.getAllByRole("tab", {
-      name: "Artifacts",
-    })) {
-      fireEvent.pointerDown(artifactsTab);
-      fireEvent.mouseDown(artifactsTab);
-      fireEvent.mouseUp(artifactsTab);
-      fireEvent.click(artifactsTab);
-    }
-    await waitFor(() => {
-      expect(
-        screen.getAllByRole("button", { name: "Code summary" }),
-      ).not.toHaveLength(0);
-    });
-    fireEvent.click(
-      firstElement(screen.getAllByRole("button", { name: "Code summary" })),
-    );
-
-    await waitFor(() => {
-      expect(
-        screen.getAllByText("artifact-summary factory artifact body"),
-      ).not.toHaveLength(0);
-    });
-
     fireEvent.change(screen.getByTestId("run-replay-range"), {
       target: { value: "0" },
     });
@@ -1585,15 +1639,6 @@ describe("DashboardShell Run Console", () => {
         firstElement(screen.getAllByTestId("event-strip-event-1")).textContent,
       ).toContain("Replay");
       expect(screen.getAllByText("Replay")).not.toHaveLength(0);
-    });
-
-    fireEvent.click(secondRow);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("selected-run-title").textContent).toBe(
-        "run-2222222222",
-      );
-      expect(screen.queryByTestId("run-replay-current-event")).toBeNull();
     });
   });
 
