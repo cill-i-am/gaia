@@ -38,6 +38,7 @@ const encodeHarnessRunResult = Schema.encodeSync(HarnessRunResultJson);
 
 /** Adapt one provider-neutral interactive session into the existing worker stage. */
 export function interactiveSessionHarness(input: {
+  readonly expectedNativeTurnId?: string;
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly provider?: HarnessProvider;
   readonly rootDirectory: string;
@@ -82,6 +83,7 @@ export function interactiveSessionHarness(input: {
                 ? yield* resumeHarnessSession({
                     provider,
                     request: {
+                      ...(input.expectedNativeTurnId === undefined ? {} : { expectedNativeTurnId: input.expectedNativeTurnId }),
                       sessionId,
                       workspacePath: workspacePathFromRoot(
                         input.rootDirectory,

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { parseHarnessEvent, parseRunId, parseWorkerRecoveryReceipt, encodeWorkerRecoveryReceiptJson, type WorkerRecoveryAction, type WorkerRecoveryReceipt } from "@gaia/core";
-import { Effect, FileSystem, Path } from "effect";
+import { Effect, FileSystem, Path, Schema } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
 import { makeRuntimeError } from "./errors.js";
 import { makeRunPaths, type RunPaths } from "./paths.js";
@@ -13,11 +13,13 @@ export type WorkerRecoveryProvider = {
   readonly startTurn: (input: { readonly model: string; readonly threadId: string }) => Effect.Effect<{ readonly turnId: string }, unknown>;
 };
 
+const PrivateWorkerRecoveryTurn = Schema.Struct({ turnId: Schema.NonEmptyString, version: Schema.Literal(1) });
+
 export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryAction, input: {
   readonly nativeThreadId: string;
   readonly provider: WorkerRecoveryProvider;
   readonly rootDirectory?: string;
-  readonly validateWorkspace: (workspacePath: string, expectedHead: string) => Effect.Effect<void, unknown>;
+  readonly validateWorkspace: (workspacePath: string, expectedHead: string) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
 }) {
   return withRunStoreLock(input, Effect.gen(function* () {
     const runId = parseRunId(runIdInput);
@@ -32,6 +34,10 @@ export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryA
     const accepted = loaded.events[0]?.payload["delivery"] as { baseRevision?: unknown } | undefined;
     const expectedHead = typeof accepted?.baseRevision === "string" ? accepted.baseRevision : undefined;
     if (expectedHead === undefined) return yield* conflict("Accepted delivery base is unavailable.");
+    if (prior === undefined) {
+      const identity = yield* Effect.exit(input.validateWorkspace(paths.workspace, expectedHead));
+      if (identity._tag === "Failure") return yield* conflict("Retained delivery worktree identity changed.");
+    }
     const models = yield* input.provider.listModels().pipe(Effect.mapError(() => failure("WorkerRecoveryModelCatalogUnavailable", "Codex model catalog is unavailable.")));
     if (!models.some((model) => model.id === action.model && !model.hidden)) return yield* failure("WorkerRecoveryModelUnavailable", "The explicitly selected Codex model is unavailable.");
     const base = { ...action, attempt: 1 as const, maxAttempts: 1 as const, payloadDigest };
@@ -81,4 +87,15 @@ function writePrivateTurnCheckpoint(runRoot: string, turnId: string) {
     const path = yield* Path.Path;
     yield* fs.writeFileString(path.join(runRoot, ".worker-recovery-turn.json"), JSON.stringify({ turnId, version: 1 }));
   });
+}
+
+export function readPrivateWorkerRecoveryTurn(runRoot: string, expectedDigest: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const raw = yield* fs.readFileString(path.join(runRoot, ".worker-recovery-turn.json"));
+    const checkpoint = yield* Schema.decodeUnknownEffect(PrivateWorkerRecoveryTurn)(JSON.parse(raw));
+    if (digest(checkpoint.turnId) !== expectedDigest) return yield* Effect.fail(new Error("Worker recovery turn checkpoint digest mismatch."));
+    return checkpoint.turnId;
+  }).pipe(Effect.mapError((cause) => makeRuntimeError({ cause, code: "WorkerRecoveryTurnCheckpointInvalid", message: "The exact recovered native turn checkpoint is missing or invalid.", recoverable: false })));
 }

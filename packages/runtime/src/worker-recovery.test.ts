@@ -28,6 +28,25 @@ function run<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path
 const action = WorkerRecoveryAction.make({ actionId: "recover-1", expectedFailureSequence: 10, expectedSessionId: parseHarnessSessionId("session-run-1234567890"), harnessProfileId: parseHarnessProfileId("codexAppServer"), kind: "retryRecoverableWorkerFailure", model: "gpt-5.4" });
 
 describe("recoverWorkerSession", () => {
+  it.each(["path", "common-dir", "repository", "base", "branch-plan", "ownership-digest", "primary-identity", "cleanliness", "registration"])("rejects %s identity drift with zero events and zero provider calls", async () => {
+    const f = fixture(); const before = readFileSync(f.paths.events, "utf8"); let calls = 0;
+    const provider: WorkerRecoveryProvider = { listModels: () => Effect.sync(() => { calls++; return []; }), resumeThread: () => Effect.die("not called"), readThread: () => Effect.die("not called"), startTurn: () => Effect.die("not called") };
+    await expect(run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace: () => Effect.fail(new Error("identity drift")) }))).rejects.toBeTruthy();
+    expect(readFileSync(f.paths.events, "utf8")).toBe(before); expect(calls).toBe(0);
+  });
+
+  it("runs the two-root A/B restart and non-mutation matrix without duplicate dispatch", async () => {
+    const f = fixture(); const rootA = process.cwd(); const beforeWorkspace = readFileSync(f.paths.events, "utf8"); let starts = 0;
+    const provider: WorkerRecoveryProvider = { listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]), resumeThread: (threadId) => Effect.succeed({ threadId }), readThread: (threadId) => Effect.succeed({ active: false, systemError: true, threadId }), startTurn: () => Effect.sync(() => { starts++; return { turnId: "turn-recovery" }; }) };
+    const validateWorkspace = () => Effect.void;
+    expect(rootA).not.toBe(f.root);
+    const confirmed = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace }));
+    expect(confirmed.state).toBe("dispatchConfirmed");
+    if (confirmed.state !== "dispatchConfirmed") throw new Error("expected confirmed recovery");
+    const restarted = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace }));
+    expect(restarted).toMatchObject({ nativeTurnIdDigest: confirmed.nativeTurnIdDigest, state: "dispatchConfirmed" }); expect(starts).toBe(1);
+    expect(readFileSync(f.paths.events, "utf8")).toContain(beforeWorkspace.trim());
+  });
   it("preflights the same thread and dispatches exactly one explicit-model turn", async () => {
     const f = fixture(); const calls: string[] = [];
     const provider: WorkerRecoveryProvider = { listModels: () => Effect.sync(() => { calls.push("models"); return [{ hidden: false, id: "gpt-5.4" }]; }), resumeThread: (threadId) => Effect.sync(() => { calls.push("resume"); return { threadId }; }), readThread: (threadId) => Effect.sync(() => { calls.push("read"); return { active: false, systemError: true, threadId }; }), startTurn: ({ model }) => Effect.sync(() => { calls.push(`start:${model}`); return { turnId: "turn-recovery" }; }) };

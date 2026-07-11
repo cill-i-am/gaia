@@ -1,0 +1,16 @@
+{
+  "generatedBy": "codex-cli 0.137.0 app-server generate-json-schema --experimental",
+  "modelListResponse": {
+    "required": ["data"],
+    "modelRequired": ["defaultReasoningEffort", "description", "displayName", "hidden", "id", "isDefault", "model", "supportedReasoningEfforts"]
+  },
+  "turnStartParams": {
+    "required": ["input", "threadId"],
+    "properties": {
+      "clientUserMessageId": ["string", "null"],
+      "input": "array",
+      "model": ["string", "null"],
+      "threadId": "string"
+    }
+  }
+}

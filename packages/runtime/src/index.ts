@@ -289,6 +289,7 @@ export {
   runRootDirectory,
   type RunPaths,
 } from "./paths.js";
+export { inspectRecoverableDeliveryWorktreeOwnership, parseDeliveryProvenance } from "./git-delivery.js";
 export {
   listLocalRuns,
   readLocalRun,

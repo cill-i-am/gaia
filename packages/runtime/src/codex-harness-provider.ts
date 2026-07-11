@@ -363,6 +363,15 @@ export function createCodexHarnessProvider(
             providerId: CodexHarnessProviderDescriptor.providerId,
           });
         }
+        if (request.expectedNativeTurnId !== undefined) {
+          const matches = (recovered.thread.turns ?? []).filter(({ id }) => id === request.expectedNativeTurnId);
+          if (matches.length !== 1 || matches[0]?.status !== "inProgress") {
+            return yield* new HarnessResumeError({
+              message: "Codex recovered thread does not contain the exact checkpointed active turn.",
+              providerId: CodexHarnessProviderDescriptor.providerId,
+            });
+          }
+        }
         return yield* makeCodexSession({
           nativeThreadId: thread.thread.id,
           options,

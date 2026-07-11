@@ -55,6 +55,7 @@ import {
 } from "./workflows.js";
 import { interactiveSessionHarness } from "./interactive-harness.js";
 import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
+import { readPrivateWorkerRecoveryTurn } from "./worker-recovery.js";
 import {
   localDirectoryWorkspaceSource,
   type WorkspaceSource,
@@ -1184,10 +1185,19 @@ function factoryContinuationOptions(
         }),
       );
     }
+    const recovery = [...events].reverse().flatMap((event) => {
+      if (event.type !== "WORKER_RECOVERY_RECORDED") return [];
+      const receipt = parseWorkerRecoveryReceipt(event.payload["recovery"]);
+      return receipt.state === "dispatchConfirmed" ? [receipt] : [];
+    })[0];
+    const expectedNativeTurnId = recovery === undefined
+      ? undefined
+      : yield* readPrivateWorkerRecoveryTurn(paths.root, recovery.nativeTurnIdDigest);
     return {
       ...commonOptions,
       workerContinuationState: continuationState,
       workerHarness: interactiveSessionHarness({
+        ...(expectedNativeTurnId === undefined ? {} : { expectedNativeTurnId }),
         provider: resolved.provider,
         rootDirectory,
         ...(options.sessionCoordinator === undefined ? {} : { sessionCoordinator: options.sessionCoordinator }),

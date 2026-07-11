@@ -79,6 +79,7 @@ export class HarnessSessionStart extends Schema.Class<HarnessSessionStart>(
 export class HarnessSessionResume extends Schema.Class<HarnessSessionResume>(
   "HarnessSessionResume",
 )({
+  expectedNativeTurnId: Schema.optionalKey(Schema.String),
   sessionId: HarnessSessionIdSchema,
   workspacePath: WorkspaceRelativePathSchema,
 }) {}

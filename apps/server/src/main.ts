@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
-import { codexAppServerHarnessProfileId, type ServerMetadata } from "@gaia/core";
+import { codexAppServerHarnessProfileId, parseRunId, type ServerMetadata } from "@gaia/core";
 import {
   createCodexHarnessProvider,
   detectInstalledCodexAppServer,
@@ -13,6 +13,10 @@ import {
   recoverWorkerSession,
   parseCodexThreadId,
   makeHarnessProviderRegistry,
+  inspectRecoverableDeliveryWorktreeOwnership,
+  makeRunPaths,
+  loadRun,
+  parseDeliveryProvenance,
   type HarnessProviderRegistry,
 } from "@gaia/runtime";
 import {
@@ -25,8 +29,6 @@ import { HttpServer } from "effect/unstable/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { makeLocalGaiaServerLayer } from "./api.js";
 import {
   appendServerLog,
@@ -140,16 +142,12 @@ function makeProductionHarnessServices(rootDirectory: string) {
           resumeThread: (threadId) => client.resumeThread({ threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ threadId: thread.id }))),
           startTurn: ({ model, threadId }) => client.startTurn({ input: [{ text: "Resume the retained worker task after the recoverable provider failure.", type: "text" }], model, threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ turn }) => ({ turnId: turn.id }))),
         },
-        validateWorkspace: (workspacePath, expectedHead) => Effect.tryPromise({
-          try: async () => {
-            const run = promisify(execFile);
-            const [{ stdout: head }, { stdout: status }] = await Promise.all([
-              run("git", ["-C", workspacePath, "rev-parse", "HEAD"]),
-              run("git", ["-C", workspacePath, "status", "--porcelain"]),
-            ]);
-            if (head.trim() !== expectedHead || status.trim().length !== 0) throw new Error("Retained worktree identity changed.");
-          },
-          catch: (cause) => cause,
+        validateWorkspace: (_workspacePath, expectedHead) => Effect.gen(function* () {
+          const paths = yield* makeRunPaths(parseRunId(runId), { rootDirectory });
+          const loaded = yield* loadRun(paths);
+          const provenance = parseDeliveryProvenance(loaded.events[0]?.payload["delivery"]);
+          if (provenance._tag === "None" || provenance.value.baseRevision !== expectedHead) return yield* Effect.fail(new Error("Accepted delivery provenance changed."));
+          yield* inspectRecoverableDeliveryWorktreeOwnership({ expectedHeads: [expectedHead], options: { rootDirectory }, paths, provenance: provenance.value });
         }),
       });
     });
