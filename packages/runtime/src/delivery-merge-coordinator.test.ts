@@ -23,7 +23,7 @@ import {
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultDeliveryFeedbackTrustPolicy } from "./delivery-remediation-coordinator.js";
-import { coordinateDeliveryMerge, coordinateDeliveryMergeReadiness, requiredCheckPolicyFromTrustPolicy, type FreshMergeState } from "./delivery-merge-coordinator.js";
+import { coordinateDeliveryMerge, coordinateDeliveryMergeReadiness, normalizeGitHubReviewDecision, requiredCheckPolicyFromTrustPolicy, type FreshMergeState } from "./delivery-merge-coordinator.js";
 import { makeRunPaths } from "./paths.js";
 
 const roots: string[] = [];
@@ -115,6 +115,32 @@ describe("delivery merge reconstructed coordinator", () => {
       const fresh = { ...base, checks: [{ appSlug: "github-actions", headSha: f.binding.expectedHeadSha, name: "gaia-pr-ci", repository: f.binding.repository, state: "passing" as const, workflow: "Gaia PR CI" }], ...(reviewDecision === undefined ? {} : { reviewDecision }), state: "open" as const };
       const decision = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: `readiness-${required}-${reviewDecision ?? "none"}`, kind: "evaluateMergeReadiness", mergeMethod: "merge" }, { freshStateReader: () => Effect.succeed(fresh), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
       expect(decision.approved).toBe(approved);
+    });
+  }
+
+  for (const [providerValue, normalized, strictApproved, soloApproved] of [
+    ["", undefined, false, true],
+    [undefined, undefined, false, true],
+    [null, undefined, false, true],
+    ["APPROVED", "APPROVED", true, true],
+    ["CHANGES_REQUESTED", "CHANGES_REQUESTED", false, false],
+    ["HOSTILE_UNKNOWN", "HOSTILE_UNKNOWN", false, false],
+  ] as const) {
+    it(`normalizes provider review decision ${String(providerValue)}`, async () => {
+      expect(normalizeGitHubReviewDecision(providerValue)).toBe(normalized);
+      for (const [required, approved] of [[true, strictApproved], [false, soloApproved]] as const) {
+        const f = fixture("attempted", required);
+        const { mergeCommitSha: _mergeCommitSha, mergedAt: _mergedAt, reviewDecision: _reviewDecision, ...base } = merged(f.binding);
+        const decision = normalizeGitHubReviewDecision(providerValue);
+        const fresh = {
+          ...base,
+          checks: [{ appSlug: "github-actions", headSha: f.binding.expectedHeadSha, name: "gaia-pr-ci", repository: f.binding.repository, state: "passing" as const, workflow: "Gaia PR CI" }],
+          ...(decision === undefined ? {} : { reviewDecision: decision }),
+          state: "open" as const,
+        };
+        const readiness = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: `provider-${String(providerValue)}-${required}`, kind: "evaluateMergeReadiness", mergeMethod: "merge" }, { freshStateReader: () => Effect.succeed(fresh), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
+        expect(readiness.approved).toBe(approved);
+      }
     });
   }
 

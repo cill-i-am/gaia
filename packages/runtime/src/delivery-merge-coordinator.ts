@@ -81,6 +81,7 @@ export function makeGitHubFreshMergeStateReader(input: { readonly commandRunner?
     const detail = JSON.parse(view.stdout) as { headRefName: string; headRefOid: string; isDraft: boolean; mergeable: string; reviewDecision?: string | null; state: string; mergedAt?: string | null; mergeCommit?: { oid?: string } | null; url: string };
     const capability = JSON.parse(repo.stdout) as { mergeCommitAllowed: boolean; rebaseMergeAllowed: boolean; squashMergeAllowed: boolean };
     const methods = [...(capability.mergeCommitAllowed ? ["merge" as const] : []), ...(capability.rebaseMergeAllowed ? ["rebase" as const] : []), ...(capability.squashMergeAllowed ? ["squash" as const] : [])];
+    const reviewDecision = normalizeGitHubReviewDecision(detail.reviewDecision);
     return {
       branchName: detail.headRefName,
       checks: read.observation.checks.map((check) => ({ appSlug: check.appSlug, headSha: read.observation.headSha, name: check.name, repository: target.repository, state: check.state === "passing" ? "passing" as const : check.state === "pending" ? "pending" as const : "failed" as const, workflow: check.workflow })),
@@ -93,12 +94,17 @@ export function makeGitHubFreshMergeStateReader(input: { readonly commandRunner?
       prNumber: target.prNumber,
       prUrl: detail.url,
       repository: target.repository,
-      ...(detail.reviewDecision == null ? {} : { reviewDecision: detail.reviewDecision }),
+      ...(reviewDecision === undefined ? {} : { reviewDecision }),
       state: detail.state === "OPEN" ? "open" as const : detail.state === "MERGED" ? "merged" as const : "closed" as const,
       supportedMethods: methods,
       unresolvedActionableThreads: read.observation.feedback.filter((item) => item.kind === "thread" && item.classification === "actionable").length,
     } satisfies FreshMergeState;
   });
+}
+
+/** GitHub represents an absent aggregate review decision as either null or an empty string. */
+export function normalizeGitHubReviewDecision(value: string | null | undefined) {
+  return value == null || value === "" ? undefined : value;
 }
 
 export function coordinateDeliveryMerge(
