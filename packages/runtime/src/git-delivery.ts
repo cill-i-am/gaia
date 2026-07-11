@@ -16,6 +16,9 @@ const GaiaOwnedBranchName = Schema.String.pipe(
   Schema.check(Schema.isMaxLength(240)),
   Schema.check(Schema.isPattern(/^gaia\/(?!-)(?!.*(?:\.\.|@\{|\/\/))(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9])$/u)),
 );
+const DeliveryRemoteName = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u)),
+);
 
 export type GitDeliveryCommandInput = {
   readonly args: ReadonlyArray<string>;
@@ -44,7 +47,7 @@ export class DeliveryAcceptanceProvenancePolicyV1 extends Schema.Class<DeliveryA
 )({
   baseBranch: LiteralBranchName,
   headBranch: GaiaOwnedBranchName,
-  remote: Schema.String.pipe(Schema.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u))),
+  remote: DeliveryRemoteName,
   version: Schema.Literal(1),
 }, strict) {}
 
@@ -53,12 +56,20 @@ export const parseDeliveryAcceptanceProvenancePolicy = Schema.decodeUnknownSync(
 );
 
 export const DeliveryProvenanceSchema = Schema.Struct({
-  baseBranch: Schema.NonEmptyString,
-  baseRevision: Schema.NonEmptyString,
-  headBranch: Schema.NonEmptyString,
+  baseBranch: LiteralBranchName,
+  baseRevision: Schema.String.pipe(
+    Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
+  ),
+  headBranch: GaiaOwnedBranchName,
   mode: Schema.Literal("pullRequest"),
-  remote: Schema.NonEmptyString,
-});
+  remote: DeliveryRemoteName,
+}).pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (provenance) => provenance.baseBranch !== provenance.headBranch,
+    ),
+  ),
+);
 
 export const parseDeliveryProvenance = Schema.decodeUnknownOption(
   DeliveryProvenanceSchema,

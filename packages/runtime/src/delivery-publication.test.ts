@@ -154,6 +154,55 @@ describe("delivery publication", () => {
       }),
     );
 
+    it.effect("publishes and retries the exact explicitly accepted base and Gaia-owned head", () =>
+      Effect.gen(function* () {
+        const fixture = yield* readyFixture(
+          ["output.txt", "src/feature.ts"],
+          { baseBranch: "gaia-93-smoke-base-abc123", headBranch: "gaia/gaia-93-smoke-head-abc123" },
+        );
+        const commands: Array<GitHubCommandInput> = [];
+        const runner = publicationRunner(commands, fixture.paths.root, fixture.provenance, { remoteReadFailuresBeforeMutation: 1 });
+        const failed = yield* publishReadyDeliveryRun(fixture.runId, { commandRunner: runner, deliveryGitCommandRunner: fixture.deliveryGitCommandRunner, rootDirectory: fixture.rootDirectory });
+        const publication = yield* retryFailedDeliveryPublication(fixture.runId, { commandRunner: runner, deliveryGitCommandRunner: fixture.deliveryGitCommandRunner, rootDirectory: fixture.rootDirectory });
+
+        assert.strictEqual(failed.state, "failed");
+        assert.strictEqual(publication.state, "confirmed");
+        assert.isTrue(commands.some(({ command, args }) => command === "git" && args[0] === "push" && args.includes(`HEAD:refs/heads/${fixture.provenance.headBranch}`)));
+        const create = commands.find(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "create");
+        assert.strictEqual(create?.args[create.args.indexOf("--base") + 1], fixture.provenance.baseBranch);
+        assert.strictEqual(create?.args[create.args.indexOf("--head") + 1], fixture.provenance.headBranch);
+      }),
+    );
+
+    it.effect("rejects tampered persisted provenance before commands or publication intent", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        for (const provenance of [
+          { baseBranch: "main", baseRevision: "not-a-sha", headBranch: "gaia/safe", mode: "pullRequest", remote: "origin" },
+          { baseBranch: "main", baseRevision, headBranch: "feature/unowned", mode: "pullRequest", remote: "origin" },
+          { baseBranch: "gaia/same", baseRevision, headBranch: "gaia/same", mode: "pullRequest", remote: "origin" },
+          { baseBranch: "main", baseRevision, headBranch: "gaia/safe", mode: "pullRequest", remote: "https://github.com/cill-i-am/gaia" },
+        ] as const) {
+          const rootDirectory = yield* fs.makeTempDirectory({ prefix: "gaia-delivery-tampered-" });
+          const runId = parseRunId("run-Tampered01");
+          const paths = yield* makeRunPaths(runId, { rootDirectory });
+          yield* fs.makeDirectory(paths.root, { recursive: true });
+          yield* writeReadyRun(runId, paths, provenance);
+          const commands: Array<GitHubCommandInput> = [];
+          const error = yield* Effect.flip(publishReadyDeliveryRun(runId, {
+            commandRunner: (input) => Effect.sync(() => { commands.push(input); return success(""); }),
+            deliveryGitCommandRunner: (input) => Effect.sync(() => { commands.push({ args: input.args, command: "git", cwd: input.cwd }); return { stderr: "", stdout: "" }; }),
+            rootDirectory,
+          }));
+
+          assert.instanceOf(error, GaiaRuntimeError);
+          assert.strictEqual(error.code, "DeliveryPolicyInvalid");
+          assert.deepEqual(commands, []);
+          assert.strictEqual((yield* readEvents(paths)).at(-1)?.type, "DELIVERY_READY_TO_PUBLISH");
+        }
+      }),
+    );
+
     it.effect("scrubs ambient repository redirection at both command boundaries", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -936,7 +985,7 @@ function publicationRunner(
             [
               baseRevision,
               treeSha,
-              `feat: deliver ${provenance.headBranch.slice("gaia/".length)}\n`,
+              `feat: deliver ${runRoot.split("/").at(-1)}\n`,
               "Gaia Delivery",
               "delivery@gaia.local",
               commitTimestamp,
@@ -994,7 +1043,7 @@ function publicationRunner(
           return success(
             `${JSON.stringify([
               {
-                baseRefName: "main",
+                baseRefName: provenance.baseBranch,
                 body,
                 headRefName: provenance.headBranch,
                 headRefOid: commitSha,
@@ -1014,6 +1063,7 @@ function publicationRunner(
 
 function readyFixture(
   changedPaths: ReadonlyArray<string> = ["output.txt", "src/feature.ts"],
+  provenanceOverride: Partial<Pick<DeliveryProvenance, "baseBranch" | "headBranch">> = {},
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -1023,9 +1073,9 @@ function readyFixture(
     const runId = parseRunId("run-R3c0v3ry01");
     const paths = yield* makeRunPaths(runId, { rootDirectory });
     const provenance: DeliveryProvenance = {
-      baseBranch: "main",
+      baseBranch: provenanceOverride.baseBranch ?? "main",
       baseRevision,
-      headBranch: `gaia/${runId}`,
+      headBranch: provenanceOverride.headBranch ?? `gaia/${runId}`,
       mode: "pullRequest",
       remote: "origin",
     };
