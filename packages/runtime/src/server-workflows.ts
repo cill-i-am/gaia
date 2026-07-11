@@ -61,6 +61,7 @@ import {
   prepareDeliveryWorktree,
   resolveDeliveryGitHubRepository,
   resolveDeliveryProvenance,
+  type DeliveryAcceptanceProvenancePolicyV1,
   type DeliveryProvenance,
   type GitDeliveryCommandRunner,
 } from "./git-delivery.js";
@@ -89,6 +90,7 @@ const nanoid = customAlphabet(
 );
 
 export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
+  readonly deliveryAcceptanceProvenancePolicy?: DeliveryAcceptanceProvenancePolicyV1;
   readonly deliveryMergeActivator?: DeliveryMergeActionHandler;
   readonly deliveryRemediationActivator?: DeliveryRemediationActionHandler;
   readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
@@ -1023,6 +1025,7 @@ function factoryContinuationOptions(
     const paths = yield* makeRunPaths(firstEvent.runId, options);
     const delivery = yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
     if (delivery.mode === "pullRequest") {
+      yield* assertAcceptedDeliveryProvenancePolicy(delivery.provenance, options.deliveryAcceptanceProvenancePolicy);
       const feedbackTrustPolicy = yield* acceptedRunDeliveryFeedbackTrustPolicy(
         firstEvent,
         delivery.provenance,
@@ -1241,8 +1244,22 @@ function acceptedDeliveryProvenance(
       ...(options.deliveryGitCommandRunner === undefined
         ? {}
         : { commandRunner: options.deliveryGitCommandRunner }),
-    });
+    }, options.deliveryAcceptanceProvenancePolicy);
   });
+}
+
+function assertAcceptedDeliveryProvenancePolicy(
+  provenance: DeliveryProvenance,
+  requested: DeliveryAcceptanceProvenancePolicyV1 | undefined,
+) {
+  if (requested === undefined) return Effect.void;
+  return requested.remote === provenance.remote && requested.baseBranch === provenance.baseBranch && requested.headBranch === provenance.headBranch
+    ? Effect.void
+    : Effect.fail(makeRuntimeError({
+        code: "DeliveryProvenancePolicyChanged",
+        message: "Delivery provenance policy changed after run acceptance.",
+        recoverable: false,
+      }));
 }
 
 function parseAcceptedDelivery(value: Schema.Json | undefined) {

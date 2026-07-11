@@ -7,6 +7,11 @@ import type { RunPaths } from "./paths.js";
 import { repositoryCommandEnvironment } from "./repository-command-environment.js";
 
 const execFileAsync = promisify(execFile);
+const strict = { parseOptions: { onExcessProperty: "error" as const } };
+const LiteralBranchName = Schema.String.pipe(
+  Schema.check(Schema.isMaxLength(240)),
+  Schema.check(Schema.isPattern(/^(?!-)(?!refs\/)(?!.*(?:\.\.|@\{|\/\/))[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9]$/u)),
+);
 
 export type GitDeliveryCommandInput = {
   readonly args: ReadonlyArray<string>;
@@ -29,6 +34,19 @@ export type DeliveryProvenance = {
   readonly mode: "pullRequest";
   readonly remote: string;
 };
+
+export class DeliveryAcceptanceProvenancePolicyV1 extends Schema.Class<DeliveryAcceptanceProvenancePolicyV1>(
+  "DeliveryAcceptanceProvenancePolicyV1",
+)({
+  baseBranch: LiteralBranchName,
+  headBranch: LiteralBranchName,
+  remote: Schema.String.pipe(Schema.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u))),
+  version: Schema.Literal(1),
+}, strict) {}
+
+export const parseDeliveryAcceptanceProvenancePolicy = Schema.decodeUnknownSync(
+  DeliveryAcceptanceProvenancePolicyV1,
+);
 
 export const DeliveryProvenanceSchema = Schema.Struct({
   baseBranch: Schema.NonEmptyString,
@@ -143,14 +161,31 @@ export const nodeGitDeliveryCommandRunner: GitDeliveryCommandRunner = (input) =>
 export function resolveDeliveryProvenance(
   runId: string,
   options: DeliveryWorkspaceOptions,
+  acceptancePolicy?: DeliveryAcceptanceProvenancePolicyV1,
 ) {
   return Effect.gen(function* () {
     const runner = options.commandRunner ?? nodeGitDeliveryCommandRunner;
     yield* runGit(runner, options.rootDirectory, ["rev-parse", "--show-toplevel"]);
-    yield* runGit(runner, options.rootDirectory, ["fetch", defaultRemote, defaultBaseBranch]);
+    const policy = acceptancePolicy === undefined
+      ? undefined
+      : parseDeliveryAcceptanceProvenancePolicy(acceptancePolicy);
+    const remote = policy?.remote ?? defaultRemote;
+    const baseBranch = policy?.baseBranch ?? defaultBaseBranch;
+    const headBranch = policy?.headBranch ?? `gaia/${runId}`;
+    if (baseBranch === headBranch) {
+      return yield* Effect.fail(makeRuntimeError({ code: "DeliveryProvenanceTopologyInvalid", message: "Delivery base and head branches must be distinct.", recoverable: false }));
+    }
+    if (policy !== undefined) {
+      yield* validateLiteralBranch(runner, options.rootDirectory, baseBranch);
+      yield* validateLiteralBranch(runner, options.rootDirectory, headBranch);
+      yield* runGit(runner, options.rootDirectory, ["remote", "get-url", "--", remote]);
+      yield* runGit(runner, options.rootDirectory, ["fetch", "--no-tags", remote, `refs/heads/${baseBranch}:refs/remotes/${remote}/${baseBranch}`]);
+    } else {
+      yield* runGit(runner, options.rootDirectory, ["fetch", defaultRemote, defaultBaseBranch]);
+    }
     const baseRevision = (yield* runGit(runner, options.rootDirectory, [
       "rev-parse",
-      `${defaultRemote}/${defaultBaseBranch}`,
+      ...(policy === undefined ? [`${defaultRemote}/${defaultBaseBranch}`] : ["--verify", `refs/remotes/${remote}/${baseBranch}^{commit}`]),
     ])).stdout.trim();
     if (!/^[0-9a-f]{40}$/u.test(baseRevision)) {
       return yield* Effect.fail(
@@ -162,13 +197,20 @@ export function resolveDeliveryProvenance(
       );
     }
     return {
-      baseBranch: defaultBaseBranch,
+      baseBranch,
       baseRevision,
-      headBranch: `gaia/${runId}`,
+      headBranch,
       mode: "pullRequest",
-      remote: defaultRemote,
+      remote,
     } satisfies DeliveryProvenance;
   });
+}
+
+function validateLiteralBranch(runner: GitDeliveryCommandRunner, cwd: string, branch: string) {
+  if (/\.\.|@\{|[~^:?*\[\\\s\u0000-\u001f\u007f]/u.test(branch) || branch.startsWith("-") || branch.startsWith("refs/") || branch.includes("//")) {
+    return Effect.fail(makeRuntimeError({ code: "DeliveryBranchInvalid", message: "Delivery branch name is not a safe literal branch.", recoverable: false }));
+  }
+  return runGit(runner, cwd, ["check-ref-format", "--branch", branch]).pipe(Effect.asVoid);
 }
 
 /** Resolve a safe owner/repository tuple when the accepted remote is GitHub. */
