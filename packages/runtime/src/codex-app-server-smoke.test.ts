@@ -1,10 +1,14 @@
 import { NodeServices } from "@effect/platform-node";
-import { codexAppServerExecutionSelection } from "@gaia/core";
+import {
+  codexAppServerExecutionSelection,
+  parseHarnessSessionId,
+  parseWorkspaceRelativePath,
+} from "@gaia/core";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { Effect, Stream } from "effect";
 import { makeCodexAppServerClient, makeCodexAppServerConnection } from "./codex-app-server-client.js";
 import {
   createCodexHarnessProvider,
@@ -14,6 +18,10 @@ import { detectInstalledCodexAppServer } from "./codex-provider-detection.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import { acceptFactoryRun, continueServerRun } from "./server-workflows.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
+import {
+  resumeHarnessSession,
+  startHarnessSession,
+} from "./harness-session.js";
 
 const runSmoke = process.env.GAIA_CODEX_APP_SERVER_SMOKE === "1";
 
@@ -142,4 +150,100 @@ describe("Codex App Server installed CLI smoke", () => {
       await rm(root, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
     }
   }, 130_000);
+
+  it.skipIf(!runSmoke)("restarts the App Server and sends one idempotent second turn through the same private session", async () => {
+    const root = await mkdtemp(join(tmpdir(), "gaia-codex-resume-smoke-"));
+    const codexHome = join(root, "codex-home");
+    const workspace = join(root, "workspace");
+    await mkdir(codexHome);
+    await mkdir(workspace);
+    await cp(join(homedir(), ".codex", "auth.json"), join(codexHome, "auth.json"), {
+      recursive: false,
+    });
+    const sessionId = parseHarnessSessionId("session-real-resume-smoke");
+    const workspacePath = parseWorkspaceRelativePath("workspace");
+    const correlationDirectory = join(root, ".gaia", "private", "harness-correlations");
+
+    try {
+      const firstEvents = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* makeCodexAppServerConnection({
+              cwd: workspace,
+              env: { ...process.env, CODEX_HOME: codexHome },
+            });
+            const session = yield* startHarnessSession({
+              provider: createCodexHarnessProvider({
+                client: makeCodexAppServerClient(connection),
+                correlationStore: makeFileCodexHarnessCorrelationStore(root),
+                detectionProbe: detectInstalledCodexAppServer,
+                workspaceRoot: root,
+              }),
+              request: {
+                input: { text: "Reply exactly GAIA_RESUME_FIRST_OK. Do not use tools." },
+                sessionId,
+                workspacePath,
+              },
+              requiredCapabilities: ["resumableSessions", "streamingMessages"],
+            });
+            return yield* session.events.pipe(
+              Stream.takeUntil((event) => event.kind === "turnCompleted"),
+              Stream.runCollect,
+            );
+          }),
+        ).pipe(Effect.provide(NodeServices.layer), Effect.timeout("90 seconds")),
+      );
+      const [correlationFile] = await readdir(correlationDirectory);
+      expect(correlationFile).toBeDefined();
+      const privateCorrelationBefore = await readFile(
+        join(correlationDirectory, correlationFile ?? "missing"),
+        "utf8",
+      );
+
+      const secondEvents = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* makeCodexAppServerConnection({
+              cwd: workspace,
+              env: { ...process.env, CODEX_HOME: codexHome },
+            });
+            const session = yield* resumeHarnessSession({
+              provider: createCodexHarnessProvider({
+                client: makeCodexAppServerClient(connection),
+                correlationStore: makeFileCodexHarnessCorrelationStore(root),
+                detectionProbe: detectInstalledCodexAppServer,
+                workspaceRoot: root,
+              }),
+              request: { sessionId, workspacePath },
+              requiredCapabilities: ["resumableSessions", "streamingMessages"],
+            });
+            const followUp = {
+              clientInputId: "remediation-real-resume-smoke-1",
+              text: "Reply exactly GAIA_RESUME_SECOND_OK. Do not use tools.",
+            } as const;
+            yield* session.send(followUp);
+            yield* session.send(followUp);
+            return yield* session.events.pipe(
+              Stream.filter((event) => event.kind === "turnCompleted"),
+              Stream.take(2),
+              Stream.runCollect,
+            );
+          }),
+        ).pipe(Effect.provide(NodeServices.layer), Effect.timeout("90 seconds")),
+      );
+      const privateCorrelationAfter = await readFile(
+        join(correlationDirectory, correlationFile ?? "missing"),
+        "utf8",
+      );
+      const privateToken = JSON.parse(privateCorrelationBefore).token as string;
+      const publicEvidence = JSON.stringify([...firstEvents, ...secondEvents]);
+
+      expect(secondEvents).toHaveLength(2);
+      expect(privateCorrelationAfter).toBe(privateCorrelationBefore);
+      expect(publicEvidence).not.toContain(privateToken);
+      expect(publicEvidence).not.toContain("remediation-real-resume-smoke-1");
+    } finally {
+      await rm(root, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
+    }
+  }, 100_000);
 });

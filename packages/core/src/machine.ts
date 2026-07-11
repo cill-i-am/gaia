@@ -6,6 +6,15 @@ import {
   type DeliveryPublication,
 } from "./delivery-publication.js";
 import {
+  encodeDeliveryPullRequestObservationJson,
+  encodeDeliveryRemediationJson,
+  parseDeliveryPullRequestObservation,
+  parseDeliveryRemediation,
+  validateDeliveryRemediationTransition,
+  type DeliveryPullRequestObservation,
+  type DeliveryRemediation,
+} from "./delivery-remediation.js";
+import {
   FailureStageSchema,
   GaiaFailure,
   ReviewPhaseSchema,
@@ -83,6 +92,11 @@ export type RunMachineEvent =
         | "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN";
       readonly publication: DeliveryPublication;
     }
+  | {
+      readonly eventSequence: number;
+      readonly remediation: DeliveryRemediation;
+      readonly type: "DELIVERY_REMEDIATION_RECORDED";
+    }
   | { readonly type: "WORKSPACE_PREPARED"; readonly workspacePath: string }
   | { readonly type: "REVIEW_STARTED" }
   | {
@@ -133,6 +147,7 @@ export type RunMachineEvent =
       readonly type: "GITHUB_PR_LOOP_RECORDED";
       readonly blockerCount: number;
       readonly nextAction: string;
+      readonly observation?: DeliveryPullRequestObservation;
       readonly prLoopPath: string;
       readonly pullRequest: string;
       readonly status: string;
@@ -278,6 +293,22 @@ export const runMachine = createMachine({
     failed: {},
     delivering: {
       on: {
+        BROWSER_EVIDENCE_RECORDED: {
+          actions: "recordBrowserEvidence",
+        },
+        GITHUB_CHECKS_RECORDED: {
+          actions: "recordGitHubChecks",
+        },
+        GITHUB_FEEDBACK_RECORDED: {
+          actions: "recordGitHubFeedback",
+        },
+        GITHUB_PR_LOOP_RECORDED: {
+          actions: "recordGitHubPrLoop",
+        },
+        REVIEW_COMPLETED: {
+          actions: "recordReviewCompleted",
+        },
+        REVIEW_STARTED: {},
         DELIVERY_PUBLICATION_ATTEMPTED: {
           actions: "recordDeliveryPublication",
         },
@@ -293,10 +324,17 @@ export const runMachine = createMachine({
         DELIVERY_PUBLICATION_OUTCOME_UNKNOWN: {
           actions: "recordDeliveryPublication",
         },
+        DELIVERY_REMEDIATION_RECORDED: {
+          actions: "recordDeliveryRemediation",
+        },
         RUN_FAILED: {
           actions: "recordFailure",
           target: "failed",
         },
+        VERIFICATION_COMPLETED: {
+          actions: "recordVerificationCompleted",
+        },
+        VERIFICATION_STARTED: {},
         WORKSPACE_PREPARED: {
           actions: "recordWorkspacePrepared",
           target: "runningWorker",
@@ -445,6 +483,16 @@ export const runMachine = createMachine({
           ? deliveryWithPublication(context.delivery, event.publication)
           : context.delivery,
     }),
+    recordDeliveryRemediation: assign({
+      delivery: ({ context, event }) =>
+        event.type === "DELIVERY_REMEDIATION_RECORDED"
+          ? deliveryWithRemediation(
+              context.delivery,
+              event.remediation,
+              event.eventSequence,
+            )
+          : context.delivery,
+    }),
     recordGitHubFeedback: assign({
       githubFeedbackCommentCount: ({ event }) =>
         event.type === "GITHUB_FEEDBACK_RECORDED"
@@ -476,6 +524,11 @@ export const runMachine = createMachine({
           : undefined,
     }),
     recordGitHubPrLoop: assign({
+      delivery: ({ context, event }) =>
+        event.type === "GITHUB_PR_LOOP_RECORDED" &&
+        event.observation !== undefined
+          ? deliveryWithPullRequestObservation(context.delivery, event.observation)
+          : context.delivery,
       githubPrLoopBlockerCount: ({ event }) =>
         event.type === "GITHUB_PR_LOOP_RECORDED"
           ? event.blockerCount
@@ -637,6 +690,7 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   const actor = createActor(runMachine).start();
   let expectedSequence = 1;
   let publication: DeliveryPublication | undefined;
+  let remediation: DeliveryRemediation | undefined;
 
   for (const event of events) {
     if (event.sequence !== expectedSequence) {
@@ -653,6 +707,14 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       );
       validatePublicationTransition(publication, next);
       publication = next;
+    }
+    if (event.type === "DELIVERY_REMEDIATION_RECORDED") {
+      const next = parseDeliveryRemediation(event.payload["remediation"]);
+      if (actor.getSnapshot().context.delivery?.["mode"] !== "pullRequest") {
+        throw new Error("Remediation requires accepted pull-request delivery state.");
+      }
+      validateDeliveryRemediationTransition(remediation, next);
+      remediation = next;
     }
 
     actor.send(toMachineEvent(event));
@@ -719,6 +781,12 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         publication: parseDeliveryPublication(event.payload["publication"]),
         type: event.type,
       };
+    case "DELIVERY_REMEDIATION_RECORDED":
+      return {
+        eventSequence: event.sequence,
+        remediation: parseDeliveryRemediation(event.payload["remediation"]),
+        type: event.type,
+      };
     case "GITHUB_CHECKS_RECORDED":
       const watchStatePath = getOptionalStringPayload(
         event,
@@ -743,9 +811,14 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         type: event.type,
       };
     case "GITHUB_PR_LOOP_RECORDED":
+      const observationValue = event.payload["observation"];
+      const observation = observationValue === undefined
+        ? undefined
+        : parseDeliveryPullRequestObservation(observationValue);
       return {
         blockerCount: getNumberPayload(event, "blockerCount"),
         nextAction: getStringPayload(event, "nextAction"),
+        ...(observation === undefined ? {} : { observation }),
         prLoopPath: getStringPayload(event, "prLoopPath"),
         pullRequest: getStringPayload(event, "pullRequest"),
         status: getStringPayload(event, "status"),
@@ -1041,6 +1114,100 @@ function publicationStage(publication: DeliveryPublication) {
     case "outcomeUnknown":
       return "publicationOutcomeUnknown";
   }
+}
+
+function deliveryWithRemediation(
+  delivery: Record<string, Schema.Json> | undefined,
+  remediation: DeliveryRemediation,
+  eventSequence: number,
+): Record<string, Schema.Json> {
+  if (delivery === undefined || delivery["mode"] !== "pullRequest") {
+    throw new Error("Remediation requires accepted pull-request delivery state.");
+  }
+  const previousValue = delivery["remediation"];
+  const previous = previousValue === undefined
+    ? undefined
+    : parseDeliveryRemediation(previousValue);
+  validateDeliveryRemediationTransition(previous, remediation);
+  const priorRearm = delivery["remediationRearmSequence"];
+  const remediationRearmSequence = remediation.state === "intentRecorded"
+    ? eventSequence
+    : priorRearm;
+  if (
+    typeof remediationRearmSequence !== "number" ||
+    !Number.isInteger(remediationRearmSequence) ||
+    remediationRearmSequence < 1
+  ) {
+    throw new Error("Remediation is missing its authoritative re-arm sequence.");
+  }
+  return {
+    ...delivery,
+    remediation: encodeDeliveryRemediationJson(remediation),
+    remediationRearmSequence,
+    stage: remediationStage(remediation),
+  };
+}
+
+function remediationStage(remediation: DeliveryRemediation) {
+  switch (remediation.state) {
+    case "intentRecorded":
+    case "dispatchAttempted":
+    case "turnCompleted":
+    case "verified":
+    case "commitAttempted":
+    case "pushAttempted":
+      return "remediating";
+    case "confirmed":
+      return "waitingForPr";
+    case "failed":
+      return "remediationFailed";
+    case "outcomeUnknown":
+      return "remediationOutcomeUnknown";
+  }
+}
+
+function deliveryWithPullRequestObservation(
+  delivery: Record<string, Schema.Json> | undefined,
+  observation: DeliveryPullRequestObservation,
+): Record<string, Schema.Json> {
+  if (delivery === undefined || delivery["mode"] !== "pullRequest") {
+    throw new Error("Pull-request observation requires accepted delivery state.");
+  }
+  const publicationValue = delivery["publication"];
+  if (publicationValue === undefined) {
+    throw new Error("Pull-request observation requires confirmed publication.");
+  }
+  const publication = parseDeliveryPublication(publicationValue);
+  if (publication.state !== "confirmed") {
+    throw new Error("Pull-request observation requires confirmed publication.");
+  }
+  const url = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/([1-9]\d*)$/u.exec(
+    publication.prUrl,
+  );
+  const remediationValue = delivery["remediation"];
+  const remediation = remediationValue === undefined
+    ? undefined
+    : parseDeliveryRemediation(remediationValue);
+  const allowedHeads = new Set([
+    publication.commitSha,
+    ...(remediation !== undefined && "commitSha" in remediation
+      ? [remediation.commitSha]
+      : []),
+  ]);
+  if (
+    url?.[1] === undefined ||
+    url[2] === undefined ||
+    observation.repository !== `${url[1]}/${url[2]}` ||
+    observation.prNumber !== publication.prNumber ||
+    observation.prUrl !== publication.prUrl ||
+    !allowedHeads.has(observation.headSha)
+  ) {
+    throw new Error("Pull-request observation changed its confirmed identity.");
+  }
+  return {
+    ...delivery,
+    observation: encodeDeliveryPullRequestObservationJson(observation),
+  };
 }
 
 function getStringPayload(event: RunEvent, key: string): string {

@@ -13,6 +13,7 @@ import { appendEvent, loadRun } from "./event-store.js";
 import {
   browserEvidenceRecord,
   failedBrowserEvidence,
+  parseBrowserEvidenceJson,
   parseBrowserEvidenceTargetUrl,
   playwrightBrowserEvidenceCollector,
   writeBrowserEvidence,
@@ -54,6 +55,7 @@ import { writeFactoryRetro } from "./factory-retro.js";
 import { writeFactoryScorecard } from "./factory-scorecard.js";
 import {
   resolveRunProfile,
+  parseRunProfileJson,
   writeRunProfile,
   type BrowserEvidenceRequirement,
   type RunProfile,
@@ -609,6 +611,95 @@ export function collectBrowserEvidence(
     options,
     collectBrowserEvidenceUnlocked(runIdInput, targetUrlInput, options),
   );
+}
+
+/** Rerun the accepted verifier, Browser policy, and read-only evidence review. */
+export function reverifyRemediatedRun(input: {
+  readonly options?: WorkflowOptions;
+  readonly paths: RunPaths;
+  readonly runId: RunId;
+  readonly spec: ReturnType<typeof parseMarkdownSpec>;
+}) {
+  const options = input.options ?? {};
+  return Effect.gen(function* () {
+    yield* appendEvent(input.runId, input.paths, { type: "VERIFICATION_STARTED" });
+    yield* verifyHarnessOutput(input.runId, input.paths, {
+      requireLegacyWorkspaceMarker: false,
+    });
+    yield* appendEvent(input.runId, input.paths, {
+      payload: { verificationResultPath: "verification-result.json" },
+      type: "VERIFICATION_COMPLETED",
+    });
+
+    const fs = yield* FileSystem.FileSystem;
+    const profileText = yield* fs.readFileString(input.paths.runProfile);
+    const profile = yield* Effect.try({
+      catch: (cause) => makeRuntimeError({ cause, code: "RunProfileUnreadable", message: "Persisted remediation run profile is invalid.", recoverable: false }),
+      try: () => parseRunProfileJson(JSON.parse(profileText)),
+    });
+    const browserEvidenceText = yield* fs.readFileString(input.paths.browserEvidence);
+    const priorEvidence = yield* Effect.try({
+      catch: (cause) => makeRuntimeError({ cause, code: "BrowserEvidenceUnreadable", message: "Persisted Browser evidence is invalid.", recoverable: false }),
+      try: () => parseBrowserEvidenceJson(JSON.parse(browserEvidenceText)),
+    });
+    const priorTarget = priorEvidence.pages[0]?.url;
+    const targetInput = options.browserEvidenceTargetUrl ?? profile.browser?.targetUrl ?? priorTarget;
+    const target = targetInput === undefined
+      ? undefined
+      : yield* parseBrowserEvidenceTargetUrlEffect(targetInput);
+    const requirement = options.browserEvidenceRequirement ?? profile.checks.browserEvidence;
+    if (target === undefined && requirement === "required") {
+      return yield* Effect.fail(browserEvidenceTargetRequiredError());
+    }
+    if (target !== undefined) {
+      const record = yield* recordBrowserEvidence(input.runId, input.paths, target, options);
+      yield* requireBrowserEvidencePolicy(record, requirement);
+    }
+
+    const reviewPaths = reviewPathsForPhase(input.paths, "evidence");
+    const reviewerName = reviewerNameFromOptions(options);
+    yield* appendEvent(input.runId, input.paths, {
+      payload: { phase: "evidence", reviewerName },
+      type: "REVIEW_STARTED",
+    });
+    const review = yield* runReviewer(
+      ReviewRunRequest.make({
+        browserEvidencePath: input.paths.browserEvidence,
+        markdownPath: reviewPaths.markdown,
+        phase: "evidence",
+        resultPath: reviewPaths.result,
+        runId: input.runId,
+        sessionEvidencePath: reviewPaths.sessionEvidence,
+        specBody: input.spec.body,
+        specTitle: input.spec.title,
+        verificationResultPath: input.paths.verificationResult,
+        workerPlanPath: input.paths.workerPlanResult,
+        workerResultPath: input.paths.workerResult,
+        workspaceManifestPath: input.paths.workspaceManifest,
+        workspacePath: input.paths.workspace,
+      }),
+      options,
+    );
+    yield* appendEvent(input.runId, input.paths, {
+      payload: {
+        phase: review.phase,
+        resultPath: review.resultPath,
+        reviewPath: runRelative(input.paths, reviewPaths.markdown),
+        reviewerSessionEvidencePath: runRelative(input.paths, reviewPaths.sessionEvidence),
+        reviewerName: review.reviewerName,
+        status: review.status,
+      },
+      type: "REVIEW_COMPLETED",
+    });
+    if (review.status === "blocked") {
+      return yield* Effect.fail(makeRuntimeError({
+        code: "ReviewBlocked",
+        message: `Evidence review blocked remediation: ${review.summary}`,
+        recoverable: true,
+      }));
+    }
+    return review;
+  });
 }
 
 function collectBrowserEvidenceUnlocked(

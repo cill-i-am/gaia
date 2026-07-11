@@ -5,6 +5,7 @@ import {
   FactoryArtifactIdSchema,
   FactoryArtifactListDto,
   FactoryGraphDto,
+  parseDeliveryRemediation,
   parseHarnessEvent,
   ResolvedHarnessExecution,
   parseRunId,
@@ -876,6 +877,14 @@ function updateStatesForEvent(
     case "DELIVERY_PUBLICATION_FAILED":
       states.set("orchestrator", "failed");
       return;
+    case "DELIVERY_REMEDIATION_RECORDED":
+      states.set(
+        "ciWatcher",
+        parseDeliveryRemediation(event.payload["remediation"]).state === "failed"
+          ? "failed"
+          : "running",
+      );
+      return;
     case "RUN_FAILED":
       states.set("orchestrator", "failed");
       states.set(roleFromFailureStage(event.payload["stage"]), "failed");
@@ -919,6 +928,7 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "DELIVERY_PUBLICATION_CONFIRMED":
     case "DELIVERY_PUBLICATION_FAILED":
     case "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN":
+    case "DELIVERY_REMEDIATION_RECORDED":
       return "orchestrator";
     case "RUN_FAILED":
       return roleFromFailureStage(event.payload["stage"]);
@@ -961,6 +971,8 @@ function subStateForEvent(event: RunEvent): string | undefined {
       return "publicationFailed";
     case "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN":
       return "publicationOutcomeUnknown";
+    case "DELIVERY_REMEDIATION_RECORDED":
+      return "remediation";
     case "RUN_CREATED":
       return "accepted";
     case "WORKSPACE_PREPARED":
@@ -1017,6 +1029,8 @@ function activityLabel(event: RunEvent): string {
       return "Publication failed";
     case "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN":
       return "Publication outcome unknown";
+    case "DELIVERY_REMEDIATION_RECORDED":
+      return "Delivery remediation updated";
     case "RUN_CREATED":
       return "Factory run accepted";
     case "WORKSPACE_PREPARED":

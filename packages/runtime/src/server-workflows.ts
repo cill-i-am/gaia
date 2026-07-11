@@ -13,7 +13,7 @@ import {
   type RunState,
 } from "@gaia/core";
 import { customAlphabet } from "nanoid";
-import { Effect, FileSystem, Option, Path, Schema } from "effect";
+import { Effect, FileSystem, Option, Path, Schema, type Duration } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
@@ -62,6 +62,12 @@ import {
   retryFailedDeliveryPublication,
 } from "./delivery-publication.js";
 import type { GitHubCommandRunner } from "./github-publisher.js";
+import {
+  continueDeliveryRemediation,
+  type DeliveryPullRequestReader,
+} from "./delivery-remediation-coordinator.js";
+import type { DeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
+import type { DeliveryFeedbackTrustPolicyV1 } from "@gaia/core";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -72,6 +78,12 @@ export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
   readonly deliveryPublicationCommandRunner?: GitHubCommandRunner;
   readonly deliveryPublisher?: typeof publishReadyDeliveryRun;
+  readonly deliveryObservationEnabled?: boolean;
+  readonly deliveryObservationMaxAttempts?: number;
+  readonly deliveryObservationPollInterval?: Duration.Input;
+  readonly deliveryFeedbackAuthorization?: DeliveryFeedbackSmokeAuthorization;
+  readonly deliveryFeedbackTrustPolicy?: DeliveryFeedbackTrustPolicyV1;
+  readonly deliveryPullRequestReader?: DeliveryPullRequestReader;
   readonly deliveryRetryPublisher?: typeof retryFailedDeliveryPublication;
   readonly harnessProviderRegistry?: HarnessProviderRegistry;
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
@@ -540,6 +552,9 @@ function continueDeliveryPublication(
       runId,
       deliveryPublicationOptions(options),
     );
+    if (options.deliveryObservationEnabled === true) {
+      yield* continueDeliveryRemediationLoop(runId, options);
+    }
     return {
       reportPath: paths.reportMarkdown,
       runDirectory: paths.root,
@@ -547,6 +562,64 @@ function continueDeliveryPublication(
       state: "delivering",
       status: "running",
     } satisfies CommandSummary;
+  });
+}
+
+function continueDeliveryRemediationLoop(
+  runId: RunId,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    const maxAttempts = Math.min(
+      20,
+      Math.max(1, options.deliveryObservationMaxAttempts ?? 6),
+    );
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const result = yield* continueDeliveryRemediation(runId, {
+        ...(options.deliveryFeedbackAuthorization === undefined
+          ? {}
+          : { authorization: options.deliveryFeedbackAuthorization }),
+        ...(options.deliveryPublicationCommandRunner === undefined
+          ? {}
+          : { commandRunner: options.deliveryPublicationCommandRunner }),
+        ...(options.deliveryGitCommandRunner === undefined
+          ? {}
+          : { deliveryGitCommandRunner: options.deliveryGitCommandRunner }),
+        ...(options.deliveryPullRequestReader === undefined
+          ? {}
+          : { pullRequestReader: options.deliveryPullRequestReader }),
+        ...(options.deliveryFeedbackTrustPolicy === undefined
+          ? {}
+          : { trustPolicy: options.deliveryFeedbackTrustPolicy }),
+        ...(options.harnessProviderRegistry === undefined
+          ? {}
+          : { harnessProviderRegistry: options.harnessProviderRegistry }),
+        rootDirectory: options.rootDirectory ?? ".",
+        ...(options.sessionCoordinator === undefined
+          ? {}
+          : { sessionCoordinator: options.sessionCoordinator }),
+        verificationOptions: options,
+      });
+      const remediation = result.remediation;
+      if (
+        result.observation.status === "ready" ||
+        remediation?.state === "outcomeUnknown" ||
+        remediation?.state === "failed" && !remediation.recoverable ||
+        remediation?.attempt === 2 && remediation.state === "confirmed" ||
+        result.observation.blockers.some(({ kind }) =>
+          kind === "operatorReviewRequired" ||
+          kind === "budgetExhausted" ||
+          kind === "mergeConflict" ||
+          kind === "expectedHeadChanged"
+        )
+      ) {
+        return result;
+      }
+      if (attempt < maxAttempts) {
+        yield* Effect.sleep(options.deliveryObservationPollInterval ?? "10 seconds");
+      }
+    }
+    return undefined;
   });
 }
 

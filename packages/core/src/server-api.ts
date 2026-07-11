@@ -29,6 +29,10 @@ import {
   AgentSessionSseEventSchema,
   AgentSessionUpdateDto,
 } from "./agent-session-api.js";
+import {
+  DeliveryPullRequestObservation,
+  DeliveryRemediationSchema,
+} from "./delivery-remediation.js";
 
 export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
@@ -288,6 +292,9 @@ export const DeliveryStatusSchema = Schema.Literals([
   "readyToPublish",
   "publishing",
   "waitingForPr",
+  "remediating",
+  "remediationFailed",
+  "remediationOutcomeUnknown",
   "publicationFailed",
   "publicationOutcomeUnknown",
   "failed",
@@ -395,7 +402,15 @@ export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   eventSequence: Schema.Number.pipe(Schema.check(Schema.isInt({ identifier: "EventSequence" }))),
   mode: DeliveryModeSchema,
   provenance: Schema.optionalKey(DeliveryProvenanceDto),
+  observation: Schema.optionalKey(DeliveryPullRequestObservation),
   publication: Schema.optionalKey(DeliveryPublicationDto),
+  remediation: Schema.optionalKey(DeliveryRemediationSchema),
+  remediationRearmSequence: Schema.optionalKey(
+    Schema.Number.pipe(
+      Schema.check(Schema.isInt({ identifier: "EventSequence" })),
+      Schema.check(Schema.isGreaterThanOrEqualTo(1)),
+    ),
+  ),
   recoveryActions: Schema.Array(DeliveryRecoveryActionKindSchema),
   runId: RunIdSchema,
   stage: DeliveryStatusSchema,

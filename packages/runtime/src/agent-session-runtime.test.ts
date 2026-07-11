@@ -15,7 +15,7 @@ import {
   parseWorkspaceRelativePath,
 } from "@gaia/core";
 import { layer } from "@effect/vitest";
-import { Effect, Fiber, FileSystem, Option, Stream } from "effect";
+import { Effect, Exit, Fiber, FileSystem, Option, Scope, Stream } from "effect";
 import { describe, expect } from "vitest";
 import {
   dispatchAgentSessionAction,
@@ -240,6 +240,35 @@ describe("agent session runtime", () => {
         yield* coordinator.shutdown;
         const live = yield* coordinator.get({ agentId: "agent-worker", runId, sessionId });
         expect(live).toBeUndefined();
+      })),
+    );
+
+    it.effect("replaces a live handle only with a newer generation and ignores its stale finalizer", () =>
+      Effect.scoped(Effect.gen(function* () {
+        const coordinator = makeLiveHarnessSessionCoordinator();
+        const firstScope = yield* Scope.make();
+        const secondScope = yield* Scope.make();
+        const first = fakeSession(["first"]);
+        const second = fakeSession(["second"]);
+        const identity = { agentId: "agent-worker", runId, sessionId } as const;
+
+        yield* coordinator.register({ ...identity, generation: 10, session: first }).pipe(
+          Effect.provideService(Scope.Scope, firstScope),
+        );
+        yield* coordinator.register({ ...identity, generation: 11, session: second }).pipe(
+          Effect.provideService(Scope.Scope, secondScope),
+        );
+        const stale = yield* coordinator.register({ ...identity, generation: 10, session: first }).pipe(
+          Effect.provideService(Scope.Scope, firstScope),
+          Effect.exit,
+        );
+        expect(stale._tag).toBe("Failure");
+        expect((yield* coordinator.get(identity))?.session).toBe(second);
+
+        yield* Scope.close(firstScope, Exit.void);
+        expect((yield* coordinator.get(identity))?.session).toBe(second);
+        yield* Scope.close(secondScope, Exit.void);
+        expect(yield* coordinator.get(identity)).toBeUndefined();
       })),
     );
   });

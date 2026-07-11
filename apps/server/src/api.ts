@@ -39,6 +39,8 @@ import {
   type RunId,
   type RunEvent,
   parseDeliveryPublication,
+  parseDeliveryPullRequestObservation,
+  parseDeliveryRemediation,
   snapshotFromReplay,
 } from "@gaia/core";
 import type {
@@ -117,7 +119,10 @@ const decodeDeliveryProjection = Schema.decodeUnknownOption(
     baseRevision: Schema.NonEmptyString,
     headBranch: Schema.NonEmptyString,
     mode: DeliveryModeSchema,
+    observation: Schema.optionalKey(Schema.Json),
     publication: Schema.optionalKey(Schema.Json),
+    remediation: Schema.optionalKey(Schema.Json),
+    remediationRearmSequence: Schema.optionalKey(Schema.Int),
     remote: Schema.NonEmptyString,
     stage: DeliveryStatusSchema,
   }),
@@ -659,9 +664,10 @@ function streamDeliveryUpdates(
     return Stream.fromIterable(backlog).pipe(
       Stream.concat(live),
       Stream.takeUntil((update) =>
-        update.stage === "waitingForPr" ||
         update.stage === "publicationFailed" ||
         update.stage === "publicationOutcomeUnknown" ||
+        update.stage === "remediationFailed" ||
+        update.stage === "remediationOutcomeUnknown" ||
         update.stage === "failed"
       ),
     );
@@ -710,12 +716,19 @@ function deliveryUpdateFromEvents(
     delivery.publication === undefined
       ? undefined
       : parseDeliveryPublication(delivery.publication);
+  const observation = delivery.observation === undefined
+    ? undefined
+    : parseDeliveryPullRequestObservation(delivery.observation);
+  const remediation = delivery.remediation === undefined
+    ? undefined
+    : parseDeliveryRemediation(delivery.remediation);
   return DeliverySnapshotDto.make({
     eventSequence,
     mode: "pullRequest",
     ...(publication === undefined
       ? {}
       : { publication: publicDeliveryPublication(publication) }),
+    ...(observation === undefined ? {} : { observation }),
     provenance: DeliveryProvenanceDto.make(delivery),
     recoveryActions:
       publication?.state === "outcomeUnknown"
@@ -724,6 +737,10 @@ function deliveryUpdateFromEvents(
           ? ["retry"]
           : [],
     runId,
+    ...(remediation === undefined ? {} : { remediation }),
+    ...(delivery.remediationRearmSequence === undefined
+      ? {}
+      : { remediationRearmSequence: delivery.remediationRearmSequence }),
     stage,
     status: stage,
   });

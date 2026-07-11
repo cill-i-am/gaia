@@ -14,13 +14,17 @@ export type AgentSessionStreamConnection =
 type StreamTarget = {
   readonly agentId: string | undefined;
   readonly isOpen: boolean;
+  readonly rearmSequence?: number;
   readonly runId: string | undefined;
+  readonly sessionId?: string;
+  readonly snapshotSequence?: number;
 };
 
 type OpenStreamTarget = {
   readonly agentId: string;
   readonly isOpen: true;
   readonly runId: string;
+  readonly sessionId: string;
 };
 
 type StreamHandle = {
@@ -51,11 +55,13 @@ export function createAgentSessionStreamController(input: {
   let lastSequence: number | undefined;
   let target: StreamTarget | undefined;
   let terminal = false;
+  let generation = 0;
 
   const closeCurrent = () => {
     if (current === undefined) return;
     const closing = current;
     current = undefined;
+    generation += 1;
     closing.close();
   };
 
@@ -65,11 +71,14 @@ export function createAgentSessionStreamController(input: {
     nextTarget?.isOpen === true &&
     nextTarget.runId !== undefined &&
     nextTarget.agentId !== undefined &&
+    nextTarget.sessionId !== undefined &&
     !terminal;
 
   const openCurrent = (connection: AgentSessionStreamConnection) => {
     const currentTarget = target;
     if (!canOpen(currentTarget)) return;
+    const openingGeneration = generation + 1;
+    generation = openingGeneration;
     input.onConnectionChange(connection);
     try {
       current = openSource(
@@ -80,8 +89,9 @@ export function createAgentSessionStreamController(input: {
           ...(lastSequence === undefined ? {} : { afterSequence: lastSequence }),
         },
         {
-          onError: handleError,
-          onUpdate: handleUpdate,
+          onError: (error) => handleGenerationError(openingGeneration, error),
+          onUpdate: (update) =>
+            handleGenerationUpdate(openingGeneration, update),
         },
       );
       input.onConnectionChange("connected");
@@ -92,14 +102,27 @@ export function createAgentSessionStreamController(input: {
     }
   };
 
-  function handleUpdate(update: typeof AgentSessionUpdateDto.Type) {
+  function handleGenerationUpdate(
+    updateGeneration: number,
+    update: typeof AgentSessionUpdateDto.Type,
+  ) {
+    if (updateGeneration !== generation) return;
+
+    const currentTarget = target;
     if (
-      lastSequence !== undefined &&
-      update.eventSequence <= lastSequence &&
-      !update.terminal
+      currentTarget?.runId !== update.runId ||
+      currentTarget.agentId !== update.agentId ||
+      (currentTarget.sessionId !== undefined &&
+        currentTarget.sessionId !== update.sessionId)
     ) {
+      input.onError(new Error("Agent session stream identity changed"));
+      terminal = true;
+      closeCurrent();
+      input.onConnectionChange("unavailable");
       return;
     }
+
+    if (lastSequence !== undefined && update.eventSequence <= lastSequence) return;
 
     lastSequence = update.eventSequence;
     input.onUpdate(update);
@@ -110,7 +133,8 @@ export function createAgentSessionStreamController(input: {
     }
   }
 
-  function handleError(error: unknown) {
+  function handleGenerationError(errorGeneration: number, error: unknown) {
+    if (errorGeneration !== generation) return;
     input.onError(error);
     closeCurrent();
     if (canOpen(target)) {
@@ -120,23 +144,35 @@ export function createAgentSessionStreamController(input: {
     input.onConnectionChange("unavailable");
   }
 
+  const targetKey = (streamTarget: StreamTarget | undefined) => {
+    if (
+      streamTarget?.runId === undefined ||
+      streamTarget.agentId === undefined ||
+      streamTarget.sessionId === undefined
+    ) {
+      return undefined;
+    }
+    return `${streamTarget.runId}:${streamTarget.agentId}:${streamTarget.sessionId}`;
+  };
+
   return {
     dispose: () => {
       target = undefined;
       closeCurrent();
     },
-    handleError,
-    handleUpdate,
+    handleError: (error: unknown) => handleGenerationError(generation, error),
+    handleUpdate: (update: typeof AgentSessionUpdateDto.Type) =>
+      handleGenerationUpdate(generation, update),
     sync: (nextTarget: StreamTarget) => {
-      const previousKey =
-        target?.runId === undefined || target.agentId === undefined
-          ? undefined
-          : `${target.runId}:${target.agentId}`;
-      const nextKey =
-        nextTarget.runId === undefined || nextTarget.agentId === undefined
-          ? undefined
-          : `${nextTarget.runId}:${nextTarget.agentId}`;
+      const previousKey = targetKey(target);
+      const previousRearmSequence = target?.rearmSequence;
+      const nextKey = targetKey(nextTarget);
       const changed = previousKey !== nextKey;
+      const rearmed =
+        !changed &&
+        nextTarget.rearmSequence !== undefined &&
+        (previousRearmSequence === undefined ||
+          nextTarget.rearmSequence > previousRearmSequence);
 
       target = nextTarget;
       if (!nextTarget.isOpen || nextKey === undefined) {
@@ -146,7 +182,21 @@ export function createAgentSessionStreamController(input: {
 
       if (changed) {
         terminal = false;
-        lastSequence = undefined;
+        lastSequence = nextTarget.snapshotSequence;
+        closeCurrent();
+      } else {
+        lastSequence = maximumDefined(
+          lastSequence,
+          nextTarget.snapshotSequence,
+        );
+      }
+
+      if (rearmed) {
+        terminal = false;
+        lastSequence = Math.max(
+          lastSequence ?? 0,
+          nextTarget.rearmSequence ?? 0,
+        );
         closeCurrent();
       }
 
@@ -155,4 +205,13 @@ export function createAgentSessionStreamController(input: {
       }
     },
   };
+}
+
+function maximumDefined(
+  left: number | undefined,
+  right: number | undefined,
+) {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return Math.max(left, right);
 }

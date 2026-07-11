@@ -25,6 +25,9 @@ const RuntimeVersionSchema = Schema.NonEmptyString.pipe(
 
 /** Parsed text input sent to a provider-neutral harness session. */
 export class HarnessInput extends Schema.Class<HarnessInput>("HarnessInput")({
+  clientInputId: Schema.optionalKey(
+    Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+  ),
   text: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(16_384))),
 }) {}
 
