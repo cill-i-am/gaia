@@ -4,6 +4,7 @@ import {
   AgentSessionUpdateDto,
   CreateRunRequest,
   DeliverySnapshotSuccessEnvelope,
+  DeliverySnapshotDto,
   DeliveryRecoveryActionRequestSchema,
   codexAppServerExecutionSelection,
   FactoryActivitySuccessEnvelope,
@@ -90,6 +91,7 @@ const decodeAgentSessionSnapshotSuccess = Schema.decodeUnknownEffect(
   AgentSessionSnapshotSuccessEnvelope,
 );
 const decodeAgentSessionUpdate = Schema.decodeUnknownSync(AgentSessionUpdateDto);
+const decodeDeliverySnapshot = Schema.decodeUnknownSync(DeliverySnapshotDto);
 
 export function healthFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig,
@@ -270,6 +272,48 @@ export type AgentSessionEventSource = {
     listener: (event: { readonly data: string; readonly lastEventId: string }) => void,
   ): void;
 };
+
+export type DeliverySnapshotEventSource = {
+  addEventListener(
+    event: "delivery-update",
+    listener: (event: { readonly data: string; readonly lastEventId: string }) => void,
+  ): void;
+  close(): void;
+  onerror: ((event: unknown) => void) | null;
+  onmessage: ((event: { readonly data: string; readonly lastEventId: string }) => void) | null;
+  removeEventListener(
+    event: "delivery-update",
+    listener: (event: { readonly data: string; readonly lastEventId: string }) => void,
+  ): void;
+};
+
+/** Browser-owned delivery SSE lifecycle for one selected run. */
+export function openDeliverySnapshotEventSource(
+  config: DashboardGaiaClientConfig & { readonly afterSequence?: number; readonly runId: string },
+  handlers: { readonly onError: (error: unknown) => void; readonly onUpdate: (update: typeof DeliverySnapshotDto.Type) => void },
+  create: (url: string) => DeliverySnapshotEventSource = (url) => new EventSource(url) as DeliverySnapshotEventSource,
+) {
+  const query = config.afterSequence === undefined ? "" : `?afterSequence=${encodeURIComponent(String(config.afterSequence))}`;
+  const baseUrl = normalizedServerUrl(config.serverUrl).replace(/\/$/u, "");
+  const source = create(`${baseUrl}/runs/${encodeURIComponent(config.runId)}/delivery/stream${query}`);
+  const onDeliveryUpdate = (event: { readonly data: string; readonly lastEventId: string }) => {
+    try {
+      const update = decodeDeliverySnapshot(JSON.parse(event.data));
+      if (event.lastEventId !== "" && String(update.eventSequence) !== event.lastEventId) throw new Error("Gaia SSE event ID does not match its normalized sequence.");
+      handlers.onUpdate(update);
+    } catch (error) {
+      close();
+      handlers.onError(error);
+    }
+  };
+  const close = () => {
+    source.removeEventListener("delivery-update", onDeliveryUpdate);
+    source.close();
+  };
+  source.addEventListener("delivery-update", onDeliveryUpdate);
+  source.onerror = handlers.onError;
+  return { close };
+}
 
 /** Browser-owned SSE lifecycle. The caller closes on run/agent change or unmount. */
 export function openAgentSessionEventSource(

@@ -1,4 +1,6 @@
 import {
+  DeliveryFeedbackTrustPolicyV1,
+  type DeliveryRemediationActivationActionRequest,
   parseMarkdownSpec,
   HarnessExecutionSelection,
   parseHarnessEvent,
@@ -13,7 +15,7 @@ import {
   type RunState,
 } from "@gaia/core";
 import { customAlphabet } from "nanoid";
-import { Effect, FileSystem, Option, Path, Schema } from "effect";
+import { Effect, FileSystem, Option, Path, Schema, type Duration } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
@@ -53,6 +55,7 @@ import {
 import {
   parseDeliveryProvenance,
   prepareDeliveryWorktree,
+  resolveDeliveryGitHubRepository,
   resolveDeliveryProvenance,
   type DeliveryProvenance,
   type GitDeliveryCommandRunner,
@@ -62,6 +65,12 @@ import {
   retryFailedDeliveryPublication,
 } from "./delivery-publication.js";
 import type { GitHubCommandRunner } from "./github-publisher.js";
+import {
+  continueDeliveryRemediation,
+  defaultDeliveryFeedbackTrustPolicy,
+  type DeliveryPullRequestReader,
+} from "./delivery-remediation-coordinator.js";
+import type { DeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -69,14 +78,27 @@ const nanoid = customAlphabet(
 );
 
 export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
+  readonly deliveryRemediationActivator?: DeliveryRemediationActionHandler;
   readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
   readonly deliveryPublicationCommandRunner?: GitHubCommandRunner;
   readonly deliveryPublisher?: typeof publishReadyDeliveryRun;
+  readonly deliveryObservationEnabled?: boolean;
+  readonly deliveryObservationMaxAttempts?: number;
+  readonly deliveryObservationPollInterval?: Duration.Input;
+  readonly deliveryFeedbackAuthorization?: DeliveryFeedbackSmokeAuthorization;
+  readonly deliveryFeedbackTrustPolicy?: DeliveryFeedbackTrustPolicyV1;
+  readonly deliveryPullRequestReader?: DeliveryPullRequestReader;
   readonly deliveryRetryPublisher?: typeof retryFailedDeliveryPublication;
   readonly harnessProviderRegistry?: HarnessProviderRegistry;
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly workspaceSource?: WorkspaceSource;
 };
+
+export type DeliveryRemediationActionHandler = (
+  runId: string,
+  action: DeliveryRemediationActivationActionRequest,
+  options: ServerWorkflowOptions,
+) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
 
 const encodeResolvedHarnessExecution = Schema.encodeSync(
   ResolvedHarnessExecution,
@@ -530,6 +552,48 @@ export function actOnDeliveryPublication(
   ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
 }
 
+/** Activate one exact controlled comment through the existing delivery coordinator. */
+export function actOnDeliveryRemediation(
+  runIdInput: string,
+  action: DeliveryRemediationActivationActionRequest,
+  options: ServerWorkflowOptions = {},
+) {
+  return withRunStoreLock(
+    options,
+    Effect.gen(function* () {
+      const runId = yield* parseRunIdEffect(runIdInput);
+      return yield* continueDeliveryRemediation(runId, {
+        activationRequest: action,
+        ...(options.deliveryPublicationCommandRunner === undefined
+          ? {}
+          : { commandRunner: options.deliveryPublicationCommandRunner }),
+        ...(options.deliveryGitCommandRunner === undefined
+          ? {}
+          : { deliveryGitCommandRunner: options.deliveryGitCommandRunner }),
+        ...(options.deliveryPullRequestReader === undefined
+          ? {}
+          : { pullRequestReader: options.deliveryPullRequestReader }),
+        ...(options.deliveryFeedbackTrustPolicy === undefined
+          ? {}
+          : { trustPolicy: options.deliveryFeedbackTrustPolicy }),
+        ...(options.harnessProviderRegistry === undefined
+          ? {}
+          : { harnessProviderRegistry: options.harnessProviderRegistry }),
+        rootDirectory: options.rootDirectory ?? ".",
+        ...(options.sessionCoordinator === undefined
+          ? {}
+          : { sessionCoordinator: options.sessionCoordinator }),
+        verificationOptions: options,
+      });
+    }),
+    {
+      nextSafeAction:
+        "Wait for the active delivery action to finish, then refresh before retrying.",
+      operation: "Gaia controlled remediation activation",
+    },
+  ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
+}
+
 function continueDeliveryPublication(
   runId: RunId,
   paths: RunPaths,
@@ -540,6 +604,9 @@ function continueDeliveryPublication(
       runId,
       deliveryPublicationOptions(options),
     );
+    if (options.deliveryObservationEnabled === true) {
+      yield* continueDeliveryRemediationLoop(runId, options);
+    }
     return {
       reportPath: paths.reportMarkdown,
       runDirectory: paths.root,
@@ -547,6 +614,64 @@ function continueDeliveryPublication(
       state: "delivering",
       status: "running",
     } satisfies CommandSummary;
+  });
+}
+
+function continueDeliveryRemediationLoop(
+  runId: RunId,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    const maxAttempts = Math.min(
+      20,
+      Math.max(1, options.deliveryObservationMaxAttempts ?? 6),
+    );
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const result = yield* continueDeliveryRemediation(runId, {
+        ...(options.deliveryFeedbackAuthorization === undefined
+          ? {}
+          : { authorization: options.deliveryFeedbackAuthorization }),
+        ...(options.deliveryPublicationCommandRunner === undefined
+          ? {}
+          : { commandRunner: options.deliveryPublicationCommandRunner }),
+        ...(options.deliveryGitCommandRunner === undefined
+          ? {}
+          : { deliveryGitCommandRunner: options.deliveryGitCommandRunner }),
+        ...(options.deliveryPullRequestReader === undefined
+          ? {}
+          : { pullRequestReader: options.deliveryPullRequestReader }),
+        ...(options.deliveryFeedbackTrustPolicy === undefined
+          ? {}
+          : { trustPolicy: options.deliveryFeedbackTrustPolicy }),
+        ...(options.harnessProviderRegistry === undefined
+          ? {}
+          : { harnessProviderRegistry: options.harnessProviderRegistry }),
+        rootDirectory: options.rootDirectory ?? ".",
+        ...(options.sessionCoordinator === undefined
+          ? {}
+          : { sessionCoordinator: options.sessionCoordinator }),
+        verificationOptions: options,
+      });
+      const remediation = result.remediation;
+      if (
+        result.observation.status === "ready" ||
+        remediation?.state === "outcomeUnknown" ||
+        remediation?.state === "failed" && !remediation.recoverable ||
+        remediation?.attempt === 2 && remediation.state === "confirmed" ||
+        result.observation.blockers.some(({ kind }) =>
+          kind === "operatorReviewRequired" ||
+          kind === "budgetExhausted" ||
+          kind === "mergeConflict" ||
+          kind === "expectedHeadChanged"
+        )
+      ) {
+        return result;
+      }
+      if (attempt < maxAttempts) {
+        yield* Effect.sleep(options.deliveryObservationPollInterval ?? "10 seconds");
+      }
+    }
+    return undefined;
   });
 }
 
@@ -808,6 +933,41 @@ function harnessAcceptanceError(error: unknown): GaiaRuntimeError {
   });
 }
 
+function acceptedDeliveryFeedbackTrustPolicy(
+  provenance: DeliveryProvenance,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    if (options.deliveryFeedbackTrustPolicy !== undefined) {
+      return yield* Effect.try({
+        try: () => Schema.decodeUnknownSync(DeliveryFeedbackTrustPolicyV1)(
+          options.deliveryFeedbackTrustPolicy,
+        ),
+        catch: (cause) => makeRuntimeError({
+          cause,
+          code: "DeliveryFeedbackTrustPolicyInvalid",
+          message: "Accepted delivery feedback trust policy is invalid.",
+          recoverable: false,
+        }),
+      });
+    }
+    const repository = yield* resolveDeliveryGitHubRepository({
+      rootDirectory: options.rootDirectory ?? ".",
+      ...(options.deliveryGitCommandRunner === undefined
+        ? {}
+        : { commandRunner: options.deliveryGitCommandRunner }),
+    }, provenance.remote);
+    return repository === undefined
+      ? DeliveryFeedbackTrustPolicyV1.make({
+          allowPullRequestAuthor: false,
+          trustedChecks: [],
+          trustedHumanLogins: [],
+          version: 1,
+        })
+      : defaultDeliveryFeedbackTrustPolicy(repository);
+  });
+}
+
 function factoryContinuationOptions(
   firstEvent: RunEvent,
   events: ReadonlyArray<RunEvent>,
@@ -829,10 +989,17 @@ function factoryContinuationOptions(
         provenance: delivery.provenance,
       });
       if (!events.some(({ type }) => type === "DELIVERY_STARTED")) {
+        const feedbackTrustPolicy = yield* acceptedDeliveryFeedbackTrustPolicy(
+          delivery.provenance,
+          options,
+        );
         yield* appendEvent(firstEvent.runId, paths, {
           payload: {
             delivery: {
               ...delivery.provenance,
+              feedbackTrustPolicy: Schema.encodeSync(
+                DeliveryFeedbackTrustPolicyV1,
+              )(feedbackTrustPolicy),
               mode: "pullRequest",
               stage: "delivering",
             },

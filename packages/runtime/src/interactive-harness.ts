@@ -4,8 +4,9 @@ import {
   parseWorkspaceRelativePath,
   type HarnessEvent,
   type RunEvent,
+  type RunId,
 } from "@gaia/core";
-import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
+import { Effect, FileSystem, Option, Schema, Stream } from "effect";
 import nodePath from "node:path";
 import { appendHarnessSessionEvent, readEvents } from "./event-store.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
@@ -24,7 +25,7 @@ import {
 import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
 import { issueDeliveryAgentIds } from "./factory-workflows.js";
 import { issueDeliveryWorkerHarnessCapabilities } from "./harness-provider-registry.js";
-import { makeRunPaths } from "./paths.js";
+import { makeRunPaths, type RunPaths } from "./paths.js";
 import {
   diffWorkspaceSnapshots,
   readWorkspaceSnapshot,
@@ -157,48 +158,13 @@ export function interactiveSessionHarness(input: {
           );
         }
 
-        const baseline = yield* readWorkspaceSnapshot(
-          paths.harnessWorkspaceBaseline,
-        ).pipe(
-          Effect.mapError(() =>
-            makeRuntimeError({
-              code: "HarnessWorkspaceBaselineMissing",
-              message: "Harness workspace baseline is unavailable for completion.",
-              recoverable: false,
-            }),
-          ),
-        );
-        const after = yield* snapshotWorkspace(request.workspacePath);
-        const workspaceDiff = diffWorkspaceSnapshots(baseline, after);
-        const outputArtifacts = yield* existingWorkspaceArtifacts(
-          request.workspacePath,
-          workspaceDiff.productChangedPaths,
-        );
-        const result = HarnessRunResult.make({
-          changedWorkspacePaths: [
-            ...workspaceDiff.productChangedPaths,
-            ...workspaceDiff.omittedGeneratedPaths.map(({ path }) => path),
-          ].toSorted(),
-          exitCode: 0,
-          harnessName: codexAppServerHarnessName,
-          outputArtifacts,
-          resultPath: "worker-result.json",
+        return yield* refreshInteractiveHarnessResult({
+          paths,
           runId: request.runId,
-          status: "completed",
-          summary: "Interactive harness worker turn completed.",
-          workspaceDiff,
+          workerLogPath: request.workerLogPath,
+          workerResultPath: request.workerResultPath,
+          workspacePath: request.workspacePath,
         });
-        const fs = yield* FileSystem.FileSystem;
-        yield* fs.writeFileString(
-          request.workerResultPath,
-          `${JSON.stringify(encodeHarnessRunResult(result), null, 2)}\n`,
-        );
-        yield* fs.writeFileString(
-          request.workerLogPath,
-          "Interactive harness worker turn completed.\n",
-          { flag: "a" },
-        );
-        return result;
       }).pipe(
         Effect.mapError((error) =>
           error instanceof GaiaRuntimeError
@@ -218,6 +184,59 @@ export function interactiveSessionHarness(input: {
         ),
       ),
   };
+}
+
+/** Refresh worker diff evidence after another turn in the same session. */
+export function refreshInteractiveHarnessResult(input: {
+  readonly paths: RunPaths;
+  readonly runId: RunId;
+  readonly workerLogPath: string;
+  readonly workerResultPath: string;
+  readonly workspacePath: string;
+}) {
+  return Effect.gen(function* () {
+    const baseline = yield* readWorkspaceSnapshot(
+      input.paths.harnessWorkspaceBaseline,
+    ).pipe(
+      Effect.mapError(() =>
+        makeRuntimeError({
+          code: "HarnessWorkspaceBaselineMissing",
+          message: "Harness workspace baseline is unavailable for completion.",
+          recoverable: false,
+        }),
+      ),
+    );
+    const after = yield* snapshotWorkspace(input.workspacePath);
+    const workspaceDiff = diffWorkspaceSnapshots(baseline, after);
+    const result = HarnessRunResult.make({
+      changedWorkspacePaths: [
+        ...workspaceDiff.productChangedPaths,
+        ...workspaceDiff.omittedGeneratedPaths.map(({ path }) => path),
+      ].toSorted(),
+      exitCode: 0,
+      harnessName: codexAppServerHarnessName,
+      // Interactive provider file changes are delivery source, not generated
+      // harness artifacts. Session file-change items already expose them for
+      // inspection; marking them as artifacts would exclude them from publish.
+      outputArtifacts: [],
+      resultPath: "worker-result.json",
+      runId: input.runId,
+      status: "completed",
+      summary: "Interactive harness worker turn completed.",
+      workspaceDiff,
+    });
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(
+      input.workerResultPath,
+      `${JSON.stringify(encodeHarnessRunResult(result), null, 2)}\n`,
+    );
+    yield* fs.writeFileString(
+      input.workerLogPath,
+      "Interactive harness worker turn completed.\n",
+      { flag: "a" },
+    );
+    return result;
+  });
 }
 
 function harnessFailureMessage(
@@ -258,21 +277,4 @@ function isTerminalSessionEvent(
 function workspacePathFromRoot(rootDirectory: string, workspacePath: string) {
   const relative = nodePath.relative(rootDirectory, workspacePath);
   return parseWorkspaceRelativePath(relative);
-}
-
-function existingWorkspaceArtifacts(
-  workspacePath: string,
-  changedPaths: ReadonlyArray<string>,
-) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const artifacts: Array<string> = [];
-    for (const changedPath of changedPaths) {
-      if (yield* fs.exists(path.join(workspacePath, changedPath))) {
-        artifacts.push(`workspace/${changedPath}`);
-      }
-    }
-    return artifacts;
-  });
 }

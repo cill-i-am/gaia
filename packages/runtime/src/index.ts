@@ -1,4 +1,9 @@
 export {
+  continueDeliveryRemediation,
+  type DeliveryRemediationCoordinatorOptions,
+  type DeliveryRemediationCoordinatorResult,
+} from "./delivery-remediation-coordinator.js";
+export {
   BrowserConsoleLevelSchema,
   BrowserConsoleMessage,
   BrowserEvidence,
@@ -233,6 +238,14 @@ export {
   type GitHubPublishPreviewOptions,
   type GitHubPullRequestSelector,
 } from "./github-publisher.js";
+export {
+  DeliveryFeedbackSmokeAuthorization,
+  deliveryFeedbackSmokeAuthorizationDigest,
+  makeDeliveryFeedbackSmokeAuthorization,
+  readGitHubPullRequest,
+  type DeliveryRemediationInput,
+  type GitHubPullRequestRead,
+} from "./github-pull-request-provider.js";
 export {
   WorkspacePrQualityGate,
   WorkspacePrQualityGateItem,

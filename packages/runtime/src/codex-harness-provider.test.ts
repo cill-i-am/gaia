@@ -270,6 +270,83 @@ describe("Codex HarnessProvider adapter", () => {
     expect(recovered.snapshot.state).toBe("idle");
   });
 
+  it("does not resend a recovered client input id and forwards a new one", async () => {
+    const sessionId = parseHarnessSessionId("session-codex-idempotent-send");
+    const correlationStore = makeInMemoryCodexHarnessCorrelationStore();
+    const first = recordingClient();
+    await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: first.client,
+            correlationStore,
+            workspaceRoot: "/workspace",
+          }),
+          request: {
+            input: { text: "start" },
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: ["resumableSessions"],
+        }),
+      ),
+    );
+
+    const second = recordingClient();
+    const client: CodexAppServerClient = {
+      ...second.client,
+      readThread: () =>
+        Effect.succeed({
+          thread: {
+            id: second.threadId,
+            status: { type: "idle" as const },
+            turns: [{
+              id: parseCodexTurnId("recovered-turn"),
+              items: [{
+                clientId: "remediation-operation-1",
+                content: [{ text: "already sent", type: "text" as const }],
+                id: parseCodexItemId("recovered-user-message"),
+                type: "userMessage" as const,
+              }],
+              status: "completed" as const,
+            }],
+          },
+        }),
+    };
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* resumeHarnessSession({
+            provider: createCodexHarnessProvider({
+              client,
+              correlationStore,
+              workspaceRoot: "/workspace",
+            }),
+            request: {
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          yield* session.send({
+            clientInputId: "remediation-operation-1",
+            text: "do not send twice",
+          });
+          yield* session.send({
+            clientInputId: "remediation-operation-2",
+            text: "send once",
+          });
+        }),
+      ),
+    );
+
+    expect(second.starts).toEqual([{
+      clientUserMessageId: "remediation-operation-2",
+      input: [{ text: "send once", type: "text" }],
+      threadId: second.threadId,
+    }]);
+  });
+
   it("rejects a resumed native thread that differs from stored correlation before reading it", async () => {
     const sessionId = parseHarnessSessionId("session-codex-resume-mismatch");
     const correlationStore = makeInMemoryCodexHarnessCorrelationStore();

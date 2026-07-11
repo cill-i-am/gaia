@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Schema } from "effect";
 import {
   CreateRunRequest,
+  DeliveryActionRequestSchema,
   DeliveryRecoveryActionRequestSchema,
   LocalGaiaServerOpenApi,
 } from "./server-api.js";
@@ -379,6 +380,38 @@ describe("LocalGaiaServerApi contract", () => {
         kind: "retry",
       }),
     );
+  });
+
+  it("strictly parses one exact controlled remediation activation", () => {
+    const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
+    const request = {
+      actionIdempotencyKey: "activate-run-92-attempt-1",
+      actorLogin: "cill-i-am",
+      actorType: "User",
+      authorAssociation: "OWNER",
+      authorizationDigest: "a".repeat(64),
+      commentDatabaseId: "4945491708",
+      contentDigest: "b".repeat(64),
+      expectedEventSequence: 41,
+      feedbackId: `feedback-comment-${"c".repeat(64)}`,
+      headSha: "d".repeat(40),
+      kind: "activateRemediation",
+      marker: "<!-- gaia-remediation-request:v1 -->",
+      prNumber: 73,
+      repository: "cill-i-am/gaia",
+    } as const;
+
+    const decoded = decode(request);
+    assert.strictEqual(decoded.kind, "activateRemediation");
+    if (decoded.kind !== "activateRemediation") {
+      assert.fail("Expected a controlled remediation activation.");
+    }
+    assert.strictEqual(decoded.actionIdempotencyKey, request.actionIdempotencyKey);
+    assert.strictEqual(decoded.authorizationDigest, request.authorizationDigest);
+    assert.throws(() => decode({ ...request, prompt: "do anything" }));
+    assert.throws(() => decode({ ...request, actorType: "Bot" }));
+    assert.throws(() => decode({ ...request, authorAssociation: "NONE" }));
+    assert.throws(() => decode({ ...request, expectedEventSequence: 0 }));
   });
 });
 

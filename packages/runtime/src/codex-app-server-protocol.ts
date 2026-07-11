@@ -28,7 +28,11 @@ const CodexFileChange = Schema.Struct({
   path: Schema.String,
 });
 export const CodexThreadItemSchema = Schema.Union([
-  Schema.Struct({ id: ItemId, type: Schema.Literal("userMessage") }),
+  Schema.Struct({
+    clientId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    id: ItemId,
+    type: Schema.Literal("userMessage"),
+  }),
   Schema.Struct({
     id: ItemId,
     memoryCitation: Schema.optionalKey(Schema.NullOr(Schema.Json)),
@@ -132,7 +136,11 @@ export const ThreadResumeParamsSchema = Schema.Struct({ threadId: ThreadId });
 export const ThreadReadParamsSchema = Schema.Struct({ includeTurns: Schema.optionalKey(Schema.Boolean), threadId: ThreadId });
 export const ThreadResultSchema = Schema.Struct({ thread: Thread });
 export const TextInputSchema = Schema.Struct({ text: Schema.String, type: Schema.Literal("text") });
-export const TurnStartParamsSchema = Schema.Struct({ input: Schema.Array(TextInputSchema).pipe(Schema.check(Schema.isMaxLength(100))), threadId: ThreadId });
+export const TurnStartParamsSchema = Schema.Struct({
+  clientUserMessageId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  input: Schema.Array(TextInputSchema).pipe(Schema.check(Schema.isMaxLength(100))),
+  threadId: ThreadId,
+});
 export const TurnSteerParamsSchema = Schema.Struct({ expectedTurnId: TurnId, input: Schema.Array(TextInputSchema).pipe(Schema.check(Schema.isMaxLength(100))), threadId: ThreadId });
 export const TurnInterruptParamsSchema = Schema.Struct({ threadId: ThreadId, turnId: TurnId });
 export const TurnResultSchema = Schema.Struct({ turn: Turn });

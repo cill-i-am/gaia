@@ -6,7 +6,15 @@ import {
   DeliveryPublicationConfirmed,
   DeliveryPublicationIntent,
   DeliveryPublicationOutcomeUnknown,
+  DeliveryBlocker,
+  DeliveryFeedbackObservation,
+  DeliveryPullRequestObservation,
+  DeliveryRemediationIntent,
+  DeliveryRemediationFailed,
+  encodeDeliveryPullRequestObservationJson,
   encodeDeliveryPublicationJson,
+  encodeDeliveryRemediationJson,
+  parseDeliveryFeedbackId,
   parseRunId,
 } from "@gaia/core";
 import {
@@ -412,6 +420,7 @@ describe("local run api http boundary", () => {
           deliveryGitCommandRunner: recordingGitRunner(),
         });
 
+        yield* appendTerminalRemediation(accepted.runId, cwd);
         const streamResponse = yield* HttpClient.get(
           `/runs/${accepted.runId}/delivery/stream`,
         ).pipe(Effect.provide(layer));
@@ -440,7 +449,15 @@ describe("local run api http boundary", () => {
         );
         assert.strictEqual(
           getString(getObjectFromArray(updates, updates.length - 1), "stage"),
+          "remediationFailed",
+        );
+        assert.include(
+          updates.map((update) => getString(update, "stage")),
           "waitingForPr",
+        );
+        assert.include(
+          updates.map((update) => getString(update, "stage")),
+          "remediating",
         );
         const finalUpdate = getObjectFromArray(updates, updates.length - 1);
         const publication = getObject(finalUpdate, "publication");
@@ -501,6 +518,7 @@ describe("local run api http boundary", () => {
           },
         );
 
+        yield* appendTerminalRemediation(accepted.runId, cwd);
         const streamResponse = yield* HttpClient.get(
           `/runs/${accepted.runId}/delivery/stream`,
         ).pipe(Effect.provide(layer));
@@ -594,6 +612,144 @@ describe("local run api http boundary", () => {
         assert.strictEqual(recoveryResponse.status, 200);
         assert.strictEqual(getString(recovered, "stage"), "waitingForPr");
         assert.deepEqual(getArray(recovered, "recoveryActions"), []);
+      }),
+      20_000,
+    );
+
+    it.effect("routes controlled remediation activation through the existing live coordinator", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-activation-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        let usedLiveCoordinator = false;
+        let observedActionKey = "";
+        const layer = testServerLayer(cwd, {
+          deliveryRemediationActivator: (_runId, action, options) =>
+            Effect.sync(() => {
+              usedLiveCoordinator = options.sessionCoordinator !== undefined;
+              observedActionKey = action.actionIdempotencyKey;
+              return { observation: undefined };
+            }),
+        });
+        const request = deliveryActivationRequest(
+          accepted.eventSequence,
+        );
+        const response = yield* HttpClientRequest.post(
+          `/runs/${accepted.runId}/delivery/actions`,
+        ).pipe(
+          HttpClientRequest.bodyJsonUnsafe(request),
+          HttpClient.execute,
+          Effect.provide(layer),
+        );
+        const malformed = yield* HttpClientRequest.post(
+          `/runs/${accepted.runId}/delivery/actions`,
+        ).pipe(
+          HttpClientRequest.bodyJsonUnsafe({ ...request, prompt: "unsafe" }),
+          HttpClient.execute,
+          Effect.provide(layer),
+        );
+
+        assert.strictEqual(response.status, 200);
+        assert.strictEqual(malformed.status, 400);
+        assert.isTrue(usedLiveCoordinator);
+        assert.strictEqual(observedActionKey, request.actionIdempotencyKey);
+      }),
+      20_000,
+    );
+
+    it.effect("projects privacy-safe PR feedback and the authoritative remediation re-arm sequence", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-remediation-" });
+        const accepted = yield* acceptFactoryRun({
+          delivery: { mode: "pullRequest" },
+          execution: codexAppServerExecutionSelection,
+          workflow: "issueDelivery",
+          workItem: {
+            description: "Project delivery remediation.",
+            kind: "issue",
+            title: "Delivery remediation projection",
+          },
+        }, {
+          deliveryGitCommandRunner: recordingGitRunner(),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        yield* continueServerRun(accepted.runId, {
+          deliveryGitCommandRunner: recordingGitRunner(),
+          deliveryPublisher: recordingDeliveryPublisher(),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        const paths = yield* makeRunPaths(accepted.runId, { rootDirectory: cwd });
+        const feedbackId = parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`);
+        const observation = DeliveryPullRequestObservation.make({
+          blockers: [DeliveryBlocker.make({
+            feedbackIds: [feedbackId],
+            kind: "actionableFeedback",
+            summary: "Trusted actionable pull-request feedback requires remediation.",
+          })],
+          checks: [],
+          draft: false,
+          feedback: [DeliveryFeedbackObservation.make({
+            actorLogin: "trusted-reviewer",
+            authorAssociation: "MEMBER",
+            classification: "actionable",
+            contentDigest: "a".repeat(64),
+            id: feedbackId,
+            kind: "comment",
+            url: "https://github.com/cill-i-am/gaia/pull/91#issuecomment-1",
+          })],
+          headSha: "b".repeat(40),
+          mergeability: "mergeable",
+          observedAt: "2026-07-11T11:00:00.000Z",
+          prNumber: 91,
+          prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+          repository: "cill-i-am/gaia",
+          reviewDecision: "CHANGES_REQUESTED",
+          snapshotDigest: "c".repeat(64),
+          status: "blocked",
+          version: 1,
+        });
+        yield* appendEvent(accepted.runId, paths, {
+          payload: {
+            blockerCount: 1,
+            nextAction: "remediate",
+            observation: encodeDeliveryPullRequestObservationJson(observation),
+            prLoopPath: "delivery-pr-observation.json",
+            pullRequest: observation.prUrl,
+            status: "blocked",
+          },
+          type: "GITHUB_PR_LOOP_RECORDED",
+        });
+        const intent = DeliveryRemediationIntent.make({
+          attempt: 1,
+          commitTimestamp: "2026-07-11T11:00:00.000Z",
+          expectedHeadSha: observation.headSha,
+          feedbackDigest: observation.snapshotDigest,
+          feedbackIds: [feedbackId],
+          inputId: `remediation-${accepted.runId}-1`,
+          operationId: `remediation:${accepted.runId}:1`,
+          state: "intentRecorded",
+        });
+        const intentEvent = yield* appendEvent(accepted.runId, paths, {
+          payload: { remediation: encodeDeliveryRemediationJson(intent) },
+          type: "DELIVERY_REMEDIATION_RECORDED",
+        });
+        const response = yield* HttpClient.get(`/runs/${accepted.runId}/delivery`).pipe(
+          Effect.provide(testServerLayer(cwd)),
+        );
+        const projected = getObject(yield* responseJsonObject(response), "data");
+
+        assert.strictEqual(getString(projected, "stage"), "remediating");
+        assert.strictEqual(getNumber(projected, "remediationRearmSequence"), intentEvent.event.sequence);
+        assert.strictEqual(getString(getObject(projected, "observation"), "headSha"), observation.headSha);
+        assert.strictEqual(getString(getObject(projected, "remediation"), "state"), "intentRecorded");
+        assert.notInclude(JSON.stringify(projected), "Project delivery remediation");
+        assert.notInclude(JSON.stringify(projected), "native-comment");
       }),
       20_000,
     );
@@ -1025,6 +1181,25 @@ function createRunRequestFromPayload(payload: unknown) {
   );
 }
 
+function deliveryActivationRequest(expectedEventSequence: number) {
+  return {
+    actionIdempotencyKey: "activate-gaia-92-attempt-1",
+    actorLogin: "cill-i-am",
+    actorType: "User",
+    authorAssociation: "OWNER",
+    authorizationDigest: "a".repeat(64),
+    commentDatabaseId: "104",
+    contentDigest: "b".repeat(64),
+    expectedEventSequence,
+    feedbackId: `feedback-comment-${"c".repeat(64)}`,
+    headSha: "d".repeat(40),
+    kind: "activateRemediation",
+    marker: "<!-- gaia-remediation-request:v1 -->",
+    prNumber: 92,
+    repository: "cill-i-am/gaia",
+  } as const;
+}
+
 function factoryCreateInput() {
   return {
     delivery: { mode: "local" },
@@ -1079,6 +1254,40 @@ function recordingGitRunner() {
       }
       throw new Error(`Unexpected git command ${command.args.join(" ")}`);
     });
+}
+
+function appendTerminalRemediation(
+  runId: ReturnType<typeof parseRunId>,
+  rootDirectory: string,
+) {
+  return Effect.gen(function* () {
+    const paths = yield* makeRunPaths(runId, { rootDirectory });
+    const intent = DeliveryRemediationIntent.make({
+      attempt: 1,
+      commitTimestamp: "2026-07-11T11:00:00.000Z",
+      expectedHeadSha: "b".repeat(40),
+      feedbackDigest: "9".repeat(64),
+      feedbackIds: [parseDeliveryFeedbackId(`feedback-check-${"8".repeat(64)}`)],
+      inputId: `remediation-${runId}-1`,
+      operationId: `remediation:${runId}:1`,
+      state: "intentRecorded",
+    });
+    for (const remediation of [
+      intent,
+      DeliveryRemediationFailed.make({
+        ...intent,
+        code: "TestTerminalBlocker",
+        message: "Terminal test blocker.",
+        recoverable: false,
+        state: "failed",
+      }),
+    ]) {
+      yield* appendEvent(runId, paths, {
+        payload: { remediation: encodeDeliveryRemediationJson(remediation) },
+        type: "DELIVERY_REMEDIATION_RECORDED",
+      });
+    }
+  });
 }
 
 function recordingDeliveryPublisher() {

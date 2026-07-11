@@ -50,7 +50,7 @@ export function appendEvent(
   return withRunEventSerialization(paths, appendEventWithinSerialization(runId, paths, input));
 }
 
-function appendEventWithinSerialization(
+export function appendEventWithinSerialization(
   runId: RunId,
   paths: RunPaths,
   input: AppendEventInput,

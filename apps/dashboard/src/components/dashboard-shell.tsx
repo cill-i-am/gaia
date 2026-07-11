@@ -83,7 +83,10 @@ import {
   type RunCompareModel,
   type RunCompareSignal,
 } from "@/run-compare-model";
-import { defaultLocalGaiaServerUrl } from "@/lib/local-gaia-client";
+import {
+  defaultLocalGaiaServerUrl,
+  openDeliverySnapshotEventSource,
+} from "@/lib/local-gaia-client";
 import {
   localGaiaDeliveryQueryOptions,
   localGaiaDeliveryActionMutationOptions,
@@ -411,6 +414,11 @@ export function DashboardShell() {
       serverUrl,
     }),
   );
+  const selectedDeliverySnapshot = useDeliverySnapshotStream({
+    initial: selectedDeliveryQuery.data?.data,
+    runId: selectedRunId,
+    serverUrl,
+  });
   const deliveryActionMutation = useMutation(
     localGaiaDeliveryActionMutationOptions({
       runId: selectedRunId ?? "",
@@ -840,7 +848,7 @@ export function DashboardShell() {
               deliveryActionMutation.error,
             )}
             deliveryActionPending={deliveryActionMutation.isPending}
-            deliverySnapshot={selectedDeliveryQuery.data?.data}
+            deliverySnapshot={selectedDeliverySnapshot}
             selectedRun={selectedRun}
             serverConnection={serverConnection}
             onSelectCommandMode={setCommandMode}
@@ -863,6 +871,7 @@ export function DashboardShell() {
               onSelectNode={setSelectedNodeId}
             />
             <AgentInspectorSheet
+              deliverySnapshot={selectedDeliverySnapshot}
               inspector={selectedNodeInspector}
               replayState={replayState}
               runCompare={runCompare}
@@ -1944,6 +1953,24 @@ function CommandHeader({
               >
                 {deliveryStatusLabel(deliverySnapshot)}
               </span>
+              {deliverySnapshot.observation === undefined ? null : (
+                <>
+                  <span data-testid="selected-run-ci-status">
+                    {deliveryCiLabel(deliverySnapshot)}
+                  </span>
+                  <span data-testid="selected-run-review-status">
+                    {deliveryReviewLabel(deliverySnapshot)}
+                  </span>
+                  <span data-testid="selected-run-blocker-status">
+                    {deliverySnapshot.observation.blockers.length} blockers
+                  </span>
+                </>
+              )}
+              {deliverySnapshot.remediation === undefined ? null : (
+                <span data-testid="selected-run-remediation-status">
+                  Attempt {deliverySnapshot.remediation.attempt}/2: {deliverySnapshot.remediation.state}
+                </span>
+              )}
               {deliverySnapshot.publication?.state === "confirmed" ? (
                 <a
                   className="inline-flex items-center gap-1 font-medium text-foreground hover:underline"
@@ -2033,6 +2060,12 @@ function deliveryStatusLabel(snapshot: typeof DeliverySnapshotDto.Type) {
       return snapshot.publication?.state === "confirmed"
         ? `Delivery: draft PR #${snapshot.publication.prNumber} waiting`
         : "Delivery: waiting for draft PR";
+    case "remediating":
+      return `Delivery: remediating attempt ${snapshot.remediation?.attempt ?? 1}/2`;
+    case "remediationFailed":
+      return "Delivery: remediation failed";
+    case "remediationOutcomeUnknown":
+      return "Delivery: remediation outcome unknown";
     case "publicationFailed":
       return snapshot.publication?.state === "failed"
         ? `Delivery: publication failed (${snapshot.publication.code})`
@@ -2044,6 +2077,28 @@ function deliveryStatusLabel(snapshot: typeof DeliverySnapshotDto.Type) {
     case "unavailable":
       return "Delivery: unavailable";
   }
+}
+
+function deliveryCiLabel(snapshot: typeof DeliverySnapshotDto.Type) {
+  const checks = snapshot.observation?.checks ?? [];
+  const failing = checks.filter(({ state }) => state === "failing").length;
+  const pending = checks.filter(({ state }) => state === "pending").length;
+  if (failing > 0) return `CI: ${failing} failing`;
+  if (pending > 0) return `CI: ${pending} pending`;
+  return checks.length === 0 ? "CI: unavailable" : `CI: ${checks.length} passing`;
+}
+
+function deliveryReviewLabel(snapshot: typeof DeliverySnapshotDto.Type) {
+  const feedback = snapshot.observation?.feedback ?? [];
+  const actionable = feedback.filter(
+    ({ classification }) => classification === "actionable",
+  ).length;
+  const untrusted = feedback.filter(
+    ({ classification }) => classification === "untrusted",
+  ).length;
+  if (actionable > 0) return `Review: ${actionable} actionable`;
+  if (untrusted > 0) return `Review: ${untrusted} untrusted`;
+  return "Review: clear";
 }
 
 function CommandModeButton({
@@ -2229,6 +2284,7 @@ function MobileWorkspace({
 }
 
 function AgentInspectorSheet({
+  deliverySnapshot,
   inspector,
   replayState,
   runCompare,
@@ -2236,6 +2292,7 @@ function AgentInspectorSheet({
   serverUrl,
   onClose,
 }: {
+  readonly deliverySnapshot: typeof DeliverySnapshotDto.Type | undefined;
   readonly inspector: SelectedNodeInspectorModel;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
@@ -2262,6 +2319,7 @@ function AgentInspectorSheet({
           side="right"
         >
           <AgentInspector
+            deliverySnapshot={deliverySnapshot}
             inspector={inspector}
             replayState={replayState}
             runCompare={runCompare}
@@ -2388,6 +2446,7 @@ function noticeFor(
 }
 
 function AgentInspector({
+  deliverySnapshot,
   inspector,
   replayState,
   runCompare,
@@ -2395,6 +2454,7 @@ function AgentInspector({
   serverUrl,
   onClose,
 }: {
+  readonly deliverySnapshot: typeof DeliverySnapshotDto.Type | undefined;
   readonly inspector: SelectedNodeInspectorModel;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
@@ -2492,9 +2552,26 @@ function AgentInspector({
     controller.sync({
       agentId: selectedAgentId === "" ? undefined : selectedAgentId,
       isOpen: inspector.kind === "agent",
+      ...(deliverySnapshot?.remediationRearmSequence === undefined
+        ? {}
+        : { rearmSequence: deliverySnapshot.remediationRearmSequence }),
       runId: selectedRunId === "" ? undefined : selectedRunId,
+      ...(streamSession?.sessionId === undefined
+        ? {}
+        : { sessionId: streamSession.sessionId }),
+      ...(streamSession?.eventSequence === undefined
+        ? {}
+        : { snapshotSequence: streamSession.eventSequence }),
     });
-  }, [getStreamController, inspector.kind, selectedAgentId, selectedRunId]);
+  }, [
+    deliverySnapshot?.remediationRearmSequence,
+    getStreamController,
+    inspector.kind,
+    selectedAgentId,
+    selectedRunId,
+    streamSession?.eventSequence,
+    streamSession?.sessionId,
+  ]);
 
   React.useEffect(
     () => () => {
@@ -3549,6 +3626,74 @@ function eventArtifactSummary(artifactHints: ReadonlyArray<string>) {
   return hiddenCount > 0
     ? `${visibleArtifacts.join(", ")} +${hiddenCount} artifacts`
     : visibleArtifacts.join(", ");
+}
+
+function useDeliverySnapshotStream({
+  initial,
+  runId,
+  serverUrl,
+}: {
+  readonly initial: typeof DeliverySnapshotDto.Type | undefined;
+  readonly runId: string | undefined;
+  readonly serverUrl: string;
+}) {
+  const [snapshot, setSnapshot] = React.useState(initial);
+
+  React.useEffect(() => {
+    setSnapshot((current) =>
+      current?.runId === initial?.runId &&
+      current !== undefined &&
+      initial !== undefined &&
+      current.eventSequence > initial.eventSequence
+        ? current
+        : initial,
+    );
+  }, [initial]);
+
+  React.useEffect(() => {
+    if (
+      runId === undefined ||
+      initial === undefined ||
+      initial.mode !== "pullRequest" ||
+      isDeliveryTerminal(initial) ||
+      typeof EventSource === "undefined"
+    ) {
+      return;
+    }
+
+    let handle: { readonly close: () => void } | undefined;
+    handle = openDeliverySnapshotEventSource(
+      {
+        ...(initial.eventSequence < 1
+          ? {}
+          : { afterSequence: initial.eventSequence }),
+        runId,
+        serverUrl,
+      },
+      {
+        onError: () => undefined,
+        onUpdate: (update) => {
+          setSnapshot((current) =>
+            current === undefined || update.eventSequence > current.eventSequence
+              ? update
+              : current,
+          );
+          if (isDeliveryTerminal(update)) handle?.close();
+        },
+      },
+    );
+    return () => handle?.close();
+  }, [initial?.eventSequence, initial?.mode, initial?.stage, runId, serverUrl]);
+
+  return snapshot;
+}
+
+function isDeliveryTerminal(snapshot: typeof DeliverySnapshotDto.Type) {
+  return snapshot.stage === "failed" ||
+    snapshot.stage === "publicationFailed" ||
+    snapshot.stage === "publicationOutcomeUnknown" ||
+    snapshot.stage === "remediationFailed" ||
+    snapshot.stage === "remediationOutcomeUnknown";
 }
 
 type RunEventStreamStatus =

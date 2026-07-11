@@ -404,6 +404,15 @@ function makeCodexSession<E>(input: {
     let adapterFailed = false;
     let bufferFailed = false;
     let projectedEventBytes = 0;
+    const dispatchedClientInputIds = new Set(
+      (input.recoveredThread?.turns ?? []).flatMap((turn) =>
+        (turn.items ?? []).flatMap((item) =>
+          item.type === "userMessage" && item.clientId !== undefined && item.clientId !== null
+            ? [item.clientId]
+            : [],
+        ),
+      ),
+    );
 
     const failEventBuffer = (message: string) => {
       if (bufferFailed) return;
@@ -620,6 +629,9 @@ function makeCodexSession<E>(input: {
     ) {
       const turn = yield* input.options.client
         .startTurn({
+          ...(input.request.input.clientInputId === undefined
+            ? {}
+            : { clientUserMessageId: input.request.input.clientInputId }),
           input: [{ text: input.request.input.text, type: "text" }],
           threadId: input.nativeThreadId,
         })
@@ -731,8 +743,17 @@ function makeCodexSession<E>(input: {
                 actionError("send", "The Codex session is terminal."),
               );
             }
+            if (
+              parsedMessage.clientInputId !== undefined &&
+              dispatchedClientInputIds.has(parsedMessage.clientInputId)
+            ) {
+              return Effect.void;
+            }
             return input.options.client
               .startTurn({
+                ...(parsedMessage.clientInputId === undefined
+                  ? {}
+                  : { clientUserMessageId: parsedMessage.clientInputId }),
                 input: [{ text: parsedMessage.text, type: "text" }],
                 threadId: input.nativeThreadId,
               })
@@ -740,6 +761,9 @@ function makeCodexSession<E>(input: {
                 Effect.tap((turn) =>
                   Effect.sync(() => {
                     if (adapterFailed || bufferFailed) return;
+                    if (parsedMessage.clientInputId !== undefined) {
+                      dispatchedClientInputIds.add(parsedMessage.clientInputId);
+                    }
                     activeTurnId = turn.turn.id;
                     emitProviderEvents(
                       mapOrFail(() =>

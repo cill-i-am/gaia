@@ -66,6 +66,7 @@ export function runLocalGaiaServer(input: {
         input.harnessProviderRegistry ??
         (yield* makeProductionHarnessProviderRegistry(identity.rootDirectory));
       const workflowOptions = {
+        deliveryObservationEnabled: true,
         harnessProviderRegistry,
         rootDirectory: identity.rootDirectory,
       };

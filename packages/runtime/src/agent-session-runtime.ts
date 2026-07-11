@@ -30,26 +30,38 @@ type LiveSessionIdentity = {
   readonly sessionId: string;
 };
 type LiveEntry = LiveSessionIdentity & { readonly session: HarnessSession };
+type RegisteredLiveEntry = LiveEntry & { readonly generation: number };
+type StoredLiveEntry = RegisteredLiveEntry & { readonly lease: symbol };
 
 export type LiveHarnessSessionCoordinator = ReturnType<typeof makeLiveHarnessSessionCoordinator>;
 
 /** Scoped registry of provider-neutral handles only. */
 export function makeLiveHarnessSessionCoordinator() {
-  const sessions = new Map<string, LiveEntry>();
+  const sessions = new Map<string, StoredLiveEntry>();
   const key = (input: LiveSessionIdentity) => `${input.runId}\0${input.agentId}\0${input.sessionId}`;
   return {
-    get: (identity: LiveSessionIdentity) => Effect.sync(() => sessions.get(key(identity))),
-    register: (entry: LiveEntry) =>
+    get: (identity: LiveSessionIdentity) => Effect.sync(() => {
+      const stored = sessions.get(key(identity));
+      if (stored === undefined) return undefined;
+      const { lease: _lease, ...entry } = stored;
+      return entry;
+    }),
+    register: (entry: LiveEntry & { readonly generation?: number }) =>
       Effect.acquireRelease(
         Effect.gen(function* () {
           const entryKey = key(entry);
-          if (sessions.has(entryKey)) {
+          const generation = entry.generation ?? 1;
+          const existing = sessions.get(entryKey);
+          if (existing !== undefined) {
             return yield* Effect.fail(makeRuntimeError({ code: "AgentSessionAlreadyLive", message: "The agent session already has a live handle.", recoverable: false }));
           }
-          sessions.set(entryKey, entry);
-          return entryKey;
+          const lease = Symbol(entryKey);
+          sessions.set(entryKey, { ...entry, generation, lease });
+          return { entryKey, lease } as const;
         }),
-        (entryKey) => Effect.sync(() => { sessions.delete(entryKey); }),
+        ({ entryKey, lease }) => Effect.sync(() => {
+          if (sessions.get(entryKey)?.lease === lease) sessions.delete(entryKey);
+        }),
       ).pipe(Effect.asVoid),
     shutdown: Effect.sync(() => sessions.clear()),
   };

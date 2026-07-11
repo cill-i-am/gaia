@@ -39,6 +39,8 @@ import {
   type RunId,
   type RunEvent,
   parseDeliveryPublication,
+  parseDeliveryPullRequestObservation,
+  parseDeliveryRemediation,
   snapshotFromReplay,
 } from "@gaia/core";
 import type {
@@ -70,6 +72,7 @@ import {
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import {
   actOnDeliveryPublication,
+  actOnDeliveryRemediation,
   acceptFactoryRun,
   continueServerRun,
   type ServerRunAcceptance,
@@ -117,7 +120,10 @@ const decodeDeliveryProjection = Schema.decodeUnknownOption(
     baseRevision: Schema.NonEmptyString,
     headBranch: Schema.NonEmptyString,
     mode: DeliveryModeSchema,
+    observation: Schema.optionalKey(Schema.Json),
     publication: Schema.optionalKey(Schema.Json),
+    remediation: Schema.optionalKey(Schema.Json),
+    remediationRearmSequence: Schema.optionalKey(Schema.Int),
     remote: Schema.NonEmptyString,
     stage: DeliveryStatusSchema,
   }),
@@ -303,11 +309,23 @@ export const RunsLive = HttpApiBuilder.group(
       .handle("actOnDelivery", ({ params, payload }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
+          const workflowOptions = {
+            ...identity.workflowOptions,
+            rootDirectory: identity.rootDirectory,
+          };
           const exit = yield* Effect.exit(
-            actOnDeliveryPublication(params.runId, payload, {
-              ...identity.workflowOptions,
-              rootDirectory: identity.rootDirectory,
-            }),
+            payload.kind === "activateRemediation"
+              ? (identity.workflowOptions.deliveryRemediationActivator ??
+                  actOnDeliveryRemediation)(
+                    params.runId,
+                    payload,
+                    workflowOptions,
+                  )
+              : actOnDeliveryPublication(
+                  params.runId,
+                  payload,
+                  workflowOptions,
+                ),
           );
           if (exit._tag === "Failure") {
             return yield* Effect.fail(actionApiErrorFromCause(exit.cause));
@@ -659,9 +677,10 @@ function streamDeliveryUpdates(
     return Stream.fromIterable(backlog).pipe(
       Stream.concat(live),
       Stream.takeUntil((update) =>
-        update.stage === "waitingForPr" ||
         update.stage === "publicationFailed" ||
         update.stage === "publicationOutcomeUnknown" ||
+        update.stage === "remediationFailed" ||
+        update.stage === "remediationOutcomeUnknown" ||
         update.stage === "failed"
       ),
     );
@@ -710,12 +729,19 @@ function deliveryUpdateFromEvents(
     delivery.publication === undefined
       ? undefined
       : parseDeliveryPublication(delivery.publication);
+  const observation = delivery.observation === undefined
+    ? undefined
+    : parseDeliveryPullRequestObservation(delivery.observation);
+  const remediation = delivery.remediation === undefined
+    ? undefined
+    : parseDeliveryRemediation(delivery.remediation);
   return DeliverySnapshotDto.make({
     eventSequence,
     mode: "pullRequest",
     ...(publication === undefined
       ? {}
       : { publication: publicDeliveryPublication(publication) }),
+    ...(observation === undefined ? {} : { observation }),
     provenance: DeliveryProvenanceDto.make(delivery),
     recoveryActions:
       publication?.state === "outcomeUnknown"
@@ -724,6 +750,10 @@ function deliveryUpdateFromEvents(
           ? ["retry"]
           : [],
     runId,
+    ...(remediation === undefined ? {} : { remediation }),
+    ...(delivery.remediationRearmSequence === undefined
+      ? {}
+      : { remediationRearmSequence: delivery.remediationRearmSequence }),
     stage,
     status: stage,
   });

@@ -4,6 +4,7 @@ import {
   HarnessCapabilities,
   HarnessProviderDescriptor,
   parseHarnessProviderId,
+  parseRunId,
   parseHarnessSessionId,
   parseHarnessTurnId,
   projectHarnessEvents,
@@ -22,7 +23,10 @@ import {
   codexAppServerHarnessName,
   HarnessRunRequest,
 } from "./harness.js";
-import { interactiveSessionHarness } from "./interactive-harness.js";
+import {
+  interactiveSessionHarness,
+  refreshInteractiveHarnessResult,
+} from "./interactive-harness.js";
 import {
   readFactoryGraph,
   readFactoryRunActivity,
@@ -49,6 +53,34 @@ const syntheticCapabilities = HarnessCapabilities.make({
 
 describe("interactive issue-delivery harness", () => {
   layer(NodeServices.layer)((it) => {
+    it.effect("keeps interactive file changes publishable instead of classifying them as harness artifacts", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-interactive-source-" });
+        const runId = parseRunId("run-SourcePub1");
+        const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+        yield* fs.makeDirectory(paths.root, { recursive: true });
+        yield* fs.makeDirectory(paths.workspace, { recursive: true });
+        yield* writeWorkspaceSnapshot(
+          paths.harnessWorkspaceBaseline,
+          yield* snapshotWorkspace(paths.workspace),
+        );
+        yield* fs.makeDirectory(`${paths.workspace}/src`, { recursive: true });
+        yield* fs.writeFileString(`${paths.workspace}/src/feature.ts`, "export const feature = true;\n");
+
+        const result = yield* refreshInteractiveHarnessResult({
+          paths,
+          runId,
+          workerLogPath: paths.workerLog,
+          workerResultPath: paths.workerResult,
+          workspacePath: paths.workspace,
+        });
+
+        assert.deepEqual(result.workspaceDiff?.productChangedPaths, ["src/feature.ts"]);
+        assert.deepEqual(result.outputArtifacts, []);
+      }),
+    );
+
     it.effect("executes the actual workflow through a synthetic provider without waiting for stream close", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   openAgentSessionEventSource,
+  openDeliverySnapshotEventSource,
   type AgentSessionEventSource,
 } from "./local-gaia-client.js";
 
@@ -35,6 +36,36 @@ describe("local Gaia agent session SSE client", () => {
     handle.close();
     expect(source.closed).toBe(2);
     expect(source.listenerCount("agent-session-update")).toBe(0);
+  });
+
+  it("streams delivery remediation updates without closing at waiting", () => {
+    let url = "";
+    const source = new TestAgentSessionEventSource();
+    const updates: Array<string> = [];
+    const handle = openDeliverySnapshotEventSource(
+      { afterSequence: 12, runId: "run-1234567890", serverUrl: "/gaia-api" },
+      { onError: () => undefined, onUpdate: (value) => updates.push(value.stage) },
+      (input) => { url = input; return source; },
+    );
+
+    source.dispatch("delivery-update", {
+      data: JSON.stringify({
+        eventSequence: 14,
+        mode: "pullRequest",
+        recoveryActions: [],
+        remediationRearmSequence: 14,
+        runId: "run-1234567890",
+        stage: "remediating",
+        status: "remediating",
+      }),
+      lastEventId: "14",
+    });
+
+    expect(url).toBe("/gaia-api/runs/run-1234567890/delivery/stream?afterSequence=12");
+    expect(updates).toEqual(["remediating"]);
+    expect(source.closed).toBe(0);
+    handle.close();
+    expect(source.closed).toBe(1);
   });
 });
 

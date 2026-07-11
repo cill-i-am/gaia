@@ -40,6 +40,7 @@ describe("Agent session stream controller", () => {
       agentId: "agent-worker",
       isOpen: true,
       runId: "run-1234567890",
+      sessionId: "session-run-1234567890",
     });
     expect(sources).toHaveLength(1);
 
@@ -47,6 +48,7 @@ describe("Agent session stream controller", () => {
       agentId: "agent-reviewer",
       isOpen: true,
       runId: "run-1234567890",
+      sessionId: "session-run-1234567890",
     });
     expect(sources).toHaveLength(2);
     expect(closed).toEqual([0]);
@@ -59,6 +61,7 @@ describe("Agent session stream controller", () => {
       agentId: "agent-reviewer",
       isOpen: false,
       runId: "run-1234567890",
+      sessionId: "session-run-1234567890",
     });
     controller.dispose();
     expect(closed).toEqual([0, 1]);
@@ -86,6 +89,7 @@ describe("Agent session stream controller", () => {
       agentId: "agent-worker",
       isOpen: true,
       runId: "run-1234567890",
+      sessionId: "session-run-1234567890",
     });
     controller.handleUpdate(update({ sequence: 6 }));
     controller.handleUpdate(update({ sequence: 9 }));
@@ -93,6 +97,75 @@ describe("Agent session stream controller", () => {
 
     expect(openedAfterSequences).toEqual([undefined, 9]);
     expect(connections).toEqual(["connecting", "connected", "reconnecting", "connected"]);
+  });
+
+  it("does not synthesize an invalid zero cursor before the first update", () => {
+    const openedAfterSequences: Array<number | undefined> = [];
+    const controller = createAgentSessionStreamController({
+      openSource: (config) => {
+        openedAfterSequences.push(config.afterSequence);
+        return { close: () => undefined };
+      },
+      onConnectionChange: () => undefined,
+      onError: () => undefined,
+      onUpdate: () => undefined,
+      serverUrl: "/gaia-api",
+    });
+    const target = {
+      agentId: "agent-worker",
+      isOpen: true,
+      runId: "run-1234567890",
+      sessionId: "session-run-1234567890",
+    } as const;
+
+    controller.sync(target);
+    controller.sync(target);
+    controller.handleError(new Error("network"));
+
+    expect(openedAfterSequences).toEqual([undefined, undefined]);
+  });
+
+  it("re-arms one second-turn stream for the same public session and rejects stale callbacks", () => {
+    const openedAfterSequences: Array<number | undefined> = [];
+    const callbacks: Array<{
+      readonly onError: (error: unknown) => void;
+      readonly onUpdate: (update: typeof AgentSessionUpdateDto.Type) => void;
+    }> = [];
+    const closed: Array<number> = [];
+    const updates: Array<number> = [];
+    const errors: Array<string> = [];
+    const controller = createAgentSessionStreamController({
+      openSource: (config, handlers) => {
+        const index = callbacks.length;
+        openedAfterSequences.push(config.afterSequence);
+        callbacks.push(handlers);
+        return { close: () => closed.push(index) };
+      },
+      onConnectionChange: () => undefined,
+      onError: (error) => errors.push(String(error)),
+      onUpdate: (value) => updates.push(value.eventSequence),
+      serverUrl: "/gaia-api",
+    });
+    const target = {
+      agentId: "agent-worker",
+      isOpen: true,
+      runId: "run-1234567890",
+      sessionId: "session-run-1234567890",
+      snapshotSequence: 5,
+    } as const;
+
+    controller.sync(target);
+    callbacks[0]?.onUpdate(update({ sequence: 12, terminal: true }));
+    controller.sync({ ...target, rearmSequence: 14, snapshotSequence: 12 });
+    callbacks[0]?.onUpdate(update({ sequence: 15 }));
+    callbacks[1]?.onUpdate(update({ sequence: 15 }));
+    callbacks[1]?.onUpdate(update({ sequence: 16, terminal: true }));
+    controller.sync({ ...target, rearmSequence: 14, snapshotSequence: 16 });
+
+    expect(openedAfterSequences).toEqual([5, 14]);
+    expect(updates).toEqual([12, 15, 16]);
+    expect(closed).toEqual([0, 1]);
+    expect(errors).toEqual([]);
   });
 });
 

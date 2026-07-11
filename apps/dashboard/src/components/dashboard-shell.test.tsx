@@ -26,6 +26,7 @@ import {
   parseHarnessQuestionId,
   parseHarnessSessionId,
   parseHarnessTurnId,
+  parseDeliveryFeedbackId,
   parseWorkspaceRelativePath,
 } from "@gaia/core";
 import { testFactoryExecution } from "@/test-factory-execution";
@@ -986,7 +987,7 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
-  it("reopens the agent session stream after StrictMode passive effect replay", async () => {
+  it("keeps one agent session stream after StrictMode passive effect replay", async () => {
     const eventSource = installMockEventSource();
     const runId = parseRunId("run-7070707072");
     const workerId = agentId("agent-worker");
@@ -1022,16 +1023,17 @@ describe("DashboardShell Run Console", () => {
     fireEvent.click(workerNode);
 
     await waitFor(() => {
-      const closedCount = eventSource.instances.filter(
-        (source) => source.close.mock.calls.length > 0,
-      ).length;
       const activeCount = eventSource.instances.filter(
         (source) =>
           source.close.mock.calls.length === 0 &&
           source.listenerCount("agent-session-update") === 1,
       ).length;
-      expect(closedCount).toBeGreaterThanOrEqual(1);
       expect(activeCount).toBe(1);
+      expect(
+        eventSource.instances.filter(
+          (source) => source.listenerCount("agent-session-update") === 1,
+        ),
+      ).toHaveLength(1);
     });
     await waitFor(() => {
       expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
@@ -2296,6 +2298,63 @@ describe("DashboardShell Run Console", () => {
       "https://github.com/cill-i-am/gaia/pull/91",
     );
     expect(screen.queryByRole("button", { name: /^Merge/u })).toBeNull();
+  });
+
+  it("renders CI, review, blocker, and remediation attempt state", async () => {
+    const runId = parseRunId("run-7777777777");
+    const feedbackId = parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`);
+    renderDashboardWithQueries({
+      deliverySnapshotsByRunId: {
+        [runId]: {
+          eventSequence: 14,
+          mode: "pullRequest",
+          observation: {
+            blockers: [{ feedbackIds: [feedbackId], kind: "actionableFeedback", summary: "Trusted feedback requires remediation." }],
+            checks: [{ appSlug: "github-actions", classification: "actionable", name: "gaia-pr-ci", state: "failing", workflow: "Gaia PR CI" }],
+            draft: true,
+            feedback: [{ actorLogin: "trusted-reviewer", authorAssociation: "MEMBER", classification: "actionable", contentDigest: "a".repeat(64), id: feedbackId, kind: "comment" }],
+            headSha: "a".repeat(40),
+            mergeability: "mergeable",
+            observedAt: "2026-07-11T11:00:00.000Z",
+            prNumber: 91,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+            repository: "cill-i-am/gaia",
+            snapshotDigest: "b".repeat(64),
+            status: "blocked",
+            version: 1,
+          },
+          remediation: {
+            attempt: 1,
+            commitTimestamp: "2026-07-11T11:00:00.000Z",
+            expectedHeadSha: "a".repeat(40),
+            feedbackDigest: "b".repeat(64),
+            feedbackIds: [feedbackId],
+            inputId: `remediation-${runId}-1`,
+            operationId: `remediation:${runId}:1`,
+            state: "intentRecorded",
+          },
+          remediationRearmSequence: 14,
+          recoveryActions: [],
+          runId,
+          stage: "remediating",
+          status: "remediating",
+        },
+      },
+      runs: [localRunSummary({
+        latestEventType: "DELIVERY_REMEDIATION_RECORDED",
+        runId,
+        state: "delivering",
+        status: "running",
+      })],
+    });
+
+    expect((await screen.findByTestId("selected-run-delivery-status")).textContent).toBe(
+      "Delivery: remediating attempt 1/2",
+    );
+    expect(screen.getByTestId("selected-run-ci-status").textContent).toBe("CI: 1 failing");
+    expect(screen.getByTestId("selected-run-review-status").textContent).toBe("Review: 1 actionable");
+    expect(screen.getByTestId("selected-run-blocker-status").textContent).toBe("1 blockers");
+    expect(screen.getByTestId("selected-run-remediation-status").textContent).toBe("Attempt 1/2: intentRecorded");
   });
 
   it("renders a definitive publication failure with only the advertised retry", async () => {

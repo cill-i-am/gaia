@@ -256,6 +256,9 @@ describe("server workflows", () => {
           rootDirectory: cwd,
         });
         const serialized = JSON.stringify(events.events);
+        const deliveryStarted = events.events.find(
+          ({ type }) => type === "DELIVERY_STARTED",
+        );
 
         assert.strictEqual(summary.state, "delivering");
         assert.deepEqual(publicationCalls, [accepted.runId]);
@@ -270,6 +273,25 @@ describe("server workflows", () => {
         );
         assert.include(serialized, "\"remote\":\"origin\"");
         assert.include(serialized, "\"baseBranch\":\"main\"");
+        assert.deepEqual(deliveryStarted?.payload["delivery"], {
+          baseBranch: "main",
+          baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+          feedbackTrustPolicy: {
+            allowPullRequestAuthor: false,
+            trustedChecks: [{
+              appSlug: "github-actions",
+              name: "gaia-pr-ci",
+              repository: "cill-i-am/gaia",
+              workflow: "Gaia PR CI",
+            }],
+            trustedHumanLogins: [],
+            version: 1,
+          },
+          headBranch: `gaia/${accepted.runId}`,
+          mode: "pullRequest",
+          remote: "origin",
+          stage: "delivering",
+        });
         assert.notInclude(serialized, cwd);
       }),
     );

@@ -467,6 +467,17 @@ describe("core contracts", () => {
 
   it("replays pull-request delivery lifecycle from safe provenance events", () => {
     const runId = parseRunId("run-V7kP9sQ2xY");
+    const feedbackTrustPolicy = {
+      allowPullRequestAuthor: false,
+      trustedChecks: [{
+        appSlug: "github-actions",
+        name: "gaia-pr-ci",
+        repository: "cill-i-am/gaia",
+        workflow: "Gaia PR CI",
+      }],
+      trustedHumanLogins: [],
+      version: 1,
+    };
     const events = [
       makeRunEvent({
         payload: {
@@ -489,6 +500,7 @@ describe("core contracts", () => {
           delivery: {
             baseBranch: "main",
             baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+            feedbackTrustPolicy,
             headBranch: "gaia/run-V7kP9sQ2xY",
             mode: "pullRequest",
             remote: "origin",
@@ -545,6 +557,7 @@ describe("core contracts", () => {
     assert.deepEqual(delivering.context.delivery, {
       baseBranch: "main",
       baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+      feedbackTrustPolicy,
       headBranch: "gaia/run-V7kP9sQ2xY",
       mode: "pullRequest",
       remote: "origin",
@@ -556,6 +569,7 @@ describe("core contracts", () => {
     assert.deepEqual(ready.context.delivery, {
       baseBranch: "main",
       baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+      feedbackTrustPolicy,
       headBranch: "gaia/run-V7kP9sQ2xY",
       mode: "pullRequest",
       remote: "origin",
