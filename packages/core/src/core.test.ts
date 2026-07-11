@@ -458,6 +458,105 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.eventSequence, 5);
   });
 
+  it("replays pull-request delivery lifecycle from safe provenance events", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const events = [
+      makeRunEvent({
+        payload: {
+          delivery: {
+            mode: "pullRequest",
+            remote: "origin",
+            baseBranch: "main",
+            baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+            headBranch: "gaia/run-V7kP9sQ2xY",
+          },
+          specPath: "input.md",
+        },
+        runId,
+        sequence: 1,
+        timestamp: "2026-07-04T10:00:00.000Z",
+        type: "RUN_CREATED",
+      }),
+      makeRunEvent({
+        payload: {
+          delivery: {
+            baseBranch: "main",
+            baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+            headBranch: "gaia/run-V7kP9sQ2xY",
+            mode: "pullRequest",
+            remote: "origin",
+            status: "delivering",
+          },
+        },
+        runId,
+        sequence: 2,
+        timestamp: "2026-07-04T10:00:01.000Z",
+        type: "DELIVERY_STARTED",
+      }),
+      makeRunEvent({
+        payload: { workspacePath: "workspace" },
+        runId,
+        sequence: 3,
+        timestamp: "2026-07-04T10:00:02.000Z",
+        type: "WORKSPACE_PREPARED",
+      }),
+      makeRunEvent({
+        payload: { workerResultPath: "worker-result.json" },
+        runId,
+        sequence: 4,
+        timestamp: "2026-07-04T10:00:03.000Z",
+        type: "WORKER_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: { verificationResultPath: "verification-result.json" },
+        runId,
+        sequence: 5,
+        timestamp: "2026-07-04T10:00:04.000Z",
+        type: "VERIFICATION_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: {
+          delivery: {
+            baseBranch: "main",
+            baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+            headBranch: "gaia/run-V7kP9sQ2xY",
+            mode: "pullRequest",
+            remote: "origin",
+            status: "readyToPublish",
+          },
+        },
+        runId,
+        sequence: 6,
+        timestamp: "2026-07-04T10:00:05.000Z",
+        type: "DELIVERY_READY_TO_PUBLISH",
+      }),
+    ];
+
+    const delivering = snapshotFromReplay(events.slice(0, 2));
+    assert.strictEqual(delivering.state, "delivering");
+    assert.deepEqual(delivering.context.delivery, {
+      baseBranch: "main",
+      baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+      headBranch: "gaia/run-V7kP9sQ2xY",
+      mode: "pullRequest",
+      remote: "origin",
+      status: "delivering",
+    });
+
+    const ready = snapshotFromReplay(events);
+    assert.strictEqual(ready.state, "readyToPublish");
+    assert.deepEqual(ready.context.delivery, {
+      baseBranch: "main",
+      baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+      headBranch: "gaia/run-V7kP9sQ2xY",
+      mode: "pullRequest",
+      remote: "origin",
+      status: "readyToPublish",
+    });
+    assert.notInclude(JSON.stringify(ready.context), "/Users/");
+    assert.notInclude(JSON.stringify(ready.context), ".gaia/runs");
+  });
+
   it("replays read-only review evidence paths", () => {
     const runId = parseRunId("run-V7kP9sQ2xY");
     const events = [

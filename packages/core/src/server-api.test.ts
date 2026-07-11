@@ -17,6 +17,8 @@ describe("LocalGaiaServerApi contract", () => {
       "/runs/{runId}/agents/{agentId}/session/stream",
       "/runs/{runId}/artifacts/{artifactId}",
       "/runs/{runId}/artifacts",
+      "/runs/{runId}/delivery",
+      "/runs/{runId}/delivery/stream",
       "/runs/{runId}/factory-graph",
     ]);
     assert.isObject(paths["/health"]?.get);
@@ -30,6 +32,8 @@ describe("LocalGaiaServerApi contract", () => {
     assert.isObject(paths["/runs/{runId}/agents/{agentId}/session"]?.get);
     assert.isObject(paths["/runs/{runId}/agents/{agentId}/session/actions"]?.post);
     assert.isObject(paths["/runs/{runId}/agents/{agentId}/session/stream"]?.get);
+    assert.isObject(paths["/runs/{runId}/delivery"]?.get);
+    assert.isObject(paths["/runs/{runId}/delivery/stream"]?.get);
     assert.isObject(paths["/runs/{runId}/artifacts"]?.get);
     assert.isObject(paths["/runs/{runId}/artifacts/{artifactId}"]?.get);
     assert.isObject(paths["/runs/{runId}/factory-graph"]?.get);
@@ -76,6 +80,14 @@ describe("LocalGaiaServerApi contract", () => {
     assert.deepEqual(
       responseStatuses(paths["/runs/{runId}/activity"]?.get?.responses),
       ["200", "400", "404", "422", "500"],
+    );
+    assert.deepEqual(
+      responseStatuses(paths["/runs/{runId}/delivery"]?.get?.responses),
+      ["200", "400", "404", "422", "500"],
+    );
+    assertJsonSchemaRef(
+      paths["/runs/{runId}/delivery"]?.get?.responses["200"],
+      "#/components/schemas/DeliverySnapshotSuccessEnvelope",
     );
     assert.deepEqual(
       responseStatuses(paths["/runs/{runId}/agents/{agentId}/activity"]?.get?.responses),

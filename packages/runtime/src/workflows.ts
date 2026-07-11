@@ -83,6 +83,7 @@ import {
   type WorkspaceSource,
 } from "./workspace.js";
 import { encodeWorkspaceDiffSummaryJson } from "./workspace-snapshot.js";
+import type { DeliveryProvenance } from "./git-delivery.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -111,6 +112,7 @@ export type WorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly browserEvidenceRequirement?: BrowserEvidenceRequirement;
   readonly browserEvidenceTargetUrl?: string;
   readonly codexHarness?: CodexHarnessOptions;
+  readonly deliveryProvenance?: DeliveryProvenance;
   readonly harnessName?: HarnessName;
   readonly workerHarness?: GaiaHarness;
   readonly processHarness?: ProcessHarnessConfig;
@@ -480,6 +482,18 @@ function executeAcceptedRun(input: {
       payload: { reportPath: "report.md" },
       type: "REPORT_COMPLETED",
     });
+    const finalSnapshot =
+      options.deliveryProvenance === undefined
+        ? snapshot
+        : (yield* appendEvent(runId, paths, {
+            payload: {
+              delivery: {
+                ...options.deliveryProvenance,
+                status: "readyToPublish",
+              },
+            },
+            type: "DELIVERY_READY_TO_PUBLISH",
+          })).snapshot;
 
     return {
       ...(harnessName === codexHarnessName
@@ -488,8 +502,8 @@ function executeAcceptedRun(input: {
       reportPath: paths.reportMarkdown,
       runDirectory: paths.root,
       runId,
-      state: snapshot.state,
-      status: "completed",
+      state: finalSnapshot.state,
+      status: finalSnapshot.state === "readyToPublish" ? "running" : "completed",
     } satisfies CommandSummary;
   });
 }
@@ -991,7 +1005,9 @@ function statusFromState(state: RunState): CommandSummary["status"] {
     case "completed":
       return "completed";
     case "created":
+    case "delivering":
     case "preparingWorkspace":
+    case "readyToPublish":
     case "runningWorker":
     case "verifying":
     case "reporting":

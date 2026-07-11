@@ -4,9 +4,11 @@ import { RunIdSchema } from "./run-id.js";
 export const RunStateSchema = Schema.Literals([
   "created",
   "preparingWorkspace",
+  "delivering",
   "runningWorker",
   "verifying",
   "reporting",
+  "readyToPublish",
   "completed",
   "failed",
 ] as const);
@@ -16,6 +18,7 @@ export type RunState = typeof RunStateSchema.Type;
 
 export const EventTypeSchema = Schema.Literals([
   "RUN_CREATED",
+  "DELIVERY_STARTED",
   "WORKSPACE_PREPARED",
   "REVIEW_STARTED",
   "REVIEW_COMPLETED",
@@ -27,6 +30,7 @@ export const EventTypeSchema = Schema.Literals([
   "BROWSER_EVIDENCE_RECORDED",
   "REPORT_STARTED",
   "REPORT_COMPLETED",
+  "DELIVERY_READY_TO_PUBLISH",
   "GITHUB_CHECKS_RECORDED",
   "GITHUB_FEEDBACK_RECORDED",
   "GITHUB_PR_LOOP_RECORDED",

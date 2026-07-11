@@ -273,6 +273,43 @@ export class FactoryArtifactSuccessEnvelope extends Schema.Class<FactoryArtifact
   status: Schema.Literal("success"),
 }) {}
 
+export const DeliveryModeSchema = Schema.Literals([
+  "local",
+  "pullRequest",
+] as const);
+
+export const DeliveryStatusSchema = Schema.Literals([
+  "unavailable",
+  "delivering",
+  "readyToPublish",
+  "failed",
+] as const);
+
+export class DeliveryProvenanceDto extends Schema.Class<DeliveryProvenanceDto>(
+  "DeliveryProvenanceDto",
+)({
+  baseBranch: Schema.NonEmptyString,
+  baseRevision: Schema.NonEmptyString,
+  headBranch: Schema.NonEmptyString,
+  remote: Schema.NonEmptyString,
+}) {}
+
+export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
+  "DeliverySnapshotDto",
+)({
+  mode: DeliveryModeSchema,
+  provenance: Schema.optionalKey(DeliveryProvenanceDto),
+  runId: RunIdSchema,
+  status: DeliveryStatusSchema,
+}) {}
+
+export class DeliverySnapshotSuccessEnvelope extends Schema.Class<DeliverySnapshotSuccessEnvelope>(
+  "DeliverySnapshotSuccessEnvelope",
+)({
+  data: DeliverySnapshotDto,
+  status: Schema.Literal("success"),
+}) {}
+
 export class LocalRunEventsSuccessEnvelope extends Schema.Class<LocalRunEventsSuccessEnvelope>(
   "LocalRunEventsSuccessEnvelope",
 )({
@@ -459,6 +496,11 @@ export const AgentSessionStreamResponse = HttpApiSchema.StreamSse({
   error: LocalRunApiErrorEnvelope,
 });
 
+export const DeliverySnapshotStreamResponse = HttpApiSchema.StreamSse({
+  data: DeliverySnapshotDto,
+  error: LocalRunApiErrorEnvelope,
+});
+
 export const HealthGroup = HttpApiGroup.make("health").add(
   HttpApiEndpoint.get("health", "/health", {
     error: LocalRunInternalErrorResponse,
@@ -523,6 +565,24 @@ export const RunsGroup = HttpApiGroup.make("runs")
         runId: RunIdSchema,
       },
       success: FactoryActivitySuccessEnvelope,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("getDeliverySnapshot", "/runs/:runId/delivery", {
+      error: LocalRunReadErrorResponse,
+      params: {
+        runId: RunIdSchema,
+      },
+      success: DeliverySnapshotSuccessEnvelope,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("streamDeliverySnapshot", "/runs/:runId/delivery/stream", {
+      error: LocalRunStreamErrorResponse,
+      params: {
+        runId: RunIdSchema,
+      },
+      success: DeliverySnapshotStreamResponse,
     }),
   )
   .add(

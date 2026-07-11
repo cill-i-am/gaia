@@ -12,7 +12,7 @@ import {
   type RunState,
 } from "@gaia/core";
 import { customAlphabet } from "nanoid";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
@@ -49,6 +49,14 @@ import {
   localDirectoryWorkspaceSource,
   type WorkspaceSource,
 } from "./workspace.js";
+import {
+  isGitRepository,
+  parseDeliveryProvenance,
+  prepareDeliveryWorktree,
+  resolveDeliveryProvenance,
+  type DeliveryProvenance,
+  type GitDeliveryCommandRunner,
+} from "./git-delivery.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -56,6 +64,7 @@ const nanoid = customAlphabet(
 );
 
 export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
+  readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
   readonly harnessProviderRegistry?: HarnessProviderRegistry;
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly workspaceSource?: WorkspaceSource;
@@ -223,6 +232,7 @@ function acceptFactoryRunUnlocked(
     const runId = yield* generateRunId;
     const paths = yield* makeRunPaths(runId, options);
     const fs = yield* FileSystem.FileSystem;
+    const delivery = yield* acceptedDeliveryProvenance(runId, options);
 
     yield* fs.makeDirectory(paths.root, { recursive: true }).pipe(
       Effect.mapError((cause) =>
@@ -262,6 +272,7 @@ function acceptFactoryRunUnlocked(
             harnessProfileId: input.execution.harnessProfileId,
           },
         },
+        ...(delivery === undefined ? {} : { delivery }),
         source: "server",
         specPath: "input.md",
         workflow: input.workflow,
@@ -564,6 +575,7 @@ function failureStageFromRunState(
   switch (state) {
     case "created":
       return "creating";
+    case "delivering":
     case "preparingWorkspace":
       return "preparingWorkspace";
     case "runningWorker":
@@ -571,6 +583,7 @@ function failureStageFromRunState(
     case "verifying":
       return "verifying";
     case "reporting":
+    case "readyToPublish":
       return "reporting";
   }
 }
@@ -665,6 +678,34 @@ function factoryContinuationOptions(
   options: ServerWorkflowOptions,
 ) {
   return Effect.gen(function* () {
+    const rootDirectory = options.rootDirectory ?? ".";
+    const paths = yield* makeRunPaths(firstEvent.runId, options);
+    const delivery = parseDeliveryProvenance(firstEvent.payload["delivery"]).pipe(
+      Option.getOrUndefined,
+    );
+    if (delivery !== undefined) {
+      yield* prepareDeliveryWorktree({
+        options: {
+          rootDirectory,
+          ...(options.deliveryGitCommandRunner === undefined
+            ? {}
+            : { commandRunner: options.deliveryGitCommandRunner }),
+        },
+        paths,
+        provenance: delivery,
+      });
+      if (!events.some(({ type }) => type === "DELIVERY_STARTED")) {
+        yield* appendEvent(firstEvent.runId, paths, {
+          payload: {
+            delivery: {
+              ...delivery,
+              status: "delivering",
+            },
+          },
+          type: "DELIVERY_STARTED",
+        });
+      }
+    }
     const execution = firstEvent.payload["execution"];
     const acceptedExecution = yield* Effect.try({
       try: () => ({
@@ -694,11 +735,12 @@ function factoryContinuationOptions(
         }),
       );
     }
-    const rootDirectory = options.rootDirectory ?? ".";
     const commonOptions = {
       ...options,
-      workspaceSource:
-        options.workspaceSource ?? localDirectoryWorkspaceSource(rootDirectory),
+      ...(delivery === undefined ? {} : { deliveryProvenance: delivery }),
+      ...(delivery === undefined
+        ? { workspaceSource: options.workspaceSource ?? localDirectoryWorkspaceSource(rootDirectory) }
+        : {}),
     };
     const sessionEvents = issueDeliveryWorkerSessionEvents(
       firstEvent.runId,
@@ -788,6 +830,25 @@ function factoryContinuationOptions(
         ...(options.sessionCoordinator === undefined ? {} : { sessionCoordinator: options.sessionCoordinator }),
       }),
     };
+  });
+}
+
+function acceptedDeliveryProvenance(runId: RunId, options: ServerWorkflowOptions) {
+  return Effect.gen(function* () {
+    const rootDirectory = options.rootDirectory ?? ".";
+    const isRepo = yield* isGitRepository({
+      rootDirectory,
+      ...(options.deliveryGitCommandRunner === undefined
+        ? {}
+        : { commandRunner: options.deliveryGitCommandRunner }),
+    });
+    if (!isRepo) return undefined;
+    return yield* resolveDeliveryProvenance(runId, {
+      rootDirectory,
+      ...(options.deliveryGitCommandRunner === undefined
+        ? {}
+        : { commandRunner: options.deliveryGitCommandRunner }),
+    });
   });
 }
 

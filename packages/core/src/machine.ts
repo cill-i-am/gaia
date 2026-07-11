@@ -15,6 +15,7 @@ export type RunMachineContext = {
   readonly browserEvidencePath: string | undefined;
   readonly browserEvidenceStatus: string | undefined;
   readonly browserEvidenceTargetUrl: string | undefined;
+  readonly delivery: Record<string, Schema.Json> | undefined;
   readonly evidenceReviewPath: string | undefined;
   readonly failure: GaiaFailure | undefined;
   readonly githubChecksPath: string | undefined;
@@ -62,6 +63,8 @@ export type RunMachineContext = {
 
 export type RunMachineEvent =
   | { readonly type: "RUN_CREATED"; readonly runId: RunId; readonly specPath: string }
+  | { readonly type: "DELIVERY_STARTED"; readonly delivery: Record<string, Schema.Json> }
+  | { readonly type: "DELIVERY_READY_TO_PUBLISH"; readonly delivery: Record<string, Schema.Json> }
   | { readonly type: "WORKSPACE_PREPARED"; readonly workspacePath: string }
   | { readonly type: "REVIEW_STARTED" }
   | {
@@ -152,6 +155,7 @@ const initialContext: RunMachineContext = {
   browserEvidencePath: undefined,
   browserEvidenceStatus: undefined,
   browserEvidenceTargetUrl: undefined,
+  delivery: undefined,
   evidenceReviewPath: undefined,
   failure: undefined,
   githubChecksPath: undefined,
@@ -211,6 +215,10 @@ export const runMachine = createMachine({
         BROWSER_EVIDENCE_RECORDED: {
           actions: "recordBrowserEvidence",
         },
+        DELIVERY_READY_TO_PUBLISH: {
+          actions: "recordDelivery",
+          target: "readyToPublish",
+        },
         GITHUB_CHECKS_RECORDED: {
           actions: "recordGitHubChecks",
         },
@@ -254,8 +262,24 @@ export const runMachine = createMachine({
       },
     },
     failed: {},
+    delivering: {
+      on: {
+        RUN_FAILED: {
+          actions: "recordFailure",
+          target: "failed",
+        },
+        WORKSPACE_PREPARED: {
+          actions: "recordWorkspacePrepared",
+          target: "runningWorker",
+        },
+      },
+    },
     preparingWorkspace: {
       on: {
+        DELIVERY_STARTED: {
+          actions: "recordDelivery",
+          target: "delivering",
+        },
         RUN_FAILED: {
           actions: "recordFailure",
           target: "failed",
@@ -271,6 +295,10 @@ export const runMachine = createMachine({
         BROWSER_EVIDENCE_RECORDED: {
           actions: "recordBrowserEvidence",
         },
+        DELIVERY_READY_TO_PUBLISH: {
+          actions: "recordDelivery",
+          target: "readyToPublish",
+        },
         PREVIEW_DEPLOYMENT_RECORDED: {
           actions: "recordPreviewDeployment",
         },
@@ -283,6 +311,14 @@ export const runMachine = createMachine({
           actions: "recordReviewCompleted",
         },
         REVIEW_STARTED: {},
+        RUN_FAILED: {
+          actions: "recordFailure",
+          target: "failed",
+        },
+      },
+    },
+    readyToPublish: {
+      on: {
         RUN_FAILED: {
           actions: "recordFailure",
           target: "failed",
@@ -343,6 +379,13 @@ export const runMachine = createMachine({
     recordFailure: assign({
       failure: ({ event }) =>
         event.type === "RUN_FAILED" ? event.failure : undefined,
+    }),
+    recordDelivery: assign({
+      delivery: ({ event }) =>
+        event.type === "DELIVERY_STARTED" ||
+        event.type === "DELIVERY_READY_TO_PUBLISH"
+          ? event.delivery
+          : undefined,
     }),
     recordGitHubChecks: assign({
       githubChecksPath: ({ event }) =>
@@ -594,6 +637,12 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         targetUrl: getStringPayload(event, "targetUrl"),
         type: event.type,
       };
+    case "DELIVERY_READY_TO_PUBLISH":
+    case "DELIVERY_STARTED":
+      return {
+        delivery: getJsonObjectPayload(event, "delivery"),
+        type: event.type,
+      };
     case "GITHUB_CHECKS_RECORDED":
       const watchStatePath = getOptionalStringPayload(
         event,
@@ -788,6 +837,19 @@ function getOptionalStringPayload(
   throw new Error(`Event ${event.type} has invalid string payload '${key}'.`);
 }
 
+function getJsonObjectPayload(
+  event: RunEvent,
+  key: string,
+): Record<string, Schema.Json> {
+  const value = event.payload[key];
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    // SAFETY: Array and null are excluded above; Schema.Json object values are string-keyed JSON records.
+    return value as Record<string, Schema.Json>;
+  }
+
+  throw new Error(`Event ${event.type} is missing object payload '${key}'.`);
+}
+
 function getFailureStagePayload(event: RunEvent, key: string) {
   const value = getStringPayload(event, key);
   return Schema.decodeUnknownSync(FailureStageSchema)(value);
@@ -800,8 +862,8 @@ function getReviewPhasePayload(event: RunEvent, key: string) {
 
 function snapshotContext(
   context: RunMachineContext,
-): Readonly<Record<string, string | boolean | number>> {
-  const output: Record<string, string | boolean | number> = {};
+): Readonly<Record<string, Schema.Json>> {
+  const output: Record<string, Schema.Json> = {};
 
   if (context.browserEvidencePath !== undefined) {
     output.browserEvidencePath = context.browserEvidencePath;
@@ -814,6 +876,9 @@ function snapshotContext(
   }
   if (context.evidenceReviewPath !== undefined) {
     output.evidenceReviewPath = context.evidenceReviewPath;
+  }
+  if (context.delivery !== undefined) {
+    output.delivery = context.delivery;
   }
   if (context.githubChecksPath !== undefined) {
     output.githubChecksPath = context.githubChecksPath;

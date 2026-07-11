@@ -1,6 +1,11 @@
 import {
   AgentActionSuccessEnvelope,
   AgentSessionSnapshotSuccessEnvelope,
+  DeliveryModeSchema,
+  DeliveryProvenanceDto,
+  DeliverySnapshotDto,
+  DeliverySnapshotSuccessEnvelope,
+  DeliveryStatusSchema,
   FactoryActivitySuccessEnvelope,
   CreateRunAcceptedResponse,
   FactoryArtifactListSuccessEnvelope,
@@ -27,6 +32,7 @@ import {
   type LocalRunApiError,
   LocalRunReadDiagnosticDto,
   type RunEvent,
+  snapshotFromReplay,
 } from "@gaia/core";
 import type {
   LocalRunList,
@@ -42,7 +48,7 @@ import {
   streamAgentSessionUpdates,
   type LocalRunReadIndex,
 } from "@gaia/runtime";
-import { Cause, Context, Effect, FileSystem, Layer, Path, Schema, Scope, Stream } from "effect";
+import { Cause, Context, Effect, FileSystem, Layer, Option, Path, Schema, Scope, Stream } from "effect";
 import type { Generator } from "effect/unstable/http/Etag";
 import type { HttpPlatform } from "effect/unstable/http/HttpPlatform";
 import {
@@ -93,6 +99,16 @@ export class LocalServerConfig extends Context.Service<
 const decodeFactoryRunSummary = Schema.decodeUnknownSync(FactoryRunSummaryDto);
 const decodeFactoryRunDetail = Schema.decodeUnknownSync(FactoryRunDetailDto);
 const decodeFactoryRunList = Schema.decodeUnknownSync(FactoryRunListDto);
+const decodeDeliveryProjection = Schema.decodeUnknownOption(
+  Schema.Struct({
+    baseBranch: Schema.NonEmptyString,
+    baseRevision: Schema.NonEmptyString,
+    headBranch: Schema.NonEmptyString,
+    mode: DeliveryModeSchema,
+    remote: Schema.NonEmptyString,
+    status: DeliveryStatusSchema,
+  }),
+);
 
 export const HealthLive = HttpApiBuilder.group(
   LocalGaiaServerApi,
@@ -232,6 +248,47 @@ export const RunsLive = HttpApiBuilder.group(
           }
 
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
+        }),
+      )
+      .handle("getDeliverySnapshot", ({ params }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(
+            readDeliverySnapshot(params.runId, identity.rootDirectory),
+          );
+          if (exit._tag === "Success") {
+            return DeliverySnapshotSuccessEnvelope.make({
+              data: exit.value,
+              status: "success",
+            });
+          }
+
+          return yield* Effect.fail(readApiErrorFromCause(exit.cause));
+        }),
+      )
+      .handle("streamDeliverySnapshot", ({ params }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const initialRead = yield* Effect.exit(
+            readLocalRunEvents(params.runId, {
+              rootDirectory: identity.rootDirectory,
+            }),
+          );
+          if (initialRead._tag === "Failure") {
+            return yield* Effect.fail(readApiErrorFromCause(initialRead.cause));
+          }
+
+          const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
+          return streamRunEvents({
+            rootDirectory: identity.rootDirectory,
+            runId: params.runId,
+          }).pipe(
+            Stream.mapEffect(() =>
+              readDeliverySnapshot(params.runId, identity.rootDirectory),
+            ),
+            Stream.mapError(streamApiError),
+            Stream.provideContext(context),
+          );
         }),
       )
       .handle("getAgentActivity", ({ params }) =>
@@ -480,6 +537,47 @@ function readFactoryRunProjection(
     }
 
     return { activity, artifacts, graph };
+  });
+}
+
+function readDeliverySnapshot(
+  runId: string,
+  rootDirectory: string,
+): Effect.Effect<typeof DeliverySnapshotDto.Type, unknown, FileSystem.FileSystem | Path.Path> {
+  return Effect.gen(function* () {
+    const events = yield* readLocalRunEvents(runId, { rootDirectory });
+    const snapshot = snapshotFromReplay(events.events);
+    const delivery = decodeDeliveryProjection(snapshot.context["delivery"]).pipe(
+      Option.getOrUndefined,
+    );
+
+    if (delivery === undefined) {
+      return DeliverySnapshotDto.make({
+        mode: "local",
+        runId: events.runId,
+        status: snapshot.state === "failed" ? "failed" : "unavailable",
+      });
+    }
+
+    if (delivery.mode !== "pullRequest") {
+      return DeliverySnapshotDto.make({
+        mode: delivery.mode,
+        runId: events.runId,
+        status: snapshot.state === "failed" ? "failed" : "unavailable",
+      });
+    }
+
+    return DeliverySnapshotDto.make({
+      mode: "pullRequest",
+      provenance: DeliveryProvenanceDto.make(delivery),
+      runId: events.runId,
+      status:
+        snapshot.state === "failed"
+          ? "failed"
+          : delivery.status === "readyToPublish"
+            ? "readyToPublish"
+            : "delivering",
+    });
   });
 }
 
