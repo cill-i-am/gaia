@@ -1,5 +1,6 @@
 import {
   DeliveryFeedbackTrustPolicyV1,
+  deliveryFeedbackRequiresApprovedReview,
   type DeliveryMergeActionRequest,
   type DeliveryEvaluateMergeReadinessActionRequest,
   type DeliveryRetryCleanupActionRequest,
@@ -305,6 +306,9 @@ function acceptFactoryRunUnlocked(
       input.delivery ?? { mode: "local" },
       options,
     );
+    const deliveryFeedbackTrustPolicy = delivery.mode === "pullRequest"
+      ? yield* acceptedDeliveryFeedbackTrustPolicy(delivery, options)
+      : undefined;
 
     yield* fs.makeDirectory(paths.root, { recursive: true }).pipe(
       Effect.mapError((cause) =>
@@ -345,6 +349,9 @@ function acceptFactoryRunUnlocked(
           },
         },
         delivery,
+        ...(deliveryFeedbackTrustPolicy === undefined ? {} : {
+          deliveryFeedbackTrustPolicy: Schema.encodeSync(DeliveryFeedbackTrustPolicyV1)(deliveryFeedbackTrustPolicy),
+        }),
         source: "server",
         specPath: "input.md",
         workflow: input.workflow,
@@ -1016,6 +1023,11 @@ function factoryContinuationOptions(
     const paths = yield* makeRunPaths(firstEvent.runId, options);
     const delivery = yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
     if (delivery.mode === "pullRequest") {
+      const feedbackTrustPolicy = yield* acceptedRunDeliveryFeedbackTrustPolicy(
+        firstEvent,
+        delivery.provenance,
+        options,
+      );
       yield* prepareDeliveryWorktree({
         options: {
           rootDirectory,
@@ -1027,10 +1039,6 @@ function factoryContinuationOptions(
         provenance: delivery.provenance,
       });
       if (!events.some(({ type }) => type === "DELIVERY_STARTED")) {
-        const feedbackTrustPolicy = yield* acceptedDeliveryFeedbackTrustPolicy(
-          delivery.provenance,
-          options,
-        );
         yield* appendEvent(firstEvent.runId, paths, {
           payload: {
             delivery: {
@@ -1175,6 +1183,49 @@ function factoryContinuationOptions(
   });
 }
 
+function acceptedRunDeliveryFeedbackTrustPolicy(
+  firstEvent: RunEvent,
+  provenance: DeliveryProvenance,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    const persisted = firstEvent.payload["deliveryFeedbackTrustPolicy"];
+    const { deliveryFeedbackTrustPolicy: _requestedPolicy, ...legacyOptions } = options;
+    const accepted = persisted === undefined
+      ? yield* acceptedDeliveryFeedbackTrustPolicy(provenance, legacyOptions)
+      : yield* Effect.try({
+          try: () => Schema.decodeUnknownSync(DeliveryFeedbackTrustPolicyV1)(persisted),
+          catch: (cause) => makeRuntimeError({
+            cause,
+            code: "DeliveryFeedbackTrustPolicyInvalid",
+            message: "Accepted delivery feedback trust policy is invalid.",
+            recoverable: false,
+          }),
+        });
+    if (
+      options.deliveryFeedbackTrustPolicy !== undefined &&
+      canonicalDeliveryFeedbackTrustPolicy(options.deliveryFeedbackTrustPolicy) !== canonicalDeliveryFeedbackTrustPolicy(accepted)
+    ) {
+      return yield* Effect.fail(makeRuntimeError({
+        code: "DeliveryFeedbackTrustPolicyChanged",
+        message: "Delivery feedback trust policy changed after run acceptance.",
+        recoverable: false,
+      }));
+    }
+    return accepted;
+  });
+}
+
+function canonicalDeliveryFeedbackTrustPolicy(policy: DeliveryFeedbackTrustPolicyV1) {
+  return JSON.stringify({
+    allowPullRequestAuthor: policy.allowPullRequestAuthor,
+    requireApprovedReview: deliveryFeedbackRequiresApprovedReview(policy),
+    trustedChecks: policy.trustedChecks,
+    trustedHumanLogins: policy.trustedHumanLogins,
+    version: policy.version,
+  });
+}
+
 function acceptedDeliveryProvenance(
   runId: RunId,
   delivery: { readonly mode: "local" | "pullRequest" },
@@ -1182,7 +1233,7 @@ function acceptedDeliveryProvenance(
 ) {
   return Effect.gen(function* () {
     if (delivery.mode === "local") {
-      return { mode: "local" };
+      return { mode: "local" as const };
     }
     const rootDirectory = options.rootDirectory ?? ".";
     return yield* resolveDeliveryProvenance(runId, {

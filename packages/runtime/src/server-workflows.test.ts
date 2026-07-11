@@ -322,8 +322,17 @@ describe("server workflows", () => {
           harnessProviderRegistry: makeTestHarnessProviderRegistry(),
           rootDirectory: cwd,
         });
+        const acceptedEvents = yield* readLocalRunEvents(accepted.runId, { rootDirectory: cwd });
+        assert.deepInclude(acceptedEvents.events[0]?.payload, {
+          deliveryFeedbackTrustPolicy: {
+            allowPullRequestAuthor: false,
+            requireApprovedReview: false,
+            trustedChecks: [],
+            trustedHumanLogins: [],
+            version: 1,
+          },
+        });
         yield* continueServerRun(accepted.runId, {
-          deliveryFeedbackTrustPolicy: trustPolicy,
           deliveryGitCommandRunner: gitRunner,
           deliveryPublisher: recordingDeliveryPublisher([]),
           harnessProviderRegistry: makeTestHarnessProviderRegistry(),
@@ -342,6 +351,61 @@ describe("server workflows", () => {
           },
         });
         assert.lengthOf(events.events.filter(({ type }) => type === "DELIVERY_STARTED"), 1);
+      }),
+    );
+
+    it.effect("rejects a continuation policy mismatch before delivery starts or external work", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-delivery-policy-drift-" });
+        const commands: Array<GitDeliveryCommandInput> = [];
+        const gitRunner = recordingGitRunner(commands, { baseRevision: "e".repeat(40) });
+        const solo = DeliveryFeedbackTrustPolicyV1.make({ allowPullRequestAuthor: false, requireApprovedReview: false, trustedChecks: [], trustedHumanLogins: [], version: 1 });
+        const strict = DeliveryFeedbackTrustPolicyV1.make({ ...solo, requireApprovedReview: true });
+        const accepted = yield* acceptFactoryRun({
+          delivery: { mode: "pullRequest" },
+          execution: codexAppServerExecutionSelection,
+          workflow: "issueDelivery",
+          workItem: { description: "Reject policy drift.", kind: "issue", title: "Policy drift" },
+        }, { deliveryFeedbackTrustPolicy: solo, deliveryGitCommandRunner: gitRunner, harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd });
+        const commandCountAfterAcceptance = commands.length;
+        const exit = yield* continueServerRun(accepted.runId, {
+          deliveryFeedbackTrustPolicy: strict,
+          deliveryGitCommandRunner: gitRunner,
+          deliveryPublisher: recordingDeliveryPublisher([]),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        }).pipe(Effect.exit);
+        const events = yield* readLocalRunEvents(accepted.runId, { rootDirectory: cwd });
+
+        assert.strictEqual(exit._tag, "Failure");
+        if (exit._tag === "Failure") assert.include(String(exit.cause), "Delivery feedback trust policy changed after run acceptance.");
+        assert.strictEqual(commands.length, commandCountAfterAcceptance);
+        assert.lengthOf(events.events.filter(({ type }) => type === "DELIVERY_STARTED"), 0);
+      }),
+    );
+
+    it.effect("replays legacy RUN_CREATED without acceptance policy as strict", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-delivery-legacy-policy-" });
+        const gitRunner = recordingGitRunner([], { baseRevision: "e".repeat(40) });
+        const accepted = yield* acceptFactoryRun({
+          delivery: { mode: "pullRequest" },
+          execution: codexAppServerExecutionSelection,
+          workflow: "issueDelivery",
+          workItem: { description: "Replay legacy strict policy.", kind: "issue", title: "Legacy policy" },
+        }, { deliveryGitCommandRunner: gitRunner, harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd });
+        const paths = yield* makeRunPaths(parseRunId(accepted.runId), { rootDirectory: cwd });
+        const encoded = JSON.parse(yield* fs.readFileString(paths.events)) as { payload: Record<string, unknown> };
+        delete encoded.payload["deliveryFeedbackTrustPolicy"];
+        yield* fs.writeFileString(paths.events, `${JSON.stringify(encoded)}\n`);
+
+        yield* continueServerRun(accepted.runId, { deliveryGitCommandRunner: gitRunner, deliveryPublisher: recordingDeliveryPublisher([]), harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd });
+        const events = yield* readLocalRunEvents(accepted.runId, { rootDirectory: cwd });
+        const started = events.events.find(({ type }) => type === "DELIVERY_STARTED");
+        assert.notProperty(events.events[0]?.payload ?? {}, "deliveryFeedbackTrustPolicy");
+        assert.notProperty((started?.payload["delivery"] as Record<string, unknown>).feedbackTrustPolicy as Record<string, unknown>, "requireApprovedReview");
       }),
     );
 
