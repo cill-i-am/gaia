@@ -221,7 +221,10 @@ export {
 } from "./factory-graph.js";
 export {
   CreateRunAcceptedResponse,
+  CreateRunDeliveryRequest,
   CreateRunIssueWorkItemRequest,
+  CreateRunLocalDeliveryRequest,
+  CreateRunPullRequestDeliveryRequest,
   CreateRunRequest,
   DeliveryModeSchema,
   DeliveryProvenanceDto,

@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Schema, SchemaGetter } from "effect";
 import {
   HttpApi,
   HttpApiEndpoint,
@@ -35,6 +35,7 @@ export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "AgentActionConflict",
   "AgentSessionUnavailable",
   "AgentStreamCursorConflict",
+  "DeliveryStreamCursorConflict",
   "ArtifactNotAllowed",
   "ArtifactNotFound",
   "EndpointNotFound",
@@ -77,6 +78,7 @@ const ConflictDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
   "AgentActionConflict",
   "AgentStreamCursorConflict",
+  "DeliveryStreamCursorConflict",
   "RunStoreLocked",
 ] as const);
 const UnprocessableDiagnosticCodeSchema = Schema.Literals([
@@ -297,9 +299,11 @@ export class DeliveryProvenanceDto extends Schema.Class<DeliveryProvenanceDto>(
 export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   "DeliverySnapshotDto",
 )({
+  eventSequence: Schema.Number.pipe(Schema.check(Schema.isInt({ identifier: "EventSequence" }))),
   mode: DeliveryModeSchema,
   provenance: Schema.optionalKey(DeliveryProvenanceDto),
   runId: RunIdSchema,
+  stage: DeliveryStatusSchema,
   status: DeliveryStatusSchema,
 }) {}
 
@@ -309,6 +313,12 @@ export class DeliverySnapshotSuccessEnvelope extends Schema.Class<DeliverySnapsh
   data: DeliverySnapshotDto,
   status: Schema.Literal("success"),
 }) {}
+
+export const DeliverySnapshotSseEventSchema = Schema.Struct({
+  data: Schema.fromJsonString(DeliverySnapshotDto),
+  event: Schema.Literal("delivery-update"),
+  id: Schema.String,
+});
 
 export class LocalRunEventsSuccessEnvelope extends Schema.Class<LocalRunEventsSuccessEnvelope>(
   "LocalRunEventsSuccessEnvelope",
@@ -461,10 +471,44 @@ export class CreateRunIssueWorkItemRequest extends Schema.Class<CreateRunIssueWo
   parseOptions: { onExcessProperty: "error" },
 }) {}
 
+export const CreateRunLocalDeliveryRequest = Schema.Struct({
+  mode: Schema.Literal("local"),
+}).pipe(
+  Schema.decode({
+    decode: SchemaGetter.transform(strictDeliveryRequestKeys),
+    encode: SchemaGetter.transform(strictDeliveryRequestKeys),
+  }),
+);
+
+export const CreateRunPullRequestDeliveryRequest = Schema.Struct({
+  mode: Schema.Literal("pullRequest"),
+}).pipe(
+  Schema.decode({
+    decode: SchemaGetter.transform(strictDeliveryRequestKeys),
+    encode: SchemaGetter.transform(strictDeliveryRequestKeys),
+  }),
+);
+
+export const CreateRunDeliveryRequest = Schema.Union([
+  CreateRunLocalDeliveryRequest,
+  CreateRunPullRequestDeliveryRequest,
+]);
+
+function strictDeliveryRequestKeys<T extends { readonly mode: "local" | "pullRequest" }>(
+  value: T,
+) {
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== "mode") {
+    throw new Error("Delivery request only accepts a mode field.");
+  }
+  return value;
+}
+
 /** Fresh factory-run create body for the issueDelivery workflow. */
 export class CreateRunRequest extends Schema.Class<CreateRunRequest>(
   "CreateRunRequest",
 )({
+  delivery: Schema.optionalKey(CreateRunDeliveryRequest),
   execution: HarnessExecutionSelection,
   workflow: FactoryWorkflowIdSchema,
   workItem: CreateRunIssueWorkItemRequest,
@@ -497,7 +541,7 @@ export const AgentSessionStreamResponse = HttpApiSchema.StreamSse({
 });
 
 export const DeliverySnapshotStreamResponse = HttpApiSchema.StreamSse({
-  data: DeliverySnapshotDto,
+  events: DeliverySnapshotSseEventSchema,
   error: LocalRunApiErrorEnvelope,
 });
 
@@ -578,10 +622,11 @@ export const RunsGroup = HttpApiGroup.make("runs")
   )
   .add(
     HttpApiEndpoint.get("streamDeliverySnapshot", "/runs/:runId/delivery/stream", {
-      error: LocalRunStreamErrorResponse,
+      error: [...LocalRunStreamErrorResponse, LocalRunApiConflictResponse],
       params: {
         runId: RunIdSchema,
       },
+      query: { afterSequence: Schema.optionalKey(Schema.NumberFromString) },
       success: DeliverySnapshotStreamResponse,
     }),
   )

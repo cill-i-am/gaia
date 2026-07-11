@@ -43,6 +43,7 @@ describe("local server protocol client", () => {
       const requests: Array<string> = [];
       const bodies: Array<unknown> = [];
       const payload = yield* CreateRunRequest.makeEffect({
+        delivery: { mode: "local" },
         execution: codexAppServerExecutionSelection,
         workflow: "issueDelivery",
         workItem: {
@@ -79,6 +80,7 @@ describe("local server protocol client", () => {
       assert.deepEqual(requests, ["POST http://127.0.0.1:4321/runs"]);
       assert.deepEqual(bodies, [
         {
+          delivery: { mode: "local" },
           execution: { harnessProfileId: "codexAppServer" },
           workflow: "issueDelivery",
           workItem: {

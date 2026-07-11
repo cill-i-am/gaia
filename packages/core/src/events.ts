@@ -8,7 +8,6 @@ export const RunStateSchema = Schema.Literals([
   "runningWorker",
   "verifying",
   "reporting",
-  "readyToPublish",
   "completed",
   "failed",
 ] as const);

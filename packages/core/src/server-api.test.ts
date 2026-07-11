@@ -227,11 +227,48 @@ describe("LocalGaiaServerApi contract", () => {
 
     assert.doesNotThrow(() =>
       decodeCreateRunRequest({
+        delivery: { mode: "local" },
         execution: { harnessProfileId: "codexAppServer" },
         workflow: "issueDelivery",
         workItem: {
           description: "Implement the contract slice.",
           externalRefs: [{ id: "GAIA-65", provider: "linear" }],
+          kind: "issue",
+          title: "Define FactoryGraph contracts",
+        },
+      }),
+    );
+    assert.doesNotThrow(() =>
+      decodeCreateRunRequest({
+        delivery: { mode: "pullRequest" },
+        execution: { harnessProfileId: "codexAppServer" },
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Implement the contract slice.",
+          kind: "issue",
+          title: "Define FactoryGraph contracts",
+        },
+      }),
+    );
+    assert.throws(() =>
+      decodeCreateRunRequest({
+        delivery: { mode: "workspacePr" },
+        execution: { harnessProfileId: "codexAppServer" },
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Unsupported delivery mode.",
+          kind: "issue",
+          title: "Define FactoryGraph contracts",
+        },
+      }),
+    );
+    assert.throws(() =>
+      decodeCreateRunRequest({
+        delivery: { mode: "pullRequest", repositoryPath: "/tmp/gaia" },
+        execution: { harnessProfileId: "codexAppServer" },
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Repository path is not public policy.",
           kind: "issue",
           title: "Define FactoryGraph contracts",
         },

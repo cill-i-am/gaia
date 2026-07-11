@@ -64,7 +64,11 @@ export type RunMachineContext = {
 export type RunMachineEvent =
   | { readonly type: "RUN_CREATED"; readonly runId: RunId; readonly specPath: string }
   | { readonly type: "DELIVERY_STARTED"; readonly delivery: Record<string, Schema.Json> }
-  | { readonly type: "DELIVERY_READY_TO_PUBLISH"; readonly delivery: Record<string, Schema.Json> }
+  | {
+      readonly type: "DELIVERY_READY_TO_PUBLISH";
+      readonly delivery: Record<string, Schema.Json>;
+      readonly reportPath: string | undefined;
+    }
   | { readonly type: "WORKSPACE_PREPARED"; readonly workspacePath: string }
   | { readonly type: "REVIEW_STARTED" }
   | {
@@ -215,10 +219,6 @@ export const runMachine = createMachine({
         BROWSER_EVIDENCE_RECORDED: {
           actions: "recordBrowserEvidence",
         },
-        DELIVERY_READY_TO_PUBLISH: {
-          actions: "recordDelivery",
-          target: "readyToPublish",
-        },
         GITHUB_CHECKS_RECORDED: {
           actions: "recordGitHubChecks",
         },
@@ -296,8 +296,8 @@ export const runMachine = createMachine({
           actions: "recordBrowserEvidence",
         },
         DELIVERY_READY_TO_PUBLISH: {
-          actions: "recordDelivery",
-          target: "readyToPublish",
+          actions: "recordDeliveryReadyToPublish",
+          target: "delivering",
         },
         PREVIEW_DEPLOYMENT_RECORDED: {
           actions: "recordPreviewDeployment",
@@ -311,14 +311,6 @@ export const runMachine = createMachine({
           actions: "recordReviewCompleted",
         },
         REVIEW_STARTED: {},
-        RUN_FAILED: {
-          actions: "recordFailure",
-          target: "failed",
-        },
-      },
-    },
-    readyToPublish: {
-      on: {
         RUN_FAILED: {
           actions: "recordFailure",
           target: "failed",
@@ -403,6 +395,16 @@ export const runMachine = createMachine({
         event.watchStatePath !== undefined
           ? event.watchStatePath
           : context.githubWatchStatePath,
+    }),
+    recordDeliveryReadyToPublish: assign({
+      delivery: ({ event }) =>
+        event.type === "DELIVERY_READY_TO_PUBLISH"
+          ? event.delivery
+          : undefined,
+      reportPath: ({ event }) =>
+        event.type === "DELIVERY_READY_TO_PUBLISH"
+          ? event.reportPath
+          : undefined,
     }),
     recordGitHubFeedback: assign({
       githubFeedbackCommentCount: ({ event }) =>
@@ -638,6 +640,11 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         type: event.type,
       };
     case "DELIVERY_READY_TO_PUBLISH":
+      return {
+        delivery: getJsonObjectPayload(event, "delivery"),
+        reportPath: getOptionalStringPayload(event, "reportPath"),
+        type: event.type,
+      };
     case "DELIVERY_STARTED":
       return {
         delivery: getJsonObjectPayload(event, "delivery"),

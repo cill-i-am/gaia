@@ -354,6 +354,7 @@ export function createRunFromDashboardGaiaClient(
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
       const payload = yield* CreateRunRequest.makeEffect({
+        delivery: { mode: "local" },
         execution: codexAppServerExecutionSelection,
         workflow: "issueDelivery",
         workItem: {

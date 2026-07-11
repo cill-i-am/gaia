@@ -50,7 +50,6 @@ import {
   type WorkspaceSource,
 } from "./workspace.js";
 import {
-  isGitRepository,
   parseDeliveryProvenance,
   prepareDeliveryWorktree,
   resolveDeliveryProvenance,
@@ -232,7 +231,11 @@ function acceptFactoryRunUnlocked(
     const runId = yield* generateRunId;
     const paths = yield* makeRunPaths(runId, options);
     const fs = yield* FileSystem.FileSystem;
-    const delivery = yield* acceptedDeliveryProvenance(runId, options);
+    const delivery = yield* acceptedDeliveryProvenance(
+      runId,
+      input.delivery ?? { mode: "local" },
+      options,
+    );
 
     yield* fs.makeDirectory(paths.root, { recursive: true }).pipe(
       Effect.mapError((cause) =>
@@ -272,7 +275,7 @@ function acceptFactoryRunUnlocked(
             harnessProfileId: input.execution.harnessProfileId,
           },
         },
-        ...(delivery === undefined ? {} : { delivery }),
+        delivery,
         source: "server",
         specPath: "input.md",
         workflow: input.workflow,
@@ -583,7 +586,6 @@ function failureStageFromRunState(
     case "verifying":
       return "verifying";
     case "reporting":
-    case "readyToPublish":
       return "reporting";
   }
 }
@@ -680,10 +682,8 @@ function factoryContinuationOptions(
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
     const paths = yield* makeRunPaths(firstEvent.runId, options);
-    const delivery = parseDeliveryProvenance(firstEvent.payload["delivery"]).pipe(
-      Option.getOrUndefined,
-    );
-    if (delivery !== undefined) {
+    const delivery = yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
+    if (delivery.mode === "pullRequest") {
       yield* prepareDeliveryWorktree({
         options: {
           rootDirectory,
@@ -692,14 +692,15 @@ function factoryContinuationOptions(
             : { commandRunner: options.deliveryGitCommandRunner }),
         },
         paths,
-        provenance: delivery,
+        provenance: delivery.provenance,
       });
       if (!events.some(({ type }) => type === "DELIVERY_STARTED")) {
         yield* appendEvent(firstEvent.runId, paths, {
           payload: {
             delivery: {
-              ...delivery,
-              status: "delivering",
+              ...delivery.provenance,
+              mode: "pullRequest",
+              stage: "delivering",
             },
           },
           type: "DELIVERY_STARTED",
@@ -737,8 +738,10 @@ function factoryContinuationOptions(
     }
     const commonOptions = {
       ...options,
-      ...(delivery === undefined ? {} : { deliveryProvenance: delivery }),
-      ...(delivery === undefined
+      ...(delivery.mode === "pullRequest"
+        ? { deliveryProvenance: delivery.provenance }
+        : {}),
+      ...(delivery.mode === "local"
         ? { workspaceSource: options.workspaceSource ?? localDirectoryWorkspaceSource(rootDirectory) }
         : {}),
     };
@@ -833,22 +836,60 @@ function factoryContinuationOptions(
   });
 }
 
-function acceptedDeliveryProvenance(runId: RunId, options: ServerWorkflowOptions) {
+function acceptedDeliveryProvenance(
+  runId: RunId,
+  delivery: { readonly mode: "local" | "pullRequest" },
+  options: ServerWorkflowOptions,
+) {
   return Effect.gen(function* () {
+    if (delivery.mode === "local") {
+      return { mode: "local" };
+    }
     const rootDirectory = options.rootDirectory ?? ".";
-    const isRepo = yield* isGitRepository({
-      rootDirectory,
-      ...(options.deliveryGitCommandRunner === undefined
-        ? {}
-        : { commandRunner: options.deliveryGitCommandRunner }),
-    });
-    if (!isRepo) return undefined;
     return yield* resolveDeliveryProvenance(runId, {
       rootDirectory,
       ...(options.deliveryGitCommandRunner === undefined
         ? {}
         : { commandRunner: options.deliveryGitCommandRunner }),
     });
+  });
+}
+
+function parseAcceptedDelivery(value: Schema.Json | undefined) {
+  return Effect.gen(function* () {
+    if (value === undefined) return { mode: "local" } as const;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryPolicyInvalid",
+          message: "Accepted delivery policy is invalid.",
+          recoverable: false,
+        }),
+      );
+    }
+    const delivery = value as Record<string, Schema.Json>;
+    const mode = delivery["mode"];
+    if (mode === "local") return { mode: "local" } as const;
+    if (mode !== "pullRequest") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryPolicyInvalid",
+          message: "Accepted delivery policy is invalid.",
+          recoverable: false,
+        }),
+      );
+    }
+    const provenance = parseDeliveryProvenance(delivery).pipe(Option.getOrUndefined);
+    if (provenance === undefined) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryWorktreeIdentityMismatch",
+          message: "Accepted pull-request delivery provenance is missing or invalid.",
+          recoverable: false,
+        }),
+      );
+    }
+    return { mode: "pullRequest", provenance } as const;
   });
 }
 

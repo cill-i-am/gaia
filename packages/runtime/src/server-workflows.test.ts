@@ -175,6 +175,47 @@ describe("server workflows", () => {
       }),
     );
 
+    it.effect("keeps default issue delivery local even inside a git repository", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-delivery-local-" });
+        const commands: Array<GitDeliveryCommandInput> = [];
+        const accepted = yield* acceptFactoryRun(
+          {
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery",
+            workItem: {
+              description: "Run locally unless pull-request delivery is requested.",
+              kind: "issue",
+              title: "Local delivery policy",
+            },
+          },
+          {
+            deliveryGitCommandRunner: recordingGitRunner(commands, {
+              baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+            }),
+            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            rootDirectory: cwd,
+          },
+        );
+        const summary = yield* continueServerRun(accepted.runId, {
+          deliveryGitCommandRunner: recordingGitRunner(commands, {
+            baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+          }),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        const events = yield* readLocalRunEvents(accepted.runId, {
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(summary.state, "completed");
+        assert.strictEqual(events.events.at(-1)?.type, "REPORT_COMPLETED");
+        assert.deepEqual(commands, []);
+        assert.deepEqual(events.events[0]?.payload["delivery"], { mode: "local" });
+      }),
+    );
+
     it.effect("runs issue delivery in an owned worktree at the accepted remote base", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -186,6 +227,7 @@ describe("server workflows", () => {
 
         const accepted = yield* acceptFactoryRun(
           {
+            delivery: { mode: "pullRequest" },
             execution: codexAppServerExecutionSelection,
             workflow: "issueDelivery",
             workItem: {
@@ -210,7 +252,7 @@ describe("server workflows", () => {
         });
         const serialized = JSON.stringify(events.events);
 
-        assert.strictEqual(summary.state, "readyToPublish");
+        assert.strictEqual(summary.state, "delivering");
         assert.strictEqual(events.events.at(-1)?.type, "DELIVERY_READY_TO_PUBLISH");
         assert.isTrue(
           commands.some(
@@ -238,6 +280,7 @@ describe("server workflows", () => {
 
         const accepted = yield* acceptFactoryRun(
           {
+            delivery: { mode: "pullRequest" },
             execution: codexAppServerExecutionSelection,
             workflow: "issueDelivery",
             workItem: {
@@ -274,6 +317,117 @@ describe("server workflows", () => {
       }),
     );
 
+    it.effect("fails closed when ownership evidence does not match the repository identity", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-delivery-ownership-" });
+        const acceptedBase = "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92";
+        const gitRunner = recordingGitRunner([], {
+          baseRevision: acceptedBase,
+          workspaceHead: acceptedBase,
+        });
+
+        const accepted = yield* acceptFactoryRun(
+          {
+            delivery: { mode: "pullRequest" },
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery",
+            workItem: {
+              description: "Reject stale ownership evidence.",
+              kind: "issue",
+              title: "Wrong ownership identity",
+            },
+          },
+          {
+            deliveryGitCommandRunner: gitRunner,
+            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            rootDirectory: cwd,
+          },
+        );
+        yield* fs.makeDirectory(`${accepted.runDirectory}/workspace`, {
+          recursive: true,
+        });
+        yield* fs.writeFileString(
+          `${accepted.runDirectory}/delivery-ownership.json`,
+          `${JSON.stringify({
+            baseRevision: acceptedBase,
+            repositoryCommonDir: `${cwd}/other-common-dir`,
+            repositoryRoot: cwd,
+            token: "stale-token",
+            version: 1,
+            workspaceCommonDir: `${accepted.runDirectory}/workspace/.git`,
+            workspaceRoot: `${accepted.runDirectory}/workspace`,
+          }, null, 2)}\n`,
+        );
+
+        const exit = yield* continueServerRun(accepted.runId, {
+          deliveryGitCommandRunner: gitRunner,
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        }).pipe(Effect.exit);
+        const events = yield* readLocalRunEvents(accepted.runId, {
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(exit._tag, "Failure");
+        assert.strictEqual(events.events.at(-1)?.type, "RUN_FAILED");
+        assert.strictEqual(
+          events.events.at(-1)?.payload["code"],
+          "DeliveryWorktreeIdentityMismatch",
+        );
+      }),
+    );
+
+    it.effect("fails closed when accepted pull-request provenance is corrupt", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-delivery-provenance-" });
+        const acceptedBase = "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92";
+        const gitRunner = recordingGitRunner([], { baseRevision: acceptedBase });
+
+        const accepted = yield* acceptFactoryRun(
+          {
+            delivery: { mode: "pullRequest" },
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery",
+            workItem: {
+              description: "Reject corrupt provenance.",
+              kind: "issue",
+              title: "Corrupt provenance",
+            },
+          },
+          {
+            deliveryGitCommandRunner: gitRunner,
+            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            rootDirectory: cwd,
+          },
+        );
+        const eventLog = `${accepted.runDirectory}/events.jsonl`;
+        const firstLine = yield* fs.readFileString(eventLog);
+        const created = JSON.parse(firstLine.trim()) as {
+          payload: Record<string, unknown>;
+        };
+        created.payload["delivery"] = { mode: "pullRequest" };
+        yield* fs.writeFileString(eventLog, `${JSON.stringify(created)}\n`);
+
+        const exit = yield* continueServerRun(accepted.runId, {
+          deliveryGitCommandRunner: gitRunner,
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        }).pipe(Effect.exit);
+        const events = yield* readLocalRunEvents(accepted.runId, {
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(exit._tag, "Failure");
+        assert.strictEqual(events.events.at(-1)?.type, "RUN_FAILED");
+        assert.strictEqual(
+          events.events.at(-1)?.payload["code"],
+          "DeliveryWorktreeIdentityMismatch",
+        );
+      }),
+    );
+
     it.effect("creates a real disposable detached git worktree without moving the primary checkout", () =>
       Effect.gen(function* () {
         const smoke = makeDisposableGitRemote();
@@ -281,6 +435,7 @@ describe("server workflows", () => {
           const primaryBefore = gitState(smoke.source);
           const accepted = yield* acceptFactoryRun(
             {
+              delivery: { mode: "pullRequest" },
               execution: codexAppServerExecutionSelection,
               workflow: "issueDelivery",
               workItem: {
@@ -303,7 +458,7 @@ describe("server workflows", () => {
           const workspaceBranch = git(workspace, "branch", "--show-current");
           const primaryAfter = gitState(smoke.source);
 
-          assert.strictEqual(summary.state, "readyToPublish");
+          assert.strictEqual(summary.state, "delivering");
           assert.strictEqual(workspaceHead, smoke.baseRevision);
           assert.strictEqual(workspaceBranch, "");
           assert.deepEqual(primaryAfter, primaryBefore);
@@ -437,6 +592,13 @@ function recordingGitRunner(
       const [first, ...rest] = command.args;
       if (first === "rev-parse" && rest[0] === "--show-toplevel") {
         return { stderr: "", stdout: `${command.cwd}\n` };
+      }
+      if (
+        first === "rev-parse" &&
+        rest[0] === "--path-format=absolute" &&
+        rest[1] === "--git-common-dir"
+      ) {
+        return { stderr: "", stdout: `${command.cwd}/.git\n` };
       }
       if (first === "fetch") {
         return { stderr: "", stdout: "" };

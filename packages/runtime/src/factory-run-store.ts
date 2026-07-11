@@ -592,6 +592,9 @@ function parseFactoryCreateInput(
   try {
     return Effect.succeed(
       decodeCreateRunRequest({
+        ...(first.payload["delivery"] === undefined
+          ? { delivery: { mode: "local" } }
+          : { delivery: publicDeliveryFromPayload(first.payload["delivery"]) }),
         execution: jsonObjectField(first.payload["execution"], "selection"),
         workflow: first.payload["workflow"],
         workItem: first.payload["workItem"],
@@ -640,6 +643,17 @@ function jsonObjectField(
     return undefined;
   }
   return Object.getOwnPropertyDescriptor(value, field)?.value;
+}
+
+function publicDeliveryFromPayload(value: Schema.Json | undefined) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { mode: "local" };
+  }
+  const mode = Object.getOwnPropertyDescriptor(value, "mode")?.value;
+  if (mode === "local" || mode === "pullRequest") {
+    return { mode };
+  }
+  return { mode: "local" };
 }
 
 function buildFactoryGraph(input: {

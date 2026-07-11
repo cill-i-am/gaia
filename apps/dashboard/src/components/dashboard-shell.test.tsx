@@ -248,8 +248,10 @@ vi.mock("@/lib/local-gaia-query", () => ({
     queryFn: () =>
       Promise.resolve({
         data: queryFixture.deliverySnapshotsByRunId[config.runId] ?? {
+          eventSequence: 0,
           mode: "local",
           runId: config.runId,
+          stage: "unavailable",
           status: "unavailable",
         },
         status: "success",
@@ -2118,6 +2120,7 @@ describe("DashboardShell Run Console", () => {
     renderDashboardWithQueries({
       deliverySnapshotsByRunId: {
         [runId]: {
+          eventSequence: 6,
           mode: "pullRequest",
           provenance: {
             baseBranch: "main",
@@ -2126,6 +2129,7 @@ describe("DashboardShell Run Console", () => {
             remote: "origin",
           },
           runId,
+          stage: "readyToPublish",
           status: "readyToPublish",
         },
       },
@@ -2133,7 +2137,7 @@ describe("DashboardShell Run Console", () => {
         localRunSummary({
           latestEventType: "DELIVERY_READY_TO_PUBLISH",
           runId,
-          state: "readyToPublish",
+          state: "delivering",
           status: "running",
         }),
       ],

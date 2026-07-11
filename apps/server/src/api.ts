@@ -31,6 +31,7 @@ import {
   LocalRunEventsSuccessEnvelope,
   type LocalRunApiError,
   LocalRunReadDiagnosticDto,
+  type RunId,
   type RunEvent,
   snapshotFromReplay,
 } from "@gaia/core";
@@ -41,7 +42,10 @@ import type {
 import { readLocalRunEvents } from "@gaia/runtime/run-read-api";
 import {
   GaiaRuntimeError,
+  makeRuntimeError,
+  makeRunPaths,
   makeLocalRunReadIndex,
+  subscribeRunEventFeed,
   dispatchAgentSessionAction,
   makeLiveHarnessSessionCoordinator,
   readAgentSessionSnapshot,
@@ -106,7 +110,7 @@ const decodeDeliveryProjection = Schema.decodeUnknownOption(
     headBranch: Schema.NonEmptyString,
     mode: DeliveryModeSchema,
     remote: Schema.NonEmptyString,
-    status: DeliveryStatusSchema,
+    stage: DeliveryStatusSchema,
   }),
 );
 
@@ -266,7 +270,7 @@ export const RunsLive = HttpApiBuilder.group(
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
         }),
       )
-      .handle("streamDeliverySnapshot", ({ params }) =>
+      .handle("streamDeliverySnapshot", ({ params, query }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
           const initialRead = yield* Effect.exit(
@@ -277,19 +281,46 @@ export const RunsLive = HttpApiBuilder.group(
           if (initialRead._tag === "Failure") {
             return yield* Effect.fail(readApiErrorFromCause(initialRead.cause));
           }
-
-          const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
-          return streamRunEvents({
+          const highWater = initialRead.value.events.at(-1)?.sequence ?? 0;
+          if (
+            query.afterSequence !== undefined &&
+            (!Number.isInteger(query.afterSequence) || query.afterSequence < 1)
+          ) {
+            return yield* Effect.fail(
+              LocalRunApiBadRequest.make({
+                code: "InvalidRequest",
+                message: "Delivery stream cursor must be a positive Gaia sequence.",
+                recoverable: false,
+                status: 400,
+              }),
+            );
+          }
+          if (
+            query.afterSequence !== undefined &&
+            query.afterSequence > highWater
+          ) {
+            return yield* Effect.fail(
+              LocalRunApiConflict.make({
+                code: "DeliveryStreamCursorConflict",
+                message:
+                  "Delivery stream cursor is ahead of authoritative run history.",
+                recoverable: true,
+                status: 409,
+              }),
+            );
+          }
+          const stream = yield* streamDeliveryUpdates(params.runId, query.afterSequence, {
             rootDirectory: identity.rootDirectory,
-            runId: params.runId,
-          }).pipe(
-            Stream.mapEffect(() =>
-              readDeliverySnapshot(params.runId, identity.rootDirectory),
-            ),
+          });
+          return stream.pipe(
+            Stream.map((update) => ({
+              data: update,
+              event: "delivery-update" as const,
+              id: String(update.eventSequence),
+            })),
             Stream.mapError(streamApiError),
-            Stream.provideContext(context),
           );
-        }),
+        }).pipe(Effect.mapError((error) => actionApiErrorFromCause(Cause.fail(error)))),
       )
       .handle("getAgentActivity", ({ params }) =>
         Effect.gen(function* () {
@@ -541,43 +572,123 @@ function readFactoryRunProjection(
 }
 
 function readDeliverySnapshot(
-  runId: string,
+  runId: RunId,
   rootDirectory: string,
 ): Effect.Effect<typeof DeliverySnapshotDto.Type, unknown, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const events = yield* readLocalRunEvents(runId, { rootDirectory });
-    const snapshot = snapshotFromReplay(events.events);
-    const delivery = decodeDeliveryProjection(snapshot.context["delivery"]).pipe(
-      Option.getOrUndefined,
-    );
+    const update = deliveryUpdateFromEvents(events.runId, events.events);
 
-    if (delivery === undefined) {
+    if (update === undefined) {
       return DeliverySnapshotDto.make({
+        eventSequence: 0,
         mode: "local",
         runId: events.runId,
-        status: snapshot.state === "failed" ? "failed" : "unavailable",
+        stage: "unavailable",
+        status: "unavailable",
       });
     }
 
-    if (delivery.mode !== "pullRequest") {
-      return DeliverySnapshotDto.make({
-        mode: delivery.mode,
-        runId: events.runId,
-        status: snapshot.state === "failed" ? "failed" : "unavailable",
-      });
-    }
+    return update;
+  });
+}
 
+function streamDeliveryUpdates(
+  runId: RunId,
+  afterSequence: number | undefined,
+  options: { readonly rootDirectory: string },
+): Effect.Effect<Stream.Stream<typeof DeliverySnapshotDto.Type, GaiaRuntimeError>, GaiaRuntimeError, FileSystem.FileSystem | Path.Path | Scope.Scope> {
+  return Effect.gen(function* () {
+    const paths = yield* makeRunPaths(runId, options).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "InvalidRunDirectory",
+          message: "Run directory could not be resolved.",
+          recoverable: false,
+        }),
+      ),
+    );
+    const subscription = yield* subscribeRunEventFeed(paths).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "RunUnreadable",
+          message: "Run could not be read from events.jsonl.",
+          recoverable: false,
+        }),
+      ),
+    );
+    if (afterSequence !== undefined && (!Number.isInteger(afterSequence) || afterSequence < 1)) {
+      return yield* Effect.fail(makeRuntimeError({ code: "InvalidRequest", message: "Delivery stream cursor must be a positive Gaia sequence.", recoverable: false }));
+    }
+    if (afterSequence !== undefined && afterSequence > subscription.highWater) {
+      return yield* Effect.fail(makeRuntimeError({ code: "DeliveryStreamCursorConflict", message: "Delivery stream cursor is ahead of authoritative run history.", recoverable: true }));
+    }
+    const cursor = afterSequence ?? 0;
+    const backlogEvents = subscription.backlog.filter((event) => event.sequence > cursor && event.sequence <= subscription.highWater);
+    const backlog = deliveryUpdatesFromEvents(runId, subscription.backlog, backlogEvents);
+    const live = subscription.live.pipe(
+      Stream.filter((event) => event.sequence > subscription.highWater),
+      Stream.mapAccum(() => subscription.backlog, (history, event) => {
+        const next = [...history, event];
+        const update = deliveryUpdateFromEvents(runId, next);
+        return [next, update === undefined || update.eventSequence !== event.sequence ? [] : [update]] as const;
+      }),
+    );
+    return Stream.fromIterable(backlog).pipe(
+      Stream.concat(live),
+      Stream.takeUntil((update) =>
+        update.stage === "readyToPublish" || update.stage === "failed"
+      ),
+    );
+  });
+}
+
+function deliveryUpdatesFromEvents(
+  runId: RunId,
+  history: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>,
+) {
+  return events.flatMap((event) => {
+    const update = deliveryUpdateFromEvents(
+      runId,
+      history.filter((candidate) => candidate.sequence <= event.sequence),
+    );
+    return update === undefined || update.eventSequence !== event.sequence ? [] : [update];
+  });
+}
+
+function deliveryUpdateFromEvents(
+  runId: RunId,
+  events: ReadonlyArray<RunEvent>,
+) {
+  if (events.length === 0) return undefined;
+  const snapshot = snapshotFromReplay(events);
+  const delivery = decodeDeliveryProjection(snapshot.context["delivery"]).pipe(
+    Option.getOrUndefined,
+  );
+  const eventSequence = events.at(-1)?.sequence ?? 0;
+
+  if (delivery === undefined || delivery.mode === "local") {
+    const status = snapshot.state === "failed" ? "failed" : snapshot.state === "completed" ? "readyToPublish" : "unavailable";
     return DeliverySnapshotDto.make({
-      mode: "pullRequest",
-      provenance: DeliveryProvenanceDto.make(delivery),
-      runId: events.runId,
-      status:
-        snapshot.state === "failed"
-          ? "failed"
-          : delivery.status === "readyToPublish"
-            ? "readyToPublish"
-            : "delivering",
+      eventSequence,
+      mode: "local",
+      runId,
+      stage: status,
+      status,
     });
+  }
+
+  const stage = snapshot.state === "failed" ? "failed" : delivery.stage;
+  return DeliverySnapshotDto.make({
+    eventSequence,
+    mode: "pullRequest",
+    provenance: DeliveryProvenanceDto.make(delivery),
+    runId,
+    stage,
+    status: stage,
   });
 }
 
@@ -818,6 +929,7 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
     case "ActiveRunConflict":
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
+    case "DeliveryStreamCursorConflict":
     case "RunStoreLocked":
       return 409;
     case "HarnessAuthenticationRequired":
@@ -860,6 +972,7 @@ function actionApiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunActionApi
   switch (diagnostic.code) {
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
+    case "DeliveryStreamCursorConflict":
       return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
     default:
       return readApiError(diagnostic);
@@ -978,6 +1091,7 @@ function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
     case "ActiveRunConflict":
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
+    case "DeliveryStreamCursorConflict":
     case "RunStoreLocked":
     case "InternalServerError":
     case "MethodNotAllowed":
@@ -1077,6 +1191,7 @@ function apiError(
       });
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
+    case "DeliveryStreamCursorConflict":
       return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
     case "RunStoreLocked":
       return LocalRunApiConflict.make({
@@ -1162,6 +1277,7 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
       });
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
+    case "DeliveryStreamCursorConflict":
       return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
     case "RunStoreLocked":
       return LocalRunApiConflict.make({

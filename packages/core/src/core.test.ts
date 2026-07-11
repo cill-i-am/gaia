@@ -485,7 +485,7 @@ describe("core contracts", () => {
             headBranch: "gaia/run-V7kP9sQ2xY",
             mode: "pullRequest",
             remote: "origin",
-            status: "delivering",
+            stage: "delivering",
           },
         },
         runId,
@@ -522,8 +522,9 @@ describe("core contracts", () => {
             headBranch: "gaia/run-V7kP9sQ2xY",
             mode: "pullRequest",
             remote: "origin",
-            status: "readyToPublish",
+            stage: "readyToPublish",
           },
+          reportPath: "report.md",
         },
         runId,
         sequence: 6,
@@ -540,19 +541,20 @@ describe("core contracts", () => {
       headBranch: "gaia/run-V7kP9sQ2xY",
       mode: "pullRequest",
       remote: "origin",
-      status: "delivering",
+      stage: "delivering",
     });
 
     const ready = snapshotFromReplay(events);
-    assert.strictEqual(ready.state, "readyToPublish");
+    assert.strictEqual(ready.state, "delivering");
     assert.deepEqual(ready.context.delivery, {
       baseBranch: "main",
       baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
       headBranch: "gaia/run-V7kP9sQ2xY",
       mode: "pullRequest",
       remote: "origin",
-      status: "readyToPublish",
+      stage: "readyToPublish",
     });
+    assert.strictEqual(ready.context.reportPath, "report.md");
     assert.notInclude(JSON.stringify(ready.context), "/Users/");
     assert.notInclude(JSON.stringify(ready.context), ".gaia/runs");
   });

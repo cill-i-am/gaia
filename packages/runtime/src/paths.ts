@@ -66,6 +66,7 @@ export type RunPaths = {
   readonly workerResult: string;
   readonly workspacePrGate: string;
   readonly workspace: string;
+  readonly deliveryOwnershipManifest: string;
   readonly workspaceManifest: string;
   readonly workspaceOutput: string;
 };
@@ -102,6 +103,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       ciWatchState: path.join(root, "ci-watch-state.json"),
       codexHarnessProgress: path.join(root, "codex-harness-progress.json"),
       dogfoodRetrospective: path.join(root, "dogfood-retrospective.json"),
+      deliveryOwnershipManifest: path.join(root, "delivery-ownership.json"),
       evidenceReviewMarkdown: path.join(root, "evidence-review.md"),
       evidenceReviewResult: path.join(root, "evidence-review.json"),
       evidenceReviewerSession: path.join(

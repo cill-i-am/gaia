@@ -478,19 +478,19 @@ function executeAcceptedRun(input: {
       skillManifest,
       spec,
     });
-    const { snapshot } = yield* appendEvent(runId, paths, {
-      payload: { reportPath: "report.md" },
-      type: "REPORT_COMPLETED",
-    });
     const finalSnapshot =
       options.deliveryProvenance === undefined
-        ? snapshot
+        ? (yield* appendEvent(runId, paths, {
+            payload: { reportPath: "report.md" },
+            type: "REPORT_COMPLETED",
+          })).snapshot
         : (yield* appendEvent(runId, paths, {
             payload: {
               delivery: {
                 ...options.deliveryProvenance,
-                status: "readyToPublish",
+                stage: "readyToPublish",
               },
+              reportPath: "report.md",
             },
             type: "DELIVERY_READY_TO_PUBLISH",
           })).snapshot;
@@ -503,7 +503,7 @@ function executeAcceptedRun(input: {
       runDirectory: paths.root,
       runId,
       state: finalSnapshot.state,
-      status: finalSnapshot.state === "readyToPublish" ? "running" : "completed",
+      status: finalSnapshot.state === "delivering" ? "running" : "completed",
     } satisfies CommandSummary;
   });
 }
@@ -1007,7 +1007,6 @@ function statusFromState(state: RunState): CommandSummary["status"] {
     case "created":
     case "delivering":
     case "preparingWorkspace":
-    case "readyToPublish":
     case "runningWorker":
     case "verifying":
     case "reporting":
