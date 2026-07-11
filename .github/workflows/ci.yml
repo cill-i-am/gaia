@@ -1,0 +1,42 @@
+name: Gaia PR CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+env:
+  TURBO_CONCURRENCY: "1"
+
+jobs:
+  gaia-pr-ci:
+    name: gaia-pr-ci
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Activate pnpm 11.7.0
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.7.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check
+        run: pnpm check
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
