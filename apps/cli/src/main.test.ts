@@ -395,6 +395,21 @@ describe("gaia CLI local server read parity", () => {
       }),
     );
 
+    it.effect("requires one explicit finite merge-readiness method and exact inputs", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-readiness-parser-" });
+        const base = ["merge-readiness", "run-1234567890", "readiness-1", "--server-url", "http://127.0.0.1:1"];
+        const [omitted, unknown, duplicate, excess] = yield* Effect.all([
+          runGaia(cwd, base),
+          runGaia(cwd, [...base, "--method", "octopus"]),
+          runGaia(cwd, [...base, "--method", "merge", "--method", "squash"]),
+          runGaia(cwd, [...base, "extra", "--method", "merge"]),
+        ], { concurrency: "unbounded" });
+        for (const result of [omitted, unknown, duplicate, excess]) expect(result.exitCode).toBe(1);
+      }),
+    );
+
     it.effect("renders no configured PR checks as an operator-facing human state", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

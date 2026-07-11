@@ -29,6 +29,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createRunFromLocalServerProtocol,
+  evaluateMergeReadinessFromLocalServerProtocol,
   getRunArtifactFromLocalServerProtocol,
   getRunEventsFromLocalServerProtocol,
   getRunFromLocalServerProtocol,
@@ -48,6 +49,23 @@ export type ServerRunAcceptedSummary =
   typeof CreateRunAcceptedResponse.Type & {
     readonly serverUrl: string;
   };
+
+export function evaluateMergeReadinessFromServer(input: {
+  readonly actionId: string;
+  readonly mergeMethod: "merge" | "rebase" | "squash";
+  readonly runId: string;
+  readonly serverUrl: string;
+}) {
+  return requestServer({
+    dataName: "merge readiness decision",
+    effect: evaluateMergeReadinessFromLocalServerProtocol({
+      payload: { actionId: input.actionId, kind: "evaluateMergeReadiness", mergeMethod: input.mergeMethod },
+      runId: input.runId,
+      serverUrl: input.serverUrl,
+    }),
+    serverUrl: input.serverUrl,
+  });
+}
 
 export function listRunsFromServer(input: {
   readonly rootDirectory: string;

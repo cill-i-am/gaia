@@ -5,7 +5,7 @@ import {
   CreateRunRequest,
   DeliverySnapshotSuccessEnvelope,
   DeliverySnapshotDto,
-  DeliveryRecoveryActionRequestSchema,
+  DeliveryActionRequestSchema,
   codexAppServerExecutionSelection,
   FactoryActivitySuccessEnvelope,
   FactoryAgentIdSchema,
@@ -196,14 +196,23 @@ export function actOnDeliveryFromDashboardGaiaClient(
     Effect.gen(function* () {
       const runId = yield* decodeRunIdParameter(config.runId);
       const payload = yield* Schema.decodeUnknownEffect(
-        DeliveryRecoveryActionRequestSchema,
+        DeliveryActionRequestSchema,
       )(config.action).pipe(
         Effect.mapError((cause) => parameterError("deliveryAction", cause)),
       );
-      return yield* client.runs.actOnDelivery({
-        params: { runId },
-        payload,
-      });
+      switch (payload.kind) {
+        case "activateRemediation":
+          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+        case "merge":
+          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+        case "evaluateMergeReadiness":
+          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+        case "retryCleanup":
+          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+        case "reconcile":
+        case "retry":
+          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+      }
     }),
   );
 }

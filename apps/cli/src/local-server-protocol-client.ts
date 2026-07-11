@@ -1,5 +1,6 @@
 import {
   CreateRunRequest,
+  DeliveryEvaluateMergeReadinessActionRequest,
   FactoryArtifactIdSchema,
   LocalGaiaServerApi,
   type LocalRunApiError,
@@ -107,6 +108,19 @@ export function createRunFromLocalServerProtocol(input: {
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
     client.runs.createRun({ payload: input.payload }),
+  );
+}
+
+export function evaluateMergeReadinessFromLocalServerProtocol(input: {
+  readonly payload: typeof DeliveryEvaluateMergeReadinessActionRequest.Type;
+  readonly runId: string;
+  readonly serverUrl: string;
+}) {
+  return withLocalGaiaServerClient(input.serverUrl, (client) =>
+    Effect.gen(function* () {
+      const runId = yield* decodeRunIdParameter(input.runId);
+      return yield* client.runs.actOnDelivery({ params: { runId }, payload: DeliveryEvaluateMergeReadinessActionRequest.make(input.payload) });
+    }),
   );
 }
 

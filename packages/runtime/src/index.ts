@@ -1,4 +1,7 @@
 export {
+  makeGitCleanupResourceAdapter,
+} from "./git-cleanup-resource-adapter.js";
+export {
   continueDeliveryRemediation,
   type DeliveryRemediationCoordinatorOptions,
   type DeliveryRemediationCoordinatorResult,
@@ -468,3 +471,30 @@ export {
   type BrowserEvidenceCollectionOptions,
   type CommandSummary,
 } from "./workflows.js";
+export {
+  invokeGitHubDeliveryMerge,
+  validateRequiredChecks,
+  type DeliveryMergeProviderInput,
+  type RequiredCheckFact,
+} from "./delivery-merge-provider.js";
+export {
+  coordinateDeliveryCleanup,
+  coordinateDeliveryMerge,
+  makeGitHubFreshMergeStateReader,
+  requiredCheckPolicyFromTrustPolicy,
+  type DeliveryMergeCoordinatorOptions,
+  type FreshMergeState,
+} from "./delivery-merge-coordinator.js";
+export {
+  CleanupCrashInjected,
+  coordinateWorktreeCleanup,
+  coordinateBranchCleanup,
+  makeInMemoryCleanupCheckpointStore,
+  makeRecordingCleanupResourceAdapter,
+  type CleanupCheckpointStore,
+  type CleanupResourceAdapter,
+  type CleanupResourceCheckpoint,
+  type CleanupResourceInspection,
+  type CleanupWorktreeBoundary,
+  type CleanupBranchBoundary,
+} from "./delivery-cleanup-resource-coordinator.js";

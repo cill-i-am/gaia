@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
-import { Effect, FileSystem, Schema } from "effect";
+import { Data, Effect, FileSystem, Schema } from "effect";
 import { makeRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
 import { repositoryCommandEnvironment } from "./repository-command-environment.js";
@@ -56,6 +56,68 @@ const DeliveryOwnershipManifest = Schema.Struct({
 const parseDeliveryOwnershipManifest = Schema.decodeUnknownSync(
   DeliveryOwnershipManifest,
 );
+
+export type DeliveryOwnedCleanupResult = {
+  readonly branch: "absent" | "present";
+  readonly worktree: "absent" | "present";
+};
+export class DeliveryOwnedCleanupPartial extends Data.TaggedError("DeliveryOwnedCleanupPartial")<{
+  readonly branch: "absent" | "present";
+  readonly message: string;
+  readonly worktree: "absent" | "present";
+}> {}
+
+/** Remove only freshly re-proven run-owned resources, one resource at a time. */
+export function cleanupOwnedDeliveryResources(input: {
+  readonly branchName: string;
+  readonly expectedBranchOid: string;
+  readonly options: DeliveryWorkspaceOptions;
+  readonly paths: RunPaths;
+}) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const runner = input.options.commandRunner ?? nodeGitDeliveryCommandRunner;
+    const raw = yield* fs.readFileString(input.paths.deliveryOwnershipManifest).pipe(
+      Effect.mapError((cause) => makeRuntimeError({ cause, code: "DeliveryCleanupOwnershipUnavailable", message: "Durable worktree ownership evidence is unavailable.", recoverable: false })),
+    );
+    const manifest = parseDeliveryOwnershipManifest(JSON.parse(raw));
+    const repository = yield* repositoryIdentity(runner, input.options.rootDirectory);
+    if (repository.repositoryRoot !== manifest.repositoryRoot || repository.repositoryCommonDir !== manifest.repositoryCommonDir || manifest.workspaceRoot === manifest.repositoryRoot) {
+      return yield* cleanupFailure("DeliveryCleanupOwnershipMismatch", "Cleanup provenance does not match the current non-primary repository.");
+    }
+    let worktree: "absent" | "present" = (yield* fs.exists(manifest.workspaceRoot)) ? "present" : "absent";
+    const branchRef = `refs/heads/${input.branchName}`;
+    let branch: "absent" | "present" = (yield* runGitExit(runner, input.options.rootDirectory, ["show-ref", "--verify", "--quiet", branchRef])) ? "present" : "absent";
+    if (branch === "present") {
+      const oid = (yield* runGit(runner, input.options.rootDirectory, ["rev-parse", branchRef])).stdout.trim();
+      if (oid !== input.expectedBranchOid) return yield* cleanupFailure("DeliveryCleanupBranchMoved", "Owned local branch no longer points at the recorded expected head.");
+    }
+    if (worktree === "present") {
+      const workspace = yield* repositoryIdentity(runner, manifest.workspaceRoot);
+      const status = (yield* runGit(runner, manifest.workspaceRoot, ["status", "--porcelain"])).stdout;
+      const branchName = (yield* runGit(runner, manifest.workspaceRoot, ["branch", "--show-current"])).stdout.trim();
+      if (workspace.repositoryRoot !== manifest.workspaceRoot || workspace.repositoryCommonDir !== manifest.workspaceCommonDir || status.trim() !== "" || branchName !== input.branchName) {
+        return yield* cleanupFailure("DeliveryCleanupUnsafe", "Owned worktree is dirty, mismatched, or no longer proves the recorded branch.");
+      }
+      yield* runGit(runner, input.options.rootDirectory, ["worktree", "remove", manifest.workspaceRoot]);
+      worktree = "absent";
+    }
+    if (branch === "present") {
+      const deletion = yield* Effect.exit(runGit(runner, input.options.rootDirectory, ["update-ref", "-d", branchRef, input.expectedBranchOid]));
+      if (deletion._tag === "Failure") return yield* Effect.fail(new DeliveryOwnedCleanupPartial({ branch: "present", message: "Owned worktree was removed but exact branch CAS deletion failed.", worktree }));
+      branch = "absent";
+    }
+    return { branch, worktree } satisfies DeliveryOwnedCleanupResult;
+  });
+}
+
+function runGitExit(runner: GitDeliveryCommandRunner, cwd: string, args: ReadonlyArray<string>) {
+  return Effect.exit(runner({ args, cwd })).pipe(Effect.map((exit) => exit._tag === "Success"));
+}
+
+function cleanupFailure(code: string, message: string) {
+  return Effect.fail(makeRuntimeError({ code, message, recoverable: true }));
+}
 
 export type DeliveryWorkspaceOptions = {
   readonly commandRunner?: GitDeliveryCommandRunner;

@@ -1,5 +1,8 @@
 import {
   DeliveryFeedbackTrustPolicyV1,
+  type DeliveryMergeActionRequest,
+  type DeliveryEvaluateMergeReadinessActionRequest,
+  type DeliveryRetryCleanupActionRequest,
   type DeliveryRemediationActivationActionRequest,
   parseMarkdownSpec,
   HarnessExecutionSelection,
@@ -71,6 +74,13 @@ import {
   type DeliveryPullRequestReader,
 } from "./delivery-remediation-coordinator.js";
 import type { DeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
+import {
+  coordinateDeliveryCleanup,
+  coordinateDeliveryMerge,
+  coordinateDeliveryMergeReadiness,
+  makeGitHubFreshMergeStateReader,
+  requiredCheckPolicyFromTrustPolicy,
+} from "./delivery-merge-coordinator.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -78,6 +88,7 @@ const nanoid = customAlphabet(
 );
 
 export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
+  readonly deliveryMergeActivator?: DeliveryMergeActionHandler;
   readonly deliveryRemediationActivator?: DeliveryRemediationActionHandler;
   readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
   readonly deliveryPublicationCommandRunner?: GitHubCommandRunner;
@@ -93,6 +104,33 @@ export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly workspaceSource?: WorkspaceSource;
 };
+
+export type DeliveryMergeActionHandler = (
+  runId: string,
+  action: DeliveryMergeActionRequest | DeliveryRetryCleanupActionRequest | DeliveryEvaluateMergeReadinessActionRequest,
+  options: ServerWorkflowOptions,
+) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
+
+export function actOnDeliveryMerge(
+  runIdInput: string,
+  action: DeliveryMergeActionRequest | DeliveryRetryCleanupActionRequest | DeliveryEvaluateMergeReadinessActionRequest,
+  options: ServerWorkflowOptions = {},
+) {
+  return Effect.gen(function* () {
+    const runId = yield* parseRunIdEffect(runIdInput);
+    const trustPolicy = options.deliveryFeedbackTrustPolicy ?? defaultDeliveryFeedbackTrustPolicy("unknown/unknown");
+    const coordinatorOptions = {
+      ...(options.deliveryPublicationCommandRunner === undefined ? {} : { commandRunner: options.deliveryPublicationCommandRunner }),
+      ...(options.deliveryFeedbackTrustPolicy === undefined ? {} : { requiredCheckPolicy: requiredCheckPolicyFromTrustPolicy(trustPolicy) }),
+      rootDirectory: options.rootDirectory ?? ".",
+    };
+    return action.kind === "merge"
+      ? yield* coordinateDeliveryMerge(runId, action, coordinatorOptions)
+      : action.kind === "evaluateMergeReadiness"
+        ? yield* coordinateDeliveryMergeReadiness(runId, action, coordinatorOptions)
+        : yield* coordinateDeliveryCleanup(runId, action, coordinatorOptions);
+  });
+}
 
 export type DeliveryRemediationActionHandler = (
   runId: string,

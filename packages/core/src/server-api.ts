@@ -34,6 +34,7 @@ import {
   DeliveryPullRequestObservation,
   DeliveryRemediationSchema,
 } from "./delivery-remediation.js";
+import { DeliveryCleanupReceiptSchema, DeliveryMergeMethodSchema, DeliveryMergeReadinessDecision, DeliveryMergeReceiptSchema } from "./delivery-merge.js";
 
 export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
@@ -296,6 +297,11 @@ export const DeliveryStatusSchema = Schema.Literals([
   "remediating",
   "remediationFailed",
   "remediationOutcomeUnknown",
+  "awaitingMerge",
+  "merging",
+  "mergeReconciliationRequired",
+  "cleanupRequired",
+  "completed",
   "publicationFailed",
   "publicationOutcomeUnknown",
   "failed",
@@ -305,6 +311,7 @@ export const DeliveryRecoveryActionKindSchema = Schema.Literals([
   "reconcile",
   "retry",
 ] as const);
+export const DeliveryPublicRecoveryActionKindSchema = Schema.Literals(["reconcile", "retry", "reconcileMerge", "retryCleanup"] as const);
 
 const EventSequenceSchema = Schema.Number.pipe(
   Schema.check(Schema.isInt({ identifier: "EventSequence" })),
@@ -361,9 +368,38 @@ export class DeliveryRemediationActivationActionRequest extends Schema.Class<Del
   repository: DeliveryActionRepositorySchema,
 }, { parseOptions: { onExcessProperty: "error" } }) {}
 
+export class DeliveryMergeActionRequest extends Schema.Class<DeliveryMergeActionRequest>(
+  "DeliveryMergeActionRequest",
+)({
+  actionId: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+  expectedBranchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
+  expectedDecisionSequence: EventSequenceSchema,
+  expectedHeadSha: DeliveryActionGitShaSchema,
+  expectedPolicyDigest: DeliveryActionDigestSchema,
+  expectedPrUrl: Schema.String.pipe(Schema.check(Schema.isPattern(/^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u))),
+  kind: Schema.Literal("merge"),
+  mergeMethod: DeliveryMergeMethodSchema,
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+export class DeliveryEvaluateMergeReadinessActionRequest extends Schema.Class<DeliveryEvaluateMergeReadinessActionRequest>("DeliveryEvaluateMergeReadinessActionRequest")({
+  actionId: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+  kind: Schema.Literal("evaluateMergeReadiness"),
+  mergeMethod: DeliveryMergeMethodSchema,
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+
+export class DeliveryRetryCleanupActionRequest extends Schema.Class<DeliveryRetryCleanupActionRequest>(
+  "DeliveryRetryCleanupActionRequest",
+)({
+  actionId: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+  expectedMergeCommitSha: DeliveryActionGitShaSchema,
+  kind: Schema.Literal("retryCleanup"),
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+
 export const DeliveryActionRequestSchema = Schema.Union([
   DeliveryRecoveryActionRequest,
   DeliveryRemediationActivationActionRequest,
+  DeliveryEvaluateMergeReadinessActionRequest,
+  DeliveryMergeActionRequest,
+  DeliveryRetryCleanupActionRequest,
 ]);
 export type DeliveryActionRequest = typeof DeliveryActionRequestSchema.Type;
 
@@ -455,13 +491,23 @@ export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   observation: Schema.optionalKey(DeliveryPullRequestObservation),
   publication: Schema.optionalKey(DeliveryPublicationDto),
   remediation: Schema.optionalKey(DeliveryRemediationSchema),
+  activeMergeAction: Schema.optionalKey(DeliveryMergeReceiptSchema),
+  latestMergeAction: Schema.optionalKey(DeliveryMergeReceiptSchema),
+  mergeDecision: Schema.optionalKey(DeliveryMergeReadinessDecision),
+  mergeDecisionSequence: Schema.optionalKey(EventSequenceSchema),
+  activeCleanupAction: Schema.optionalKey(DeliveryCleanupReceiptSchema),
+  latestCleanupAction: Schema.optionalKey(DeliveryCleanupReceiptSchema),
+  actionAudit: Schema.optionalKey(Schema.Struct({
+    cleanup: Schema.Array(Schema.Struct({ actionId: Schema.NonEmptyString, latestSequence: EventSequenceSchema, state: Schema.NonEmptyString })).pipe(Schema.check(Schema.isMaxLength(20))),
+    merge: Schema.Array(Schema.Struct({ actionId: Schema.NonEmptyString, latestSequence: EventSequenceSchema, state: Schema.NonEmptyString })).pipe(Schema.check(Schema.isMaxLength(20))),
+  })),
   remediationRearmSequence: Schema.optionalKey(
     Schema.Number.pipe(
       Schema.check(Schema.isInt({ identifier: "EventSequence" })),
       Schema.check(Schema.isGreaterThanOrEqualTo(1)),
     ),
   ),
-  recoveryActions: Schema.Array(DeliveryRecoveryActionKindSchema),
+  recoveryActions: Schema.Array(DeliveryPublicRecoveryActionKindSchema),
   runId: RunIdSchema,
   stage: DeliveryStatusSchema,
   status: DeliveryStatusSchema,

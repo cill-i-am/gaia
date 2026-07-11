@@ -2241,7 +2241,7 @@ describe("DashboardShell Run Console", () => {
     expect(
       (await screen.findByTestId("selected-run-delivery-status")).textContent,
     ).toBe("Delivery: publication outcome unknown");
-    fireEvent.click(screen.getByRole("button", { name: "Reconcile" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile publication" }));
 
     await waitFor(() => {
       expect(queryFixture.deliveryActionInputs).toEqual([
