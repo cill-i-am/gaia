@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   codexAppServerExecutionSelection,
+  DeliveryFeedbackTrustPolicyV1,
   DeliveryPublicationConfirmed,
   HarnessCapabilities,
   HarnessProviderDescriptor,
@@ -293,6 +294,54 @@ describe("server workflows", () => {
           stage: "delivering",
         });
         assert.notInclude(serialized, cwd);
+      }),
+    );
+
+    it.effect("persists explicit solo approval policy only at delivery acceptance", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-delivery-solo-policy-" });
+        const gitRunner = recordingGitRunner([], {
+          baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+        });
+        const trustPolicy = DeliveryFeedbackTrustPolicyV1.make({
+          allowPullRequestAuthor: false,
+          requireApprovedReview: false,
+          trustedChecks: [],
+          trustedHumanLogins: [],
+          version: 1,
+        });
+        const accepted = yield* acceptFactoryRun({
+          delivery: { mode: "pullRequest" },
+          execution: codexAppServerExecutionSelection,
+          workflow: "issueDelivery",
+          workItem: { description: "Persist solo review authority.", kind: "issue", title: "Solo policy" },
+        }, {
+          deliveryFeedbackTrustPolicy: trustPolicy,
+          deliveryGitCommandRunner: gitRunner,
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        yield* continueServerRun(accepted.runId, {
+          deliveryFeedbackTrustPolicy: trustPolicy,
+          deliveryGitCommandRunner: gitRunner,
+          deliveryPublisher: recordingDeliveryPublisher([]),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        const events = yield* readLocalRunEvents(accepted.runId, { rootDirectory: cwd });
+        const deliveryStarted = events.events.find(({ type }) => type === "DELIVERY_STARTED");
+
+        assert.deepInclude(deliveryStarted?.payload["delivery"], {
+          feedbackTrustPolicy: {
+            allowPullRequestAuthor: false,
+            requireApprovedReview: false,
+            trustedChecks: [],
+            trustedHumanLogins: [],
+            version: 1,
+          },
+        });
+        assert.lengthOf(events.events.filter(({ type }) => type === "DELIVERY_STARTED"), 1);
       }),
     );
 

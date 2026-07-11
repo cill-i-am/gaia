@@ -11,6 +11,7 @@ import {
   DeliveryRemediationPushAttempted,
   DeliveryRemediationTurnCompleted,
   DeliveryRemediationVerified,
+  deliveryFeedbackRequiresApprovedReview,
   encodeDeliveryRemediationJson,
   parseDeliveryFeedbackId,
   parseDeliveryFeedbackTrustPolicy,
@@ -29,6 +30,21 @@ const feedbackId = parseDeliveryFeedbackId(
 );
 
 describe("delivery remediation contracts", () => {
+  it("keeps legacy approval policy strict and accepts only explicit booleans", () => {
+    const legacy = {
+      allowPullRequestAuthor: false,
+      trustedChecks: [],
+      trustedHumanLogins: [],
+      version: 1,
+    };
+
+    assert.strictEqual(deliveryFeedbackRequiresApprovedReview(parseDeliveryFeedbackTrustPolicy(legacy)), true);
+    assert.strictEqual(deliveryFeedbackRequiresApprovedReview(parseDeliveryFeedbackTrustPolicy({ ...legacy, requireApprovedReview: true })), true);
+    assert.strictEqual(deliveryFeedbackRequiresApprovedReview(parseDeliveryFeedbackTrustPolicy({ ...legacy, requireApprovedReview: false })), false);
+    assert.throws(() => parseDeliveryFeedbackTrustPolicy({ ...legacy, requireApprovedReview: "false" }));
+    assert.throws(() => parseDeliveryFeedbackTrustPolicy({ ...legacy, requireApprovedReview: false, unexpected: true }));
+  });
+
   it("parses an immutable empty-by-default human trust policy", () => {
     const policy = parseDeliveryFeedbackTrustPolicy({
       allowPullRequestAuthor: false,

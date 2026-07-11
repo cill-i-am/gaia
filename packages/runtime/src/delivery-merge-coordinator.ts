@@ -9,6 +9,7 @@ import {
   DeliveryRequiredCheckPolicy,
   DeliveryFeedbackTrustPolicyV1,
   deliveryRequiredCheckPolicyCanonicalPayload,
+  deliveryFeedbackRequiresApprovedReview,
   encodeDeliveryMergeReceiptJson,
   encodeDeliveryCleanupReceiptJson,
   encodeDeliveryMergeReadinessDecisionJson,
@@ -42,6 +43,7 @@ export type FreshMergeState = {
   readonly branchName: string;
   readonly checks: ReadonlyArray<RequiredCheckFact>;
   readonly draft: boolean;
+  readonly feedbackBlockers: number;
   readonly headSha: string;
   readonly mergeCommitSha?: string;
   readonly mergeability: "conflicting" | "mergeable" | "unknown";
@@ -66,7 +68,7 @@ export function requiredCheckPolicyFromTrustPolicy(trust: DeliveryFeedbackTrustP
   const checks = trust.trustedChecks.map((check) => ({ ...check })).sort((left, right) =>
     [left.repository, left.workflow, left.name, left.appSlug].join("\0").localeCompare([right.repository, right.workflow, right.name, right.appSlug].join("\0"))
   );
-  return DeliveryRequiredCheckPolicy.make({ checks, requireApprovedReview: true, version: 1 });
+  return DeliveryRequiredCheckPolicy.make({ checks, requireApprovedReview: deliveryFeedbackRequiresApprovedReview(trust), version: 1 });
 }
 
 export function makeGitHubFreshMergeStateReader(input: { readonly commandRunner?: GitHubCommandRunner; readonly rootDirectory: string; readonly trustPolicy: DeliveryFeedbackTrustPolicyV1 }) {
@@ -83,6 +85,7 @@ export function makeGitHubFreshMergeStateReader(input: { readonly commandRunner?
       branchName: detail.headRefName,
       checks: read.observation.checks.map((check) => ({ appSlug: check.appSlug, headSha: read.observation.headSha, name: check.name, repository: target.repository, state: check.state === "passing" ? "passing" as const : check.state === "pending" ? "pending" as const : "failed" as const, workflow: check.workflow })),
       draft: detail.isDraft,
+      feedbackBlockers: read.observation.blockers.length,
       headSha: detail.headRefOid,
       ...(detail.mergeCommit?.oid === undefined ? {} : { mergeCommitSha: detail.mergeCommit.oid }),
       mergeability: detail.mergeable === "MERGEABLE" ? "mergeable" as const : detail.mergeable === "CONFLICTING" ? "conflicting" as const : "unknown" as const,
@@ -309,7 +312,10 @@ function freshBlockers(fresh: FreshMergeState, branch: string, method: "merge" |
   if (!fresh.supportedMethods.includes(method)) blockers.push("Selected merge method is unavailable.");
   if (fresh.mergeability !== "mergeable") blockers.push("Mergeability is not mergeable.");
   if (fresh.unresolvedActionableThreads !== 0) blockers.push("Actionable review threads remain unresolved.");
-  if (policy.requireApprovedReview && fresh.reviewDecision !== "APPROVED") blockers.push("Required review approval is absent.");
+  if (fresh.feedbackBlockers !== 0) blockers.push("Trusted feedback evaluation remains blocked or ambiguous.");
+  if (fresh.reviewDecision === "CHANGES_REQUESTED") blockers.push("Review changes are requested.");
+  else if (policy.requireApprovedReview && fresh.reviewDecision !== "APPROVED") blockers.push("Required review approval is absent.");
+  else if (!policy.requireApprovedReview && fresh.reviewDecision !== undefined && fresh.reviewDecision !== "APPROVED" && fresh.reviewDecision !== "REVIEW_REQUIRED") blockers.push("Review state is ambiguous or unsupported.");
   if (!validateRequiredChecks(policy.checks, fresh.checks, fresh.headSha)) blockers.push("Required checks are incomplete or unsuccessful.");
   return blockers;
 }

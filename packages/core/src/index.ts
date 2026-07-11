@@ -273,6 +273,7 @@ export {
   DeliveryFeedbackKindSchema,
   DeliveryFeedbackObservation,
   DeliveryFeedbackTrustPolicyV1,
+  deliveryFeedbackRequiresApprovedReview,
   DeliveryPullRequestObservation,
   DeliveryPullRequestStatusSchema,
   DeliveryRemediationCommitAttempted,

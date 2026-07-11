@@ -68,6 +68,7 @@ export class DeliveryFeedbackTrustPolicyV1 extends Schema.Class<DeliveryFeedback
   "DeliveryFeedbackTrustPolicyV1",
 )({
   allowPullRequestAuthor: Schema.Boolean,
+  requireApprovedReview: Schema.optionalKey(Schema.Boolean),
   trustedChecks: Schema.Array(DeliveryTrustedCheckV1).pipe(
     Schema.check(Schema.isMaxLength(20)),
   ),
@@ -81,6 +82,13 @@ export class DeliveryFeedbackTrustPolicyV1 extends Schema.Class<DeliveryFeedback
 export const parseDeliveryFeedbackTrustPolicy = Schema.decodeUnknownSync(
   DeliveryFeedbackTrustPolicyV1,
 );
+
+/** Legacy policies are strict; only an explicitly persisted false relaxes approval. */
+export function deliveryFeedbackRequiresApprovedReview(
+  policy: DeliveryFeedbackTrustPolicyV1,
+): boolean {
+  return policy.requireApprovedReview !== false;
+}
 
 /** Finite normalized state for one hosted pull-request check. */
 export const DeliveryCheckStateSchema = Schema.Literals([

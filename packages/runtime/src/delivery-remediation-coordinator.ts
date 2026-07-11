@@ -1,5 +1,6 @@
 import {
   DeliveryFeedbackTrustPolicyV1,
+  deliveryFeedbackRequiresApprovedReview,
   DeliveryRemediationActivationActionRequest,
   DeliveryBlocker,
   DeliveryPullRequestObservation,
@@ -1450,7 +1451,13 @@ function acceptedFeedbackTrustPolicy(
 }
 
 function canonicalTrustPolicy(policy: DeliveryFeedbackTrustPolicyV1) {
-  return JSON.stringify(Schema.encodeSync(DeliveryFeedbackTrustPolicyV1)(policy));
+  return JSON.stringify({
+    allowPullRequestAuthor: policy.allowPullRequestAuthor,
+    requireApprovedReview: deliveryFeedbackRequiresApprovedReview(policy),
+    trustedChecks: policy.trustedChecks,
+    trustedHumanLogins: policy.trustedHumanLogins,
+    version: policy.version,
+  });
 }
 
 function expectedHeadChangedRead(input: {
