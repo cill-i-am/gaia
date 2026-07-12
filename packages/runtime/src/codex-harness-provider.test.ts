@@ -16,6 +16,7 @@ import {
   parseCodexThreadId,
   parseCodexTurnId,
   parseCodexItemId,
+  type CodexThread,
   type CodexNotification,
   type CodexAppServerError,
   type CodexServerRequest,
@@ -29,12 +30,15 @@ import {
 } from "./codex-harness-provider.js";
 import { resumeHarnessSession, startHarnessSession } from "./harness-session.js";
 
-function recordingClient(recoveredTurns: ReadonlyArray<{ readonly id: ReturnType<typeof parseCodexTurnId>; readonly status: "inProgress" | "completed" | "failed" }> = []) {
+type RecoveredTurn = NonNullable<CodexThread["turns"]>[number];
+
+function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
   const notifications = new Set<(notification: CodexNotification) => void>();
   const requests = new Set<(request: CodexServerRequest) => void>();
   const terminations = new Set<(error: CodexAppServerError) => void>();
   const starts: Array<unknown> = [];
   const initializations: Array<unknown> = [];
+  const interrupts: Array<unknown> = [];
   const fileResponses: Array<unknown> = [];
   const permissionResponses: Array<unknown> = [];
   const reads: Array<unknown> = [];
@@ -45,7 +49,10 @@ function recordingClient(recoveredTurns: ReadonlyArray<{ readonly id: ReturnType
       initializations.push(params);
       return Effect.succeed({ platformFamily: "unix", platformOs: "macos", userAgent: "Codex/0.137.0" });
     },
-    interruptTurn: () => Effect.succeed({}),
+    interruptTurn: (params) => {
+      interrupts.push(params);
+      return Effect.succeed({});
+    },
     onNotification: (listener) => { notifications.add(listener); return () => notifications.delete(listener); },
     onServerRequest: (listener) => { requests.add(listener); return () => requests.delete(listener); },
     onTermination: (listener) => { terminations.add(listener); return () => terminations.delete(listener); },
@@ -69,6 +76,7 @@ function recordingClient(recoveredTurns: ReadonlyArray<{ readonly id: ReturnType
     client,
     fileResponses,
     initializations,
+    interrupts,
     notifications,
     permissionResponses,
     reads,
@@ -81,25 +89,200 @@ function recordingClient(recoveredTurns: ReadonlyArray<{ readonly id: ReturnType
 }
 
 describe("Codex HarnessProvider adapter", () => {
+  it("projects only the latest checkpointed turn into the resumed session", async () => {
+    const sessionId = parseHarnessSessionId("session-exact-latest-turn");
+    const store = makeInMemoryCodexHarnessCorrelationStore();
+    const first = recordingClient();
+    await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: first.client,
+            correlationStore: store,
+            workspaceRoot: "/workspace",
+          }),
+          request: {
+            input: { text: "start" },
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: [],
+        }),
+      ),
+    );
+
+    const olderTurnId = parseCodexTurnId("native-older-completed-turn");
+    const second = recordingClient([
+      {
+        id: olderTurnId,
+        items: [
+          {
+            id: parseCodexItemId("native-older-completed-item"),
+            phase: "final_answer",
+            text: "older terminal output",
+            type: "agentMessage",
+          },
+        ],
+        status: "completed",
+      },
+      { id: first.turnId, status: "inProgress" },
+    ]);
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* resumeHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: second.client,
+              correlationStore: store,
+              workspaceRoot: "/workspace",
+            }),
+            request: {
+              expectedNativeTurnId: first.turnId,
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          const initial = yield* session.snapshot;
+          const observedFiber = yield* session.events.pipe(
+            Stream.takeUntil((event) => event.kind === "turnCompleted"),
+            Stream.runCollect,
+            Effect.forkChild,
+          );
+          yield* Effect.yieldNow;
+          if (Option.isNone(session.interrupt)) {
+            throw new Error("Expected interruption support.");
+          }
+          yield* session.interrupt.value;
+          for (const listener of second.notifications) {
+            listener({
+              method: "turn/completed",
+              params: {
+                threadId: second.threadId,
+                turn: { id: first.turnId, status: "completed" },
+              },
+            });
+          }
+          return {
+            initial,
+            observed: Array.from(yield* Fiber.join(observedFiber)),
+          };
+        }),
+      ),
+    );
+
+    expect(second.starts).toEqual([]);
+    expect(second.interrupts).toEqual([
+      { threadId: second.threadId, turnId: first.turnId },
+    ]);
+    expect(result.initial.turns).toHaveLength(1);
+    expect(result.initial.turns[0]?.status).toBe("running");
+    expect(result.initial.items).toEqual([]);
+    expect(
+      result.observed.filter((event) => event.kind === "turnCompleted"),
+    ).toEqual([
+      expect.objectContaining({
+        status: "completed",
+        turnId: result.initial.turns[0]?.turnId,
+      }),
+    ]);
+  });
+
   it.each(["inProgress", "completed", "failed"] as const)("replays the exact checkpointed %s turn without starting another turn", async (status) => {
     const sessionId = parseHarnessSessionId(`session-exact-${status}`);
     const store = makeInMemoryCodexHarnessCorrelationStore();
     const first = recordingClient();
     await Effect.runPromise(Effect.scoped(startHarnessSession({ provider: createCodexHarnessProvider({ client: first.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { input: { text: "start" }, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] })));
-    const second = recordingClient([{ id: first.turnId, status }]);
+    const second = recordingClient([
+      {
+        id: parseCodexTurnId("older-checkpoint-history-turn"),
+        status: "completed",
+      },
+      { id: first.turnId, status },
+    ]);
     const snapshot = await Effect.runPromise(Effect.scoped(Effect.gen(function* () { const session = yield* resumeHarnessSession({ provider: createCodexHarnessProvider({ client: second.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { expectedNativeTurnId: first.turnId, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] }); return yield* session.snapshot; })));
     expect(second.starts).toEqual([]);
     expect(snapshot.turns).toHaveLength(1); expect(snapshot.turns[0]?.status).toBe(status === "inProgress" ? "running" : status);
   });
 
-  it.each(["missing", "different", "duplicate", "unrelated-latest"] as const)("rejects %s checkpoint history without emitting or starting", async (variant) => {
+  it("preserves full recovered history when no checkpoint is supplied", async () => {
+    const sessionId = parseHarnessSessionId("session-full-history-resume");
+    const store = makeInMemoryCodexHarnessCorrelationStore();
+    const first = recordingClient();
+    await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: first.client,
+            correlationStore: store,
+            workspaceRoot: "/workspace",
+          }),
+          request: {
+            input: { text: "start" },
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: [],
+        }),
+      ),
+    );
+    const second = recordingClient([
+      {
+        id: parseCodexTurnId("older-full-history-turn"),
+        items: [
+          {
+            id: parseCodexItemId("older-full-history-item"),
+            phase: "final_answer",
+            text: "ordinary resume history",
+            type: "agentMessage",
+          },
+        ],
+        status: "completed",
+      },
+      { id: first.turnId, status: "inProgress" },
+    ]);
+    const snapshot = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* resumeHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: second.client,
+              correlationStore: store,
+              workspaceRoot: "/workspace",
+            }),
+            request: {
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          return yield* session.snapshot;
+        }),
+      ),
+    );
+
+    expect(second.starts).toEqual([]);
+    expect(snapshot.turns).toHaveLength(2);
+    expect(JSON.stringify(snapshot)).toContain("ordinary resume history");
+  });
+
+  it.each(["missing", "different", "duplicate", "unrelated-latest", "invalid-status"] as const)("rejects %s checkpoint history without emitting or starting", async (variant) => {
     const sessionId = parseHarnessSessionId(`session-reject-${variant}`); const store = makeInMemoryCodexHarnessCorrelationStore(); const first = recordingClient();
     await Effect.runPromise(Effect.scoped(startHarnessSession({ provider: createCodexHarnessProvider({ client: first.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { input: { text: "start" }, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] })));
     const other = parseCodexTurnId("other-turn");
-    const turns = variant === "missing" ? [] : variant === "different" ? [{ id: other, status: "completed" as const }] : variant === "duplicate" ? [{ id: first.turnId, status: "completed" as const }, { id: first.turnId, status: "completed" as const }] : [{ id: first.turnId, status: "completed" as const }, { id: other, status: "completed" as const }];
+    const turns = variant === "missing"
+      ? []
+      : variant === "different"
+        ? [{ id: other, status: "completed" as const }]
+        : variant === "duplicate"
+          ? [{ id: first.turnId, status: "completed" as const }, { id: first.turnId, status: "completed" as const }]
+          : variant === "invalid-status"
+            ? [{ id: first.turnId, status: "interrupted" as const }]
+            : [{ id: first.turnId, status: "completed" as const }, { id: other, status: "completed" as const }];
     const second = recordingClient(turns);
     const exit = await Effect.runPromise(Effect.scoped(resumeHarnessSession({ provider: createCodexHarnessProvider({ client: second.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { expectedNativeTurnId: first.turnId, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] }).pipe(Effect.exit)));
     expect(exit._tag).toBe("Failure"); expect(second.starts).toEqual([]);
+    expect(second.notifications.size).toBe(0); expect(second.interrupts).toEqual([]);
   });
   it("round-trips strict durable private correlation and rejects corrupt state", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "gaia-codex-correlation-"));

@@ -363,6 +363,7 @@ export function createCodexHarnessProvider(
             providerId: CodexHarnessProviderDescriptor.providerId,
           });
         }
+        let recoveredProjectionTurnId: CodexTurnId | undefined;
         if (request.expectedNativeTurnId !== undefined) {
           const turns = recovered.thread.turns ?? [];
           const matches = turns.filter(({ id }) => id === request.expectedNativeTurnId);
@@ -373,10 +374,14 @@ export function createCodexHarnessProvider(
               providerId: CodexHarnessProviderDescriptor.providerId,
             });
           }
+          recoveredProjectionTurnId = exact.id;
         }
         return yield* makeCodexSession({
           nativeThreadId: thread.thread.id,
           options,
+          ...(recoveredProjectionTurnId === undefined
+            ? {}
+            : { recoveredProjectionTurnId }),
           recoveredThread: recovered.thread,
           request,
         }, () =>
@@ -392,6 +397,7 @@ export function createCodexHarnessProvider(
 function makeCodexSession<E>(input: {
   readonly nativeThreadId: CodexThreadId;
   readonly options: CodexHarnessProviderOptions;
+  readonly recoveredProjectionTurnId?: CodexTurnId;
   readonly recoveredThread?: CodexThread;
   readonly request: HarnessSessionStart | HarnessSessionResume;
 }, initialTurnError: () => E): Effect.Effect<HarnessSession, E, Scope.Scope> {
@@ -409,6 +415,16 @@ function makeCodexSession<E>(input: {
         input.request.workspacePath,
       ),
     });
+    const recoveredThreadForProjection =
+      input.recoveredThread === undefined ||
+        input.recoveredProjectionTurnId === undefined
+        ? input.recoveredThread
+        : {
+            ...input.recoveredThread,
+            turns: (input.recoveredThread.turns ?? []).filter(
+              ({ id }) => id === input.recoveredProjectionTurnId,
+            ),
+          };
     const projectedEvents: Array<HarnessEvent> = [];
     const pendingRequests = new Map<HarnessInteractionId, CodexServerRequest>();
     let activeTurnId: CodexTurnId | undefined;
@@ -613,7 +629,7 @@ function makeCodexSession<E>(input: {
     );
 
     if (
-      input.recoveredThread !== undefined &&
+      recoveredThreadForProjection !== undefined &&
       !adapterFailed &&
       !bufferFailed
     ) {
@@ -624,10 +640,10 @@ function makeCodexSession<E>(input: {
         }),
       ]);
       emitProviderEvents(
-        mapOrFail(() => mapper.mapRecoveredThread(input.recoveredThread)),
+        mapOrFail(() => mapper.mapRecoveredThread(recoveredThreadForProjection)),
       );
       if (!adapterFailed && !bufferFailed) {
-        activeTurnId = [...(input.recoveredThread.turns ?? [])]
+        activeTurnId = [...(recoveredThreadForProjection.turns ?? [])]
           .reverse()
           .find((turn) => turn.status === "inProgress")?.id;
       }
