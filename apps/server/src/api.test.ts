@@ -1,3 +1,4 @@
+import { request as httpRequest } from "node:http";
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
@@ -41,10 +42,11 @@ import {
   makeTestHarnessProviderRegistry,
   testHarnessProvider,
 } from "@gaia/runtime/test-support";
-import { Deferred, Effect, FileSystem, Layer, Schema } from "effect";
+import { Deferred, Effect, Fiber, FileSystem, Layer, Schema } from "effect";
 import {
   HttpClient,
   HttpClientRequest,
+  HttpServer,
   type HttpClientResponse,
 } from "effect/unstable/http";
 import { makeLocalGaiaServerLayer } from "./api.js";
@@ -1127,6 +1129,48 @@ describe("local run api http boundary", () => {
       }),
     );
 
+    it.effect("rolls back a pre-acceptance failure so a later create can be accepted", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-reusable-" });
+        const store = yield* makeRunStorePaths({ rootDirectory: cwd });
+        let detections = 0;
+        const registry = makeHarnessProviderRegistry([
+          {
+            profileId: codexAppServerExecutionSelection.harnessProfileId,
+            provider: {
+              ...testHarnessProvider,
+              detect: Effect.gen(function* () {
+                detections += 1;
+                if (detections === 1) {
+                  return {
+                    state: "authenticationRequired",
+                    version: "test-1",
+                  } as const;
+                }
+                return yield* testHarnessProvider.detect;
+              }),
+            },
+          },
+        ]);
+        const layer = testServerLayer(cwd, { harnessProviderRegistry: registry });
+
+        const { first, second } = yield* Effect.gen(function* () {
+          const failed = yield* createRunRequest("Fail before durable acceptance.\n");
+          assert.isFalse(yield* fs.exists(store.runsRoot));
+          const accepted = yield* createRunRequest("Accept after rollback.\n");
+          return { first: failed, second: accepted };
+        }).pipe(Effect.provide(layer));
+        const firstBody = yield* responseJsonObject(first);
+        const secondBody = yield* responseJsonObject(second);
+
+        assert.strictEqual(first.status, 422);
+        assertApiError(firstBody, "HarnessAuthenticationRequired", 422);
+        assert.strictEqual(second.status, 202);
+        assert.strictEqual(getString(secondBody, "status"), "accepted");
+      }),
+    );
+
     it.effect("rejects path-bearing and unknown create request shapes", () =>
       Effect.gen(function* () {
         const layer = testServerLayer(".");
@@ -1183,6 +1227,102 @@ describe("local run api http boundary", () => {
         assertApiError(body, "ActiveRunConflict", 409);
 
         yield* Deferred.succeed(release, undefined);
+      }),
+      20_000,
+    );
+
+    it.effect("returns typed 409 while the first create is still accepting", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-accepting-" });
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const registry = pausingFirstDetectionRegistry(entered, release);
+        const layer = testServerLayer(cwd, { harnessProviderRegistry: registry });
+
+        const { first, second } = yield* Effect.gen(function* () {
+          const firstFiber = yield* createRunRequest("Pause during acceptance.\n").pipe(
+            Effect.forkChild,
+          );
+          yield* Deferred.await(entered);
+          const conflict = yield* createRunRequest("Conflict while accepting.\n");
+          yield* Deferred.succeed(release, undefined);
+          const accepted = yield* Fiber.join(firstFiber);
+          return { first: accepted, second: conflict };
+        }).pipe(Effect.provide(layer));
+        const secondBody = yield* responseJsonObject(second);
+
+        assert.strictEqual(first.status, 202);
+        assert.strictEqual(second.status, 409);
+        assertApiError(secondBody, "ActiveRunConflict", 409);
+      }),
+      20_000,
+    );
+
+    it.effect("rolls back a canceled pre-acceptance create so a later create is accepted", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-cancel-accepting-" });
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const registry = pausingFirstDetectionRegistry(entered, release);
+        const layer = testServerLayer(cwd, { harnessProviderRegistry: registry });
+
+        const second = yield* Effect.gen(function* () {
+          const server = yield* HttpServer.HttpServer;
+          const firstRequest = startNativeCreateRunRequest(
+            loopbackServerUrl(server),
+            "Cancel during acceptance.\n",
+          );
+          yield* Deferred.await(entered);
+          const socket = yield* Effect.promise(() => firstRequest.socket);
+          socket.resetAndDestroy();
+          yield* Effect.promise(() => firstRequest.closed);
+          return yield* eventuallyAcceptedCreate("Accept after cancellation rollback.\n");
+        }).pipe(
+          Effect.ensuring(Deferred.succeed(release, undefined)),
+          Effect.provide(layer),
+        );
+        const body = yield* responseJsonObject(second);
+
+        assert.strictEqual(second.status, 202);
+        assert.strictEqual(getString(body, "status"), "accepted");
+      }),
+      20_000,
+    );
+
+    it.effect("keeps the running reservation owned after canceling a post-markAccepted request", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-cancel-running-" });
+        const markedAccepted = yield* Deferred.make<void>();
+        const releaseReviewer = yield* Deferred.make<void>();
+        const layer = testServerLayer(
+          cwd,
+          { reviewer: pausingReviewer(releaseReviewer) },
+          {
+            afterCreateRunAccepted: () =>
+              Effect.gen(function* () {
+                yield* Deferred.succeed(markedAccepted, undefined);
+                yield* Effect.never;
+              }),
+          },
+        );
+
+        const second = yield* Effect.gen(function* () {
+          const firstFiber = yield* createRunRequest("Cancel after markAccepted.\n").pipe(
+            Effect.forkChild,
+          );
+          yield* Deferred.await(markedAccepted);
+          yield* Fiber.interrupt(firstFiber);
+          const conflict = yield* createRunRequest("Conflict with running owner.\n");
+          yield* Deferred.succeed(releaseReviewer, undefined);
+          return conflict;
+        }).pipe(Effect.provide(layer));
+        const secondBody = yield* responseJsonObject(second);
+
+        assert.strictEqual(second.status, 409);
+        assertApiError(secondBody, "ActiveRunConflict", 409);
       }),
       20_000,
     );
@@ -1360,7 +1500,11 @@ function postCreateRun(
 }
 
 function createRunRequest(specMarkdown: string) {
-  return createRunRequestFromPayload({
+  return createRunRequestFromPayload(createRunPayload(specMarkdown));
+}
+
+function createRunPayload(specMarkdown: string) {
+  return {
     delivery: { mode: "local" },
     execution: codexAppServerExecutionSelection,
     workflow: "issueDelivery",
@@ -1369,7 +1513,7 @@ function createRunRequest(specMarkdown: string) {
       kind: "issue",
       title: "Server API test run",
     },
-  });
+  } as const;
 }
 
 function createRunRequestFromPayload(payload: unknown) {
@@ -1416,6 +1560,77 @@ function factoryCreateInput() {
       title: "Wire LocalGaiaServerApi factory endpoints",
     },
   } as const;
+}
+
+function pausingFirstDetectionRegistry(
+  entered: Deferred.Deferred<void>,
+  release: Deferred.Deferred<void>,
+) {
+  let detections = 0;
+  return makeHarnessProviderRegistry([
+    {
+      profileId: codexAppServerExecutionSelection.harnessProfileId,
+      provider: {
+        ...testHarnessProvider,
+        detect: Effect.gen(function* () {
+          detections += 1;
+          if (detections === 1) {
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(release);
+          }
+          return yield* testHarnessProvider.detect;
+        }),
+      },
+    },
+  ]);
+}
+
+function eventuallyAcceptedCreate(specMarkdown: string) {
+  return Effect.gen(function* () {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const response = yield* createRunRequest(specMarkdown);
+      if (response.status === 202) {
+        return response;
+      }
+      if (response.status !== 409) {
+        assert.fail(`Expected create retry to return 202 or transient 409, got ${response.status}.`);
+      }
+      yield* Effect.yieldNow;
+    }
+    assert.fail("Expected canceled pre-acceptance create to release its reservation.");
+  });
+}
+
+function startNativeCreateRunRequest(
+  baseUrl: string,
+  specMarkdown: string,
+) {
+  const body = JSON.stringify(createRunPayload(specMarkdown));
+  const request = httpRequest(new URL("/runs", baseUrl), {
+    headers: {
+      "content-length": Buffer.byteLength(body),
+      "content-type": "application/json",
+    },
+    method: "POST",
+  });
+  const socket = new Promise<import("node:net").Socket>((resolve) => {
+    request.once("socket", resolve);
+  });
+  const closed = new Promise<void>((resolve) => {
+    request.once("close", resolve);
+    request.once("error", () => resolve());
+  });
+  request.write(body);
+  request.end();
+  return { closed, request, socket } as const;
+}
+
+function loopbackServerUrl(server: { readonly address: HttpServer.Address }) {
+  const address = server.address;
+  if (address._tag !== "TcpAddress") {
+    assert.fail("Expected test server to bind a TCP address.");
+  }
+  return `http://127.0.0.1:${address.port}`;
 }
 
 function recordingGitRunner() {

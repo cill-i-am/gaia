@@ -94,7 +94,7 @@ function makeReservation(
           : current,
       ),
     reservationId,
-    rollback: clearReservation(active, reservationId),
+    rollback: clearAcceptingReservation(active, reservationId),
   };
 }
 
@@ -119,5 +119,16 @@ function clearReservation(
 ) {
   return Ref.update(active, (current) =>
     current?.reservationId === reservationId ? undefined : current,
+  );
+}
+
+function clearAcceptingReservation(
+  active: Ref.Ref<ActiveServerRun | undefined>,
+  reservationId: string,
+) {
+  return Ref.update(active, (current) =>
+    current?.reservationId === reservationId && current.phase === "accepting"
+      ? undefined
+      : current,
   );
 }
