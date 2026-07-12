@@ -905,6 +905,7 @@ function updateStatesForEvent(
     case "DELIVERY_CLEANUP_PROVENANCE_RECORDED":
     case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
     case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
+    case "WORKER_CONTINUATION_RECORDED":
       states.set("orchestrator", "running");
       return;
     case "RUN_FAILED":
@@ -957,6 +958,7 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "DELIVERY_CLEANUP_PROVENANCE_RECORDED":
     case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
     case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
+    case "WORKER_CONTINUATION_RECORDED":
       return "orchestrator";
     case "RUN_FAILED":
       return roleFromFailureStage(event.payload["stage"]);
@@ -1098,6 +1100,8 @@ function activityLabel(event: RunEvent): string {
       return "Worker completed";
     case "WORKER_RECOVERY_RECORDED":
       return "Worker recovery updated";
+    case "WORKER_CONTINUATION_RECORDED":
+      return "Audited worker continuation updated";
     case "VERIFICATION_STARTED":
       return "Verification started";
     case "VERIFICATION_COMPLETED":

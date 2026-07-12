@@ -25,7 +25,14 @@ import {
   deriveDeliveryMergeActionHistories,
   deriveDeliveryCleanupActionHistories,
 } from "./delivery-merge.js";
-import { parseWorkerRecoveryReceipt, type WorkerRecoveryReceipt } from "./worker-recovery.js";
+import {
+  encodeWorkerContinuationReceiptJson,
+  parseWorkerContinuationReceipt,
+  parseWorkerRecoveryReceipt,
+  workerContinuationProjection,
+  type WorkerContinuationReceipt,
+  type WorkerRecoveryReceipt,
+} from "./worker-recovery.js";
 import {
   FailureStageSchema,
   GaiaFailure,
@@ -199,6 +206,7 @@ export type RunMachineEvent =
     }
   | { readonly type: "HARNESS_SESSION_EVENT_RECORDED" }
   | { readonly type: "WORKER_RECOVERY_RECORDED"; readonly recovery: WorkerRecoveryReceipt }
+  | { readonly continuation: WorkerContinuationReceipt; readonly type: "WORKER_CONTINUATION_RECORDED" }
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
@@ -262,6 +270,11 @@ export const runMachine = createMachine({
   states: {
     completed: {
       on: {
+        WORKER_CONTINUATION_RECORDED: [
+          { actions: "recordWorkerContinuation", guard: "workerContinuationRunning", target: "runningWorker" },
+          { actions: "recordWorkerContinuation", guard: "workerContinuationFailed", target: "failed" },
+          { actions: "recordWorkerContinuation", target: "delivering" },
+        ],
         BROWSER_EVIDENCE_RECORDED: {
           actions: "recordBrowserEvidence",
         },
@@ -309,6 +322,11 @@ export const runMachine = createMachine({
     },
     failed: {
       on: {
+        WORKER_CONTINUATION_RECORDED: [
+          { actions: "recordWorkerContinuation", guard: "workerContinuationRunning", target: "runningWorker" },
+          { actions: "recordWorkerContinuation", guard: "workerContinuationFailed" },
+          { actions: "recordWorkerContinuation", target: "delivering" },
+        ],
         WORKER_RECOVERY_RECORDED: [
           { guard: "workerRecoveryConfirmed", target: "runningWorker" },
           {},
@@ -351,6 +369,11 @@ export const runMachine = createMachine({
         DELIVERY_REMEDIATION_RECORDED: {
           actions: "recordDeliveryRemediation",
         },
+        WORKER_CONTINUATION_RECORDED: [
+          { actions: "recordWorkerContinuation", guard: "workerContinuationRunning", target: "runningWorker" },
+          { actions: "recordWorkerContinuation", guard: "workerContinuationFailed", target: "failed" },
+          { actions: "recordWorkerContinuation" },
+        ],
         DELIVERY_MERGE_RECORDED: { actions: "recordDeliveryMerge" },
         DELIVERY_MERGE_READINESS_RECORDED: { actions: "recordDeliveryMergeReadiness" },
         DELIVERY_CLEANUP_RECORDED: [
@@ -432,6 +455,10 @@ export const runMachine = createMachine({
           target: "verifying",
         },
         WORKER_STARTED: {},
+        WORKER_CONTINUATION_RECORDED: [
+          { actions: "recordWorkerContinuation", guard: "workerContinuationFailed", target: "failed" },
+          { actions: "recordWorkerContinuation" },
+        ],
       },
     },
     verifying: {
@@ -527,6 +554,23 @@ export const runMachine = createMachine({
       delivery: ({ context, event }) => event.type === "DELIVERY_MERGE_RECORDED"
         ? deliveryWithMerge(context.delivery, event.mergeAction)
         : context.delivery,
+    }),
+    recordWorkerContinuation: assign({
+      delivery: ({ context, event }) => event.type === "WORKER_CONTINUATION_RECORDED"
+        ? deliveryWithWorkerContinuation(context.delivery, event.continuation)
+        : context.delivery,
+      evidenceReviewPath: ({ context, event }) => event.type === "WORKER_CONTINUATION_RECORDED" && event.continuation.state === "intentRecorded"
+        ? undefined
+        : context.evidenceReviewPath,
+      reportPath: ({ context, event }) => event.type === "WORKER_CONTINUATION_RECORDED" && event.continuation.state === "intentRecorded"
+        ? undefined
+        : context.reportPath,
+      verificationResultPath: ({ context, event }) => event.type === "WORKER_CONTINUATION_RECORDED" && event.continuation.state === "intentRecorded"
+        ? undefined
+        : context.verificationResultPath,
+      workerResultPath: ({ context, event }) => event.type === "WORKER_CONTINUATION_RECORDED" && event.continuation.state === "intentRecorded"
+        ? undefined
+        : context.workerResultPath,
     }),
     recordDeliveryMergeReadiness: assign({
       delivery: ({ context, event }) => event.type === "DELIVERY_MERGE_READINESS_RECORDED" && context.delivery !== undefined
@@ -731,6 +775,8 @@ export const runMachine = createMachine({
   },
   guards: {
     workerRecoveryConfirmed: ({ event }) => event.type === "WORKER_RECOVERY_RECORDED" && event.recovery.state === "dispatchConfirmed",
+    workerContinuationFailed: ({ event }) => event.type === "WORKER_CONTINUATION_RECORDED" && (event.continuation.state === "failed" || event.continuation.state === "outcomeUnknown"),
+    workerContinuationRunning: ({ event }) => event.type === "WORKER_CONTINUATION_RECORDED" && (event.continuation.state === "resumeAttempted" || event.continuation.state === "resumeConfirmed" || event.continuation.state === "followUpAttempted" || event.continuation.state === "followUpConfirmed"),
     cleanupCompleted: ({ event }) => event.type === "DELIVERY_CLEANUP_RECORDED" && event.cleanup.state === "completed",
   },
 });
@@ -776,6 +822,15 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       if (deriveDeliveryMergeActionHistories(mergeActions).latest?.latest.state !== "dispatchConfirmed") throw new Error("Cleanup requires a confirmed merge.");
       cleanupActions.push({ receipt: parseDeliveryCleanupReceipt(event.payload["cleanup"]), sequence: event.sequence });
       deriveDeliveryCleanupActionHistories(cleanupActions);
+    }
+    if (event.type === "WORKER_CONTINUATION_RECORDED") {
+      const previousValue = actor.getSnapshot().context.delivery?.["workerContinuation"];
+      if (previousValue !== undefined) {
+        assertWorkerContinuationTransition(
+          parseWorkerContinuationReceipt(previousValue),
+          parseWorkerContinuationReceipt(event.payload["continuation"]),
+        );
+      }
     }
 
     actor.send(toMachineEvent(event));
@@ -953,6 +1008,8 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
       return { type: event.type };
     case "WORKER_RECOVERY_RECORDED":
       return { recovery: parseWorkerRecoveryReceipt(event.payload["recovery"]), type: event.type };
+    case "WORKER_CONTINUATION_RECORDED":
+      return { continuation: parseWorkerContinuationReceipt(event.payload["continuation"]), type: event.type };
     case "REVIEW_COMPLETED":
       const reviewerSessionEvidencePath = getOptionalStringPayload(
         event,
@@ -1024,6 +1081,14 @@ function deliveryWithPublication(
   if (delivery === undefined) {
     throw new Error("Publication requires accepted pull-request delivery state.");
   }
+  if (
+    delivery["workerEvidenceEpochSequence"] !== undefined &&
+    delivery["stage"] !== "readyToPublish"
+  ) {
+    throw new Error(
+      "Publication requires fresh post-continuation ready evidence.",
+    );
+  }
 
   const previousValue = delivery["publication"];
   const previous =
@@ -1037,6 +1102,92 @@ function deliveryWithPublication(
     publication: encodeDeliveryPublicationJson(publication),
     stage: publicationStage(publication),
   };
+}
+
+function deliveryWithWorkerContinuation(
+  delivery: Record<string, Schema.Json> | undefined,
+  continuation: WorkerContinuationReceipt,
+): Record<string, Schema.Json> {
+  if (delivery === undefined || delivery["mode"] !== "pullRequest") {
+    throw new Error("Worker continuation requires accepted pull-request delivery state.");
+  }
+  const previousValue = delivery["workerContinuation"];
+  const previous = previousValue === undefined
+    ? undefined
+    : parseWorkerContinuationReceipt(previousValue);
+  assertWorkerContinuationTransition(previous, continuation);
+  const stage = workerContinuationProjection(continuation);
+  const priorStage = delivery["stage"];
+  const nextStage = stage ?? (typeof priorStage === "string" ? priorStage : undefined);
+  if (nextStage === undefined) {
+    throw new Error("Worker continuation requires an existing delivery stage.");
+  }
+  return {
+    ...delivery,
+    stage: nextStage,
+    workerContinuation: encodeWorkerContinuationReceiptJson(continuation),
+    workerEvidenceEpochSequence: continuation.workerEvidenceEpochSequence,
+  };
+}
+
+function assertWorkerContinuationTransition(
+  previous: WorkerContinuationReceipt | undefined,
+  next: WorkerContinuationReceipt,
+) {
+  if (previous === undefined) {
+    if (next.state !== "intentRecorded") {
+      throw new Error("Worker continuation must record intent before continuation work.");
+    }
+    return;
+  }
+  if (JSON.stringify(workerContinuationBinding(previous)) !== JSON.stringify(workerContinuationBinding(next))) {
+    throw new Error("Worker continuation action is already bound to different immutable input.");
+  }
+  const previousRank = workerContinuationStateRank(previous.state);
+  const nextRank = workerContinuationStateRank(next.state);
+  if (previousRank === undefined || nextRank === undefined || nextRank < previousRank) {
+    throw new Error("Worker continuation cannot move backward.");
+  }
+  if (
+    (previous.state === "failed" || previous.state === "outcomeUnknown" || previous.state === "workerCompleted") &&
+    previous.state !== next.state
+  ) {
+    throw new Error("Terminal worker continuation state cannot change.");
+  }
+}
+
+function workerContinuationBinding(receipt: WorkerContinuationReceipt) {
+  return {
+    actionId: receipt.actionId,
+    expectedContaminatedReadySequence: receipt.expectedContaminatedReadySequence,
+    expectedCurrentSequence: receipt.expectedCurrentSequence,
+    expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
+    expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
+    expectedRecoveryActionId: receipt.expectedRecoveryActionId,
+    expectedSessionId: receipt.expectedSessionId,
+    harnessProfileId: receipt.harnessProfileId,
+    maxAttempts: receipt.maxAttempts,
+    workerEvidenceEpochSequence: receipt.workerEvidenceEpochSequence,
+  };
+}
+
+function workerContinuationStateRank(state: WorkerContinuationReceipt["state"]) {
+  switch (state) {
+    case "intentRecorded":
+      return 0;
+    case "resumeAttempted":
+      return 1;
+    case "resumeConfirmed":
+      return 2;
+    case "followUpAttempted":
+      return 3;
+    case "followUpConfirmed":
+      return 4;
+    case "workerCompleted":
+    case "failed":
+    case "outcomeUnknown":
+      return 5;
+  }
 }
 
 function deliveryWithMerge(

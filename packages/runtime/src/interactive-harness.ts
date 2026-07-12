@@ -1,6 +1,7 @@
 import {
   parseHarnessEvent,
   parseHarnessSessionId,
+  parseWorkerContinuationReceipt,
   parseWorkerRecoveryReceipt,
   parseWorkspaceRelativePath,
   type HarnessEvent,
@@ -54,8 +55,15 @@ export function interactiveSessionHarness(input: {
         const existing = yield* readEvents(paths);
         const sessionId = parseHarnessSessionId(`session-${request.runId}`);
         const fullHistory = harnessHistory(existing, sessionId);
-        const recoverySequence = [...existing].reverse().find((event) => event.type === "WORKER_RECOVERY_RECORDED" && parseWorkerRecoveryReceipt(event.payload["recovery"]).state === "dispatchConfirmed")?.sequence;
-        const history = recoverySequence === undefined ? fullHistory : harnessHistory(existing.filter(({ sequence }) => sequence > recoverySequence), sessionId);
+        const recoverySequence = latestRecoveryCheckpointSequence(existing);
+        const continuationEpochSequence = latestWorkerContinuationEpochSequence(existing);
+        const historyStartSequence = Math.max(
+          recoverySequence ?? 0,
+          continuationEpochSequence ?? 0,
+        );
+        const history = historyStartSequence === 0
+          ? fullHistory
+          : harnessHistory(existing.filter(({ sequence }) => sequence > historyStartSequence), sessionId);
         const existingTerminal = terminalSessionEvent(history);
 
         let terminal = existingTerminal;
@@ -282,4 +290,19 @@ function isTerminalSessionEvent(
 function workspacePathFromRoot(rootDirectory: string, workspacePath: string) {
   const relative = nodePath.relative(rootDirectory, workspacePath);
   return parseWorkspaceRelativePath(relative);
+}
+
+function latestRecoveryCheckpointSequence(events: ReadonlyArray<RunEvent>) {
+  return [...events].reverse().find((event) =>
+    event.type === "WORKER_RECOVERY_RECORDED" &&
+    parseWorkerRecoveryReceipt(event.payload["recovery"]).state === "dispatchConfirmed"
+  )?.sequence;
+}
+
+function latestWorkerContinuationEpochSequence(events: ReadonlyArray<RunEvent>) {
+  return [...events].reverse().flatMap((event) => {
+    if (event.type !== "WORKER_CONTINUATION_RECORDED") return [];
+    const continuation = parseWorkerContinuationReceipt(event.payload["continuation"]);
+    return [continuation.workerEvidenceEpochSequence];
+  })[0];
 }

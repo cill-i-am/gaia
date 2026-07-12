@@ -22,7 +22,12 @@ import {
 } from "./factory-graph.js";
 import { RunIdSchema } from "./run-id.js";
 import { HarnessExecutionSelection } from "./harness-execution.js";
-import { WorkerRecoveryAction, WorkerRecoveryReceiptSchema } from "./worker-recovery.js";
+import {
+  WorkerContinuationAction,
+  WorkerContinuationReceiptSchema,
+  WorkerRecoveryAction,
+  WorkerRecoveryReceiptSchema,
+} from "./worker-recovery.js";
 import {
   AgentActionSuccessEnvelope,
   AgentOperatorActionRequestSchema,
@@ -324,6 +329,10 @@ export const DeliveryStatusSchema = Schema.Literals([
   "workerRecoveryDispatching",
   "workerRecoveryFailed",
   "workerRecoveryOutcomeUnknown",
+  "workerContinuationPending",
+  "workerContinuationRunning",
+  "workerContinuationFailed",
+  "workerContinuationOutcomeUnknown",
 ] as const);
 
 export const DeliveryRecoveryActionKindSchema = Schema.Literals([
@@ -415,6 +424,7 @@ export class DeliveryRetryCleanupActionRequest extends Schema.Class<DeliveryRetr
 
 export const DeliveryActionRequestSchema = Schema.Union([
   DeliveryRecoveryActionRequest,
+  WorkerContinuationAction,
   DeliveryRemediationActivationActionRequest,
   DeliveryEvaluateMergeReadinessActionRequest,
   DeliveryMergeActionRequest,
@@ -530,6 +540,7 @@ export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   runId: RunIdSchema,
   stage: DeliveryStatusSchema,
   status: DeliveryStatusSchema,
+  workerContinuation: Schema.optionalKey(WorkerContinuationReceiptSchema),
   workerRecovery: Schema.optionalKey(WorkerRecoveryReceiptSchema),
 }) {}
 
