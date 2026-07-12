@@ -10,6 +10,7 @@ import {
   DeliveryProvenanceDto,
   DeliverySnapshotDto,
   DeliverySnapshotSuccessEnvelope,
+  WorkerRecoverySuccessEnvelope,
   DeliveryStatusSchema,
   FactoryActivitySuccessEnvelope,
   CreateRunAcceptedResponse,
@@ -43,10 +44,15 @@ import {
   parseDeliveryRemediation,
   parseDeliveryMergeReceipt,
   parseDeliveryMergeReadinessDecision,
+  parseRunId,
   parseDeliveryCleanupReceipt,
   snapshotFromReplay,
   deriveDeliveryActionHistoriesFromEvents,
   deliveryActionAuditSummary,
+  parseWorkerRecoveryReceipt,
+  workerRecoveryProjection,
+  encodeWorkerRecoveryReceiptJson,
+  type WorkerRecoveryAction,
 } from "@gaia/core";
 import type {
   LocalRunList,
@@ -55,6 +61,7 @@ import type {
 import { readLocalRunEvents } from "@gaia/runtime/run-read-api";
 import {
   GaiaRuntimeError,
+  appendEvent,
   makeRuntimeError,
   makeRunPaths,
   makeLocalRunReadIndex,
@@ -79,6 +86,7 @@ import {
   actOnDeliveryPublication,
   actOnDeliveryRemediation,
   actOnDeliveryMerge,
+  actOnWorkerRecovery,
   acceptFactoryRun,
   continueServerRun,
   type ServerRunAcceptance,
@@ -111,6 +119,45 @@ type LocalServerConfigValue = LocalServerIdentity & {
   readonly subscribeDeliveryRunEventFeed: typeof subscribeRunEventFeed;
   readonly workflowOptions: ServerWorkflowOptions;
 };
+
+/** Finite recovery transaction: persist one receipt, then join its confirmed continuation. */
+export function executeWorkerRecoveryTransaction(input: {
+  readonly action: WorkerRecoveryAction;
+  readonly identity: LocalServerConfigValue;
+  readonly runId: string;
+}) {
+  return Effect.gen(function* () {
+    const receipt = yield* actOnWorkerRecovery(input.runId, input.action, {
+      ...input.identity.workflowOptions,
+      rootDirectory: input.identity.rootDirectory,
+    });
+    if (receipt.state === "dispatchConfirmed") {
+      const continuation = yield* Effect.exit(
+        continueServerRun(input.runId, {
+          ...input.identity.workflowOptions,
+          rootDirectory: input.identity.rootDirectory,
+          sessionCoordinator: input.identity.sessionCoordinator,
+        }),
+      );
+      if (continuation._tag === "Failure") {
+        const failed = {
+          ...receipt,
+          code: "WorkerRecoveryContinuationFailed",
+          message: "Confirmed worker recovery could not be continued safely.",
+          state: "failed" as const,
+        };
+        const runId = parseRunId(input.runId);
+        const paths = yield* makeRunPaths(runId, { rootDirectory: input.identity.rootDirectory });
+        yield* appendEvent(runId, paths, {
+          payload: { recovery: encodeWorkerRecoveryReceiptJson(failed) },
+          type: "WORKER_RECOVERY_RECORDED",
+        });
+        return failed;
+      }
+    }
+    return receipt;
+  });
+}
 
 export class LocalServerConfig extends Context.Service<
   LocalServerConfig,
@@ -354,6 +401,15 @@ export const RunsLive = HttpApiBuilder.group(
             data: snapshotExit.value,
             status: "success",
           });
+        }),
+      )
+      .handle("recoverWorker", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(executeWorkerRecoveryTransaction({ action: payload, identity, runId: params.runId }));
+          if (exit._tag === "Failure") return yield* Effect.fail(actionApiErrorFromCause(exit.cause));
+          yield* identity.runIndex.refreshRun(params.runId);
+          return WorkerRecoverySuccessEnvelope.make({ data: exit.value, status: "success" });
         }),
       )
       .handle("getAgentActivity", ({ params }) =>
@@ -725,6 +781,8 @@ function deliveryUpdateFromEvents(
     Option.getOrUndefined,
   );
   const eventSequence = events.at(-1)?.sequence ?? 0;
+  const workerRecoveryEvent = [...events].reverse().find(({ type }) => type === "WORKER_RECOVERY_RECORDED");
+  const workerRecovery = workerRecoveryEvent === undefined ? undefined : parseWorkerRecoveryReceipt(workerRecoveryEvent.payload["recovery"]);
 
   if (delivery === undefined || delivery.mode === "local") {
     const status = snapshot.state === "failed" ? "failed" : snapshot.state === "completed" ? "readyToPublish" : "unavailable";
@@ -738,7 +796,8 @@ function deliveryUpdateFromEvents(
     });
   }
 
-  const stage = snapshot.state === "failed" ? "failed" : delivery.stage;
+  const recoveryStage = workerRecoveryProjection(workerRecovery);
+  const stage = recoveryStage === undefined ? (snapshot.state === "failed" ? "failed" : delivery.stage) : recoveryStage;
   const publication =
     delivery.publication === undefined
       ? undefined
@@ -789,6 +848,7 @@ function deliveryUpdateFromEvents(
       : { remediationRearmSequence: delivery.remediationRearmSequence }),
     stage,
     status: stage,
+    ...(workerRecovery === undefined ? {} : { workerRecovery }),
   });
 }
 
@@ -1035,7 +1095,8 @@ function isAllowedMethod(method: string, url: string) {
   return method === "POST" && (
     path === "/runs" ||
     /^\/runs\/[^/]+\/agents\/[^/]+\/session\/actions$/u.test(path) ||
-    /^\/runs\/[^/]+\/delivery\/actions$/u.test(path)
+    /^\/runs\/[^/]+\/delivery\/actions$/u.test(path) ||
+    /^\/runs\/[^/]+\/recovery\/actions$/u.test(path)
   );
 }
 

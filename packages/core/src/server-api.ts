@@ -22,6 +22,7 @@ import {
 } from "./factory-graph.js";
 import { RunIdSchema } from "./run-id.js";
 import { HarnessExecutionSelection } from "./harness-execution.js";
+import { WorkerRecoveryAction, WorkerRecoveryReceiptSchema } from "./worker-recovery.js";
 import {
   AgentActionSuccessEnvelope,
   AgentOperatorActionRequestSchema,
@@ -127,6 +128,11 @@ export const ServerHostSchema = Schema.Literal("127.0.0.1");
 export const LocalRunStatusSchema = Schema.Literals([
   "completed",
   "failed",
+  "runningWorker",
+  "workerRecoveryPending",
+  "workerRecoveryDispatching",
+  "workerRecoveryFailed",
+  "workerRecoveryOutcomeUnknown",
   "running",
 ] as const);
 
@@ -305,6 +311,11 @@ export const DeliveryStatusSchema = Schema.Literals([
   "publicationFailed",
   "publicationOutcomeUnknown",
   "failed",
+  "runningWorker",
+  "workerRecoveryPending",
+  "workerRecoveryDispatching",
+  "workerRecoveryFailed",
+  "workerRecoveryOutcomeUnknown",
 ] as const);
 
 export const DeliveryRecoveryActionKindSchema = Schema.Literals([
@@ -511,12 +522,18 @@ export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   runId: RunIdSchema,
   stage: DeliveryStatusSchema,
   status: DeliveryStatusSchema,
+  workerRecovery: Schema.optionalKey(WorkerRecoveryReceiptSchema),
 }) {}
 
 export class DeliverySnapshotSuccessEnvelope extends Schema.Class<DeliverySnapshotSuccessEnvelope>(
   "DeliverySnapshotSuccessEnvelope",
 )({
   data: DeliverySnapshotDto,
+  status: Schema.Literal("success"),
+}) {}
+
+export class WorkerRecoverySuccessEnvelope extends Schema.Class<WorkerRecoverySuccessEnvelope>("WorkerRecoverySuccessEnvelope")({
+  data: WorkerRecoveryReceiptSchema,
   status: Schema.Literal("success"),
 }) {}
 
@@ -842,6 +859,14 @@ export const RunsGroup = HttpApiGroup.make("runs")
       params: { runId: RunIdSchema },
       payload: DeliveryActionRequestSchema,
       success: DeliverySnapshotSuccessEnvelope,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("recoverWorker", "/runs/:runId/recovery/actions", {
+      error: [...LocalRunReadErrorResponse, LocalRunApiConflictResponse],
+      params: { runId: RunIdSchema },
+      payload: WorkerRecoveryAction,
+      success: WorkerRecoverySuccessEnvelope,
     }),
   )
   .add(

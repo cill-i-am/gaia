@@ -320,7 +320,7 @@ export function createCodexHarnessProvider(
             ),
           );
         const correlatedThreadId =
-          correlation === undefined ? undefined : decodeCorrelation(correlation);
+          correlation === undefined ? undefined : decodeCodexHarnessCorrelation(correlation);
         if (correlatedThreadId === undefined) {
           return yield* new HarnessResumeError({
             message: "Codex session correlation is unavailable for resume.",
@@ -362,6 +362,17 @@ export function createCodexHarnessProvider(
               "Codex read a thread that does not match stored session correlation.",
             providerId: CodexHarnessProviderDescriptor.providerId,
           });
+        }
+        if (request.expectedNativeTurnId !== undefined) {
+          const turns = recovered.thread.turns ?? [];
+          const matches = turns.filter(({ id }) => id === request.expectedNativeTurnId);
+          const exact = matches[0];
+          if (matches.length !== 1 || turns.at(-1)?.id !== request.expectedNativeTurnId || exact?.status === undefined || !["inProgress", "completed", "failed"].includes(exact.status)) {
+            return yield* new HarnessResumeError({
+              message: "Codex recovered thread does not end at the exact checkpointed turn.",
+              providerId: CodexHarnessProviderDescriptor.providerId,
+            });
+          }
         }
         return yield* makeCodexSession({
           nativeThreadId: thread.thread.id,
@@ -991,7 +1002,7 @@ function encodeCorrelation(threadId: CodexThreadId): CodexHarnessOpaqueCorrelati
   return { token: Buffer.from(threadId, "utf8").toString("base64url") };
 }
 
-function decodeCorrelation(
+export function decodeCodexHarnessCorrelation(
   correlation: CodexHarnessOpaqueCorrelation,
 ): CodexThreadId | undefined {
   try {

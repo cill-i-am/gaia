@@ -1,4 +1,8 @@
 export {
+  recoverWorkerSession,
+  type WorkerRecoveryProvider,
+} from "./worker-recovery.js";
+export {
   makeGitCleanupResourceAdapter,
 } from "./git-cleanup-resource-adapter.js";
 export {
@@ -45,6 +49,7 @@ export {
   CodexAppServerClientService,
   makeCodexAppServerConnection,
   makeCodexAppServerClient,
+  listCodexModels,
   type CodexAppServerClient,
 } from "./codex-app-server-client.js";
 export {
@@ -53,6 +58,7 @@ export {
   CodexAppServerProtocolError,
   CodexAppServerTimeoutError,
   CodexAppServerTransportError,
+  parseCodexThreadId,
   type CodexAppServerError,
 } from "./codex-app-server-protocol.js";
 export {
@@ -60,6 +66,7 @@ export {
   CodexHarnessProviderDescriptor,
   createCodexHarnessProvider,
   makeFileCodexHarnessCorrelationStore,
+  decodeCodexHarnessCorrelation,
   makeInMemoryCodexHarnessCorrelationStore,
   type CodexHarnessCorrelationStore,
   type CodexHarnessOpaqueCorrelation,
@@ -282,6 +289,7 @@ export {
   runRootDirectory,
   type RunPaths,
 } from "./paths.js";
+export { inspectRecoverableDeliveryWorktreeOwnership, parseDeliveryProvenance } from "./git-delivery.js";
 export {
   listLocalRuns,
   readLocalRun,

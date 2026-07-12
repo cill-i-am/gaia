@@ -139,7 +139,23 @@ export const TextInputSchema = Schema.Struct({ text: Schema.String, type: Schema
 export const TurnStartParamsSchema = Schema.Struct({
   clientUserMessageId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   input: Schema.Array(TextInputSchema).pipe(Schema.check(Schema.isMaxLength(100))),
+  model: Schema.optionalKey(Schema.NullOr(Schema.String)),
   threadId: ThreadId,
+});
+export const ModelListParamsSchema = Schema.Struct({
+  cursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  includeHidden: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+  limit: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+});
+export const CodexModelSchema = Schema.Struct({
+  displayName: Schema.String,
+  hidden: Schema.Boolean,
+  id: Schema.String,
+  model: Schema.String,
+});
+export const ModelListResultSchema = Schema.Struct({
+  data: Schema.Array(CodexModelSchema),
+  nextCursor: Schema.NullOr(Schema.String),
 });
 export const TurnSteerParamsSchema = Schema.Struct({ expectedTurnId: TurnId, input: Schema.Array(TextInputSchema).pipe(Schema.check(Schema.isMaxLength(100))), threadId: ThreadId });
 export const TurnInterruptParamsSchema = Schema.Struct({ threadId: ThreadId, turnId: TurnId });

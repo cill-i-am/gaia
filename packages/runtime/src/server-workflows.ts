@@ -11,9 +11,12 @@ import {
   parseHarnessSessionId,
   parseDeliveryPublication,
   parseRunId,
+  parseWorkerRecoveryReceipt,
   ResolvedHarnessExecution,
   snapshotFromReplay,
   type GaiaFailure,
+  type WorkerRecoveryAction,
+  type WorkerRecoveryReceipt,
   type RunEvent,
   type RunId,
   type RunState,
@@ -52,6 +55,7 @@ import {
 } from "./workflows.js";
 import { interactiveSessionHarness } from "./interactive-harness.js";
 import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
+import { readPrivateWorkerRecoveryTurn } from "./worker-recovery.js";
 import {
   localDirectoryWorkspaceSource,
   type WorkspaceSource,
@@ -106,7 +110,14 @@ export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly harnessProviderRegistry?: HarnessProviderRegistry;
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly workspaceSource?: WorkspaceSource;
+  readonly workerRecoveryActivator?: (runId: string, action: WorkerRecoveryAction) => Effect.Effect<WorkerRecoveryReceipt, unknown, FileSystem.FileSystem | Path.Path>;
 };
+
+export function actOnWorkerRecovery(runId: string, action: WorkerRecoveryAction, options: ServerWorkflowOptions) {
+  return options.workerRecoveryActivator === undefined
+    ? Effect.fail(makeRuntimeError({ code: "DeliveryActionFailed", message: "Worker recovery is unavailable.", recoverable: false }))
+    : options.workerRecoveryActivator(runId, action);
+}
 
 export type DeliveryMergeActionHandler = (
   runId: string,
@@ -1174,10 +1185,19 @@ function factoryContinuationOptions(
         }),
       );
     }
+    const recovery = [...events].reverse().flatMap((event) => {
+      if (event.type !== "WORKER_RECOVERY_RECORDED") return [];
+      const receipt = parseWorkerRecoveryReceipt(event.payload["recovery"]);
+      return receipt.state === "dispatchConfirmed" ? [receipt] : [];
+    })[0];
+    const expectedNativeTurnId = recovery === undefined
+      ? undefined
+      : yield* readPrivateWorkerRecoveryTurn(paths.root, recovery.nativeTurnIdDigest);
     return {
       ...commonOptions,
       workerContinuationState: continuationState,
       workerHarness: interactiveSessionHarness({
+        ...(expectedNativeTurnId === undefined ? {} : { expectedNativeTurnId }),
         provider: resolved.provider,
         rootDirectory,
         ...(options.sessionCoordinator === undefined ? {} : { sessionCoordinator: options.sessionCoordinator }),
@@ -1305,15 +1325,22 @@ function issueDeliveryWorkerContinuationState(
   events: ReadonlyArray<RunEvent>,
   sessionEvents: ReadonlyArray<ReturnType<typeof parseHarnessEvent>>,
 ): WorkerContinuationState | "invalid" {
+  const recoverySequence = [...events].reverse().find((event) =>
+    event.type === "WORKER_RECOVERY_RECORDED" &&
+    parseWorkerRecoveryReceipt(event.payload["recovery"]).state === "dispatchConfirmed"
+  )?.sequence;
+  const relevantSessionEvents = recoverySequence === undefined
+    ? sessionEvents
+    : events.filter((event) => event.sequence > recoverySequence && event.type === "HARNESS_SESSION_EVENT_RECORDED").map((event) => parseHarnessEvent(event.payload.event));
   const workerCompletionPersisted = events.some(
     ({ type }) => type === "WORKER_COMPLETED",
   );
-  const terminal = sessionEvents.find(
+  const terminal = relevantSessionEvents.find(
     ({ kind }) => kind === "turnCompleted" || kind === "sessionFailed",
   );
   if (terminal === undefined) {
     if (workerCompletionPersisted) return "invalid";
-    return sessionEvents.length === 0 ? "start" : "resume";
+    return recoverySequence !== undefined || relevantSessionEvents.length > 0 ? "resume" : "start";
   }
   if (
     terminal.kind === "turnCompleted" &&

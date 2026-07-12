@@ -1,14 +1,22 @@
 #!/usr/bin/env node
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
-import { codexAppServerHarnessProfileId, type ServerMetadata } from "@gaia/core";
+import { codexAppServerHarnessProfileId, parseRunId, type ServerMetadata } from "@gaia/core";
 import {
   createCodexHarnessProvider,
   detectInstalledCodexAppServer,
   makeCodexAppServerClient,
   makeCodexAppServerConnection,
   makeFileCodexHarnessCorrelationStore,
+  decodeCodexHarnessCorrelation,
+  listCodexModels,
+  recoverWorkerSession,
+  parseCodexThreadId,
   makeHarnessProviderRegistry,
+  inspectRecoverableDeliveryWorktreeOwnership,
+  makeRunPaths,
+  loadRun,
+  parseDeliveryProvenance,
   type HarnessProviderRegistry,
 } from "@gaia/runtime";
 import {
@@ -62,13 +70,15 @@ export function runLocalGaiaServer(input: {
   });
   return Effect.scoped(
     Effect.gen(function* () {
-      const harnessProviderRegistry =
-        input.harnessProviderRegistry ??
-        (yield* makeProductionHarnessProviderRegistry(identity.rootDirectory));
+      const production = input.harnessProviderRegistry === undefined
+        ? yield* makeProductionHarnessServices(identity.rootDirectory)
+        : undefined;
+      const harnessProviderRegistry = input.harnessProviderRegistry ?? production!.registry;
       const workflowOptions = {
         deliveryObservationEnabled: true,
         harnessProviderRegistry,
         rootDirectory: identity.rootDirectory,
+        ...(production === undefined ? {} : { workerRecoveryActivator: production.recover }),
       };
       const reconciliation = yield* reconcileInterruptedServerRuns(
         workflowOptions,
@@ -103,20 +113,45 @@ export function runLocalGaiaServer(input: {
   ).pipe(Effect.provide(NodeServices.layer));
 }
 
-function makeProductionHarnessProviderRegistry(rootDirectory: string) {
+function makeProductionHarnessServices(rootDirectory: string) {
   return Effect.gen(function* () {
     const connection = yield* makeCodexAppServerConnection({
       cwd: rootDirectory,
     });
+    const client = makeCodexAppServerClient(connection);
+    const correlationStore = makeFileCodexHarnessCorrelationStore(rootDirectory);
     const provider = createCodexHarnessProvider({
-      client: makeCodexAppServerClient(connection),
-      correlationStore: makeFileCodexHarnessCorrelationStore(rootDirectory),
+      client,
+      correlationStore,
       detectionProbe: detectInstalledCodexAppServer,
       workspaceRoot: rootDirectory,
     });
-    return makeHarnessProviderRegistry([
+    const registry = makeHarnessProviderRegistry([
       { profileId: codexAppServerHarnessProfileId, provider },
     ]);
+    const recover = (runId: string, action: Parameters<typeof recoverWorkerSession>[1]) => Effect.gen(function* () {
+      const correlation = yield* correlationStore.load(action.expectedSessionId);
+      const nativeThreadId = correlation === undefined ? undefined : decodeCodexHarnessCorrelation(correlation);
+      if (nativeThreadId === undefined) return yield* Effect.fail(new Error("Codex session correlation is unavailable."));
+      return yield* recoverWorkerSession(runId, action, {
+        nativeThreadId,
+        rootDirectory,
+        provider: {
+          listModels: () => listCodexModels(connection, { includeHidden: false }).pipe(Effect.map(({ data }) => data.map(({ hidden, id }) => ({ hidden, id })))),
+          readThread: (threadId) => client.readThread({ includeTurns: true, threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ active: thread.status?.type === "active", systemError: thread.status?.type === "systemError", threadId: thread.id }))),
+          resumeThread: (threadId) => client.resumeThread({ threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ threadId: thread.id }))),
+          startTurn: ({ model, threadId }) => client.startTurn({ input: [{ text: "Resume the retained worker task after the recoverable provider failure.", type: "text" }], model, threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ turn }) => ({ turnId: turn.id }))),
+        },
+        validateWorkspace: (_workspacePath, expectedHead) => Effect.gen(function* () {
+          const paths = yield* makeRunPaths(parseRunId(runId), { rootDirectory });
+          const loaded = yield* loadRun(paths);
+          const provenance = parseDeliveryProvenance(loaded.events[0]?.payload["delivery"]);
+          if (provenance._tag === "None" || provenance.value.baseRevision !== expectedHead) return yield* Effect.fail(new Error("Accepted delivery provenance changed."));
+          yield* inspectRecoverableDeliveryWorktreeOwnership({ expectedHeads: [expectedHead], options: { rootDirectory }, paths, provenance: provenance.value });
+        }),
+      });
+    });
+    return { recover, registry };
   });
 }
 

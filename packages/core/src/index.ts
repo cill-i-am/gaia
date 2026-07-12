@@ -1,4 +1,13 @@
 export {
+  WorkerRecoveryAction,
+  WorkerRecoveryReceiptSchema,
+  encodeWorkerRecoveryReceiptJson,
+  parseWorkerRecoveryAction,
+  parseWorkerRecoveryReceipt,
+  workerRecoveryProjection,
+  type WorkerRecoveryReceipt,
+} from "./worker-recovery.js";
+export {
   DeliveryCleanupCompleted,
   DeliveryCleanupReceiptSchema,
   DeliveryCleanupRequired,
@@ -322,6 +331,7 @@ export {
   DeliverySnapshotDto,
   DeliverySnapshotStreamResponse,
   DeliverySnapshotSuccessEnvelope,
+  WorkerRecoverySuccessEnvelope,
   DeliveryStatusSchema,
   FactoryActivitySuccessEnvelope,
   FactoryArtifactListSuccessEnvelope,

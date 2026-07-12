@@ -9,7 +9,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Effect, Stream } from "effect";
-import { makeCodexAppServerClient, makeCodexAppServerConnection } from "./codex-app-server-client.js";
+import { listCodexModels, makeCodexAppServerClient, makeCodexAppServerConnection } from "./codex-app-server-client.js";
 import {
   createCodexHarnessProvider,
   makeFileCodexHarnessCorrelationStore,
@@ -49,6 +49,9 @@ describe("Codex App Server installed CLI smoke", () => {
           if (method === "turn/completed") completed = true;
         });
         yield* client.initialize({ clientInfo: { name: "gaia", title: "Gaia", version: "0.1.0" } });
+        const catalog = yield* listCodexModels(connection, { includeHidden: false });
+        const model = catalog.data.find(({ hidden }) => !hidden)?.id;
+        if (model === undefined) return yield* Effect.die("model/list returned no visible model");
         const started = yield* client.startThread({
           approvalPolicy: "never",
           cwd,
@@ -61,14 +64,16 @@ describe("Codex App Server installed CLI smoke", () => {
         }
         yield* client.startTurn({
           input: [{ type: "text", text: "Reply exactly GAIA_SMOKE_OK. Do not use tools." }],
+          model,
           threadId: thread.id,
         });
         yield* Effect.sleep("1 second").pipe(
           Effect.repeat({ while: () => !completed, times: 45 }),
         );
-        return { completed, sawItem };
+        return { completed, model, sawItem };
       })).pipe(Effect.timeout("60 seconds")));
-      expect(evidence).toEqual({ completed: true, sawItem: true });
+      expect(evidence).toMatchObject({ completed: true, sawItem: true });
+      expect(evidence.model.length).toBeGreaterThan(0);
     } finally {
       await rm(root, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
     }

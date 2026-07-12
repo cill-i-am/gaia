@@ -962,6 +962,7 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
       return roleFromFailureStage(event.payload["stage"]);
     case "WORKER_STARTED":
     case "WORKER_COMPLETED":
+    case "WORKER_RECOVERY_RECORDED":
     case "HARNESS_SESSION_EVENT_RECORDED":
       return "worker";
     case "REVIEW_STARTED":
@@ -1011,6 +1012,8 @@ function subStateForEvent(event: RunEvent): string | undefined {
     case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
     case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
       return "checkpoint";
+    case "WORKER_RECOVERY_RECORDED":
+      return "workerRecovery";
     case "RUN_CREATED":
       return "accepted";
     case "WORKSPACE_PREPARED":
@@ -1093,6 +1096,8 @@ function activityLabel(event: RunEvent): string {
       return "Worker started";
     case "WORKER_COMPLETED":
       return "Worker completed";
+    case "WORKER_RECOVERY_RECORDED":
+      return "Worker recovery updated";
     case "VERIFICATION_STARTED":
       return "Verification started";
     case "VERIFICATION_COMPLETED":

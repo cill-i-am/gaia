@@ -1,6 +1,7 @@
 import {
   parseHarnessEvent,
   parseHarnessSessionId,
+  parseWorkerRecoveryReceipt,
   parseWorkspaceRelativePath,
   type HarnessEvent,
   type RunEvent,
@@ -38,6 +39,7 @@ const encodeHarnessRunResult = Schema.encodeSync(HarnessRunResultJson);
 
 /** Adapt one provider-neutral interactive session into the existing worker stage. */
 export function interactiveSessionHarness(input: {
+  readonly expectedNativeTurnId?: string;
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly provider?: HarnessProvider;
   readonly rootDirectory: string;
@@ -51,12 +53,14 @@ export function interactiveSessionHarness(input: {
         });
         const existing = yield* readEvents(paths);
         const sessionId = parseHarnessSessionId(`session-${request.runId}`);
-        const history = harnessHistory(existing, sessionId);
+        const fullHistory = harnessHistory(existing, sessionId);
+        const recoverySequence = [...existing].reverse().find((event) => event.type === "WORKER_RECOVERY_RECORDED" && parseWorkerRecoveryReceipt(event.payload["recovery"]).state === "dispatchConfirmed")?.sequence;
+        const history = recoverySequence === undefined ? fullHistory : harnessHistory(existing.filter(({ sequence }) => sequence > recoverySequence), sessionId);
         const existingTerminal = terminalSessionEvent(history);
 
         let terminal = existingTerminal;
         if (terminal === undefined) {
-          const sessionStarted = history.some(
+          const sessionStarted = fullHistory.some(
             (event) => event.kind === "sessionStarted",
           );
           if (!sessionStarted) {
@@ -82,6 +86,7 @@ export function interactiveSessionHarness(input: {
                 ? yield* resumeHarnessSession({
                     provider,
                     request: {
+                      ...(input.expectedNativeTurnId === undefined ? {} : { expectedNativeTurnId: input.expectedNativeTurnId }),
                       sessionId,
                       workspacePath: workspacePathFromRoot(
                         input.rootDirectory,

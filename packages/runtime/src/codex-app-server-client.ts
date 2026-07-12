@@ -23,6 +23,7 @@ import {
   UserInputResponseSchema,
   ElicitationResponseSchema,
   InitializeParamsSchema, ThreadStartParamsSchema, ThreadResumeParamsSchema, ThreadReadParamsSchema,
+  ModelListParamsSchema, ModelListResultSchema,
   TurnStartParamsSchema, TurnSteerParamsSchema, TurnInterruptParamsSchema,
   isCuratedCodexNotificationMethod,
   supportedCodexCliVersion,
@@ -251,5 +252,11 @@ export function makeCodexAppServerClient(connection: CodexAppServerConnection) {
 }
 
 export type CodexAppServerClient = ReturnType<typeof makeCodexAppServerClient>;
+export function listCodexModels(connection: CodexAppServerConnection, params: typeof ModelListParamsSchema.Type = {}) {
+  return Schema.decodeUnknownEffect(ModelListParamsSchema)(params).pipe(
+    Effect.flatMap((parsed) => connection.request("model/list", parsed)),
+    Effect.flatMap(Schema.decodeUnknownEffect(ModelListResultSchema)),
+  );
+}
 export class CodexAppServerClientService extends Context.Service<CodexAppServerClientService, CodexAppServerClient>()("@gaia/runtime/CodexAppServerClient") {}
 export const CodexAppServerClientLive = (options: CodexAppServerTransportOptions = {}) => Layer.effect(CodexAppServerClientService, makeCodexAppServerConnection(options).pipe(Effect.map(makeCodexAppServerClient)));
