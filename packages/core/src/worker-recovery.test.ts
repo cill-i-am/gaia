@@ -140,6 +140,99 @@ describe("worker recovery contracts", () => {
     expect(workerContinuationProjection(continuation)).toBe("workerContinuationPending");
     expect(delivery["publication"]).toBeUndefined();
   });
+
+  it("rejects continuation replay when only the delivery provenance digest drifts", () => {
+    const runId = parseRunId("run-xwcFbNNdfY");
+    const intentEvents = [
+      ...readyToPublishEvents(runId),
+      makeRunEvent({
+        payload: {
+          recovery: {
+            ...action,
+            attempt: 1,
+            maxAttempts: 1,
+            nativeTurnIdDigest: "b".repeat(64),
+            payloadDigest: "a".repeat(64),
+            state: "dispatchConfirmed",
+          },
+        },
+        runId,
+        sequence: 7,
+        timestamp: "2026-07-11T08:00:00.000Z",
+        type: "WORKER_RECOVERY_RECORDED",
+      }),
+      makeRunEvent({
+        payload: {
+          recovery: {
+            ...action,
+            attempt: 1,
+            code: "WorkerRecoveryContinuationFailed",
+            maxAttempts: 1,
+            message: "The checkpoint turn was interrupted after zero product changes.",
+            nativeTurnIdDigest: "b".repeat(64),
+            payloadDigest: "a".repeat(64),
+            state: "failed",
+          },
+        },
+        runId,
+        sequence: 8,
+        timestamp: "2026-07-11T08:00:01.000Z",
+        type: "WORKER_RECOVERY_RECORDED",
+      }),
+      makeRunEvent({
+        payload: {
+          continuation: encodeWorkerContinuationReceiptJson(parseWorkerContinuationReceipt({
+            actionId: "continue-recovery-1",
+            expectedContaminatedReadySequence: 6,
+            expectedCurrentSequence: 8,
+            expectedDeliveryProvenanceDigest: "c".repeat(64),
+            expectedFailedRecoverySequence: 8,
+            expectedRecoveryActionId: "recover-1",
+            expectedSessionId: "session-run-OzzhMsXsBb",
+            harnessProfileId: "codexAppServer",
+            maxAttempts: 1,
+            state: "intentRecorded",
+            workerEvidenceEpochSequence: 9,
+          })),
+        },
+        runId,
+        sequence: 9,
+        timestamp: "2026-07-11T08:00:02.000Z",
+        type: "WORKER_CONTINUATION_RECORDED",
+      }),
+    ];
+    const stable = snapshotFromReplay(intentEvents);
+    const stableDelivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(stable.context.delivery);
+
+    expect(stable.state).toBe("delivering");
+    expect(stableDelivery["stage"]).toBe("workerContinuationPending");
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        makeRunEvent({
+          payload: {
+            continuation: encodeWorkerContinuationReceiptJson(parseWorkerContinuationReceipt({
+              actionId: "continue-recovery-1",
+              expectedContaminatedReadySequence: 6,
+              expectedCurrentSequence: 8,
+              expectedDeliveryProvenanceDigest: "d".repeat(64),
+              expectedFailedRecoverySequence: 8,
+              expectedRecoveryActionId: "recover-1",
+              expectedSessionId: "session-run-OzzhMsXsBb",
+              harnessProfileId: "codexAppServer",
+              maxAttempts: 1,
+              state: "resumeAttempted",
+              workerEvidenceEpochSequence: 9,
+            })),
+          },
+          runId,
+          sequence: 10,
+          timestamp: "2026-07-11T08:00:03.000Z",
+          type: "WORKER_CONTINUATION_RECORDED",
+        }),
+      ])
+    ).toThrow("Worker continuation action is already bound to different immutable input.");
+  });
 });
 
 function readyToPublishEvents(runId: ReturnType<typeof parseRunId>) {

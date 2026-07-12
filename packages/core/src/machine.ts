@@ -823,6 +823,15 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       cleanupActions.push({ receipt: parseDeliveryCleanupReceipt(event.payload["cleanup"]), sequence: event.sequence });
       deriveDeliveryCleanupActionHistories(cleanupActions);
     }
+    if (event.type === "WORKER_CONTINUATION_RECORDED") {
+      const previousValue = actor.getSnapshot().context.delivery?.["workerContinuation"];
+      if (previousValue !== undefined) {
+        assertWorkerContinuationTransition(
+          parseWorkerContinuationReceipt(previousValue),
+          parseWorkerContinuationReceipt(event.payload["continuation"]),
+        );
+      }
+    }
 
     actor.send(toMachineEvent(event));
     expectedSequence += 1;
@@ -1152,6 +1161,7 @@ function workerContinuationBinding(receipt: WorkerContinuationReceipt) {
     actionId: receipt.actionId,
     expectedContaminatedReadySequence: receipt.expectedContaminatedReadySequence,
     expectedCurrentSequence: receipt.expectedCurrentSequence,
+    expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
     expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
     expectedRecoveryActionId: receipt.expectedRecoveryActionId,
     expectedSessionId: receipt.expectedSessionId,
