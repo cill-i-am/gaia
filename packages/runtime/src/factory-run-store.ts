@@ -906,6 +906,7 @@ function updateStatesForEvent(
     case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
     case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
     case "WORKER_CONTINUATION_RECORDED":
+    case "WORKER_CORRELATION_RECONCILIATION_RECORDED":
       states.set("orchestrator", "running");
       return;
     case "RUN_FAILED":
@@ -959,6 +960,7 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
     case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
     case "WORKER_CONTINUATION_RECORDED":
+    case "WORKER_CORRELATION_RECONCILIATION_RECORDED":
       return "orchestrator";
     case "RUN_FAILED":
       return roleFromFailureStage(event.payload["stage"]);
@@ -1016,6 +1018,10 @@ function subStateForEvent(event: RunEvent): string | undefined {
       return "checkpoint";
     case "WORKER_RECOVERY_RECORDED":
       return "workerRecovery";
+    case "WORKER_CONTINUATION_RECORDED":
+      return "workerContinuation";
+    case "WORKER_CORRELATION_RECONCILIATION_RECORDED":
+      return "workerCorrelation";
     case "RUN_CREATED":
       return "accepted";
     case "WORKSPACE_PREPARED":
@@ -1102,6 +1108,8 @@ function activityLabel(event: RunEvent): string {
       return "Worker recovery updated";
     case "WORKER_CONTINUATION_RECORDED":
       return "Audited worker continuation updated";
+    case "WORKER_CORRELATION_RECONCILIATION_RECORDED":
+      return "Audited worker correlation reconciliation updated";
     case "VERIFICATION_STARTED":
       return "Verification started";
     case "VERIFICATION_COMPLETED":

@@ -116,6 +116,65 @@ export const CodexThreadSchema = Schema.Struct({
 export type CodexThread = typeof CodexThreadSchema.Type;
 const Thread = CodexThreadSchema;
 const Empty = Schema.Struct({});
+export const CodexThreadSourceKindSchema = Schema.Literals([
+  "cli",
+  "vscode",
+  "exec",
+  "appServer",
+  "subAgent",
+  "subAgentReview",
+  "subAgentCompact",
+  "subAgentThreadSpawn",
+  "subAgentOther",
+  "unknown",
+] as const);
+const CodexThreadSourceSchema = Schema.Union([
+  Schema.Literals(["cli", "vscode", "exec", "appServer", "unknown"] as const),
+  Schema.Struct({ custom: Schema.String }),
+  Schema.Struct({ subAgent: Schema.Json }),
+]);
+export const ThreadListParamsSchema = Schema.Struct({
+  archived: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+  cursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  cwd: Schema.optionalKey(Schema.NullOr(Schema.Union([Schema.String, Schema.Array(Schema.String)]))),
+  limit: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  modelProviders: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+  searchTerm: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  sortDirection: Schema.optionalKey(Schema.NullOr(Schema.Literals(["asc", "desc"] as const))),
+  sortKey: Schema.optionalKey(Schema.NullOr(Schema.Literals(["created_at", "updated_at"] as const))),
+  sourceKinds: Schema.optionalKey(Schema.NullOr(Schema.Array(CodexThreadSourceKindSchema))),
+  useStateDbOnly: Schema.optionalKey(Schema.Boolean),
+});
+export const CodexListedThreadSchema = Schema.Struct({
+  createdAt: Schema.Number,
+  cwd: Schema.String,
+  id: ThreadId,
+  sessionId: Schema.String,
+  source: CodexThreadSourceSchema,
+  status: Schema.optionalKey(
+    Schema.Union([
+      Schema.Struct({ type: Schema.Literal("notLoaded") }),
+      Schema.Struct({ type: Schema.Literal("idle") }),
+      Schema.Struct({ type: Schema.Literal("systemError") }),
+      Schema.Struct({
+        activeFlags: Schema.Array(
+          Schema.Literals(["waitingOnApproval", "waitingOnUserInput"] as const),
+        ),
+        type: Schema.Literal("active"),
+      }),
+    ]),
+  ),
+  turns: Schema.optionalKey(Schema.Array(Turn)),
+  updatedAt: Schema.Number,
+});
+export const ThreadListResultSchema = Schema.Struct({
+  backwardsCursor: Schema.NullOr(Schema.String),
+  data: Schema.Array(CodexListedThreadSchema),
+  nextCursor: Schema.NullOr(Schema.String),
+});
+export type ThreadListParams = typeof ThreadListParamsSchema.Type;
+export type ThreadListResult = typeof ThreadListResultSchema.Type;
+export type CodexListedThread = typeof CodexListedThreadSchema.Type;
 
 export const InitializeParamsSchema = Schema.Struct({
   clientInfo: Schema.Struct({ name: Schema.String, title: Schema.String, version: Schema.String }),

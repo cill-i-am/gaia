@@ -63,6 +63,69 @@ describe("Codex App Server connection", () => {
     expect(fake.kills()).toBe(1);
   });
 
+  it("parses stable thread/list responses with App Server source and cursors", async () => {
+    const fake = fakeProcess();
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const connection = yield* makeCodexAppServerConnection({ process: fake.process });
+      const client = makeCodexAppServerClient(connection);
+      const fiber = yield* client.listThreads({
+        archived: false,
+        cwd: "/tmp/gaia/workspace",
+        limit: 100,
+        sortDirection: "asc",
+        sortKey: "created_at",
+        sourceKinds: ["appServer"],
+        useStateDbOnly: true,
+      }).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      expect(fake.writes.at(-1)).toMatchObject({
+        method: "thread/list",
+        params: {
+          archived: false,
+          cwd: "/tmp/gaia/workspace",
+          limit: 100,
+          sortDirection: "asc",
+          sortKey: "created_at",
+          sourceKinds: ["appServer"],
+          useStateDbOnly: true,
+        },
+      });
+      for (const listener of fake.lines) listener(JSON.stringify({
+        id: 1,
+        result: {
+          backwardsCursor: "back-1",
+          data: [{
+            cliVersion: "0.137.0",
+            createdAt: 1_789_000_000,
+            cwd: "/tmp/gaia/workspace",
+            ephemeral: false,
+            forkedFromId: null,
+            id: "thread-1",
+            modelProvider: "openai",
+            parentThreadId: null,
+            path: null,
+            preview: "Fix",
+            sessionId: "session-1",
+            source: "appServer",
+            status: { type: "idle" },
+            threadSource: null,
+            agentNickname: null,
+            agentRole: null,
+            gitInfo: null,
+            name: null,
+            turns: [],
+            updatedAt: 1_789_000_001,
+          }],
+          nextCursor: null,
+        },
+      }));
+      const result = yield* Fiber.join(fiber);
+      expect(result.data[0]?.source).toBe("appServer");
+      expect(result.data[0]?.cwd).toBe("/tmp/gaia/workspace");
+      expect(result.backwardsCursor).toBe("back-1");
+    })));
+  });
+
   it("fails every pending request exactly once when the process exits", async () => {
     const fake = fakeProcess();
     const tags = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {

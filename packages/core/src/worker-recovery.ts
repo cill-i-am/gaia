@@ -53,6 +53,21 @@ export class WorkerContinuationAction extends Schema.Class<WorkerContinuationAct
   kind: Schema.Literal("continueInterruptedWorkerRecovery"),
 }, { parseOptions: { onExcessProperty: "error" } }) {}
 
+export class WorkerCorrelationReconciliationAction extends Schema.Class<WorkerCorrelationReconciliationAction>("WorkerCorrelationReconciliationAction")({
+  actionId: ActionId,
+  expectedContaminatedReadySequence: Sequence,
+  expectedContinuationActionId: ActionId,
+  expectedCurrentSequence: Sequence,
+  expectedDeliveryProvenanceDigest: Digest,
+  expectedFailedContinuationSequence: Sequence,
+  expectedFailedRecoverySequence: Sequence,
+  expectedNativeTurnIdDigest: Digest,
+  expectedRecoveryActionId: ActionId,
+  expectedSessionId: HarnessSessionIdSchema,
+  harnessProfileId: HarnessProfileIdSchema,
+  kind: Schema.Literal("reconcileInterruptedWorkerCorrelation"),
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+
 const Base = {
   actionId: ActionId,
   attempt: Schema.Literal(1),
@@ -115,13 +130,55 @@ export const WorkerContinuationReceiptSchema = Schema.Union([
 ]);
 export type WorkerContinuationReceipt = typeof WorkerContinuationReceiptSchema.Type;
 
+const CorrelationBase = {
+  actionId: ActionId,
+  expectedContaminatedReadySequence: Sequence,
+  expectedContinuationActionId: ActionId,
+  expectedCurrentSequence: Sequence,
+  expectedDeliveryProvenanceDigest: Digest,
+  expectedFailedContinuationSequence: Sequence,
+  expectedFailedRecoverySequence: Sequence,
+  expectedNativeTurnIdDigest: Digest,
+  expectedRecoveryActionId: ActionId,
+  expectedSessionId: HarnessSessionIdSchema,
+  harnessProfileId: HarnessProfileIdSchema,
+  maxAttempts: Schema.Literal(1),
+  workerEvidenceEpochSequence: Sequence,
+} as const;
+
+export const WorkerCorrelationReconciliationReceiptSchema = Schema.Union([
+  Schema.Struct({ ...CorrelationBase, state: Schema.Literal("intentRecorded") }),
+  Schema.Struct({ ...CorrelationBase, state: Schema.Literal("correlationAttempted") }),
+  Schema.Struct({ ...CorrelationBase, state: Schema.Literal("correlationConfirmed") }),
+  Schema.Struct({ ...CorrelationBase, state: Schema.Literal("followUpAttempted") }),
+  Schema.Struct({ ...CorrelationBase, state: Schema.Literal("followUpConfirmed") }),
+  Schema.Struct({ ...CorrelationBase, state: Schema.Literal("workerCompleted") }),
+  Schema.Struct({
+    ...CorrelationBase,
+    code: Schema.NonEmptyString,
+    message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1024))),
+    state: Schema.Literal("failed"),
+  }),
+  Schema.Struct({
+    ...CorrelationBase,
+    code: Schema.NonEmptyString,
+    message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1024))),
+    state: Schema.Literal("outcomeUnknown"),
+  }),
+]);
+export type WorkerCorrelationReconciliationReceipt =
+  typeof WorkerCorrelationReconciliationReceiptSchema.Type;
+
 export const parseWorkerRecoveryAction = Schema.decodeUnknownSync(WorkerRecoveryAction);
 export const parseWorkerRecoveryReceipt = Schema.decodeUnknownSync(WorkerRecoveryReceiptSchema);
 export const parseWorkerContinuationAction = Schema.decodeUnknownSync(WorkerContinuationAction);
 export const parseWorkerContinuationReceipt = Schema.decodeUnknownSync(WorkerContinuationReceiptSchema);
+export const parseWorkerCorrelationReconciliationAction = Schema.decodeUnknownSync(WorkerCorrelationReconciliationAction);
+export const parseWorkerCorrelationReconciliationReceipt = Schema.decodeUnknownSync(WorkerCorrelationReconciliationReceiptSchema);
 export const encodeWorkerRecoveryFailureEvidenceJson = Schema.encodeSync(WorkerRecoveryFailureEvidence);
 export const encodeWorkerRecoveryReceiptJson = Schema.encodeSync(WorkerRecoveryReceiptSchema);
 export const encodeWorkerContinuationReceiptJson = Schema.encodeSync(WorkerContinuationReceiptSchema);
+export const encodeWorkerCorrelationReconciliationReceiptJson = Schema.encodeSync(WorkerCorrelationReconciliationReceiptSchema);
 
 export function workerRecoveryProjection(receipt: WorkerRecoveryReceipt | undefined) {
   if (receipt === undefined) return undefined;
@@ -146,5 +203,19 @@ export function workerContinuationProjection(receipt: WorkerContinuationReceipt 
     case "workerCompleted": return undefined;
     case "failed": return "workerContinuationFailed" as const;
     case "outcomeUnknown": return "workerContinuationOutcomeUnknown" as const;
+  }
+}
+
+export function workerCorrelationReconciliationProjection(receipt: WorkerCorrelationReconciliationReceipt | undefined) {
+  if (receipt === undefined) return undefined;
+  switch (receipt.state) {
+    case "intentRecorded": return "workerCorrelationPending" as const;
+    case "correlationAttempted":
+    case "correlationConfirmed":
+    case "followUpAttempted":
+    case "followUpConfirmed": return "workerCorrelationRunning" as const;
+    case "workerCompleted": return undefined;
+    case "failed": return "workerCorrelationFailed" as const;
+    case "outcomeUnknown": return "workerCorrelationOutcomeUnknown" as const;
   }
 }

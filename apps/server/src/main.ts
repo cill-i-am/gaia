@@ -3,6 +3,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import {
   codexAppServerHarnessProfileId,
+  parseWorkspaceRelativePath,
   parseRunId,
   type HarnessDetection,
   type ServerMetadata,
@@ -14,10 +15,15 @@ import {
   makeCodexAppServerConnection,
   makeFileCodexHarnessCorrelationStore,
   decodeCodexHarnessCorrelation,
+  encodeCodexHarnessCorrelation,
   listCodexModels,
   recoverWorkerSession,
   parseCodexThreadId,
+  readPrivateWorkerRecoveryTurn,
+  resumeHarnessSession,
+  writePrivateWorkerCorrelationFollowUpTurn,
   makeHarnessProviderRegistry,
+  issueDeliveryWorkerHarnessCapabilities,
   inspectRecoverableDeliveryWorktreeOwnership,
   makeRunPaths,
   makeRuntimeError,
@@ -29,13 +35,15 @@ import {
 } from "@gaia/runtime";
 import {
   reconcileInterruptedServerRuns,
+  type WorkerCorrelationReconciliationInput,
 } from "@gaia/runtime/server-workflows";
 import { makeTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
 import { Effect, Layer } from "effect";
 import * as Console from "effect/Console";
 import { HttpServer } from "effect/unstable/http";
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import nodePath from "node:path";
 import { pathToFileURL } from "node:url";
 import { makeLocalGaiaServerLayer } from "./api.js";
 export { writeRecoveryHttpEvidence } from "./recovery-http-evidence.js";
@@ -87,7 +95,11 @@ export function runLocalGaiaServer(input: {
         deliveryObservationEnabled: true,
         harnessProviderRegistry,
         rootDirectory: identity.rootDirectory,
-        ...(production === undefined ? {} : { workerRecoveryActivator: production.recover }),
+        ...(production === undefined ? {} : {
+          workerCorrelationFollowUpDispatcher: production.dispatchCorrelationFollowUp,
+          workerCorrelationReconciler: production.reconcileCorrelation,
+          workerRecoveryActivator: production.recover,
+        }),
       };
       const reconciliation = yield* reconcileInterruptedServerRuns(
         workflowOptions,
@@ -167,7 +179,176 @@ function makeProductionHarnessServices(rootDirectory: string) {
         }),
       });
     });
-    return { recover, registry };
+    const reconcileCorrelation = (input: WorkerCorrelationReconciliationInput) =>
+      Effect.gen(function* () {
+        const workspacePath = workerWorkspacePath(input.events);
+        const acceptedAt = input.events[0]?.timestamp;
+        if (workspacePath === undefined || acceptedAt === undefined) {
+          return yield* Effect.fail(makeRuntimeError({
+            code: "HarnessCorrelationUnavailable",
+            message: "Audited correlation reconciliation requires the accepted worker workspace.",
+            recoverable: false,
+          }));
+        }
+        const candidates = yield* listStableCodexThreadsForWorkspace(client, workspacePath);
+        const acceptedAtSeconds = Math.floor(Date.parse(acceptedAt) / 1000);
+        if (!Number.isFinite(acceptedAtSeconds)) {
+          return yield* Effect.fail(makeRuntimeError({
+            code: "HarnessCorrelationUnavailable",
+            message: "Audited correlation reconciliation requires a valid accepted creation timestamp.",
+            recoverable: false,
+          }));
+        }
+        const nowSeconds = Math.ceil(Date.now() / 1000) + 60;
+        const matches = yield* Effect.forEach(candidates, (thread) =>
+          Effect.gen(function* () {
+            if (
+              thread.cwd !== workspacePath ||
+              thread.source !== "appServer" ||
+              thread.createdAt < acceptedAtSeconds - 300 ||
+              thread.createdAt > nowSeconds
+            ) {
+              return undefined;
+            }
+            const read = yield* client.readThread({ includeTurns: true, threadId: thread.id });
+            const turns = read.thread.turns ?? [];
+            const latest = turns.at(-1);
+            if (
+              read.thread.id !== thread.id ||
+              latest === undefined ||
+              latest.status !== "interrupted" ||
+              digestStableNativeId(latest.id) !== input.action.expectedNativeTurnIdDigest
+            ) {
+              return undefined;
+            }
+            const digestMatches = turns.filter(({ id }) => digestStableNativeId(id) === input.action.expectedNativeTurnIdDigest);
+            return digestMatches.length === 1 ? { threadId: thread.id } : undefined;
+          }),
+        ).pipe(Effect.map((items) => items.filter((item): item is { readonly threadId: ReturnType<typeof parseCodexThreadId> } => item !== undefined)));
+        const [match] = matches;
+        if (matches.length !== 1 || match === undefined) {
+          return yield* Effect.fail(makeRuntimeError({
+            code: "HarnessCorrelationUnavailable",
+            message: "Audited correlation reconciliation could not identify exactly one interrupted App Server checkpoint.",
+            recoverable: false,
+          }));
+        }
+        yield* correlationStore.save(
+          input.action.expectedSessionId,
+          encodeCodexHarnessCorrelation(match.threadId),
+        );
+      });
+    const dispatchCorrelationFollowUp = (input: WorkerCorrelationReconciliationInput) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const workspacePath = workerWorkspacePath(input.events);
+          if (workspacePath === undefined) {
+            return yield* Effect.fail(makeRuntimeError({
+              code: "HarnessCorrelationUnavailable",
+              message: "Audited correlation follow-up requires the accepted worker workspace.",
+              recoverable: false,
+            }));
+          }
+          const checkpointTurnId = yield* readPrivateWorkerRecoveryTurn(
+            input.paths.root,
+            input.action.expectedNativeTurnIdDigest,
+          );
+          yield* resumeHarnessSession({
+            provider,
+            request: {
+              allowInterruptedCheckpoint: true,
+              expectedNativeTurnId: checkpointTurnId,
+              sessionId: input.action.expectedSessionId,
+              workspacePath: parseWorkspaceRelativePath(
+                nodePath.relative(rootDirectory, workspacePath),
+              ),
+            },
+            requiredCapabilities: issueDeliveryWorkerHarnessCapabilities,
+          });
+          const correlation = yield* correlationStore.load(input.action.expectedSessionId);
+          const threadId = correlation === undefined
+            ? undefined
+            : decodeCodexHarnessCorrelation(correlation);
+          if (threadId === undefined) {
+            return yield* Effect.fail(makeRuntimeError({
+              code: "HarnessCorrelationUnavailable",
+              message: "Audited correlation follow-up requires a private session correlation.",
+              recoverable: false,
+            }));
+          }
+          const turn = yield* client.startTurn({
+            clientUserMessageId: input.clientInputId,
+            input: [{ text: input.followUpText, type: "text" }],
+            threadId,
+          });
+          yield* writePrivateWorkerCorrelationFollowUpTurn(
+            input.paths.root,
+            turn.turn.id,
+          );
+        }),
+      );
+    return { dispatchCorrelationFollowUp, recover, reconcileCorrelation, registry };
+  });
+}
+
+function workerWorkspacePath(events: ReadonlyArray<{ readonly payload: Readonly<Record<string, unknown>>; readonly type: string }>) {
+  const workspacePath = events.find(({ type }) => type === "WORKSPACE_PREPARED")?.payload["workspacePath"];
+  return typeof workspacePath === "string" ? workspacePath : undefined;
+}
+
+function digestStableNativeId(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+type ListedCodexThreadForReconciliation = {
+  readonly createdAt: number;
+  readonly cwd: string;
+  readonly id: ReturnType<typeof parseCodexThreadId>;
+  readonly source: unknown;
+};
+
+type StableCodexThreadListClient = Pick<ReturnType<typeof makeCodexAppServerClient>, "listThreads">;
+
+export function listStableCodexThreadsForWorkspace(
+  client: StableCodexThreadListClient,
+  workspacePath: string,
+) {
+  return Effect.gen(function* () {
+    const byId = new Map<string, ListedCodexThreadForReconciliation>();
+    for (const archived of [false, true] as const) {
+      const seenCursors = new Set<string>();
+      let cursor: string | null = null;
+      do {
+        const page: {
+          readonly data: ReadonlyArray<ListedCodexThreadForReconciliation>;
+          readonly nextCursor: string | null;
+        } = yield* client.listThreads({
+          archived,
+          cursor,
+          cwd: workspacePath,
+          limit: 100,
+          sortDirection: "asc",
+          sortKey: "created_at",
+          sourceKinds: ["appServer"],
+          useStateDbOnly: true,
+        });
+        for (const thread of page.data) {
+          byId.set(thread.id, thread);
+        }
+        if (page.nextCursor !== null) {
+          if (seenCursors.has(page.nextCursor)) {
+            return yield* Effect.fail(makeRuntimeError({
+              code: "HarnessCorrelationUnavailable",
+              message: "Audited correlation reconciliation detected cyclic App Server thread pagination.",
+              recoverable: false,
+            }));
+          }
+          seenCursors.add(page.nextCursor);
+        }
+        cursor = page.nextCursor;
+      } while (cursor !== null);
+    }
+    return [...byId.values()];
   });
 }
 

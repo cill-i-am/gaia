@@ -27,10 +27,14 @@ import {
 } from "./delivery-merge.js";
 import {
   encodeWorkerContinuationReceiptJson,
+  encodeWorkerCorrelationReconciliationReceiptJson,
   parseWorkerContinuationReceipt,
+  parseWorkerCorrelationReconciliationReceipt,
   parseWorkerRecoveryReceipt,
   workerContinuationProjection,
+  workerCorrelationReconciliationProjection,
   type WorkerContinuationReceipt,
+  type WorkerCorrelationReconciliationReceipt,
   type WorkerRecoveryReceipt,
 } from "./worker-recovery.js";
 import {
@@ -207,6 +211,7 @@ export type RunMachineEvent =
   | { readonly type: "HARNESS_SESSION_EVENT_RECORDED" }
   | { readonly type: "WORKER_RECOVERY_RECORDED"; readonly recovery: WorkerRecoveryReceipt }
   | { readonly continuation: WorkerContinuationReceipt; readonly type: "WORKER_CONTINUATION_RECORDED" }
+  | { readonly reconciliation: WorkerCorrelationReconciliationReceipt; readonly type: "WORKER_CORRELATION_RECONCILIATION_RECORDED" }
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
@@ -275,6 +280,11 @@ export const runMachine = createMachine({
           { actions: "recordWorkerContinuation", guard: "workerContinuationFailed", target: "failed" },
           { actions: "recordWorkerContinuation", target: "delivering" },
         ],
+        WORKER_CORRELATION_RECONCILIATION_RECORDED: [
+          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationRunning", target: "runningWorker" },
+          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationFailed", target: "failed" },
+          { actions: "recordWorkerCorrelationReconciliation", target: "delivering" },
+        ],
         BROWSER_EVIDENCE_RECORDED: {
           actions: "recordBrowserEvidence",
         },
@@ -318,6 +328,10 @@ export const runMachine = createMachine({
           actions: "recordFailure",
           target: "failed",
         },
+        WORKER_CORRELATION_RECONCILIATION_RECORDED: [
+          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationFailed", target: "failed" },
+          { actions: "recordWorkerCorrelationReconciliation" },
+        ],
       },
     },
     failed: {
@@ -326,6 +340,11 @@ export const runMachine = createMachine({
           { actions: "recordWorkerContinuation", guard: "workerContinuationRunning", target: "runningWorker" },
           { actions: "recordWorkerContinuation", guard: "workerContinuationFailed" },
           { actions: "recordWorkerContinuation", target: "delivering" },
+        ],
+        WORKER_CORRELATION_RECONCILIATION_RECORDED: [
+          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationRunning", target: "runningWorker" },
+          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationFailed" },
+          { actions: "recordWorkerCorrelationReconciliation", target: "delivering" },
         ],
         WORKER_RECOVERY_RECORDED: [
           { guard: "workerRecoveryConfirmed", target: "runningWorker" },
@@ -373,6 +392,11 @@ export const runMachine = createMachine({
           { actions: "recordWorkerContinuation", guard: "workerContinuationRunning", target: "runningWorker" },
           { actions: "recordWorkerContinuation", guard: "workerContinuationFailed", target: "failed" },
           { actions: "recordWorkerContinuation" },
+        ],
+        WORKER_CORRELATION_RECONCILIATION_RECORDED: [
+          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationRunning", target: "runningWorker" },
+          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationFailed", target: "failed" },
+          { actions: "recordWorkerCorrelationReconciliation" },
         ],
         DELIVERY_MERGE_RECORDED: { actions: "recordDeliveryMerge" },
         DELIVERY_MERGE_READINESS_RECORDED: { actions: "recordDeliveryMergeReadiness" },
@@ -459,6 +483,10 @@ export const runMachine = createMachine({
           { actions: "recordWorkerContinuation", guard: "workerContinuationFailed", target: "failed" },
           { actions: "recordWorkerContinuation" },
         ],
+        WORKER_CORRELATION_RECONCILIATION_RECORDED: [
+          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationFailed", target: "failed" },
+          { actions: "recordWorkerCorrelationReconciliation" },
+        ],
       },
     },
     verifying: {
@@ -475,6 +503,10 @@ export const runMachine = createMachine({
           target: "reporting",
         },
         VERIFICATION_STARTED: {},
+        WORKER_CORRELATION_RECONCILIATION_RECORDED: [
+          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationFailed", target: "failed" },
+          { actions: "recordWorkerCorrelationReconciliation" },
+        ],
       },
     },
   },
@@ -569,6 +601,23 @@ export const runMachine = createMachine({
         ? undefined
         : context.verificationResultPath,
       workerResultPath: ({ context, event }) => event.type === "WORKER_CONTINUATION_RECORDED" && event.continuation.state === "intentRecorded"
+        ? undefined
+        : context.workerResultPath,
+    }),
+    recordWorkerCorrelationReconciliation: assign({
+      delivery: ({ context, event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED"
+        ? deliveryWithWorkerCorrelationReconciliation(context.delivery, event.reconciliation)
+        : context.delivery,
+      evidenceReviewPath: ({ context, event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" && event.reconciliation.state === "intentRecorded"
+        ? undefined
+        : context.evidenceReviewPath,
+      reportPath: ({ context, event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" && event.reconciliation.state === "intentRecorded"
+        ? undefined
+        : context.reportPath,
+      verificationResultPath: ({ context, event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" && event.reconciliation.state === "intentRecorded"
+        ? undefined
+        : context.verificationResultPath,
+      workerResultPath: ({ context, event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" && event.reconciliation.state === "intentRecorded"
         ? undefined
         : context.workerResultPath,
     }),
@@ -777,6 +826,8 @@ export const runMachine = createMachine({
     workerRecoveryConfirmed: ({ event }) => event.type === "WORKER_RECOVERY_RECORDED" && event.recovery.state === "dispatchConfirmed",
     workerContinuationFailed: ({ event }) => event.type === "WORKER_CONTINUATION_RECORDED" && (event.continuation.state === "failed" || event.continuation.state === "outcomeUnknown"),
     workerContinuationRunning: ({ event }) => event.type === "WORKER_CONTINUATION_RECORDED" && (event.continuation.state === "resumeAttempted" || event.continuation.state === "resumeConfirmed" || event.continuation.state === "followUpAttempted" || event.continuation.state === "followUpConfirmed"),
+    workerCorrelationFailed: ({ event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" && (event.reconciliation.state === "failed" || event.reconciliation.state === "outcomeUnknown"),
+    workerCorrelationRunning: ({ event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" && (event.reconciliation.state === "correlationAttempted" || event.reconciliation.state === "correlationConfirmed" || event.reconciliation.state === "followUpAttempted" || event.reconciliation.state === "followUpConfirmed"),
     cleanupCompleted: ({ event }) => event.type === "DELIVERY_CLEANUP_RECORDED" && event.cleanup.state === "completed",
   },
 });
@@ -829,6 +880,15 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
         assertWorkerContinuationTransition(
           parseWorkerContinuationReceipt(previousValue),
           parseWorkerContinuationReceipt(event.payload["continuation"]),
+        );
+      }
+    }
+    if (event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED") {
+      const previousValue = actor.getSnapshot().context.delivery?.["workerCorrelationReconciliation"];
+      if (previousValue !== undefined) {
+        assertWorkerCorrelationReconciliationTransition(
+          parseWorkerCorrelationReconciliationReceipt(previousValue),
+          parseWorkerCorrelationReconciliationReceipt(event.payload["reconciliation"]),
         );
       }
     }
@@ -1010,6 +1070,8 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
       return { recovery: parseWorkerRecoveryReceipt(event.payload["recovery"]), type: event.type };
     case "WORKER_CONTINUATION_RECORDED":
       return { continuation: parseWorkerContinuationReceipt(event.payload["continuation"]), type: event.type };
+    case "WORKER_CORRELATION_RECONCILIATION_RECORDED":
+      return { reconciliation: parseWorkerCorrelationReconciliationReceipt(event.payload["reconciliation"]), type: event.type };
     case "REVIEW_COMPLETED":
       const reviewerSessionEvidencePath = getOptionalStringPayload(
         event,
@@ -1130,6 +1192,32 @@ function deliveryWithWorkerContinuation(
   };
 }
 
+function deliveryWithWorkerCorrelationReconciliation(
+  delivery: Record<string, Schema.Json> | undefined,
+  reconciliation: WorkerCorrelationReconciliationReceipt,
+): Record<string, Schema.Json> {
+  if (delivery === undefined || delivery["mode"] !== "pullRequest") {
+    throw new Error("Worker correlation reconciliation requires accepted pull-request delivery state.");
+  }
+  const previousValue = delivery["workerCorrelationReconciliation"];
+  const previous = previousValue === undefined
+    ? undefined
+    : parseWorkerCorrelationReconciliationReceipt(previousValue);
+  assertWorkerCorrelationReconciliationTransition(previous, reconciliation);
+  const stage = workerCorrelationReconciliationProjection(reconciliation);
+  const priorStage = delivery["stage"];
+  const nextStage = stage ?? (typeof priorStage === "string" ? priorStage : undefined);
+  if (nextStage === undefined) {
+    throw new Error("Worker correlation reconciliation requires an existing delivery stage.");
+  }
+  return {
+    ...delivery,
+    stage: nextStage,
+    workerCorrelationReconciliation: encodeWorkerCorrelationReconciliationReceiptJson(reconciliation),
+    workerEvidenceEpochSequence: reconciliation.workerEvidenceEpochSequence,
+  };
+}
+
 function assertWorkerContinuationTransition(
   previous: WorkerContinuationReceipt | undefined,
   next: WorkerContinuationReceipt,
@@ -1156,6 +1244,24 @@ function assertWorkerContinuationTransition(
   }
 }
 
+function assertWorkerCorrelationReconciliationTransition(
+  previous: WorkerCorrelationReconciliationReceipt | undefined,
+  next: WorkerCorrelationReconciliationReceipt,
+) {
+  if (previous === undefined) {
+    if (next.state !== "intentRecorded") {
+      throw new Error("Worker correlation reconciliation must record intent before continuation work.");
+    }
+    return;
+  }
+  if (JSON.stringify(workerCorrelationReconciliationBinding(previous)) !== JSON.stringify(workerCorrelationReconciliationBinding(next))) {
+    throw new Error("Worker correlation reconciliation action is already bound to different immutable input.");
+  }
+  if (!isLegalWorkerCorrelationReconciliationTransition(previous.state, next.state)) {
+    throw new Error(`Worker correlation reconciliation cannot transition from ${previous.state} to ${next.state}.`);
+  }
+}
+
 function workerContinuationBinding(receipt: WorkerContinuationReceipt) {
   return {
     actionId: receipt.actionId,
@@ -1163,6 +1269,24 @@ function workerContinuationBinding(receipt: WorkerContinuationReceipt) {
     expectedCurrentSequence: receipt.expectedCurrentSequence,
     expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
     expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
+    expectedRecoveryActionId: receipt.expectedRecoveryActionId,
+    expectedSessionId: receipt.expectedSessionId,
+    harnessProfileId: receipt.harnessProfileId,
+    maxAttempts: receipt.maxAttempts,
+    workerEvidenceEpochSequence: receipt.workerEvidenceEpochSequence,
+  };
+}
+
+function workerCorrelationReconciliationBinding(receipt: WorkerCorrelationReconciliationReceipt) {
+  return {
+    actionId: receipt.actionId,
+    expectedContaminatedReadySequence: receipt.expectedContaminatedReadySequence,
+    expectedContinuationActionId: receipt.expectedContinuationActionId,
+    expectedCurrentSequence: receipt.expectedCurrentSequence,
+    expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
+    expectedFailedContinuationSequence: receipt.expectedFailedContinuationSequence,
+    expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
+    expectedNativeTurnIdDigest: receipt.expectedNativeTurnIdDigest,
     expectedRecoveryActionId: receipt.expectedRecoveryActionId,
     expectedSessionId: receipt.expectedSessionId,
     harnessProfileId: receipt.harnessProfileId,
@@ -1187,6 +1311,28 @@ function workerContinuationStateRank(state: WorkerContinuationReceipt["state"]) 
     case "failed":
     case "outcomeUnknown":
       return 5;
+  }
+}
+
+function isLegalWorkerCorrelationReconciliationTransition(
+  previous: WorkerCorrelationReconciliationReceipt["state"],
+  next: WorkerCorrelationReconciliationReceipt["state"],
+) {
+  switch (previous) {
+    case "intentRecorded":
+      return next === "correlationAttempted";
+    case "correlationAttempted":
+      return next === "correlationConfirmed" || next === "failed" || next === "outcomeUnknown";
+    case "correlationConfirmed":
+      return next === "followUpAttempted";
+    case "followUpAttempted":
+      return next === "followUpConfirmed" || next === "outcomeUnknown";
+    case "followUpConfirmed":
+      return next === "workerCompleted" || next === "failed";
+    case "failed":
+    case "outcomeUnknown":
+    case "workerCompleted":
+      return false;
   }
 }
 

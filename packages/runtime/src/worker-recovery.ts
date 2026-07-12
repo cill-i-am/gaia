@@ -17,6 +17,7 @@ export type WorkerRecoveryProvider = {
 };
 
 const PrivateWorkerRecoveryTurn = Schema.Struct({ turnId: Schema.NonEmptyString, version: Schema.Literal(1) });
+const PrivateWorkerCorrelationFollowUpTurn = Schema.Struct({ turnId: Schema.NonEmptyString, version: Schema.Literal(1) });
 
 export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryAction, input: {
   readonly appendRecoveryEvent?: typeof appendEvent;
@@ -116,4 +117,22 @@ export function readPrivateWorkerRecoveryTurn(runRoot: string, expectedDigest: s
     if (digest(checkpoint.turnId) !== expectedDigest) return yield* Effect.fail(new Error("Worker recovery turn checkpoint digest mismatch."));
     return checkpoint.turnId;
   }).pipe(Effect.mapError((cause) => makeRuntimeError({ cause, code: "WorkerRecoveryTurnCheckpointInvalid", message: "The exact recovered native turn checkpoint is missing or invalid.", recoverable: false })));
+}
+
+export function writePrivateWorkerCorrelationFollowUpTurn(runRoot: string, turnId: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* fs.writeFileString(path.join(runRoot, ".worker-correlation-follow-up-turn.json"), JSON.stringify({ turnId, version: 1 }));
+  }).pipe(Effect.mapError((cause) => makeRuntimeError({ cause, code: "WorkerCorrelationFollowUpCheckpointInvalid", message: "The accepted worker correlation follow-up checkpoint could not be persisted.", recoverable: false })));
+}
+
+export function readPrivateWorkerCorrelationFollowUpTurn(runRoot: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const raw = yield* fs.readFileString(path.join(runRoot, ".worker-correlation-follow-up-turn.json"));
+    const checkpoint = yield* Schema.decodeUnknownEffect(PrivateWorkerCorrelationFollowUpTurn)(JSON.parse(raw));
+    return checkpoint.turnId;
+  }).pipe(Effect.mapError((cause) => makeRuntimeError({ cause, code: "WorkerCorrelationFollowUpCheckpointInvalid", message: "The accepted worker correlation follow-up checkpoint is missing or invalid.", recoverable: false })));
 }

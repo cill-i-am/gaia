@@ -28,7 +28,7 @@ import {
   makeFileCodexHarnessCorrelationStore,
   makeInMemoryCodexHarnessCorrelationStore,
 } from "./codex-harness-provider.js";
-import { resumeHarnessSession, startHarnessSession } from "./harness-session.js";
+import { HarnessInput, resumeHarnessSession, startHarnessSession } from "./harness-session.js";
 
 type RecoveredTurn = NonNullable<CodexThread["turns"]>[number];
 
@@ -53,6 +53,7 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
       interrupts.push(params);
       return Effect.succeed({});
     },
+    listThreads: () => Effect.succeed({ backwardsCursor: null, data: [], nextCursor: null }),
     onNotification: (listener) => { notifications.add(listener); return () => notifications.delete(listener); },
     onServerRequest: (listener) => { requests.add(listener); return () => requests.delete(listener); },
     onTermination: (listener) => { terminations.add(listener); return () => terminations.delete(listener); },
@@ -284,6 +285,46 @@ describe("Codex HarnessProvider adapter", () => {
     expect(exit._tag).toBe("Failure"); expect(second.starts).toEqual([]);
     expect(second.notifications.size).toBe(0); expect(second.interrupts).toEqual([]);
   });
+
+  it("allows an audited interrupted checkpoint without projecting the stale terminal turn", async () => {
+    const sessionId = parseHarnessSessionId("session-audited-interrupted-checkpoint");
+    const store = makeInMemoryCodexHarnessCorrelationStore();
+    const first = recordingClient();
+    await Effect.runPromise(Effect.scoped(startHarnessSession({ provider: createCodexHarnessProvider({ client: first.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { input: { text: "start" }, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] })));
+    const second = recordingClient([{ id: first.turnId, status: "interrupted" }]);
+    const snapshot = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* resumeHarnessSession({
+            provider: createCodexHarnessProvider({ client: second.client, correlationStore: store, workspaceRoot: "/workspace" }),
+            request: {
+              allowInterruptedCheckpoint: true,
+              expectedNativeTurnId: first.turnId,
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          const initial = yield* session.snapshot;
+          yield* session.send(HarnessInput.make({
+            clientInputId: "audited-follow-up-1",
+            text: "continue from checkpoint",
+          }));
+          return initial;
+        }),
+      ),
+    );
+
+    expect(snapshot.turns).toHaveLength(0);
+    expect(second.starts).toEqual([
+      {
+        clientUserMessageId: "audited-follow-up-1",
+        input: [{ text: "continue from checkpoint", type: "text" }],
+        threadId: second.threadId,
+      },
+    ]);
+  });
+
   it("round-trips strict durable private correlation and rejects corrupt state", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "gaia-codex-correlation-"));
     const sessionId = parseHarnessSessionId("session-durable-correlation");

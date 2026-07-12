@@ -12,13 +12,18 @@ import {
   parseDeliveryPublication,
   parseRunId,
   encodeWorkerContinuationReceiptJson,
+  encodeWorkerCorrelationReconciliationReceiptJson,
   parseWorkerContinuationAction,
   parseWorkerContinuationReceipt,
+  parseWorkerCorrelationReconciliationAction,
+  parseWorkerCorrelationReconciliationReceipt,
   parseWorkerRecoveryReceipt,
   ResolvedHarnessExecution,
   snapshotFromReplay,
   type WorkerContinuationAction,
   type WorkerContinuationReceipt,
+  type WorkerCorrelationReconciliationAction,
+  type WorkerCorrelationReconciliationReceipt,
   type GaiaFailure,
   type WorkerRecoveryAction,
   type WorkerRecoveryReceipt,
@@ -61,7 +66,10 @@ import {
 } from "./workflows.js";
 import { interactiveSessionHarness } from "./interactive-harness.js";
 import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
-import { readPrivateWorkerRecoveryTurn } from "./worker-recovery.js";
+import {
+  readPrivateWorkerCorrelationFollowUpTurn,
+  readPrivateWorkerRecoveryTurn,
+} from "./worker-recovery.js";
 import {
   localDirectoryWorkspaceSource,
   type WorkspaceSource,
@@ -118,7 +126,27 @@ export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly workspaceSource?: WorkspaceSource;
   readonly workerRecoveryActivator?: (runId: string, action: WorkerRecoveryAction) => Effect.Effect<WorkerRecoveryReceipt, unknown, FileSystem.FileSystem | Path.Path>;
   readonly workerContinuationRunner?: (runId: string, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
+  readonly workerCorrelationReconciler?: WorkerCorrelationReconciler;
+  readonly workerCorrelationFollowUpDispatcher?: WorkerCorrelationFollowUpDispatcher;
+  readonly workerCorrelationRunner?: (runId: string, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
 };
+
+export type WorkerCorrelationReconciliationInput = {
+  readonly action: WorkerCorrelationReconciliationAction;
+  readonly clientInputId: string;
+  readonly events: ReadonlyArray<RunEvent>;
+  readonly followUpText: string;
+  readonly paths: RunPaths;
+  readonly runId: RunId;
+};
+
+export type WorkerCorrelationReconciler = (
+  input: WorkerCorrelationReconciliationInput,
+) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
+
+export type WorkerCorrelationFollowUpDispatcher = (
+  input: WorkerCorrelationReconciliationInput,
+) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
 
 export function actOnWorkerRecovery(runId: string, action: WorkerRecoveryAction, options: ServerWorkflowOptions) {
   return options.workerRecoveryActivator === undefined
@@ -216,6 +244,161 @@ function actOnWorkerContinuationUnlocked(
       });
     }
     return yield* recordWorkerContinuationReceipt(runId, paths, {
+      ...base,
+      state: "workerCompleted",
+    });
+  });
+}
+
+export function actOnWorkerCorrelationReconciliation(
+  runIdInput: string,
+  actionInput: WorkerCorrelationReconciliationAction,
+  options: ServerWorkflowOptions = {},
+) {
+  return withRunStoreLock(
+    options,
+    actOnWorkerCorrelationReconciliationUnlocked(runIdInput, actionInput, options),
+    {
+      nextSafeAction:
+        "Refresh delivery state before retrying the audited worker correlation reconciliation action.",
+      operation: "Gaia audited worker correlation reconciliation action",
+    },
+  ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
+}
+
+function actOnWorkerCorrelationReconciliationUnlocked(
+  runIdInput: string,
+  actionInput: WorkerCorrelationReconciliationAction,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    if (
+      options.workerCorrelationReconciler === undefined ||
+      options.workerCorrelationFollowUpDispatcher === undefined
+    ) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryActionFailed",
+          message: "Worker correlation reconciliation is unavailable.",
+          recoverable: false,
+        }),
+      );
+    }
+    const runId = yield* parseRunIdEffect(runIdInput);
+    const action = parseWorkerCorrelationReconciliationAction(actionInput);
+    const paths = yield* makeRunPaths(runId, options);
+    const loaded = yield* loadRun(paths);
+    const prior = latestWorkerCorrelationReconciliationReceipt(loaded.events);
+    const epochSequence = prior?.workerEvidenceEpochSequence ?? action.expectedCurrentSequence + 1;
+    const base = {
+      actionId: action.actionId,
+      expectedContaminatedReadySequence: action.expectedContaminatedReadySequence,
+      expectedContinuationActionId: action.expectedContinuationActionId,
+      expectedCurrentSequence: action.expectedCurrentSequence,
+      expectedDeliveryProvenanceDigest: action.expectedDeliveryProvenanceDigest,
+      expectedFailedContinuationSequence: action.expectedFailedContinuationSequence,
+      expectedFailedRecoverySequence: action.expectedFailedRecoverySequence,
+      expectedNativeTurnIdDigest: action.expectedNativeTurnIdDigest,
+      expectedRecoveryActionId: action.expectedRecoveryActionId,
+      expectedSessionId: action.expectedSessionId,
+      harnessProfileId: action.harnessProfileId,
+      maxAttempts: 1 as const,
+      workerEvidenceEpochSequence: epochSequence,
+    };
+    const input = {
+      action,
+      clientInputId: workerCorrelationFollowUpClientInputId(runId, action.actionId),
+      events: loaded.events,
+      followUpText: workerCorrelationFollowUpText,
+      paths,
+      runId,
+    } satisfies WorkerCorrelationReconciliationInput;
+
+    if (prior !== undefined) {
+      yield* assertWorkerCorrelationReconciliationReplay(prior, base);
+      if (prior.state === "correlationAttempted" || prior.state === "followUpAttempted") {
+        return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
+          ...prior,
+          code: "WorkerCorrelationOutcomeUnknown",
+          message: "A prior audited correlation reconciliation attempt has no durable terminal receipt.",
+          state: "outcomeUnknown",
+        });
+      }
+      if (prior.state === "failed" || prior.state === "outcomeUnknown" || prior.state === "workerCompleted") {
+        return prior;
+      }
+    } else {
+      yield* assertWorkerCorrelationReconciliationEligibility(loaded.events, action);
+      yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
+        ...base,
+        state: "intentRecorded",
+      });
+    }
+
+    if (prior === undefined || prior.state === "intentRecorded") {
+      yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
+        ...base,
+        state: "correlationAttempted",
+      });
+      const reconciled = yield* Effect.exit(options.workerCorrelationReconciler(input));
+      if (reconciled._tag === "Failure") {
+        return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
+          ...base,
+          code: "WorkerCorrelationReconciliationFailed",
+          message: "Audited worker correlation reconciliation failed before the private checkpoint was durably confirmed.",
+          state: "failed",
+        });
+      }
+      yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
+        ...base,
+        state: "correlationConfirmed",
+      });
+    }
+
+    if (prior === undefined || prior.state === "intentRecorded" || prior.state === "correlationConfirmed") {
+      yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
+        ...base,
+        state: "followUpAttempted",
+      });
+      const dispatched = yield* Effect.exit(options.workerCorrelationFollowUpDispatcher(input));
+      if (dispatched._tag === "Failure") {
+        return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
+          ...base,
+          code: "WorkerCorrelationFollowUpOutcomeUnknown",
+          message: "Audited worker correlation follow-up acceptance could not be confirmed.",
+          state: "outcomeUnknown",
+        });
+      }
+      yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
+        ...base,
+        state: "followUpConfirmed",
+      });
+    }
+
+    const continued = yield* Effect.exit(
+      (options.workerCorrelationRunner ?? options.workerContinuationRunner ?? continueServerRunWorkerOnly)(runId, options),
+    );
+    if (continued._tag === "Failure") {
+      return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
+        ...base,
+        code: "WorkerCorrelationContinuationFailed",
+        message: "Audited worker correlation reconciliation failed before fresh worker evidence completed.",
+        state: "failed",
+      });
+    }
+    const refreshed = yield* loadRun(paths);
+    const hasFreshWorkerCompletion = refreshed.events.some(
+      ({ sequence, type }) => type === "WORKER_COMPLETED" && sequence > epochSequence,
+    );
+    if (!hasFreshWorkerCompletion) {
+      return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
+        ...base,
+        code: "WorkerCorrelationNoFreshWorkerCompletion",
+        message: "Audited worker correlation reconciliation did not produce fresh worker evidence.",
+        state: "failed",
+      });
+    }
+    return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
       ...base,
       state: "workerCompleted",
     });
@@ -871,6 +1054,13 @@ function latestWorkerContinuationReceipt(events: ReadonlyArray<RunEvent>) {
   })[0];
 }
 
+function latestWorkerCorrelationReconciliationReceipt(events: ReadonlyArray<RunEvent>) {
+  return [...events].reverse().flatMap((event) => {
+    if (event.type !== "WORKER_CORRELATION_RECONCILIATION_RECORDED") return [];
+    return [parseWorkerCorrelationReconciliationReceipt(event.payload["reconciliation"])];
+  })[0];
+}
+
 function recordWorkerContinuationReceipt(
   runId: RunId,
   paths: RunPaths,
@@ -879,6 +1069,17 @@ function recordWorkerContinuationReceipt(
   return appendEvent(runId, paths, {
     payload: { continuation: encodeWorkerContinuationReceiptJson(receipt) },
     type: "WORKER_CONTINUATION_RECORDED",
+  }).pipe(Effect.as(receipt));
+}
+
+function recordWorkerCorrelationReconciliationReceipt(
+  runId: RunId,
+  paths: RunPaths,
+  receipt: WorkerCorrelationReconciliationReceipt,
+) {
+  return appendEvent(runId, paths, {
+    payload: { reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(receipt) },
+    type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
   }).pipe(Effect.as(receipt));
 }
 
@@ -896,6 +1097,20 @@ function assertWorkerContinuationReplay(
   return Effect.void;
 }
 
+function assertWorkerCorrelationReconciliationReplay(
+  prior: WorkerCorrelationReconciliationReceipt,
+  expected: Omit<WorkerCorrelationReconciliationReceipt, "code" | "message" | "state">,
+) {
+  if (JSON.stringify(workerCorrelationReconciliationBinding(prior)) !== JSON.stringify(expected)) {
+    return Effect.fail(makeRuntimeError({
+      code: "DeliveryActionConflict",
+      message: "Another audited worker correlation reconciliation action is already authoritative.",
+      recoverable: false,
+    }));
+  }
+  return Effect.void;
+}
+
 function workerContinuationBinding(
   receipt: Omit<WorkerContinuationReceipt, "code" | "message" | "state">,
 ) {
@@ -905,6 +1120,26 @@ function workerContinuationBinding(
     expectedCurrentSequence: receipt.expectedCurrentSequence,
     expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
     expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
+    expectedRecoveryActionId: receipt.expectedRecoveryActionId,
+    expectedSessionId: receipt.expectedSessionId,
+    harnessProfileId: receipt.harnessProfileId,
+    maxAttempts: receipt.maxAttempts,
+    workerEvidenceEpochSequence: receipt.workerEvidenceEpochSequence,
+  };
+}
+
+function workerCorrelationReconciliationBinding(
+  receipt: Omit<WorkerCorrelationReconciliationReceipt, "code" | "message" | "state">,
+) {
+  return {
+    actionId: receipt.actionId,
+    expectedContaminatedReadySequence: receipt.expectedContaminatedReadySequence,
+    expectedContinuationActionId: receipt.expectedContinuationActionId,
+    expectedCurrentSequence: receipt.expectedCurrentSequence,
+    expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
+    expectedFailedContinuationSequence: receipt.expectedFailedContinuationSequence,
+    expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
+    expectedNativeTurnIdDigest: receipt.expectedNativeTurnIdDigest,
     expectedRecoveryActionId: receipt.expectedRecoveryActionId,
     expectedSessionId: receipt.expectedSessionId,
     harnessProfileId: receipt.harnessProfileId,
@@ -988,12 +1223,120 @@ function assertWorkerContinuationEligibility(
   });
 }
 
+function assertWorkerCorrelationReconciliationEligibility(
+  events: ReadonlyArray<RunEvent>,
+  action: WorkerCorrelationReconciliationAction,
+) {
+  return Effect.gen(function* () {
+    const currentSequence = events.at(-1)?.sequence ?? 0;
+    if (currentSequence !== action.expectedCurrentSequence) {
+      return yield* Effect.fail(makeRuntimeError({
+        code: "DeliveryActionConflict",
+        message: "Delivery state changed before audited worker correlation reconciliation was accepted.",
+        recoverable: true,
+      }));
+    }
+    if (action.expectedFailedContinuationSequence !== action.expectedCurrentSequence) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited correlation reconciliation requires the current failed continuation receipt."),
+      );
+    }
+    const firstEvent = events[0];
+    const delivery = firstEvent === undefined
+      ? undefined
+      : yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
+    if (
+      delivery?.mode !== "pullRequest" ||
+      action.expectedDeliveryProvenanceDigest !==
+        deliveryProvenanceDigest(delivery.provenance)
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited correlation reconciliation requires the accepted delivery provenance."),
+      );
+    }
+    const failedRecoveryEvent = events.find(
+      (event) => event.sequence === action.expectedFailedRecoverySequence,
+    );
+    if (failedRecoveryEvent?.type !== "WORKER_RECOVERY_RECORDED") {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited correlation reconciliation requires the exact failed recovery receipt."),
+      );
+    }
+    const failedRecovery = parseWorkerRecoveryReceipt(failedRecoveryEvent.payload["recovery"]);
+    if (
+      failedRecovery.state !== "failed" ||
+      failedRecovery.code !== "WorkerRecoveryContinuationFailed" ||
+      failedRecovery.actionId !== action.expectedRecoveryActionId ||
+      failedRecovery.expectedSessionId !== action.expectedSessionId ||
+      failedRecovery.harnessProfileId !== action.harnessProfileId ||
+      failedRecovery.nativeTurnIdDigest !== action.expectedNativeTurnIdDigest
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited correlation reconciliation requires the exact failed interrupted recovery checkpoint."),
+      );
+    }
+    const failedContinuationEvent = events.find(
+      (event) => event.sequence === action.expectedFailedContinuationSequence,
+    );
+    if (failedContinuationEvent?.type !== "WORKER_CONTINUATION_RECORDED") {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited correlation reconciliation requires the exact failed audited continuation receipt."),
+      );
+    }
+    const failedContinuation = parseWorkerContinuationReceipt(failedContinuationEvent.payload["continuation"]);
+    if (
+      failedContinuation.state !== "failed" ||
+      failedContinuation.actionId !== action.expectedContinuationActionId ||
+      failedContinuation.expectedContaminatedReadySequence !== action.expectedContaminatedReadySequence ||
+      failedContinuation.expectedDeliveryProvenanceDigest !== action.expectedDeliveryProvenanceDigest ||
+      failedContinuation.expectedFailedRecoverySequence !== action.expectedFailedRecoverySequence ||
+      failedContinuation.expectedRecoveryActionId !== action.expectedRecoveryActionId ||
+      failedContinuation.expectedSessionId !== action.expectedSessionId ||
+      failedContinuation.harnessProfileId !== action.harnessProfileId
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited correlation reconciliation requires the exact failed continuation binding."),
+      );
+    }
+    const readyEvent = events.find(
+      (event) => event.sequence === action.expectedContaminatedReadySequence,
+    );
+    if (readyEvent?.type !== "DELIVERY_READY_TO_PUBLISH") {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited correlation reconciliation requires the contaminated ready boundary."),
+      );
+    }
+    if (
+      events.some(isDeliveryPublicationEvent) ||
+      events.some(({ type }) =>
+        type === "GITHUB_PR_LOOP_RECORDED" ||
+        type === "GITHUB_CHECKS_RECORDED" ||
+        type === "GITHUB_FEEDBACK_RECORDED"
+      )
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited correlation reconciliation is unavailable after publication or pull-request evidence exists."),
+      );
+    }
+  });
+}
+
 function workerContinuationConflict(message: string) {
   return makeRuntimeError({
     code: "DeliveryActionConflict",
     message,
     recoverable: false,
   });
+}
+
+const workerCorrelationFollowUpText =
+  "Continue the interrupted worker recovery from the audited checkpoint. Do not restart the run, publish, merge, or change recovery policy.";
+
+function workerCorrelationFollowUpClientInputId(runId: RunId, actionId: string) {
+  const digest = createHash("sha256")
+    .update(["gaia-worker-correlation-follow-up-v1", runId, actionId].join("\0"))
+    .digest("hex");
+  return `gaia-worker-correlation:${digest}`;
 }
 
 function isDeliveryPublicationEvent(event: RunEvent) {
@@ -1535,9 +1878,12 @@ function factoryContinuationOptions(
       const receipt = parseWorkerRecoveryReceipt(event.payload["recovery"]);
       return receipt.state === "dispatchConfirmed" ? [receipt] : [];
     })[0];
-    const expectedNativeTurnId = recovery === undefined
-      ? undefined
-      : yield* readPrivateWorkerRecoveryTurn(paths.root, recovery.nativeTurnIdDigest);
+    const latestCorrelation = latestWorkerCorrelationReconciliationReceipt(events);
+    const expectedNativeTurnId = latestCorrelation?.state === "followUpConfirmed" || latestCorrelation?.state === "workerCompleted"
+      ? yield* readPrivateWorkerCorrelationFollowUpTurn(paths.root)
+      : recovery === undefined
+        ? undefined
+        : yield* readPrivateWorkerRecoveryTurn(paths.root, recovery.nativeTurnIdDigest);
     return {
       ...commonOptions,
       workerContinuationState: continuationState,

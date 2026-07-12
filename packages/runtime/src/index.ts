@@ -1,5 +1,8 @@
 export {
   recoverWorkerSession,
+  readPrivateWorkerCorrelationFollowUpTurn,
+  readPrivateWorkerRecoveryTurn,
+  writePrivateWorkerCorrelationFollowUpTurn,
   type WorkerRecoveryProvider,
   type WorkerRecoveryThreadStatus,
 } from "./worker-recovery.js";
@@ -68,6 +71,7 @@ export {
   createCodexHarnessProvider,
   makeFileCodexHarnessCorrelationStore,
   decodeCodexHarnessCorrelation,
+  encodeCodexHarnessCorrelation,
   makeInMemoryCodexHarnessCorrelationStore,
   type CodexHarnessCorrelationStore,
   type CodexHarnessOpaqueCorrelation,
