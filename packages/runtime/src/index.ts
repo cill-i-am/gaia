@@ -1,6 +1,7 @@
 export {
   recoverWorkerSession,
   type WorkerRecoveryProvider,
+  type WorkerRecoveryThreadStatus,
 } from "./worker-recovery.js";
 export {
   makeGitCleanupResourceAdapter,

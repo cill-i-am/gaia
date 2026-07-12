@@ -37,6 +37,7 @@ import { readFile } from "node:fs/promises";
 import {
   makeProductionWorkerRecoveryProvider,
   runLocalGaiaServer,
+  toWorkerRecoveryThreadStatus,
 } from "./main.js";
 
 describe("local Gaia server process", () => {
@@ -65,12 +66,12 @@ describe("local Gaia server process", () => {
           readThread: (threadId) =>
             Effect.sync(() => {
               calls.push("read");
-              return { active: false, systemError: true, threadId };
+              return { status: "systemError", threadId };
             }),
           resumeThread: (threadId) =>
             Effect.sync(() => {
               calls.push("resume");
-              return { threadId };
+              return { status: "idle", threadId };
             }),
           startTurn: ({ model }) =>
             Effect.sync(() => {
@@ -99,6 +100,15 @@ describe("local Gaia server process", () => {
         ]);
       }),
     );
+    it("normalizes finite App Server thread statuses for recovery preflight", () => {
+      assert.strictEqual(toWorkerRecoveryThreadStatus("idle"), "idle");
+      assert.strictEqual(toWorkerRecoveryThreadStatus("notLoaded"), "notLoaded");
+      assert.strictEqual(toWorkerRecoveryThreadStatus("systemError"), "systemError");
+      assert.strictEqual(toWorkerRecoveryThreadStatus("active"), "active");
+      assert.strictEqual(toWorkerRecoveryThreadStatus(undefined), "unknown");
+      assert.strictEqual(toWorkerRecoveryThreadStatus("paused"), "unknown");
+    });
+
     it.effect("fails before model catalog and recovery mutation when detection cannot become available", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -132,15 +142,14 @@ describe("local Gaia server process", () => {
                 Effect.sync(() => {
                   calls.push("read");
                   return {
-                    active: false,
-                    systemError: true,
+                    status: "systemError",
                     threadId: "thread-private",
                   };
                 }),
               resumeThread: () =>
                 Effect.sync(() => {
                   calls.push("resume");
-                  return { threadId: "thread-private" };
+                  return { status: "idle", threadId: "thread-private" };
                 }),
               startTurn: () =>
                 Effect.sync(() => {

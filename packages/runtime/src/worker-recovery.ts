@@ -6,10 +6,13 @@ import { makeRuntimeError } from "./errors.js";
 import { makeRunPaths, type RunPaths } from "./paths.js";
 import { withRunStoreLock } from "./run-store-lock.js";
 
+export type WorkerRecoveryThreadStatus = "active" | "idle" | "notLoaded" | "systemError" | "unknown";
+export type WorkerRecoveryThreadState = { readonly status: WorkerRecoveryThreadStatus; readonly threadId: string };
+
 export type WorkerRecoveryProvider = {
   readonly listModels: () => Effect.Effect<ReadonlyArray<{ readonly hidden: boolean; readonly id: string }>, unknown>;
-  readonly readThread: (threadId: string) => Effect.Effect<{ readonly active: boolean; readonly systemError: boolean; readonly threadId: string }, unknown>;
-  readonly resumeThread: (threadId: string) => Effect.Effect<{ readonly threadId: string }, unknown>;
+  readonly readThread: (threadId: string) => Effect.Effect<WorkerRecoveryThreadState, unknown>;
+  readonly resumeThread: (threadId: string) => Effect.Effect<WorkerRecoveryThreadState, unknown>;
   readonly startTurn: (input: { readonly model: string; readonly threadId: string }) => Effect.Effect<{ readonly turnId: string }, unknown>;
 };
 
@@ -57,7 +60,7 @@ export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryA
       yield* input.validateWorkspace(paths.workspace, expectedHead);
       const resumed = yield* input.provider.resumeThread(input.nativeThreadId);
       const read = yield* input.provider.readThread(input.nativeThreadId);
-      if (resumed.threadId !== input.nativeThreadId || read.threadId !== input.nativeThreadId || read.active || !read.systemError) return yield* Effect.fail(new Error("thread mismatch"));
+      if (!isSafeRecoveryThreadState(input.nativeThreadId, resumed) || !isSafeRecoveryThreadState(input.nativeThreadId, read)) return yield* Effect.fail(new Error("thread mismatch"));
       yield* input.validateWorkspace(paths.workspace, expectedHead);
     }));
     if (preflight._tag === "Failure") return yield* recordReceipt({ ...base, code: "WorkerRecoveryPreflightFailed", message: "Worker recovery preflight failed conclusively.", state: "failed" });
@@ -71,6 +74,10 @@ export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryA
     if (checkpoint._tag === "Failure") return yield* recordReceipt({ ...base, code: "WorkerRecoveryOutcomeUnknown", message: "Codex returned a turn but its private receipt was not durable.", state: "outcomeUnknown" });
     return yield* recordReceipt({ ...base, nativeTurnIdDigest: digest(started.value.turnId), state: "dispatchConfirmed" });
   }));
+}
+
+function isSafeRecoveryThreadState(expectedThreadId: string, state: WorkerRecoveryThreadState) {
+  return state.threadId === expectedThreadId && (state.status === "idle" || state.status === "notLoaded" || state.status === "systemError");
 }
 
 function assertEligible(events: ReadonlyArray<{ readonly payload: Record<string, unknown>; readonly sequence: number; readonly type: string }>, action: WorkerRecoveryAction) {
