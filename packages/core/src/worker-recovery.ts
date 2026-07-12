@@ -41,6 +41,18 @@ export class WorkerRecoveryAction extends Schema.Class<WorkerRecoveryAction>("Wo
   model: ModelId,
 }, { parseOptions: { onExcessProperty: "error" } }) {}
 
+export class WorkerContinuationAction extends Schema.Class<WorkerContinuationAction>("WorkerContinuationAction")({
+  actionId: ActionId,
+  expectedContaminatedReadySequence: Sequence,
+  expectedCurrentSequence: Sequence,
+  expectedDeliveryProvenanceDigest: Digest,
+  expectedFailedRecoverySequence: Sequence,
+  expectedRecoveryActionId: ActionId,
+  expectedSessionId: HarnessSessionIdSchema,
+  harnessProfileId: HarnessProfileIdSchema,
+  kind: Schema.Literal("continueInterruptedWorkerRecovery"),
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+
 const Base = {
   actionId: ActionId,
   attempt: Schema.Literal(1),
@@ -67,10 +79,49 @@ export const WorkerRecoveryReceiptSchema = Schema.Union([
   Schema.Struct({ ...Base, code: Schema.NonEmptyString, message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1024))), state: Schema.Literal("outcomeUnknown") }),
 ]);
 export type WorkerRecoveryReceipt = typeof WorkerRecoveryReceiptSchema.Type;
+
+const ContinuationBase = {
+  actionId: ActionId,
+  expectedContaminatedReadySequence: Sequence,
+  expectedCurrentSequence: Sequence,
+  expectedDeliveryProvenanceDigest: Digest,
+  expectedFailedRecoverySequence: Sequence,
+  expectedRecoveryActionId: ActionId,
+  expectedSessionId: HarnessSessionIdSchema,
+  harnessProfileId: HarnessProfileIdSchema,
+  maxAttempts: Schema.Literal(1),
+  workerEvidenceEpochSequence: Sequence,
+} as const;
+
+export const WorkerContinuationReceiptSchema = Schema.Union([
+  Schema.Struct({ ...ContinuationBase, state: Schema.Literal("intentRecorded") }),
+  Schema.Struct({ ...ContinuationBase, state: Schema.Literal("resumeAttempted") }),
+  Schema.Struct({ ...ContinuationBase, state: Schema.Literal("resumeConfirmed") }),
+  Schema.Struct({ ...ContinuationBase, state: Schema.Literal("followUpAttempted") }),
+  Schema.Struct({ ...ContinuationBase, state: Schema.Literal("followUpConfirmed") }),
+  Schema.Struct({ ...ContinuationBase, state: Schema.Literal("workerCompleted") }),
+  Schema.Struct({
+    ...ContinuationBase,
+    code: Schema.NonEmptyString,
+    message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1024))),
+    state: Schema.Literal("failed"),
+  }),
+  Schema.Struct({
+    ...ContinuationBase,
+    code: Schema.NonEmptyString,
+    message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1024))),
+    state: Schema.Literal("outcomeUnknown"),
+  }),
+]);
+export type WorkerContinuationReceipt = typeof WorkerContinuationReceiptSchema.Type;
+
 export const parseWorkerRecoveryAction = Schema.decodeUnknownSync(WorkerRecoveryAction);
 export const parseWorkerRecoveryReceipt = Schema.decodeUnknownSync(WorkerRecoveryReceiptSchema);
+export const parseWorkerContinuationAction = Schema.decodeUnknownSync(WorkerContinuationAction);
+export const parseWorkerContinuationReceipt = Schema.decodeUnknownSync(WorkerContinuationReceiptSchema);
 export const encodeWorkerRecoveryFailureEvidenceJson = Schema.encodeSync(WorkerRecoveryFailureEvidence);
 export const encodeWorkerRecoveryReceiptJson = Schema.encodeSync(WorkerRecoveryReceiptSchema);
+export const encodeWorkerContinuationReceiptJson = Schema.encodeSync(WorkerContinuationReceiptSchema);
 
 export function workerRecoveryProjection(receipt: WorkerRecoveryReceipt | undefined) {
   if (receipt === undefined) return undefined;
@@ -81,5 +132,19 @@ export function workerRecoveryProjection(receipt: WorkerRecoveryReceipt | undefi
     case "dispatchConfirmed": return "runningWorker" as const;
     case "failed": return "workerRecoveryFailed" as const;
     case "outcomeUnknown": return "workerRecoveryOutcomeUnknown" as const;
+  }
+}
+
+export function workerContinuationProjection(receipt: WorkerContinuationReceipt | undefined) {
+  if (receipt === undefined) return undefined;
+  switch (receipt.state) {
+    case "intentRecorded": return "workerContinuationPending" as const;
+    case "resumeAttempted":
+    case "resumeConfirmed":
+    case "followUpAttempted":
+    case "followUpConfirmed": return "workerContinuationRunning" as const;
+    case "workerCompleted": return undefined;
+    case "failed": return "workerContinuationFailed" as const;
+    case "outcomeUnknown": return "workerContinuationOutcomeUnknown" as const;
   }
 }

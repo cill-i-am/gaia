@@ -392,6 +392,27 @@ describe("LocalGaiaServerApi contract", () => {
     assert.throws(() => decode({ ...action, expectedBranchName: "" }));
   });
 
+  it("accepts audited worker continuation actions without native checkpoint fields", () => {
+    const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
+    const request = {
+      actionId: "continue-recovery-1",
+      expectedContaminatedReadySequence: 6,
+      expectedCurrentSequence: 17,
+      expectedDeliveryProvenanceDigest: "c".repeat(64),
+      expectedFailedRecoverySequence: 16,
+      expectedRecoveryActionId: "recover-1",
+      expectedSessionId: "session-run-1234567890",
+      harnessProfileId: "codexAppServer",
+      kind: "continueInterruptedWorkerRecovery",
+    } as const;
+
+    const decoded = decode(request);
+    assert.strictEqual(decoded.kind, "continueInterruptedWorkerRecovery");
+    assert.throws(() => decode({ ...request, nativeTurnId: "turn-private" }));
+    assert.throws(() => decode({ ...request, nativeTurnIdDigest: "a".repeat(64) }));
+    assert.throws(() => decode({ ...request, protocol: "codex-app-server" }));
+  });
+
   it("drops private cleanup provenance from parsed and serialized delivery snapshots", () => {
     const hostile = "/HOSTILE/absolute/common-dir::PRIVATE_TOKEN_93";
     const decode = Schema.decodeUnknownSync(DeliverySnapshotDto);

@@ -11,9 +11,14 @@ import {
   parseHarnessSessionId,
   parseDeliveryPublication,
   parseRunId,
+  encodeWorkerContinuationReceiptJson,
+  parseWorkerContinuationAction,
+  parseWorkerContinuationReceipt,
   parseWorkerRecoveryReceipt,
   ResolvedHarnessExecution,
   snapshotFromReplay,
+  type WorkerContinuationAction,
+  type WorkerContinuationReceipt,
   type GaiaFailure,
   type WorkerRecoveryAction,
   type WorkerRecoveryReceipt,
@@ -23,6 +28,7 @@ import {
 } from "@gaia/core";
 import { customAlphabet } from "nanoid";
 import { Effect, FileSystem, Option, Path, Schema, type Duration } from "effect";
+import { createHash } from "node:crypto";
 import { appendEvent, loadRun } from "./event-store.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
@@ -111,12 +117,109 @@ export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly workspaceSource?: WorkspaceSource;
   readonly workerRecoveryActivator?: (runId: string, action: WorkerRecoveryAction) => Effect.Effect<WorkerRecoveryReceipt, unknown, FileSystem.FileSystem | Path.Path>;
+  readonly workerContinuationRunner?: (runId: string, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
 };
 
 export function actOnWorkerRecovery(runId: string, action: WorkerRecoveryAction, options: ServerWorkflowOptions) {
   return options.workerRecoveryActivator === undefined
     ? Effect.fail(makeRuntimeError({ code: "DeliveryActionFailed", message: "Worker recovery is unavailable.", recoverable: false }))
     : options.workerRecoveryActivator(runId, action);
+}
+
+export function actOnWorkerContinuation(
+  runIdInput: string,
+  actionInput: WorkerContinuationAction,
+  options: ServerWorkflowOptions = {},
+) {
+  return withRunStoreLock(
+    options,
+    actOnWorkerContinuationUnlocked(runIdInput, actionInput, options),
+    {
+      nextSafeAction:
+        "Refresh delivery state before retrying the audited worker continuation action.",
+      operation: "Gaia audited worker continuation action",
+    },
+  ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
+}
+
+function actOnWorkerContinuationUnlocked(
+  runIdInput: string,
+  actionInput: WorkerContinuationAction,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    const runId = yield* parseRunIdEffect(runIdInput);
+    const action = parseWorkerContinuationAction(actionInput);
+    const paths = yield* makeRunPaths(runId, options);
+    const loaded = yield* loadRun(paths);
+    const prior = latestWorkerContinuationReceipt(loaded.events);
+    const epochSequence = prior?.workerEvidenceEpochSequence ?? action.expectedCurrentSequence + 1;
+    const base = {
+      actionId: action.actionId,
+      expectedContaminatedReadySequence: action.expectedContaminatedReadySequence,
+      expectedCurrentSequence: action.expectedCurrentSequence,
+      expectedDeliveryProvenanceDigest: action.expectedDeliveryProvenanceDigest,
+      expectedFailedRecoverySequence: action.expectedFailedRecoverySequence,
+      expectedRecoveryActionId: action.expectedRecoveryActionId,
+      expectedSessionId: action.expectedSessionId,
+      harnessProfileId: action.harnessProfileId,
+      maxAttempts: 1 as const,
+      workerEvidenceEpochSequence: epochSequence,
+    };
+
+    if (prior !== undefined) {
+      yield* assertWorkerContinuationReplay(prior, base);
+      if (prior.state === "resumeAttempted" || prior.state === "followUpAttempted") {
+        return yield* recordWorkerContinuationReceipt(runId, paths, {
+          ...prior,
+          code: "WorkerContinuationOutcomeUnknown",
+          message: "A prior audited continuation attempt has no durable terminal receipt.",
+          state: "outcomeUnknown",
+        });
+      }
+      if (prior.state !== "intentRecorded") {
+        return prior;
+      }
+    } else {
+      yield* assertWorkerContinuationEligibility(loaded.events, action);
+      yield* recordWorkerContinuationReceipt(runId, paths, {
+        ...base,
+        state: "intentRecorded",
+      });
+    }
+
+    yield* recordWorkerContinuationReceipt(runId, paths, {
+      ...base,
+      state: "resumeAttempted",
+    });
+    const continued = yield* Effect.exit(
+      (options.workerContinuationRunner ?? continueServerRunWorkerOnly)(runId, options),
+    );
+    if (continued._tag === "Failure") {
+      return yield* recordWorkerContinuationReceipt(runId, paths, {
+        ...base,
+        code: "WorkerContinuationFailed",
+        message: "Audited worker continuation failed before fresh worker evidence completed.",
+        state: "failed",
+      });
+    }
+    const refreshed = yield* loadRun(paths);
+    const hasFreshWorkerCompletion = refreshed.events.some(
+      ({ sequence, type }) => type === "WORKER_COMPLETED" && sequence > epochSequence,
+    );
+    if (!hasFreshWorkerCompletion) {
+      return yield* recordWorkerContinuationReceipt(runId, paths, {
+        ...base,
+        code: "WorkerContinuationNoFreshWorkerCompletion",
+        message: "Audited worker continuation did not produce fresh worker evidence.",
+        state: "failed",
+      });
+    }
+    return yield* recordWorkerContinuationReceipt(runId, paths, {
+      ...base,
+      state: "workerCompleted",
+    });
+  });
 }
 
 export type DeliveryMergeActionHandler = (
@@ -544,6 +647,92 @@ function continueServerRunUnlocked(
   });
 }
 
+function continueServerRunWorkerOnly(
+  runIdInput: string,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    const runId = yield* parseRunIdEffect(runIdInput);
+    const paths = yield* makeRunPaths(runId, options);
+    const loaded = yield* loadRun(paths).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "ServerRunUnreadable",
+          message: `Gaia server could not read accepted run ${runId}.`,
+          recoverable: true,
+        }),
+      ),
+    );
+    const firstEvent = loaded.events[0];
+    if (
+      firstEvent === undefined ||
+      firstEvent.type !== "RUN_CREATED" ||
+      firstEvent.payload["source"] !== "server"
+    ) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "RunNotServerCreated",
+          message: `Run ${runId} was not accepted by the local Gaia server.`,
+          recoverable: false,
+        }),
+      );
+    }
+    if (firstEvent.payload["workflow"] !== "issueDelivery") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryActionConflict",
+          message: "Audited worker continuation is only available for issue delivery runs.",
+          recoverable: false,
+        }),
+      );
+    }
+    const fs = yield* FileSystem.FileSystem;
+    const specMarkdown = yield* fs.readFileString(paths.input).pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "ServerRunInputUnreadable",
+          message: `Gaia server could not read accepted input for ${runId}.`,
+          recoverable: true,
+        }),
+      ),
+    );
+    const spec = yield* parseServerSpec({
+      specMarkdown,
+      title: runId,
+    });
+
+    return yield* Effect.gen(function* () {
+      const continuationOptions = yield* factoryContinuationOptions(
+        firstEvent,
+        loaded.events,
+        options,
+      );
+      return yield* continueAcceptedRun(
+        runId,
+        paths,
+        spec,
+        continuationOptions,
+      );
+    }).pipe(
+      Effect.mapError((error) =>
+        error instanceof GaiaRuntimeError
+          ? error
+          : makeRuntimeError({
+              cause: error,
+              code: "ServerRunContinuationFailed",
+              message: `Gaia server could not continue accepted run ${runId}.`,
+              recoverable: true,
+            }),
+      ),
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        failServerRunIfNeeded(runId, paths, "runningWorker", error),
+      ),
+    );
+  });
+}
+
 export function actOnDeliveryPublication(
   runIdInput: string,
   action: {
@@ -675,6 +864,160 @@ function continueDeliveryPublication(
   });
 }
 
+function latestWorkerContinuationReceipt(events: ReadonlyArray<RunEvent>) {
+  return [...events].reverse().flatMap((event) => {
+    if (event.type !== "WORKER_CONTINUATION_RECORDED") return [];
+    return [parseWorkerContinuationReceipt(event.payload["continuation"])];
+  })[0];
+}
+
+function recordWorkerContinuationReceipt(
+  runId: RunId,
+  paths: RunPaths,
+  receipt: WorkerContinuationReceipt,
+) {
+  return appendEvent(runId, paths, {
+    payload: { continuation: encodeWorkerContinuationReceiptJson(receipt) },
+    type: "WORKER_CONTINUATION_RECORDED",
+  }).pipe(Effect.as(receipt));
+}
+
+function assertWorkerContinuationReplay(
+  prior: WorkerContinuationReceipt,
+  expected: Omit<WorkerContinuationReceipt, "code" | "message" | "state">,
+) {
+  if (JSON.stringify(workerContinuationBinding(prior)) !== JSON.stringify(expected)) {
+    return Effect.fail(makeRuntimeError({
+      code: "DeliveryActionConflict",
+      message: "Another audited worker continuation action is already authoritative.",
+      recoverable: false,
+    }));
+  }
+  return Effect.void;
+}
+
+function workerContinuationBinding(
+  receipt: Omit<WorkerContinuationReceipt, "code" | "message" | "state">,
+) {
+  return {
+    actionId: receipt.actionId,
+    expectedContaminatedReadySequence: receipt.expectedContaminatedReadySequence,
+    expectedCurrentSequence: receipt.expectedCurrentSequence,
+    expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
+    expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
+    expectedRecoveryActionId: receipt.expectedRecoveryActionId,
+    expectedSessionId: receipt.expectedSessionId,
+    harnessProfileId: receipt.harnessProfileId,
+    maxAttempts: receipt.maxAttempts,
+    workerEvidenceEpochSequence: receipt.workerEvidenceEpochSequence,
+  };
+}
+
+function assertWorkerContinuationEligibility(
+  events: ReadonlyArray<RunEvent>,
+  action: WorkerContinuationAction,
+) {
+  return Effect.gen(function* () {
+    const currentSequence = events.at(-1)?.sequence ?? 0;
+    if (currentSequence !== action.expectedCurrentSequence) {
+      return yield* Effect.fail(makeRuntimeError({
+        code: "DeliveryActionConflict",
+        message: "Delivery state changed before audited worker continuation was accepted.",
+        recoverable: true,
+      }));
+    }
+    if (action.expectedFailedRecoverySequence !== action.expectedCurrentSequence) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited continuation requires the current failed recovery receipt."),
+      );
+    }
+    const firstEvent = events[0];
+    const delivery = firstEvent === undefined
+      ? undefined
+      : yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
+    if (
+      delivery?.mode !== "pullRequest" ||
+      action.expectedDeliveryProvenanceDigest !==
+        deliveryProvenanceDigest(delivery.provenance)
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited continuation requires the accepted delivery provenance."),
+      );
+    }
+    const failedRecoveryEvent = events.find(
+      (event) => event.sequence === action.expectedFailedRecoverySequence,
+    );
+    if (failedRecoveryEvent?.type !== "WORKER_RECOVERY_RECORDED") {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited continuation requires the exact failed recovery receipt."),
+      );
+    }
+    const failedRecovery = parseWorkerRecoveryReceipt(failedRecoveryEvent.payload["recovery"]);
+    if (
+      failedRecovery.state !== "failed" ||
+      failedRecovery.code !== "WorkerRecoveryContinuationFailed" ||
+      failedRecovery.actionId !== action.expectedRecoveryActionId ||
+      failedRecovery.expectedSessionId !== action.expectedSessionId ||
+      failedRecovery.harnessProfileId !== action.harnessProfileId ||
+      failedRecovery.nativeTurnIdDigest === undefined
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited continuation requires the exact failed interrupted recovery checkpoint."),
+      );
+    }
+    const readyEvent = events.find(
+      (event) => event.sequence === action.expectedContaminatedReadySequence,
+    );
+    if (readyEvent?.type !== "DELIVERY_READY_TO_PUBLISH") {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited continuation requires the contaminated ready boundary."),
+      );
+    }
+    if (
+      events.some(isDeliveryPublicationEvent) ||
+      events.some(({ type }) =>
+        type === "GITHUB_PR_LOOP_RECORDED" ||
+        type === "GITHUB_CHECKS_RECORDED" ||
+        type === "GITHUB_FEEDBACK_RECORDED"
+      )
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited continuation is unavailable after publication or pull-request evidence exists."),
+      );
+    }
+  });
+}
+
+function workerContinuationConflict(message: string) {
+  return makeRuntimeError({
+    code: "DeliveryActionConflict",
+    message,
+    recoverable: false,
+  });
+}
+
+function isDeliveryPublicationEvent(event: RunEvent) {
+  return (
+    event.type === "DELIVERY_PUBLICATION_INTENT_RECORDED" ||
+    event.type === "DELIVERY_PUBLICATION_ATTEMPTED" ||
+    event.type === "DELIVERY_PUBLICATION_CONFIRMED" ||
+    event.type === "DELIVERY_PUBLICATION_FAILED" ||
+    event.type === "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN"
+  );
+}
+
+function deliveryProvenanceDigest(provenance: DeliveryProvenance) {
+  return createHash("sha256")
+    .update([
+      "gaia-worker-continuation-delivery-provenance-v1",
+      provenance.baseBranch,
+      provenance.baseRevision,
+      provenance.headBranch,
+      provenance.remote,
+    ].join("\0"))
+    .digest("hex");
+}
+
 function continueDeliveryRemediationLoop(
   runId: RunId,
   options: ServerWorkflowOptions,
@@ -746,12 +1089,14 @@ function deliveryPublicationOptions(options: ServerWorkflowOptions) {
 }
 
 function isDeliveryPublicationReady(events: ReadonlyArray<RunEvent>) {
+  const workerEvidenceEpochSequence = latestWorkerContinuationEpochSequence(events) ?? 0;
   return events.some(
-    ({ type }) =>
-      type === "DELIVERY_READY_TO_PUBLISH" ||
+    ({ sequence, type }) =>
+      sequence > workerEvidenceEpochSequence &&
+      (type === "DELIVERY_READY_TO_PUBLISH" ||
       type === "DELIVERY_PUBLICATION_INTENT_RECORDED" ||
       type === "DELIVERY_PUBLICATION_ATTEMPTED" ||
-      type === "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN",
+      type === "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN"),
   );
 }
 
@@ -1329,11 +1674,16 @@ function issueDeliveryWorkerContinuationState(
     event.type === "WORKER_RECOVERY_RECORDED" &&
     parseWorkerRecoveryReceipt(event.payload["recovery"]).state === "dispatchConfirmed"
   )?.sequence;
-  const relevantSessionEvents = recoverySequence === undefined
+  const continuationEpochSequence = latestWorkerContinuationEpochSequence(events);
+  const evidenceEpochSequence = Math.max(
+    recoverySequence ?? 0,
+    continuationEpochSequence ?? 0,
+  );
+  const relevantSessionEvents = evidenceEpochSequence === 0
     ? sessionEvents
-    : events.filter((event) => event.sequence > recoverySequence && event.type === "HARNESS_SESSION_EVENT_RECORDED").map((event) => parseHarnessEvent(event.payload.event));
+    : events.filter((event) => event.sequence > evidenceEpochSequence && event.type === "HARNESS_SESSION_EVENT_RECORDED").map((event) => parseHarnessEvent(event.payload.event));
   const workerCompletionPersisted = events.some(
-    ({ type }) => type === "WORKER_COMPLETED",
+    ({ sequence, type }) => type === "WORKER_COMPLETED" && sequence > evidenceEpochSequence,
   );
   const terminal = relevantSessionEvents.find(
     ({ kind }) => kind === "turnCompleted" || kind === "sessionFailed",
@@ -1350,6 +1700,14 @@ function issueDeliveryWorkerContinuationState(
     return "completed";
   }
   return "terminal";
+}
+
+function latestWorkerContinuationEpochSequence(events: ReadonlyArray<RunEvent>) {
+  return [...events].reverse().flatMap((event) => {
+    if (event.type !== "WORKER_CONTINUATION_RECORDED") return [];
+    const continuation = parseWorkerContinuationReceipt(event.payload["continuation"]);
+    return [continuation.workerEvidenceEpochSequence];
+  })[0];
 }
 
 function issueDeliveryWorkerSessionEvents(

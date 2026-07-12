@@ -52,6 +52,8 @@ import {
   deriveDeliveryActionHistoriesFromEvents,
   deliveryActionAuditSummary,
   parseWorkerRecoveryReceipt,
+  parseWorkerContinuationReceipt,
+  workerContinuationProjection,
   workerRecoveryProjection,
   encodeWorkerRecoveryReceiptJson,
   type WorkerRecoveryAction,
@@ -88,6 +90,7 @@ import {
   actOnDeliveryPublication,
   actOnDeliveryRemediation,
   actOnDeliveryMerge,
+  actOnWorkerContinuation,
   actOnWorkerRecovery,
   acceptFactoryRun,
   continueServerRun,
@@ -397,6 +400,12 @@ export const RunsLive = HttpApiBuilder.group(
                   )
               : payload.kind === "merge" || payload.kind === "retryCleanup" || payload.kind === "evaluateMergeReadiness"
                 ? (identity.workflowOptions.deliveryMergeActivator ?? actOnDeliveryMerge)(
+                    params.runId,
+                    payload,
+                    workflowOptions,
+                  )
+              : payload.kind === "continueInterruptedWorkerRecovery"
+                ? actOnWorkerContinuation(
                     params.runId,
                     payload,
                     workflowOptions,
@@ -813,6 +822,8 @@ function deliveryUpdateFromEvents(
   const eventSequence = events.at(-1)?.sequence ?? 0;
   const workerRecoveryEvent = [...events].reverse().find(({ type }) => type === "WORKER_RECOVERY_RECORDED");
   const workerRecovery = workerRecoveryEvent === undefined ? undefined : parseWorkerRecoveryReceipt(workerRecoveryEvent.payload["recovery"]);
+  const workerContinuationEvent = [...events].reverse().find(({ type }) => type === "WORKER_CONTINUATION_RECORDED");
+  const workerContinuation = workerContinuationEvent === undefined ? undefined : parseWorkerContinuationReceipt(workerContinuationEvent.payload["continuation"]);
 
   if (delivery === undefined || delivery.mode === "local") {
     const status = snapshot.state === "failed" ? "failed" : snapshot.state === "completed" ? "readyToPublish" : "unavailable";
@@ -826,8 +837,9 @@ function deliveryUpdateFromEvents(
     });
   }
 
+  const continuationStage = workerContinuationProjection(workerContinuation);
   const recoveryStage = workerRecoveryProjection(workerRecovery);
-  const stage = recoveryStage === undefined ? (snapshot.state === "failed" ? "failed" : delivery.stage) : recoveryStage;
+  const stage = continuationStage ?? recoveryStage ?? (snapshot.state === "failed" ? "failed" : delivery.stage);
   const publication =
     delivery.publication === undefined
       ? undefined
@@ -878,6 +890,7 @@ function deliveryUpdateFromEvents(
       : { remediationRearmSequence: delivery.remediationRearmSequence }),
     stage,
     status: stage,
+    ...(workerContinuation === undefined ? {} : { workerContinuation }),
     ...(workerRecovery === undefined ? {} : { workerRecovery }),
   });
 }

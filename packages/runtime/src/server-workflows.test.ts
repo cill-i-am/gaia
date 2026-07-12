@@ -1,6 +1,7 @@
 import { assert, describe, it, layer } from "@effect/vitest";
 import { NodeServices } from "@effect/platform-node";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,11 +9,16 @@ import {
   codexAppServerExecutionSelection,
   DeliveryFeedbackTrustPolicyV1,
   DeliveryPublicationConfirmed,
+  WorkerContinuationAction,
+  encodeWorkerContinuationReceiptJson,
+  encodeWorkerRecoveryReceiptJson,
   HarnessCapabilities,
   HarnessProviderDescriptor,
   parseRunId,
   parseHarnessProviderId,
+  parseHarnessSessionId,
   ResolvedHarnessExecution,
+  snapshotFromReplay,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 import {
@@ -23,9 +29,11 @@ import {
 } from "./reviewer.js";
 import { GaiaRuntimeError } from "./errors.js";
 import { readLocalRun, readLocalRunEvents } from "./run-read-api.js";
+import { appendEvent } from "./event-store.js";
 import {
   acceptFactoryRun,
   acceptServerRun,
+  actOnWorkerContinuation,
   continueServerRun,
   reconcileInterruptedServerRuns,
 } from "./server-workflows.js";
@@ -607,6 +615,330 @@ describe("server workflows", () => {
       }),
     );
 
+    it.effect("continues an audited worker recovery from a fresh epoch without publishing stale ready evidence", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const smoke = makeDisposableGitRemote();
+        try {
+          const cwd = realpathSync(smoke.source);
+          const publicationCalls: Array<string> = [];
+          const accepted = yield* acceptFactoryRun(
+            {
+              delivery: { mode: "pullRequest" },
+              execution: codexAppServerExecutionSelection,
+              workflow: "issueDelivery",
+              workItem: {
+                description: "Recover the interrupted checkpoint.",
+                kind: "issue",
+                title: "Audited continuation",
+              },
+            },
+            {
+              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              rootDirectory: cwd,
+            },
+          );
+          yield* continueServerRun(accepted.runId, {
+            deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
+            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            rootDirectory: cwd,
+          });
+          publicationCalls.length = 0;
+
+          const runId = parseRunId(accepted.runId);
+          const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+          const readyEvents = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+          const contaminatedReady = readyEvents.events.find(
+            ({ type }) => type === "DELIVERY_READY_TO_PUBLISH",
+          );
+          if (contaminatedReady === undefined) {
+            assert.fail("Expected contaminated ready evidence.");
+          }
+          const sessionId = parseHarnessSessionId(`session-${runId}`);
+          const recoveryBase = {
+            actionId: "recover-1",
+            attempt: 1 as const,
+            expectedFailureSequence: 10,
+            expectedSessionId: sessionId,
+            harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
+            maxAttempts: 1 as const,
+            model: "gpt-5.4",
+            payloadDigest: "a".repeat(64),
+          };
+          const recoveredTurnDigest = digest("turn-test-worker");
+          yield* appendEvent(runId, paths, {
+            payload: {
+              recovery: encodeWorkerRecoveryReceiptJson({
+                ...recoveryBase,
+                nativeTurnIdDigest: recoveredTurnDigest,
+                state: "dispatchConfirmed",
+              }),
+            },
+            type: "WORKER_RECOVERY_RECORDED",
+          });
+          const failedRecovery = yield* appendEvent(runId, paths, {
+            payload: {
+              recovery: encodeWorkerRecoveryReceiptJson({
+                ...recoveryBase,
+                code: "WorkerRecoveryContinuationFailed",
+                message: "The checkpoint turn was interrupted after zero product changes.",
+                nativeTurnIdDigest: recoveredTurnDigest,
+                state: "failed",
+              }),
+            },
+            type: "WORKER_RECOVERY_RECORDED",
+          });
+          yield* fs.writeFileString(
+            `${paths.root}/.worker-recovery-turn.json`,
+            `${JSON.stringify({ turnId: "turn-test-worker", version: 1 })}\n`,
+          );
+
+          const action = WorkerContinuationAction.make({
+            actionId: "continue-recovery-1",
+            expectedContaminatedReadySequence: contaminatedReady.sequence,
+            expectedCurrentSequence: failedRecovery.event.sequence,
+            expectedDeliveryProvenanceDigest: deliveryProvenanceDigest({
+              baseBranch: "main",
+              baseRevision: smoke.baseRevision,
+              headBranch: `gaia/${runId}`,
+              remote: "origin",
+            }),
+            expectedFailedRecoverySequence: failedRecovery.event.sequence,
+            expectedRecoveryActionId: "recover-1",
+            expectedSessionId: sessionId,
+            harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
+            kind: "continueInterruptedWorkerRecovery",
+          });
+          const receipt = yield* actOnWorkerContinuation(
+            runId,
+            action,
+            {
+              deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
+              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              rootDirectory: cwd,
+            },
+          );
+          const events = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+          const continuationStates = events.events.flatMap((event) =>
+            event.type === "WORKER_CONTINUATION_RECORDED"
+              ? [(event.payload["continuation"] as { state?: unknown }).state]
+              : [],
+          );
+          const workerCompletions = events.events.filter(
+            ({ type }) => type === "WORKER_COMPLETED",
+          );
+          const freshReady = events.events
+            .filter(({ type }) => type === "DELIVERY_READY_TO_PUBLISH")
+            .at(-1);
+          const delivery = snapshotFromReplay(events.events).context["delivery"];
+
+          assert.strictEqual(receipt.state, "workerCompleted");
+          assert.deepEqual(continuationStates, [
+            "intentRecorded",
+            "resumeAttempted",
+            "workerCompleted",
+          ]);
+          assert.lengthOf(workerCompletions, 2);
+          assert.isAbove(workerCompletions.at(-1)?.sequence ?? 0, failedRecovery.event.sequence);
+          assert.isAbove(freshReady?.sequence ?? 0, failedRecovery.event.sequence);
+          assert.deepEqual(publicationCalls, []);
+          assert.isObject(delivery);
+          assert.strictEqual((delivery as Record<string, unknown>)["stage"], "readyToPublish");
+          assert.strictEqual(
+            (delivery as Record<string, unknown>)["workerEvidenceEpochSequence"],
+            failedRecovery.event.sequence + 1,
+          );
+
+          const replayEventCount = events.events.length;
+          const replayReceipt = yield* actOnWorkerContinuation(
+            runId,
+            action,
+            {
+              deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
+              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              rootDirectory: cwd,
+            },
+          );
+          const replayedEvents = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+          const conflict = yield* Effect.flip(
+            actOnWorkerContinuation(
+              runId,
+              WorkerContinuationAction.make({
+                ...action,
+                actionId: "continue-recovery-2",
+              }),
+              {
+                deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
+                harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                rootDirectory: cwd,
+              },
+            ),
+          );
+          const conflictedEvents = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+
+          assert.deepEqual(replayReceipt, receipt);
+          assert.lengthOf(replayedEvents.events, replayEventCount);
+          assert.instanceOf(conflict, GaiaRuntimeError);
+          assert.strictEqual(conflict.code, "DeliveryActionConflict");
+          assert.lengthOf(conflictedEvents.events, replayEventCount);
+        } finally {
+          rmSync(smoke.root, { force: true, recursive: true });
+        }
+      }),
+    );
+
+    it.effect("marks ambiguous audited continuation restarts outcomeUnknown without redispatch", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-audited-continuation-ambiguity-" });
+        const accepted = yield* acceptServerRun(
+          { specMarkdown: "Already accepted before ambiguous continuation.\n" },
+          { rootDirectory: cwd },
+        );
+        const runId = parseRunId(accepted.runId);
+        const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+        const sessionId = parseHarnessSessionId(`session-${runId}`);
+        const action = WorkerContinuationAction.make({
+          actionId: "continue-recovery-1",
+          expectedContaminatedReadySequence: accepted.eventSequence,
+          expectedCurrentSequence: accepted.eventSequence,
+          expectedDeliveryProvenanceDigest: "c".repeat(64),
+          expectedFailedRecoverySequence: accepted.eventSequence,
+          expectedRecoveryActionId: "recover-1",
+          expectedSessionId: sessionId,
+          harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
+          kind: "continueInterruptedWorkerRecovery",
+        });
+        const base = {
+          actionId: action.actionId,
+          expectedContaminatedReadySequence: action.expectedContaminatedReadySequence,
+          expectedCurrentSequence: action.expectedCurrentSequence,
+          expectedDeliveryProvenanceDigest: action.expectedDeliveryProvenanceDigest,
+          expectedFailedRecoverySequence: action.expectedFailedRecoverySequence,
+          expectedRecoveryActionId: action.expectedRecoveryActionId,
+          expectedSessionId: action.expectedSessionId,
+          harnessProfileId: action.harnessProfileId,
+          maxAttempts: 1 as const,
+          workerEvidenceEpochSequence: accepted.eventSequence + 1,
+        };
+        yield* appendEvent(runId, paths, {
+          payload: {
+            continuation: encodeWorkerContinuationReceiptJson({
+              ...base,
+              state: "intentRecorded",
+            }),
+          },
+          type: "WORKER_CONTINUATION_RECORDED",
+        });
+        yield* appendEvent(runId, paths, {
+          payload: {
+            continuation: encodeWorkerContinuationReceiptJson({
+              ...base,
+              state: "resumeAttempted",
+            }),
+          },
+          type: "WORKER_CONTINUATION_RECORDED",
+        });
+
+        let dispatches = 0;
+        const receipt = yield* actOnWorkerContinuation(runId, action, {
+          rootDirectory: cwd,
+          workerContinuationRunner: () =>
+            Effect.sync(() => {
+              dispatches += 1;
+              return {
+                reportPath: paths.reportMarkdown,
+                runDirectory: paths.root,
+                runId,
+                state: "delivering",
+                status: "running",
+              };
+            }),
+        });
+        const events = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+        const continuationStates = events.events.flatMap((event) =>
+          event.type === "WORKER_CONTINUATION_RECORDED"
+            ? [(event.payload["continuation"] as { state?: unknown }).state]
+            : [],
+        );
+        const replayEventCount = events.events.length;
+        const replayReceipt = yield* actOnWorkerContinuation(runId, action, {
+          rootDirectory: cwd,
+          workerContinuationRunner: () =>
+            Effect.sync(() => {
+              dispatches += 1;
+              return {
+                reportPath: paths.reportMarkdown,
+                runDirectory: paths.root,
+                runId,
+                state: "delivering",
+                status: "running",
+              };
+            }),
+        });
+        const replayedEvents = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+
+        assert.strictEqual(receipt.state, "outcomeUnknown");
+        assert.strictEqual(replayReceipt.state, "outcomeUnknown");
+        assert.strictEqual(dispatches, 0);
+        assert.deepEqual(continuationStates, [
+          "intentRecorded",
+          "resumeAttempted",
+          "outcomeUnknown",
+        ]);
+        assert.lengthOf(replayedEvents.events, replayEventCount);
+      }),
+    );
+
+    it.effect("rejects audited continuation before intent when historical recovery evidence is missing", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-audited-continuation-preflight-" });
+        const accepted = yield* acceptServerRun(
+          { specMarkdown: "No eligible failed recovery exists.\n" },
+          { rootDirectory: cwd },
+        );
+        const runId = parseRunId(accepted.runId);
+        const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+        const action = WorkerContinuationAction.make({
+          actionId: "continue-recovery-1",
+          expectedContaminatedReadySequence: accepted.eventSequence,
+          expectedCurrentSequence: accepted.eventSequence,
+          expectedDeliveryProvenanceDigest: "c".repeat(64),
+          expectedFailedRecoverySequence: accepted.eventSequence,
+          expectedRecoveryActionId: "recover-1",
+          expectedSessionId: parseHarnessSessionId(`session-${runId}`),
+          harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
+          kind: "continueInterruptedWorkerRecovery",
+        });
+        let dispatches = 0;
+        const error = yield* Effect.flip(
+          actOnWorkerContinuation(runId, action, {
+            rootDirectory: cwd,
+            workerContinuationRunner: () =>
+              Effect.sync(() => {
+                dispatches += 1;
+                return {
+                  reportPath: paths.reportMarkdown,
+                  runDirectory: paths.root,
+                  runId,
+                  state: "delivering",
+                  status: "running",
+                };
+              }),
+          }),
+        );
+        const events = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+
+        assert.instanceOf(error, GaiaRuntimeError);
+        assert.strictEqual(error.code, "DeliveryActionConflict");
+        assert.strictEqual(dispatches, 0);
+        assert.isFalse(
+          events.events.some(({ type }) => type === "WORKER_CONTINUATION_RECORDED"),
+        );
+      }),
+    );
+
     it.effect("fails closed when an unrelated same-head clone forges ownership evidence", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -886,6 +1218,25 @@ function recordingDeliveryPublisher(calls: Array<string>) {
         treeSha: "d".repeat(40),
       });
     });
+}
+
+function digest(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function deliveryProvenanceDigest(input: {
+  readonly baseBranch: string;
+  readonly baseRevision: string;
+  readonly headBranch: string;
+  readonly remote: string;
+}) {
+  return digest([
+    "gaia-worker-continuation-delivery-provenance-v1",
+    input.baseBranch,
+    input.baseRevision,
+    input.headBranch,
+    input.remote,
+  ].join("\0"));
 }
 
 function makeDisposableGitRemote() {
