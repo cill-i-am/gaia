@@ -156,6 +156,85 @@ describe("Codex App Server installed CLI smoke", () => {
     }
   }, 130_000);
 
+  it.skipIf(!runSmoke)("proves disposable read and resume status semantics on a stored thread", async () => {
+    const root = await mkdtemp(join(tmpdir(), "gaia-codex-status-smoke-"));
+    const codexHome = join(root, "codex-home");
+    const workspace = join(root, "workspace");
+    await mkdir(codexHome);
+    await mkdir(workspace);
+    await cp(join(homedir(), ".codex", "auth.json"), join(codexHome, "auth.json"), {
+      recursive: false,
+    });
+
+    try {
+      const threadId = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* makeCodexAppServerConnection({
+              cwd: workspace,
+              env: { ...process.env, CODEX_HOME: codexHome },
+            });
+            const client = makeCodexAppServerClient(connection);
+            let completed = false;
+            client.onNotification(({ method }) => {
+              if (method === "turn/completed") completed = true;
+            });
+            yield* client.initialize({ clientInfo: { name: "gaia", title: "Gaia", version: "0.1.0" } });
+            const catalog = yield* listCodexModels(connection, { includeHidden: false });
+            const model = catalog.data.find(({ hidden }) => !hidden)?.id;
+            if (model === undefined) return yield* Effect.die("model/list returned no visible model");
+            const started = yield* client.startThread({
+              approvalPolicy: "never",
+              cwd: workspace,
+              sandbox: "read-only",
+            });
+            yield* client.startTurn({
+              input: [{ type: "text", text: "Reply exactly GAIA_STATUS_PROOF_OK. Do not use tools." }],
+              model,
+              threadId: started.thread.id,
+            });
+            yield* Effect.sleep("1 second").pipe(
+              Effect.repeat({ while: () => !completed, times: 45 }),
+            );
+            if (!completed) return yield* Effect.die("disposable proof turn did not complete");
+            return started.thread.id;
+          }),
+        ).pipe(Effect.timeout("45 seconds")),
+      );
+
+      const proof = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* makeCodexAppServerConnection({
+              cwd: workspace,
+              env: { ...process.env, CODEX_HOME: codexHome },
+            });
+            const client = makeCodexAppServerClient(connection);
+            yield* client.initialize({ clientInfo: { name: "gaia", title: "Gaia", version: "0.1.0" } });
+            const coldRead = yield* client.readThread({ includeTurns: true, threadId });
+            const resumed = yield* client.resumeThread({ threadId });
+            const postResumeRead = yield* client.readThread({ includeTurns: true, threadId });
+            return {
+              coldRead: coldRead.thread.status?.type,
+              postResumeRead: postResumeRead.thread.status?.type,
+              readThreadId: coldRead.thread.id,
+              resumed: resumed.thread.status?.type,
+              resumedThreadId: resumed.thread.id,
+            };
+          }),
+        ).pipe(Effect.timeout("45 seconds")),
+      );
+
+      expect(proof.readThreadId).toBe(threadId);
+      expect(proof.resumedThreadId).toBe(threadId);
+      expect(proof.coldRead).toBe("notLoaded");
+      expect(["idle", "notLoaded", "systemError"]).toContain(proof.resumed);
+      expect(["idle", "notLoaded", "systemError"]).toContain(proof.postResumeRead);
+    } finally {
+      await rm(root, { force: true, maxRetries: 5, recursive: true, retryDelay: 100 });
+    }
+  }, 100_000);
+
   it.skipIf(!runSmoke)("restarts the App Server and sends one idempotent second turn through the same private session", async () => {
     const root = await mkdtemp(join(tmpdir(), "gaia-codex-resume-smoke-"));
     const codexHome = join(root, "codex-home");

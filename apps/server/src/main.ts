@@ -25,6 +25,7 @@ import {
   parseDeliveryProvenance,
   type HarnessProviderRegistry,
   type WorkerRecoveryProvider,
+  type WorkerRecoveryThreadStatus,
 } from "@gaia/runtime";
 import {
   reconcileInterruptedServerRuns,
@@ -153,8 +154,8 @@ function makeProductionHarnessServices(rootDirectory: string) {
         provider: makeProductionWorkerRecoveryProvider({
           detect: provider.detect,
           listModels: () => listCodexModels(connection, { includeHidden: false }).pipe(Effect.map(({ data }) => data.map(({ hidden, id }) => ({ hidden, id })))),
-          readThread: (threadId) => client.readThread({ includeTurns: true, threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ active: thread.status?.type === "active", systemError: thread.status?.type === "systemError", threadId: thread.id }))),
-          resumeThread: (threadId) => client.resumeThread({ threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ threadId: thread.id }))),
+          readThread: (threadId) => client.readThread({ includeTurns: true, threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ status: toWorkerRecoveryThreadStatus(thread.status?.type), threadId: thread.id }))),
+          resumeThread: (threadId) => client.resumeThread({ threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ status: toWorkerRecoveryThreadStatus(thread.status?.type), threadId: thread.id }))),
           startTurn: ({ model, threadId }) => client.startTurn({ input: [{ text: "Resume the retained worker task after the recoverable provider failure.", type: "text" }], model, threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ turn }) => ({ turnId: turn.id }))),
         }),
         validateWorkspace: (_workspacePath, expectedHead) => Effect.gen(function* () {
@@ -168,6 +169,19 @@ function makeProductionHarnessServices(rootDirectory: string) {
     });
     return { recover, registry };
   });
+}
+
+/** Normalize stable App Server thread status into the finite recovery preflight vocabulary. */
+export function toWorkerRecoveryThreadStatus(status: string | undefined): WorkerRecoveryThreadStatus {
+  switch (status) {
+    case "active":
+    case "idle":
+    case "notLoaded":
+    case "systemError":
+      return status;
+    default:
+      return "unknown";
+  }
 }
 
 export function makeProductionWorkerRecoveryProvider(

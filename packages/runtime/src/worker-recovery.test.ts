@@ -7,7 +7,7 @@ import { RunEvent, WorkerRecoveryAction, makeRunEvent, parseHarnessEvent, parseH
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { makeRunPaths } from "./paths.js";
-import { recoverWorkerSession, type WorkerRecoveryProvider } from "./worker-recovery.js";
+import { recoverWorkerSession, type WorkerRecoveryProvider, type WorkerRecoveryThreadStatus } from "./worker-recovery.js";
 import { inspectRecoverableDeliveryWorktreeOwnership, parseDeliveryProvenance, prepareDeliveryWorktree, type DeliveryProvenance } from "./git-delivery.js";
 import { actOnWorkerRecovery } from "./server-workflows.js";
 import { makeRuntimeError } from "./errors.js";
@@ -43,6 +43,12 @@ async function realOwnedFixture() {
   return { ...f, head, provenance, validateWorkspace };
 }
 const action = WorkerRecoveryAction.make({ actionId: "recover-1", expectedFailureSequence: 10, expectedSessionId: parseHarnessSessionId("session-run-1234567890"), harnessProfileId: parseHarnessProfileId("codexAppServer"), kind: "retryRecoverableWorkerFailure", model: "gpt-5.4" });
+const threadState = (status: WorkerRecoveryThreadStatus, threadId = "thread-1") => ({ status, threadId });
+function rewriteStoredEvents(eventsPath: string, mutate: (events: Array<Record<string, unknown>>) => void) {
+  const events = readFileSync(eventsPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+  mutate(events);
+  writeFileSync(eventsPath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+}
 
 describe("recoverWorkerSession", () => {
   it.each([
@@ -66,7 +72,7 @@ describe("recoverWorkerSession", () => {
 
   it("runs the public server workflow A/B restart and non-mutation matrix against a real retained Git root", async () => {
     const f = await realOwnedFixture(); const rootA = process.cwd(); const beforeHead = git(f.paths.workspace, "rev-parse", "HEAD"); const beforeStatus = git(f.paths.workspace, "status", "--porcelain"); const beforeCommon = git(f.paths.workspace, "rev-parse", "--path-format=absolute", "--git-common-dir"); const beforeInventory = git(f.root, "worktree", "list", "--porcelain"); let starts = 0;
-    const provider: WorkerRecoveryProvider = { listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]), resumeThread: (threadId) => Effect.succeed({ threadId }), readThread: (threadId) => Effect.succeed({ active: false, systemError: true, threadId }), startTurn: () => Effect.sync(() => { starts++; return { turnId: "turn-recovery" }; }) };
+    const provider: WorkerRecoveryProvider = { listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]), resumeThread: (threadId) => Effect.succeed({ status: "idle", threadId }), readThread: (threadId) => Effect.succeed({ status: "systemError", threadId }), startTurn: () => Effect.sync(() => { starts++; return { turnId: "turn-recovery" }; }) };
     expect(rootA).not.toBe(f.root);
     const activate = (runId: string, request: typeof action) => recoverWorkerSession(runId, request, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace: f.validateWorkspace });
     const confirmed = await run(actOnWorkerRecovery(f.runId, action, { rootDirectory: f.root, workerRecoveryActivator: activate }));
@@ -76,9 +82,17 @@ describe("recoverWorkerSession", () => {
     expect(restarted).toMatchObject({ nativeTurnIdDigest: confirmed.nativeTurnIdDigest, state: "dispatchConfirmed" }); expect(starts).toBe(1);
     expect(git(f.paths.workspace, "rev-parse", "HEAD")).toBe(beforeHead); expect(git(f.paths.workspace, "status", "--porcelain")).toBe(beforeStatus); expect(git(f.paths.workspace, "rev-parse", "--path-format=absolute", "--git-common-dir")).toBe(beforeCommon); expect(git(f.root, "worktree", "list", "--porcelain")).toBe(beforeInventory);
   });
+  it("accepts exact same-thread safe non-active resume and read statuses before dispatch", async () => {
+    const f = fixture(); const calls: string[] = [];
+    const provider: WorkerRecoveryProvider = { listModels: () => Effect.sync(() => { calls.push("models"); return [{ hidden: false, id: "gpt-5.4" }]; }), resumeThread: (threadId) => Effect.sync(() => { calls.push("resume:idle"); return { status: "idle", threadId }; }), readThread: (threadId) => Effect.sync(() => { calls.push("read:notLoaded"); return { status: "notLoaded", threadId }; }), startTurn: ({ model }) => Effect.sync(() => { calls.push(`start:${model}`); return { turnId: "turn-recovery" }; }) };
+    const validateWorkspace = () => Effect.void;
+    const result = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace }));
+    expect(result.state).toBe("dispatchConfirmed"); expect(calls).toEqual(["models", "resume:idle", "read:notLoaded", "start:gpt-5.4"]);
+  });
+
   it("preflights the same thread and dispatches exactly one explicit-model turn", async () => {
     const f = fixture(); const calls: string[] = [];
-    const provider: WorkerRecoveryProvider = { listModels: () => Effect.sync(() => { calls.push("models"); return [{ hidden: false, id: "gpt-5.4" }]; }), resumeThread: (threadId) => Effect.sync(() => { calls.push("resume"); return { threadId }; }), readThread: (threadId) => Effect.sync(() => { calls.push("read"); return { active: false, systemError: true, threadId }; }), startTurn: ({ model }) => Effect.sync(() => { calls.push(`start:${model}`); return { turnId: "turn-recovery" }; }) };
+    const provider: WorkerRecoveryProvider = { listModels: () => Effect.sync(() => { calls.push("models"); return [{ hidden: false, id: "gpt-5.4" }]; }), resumeThread: (threadId) => Effect.sync(() => { calls.push("resume"); return { status: "idle", threadId }; }), readThread: (threadId) => Effect.sync(() => { calls.push("read"); return { status: "systemError", threadId }; }), startTurn: ({ model }) => Effect.sync(() => { calls.push(`start:${model}`); return { turnId: "turn-recovery" }; }) };
     const validateWorkspace = () => Effect.void;
     const result = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace }));
     expect(result.state).toBe("dispatchConfirmed"); expect(calls).toEqual(["models", "resume", "read", "start:gpt-5.4"]);
@@ -89,10 +103,94 @@ describe("recoverWorkerSession", () => {
 
   it("makes an ambiguous dispatch terminal and never redispatches", async () => {
     const f = fixture(); let starts = 0;
-    const provider: WorkerRecoveryProvider = { listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]), resumeThread: (threadId) => Effect.succeed({ threadId }), readThread: (threadId) => Effect.succeed({ active: false, systemError: true, threadId }), startTurn: () => Effect.sync(() => { starts++; throw new Error("lost response"); }) };
+    const provider: WorkerRecoveryProvider = { listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]), resumeThread: (threadId) => Effect.succeed({ status: "idle", threadId }), readThread: (threadId) => Effect.succeed({ status: "systemError", threadId }), startTurn: () => Effect.sync(() => { starts++; throw new Error("lost response"); }) };
     const validateWorkspace = () => Effect.void;
     const first = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace })); expect(first.state).toBe("outcomeUnknown");
     const second = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace })); expect(second.state).toBe("outcomeUnknown"); expect(starts).toBe(1);
+  });
+
+  it.each([
+    ["missing sessionFailed", (events: Array<Record<string, unknown>>): void => { events[8] = { ...events[6]!, sequence: 9, timestamp: "2026-07-11T00:00:09.000Z" }; }, action],
+    ["wrong session", (events: Array<Record<string, unknown>>): void => { (((events[8]!["payload"] as Record<string, unknown>)["event"] as Record<string, unknown>)["sessionId"] = "session-run-other"); }, action],
+    ["wrong harness profile", (events: Array<Record<string, unknown>>): void => { ((((events[0]!["payload"] as Record<string, unknown>)["execution"] as Record<string, unknown>)["selection"] as Record<string, unknown>)["harnessProfileId"] = "otherProfile"); }, action],
+    ["nonrecoverable provider failure", (events: Array<Record<string, unknown>>): void => { (((((events[8]!["payload"] as Record<string, unknown>)["event"] as Record<string, unknown>)["failure"] as Record<string, unknown>)["recoverable"] = false)); }, action],
+    ["nonrecoverable run failure", (events: Array<Record<string, unknown>>): void => { ((events[9]!["payload"] as Record<string, unknown>)["recoverable"] = false); }, action],
+    ["wrong failure stage", (events: Array<Record<string, unknown>>): void => { ((events[9]!["payload"] as Record<string, unknown>)["stage"] = "reviewing"); }, action],
+    ["wrong expected sequence", (_events: Array<Record<string, unknown>>): void => undefined, WorkerRecoveryAction.make({ ...action, expectedFailureSequence: 9 })],
+    ["failure not final", (events: Array<Record<string, unknown>>): void => { events.push({ ...events[3]!, sequence: 11, timestamp: "2026-07-11T00:00:11.000Z" }); }, action],
+  ] as const)("requires historical Gaia eligibility despite safe live status: %s", async (_name, mutate, request) => {
+    const f = fixture();
+    rewriteStoredEvents(f.paths.events, mutate);
+    const before = readFileSync(f.paths.events, "utf8");
+    const calls: string[] = [];
+    const provider: WorkerRecoveryProvider = {
+      listModels: () => Effect.sync(() => { calls.push("models"); return [{ hidden: false, id: "gpt-5.4" }]; }),
+      resumeThread: (threadId) => Effect.sync(() => { calls.push("resume"); return threadState("idle", threadId); }),
+      readThread: (threadId) => Effect.sync(() => { calls.push("read"); return threadState("notLoaded", threadId); }),
+      startTurn: () => Effect.sync(() => { calls.push("start"); return { turnId: "turn-recovery" }; }),
+    };
+    const exit = await run(recoverWorkerSession(f.runId, request, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace: () => Effect.void }).pipe(Effect.exit));
+    expect(exit._tag).toBe("Failure");
+    expect(readFileSync(f.paths.events, "utf8")).toBe(before);
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ["wrong resume id", { resume: threadState("idle", "thread-other") }],
+    ["wrong read id", { read: threadState("idle", "thread-other") }],
+    ["active resume", { resume: threadState("active") }],
+    ["active read", { read: threadState("active") }],
+    ["unknown resume", { resume: threadState("unknown") }],
+    ["unknown read", { read: threadState("unknown") }],
+    ["resume error", { resumeError: true }],
+    ["read error", { readError: true }],
+    ["workspace race", { workspaceRace: true }],
+  ] as const)("records preflight failure for %s with zero dispatch", async (_name, scenario) => {
+    const f = fixture();
+    let starts = 0;
+    let validations = 0;
+    const provider: WorkerRecoveryProvider = {
+      listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
+      resumeThread: (threadId): ReturnType<WorkerRecoveryProvider["resumeThread"]> => "resumeError" in scenario && scenario.resumeError === true ? Effect.fail(new Error("resume failed")) : Effect.succeed("resume" in scenario ? scenario.resume : threadState("idle", threadId)),
+      readThread: (threadId): ReturnType<WorkerRecoveryProvider["readThread"]> => "readError" in scenario && scenario.readError === true ? Effect.fail(new Error("read failed")) : Effect.succeed("read" in scenario ? scenario.read : threadState("idle", threadId)),
+      startTurn: () => Effect.sync(() => { starts++; return { turnId: "turn-recovery" }; }),
+    };
+    const validateWorkspace = () => {
+      validations++;
+      return "workspaceRace" in scenario && scenario.workspaceRace === true && validations === 2 ? Effect.fail(new Error("workspace race")) : Effect.void;
+    };
+    const result = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace }));
+    expect(result.state).toBe("failed");
+    if (result.state !== "failed") throw new Error("expected failed recovery");
+    expect(result.code).toBe("WorkerRecoveryPreflightFailed");
+    expect(starts).toBe(0);
+    const events = readFileSync(f.paths.events, "utf8");
+    expect(events).toContain("WorkerRecoveryPreflightFailed");
+    expect(events).not.toContain("dispatchAttempted");
+    expect(events).not.toContain("dispatchConfirmed");
+    expect(existsSync(path.join(f.paths.root, ".worker-recovery-turn.json"))).toBe(false);
+  });
+
+  it("returns a prior terminal failed recovery without another provider dispatch", async () => {
+    const f = fixture();
+    const failingProvider: WorkerRecoveryProvider = {
+      listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
+      resumeThread: (threadId) => Effect.succeed(threadState("active", threadId)),
+      readThread: (threadId) => Effect.succeed(threadState("idle", threadId)),
+      startTurn: () => Effect.die("not called"),
+    };
+    const first = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider: failingProvider, rootDirectory: f.root, validateWorkspace: () => Effect.void }));
+    expect(first.state).toBe("failed");
+    const calls: string[] = [];
+    const provider: WorkerRecoveryProvider = {
+      listModels: () => Effect.sync(() => { calls.push("models"); return [{ hidden: false, id: "gpt-5.4" }]; }),
+      resumeThread: (threadId) => Effect.sync(() => { calls.push("resume"); return threadState("idle", threadId); }),
+      readThread: (threadId) => Effect.sync(() => { calls.push("read"); return threadState("idle", threadId); }),
+      startTurn: () => Effect.sync(() => { calls.push("start"); return { turnId: "turn-recovery" }; }),
+    };
+    const second = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace: () => Effect.void }));
+    expect(second).toMatchObject({ code: "WorkerRecoveryPreflightFailed", state: "failed" });
+    expect(calls).toEqual([]);
   });
 
   it.each([
@@ -104,8 +202,8 @@ describe("recoverWorkerSession", () => {
     let mutations = 0;
     const provider: WorkerRecoveryProvider = {
       listModels,
-      readThread: () => Effect.sync(() => { mutations++; return { active: false, systemError: true, threadId: "thread-1" }; }),
-      resumeThread: () => Effect.sync(() => { mutations++; return { threadId: "thread-1" }; }),
+      readThread: () => Effect.sync(() => { mutations++; return { status: "systemError", threadId: "thread-1" }; }),
+      resumeThread: () => Effect.sync(() => { mutations++; return { status: "idle", threadId: "thread-1" }; }),
       startTurn: () => Effect.sync(() => { mutations++; return { turnId: "turn-recovery" }; }),
     };
     const exit = await run(recoverWorkerSession(f.runId, action, {
@@ -128,8 +226,8 @@ describe("recoverWorkerSession", () => {
     let mutations = 0;
     const provider: WorkerRecoveryProvider = {
       listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
-      readThread: () => Effect.sync(() => { mutations++; return { active: false, systemError: true, threadId: "thread-1" }; }),
-      resumeThread: () => Effect.sync(() => { mutations++; return { threadId: "thread-1" }; }),
+      readThread: () => Effect.sync(() => { mutations++; return { status: "systemError", threadId: "thread-1" }; }),
+      resumeThread: () => Effect.sync(() => { mutations++; return { status: "idle", threadId: "thread-1" }; }),
       startTurn: () => Effect.sync(() => { mutations++; return { turnId: "turn-recovery" }; }),
     };
     const exit = await run(recoverWorkerSession(f.runId, action, {
