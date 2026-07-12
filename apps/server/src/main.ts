@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
-import { codexAppServerHarnessProfileId, parseRunId, type ServerMetadata } from "@gaia/core";
+import {
+  codexAppServerHarnessProfileId,
+  parseRunId,
+  type HarnessDetection,
+  type ServerMetadata,
+} from "@gaia/core";
 import {
   createCodexHarnessProvider,
   detectInstalledCodexAppServer,
@@ -19,6 +24,7 @@ import {
   loadRun,
   parseDeliveryProvenance,
   type HarnessProviderRegistry,
+  type WorkerRecoveryProvider,
 } from "@gaia/runtime";
 import {
   reconcileInterruptedServerRuns,
@@ -144,12 +150,13 @@ function makeProductionHarnessServices(rootDirectory: string) {
       return yield* recoverWorkerSession(runId, action, {
         nativeThreadId,
         rootDirectory,
-        provider: {
+        provider: makeProductionWorkerRecoveryProvider({
+          detect: provider.detect,
           listModels: () => listCodexModels(connection, { includeHidden: false }).pipe(Effect.map(({ data }) => data.map(({ hidden, id }) => ({ hidden, id })))),
           readThread: (threadId) => client.readThread({ includeTurns: true, threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ active: thread.status?.type === "active", systemError: thread.status?.type === "systemError", threadId: thread.id }))),
           resumeThread: (threadId) => client.resumeThread({ threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ threadId: thread.id }))),
           startTurn: ({ model, threadId }) => client.startTurn({ input: [{ text: "Resume the retained worker task after the recoverable provider failure.", type: "text" }], model, threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ turn }) => ({ turnId: turn.id }))),
-        },
+        }),
         validateWorkspace: (_workspacePath, expectedHead) => Effect.gen(function* () {
           const paths = yield* makeRunPaths(parseRunId(runId), { rootDirectory });
           const loaded = yield* loadRun(paths);
@@ -161,6 +168,28 @@ function makeProductionHarnessServices(rootDirectory: string) {
     });
     return { recover, registry };
   });
+}
+
+export function makeProductionWorkerRecoveryProvider(
+  input: WorkerRecoveryProvider & {
+    readonly detect: Effect.Effect<HarnessDetection, unknown>;
+  },
+): WorkerRecoveryProvider {
+  return {
+    listModels: () =>
+      Effect.gen(function* () {
+        const detection = yield* input.detect;
+        if (detection.state !== "available") {
+          return yield* Effect.fail(
+            new Error("Codex App Server is unavailable or incompatible."),
+          );
+        }
+        return yield* input.listModels();
+      }),
+    readThread: input.readThread,
+    resumeThread: input.resumeThread,
+    startTurn: input.startTurn,
+  };
 }
 
 export function parseServerArgs(args: ReadonlyArray<string>): ServerConfig {
