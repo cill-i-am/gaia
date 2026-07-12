@@ -3,19 +3,38 @@ import {
   codexAppServerExecutionSelection,
   HarnessCapabilities,
   HarnessProviderDescriptor,
+  parseHarnessEvent,
   parseHarnessProviderId,
   parseRunId,
   parseHarnessSessionId,
   parseHarnessTurnId,
+  parseWorkspaceRelativePath,
   projectHarnessEvents,
   type HarnessEvent,
 } from "@gaia/core";
 import { assert, describe, it, layer } from "@effect/vitest";
-import { Effect, FileSystem, Option, Stream } from "effect";
+import { Deferred, Effect, Fiber, FileSystem, Option, Stream } from "effect";
+import type { CodexAppServerClient } from "./codex-app-server-client.js";
+import {
+  parseCodexItemId,
+  parseCodexThreadId,
+  parseCodexTurnId,
+  type CodexNotification,
+  type CodexThread,
+  type CodexThreadId,
+  type CodexTurnId,
+} from "./codex-app-server-protocol.js";
+import {
+  CodexHarnessCapabilities,
+  CodexHarnessProviderDescriptor,
+  createCodexHarnessProvider,
+  makeInMemoryCodexHarnessCorrelationStore,
+} from "./codex-harness-provider.js";
 import { appendEvent, appendHarnessSessionEvent } from "./event-store.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import {
   HarnessResumeError,
+  startHarnessSession,
   type HarnessProvider,
   type HarnessSession,
 } from "./harness-session.js";
@@ -133,6 +152,174 @@ describe("interactive issue-delivery harness", () => {
           types.indexOf("HARNESS_SESSION_EVENT_RECORDED"),
           types.indexOf("WORKER_COMPLETED"),
         );
+      }),
+    );
+
+    it.effect("waits for the exact checkpoint turn instead of an older recovered terminal", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({
+          prefix: "gaia-checkpoint-turn-projection-",
+        });
+        const runId = parseRunId("run-ChkptProj1");
+        const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+        yield* fs.makeDirectory(paths.root, { recursive: true });
+        yield* fs.makeDirectory(paths.workspace, { recursive: true });
+        yield* writeWorkspaceSnapshot(
+          paths.harnessWorkspaceBaseline,
+          yield* snapshotWorkspace(paths.workspace),
+        );
+
+        const sessionId = parseHarnessSessionId(`session-${runId}`);
+        const threadId = parseCodexThreadId("native-checkpoint-thread");
+        const olderTurnId = parseCodexTurnId("native-older-completed-turn");
+        const checkpointTurnId = parseCodexTurnId("native-checkpoint-turn");
+        const correlationStore = makeInMemoryCodexHarnessCorrelationStore();
+        const first = recordingCodexClient({
+          recoveredTurns: [],
+          startTurnId: olderTurnId,
+          threadId,
+        });
+        yield* Effect.scoped(
+          startHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: first.client,
+              correlationStore,
+              workspaceRoot: cwd,
+            }),
+            request: {
+              input: { text: "initial turn" },
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("workspace"),
+            },
+            requiredCapabilities: [],
+          }),
+        );
+        yield* appendHarnessSessionEvent(runId, paths, {
+          capabilities: CodexHarnessCapabilities,
+          kind: "sessionStarted",
+          provider: CodexHarnessProviderDescriptor,
+          sessionId,
+          state: "running",
+        });
+
+        const subscribed = yield* Deferred.make<void>();
+        const second = recordingCodexClient({
+          onSubscribed: () => {
+            Deferred.doneUnsafe(subscribed, Effect.void);
+          },
+          recoveredTurns: [
+            {
+              id: olderTurnId,
+              items: [
+                {
+                  id: parseCodexItemId("native-older-completed-item"),
+                  phase: "final_answer",
+                  text: "older terminal output",
+                  type: "agentMessage",
+                },
+              ],
+              status: "completed",
+            },
+            { id: checkpointTurnId, status: "inProgress" },
+          ],
+          startTurnId: checkpointTurnId,
+          threadId,
+        });
+        const provider = createCodexHarnessProvider({
+          client: second.client,
+          correlationStore,
+          workspaceRoot: cwd,
+        });
+        const resultFiber = yield* interactiveSessionHarness({
+          expectedNativeTurnId: checkpointTurnId,
+          provider,
+          rootDirectory: cwd,
+        }).run(
+          HarnessRunRequest.make({
+            codexHarnessProgressPath: paths.codexHarnessProgress,
+            harnessName: codexAppServerHarnessName,
+            resolvedSkillPaths: [],
+            runId,
+            skillBundlePath: paths.skillBundle,
+            specBody: "Complete only the checkpointed turn.",
+            specTitle: "Checkpoint turn projection",
+            workerLogPath: paths.workerLog,
+            workerResultPath: paths.workerResult,
+            workspaceOutputPath: paths.workspaceOutput,
+            workspacePath: paths.workspace,
+          }),
+        ).pipe(Effect.forkChild);
+
+        yield* Deferred.await(subscribed);
+        let beforeCompletion: ReadonlyArray<HarnessEvent> = [];
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const observed = yield* readLocalRunEvents(runId, {
+            rootDirectory: cwd,
+          });
+          beforeCompletion = observed.events.flatMap((event) =>
+            event.type === "HARNESS_SESSION_EVENT_RECORDED"
+              ? [parseHarnessEvent(event.payload["event"])]
+              : [],
+          );
+          if (beforeCompletion.some((event) => event.kind === "turnStarted")) {
+            break;
+          }
+          yield* Effect.yieldNow;
+        }
+        assert.strictEqual(
+          beforeCompletion.filter((event) => event.kind === "turnStarted").length,
+          1,
+        );
+        assert.strictEqual(
+          beforeCompletion.filter((event) => event.kind === "turnCompleted").length,
+          0,
+        );
+        assert.notInclude(
+          JSON.stringify(beforeCompletion),
+          "older terminal output",
+        );
+        assert.strictEqual(resultFiber.pollUnsafe(), undefined);
+        for (const listener of second.notifications) {
+          listener({
+            method: "turn/completed",
+            params: {
+              threadId,
+              turn: { id: checkpointTurnId, status: "completed" },
+            },
+          });
+        }
+        const result = yield* Fiber.join(resultFiber);
+        const events = yield* readLocalRunEvents(runId, {
+          rootDirectory: cwd,
+        });
+        const harnessEvents = events.events.flatMap((event) =>
+          event.type === "HARNESS_SESSION_EVENT_RECORDED"
+            ? [parseHarnessEvent(event.payload["event"])]
+            : [],
+        );
+        const turnStarts = harnessEvents.filter(
+          (event) => event.kind === "turnStarted",
+        );
+        const terminals = harnessEvents.filter(
+          (event) => event.kind === "turnCompleted",
+        );
+
+        assert.strictEqual(result.harnessName, codexAppServerHarnessName);
+        assert.strictEqual(second.turnStarts.length, 0);
+        assert.deepEqual(second.interrupts, []);
+        assert.strictEqual(turnStarts.length, 1);
+        assert.strictEqual(terminals.length, 1);
+        assert.strictEqual(terminals[0]?.kind, "turnCompleted");
+        assert.strictEqual(turnStarts[0]?.kind, "turnStarted");
+        if (
+          terminals[0]?.kind !== "turnCompleted" ||
+          turnStarts[0]?.kind !== "turnStarted"
+        ) {
+          throw new Error("Expected one checkpoint turn lifecycle.");
+        }
+        assert.strictEqual(terminals[0].turnId, turnStarts[0].turnId);
+        assert.notInclude(JSON.stringify(harnessEvents), "older terminal output");
       }),
     );
 
@@ -541,4 +728,59 @@ function syntheticSession(
     snapshot: Effect.succeed(projectHarnessEvents(events, sessionId)),
     steer: Option.none(),
   };
+}
+
+type RecoveredCodexTurn = NonNullable<CodexThread["turns"]>[number];
+
+function recordingCodexClient(input: {
+  readonly onSubscribed?: () => void;
+  readonly recoveredTurns: ReadonlyArray<RecoveredCodexTurn>;
+  readonly startTurnId: CodexTurnId;
+  readonly threadId: CodexThreadId;
+}) {
+  const interrupts: Array<unknown> = [];
+  const notifications = new Set<(notification: CodexNotification) => void>();
+  const turnStarts: Array<unknown> = [];
+  const client = {
+    initialize: () =>
+      Effect.succeed({
+        platformFamily: "unix",
+        platformOs: "macos",
+        userAgent: "Codex/0.137.0",
+      }),
+    interruptTurn: (params) =>
+      Effect.sync(() => {
+        interrupts.push(params);
+        return {};
+      }),
+    onNotification: (listener) => {
+      notifications.add(listener);
+      input.onSubscribed?.();
+      return () => notifications.delete(listener);
+    },
+    onServerRequest: () => () => undefined,
+    onTermination: () => () => undefined,
+    readThread: () =>
+      Effect.succeed({
+        thread: {
+          id: input.threadId,
+          status: { type: "idle" as const },
+          turns: [...input.recoveredTurns],
+        },
+      }),
+    respondCommandApproval: () => Effect.void,
+    respondElicitation: () => Effect.void,
+    respondFileApproval: () => Effect.void,
+    respondPermissionApproval: () => Effect.void,
+    respondUserInput: () => Effect.void,
+    resumeThread: () => Effect.succeed({ thread: { id: input.threadId } }),
+    startThread: () => Effect.succeed({ thread: { id: input.threadId } }),
+    startTurn: (params) =>
+      Effect.sync(() => {
+        turnStarts.push(params);
+        return { turn: { id: input.startTurnId, status: "inProgress" as const } };
+      }),
+    steerTurn: () => Effect.succeed({ turnId: input.startTurnId }),
+  } satisfies CodexAppServerClient;
+  return { client, interrupts, notifications, turnStarts };
 }
