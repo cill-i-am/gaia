@@ -2,6 +2,7 @@ import {
   parseHarnessEvent,
   parseHarnessSessionId,
   parseWorkerContinuationReceipt,
+  parseWorkerCorrelationReconciliationReceipt,
   parseWorkerRecoveryReceipt,
   parseWorkspaceRelativePath,
   type HarnessEvent,
@@ -57,9 +58,11 @@ export function interactiveSessionHarness(input: {
         const fullHistory = harnessHistory(existing, sessionId);
         const recoverySequence = latestRecoveryCheckpointSequence(existing);
         const continuationEpochSequence = latestWorkerContinuationEpochSequence(existing);
+        const correlationEpochSequence = latestWorkerCorrelationEpochSequence(existing);
         const historyStartSequence = Math.max(
           recoverySequence ?? 0,
           continuationEpochSequence ?? 0,
+          correlationEpochSequence ?? 0,
         );
         const history = historyStartSequence === 0
           ? fullHistory
@@ -304,5 +307,13 @@ function latestWorkerContinuationEpochSequence(events: ReadonlyArray<RunEvent>) 
     if (event.type !== "WORKER_CONTINUATION_RECORDED") return [];
     const continuation = parseWorkerContinuationReceipt(event.payload["continuation"]);
     return [continuation.workerEvidenceEpochSequence];
+  })[0];
+}
+
+function latestWorkerCorrelationEpochSequence(events: ReadonlyArray<RunEvent>) {
+  return [...events].reverse().flatMap((event) => {
+    if (event.type !== "WORKER_CORRELATION_RECONCILIATION_RECORDED") return [];
+    const reconciliation = parseWorkerCorrelationReconciliationReceipt(event.payload["reconciliation"]);
+    return [reconciliation.workerEvidenceEpochSequence];
   })[0];
 }

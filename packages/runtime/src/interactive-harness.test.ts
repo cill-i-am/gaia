@@ -753,6 +753,7 @@ function recordingCodexClient(input: {
         interrupts.push(params);
         return {};
       }),
+    listThreads: () => Effect.succeed({ backwardsCursor: null, data: [], nextCursor: null }),
     onNotification: (listener) => {
       notifications.add(listener);
       input.onSubscribed?.();

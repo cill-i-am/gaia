@@ -35,6 +35,7 @@ import { Deferred, Effect, Fiber, FileSystem, Option, Ref, Schema, Stream } from
 import { createServer } from "node:net";
 import { readFile } from "node:fs/promises";
 import {
+  listStableCodexThreadsForWorkspace,
   makeProductionWorkerRecoveryProvider,
   runLocalGaiaServer,
   toWorkerRecoveryThreadStatus,
@@ -108,6 +109,31 @@ describe("local Gaia server process", () => {
       assert.strictEqual(toWorkerRecoveryThreadStatus(undefined), "unknown");
       assert.strictEqual(toWorkerRecoveryThreadStatus("paused"), "unknown");
     });
+
+    it.effect("fails closed when stable App Server thread pagination repeats a cursor", () =>
+      Effect.gen(function* () {
+        let calls = 0;
+        const exit = yield* listStableCodexThreadsForWorkspace(
+          {
+            listThreads: () =>
+              Effect.gen(function* () {
+                calls += 1;
+                yield* Effect.yieldNow;
+                return {
+                  backwardsCursor: null,
+                  data: [],
+                  nextCursor: "cursor-a",
+                };
+              }),
+          },
+          "/tmp/gaia/workspace",
+        ).pipe(Effect.timeout("250 millis"), Effect.exit);
+
+        assert.strictEqual(exit._tag, "Failure");
+        assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+        assert.isAtMost(calls, 3);
+      }),
+    );
 
     it.effect("fails before model catalog and recovery mutation when detection cannot become available", () =>
       Effect.gen(function* () {

@@ -3,12 +3,16 @@ import { Schema } from "effect";
 import { makeRunEvent, parseRunId, snapshotFromReplay } from "./index.js";
 import {
   encodeWorkerContinuationReceiptJson,
+  encodeWorkerCorrelationReconciliationReceiptJson,
   parseWorkerContinuationAction,
   parseWorkerContinuationReceipt,
+  parseWorkerCorrelationReconciliationAction,
+  parseWorkerCorrelationReconciliationReceipt,
   parseWorkerRecoveryAction,
   parseWorkerRecoveryReceipt,
   WorkerRecoveryFailureEvidence,
   workerContinuationProjection,
+  workerCorrelationReconciliationProjection,
   workerRecoveryProjection,
 } from "./worker-recovery.js";
 
@@ -66,6 +70,28 @@ describe("worker recovery contracts", () => {
     expect(() => parseWorkerContinuationAction({ ...continuation, nativeTurnId: "turn-123" })).toThrow();
     expect(() => parseWorkerContinuationAction({ ...continuation, nativeTurnIdDigest: "a".repeat(64) })).toThrow();
     expect(() => parseWorkerContinuationAction({ ...continuation, protocol: "codex" })).toThrow();
+  });
+
+  it("strictly parses audited correlation reconciliation actions without provider-native material", () => {
+    const reconciliation = {
+      actionId: "reconcile-correlation-1",
+      expectedContaminatedReadySequence: 6,
+      expectedContinuationActionId: "continue-recovery-1",
+      expectedCurrentSequence: 9,
+      expectedDeliveryProvenanceDigest: "c".repeat(64),
+      expectedFailedContinuationSequence: 9,
+      expectedFailedRecoverySequence: 8,
+      expectedNativeTurnIdDigest: "b".repeat(64),
+      expectedRecoveryActionId: "recover-1",
+      expectedSessionId: "session-run-OzzhMsXsBb",
+      harnessProfileId: "codexAppServer",
+      kind: "reconcileInterruptedWorkerCorrelation",
+    } as const;
+
+    expect(parseWorkerCorrelationReconciliationAction(reconciliation)).toEqual(reconciliation);
+    expect(() => parseWorkerCorrelationReconciliationAction({ ...reconciliation, nativeTurnId: "turn-123" })).toThrow();
+    expect(() => parseWorkerCorrelationReconciliationAction({ ...reconciliation, nativeThreadId: "thread-123" })).toThrow();
+    expect(() => parseWorkerCorrelationReconciliationAction({ ...reconciliation, protocol: "codex" })).toThrow();
   });
 
   it("quarantines stale ready evidence behind a new authoritative worker epoch", () => {
@@ -233,7 +259,311 @@ describe("worker recovery contracts", () => {
       ])
     ).toThrow("Worker continuation action is already bound to different immutable input.");
   });
+
+  it("creates an authoritative worker epoch for correlation reconciliation and rejects checkpoint digest drift", () => {
+    const runId = parseRunId("run-xwcFbNNdfY");
+    const intentEvents = eligibleCorrelationEvents(runId);
+    const snapshot = snapshotFromReplay(intentEvents);
+    const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(snapshot.context.delivery);
+    const reconciliation = parseWorkerCorrelationReconciliationReceipt(delivery["workerCorrelationReconciliation"]);
+
+    expect(snapshot.state).toBe("delivering");
+    expect(delivery["stage"]).toBe("workerCorrelationPending");
+    expect(delivery["workerEvidenceEpochSequence"]).toBe(11);
+    expect(workerCorrelationReconciliationProjection(reconciliation)).toBe("workerCorrelationPending");
+    expect(delivery["publication"]).toBeUndefined();
+
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        makeRunEvent({
+          payload: {
+            reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(parseWorkerCorrelationReconciliationReceipt({
+              actionId: "reconcile-correlation-1",
+              expectedContaminatedReadySequence: 6,
+              expectedContinuationActionId: "continue-recovery-1",
+              expectedCurrentSequence: 10,
+              expectedDeliveryProvenanceDigest: "c".repeat(64),
+              expectedFailedContinuationSequence: 10,
+              expectedFailedRecoverySequence: 8,
+              expectedNativeTurnIdDigest: "d".repeat(64),
+              expectedRecoveryActionId: "recover-1",
+              expectedSessionId: "session-run-OzzhMsXsBb",
+              harnessProfileId: "codexAppServer",
+              maxAttempts: 1,
+              state: "correlationAttempted",
+              workerEvidenceEpochSequence: 11,
+            })),
+          },
+          runId,
+          sequence: 12,
+          timestamp: "2026-07-11T08:00:04.000Z",
+          type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+        }),
+      ])
+    ).toThrow("Worker correlation reconciliation action is already bound to different immutable input.");
+  });
+
+  it("replays legal correlation reconciliation phases only in durable order", () => {
+    const runId = parseRunId("run-xwcFbNNdfY");
+    const intentEvents = eligibleCorrelationEvents(runId);
+    const legalEvents = [
+      ...intentEvents,
+      correlationReconciliationEvent(runId, 12, "correlationAttempted"),
+      correlationReconciliationEvent(runId, 13, "correlationConfirmed"),
+      correlationReconciliationEvent(runId, 14, "followUpAttempted"),
+      correlationReconciliationEvent(runId, 15, "followUpConfirmed"),
+      correlationReconciliationEvent(runId, 16, "workerCompleted"),
+    ];
+
+    const snapshot = snapshotFromReplay(legalEvents);
+    const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(snapshot.context.delivery);
+    const reconciliation = parseWorkerCorrelationReconciliationReceipt(delivery["workerCorrelationReconciliation"]);
+
+    expect(reconciliation.state).toBe("workerCompleted");
+    expect(delivery["workerEvidenceEpochSequence"]).toBe(11);
+  });
+
+  it("rejects skipped or out-of-order correlation reconciliation phases", () => {
+    const runId = parseRunId("run-xwcFbNNdfY");
+    const intentEvents = eligibleCorrelationEvents(runId);
+
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        correlationReconciliationEvent(runId, 12, "followUpConfirmed"),
+      ])
+    ).toThrow("Worker correlation reconciliation cannot transition from intentRecorded to followUpConfirmed.");
+
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        correlationReconciliationEvent(runId, 12, "correlationAttempted"),
+        correlationReconciliationEvent(runId, 13, "followUpAttempted"),
+      ])
+    ).toThrow("Worker correlation reconciliation cannot transition from correlationAttempted to followUpAttempted.");
+
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        correlationReconciliationEvent(runId, 12, "correlationAttempted"),
+        correlationReconciliationEvent(runId, 13, "correlationConfirmed"),
+        correlationReconciliationEvent(runId, 14, "correlationAttempted"),
+      ])
+    ).toThrow("Worker correlation reconciliation cannot transition from correlationConfirmed to correlationAttempted.");
+  });
+
+  it("preserves only runtime-produced terminal correlation reconciliation edges", () => {
+    const runId = parseRunId("run-xwcFbNNdfY");
+    const intentEvents = eligibleCorrelationEvents(runId);
+
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        correlationReconciliationEvent(runId, 12, "correlationAttempted"),
+        terminalCorrelationReconciliationEvent(runId, 13, "failed"),
+      ])
+    ).not.toThrow();
+
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        correlationReconciliationEvent(runId, 12, "correlationAttempted"),
+        correlationReconciliationEvent(runId, 13, "correlationConfirmed"),
+        correlationReconciliationEvent(runId, 14, "followUpAttempted"),
+        terminalCorrelationReconciliationEvent(runId, 15, "outcomeUnknown"),
+      ])
+    ).not.toThrow();
+
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        correlationReconciliationEvent(runId, 12, "correlationAttempted"),
+        correlationReconciliationEvent(runId, 13, "correlationConfirmed"),
+        correlationReconciliationEvent(runId, 14, "followUpAttempted"),
+        correlationReconciliationEvent(runId, 15, "followUpConfirmed"),
+        terminalCorrelationReconciliationEvent(runId, 16, "failed"),
+      ])
+    ).not.toThrow();
+
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        correlationReconciliationEvent(runId, 12, "correlationAttempted"),
+        correlationReconciliationEvent(runId, 13, "correlationConfirmed"),
+        terminalCorrelationReconciliationEvent(runId, 14, "outcomeUnknown"),
+      ])
+    ).toThrow("Worker correlation reconciliation cannot transition from correlationConfirmed to outcomeUnknown.");
+  });
 });
+
+function correlationReconciliationEvent(
+  runId: ReturnType<typeof parseRunId>,
+  sequence: number,
+  state: "correlationAttempted" | "correlationConfirmed" | "followUpAttempted" | "followUpConfirmed" | "workerCompleted",
+) {
+  return makeRunEvent({
+    payload: {
+      reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(parseWorkerCorrelationReconciliationReceipt({
+        ...correlationReconciliationBase,
+        state,
+      })),
+    },
+    runId,
+    sequence,
+    timestamp: `2026-07-11T08:00:${sequence}.000Z`,
+    type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+  });
+}
+
+function terminalCorrelationReconciliationEvent(
+  runId: ReturnType<typeof parseRunId>,
+  sequence: number,
+  state: "failed" | "outcomeUnknown",
+) {
+  return makeRunEvent({
+    payload: {
+      reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(parseWorkerCorrelationReconciliationReceipt({
+        ...correlationReconciliationBase,
+        code: state === "failed"
+          ? "WorkerCorrelationReconciliationFailed"
+          : "WorkerCorrelationOutcomeUnknown",
+        message: state === "failed"
+          ? "Audited worker correlation reconciliation failed."
+          : "Audited worker correlation reconciliation outcome is unknown.",
+        state,
+      })),
+    },
+    runId,
+    sequence,
+    timestamp: `2026-07-11T08:00:${sequence}.000Z`,
+    type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+  });
+}
+
+const correlationReconciliationBase = {
+  actionId: "reconcile-correlation-1",
+  expectedContaminatedReadySequence: 6,
+  expectedContinuationActionId: "continue-recovery-1",
+  expectedCurrentSequence: 10,
+  expectedDeliveryProvenanceDigest: "c".repeat(64),
+  expectedFailedContinuationSequence: 10,
+  expectedFailedRecoverySequence: 8,
+  expectedNativeTurnIdDigest: "b".repeat(64),
+  expectedRecoveryActionId: "recover-1",
+  expectedSessionId: "session-run-OzzhMsXsBb",
+  harnessProfileId: "codexAppServer",
+  maxAttempts: 1 as const,
+  workerEvidenceEpochSequence: 11,
+} as const;
+
+function eligibleCorrelationEvents(runId: ReturnType<typeof parseRunId>) {
+  return [
+    ...readyToPublishEvents(runId),
+    makeRunEvent({
+      payload: {
+        recovery: {
+          ...action,
+          attempt: 1,
+          maxAttempts: 1,
+          nativeTurnIdDigest: "b".repeat(64),
+          payloadDigest: "a".repeat(64),
+          state: "dispatchConfirmed",
+        },
+      },
+      runId,
+      sequence: 7,
+      timestamp: "2026-07-11T08:00:00.000Z",
+      type: "WORKER_RECOVERY_RECORDED",
+    }),
+    makeRunEvent({
+      payload: {
+        recovery: {
+          ...action,
+          attempt: 1,
+          code: "WorkerRecoveryContinuationFailed",
+          maxAttempts: 1,
+          message: "The checkpoint turn was interrupted after zero product changes.",
+          nativeTurnIdDigest: "b".repeat(64),
+          payloadDigest: "a".repeat(64),
+          state: "failed",
+        },
+      },
+      runId,
+      sequence: 8,
+      timestamp: "2026-07-11T08:00:01.000Z",
+      type: "WORKER_RECOVERY_RECORDED",
+    }),
+    makeRunEvent({
+      payload: {
+        continuation: encodeWorkerContinuationReceiptJson(parseWorkerContinuationReceipt({
+          actionId: "continue-recovery-1",
+          expectedContaminatedReadySequence: 6,
+          expectedCurrentSequence: 8,
+          expectedDeliveryProvenanceDigest: "c".repeat(64),
+          expectedFailedRecoverySequence: 8,
+          expectedRecoveryActionId: "recover-1",
+          expectedSessionId: "session-run-OzzhMsXsBb",
+          harnessProfileId: "codexAppServer",
+          maxAttempts: 1,
+          state: "intentRecorded",
+          workerEvidenceEpochSequence: 9,
+        })),
+      },
+      runId,
+      sequence: 9,
+      timestamp: "2026-07-11T08:00:02.000Z",
+      type: "WORKER_CONTINUATION_RECORDED",
+    }),
+    makeRunEvent({
+      payload: {
+        continuation: encodeWorkerContinuationReceiptJson(parseWorkerContinuationReceipt({
+          actionId: "continue-recovery-1",
+          expectedContaminatedReadySequence: 6,
+          expectedCurrentSequence: 8,
+          expectedDeliveryProvenanceDigest: "c".repeat(64),
+          expectedFailedRecoverySequence: 8,
+          expectedRecoveryActionId: "recover-1",
+          expectedSessionId: "session-run-OzzhMsXsBb",
+          harnessProfileId: "codexAppServer",
+          maxAttempts: 1,
+          state: "failed",
+          code: "HarnessCorrelationUnavailable",
+          message: "The interrupted checkpoint correlation is unavailable.",
+          workerEvidenceEpochSequence: 9,
+        })),
+      },
+      runId,
+      sequence: 10,
+      timestamp: "2026-07-11T08:00:02.500Z",
+      type: "WORKER_CONTINUATION_RECORDED",
+    }),
+    makeRunEvent({
+      payload: {
+        reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(parseWorkerCorrelationReconciliationReceipt({
+          actionId: "reconcile-correlation-1",
+          expectedContaminatedReadySequence: 6,
+          expectedContinuationActionId: "continue-recovery-1",
+          expectedCurrentSequence: 10,
+          expectedDeliveryProvenanceDigest: "c".repeat(64),
+          expectedFailedContinuationSequence: 10,
+          expectedFailedRecoverySequence: 8,
+          expectedNativeTurnIdDigest: "b".repeat(64),
+          expectedRecoveryActionId: "recover-1",
+          expectedSessionId: "session-run-OzzhMsXsBb",
+          harnessProfileId: "codexAppServer",
+          maxAttempts: 1,
+          state: "intentRecorded",
+          workerEvidenceEpochSequence: 11,
+        })),
+      },
+      runId,
+      sequence: 11,
+      timestamp: "2026-07-11T08:00:03.000Z",
+      type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+    }),
+  ];
+}
 
 function readyToPublishEvents(runId: ReturnType<typeof parseRunId>) {
   const delivery = {

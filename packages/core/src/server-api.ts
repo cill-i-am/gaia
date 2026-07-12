@@ -25,6 +25,8 @@ import { HarnessExecutionSelection } from "./harness-execution.js";
 import {
   WorkerContinuationAction,
   WorkerContinuationReceiptSchema,
+  WorkerCorrelationReconciliationAction,
+  WorkerCorrelationReconciliationReceiptSchema,
   WorkerRecoveryAction,
   WorkerRecoveryReceiptSchema,
 } from "./worker-recovery.js";
@@ -333,6 +335,10 @@ export const DeliveryStatusSchema = Schema.Literals([
   "workerContinuationRunning",
   "workerContinuationFailed",
   "workerContinuationOutcomeUnknown",
+  "workerCorrelationPending",
+  "workerCorrelationRunning",
+  "workerCorrelationFailed",
+  "workerCorrelationOutcomeUnknown",
 ] as const);
 
 export const DeliveryRecoveryActionKindSchema = Schema.Literals([
@@ -425,6 +431,7 @@ export class DeliveryRetryCleanupActionRequest extends Schema.Class<DeliveryRetr
 export const DeliveryActionRequestSchema = Schema.Union([
   DeliveryRecoveryActionRequest,
   WorkerContinuationAction,
+  WorkerCorrelationReconciliationAction,
   DeliveryRemediationActivationActionRequest,
   DeliveryEvaluateMergeReadinessActionRequest,
   DeliveryMergeActionRequest,
@@ -541,6 +548,7 @@ export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   stage: DeliveryStatusSchema,
   status: DeliveryStatusSchema,
   workerContinuation: Schema.optionalKey(WorkerContinuationReceiptSchema),
+  workerCorrelationReconciliation: Schema.optionalKey(WorkerCorrelationReconciliationReceiptSchema),
   workerRecovery: Schema.optionalKey(WorkerRecoveryReceiptSchema),
 }) {}
 

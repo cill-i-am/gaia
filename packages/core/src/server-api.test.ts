@@ -413,6 +413,30 @@ describe("LocalGaiaServerApi contract", () => {
     assert.throws(() => decode({ ...request, protocol: "codex-app-server" }));
   });
 
+  it("accepts audited worker correlation reconciliation actions without native checkpoint fields", () => {
+    const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
+    const request = {
+      actionId: "reconcile-correlation-1",
+      expectedContaminatedReadySequence: 6,
+      expectedContinuationActionId: "continue-recovery-1",
+      expectedCurrentSequence: 35,
+      expectedDeliveryProvenanceDigest: "c".repeat(64),
+      expectedFailedContinuationSequence: 35,
+      expectedFailedRecoverySequence: 31,
+      expectedNativeTurnIdDigest: "d".repeat(64),
+      expectedRecoveryActionId: "recover-1",
+      expectedSessionId: "session-run-1234567890",
+      harnessProfileId: "codexAppServer",
+      kind: "reconcileInterruptedWorkerCorrelation",
+    } as const;
+
+    const decoded = decode(request);
+    assert.strictEqual(decoded.kind, "reconcileInterruptedWorkerCorrelation");
+    assert.throws(() => decode({ ...request, nativeTurnId: "turn-private" }));
+    assert.throws(() => decode({ ...request, nativeThreadId: "thread-private" }));
+    assert.throws(() => decode({ ...request, protocol: "codex-app-server" }));
+  });
+
   it("drops private cleanup provenance from parsed and serialized delivery snapshots", () => {
     const hostile = "/HOSTILE/absolute/common-dir::PRIVATE_TOKEN_93";
     const decode = Schema.decodeUnknownSync(DeliverySnapshotDto);

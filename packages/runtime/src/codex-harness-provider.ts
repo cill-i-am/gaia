@@ -276,7 +276,7 @@ export function createCodexHarnessProvider(
             ),
           );
         yield* options.correlationStore
-          .save(request.sessionId, encodeCorrelation(thread.thread.id))
+          .save(request.sessionId, encodeCodexHarnessCorrelation(thread.thread.id))
           .pipe(
             Effect.mapError(
               () =>
@@ -364,16 +364,21 @@ export function createCodexHarnessProvider(
           });
         }
         let recoveredProjectionTurnId: CodexTurnId | undefined;
+        let suppressRecoveredProjectionTurn = false;
         if (request.expectedNativeTurnId !== undefined) {
           const turns = recovered.thread.turns ?? [];
           const matches = turns.filter(({ id }) => id === request.expectedNativeTurnId);
           const exact = matches[0];
-          if (matches.length !== 1 || turns.at(-1)?.id !== request.expectedNativeTurnId || exact?.status === undefined || !["inProgress", "completed", "failed"].includes(exact.status)) {
+          const allowedStatuses = request.allowInterruptedCheckpoint === true
+            ? ["inProgress", "completed", "failed", "interrupted"]
+            : ["inProgress", "completed", "failed"];
+          if (matches.length !== 1 || turns.at(-1)?.id !== request.expectedNativeTurnId || exact?.status === undefined || !allowedStatuses.includes(exact.status)) {
             return yield* new HarnessResumeError({
               message: "Codex recovered thread does not end at the exact checkpointed turn.",
               providerId: CodexHarnessProviderDescriptor.providerId,
             });
           }
+          suppressRecoveredProjectionTurn = request.allowInterruptedCheckpoint === true && exact.status === "interrupted";
           recoveredProjectionTurnId = exact.id;
         }
         return yield* makeCodexSession({
@@ -382,6 +387,7 @@ export function createCodexHarnessProvider(
           ...(recoveredProjectionTurnId === undefined
             ? {}
             : { recoveredProjectionTurnId }),
+          ...(suppressRecoveredProjectionTurn ? { suppressRecoveredProjectionTurn } : {}),
           recoveredThread: recovered.thread,
           request,
         }, () =>
@@ -400,6 +406,7 @@ function makeCodexSession<E>(input: {
   readonly recoveredProjectionTurnId?: CodexTurnId;
   readonly recoveredThread?: CodexThread;
   readonly request: HarnessSessionStart | HarnessSessionResume;
+  readonly suppressRecoveredProjectionTurn?: boolean;
 }, initialTurnError: () => E): Effect.Effect<HarnessSession, E, Scope.Scope> {
   return Effect.gen(function* () {
     const queue = yield* Queue.bounded<HarnessEvent, HarnessSessionError>(2_000);
@@ -421,9 +428,11 @@ function makeCodexSession<E>(input: {
         ? input.recoveredThread
         : {
             ...input.recoveredThread,
-            turns: (input.recoveredThread.turns ?? []).filter(
-              ({ id }) => id === input.recoveredProjectionTurnId,
-            ),
+            turns: input.suppressRecoveredProjectionTurn === true
+              ? []
+              : (input.recoveredThread.turns ?? []).filter(
+                  ({ id }) => id === input.recoveredProjectionTurnId,
+                ),
           };
     const projectedEvents: Array<HarnessEvent> = [];
     const pendingRequests = new Map<HarnessInteractionId, CodexServerRequest>();
@@ -1014,7 +1023,7 @@ function boundedVersion(userAgent: string): string {
   return (match?.[1] ?? "unknown").slice(0, 200);
 }
 
-function encodeCorrelation(threadId: CodexThreadId): CodexHarnessOpaqueCorrelation {
+export function encodeCodexHarnessCorrelation(threadId: CodexThreadId): CodexHarnessOpaqueCorrelation {
   return { token: Buffer.from(threadId, "utf8").toString("base64url") };
 }
 

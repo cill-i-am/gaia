@@ -10,7 +10,9 @@ import {
   DeliveryFeedbackTrustPolicyV1,
   DeliveryPublicationConfirmed,
   WorkerContinuationAction,
+  WorkerCorrelationReconciliationAction,
   encodeWorkerContinuationReceiptJson,
+  encodeWorkerCorrelationReconciliationReceiptJson,
   encodeWorkerRecoveryReceiptJson,
   HarnessCapabilities,
   HarnessProviderDescriptor,
@@ -33,6 +35,7 @@ import { appendEvent } from "./event-store.js";
 import {
   acceptFactoryRun,
   acceptServerRun,
+  actOnWorkerCorrelationReconciliation,
   actOnWorkerContinuation,
   continueServerRun,
   reconcileInterruptedServerRuns,
@@ -890,6 +893,215 @@ describe("server workflows", () => {
       }),
     );
 
+    it.effect("records one audited correlation reconciliation epoch before a deterministic follow-up", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const smoke = makeDisposableGitRemote();
+        try {
+          const cwd = realpathSync(smoke.source);
+          const publicationCalls: Array<string> = [];
+          const accepted = yield* acceptFactoryRun(
+            {
+              delivery: { mode: "pullRequest" },
+              execution: codexAppServerExecutionSelection,
+              workflow: "issueDelivery",
+              workItem: {
+                description: "Recover the interrupted checkpoint.",
+                kind: "issue",
+                title: "Audited correlation reconciliation",
+              },
+            },
+            {
+              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              rootDirectory: cwd,
+            },
+          );
+          yield* continueServerRun(accepted.runId, {
+            deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
+            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            rootDirectory: cwd,
+          });
+          publicationCalls.length = 0;
+
+          const runId = parseRunId(accepted.runId);
+          const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+          const readyEvents = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+          const contaminatedReady = readyEvents.events.find(
+            ({ type }) => type === "DELIVERY_READY_TO_PUBLISH",
+          );
+          if (contaminatedReady === undefined) {
+            assert.fail("Expected contaminated ready evidence.");
+          }
+          const sessionId = parseHarnessSessionId(`session-${runId}`);
+          const recoveredTurnDigest = digest("turn-test-worker");
+          const recoveryBase = {
+            actionId: "recover-1",
+            attempt: 1 as const,
+            expectedFailureSequence: 10,
+            expectedSessionId: sessionId,
+            harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
+            maxAttempts: 1 as const,
+            model: "gpt-5.4",
+            payloadDigest: "a".repeat(64),
+          };
+          yield* appendEvent(runId, paths, {
+            payload: {
+              recovery: encodeWorkerRecoveryReceiptJson({
+                ...recoveryBase,
+                nativeTurnIdDigest: recoveredTurnDigest,
+                state: "dispatchConfirmed",
+              }),
+            },
+            type: "WORKER_RECOVERY_RECORDED",
+          });
+          const failedRecovery = yield* appendEvent(runId, paths, {
+            payload: {
+              recovery: encodeWorkerRecoveryReceiptJson({
+                ...recoveryBase,
+                code: "WorkerRecoveryContinuationFailed",
+                message: "The checkpoint turn was interrupted after zero product changes.",
+                nativeTurnIdDigest: recoveredTurnDigest,
+                state: "failed",
+              }),
+            },
+            type: "WORKER_RECOVERY_RECORDED",
+          });
+          const continuationBase = {
+            actionId: "continue-recovery-1",
+            expectedContaminatedReadySequence: contaminatedReady.sequence,
+            expectedCurrentSequence: failedRecovery.event.sequence,
+            expectedDeliveryProvenanceDigest: deliveryProvenanceDigest({
+              baseBranch: "main",
+              baseRevision: smoke.baseRevision,
+              headBranch: `gaia/${runId}`,
+              remote: "origin",
+            }),
+            expectedFailedRecoverySequence: failedRecovery.event.sequence,
+            expectedRecoveryActionId: "recover-1",
+            expectedSessionId: sessionId,
+            harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
+            maxAttempts: 1 as const,
+            workerEvidenceEpochSequence: failedRecovery.event.sequence + 1,
+          };
+          yield* appendEvent(runId, paths, {
+            payload: {
+              continuation: encodeWorkerContinuationReceiptJson({
+                ...continuationBase,
+                state: "intentRecorded",
+              }),
+            },
+            type: "WORKER_CONTINUATION_RECORDED",
+          });
+          const failedContinuation = yield* appendEvent(runId, paths, {
+            payload: {
+              continuation: encodeWorkerContinuationReceiptJson({
+                ...continuationBase,
+                code: "HarnessCorrelationUnavailable",
+                message: "The interrupted checkpoint correlation is unavailable.",
+                state: "failed",
+              }),
+            },
+            type: "WORKER_CONTINUATION_RECORDED",
+          });
+          const action = WorkerCorrelationReconciliationAction.make({
+            actionId: "reconcile-correlation-1",
+            expectedContaminatedReadySequence: contaminatedReady.sequence,
+            expectedContinuationActionId: "continue-recovery-1",
+            expectedCurrentSequence: failedContinuation.event.sequence,
+            expectedDeliveryProvenanceDigest: continuationBase.expectedDeliveryProvenanceDigest,
+            expectedFailedContinuationSequence: failedContinuation.event.sequence,
+            expectedFailedRecoverySequence: failedRecovery.event.sequence,
+            expectedNativeTurnIdDigest: recoveredTurnDigest,
+            expectedRecoveryActionId: "recover-1",
+            expectedSessionId: sessionId,
+            harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
+            kind: "reconcileInterruptedWorkerCorrelation",
+          });
+          const seamCalls: Array<string> = [];
+          const receipt = yield* actOnWorkerCorrelationReconciliation(runId, action, {
+            rootDirectory: cwd,
+            workerCorrelationReconciler: ({ action: seamAction, clientInputId }) =>
+              Effect.sync(() => {
+                seamCalls.push(`reconcile:${seamAction.actionId}:${clientInputId}`);
+              }),
+            workerCorrelationFollowUpDispatcher: ({ clientInputId, followUpText }) =>
+              Effect.sync(() => {
+                seamCalls.push(`follow-up:${clientInputId}:${followUpText.includes("Do not restart")}`);
+              }),
+            workerCorrelationRunner: () =>
+              appendEvent(runId, paths, {
+                payload: { workerResultPath: "worker-result-reconciled.json" },
+                type: "WORKER_COMPLETED",
+              }).pipe(
+                Effect.as({
+                  reportPath: paths.reportMarkdown,
+                  runDirectory: paths.root,
+                  runId,
+                  state: "delivering" as const,
+                  status: "running" as const,
+                }),
+              ),
+          });
+          const events = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+          const reconciliationStates = events.events.flatMap((event) =>
+            event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED"
+              ? [(event.payload["reconciliation"] as { state?: unknown }).state]
+              : [],
+          );
+          const delivery = snapshotFromReplay(events.events).context["delivery"];
+
+          assert.strictEqual(receipt.state, "workerCompleted");
+          assert.deepEqual(reconciliationStates, [
+            "intentRecorded",
+            "correlationAttempted",
+            "correlationConfirmed",
+            "followUpAttempted",
+            "followUpConfirmed",
+            "workerCompleted",
+          ]);
+          assert.lengthOf(seamCalls, 2);
+          assert.deepEqual(publicationCalls, []);
+          assert.isObject(delivery);
+          assert.strictEqual(
+            (delivery as Record<string, unknown>)["workerEvidenceEpochSequence"],
+            failedContinuation.event.sequence + 1,
+          );
+
+          const replayEventCount = events.events.length;
+          const replayReceipt = yield* actOnWorkerCorrelationReconciliation(runId, action, {
+            rootDirectory: cwd,
+            workerCorrelationReconciler: () => Effect.die("must not reconcile twice"),
+            workerCorrelationFollowUpDispatcher: () => Effect.die("must not redispatch follow-up"),
+            workerCorrelationRunner: () => Effect.die("must not rerun completed worker"),
+          });
+          const replayedEvents = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+          const conflict = yield* Effect.flip(
+            actOnWorkerCorrelationReconciliation(
+              runId,
+              WorkerCorrelationReconciliationAction.make({
+                ...action,
+                actionId: "reconcile-correlation-2",
+              }),
+              {
+                rootDirectory: cwd,
+                workerCorrelationReconciler: () => Effect.die("must not reconcile conflicting action"),
+                workerCorrelationFollowUpDispatcher: () => Effect.die("must not dispatch conflicting action"),
+              },
+            ),
+          );
+          const conflictedEvents = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+
+          assert.deepEqual(replayReceipt, receipt);
+          assert.lengthOf(replayedEvents.events, replayEventCount);
+          assert.instanceOf(conflict, GaiaRuntimeError);
+          assert.strictEqual(conflict.code, "DeliveryActionConflict");
+          assert.lengthOf(conflictedEvents.events, replayEventCount);
+        } finally {
+          rmSync(smoke.root, { force: true, recursive: true });
+        }
+      }),
+    );
+
     it.effect("rejects audited continuation before intent when historical recovery evidence is missing", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -936,6 +1148,152 @@ describe("server workflows", () => {
         assert.isFalse(
           events.events.some(({ type }) => type === "WORKER_CONTINUATION_RECORDED"),
         );
+      }),
+    );
+
+    it.effect("marks ambiguous audited correlation follow-up restarts outcomeUnknown without redispatch", () =>
+      Effect.gen(function* () {
+        const smoke = makeDisposableGitRemote();
+        try {
+          const cwd = realpathSync(smoke.source);
+          const accepted = yield* acceptFactoryRun(
+            {
+              delivery: { mode: "pullRequest" },
+              execution: codexAppServerExecutionSelection,
+              workflow: "issueDelivery",
+              workItem: {
+                description: "Ambiguous audited correlation.",
+                kind: "issue",
+                title: "Audited correlation ambiguity",
+              },
+            },
+            {
+              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              rootDirectory: cwd,
+            },
+          );
+          const runId = parseRunId(accepted.runId);
+          const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+          yield* appendEvent(runId, paths, {
+            payload: {
+              delivery: {
+                baseBranch: "main",
+                baseRevision: smoke.baseRevision,
+                headBranch: `gaia/${runId}`,
+                mode: "pullRequest",
+                remote: "origin",
+                stage: "delivering",
+              },
+            },
+            type: "DELIVERY_STARTED",
+          });
+          const sessionId = parseHarnessSessionId(`session-${runId}`);
+          const action = WorkerCorrelationReconciliationAction.make({
+            actionId: "reconcile-correlation-1",
+            expectedContaminatedReadySequence: accepted.eventSequence,
+            expectedContinuationActionId: "continue-recovery-1",
+            expectedCurrentSequence: accepted.eventSequence,
+            expectedDeliveryProvenanceDigest: "c".repeat(64),
+            expectedFailedContinuationSequence: accepted.eventSequence,
+            expectedFailedRecoverySequence: accepted.eventSequence,
+            expectedNativeTurnIdDigest: "d".repeat(64),
+            expectedRecoveryActionId: "recover-1",
+            expectedSessionId: sessionId,
+            harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
+            kind: "reconcileInterruptedWorkerCorrelation",
+          });
+          const base = {
+            actionId: action.actionId,
+            expectedContaminatedReadySequence: action.expectedContaminatedReadySequence,
+            expectedContinuationActionId: action.expectedContinuationActionId,
+            expectedCurrentSequence: action.expectedCurrentSequence,
+            expectedDeliveryProvenanceDigest: action.expectedDeliveryProvenanceDigest,
+            expectedFailedContinuationSequence: action.expectedFailedContinuationSequence,
+            expectedFailedRecoverySequence: action.expectedFailedRecoverySequence,
+            expectedNativeTurnIdDigest: action.expectedNativeTurnIdDigest,
+            expectedRecoveryActionId: action.expectedRecoveryActionId,
+            expectedSessionId: action.expectedSessionId,
+            harnessProfileId: action.harnessProfileId,
+            maxAttempts: 1 as const,
+            workerEvidenceEpochSequence: accepted.eventSequence + 1,
+          };
+          yield* appendEvent(runId, paths, {
+            payload: {
+              reconciliation: encodeWorkerCorrelationReconciliationReceiptJson({
+                ...base,
+                state: "intentRecorded",
+              }),
+            },
+            type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+          });
+          yield* appendEvent(runId, paths, {
+            payload: {
+              reconciliation: encodeWorkerCorrelationReconciliationReceiptJson({
+                ...base,
+                state: "correlationAttempted",
+              }),
+            },
+            type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+          });
+          yield* appendEvent(runId, paths, {
+            payload: {
+              reconciliation: encodeWorkerCorrelationReconciliationReceiptJson({
+                ...base,
+                state: "correlationConfirmed",
+              }),
+            },
+            type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+          });
+          yield* appendEvent(runId, paths, {
+            payload: {
+              reconciliation: encodeWorkerCorrelationReconciliationReceiptJson({
+                ...base,
+                state: "followUpAttempted",
+              }),
+            },
+            type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+          });
+
+          let dispatches = 0;
+          const receipt = yield* actOnWorkerCorrelationReconciliation(runId, action, {
+            rootDirectory: cwd,
+            workerCorrelationFollowUpDispatcher: () =>
+              Effect.sync(() => {
+                dispatches += 1;
+              }),
+            workerCorrelationReconciler: () =>
+              Effect.sync(() => {
+                dispatches += 1;
+              }),
+          });
+          const events = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+          const reconciliationStates = events.events.flatMap((event) =>
+            event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED"
+              ? [(event.payload["reconciliation"] as { state?: unknown }).state]
+              : [],
+          );
+          const replayEventCount = events.events.length;
+          const replayReceipt = yield* actOnWorkerCorrelationReconciliation(runId, action, {
+            rootDirectory: cwd,
+            workerCorrelationFollowUpDispatcher: () => Effect.die("must not redispatch ambiguous follow-up"),
+            workerCorrelationReconciler: () => Effect.die("must not reconcile ambiguous follow-up"),
+          });
+          const replayedEvents = yield* readLocalRunEvents(runId, { rootDirectory: cwd });
+
+          assert.strictEqual(receipt.state, "outcomeUnknown");
+          assert.strictEqual(replayReceipt.state, "outcomeUnknown");
+          assert.strictEqual(dispatches, 0);
+          assert.deepEqual(reconciliationStates, [
+            "intentRecorded",
+            "correlationAttempted",
+            "correlationConfirmed",
+            "followUpAttempted",
+            "outcomeUnknown",
+          ]);
+          assert.lengthOf(replayedEvents.events, replayEventCount);
+        } finally {
+          rmSync(smoke.root, { force: true, recursive: true });
+        }
       }),
     );
 

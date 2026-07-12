@@ -53,7 +53,9 @@ import {
   deliveryActionAuditSummary,
   parseWorkerRecoveryReceipt,
   parseWorkerContinuationReceipt,
+  parseWorkerCorrelationReconciliationReceipt,
   workerContinuationProjection,
+  workerCorrelationReconciliationProjection,
   workerRecoveryProjection,
   encodeWorkerRecoveryReceiptJson,
   type WorkerRecoveryAction,
@@ -90,6 +92,7 @@ import {
   actOnDeliveryPublication,
   actOnDeliveryRemediation,
   actOnDeliveryMerge,
+  actOnWorkerCorrelationReconciliation,
   actOnWorkerContinuation,
   actOnWorkerRecovery,
   acceptFactoryRun,
@@ -406,6 +409,12 @@ export const RunsLive = HttpApiBuilder.group(
                   )
               : payload.kind === "continueInterruptedWorkerRecovery"
                 ? actOnWorkerContinuation(
+                    params.runId,
+                    payload,
+                    workflowOptions,
+                  )
+              : payload.kind === "reconcileInterruptedWorkerCorrelation"
+                ? actOnWorkerCorrelationReconciliation(
                     params.runId,
                     payload,
                     workflowOptions,
@@ -824,6 +833,8 @@ function deliveryUpdateFromEvents(
   const workerRecovery = workerRecoveryEvent === undefined ? undefined : parseWorkerRecoveryReceipt(workerRecoveryEvent.payload["recovery"]);
   const workerContinuationEvent = [...events].reverse().find(({ type }) => type === "WORKER_CONTINUATION_RECORDED");
   const workerContinuation = workerContinuationEvent === undefined ? undefined : parseWorkerContinuationReceipt(workerContinuationEvent.payload["continuation"]);
+  const workerCorrelationEvent = [...events].reverse().find(({ type }) => type === "WORKER_CORRELATION_RECONCILIATION_RECORDED");
+  const workerCorrelationReconciliation = workerCorrelationEvent === undefined ? undefined : parseWorkerCorrelationReconciliationReceipt(workerCorrelationEvent.payload["reconciliation"]);
 
   if (delivery === undefined || delivery.mode === "local") {
     const status = snapshot.state === "failed" ? "failed" : snapshot.state === "completed" ? "readyToPublish" : "unavailable";
@@ -837,9 +848,10 @@ function deliveryUpdateFromEvents(
     });
   }
 
+  const correlationStage = workerCorrelationReconciliationProjection(workerCorrelationReconciliation);
   const continuationStage = workerContinuationProjection(workerContinuation);
   const recoveryStage = workerRecoveryProjection(workerRecovery);
-  const stage = continuationStage ?? recoveryStage ?? (snapshot.state === "failed" ? "failed" : delivery.stage);
+  const stage = correlationStage ?? continuationStage ?? recoveryStage ?? (snapshot.state === "failed" ? "failed" : delivery.stage);
   const publication =
     delivery.publication === undefined
       ? undefined
@@ -891,6 +903,7 @@ function deliveryUpdateFromEvents(
     stage,
     status: stage,
     ...(workerContinuation === undefined ? {} : { workerContinuation }),
+    ...(workerCorrelationReconciliation === undefined ? {} : { workerCorrelationReconciliation }),
     ...(workerRecovery === undefined ? {} : { workerRecovery }),
   });
 }

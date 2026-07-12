@@ -211,6 +211,8 @@ export function actOnDeliveryFromDashboardGaiaClient(
           return yield* client.runs.actOnDelivery({ params: { runId }, payload });
         case "continueInterruptedWorkerRecovery":
           return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+        case "reconcileInterruptedWorkerCorrelation":
+          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
         case "reconcile":
         case "retry":
           return yield* client.runs.actOnDelivery({ params: { runId }, payload });

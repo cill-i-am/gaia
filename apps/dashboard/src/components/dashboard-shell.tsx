@@ -2147,6 +2147,14 @@ function deliveryStatusLabel(snapshot: typeof DeliverySnapshotDto.Type) {
       return "Delivery: audited worker continuation failed";
     case "workerContinuationOutcomeUnknown":
       return "Delivery: audited worker continuation outcome unknown";
+    case "workerCorrelationPending":
+      return "Delivery: audited worker correlation pending";
+    case "workerCorrelationRunning":
+      return "Delivery: audited worker correlation running";
+    case "workerCorrelationFailed":
+      return "Delivery: audited worker correlation failed";
+    case "workerCorrelationOutcomeUnknown":
+      return "Delivery: audited worker correlation outcome unknown";
     case "unavailable":
       return "Delivery: unavailable";
   }
