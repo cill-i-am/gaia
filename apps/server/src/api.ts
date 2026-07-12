@@ -120,6 +120,7 @@ type LocalServerConfigValue = LocalServerIdentity & {
   readonly sessionCoordinator: ReturnType<typeof makeLiveHarnessSessionCoordinator>;
   readonly subscribeDeliveryRunEventFeed: typeof subscribeRunEventFeed;
   readonly workflowOptions: ServerWorkflowOptions;
+  readonly afterCreateRunAccepted: (accepted: ServerRunAcceptance) => Effect.Effect<void>;
   readonly writeWorkerRecoveryFailureEvidence: WorkerRecoveryFailureEvidenceWriter;
 };
 
@@ -246,29 +247,37 @@ export const RunsLive = HttpApiBuilder.group(
           }
 
           const identity = yield* LocalServerConfig;
-          const reservation = yield* identity.runRegistry.reserveCreate.pipe(
-            Effect.mapError((error) => activeRunConflictApiError(error)),
-          );
-          const acceptedExit = yield* Effect.exit(
-            acceptFactoryRun(payload, {
-              ...identity.workflowOptions,
-              rootDirectory: identity.rootDirectory,
+          const accepted = yield* Effect.uninterruptibleMask((restore) =>
+            Effect.gen(function* () {
+              const reservation = yield* identity.runRegistry.reserveCreate.pipe(
+                Effect.mapError((error) => activeRunConflictApiError(error)),
+              );
+              const acceptedExit = yield* Effect.exit(
+                restore(
+                  acceptFactoryRun(payload, {
+                    ...identity.workflowOptions,
+                    rootDirectory: identity.rootDirectory,
+                  }).pipe(Effect.onInterrupt(() => reservation.rollback)),
+                ),
+              );
+
+              if (acceptedExit._tag === "Failure") {
+                yield* reservation.rollback;
+                return yield* Effect.fail(apiErrorFromCause(acceptedExit.cause));
+              }
+
+              const accepted = acceptedExit.value;
+              yield* identity.runIndex.refreshRun(accepted.runId);
+              yield* reservation.markAccepted(accepted.runId);
+              yield* forkServerContinuation({
+                accepted,
+                identity,
+                reservation,
+              });
+              return accepted;
             }),
           );
-
-          if (acceptedExit._tag === "Failure") {
-            yield* reservation.rollback;
-            return yield* Effect.fail(apiErrorFromCause(acceptedExit.cause));
-          }
-
-          const accepted = acceptedExit.value;
-          yield* identity.runIndex.refreshRun(accepted.runId);
-          yield* reservation.markAccepted(accepted.runId);
-          yield* forkServerContinuation({
-            accepted,
-            identity,
-            reservation,
-          });
+          yield* identity.afterCreateRunAccepted(accepted);
 
           return CreateRunAcceptedResponse.make({
             acceptedAt: accepted.acceptedAt,
@@ -557,6 +566,7 @@ export function makeLocalGaiaServerLayer(
   workflowOptions: ServerWorkflowOptions = {},
   resumableRunIds: ReadonlyArray<string> = [],
   options: {
+    readonly afterCreateRunAccepted?: (accepted: ServerRunAcceptance) => Effect.Effect<void>;
     readonly subscribeDeliveryRunEventFeed?: typeof subscribeRunEventFeed;
     readonly writeWorkerRecoveryFailureEvidence?: WorkerRecoveryFailureEvidenceWriter;
   } = {},
@@ -604,6 +614,7 @@ export function makeLocalGaiaServerLayer(
         runRegistry,
         runScope,
         sessionCoordinator,
+        afterCreateRunAccepted: options.afterCreateRunAccepted ?? (() => Effect.void),
         subscribeDeliveryRunEventFeed:
           options.subscribeDeliveryRunEventFeed ?? subscribeRunEventFeed,
         workflowOptions: scopedWorkflowOptions,
