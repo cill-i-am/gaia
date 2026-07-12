@@ -64,6 +64,10 @@ export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "RunHasNoEvents",
   "RunNotFound",
   "RunUnreadable",
+  "WorkerRecoveryCorrelationUnavailable",
+  "WorkerRecoveryIntentPersistenceFailed",
+  "WorkerRecoveryModelCatalogUnavailable",
+  "WorkerRecoveryModelUnavailable",
 ] as const);
 
 const BadRequestDiagnosticCodeSchema = Schema.Literals([
@@ -100,9 +104,13 @@ const UnprocessableDiagnosticCodeSchema = Schema.Literals([
   "InvalidRunDirectory",
   "RunHasNoEvents",
   "RunUnreadable",
+  "WorkerRecoveryCorrelationUnavailable",
+  "WorkerRecoveryModelCatalogUnavailable",
+  "WorkerRecoveryModelUnavailable",
 ] as const);
 const InternalServerDiagnosticCodeSchema = Schema.Literals([
   "InternalServerError",
+  "WorkerRecoveryIntentPersistenceFailed",
 ] as const);
 
 export const LocalRunApiErrorStatusSchema = Schema.Literals([

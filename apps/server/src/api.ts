@@ -11,6 +11,8 @@ import {
   DeliverySnapshotDto,
   DeliverySnapshotSuccessEnvelope,
   WorkerRecoverySuccessEnvelope,
+  WorkerRecoveryFailureEvidence,
+  encodeWorkerRecoveryFailureEvidenceJson,
   DeliveryStatusSchema,
   FactoryActivitySuccessEnvelope,
   CreateRunAcceptedResponse,
@@ -118,7 +120,15 @@ type LocalServerConfigValue = LocalServerIdentity & {
   readonly sessionCoordinator: ReturnType<typeof makeLiveHarnessSessionCoordinator>;
   readonly subscribeDeliveryRunEventFeed: typeof subscribeRunEventFeed;
   readonly workflowOptions: ServerWorkflowOptions;
+  readonly writeWorkerRecoveryFailureEvidence: WorkerRecoveryFailureEvidenceWriter;
 };
+
+type WorkerRecoveryFailureEvidenceWriter = (
+  rootDirectory: string,
+  runId: string,
+  actionId: string,
+  error: LocalRunActionApiError,
+) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
 
 /** Finite recovery transaction: persist one receipt, then join its confirmed continuation. */
 export function executeWorkerRecoveryTransaction(input: {
@@ -407,7 +417,13 @@ export const RunsLive = HttpApiBuilder.group(
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
           const exit = yield* Effect.exit(executeWorkerRecoveryTransaction({ action: payload, identity, runId: params.runId }));
-          if (exit._tag === "Failure") return yield* Effect.fail(actionApiErrorFromCause(exit.cause));
+          if (exit._tag === "Failure") {
+            const error = actionApiErrorFromCause(exit.cause);
+            yield* identity.writeWorkerRecoveryFailureEvidence(identity.rootDirectory, params.runId, payload.actionId, error).pipe(
+              Effect.orElseSucceed(() => undefined),
+            );
+            return yield* Effect.fail(error);
+          }
           yield* identity.runIndex.refreshRun(params.runId);
           return WorkerRecoverySuccessEnvelope.make({ data: exit.value, status: "success" });
         }),
@@ -542,6 +558,7 @@ export function makeLocalGaiaServerLayer(
   resumableRunIds: ReadonlyArray<string> = [],
   options: {
     readonly subscribeDeliveryRunEventFeed?: typeof subscribeRunEventFeed;
+    readonly writeWorkerRecoveryFailureEvidence?: WorkerRecoveryFailureEvidenceWriter;
   } = {},
 ): Layer.Layer<
   never,
@@ -590,6 +607,8 @@ export function makeLocalGaiaServerLayer(
         subscribeDeliveryRunEventFeed:
           options.subscribeDeliveryRunEventFeed ?? subscribeRunEventFeed,
         workflowOptions: scopedWorkflowOptions,
+        writeWorkerRecoveryFailureEvidence:
+          options.writeWorkerRecoveryFailureEvidence ?? appendWorkerRecoveryFailureEvidence,
       } satisfies LocalServerConfigValue;
     }),
   );
@@ -1159,8 +1178,12 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
     case "InvalidRunDirectory":
     case "RunHasNoEvents":
     case "RunUnreadable":
+    case "WorkerRecoveryCorrelationUnavailable":
+    case "WorkerRecoveryModelCatalogUnavailable":
+    case "WorkerRecoveryModelUnavailable":
       return 422;
     case "InternalServerError":
+    case "WorkerRecoveryIntentPersistenceFailed":
       return 500;
   }
 }
@@ -1200,8 +1223,56 @@ function actionApiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunActionApi
         ...(diagnostic.runId === undefined ? {} : { runId: diagnostic.runId }),
         status: 409,
       });
+    case "WorkerRecoveryCorrelationUnavailable":
+    case "WorkerRecoveryModelCatalogUnavailable":
+    case "WorkerRecoveryModelUnavailable":
+      return LocalRunApiUnprocessable.make({
+        ...publicDiagnosticFields(diagnostic),
+        code: diagnostic.code,
+        status: 422,
+      });
+    case "WorkerRecoveryIntentPersistenceFailed":
+      return LocalRunApiInternalServerError.make({
+        ...publicDiagnosticFields(diagnostic),
+        code: diagnostic.code,
+        status: 500,
+      });
     default:
       return readApiError(diagnostic);
+  }
+}
+
+function appendWorkerRecoveryFailureEvidence(rootDirectory: string, runId: string, actionId: string, error: LocalRunActionApiError) {
+  return appendServerLog(rootDirectory, JSON.stringify(encodeWorkerRecoveryFailureEvidenceJson(WorkerRecoveryFailureEvidence.make({
+    actionId,
+    code: recoveryFailureEvidenceCode(error.code),
+    runId: parseRunId(runId),
+    stage: recoveryFailureEvidenceStage(error.code),
+    status: error.status === 409 || error.status === 422 ? error.status : 500,
+    timestamp: new Date().toISOString(),
+  }))));
+}
+
+function recoveryFailureEvidenceStage(code: LocalRunActionApiError["code"]): typeof WorkerRecoveryFailureEvidence.Type["stage"] {
+  switch (code) {
+    case "WorkerRecoveryCorrelationUnavailable": return "correlation";
+    case "WorkerRecoveryIntentPersistenceFailed": return "intentPersistence";
+    case "WorkerRecoveryModelCatalogUnavailable": return "modelCatalog";
+    case "WorkerRecoveryModelUnavailable": return "modelSelection";
+    default: return "unknown";
+  }
+}
+
+function recoveryFailureEvidenceCode(code: LocalRunActionApiError["code"]): typeof WorkerRecoveryFailureEvidence.Type["code"] {
+  switch (code) {
+    case "DeliveryActionConflict":
+    case "WorkerRecoveryCorrelationUnavailable":
+    case "WorkerRecoveryIntentPersistenceFailed":
+    case "WorkerRecoveryModelCatalogUnavailable":
+    case "WorkerRecoveryModelUnavailable":
+      return code;
+    default:
+      return "InternalServerError";
   }
 }
 
@@ -1223,8 +1294,8 @@ function causeToDiagnostic(cause: Cause.Cause<unknown>): ApiDiagnostic {
   }
 
   return {
-    code: "RunUnreadable",
-    message: "Run could not be read from events.jsonl.",
+    code: "InternalServerError",
+    message: "Local Gaia API request failed.",
     recoverable: false,
   };
 }
@@ -1313,6 +1384,20 @@ function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
         ...diagnostic,
         code: "RunUnreadable",
         status: 422,
+      });
+    case "WorkerRecoveryCorrelationUnavailable":
+    case "WorkerRecoveryModelCatalogUnavailable":
+    case "WorkerRecoveryModelUnavailable":
+      return LocalRunApiUnprocessable.make({
+        ...diagnostic,
+        code: diagnostic.code,
+        status: 422,
+      });
+    case "WorkerRecoveryIntentPersistenceFailed":
+      return LocalRunApiInternalServerError.make({
+        ...diagnostic,
+        code: diagnostic.code,
+        status: 500,
       });
     case "ActiveRunConflict":
     case "AgentActionConflict":
@@ -1520,6 +1605,9 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
     case "HarnessProfileNotFound":
     case "HarnessUnavailable":
     case "AgentSessionUnavailable":
+    case "WorkerRecoveryCorrelationUnavailable":
+    case "WorkerRecoveryModelCatalogUnavailable":
+    case "WorkerRecoveryModelUnavailable":
       return LocalRunApiUnprocessable.make({
         ...diagnostic,
         code: diagnostic.code,
@@ -1550,6 +1638,7 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
     case "FactoryGraphNotFound":
     case "RunNotFound":
     case "InternalServerError":
+    case "WorkerRecoveryIntentPersistenceFailed":
       return internalApiError(diagnostic);
   }
 }
@@ -1703,13 +1792,7 @@ function isTerminalRunEvent(event: RunEvent) {
 }
 
 function isRuntimeDiagnostic(input: unknown): input is LocalRunReadDiagnostic {
-  return (
-    typeof input === "object" &&
-    input !== null &&
-    "code" in input &&
-    "message" in input &&
-    "recoverable" in input
-  );
+  return Option.isSome(Schema.decodeUnknownOption(LocalRunReadDiagnosticDto)(input));
 }
 
 function isApiDiagnostic(input: unknown): input is ApiDiagnostic {
