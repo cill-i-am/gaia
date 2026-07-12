@@ -2,9 +2,16 @@ import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
+  makeRunEvent,
+  parseHarnessEvent,
+  parseHarnessProfileId,
+  parseHarnessSessionId,
   parseHarnessTurnId,
+  parseRunId,
   projectHarnessEvents,
   RunEvent,
+  WorkerRecoveryAction,
+  type HarnessDetection,
   type ServerMetadata,
 } from "@gaia/core";
 import { readLocalRunEvents } from "@gaia/runtime/run-read-api";
@@ -14,9 +21,11 @@ import {
 } from "@gaia/runtime/server-workflows";
 import {
   makeHarnessProviderRegistry,
+  recoverWorkerSession,
   type HarnessProvider,
   type HarnessProviderRegistry,
 } from "@gaia/runtime";
+import { makeRunPaths } from "@gaia/runtime/paths";
 import {
   makeTestHarnessProviderRegistry,
   testHarnessCapabilities,
@@ -25,10 +34,151 @@ import {
 import { Deferred, Effect, Fiber, FileSystem, Option, Ref, Schema, Stream } from "effect";
 import { createServer } from "node:net";
 import { readFile } from "node:fs/promises";
-import { runLocalGaiaServer } from "./main.js";
+import {
+  makeProductionWorkerRecoveryProvider,
+  runLocalGaiaServer,
+} from "./main.js";
 
 describe("local Gaia server process", () => {
   layer(NodeServices.layer)((it) => {
+    it.effect("detects before direct recovery model catalog and reaches preflight", () =>
+      Effect.gen(function* () {
+        const fixture = yield* makeWorkerRecoveryFixture();
+        const calls: string[] = [];
+        let detected = false;
+        const provider = makeProductionWorkerRecoveryProvider({
+          detect: Effect.sync(() => {
+            calls.push("detect");
+            detected = true;
+            return {
+              auth: { state: "notRequired" },
+              capabilities: testHarnessCapabilities,
+              state: "available",
+              version: "test-1",
+            };
+          }),
+          listModels: () =>
+            Effect.sync(() => {
+              calls.push(detected ? "model/list" : "model/list-before-detect");
+              return [{ hidden: false, id: "gpt-5.4" }];
+            }),
+          readThread: (threadId) =>
+            Effect.sync(() => {
+              calls.push("read");
+              return { active: false, systemError: true, threadId };
+            }),
+          resumeThread: (threadId) =>
+            Effect.sync(() => {
+              calls.push("resume");
+              return { threadId };
+            }),
+          startTurn: ({ model }) =>
+            Effect.sync(() => {
+              calls.push(`start:${model}`);
+              return { turnId: "turn-recovery" };
+            }),
+        });
+        const result = yield* recoverWorkerSession(
+          fixture.runId,
+          workerRecoveryAction,
+          {
+            nativeThreadId: "thread-private",
+            provider,
+            rootDirectory: fixture.root,
+            validateWorkspace: () => Effect.void,
+          },
+        );
+
+        assert.strictEqual(result.state, "dispatchConfirmed");
+        assert.deepEqual(calls, [
+          "detect",
+          "model/list",
+          "resume",
+          "read",
+          "start:gpt-5.4",
+        ]);
+      }),
+    );
+    it.effect("fails before model catalog and recovery mutation when detection cannot become available", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const detections: ReadonlyArray<
+          () => Effect.Effect<HarnessDetection, unknown>
+        > = [
+          () => Effect.succeed({ state: "missing" }),
+          () =>
+            Effect.succeed({
+              reason: "Unsupported stable protocol.",
+              state: "incompatible",
+              version: "test-0",
+            }),
+          () => Effect.fail(new Error("private detection cause")),
+        ];
+        yield* Effect.forEach(detections, (makeDetection) =>
+          Effect.gen(function* () {
+            const fixture = yield* makeWorkerRecoveryFixture();
+            const before = yield* fs.readFileString(fixture.paths.events);
+            const calls: string[] = [];
+            const provider = makeProductionWorkerRecoveryProvider({
+              detect: Effect.sync(() => {
+                calls.push("detect");
+              }).pipe(Effect.andThen(makeDetection)),
+              listModels: () =>
+                Effect.sync(() => {
+                  calls.push("model/list");
+                  return [{ hidden: false, id: "gpt-5.4" }];
+                }),
+              readThread: () =>
+                Effect.sync(() => {
+                  calls.push("read");
+                  return {
+                    active: false,
+                    systemError: true,
+                    threadId: "thread-private",
+                  };
+                }),
+              resumeThread: () =>
+                Effect.sync(() => {
+                  calls.push("resume");
+                  return { threadId: "thread-private" };
+                }),
+              startTurn: () =>
+                Effect.sync(() => {
+                  calls.push("start");
+                  return { turnId: "turn-recovery" };
+                }),
+            });
+            const exit = yield* recoverWorkerSession(
+              fixture.runId,
+              workerRecoveryAction,
+              {
+                nativeThreadId: "thread-private",
+                provider,
+                rootDirectory: fixture.root,
+                validateWorkspace: () => Effect.void,
+              },
+            ).pipe(Effect.exit);
+
+            assert.strictEqual(exit._tag, "Failure");
+            assert.include(
+              JSON.stringify(exit),
+              "WorkerRecoveryModelCatalogUnavailable",
+            );
+            assert.notInclude(JSON.stringify(exit), "private detection cause");
+            assert.deepEqual(calls, ["detect"]);
+            assert.strictEqual(
+              yield* fs.readFileString(fixture.paths.events),
+              before,
+            );
+            assert.isFalse(
+              yield* fs.exists(
+                `${fixture.paths.root}/.worker-recovery-turn.json`,
+              ),
+            );
+          }),
+        );
+      }),
+    );
     it.effect("binds dynamically, writes discovery state, and cleans metadata on shutdown", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -222,6 +372,108 @@ describe("local Gaia server process", () => {
     );
   });
 });
+
+const workerRecoveryAction = WorkerRecoveryAction.make({
+  actionId: "recover-1",
+  expectedFailureSequence: 10,
+  expectedSessionId: parseHarnessSessionId("session-run-1234567890"),
+  harnessProfileId: parseHarnessProfileId("codexAppServer"),
+  kind: "retryRecoverableWorkerFailure",
+  model: "gpt-5.4",
+});
+
+function makeWorkerRecoveryFixture() {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectory({
+      prefix: "gaia-server-recovery-provider-",
+    });
+    const runId = parseRunId("run-1234567890");
+    const paths = yield* makeRunPaths(runId, { rootDirectory: root });
+    yield* fs.makeDirectory(paths.root, { recursive: true });
+    yield* fs.makeDirectory(paths.workspace, { recursive: true });
+    const event = (
+      sequence: number,
+      type: Parameters<typeof makeRunEvent>[0]["type"],
+      payload: Record<string, Schema.Json>,
+    ) =>
+      makeRunEvent({
+        payload,
+        runId,
+        sequence,
+        timestamp: `2026-07-11T00:00:0${sequence}.000Z`,
+        type,
+      });
+    const session = (value: unknown) => ({
+      event: parseHarnessEvent(value) as unknown as Schema.Json,
+    });
+    const events = [
+      event(1, "RUN_CREATED", {
+        delivery: {
+          baseRevision: "a".repeat(40),
+          mode: "pullRequest",
+        },
+        execution: { selection: { harnessProfileId: "codexAppServer" } },
+        specPath: "input.md",
+      }),
+      event(2, "DELIVERY_STARTED", {
+        delivery: {
+          baseBranch: "main",
+          baseRevision: "a".repeat(40),
+          headBranch: "gaia/run-1234567890",
+          mode: "pullRequest",
+          remote: "origin",
+          stage: "delivering",
+        },
+      }),
+      event(3, "WORKSPACE_PREPARED", { workspacePath: "workspace" }),
+      event(4, "REVIEW_STARTED", { phase: "plan" }),
+      event(5, "REVIEW_COMPLETED", {
+        phase: "plan",
+        reviewPath: "plan.md",
+        reviewerName: "reviewer",
+        status: "approved",
+      }),
+      event(6, "WORKER_STARTED", {}),
+      event(7, "HARNESS_SESSION_EVENT_RECORDED", session({
+        capabilities: testHarnessCapabilities,
+        kind: "sessionStarted",
+        provider: testHarnessProvider.descriptor,
+        sessionId: "session-run-1234567890",
+        state: "connecting",
+      })),
+      event(8, "HARNESS_SESSION_EVENT_RECORDED", session({
+        kind: "turnStarted",
+        sessionId: "session-run-1234567890",
+        turnId: "turn-initial",
+      })),
+      event(9, "HARNESS_SESSION_EVENT_RECORDED", session({
+        failure: {
+          code: "CodexThreadSystemError",
+          kind: "providerFailure",
+          message: "system error",
+          recoverable: true,
+        },
+        kind: "sessionFailed",
+        sessionId: "session-run-1234567890",
+      })),
+      event(10, "RUN_FAILED", {
+        code: "HarnessSessionFailed",
+        message: "failed",
+        recoverable: true,
+        stage: "runningWorker",
+      }),
+    ];
+    yield* fs.writeFileString(
+      paths.events,
+      `${events
+        .map((value) => JSON.stringify(Schema.encodeSync(RunEvent)(value)))
+        .join("\n")}\n`,
+    );
+    yield* fs.writeFileString(paths.snapshots, "");
+    return { paths, root, runId };
+  });
+}
 
 type TestServer = {
   readonly close: Effect.Effect<void>;
