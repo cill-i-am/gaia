@@ -15,6 +15,7 @@ import {
   makeHarnessProviderRegistry,
   inspectRecoverableDeliveryWorktreeOwnership,
   makeRunPaths,
+  makeRuntimeError,
   loadRun,
   parseDeliveryProvenance,
   type HarnessProviderRegistry,
@@ -30,6 +31,7 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { makeLocalGaiaServerLayer } from "./api.js";
+export { writeRecoveryHttpEvidence } from "./recovery-http-evidence.js";
 import {
   appendServerLog,
   removeServerMetadata,
@@ -132,7 +134,13 @@ function makeProductionHarnessServices(rootDirectory: string) {
     const recover = (runId: string, action: Parameters<typeof recoverWorkerSession>[1]) => Effect.gen(function* () {
       const correlation = yield* correlationStore.load(action.expectedSessionId);
       const nativeThreadId = correlation === undefined ? undefined : decodeCodexHarnessCorrelation(correlation);
-      if (nativeThreadId === undefined) return yield* Effect.fail(new Error("Codex session correlation is unavailable."));
+      if (nativeThreadId === undefined) {
+        return yield* Effect.fail(makeRuntimeError({
+          code: "WorkerRecoveryCorrelationUnavailable",
+          message: "Worker recovery session correlation is unavailable.",
+          recoverable: false,
+        }));
+      }
       return yield* recoverWorkerSession(runId, action, {
         nativeThreadId,
         rootDirectory,

@@ -1,6 +1,10 @@
 export {
   WorkerRecoveryAction,
+  WorkerRecoveryFailureEvidence,
+  WorkerRecoveryFailureCodeSchema,
+  WorkerRecoveryFailureStageSchema,
   WorkerRecoveryReceiptSchema,
+  encodeWorkerRecoveryFailureEvidenceJson,
   encodeWorkerRecoveryReceiptJson,
   parseWorkerRecoveryAction,
   parseWorkerRecoveryReceipt,

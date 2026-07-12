@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -10,6 +10,7 @@ import { makeRunPaths } from "./paths.js";
 import { recoverWorkerSession, type WorkerRecoveryProvider } from "./worker-recovery.js";
 import { inspectRecoverableDeliveryWorktreeOwnership, parseDeliveryProvenance, prepareDeliveryWorktree, type DeliveryProvenance } from "./git-delivery.js";
 import { actOnWorkerRecovery } from "./server-workflows.js";
+import { makeRuntimeError } from "./errors.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -92,5 +93,56 @@ describe("recoverWorkerSession", () => {
     const validateWorkspace = () => Effect.void;
     const first = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace })); expect(first.state).toBe("outcomeUnknown");
     const second = await run(recoverWorkerSession(f.runId, action, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace })); expect(second.state).toBe("outcomeUnknown"); expect(starts).toBe(1);
+  });
+
+  it.each([
+    ["WorkerRecoveryModelCatalogUnavailable", () => Effect.fail(new Error("private catalog cause"))],
+    ["WorkerRecoveryModelUnavailable", () => Effect.succeed([{ hidden: false, id: "other-model" }])],
+  ] as const)("fails before intent with %s and zero provider mutation", async (code, listModels) => {
+    const f = fixture();
+    const before = readFileSync(f.paths.events, "utf8");
+    let mutations = 0;
+    const provider: WorkerRecoveryProvider = {
+      listModels,
+      readThread: () => Effect.sync(() => { mutations++; return { active: false, systemError: true, threadId: "thread-1" }; }),
+      resumeThread: () => Effect.sync(() => { mutations++; return { threadId: "thread-1" }; }),
+      startTurn: () => Effect.sync(() => { mutations++; return { turnId: "turn-recovery" }; }),
+    };
+    const exit = await run(recoverWorkerSession(f.runId, action, {
+      nativeThreadId: "thread-1",
+      provider,
+      rootDirectory: f.root,
+      validateWorkspace: () => Effect.void,
+    }).pipe(Effect.exit));
+    expect(exit._tag).toBe("Failure");
+    expect(JSON.stringify(exit)).toContain(code);
+    expect(JSON.stringify(exit)).not.toContain("private catalog cause");
+    expect(readFileSync(f.paths.events, "utf8")).toBe(before);
+    expect(mutations).toBe(0);
+    expect(existsSync(path.join(f.paths.root, ".worker-recovery-turn.json"))).toBe(false);
+  });
+
+  it("reports initial intent persistence failure without a partial event or provider mutation", async () => {
+    const f = fixture();
+    const before = readFileSync(f.paths.events, "utf8");
+    let mutations = 0;
+    const provider: WorkerRecoveryProvider = {
+      listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
+      readThread: () => Effect.sync(() => { mutations++; return { active: false, systemError: true, threadId: "thread-1" }; }),
+      resumeThread: () => Effect.sync(() => { mutations++; return { threadId: "thread-1" }; }),
+      startTurn: () => Effect.sync(() => { mutations++; return { turnId: "turn-recovery" }; }),
+    };
+    const exit = await run(recoverWorkerSession(f.runId, action, {
+      appendRecoveryEvent: () => Effect.fail(makeRuntimeError({ cause: new Error("private persistence path"), code: "WriteFailed", message: "write failed" })),
+      nativeThreadId: "thread-1",
+      provider,
+      rootDirectory: f.root,
+      validateWorkspace: () => Effect.void,
+    }).pipe(Effect.exit));
+    expect(exit._tag).toBe("Failure");
+    expect(JSON.stringify(exit)).toContain("WorkerRecoveryIntentPersistenceFailed");
+    expect(JSON.stringify(exit)).not.toContain("private persistence path");
+    expect(readFileSync(f.paths.events, "utf8")).toBe(before);
+    expect(mutations).toBe(0);
   });
 });

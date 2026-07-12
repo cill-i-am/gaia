@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseWorkerRecoveryAction, parseWorkerRecoveryReceipt, workerRecoveryProjection } from "./worker-recovery.js";
+import { Schema } from "effect";
+import { parseWorkerRecoveryAction, parseWorkerRecoveryReceipt, WorkerRecoveryFailureEvidence, workerRecoveryProjection } from "./worker-recovery.js";
 
 const action = {
   actionId: "recover-1",
@@ -22,5 +23,19 @@ describe("worker recovery contracts", () => {
     expect(workerRecoveryProjection(parseWorkerRecoveryReceipt({ ...base, state: "dispatchAttempted" }))).toBe("workerRecoveryDispatching");
     expect(workerRecoveryProjection(parseWorkerRecoveryReceipt({ ...base, nativeTurnIdDigest: "b".repeat(64), state: "dispatchConfirmed" }))).toBe("runningWorker");
     expect(workerRecoveryProjection(parseWorkerRecoveryReceipt({ ...base, code: "WorkerRecoveryOutcomeUnknown", message: "Ambiguous provider outcome.", state: "outcomeUnknown" }))).toBe("workerRecoveryOutcomeUnknown");
+  });
+
+  it("strictly limits public failure evidence to finite safe fields", () => {
+    const evidence = {
+      actionId: "recover-1",
+      code: "WorkerRecoveryModelUnavailable",
+      runId: "run-OzzhMsXsBb",
+      stage: "modelSelection",
+      status: 422,
+      timestamp: "2026-07-12T08:00:00.000Z",
+    } as const;
+    expect(Schema.decodeUnknownSync(WorkerRecoveryFailureEvidence)(evidence)).toEqual(evidence);
+    expect(() => Schema.decodeUnknownSync(WorkerRecoveryFailureEvidence)({ ...evidence, rawCause: "secret" })).toThrow();
+    expect(() => Schema.decodeUnknownSync(WorkerRecoveryFailureEvidence)({ ...evidence, code: "ArbitraryCode" })).toThrow();
   });
 });

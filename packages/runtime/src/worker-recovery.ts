@@ -16,6 +16,7 @@ export type WorkerRecoveryProvider = {
 const PrivateWorkerRecoveryTurn = Schema.Struct({ turnId: Schema.NonEmptyString, version: Schema.Literal(1) });
 
 export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryAction, input: {
+  readonly appendRecoveryEvent?: typeof appendEvent;
   readonly nativeThreadId: string;
   readonly provider: WorkerRecoveryProvider;
   readonly rootDirectory?: string;
@@ -24,11 +25,17 @@ export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryA
   return withRunStoreLock(input, Effect.gen(function* () {
     const runId = parseRunId(runIdInput);
     const paths = yield* makeRunPaths(runId, input);
+    const recordReceipt = (receipt: WorkerRecoveryReceipt) => record(
+      runId,
+      paths,
+      receipt,
+      input.appendRecoveryEvent ?? appendEvent,
+    );
     const loaded = yield* loadRun(paths);
     const prior = latestReceipt(loaded.events);
     const payloadDigest = digest(action);
     if (prior !== undefined && (prior.actionId !== action.actionId || prior.payloadDigest !== payloadDigest)) return yield* conflict("Another worker recovery action is already authoritative.");
-    if (prior?.state === "dispatchAttempted") return yield* record(runId, paths, { ...prior, code: "WorkerRecoveryOutcomeUnknown", message: "A prior dispatch has no durable native turn receipt.", state: "outcomeUnknown" });
+    if (prior?.state === "dispatchAttempted") return yield* recordReceipt({ ...prior, code: "WorkerRecoveryOutcomeUnknown", message: "A prior dispatch has no durable native turn receipt.", state: "outcomeUnknown" });
     if (prior?.state === "dispatchConfirmed" || prior?.state === "failed" || prior?.state === "outcomeUnknown") return prior;
     assertEligible(loaded.events, action);
     const accepted = loaded.events[0]?.payload["delivery"] as { baseRevision?: unknown } | undefined;
@@ -41,7 +48,11 @@ export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryA
     const models = yield* input.provider.listModels().pipe(Effect.mapError(() => failure("WorkerRecoveryModelCatalogUnavailable", "Codex model catalog is unavailable.")));
     if (!models.some((model) => model.id === action.model && !model.hidden)) return yield* failure("WorkerRecoveryModelUnavailable", "The explicitly selected Codex model is unavailable.");
     const base = { ...action, attempt: 1 as const, maxAttempts: 1 as const, payloadDigest };
-    if (prior === undefined) yield* record(runId, paths, { ...base, state: "intentRecorded" });
+    if (prior === undefined) {
+      yield* recordReceipt({ ...base, state: "intentRecorded" }).pipe(
+        Effect.mapError(() => failure("WorkerRecoveryIntentPersistenceFailed", "Worker recovery intent could not be persisted.")),
+      );
+    }
     const preflight = yield* Effect.exit(Effect.gen(function* () {
       yield* input.validateWorkspace(paths.workspace, expectedHead);
       const resumed = yield* input.provider.resumeThread(input.nativeThreadId);
@@ -49,16 +60,16 @@ export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryA
       if (resumed.threadId !== input.nativeThreadId || read.threadId !== input.nativeThreadId || read.active || !read.systemError) return yield* Effect.fail(new Error("thread mismatch"));
       yield* input.validateWorkspace(paths.workspace, expectedHead);
     }));
-    if (preflight._tag === "Failure") return yield* record(runId, paths, { ...base, code: "WorkerRecoveryPreflightFailed", message: "Worker recovery preflight failed conclusively.", state: "failed" });
-    if (prior?.state !== "preflightConfirmed") yield* record(runId, paths, { ...base, state: "preflightConfirmed" });
-    yield* record(runId, paths, { ...base, state: "dispatchAttempted" });
+    if (preflight._tag === "Failure") return yield* recordReceipt({ ...base, code: "WorkerRecoveryPreflightFailed", message: "Worker recovery preflight failed conclusively.", state: "failed" });
+    if (prior?.state !== "preflightConfirmed") yield* recordReceipt({ ...base, state: "preflightConfirmed" });
+    yield* recordReceipt({ ...base, state: "dispatchAttempted" });
     const started = yield* Effect.exit(input.provider.startTurn({ model: action.model, threadId: input.nativeThreadId }));
     if (started._tag === "Failure") {
-      return yield* record(runId, paths, { ...base, code: "WorkerRecoveryOutcomeUnknown", message: "Codex turn dispatch outcome is unknown.", state: "outcomeUnknown" });
+      return yield* recordReceipt({ ...base, code: "WorkerRecoveryOutcomeUnknown", message: "Codex turn dispatch outcome is unknown.", state: "outcomeUnknown" });
     }
     const checkpoint = yield* writePrivateTurnCheckpoint(paths.root, started.value.turnId).pipe(Effect.exit);
-    if (checkpoint._tag === "Failure") return yield* record(runId, paths, { ...base, code: "WorkerRecoveryOutcomeUnknown", message: "Codex returned a turn but its private receipt was not durable.", state: "outcomeUnknown" });
-    return yield* record(runId, paths, { ...base, nativeTurnIdDigest: digest(started.value.turnId), state: "dispatchConfirmed" });
+    if (checkpoint._tag === "Failure") return yield* recordReceipt({ ...base, code: "WorkerRecoveryOutcomeUnknown", message: "Codex returned a turn but its private receipt was not durable.", state: "outcomeUnknown" });
+    return yield* recordReceipt({ ...base, nativeTurnIdDigest: digest(started.value.turnId), state: "dispatchConfirmed" });
   }));
 }
 
@@ -78,8 +89,8 @@ function latestReceipt(events: ReadonlyArray<{ readonly payload: Record<string, 
 function digest(value: unknown) { return createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex"); }
 function conflict(message: string) { return Effect.fail(makeRuntimeError({ code: "DeliveryActionConflict", message, recoverable: false })); }
 function failure(code: string, message: string) { return makeRuntimeError({ code, message, recoverable: false }); }
-function record(runId: ReturnType<typeof parseRunId>, paths: RunPaths, receipt: WorkerRecoveryReceipt) {
-  return appendEvent(runId, paths, { payload: { recovery: encodeWorkerRecoveryReceiptJson(receipt) }, type: "WORKER_RECOVERY_RECORDED" }).pipe(Effect.as(receipt));
+function record(runId: ReturnType<typeof parseRunId>, paths: RunPaths, receipt: WorkerRecoveryReceipt, appendRecoveryEvent: typeof appendEvent) {
+  return appendRecoveryEvent(runId, paths, { payload: { recovery: encodeWorkerRecoveryReceiptJson(receipt) }, type: "WORKER_RECOVERY_RECORDED" }).pipe(Effect.as(receipt));
 }
 function writePrivateTurnCheckpoint(runRoot: string, turnId: string) {
   return Effect.gen(function* () {

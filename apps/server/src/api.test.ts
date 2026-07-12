@@ -16,6 +16,9 @@ import {
   encodeDeliveryRemediationJson,
   parseDeliveryFeedbackId,
   parseRunId,
+  WorkerRecoveryAction,
+  parseHarnessProfileId,
+  parseHarnessSessionId,
 } from "@gaia/core";
 import {
   makeHarnessProviderRegistry,
@@ -25,6 +28,7 @@ import {
   subscribeRunEventFeed,
   type GaiaReviewer,
   type DeliveryPublicationOptions,
+  makeRuntimeError,
 } from "@gaia/runtime";
 import type { ServerWorkflowOptions } from "@gaia/runtime/server-workflows";
 import {
@@ -48,6 +52,88 @@ import type { LocalServerIdentity } from "./discovery.js";
 
 describe("local run api http boundary", () => {
   layer(NodeServices.layer)((it) => {
+    for (const [inputCode, code, status] of [
+      ["WorkerRecoveryCorrelationUnavailable", "WorkerRecoveryCorrelationUnavailable", 422],
+      ["WorkerRecoveryModelCatalogUnavailable", "WorkerRecoveryModelCatalogUnavailable", 422],
+      ["WorkerRecoveryModelUnavailable", "WorkerRecoveryModelUnavailable", 422],
+      ["WorkerRecoveryIntentPersistenceFailed", "WorkerRecoveryIntentPersistenceFailed", 500],
+      ["ArbitraryPrivateRecoveryCode", "InternalServerError", 500],
+    ] as const) {
+      it.effect(`maps ${code} through the strict recovery endpoint with safe evidence`, () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-recovery-error-" });
+          const action = WorkerRecoveryAction.make({
+            actionId: `action-${inputCode}`,
+            expectedFailureSequence: 15,
+            expectedSessionId: parseHarnessSessionId("session-run-1234567890"),
+            harnessProfileId: parseHarnessProfileId("codexAppServer"),
+            kind: "retryRecoverableWorkerFailure",
+            model: "gpt-5.5",
+          });
+          const response = yield* HttpClientRequest.post("/runs/run-1234567890/recovery/actions").pipe(
+            HttpClientRequest.bodyJsonUnsafe(action),
+            HttpClient.execute,
+            Effect.provide(testServerLayer(cwd, {
+              workerRecoveryActivator: () => Effect.fail(makeRuntimeError({
+                cause: new Error("native-thread-token /private/path model-catalog prompt"),
+                code: inputCode,
+                message: code === "WorkerRecoveryIntentPersistenceFailed"
+                  ? "Worker recovery intent could not be persisted."
+                  : "Worker recovery pre-intent dependency is unavailable.",
+              })),
+            })),
+          );
+          const body = yield* responseJsonObject(response);
+          const log = yield* fs.readFileString(`${cwd}/.gaia/server.log`);
+          const evidence = JSON.parse(log.trim()) as Record<string, unknown>;
+          assert.strictEqual(response.status, status);
+          assert.strictEqual(getString(body, "code"), code);
+          assert.strictEqual(evidence["code"], code);
+          assert.strictEqual(evidence["status"], status);
+          assert.strictEqual(evidence["runId"], "run-1234567890");
+          assert.strictEqual(evidence["actionId"], action.actionId);
+          assert.hasAllKeys(evidence, ["timestamp", "runId", "actionId", "stage", "code", "status"]);
+          for (const secret of ["native-thread", "token", "/private/path", "model-catalog", "prompt", "gpt-5.5"]) {
+            assert.notInclude(JSON.stringify(body), secret);
+            assert.notInclude(log, secret);
+          }
+        }),
+      );
+    }
+
+    it.effect("preserves the primary typed response when safe evidence append fails", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-recovery-log-failure-" });
+        const action = WorkerRecoveryAction.make({
+          actionId: "action-log-failure",
+          expectedFailureSequence: 15,
+          expectedSessionId: parseHarnessSessionId("session-run-1234567890"),
+          harnessProfileId: parseHarnessProfileId("codexAppServer"),
+          kind: "retryRecoverableWorkerFailure",
+          model: "gpt-5.5",
+        });
+        const response = yield* HttpClientRequest.post("/runs/run-1234567890/recovery/actions").pipe(
+          HttpClientRequest.bodyJsonUnsafe(action),
+          HttpClient.execute,
+          Effect.provide(testServerLayer(
+            cwd,
+            {
+              workerRecoveryActivator: () => Effect.fail(makeRuntimeError({
+                code: "WorkerRecoveryModelUnavailable",
+                message: "The explicitly selected Codex model is unavailable.",
+              })),
+            },
+            { writeWorkerRecoveryFailureEvidence: () => Effect.fail(new Error("evidence unavailable")) },
+          )),
+        );
+        const body = yield* responseJsonObject(response);
+        assert.strictEqual(response.status, 422);
+        assert.strictEqual(getString(body, "code"), "WorkerRecoveryModelUnavailable");
+      }),
+    );
+
     it.effect("returns health with workspace identity", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
