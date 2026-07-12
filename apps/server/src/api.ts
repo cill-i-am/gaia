@@ -44,12 +44,14 @@ import {
   parseDeliveryRemediation,
   parseDeliveryMergeReceipt,
   parseDeliveryMergeReadinessDecision,
+  parseRunId,
   parseDeliveryCleanupReceipt,
   snapshotFromReplay,
   deriveDeliveryActionHistoriesFromEvents,
   deliveryActionAuditSummary,
   parseWorkerRecoveryReceipt,
   workerRecoveryProjection,
+  encodeWorkerRecoveryReceiptJson,
   type WorkerRecoveryAction,
 } from "@gaia/core";
 import type {
@@ -59,6 +61,7 @@ import type {
 import { readLocalRunEvents } from "@gaia/runtime/run-read-api";
 import {
   GaiaRuntimeError,
+  appendEvent,
   makeRuntimeError,
   makeRunPaths,
   makeLocalRunReadIndex,
@@ -129,11 +132,28 @@ export function executeWorkerRecoveryTransaction(input: {
       rootDirectory: input.identity.rootDirectory,
     });
     if (receipt.state === "dispatchConfirmed") {
-      yield* continueServerRun(input.runId, {
-        ...input.identity.workflowOptions,
-        rootDirectory: input.identity.rootDirectory,
-        sessionCoordinator: input.identity.sessionCoordinator,
-      }).pipe(Effect.ignore);
+      const continuation = yield* Effect.exit(
+        continueServerRun(input.runId, {
+          ...input.identity.workflowOptions,
+          rootDirectory: input.identity.rootDirectory,
+          sessionCoordinator: input.identity.sessionCoordinator,
+        }),
+      );
+      if (continuation._tag === "Failure") {
+        const failed = {
+          ...receipt,
+          code: "WorkerRecoveryContinuationFailed",
+          message: "Confirmed worker recovery could not be continued safely.",
+          state: "failed" as const,
+        };
+        const runId = parseRunId(input.runId);
+        const paths = yield* makeRunPaths(runId, { rootDirectory: input.identity.rootDirectory });
+        yield* appendEvent(runId, paths, {
+          payload: { recovery: encodeWorkerRecoveryReceiptJson(failed) },
+          type: "WORKER_RECOVERY_RECORDED",
+        });
+        return failed;
+      }
     }
     return receipt;
   });

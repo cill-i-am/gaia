@@ -32,7 +32,13 @@ export const WorkerRecoveryReceiptSchema = Schema.Union([
   Schema.Struct({ ...Base, state: Schema.Literal("preflightConfirmed") }),
   Schema.Struct({ ...Base, state: Schema.Literal("dispatchAttempted") }),
   Schema.Struct({ ...Base, nativeTurnIdDigest: Digest, state: Schema.Literal("dispatchConfirmed") }),
-  Schema.Struct({ ...Base, code: Schema.NonEmptyString, message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1024))), state: Schema.Literal("failed") }),
+  Schema.Struct({
+    ...Base,
+    code: Schema.NonEmptyString,
+    message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1024))),
+    nativeTurnIdDigest: Schema.optionalKey(Digest),
+    state: Schema.Literal("failed"),
+  }),
   Schema.Struct({ ...Base, code: Schema.NonEmptyString, message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1024))), state: Schema.Literal("outcomeUnknown") }),
 ]);
 export type WorkerRecoveryReceipt = typeof WorkerRecoveryReceiptSchema.Type;
