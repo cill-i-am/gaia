@@ -1,5 +1,6 @@
 import {
   CreateRunRequest,
+  deriveDeliveryCleanupActionHistories,
   FactoryActivityListDto,
   FactoryArtifactBodyDto,
   FactoryArtifactIdSchema,
@@ -270,7 +271,18 @@ export function readFactoryRunIndexes(
       return yield* Effect.fail(noEventsDiagnostic(runId));
     }
 
-    const stored = yield* readStoredIndexes(paths, loadedExit.value.events);
+    const stored = yield* readStoredIndexes(
+      paths,
+      loadedExit.value.events,
+      loadedExit.value.latestSnapshot?.state === "completed" &&
+        deriveDeliveryCleanupActionHistories(
+          loadedExit.value.events.flatMap((event) =>
+            event.type === "DELIVERY_CLEANUP_RECORDED"
+              ? [{ receipt: parseDeliveryCleanupReceipt(event.payload["cleanup"]), sequence: event.sequence }]
+              : [],
+          ),
+        ).latest?.latest.state === "completed",
+    );
     if (
       stored.graph._tag === "valid" &&
       stored.activity._tag === "valid" &&
@@ -419,6 +431,7 @@ function rebuildFactoryRunIndexesFromPaths(input: {
 function readStoredIndexes(
   paths: RunPaths,
   events: ReadonlyArray<RunEvent>,
+  terminalDeliveryCleanupCompleted: boolean,
 ) {
   return Effect.gen(function* () {
     const graph = yield* readStoredJson(
@@ -450,7 +463,10 @@ function readStoredIndexes(
         events[0]?.runId,
         "artifacts/index.json",
       ),
-      graph: markRunIdMismatch(graph, events[0]?.runId, "factory-graph.json"),
+      graph: markTerminalDeliveryGraphStale(
+        markRunIdMismatch(graph, events[0]?.runId, "factory-graph.json"),
+        terminalDeliveryCleanupCompleted,
+      ),
     };
   });
 }
@@ -509,6 +525,41 @@ function markActivityStale(
         "activity-index.json did not match events.jsonl and was rebuilt.",
       recoverable: true,
       sourceId: "activity-index.json",
+    },
+  };
+}
+
+function markTerminalDeliveryGraphStale(
+  read: StoredIndexRead<FactoryGraphProjection>,
+  terminalDeliveryCleanupCompleted: boolean,
+): StoredIndexRead<FactoryGraphProjection> {
+  if (read._tag !== "valid" || !terminalDeliveryCleanupCompleted) {
+    return read;
+  }
+
+  const orchestrators = read.value.agents.filter(
+    ({ role }) => role === "orchestrator",
+  );
+  const ciWatchers = read.value.agents.filter(
+    ({ role }) => role === "ciWatcher",
+  );
+  const settled =
+    orchestrators.length === 1 &&
+    orchestrators[0]?.id === issueDeliveryAgentIds.orchestrator &&
+    orchestrators[0].state === "succeeded" &&
+    ciWatchers.length === 1 &&
+    ciWatchers[0]?.id === issueDeliveryAgentIds.ciWatcher &&
+    ciWatchers[0].state === "succeeded";
+  if (settled) return read;
+
+  return {
+    _tag: "stale",
+    diagnostic: {
+      code: "FactoryProjectionIndexStale",
+      message:
+        "factory-graph.json conflicted with terminal delivery cleanup and was rebuilt from events.jsonl.",
+      recoverable: true,
+      sourceId: "factory-graph.json",
     },
   };
 }
