@@ -717,7 +717,9 @@ function waitForCompletedServerRun(cwd: string, runId: string) {
       }
 
       yield* Effect.promise(
-        () => new Promise<void>((resolve) => setTimeout(resolve, 250)),
+        () => new Promise<void>((resolve) => {
+          setTimeout(resolve, 250);
+        }),
       );
     }
 

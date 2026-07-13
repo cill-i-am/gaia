@@ -47,8 +47,11 @@ import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import type { HarnessProvider } from "./harness-session.js";
 import { makeRunPaths } from "./paths.js";
 import { makeTestHarnessProviderRegistry } from "./test-support.js";
-import { prepareDeliveryWorktree, type GitDeliveryCommandInput } from "./git-delivery.js";
-import { DeliveryAcceptanceProvenancePolicyV1 } from "./git-delivery.js";
+import {
+  DeliveryAcceptanceProvenancePolicyV1,
+  prepareDeliveryWorktree,
+  type GitDeliveryCommandInput,
+} from "./git-delivery.js";
 
 describe("server workflows", () => {
   layer(NodeServices.layer)((it) => {
@@ -435,7 +438,11 @@ describe("server workflows", () => {
         const events = yield* readLocalRunEvents(accepted.runId, { rootDirectory: cwd });
         const started = events.events.find(({ type }) => type === "DELIVERY_STARTED");
         assert.notProperty(events.events[0]?.payload ?? {}, "deliveryFeedbackTrustPolicy");
-        assert.notProperty((started?.payload["delivery"] as Record<string, unknown>).feedbackTrustPolicy as Record<string, unknown>, "requireApprovedReview");
+        assert.isDefined(started);
+        if (started === undefined) {
+          throw new Error("DELIVERY_STARTED event was not recorded.");
+        }
+        assert.notProperty((started.payload["delivery"] as Record<string, unknown>).feedbackTrustPolicy as Record<string, unknown>, "requireApprovedReview");
       }),
     );
 

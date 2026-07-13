@@ -1134,7 +1134,9 @@ function parseServerUrlInput(
   return Effect.try({
     try: () => {
       const serverUrl = parseLocalGaiaServerUrl(input);
-      new URL(serverUrl);
+      if (!URL.canParse(serverUrl)) {
+        throw new TypeError("Local Gaia server URL must be absolute.");
+      }
       return serverUrl;
     },
     catch: (cause) =>

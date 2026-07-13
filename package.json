@@ -5,15 +5,24 @@
   "packageManager": "pnpm@11.7.0",
   "scripts": {
     "build": "turbo run build",
-    "check": "turbo run check",
+    "check": "turbo run check && pnpm lint && pnpm format:check && pnpm test:tooling",
     "dev": "turbo run dev",
+    "format": "oxfmt --config oxfmt.config.ts --write \"apps/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"packages/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"examples/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"scripts/**/*.{js,jsx,ts,tsx,mjs,cjs}\" oxlint.config.ts oxlint.audit.config.ts oxfmt.config.ts",
+    "format:check": "oxfmt --config oxfmt.config.ts --check \"apps/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"packages/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"examples/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"scripts/**/*.{js,jsx,ts,tsx,mjs,cjs}\" oxlint.config.ts oxlint.audit.config.ts oxfmt.config.ts",
     "gaia": "pnpm --filter @gaia/cli gaia",
+    "lint": "oxlint --config oxlint.config.ts apps packages examples scripts oxlint.config.ts oxlint.audit.config.ts oxfmt.config.ts",
+    "lint:audit": "oxlint --config oxlint.audit.config.ts apps packages examples scripts",
     "opensrc:effect": "opensrc path --cwd . effect",
     "postinstall": "./scripts/ensure-effect-source.sh",
-    "test": "turbo run test"
+    "test": "turbo run test",
+    "test:tooling": "node scripts/verify-tooling-sorting.mjs",
+    "tooling:doctor": "ultracite doctor"
   },
   "devDependencies": {
     "opensrc": "^0.7.3",
-    "turbo": "^2.10.3"
+    "oxfmt": "0.58.0",
+    "oxlint": "1.73.0",
+    "turbo": "^2.10.3",
+    "ultracite": "7.9.3"
   }
 }

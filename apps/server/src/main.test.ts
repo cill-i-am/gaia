@@ -1378,7 +1378,9 @@ function waitForTerminalRunEventFile(rootDirectory: string, runId: string) {
         return events;
       }
       yield* Effect.promise(
-        () => new Promise<void>((resolve) => setTimeout(resolve, 25)),
+        () => new Promise<void>((resolve) => {
+          setTimeout(resolve, 25);
+        }),
       );
     }
     return yield* Effect.fail(new Error("Restarted run did not become terminal."));
@@ -1404,7 +1406,9 @@ function waitForRunEventTypeFile(
         // The accepted run file can be between atomic append steps.
       }
       yield* Effect.promise(
-        () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+        () => new Promise<void>((resolve) => {
+          setTimeout(resolve, 10);
+        }),
       );
     }
     return yield* Effect.fail(new Error(`Run event ${eventType} was not persisted.`));
