@@ -69,37 +69,52 @@ describe("gaia CLI local server read parity", () => {
           );
           const server = yield* startLocalRunServer(cwd);
           try {
-            const [directEvents, serverEvents, directArtifact, serverArtifact] =
-              yield* Effect.all(
-                [
-                  runGaiaJson(cwd, ["events", runId, "--json"]),
-                  runGaiaJson(cwd, [
-                    "events",
-                    runId,
-                    "--json",
-                    "--server-url",
-                    server.url,
-                  ]),
-                  runGaiaJson(cwd, [
-                    "artifact",
-                    runId,
-                    "report-json",
-                    "--json",
-                  ]),
-                  runGaiaJson(cwd, [
-                    "artifact",
-                    runId,
-                    "report-json",
-                    "--json",
-                    "--server-url",
-                    server.url,
-                  ]),
-                ],
-                { concurrency: "unbounded" }
-              );
+            const [
+              directEvents,
+              serverEvents,
+              directArtifact,
+              serverArtifact,
+              directEventsHuman,
+              serverEventsHuman,
+              directArtifactHuman,
+              serverArtifactHuman,
+            ] = yield* Effect.all(
+              [
+                runGaiaJson(cwd, ["events", runId, "--json"]),
+                runGaiaJson(cwd, [
+                  "events",
+                  runId,
+                  "--json",
+                  "--server-url",
+                  server.url,
+                ]),
+                runGaiaJson(cwd, ["artifact", runId, "report-json", "--json"]),
+                runGaiaJson(cwd, [
+                  "artifact",
+                  runId,
+                  "report-json",
+                  "--json",
+                  "--server-url",
+                  server.url,
+                ]),
+                runGaia(cwd, ["events", runId]),
+                runGaia(cwd, ["events", runId, "--server-url", server.url]),
+                runGaia(cwd, ["artifact", runId, "report-json"]),
+                runGaia(cwd, [
+                  "artifact",
+                  runId,
+                  "report-json",
+                  "--server-url",
+                  server.url,
+                ]),
+              ],
+              { concurrency: "unbounded" }
+            );
 
             expect(serverEvents).toEqual(directEvents);
             expect(serverArtifact).toEqual(directArtifact);
+            expect(serverEventsHuman.stdout).toBe(directEventsHuman.stdout);
+            expect(serverArtifactHuman.stdout).toBe(directArtifactHuman.stdout);
           } finally {
             yield* stopServer(server);
           }

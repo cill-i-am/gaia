@@ -1,15 +1,16 @@
-import type { RunId } from "@gaia/core";
-import { Cause, Effect, FileSystem, Path, Ref } from "effect";
-
-import type { RunStorageOptions } from "./paths.js";
 import {
-  listLocalRuns,
-  readLocalRun,
+  LocalRunReadDiagnosticSchema,
+  parseLocalRunReadDiagnostic,
   type LocalRunDetail,
   type LocalRunList,
   type LocalRunReadDiagnostic,
   type LocalRunSummary,
-} from "./run-read-api.js";
+  type RunId,
+} from "@gaia/core";
+import { Cause, Effect, FileSystem, Option, Path, Ref, Schema } from "effect";
+
+import type { RunStorageOptions } from "./paths.js";
+import { listLocalRuns, readLocalRun } from "./run-read-api.js";
 
 export type LocalRunReadIndex = {
   readonly list: Effect.Effect<LocalRunList>;
@@ -200,12 +201,12 @@ function removeRunDiagnostic(
 }
 
 function runNotFoundDiagnostic(runId: RunId): LocalRunReadDiagnostic {
-  return {
+  return parseLocalRunReadDiagnostic({
     code: "RunNotFound",
     message: "Run directory does not exist.",
     recoverable: false,
     runId,
-  };
+  });
 }
 
 function diagnosticFromCause(
@@ -213,25 +214,20 @@ function diagnosticFromCause(
   runId: RunId
 ): LocalRunReadDiagnostic {
   for (const reason of cause.reasons) {
-    if (Cause.isFailReason(reason) && isReadDiagnostic(reason.error)) {
-      return reason.error;
+    if (Cause.isFailReason(reason)) {
+      const diagnostic = Schema.decodeUnknownOption(
+        LocalRunReadDiagnosticSchema
+      )(reason.error);
+      if (Option.isSome(diagnostic)) {
+        return diagnostic.value;
+      }
     }
   }
 
-  return {
+  return parseLocalRunReadDiagnostic({
     code: "RunUnreadable",
     message: "Run could not be read from events.jsonl.",
     recoverable: false,
     runId,
-  };
-}
-
-function isReadDiagnostic(input: unknown): input is LocalRunReadDiagnostic {
-  return (
-    typeof input === "object" &&
-    input !== null &&
-    "code" in input &&
-    "message" in input &&
-    "recoverable" in input
-  );
+  });
 }

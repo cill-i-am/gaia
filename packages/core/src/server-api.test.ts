@@ -7,9 +7,140 @@ import {
   DeliveryRecoveryActionRequestSchema,
   DeliverySnapshotDto,
   HealthResponse,
+  LocalRunReadArtifactSchema,
+  LocalRunReadDiagnosticSchema,
+  LocalRunReadListSchema,
+  LocalRunReadDiagnosticCodeSchema,
+  LocalRunReadStatusSchema,
+  LocalRunReadSummarySchema,
   LocalGaiaServerOpenApi,
   ServerMetadata,
+  parseLocalRunArtifactId,
+  parseLocalRunArtifactName,
+  parseLocalRunPathSegment,
+  parseLocalRunTimestamp,
 } from "./server-api.js";
+
+describe("local run read contracts", () => {
+  it("owns the exact reader diagnostic and status subsets", () => {
+    assert.deepEqual(LocalRunReadDiagnosticCodeSchema.literals, [
+      "ArtifactNotAllowed",
+      "ArtifactNotFound",
+      "FactoryAgentNotFound",
+      "FactoryGraphNotFound",
+      "InvalidRunDirectory",
+      "InvalidRunId",
+      "RunHasNoEvents",
+      "RunNotFound",
+      "RunUnreadable",
+    ]);
+    assert.deepEqual(LocalRunReadStatusSchema.literals, [
+      "completed",
+      "failed",
+      "running",
+    ]);
+    assert.throws(() =>
+      Schema.decodeUnknownSync(LocalRunReadDiagnosticCodeSchema)(
+        "InternalServerError"
+      )
+    );
+    assert.throws(() =>
+      Schema.decodeUnknownSync(LocalRunReadStatusSchema)("runningWorker")
+    );
+  });
+
+  it("brands allowlisted artifact ids while preserving raw attempted names", () => {
+    assert.strictEqual(parseLocalRunArtifactId("events"), "events");
+    assert.throws(() => parseLocalRunArtifactId("../events.jsonl"));
+    assert.throws(() => parseLocalRunArtifactId(""));
+    assert.strictEqual(
+      parseLocalRunArtifactName("../events.jsonl"),
+      "../events.jsonl"
+    );
+    assert.strictEqual(parseLocalRunArtifactName(""), "");
+
+    const traversalDiagnostic = Schema.decodeUnknownSync(
+      LocalRunReadDiagnosticSchema
+    )({
+      artifactName: "../events.jsonl",
+      code: "ArtifactNotAllowed",
+      message: "Artifact is not allowlisted for local API reads.",
+      recoverable: false,
+      runId: "run-L84-kMhLY8",
+    });
+    const emptyDiagnostic = Schema.decodeUnknownSync(
+      LocalRunReadDiagnosticSchema
+    )({
+      artifactName: "",
+      code: "ArtifactNotAllowed",
+      message: "Artifact is not allowlisted for local API reads.",
+      recoverable: false,
+      runId: "run-L84-kMhLY8",
+    });
+
+    assert.strictEqual(traversalDiagnostic.artifactName, "../events.jsonl");
+    assert.strictEqual(emptyDiagnostic.artifactName, "");
+  });
+
+  it("parses exact timestamps and safe run-directory path segments", () => {
+    assert.strictEqual(
+      parseLocalRunTimestamp("2026-07-13T12:00:00.000Z"),
+      "2026-07-13T12:00:00.000Z"
+    );
+    assert.throws(() => parseLocalRunTimestamp("2026-07-13T12:00:00Z"));
+    assert.throws(() =>
+      parseLocalRunTimestamp("2026-07-13T12:00:00.000+01:00")
+    );
+    assert.throws(() => parseLocalRunTimestamp("2026-02-31T12:00:00.000Z"));
+    assert.strictEqual(
+      parseLocalRunPathSegment("run-not-valid"),
+      "run-not-valid"
+    );
+    for (const invalid of ["", ".", "..", "../run", "run/id", "run\\id"]) {
+      assert.throws(() => parseLocalRunPathSegment(invalid));
+    }
+  });
+
+  it("decodes and round-trips the authoritative reader DTOs", () => {
+    const input = {
+      diagnostics: [],
+      runs: [
+        {
+          artifacts: ["events", "report"],
+          createdAt: "2026-07-13T12:00:00.000Z",
+          eventCount: 2,
+          latestEventType: "REPORT_COMPLETED",
+          runId: "run-L84-kMhLY8",
+          state: "completed",
+          status: "completed",
+          updatedAt: "2026-07-13T12:01:00.000Z",
+        },
+      ],
+    } as const;
+    const decoded = Schema.decodeUnknownSync(LocalRunReadListSchema)(input);
+
+    assert.deepEqual(Schema.encodeSync(LocalRunReadListSchema)(decoded), input);
+    assert.deepEqual(
+      Schema.decodeUnknownSync(LocalRunReadSummarySchema)(input.runs[0]),
+      decoded.runs[0]
+    );
+    assert.deepEqual(
+      Schema.decodeUnknownSync(LocalRunReadArtifactSchema)({
+        artifactName: "events",
+        body: "{}",
+        contentType: "application/json",
+        runId: "run-L84-kMhLY8",
+      }).artifactName,
+      "events"
+    );
+    assert.throws(() =>
+      Schema.decodeUnknownSync(LocalRunReadSummarySchema)({
+        ...input.runs[0],
+        updatedAt: "not-a-timestamp",
+      })
+    );
+  });
+});
 
 describe("LocalGaiaServerApi contract", () => {
   it("owns the exact local server URL contract in metadata and OpenAPI", () => {

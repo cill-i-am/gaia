@@ -1,8 +1,13 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
-import { Effect, FileSystem } from "effect";
+import {
+  LocalRunReadDiagnosticSchema,
+  LocalRunReadListSchema,
+  LocalRunReadSummarySchema,
+} from "@gaia/core";
+import { Effect, FileSystem, Schema } from "effect";
 
-import { makeRunStorePaths } from "./paths.js";
+import { makeRunPaths, makeRunStorePaths } from "./paths.js";
 import {
   listLocalRuns,
   readLocalRun,
@@ -24,21 +29,38 @@ describe("local run read api", () => {
           const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
           const store = yield* makeRunStorePaths({ rootDirectory: cwd });
           yield* fs.makeDirectory(`${store.runsRoot}/run-not-valid`);
+          yield* fs.makeDirectory(`${store.runsRoot}/run-unsafe\\segment`);
           yield* fs.makeDirectory(`${store.runsRoot}/run-L84-kMhLY8`);
 
           const result = yield* listLocalRuns({ rootDirectory: cwd });
+          const decoded = Schema.decodeUnknownSync(LocalRunReadListSchema)(
+            result
+          );
 
           assert.deepEqual(
-            result.runs.map((run) => run.runId),
+            decoded.runs.map((run) => run.runId),
             [summary.runId]
           );
-          assert.strictEqual(result.diagnostics.length, 2);
-          assert.deepInclude(result.diagnostics, {
-            code: "InvalidRunDirectory",
-            message: "Run directory name is not a valid Gaia run id.",
-            pathSegment: "run-not-valid",
-            recoverable: false,
-          });
+          assert.strictEqual(result.diagnostics.length, 3);
+          const invalidRunDiagnostic = result.diagnostics.find(
+            (diagnostic) => diagnostic.pathSegment === "run-not-valid"
+          );
+          assert.strictEqual(
+            invalidRunDiagnostic?.message,
+            "Run directory name is not a valid Gaia run id."
+          );
+          assert.strictEqual(
+            invalidRunDiagnostic?.pathSegment,
+            "run-not-valid"
+          );
+          assert.isFalse(invalidRunDiagnostic?.recoverable);
+          assert.isTrue(
+            result.diagnostics.some(
+              (diagnostic) =>
+                diagnostic.code === "InvalidRunDirectory" &&
+                diagnostic.pathSegment === undefined
+            )
+          );
           const emptyRunDiagnostic = result.diagnostics.find(
             (diagnostic) => diagnostic.code === "RunHasNoEvents"
           );
@@ -64,9 +86,13 @@ describe("local run read api", () => {
         });
 
         assert.strictEqual(run.runId, summary.runId);
+        assert.deepEqual(
+          Schema.decodeUnknownSync(LocalRunReadSummarySchema)(run),
+          run
+        );
         assert.strictEqual(run.status, "completed");
         assert.isAbove(run.eventCount, 0);
-        assert.includeMembers(run.artifacts, [
+        for (const expected of [
           "input",
           "worker-plan",
           "plan-review",
@@ -82,8 +108,12 @@ describe("local run read api", () => {
           "report-json",
           "events",
           "snapshots",
-        ]);
-        assert.notInclude(run.artifacts, "report.json");
+        ]) {
+          assert.isTrue(
+            run.artifacts.some((artifactName) => artifactName === expected)
+          );
+        }
+        assert.isFalse(run.artifacts.map(String).includes("report.json"));
         assert.strictEqual(events.runId, summary.runId);
         assert.strictEqual(events.events.length, run.eventCount);
         assert.strictEqual(events.events[0]?.type, "RUN_CREATED");
@@ -121,6 +151,9 @@ describe("local run read api", () => {
             rootDirectory: cwd,
           })
         );
+        const emptyRejected = yield* Effect.flip(
+          readLocalRunArtifact(summary.runId, "", { rootDirectory: cwd })
+        );
 
         assert.strictEqual(report.artifactName, "report-json");
         assert.strictEqual(report.contentType, "application/json");
@@ -137,14 +170,67 @@ describe("local run read api", () => {
         assert.strictEqual(factoryRetro.artifactName, "factory-retro-markdown");
         assert.strictEqual(factoryRetro.contentType, "text/markdown");
         assert.include(factoryRetro.body, `# Factory Retro ${summary.runId}`);
-        assert.deepEqual(rejected, {
-          artifactName: "../events.jsonl",
-          code: "ArtifactNotAllowed",
-          message: "Artifact is not allowlisted for local API reads.",
-          recoverable: false,
-          runId: summary.runId,
-        });
+        const rejectedDiagnostic = Schema.decodeUnknownSync(
+          LocalRunReadDiagnosticSchema
+        )(rejected);
+        const emptyDiagnostic = Schema.decodeUnknownSync(
+          LocalRunReadDiagnosticSchema
+        )(emptyRejected);
+        assert.strictEqual(rejectedDiagnostic.artifactName, "../events.jsonl");
+        assert.strictEqual(rejectedDiagnostic.code, "ArtifactNotAllowed");
+        assert.strictEqual(
+          rejectedDiagnostic.message,
+          "Artifact is not allowlisted for local API reads."
+        );
+        assert.isFalse(rejectedDiagnostic.recoverable);
+        assert.strictEqual(rejectedDiagnostic.runId, summary.runId);
+        assert.strictEqual(emptyDiagnostic.artifactName, "");
+        assert.strictEqual(emptyDiagnostic.code, "ArtifactNotAllowed");
+        assert.strictEqual(
+          emptyDiagnostic.message,
+          "Artifact is not allowlisted for local API reads."
+        );
+        assert.isFalse(emptyDiagnostic.recoverable);
+        assert.strictEqual(emptyDiagnostic.runId, summary.runId);
       })
+    );
+
+    it.effect(
+      "rejects an invalid summary timestamp at the filesystem seam",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-read-api-" });
+          const specPath = `${cwd}/spec.md`;
+          yield* fs.writeFileString(specPath, "Reject invalid timestamps.\n");
+          const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+          const paths = yield* makeRunPaths(summary.runId, {
+            rootDirectory: cwd,
+          });
+          const events = yield* fs.readFileString(paths.events);
+          yield* fs.writeFileString(
+            paths.events,
+            events.replace(
+              /"timestamp":"[^"]+"/u,
+              '"timestamp":"not-a-timestamp"'
+            )
+          );
+
+          const diagnostic = yield* Effect.flip(
+            readLocalRun(summary.runId, { rootDirectory: cwd })
+          );
+          const decodedDiagnostic = Schema.decodeUnknownSync(
+            LocalRunReadDiagnosticSchema
+          )(diagnostic);
+
+          assert.strictEqual(decodedDiagnostic.code, "RunUnreadable");
+          assert.strictEqual(
+            decodedDiagnostic.message,
+            "Run could not be read from events.jsonl."
+          );
+          assert.isFalse(decodedDiagnostic.recoverable);
+          assert.strictEqual(decodedDiagnostic.runId, summary.runId);
+        })
     );
   });
 });

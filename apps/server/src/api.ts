@@ -29,6 +29,7 @@ import {
   FactoryRunSummaryDto,
   HealthResponse,
   LocalGaiaServerApi,
+  LocalRunApiDiagnosticDto,
   LocalRunApiBadRequest,
   LocalRunApiConflict,
   LocalRunApiInternalServerError,
@@ -38,7 +39,10 @@ import {
   LocalRunApiUnprocessable,
   LocalRunEventsSuccessEnvelope,
   type LocalRunApiError,
-  LocalRunReadDiagnosticDto,
+  parseLocalRunApiDiagnostic,
+  parseLocalRunReadDiagnostic,
+  type LocalRunList,
+  type LocalRunReadDiagnostic,
   type RunId,
   RunEvent,
   parseDeliveryPublication,
@@ -83,10 +87,6 @@ import {
   readFactoryRunActivity,
   readFactoryRunArtifact,
 } from "@gaia/runtime/factory-run-read-api";
-import type {
-  LocalRunList,
-  LocalRunReadDiagnostic,
-} from "@gaia/runtime/run-read-api";
 import { readLocalRunEvents } from "@gaia/runtime/run-read-api";
 import {
   actOnDeliveryPublication,
@@ -207,6 +207,9 @@ export class LocalServerConfig extends Context.Service<
 const decodeFactoryRunSummary = Schema.decodeUnknownSync(FactoryRunSummaryDto);
 const decodeFactoryRunDetail = Schema.decodeUnknownSync(FactoryRunDetailDto);
 const decodeFactoryRunList = Schema.decodeUnknownSync(FactoryRunListDto);
+const decodeLocalRunApiDiagnostic = Schema.decodeUnknownOption(
+  LocalRunApiDiagnosticDto
+);
 const decodeDeliveryProjection = Schema.decodeUnknownOption(
   Schema.Struct({
     baseBranch: Schema.NonEmptyString,
@@ -814,12 +817,15 @@ function readFactoryRunProjection(
     const activity = yield* readFactoryRunActivity(runId, options);
     const artifacts = yield* listFactoryRunArtifacts(runId, options);
     if (graph.workItems[0] === undefined) {
-      return yield* Effect.fail({
-        code: "FactoryGraphNotFound",
-        message: "Factory graph projection does not contain a root work item.",
-        recoverable: false,
-        runId: graph.runId,
-      } satisfies LocalRunReadDiagnostic);
+      return yield* Effect.fail(
+        parseLocalRunReadDiagnostic({
+          code: "FactoryGraphNotFound",
+          message:
+            "Factory graph projection does not contain a root work item.",
+          recoverable: false,
+          runId: graph.runId,
+        })
+      );
     }
 
     return { activity, artifacts, graph };
@@ -1540,8 +1546,9 @@ function apiErrorFromCause(
         return apiErrorFromRuntimeError(reason.error);
       }
 
-      if (isApiDiagnostic(reason.error)) {
-        return createApiError(reason.error);
+      const diagnostic = decodeLocalRunApiDiagnostic(reason.error);
+      if (Option.isSome(diagnostic)) {
+        return createApiError(diagnostic.value);
       }
     }
   }
@@ -1648,26 +1655,30 @@ function recoveryFailureEvidenceCode(
 
 function causeToDiagnostic(cause: Cause.Cause<unknown>): ApiDiagnostic {
   for (const reason of cause.reasons) {
-    if (Cause.isFailReason(reason) && isRuntimeDiagnostic(reason.error)) {
-      return reason.error;
+    if (Cause.isFailReason(reason)) {
+      const diagnostic = decodeLocalRunApiDiagnostic(reason.error);
+      if (Option.isSome(diagnostic)) {
+        return diagnostic.value;
+      }
     }
 
     if (Cause.isDieReason(reason)) {
       const defect = "defect" in reason ? reason.defect : undefined;
-      if (isRuntimeDiagnostic(defect)) return defect;
-      return {
+      const diagnostic = decodeLocalRunApiDiagnostic(defect);
+      if (Option.isSome(diagnostic)) return diagnostic.value;
+      return parseLocalRunApiDiagnostic({
         code: "InternalServerError",
         message: "Local Gaia API request failed.",
         recoverable: false,
-      };
+      });
     }
   }
 
-  return {
+  return parseLocalRunApiDiagnostic({
     code: "InternalServerError",
     message: "Local Gaia API request failed.",
     recoverable: false,
-  };
+  });
 }
 
 function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
@@ -2155,9 +2166,10 @@ function readNextStreamEvent(
 }
 
 function streamApiError(error: unknown): typeof LocalRunApiErrorEnvelope.Type {
-  const diagnostic = isRuntimeDiagnostic(error)
-    ? LocalRunReadDiagnosticDto.make(error)
-    : LocalRunReadDiagnosticDto.make({
+  const parsed = decodeLocalRunApiDiagnostic(error);
+  const diagnostic = Option.isSome(parsed)
+    ? parsed.value
+    : parseLocalRunApiDiagnostic({
         code: "InternalServerError",
         message: "Local Gaia event stream failed.",
         recoverable: false,
@@ -2173,23 +2185,7 @@ function isTerminalRunEvent(event: RunEvent) {
   return event.type === "REPORT_COMPLETED" || event.type === "RUN_FAILED";
 }
 
-function isRuntimeDiagnostic(input: unknown): input is LocalRunReadDiagnostic {
-  return Option.isSome(
-    Schema.decodeUnknownOption(LocalRunReadDiagnosticDto)(input)
-  );
-}
-
-function isApiDiagnostic(input: unknown): input is ApiDiagnostic {
-  return (
-    typeof input === "object" &&
-    input !== null &&
-    "code" in input &&
-    "message" in input &&
-    "recoverable" in input
-  );
-}
-
-type ApiDiagnostic = typeof LocalRunReadDiagnosticDto.Type;
+type ApiDiagnostic = typeof LocalRunApiDiagnosticDto.Type;
 type MethodNotAllowedDiagnostic = Omit<
   typeof LocalRunApiMethodNotAllowed.Type,
   "status"

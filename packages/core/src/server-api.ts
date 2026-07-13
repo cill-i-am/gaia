@@ -57,36 +57,47 @@ import {
 } from "./worker-recovery.js";
 
 export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
+  "ArtifactNotAllowed",
+  "ArtifactNotFound",
+  "FactoryAgentNotFound",
+  "FactoryGraphNotFound",
+  "InvalidRunDirectory",
+  "InvalidRunId",
+  "RunHasNoEvents",
+  "RunNotFound",
+  "RunUnreadable",
+] as const);
+
+export type LocalRunReadDiagnosticCode =
+  typeof LocalRunReadDiagnosticCodeSchema.Type;
+
+const LocalRunApiAdditionalDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
   "AgentActionConflict",
   "AgentSessionUnavailable",
   "AgentStreamCursorConflict",
   "DeliveryActionConflict",
   "DeliveryStreamCursorConflict",
-  "ArtifactNotAllowed",
-  "ArtifactNotFound",
   "EndpointNotFound",
-  "FactoryAgentNotFound",
-  "FactoryGraphNotFound",
   "HarnessAuthenticationRequired",
   "HarnessCapabilityMismatch",
   "HarnessIncompatible",
   "HarnessProfileNotFound",
   "HarnessUnavailable",
-  "InvalidRunDirectory",
-  "InvalidRunId",
   "InvalidRequest",
   "InvalidSpec",
   "InternalServerError",
   "MethodNotAllowed",
   "RunStoreLocked",
-  "RunHasNoEvents",
-  "RunNotFound",
-  "RunUnreadable",
   "WorkerRecoveryCorrelationUnavailable",
   "WorkerRecoveryIntentPersistenceFailed",
   "WorkerRecoveryModelCatalogUnavailable",
   "WorkerRecoveryModelUnavailable",
+] as const);
+
+export const LocalRunApiDiagnosticCodeSchema = Schema.Literals([
+  ...LocalRunReadDiagnosticCodeSchema.literals,
+  ...LocalRunApiAdditionalDiagnosticCodeSchema.literals,
 ] as const);
 
 const BadRequestDiagnosticCodeSchema = Schema.Literals([
@@ -146,16 +157,26 @@ const diagnosticFields = {
 
 export const ServerHostSchema = Schema.Literal("127.0.0.1");
 
-/** Legacy local run status retained for existing non-product dashboard consumers. */
-export const LocalRunStatusSchema = Schema.Literals([
+export const LocalRunReadStatusSchema = Schema.Literals([
   "completed",
   "failed",
+  "running",
+] as const);
+
+export type LocalRunStatus = typeof LocalRunReadStatusSchema.Type;
+
+/** Legacy local run status retained for existing non-product dashboard consumers. */
+const LocalRunAdditionalStatusSchema = Schema.Literals([
   "runningWorker",
   "workerRecoveryPending",
   "workerRecoveryDispatching",
   "workerRecoveryFailed",
   "workerRecoveryOutcomeUnknown",
-  "running",
+] as const);
+
+export const LocalRunStatusSchema = Schema.Literals([
+  ...LocalRunReadStatusSchema.literals,
+  ...LocalRunAdditionalStatusSchema.literals,
 ] as const);
 
 /** Legacy artifact content types retained for existing non-product dashboard consumers. */
@@ -187,6 +208,88 @@ export const LocalRunArtifactIdSchema = Schema.Literals([
   "snapshots",
 ] as const).annotate({ identifier: "LocalRunArtifactId" });
 
+export const LocalRunReadArtifactIdSchema = LocalRunArtifactIdSchema.pipe(
+  Schema.brand("LocalRunArtifactId")
+);
+
+export type LocalRunArtifactId = typeof LocalRunReadArtifactIdSchema.Type;
+
+export const parseLocalRunArtifactId = Schema.decodeUnknownSync(
+  LocalRunReadArtifactIdSchema
+);
+
+export const localRunArtifactIds = Object.freeze(
+  LocalRunArtifactIdSchema.literals.map((artifactId) =>
+    parseLocalRunArtifactId(artifactId)
+  )
+);
+
+export const LocalRunArtifactNameSchema = Schema.String.pipe(
+  Schema.brand("LocalRunArtifactName")
+);
+
+export type LocalRunArtifactName = typeof LocalRunArtifactNameSchema.Type;
+
+export const parseLocalRunArtifactName = Schema.decodeUnknownSync(
+  LocalRunArtifactNameSchema
+);
+
+const localRunTimestampPattern =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+
+export const LocalRunTimestampSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (timestamp) => {
+        if (!localRunTimestampPattern.test(timestamp)) {
+          return false;
+        }
+
+        const parsed = new Date(timestamp);
+        return (
+          !Number.isNaN(parsed.getTime()) && parsed.toISOString() === timestamp
+        );
+      },
+      {
+        identifier: "LocalRunTimestamp",
+        message:
+          "Local run timestamps must be UTC ISO strings with milliseconds.",
+      }
+    )
+  ),
+  Schema.brand("LocalRunTimestamp")
+);
+
+export type LocalRunTimestamp = typeof LocalRunTimestampSchema.Type;
+
+export const parseLocalRunTimestamp = Schema.decodeUnknownSync(
+  LocalRunTimestampSchema
+);
+
+const isSafeLocalRunPathSegment = Schema.makeFilter(
+  (pathSegment: string) =>
+    pathSegment !== "." &&
+    pathSegment !== ".." &&
+    !pathSegment.includes("/") &&
+    !pathSegment.includes("\\") &&
+    !/[\u0000-\u001f\u007f]/u.test(pathSegment),
+  {
+    identifier: "LocalRunPathSegment",
+    message: "Local run path segments must be safe single directory names.",
+  }
+);
+
+export const LocalRunPathSegmentSchema = Schema.NonEmptyString.pipe(
+  Schema.check(isSafeLocalRunPathSegment),
+  Schema.brand("LocalRunPathSegment")
+);
+
+export type LocalRunPathSegment = typeof LocalRunPathSegmentSchema.Type;
+
+export const parseLocalRunPathSegment = Schema.decodeUnknownSync(
+  LocalRunPathSegmentSchema
+);
+
 export class LocalRunReadDiagnosticDto extends Schema.Class<LocalRunReadDiagnosticDto>(
   "LocalRunReadDiagnosticDto"
 )({
@@ -197,6 +300,31 @@ export class LocalRunReadDiagnosticDto extends Schema.Class<LocalRunReadDiagnost
   recoverable: Schema.Boolean,
   runId: Schema.optionalKey(RunIdSchema),
 }) {}
+
+export const LocalRunReadDiagnosticSchema = Schema.Struct({
+  ...LocalRunReadDiagnosticDto.fields,
+  artifactName: Schema.optionalKey(LocalRunArtifactNameSchema),
+  pathSegment: Schema.optionalKey(LocalRunPathSegmentSchema),
+}).annotate({ identifier: "LocalRunReadDiagnostic" });
+
+export type LocalRunReadDiagnostic = typeof LocalRunReadDiagnosticSchema.Type;
+
+export const parseLocalRunReadDiagnostic = Schema.decodeUnknownSync(
+  LocalRunReadDiagnosticSchema
+);
+
+export class LocalRunApiDiagnosticDto extends Schema.Class<LocalRunApiDiagnosticDto>(
+  "LocalRunApiDiagnosticDto"
+)({
+  ...diagnosticFields,
+  code: LocalRunApiDiagnosticCodeSchema,
+}) {}
+
+export type LocalRunApiDiagnostic = typeof LocalRunApiDiagnosticDto.Type;
+
+export const parseLocalRunApiDiagnostic = Schema.decodeUnknownSync(
+  LocalRunApiDiagnosticDto
+);
 
 /** Legacy run summary retained until downstream dashboard/server slices migrate. */
 export class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
@@ -214,6 +342,21 @@ export class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
   updatedAt: Schema.NonEmptyString,
 }) {}
 
+export const LocalRunReadSummarySchema = Schema.Struct({
+  ...LocalRunSummaryDto.fields,
+  artifacts: Schema.Array(LocalRunReadArtifactIdSchema),
+  createdAt: LocalRunTimestampSchema,
+  status: LocalRunReadStatusSchema,
+  updatedAt: LocalRunTimestampSchema,
+}).annotate({ identifier: "LocalRunReadSummary" });
+
+export type LocalRunSummary = typeof LocalRunReadSummarySchema.Type;
+export type LocalRunDetail = LocalRunSummary;
+
+export const parseLocalRunSummary = Schema.decodeUnknownSync(
+  LocalRunReadSummarySchema
+);
+
 /** Legacy run list retained until downstream dashboard/server slices migrate. */
 export class LocalRunListDto extends Schema.Class<LocalRunListDto>(
   "LocalRunListDto"
@@ -222,6 +365,18 @@ export class LocalRunListDto extends Schema.Class<LocalRunListDto>(
   runs: Schema.Array(LocalRunSummaryDto),
 }) {}
 
+export const LocalRunReadListSchema = Schema.Struct({
+  ...LocalRunListDto.fields,
+  diagnostics: Schema.Array(LocalRunReadDiagnosticSchema),
+  runs: Schema.Array(LocalRunReadSummarySchema),
+}).annotate({ identifier: "LocalRunReadList" });
+
+export type LocalRunList = typeof LocalRunReadListSchema.Type;
+
+export const parseLocalRunList = Schema.decodeUnknownSync(
+  LocalRunReadListSchema
+);
+
 /** Legacy internal event read retained but excluded from product OpenAPI. */
 export class LocalRunEventsDto extends Schema.Class<LocalRunEventsDto>(
   "LocalRunEventsDto"
@@ -229,6 +384,10 @@ export class LocalRunEventsDto extends Schema.Class<LocalRunEventsDto>(
   events: Schema.Array(RunEvent),
   runId: RunIdSchema,
 }) {}
+
+export type LocalRunEvents = typeof LocalRunEventsDto.Type;
+
+export const parseLocalRunEvents = Schema.decodeUnknownSync(LocalRunEventsDto);
 
 /** Legacy artifact body retained until first-class artifact metadata is wired downstream. */
 export class LocalRunArtifactDto extends Schema.Class<LocalRunArtifactDto>(
@@ -239,6 +398,19 @@ export class LocalRunArtifactDto extends Schema.Class<LocalRunArtifactDto>(
   contentType: LocalRunArtifactContentTypeSchema,
   runId: RunIdSchema,
 }) {}
+
+export const LocalRunReadArtifactSchema = Schema.Struct({
+  ...LocalRunArtifactDto.fields,
+  artifactName: LocalRunReadArtifactIdSchema,
+}).annotate({ identifier: "LocalRunReadArtifact" });
+
+export type LocalRunArtifact = typeof LocalRunReadArtifactSchema.Type;
+export type LocalRunArtifactContentType =
+  typeof LocalRunArtifactContentTypeSchema.Type;
+
+export const parseLocalRunArtifact = Schema.decodeUnknownSync(
+  LocalRunReadArtifactSchema
+);
 
 export class LocalRunListSuccessEnvelope extends Schema.Class<LocalRunListSuccessEnvelope>(
   "LocalRunListSuccessEnvelope"
@@ -258,7 +430,7 @@ export class LocalRunListPartialEnvelope extends Schema.Class<LocalRunListPartia
 export class LocalRunDetailSuccessEnvelope extends Schema.Class<LocalRunDetailSuccessEnvelope>(
   "LocalRunDetailSuccessEnvelope"
 )({
-  data: LocalRunSummaryDto,
+  data: LocalRunReadSummarySchema,
   status: Schema.Literal("success"),
 }) {}
 
@@ -745,8 +917,7 @@ export class LocalRunEventsSuccessEnvelope extends Schema.Class<LocalRunEventsSu
 export class LocalRunApiErrorEnvelope extends Schema.Class<LocalRunApiErrorEnvelope>(
   "LocalRunApiErrorEnvelope"
 )({
-  ...diagnosticFields,
-  code: LocalRunReadDiagnosticCodeSchema,
+  ...LocalRunApiDiagnosticDto.fields,
   status: LocalRunApiErrorStatusSchema,
 }) {}
 
