@@ -44,7 +44,7 @@ import {
   DeliveryPullRequestObservation,
   DeliveryRemediationSchema,
 } from "./delivery-remediation.js";
-import { DeliveryCleanupReceiptSchema, DeliveryMergeMethodSchema, DeliveryMergeReadinessDecision, DeliveryMergeReceiptSchema } from "./delivery-merge.js";
+import { DeliveryActionIdSchema, DeliveryCleanupReceiptSchema, DeliveryMergeMethodSchema, DeliveryMergeReadinessDecision, DeliveryMergeReceiptSchema, DeliveryPullRequestReadyReceiptSchema } from "./delivery-merge.js";
 
 export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
@@ -407,7 +407,7 @@ export class DeliveryRemediationActivationActionRequest extends Schema.Class<Del
 export class DeliveryMergeActionRequest extends Schema.Class<DeliveryMergeActionRequest>(
   "DeliveryMergeActionRequest",
 )({
-  actionId: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+  actionId: DeliveryActionIdSchema,
   expectedBranchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
   expectedDecisionSequence: EventSequenceSchema,
   expectedHeadSha: DeliveryActionGitShaSchema,
@@ -416,6 +416,18 @@ export class DeliveryMergeActionRequest extends Schema.Class<DeliveryMergeAction
   kind: Schema.Literal("merge"),
   mergeMethod: DeliveryMergeMethodSchema,
 }, { parseOptions: { onExcessProperty: "error" } }) {}
+
+export class DeliveryMarkReadyForReviewActionRequest extends Schema.Class<DeliveryMarkReadyForReviewActionRequest>(
+  "DeliveryMarkReadyForReviewActionRequest",
+)({
+  actionId: DeliveryActionIdSchema,
+  expectedBranchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
+  expectedHeadSha: DeliveryActionGitShaSchema,
+  expectedPrNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+  expectedPrUrl: Schema.String.pipe(Schema.check(Schema.isPattern(/^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u))),
+  kind: Schema.Literal("markReadyForReview"),
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+
 export class DeliveryEvaluateMergeReadinessActionRequest extends Schema.Class<DeliveryEvaluateMergeReadinessActionRequest>("DeliveryEvaluateMergeReadinessActionRequest")({
   actionId: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
   kind: Schema.Literal("evaluateMergeReadiness"),
@@ -436,6 +448,7 @@ export const DeliveryActionRequestSchema = Schema.Union([
   WorkerCorrelationReconciliationAction,
   WorkerDesktopOriginCorrelationAction,
   DeliveryRemediationActivationActionRequest,
+  DeliveryMarkReadyForReviewActionRequest,
   DeliveryEvaluateMergeReadinessActionRequest,
   DeliveryMergeActionRequest,
   DeliveryRetryCleanupActionRequest,
@@ -532,6 +545,8 @@ export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   remediation: Schema.optionalKey(DeliveryRemediationSchema),
   activeMergeAction: Schema.optionalKey(DeliveryMergeReceiptSchema),
   latestMergeAction: Schema.optionalKey(DeliveryMergeReceiptSchema),
+  activeReadyForReviewAction: Schema.optionalKey(DeliveryPullRequestReadyReceiptSchema),
+  latestReadyForReviewAction: Schema.optionalKey(DeliveryPullRequestReadyReceiptSchema),
   mergeDecision: Schema.optionalKey(DeliveryMergeReadinessDecision),
   mergeDecisionSequence: Schema.optionalKey(EventSequenceSchema),
   activeCleanupAction: Schema.optionalKey(DeliveryCleanupReceiptSchema),
@@ -539,6 +554,7 @@ export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   actionAudit: Schema.optionalKey(Schema.Struct({
     cleanup: Schema.Array(Schema.Struct({ actionId: Schema.NonEmptyString, latestSequence: EventSequenceSchema, state: Schema.NonEmptyString })).pipe(Schema.check(Schema.isMaxLength(20))),
     merge: Schema.Array(Schema.Struct({ actionId: Schema.NonEmptyString, latestSequence: EventSequenceSchema, state: Schema.NonEmptyString })).pipe(Schema.check(Schema.isMaxLength(20))),
+    readyForReview: Schema.Array(Schema.Struct({ actionId: Schema.NonEmptyString, latestSequence: EventSequenceSchema, state: Schema.NonEmptyString })).pipe(Schema.check(Schema.isMaxLength(20))),
   })),
   remediationRearmSequence: Schema.optionalKey(
     Schema.Number.pipe(

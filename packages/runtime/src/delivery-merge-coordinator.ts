@@ -26,7 +26,7 @@ import {
 } from "@gaia/core";
 import { createHash } from "node:crypto";
 import { Cause, Effect, FileSystem, Option, Schema } from "effect";
-import { appendEvent, loadRun } from "./event-store.js";
+import { appendEvent, loadRun, readEvents } from "./event-store.js";
 import { makeRuntimeError } from "./errors.js";
 import { makeRunPaths, type RunPaths, type RunStorageOptions } from "./paths.js";
 import { DeliveryMergeConclusivelyRejected, invokeGitHubDeliveryMerge, validateRequiredChecks, type RequiredCheckFact } from "./delivery-merge-provider.js";
@@ -38,6 +38,7 @@ import { coordinateBranchCleanup, coordinateWorktreeCleanup, type CleanupResourc
 import { deliveryCleanupOwnershipPayloadDigest, DeliveryCleanupOwnershipProvenanceV1 } from "./delivery-cleanup-provenance.js";
 import { makeEventCleanupCheckpointStore, recordOrValidateCleanupProvenance } from "./delivery-cleanup-event-store.js";
 import { makeGitCleanupResourceAdapter } from "./git-cleanup-resource-adapter.js";
+import { requireExactReadyForReviewConfirmation } from "./delivery-ready-for-review-coordinator.js";
 
 export type FreshMergeState = {
   readonly branchName: string;
@@ -114,14 +115,26 @@ export function coordinateDeliveryMerge(
 ) {
   return withRunStoreLock(options, Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options);
-    const loaded = yield* loadRun(paths);
+    const events = yield* readEvents(paths).pipe(
+      Effect.catchCause(() => conflict("Delivery history is invalid for the current run authority.")),
+    );
     const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(
-      snapshotFromReplay(loaded.events).context["delivery"],
+      snapshotFromReplay(events).context["delivery"],
     );
     const publication = parseDeliveryPublication(delivery["publication"]);
     if (publication.state !== "confirmed") return yield* conflict("Owned pull request is not confirmed.");
     const repository = repositoryFromPrUrl(publication.prUrl);
-    const histories = deriveDeliveryActionHistoriesFromEvents(loaded.events);
+    requireExactReadyForReviewConfirmation(events, {
+      branchName: publication.branchName,
+      expectedHeadSha: action.expectedHeadSha,
+      prNumber: publication.prNumber,
+      prUrl: publication.prUrl,
+      publicationOperationId: publication.operationId,
+      publicationPayloadDigest: publication.payloadDigest,
+      repository,
+      runId,
+    });
+    const histories = deriveDeliveryActionHistoriesFromEvents(events);
     const previous = histories.merge.latest?.latest;
     const trust = Schema.decodeUnknownSync(DeliveryFeedbackTrustPolicyV1)(delivery["feedbackTrustPolicy"]);
     const policy = requiredCheckPolicyFromTrustPolicy(trust);
@@ -143,7 +156,7 @@ export function coordinateDeliveryMerge(
       prUrl: publication.prUrl,
       repository,
     };
-    const readinessEvents = loaded.events.filter(({ type }) => type === "DELIVERY_MERGE_READINESS_RECORDED");
+    const readinessEvents = events.filter(({ type }) => type === "DELIVERY_MERGE_READINESS_RECORDED");
     const decisionEvent = readinessEvents.at(-1);
     if (decisionEvent?.sequence !== action.expectedDecisionSequence) {
       return yield* conflict("The merge action does not target the latest readiness decision.");
@@ -213,8 +226,10 @@ export function coordinateDeliveryMerge(
 export function coordinateDeliveryMergeReadiness(runId: RunId, action: DeliveryEvaluateMergeReadinessActionRequest, options: DeliveryMergeCoordinatorOptions) {
   return withRunStoreLock(options, Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options);
-    const loaded = yield* loadRun(paths);
-    const replay = snapshotFromReplay(loaded.events);
+    const events = yield* readEvents(paths).pipe(
+      Effect.catchCause(() => conflict("Delivery history is invalid for the current run authority.")),
+    );
+    const replay = snapshotFromReplay(events);
     if (replay.state !== "delivering") return yield* conflict("Merge readiness requires a delivering pull-request run.");
     const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(replay.context["delivery"]);
     const publication = parseDeliveryPublication(delivery["publication"]);
@@ -224,16 +239,36 @@ export function coordinateDeliveryMergeReadiness(runId: RunId, action: DeliveryE
     const policyDigest = hash(deliveryRequiredCheckPolicyCanonicalPayload(policy));
     const repository = repositoryFromPrUrl(publication.prUrl);
     const readinessDigest = hash([action.actionId, runId, publication.prUrl, publication.branchName, action.mergeMethod, policyDigest].join("\0"));
-    const prior = loaded.events
+    const prior = events
       .filter(({ type }) => type === "DELIVERY_MERGE_READINESS_RECORDED")
       .map((event) => parseDeliveryMergeReadinessDecision(event.payload["decision"]))
       .find((decision) => decision.actionId === action.actionId);
     if (prior !== undefined) {
       if (prior.payloadDigest !== readinessDigest) return yield* conflict("Readiness action ID conflicts with a changed immutable tuple.");
+      requireExactReadyForReviewConfirmation(events, {
+        branchName: publication.branchName,
+        expectedHeadSha: prior.headSha,
+        prNumber: publication.prNumber,
+        prUrl: publication.prUrl,
+        publicationOperationId: publication.operationId,
+        publicationPayloadDigest: publication.payloadDigest,
+        repository,
+        runId,
+      });
       return prior;
     }
     const reader = options.freshStateReader ?? makeGitHubFreshMergeStateReader({ ...(options.commandRunner === undefined ? {} : { commandRunner: options.commandRunner }), rootDirectory: options.rootDirectory ?? ".", trustPolicy: trust });
     const fresh = yield* reader({ prNumber: publication.prNumber, repository }).pipe(Effect.mapError(() => makeRuntimeError({ code: "DeliveryMergeReadFailed", message: "Fresh GitHub readiness evidence is unavailable.", recoverable: true })));
+    requireExactReadyForReviewConfirmation(events, {
+      branchName: publication.branchName,
+      expectedHeadSha: fresh.headSha,
+      prNumber: publication.prNumber,
+      prUrl: publication.prUrl,
+      publicationOperationId: publication.operationId,
+      publicationPayloadDigest: publication.payloadDigest,
+      repository,
+      runId,
+    });
     const blockers = freshBlockers(fresh, publication.branchName, action.mergeMethod, policy);
     const decision = DeliveryMergeReadinessDecision.make({ actionId: action.actionId, approved: blockers.length === 0, blockers, branchName: publication.branchName, headSha: fresh.headSha, mergeMethod: action.mergeMethod, payloadDigest: readinessDigest, policyDigest, policyVersion: 1, prNumber: publication.prNumber, prUrl: publication.prUrl });
     yield* appendEvent(runId, paths, { payload: { decision: encodeDeliveryMergeReadinessDecisionJson(decision) }, type: "DELIVERY_MERGE_READINESS_RECORDED" });

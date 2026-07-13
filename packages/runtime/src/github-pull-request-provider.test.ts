@@ -39,6 +39,7 @@ describe("delivery GitHub pull request provider", () => {
       assert.include(commands[0]?.args.join(" ") ?? "", "number=92");
 
       assert.strictEqual(result.observation.headSha, headSha);
+      assert.strictEqual(result.observation.branchName, "gaia/run-1234567890");
       assert.strictEqual(result.observation.status, "blocked");
       assert.deepEqual(
         result.remediationInputs.map(({ kind, text }) => [kind, text]),
@@ -456,6 +457,7 @@ function pullRequestFixture() {
               },
             ],
           },
+          headRefName: "gaia/run-1234567890",
           headRefOid: headSha,
           isDraft: false,
           mergeable: "MERGEABLE",

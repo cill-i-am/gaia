@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
+import { createHash } from "node:crypto";
 import {
   DeliveryCleanupCompleted,
   DeliveryCleanupRequired,
@@ -7,7 +8,10 @@ import {
   DeliveryMergeDispatchConfirmed,
   DeliveryMergeIntent,
   DeliveryMergeReadinessDecision,
+  DeliveryPullRequestReadyConfirmedWithoutDispatch,
+  DeliveryPullRequestReadyIntent,
   DeliveryRequiredCheckPolicy,
+  deliveryPullRequestReadyCanonicalPayload,
   deliveryMergeMethodArguments,
   deliveryRequiredCheckPolicyCanonicalPayload,
   parseDeliveryCleanupReceipt,
@@ -15,15 +19,81 @@ import {
   encodeDeliveryCleanupReceiptJson,
   encodeDeliveryMergeReadinessDecisionJson,
   encodeDeliveryMergeReceiptJson,
+  encodeDeliveryPullRequestReadyReceiptJson,
   deriveDeliveryMergeActionHistories,
+  deriveDeliveryPullRequestReadyActionHistories,
   deriveDeliveryCleanupActionHistories,
   deliveryActionAuditSummary,
 } from "./delivery-merge.js";
 import { makeRunEvent } from "./events.js";
 import { snapshotFromReplay } from "./machine.js";
 import { parseRunId } from "./run-id.js";
+import { DeliveryPublicationConfirmed, encodeDeliveryPublicationJson } from "./delivery-publication.js";
 
 const check = { appSlug: "github-actions", name: "test", repository: "cill-i-am/gaia", workflow: "CI" };
+
+function readyReplayEvents(overrides: Partial<{
+  readonly actionId: string;
+  readonly branchName: string;
+  readonly expectedHeadSha: string;
+  readonly payloadDigest: string;
+  readonly prNumber: number;
+  readonly prUrl: string;
+  readonly publicationOperationId: string;
+  readonly publicationPayloadDigest: string;
+  readonly repository: string;
+  readonly runId: ReturnType<typeof parseRunId>;
+}> = {}) {
+  const enclosingRunId = parseRunId("run-1234567890");
+  const publication = DeliveryPublicationConfirmed.make({
+    baseBranch: "main",
+    baseRevision: "0".repeat(40),
+    branchName: "gaia/run-1234567890",
+    commitMessage: "feat: delivery",
+    commitSha: "a".repeat(40),
+    commitTimestamp: "2026-07-11T19:00:00.000Z",
+    digestVersion: 1,
+    draft: true,
+    headSha: "a".repeat(40),
+    operationId: "publish-run-1234567890-1",
+    payloadDigest: "c".repeat(64),
+    prNumber: 74,
+    prUrl: "https://github.com/cill-i-am/gaia/pull/74",
+    sourcePaths: ["feature.ts"],
+    state: "confirmed",
+    treeSha: "2".repeat(40),
+  });
+  const bindingBase = {
+    actionId: overrides.actionId ?? "ready-1",
+    branchName: overrides.branchName ?? publication.branchName,
+    expectedHeadSha: overrides.expectedHeadSha ?? publication.headSha,
+    prNumber: overrides.prNumber ?? publication.prNumber,
+    prUrl: overrides.prUrl ?? publication.prUrl,
+    publicationOperationId: overrides.publicationOperationId ?? publication.operationId,
+    publicationPayloadDigest: overrides.publicationPayloadDigest ?? publication.payloadDigest,
+    repository: overrides.repository ?? "cill-i-am/gaia",
+    runId: overrides.runId ?? enclosingRunId,
+    version: 1 as const,
+  };
+  const binding = {
+    ...bindingBase,
+    payloadDigest: overrides.payloadDigest ?? createHash("sha256")
+      .update(deliveryPullRequestReadyCanonicalPayload(bindingBase))
+      .digest("hex"),
+  };
+  const intent = DeliveryPullRequestReadyIntent.make({ ...binding, state: "intentRecorded" });
+  const confirmed = DeliveryPullRequestReadyConfirmedWithoutDispatch.make({ ...binding, draft: false, state: "confirmedWithoutDispatch" });
+  const event = (sequence: number, type: Parameters<typeof makeRunEvent>[0]["type"], payload: Readonly<Record<string, Schema.Json>>) => makeRunEvent({ payload, runId: enclosingRunId, sequence, timestamp: `2026-07-11T19:00:0${sequence}.000Z`, type });
+  return {
+    events: [
+      event(1, "RUN_CREATED", { specPath: "spec.md" }),
+      event(2, "DELIVERY_STARTED", { delivery: { baseBranch: "main", baseRevision: "0".repeat(40), headBranch: publication.branchName, mode: "pullRequest", publication: encodeDeliveryPublicationJson(publication), remote: "origin", stage: "waitingForPr" } }),
+      event(3, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(intent) }),
+      event(4, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(confirmed) }),
+    ],
+    publication,
+  };
+}
 
 describe("delivery merge contracts", () => {
   it("maps every supported method to exactly one provider flag", () => {
@@ -42,6 +112,74 @@ describe("delivery merge contracts", () => {
     expect(parseDeliveryMergeReceipt(base).state).toBe("intentRecorded");
     expect(() => parseDeliveryMergeReceipt({ ...base, mergeMethod: "fast-forward" })).toThrow();
     expect(() => parseDeliveryMergeReceipt({ ...base, unexpected: true })).toThrow();
+  });
+
+  it("binds ready-for-review intent to the confirmed publication generation", () => {
+    const binding = {
+      actionId: "ready-1",
+      branchName: "gaia/run-1234567890",
+      expectedHeadSha: "a".repeat(40),
+      payloadDigest: "b".repeat(64),
+      prNumber: 74,
+      prUrl: "https://github.com/cill-i-am/gaia/pull/74",
+      publicationOperationId: "publish-run-1234567890-1",
+      publicationPayloadDigest: "c".repeat(64),
+      repository: "cill-i-am/gaia",
+      runId: parseRunId("run-1234567890"),
+      version: 1 as const,
+    };
+    const canonical = deliveryPullRequestReadyCanonicalPayload(binding);
+    expect(canonical).toContain("gaia.delivery.mark-ready.v1");
+    expect(canonical).toContain(`${binding.publicationOperationId.length}:${binding.publicationOperationId}`);
+
+    const intent = DeliveryPullRequestReadyIntent.make({ ...binding, state: "intentRecorded" });
+    const confirmed = DeliveryPullRequestReadyConfirmedWithoutDispatch.make({
+      ...binding,
+      draft: false,
+      state: "confirmedWithoutDispatch",
+    });
+    const history = deriveDeliveryPullRequestReadyActionHistories([
+      { receipt: intent, sequence: 4 },
+      { receipt: confirmed, sequence: 5 },
+    ]);
+    expect(history.latest?.latest.state).toBe("confirmedWithoutDispatch");
+    expect(history.active).toBeUndefined();
+    expect(() => deriveDeliveryPullRequestReadyActionHistories([
+      { receipt: intent, sequence: 4 },
+      { receipt: DeliveryPullRequestReadyConfirmedWithoutDispatch.make({ ...confirmed, publicationPayloadDigest: "d".repeat(64) }), sequence: 5 },
+    ])).toThrow("Ready-for-review action binding changed");
+  });
+
+  it("replays ready-for-review receipts without rewriting draft publication history", () => {
+    const { events } = readyReplayEvents();
+    const snapshot = snapshotFromReplay(events);
+    expect(snapshot.context["delivery"]).toMatchObject({
+      publication: { draft: true, state: "confirmed" },
+      readyForReviewAction: { draft: false, state: "confirmedWithoutDispatch" },
+    });
+  });
+
+  it("rejects a canonically hashed ready receipt from a different enclosing run", () => {
+    const { events } = readyReplayEvents({ runId: parseRunId("run-wrong12345") });
+    expect(() => snapshotFromReplay(events)).toThrow("Ready-for-review action does not match its enclosing run");
+  });
+
+  it.each([
+    ["publication operation", { publicationOperationId: "publish-run-1234567890-2" }],
+    ["publication digest", { publicationPayloadDigest: "d".repeat(64) }],
+    ["repository", { repository: "cill-i-am/other" }],
+    ["PR number", { prNumber: 75 }],
+    ["PR URL", { prUrl: "https://github.com/cill-i-am/gaia/pull/75" }],
+    ["branch", { branchName: "gaia/run-other1234" }],
+    ["head", { expectedHeadSha: "d".repeat(40) }],
+  ] as const)("rejects ready replay with a mismatched %s", (_name, overrides) => {
+    const { events } = readyReplayEvents(overrides);
+    expect(() => snapshotFromReplay(events)).toThrow("Ready-for-review action does not match the confirmed publication");
+  });
+
+  it("rejects ready replay when the canonical digest does not recompute", () => {
+    const { events } = readyReplayEvents({ payloadDigest: "f".repeat(64) });
+    expect(() => snapshotFromReplay(events)).toThrow("Ready-for-review action digest is invalid");
   });
 
   it("only completes cleanup when both exact resources are absent", () => {

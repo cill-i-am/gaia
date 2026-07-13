@@ -26,7 +26,7 @@ describe("DeliveryMergeConfirmation", () => {
 
   it("constructs the first cleanup action from the confirmed merge projection", () => {
     const merge = DeliveryMergeDispatchConfirmed.make({ actionId: "merge-1", branchName: "gaia/run-1234567890", decisionSequence: 9, expectedHeadSha: "a".repeat(40), mergeCommitSha: "b".repeat(40), mergeMethod: "merge", mergedAt: "2026-07-11T20:00:00.000Z", payloadDigest: "c".repeat(64), policyDigest: "d".repeat(64), policyVersion: 1, prNumber: 93, prUrl: "https://github.com/cill-i-am/gaia/pull/93", repository: "cill-i-am/gaia", state: "dispatchConfirmed" });
-    const snapshot = DeliverySnapshotDto.make({ actionAudit: { cleanup: [], merge: [] }, eventSequence: 10, latestMergeAction: merge, mode: "pullRequest", recoveryActions: ["retryCleanup"], runId: parseRunId("run-1234567890"), stage: "cleanupRequired", status: "cleanupRequired" });
+    const snapshot = DeliverySnapshotDto.make({ actionAudit: { cleanup: [], merge: [], readyForReview: [] }, eventSequence: 10, latestMergeAction: merge, mode: "pullRequest", recoveryActions: ["retryCleanup"], runId: parseRunId("run-1234567890"), stage: "cleanupRequired", status: "cleanupRequired" });
     expect(deliveryRecoveryAction(snapshot, "retryCleanup")).toEqual({ actionId: "cleanup-merge-1", expectedMergeCommitSha: "b".repeat(40), kind: "retryCleanup" });
   });
 

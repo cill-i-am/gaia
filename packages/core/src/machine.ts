@@ -24,6 +24,11 @@ import {
   type DeliveryMergeReceipt,
   deriveDeliveryMergeActionHistories,
   deriveDeliveryCleanupActionHistories,
+  deriveDeliveryPullRequestReadyActionHistories,
+  assertDeliveryPullRequestReadyAuthority,
+  encodeDeliveryPullRequestReadyReceiptJson,
+  parseDeliveryPullRequestReadyReceipt,
+  type DeliveryPullRequestReadyReceipt,
 } from "./delivery-merge.js";
 import {
   encodeWorkerContinuationReceiptJson,
@@ -124,6 +129,7 @@ export type RunMachineEvent =
       readonly remediation: DeliveryRemediation;
       readonly type: "DELIVERY_REMEDIATION_RECORDED";
     }
+  | { readonly type: "DELIVERY_PR_READY_RECORDED"; readonly readyForReviewAction: DeliveryPullRequestReadyReceipt }
   | { readonly type: "DELIVERY_MERGE_RECORDED"; readonly mergeAction: DeliveryMergeReceipt }
   | { readonly type: "DELIVERY_MERGE_READINESS_RECORDED"; readonly decision: ReturnType<typeof parseDeliveryMergeReadinessDecision>; readonly eventSequence: number }
   | { readonly type: "DELIVERY_CLEANUP_RECORDED"; readonly cleanup: ReturnType<typeof parseDeliveryCleanupReceipt> }
@@ -407,6 +413,9 @@ export const runMachine = createMachine({
         DELIVERY_REMEDIATION_RECORDED: {
           actions: "recordDeliveryRemediation",
         },
+        DELIVERY_PR_READY_RECORDED: {
+          actions: "recordDeliveryPullRequestReady",
+        },
         WORKER_CONTINUATION_RECORDED: [
           { actions: "recordWorkerContinuation", guard: "workerContinuationRunning", target: "runningWorker" },
           { actions: "recordWorkerContinuation", guard: "workerContinuationFailed", target: "failed" },
@@ -617,6 +626,11 @@ export const runMachine = createMachine({
     recordDeliveryMerge: assign({
       delivery: ({ context, event }) => event.type === "DELIVERY_MERGE_RECORDED"
         ? deliveryWithMerge(context.delivery, event.mergeAction)
+        : context.delivery,
+    }),
+    recordDeliveryPullRequestReady: assign({
+      delivery: ({ context, event }) => event.type === "DELIVERY_PR_READY_RECORDED"
+        ? deliveryWithPullRequestReady(context.delivery, event.readyForReviewAction)
         : context.delivery,
     }),
     recordWorkerContinuation: assign({
@@ -888,6 +902,7 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   let expectedSequence = 1;
   let publication: DeliveryPublication | undefined;
   let remediation: DeliveryRemediation | undefined;
+  const readyForReviewActions: Array<{ receipt: DeliveryPullRequestReadyReceipt; sequence: number }> = [];
   const mergeActions: Array<{ receipt: DeliveryMergeReceipt; sequence: number }> = [];
   const cleanupActions: Array<{ receipt: ReturnType<typeof parseDeliveryCleanupReceipt>; sequence: number }> = [];
 
@@ -914,6 +929,28 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       }
       validateDeliveryRemediationTransition(remediation, next);
       remediation = next;
+    }
+    if (event.type === "DELIVERY_PR_READY_RECORDED") {
+      const next = parseDeliveryPullRequestReadyReceipt(event.payload["readyForReviewAction"]);
+      const delivery = actor.getSnapshot().context.delivery;
+      if (delivery?.["mode"] !== "pullRequest") throw new Error("Ready-for-review action requires accepted pull-request delivery state.");
+      const confirmedPublication = parseDeliveryPublication(delivery["publication"]);
+      if (confirmedPublication.state !== "confirmed") throw new Error("Ready-for-review action requires a confirmed publication.");
+      const repositoryMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(confirmedPublication.prUrl);
+      if (repositoryMatch?.[1] === undefined) throw new Error("Confirmed publication has an invalid pull-request URL.");
+      assertDeliveryPullRequestReadyAuthority(next, {
+        branchName: confirmedPublication.branchName,
+        expectedHeadSha: confirmedPublication.headSha,
+        prNumber: confirmedPublication.prNumber,
+        prUrl: confirmedPublication.prUrl,
+        publicationOperationId: confirmedPublication.operationId,
+        publicationPayloadDigest: confirmedPublication.payloadDigest,
+        repository: repositoryMatch[1],
+        runId: event.runId,
+      });
+      if (next.runId !== events[0]?.runId) throw new Error("Ready-for-review action does not match its enclosing run.");
+      readyForReviewActions.push({ receipt: next, sequence: event.sequence });
+      deriveDeliveryPullRequestReadyActionHistories(readyForReviewActions);
     }
     if (event.type === "DELIVERY_MERGE_RECORDED") {
       const next = parseDeliveryMergeReceipt(event.payload["mergeAction"]);
@@ -1021,6 +1058,11 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
       return {
         eventSequence: event.sequence,
         remediation: parseDeliveryRemediation(event.payload["remediation"]),
+        type: event.type,
+      };
+    case "DELIVERY_PR_READY_RECORDED":
+      return {
+        readyForReviewAction: parseDeliveryPullRequestReadyReceipt(event.payload["readyForReviewAction"]),
         type: event.type,
       };
     case "DELIVERY_MERGE_RECORDED":
@@ -1716,6 +1758,19 @@ function deliveryWithRemediation(
     remediation: encodeDeliveryRemediationJson(remediation),
     remediationRearmSequence,
     stage: remediationStage(remediation),
+  };
+}
+
+function deliveryWithPullRequestReady(
+  delivery: Record<string, Schema.Json> | undefined,
+  readyForReviewAction: DeliveryPullRequestReadyReceipt,
+): Record<string, Schema.Json> {
+  if (delivery === undefined || delivery["mode"] !== "pullRequest") {
+    throw new Error("Ready-for-review action requires accepted pull-request delivery state.");
+  }
+  return {
+    ...delivery,
+    readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(readyForReviewAction),
   };
 }
 

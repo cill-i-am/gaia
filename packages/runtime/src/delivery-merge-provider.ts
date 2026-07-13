@@ -21,6 +21,40 @@ export class DeliveryMergeConclusivelyRejected extends Data.TaggedError("Deliver
   readonly message: string;
 }> {}
 
+export class DeliveryReadyForReviewOutcomeUncertain extends Data.TaggedError("DeliveryReadyForReviewOutcomeUncertain")<{
+  readonly message: string;
+}> {}
+
+export class DeliveryReadyForReviewConclusivelyRejected extends Data.TaggedError("DeliveryReadyForReviewConclusivelyRejected")<{
+  readonly message: string;
+}> {}
+
+export type DeliveryReadyForReviewProviderInput = {
+  readonly cwd: string;
+  readonly prUrl: string;
+  readonly repository: string;
+};
+
+/** Invoke one exact ready-for-review mutation without branch inference. */
+export function invokeGitHubReadyForReview(
+  input: DeliveryReadyForReviewProviderInput,
+  commandRunner: GitHubCommandRunner = nodeGitHubCommandRunner,
+) {
+  return commandRunner({
+    args: ["pr", "ready", input.prUrl, "--repo", input.repository],
+    command: "gh",
+    cwd: input.cwd,
+  }).pipe(
+    Effect.flatMap((result) =>
+      result.exitCode === 0
+        ? Effect.void
+        : Effect.fail(new DeliveryReadyForReviewOutcomeUncertain({
+            message: "GitHub did not return a confirmable ready-for-review result.",
+          })),
+    ),
+  );
+}
+
 /** Invoke exactly one explicitly selected expected-head-protected GitHub merge. */
 export function invokeGitHubDeliveryMerge(
   input: DeliveryMergeProviderInput,

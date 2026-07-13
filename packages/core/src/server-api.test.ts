@@ -392,6 +392,24 @@ describe("LocalGaiaServerApi contract", () => {
     assert.throws(() => decode({ ...action, expectedBranchName: "" }));
   });
 
+  it("strictly parses the public ready-for-review action tuple", () => {
+    const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
+    const action = {
+      actionId: "ready-1",
+      expectedBranchName: "gaia/run-1234567890",
+      expectedHeadSha: "a".repeat(40),
+      expectedPrNumber: 74,
+      expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/74",
+      kind: "markReadyForReview",
+    } as const;
+    assert.strictEqual(decode(action).kind, "markReadyForReview");
+    assert.throws(() => decode({ ...action, publicationOperationId: "private-generation" }));
+    assert.throws(() => decode({ ...action, expectedPrNumber: 0 }));
+    assert.throws(() => decode({ ...action, expectedHeadSha: "not-a-sha" }));
+    assert.throws(() => decode({ ...action, actionId: "bad action id" }));
+    assert.throws(() => decode({ ...action, force: true }));
+  });
+
   it("accepts audited worker continuation actions without native checkpoint fields", () => {
     const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
     const request = {
@@ -469,7 +487,7 @@ describe("LocalGaiaServerApi contract", () => {
     const decode = Schema.decodeUnknownSync(DeliverySnapshotDto);
     const encode = Schema.encodeSync(Schema.toCodecJson(DeliverySnapshotDto));
     const snapshot = decode({
-      actionAudit: { cleanup: [], merge: [] },
+      actionAudit: { cleanup: [], merge: [], readyForReview: [] },
       eventSequence: 12,
       mode: "pullRequest",
       ownershipToken: hostile,
@@ -483,6 +501,34 @@ describe("LocalGaiaServerApi contract", () => {
     assert.notInclude(serialized, hostile);
     assert.notInclude(serialized, "ownershipToken");
     assert.notInclude(serialized, "privateProvenance");
+  });
+
+  it("keeps retained pre-branch pull-request observations decodable", () => {
+    const snapshot = Schema.decodeUnknownSync(DeliverySnapshotDto)({
+      eventSequence: 12,
+      mode: "pullRequest",
+      observation: {
+        blockers: [],
+        checks: [],
+        draft: true,
+        feedback: [],
+        headSha: "a".repeat(40),
+        mergeability: "mergeable",
+        observedAt: "2026-07-12T12:00:00.000Z",
+        prNumber: 91,
+        prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+        repository: "cill-i-am/gaia",
+        snapshotDigest: "b".repeat(64),
+        status: "waiting",
+        version: 1,
+      },
+      recoveryActions: [],
+      runId: "run-1234567890",
+      stage: "waitingForPr",
+      status: "waitingForPr",
+    });
+
+    assert.isUndefined(snapshot.observation?.branchName);
   });
 
   it("strictly parses one exact controlled remediation activation", () => {

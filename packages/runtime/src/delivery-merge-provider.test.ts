@@ -1,9 +1,26 @@
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import type { GitHubCommandInput } from "./github-publisher.js";
-import { invokeGitHubDeliveryMerge, validateRequiredChecks } from "./delivery-merge-provider.js";
+import { invokeGitHubDeliveryMerge, invokeGitHubReadyForReview, validateRequiredChecks } from "./delivery-merge-provider.js";
 
 describe("delivery merge provider", () => {
+  it("marks only the exact owned pull request ready for review", async () => {
+    const calls: GitHubCommandInput[] = [];
+    await Effect.runPromise(invokeGitHubReadyForReview({
+      cwd: "/repo",
+      prUrl: "https://github.com/cill-i-am/gaia/pull/74",
+      repository: "cill-i-am/gaia",
+    }, (input) => {
+      calls.push(input);
+      return Effect.succeed({ exitCode: 0, stderr: "", stdout: "" });
+    }));
+    expect(calls).toEqual([{
+      args: ["pr", "ready", "https://github.com/cill-i-am/gaia/pull/74", "--repo", "cill-i-am/gaia"],
+      command: "gh",
+      cwd: "/repo",
+    }]);
+  });
+
   for (const [method, flag] of [["merge", "--merge"], ["squash", "--squash"], ["rebase", "--rebase"]] as const) {
     it(`maps ${method} to its one exact provider mutation`, async () => {
       const calls: GitHubCommandInput[] = [];

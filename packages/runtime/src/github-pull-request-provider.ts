@@ -210,6 +210,7 @@ class RawPullRequest extends Schema.Class<RawPullRequest>("RawPullRequest")({
       }),
     ).pipe(Schema.check(Schema.isMaxLength(1))),
   }),
+  headRefName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
   headRefOid: Schema.String,
   isDraft: Schema.Boolean,
   mergeable: Schema.NonEmptyString,
@@ -472,6 +473,7 @@ function normalizePullRequest(input: {
       : "ready";
   const snapshotDigest = stableHash(JSON.stringify({
     blockers,
+    branchName: input.pr.headRefName,
     checks,
     draft: input.pr.isDraft,
     feedback,
@@ -482,6 +484,7 @@ function normalizePullRequest(input: {
   return {
     observation: DeliveryPullRequestObservation.make({
       blockers,
+      branchName: input.pr.headRefName,
       checks,
       draft: input.pr.isDraft,
       feedback,
@@ -718,7 +721,7 @@ const pullRequestQuery = `query GaiaDeliveryPullRequest($owner: String!, $name: 
       author { __typename login }
       comments(first: 100) { nodes { author { __typename login } authorAssociation body databaseId updatedAt url } pageInfo { hasNextPage } }
       commits(last: 1) { nodes { commit { oid checkSuites(first: 50) { nodes { app { slug } workflowRun { workflow { name } } checkRuns(first: 100) { nodes { conclusion detailsUrl name status } pageInfo { hasNextPage } } } pageInfo { hasNextPage } } } } }
-      headRefOid isDraft mergeable reviewDecision url
+      headRefName headRefOid isDraft mergeable reviewDecision url
       reviews(first: 100) { nodes { author { __typename login } authorAssociation body databaseId state updatedAt url } pageInfo { hasNextPage } }
       reviewThreads(first: 100) { nodes { id isResolved comments(first: 20) { nodes { author { __typename login } authorAssociation body databaseId outdated path pullRequestReview { state } updatedAt url } pageInfo { hasNextPage } } } pageInfo { hasNextPage } }
     }

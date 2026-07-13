@@ -2,6 +2,7 @@ import {
   DeliveryFeedbackTrustPolicyV1,
   deliveryFeedbackRequiresApprovedReview,
   type DeliveryMergeActionRequest,
+  type DeliveryMarkReadyForReviewActionRequest,
   type DeliveryEvaluateMergeReadinessActionRequest,
   type DeliveryRetryCleanupActionRequest,
   type DeliveryRemediationActivationActionRequest,
@@ -106,6 +107,7 @@ import {
   makeGitHubFreshMergeStateReader,
   requiredCheckPolicyFromTrustPolicy,
 } from "./delivery-merge-coordinator.js";
+import { coordinateDeliveryPullRequestReady } from "./delivery-ready-for-review-coordinator.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -115,6 +117,7 @@ const nanoid = customAlphabet(
 export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly deliveryAcceptanceProvenancePolicy?: DeliveryAcceptanceProvenancePolicyV1;
   readonly deliveryMergeActivator?: DeliveryMergeActionHandler;
+  readonly deliveryReadyForReviewActivator?: DeliveryReadyForReviewActionHandler;
   readonly deliveryRemediationActivator?: DeliveryRemediationActionHandler;
   readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
   readonly deliveryPublicationCommandRunner?: GitHubCommandRunner;
@@ -592,6 +595,26 @@ export type DeliveryMergeActionHandler = (
   action: DeliveryMergeActionRequest | DeliveryRetryCleanupActionRequest | DeliveryEvaluateMergeReadinessActionRequest,
   options: ServerWorkflowOptions,
 ) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
+
+export type DeliveryReadyForReviewActionHandler = (
+  runId: string,
+  action: DeliveryMarkReadyForReviewActionRequest,
+  options: ServerWorkflowOptions,
+) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
+
+export function actOnDeliveryReadyForReview(
+  runIdInput: string,
+  action: DeliveryMarkReadyForReviewActionRequest,
+  options: ServerWorkflowOptions = {},
+) {
+  return Effect.gen(function* () {
+    const runId = yield* parseRunIdEffect(runIdInput);
+    return yield* coordinateDeliveryPullRequestReady(runId, action, {
+      ...(options.deliveryPublicationCommandRunner === undefined ? {} : { commandRunner: options.deliveryPublicationCommandRunner }),
+      rootDirectory: options.rootDirectory ?? ".",
+    });
+  });
+}
 
 export function actOnDeliveryMerge(
   runIdInput: string,

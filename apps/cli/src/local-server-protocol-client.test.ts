@@ -137,7 +137,7 @@ describe("local server protocol client", () => {
           serverUrl: "http://127.0.0.1:4321",
         }).pipe(Effect.provide(recordingFetchLayer(requests, async (request) => {
           bodies.push(JSON.parse(await request.text()));
-          return jsonResponse({ data: { actionAudit: { cleanup: [], merge: [] }, eventSequence: 9, mode: "pullRequest", recoveryActions: [], runId: "run-1234567890", stage: "delivering", status: "delivering" }, status: "success" });
+          return jsonResponse({ data: { actionAudit: { cleanup: [], merge: [], readyForReview: [] }, eventSequence: 9, mode: "pullRequest", recoveryActions: [], runId: "run-1234567890", stage: "delivering", status: "delivering" }, status: "success" });
         })));
         assert.strictEqual(result.data.runId, "run-1234567890");
         assert.deepEqual(requests, ["POST http://127.0.0.1:4321/runs/run-1234567890/delivery/actions"]);
