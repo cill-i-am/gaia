@@ -6,6 +6,8 @@ import {
   FactoryArtifactIdSchema,
   FactoryArtifactListDto,
   FactoryGraphDto,
+  parseLocalRunArtifactName,
+  parseLocalRunReadDiagnostic,
   parseDeliveryRemediation,
   parseDeliveryMergeReceipt,
   parseDeliveryMergeReadinessDecision,
@@ -17,6 +19,7 @@ import {
   type FactoryAgentState,
   type FactoryArtifactId,
   type FactoryArtifactKind,
+  type LocalRunReadDiagnostic,
   type RunEvent,
   type RunId,
 } from "@gaia/core";
@@ -34,7 +37,6 @@ import {
   type RunPaths,
   type RunStorageOptions,
 } from "./paths.js";
-import type { LocalRunReadDiagnostic } from "./run-read-api.js";
 
 export type FactoryRunCreateInput = typeof CreateRunRequest.Type;
 export type FactoryGraphProjection = typeof FactoryGraphDto.Type;
@@ -346,26 +348,30 @@ export function readFactoryArtifactBodyFromIndex(
       (candidate) => candidate.artifactId === artifactIdInput
     );
     if (artifact === undefined) {
-      return yield* Effect.fail({
-        artifactName: artifactIdInput,
-        code: "ArtifactNotFound",
-        message: "Factory artifact does not exist for this run.",
-        recoverable: false,
-        runId: indexes.graph.runId,
-      } satisfies LocalRunReadDiagnostic);
+      return yield* Effect.fail(
+        parseLocalRunReadDiagnostic({
+          artifactName: parseLocalRunArtifactName(artifactIdInput),
+          code: "ArtifactNotFound",
+          message: "Factory artifact does not exist for this run.",
+          recoverable: false,
+          runId: indexes.graph.runId,
+        })
+      );
     }
 
     const definition = factoryArtifactDefinitions.find(
       (candidate) => candidate.artifactId === artifactIdInput
     );
     if (definition === undefined) {
-      return yield* Effect.fail({
-        artifactName: artifactIdInput,
-        code: "ArtifactNotFound",
-        message: "Factory artifact body is not readable by the runtime.",
-        recoverable: false,
-        runId: indexes.graph.runId,
-      } satisfies LocalRunReadDiagnostic);
+      return yield* Effect.fail(
+        parseLocalRunReadDiagnostic({
+          artifactName: parseLocalRunArtifactName(artifactIdInput),
+          code: "ArtifactNotFound",
+          message: "Factory artifact body is not readable by the runtime.",
+          recoverable: false,
+          runId: indexes.graph.runId,
+        })
+      );
     }
 
     const paths = yield* makeRunPaths(indexes.graph.runId, options);
@@ -374,13 +380,15 @@ export function readFactoryArtifactBodyFromIndex(
       fs.readFileString(definition.path(paths))
     );
     if (bodyExit._tag === "Failure") {
-      return yield* Effect.fail({
-        artifactName: artifactIdInput,
-        code: "ArtifactNotFound",
-        message: "Factory artifact body could not be read for this run.",
-        recoverable: false,
-        runId: indexes.graph.runId,
-      } satisfies LocalRunReadDiagnostic);
+      return yield* Effect.fail(
+        parseLocalRunReadDiagnostic({
+          artifactName: parseLocalRunArtifactName(artifactIdInput),
+          code: "ArtifactNotFound",
+          message: "Factory artifact body could not be read for this run.",
+          recoverable: false,
+          runId: indexes.graph.runId,
+        })
+      );
     }
 
     return decodeFactoryArtifactBody({
@@ -690,13 +698,15 @@ function parseFactoryCreateInput(
       })
     );
   } catch {
-    return Effect.fail({
-      code: "FactoryGraphNotFound",
-      message:
-        "Run does not contain factory workflow metadata in its authoritative RUN_CREATED event.",
-      recoverable: false,
-      runId: first.runId,
-    } satisfies LocalRunReadDiagnostic);
+    return Effect.fail(
+      parseLocalRunReadDiagnostic({
+        code: "FactoryGraphNotFound",
+        message:
+          "Run does not contain factory workflow metadata in its authoritative RUN_CREATED event.",
+        recoverable: false,
+        runId: first.runId,
+      })
+    );
   }
 }
 
@@ -714,13 +724,15 @@ function parseFactoryResolvedExecution(
       )
     );
   } catch {
-    return Effect.fail({
-      code: "FactoryGraphNotFound",
-      message:
-        "Run does not contain resolved harness execution metadata in its authoritative RUN_CREATED event.",
-      recoverable: false,
-      runId: first.runId,
-    } satisfies LocalRunReadDiagnostic);
+    return Effect.fail(
+      parseLocalRunReadDiagnostic({
+        code: "FactoryGraphNotFound",
+        message:
+          "Run does not contain resolved harness execution metadata in its authoritative RUN_CREATED event.",
+        recoverable: false,
+        runId: first.runId,
+      })
+    );
   }
 }
 
@@ -1442,28 +1454,28 @@ function parentAgentIdForRole(role: FactoryAgentRole): string | undefined {
 }
 
 function runNotFoundDiagnostic(runId: RunId): LocalRunReadDiagnostic {
-  return {
+  return parseLocalRunReadDiagnostic({
     code: "RunNotFound",
     message: "Run directory does not exist.",
     recoverable: false,
     runId,
-  };
+  });
 }
 
 function noEventsDiagnostic(runId: RunId | undefined): LocalRunReadDiagnostic {
-  return {
+  return parseLocalRunReadDiagnostic({
     code: "RunHasNoEvents",
     message: "Run has no events.jsonl records.",
     recoverable: false,
     ...(runId === undefined ? {} : { runId }),
-  };
+  });
 }
 
 function readFailureDiagnostic(runId: RunId): LocalRunReadDiagnostic {
-  return {
+  return parseLocalRunReadDiagnostic({
     code: "RunUnreadable",
     message: "Run could not be read from events.jsonl.",
     recoverable: false,
     runId,
-  };
+  });
 }

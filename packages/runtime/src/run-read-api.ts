@@ -1,11 +1,25 @@
 import {
+  LocalRunPathSegmentSchema,
+  LocalRunReadArtifactIdSchema,
+  LocalRunReadDiagnosticSchema,
+  LocalRunReadSummarySchema,
+  localRunArtifactIds,
+  parseLocalRunArtifact,
+  parseLocalRunArtifactName,
+  parseLocalRunEvents,
+  parseLocalRunList,
+  parseLocalRunReadDiagnostic,
   parseRunId,
   snapshotFromReplay,
-  type RunEvent,
+  type LocalRunArtifactContentType,
+  type LocalRunArtifactId,
+  type LocalRunReadDiagnostic,
+  type LocalRunStatus,
+  type LocalRunSummary,
   type RunId,
   type RunState,
 } from "@gaia/core";
-import { Cause, Effect, FileSystem } from "effect";
+import { Cause, Effect, FileSystem, Option, Schema } from "effect";
 
 import { loadRun } from "./event-store.js";
 import {
@@ -15,103 +29,18 @@ import {
   type RunStorageOptions,
 } from "./paths.js";
 
-export type LocalRunReadDiagnosticCode =
-  | "ArtifactNotAllowed"
-  | "ArtifactNotFound"
-  | "FactoryAgentNotFound"
-  | "FactoryGraphNotFound"
-  | "InvalidRunDirectory"
-  | "InvalidRunId"
-  | "RunHasNoEvents"
-  | "RunNotFound"
-  | "RunUnreadable";
-
-export type LocalRunReadDiagnostic = {
-  readonly artifactName?: string;
-  readonly code: LocalRunReadDiagnosticCode;
-  readonly message: string;
-  readonly pathSegment?: string;
-  readonly recoverable: boolean;
-  readonly runId?: RunId;
-};
-
-export type LocalRunStatus = "completed" | "failed" | "running";
-
-export type LocalRunSummary = {
-  readonly artifacts: ReadonlyArray<LocalRunArtifactId>;
-  readonly createdAt: string;
-  readonly eventCount: number;
-  readonly latestEventType: RunEvent["type"];
-  readonly runId: RunId;
-  readonly state: RunState;
-  readonly status: LocalRunStatus;
-  readonly updatedAt: string;
-};
-
-export type LocalRunDetail = LocalRunSummary;
-
-export type LocalRunList = {
-  readonly diagnostics: ReadonlyArray<LocalRunReadDiagnostic>;
-  readonly runs: ReadonlyArray<LocalRunSummary>;
-};
-
-export type LocalRunEvents = {
-  readonly events: ReadonlyArray<RunEvent>;
-  readonly runId: RunId;
-};
-
-export type LocalRunArtifactContentType =
-  | "application/json"
-  | "text/markdown"
-  | "text/plain";
-
-export type LocalRunArtifactId =
-  | "input"
-  | "worker-plan"
-  | "reviewer-findings"
-  | "plan-review"
-  | "worker-log"
-  | "worker-result"
-  | "verification-result"
-  | "evidence-review"
-  | "evidence-promotion"
-  | "evidence-promotion-markdown"
-  | "factory-retro"
-  | "factory-retro-markdown"
-  | "factory-scorecard"
-  | "factory-scorecard-markdown"
-  | "report"
-  | "report-json"
-  | "events"
-  | "snapshots";
-
-const localRunArtifactIds: ReadonlyArray<LocalRunArtifactId> = [
-  "input",
-  "worker-plan",
-  "reviewer-findings",
-  "plan-review",
-  "worker-log",
-  "worker-result",
-  "verification-result",
-  "evidence-review",
-  "evidence-promotion",
-  "evidence-promotion-markdown",
-  "factory-retro",
-  "factory-retro-markdown",
-  "factory-scorecard",
-  "factory-scorecard-markdown",
-  "report",
-  "report-json",
-  "events",
-  "snapshots",
-];
-
-export type LocalRunArtifact = {
-  readonly artifactName: LocalRunArtifactId;
-  readonly body: string;
-  readonly contentType: LocalRunArtifactContentType;
-  readonly runId: RunId;
-};
+const decodeLocalRunArtifactId = Schema.decodeUnknownOption(
+  LocalRunReadArtifactIdSchema
+);
+const decodeLocalRunDiagnostic = Schema.decodeUnknownOption(
+  LocalRunReadDiagnosticSchema
+);
+const decodeLocalRunSummary = Schema.decodeUnknownOption(
+  LocalRunReadSummarySchema
+);
+const encodeLocalRunArtifactId = Schema.encodeSync(
+  LocalRunReadArtifactIdSchema
+);
 
 type ArtifactDefinition = {
   readonly contentType: LocalRunArtifactContentType;
@@ -119,7 +48,7 @@ type ArtifactDefinition = {
 };
 
 const artifactDefinitions: Readonly<
-  Record<LocalRunArtifactId, ArtifactDefinition>
+  Record<typeof LocalRunReadArtifactIdSchema.Encoded, ArtifactDefinition>
 > = {
   "evidence-review": {
     contentType: "application/json",
@@ -201,7 +130,7 @@ export function listLocalRuns(options: RunStorageOptions = {}) {
     const store = yield* makeRunStorePaths(options);
     const exists = yield* fs.exists(store.runsRoot);
     if (!exists) {
-      return { diagnostics: [], runs: [] } satisfies LocalRunList;
+      return parseLocalRunList({ diagnostics: [], runs: [] });
     }
 
     const entries = (yield* fs.readDirectory(store.runsRoot))
@@ -226,7 +155,7 @@ export function listLocalRuns(options: RunStorageOptions = {}) {
       }
     }
 
-    return { diagnostics, runs } satisfies LocalRunList;
+    return parseLocalRunList({ diagnostics, runs });
   });
 }
 
@@ -256,7 +185,7 @@ export function readLocalRun(runId: RunId, options: RunStorageOptions = {}) {
     }
 
     const artifacts = yield* existingArtifacts(paths);
-    return {
+    const summary = decodeLocalRunSummary({
       artifacts,
       createdAt: firstEvent.timestamp,
       eventCount: loadedExit.value.events.length,
@@ -265,7 +194,12 @@ export function readLocalRun(runId: RunId, options: RunStorageOptions = {}) {
       state: snapshot.state,
       status: statusFromState(snapshot.state),
       updatedAt: latestEvent.timestamp,
-    } satisfies LocalRunDetail;
+    });
+    if (Option.isNone(summary)) {
+      return yield* Effect.fail(readFailureDiagnostic(runId));
+    }
+
+    return summary.value;
   });
 }
 
@@ -290,10 +224,10 @@ export function readLocalRunEvents(
       return yield* Effect.fail(noEventsDiagnostic(runId));
     }
 
-    return {
+    return parseLocalRunEvents({
       events: loadedExit.value.events,
       runId,
-    } satisfies LocalRunEvents;
+    });
   });
 }
 
@@ -303,71 +237,47 @@ export function readLocalRunArtifact(
   options: RunStorageOptions = {}
 ) {
   return Effect.gen(function* () {
-    const artifactId = parseArtifactId(artifactName);
-    if (artifactId._tag === "Failure") {
-      return yield* Effect.fail({
-        artifactName,
-        code: "ArtifactNotAllowed",
-        message: "Artifact is not allowlisted for local API reads.",
-        recoverable: false,
-        runId,
-      } satisfies LocalRunReadDiagnostic);
+    const attemptedArtifactName = parseLocalRunArtifactName(artifactName);
+    const artifactId = decodeLocalRunArtifactId(artifactName);
+    if (Option.isNone(artifactId)) {
+      return yield* Effect.fail(
+        parseLocalRunReadDiagnostic({
+          artifactName: attemptedArtifactName,
+          code: "ArtifactNotAllowed",
+          message: "Artifact is not allowlisted for local API reads.",
+          recoverable: false,
+          runId,
+        })
+      );
     }
 
-    const definition = artifactDefinitions[artifactId.artifactId];
+    const definition =
+      artifactDefinitions[encodeLocalRunArtifactId(artifactId.value)];
     yield* readLocalRun(runId, options);
     const fs = yield* FileSystem.FileSystem;
     const paths = yield* makeRunPaths(runId, options);
     const artifactPath = definition.path(paths);
     const exists = yield* fs.exists(artifactPath);
     if (!exists) {
-      return yield* Effect.fail({
-        artifactName,
-        code: "ArtifactNotFound",
-        message: "Artifact does not exist for this run.",
-        recoverable: false,
-        runId,
-      } satisfies LocalRunReadDiagnostic);
+      return yield* Effect.fail(
+        parseLocalRunReadDiagnostic({
+          artifactName: attemptedArtifactName,
+          code: "ArtifactNotFound",
+          message: "Artifact does not exist for this run.",
+          recoverable: false,
+          runId,
+        })
+      );
     }
 
     const body = yield* fs.readFileString(artifactPath);
-    return {
-      artifactName: artifactId.artifactId,
+    return parseLocalRunArtifact({
+      artifactName: artifactId.value,
       body,
       contentType: definition.contentType,
       runId,
-    } satisfies LocalRunArtifact;
+    });
   });
-}
-
-type ParsedArtifactId =
-  | { readonly _tag: "Failure" }
-  | { readonly _tag: "Success"; readonly artifactId: LocalRunArtifactId };
-
-function parseArtifactId(input: string): ParsedArtifactId {
-  switch (input) {
-    case "input":
-    case "worker-plan":
-    case "reviewer-findings":
-    case "plan-review":
-    case "worker-log":
-    case "worker-result":
-    case "verification-result":
-    case "evidence-review":
-    case "evidence-promotion":
-    case "evidence-promotion-markdown":
-    case "factory-retro":
-    case "factory-retro-markdown":
-    case "factory-scorecard":
-    case "factory-scorecard-markdown":
-    case "report":
-    case "report-json":
-    case "events":
-    case "snapshots":
-      return { _tag: "Success", artifactId: input };
-  }
-
-  return { _tag: "Failure" };
 }
 
 type ParsedRunDirectoryName =
@@ -375,17 +285,31 @@ type ParsedRunDirectoryName =
   | { readonly _tag: "Success"; readonly runId: RunId };
 
 function parseRunDirectoryName(pathSegment: string): ParsedRunDirectoryName {
+  const decodedPathSegment = Schema.decodeUnknownOption(
+    LocalRunPathSegmentSchema
+  )(pathSegment);
+  if (Option.isNone(decodedPathSegment)) {
+    return {
+      _tag: "Failure",
+      diagnostic: parseLocalRunReadDiagnostic({
+        code: "InvalidRunDirectory",
+        message: "Run directory name is not a valid Gaia run id.",
+        recoverable: false,
+      }),
+    };
+  }
+
   try {
     return { _tag: "Success", runId: parseRunId(pathSegment) };
   } catch {
     return {
       _tag: "Failure",
-      diagnostic: {
+      diagnostic: parseLocalRunReadDiagnostic({
         code: "InvalidRunDirectory",
         message: "Run directory name is not a valid Gaia run id.",
-        pathSegment,
+        pathSegment: decodedPathSegment.value,
         recoverable: false,
-      } satisfies LocalRunReadDiagnostic,
+      }),
     };
   }
 }
@@ -407,7 +331,8 @@ function existingArtifacts(paths: RunPaths) {
     const fs = yield* FileSystem.FileSystem;
     const artifacts: Array<LocalRunArtifactId> = [];
     for (const artifactName of localRunArtifactIds) {
-      const definition = artifactDefinitions[artifactName];
+      const definition =
+        artifactDefinitions[encodeLocalRunArtifactId(artifactName)];
       const exists = yield* fs.exists(definition.path(paths));
       if (exists) {
         artifacts.push(artifactName);
@@ -419,21 +344,21 @@ function existingArtifacts(paths: RunPaths) {
 }
 
 function noEventsDiagnostic(runId: RunId): LocalRunReadDiagnostic {
-  return {
+  return parseLocalRunReadDiagnostic({
     code: "RunHasNoEvents",
     message: "Run has no events.jsonl records.",
     recoverable: false,
     runId,
-  };
+  });
 }
 
 function readFailureDiagnostic(runId: RunId): LocalRunReadDiagnostic {
-  return {
+  return parseLocalRunReadDiagnostic({
     code: "RunUnreadable",
     message: "Run could not be read from events.jsonl.",
     recoverable: false,
     runId,
-  };
+  });
 }
 
 function diagnosticFromCause(
@@ -441,29 +366,22 @@ function diagnosticFromCause(
   runId: RunId
 ): LocalRunReadDiagnostic {
   for (const reason of cause.reasons) {
-    if (Cause.isFailReason(reason) && isReadDiagnostic(reason.error)) {
-      return reason.error;
+    if (Cause.isFailReason(reason)) {
+      const diagnostic = decodeLocalRunDiagnostic(reason.error);
+      if (Option.isSome(diagnostic)) {
+        return diagnostic.value;
+      }
     }
   }
 
   return readFailureDiagnostic(runId);
 }
 
-function isReadDiagnostic(input: unknown): input is LocalRunReadDiagnostic {
-  return (
-    typeof input === "object" &&
-    input !== null &&
-    "code" in input &&
-    "message" in input &&
-    "recoverable" in input
-  );
-}
-
 function runNotFoundDiagnostic(runId: RunId): LocalRunReadDiagnostic {
-  return {
+  return parseLocalRunReadDiagnostic({
     code: "RunNotFound",
     message: "Run directory does not exist.",
     recoverable: false,
     runId,
-  };
+  });
 }

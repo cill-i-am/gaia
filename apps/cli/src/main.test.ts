@@ -69,37 +69,52 @@ describe("gaia CLI local server read parity", () => {
           );
           const server = yield* startLocalRunServer(cwd);
           try {
-            const [directEvents, serverEvents, directArtifact, serverArtifact] =
-              yield* Effect.all(
-                [
-                  runGaiaJson(cwd, ["events", runId, "--json"]),
-                  runGaiaJson(cwd, [
-                    "events",
-                    runId,
-                    "--json",
-                    "--server-url",
-                    server.url,
-                  ]),
-                  runGaiaJson(cwd, [
-                    "artifact",
-                    runId,
-                    "report-json",
-                    "--json",
-                  ]),
-                  runGaiaJson(cwd, [
-                    "artifact",
-                    runId,
-                    "report-json",
-                    "--json",
-                    "--server-url",
-                    server.url,
-                  ]),
-                ],
-                { concurrency: "unbounded" }
-              );
+            const [
+              directEvents,
+              serverEvents,
+              directArtifact,
+              serverArtifact,
+              directEventsHuman,
+              serverEventsHuman,
+              directArtifactHuman,
+              serverArtifactHuman,
+            ] = yield* Effect.all(
+              [
+                runGaiaJson(cwd, ["events", runId, "--json"]),
+                runGaiaJson(cwd, [
+                  "events",
+                  runId,
+                  "--json",
+                  "--server-url",
+                  server.url,
+                ]),
+                runGaiaJson(cwd, ["artifact", runId, "report-json", "--json"]),
+                runGaiaJson(cwd, [
+                  "artifact",
+                  runId,
+                  "report-json",
+                  "--json",
+                  "--server-url",
+                  server.url,
+                ]),
+                runGaia(cwd, ["events", runId]),
+                runGaia(cwd, ["events", runId, "--server-url", server.url]),
+                runGaia(cwd, ["artifact", runId, "report-json"]),
+                runGaia(cwd, [
+                  "artifact",
+                  runId,
+                  "report-json",
+                  "--server-url",
+                  server.url,
+                ]),
+              ],
+              { concurrency: "unbounded" }
+            );
 
             expect(serverEvents).toEqual(directEvents);
             expect(serverArtifact).toEqual(directArtifact);
+            expect(serverEventsHuman.stdout).toBe(directEventsHuman.stdout);
+            expect(serverArtifactHuman.stdout).toBe(directArtifactHuman.stdout);
           } finally {
             yield* stopServer(server);
           }
@@ -134,6 +149,48 @@ describe("gaia CLI local server read parity", () => {
             recoverable: true,
             status: "failed",
           });
+        }),
+      20_000
+    );
+
+    it.effect(
+      "rejects traversal artifacts before transport with direct and server parity",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-cli-artifact-input-",
+          });
+          const base = ["artifact", "run-L84-kMhLY8", "../events.jsonl"];
+          const [directJson, serverJson, directHuman, serverHuman] =
+            yield* Effect.all(
+              [
+                runGaia(cwd, [...base, "--json"]),
+                runGaia(cwd, [
+                  ...base,
+                  "--json",
+                  "--server-url",
+                  "http://127.0.0.1:1",
+                ]),
+                runGaia(cwd, base),
+                runGaia(cwd, [...base, "--server-url", "http://127.0.0.1:1"]),
+              ],
+              { concurrency: "unbounded" }
+            );
+          const expectedJson = {
+            code: "ArtifactNotAllowed",
+            message: "Artifact is not allowlisted for local API reads.",
+            recoverable: false,
+            status: "failed",
+          };
+
+          expect(directJson.exitCode).toBe(1);
+          expect(serverJson.exitCode).toBe(1);
+          expect(parseCliJson(directJson.stdout)).toEqual(expectedJson);
+          expect(parseCliJson(serverJson.stdout)).toEqual(expectedJson);
+          expect(directHuman.exitCode).toBe(1);
+          expect(serverHuman.exitCode).toBe(1);
+          expect(serverHuman.stdout).toBe(directHuman.stdout);
         }),
       20_000
     );

@@ -4,9 +4,12 @@ import path from "node:path";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  LocalRunApiDiagnosticDto,
   parseLocalGaiaServerUrl,
   parseRunId,
   type LocalGaiaServerUrl,
+  type LocalRunArtifact,
+  type LocalRunEvents,
   type RunId,
 } from "@gaia/core";
 import type {
@@ -26,9 +29,6 @@ import type {
   GitHubPublishPreflightSummary,
   GitHubPublishPreview,
   GitHubPrSummary,
-  LocalRunArtifact,
-  LocalRunEvents,
-  LocalRunReadDiagnostic,
   WorkspacePrQualityGate,
   WorkspacePrQualityGateItem,
 } from "@gaia/runtime";
@@ -69,6 +69,7 @@ import { runLocalGaiaServer } from "@gaia/server";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Argument from "effect/unstable/cli/Argument";
 import * as Command from "effect/unstable/cli/Command";
 import * as Flag from "effect/unstable/cli/Flag";
@@ -98,6 +99,9 @@ const runId = Argument.string("run-id");
 const pullRequest = Argument.string("pull-request");
 const artifactName = Argument.string("artifact-name");
 const actionId = Argument.string("action-id");
+const decodeLocalRunApiDiagnostic = Schema.decodeUnknownOption(
+  LocalRunApiDiagnosticDto
+);
 const optionalRunId = runId.pipe(Argument.optional);
 const optionalPullRequest = pullRequest.pipe(Argument.optional);
 const browserTargetUrl = Flag.string("url").pipe(
@@ -1238,11 +1242,12 @@ function failureOutput(error: unknown): FailureOutput {
     };
   }
 
-  if (isLocalRunReadDiagnostic(error)) {
+  const diagnostic = decodeLocalRunApiDiagnostic(error);
+  if (Option.isSome(diagnostic)) {
     return {
-      code: error.code,
-      message: error.message,
-      recoverable: error.recoverable,
+      code: diagnostic.value.code,
+      message: diagnostic.value.message,
+      recoverable: diagnostic.value.recoverable,
       status: "failed",
     };
   }
@@ -1253,21 +1258,6 @@ function failureOutput(error: unknown): FailureOutput {
     recoverable: false,
     status: "failed",
   };
-}
-
-function isLocalRunReadDiagnostic(
-  input: unknown
-): input is LocalRunReadDiagnostic {
-  return (
-    typeof input === "object" &&
-    input !== null &&
-    "code" in input &&
-    typeof input.code === "string" &&
-    "message" in input &&
-    typeof input.message === "string" &&
-    "recoverable" in input &&
-    typeof input.recoverable === "boolean"
-  );
 }
 
 function renderFailure(failure: FailureOutput) {

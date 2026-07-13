@@ -1,5 +1,10 @@
-import type { RunId } from "@gaia/core";
-import { Effect } from "effect";
+import {
+  LocalRunPathSegmentSchema,
+  parseLocalRunReadDiagnostic,
+  type LocalRunReadDiagnostic,
+  type RunId,
+} from "@gaia/core";
+import { Effect, Option, Schema } from "effect";
 
 import {
   readFactoryArtifactBodyFromIndex,
@@ -7,7 +12,10 @@ import {
   type FactoryActivityIndex,
 } from "./factory-run-store.js";
 import type { RunStorageOptions } from "./paths.js";
-import type { LocalRunReadDiagnostic } from "./run-read-api.js";
+
+const decodeLocalRunPathSegment = Schema.decodeUnknownOption(
+  LocalRunPathSegmentSchema
+);
 
 export function readFactoryGraph(
   runId: RunId,
@@ -38,13 +46,18 @@ export function readFactoryAgentActivity(
       (candidate) => candidate.id === agentIdInput
     );
     if (agent === undefined) {
-      return yield* Effect.fail({
-        code: "FactoryAgentNotFound",
-        message: "Factory agent does not exist for this run.",
-        pathSegment: agentIdInput,
-        recoverable: false,
-        runId: indexes.graph.runId,
-      } satisfies LocalRunReadDiagnostic);
+      const pathSegment = decodeLocalRunPathSegment(agentIdInput);
+      return yield* Effect.fail(
+        parseLocalRunReadDiagnostic({
+          code: "FactoryAgentNotFound",
+          message: "Factory agent does not exist for this run.",
+          ...(Option.isNone(pathSegment)
+            ? {}
+            : { pathSegment: pathSegment.value }),
+          recoverable: false,
+          runId: indexes.graph.runId,
+        })
+      );
     }
 
     return {

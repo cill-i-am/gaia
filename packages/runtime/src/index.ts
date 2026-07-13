@@ -304,15 +304,6 @@ export {
   readLocalRun,
   readLocalRunArtifact,
   readLocalRunEvents,
-  type LocalRunArtifact,
-  type LocalRunArtifactContentType,
-  type LocalRunDetail,
-  type LocalRunEvents,
-  type LocalRunList,
-  type LocalRunReadDiagnostic,
-  type LocalRunReadDiagnosticCode,
-  type LocalRunStatus,
-  type LocalRunSummary,
 } from "./run-read-api.js";
 export {
   listFactoryRunArtifacts,
