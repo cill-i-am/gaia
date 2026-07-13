@@ -1,5 +1,6 @@
 import { Effect, FileSystem, Path, Schema } from "effect";
 import type { PlatformError } from "effect/PlatformError";
+
 import { makeRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
 
@@ -14,13 +15,13 @@ const ignoredWorkspaceEntries = new Set([
 ]);
 
 export const WorkspaceSourcePathSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("WorkspaceSourcePath"),
+  Schema.brand("WorkspaceSourcePath")
 );
 
 export type WorkspaceSourcePath = typeof WorkspaceSourcePathSchema.Type;
 
 export const parseWorkspaceSourcePath = Schema.decodeUnknownSync(
-  WorkspaceSourcePathSchema,
+  WorkspaceSourcePathSchema
 );
 
 export type WorkspaceSource =
@@ -31,10 +32,10 @@ export type WorkspaceSource =
     };
 
 export class WorkspacePreparationResult extends Schema.Class<WorkspacePreparationResult>(
-  "WorkspacePreparationResult",
+  "WorkspacePreparationResult"
 )({
   copiedFiles: Schema.Number.pipe(
-    Schema.check(Schema.isInt({ identifier: "CopiedFiles" })),
+    Schema.check(Schema.isInt({ identifier: "CopiedFiles" }))
   ),
   manifestPath: Schema.NonEmptyString,
   skippedEntries: Schema.Array(Schema.NonEmptyString),
@@ -44,19 +45,17 @@ export class WorkspacePreparationResult extends Schema.Class<WorkspacePreparatio
 }) {}
 
 const WorkspacePreparationResultJson = Schema.toCodecJson(
-  WorkspacePreparationResult,
+  WorkspacePreparationResult
 );
 const encodeWorkspacePreparationResult = Schema.encodeSync(
-  WorkspacePreparationResultJson,
+  WorkspacePreparationResultJson
 );
 
 export function emptyWorkspaceSource(): WorkspaceSource {
   return { _tag: "Empty" };
 }
 
-export function localDirectoryWorkspaceSource(
-  input: string,
-): WorkspaceSource {
+export function localDirectoryWorkspaceSource(input: string): WorkspaceSource {
   return {
     _tag: "LocalDirectory",
     path: parseWorkspaceSourcePath(input),
@@ -65,7 +64,7 @@ export function localDirectoryWorkspaceSource(
 
 export function prepareWorkspace(
   paths: RunPaths,
-  source: WorkspaceSource = emptyWorkspaceSource(),
+  source: WorkspaceSource = emptyWorkspaceSource()
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -85,7 +84,7 @@ export function prepareWorkspace(
 
     yield* fs.writeFileString(
       paths.workspaceManifest,
-      `${JSON.stringify(encodeWorkspacePreparationResult(result), null, 2)}\n`,
+      `${JSON.stringify(encodeWorkspacePreparationResult(result), null, 2)}\n`
     );
 
     return result;
@@ -94,7 +93,7 @@ export function prepareWorkspace(
 
 function prepareLocalDirectoryWorkspace(
   paths: RunPaths,
-  sourcePath: WorkspaceSourcePath,
+  sourcePath: WorkspaceSourcePath
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -106,9 +105,9 @@ function prepareLocalDirectoryWorkspace(
             code: "WorkspaceSourceUnavailable",
             message: `Workspace source '${sourcePath}' is not available.`,
             recoverable: false,
-          }),
-        ),
-      ),
+          })
+        )
+      )
     );
 
     if (sourceInfo.type !== "Directory") {
@@ -117,11 +116,14 @@ function prepareLocalDirectoryWorkspace(
           code: "WorkspaceSourceNotDirectory",
           message: `Workspace source '${sourcePath}' must be a directory.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
-    const copied = yield* copyWorkspaceDirectoryContents(sourcePath, paths.workspace);
+    const copied = yield* copyWorkspaceDirectoryContents(
+      sourcePath,
+      paths.workspace
+    );
 
     return WorkspacePreparationResult.make({
       copiedFiles: copied.copiedFiles,
@@ -148,7 +150,7 @@ export type WorkspaceCopyOptions = {
 export function copyWorkspaceDirectoryContents(
   sourceDirectory: string,
   destinationDirectory: string,
-  options: WorkspaceCopyOptions = {},
+  options: WorkspaceCopyOptions = {}
 ): Effect.Effect<
   CopyDirectoryResult,
   PlatformError,
@@ -168,7 +170,7 @@ function copyDirectoryContents(
     deleteExtraneous: boolean;
     relativePrefix: string;
     skippedRelativePaths: ReadonlySet<string>;
-  }>,
+  }>
 ): Effect.Effect<
   CopyDirectoryResult,
   PlatformError,
@@ -183,9 +185,9 @@ function copyDirectoryContents(
     let copiedFiles = 0;
 
     if (input.deleteExtraneous && (yield* fs.exists(destinationDirectory))) {
-      const destinationEntries = (
-        yield* fs.readDirectory(destinationDirectory)
-      ).toSorted();
+      const destinationEntries = (yield* fs.readDirectory(
+        destinationDirectory
+      )).toSorted();
 
       for (const entry of destinationEntries) {
         const relativePath =
@@ -235,7 +237,7 @@ function copyDirectoryContents(
               deleteExtraneous: input.deleteExtraneous,
               relativePrefix: relativePath,
               skippedRelativePaths: input.skippedRelativePaths,
-            },
+            }
           );
           copiedFiles += childResult.copiedFiles;
           skippedEntries.push(...childResult.skippedEntries);

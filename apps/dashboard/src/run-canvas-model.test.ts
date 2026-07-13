@@ -3,10 +3,7 @@ import { RunIdSchema, makeRunEvent } from "@gaia/core";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import {
-  buildRunCanvasModel,
-  buildRunReplayState,
-} from "@/run-canvas-model";
+import { buildRunCanvasModel, buildRunReplayState } from "@/run-canvas-model";
 
 describe("run canvas model", () => {
   it("derives a run graph from ordered events and exposed artifacts", () => {
@@ -81,7 +78,7 @@ describe("run canvas model", () => {
         "event:5:REPORT_COMPLETED:2026-07-07T12:04:00.000Z",
         "artifact:input",
         "artifact:report-json",
-      ]),
+      ])
     );
     expect(model.edges).toEqual(
       expect.arrayContaining([
@@ -95,11 +92,11 @@ describe("run canvas model", () => {
           source: "event:5:REPORT_COMPLETED:2026-07-07T12:04:00.000Z",
           target: "artifact:report-json",
         }),
-      ]),
+      ])
     );
     expect(
       model.nodes.find((node) => node.id === "relationship:thread-identity")
-        ?.summary,
+        ?.summary
     ).toContain("not Codex thread IDs");
   });
 
@@ -176,7 +173,7 @@ describe("run canvas model", () => {
 
     expect(replayState.currentStep?.label).toBe("2: Worker Started");
     expect(replayState.activeEventId).toBe(
-      "event:2:WORKER_STARTED:2026-07-07T12:01:00.000Z",
+      "event:2:WORKER_STARTED:2026-07-07T12:01:00.000Z"
     );
     expect(replayState.visibleEventIds).toEqual([
       "event:1:RUN_CREATED:2026-07-07T12:00:00.000Z",
@@ -185,10 +182,7 @@ describe("run canvas model", () => {
     expect(replayState.futureEventIds).toEqual([
       "event:3:WORKER_COMPLETED:2026-07-07T12:02:00.000Z",
     ]);
-    expect(replayState.visibleArtifactIds).toEqual([
-      "input",
-      "worker-plan",
-    ]);
+    expect(replayState.visibleArtifactIds).toEqual(["input", "worker-plan"]);
     expect(Math.round(replayState.progressPercent)).toBe(50);
   });
 
@@ -217,13 +211,13 @@ describe("run canvas model", () => {
 
     expect(
       buildRunReplayState({ requestedIndex: undefined, run: model })
-        .activeSequence,
+        .activeSequence
     ).toBe(2);
     expect(
-      buildRunReplayState({ requestedIndex: -99, run: model }).activeSequence,
+      buildRunReplayState({ requestedIndex: -99, run: model }).activeSequence
     ).toBe(1);
     expect(
-      buildRunReplayState({ requestedIndex: 99, run: model }).activeSequence,
+      buildRunReplayState({ requestedIndex: 99, run: model }).activeSequence
     ).toBe(2);
   });
 });
@@ -231,7 +225,7 @@ describe("run canvas model", () => {
 function localRunSummary(
   input: Partial<typeof LocalRunSummaryDto.Type> & {
     readonly runId: typeof LocalRunSummaryDto.Type.runId;
-  },
+  }
 ): typeof LocalRunSummaryDto.Type {
   return {
     artifacts: ["input"],

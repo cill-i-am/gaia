@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
+
 import {
   HarnessCapabilities,
   HarnessSessionIdSchema,
@@ -12,9 +16,6 @@ import {
   type HarnessInteractionId,
   type HarnessSessionId,
 } from "@gaia/core";
-import path from "node:path";
-import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import {
   Cause,
   Effect,
@@ -25,9 +26,8 @@ import {
   Stream,
   type Scope,
 } from "effect";
-import {
-  type CodexAppServerClient,
-} from "./codex-app-server-client.js";
+
+import { type CodexAppServerClient } from "./codex-app-server-client.js";
 import {
   supportedCodexCliVersion,
   parseCodexThreadId,
@@ -54,7 +54,13 @@ import {
 
 /** Stable capabilities implemented by the initial Codex App Server adapter. */
 export const CodexHarnessCapabilities = HarnessCapabilities.make({
-  approvals: ["command", "fileChange", "permission", "userInput", "mcpElicitation"],
+  approvals: [
+    "command",
+    "fileChange",
+    "permission",
+    "userInput",
+    "mcpElicitation",
+  ],
   fileChangeEvents: true,
   interruption: true,
   resumableSessions: true,
@@ -86,10 +92,7 @@ export type CodexHarnessProviderOptions = {
 
 /** Opaque adapter token; callers persist it without interpreting its contents. */
 const CodexHarnessCorrelationTokenSchema = Schema.NonEmptyString.pipe(
-  Schema.check(
-    Schema.isMaxLength(4_096),
-    Schema.isPattern(/^[A-Za-z0-9_-]+$/u),
-  ),
+  Schema.check(Schema.isMaxLength(4_096), Schema.isPattern(/^[A-Za-z0-9_-]+$/u))
 );
 
 /** Finite opaque adapter token persisted without exposing its native meaning. */
@@ -100,11 +103,11 @@ export type CodexHarnessOpaqueCorrelation = {
 /** Adapter-owned persistence seam for opaque Codex session correlation. */
 export interface CodexHarnessCorrelationStore {
   readonly load: (
-    sessionId: HarnessSessionId,
+    sessionId: HarnessSessionId
   ) => Effect.Effect<CodexHarnessOpaqueCorrelation | undefined, unknown>;
   readonly save: (
     sessionId: HarnessSessionId,
-    correlation: CodexHarnessOpaqueCorrelation,
+    correlation: CodexHarnessOpaqueCorrelation
   ) => Effect.Effect<void, unknown>;
 }
 
@@ -124,33 +127,41 @@ export function makeInMemoryCodexHarnessCorrelationStore(): CodexHarnessCorrelat
 }
 
 class CodexHarnessCorrelationFile extends Schema.Class<CodexHarnessCorrelationFile>(
-  "CodexHarnessCorrelationFile",
-)({
-  harnessProfileId: Schema.Literal("codexAppServer"),
-  providerId: Schema.Literal("codex-app-server"),
-  sessionId: HarnessSessionIdSchema,
-  token: CodexHarnessCorrelationTokenSchema,
-  version: Schema.Literal(1),
-}, {
-  parseOptions: { onExcessProperty: "error" },
-}) {}
+  "CodexHarnessCorrelationFile"
+)(
+  {
+    harnessProfileId: Schema.Literal("codexAppServer"),
+    providerId: Schema.Literal("codex-app-server"),
+    sessionId: HarnessSessionIdSchema,
+    token: CodexHarnessCorrelationTokenSchema,
+    version: Schema.Literal(1),
+  },
+  {
+    parseOptions: { onExcessProperty: "error" },
+  }
+) {}
 const decodeCodexHarnessCorrelationFile = Schema.decodeUnknownSync(
-  CodexHarnessCorrelationFile,
+  CodexHarnessCorrelationFile
 );
 const decodeCodexHarnessOpaqueCorrelation = Schema.decodeUnknownSync(
-  Schema.Struct({ token: CodexHarnessCorrelationTokenSchema }),
+  Schema.Struct({ token: CodexHarnessCorrelationTokenSchema })
 );
 const correlationFileMaxBytes = 16_384;
 
 /** Durable adapter-private correlation store excluded from public run contracts. */
 export function makeFileCodexHarnessCorrelationStore(
-  rootDirectory: string,
+  rootDirectory: string
 ): CodexHarnessCorrelationStore {
-  const directory = path.join(rootDirectory, ".gaia", "private", "harness-correlations");
+  const directory = path.join(
+    rootDirectory,
+    ".gaia",
+    "private",
+    "harness-correlations"
+  );
   const correlationPath = (sessionId: HarnessSessionId) =>
     path.join(
       directory,
-      `${createHash("sha256").update(sessionId).digest("hex")}.json`,
+      `${createHash("sha256").update(sessionId).digest("hex")}.json`
     );
 
   return {
@@ -160,11 +171,13 @@ export function makeFileCodexHarnessCorrelationStore(
           try {
             const target = correlationPath(sessionId);
             if ((await stat(target)).size > correlationFileMaxBytes) {
-              throw new Error("Harness correlation file exceeds its size limit.");
+              throw new Error(
+                "Harness correlation file exceeds its size limit."
+              );
             }
             const contents = await readFile(target, "utf8");
             const parsed = decodeCodexHarnessCorrelationFile(
-              JSON.parse(contents),
+              JSON.parse(contents)
             );
             if (parsed.sessionId !== sessionId) {
               throw new Error("Harness correlation session does not match.");
@@ -187,9 +200,8 @@ export function makeFileCodexHarnessCorrelationStore(
     save: (sessionId, correlation) =>
       Effect.tryPromise({
         try: async () => {
-          const parsedCorrelation = decodeCodexHarnessOpaqueCorrelation(
-            correlation,
-          );
+          const parsedCorrelation =
+            decodeCodexHarnessOpaqueCorrelation(correlation);
           await mkdir(directory, { recursive: true, mode: 0o700 });
           const target = correlationPath(sessionId);
           const temporary = `${target}.${process.pid}.tmp`;
@@ -202,7 +214,7 @@ export function makeFileCodexHarnessCorrelationStore(
               token: parsedCorrelation.token,
               version: 1,
             })}\n`,
-            { encoding: "utf8", mode: 0o600 },
+            { encoding: "utf8", mode: 0o600 }
           );
           await rename(temporary, target);
         },
@@ -213,13 +225,14 @@ export function makeFileCodexHarnessCorrelationStore(
 
 /** Build the first rich HarnessProvider implementation over the landed GAIA-83 client. */
 export function createCodexHarnessProvider(
-  options: CodexHarnessProviderOptions,
+  options: CodexHarnessProviderOptions
 ): HarnessProvider {
   let initializedDetection: HarnessDetection | undefined;
   const initializationSemaphore = Semaphore.makeUnsafe(1);
   const initialize = initializationSemaphore.withPermits(1)(
     Effect.suspend(() => {
-      if (initializedDetection !== undefined) return Effect.succeed(initializedDetection);
+      if (initializedDetection !== undefined)
+        return Effect.succeed(initializedDetection);
       return options.client
         .initialize({
           clientInfo: { name: "gaia", title: "Gaia", version: "0.1.0" },
@@ -234,9 +247,9 @@ export function createCodexHarnessProvider(
               initializedDetection = availableCodexDetection();
               return initializedDetection;
             },
-          }),
+          })
         );
-    }),
+    })
   );
   const detect = Effect.gen(function* () {
     const probe = yield* (
@@ -262,7 +275,10 @@ export function createCodexHarnessProvider(
         const thread = yield* options.client
           .startThread({
             approvalPolicy: "on-request",
-            cwd: absoluteWorkspacePath(options.workspaceRoot, request.workspacePath),
+            cwd: absoluteWorkspacePath(
+              options.workspaceRoot,
+              request.workspacePath
+            ),
             ephemeral: false,
             sandbox: "workspace-write",
           })
@@ -270,31 +286,37 @@ export function createCodexHarnessProvider(
             Effect.mapError(
               () =>
                 new HarnessStartError({
-                  message: "Codex App Server could not start the session thread.",
+                  message:
+                    "Codex App Server could not start the session thread.",
                   providerId: CodexHarnessProviderDescriptor.providerId,
-                }),
-            ),
+                })
+            )
           );
         yield* options.correlationStore
-          .save(request.sessionId, encodeCodexHarnessCorrelation(thread.thread.id))
+          .save(
+            request.sessionId,
+            encodeCodexHarnessCorrelation(thread.thread.id)
+          )
           .pipe(
             Effect.mapError(
               () =>
                 new HarnessStartError({
                   message: "Codex session correlation could not be persisted.",
                   providerId: CodexHarnessProviderDescriptor.providerId,
-                }),
-            ),
+                })
+            )
           );
-        return yield* makeCodexSession({
-          nativeThreadId: thread.thread.id,
-          options,
-          request,
-        }, () =>
-          new HarnessStartError({
-            message: "Codex App Server could not start the initial turn.",
-            providerId: CodexHarnessProviderDescriptor.providerId,
-          }),
+        return yield* makeCodexSession(
+          {
+            nativeThreadId: thread.thread.id,
+            options,
+            request,
+          },
+          () =>
+            new HarnessStartError({
+              message: "Codex App Server could not start the initial turn.",
+              providerId: CodexHarnessProviderDescriptor.providerId,
+            })
         );
       }),
     descriptor: CodexHarnessProviderDescriptor,
@@ -316,11 +338,13 @@ export function createCodexHarnessProvider(
                 new HarnessResumeError({
                   message: "Codex session correlation could not be loaded.",
                   providerId: CodexHarnessProviderDescriptor.providerId,
-                }),
-            ),
+                })
+            )
           );
         const correlatedThreadId =
-          correlation === undefined ? undefined : decodeCodexHarnessCorrelation(correlation);
+          correlation === undefined
+            ? undefined
+            : decodeCodexHarnessCorrelation(correlation);
         if (correlatedThreadId === undefined) {
           return yield* new HarnessResumeError({
             message: "Codex session correlation is unavailable for resume.",
@@ -333,10 +357,11 @@ export function createCodexHarnessProvider(
             Effect.mapError(
               () =>
                 new HarnessResumeError({
-                  message: "Codex App Server could not resume the session thread.",
+                  message:
+                    "Codex App Server could not resume the session thread.",
                   providerId: CodexHarnessProviderDescriptor.providerId,
-              }),
-            ),
+                })
+            )
           );
         if (thread.thread.id !== correlatedThreadId) {
           return yield* new HarnessResumeError({
@@ -351,10 +376,11 @@ export function createCodexHarnessProvider(
             Effect.mapError(
               () =>
                 new HarnessResumeError({
-                  message: "Codex App Server could not read the recovered session.",
+                  message:
+                    "Codex App Server could not read the recovered session.",
                   providerId: CodexHarnessProviderDescriptor.providerId,
-                }),
-            ),
+                })
+            )
           );
         if (recovered.thread.id !== correlatedThreadId) {
           return yield* new HarnessResumeError({
@@ -367,49 +393,69 @@ export function createCodexHarnessProvider(
         let suppressRecoveredProjectionTurn = false;
         if (request.expectedNativeTurnId !== undefined) {
           const turns = recovered.thread.turns ?? [];
-          const matches = turns.filter(({ id }) => id === request.expectedNativeTurnId);
+          const matches = turns.filter(
+            ({ id }) => id === request.expectedNativeTurnId
+          );
           const exact = matches[0];
-          const allowedStatuses = request.allowInterruptedCheckpoint === true
-            ? ["inProgress", "completed", "failed", "interrupted"]
-            : ["inProgress", "completed", "failed"];
-          if (matches.length !== 1 || turns.at(-1)?.id !== request.expectedNativeTurnId || exact?.status === undefined || !allowedStatuses.includes(exact.status)) {
+          const allowedStatuses =
+            request.allowInterruptedCheckpoint === true
+              ? ["inProgress", "completed", "failed", "interrupted"]
+              : ["inProgress", "completed", "failed"];
+          if (
+            matches.length !== 1 ||
+            turns.at(-1)?.id !== request.expectedNativeTurnId ||
+            exact?.status === undefined ||
+            !allowedStatuses.includes(exact.status)
+          ) {
             return yield* new HarnessResumeError({
-              message: "Codex recovered thread does not end at the exact checkpointed turn.",
+              message:
+                "Codex recovered thread does not end at the exact checkpointed turn.",
               providerId: CodexHarnessProviderDescriptor.providerId,
             });
           }
-          suppressRecoveredProjectionTurn = request.allowInterruptedCheckpoint === true && exact.status === "interrupted";
+          suppressRecoveredProjectionTurn =
+            request.allowInterruptedCheckpoint === true &&
+            exact.status === "interrupted";
           recoveredProjectionTurnId = exact.id;
         }
-        return yield* makeCodexSession({
-          nativeThreadId: thread.thread.id,
-          options,
-          ...(recoveredProjectionTurnId === undefined
-            ? {}
-            : { recoveredProjectionTurnId }),
-          ...(suppressRecoveredProjectionTurn ? { suppressRecoveredProjectionTurn } : {}),
-          recoveredThread: recovered.thread,
-          request,
-        }, () =>
-          new HarnessResumeError({
-            message: "Codex App Server could not restore the session.",
-            providerId: CodexHarnessProviderDescriptor.providerId,
-          }),
+        return yield* makeCodexSession(
+          {
+            nativeThreadId: thread.thread.id,
+            options,
+            ...(recoveredProjectionTurnId === undefined
+              ? {}
+              : { recoveredProjectionTurnId }),
+            ...(suppressRecoveredProjectionTurn
+              ? { suppressRecoveredProjectionTurn }
+              : {}),
+            recoveredThread: recovered.thread,
+            request,
+          },
+          () =>
+            new HarnessResumeError({
+              message: "Codex App Server could not restore the session.",
+              providerId: CodexHarnessProviderDescriptor.providerId,
+            })
         );
       }),
   };
 }
 
-function makeCodexSession<E>(input: {
-  readonly nativeThreadId: CodexThreadId;
-  readonly options: CodexHarnessProviderOptions;
-  readonly recoveredProjectionTurnId?: CodexTurnId;
-  readonly recoveredThread?: CodexThread;
-  readonly request: HarnessSessionStart | HarnessSessionResume;
-  readonly suppressRecoveredProjectionTurn?: boolean;
-}, initialTurnError: () => E): Effect.Effect<HarnessSession, E, Scope.Scope> {
+function makeCodexSession<E>(
+  input: {
+    readonly nativeThreadId: CodexThreadId;
+    readonly options: CodexHarnessProviderOptions;
+    readonly recoveredProjectionTurnId?: CodexTurnId;
+    readonly recoveredThread?: CodexThread;
+    readonly request: HarnessSessionStart | HarnessSessionResume;
+    readonly suppressRecoveredProjectionTurn?: boolean;
+  },
+  initialTurnError: () => E
+): Effect.Effect<HarnessSession, E, Scope.Scope> {
   return Effect.gen(function* () {
-    const queue = yield* Queue.bounded<HarnessEvent, HarnessSessionError>(2_000);
+    const queue = yield* Queue.bounded<HarnessEvent, HarnessSessionError>(
+      2_000
+    );
     const mapper = createCodexSessionMapper({
       capabilities: CodexHarnessCapabilities,
       provider: CodexHarnessProviderDescriptor,
@@ -419,20 +465,21 @@ function makeCodexSession<E>(input: {
       sessionId: input.request.sessionId,
       workspaceRoot: absoluteWorkspacePath(
         input.options.workspaceRoot,
-        input.request.workspacePath,
+        input.request.workspacePath
       ),
     });
     const recoveredThreadForProjection =
       input.recoveredThread === undefined ||
-        input.recoveredProjectionTurnId === undefined
+      input.recoveredProjectionTurnId === undefined
         ? input.recoveredThread
         : {
             ...input.recoveredThread,
-            turns: input.suppressRecoveredProjectionTurn === true
-              ? []
-              : (input.recoveredThread.turns ?? []).filter(
-                  ({ id }) => id === input.recoveredProjectionTurnId,
-                ),
+            turns:
+              input.suppressRecoveredProjectionTurn === true
+                ? []
+                : (input.recoveredThread.turns ?? []).filter(
+                    ({ id }) => id === input.recoveredProjectionTurnId
+                  ),
           };
     const projectedEvents: Array<HarnessEvent> = [];
     const pendingRequests = new Map<HarnessInteractionId, CodexServerRequest>();
@@ -443,11 +490,13 @@ function makeCodexSession<E>(input: {
     const dispatchedClientInputIds = new Set(
       (input.recoveredThread?.turns ?? []).flatMap((turn) =>
         (turn.items ?? []).flatMap((item) =>
-          item.type === "userMessage" && item.clientId !== undefined && item.clientId !== null
+          item.type === "userMessage" &&
+          item.clientId !== undefined &&
+          item.clientId !== null
             ? [item.clientId]
-            : [],
-        ),
-      ),
+            : []
+        )
+      )
     );
 
     const failEventBuffer = (message: string) => {
@@ -474,8 +523,8 @@ function makeCodexSession<E>(input: {
           new HarnessSessionError({
             message,
             providerId: CodexHarnessProviderDescriptor.providerId,
-          }),
-        ),
+          })
+        )
       );
     };
 
@@ -489,17 +538,13 @@ function makeCodexSession<E>(input: {
           projectedEventBytes + eventBytes >
             HarnessSessionEventBudgetBytes - 1_024
         ) {
-          failEventBuffer(
-            "Codex session exceeded its bounded event buffer.",
-          );
+          failEventBuffer("Codex session exceeded its bounded event buffer.");
           return;
         }
         projectedEventBytes += eventBytes;
         projectedEvents.push(parsed);
         if (!Queue.offerUnsafe(queue, parsed)) {
-          failEventBuffer(
-            "Codex session live event consumer fell behind.",
-          );
+          failEventBuffer("Codex session live event consumer fell behind.");
         }
       }
     };
@@ -511,14 +556,14 @@ function makeCodexSession<E>(input: {
           new HarnessSessionError({
             message,
             providerId: CodexHarnessProviderDescriptor.providerId,
-          }),
-        ),
+          })
+        )
       );
     };
 
     const terminateSession = (
       events: ReadonlyArray<HarnessEvent>,
-      message: string,
+      message: string
     ) => {
       if (adapterFailed || bufferFailed) return;
       adapterFailed = true;
@@ -533,7 +578,7 @@ function makeCodexSession<E>(input: {
       if (events.some((event) => event.kind === "sessionFailed")) {
         terminateSession(
           events,
-          "Codex session reached a terminal provider failure.",
+          "Codex session reached a terminal provider failure."
         );
         return;
       }
@@ -541,7 +586,7 @@ function makeCodexSession<E>(input: {
     };
 
     const mapOrFail = (
-      map: () => ReadonlyArray<HarnessEvent>,
+      map: () => ReadonlyArray<HarnessEvent>
     ): ReadonlyArray<HarnessEvent> => {
       if (adapterFailed || bufferFailed) return [];
       try {
@@ -553,24 +598,27 @@ function makeCodexSession<E>(input: {
               failure: {
                 code: "CodexProjectionRejected",
                 kind: "providerFailure",
-                message: "Codex emitted an event outside Gaia's safe projection limits.",
+                message:
+                  "Codex emitted an event outside Gaia's safe projection limits.",
                 recoverable: false,
               },
               kind: "sessionFailed",
               sessionId: input.request.sessionId,
             }),
           ],
-          "Codex session projection was rejected.",
+          "Codex session projection was rejected."
         );
         return [];
       }
     };
 
     emitProviderEvents(
-      mapOrFail(() => mapper.mapNotification({
-        method: "thread/started",
-        params: { thread: { id: input.nativeThreadId } },
-      })),
+      mapOrFail(() =>
+        mapper.mapNotification({
+          method: "thread/started",
+          params: { thread: { id: input.nativeThreadId } },
+        })
+      )
     );
 
     const removeNotification = input.options.client.onNotification(
@@ -599,7 +647,7 @@ function makeCodexSession<E>(input: {
           }
         }
         emitProviderEvents(events);
-      },
+      }
     );
     const removeRequest = input.options.client.onServerRequest((request) => {
       const events = mapOrFail(() => mapper.mapServerRequest(request));
@@ -611,7 +659,8 @@ function makeCodexSession<E>(input: {
       emitProviderEvents(events);
     });
     const removeTermination = input.options.client.onTermination(() => {
-      const message = "Codex App Server terminated before the session completed.";
+      const message =
+        "Codex App Server terminated before the session completed.";
       terminateSession(
         [
           parseHarnessEvent({
@@ -625,7 +674,7 @@ function makeCodexSession<E>(input: {
             sessionId: input.request.sessionId,
           }),
         ],
-        message,
+        message
       );
     });
     yield* Effect.addFinalizer(() =>
@@ -634,7 +683,7 @@ function makeCodexSession<E>(input: {
         removeRequest();
         removeTermination();
         yield* Queue.shutdown(queue);
-      }),
+      })
     );
 
     if (
@@ -649,7 +698,7 @@ function makeCodexSession<E>(input: {
         }),
       ]);
       emitProviderEvents(
-        mapOrFail(() => mapper.mapRecoveredThread(recoveredThreadForProjection)),
+        mapOrFail(() => mapper.mapRecoveredThread(recoveredThreadForProjection))
       );
       if (!adapterFailed && !bufferFailed) {
         activeTurnId = [...(recoveredThreadForProjection.turns ?? [])]
@@ -658,11 +707,7 @@ function makeCodexSession<E>(input: {
       }
     }
 
-    if (
-      "input" in input.request &&
-      !adapterFailed &&
-      !bufferFailed
-    ) {
+    if ("input" in input.request && !adapterFailed && !bufferFailed) {
       const turn = yield* input.options.client
         .startTurn({
           ...(input.request.input.clientInputId === undefined
@@ -675,13 +720,15 @@ function makeCodexSession<E>(input: {
       if (!adapterFailed && !bufferFailed) {
         activeTurnId = turn.turn.id;
         emitProviderEvents(
-          mapOrFail(() => mapper.mapNotification({
-            method: "turn/started",
-            params: {
-              threadId: input.nativeThreadId,
-              turn: { id: turn.turn.id, status: "inProgress" },
-            },
-          })),
+          mapOrFail(() =>
+            mapper.mapNotification({
+              method: "turn/started",
+              params: {
+                threadId: input.nativeThreadId,
+                turn: { id: turn.turn.id, status: "inProgress" },
+              },
+            })
+          )
         );
       }
     }
@@ -692,44 +739,51 @@ function makeCodexSession<E>(input: {
         Effect.suspend(() => {
           if (adapterFailed || bufferFailed) {
             return Effect.fail(
-              actionError("interrupt", "The Codex session is terminal."),
+              actionError("interrupt", "The Codex session is terminal.")
             );
           }
           if (activeTurnId === undefined) {
-            return Effect.fail(actionError("interrupt", "No active Codex turn to interrupt."));
+            return Effect.fail(
+              actionError("interrupt", "No active Codex turn to interrupt.")
+            );
           }
           return input.options.client
-            .interruptTurn({ threadId: input.nativeThreadId, turnId: activeTurnId })
+            .interruptTurn({
+              threadId: input.nativeThreadId,
+              turnId: activeTurnId,
+            })
             .pipe(
               Effect.mapError(() =>
-                actionError("interrupt", "Codex turn interruption failed."),
-              ),
+                actionError("interrupt", "Codex turn interruption failed.")
+              )
             );
-        }),
+        })
       ),
       resolveInteraction: (response) =>
-        Schema.decodeUnknownEffect(HarnessInteractionResponseSchema)(response).pipe(
+        Schema.decodeUnknownEffect(HarnessInteractionResponseSchema)(
+          response
+        ).pipe(
           Effect.mapError(() =>
             actionError(
               "resolveInteraction",
-              "The Codex interaction response is invalid.",
-            ),
+              "The Codex interaction response is invalid."
+            )
           ),
           Effect.flatMap((parsedResponse) => {
             if (adapterFailed || bufferFailed) {
               return Effect.fail(
                 actionError(
                   "resolveInteraction",
-                  "The Codex session is terminal.",
-                ),
+                  "The Codex session is terminal."
+                )
               );
             }
             if (!interactionResponseWithinBudget(parsedResponse)) {
               return Effect.fail(
                 actionError(
                   "resolveInteraction",
-                  "The Codex interaction response exceeds its size limit.",
-                ),
+                  "The Codex interaction response exceeds its size limit."
+                )
               );
             }
             const request = pendingRequests.get(parsedResponse.interactionId);
@@ -737,15 +791,15 @@ function makeCodexSession<E>(input: {
               return Effect.fail(
                 actionError(
                   "resolveInteraction",
-                  "The Codex interaction is stale or already resolved.",
-                ),
+                  "The Codex interaction is stale or already resolved."
+                )
               );
             }
             return respondToCodexRequest(
               input.options.client,
               mapper,
               request,
-              parsedResponse,
+              parsedResponse
             ).pipe(
               Effect.tap(() =>
                 Effect.sync(() => {
@@ -763,20 +817,22 @@ function makeCodexSession<E>(input: {
                       decision: auditDecision,
                       resolvedAt: new Date().toISOString(),
                       responseKind: parsedResponse.kind,
-                    }),
+                    })
                   );
-                }),
-              ),
+                })
+              )
             );
-          }),
+          })
         ),
       send: (message) =>
         Schema.decodeUnknownEffect(HarnessInput)(message).pipe(
-          Effect.mapError(() => actionError("send", "Codex follow-up input is invalid.")),
+          Effect.mapError(() =>
+            actionError("send", "Codex follow-up input is invalid.")
+          ),
           Effect.flatMap((parsedMessage) => {
             if (adapterFailed || bufferFailed) {
               return Effect.fail(
-                actionError("send", "The Codex session is terminal."),
+                actionError("send", "The Codex session is terminal.")
               );
             }
             if (
@@ -809,20 +865,21 @@ function makeCodexSession<E>(input: {
                             threadId: input.nativeThreadId,
                             turn: { id: turn.turn.id, status: "inProgress" },
                           },
-                        }),
-                      ),
+                        })
+                      )
                     );
-                  }),
+                  })
                 ),
                 Effect.asVoid,
                 Effect.mapError(() =>
-                  actionError("send", "Codex follow-up turn failed."),
-                ),
+                  actionError("send", "Codex follow-up turn failed.")
+                )
               );
-          }),
+          })
         ),
       snapshot: Effect.try({
-        try: () => projectHarnessEvents(projectedEvents, input.request.sessionId),
+        try: () =>
+          projectHarnessEvents(projectedEvents, input.request.sessionId),
         catch: () =>
           new HarnessSessionError({
             message: "Codex session projection could not be rebuilt.",
@@ -831,17 +888,19 @@ function makeCodexSession<E>(input: {
       }),
       steer: Option.some((message) =>
         Schema.decodeUnknownEffect(HarnessInput)(message).pipe(
-          Effect.mapError(() => actionError("steer", "Codex steering input is invalid.")),
+          Effect.mapError(() =>
+            actionError("steer", "Codex steering input is invalid.")
+          ),
           Effect.flatMap((parsedMessage) =>
             Effect.suspend(() => {
               if (adapterFailed || bufferFailed) {
                 return Effect.fail(
-                  actionError("steer", "The Codex session is terminal."),
+                  actionError("steer", "The Codex session is terminal.")
                 );
               }
               if (activeTurnId === undefined) {
                 return Effect.fail(
-                  actionError("steer", "No active Codex turn to steer."),
+                  actionError("steer", "No active Codex turn to steer.")
                 );
               }
               return input.options.client
@@ -853,12 +912,12 @@ function makeCodexSession<E>(input: {
                 .pipe(
                   Effect.asVoid,
                   Effect.mapError(() =>
-                    actionError("steer", "Codex turn steering failed."),
-                  ),
+                    actionError("steer", "Codex turn steering failed.")
+                  )
                 );
-            }),
-          ),
-        ),
+            })
+          )
+        )
       ),
     };
     return session;
@@ -869,7 +928,7 @@ function respondToCodexRequest(
   client: CodexAppServerClient,
   mapper: ReturnType<typeof createCodexSessionMapper>,
   request: CodexServerRequest,
-  response: HarnessInteractionResponse,
+  response: HarnessInteractionResponse
 ) {
   switch (request.method) {
     case "item/commandExecution/requestApproval":
@@ -925,7 +984,8 @@ function respondToCodexRequest(
         .respondUserInput(request, { answers })
         .pipe(mapInteractionResponseError);
     case "mcpServer/elicitation/request":
-      if (response.kind !== "mcpElicitation") return invalidInteractionResponse();
+      if (response.kind !== "mcpElicitation")
+        return invalidInteractionResponse();
       return client
         .respondElicitation(request, {
           _meta: null,
@@ -937,20 +997,20 @@ function respondToCodexRequest(
 }
 
 const mapInteractionResponseError = Effect.mapError(() =>
-  actionError("resolveInteraction", "Codex interaction response failed."),
+  actionError("resolveInteraction", "Codex interaction response failed.")
 );
 
 function invalidInteractionResponse() {
   return Effect.fail(
     actionError(
       "resolveInteraction",
-      "The interaction response does not match the pending Codex request.",
-    ),
+      "The interaction response does not match the pending Codex request."
+    )
   );
 }
 
 function interactionResponseWithinBudget(
-  response: HarnessInteractionResponse,
+  response: HarnessInteractionResponse
 ): boolean {
   return (
     new TextEncoder().encode(JSON.stringify(response)).byteLength <= 1_048_576
@@ -959,7 +1019,7 @@ function interactionResponseWithinBudget(
 
 function actionError(
   actionKind: "send" | "steer" | "interrupt" | "resolveInteraction",
-  message: string,
+  message: string
 ) {
   return new HarnessActionError({
     actionKind,
@@ -969,7 +1029,7 @@ function actionError(
 }
 
 function mapApprovalDecision(
-  decision: "approve" | "approveForSession" | "decline" | "cancel",
+  decision: "approve" | "approveForSession" | "decline" | "cancel"
 ) {
   switch (decision) {
     case "approve":
@@ -999,13 +1059,15 @@ function detectionFromCodexError(error: CodexAppServerError): HarnessDetection {
   switch (error._tag) {
     case "CodexAppServerIncompatibilityError":
       return {
-        reason: "Codex App Server version is incompatible with this Gaia adapter.",
+        reason:
+          "Codex App Server version is incompatible with this Gaia adapter.",
         state: "incompatible",
         version: boundedVersion(error.actualUserAgent),
       };
     case "CodexAppServerProtocolError":
       return {
-        reason: "Codex App Server did not complete the expected initialize protocol.",
+        reason:
+          "Codex App Server did not complete the expected initialize protocol.",
         state: "incompatible",
         version: "unknown",
       };
@@ -1017,21 +1079,26 @@ function detectionFromCodexError(error: CodexAppServerError): HarnessDetection {
 }
 
 function boundedVersion(userAgent: string): string {
-  const match = /\b(?:Codex|gaia)\/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?:\s|$)/iu.exec(
-    userAgent,
-  );
+  const match =
+    /\b(?:Codex|gaia)\/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?:\s|$)/iu.exec(
+      userAgent
+    );
   return (match?.[1] ?? "unknown").slice(0, 200);
 }
 
-export function encodeCodexHarnessCorrelation(threadId: CodexThreadId): CodexHarnessOpaqueCorrelation {
+export function encodeCodexHarnessCorrelation(
+  threadId: CodexThreadId
+): CodexHarnessOpaqueCorrelation {
   return { token: Buffer.from(threadId, "utf8").toString("base64url") };
 }
 
 export function decodeCodexHarnessCorrelation(
-  correlation: CodexHarnessOpaqueCorrelation,
+  correlation: CodexHarnessOpaqueCorrelation
 ): CodexThreadId | undefined {
   try {
-    const decoded = Buffer.from(correlation.token, "base64url").toString("utf8");
+    const decoded = Buffer.from(correlation.token, "base64url").toString(
+      "utf8"
+    );
     return decoded.length === 0 ? undefined : parseCodexThreadId(decoded);
   } catch {
     return undefined;

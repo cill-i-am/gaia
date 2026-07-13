@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import type { AgentSessionSnapshotDto } from "@gaia/core";
 import {
   FactoryAgentIdSchema,
@@ -11,6 +10,7 @@ import {
   parseWorkspaceRelativePath,
 } from "@gaia/core";
 import { Schema } from "effect";
+import { describe, expect, it } from "vitest";
 
 import { buildAgentInspectorSessionModel } from "@/agent-inspector-model";
 
@@ -46,7 +46,7 @@ describe("Agent Inspector session model", () => {
                 diff: "@@ -1 +1 @@\n-Agent\n+Agent Inspector\n",
                 kind: "update",
                 path: parseWorkspaceRelativePath(
-                  "apps/dashboard/src/components/dashboard-shell.tsx",
+                  "apps/dashboard/src/components/dashboard-shell.tsx"
                 ),
               },
             ],
@@ -77,7 +77,7 @@ describe("Agent Inspector session model", () => {
       "File update running",
     ]);
     expect(model.timeline[2]?.details).toContain(
-      "apps/dashboard/src/components/dashboard-shell.tsx",
+      "apps/dashboard/src/components/dashboard-shell.tsx"
     );
   });
 
@@ -150,16 +150,16 @@ describe("Agent Inspector session model", () => {
 
     expect(reconnecting.status).toBe("reconnecting");
     expect(reconnecting.notice).toBe(
-      "SSE recovery required; reconnecting from Gaia sequence 12.",
+      "SSE recovery required; reconnecting from Gaia sequence 12."
     );
     expect(reconnecting.composer.mode).toBe("disabled");
     expect(unavailable.status).toBe("unavailable");
     expect(unavailable.composer.disabledReason).toBe(
-      "Agent session is unavailable.",
+      "Agent session is unavailable."
     );
     expect(completed.status).toBe("completed");
     expect(completed.composer.disabledReason).toBe(
-      "Agent session is completed.",
+      "Agent session is completed."
     );
   });
 
@@ -242,7 +242,13 @@ describe("Agent Inspector session model", () => {
 });
 
 const capabilities = {
-  approvals: ["command", "fileChange", "permission", "userInput", "mcpElicitation"],
+  approvals: [
+    "command",
+    "fileChange",
+    "permission",
+    "userInput",
+    "mcpElicitation",
+  ],
   fileChangeEvents: true,
   interruption: true,
   resumableSessions: true,
@@ -257,7 +263,7 @@ const capabilities = {
 } as const;
 
 function sessionFixture(
-  input: Partial<typeof AgentSessionSnapshotDto.Type> = {},
+  input: Partial<typeof AgentSessionSnapshotDto.Type> = {}
 ): typeof AgentSessionSnapshotDto.Type {
   return {
     agentId: parseAgentId("agent-worker"),

@@ -12,6 +12,7 @@ import {
   type RunSpec,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
+
 import { makeRuntimeError } from "./errors.js";
 import { runRelative, type RunPaths } from "./paths.js";
 
@@ -56,13 +57,16 @@ export function writeFactoryRetro(input: WriteFactoryRetroInput) {
     ]);
     const promotedEvidence = promotedEvidenceForRetro(
       input.paths,
-      evidencePromotion,
+      evidencePromotion
     );
     const sourceLinks = dedupeSourceLinks([
       ...notes.sourceLinks,
       ...sourceLinksFromRetrospective(findings),
       FactoryRetroSourceLink.make({
-        artifactPath: runRelative(input.paths, input.paths.dogfoodRetrospective),
+        artifactPath: runRelative(
+          input.paths,
+          input.paths.dogfoodRetrospective
+        ),
         label: "Dogfood retrospective",
       }),
       ...(evidencePromotion === undefined
@@ -84,7 +88,8 @@ export function writeFactoryRetro(input: WriteFactoryRetroInput) {
       missed,
       misled,
       promotedEvidence,
-      promotionStatus: evidencePromotion?.promotionStatus ?? "pending-promotion",
+      promotionStatus:
+        evidencePromotion?.promotionStatus ?? "pending-promotion",
       recommendedNextFactoryImprovement,
       runId: input.runId,
       sourceLinks,
@@ -99,7 +104,8 @@ export function writeFactoryRetro(input: WriteFactoryRetroInput) {
       missed,
       misled,
       promotedEvidence,
-      promotionStatus: evidencePromotion?.promotionStatus ?? "pending-promotion",
+      promotionStatus:
+        evidencePromotion?.promotionStatus ?? "pending-promotion",
       recommendedNextFactoryImprovement,
       runId: input.runId,
       sourceLinks,
@@ -116,7 +122,7 @@ export function writeFactoryRetro(input: WriteFactoryRetroInput) {
     yield* fs.writeFileString(input.paths.factoryRetroMarkdown, markdown);
     yield* fs.writeFileString(
       input.paths.factoryRetroJson,
-      `${JSON.stringify(encodeFactoryRetro(retro), null, 2)}\n`,
+      `${JSON.stringify(encodeFactoryRetro(retro), null, 2)}\n`
     );
 
     return retro;
@@ -128,15 +134,15 @@ export function writeFactoryRetro(input: WriteFactoryRetroInput) {
           code: "FactoryRetroWriteFailed",
           message: "Gaia could not write factory-retro artifacts.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function observedHelpedEntries(
   paths: RunPaths,
-  evidencePromotion: EvidencePromotion | undefined,
+  evidencePromotion: EvidencePromotion | undefined
 ) {
   const entries: Array<FactoryRetroEntry> = [];
   if (evidencePromotion?.reportPaths.workerPlanPath !== undefined) {
@@ -145,7 +151,7 @@ function observedHelpedEntries(
         artifactPath: evidencePromotion.reportPaths.workerPlanPath,
         source: "observed",
         summary: "Worker planning evidence was available for operator review.",
-      }),
+      })
     );
   }
 
@@ -159,8 +165,9 @@ function observedHelpedEntries(
           evidencePromotion.reportPaths.reportMarkdownPath ??
           evidencePromotion.reportPaths.reportJsonPath,
         source: "observed",
-        summary: "Human run reports were available as durable handoff evidence.",
-      }),
+        summary:
+          "Human run reports were available as durable handoff evidence.",
+      })
     );
   }
 
@@ -170,7 +177,7 @@ function observedHelpedEntries(
         artifactPath: evidencePromotion.verification.path,
         source: "observed",
         summary: `Verification evidence was recorded with status '${evidencePromotion.verification.status}'.`,
-      }),
+      })
     );
   }
 
@@ -179,7 +186,7 @@ function observedHelpedEntries(
       FactoryRetroEntry.make({
         source: "observed",
         summary: "PR, check, or feedback evidence was selected for promotion.",
-      }),
+      })
     );
   }
 
@@ -189,7 +196,7 @@ function observedHelpedEntries(
         artifactPath: runRelative(paths, paths.events),
         source: "observed",
         summary: "events.jsonl preserved the run history for later replay.",
-      }),
+      })
     );
   }
 
@@ -204,7 +211,7 @@ function missedEntries(findings: ReadonlyArray<DogfoodFinding>) {
         artifactPath: finding.sources[0]?.artifactPath,
         source: "observed",
         summary: finding.summary,
-      }),
+      })
     );
 }
 
@@ -216,13 +223,13 @@ function misledEntries(findings: ReadonlyArray<DogfoodFinding>) {
         artifactPath: finding.sources[0]?.artifactPath,
         source: "inferred",
         summary: finding.summary,
-      }),
+      })
     );
 }
 
 function promotedEvidenceForRetro(
   paths: RunPaths,
-  evidencePromotion: EvidencePromotion | undefined,
+  evidencePromotion: EvidencePromotion | undefined
 ) {
   if (evidencePromotion === undefined) {
     return [
@@ -255,8 +262,8 @@ function sourceLinksFromRetrospective(findings: ReadonlyArray<DogfoodFinding>) {
           : { artifactPath: source.artifactPath }),
         label: source.label,
         ...(source.url === undefined ? {} : { url: source.url }),
-      }),
-    ),
+      })
+    )
   );
 }
 
@@ -266,7 +273,7 @@ function recommendedImprovement(input: {
   readonly misled: ReadonlyArray<FactoryRetroEntry>;
 }) {
   const firstCandidate = input.findings.find(
-    (finding) => finding.candidateIssue !== undefined,
+    (finding) => finding.candidateIssue !== undefined
   )?.candidateIssue;
   if (firstCandidate !== undefined) {
     return firstCandidate.title;
@@ -302,13 +309,13 @@ function parseOperatorNotes(body: string): OperatorNotes {
 
 function entriesFromNotes(
   notes: ReadonlyArray<string>,
-  source: FactoryRetroEntrySource,
+  source: FactoryRetroEntrySource
 ) {
   return notes.map((summary) =>
     factoryRetroEntry({
       source,
       summary,
-    }),
+    })
   );
 }
 
@@ -328,7 +335,7 @@ function factoryRetroEntry(input: {
 
 function extractSectionItems(
   body: string,
-  headings: ReadonlyArray<string>,
+  headings: ReadonlyArray<string>
 ): ReadonlyArray<string> {
   const lines = body.split(/\r?\n/u);
   const wanted = new Set(headings.map(normalizeHeading));
@@ -423,7 +430,7 @@ function entryList(entries: ReadonlyArray<FactoryRetroEntry>) {
     : entries
         .map(
           (entry) =>
-            `- ${entry.source}: ${entry.summary}${formatPath(entry.artifactPath)}`,
+            `- ${entry.source}: ${entry.summary}${formatPath(entry.artifactPath)}`
         )
         .join("\n");
 }
@@ -478,7 +485,10 @@ function normalizeHeading(input: string) {
 }
 
 function readDogfoodRetrospective(paths: RunPaths) {
-  return readJsonIfExists(paths.dogfoodRetrospective, parseDogfoodRetrospective);
+  return readJsonIfExists(
+    paths.dogfoodRetrospective,
+    parseDogfoodRetrospective
+  );
 }
 
 function readEvidencePromotion(paths: RunPaths) {
@@ -487,7 +497,7 @@ function readEvidencePromotion(paths: RunPaths) {
 
 function readJsonIfExists<A>(
   artifactPath: string,
-  parse: (input: unknown) => A,
+  parse: (input: unknown) => A
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -514,7 +524,8 @@ function readJsonIfExists<A>(
         makeRuntimeError({
           cause,
           code: "FactoryRetroArtifactInvalid",
-          message: "A factory retro source artifact did not match Gaia's schema.",
+          message:
+            "A factory retro source artifact did not match Gaia's schema.",
           recoverable: true,
         }),
     });

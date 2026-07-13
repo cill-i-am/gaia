@@ -1,7 +1,8 @@
 import { RunIdSchema, type RunId } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
-import { appendEvent } from "./event-store.js";
+
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import { appendEvent } from "./event-store.js";
 import {
   makeRunPaths,
   runRelative,
@@ -18,14 +19,13 @@ export const LinearIssueIdentifierSchema = Schema.NonEmptyString.pipe(
     identifier: "LinearIssueIdentifier",
     message: "Expected a Linear issue identifier like GAI-123.",
   }),
-  Schema.brand("LinearIssueIdentifier"),
+  Schema.brand("LinearIssueIdentifier")
 );
 
-export type LinearIssueIdentifier =
-  typeof LinearIssueIdentifierSchema.Type;
+export type LinearIssueIdentifier = typeof LinearIssueIdentifierSchema.Type;
 
 export const LinearIssueIdSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("LinearIssueId"),
+  Schema.brand("LinearIssueId")
 );
 
 export type LinearIssueId = typeof LinearIssueIdSchema.Type;
@@ -35,20 +35,19 @@ export const LinearIssueUrlSchema = Schema.NonEmptyString.pipe(
     identifier: "LinearIssueUrl",
     message: "Expected an HTTP or HTTPS Linear issue URL.",
   }),
-  Schema.brand("LinearIssueUrl"),
+  Schema.brand("LinearIssueUrl")
 );
 
 export type LinearIssueUrl = typeof LinearIssueUrlSchema.Type;
 
 const LinearIssueRelationCountSchema = Schema.Int.check(
-  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isGreaterThanOrEqualTo(0)
 ).pipe(Schema.brand("LinearIssueRelationCount"));
 
-type LinearIssueRelationCount =
-  typeof LinearIssueRelationCountSchema.Type;
+type LinearIssueRelationCount = typeof LinearIssueRelationCountSchema.Type;
 
 export class LinearIssueReference extends Schema.Class<LinearIssueReference>(
-  "LinearIssueReference",
+  "LinearIssueReference"
 )({
   id: Schema.optionalKey(LinearIssueIdSchema),
   identifier: LinearIssueIdentifierSchema,
@@ -66,7 +65,7 @@ export class LinearIssue extends Schema.Class<LinearIssue>("LinearIssue")({
 }) {}
 
 export class LinearIssueGraphInput extends Schema.Class<LinearIssueGraphInput>(
-  "LinearIssueGraphInput",
+  "LinearIssueGraphInput"
 )({
   blockedBy: Schema.Array(LinearIssueReference),
   blocks: Schema.Array(LinearIssueReference),
@@ -74,7 +73,7 @@ export class LinearIssueGraphInput extends Schema.Class<LinearIssueGraphInput>(
 }) {}
 
 export class LinearIssueGraph extends Schema.Class<LinearIssueGraph>(
-  "LinearIssueGraph",
+  "LinearIssueGraph"
 )({
   blockedBy: Schema.Array(LinearIssueReference),
   blocks: Schema.Array(LinearIssueReference),
@@ -86,7 +85,7 @@ export class LinearIssueGraph extends Schema.Class<LinearIssueGraph>(
 }) {}
 
 export class LinearIssueGraphSummary extends Schema.Class<LinearIssueGraphSummary>(
-  "LinearIssueGraphSummary",
+  "LinearIssueGraphSummary"
 )({
   blockedByCount: LinearIssueRelationCountSchema,
   blocksCount: LinearIssueRelationCountSchema,
@@ -109,18 +108,18 @@ export const parseLinearIssueGraphJson =
 export function recordLinearIssueGraph(
   runIdInput: RunId,
   sourcePath: string,
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ) {
   return withRunStoreLock(
     options,
-    recordLinearIssueGraphUnlocked(runIdInput, sourcePath, options),
+    recordLinearIssueGraphUnlocked(runIdInput, sourcePath, options)
   );
 }
 
 function recordLinearIssueGraphUnlocked(
   runIdInput: RunId,
   sourcePath: string,
-  options: RunStorageOptions,
+  options: RunStorageOptions
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -132,7 +131,7 @@ function recordLinearIssueGraphUnlocked(
           code: "RunNotCompleted",
           message: `Run ${run.runId} must be completed before recording Linear issue graph evidence.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -187,9 +186,9 @@ function readLinearIssueGraphInput(sourcePath: string) {
             code: "LinearIssueGraphReadFailed",
             message: `Gaia could not read Linear issue graph input at ${sourcePath}.`,
             recoverable: true,
-          }),
-        ),
-      ),
+          })
+        )
+      )
     );
     const parsed = yield* parseJson(text, sourcePath);
 
@@ -199,14 +198,14 @@ function readLinearIssueGraphInput(sourcePath: string) {
 
 function writeLinearIssueGraph(
   paths: RunPaths,
-  graph: LinearIssueGraph,
+  graph: LinearIssueGraph
 ): Effect.Effect<LinearIssueGraph, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
 
     yield* fs.writeFileString(
       paths.linearIssueGraph,
-      `${JSON.stringify(encodeLinearIssueGraphJson(graph), null, 2)}\n`,
+      `${JSON.stringify(encodeLinearIssueGraphJson(graph), null, 2)}\n`
     );
 
     return graph;
@@ -218,9 +217,9 @@ function writeLinearIssueGraph(
           code: "LinearIssueGraphWriteFailed",
           message: "Gaia could not write the Linear issue graph artifact.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -251,7 +250,7 @@ function parseJson(text: string, sourcePath: string) {
 }
 
 function parseLinearIssueRelationCount(
-  count: number,
+  count: number
 ): LinearIssueRelationCount {
   return Schema.decodeUnknownSync(LinearIssueRelationCountSchema)(count);
 }

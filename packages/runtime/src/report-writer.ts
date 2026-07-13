@@ -8,19 +8,17 @@ import {
   type RunSpec,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
+
 import type { RunPaths } from "./paths.js";
-import {
-  selectedSkillNames,
-  type SkillManifest,
-} from "./skill-manifest.js";
-import {
-  markdownInferredRecommendations,
-  type WorkerPlanInferredRecommendations,
-} from "./skill-review-inference.js";
 import {
   markdownHistoricalRiskNotes,
   type WorkerPlanHistoricalRiskNote,
 } from "./reviewer-findings.js";
+import { selectedSkillNames, type SkillManifest } from "./skill-manifest.js";
+import {
+  markdownInferredRecommendations,
+  type WorkerPlanInferredRecommendations,
+} from "./skill-review-inference.js";
 import {
   classifyDomainReferences,
   type WorkerPlanDomainReference,
@@ -44,7 +42,7 @@ export function writeReport(input: {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const codexHarnessProgressExists = yield* fs.exists(
-      input.paths.codexHarnessProgress,
+      input.paths.codexHarnessProgress
     );
     const report = RunReport.make({
       artifacts: [
@@ -60,9 +58,7 @@ export function writeReport(input: {
         "plan-review.md",
         "plan-review.json",
         "plan-reviewer-session.json",
-        ...(codexHarnessProgressExists
-          ? ["codex-harness-progress.json"]
-          : []),
+        ...(codexHarnessProgressExists ? ["codex-harness-progress.json"] : []),
         "dogfood-retrospective.json",
         "evidence-promotion.json",
         "evidence-promotion.md",
@@ -97,12 +93,12 @@ export function writeReport(input: {
         input.factoryScorecard,
         input.inferredRecommendations,
         input.historicalRiskNotes,
-        classifyDomainReferences(input.spec.body),
-      ),
+        classifyDomainReferences(input.spec.body)
+      )
     );
     yield* fs.writeFileString(
       input.paths.reportJson,
-      `${JSON.stringify(encodeRunReport(report), null, 2)}\n`,
+      `${JSON.stringify(encodeRunReport(report), null, 2)}\n`
     );
 
     return report;
@@ -117,7 +113,7 @@ function markdownReport(
   factoryScorecard: FactoryLaneScorecard | undefined,
   inferredRecommendations: WorkerPlanInferredRecommendations,
   historicalRiskNotes: ReadonlyArray<WorkerPlanHistoricalRiskNote>,
-  domainReferences: ReadonlyArray<WorkerPlanDomainReference>,
+  domainReferences: ReadonlyArray<WorkerPlanDomainReference>
 ): string {
   const artifacts = report.artifacts
     .map((artifact) => `- ${artifact}`)
@@ -152,7 +148,7 @@ function markdownReport(
           ...(retrospective.findings.length === 0
             ? ["- none"]
             : retrospective.findings.map(
-                (finding) => `- ${finding.category}: ${finding.summary}`,
+                (finding) => `- ${finding.category}: ${finding.summary}`
               )),
         ].join("\n");
   const promotionSection =
@@ -167,7 +163,7 @@ function markdownReport(
           "",
           "Selected evidence:",
           ...evidencePromotion.selectedEvidence.map(
-            (evidence) => `- ${evidence.status}: ${evidence.label}`,
+            (evidence) => `- ${evidence.status}: ${evidence.label}`
           ),
           "",
           "Cleanup guidance:",
@@ -190,21 +186,21 @@ function markdownReport(
           ...(factoryRetro.helped.length === 0
             ? ["- none"]
             : factoryRetro.helped.map(
-                (entry) => `- ${entry.source}: ${entry.summary}`,
+                (entry) => `- ${entry.source}: ${entry.summary}`
               )),
           "",
           "Missed:",
           ...(factoryRetro.missed.length === 0
             ? ["- none"]
             : factoryRetro.missed.map(
-                (entry) => `- ${entry.source}: ${entry.summary}`,
+                (entry) => `- ${entry.source}: ${entry.summary}`
               )),
           "",
           "Misled:",
           ...(factoryRetro.misled.length === 0
             ? ["- none"]
             : factoryRetro.misled.map(
-                (entry) => `- ${entry.source}: ${entry.summary}`,
+                (entry) => `- ${entry.source}: ${entry.summary}`
               )),
           "",
           "Recommended next factory improvement:",
@@ -225,13 +221,13 @@ function markdownReport(
           "Lane implementation acceptance:",
           ...factoryScorecard.lanes.map(
             (lane) =>
-              `- ${lane.label}: ${lane.implementationAcceptance.status} - ${lane.implementationAcceptance.summary}`,
+              `- ${lane.label}: ${lane.implementationAcceptance.status} - ${lane.implementationAcceptance.summary}`
           ),
           "",
           "Gaia factory learning signal:",
           ...factoryScorecard.lanes.map(
             (lane) =>
-              `- ${lane.label}: ${lane.factoryLearningSignal.status} - ${lane.factoryLearningSignal.summary}`,
+              `- ${lane.label}: ${lane.factoryLearningSignal.status} - ${lane.factoryLearningSignal.summary}`
           ),
           "",
           "Notes:",

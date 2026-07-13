@@ -1,12 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
-import * as React from "react";
 import {
   HeadContent,
   Outlet,
   Scripts,
   createRootRoute,
 } from "@tanstack/react-router";
+import type { ReactNode } from "react";
+import * as React from "react";
 
 import "@xyflow/react/dist/style.css";
 import "../styles.css";
@@ -40,7 +40,7 @@ function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
             refetchOnWindowFocus: false,
           },
         },
-      }),
+      })
   );
 
   return (

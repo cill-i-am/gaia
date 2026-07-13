@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+
 import {
   EvidencePromotionCleanupStatusSchema,
   EvidencePromotionStatusSchema,
@@ -13,11 +14,10 @@ export const FactoryRetroEntrySourceSchema = Schema.Literals([
 ] as const);
 
 /** Distinguishes observed run evidence from inferred or operator-supplied notes. */
-export type FactoryRetroEntrySource =
-  typeof FactoryRetroEntrySourceSchema.Type;
+export type FactoryRetroEntrySource = typeof FactoryRetroEntrySourceSchema.Type;
 
 export class FactoryRetroEntry extends Schema.Class<FactoryRetroEntry>(
-  "FactoryRetroEntry",
+  "FactoryRetroEntry"
 )({
   artifactPath: Schema.optionalKey(Schema.NonEmptyString),
   source: FactoryRetroEntrySourceSchema,
@@ -25,7 +25,7 @@ export class FactoryRetroEntry extends Schema.Class<FactoryRetroEntry>(
 }) {}
 
 export class FactoryRetroSourceLink extends Schema.Class<FactoryRetroSourceLink>(
-  "FactoryRetroSourceLink",
+  "FactoryRetroSourceLink"
 )({
   artifactPath: Schema.optionalKey(Schema.NonEmptyString),
   label: Schema.NonEmptyString,

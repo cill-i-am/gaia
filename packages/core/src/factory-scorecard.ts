@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+
 import { FactoryLaneRoleSchema } from "./factory-delegation.js";
 import { RunIdSchema } from "./run-id.js";
 
@@ -36,16 +37,17 @@ export const FactoryLaneScorecardCriterionSchema = Schema.Literals([
 export type FactoryLaneScorecardCriterion =
   typeof FactoryLaneScorecardCriterionSchema.Type;
 
-export const FactoryLaneScorecardCriterionClassificationSchema = Schema.Literals([
-  "strong",
-  "adequate",
-  "weak",
-  "risk",
-  "low",
-  "medium",
-  "high",
-  "unknown",
-] as const);
+export const FactoryLaneScorecardCriterionClassificationSchema =
+  Schema.Literals([
+    "strong",
+    "adequate",
+    "weak",
+    "risk",
+    "low",
+    "medium",
+    "high",
+    "unknown",
+  ] as const);
 
 export type FactoryLaneScorecardCriterionClassification =
   typeof FactoryLaneScorecardCriterionClassificationSchema.Type;
@@ -69,7 +71,7 @@ export type FactoryLaneScorecardFactoryLearningSignalStatus =
   typeof FactoryLaneScorecardFactoryLearningSignalStatusSchema.Type;
 
 export class FactoryLaneScorecardSourceLink extends Schema.Class<FactoryLaneScorecardSourceLink>(
-  "FactoryLaneScorecardSourceLink",
+  "FactoryLaneScorecardSourceLink"
 )({
   artifactPath: Schema.optionalKey(Schema.NonEmptyString),
   label: Schema.NonEmptyString,
@@ -77,7 +79,7 @@ export class FactoryLaneScorecardSourceLink extends Schema.Class<FactoryLaneScor
 }) {}
 
 export class FactoryLaneScorecardVerificationEvidence extends Schema.Class<FactoryLaneScorecardVerificationEvidence>(
-  "FactoryLaneScorecardVerificationEvidence",
+  "FactoryLaneScorecardVerificationEvidence"
 )({
   command: Schema.NonEmptyString,
   path: Schema.optionalKey(Schema.NonEmptyString),
@@ -85,7 +87,7 @@ export class FactoryLaneScorecardVerificationEvidence extends Schema.Class<Facto
 }) {}
 
 export class FactoryLaneScorecardCriterionAssessment extends Schema.Class<FactoryLaneScorecardCriterionAssessment>(
-  "FactoryLaneScorecardCriterionAssessment",
+  "FactoryLaneScorecardCriterionAssessment"
 )({
   classification: FactoryLaneScorecardCriterionClassificationSchema,
   criterion: FactoryLaneScorecardCriterionSchema,
@@ -94,14 +96,14 @@ export class FactoryLaneScorecardCriterionAssessment extends Schema.Class<Factor
 }) {}
 
 export class FactoryLaneScorecardImplementationAcceptance extends Schema.Class<FactoryLaneScorecardImplementationAcceptance>(
-  "FactoryLaneScorecardImplementationAcceptance",
+  "FactoryLaneScorecardImplementationAcceptance"
 )({
   status: FactoryLaneScorecardImplementationAcceptanceStatusSchema,
   summary: Schema.NonEmptyString,
 }) {}
 
 export class FactoryLaneScorecardFactoryLearningSignal extends Schema.Class<FactoryLaneScorecardFactoryLearningSignal>(
-  "FactoryLaneScorecardFactoryLearningSignal",
+  "FactoryLaneScorecardFactoryLearningSignal"
 )({
   evidence: Schema.Array(Schema.NonEmptyString),
   status: FactoryLaneScorecardFactoryLearningSignalStatusSchema,
@@ -109,7 +111,7 @@ export class FactoryLaneScorecardFactoryLearningSignal extends Schema.Class<Fact
 }) {}
 
 export class FactoryLaneScorecardLane extends Schema.Class<FactoryLaneScorecardLane>(
-  "FactoryLaneScorecardLane",
+  "FactoryLaneScorecardLane"
 )({
   checkStatus: FactoryLaneScorecardCheckStatusSchema,
   comparisonWaitStatus: FactoryLaneScorecardComparisonWaitStatusSchema,
@@ -127,7 +129,7 @@ export class FactoryLaneScorecardLane extends Schema.Class<FactoryLaneScorecardL
 }) {}
 
 export class FactoryLaneScorecardPreferredLane extends Schema.Class<FactoryLaneScorecardPreferredLane>(
-  "FactoryLaneScorecardPreferredLane",
+  "FactoryLaneScorecardPreferredLane"
 )({
   laneId: Schema.NonEmptyString,
   rationale: Schema.NonEmptyString,
@@ -136,7 +138,7 @@ export class FactoryLaneScorecardPreferredLane extends Schema.Class<FactoryLaneS
 
 /** Inspectable A/B lane comparison artifact for orchestrator decisions. */
 export class FactoryLaneScorecard extends Schema.Class<FactoryLaneScorecard>(
-  "FactoryLaneScorecard",
+  "FactoryLaneScorecard"
 )({
   artifactPath: Schema.NonEmptyString,
   comparisonSummary: Schema.NonEmptyString,
@@ -153,5 +155,6 @@ export class FactoryLaneScorecard extends Schema.Class<FactoryLaneScorecard>(
 
 export const parseFactoryLaneScorecard =
   Schema.decodeUnknownSync(FactoryLaneScorecard);
-export const parseFactoryLaneScorecardLane =
-  Schema.decodeUnknownSync(FactoryLaneScorecardLane);
+export const parseFactoryLaneScorecardLane = Schema.decodeUnknownSync(
+  FactoryLaneScorecardLane
+);

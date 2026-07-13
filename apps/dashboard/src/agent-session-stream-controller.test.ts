@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import type { AgentSessionUpdateDto } from "@gaia/core";
 import {
   FactoryAgentIdSchema,
@@ -7,6 +6,7 @@ import {
   parseRunId,
 } from "@gaia/core";
 import { Schema } from "effect";
+import { describe, expect, it } from "vitest";
 
 import { createAgentSessionStreamController } from "@/agent-session-stream-controller";
 import type { AgentSessionEventSource } from "@/lib/local-gaia-client";
@@ -56,7 +56,9 @@ describe("Agent session stream controller", () => {
     expect(sources).toHaveLength(2);
     expect(closed).toEqual([0]);
 
-    controller.handleUpdate(update({ agentId: "agent-reviewer", terminal: true, sequence: 12 }));
+    controller.handleUpdate(
+      update({ agentId: "agent-reviewer", terminal: true, sequence: 12 })
+    );
     expect(updates).toEqual([12]);
     expect(closed).toEqual([0, 1]);
 
@@ -99,7 +101,12 @@ describe("Agent session stream controller", () => {
     controller.handleError(new Error("network"));
 
     expect(openedAfterSequences).toEqual([undefined, 9]);
-    expect(connections).toEqual(["connecting", "connected", "reconnecting", "connected"]);
+    expect(connections).toEqual([
+      "connecting",
+      "connected",
+      "reconnecting",
+      "connected",
+    ]);
   });
 
   it("does not synthesize an invalid zero cursor before the first update", () => {

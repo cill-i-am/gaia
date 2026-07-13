@@ -31,12 +31,12 @@ export function serverDiscoveryPaths(rootDirectory: string) {
 
 export function serverMetadataFromAddress(
   identity: LocalServerIdentity,
-  address: HttpServer.Address,
+  address: HttpServer.Address
 ) {
   return Effect.gen(function* () {
     if (address._tag !== "TcpAddress") {
       return yield* Effect.fail(
-        new Error("Local Gaia server must bind to a TCP loopback address."),
+        new Error("Local Gaia server must bind to a TCP loopback address.")
       );
     }
 
@@ -65,7 +65,7 @@ export function writeServerMetadata(metadata: ServerMetadata) {
     yield* fs.makeDirectory(paths.gaiaRoot, { recursive: true });
     yield* fs.writeFileString(
       paths.serverJson,
-      `${JSON.stringify(metadata, null, 2)}\n`,
+      `${JSON.stringify(metadata, null, 2)}\n`
     );
   });
 }

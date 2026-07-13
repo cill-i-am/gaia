@@ -16,12 +16,12 @@ if (port !== undefined && parseServerPort(port) === undefined) {
           status: "failed",
         },
         null,
-        2,
-      )}\n`,
+        2
+      )}\n`
     );
   } else {
     process.stdout.write(
-      `Gaia command failed: Invalid local server port: ${port}\ncode: InvalidServerPort\nrecoverable: false\n`,
+      `Gaia command failed: Invalid local server port: ${port}\ncode: InvalidServerPort\nrecoverable: false\n`
     );
   }
   process.exitCode = 1;

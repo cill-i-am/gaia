@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   DeliveryBlocker,
   DeliveryCheckObservation,
@@ -7,7 +9,6 @@ import {
   parseDeliveryFeedbackId,
   type DeliveryFeedbackTrustPolicyV1,
 } from "@gaia/core";
-import { createHash } from "node:crypto";
 import { Effect, Schema } from "effect";
 
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
@@ -23,18 +24,18 @@ const maximumBodyCharacters = 16_384;
 const trustedAssociations = new Set(["COLLABORATOR", "MEMBER", "OWNER"]);
 const passingConclusions = new Set(["NEUTRAL", "SKIPPED", "SUCCESS"]);
 const DigestSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
 );
 const GitShaSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
+  Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))
 );
 const LoginSchema = Schema.String.pipe(
   Schema.check(
-    Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u),
-  ),
+    Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u)
+  )
 );
 const RepositorySchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)),
+  Schema.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u))
 );
 const TrustedAssociationSchema = Schema.Literals([
   "COLLABORATOR",
@@ -55,28 +56,34 @@ const DeliveryFeedbackSmokeAuthorizationInputSchema = Schema.Struct({
 type DeliveryFeedbackSmokeAuthorizationInput =
   typeof DeliveryFeedbackSmokeAuthorizationInputSchema.Type;
 
-class RawActor extends Schema.Class<RawActor>("RawActor")({
-  __typename: Schema.NonEmptyString,
-  login: Schema.NonEmptyString,
-}, strict) {}
+class RawActor extends Schema.Class<RawActor>("RawActor")(
+  {
+    __typename: Schema.NonEmptyString,
+    login: Schema.NonEmptyString,
+  },
+  strict
+) {}
 
 /** Ephemeral authorization for one controlled acceptance-smoke comment. */
 export class DeliveryFeedbackSmokeAuthorization extends Schema.Class<DeliveryFeedbackSmokeAuthorization>(
-  "DeliveryFeedbackSmokeAuthorization",
-)({
-  ...DeliveryFeedbackSmokeAuthorizationInputSchema.fields,
-  authorizationDigest: DigestSchema,
-  marker: Schema.Literal(remediationMarker),
-  version: Schema.Literal(1),
-}, strict) {}
+  "DeliveryFeedbackSmokeAuthorization"
+)(
+  {
+    ...DeliveryFeedbackSmokeAuthorizationInputSchema.fields,
+    authorizationDigest: DigestSchema,
+    marker: Schema.Literal(remediationMarker),
+    version: Schema.Literal(1),
+  },
+  strict
+) {}
 
 /** Create one exact, self-verifying acceptance-smoke authorization tuple. */
 export function makeDeliveryFeedbackSmokeAuthorization(
-  input: DeliveryFeedbackSmokeAuthorizationInput,
+  input: DeliveryFeedbackSmokeAuthorizationInput
 ) {
   const binding = Schema.decodeUnknownSync(
     DeliveryFeedbackSmokeAuthorizationInputSchema,
-    { onExcessProperty: "error" },
+    { onExcessProperty: "error" }
   )(input);
   const tuple = {
     ...binding,
@@ -91,22 +98,24 @@ export function makeDeliveryFeedbackSmokeAuthorization(
 
 /** Canonical domain-separated digest for an exact smoke authorization tuple. */
 export function deliveryFeedbackSmokeAuthorizationDigest(
-  input: Omit<DeliveryFeedbackSmokeAuthorization, "authorizationDigest">,
+  input: Omit<DeliveryFeedbackSmokeAuthorization, "authorizationDigest">
 ) {
-  return stableHash([
-    "gaia-feedback-smoke-authorization-v1",
-    String(input.version),
-    input.repository,
-    String(input.prNumber),
-    input.headSha,
-    input.actorType,
-    input.actorLogin,
-    input.authorAssociation,
-    String(input.commentDatabaseId),
-    input.feedbackId,
-    input.contentDigest,
-    input.marker,
-  ].join("\0"));
+  return stableHash(
+    [
+      "gaia-feedback-smoke-authorization-v1",
+      String(input.version),
+      input.repository,
+      String(input.prNumber),
+      input.headSha,
+      input.actorType,
+      input.actorLogin,
+      input.authorAssociation,
+      String(input.commentDatabaseId),
+      input.feedbackId,
+      input.contentDigest,
+      input.marker,
+    ].join("\0")
+  );
 }
 
 const RawActorOrNull = Schema.NullOr(RawActor);
@@ -121,112 +130,143 @@ const RawAssociation = Schema.Literals([
   "OWNER",
 ] as const);
 const RawBody = Schema.String.pipe(
-  Schema.check(Schema.isMaxLength(maximumBodyCharacters)),
+  Schema.check(Schema.isMaxLength(maximumBodyCharacters))
 );
 const RawPageInfo = Schema.Struct({ hasNextPage: Schema.Boolean });
 
-class RawComment extends Schema.Class<RawComment>("RawComment")({
-  author: RawActorOrNull,
-  authorAssociation: RawAssociation,
-  body: RawBody,
-  databaseId: Schema.Union([Schema.String, Schema.Number]),
-  updatedAt: Schema.String,
-  url: Schema.String,
-}, strict) {}
+class RawComment extends Schema.Class<RawComment>("RawComment")(
+  {
+    author: RawActorOrNull,
+    authorAssociation: RawAssociation,
+    body: RawBody,
+    databaseId: Schema.Union([Schema.String, Schema.Number]),
+    updatedAt: Schema.String,
+    url: Schema.String,
+  },
+  strict
+) {}
 
-class RawReview extends Schema.Class<RawReview>("RawReview")({
-  author: RawActorOrNull,
-  authorAssociation: RawAssociation,
-  body: RawBody,
-  databaseId: Schema.Union([Schema.String, Schema.Number]),
-  state: Schema.NonEmptyString,
-  updatedAt: Schema.String,
-  url: Schema.String,
-}, strict) {}
+class RawReview extends Schema.Class<RawReview>("RawReview")(
+  {
+    author: RawActorOrNull,
+    authorAssociation: RawAssociation,
+    body: RawBody,
+    databaseId: Schema.Union([Schema.String, Schema.Number]),
+    state: Schema.NonEmptyString,
+    updatedAt: Schema.String,
+    url: Schema.String,
+  },
+  strict
+) {}
 
-class RawThreadComment extends Schema.Class<RawThreadComment>("RawThreadComment")({
-  author: RawActorOrNull,
-  authorAssociation: RawAssociation,
-  body: RawBody,
-  databaseId: Schema.Union([Schema.String, Schema.Number]),
-  outdated: Schema.Boolean,
-  path: Schema.NullOr(Schema.String),
-  pullRequestReview: Schema.NullOr(
-    Schema.Struct({ state: Schema.NonEmptyString }),
-  ),
-  updatedAt: Schema.String,
-  url: Schema.String,
-}, strict) {}
-
-class RawReviewThread extends Schema.Class<RawReviewThread>("RawReviewThread")({
-  comments: Schema.Struct({
-    nodes: Schema.Array(RawThreadComment).pipe(
-      Schema.check(Schema.isMaxLength(20)),
+class RawThreadComment extends Schema.Class<RawThreadComment>(
+  "RawThreadComment"
+)(
+  {
+    author: RawActorOrNull,
+    authorAssociation: RawAssociation,
+    body: RawBody,
+    databaseId: Schema.Union([Schema.String, Schema.Number]),
+    outdated: Schema.Boolean,
+    path: Schema.NullOr(Schema.String),
+    pullRequestReview: Schema.NullOr(
+      Schema.Struct({ state: Schema.NonEmptyString })
     ),
-    pageInfo: RawPageInfo,
-  }),
-  id: Schema.String,
-  isResolved: Schema.Boolean,
-}, strict) {}
+    updatedAt: Schema.String,
+    url: Schema.String,
+  },
+  strict
+) {}
 
-class RawCheckRun extends Schema.Class<RawCheckRun>("RawCheckRun")({
-  conclusion: Schema.NullOr(Schema.String),
-  detailsUrl: Schema.NullOr(Schema.String),
-  name: Schema.NonEmptyString,
-  status: Schema.NonEmptyString,
-}, strict) {}
-
-class RawCheckSuite extends Schema.Class<RawCheckSuite>("RawCheckSuite")({
-  app: Schema.NullOr(Schema.Struct({ slug: Schema.NonEmptyString })),
-  checkRuns: Schema.Struct({
-    nodes: Schema.Array(RawCheckRun).pipe(Schema.check(Schema.isMaxLength(100))),
-    pageInfo: RawPageInfo,
-  }),
-  workflowRun: Schema.NullOr(
-    Schema.Struct({
-      workflow: Schema.NullOr(Schema.Struct({ name: Schema.NonEmptyString })),
+class RawReviewThread extends Schema.Class<RawReviewThread>("RawReviewThread")(
+  {
+    comments: Schema.Struct({
+      nodes: Schema.Array(RawThreadComment).pipe(
+        Schema.check(Schema.isMaxLength(20))
+      ),
+      pageInfo: RawPageInfo,
     }),
-  ),
-}, strict) {}
+    id: Schema.String,
+    isResolved: Schema.Boolean,
+  },
+  strict
+) {}
 
-class RawPullRequest extends Schema.Class<RawPullRequest>("RawPullRequest")({
-  author: RawActorOrNull,
-  comments: Schema.Struct({
-    nodes: Schema.Array(RawComment).pipe(Schema.check(Schema.isMaxLength(100))),
-    pageInfo: RawPageInfo,
-  }),
-  commits: Schema.Struct({
-    nodes: Schema.Array(
+class RawCheckRun extends Schema.Class<RawCheckRun>("RawCheckRun")(
+  {
+    conclusion: Schema.NullOr(Schema.String),
+    detailsUrl: Schema.NullOr(Schema.String),
+    name: Schema.NonEmptyString,
+    status: Schema.NonEmptyString,
+  },
+  strict
+) {}
+
+class RawCheckSuite extends Schema.Class<RawCheckSuite>("RawCheckSuite")(
+  {
+    app: Schema.NullOr(Schema.Struct({ slug: Schema.NonEmptyString })),
+    checkRuns: Schema.Struct({
+      nodes: Schema.Array(RawCheckRun).pipe(
+        Schema.check(Schema.isMaxLength(100))
+      ),
+      pageInfo: RawPageInfo,
+    }),
+    workflowRun: Schema.NullOr(
       Schema.Struct({
-        commit: Schema.Struct({
-          checkSuites: Schema.Struct({
-            nodes: Schema.Array(RawCheckSuite).pipe(
-              Schema.check(Schema.isMaxLength(50)),
-            ),
-            pageInfo: RawPageInfo,
-          }),
-          oid: Schema.String,
-        }),
-      }),
-    ).pipe(Schema.check(Schema.isMaxLength(1))),
-  }),
-  headRefName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
-  headRefOid: Schema.String,
-  isDraft: Schema.Boolean,
-  mergeable: Schema.NonEmptyString,
-  reviewDecision: Schema.NullOr(Schema.String),
-  reviewThreads: Schema.Struct({
-    nodes: Schema.Array(RawReviewThread).pipe(
-      Schema.check(Schema.isMaxLength(100)),
+        workflow: Schema.NullOr(Schema.Struct({ name: Schema.NonEmptyString })),
+      })
     ),
-    pageInfo: RawPageInfo,
-  }),
-  reviews: Schema.Struct({
-    nodes: Schema.Array(RawReview).pipe(Schema.check(Schema.isMaxLength(100))),
-    pageInfo: RawPageInfo,
-  }),
-  url: Schema.String,
-}, strict) {}
+  },
+  strict
+) {}
+
+class RawPullRequest extends Schema.Class<RawPullRequest>("RawPullRequest")(
+  {
+    author: RawActorOrNull,
+    comments: Schema.Struct({
+      nodes: Schema.Array(RawComment).pipe(
+        Schema.check(Schema.isMaxLength(100))
+      ),
+      pageInfo: RawPageInfo,
+    }),
+    commits: Schema.Struct({
+      nodes: Schema.Array(
+        Schema.Struct({
+          commit: Schema.Struct({
+            checkSuites: Schema.Struct({
+              nodes: Schema.Array(RawCheckSuite).pipe(
+                Schema.check(Schema.isMaxLength(50))
+              ),
+              pageInfo: RawPageInfo,
+            }),
+            oid: Schema.String,
+          }),
+        })
+      ).pipe(Schema.check(Schema.isMaxLength(1))),
+    }),
+    headRefName: Schema.NonEmptyString.pipe(
+      Schema.check(Schema.isMaxLength(240))
+    ),
+    headRefOid: Schema.String,
+    isDraft: Schema.Boolean,
+    mergeable: Schema.NonEmptyString,
+    reviewDecision: Schema.NullOr(Schema.String),
+    reviewThreads: Schema.Struct({
+      nodes: Schema.Array(RawReviewThread).pipe(
+        Schema.check(Schema.isMaxLength(100))
+      ),
+      pageInfo: RawPageInfo,
+    }),
+    reviews: Schema.Struct({
+      nodes: Schema.Array(RawReview).pipe(
+        Schema.check(Schema.isMaxLength(100))
+      ),
+      pageInfo: RawPageInfo,
+    }),
+    url: Schema.String,
+  },
+  strict
+) {}
 
 const RawResponse = Schema.Struct({
   data: Schema.Struct({
@@ -258,15 +298,29 @@ export function readGitHubPullRequest(input: {
   readonly trustPolicy: DeliveryFeedbackTrustPolicyV1;
 }) {
   return Effect.gen(function* () {
-    const authorization = input.authorization === undefined
-      ? undefined
-      : yield* Schema.decodeUnknownEffect(DeliveryFeedbackSmokeAuthorization)(
-          input.authorization,
-        ).pipe(
-          Effect.mapError((cause) => makeRuntimeError({ cause, code: "GitHubFeedbackAuthorizationInvalid", message: "Controlled feedback authorization is invalid.", recoverable: false })),
-        );
+    const authorization =
+      input.authorization === undefined
+        ? undefined
+        : yield* Schema.decodeUnknownEffect(DeliveryFeedbackSmokeAuthorization)(
+            input.authorization
+          ).pipe(
+            Effect.mapError((cause) =>
+              makeRuntimeError({
+                cause,
+                code: "GitHubFeedbackAuthorizationInvalid",
+                message: "Controlled feedback authorization is invalid.",
+                recoverable: false,
+              })
+            )
+          );
     const repository = yield* Effect.try({
-      catch: (cause) => makeRuntimeError({ cause, code: "GitHubRepositoryInvalid", message: "GitHub repository identity is invalid.", recoverable: false }),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "GitHubRepositoryInvalid",
+          message: "GitHub repository identity is invalid.",
+          recoverable: false,
+        }),
       try: () => parseRepository(input.repository),
     });
     const runner = input.commandRunner ?? nodeGitHubCommandRunner;
@@ -292,7 +346,7 @@ export function readGitHubPullRequest(input: {
           code: "GitHubPullRequestReadFailed",
           message: "GitHub pull-request observation failed.",
           recoverable: true,
-        }),
+        })
       );
     }
     const raw = yield* decodeResponse(result.stdout);
@@ -300,30 +354,38 @@ export function readGitHubPullRequest(input: {
       catch: (cause) =>
         cause instanceof GaiaRuntimeError
           ? cause
-          : makeRuntimeError({ cause, code: "GitHubPullRequestResponseInvalid", message: "GitHub pull-request observation could not be normalized.", recoverable: true }),
-      try: () => normalizePullRequest({
-        ...(authorization === undefined ? {} : { authorization }),
-        now: input.now?.() ?? new Date().toISOString(),
-        pr: raw.data.repository.pullRequest,
-        prNumber: input.prNumber,
-        repository: input.repository,
-        trustPolicy: input.trustPolicy,
-      }),
+          : makeRuntimeError({
+              cause,
+              code: "GitHubPullRequestResponseInvalid",
+              message:
+                "GitHub pull-request observation could not be normalized.",
+              recoverable: true,
+            }),
+      try: () =>
+        normalizePullRequest({
+          ...(authorization === undefined ? {} : { authorization }),
+          now: input.now?.() ?? new Date().toISOString(),
+          pr: raw.data.repository.pullRequest,
+          prNumber: input.prNumber,
+          repository: input.repository,
+          trustPolicy: input.trustPolicy,
+        }),
     });
   });
 }
 
 function decodeResponse(stdout: string) {
   return Effect.try({
-    try: () => Schema.decodeUnknownSync(
-      RawResponse,
-      { onExcessProperty: "error" },
-    )(JSON.parse(stdout)),
+    try: () =>
+      Schema.decodeUnknownSync(RawResponse, { onExcessProperty: "error" })(
+        JSON.parse(stdout)
+      ),
     catch: (cause) =>
       makeRuntimeError({
         cause,
         code: "GitHubPullRequestResponseInvalid",
-        message: "GitHub pull-request output did not match Gaia's bounded schema.",
+        message:
+          "GitHub pull-request output did not match Gaia's bounded schema.",
         recoverable: true,
       }),
   });
@@ -368,7 +430,8 @@ function normalizePullRequest(input: {
       url: comment.url,
     });
     feedback.push(normalized.observation);
-    if (normalized.input !== undefined) remediationInputs.push(normalized.input);
+    if (normalized.input !== undefined)
+      remediationInputs.push(normalized.input);
   }
   for (const review of input.pr.reviews.nodes) {
     const normalized = normalizeFeedback({
@@ -387,7 +450,8 @@ function normalizePullRequest(input: {
       url: review.url,
     });
     feedback.push(normalized.observation);
-    if (normalized.input !== undefined) remediationInputs.push(normalized.input);
+    if (normalized.input !== undefined)
+      remediationInputs.push(normalized.input);
   }
   for (const thread of input.pr.reviewThreads.nodes) {
     const root = thread.comments.nodes[0];
@@ -407,13 +471,15 @@ function normalizePullRequest(input: {
       actor: root.author,
       association: root.authorAssociation,
       explicitAction,
-      forcedInformational: thread.isResolved || root.outdated || !explicitAction,
+      forcedInformational:
+        thread.isResolved || root.outdated || !explicitAction,
       pullRequestAuthor,
       trustPolicy: input.trustPolicy,
       url: root.url,
     });
     feedback.push(normalized.observation);
-    if (normalized.input !== undefined) remediationInputs.push(normalized.input);
+    if (normalized.input !== undefined)
+      remediationInputs.push(normalized.input);
   }
 
   const checks = headCommit.checkSuites.nodes.flatMap((suite) =>
@@ -426,7 +492,7 @@ function normalizePullRequest(input: {
           candidate.appSlug === appSlug &&
           candidate.name === check.name &&
           candidate.repository === input.repository &&
-          candidate.workflow === workflow,
+          candidate.workflow === workflow
       );
       const classification = trusted
         ? state === "failing"
@@ -444,14 +510,14 @@ function normalizePullRequest(input: {
       if (classification === "actionable") {
         remediationInputs.unshift({
           id: parseDeliveryFeedbackId(
-            `feedback-check-${stableHash(`github-check-v1\0${input.repository}\0${input.prNumber}\0${appSlug}\0${workflow}\0${check.name}`)}`,
+            `feedback-check-${stableHash(`github-check-v1\0${input.repository}\0${input.prNumber}\0${appSlug}\0${workflow}\0${check.name}`)}`
           ),
           kind: "check",
           text: `Hosted check ${check.name} failed.`,
         });
       }
       return observation;
-    }),
+    })
   );
   const blockers = blockersFor({
     checks,
@@ -461,26 +527,29 @@ function normalizePullRequest(input: {
     reviewDecision: input.pr.reviewDecision,
     truncated,
   });
-  const actionableBlocker = blockers.some((blocker) =>
-    blocker.kind !== "pendingCheck" &&
-    blocker.kind !== "draftPullRequest" &&
-    blocker.kind !== "mergeabilityUnknown"
+  const actionableBlocker = blockers.some(
+    (blocker) =>
+      blocker.kind !== "pendingCheck" &&
+      blocker.kind !== "draftPullRequest" &&
+      blocker.kind !== "mergeabilityUnknown"
   );
   const status = actionableBlocker
     ? "blocked"
     : blockers.length > 0
       ? "waiting"
       : "ready";
-  const snapshotDigest = stableHash(JSON.stringify({
-    blockers,
-    branchName: input.pr.headRefName,
-    checks,
-    draft: input.pr.isDraft,
-    feedback,
-    headSha: input.pr.headRefOid,
-    mergeable: input.pr.mergeable,
-    reviewDecision: input.pr.reviewDecision,
-  }));
+  const snapshotDigest = stableHash(
+    JSON.stringify({
+      blockers,
+      branchName: input.pr.headRefName,
+      checks,
+      draft: input.pr.isDraft,
+      feedback,
+      headSha: input.pr.headRefOid,
+      mergeable: input.pr.mergeable,
+      reviewDecision: input.pr.reviewDecision,
+    })
+  );
   return {
     observation: DeliveryPullRequestObservation.make({
       blockers,
@@ -528,21 +597,23 @@ function normalizeFeedback(input: {
     input.actor?.__typename === "User" &&
     trustedAssociations.has(input.association) &&
     (input.controlledAuthorization === true ||
-      input.trustPolicy.trustedHumanLogins.some(
-        (login) => login.toLowerCase() === actorLogin?.toLowerCase(),
+      (input.trustPolicy.trustedHumanLogins.some(
+        (login) => login.toLowerCase() === actorLogin?.toLowerCase()
       ) &&
-      (input.trustPolicy.allowPullRequestAuthor ||
-        actorLogin?.toLowerCase() !== input.pullRequestAuthor));
+        (input.trustPolicy.allowPullRequestAuthor ||
+          actorLogin?.toLowerCase() !== input.pullRequestAuthor)));
   const deniedPullRequestAuthor =
     input.controlledAuthorization !== true &&
     !input.trustPolicy.allowPullRequestAuthor &&
     actorLogin?.toLowerCase() === input.pullRequestAuthor;
   const classification =
-    input.forcedInformational || !input.explicitAction || deniedPullRequestAuthor
-    ? "informational"
-    : trusted
-      ? "actionable"
-      : "untrusted";
+    input.forcedInformational ||
+    !input.explicitAction ||
+    deniedPullRequestAuthor
+      ? "informational"
+      : trusted
+        ? "actionable"
+        : "untrusted";
   const observation = DeliveryFeedbackObservation.make({
     ...(actorLogin === undefined ? {} : { actorLogin }),
     authorAssociation: input.association,
@@ -576,68 +647,134 @@ function blockersFor(input: {
 }) {
   const blockers: Array<DeliveryBlocker> = [];
   const actionable = input.feedback.filter(
-    ({ classification }) => classification === "actionable",
+    ({ classification }) => classification === "actionable"
   );
   const untrusted = input.feedback.filter(
-    ({ classification }) => classification === "untrusted",
+    ({ classification }) => classification === "untrusted"
   );
   if (actionable.length > 0) {
-    blockers.push(DeliveryBlocker.make({
-      feedbackIds: actionable.map(({ id }) => id),
-      kind: "actionableFeedback",
-      summary: "Trusted actionable pull-request feedback requires remediation.",
-    }));
+    blockers.push(
+      DeliveryBlocker.make({
+        feedbackIds: actionable.map(({ id }) => id),
+        kind: "actionableFeedback",
+        summary:
+          "Trusted actionable pull-request feedback requires remediation.",
+      })
+    );
   }
-  if (untrusted.length > 0 || input.reviewDecision === "CHANGES_REQUESTED" && actionable.length === 0) {
-    blockers.push(DeliveryBlocker.make({
-      feedbackIds: untrusted.map(({ id }) => id).slice(0, 20),
-      kind: "operatorReviewRequired",
-      summary: "Untrusted or ambiguous feedback requires operator review.",
-    }));
+  if (
+    untrusted.length > 0 ||
+    (input.reviewDecision === "CHANGES_REQUESTED" && actionable.length === 0)
+  ) {
+    blockers.push(
+      DeliveryBlocker.make({
+        feedbackIds: untrusted.map(({ id }) => id).slice(0, 20),
+        kind: "operatorReviewRequired",
+        summary: "Untrusted or ambiguous feedback requires operator review.",
+      })
+    );
   }
   const failing = input.checks.filter(
-    ({ classification, state }) => classification === "actionable" && state === "failing",
+    ({ classification, state }) =>
+      classification === "actionable" && state === "failing"
   );
   if (failing.length > 0) {
-    blockers.push(DeliveryBlocker.make({
-      feedbackIds: [],
-      kind: "failedCheck",
-      summary: "A trusted hosted check failed.",
-    }));
+    blockers.push(
+      DeliveryBlocker.make({
+        feedbackIds: [],
+        kind: "failedCheck",
+        summary: "A trusted hosted check failed.",
+      })
+    );
   }
   const trustedChecks = input.checks.filter(
-    ({ classification }) => classification !== "untrusted",
+    ({ classification }) => classification !== "untrusted"
   );
   if (trustedChecks.length === 0) {
-    blockers.push(DeliveryBlocker.make({ feedbackIds: [], kind: "missingHostedChecks", summary: "No trusted hosted checks were reported." }));
+    blockers.push(
+      DeliveryBlocker.make({
+        feedbackIds: [],
+        kind: "missingHostedChecks",
+        summary: "No trusted hosted checks were reported.",
+      })
+    );
   } else if (trustedChecks.some(({ state }) => state === "pending")) {
-    blockers.push(DeliveryBlocker.make({ feedbackIds: [], kind: "pendingCheck", summary: "Hosted checks are still pending." }));
+    blockers.push(
+      DeliveryBlocker.make({
+        feedbackIds: [],
+        kind: "pendingCheck",
+        summary: "Hosted checks are still pending.",
+      })
+    );
   }
-  if (input.draft) blockers.push(DeliveryBlocker.make({ feedbackIds: [], kind: "draftPullRequest", summary: "The pull request is still a draft." }));
-  if (input.mergeability === "UNKNOWN") blockers.push(DeliveryBlocker.make({ feedbackIds: [], kind: "mergeabilityUnknown", summary: "GitHub mergeability is not yet known." }));
-  if (input.mergeability === "CONFLICTING") blockers.push(DeliveryBlocker.make({ feedbackIds: [], kind: "mergeConflict", summary: "The pull request has merge conflicts." }));
-  if (input.truncated) blockers.push(DeliveryBlocker.make({ feedbackIds: [], kind: "feedbackTruncated", summary: "GitHub evidence exceeded Gaia's bounded read." }));
+  if (input.draft)
+    blockers.push(
+      DeliveryBlocker.make({
+        feedbackIds: [],
+        kind: "draftPullRequest",
+        summary: "The pull request is still a draft.",
+      })
+    );
+  if (input.mergeability === "UNKNOWN")
+    blockers.push(
+      DeliveryBlocker.make({
+        feedbackIds: [],
+        kind: "mergeabilityUnknown",
+        summary: "GitHub mergeability is not yet known.",
+      })
+    );
+  if (input.mergeability === "CONFLICTING")
+    blockers.push(
+      DeliveryBlocker.make({
+        feedbackIds: [],
+        kind: "mergeConflict",
+        summary: "The pull request has merge conflicts.",
+      })
+    );
+  if (input.truncated)
+    blockers.push(
+      DeliveryBlocker.make({
+        feedbackIds: [],
+        kind: "feedbackTruncated",
+        summary: "GitHub evidence exceeded Gaia's bounded read.",
+      })
+    );
   return blockers;
 }
 
 function isTruncated(pr: RawPullRequest, suites: ReadonlyArray<RawCheckSuite>) {
-  return pr.comments.pageInfo.hasNextPage ||
+  return (
+    pr.comments.pageInfo.hasNextPage ||
     pr.reviews.pageInfo.hasNextPage ||
     pr.reviewThreads.pageInfo.hasNextPage ||
-    pr.reviewThreads.nodes.some((thread) => thread.comments.pageInfo.hasNextPage) ||
+    pr.reviewThreads.nodes.some(
+      (thread) => thread.comments.pageInfo.hasNextPage
+    ) ||
     pr.commits.nodes[0]?.commit.checkSuites.pageInfo.hasNextPage === true ||
-    suites.some((suite) => suite.checkRuns.pageInfo.hasNextPage);
+    suites.some((suite) => suite.checkRuns.pageInfo.hasNextPage)
+  );
 }
 
 function hasRemediationMarker(body: string) {
-  return body.split(/\r?\n/u).find((line) => line.trim() !== "")?.trim() === remediationMarker;
+  return (
+    body
+      .split(/\r?\n/u)
+      .find((line) => line.trim() !== "")
+      ?.trim() === remediationMarker
+  );
 }
 
 function remediationText(body: string) {
   if (!hasRemediationMarker(body)) return body.trim().slice(0, 4_096);
   const lines = body.split(/\r?\n/u);
-  const markerIndex = lines.findIndex((line) => line.trim() === remediationMarker);
-  return lines.slice(markerIndex + 1).join("\n").trim().slice(0, 4_096);
+  const markerIndex = lines.findIndex(
+    (line) => line.trim() === remediationMarker
+  );
+  return lines
+    .slice(markerIndex + 1)
+    .join("\n")
+    .trim()
+    .slice(0, 4_096);
 }
 
 function feedbackId(input: {
@@ -647,7 +784,7 @@ function feedbackId(input: {
   readonly repository: string;
 }) {
   return parseDeliveryFeedbackId(
-    `feedback-${input.kind}-${stableHash(`github-feedback-v1\0${input.repository}\0${input.prNumber}\0${input.kind}\0${input.nativeId}`)}`,
+    `feedback-${input.kind}-${stableHash(`github-feedback-v1\0${input.repository}\0${input.prNumber}\0${input.kind}\0${input.nativeId}`)}`
   );
 }
 
@@ -658,7 +795,7 @@ function controlledCommentAuthorization(
     readonly prNumber: number;
     readonly repository: string;
   },
-  comment: RawComment,
+  comment: RawComment
 ) {
   const authorization = input.authorization;
   const actor = comment.author;
@@ -668,7 +805,8 @@ function controlledCommentAuthorization(
     prNumber: input.prNumber,
     repository: input.repository,
   });
-  return authorization !== undefined &&
+  return (
+    authorization !== undefined &&
     actor !== null &&
     authorization.version === 1 &&
     authorization.marker === remediationMarker &&
@@ -685,7 +823,8 @@ function controlledCommentAuthorization(
     authorization.actorLogin === actor.login &&
     authorization.authorAssociation === comment.authorAssociation &&
     trustedAssociations.has(comment.authorAssociation) &&
-    hasRemediationMarker(comment.body);
+    hasRemediationMarker(comment.body)
+  );
 }
 
 function checkState(check: RawCheckRun): "failing" | "passing" | "pending" {
@@ -697,9 +836,12 @@ function checkState(check: RawCheckRun): "failing" | "passing" | "pending" {
 
 function normalizeMergeability(value: string) {
   switch (value) {
-    case "MERGEABLE": return "mergeable" as const;
-    case "CONFLICTING": return "conflicting" as const;
-    default: return "unknown" as const;
+    case "MERGEABLE":
+      return "mergeable" as const;
+    case "CONFLICTING":
+      return "conflicting" as const;
+    default:
+      return "unknown" as const;
   }
 }
 
@@ -710,7 +852,11 @@ function stableHash(value: string) {
 function parseRepository(repository: string) {
   const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/u.exec(repository);
   if (match?.[1] === undefined || match[2] === undefined) {
-    throw makeRuntimeError({ code: "GitHubRepositoryInvalid", message: "GitHub repository identity is invalid.", recoverable: false });
+    throw makeRuntimeError({
+      code: "GitHubRepositoryInvalid",
+      message: "GitHub repository identity is invalid.",
+      recoverable: false,
+    });
   }
   return { name: match[2], owner: match[1] };
 }

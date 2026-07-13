@@ -7,11 +7,18 @@ import {
   projectHarnessEvents,
 } from "@gaia/core";
 import { describe, expect, it } from "vitest";
+
 import { createCodexSessionMapper } from "./codex-session-mapper.js";
 
 const sessionId = parseHarnessSessionId("session-codex-mapper");
 const capabilities = HarnessCapabilities.make({
-  approvals: ["command", "fileChange", "permission", "userInput", "mcpElicitation"],
+  approvals: [
+    "command",
+    "fileChange",
+    "permission",
+    "userInput",
+    "mcpElicitation",
+  ],
   fileChangeEvents: true,
   interruption: true,
   resumableSessions: true,
@@ -44,40 +51,52 @@ function mapper() {
 describe("Codex App Server provider-neutral mapper", () => {
   it("coalesces deltas, drops reasoning, and treats the final item as authoritative", () => {
     const subject = mapper();
-    expect(subject.mapNotification({
-      method: "thread/started",
-      params: { thread: { id: "vendor-thread" } },
-    }).map(({ kind }) => kind)).toEqual(["sessionStarted"]);
-    expect(subject.mapNotification({
-      method: "turn/started",
-      params: {
-        threadId: "vendor-thread",
-        turn: { id: "vendor-turn", status: "inProgress" },
-      },
-    }).map(({ kind }) => kind)).toEqual(["turnStarted", "sessionStateChanged"]);
+    expect(
+      subject
+        .mapNotification({
+          method: "thread/started",
+          params: { thread: { id: "vendor-thread" } },
+        })
+        .map(({ kind }) => kind)
+    ).toEqual(["sessionStarted"]);
+    expect(
+      subject
+        .mapNotification({
+          method: "turn/started",
+          params: {
+            threadId: "vendor-thread",
+            turn: { id: "vendor-turn", status: "inProgress" },
+          },
+        })
+        .map(({ kind }) => kind)
+    ).toEqual(["turnStarted", "sessionStateChanged"]);
 
-    expect(subject.mapNotification({
-      method: "item/started",
-      params: {
-        item: {
-          content: ["hidden chain of thought"],
-          id: "vendor-reasoning",
-          summary: ["hidden summary"],
-          type: "reasoning",
+    expect(
+      subject.mapNotification({
+        method: "item/started",
+        params: {
+          item: {
+            content: ["hidden chain of thought"],
+            id: "vendor-reasoning",
+            summary: ["hidden summary"],
+            type: "reasoning",
+          },
+          threadId: "vendor-thread",
+          turnId: "vendor-turn",
         },
-        threadId: "vendor-thread",
-        turnId: "vendor-turn",
-      },
-    })).toEqual([]);
-    expect(subject.mapNotification({
-      method: "item/agentMessage/delta",
-      params: {
-        delta: "Hello ",
-        itemId: "vendor-message",
-        threadId: "vendor-thread",
-        turnId: "vendor-turn",
-      },
-    })).toEqual([]);
+      })
+    ).toEqual([]);
+    expect(
+      subject.mapNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          delta: "Hello ",
+          itemId: "vendor-message",
+          threadId: "vendor-thread",
+          turnId: "vendor-turn",
+        },
+      })
+    ).toEqual([]);
     const deltaEvents = subject.mapNotification({
       method: "item/agentMessage/delta",
       params: {
@@ -123,35 +142,42 @@ describe("Codex App Server provider-neutral mapper", () => {
     expect(JSON.stringify(completed)).not.toContain("/Users/operator");
     expect(JSON.stringify(completed)).not.toContain("vendor-");
 
-    expect(subject.mapNotification({
-      method: "item/completed",
-      params: {
-        completedAtMs: 3,
-        item: {
-          id: "vendor-message",
-          memoryCitation: null,
-          phase: "final_answer",
-          text: "duplicate final",
-          type: "agentMessage",
+    expect(
+      subject.mapNotification({
+        method: "item/completed",
+        params: {
+          completedAtMs: 3,
+          item: {
+            id: "vendor-message",
+            memoryCitation: null,
+            phase: "final_answer",
+            text: "duplicate final",
+            type: "agentMessage",
+          },
+          threadId: "vendor-thread",
+          turnId: "vendor-turn",
         },
-        threadId: "vendor-thread",
-        turnId: "vendor-turn",
-      },
-    })).toEqual([]);
-    expect(subject.mapNotification({
-      method: "item/agentMessage/delta",
-      params: {
-        delta: "late",
-        itemId: "vendor-message",
-        threadId: "vendor-thread",
-        turnId: "vendor-turn",
-      },
-    })).toEqual([]);
+      })
+    ).toEqual([]);
+    expect(
+      subject.mapNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          delta: "late",
+          itemId: "vendor-message",
+          threadId: "vendor-thread",
+          turnId: "vendor-turn",
+        },
+      })
+    ).toEqual([]);
   });
 
   it("maps allowlisted commands, file changes, tools, plans, reviews, usage, and failures", () => {
     const subject = mapper();
-    subject.mapNotification({ method: "thread/started", params: { thread: { id: "t" } } });
+    subject.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "t" } },
+    });
     subject.mapNotification({
       method: "turn/started",
       params: { threadId: "t", turn: { id: "u", status: "inProgress" } },
@@ -183,8 +209,16 @@ describe("Codex App Server provider-neutral mapper", () => {
         params: {
           item: {
             changes: [
-              { diff: "+safe", kind: { type: "add" }, path: "/workspace/project/src/new.ts" },
-              { diff: "+secret", kind: { move_path: null, type: "update" }, path: "/private/outside.txt" },
+              {
+                diff: "+safe",
+                kind: { type: "add" },
+                path: "/workspace/project/src/new.ts",
+              },
+              {
+                diff: "+secret",
+                kind: { move_path: null, type: "update" },
+                path: "/private/outside.txt",
+              },
             ],
             id: "file-native",
             status: "completed",
@@ -204,7 +238,11 @@ describe("Codex App Server provider-neutral mapper", () => {
             id: "tool-native",
             mcpAppResourceUri: "secret://resource",
             pluginId: null,
-            result: { content: [{ raw: "must not cross" }], structuredContent: null, _meta: null },
+            result: {
+              content: [{ raw: "must not cross" }],
+              structuredContent: null,
+              _meta: null,
+            },
             server: "linear",
             status: "completed",
             tool: "get_issue",
@@ -217,7 +255,11 @@ describe("Codex App Server provider-neutral mapper", () => {
       {
         method: "item/completed",
         params: {
-          item: { id: "review-native", review: "Looks safe", type: "exitedReviewMode" },
+          item: {
+            id: "review-native",
+            review: "Looks safe",
+            type: "exitedReviewMode",
+          },
           threadId: "t",
           turnId: "u",
         },
@@ -248,14 +290,20 @@ describe("Codex App Server provider-neutral mapper", () => {
         params: {
           threadId: "t",
           turn: {
-            error: { additionalDetails: "private details", codexErrorInfo: null, message: "provider failed" },
+            error: {
+              additionalDetails: "private details",
+              codexErrorInfo: null,
+              message: "provider failed",
+            },
             id: "u",
             status: "failed",
           },
         },
       },
     ];
-    const events = fixtures.flatMap((fixture) => subject.mapNotification(fixture));
+    const events = fixtures.flatMap((fixture) =>
+      subject.mapNotification(fixture)
+    );
     const serialized = JSON.stringify(events);
 
     expect(events.map(({ kind }) => kind)).toEqual([
@@ -280,10 +328,16 @@ describe("Codex App Server provider-neutral mapper", () => {
 
   it("maps interactions without exposing provider request IDs or unsafe paths", () => {
     const subject = mapper();
-    subject.mapNotification({ method: "thread/started", params: { thread: { id: "thread-secret" } } });
+    subject.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "thread-secret" } },
+    });
     subject.mapNotification({
       method: "turn/started",
-      params: { threadId: "thread-secret", turn: { id: "turn-secret", status: "inProgress" } },
+      params: {
+        threadId: "thread-secret",
+        turn: { id: "turn-secret", status: "inProgress" },
+      },
     });
     const events = subject.mapServerRequest({
       id: "request-secret",
@@ -342,7 +396,7 @@ describe("Codex App Server provider-neutral mapper", () => {
     const questionEvent = questions.find(
       (event) =>
         event.kind === "interactionRequested" &&
-        event.interaction.kind === "userInput",
+        event.interaction.kind === "userInput"
     );
     if (
       questionEvent?.kind !== "interactionRequested" ||
@@ -359,7 +413,7 @@ describe("Codex App Server provider-neutral mapper", () => {
     expect(
       subject.mapUserInputAnswers("question-request-secret", [
         { answers: ["yes"], questionId: publicQuestionId },
-      ]),
+      ])
     ).toEqual({ "native-question-secret": { answers: ["yes"] } });
     const auditedQuestion = subject.resolveServerRequest(
       "question-request-secret",
@@ -368,11 +422,11 @@ describe("Codex App Server provider-neutral mapper", () => {
         decision: "submit",
         resolvedAt: "2026-07-10T10:11:00.000Z",
         responseKind: "userInput",
-      },
+      }
     );
     expect(JSON.stringify(auditedQuestion)).not.toContain("yes");
     expect(JSON.stringify(auditedQuestion)).not.toContain(
-      "native-question-secret",
+      "native-question-secret"
     );
 
     const elicitation = subject.mapServerRequest({
@@ -428,7 +482,7 @@ describe("Codex App Server provider-neutral mapper", () => {
       { kind: "sessionStateChanged" },
     ]);
     expect(JSON.stringify(urlElicitation)).not.toContain(
-      "native-elicitation-secret",
+      "native-elicitation-secret"
     );
     expect(JSON.stringify(urlElicitation)).not.toContain("provider.example");
   });
@@ -446,7 +500,7 @@ describe("Codex App Server provider-neutral mapper", () => {
           status: { activeFlags: ["waitingOnApproval"], type: "active" },
           threadId: "generated-thread",
         },
-      }),
+      })
     ).toMatchObject([
       { kind: "sessionStateChanged", state: "waitingForOperator" },
     ]);
@@ -486,7 +540,7 @@ describe("Codex App Server provider-neutral mapper", () => {
       method: "warning",
       params: {
         message:
-          "AWS_SECRET_ACCESS_KEY=aws_topsecret DATABASE_URL=postgres://secret@host/db HOME=/home/operator FEATURE_FLAG=private { NODE_ENV: 'production' } Authorization: Basic dXNlcjpwYXNz x-api-key: arbitrary-secret {\"NODE_ENV\":\"json-production\",\"AWS_SECRET_ACCESS_KEY\":\"json-secret\",\"Authorization\":\"Basic anNvbi1iYXNpYw==\"} Read `/etc/passwd` and see,/opt/private plus /Volumes/private/file",
+          'AWS_SECRET_ACCESS_KEY=aws_topsecret DATABASE_URL=postgres://secret@host/db HOME=/home/operator FEATURE_FLAG=private { NODE_ENV: \'production\' } Authorization: Basic dXNlcjpwYXNz x-api-key: arbitrary-secret {"NODE_ENV":"json-production","AWS_SECRET_ACCESS_KEY":"json-secret","Authorization":"Basic anNvbi1iYXNpYw=="} Read `/etc/passwd` and see,/opt/private plus /Volumes/private/file',
         threadId: "privacy-thread",
       },
     });
@@ -547,7 +601,7 @@ describe("Codex App Server provider-neutral mapper", () => {
           threadId: "ordering-thread",
           turn: { id: "ordering-turn", status: "inProgress" },
         },
-      }),
+      })
     ).toMatchObject([{ kind: "sessionStateChanged", state: "running" }]);
 
     subject.mapNotification({
@@ -572,7 +626,7 @@ describe("Codex App Server provider-neutral mapper", () => {
           threadId: "ordering-thread",
           turn: { id: "ordering-turn", status: "inProgress" },
         },
-      }),
+      })
     ).toEqual([]);
     const interruptedNewer = subject.mapNotification({
       method: "turn/completed",
@@ -606,12 +660,12 @@ describe("Codex App Server provider-neutral mapper", () => {
           threadId: "delta-thread",
           turnId: "delta-turn",
         },
-      }),
+      })
     );
     const total = emitted.reduce(
       (sum, event) =>
         event.kind === "itemDeltaRecorded" ? sum + event.chunk.length : sum,
-      0,
+      0
     );
     expect(total).toBeLessThanOrEqual(65_536);
   });
@@ -644,7 +698,7 @@ describe("Codex App Server provider-neutral mapper", () => {
           method: "serverRequest/resolved",
           params: { requestId: 7, threadId: "resolved-thread" },
         })
-        .map(({ kind }) => kind),
+        .map(({ kind }) => kind)
     ).toEqual(["interactionCancelled", "sessionStateChanged"]);
     expect(subject.mapServerRequest(requested)).toEqual([]);
   });
@@ -663,7 +717,7 @@ describe("Codex App Server provider-neutral mapper", () => {
           status: { type: "systemError" },
           threadId: "system-error-thread",
         },
-      }),
+      })
     ).toEqual([
       expect.objectContaining({
         failure: expect.objectContaining({
@@ -686,25 +740,25 @@ describe("Codex App Server provider-neutral mapper", () => {
       subject.mapNotification({
         method: "warning",
         params: { message: "other", threadId: "warning-other" },
-      }),
+      })
     ).toEqual([]);
     expect(
       subject.mapNotification({
         method: "warning",
         params: { message: "global", threadId: null },
-      }),
+      })
     ).toEqual([]);
     expect(
       subject.mapNotification({
         method: "warning",
         params: { message: "global-omitted" },
-      }),
+      })
     ).toEqual([]);
     expect(
       subject.mapNotification({
         method: "warning",
         params: { message: "owned", threadId: "warning-owner" },
-      }),
+      })
     ).toEqual([
       expect.objectContaining({
         item: expect.objectContaining({ message: "owned" }),
@@ -723,19 +777,21 @@ describe("Codex App Server provider-neutral mapper", () => {
       method: "warning",
       params: { message: "pre-crash warning", threadId: "stable-thread" },
     });
-    const liveItem = live.mapNotification({
-      method: "item/completed",
-      params: {
-        item: {
-          id: "stable-native-item",
-          phase: "final_answer",
-          text: "final",
-          type: "agentMessage",
+    const liveItem = live
+      .mapNotification({
+        method: "item/completed",
+        params: {
+          item: {
+            id: "stable-native-item",
+            phase: "final_answer",
+            text: "final",
+            type: "agentMessage",
+          },
+          threadId: "stable-thread",
+          turnId: "stable-turn",
         },
-        threadId: "stable-thread",
-        turnId: "stable-turn",
-      },
-    }).find((event) => event.kind === "itemUpserted");
+      })
+      .find((event) => event.kind === "itemUpserted");
 
     const recovered = mapper();
     recovered.mapNotification({
@@ -765,7 +821,10 @@ describe("Codex App Server provider-neutral mapper", () => {
 
     expect(liveItem?.kind).toBe("itemUpserted");
     expect(recoveredItem?.kind).toBe("itemUpserted");
-    if (liveItem?.kind !== "itemUpserted" || recoveredItem?.kind !== "itemUpserted") {
+    if (
+      liveItem?.kind !== "itemUpserted" ||
+      recoveredItem?.kind !== "itemUpserted"
+    ) {
       throw new Error("Expected mapped items.");
     }
     expect(recoveredItem.item.itemId).toBe(liveItem.item.itemId);
@@ -813,7 +872,7 @@ describe("Codex App Server provider-neutral mapper", () => {
         { kind: "sessionRecovered", sessionId },
         ...recoveredEvents,
       ],
-      sessionId,
+      sessionId
     );
 
     expect(snapshot.items).toEqual(
@@ -823,7 +882,7 @@ describe("Codex App Server provider-neutral mapper", () => {
           kind: "message",
           text: "authoritative recovered final",
         }),
-      ]),
+      ])
     );
   });
 
@@ -876,10 +935,14 @@ describe("Codex App Server provider-neutral mapper", () => {
       },
     });
 
-    const turnStarted = turnEvents.find((event) => event.kind === "turnStarted");
-    const itemUpserted = itemEvents.find((event) => event.kind === "itemUpserted");
+    const turnStarted = turnEvents.find(
+      (event) => event.kind === "turnStarted"
+    );
+    const itemUpserted = itemEvents.find(
+      (event) => event.kind === "itemUpserted"
+    );
     const interactionRequested = interactionEvents.find(
-      (event) => event.kind === "interactionRequested",
+      (event) => event.kind === "interactionRequested"
     );
     if (
       turnStarted?.kind !== "turnStarted" ||
@@ -887,7 +950,9 @@ describe("Codex App Server provider-neutral mapper", () => {
       interactionRequested?.kind !== "interactionRequested" ||
       interactionRequested.interaction.kind !== "userInput"
     ) {
-      throw new Error("Expected derived turn, item, and interaction identifiers.");
+      throw new Error(
+        "Expected derived turn, item, and interaction identifiers."
+      );
     }
     const question = interactionRequested.interaction.questions[0];
     if (question === undefined) {
@@ -923,7 +988,7 @@ describe("Codex App Server provider-neutral mapper", () => {
       },
     });
     const fileInteraction = file.find(
-      (event) => event.kind === "interactionRequested",
+      (event) => event.kind === "interactionRequested"
     );
     expect(fileInteraction).toMatchObject({
       interaction: {
@@ -948,7 +1013,7 @@ describe("Codex App Server provider-neutral mapper", () => {
       },
     });
     expect(
-      command.find((event) => event.kind === "interactionRequested"),
+      command.find((event) => event.kind === "interactionRequested")
     ).toMatchObject({
       interaction: {
         allowedDecisions: ["decline", "cancel"],
@@ -986,7 +1051,7 @@ describe("Codex App Server provider-neutral mapper", () => {
       },
     });
     expect(
-      permission.find((event) => event.kind === "interactionRequested"),
+      permission.find((event) => event.kind === "interactionRequested")
     ).toMatchObject({
       interaction: {
         allowedDecisions: ["approve", "decline", "cancel"],

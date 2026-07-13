@@ -7,9 +7,9 @@ import {
   type RunId,
   type RunState,
 } from "@gaia/core";
-import { customAlphabet } from "nanoid";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { appendEvent, loadRun } from "./event-store.js";
+import { customAlphabet } from "nanoid";
+
 import {
   browserEvidenceRecord,
   failedBrowserEvidence,
@@ -23,7 +23,13 @@ import {
   type BrowserEvidenceTargetUrl,
 } from "./browser-evidence.js";
 import type { CodexHarnessOptions } from "./codex-harness.js";
+import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
+import { appendEvent, loadRun } from "./event-store.js";
+import { writeEvidencePromotion } from "./evidence-promotion.js";
+import { writeFactoryRetro } from "./factory-retro.js";
+import { writeFactoryScorecard } from "./factory-scorecard.js";
+import type { DeliveryProvenance } from "./git-delivery.js";
 import {
   HarnessRunRequest,
   HarnessRunResult,
@@ -43,16 +49,18 @@ import {
   type RunStorageOptions,
 } from "./paths.js";
 import {
+  availablePreviewDeployment,
+  previewDeploymentRecord,
+  writeEmptyPreviewDeployment,
+  writePreviewDeployment,
+} from "./preview-deployment.js";
+import { writeReport } from "./report-writer.js";
+import {
   ReviewRunRequest,
   defaultReviewerName,
   runReviewer,
   type ReviewerRunOptions,
 } from "./reviewer.js";
-import { writeReport } from "./report-writer.js";
-import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
-import { writeEvidencePromotion } from "./evidence-promotion.js";
-import { writeFactoryRetro } from "./factory-retro.js";
-import { writeFactoryScorecard } from "./factory-scorecard.js";
 import {
   resolveRunProfile,
   parseRunProfileJson,
@@ -61,35 +69,28 @@ import {
   type RunProfile,
   type RunProfileSource,
 } from "./run-profile.js";
-import {
-  availablePreviewDeployment,
-  previewDeploymentRecord,
-  writeEmptyPreviewDeployment,
-  writePreviewDeployment,
-} from "./preview-deployment.js";
 import { withRunStoreLock } from "./run-store-lock.js";
-import {
-  writeSkillManifest,
-  type SkillManifestSource,
-} from "./skill-manifest.js";
 import {
   resolvedSkillPaths,
   writeSkillBundle,
   type SkillInstallerOptions,
 } from "./skill-bundle.js";
+import {
+  writeSkillManifest,
+  type SkillManifestSource,
+} from "./skill-manifest.js";
 import { verifyHarnessOutput } from "./verifier.js";
 import { writeWorkerPlan } from "./worker-plan.js";
+import { encodeWorkspaceDiffSummaryJson } from "./workspace-snapshot.js";
 import {
   emptyWorkspaceSource,
   prepareWorkspace,
   type WorkspaceSource,
 } from "./workspace.js";
-import { encodeWorkspaceDiffSummaryJson } from "./workspace-snapshot.js";
-import type { DeliveryProvenance } from "./git-delivery.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
-  10,
+  10
 );
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const decodeHarnessRunResult = Schema.decodeUnknownSync(HarnessRunResultJson);
@@ -109,21 +110,22 @@ export type WorkerContinuationState =
   | "terminal"
   | "completed";
 
-export type WorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
-  readonly browserEvidenceCollector?: BrowserEvidenceCollector;
-  readonly browserEvidenceRequirement?: BrowserEvidenceRequirement;
-  readonly browserEvidenceTargetUrl?: string;
-  readonly codexHarness?: CodexHarnessOptions;
-  readonly deliveryProvenance?: DeliveryProvenance;
-  readonly harnessName?: HarnessName;
-  readonly workerHarness?: GaiaHarness;
-  readonly processHarness?: ProcessHarnessConfig;
-  readonly skillInstaller?: SkillInstallerOptions;
-  readonly skillManifestSource?: SkillManifestSource;
-  readonly runProfileSource?: RunProfileSource;
-  readonly workspaceSource?: WorkspaceSource;
-  readonly workerContinuationState?: WorkerContinuationState;
-};
+export type WorkflowOptions = RunStorageOptions &
+  ReviewerRunOptions & {
+    readonly browserEvidenceCollector?: BrowserEvidenceCollector;
+    readonly browserEvidenceRequirement?: BrowserEvidenceRequirement;
+    readonly browserEvidenceTargetUrl?: string;
+    readonly codexHarness?: CodexHarnessOptions;
+    readonly deliveryProvenance?: DeliveryProvenance;
+    readonly harnessName?: HarnessName;
+    readonly workerHarness?: GaiaHarness;
+    readonly processHarness?: ProcessHarnessConfig;
+    readonly skillInstaller?: SkillInstallerOptions;
+    readonly skillManifestSource?: SkillManifestSource;
+    readonly runProfileSource?: RunProfileSource;
+    readonly workspaceSource?: WorkspaceSource;
+    readonly workerContinuationState?: WorkerContinuationState;
+  };
 
 export type BrowserEvidenceCollectionOptions = RunStorageOptions & {
   readonly browserEvidenceCollector?: BrowserEvidenceCollector;
@@ -145,21 +147,20 @@ function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
     const spec = yield* parseSpec(input, fallbackTitle);
     const runProfile = yield* resolveRunProfile(options.runProfileSource);
     const browserEvidenceRequirement =
-      options.browserEvidenceRequirement ??
-      runProfile.checks.browserEvidence;
+      options.browserEvidenceRequirement ?? runProfile.checks.browserEvidence;
     const explicitBrowserEvidenceTargetUrl =
       options.browserEvidenceTargetUrl === undefined
         ? undefined
         : yield* parseBrowserEvidenceTargetUrlEffect(
-            options.browserEvidenceTargetUrl,
+            options.browserEvidenceTargetUrl
           );
     yield* fs.makeDirectory(paths.root, { recursive: true });
     yield* fs.writeFileString(paths.input, input);
     yield* fs.writeFileString(paths.latest, runId);
     yield* writeRunProfile({ paths, profile: runProfile }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "creating", error),
-      ),
+        recordRunFailure(runId, paths, "creating", error)
+      )
     );
 
     yield* appendEvent(runId, paths, {
@@ -183,24 +184,23 @@ export function continueAcceptedRun(
   runId: RunId,
   paths: RunPaths,
   spec: ReturnType<typeof parseMarkdownSpec>,
-  options: WorkflowOptions = {},
+  options: WorkflowOptions = {}
 ) {
   return Effect.gen(function* () {
     const runProfile = yield* resolveRunProfile(options.runProfileSource);
     const browserEvidenceRequirement =
-      options.browserEvidenceRequirement ??
-      runProfile.checks.browserEvidence;
+      options.browserEvidenceRequirement ?? runProfile.checks.browserEvidence;
     const explicitBrowserEvidenceTargetUrl =
       options.browserEvidenceTargetUrl === undefined
         ? undefined
         : yield* parseBrowserEvidenceTargetUrlEffect(
-            options.browserEvidenceTargetUrl,
+            options.browserEvidenceTargetUrl
           );
 
     yield* writeRunProfile({ paths, profile: runProfile }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "creating", error),
-      ),
+        recordRunFailure(runId, paths, "creating", error)
+      )
     );
 
     return yield* executeAcceptedRun({
@@ -217,7 +217,9 @@ export function continueAcceptedRun(
 
 function executeAcceptedRun(input: {
   readonly browserEvidenceRequirement: BrowserEvidenceRequirement;
-  readonly explicitBrowserEvidenceTargetUrl?: BrowserEvidenceTargetUrl | undefined;
+  readonly explicitBrowserEvidenceTargetUrl?:
+    | BrowserEvidenceTargetUrl
+    | undefined;
   readonly options: WorkflowOptions;
   readonly paths: RunPaths;
   readonly runId: RunId;
@@ -238,7 +240,7 @@ function executeAcceptedRun(input: {
     if (workerContinuationState === "start") {
       const workspace = yield* prepareWorkspace(
         paths,
-        options.workspaceSource ?? emptyWorkspaceSource(),
+        options.workspaceSource ?? emptyWorkspaceSource()
       );
       yield* appendEvent(runId, paths, {
         payload: {
@@ -257,8 +259,8 @@ function executeAcceptedRun(input: {
         : { source: options.skillManifestSource }),
     }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "preparingWorkspace", error),
-      ),
+        recordRunFailure(runId, paths, "preparingWorkspace", error)
+      )
     );
     const skillBundle = yield* writeSkillBundle({
       manifest: skillManifest,
@@ -271,24 +273,24 @@ function executeAcceptedRun(input: {
         : { source: options.skillManifestSource }),
     }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "preparingWorkspace", error),
-      ),
+        recordRunFailure(runId, paths, "preparingWorkspace", error)
+      )
     );
     yield* writeEmptyBrowserEvidence({ paths }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "preparingWorkspace", error),
-      ),
+        recordRunFailure(runId, paths, "preparingWorkspace", error)
+      )
     );
     yield* writeEmptyPreviewDeployment({ paths }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "preparingWorkspace", error),
-      ),
+        recordRunFailure(runId, paths, "preparingWorkspace", error)
+      )
     );
     const harnessName =
       options.workerHarness?.name ??
       (workerContinuationState === "completed"
         ? codexAppServerHarnessName
-        : options.harnessName ?? defaultHarnessName);
+        : (options.harnessName ?? defaultHarnessName));
     const workerPlan = yield* writeWorkerPlan({
       harnessName,
       paths,
@@ -296,8 +298,8 @@ function executeAcceptedRun(input: {
       spec,
     }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "reviewing", error),
-      ),
+        recordRunFailure(runId, paths, "reviewing", error)
+      )
     );
     if (workerContinuationState === "start") {
       yield* runReviewPhase(runId, paths, spec, "plan", options);
@@ -308,7 +310,7 @@ function executeAcceptedRun(input: {
             ? {
                 harnessProgressPath: runRelative(
                   paths,
-                  paths.codexHarnessProgress,
+                  paths.codexHarnessProgress
                 ),
               }
             : {}),
@@ -343,11 +345,11 @@ function executeAcceptedRun(input: {
         : options.workerHarness === undefined
           ? runHarness(harnessRequest, harnessOptions)
           : options.workerHarness.run(harnessRequest)
-      ).pipe(
-        Effect.catchTag("GaiaRuntimeError", (error) =>
-          recordRunFailure(runId, paths, "runningWorker", error),
-        ),
-      );
+    ).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "runningWorker", error)
+      )
+    );
     const previewDeploymentTargetUrl = harnessResult.previewDeploymentUrl;
     if (workerContinuationState !== "completed") {
       yield* appendEvent(runId, paths, {
@@ -365,7 +367,7 @@ function executeAcceptedRun(input: {
             ? {}
             : {
                 workspaceDiff: encodeWorkspaceDiffSummaryJson(
-                  harnessResult.workspaceDiff,
+                  harnessResult.workspaceDiff
                 ),
               }),
           workerResultPath: harnessResult.resultPath,
@@ -377,21 +379,20 @@ function executeAcceptedRun(input: {
       yield* recordPreviewDeployment(
         runId,
         paths,
-        previewDeploymentTargetUrl,
+        previewDeploymentTargetUrl
       ).pipe(
         Effect.catchTag("GaiaRuntimeError", (error) =>
-          recordRunFailure(runId, paths, "runningWorker", error),
-        ),
+          recordRunFailure(runId, paths, "runningWorker", error)
+        )
       );
     }
     yield* appendEvent(runId, paths, { type: "VERIFICATION_STARTED" });
     yield* verifyHarnessOutput(runId, paths, {
-      requireLegacyWorkspaceMarker:
-        harnessName !== codexAppServerHarnessName,
+      requireLegacyWorkspaceMarker: harnessName !== codexAppServerHarnessName,
     }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "verifying", error),
-      ),
+        recordRunFailure(runId, paths, "verifying", error)
+      )
     );
     yield* appendEvent(runId, paths, {
       payload: { verificationResultPath: "verification-result.json" },
@@ -411,7 +412,7 @@ function executeAcceptedRun(input: {
         runId,
         paths,
         "reporting",
-        browserEvidenceTargetRequiredError(),
+        browserEvidenceTargetRequiredError()
       );
     }
     if (browserEvidenceTargetUrl !== undefined) {
@@ -419,35 +420,35 @@ function executeAcceptedRun(input: {
         runId,
         paths,
         browserEvidenceTargetUrl,
-        options,
+        options
       ).pipe(
         Effect.catchTag("GaiaRuntimeError", (error) =>
-          recordRunFailure(runId, paths, "reporting", error),
-        ),
+          recordRunFailure(runId, paths, "reporting", error)
+        )
       );
       yield* requireBrowserEvidencePolicy(
         browserEvidenceRecord,
-        browserEvidenceRequirement,
+        browserEvidenceRequirement
       ).pipe(
         Effect.catchTag("GaiaRuntimeError", (error) =>
-          recordRunFailure(runId, paths, "reporting", error),
-        ),
+          recordRunFailure(runId, paths, "reporting", error)
+        )
       );
     }
     yield* runReviewPhase(runId, paths, spec, "evidence", options);
     yield* appendEvent(runId, paths, { type: "REPORT_STARTED" });
     const retrospective = yield* writeDogfoodRetrospective(runId, paths).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "reporting", error),
-      ),
+        recordRunFailure(runId, paths, "reporting", error)
+      )
     );
     const evidencePromotion = yield* writeEvidencePromotion({
       paths,
       runId,
     }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "reporting", error),
-      ),
+        recordRunFailure(runId, paths, "reporting", error)
+      )
     );
     const factoryRetro = yield* writeFactoryRetro({
       evidencePromotion,
@@ -456,8 +457,8 @@ function executeAcceptedRun(input: {
       spec,
     }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "reporting", error),
-      ),
+        recordRunFailure(runId, paths, "reporting", error)
+      )
     );
     const factoryScorecard = yield* writeFactoryScorecard({
       paths,
@@ -465,8 +466,8 @@ function executeAcceptedRun(input: {
       spec,
     }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "reporting", error),
-      ),
+        recordRunFailure(runId, paths, "reporting", error)
+      )
     );
     yield* writeReport({
       evidencePromotion,
@@ -518,10 +519,11 @@ function readPersistedWorkerResult(runId: RunId, paths: RunPaths) {
         makeRuntimeError({
           cause,
           code: "WorkerResultUnreadable",
-          message: "Persisted worker result is unavailable for downstream resume.",
+          message:
+            "Persisted worker result is unavailable for downstream resume.",
           recoverable: false,
-        }),
-      ),
+        })
+      )
     );
     const result = yield* Effect.try({
       try: () => decodeHarnessRunResult(JSON.parse(contents)),
@@ -529,7 +531,8 @@ function readPersistedWorkerResult(runId: RunId, paths: RunPaths) {
         makeRuntimeError({
           cause,
           code: "WorkerResultUnreadable",
-          message: "Persisted worker result is unavailable for downstream resume.",
+          message:
+            "Persisted worker result is unavailable for downstream resume.",
           recoverable: false,
         }),
     });
@@ -542,7 +545,7 @@ function readPersistedWorkerResult(runId: RunId, paths: RunPaths) {
           code: "WorkerResultMismatch",
           message: "Persisted worker result does not match the accepted run.",
           recoverable: false,
-        }),
+        })
       );
     }
     return result;
@@ -574,7 +577,7 @@ export function resumeRun(runId: RunId, options: WorkflowOptions = {}) {
           code: "RunHasNoEvents",
           message: `Run ${runId} has no events to resume.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -596,7 +599,7 @@ export function resumeRun(runId: RunId, options: WorkflowOptions = {}) {
         message:
           "Prototype 1 can resume completed runs and validate logs, but cannot continue partial live work yet.",
         recoverable: false,
-      }),
+      })
     );
   });
 }
@@ -604,11 +607,11 @@ export function resumeRun(runId: RunId, options: WorkflowOptions = {}) {
 export function collectBrowserEvidence(
   runId: RunId,
   targetUrlInput: string,
-  options: BrowserEvidenceCollectionOptions = {},
+  options: BrowserEvidenceCollectionOptions = {}
 ) {
   return withRunStoreLock(
     options,
-    collectBrowserEvidenceUnlocked(runId, targetUrlInput, options),
+    collectBrowserEvidenceUnlocked(runId, targetUrlInput, options)
   );
 }
 
@@ -621,7 +624,9 @@ export function reverifyRemediatedRun(input: {
 }) {
   const options = input.options ?? {};
   return Effect.gen(function* () {
-    yield* appendEvent(input.runId, input.paths, { type: "VERIFICATION_STARTED" });
+    yield* appendEvent(input.runId, input.paths, {
+      type: "VERIFICATION_STARTED",
+    });
     yield* verifyHarnessOutput(input.runId, input.paths, {
       requireLegacyWorkspaceMarker: false,
     });
@@ -633,25 +638,49 @@ export function reverifyRemediatedRun(input: {
     const fs = yield* FileSystem.FileSystem;
     const profileText = yield* fs.readFileString(input.paths.runProfile);
     const profile = yield* Effect.try({
-      catch: (cause) => makeRuntimeError({ cause, code: "RunProfileUnreadable", message: "Persisted remediation run profile is invalid.", recoverable: false }),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "RunProfileUnreadable",
+          message: "Persisted remediation run profile is invalid.",
+          recoverable: false,
+        }),
       try: () => parseRunProfileJson(JSON.parse(profileText)),
     });
-    const browserEvidenceText = yield* fs.readFileString(input.paths.browserEvidence);
+    const browserEvidenceText = yield* fs.readFileString(
+      input.paths.browserEvidence
+    );
     const priorEvidence = yield* Effect.try({
-      catch: (cause) => makeRuntimeError({ cause, code: "BrowserEvidenceUnreadable", message: "Persisted Browser evidence is invalid.", recoverable: false }),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "BrowserEvidenceUnreadable",
+          message: "Persisted Browser evidence is invalid.",
+          recoverable: false,
+        }),
       try: () => parseBrowserEvidenceJson(JSON.parse(browserEvidenceText)),
     });
     const priorTarget = priorEvidence.pages[0]?.url;
-    const targetInput = options.browserEvidenceTargetUrl ?? profile.browser?.targetUrl ?? priorTarget;
-    const target = targetInput === undefined
-      ? undefined
-      : yield* parseBrowserEvidenceTargetUrlEffect(targetInput);
-    const requirement = options.browserEvidenceRequirement ?? profile.checks.browserEvidence;
+    const targetInput =
+      options.browserEvidenceTargetUrl ??
+      profile.browser?.targetUrl ??
+      priorTarget;
+    const target =
+      targetInput === undefined
+        ? undefined
+        : yield* parseBrowserEvidenceTargetUrlEffect(targetInput);
+    const requirement =
+      options.browserEvidenceRequirement ?? profile.checks.browserEvidence;
     if (target === undefined && requirement === "required") {
       return yield* Effect.fail(browserEvidenceTargetRequiredError());
     }
     if (target !== undefined) {
-      const record = yield* recordBrowserEvidence(input.runId, input.paths, target, options);
+      const record = yield* recordBrowserEvidence(
+        input.runId,
+        input.paths,
+        target,
+        options
+      );
       yield* requireBrowserEvidencePolicy(record, requirement);
     }
 
@@ -677,25 +706,30 @@ export function reverifyRemediatedRun(input: {
         workspaceManifestPath: input.paths.workspaceManifest,
         workspacePath: input.paths.workspace,
       }),
-      options,
+      options
     );
     yield* appendEvent(input.runId, input.paths, {
       payload: {
         phase: review.phase,
         resultPath: review.resultPath,
         reviewPath: runRelative(input.paths, reviewPaths.markdown),
-        reviewerSessionEvidencePath: runRelative(input.paths, reviewPaths.sessionEvidence),
+        reviewerSessionEvidencePath: runRelative(
+          input.paths,
+          reviewPaths.sessionEvidence
+        ),
         reviewerName: review.reviewerName,
         status: review.status,
       },
       type: "REVIEW_COMPLETED",
     });
     if (review.status === "blocked") {
-      return yield* Effect.fail(makeRuntimeError({
-        code: "ReviewBlocked",
-        message: `Evidence review blocked remediation: ${review.summary}`,
-        recoverable: true,
-      }));
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "ReviewBlocked",
+          message: `Evidence review blocked remediation: ${review.summary}`,
+          recoverable: true,
+        })
+      );
     }
     return review;
   });
@@ -704,11 +738,12 @@ export function reverifyRemediatedRun(input: {
 function collectBrowserEvidenceUnlocked(
   runId: RunId,
   targetUrlInput: string,
-  options: BrowserEvidenceCollectionOptions,
+  options: BrowserEvidenceCollectionOptions
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
-    const targetUrl = yield* parseBrowserEvidenceTargetUrlEffect(targetUrlInput);
+    const targetUrl =
+      yield* parseBrowserEvidenceTargetUrlEffect(targetUrlInput);
     const run = yield* statusRun(runId, { rootDirectory });
 
     if (run.status !== "completed") {
@@ -717,7 +752,7 @@ function collectBrowserEvidenceUnlocked(
           code: "RunNotCompleted",
           message: `Run ${run.runId} must be completed before collecting browser evidence.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -728,7 +763,7 @@ function collectBrowserEvidenceUnlocked(
 
 export function statusRun(
   requestedRunId?: RunId,
-  options: WorkflowOptions = {},
+  options: WorkflowOptions = {}
 ) {
   return Effect.gen(function* () {
     const runId =
@@ -744,7 +779,7 @@ export function statusRun(
           code: "RunHasNoEvents",
           message: `Run ${runId} has no events.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -811,7 +846,7 @@ function latestRunId(options: WorkflowOptions) {
           code: "NoRunsFound",
           message: "No Gaia latest-run pointer found.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -852,7 +887,7 @@ function recordBrowserEvidence(
   targetUrl: BrowserEvidenceTargetUrl,
   options: Readonly<{
     readonly browserEvidenceCollector?: BrowserEvidenceCollector;
-  }>,
+  }>
 ) {
   return Effect.gen(function* () {
     const collector =
@@ -863,9 +898,9 @@ function recordBrowserEvidence(
           failedBrowserEvidence({
             message: error.message,
             targetUrl,
-          }),
-        ),
-      ),
+          })
+        )
+      )
     );
     const evidence = yield* writeBrowserEvidence({ evidence: captured, paths });
     const record = browserEvidenceRecord({
@@ -891,7 +926,7 @@ function recordBrowserEvidence(
 function recordPreviewDeployment(
   runId: RunId,
   paths: RunPaths,
-  targetUrl: BrowserEvidenceTargetUrl,
+  targetUrl: BrowserEvidenceTargetUrl
 ) {
   return Effect.gen(function* () {
     const deployment = yield* writePreviewDeployment({
@@ -919,7 +954,7 @@ function recordPreviewDeployment(
 
 function requireBrowserEvidencePolicy(
   record: BrowserEvidenceRecord,
-  requirement: BrowserEvidenceRequirement,
+  requirement: BrowserEvidenceRequirement
 ): Effect.Effect<void, GaiaRuntimeError> {
   if (requirement === "optional" || record.status === "collected") {
     return Effect.void;
@@ -930,7 +965,7 @@ function requireBrowserEvidencePolicy(
       code: "RequiredBrowserEvidenceFailed",
       message: `Browser evidence is required for this run, but capture status was '${record.status}'.`,
       recoverable: true,
-    }),
+    })
   );
 }
 
@@ -938,7 +973,7 @@ function recordRunFailure(
   runId: RunId,
   paths: RunPaths,
   stage: GaiaFailure["stage"],
-  error: GaiaRuntimeError,
+  error: GaiaRuntimeError
 ) {
   return Effect.gen(function* () {
     yield* appendEvent(runId, paths, {
@@ -946,10 +981,10 @@ function recordRunFailure(
       type: "RUN_FAILED",
     });
     yield* writeDogfoodRetrospective(runId, paths).pipe(
-      Effect.catchTag("GaiaRuntimeError", () => Effect.void),
+      Effect.catchTag("GaiaRuntimeError", () => Effect.void)
     );
     yield* writeEvidencePromotion({ paths, runId }).pipe(
-      Effect.catchTag("GaiaRuntimeError", () => Effect.void),
+      Effect.catchTag("GaiaRuntimeError", () => Effect.void)
     );
     const fs = yield* FileSystem.FileSystem;
     let input = {
@@ -959,14 +994,14 @@ function recordRunFailure(
     const inputText = yield* Effect.exit(fs.readFileString(paths.input));
     if (inputText._tag === "Success") {
       const parsedSpec = yield* Effect.exit(
-        parseSpec(inputText.value, "factory-retro-failed-run"),
+        parseSpec(inputText.value, "factory-retro-failed-run")
       );
       if (parsedSpec._tag === "Success") {
         input = parsedSpec.value;
       }
     }
     yield* writeFactoryRetro({ paths, runId, spec: input }).pipe(
-      Effect.catchTag("GaiaRuntimeError", () => Effect.void),
+      Effect.catchTag("GaiaRuntimeError", () => Effect.void)
     );
 
     return yield* Effect.fail(error);
@@ -978,7 +1013,7 @@ function runReviewPhase(
   paths: RunPaths,
   spec: ReturnType<typeof parseMarkdownSpec>,
   phase: ReviewPhase,
-  options: ReviewerRunOptions,
+  options: ReviewerRunOptions
 ) {
   return Effect.gen(function* () {
     const reviewPaths = reviewPathsForPhase(paths, phase);
@@ -1006,11 +1041,11 @@ function runReviewPhase(
         workspaceManifestPath: paths.workspaceManifest,
         workspacePath: paths.workspace,
       }),
-      options,
+      options
     ).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "reviewing", error),
-      ),
+        recordRunFailure(runId, paths, "reviewing", error)
+      )
     );
 
     yield* appendEvent(runId, paths, {
@@ -1020,7 +1055,7 @@ function runReviewPhase(
         reviewPath: runRelative(paths, reviewPaths.markdown),
         reviewerSessionEvidencePath: runRelative(
           paths,
-          reviewPaths.sessionEvidence,
+          reviewPaths.sessionEvidence
         ),
         reviewerName: review.reviewerName,
         status: review.status,
@@ -1037,7 +1072,7 @@ function runReviewPhase(
           code: "ReviewBlocked",
           message: `${review.phase} review blocked the run: ${review.summary}`,
           recoverable: true,
-        }),
+        })
       );
     }
 
@@ -1106,7 +1141,7 @@ function statusFromState(state: RunState): CommandSummary["status"] {
 
 export function failureToEventPayload(
   error: GaiaRuntimeError,
-  stage: GaiaFailure["stage"],
+  stage: GaiaFailure["stage"]
 ): Readonly<Record<string, Schema.Json>> {
   const failure = GaiaFailure.make({
     code: error.code,

@@ -1,17 +1,17 @@
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import {
   parseHarnessActionId,
   parseHarnessInteractionId,
   parseHarnessSessionId,
   parseWorkspaceRelativePath,
 } from "@gaia/core";
-import { describe, expect, it } from "vitest";
 import { Effect, Fiber, Option, Stream } from "effect";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import {
-  type CodexAppServerClient,
-} from "./codex-app-server-client.js";
+import { describe, expect, it } from "vitest";
+
+import { type CodexAppServerClient } from "./codex-app-server-client.js";
 import {
   parseCodexThreadId,
   parseCodexTurnId,
@@ -28,7 +28,11 @@ import {
   makeFileCodexHarnessCorrelationStore,
   makeInMemoryCodexHarnessCorrelationStore,
 } from "./codex-harness-provider.js";
-import { HarnessInput, resumeHarnessSession, startHarnessSession } from "./harness-session.js";
+import {
+  HarnessInput,
+  resumeHarnessSession,
+  startHarnessSession,
+} from "./harness-session.js";
 
 type RecoveredTurn = NonNullable<CodexThread["turns"]>[number];
 
@@ -47,30 +51,62 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
   const client = {
     initialize: (params) => {
       initializations.push(params);
-      return Effect.succeed({ platformFamily: "unix", platformOs: "macos", userAgent: "Codex/0.137.0" });
+      return Effect.succeed({
+        platformFamily: "unix",
+        platformOs: "macos",
+        userAgent: "Codex/0.137.0",
+      });
     },
     interruptTurn: (params) => {
       interrupts.push(params);
       return Effect.succeed({});
     },
-    listThreads: () => Effect.succeed({ backwardsCursor: null, data: [], nextCursor: null }),
-    onNotification: (listener) => { notifications.add(listener); return () => notifications.delete(listener); },
-    onServerRequest: (listener) => { requests.add(listener); return () => requests.delete(listener); },
-    onTermination: (listener) => { terminations.add(listener); return () => terminations.delete(listener); },
+    listThreads: () =>
+      Effect.succeed({ backwardsCursor: null, data: [], nextCursor: null }),
+    onNotification: (listener) => {
+      notifications.add(listener);
+      return () => notifications.delete(listener);
+    },
+    onServerRequest: (listener) => {
+      requests.add(listener);
+      return () => requests.delete(listener);
+    },
+    onTermination: (listener) => {
+      terminations.add(listener);
+      return () => terminations.delete(listener);
+    },
     readThread: (params) => {
       reads.push(params);
       return Effect.succeed({
-        thread: { id: threadId, status: { type: "idle" as const }, turns: [...recoveredTurns] },
+        thread: {
+          id: threadId,
+          status: { type: "idle" as const },
+          turns: [...recoveredTurns],
+        },
       });
     },
     respondCommandApproval: () => Effect.void,
     respondElicitation: () => Effect.void,
-    respondFileApproval: (_request, response) => Effect.sync(() => { fileResponses.push(response); }),
-    respondPermissionApproval: (_request, response) => Effect.sync(() => { permissionResponses.push(response); }),
+    respondFileApproval: (_request, response) =>
+      Effect.sync(() => {
+        fileResponses.push(response);
+      }),
+    respondPermissionApproval: (_request, response) =>
+      Effect.sync(() => {
+        permissionResponses.push(response);
+      }),
     respondUserInput: () => Effect.void,
     resumeThread: () => Effect.succeed({ thread: { id: threadId } }),
-    startThread: (params) => { starts.push(params); return Effect.succeed({ thread: { id: threadId } }); },
-    startTurn: (params) => { starts.push(params); return Effect.succeed({ turn: { id: turnId, status: "inProgress" as const } }); },
+    startThread: (params) => {
+      starts.push(params);
+      return Effect.succeed({ thread: { id: threadId } });
+    },
+    startTurn: (params) => {
+      starts.push(params);
+      return Effect.succeed({
+        turn: { id: turnId, status: "inProgress" as const },
+      });
+    },
     steerTurn: () => Effect.succeed({ turnId }),
   } satisfies CodexAppServerClient;
   return {
@@ -108,8 +144,8 @@ describe("Codex HarnessProvider adapter", () => {
             workspacePath: parseWorkspaceRelativePath("project"),
           },
           requiredCapabilities: [],
-        }),
-      ),
+        })
+      )
     );
 
     const olderTurnId = parseCodexTurnId("native-older-completed-turn");
@@ -148,7 +184,7 @@ describe("Codex HarnessProvider adapter", () => {
           const observedFiber = yield* session.events.pipe(
             Stream.takeUntil((event) => event.kind === "turnCompleted"),
             Stream.runCollect,
-            Effect.forkChild,
+            Effect.forkChild
           );
           yield* Effect.yieldNow;
           if (Option.isNone(session.interrupt)) {
@@ -168,8 +204,8 @@ describe("Codex HarnessProvider adapter", () => {
             initial,
             observed: Array.from(yield* Fiber.join(observedFiber)),
           };
-        }),
-      ),
+        })
+      )
     );
 
     expect(second.starts).toEqual([]);
@@ -180,7 +216,7 @@ describe("Codex HarnessProvider adapter", () => {
     expect(result.initial.turns[0]?.status).toBe("running");
     expect(result.initial.items).toEqual([]);
     expect(
-      result.observed.filter((event) => event.kind === "turnCompleted"),
+      result.observed.filter((event) => event.kind === "turnCompleted")
     ).toEqual([
       expect.objectContaining({
         status: "completed",
@@ -189,22 +225,63 @@ describe("Codex HarnessProvider adapter", () => {
     ]);
   });
 
-  it.each(["inProgress", "completed", "failed"] as const)("replays the exact checkpointed %s turn without starting another turn", async (status) => {
-    const sessionId = parseHarnessSessionId(`session-exact-${status}`);
-    const store = makeInMemoryCodexHarnessCorrelationStore();
-    const first = recordingClient();
-    await Effect.runPromise(Effect.scoped(startHarnessSession({ provider: createCodexHarnessProvider({ client: first.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { input: { text: "start" }, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] })));
-    const second = recordingClient([
-      {
-        id: parseCodexTurnId("older-checkpoint-history-turn"),
-        status: "completed",
-      },
-      { id: first.turnId, status },
-    ]);
-    const snapshot = await Effect.runPromise(Effect.scoped(Effect.gen(function* () { const session = yield* resumeHarnessSession({ provider: createCodexHarnessProvider({ client: second.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { expectedNativeTurnId: first.turnId, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] }); return yield* session.snapshot; })));
-    expect(second.starts).toEqual([]);
-    expect(snapshot.turns).toHaveLength(1); expect(snapshot.turns[0]?.status).toBe(status === "inProgress" ? "running" : status);
-  });
+  it.each(["inProgress", "completed", "failed"] as const)(
+    "replays the exact checkpointed %s turn without starting another turn",
+    async (status) => {
+      const sessionId = parseHarnessSessionId(`session-exact-${status}`);
+      const store = makeInMemoryCodexHarnessCorrelationStore();
+      const first = recordingClient();
+      await Effect.runPromise(
+        Effect.scoped(
+          startHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: first.client,
+              correlationStore: store,
+              workspaceRoot: "/workspace",
+            }),
+            request: {
+              input: { text: "start" },
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          })
+        )
+      );
+      const second = recordingClient([
+        {
+          id: parseCodexTurnId("older-checkpoint-history-turn"),
+          status: "completed",
+        },
+        { id: first.turnId, status },
+      ]);
+      const snapshot = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const session = yield* resumeHarnessSession({
+              provider: createCodexHarnessProvider({
+                client: second.client,
+                correlationStore: store,
+                workspaceRoot: "/workspace",
+              }),
+              request: {
+                expectedNativeTurnId: first.turnId,
+                sessionId,
+                workspacePath: parseWorkspaceRelativePath("project"),
+              },
+              requiredCapabilities: [],
+            });
+            return yield* session.snapshot;
+          })
+        )
+      );
+      expect(second.starts).toEqual([]);
+      expect(snapshot.turns).toHaveLength(1);
+      expect(snapshot.turns[0]?.status).toBe(
+        status === "inProgress" ? "running" : status
+      );
+    }
+  );
 
   it("preserves full recovered history when no checkpoint is supplied", async () => {
     const sessionId = parseHarnessSessionId("session-full-history-resume");
@@ -224,8 +301,8 @@ describe("Codex HarnessProvider adapter", () => {
             workspacePath: parseWorkspaceRelativePath("project"),
           },
           requiredCapabilities: [],
-        }),
-      ),
+        })
+      )
     );
     const second = recordingClient([
       {
@@ -258,8 +335,8 @@ describe("Codex HarnessProvider adapter", () => {
             requiredCapabilities: [],
           });
           return yield* session.snapshot;
-        }),
-      ),
+        })
+      )
     );
 
     expect(second.starts).toEqual([]);
@@ -267,36 +344,112 @@ describe("Codex HarnessProvider adapter", () => {
     expect(JSON.stringify(snapshot)).toContain("ordinary resume history");
   });
 
-  it.each(["missing", "different", "duplicate", "unrelated-latest", "invalid-status"] as const)("rejects %s checkpoint history without emitting or starting", async (variant) => {
-    const sessionId = parseHarnessSessionId(`session-reject-${variant}`); const store = makeInMemoryCodexHarnessCorrelationStore(); const first = recordingClient();
-    await Effect.runPromise(Effect.scoped(startHarnessSession({ provider: createCodexHarnessProvider({ client: first.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { input: { text: "start" }, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] })));
-    const other = parseCodexTurnId("other-turn");
-    const turns = variant === "missing"
-      ? []
-      : variant === "different"
-        ? [{ id: other, status: "completed" as const }]
-        : variant === "duplicate"
-          ? [{ id: first.turnId, status: "completed" as const }, { id: first.turnId, status: "completed" as const }]
-          : variant === "invalid-status"
-            ? [{ id: first.turnId, status: "interrupted" as const }]
-            : [{ id: first.turnId, status: "completed" as const }, { id: other, status: "completed" as const }];
-    const second = recordingClient(turns);
-    const exit = await Effect.runPromise(Effect.scoped(resumeHarnessSession({ provider: createCodexHarnessProvider({ client: second.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { expectedNativeTurnId: first.turnId, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] }).pipe(Effect.exit)));
-    expect(exit._tag).toBe("Failure"); expect(second.starts).toEqual([]);
-    expect(second.notifications.size).toBe(0); expect(second.interrupts).toEqual([]);
-  });
+  it.each([
+    "missing",
+    "different",
+    "duplicate",
+    "unrelated-latest",
+    "invalid-status",
+  ] as const)(
+    "rejects %s checkpoint history without emitting or starting",
+    async (variant) => {
+      const sessionId = parseHarnessSessionId(`session-reject-${variant}`);
+      const store = makeInMemoryCodexHarnessCorrelationStore();
+      const first = recordingClient();
+      await Effect.runPromise(
+        Effect.scoped(
+          startHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: first.client,
+              correlationStore: store,
+              workspaceRoot: "/workspace",
+            }),
+            request: {
+              input: { text: "start" },
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          })
+        )
+      );
+      const other = parseCodexTurnId("other-turn");
+      const turns =
+        variant === "missing"
+          ? []
+          : variant === "different"
+            ? [{ id: other, status: "completed" as const }]
+            : variant === "duplicate"
+              ? [
+                  { id: first.turnId, status: "completed" as const },
+                  { id: first.turnId, status: "completed" as const },
+                ]
+              : variant === "invalid-status"
+                ? [{ id: first.turnId, status: "interrupted" as const }]
+                : [
+                    { id: first.turnId, status: "completed" as const },
+                    { id: other, status: "completed" as const },
+                  ];
+      const second = recordingClient(turns);
+      const exit = await Effect.runPromise(
+        Effect.scoped(
+          resumeHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: second.client,
+              correlationStore: store,
+              workspaceRoot: "/workspace",
+            }),
+            request: {
+              expectedNativeTurnId: first.turnId,
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          }).pipe(Effect.exit)
+        )
+      );
+      expect(exit._tag).toBe("Failure");
+      expect(second.starts).toEqual([]);
+      expect(second.notifications.size).toBe(0);
+      expect(second.interrupts).toEqual([]);
+    }
+  );
 
   it("allows an audited interrupted checkpoint without projecting the stale terminal turn", async () => {
-    const sessionId = parseHarnessSessionId("session-audited-interrupted-checkpoint");
+    const sessionId = parseHarnessSessionId(
+      "session-audited-interrupted-checkpoint"
+    );
     const store = makeInMemoryCodexHarnessCorrelationStore();
     const first = recordingClient();
-    await Effect.runPromise(Effect.scoped(startHarnessSession({ provider: createCodexHarnessProvider({ client: first.client, correlationStore: store, workspaceRoot: "/workspace" }), request: { input: { text: "start" }, sessionId, workspacePath: parseWorkspaceRelativePath("project") }, requiredCapabilities: [] })));
-    const second = recordingClient([{ id: first.turnId, status: "interrupted" }]);
+    await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: first.client,
+            correlationStore: store,
+            workspaceRoot: "/workspace",
+          }),
+          request: {
+            input: { text: "start" },
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: [],
+        })
+      )
+    );
+    const second = recordingClient([
+      { id: first.turnId, status: "interrupted" },
+    ]);
     const snapshot = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const session = yield* resumeHarnessSession({
-            provider: createCodexHarnessProvider({ client: second.client, correlationStore: store, workspaceRoot: "/workspace" }),
+            provider: createCodexHarnessProvider({
+              client: second.client,
+              correlationStore: store,
+              workspaceRoot: "/workspace",
+            }),
             request: {
               allowInterruptedCheckpoint: true,
               expectedNativeTurnId: first.turnId,
@@ -306,13 +459,15 @@ describe("Codex HarnessProvider adapter", () => {
             requiredCapabilities: [],
           });
           const initial = yield* session.snapshot;
-          yield* session.send(HarnessInput.make({
-            clientInputId: "audited-follow-up-1",
-            text: "continue from checkpoint",
-          }));
+          yield* session.send(
+            HarnessInput.make({
+              clientInputId: "audited-follow-up-1",
+              text: "continue from checkpoint",
+            })
+          );
           return initial;
-        }),
-      ),
+        })
+      )
     );
 
     expect(snapshot.turns).toHaveLength(0);
@@ -331,10 +486,12 @@ describe("Codex HarnessProvider adapter", () => {
     const store = makeFileCodexHarnessCorrelationStore(root);
 
     await Effect.runPromise(
-      store.save(sessionId, { token: "opaque-native-correlation" }),
+      store.save(sessionId, { token: "opaque-native-correlation" })
     );
     const reconstructed = makeFileCodexHarnessCorrelationStore(root);
-    await expect(Effect.runPromise(reconstructed.load(sessionId))).resolves.toEqual({
+    await expect(
+      Effect.runPromise(reconstructed.load(sessionId))
+    ).resolves.toEqual({
       token: "opaque-native-correlation",
     });
 
@@ -342,7 +499,7 @@ describe("Codex HarnessProvider adapter", () => {
       root,
       ".gaia",
       "private",
-      "harness-correlations",
+      "harness-correlations"
     );
     const [filename] = await readdir(directory);
     expect(filename).toBeDefined();
@@ -363,9 +520,11 @@ describe("Codex HarnessProvider adapter", () => {
         sessionId,
         token: "x".repeat(20_000),
         version: 1,
-      })}\n`,
+      })}\n`
     );
-    const oversized = await Effect.runPromiseExit(reconstructed.load(sessionId));
+    const oversized = await Effect.runPromiseExit(
+      reconstructed.load(sessionId)
+    );
     expect(oversized._tag).toBe("Failure");
   });
 
@@ -393,7 +552,7 @@ describe("Codex HarnessProvider adapter", () => {
           });
           const initial = yield* session.events.pipe(
             Stream.take(3),
-            Stream.runCollect,
+            Stream.runCollect
           );
           for (const listener of fake.notifications) {
             listener({
@@ -415,8 +574,8 @@ describe("Codex HarnessProvider adapter", () => {
             initial: Array.from(initial),
             snapshot: yield* session.snapshot,
           };
-        }),
-      ),
+        })
+      )
     );
 
     expect(fake.starts).toEqual([
@@ -470,8 +629,8 @@ describe("Codex HarnessProvider adapter", () => {
             workspacePath: parseWorkspaceRelativePath("project"),
           },
           requiredCapabilities: ["resumableSessions"],
-        }),
-      ),
+        })
+      )
     );
 
     const second = recordingClient();
@@ -492,14 +651,14 @@ describe("Codex HarnessProvider adapter", () => {
           });
           const initial = yield* session.events.pipe(
             Stream.take(3),
-            Stream.runCollect,
+            Stream.runCollect
           );
           return {
             initial: Array.from(initial),
             snapshot: yield* session.snapshot,
           };
-        }),
-      ),
+        })
+      )
     );
 
     expect(second.reads).toEqual([
@@ -532,8 +691,8 @@ describe("Codex HarnessProvider adapter", () => {
             workspacePath: parseWorkspaceRelativePath("project"),
           },
           requiredCapabilities: ["resumableSessions"],
-        }),
-      ),
+        })
+      )
     );
 
     const second = recordingClient();
@@ -544,16 +703,20 @@ describe("Codex HarnessProvider adapter", () => {
           thread: {
             id: second.threadId,
             status: { type: "idle" as const },
-            turns: [{
-              id: parseCodexTurnId("recovered-turn"),
-              items: [{
-                clientId: "remediation-operation-1",
-                content: [{ text: "already sent", type: "text" as const }],
-                id: parseCodexItemId("recovered-user-message"),
-                type: "userMessage" as const,
-              }],
-              status: "completed" as const,
-            }],
+            turns: [
+              {
+                id: parseCodexTurnId("recovered-turn"),
+                items: [
+                  {
+                    clientId: "remediation-operation-1",
+                    content: [{ text: "already sent", type: "text" as const }],
+                    id: parseCodexItemId("recovered-user-message"),
+                    type: "userMessage" as const,
+                  },
+                ],
+                status: "completed" as const,
+              },
+            ],
           },
         }),
     };
@@ -580,15 +743,17 @@ describe("Codex HarnessProvider adapter", () => {
             clientInputId: "remediation-operation-2",
             text: "send once",
           });
-        }),
-      ),
+        })
+      )
     );
 
-    expect(second.starts).toEqual([{
-      clientUserMessageId: "remediation-operation-2",
-      input: [{ text: "send once", type: "text" }],
-      threadId: second.threadId,
-    }]);
+    expect(second.starts).toEqual([
+      {
+        clientUserMessageId: "remediation-operation-2",
+        input: [{ text: "send once", type: "text" }],
+        threadId: second.threadId,
+      },
+    ]);
   });
 
   it("rejects a resumed native thread that differs from stored correlation before reading it", async () => {
@@ -609,8 +774,8 @@ describe("Codex HarnessProvider adapter", () => {
             workspacePath: parseWorkspaceRelativePath("project"),
           },
           requiredCapabilities: ["resumableSessions"],
-        }),
-      ),
+        })
+      )
     );
 
     const second = recordingClient();
@@ -633,8 +798,8 @@ describe("Codex HarnessProvider adapter", () => {
             workspacePath: parseWorkspaceRelativePath("project"),
           },
           requiredCapabilities: [],
-        }).pipe(Effect.flip),
-      ),
+        }).pipe(Effect.flip)
+      )
     );
 
     expect(error._tag).toBe("HarnessResumeError");
@@ -642,7 +807,7 @@ describe("Codex HarnessProvider adapter", () => {
       throw new Error(`Unexpected error: ${error._tag}`);
     }
     expect(error.message).toBe(
-      "Codex resumed a thread that does not match stored session correlation.",
+      "Codex resumed a thread that does not match stored session correlation."
     );
     expect(second.reads).toEqual([]);
   });
@@ -665,8 +830,8 @@ describe("Codex HarnessProvider adapter", () => {
             workspacePath: parseWorkspaceRelativePath("project"),
           },
           requiredCapabilities: ["resumableSessions"],
-        }),
-      ),
+        })
+      )
     );
 
     const second = recordingClient();
@@ -677,7 +842,7 @@ describe("Codex HarnessProvider adapter", () => {
         second.client.readThread(params).pipe(
           Effect.map((result) => ({
             thread: { ...result.thread, id: mismatchedThreadId },
-          })),
+          }))
         ),
     };
     const error = await Effect.runPromise(
@@ -693,8 +858,8 @@ describe("Codex HarnessProvider adapter", () => {
             workspacePath: parseWorkspaceRelativePath("project"),
           },
           requiredCapabilities: [],
-        }).pipe(Effect.flip),
-      ),
+        }).pipe(Effect.flip)
+      )
     );
 
     expect(error._tag).toBe("HarnessResumeError");
@@ -702,7 +867,7 @@ describe("Codex HarnessProvider adapter", () => {
       throw new Error(`Unexpected error: ${error._tag}`);
     }
     expect(error.message).toBe(
-      "Codex read a thread that does not match stored session correlation.",
+      "Codex read a thread that does not match stored session correlation."
     );
     expect(second.reads).toEqual([
       { includeTurns: true, threadId: second.threadId },
@@ -718,7 +883,7 @@ describe("Codex HarnessProvider adapter", () => {
           new CodexAppServerIncompatibilityError({
             actualUserAgent: "Codex/0.136.0 test",
             supportedVersion: "0.137.0",
-          }),
+          })
         ),
     };
     const detection = await Effect.runPromise(
@@ -726,7 +891,7 @@ describe("Codex HarnessProvider adapter", () => {
         client,
         correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
         workspaceRoot: "/workspace",
-      }).detect,
+      }).detect
     );
 
     expect(detection).toMatchObject({
@@ -745,7 +910,7 @@ describe("Codex HarnessProvider adapter", () => {
           new CodexAppServerIncompatibilityError({
             actualUserAgent: "gaia/0.136.0 test",
             supportedVersion: "0.137.0",
-          }),
+          })
         ),
     };
     const detection = await Effect.runPromise(
@@ -753,7 +918,7 @@ describe("Codex HarnessProvider adapter", () => {
         client,
         correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
         workspaceRoot: "/workspace",
-      }).detect,
+      }).detect
     );
 
     expect(detection).toMatchObject({
@@ -768,7 +933,7 @@ describe("Codex HarnessProvider adapter", () => {
       ...fake.client,
       initialize: (params) =>
         Effect.sleep("10 millis").pipe(
-          Effect.andThen(fake.client.initialize(params)),
+          Effect.andThen(fake.client.initialize(params))
         ),
     };
     const provider = createCodexHarnessProvider({
@@ -780,7 +945,7 @@ describe("Codex HarnessProvider adapter", () => {
     const detections = await Effect.runPromise(
       Effect.all([provider.detect, provider.detect], {
         concurrency: "unbounded",
-      }),
+      })
     );
 
     expect(detections.map(({ state }) => state)).toEqual([
@@ -837,8 +1002,8 @@ describe("Codex HarnessProvider adapter", () => {
             });
           }
           return { failed, afterProviderInput: yield* session.snapshot };
-        }),
-      ),
+        })
+      )
     );
 
     expect(snapshots.failed.state).toBe("failed");
@@ -916,8 +1081,8 @@ describe("Codex HarnessProvider adapter", () => {
             })
             .pipe(Effect.exit);
           return { resolution, snapshot: yield* session.snapshot };
-        }),
-      ),
+        })
+      )
     );
 
     expect(result.resolution._tag).toBe("Failure");
@@ -948,12 +1113,12 @@ describe("Codex HarnessProvider adapter", () => {
             listener(
               new CodexAppServerTransportError({
                 message: "connection closed",
-              }),
+              })
             );
           }
           return yield* session.snapshot;
-        }),
-      ),
+        })
+      )
     );
 
     expect(snapshot.state).toBe("failed");
@@ -987,10 +1152,10 @@ describe("Codex HarnessProvider adapter", () => {
             Stream.runForEach((event) =>
               Effect.sync(() => {
                 observed.push(event);
-              }),
+              })
             ),
             Effect.exit,
-            Effect.forkChild,
+            Effect.forkChild
           );
           yield* Effect.yieldNow;
           for (const listener of fake.notifications) {
@@ -1012,25 +1177,30 @@ describe("Codex HarnessProvider adapter", () => {
           const send = yield* session
             .send({ text: "must not dispatch" })
             .pipe(Effect.exit);
-          if (Option.isNone(session.steer) || Option.isNone(session.interrupt)) {
-            throw new Error("Expected Codex steering and interruption operations.");
+          if (
+            Option.isNone(session.steer) ||
+            Option.isNone(session.interrupt)
+          ) {
+            throw new Error(
+              "Expected Codex steering and interruption operations."
+            );
           }
-          const steer = yield* session.steer.value({ text: "must not steer" }).pipe(
-            Effect.exit,
-          );
+          const steer = yield* session.steer
+            .value({ text: "must not steer" })
+            .pipe(Effect.exit);
           const interrupt = yield* session.interrupt.value.pipe(Effect.exit);
           const resolveInteraction = yield* session
             .resolveInteraction({
               actionId: parseHarnessActionId("action-terminal-resolution"),
               decision: "decline",
               interactionId: parseHarnessInteractionId(
-                "interaction-terminal-resolution",
+                "interaction-terminal-resolution"
               ),
               kind: "approval",
             })
             .pipe(Effect.exit);
           const stream = yield* Fiber.join(streamFiber).pipe(
-            Effect.timeoutOption("1 second"),
+            Effect.timeoutOption("1 second")
           );
           return {
             interrupt,
@@ -1041,8 +1211,8 @@ describe("Codex HarnessProvider adapter", () => {
             steer,
             stream,
           };
-        }),
-      ),
+        })
+      )
     );
 
     expect(Option.isSome(result.stream)).toBe(true);
@@ -1062,7 +1232,7 @@ describe("Codex HarnessProvider adapter", () => {
           kind: "warning",
           message: "must be ignored after terminal failure",
         }),
-      ]),
+      ])
     );
     expect(result.observed.at(-1)).toMatchObject({
       failure: expect.objectContaining({ code: "CodexThreadSystemError" }),
@@ -1072,7 +1242,9 @@ describe("Codex HarnessProvider adapter", () => {
 
   it("terminates the live stream when safe projection rejects provider output", async () => {
     const fake = recordingClient();
-    const sessionId = parseHarnessSessionId("session-codex-projection-terminal");
+    const sessionId = parseHarnessSessionId(
+      "session-codex-projection-terminal"
+    );
     const result = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -1094,10 +1266,10 @@ describe("Codex HarnessProvider adapter", () => {
             Stream.runForEach((event) =>
               Effect.sync(() => {
                 observed.push(event);
-              }),
+              })
             ),
             Effect.exit,
-            Effect.forkChild,
+            Effect.forkChild
           );
           yield* Effect.yieldNow;
           for (let index = 0; index < 1_001; index += 1) {
@@ -1117,11 +1289,11 @@ describe("Codex HarnessProvider adapter", () => {
             observed,
             snapshot: yield* session.snapshot,
             stream: yield* Fiber.join(streamFiber).pipe(
-              Effect.timeoutOption("1 second"),
+              Effect.timeoutOption("1 second")
             ),
           };
-        }),
-      ),
+        })
+      )
     );
 
     expect(Option.isSome(result.stream)).toBe(true);
@@ -1156,8 +1328,8 @@ describe("Codex HarnessProvider adapter", () => {
             workspacePath: parseWorkspaceRelativePath("project"),
           },
           requiredCapabilities: ["resumableSessions"],
-        }),
-      ),
+        })
+      )
     );
 
     const second = recordingClient();
@@ -1165,7 +1337,7 @@ describe("Codex HarnessProvider adapter", () => {
       ...second.client,
       onTermination: (listener) => {
         listener(
-          new CodexAppServerTransportError({ message: "already terminated" }),
+          new CodexAppServerTransportError({ message: "already terminated" })
         );
         return () => undefined;
       },
@@ -1186,8 +1358,8 @@ describe("Codex HarnessProvider adapter", () => {
             requiredCapabilities: [],
           });
           return yield* session.snapshot.pipe(Effect.exit);
-        }),
-      ),
+        })
+      )
     );
 
     expect(result._tag).toBe("Success");
@@ -1249,8 +1421,8 @@ describe("Codex HarnessProvider adapter", () => {
             })
             .pipe(Effect.exit);
           return { resolution, snapshot: yield* session.snapshot };
-        }),
-      ),
+        })
+      )
     );
 
     expect(result.resolution._tag).toBe("Failure");
@@ -1263,7 +1435,9 @@ describe("Codex HarnessProvider adapter", () => {
 
   it("constructs permission approval responses from the audited neutral scope", async () => {
     const fake = recordingClient();
-    const sessionId = parseHarnessSessionId("session-codex-permission-response");
+    const sessionId = parseHarnessSessionId(
+      "session-codex-permission-response"
+    );
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -1322,8 +1496,8 @@ describe("Codex HarnessProvider adapter", () => {
             interactionId: pendingInteraction.interactionId,
             kind: "approval",
           });
-        }),
-      ),
+        })
+      )
     );
 
     expect(fake.permissionResponses).toEqual([

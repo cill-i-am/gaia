@@ -7,9 +7,7 @@ export {
   type WorkerRecoveryWorkspaceValidation,
   type WorkerRecoveryThreadStatus,
 } from "./worker-recovery.js";
-export {
-  makeGitCleanupResourceAdapter,
-} from "./git-cleanup-resource-adapter.js";
+export { makeGitCleanupResourceAdapter } from "./git-cleanup-resource-adapter.js";
 export {
   continueDeliveryRemediation,
   type DeliveryRemediationCoordinatorOptions,
@@ -295,7 +293,12 @@ export {
   runRootDirectory,
   type RunPaths,
 } from "./paths.js";
-export { inspectContinuableDeliveryWorktreeOwnership, inspectRecoverableDeliveryWorktreeOwnership, inspectRetainedPayloadDeliveryWorktreeOwnership, parseDeliveryProvenance } from "./git-delivery.js";
+export {
+  inspectContinuableDeliveryWorktreeOwnership,
+  inspectRecoverableDeliveryWorktreeOwnership,
+  inspectRetainedPayloadDeliveryWorktreeOwnership,
+  parseDeliveryProvenance,
+} from "./git-delivery.js";
 export {
   listLocalRuns,
   readLocalRun,

@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+
 import type { WorkerPlanPlanningContext } from "./source-planning-context.js";
 
 export const InferenceConfidenceSchema = Schema.Literals([
@@ -18,7 +19,7 @@ export const InferenceSourceKindSchema = Schema.Literals([
 ] as const);
 
 export class InferenceSource extends Schema.Class<InferenceSource>(
-  "InferenceSource",
+  "InferenceSource"
 )({
   kind: InferenceSourceKindSchema,
   reason: Schema.NonEmptyString,
@@ -26,7 +27,7 @@ export class InferenceSource extends Schema.Class<InferenceSource>(
 }) {}
 
 export class InferenceRecommendation extends Schema.Class<InferenceRecommendation>(
-  "InferenceRecommendation",
+  "InferenceRecommendation"
 )({
   confidence: InferenceConfidenceSchema,
   name: Schema.NonEmptyString,
@@ -35,7 +36,7 @@ export class InferenceRecommendation extends Schema.Class<InferenceRecommendatio
 }) {}
 
 export class InferredVerificationExpectation extends Schema.Class<InferredVerificationExpectation>(
-  "InferredVerificationExpectation",
+  "InferredVerificationExpectation"
 )({
   check: Schema.NonEmptyString,
   command: Schema.optionalKey(Schema.NonEmptyString),
@@ -45,7 +46,7 @@ export class InferredVerificationExpectation extends Schema.Class<InferredVerifi
 }) {}
 
 export class WorkerPlanInferredRecommendations extends Schema.Class<WorkerPlanInferredRecommendations>(
-  "WorkerPlanInferredRecommendations",
+  "WorkerPlanInferredRecommendations"
 )({
   reviewStack: Schema.Array(InferenceRecommendation),
   skills: Schema.Array(InferenceRecommendation),
@@ -95,12 +96,13 @@ type VerificationAccumulator = SkillAccumulator & {
 
 const baseReviewSource = InferenceSource.make({
   kind: "planned-surface",
-  reason: "Every implementation handoff needs a reviewable production-readiness record.",
+  reason:
+    "Every implementation handoff needs a reviewable production-readiness record.",
   value: "worker plan",
 });
 
 export function inferSkillReviewStack(
-  input: InferenceInput,
+  input: InferenceInput
 ): WorkerPlanInferredRecommendations {
   const profile = surfaceProfile(input);
   const skills = new Map<string, SkillAccumulator>();
@@ -108,32 +110,72 @@ export function inferSkillReviewStack(
   const verification = new Map<string, VerificationAccumulator>();
   const docsTemplateOnly = isDocsTemplateOnly(input.likelyTouchedSurfaces);
 
-  addRecommendation(skills, "production-ready", "high", [
-    "Worker output should pass the repo production-ready evidence gate before handoff.",
-  ], [baseReviewSource]);
-  addRecommendation(reviewStack, "production-ready", "high", [
-    "Run the production-ready gate before claiming the worker slice is complete.",
-  ], [baseReviewSource]);
-  addRecommendation(skills, "code-review", "high", [
-    "Changed artifacts need standards-backed review before merge.",
-  ], [baseReviewSource]);
-  addRecommendation(reviewStack, "code-review", "high", [
-    "Review changed behavior, contracts, boundaries, and tests.",
-  ], [baseReviewSource]);
-  addRecommendation(skills, "simplify", "high", [
-    "Run a simplification pass before handoff to keep the factory artifact small.",
-  ], [baseReviewSource]);
-  addRecommendation(reviewStack, "simplify", "high", [
-    "Check for removable inference complexity before the PR is handed off.",
-  ], [baseReviewSource]);
+  addRecommendation(
+    skills,
+    "production-ready",
+    "high",
+    [
+      "Worker output should pass the repo production-ready evidence gate before handoff.",
+    ],
+    [baseReviewSource]
+  );
+  addRecommendation(
+    reviewStack,
+    "production-ready",
+    "high",
+    [
+      "Run the production-ready gate before claiming the worker slice is complete.",
+    ],
+    [baseReviewSource]
+  );
+  addRecommendation(
+    skills,
+    "code-review",
+    "high",
+    ["Changed artifacts need standards-backed review before merge."],
+    [baseReviewSource]
+  );
+  addRecommendation(
+    reviewStack,
+    "code-review",
+    "high",
+    ["Review changed behavior, contracts, boundaries, and tests."],
+    [baseReviewSource]
+  );
+  addRecommendation(
+    skills,
+    "simplify",
+    "high",
+    [
+      "Run a simplification pass before handoff to keep the factory artifact small.",
+    ],
+    [baseReviewSource]
+  );
+  addRecommendation(
+    reviewStack,
+    "simplify",
+    "high",
+    ["Check for removable inference complexity before the PR is handed off."],
+    [baseReviewSource]
+  );
 
   if (!docsTemplateOnly && profile.effect.length > 0) {
-    addRecommendation(skills, "effect-ts", "high", [
-      "Effect APIs or Effect-oriented runtime/server surfaces are present.",
-    ], profile.effect);
-    addRecommendation(reviewStack, "effect-ts", "high", [
-      "Effect code should be reviewed for typed errors, Schema boundaries, and runtime-edge provisioning.",
-    ], profile.effect);
+    addRecommendation(
+      skills,
+      "effect-ts",
+      "high",
+      ["Effect APIs or Effect-oriented runtime/server surfaces are present."],
+      profile.effect
+    );
+    addRecommendation(
+      reviewStack,
+      "effect-ts",
+      "high",
+      [
+        "Effect code should be reviewed for typed errors, Schema boundaries, and runtime-edge provisioning.",
+      ],
+      profile.effect
+    );
     addVerification(verification, "Focused runtime Effect tests", {
       command: "pnpm --filter @gaia/runtime test",
       confidence: "medium",
@@ -146,7 +188,9 @@ export function inferSkillReviewStack(
     addVerification(verification, "Focused core contract tests", {
       command: "pnpm --filter @gaia/core test",
       confidence: "high",
-      reasons: ["Core contract surfaces should be proven through core package tests."],
+      reasons: [
+        "Core contract surfaces should be proven through core package tests.",
+      ],
       sources: profile.core,
     });
   }
@@ -156,12 +200,16 @@ export function inferSkillReviewStack(
     addVerification(verification, "Focused server tests", {
       command: "pnpm --filter @gaia/server test",
       confidence: "high",
-      reasons: ["Server API surfaces should be covered by server package tests."],
+      reasons: [
+        "Server API surfaces should be covered by server package tests.",
+      ],
       sources: explicitServerSources,
     });
     addVerification(verification, "Built server binary smoke", {
       confidence: "medium",
-      reasons: ["Server entrypoint changes should be checked after the binary is built."],
+      reasons: [
+        "Server entrypoint changes should be checked after the binary is built.",
+      ],
       sources: explicitServerSources,
     });
   }
@@ -170,22 +218,38 @@ export function inferSkillReviewStack(
     addVerification(verification, "Focused CLI tests", {
       command: "pnpm --filter @gaia/cli test",
       confidence: "high",
-      reasons: ["CLI command-output surfaces should be covered by CLI package tests."],
+      reasons: [
+        "CLI command-output surfaces should be covered by CLI package tests.",
+      ],
       sources: profile.cli,
     });
   }
 
   if (!docsTemplateOnly && profile.githubPr.length > 0) {
-    addRecommendation(skills, "ci-watch", "medium", [
-      "GitHub, PR, check, or feedback evidence paths require explicit CI/comment classification.",
-    ], profile.githubPr);
-    addRecommendation(reviewStack, "ci-watch", "medium", [
-      "PR/check evidence changes should be watched for check and comment drift.",
-    ], profile.githubPr);
+    addRecommendation(
+      skills,
+      "ci-watch",
+      "medium",
+      [
+        "GitHub, PR, check, or feedback evidence paths require explicit CI/comment classification.",
+      ],
+      profile.githubPr
+    );
+    addRecommendation(
+      reviewStack,
+      "ci-watch",
+      "medium",
+      [
+        "PR/check evidence changes should be watched for check and comment drift.",
+      ],
+      profile.githubPr
+    );
     addVerification(verification, "PR check and comment watch", {
       command: "pnpm gaia pr-checks 1 --json",
       confidence: "medium",
-      reasons: ["PR evidence surfaces should preserve explicit check classifications."],
+      reasons: [
+        "PR evidence surfaces should preserve explicit check classifications.",
+      ],
       sources: profile.githubPr,
     });
   }
@@ -193,7 +257,9 @@ export function inferSkillReviewStack(
   if (!docsTemplateOnly && profile.browserVisible.length > 0) {
     addVerification(verification, "Browser/user-visible evidence smoke", {
       confidence: "medium",
-      reasons: ["Browser or user-visible surfaces should have explicit rendered evidence when a target URL exists."],
+      reasons: [
+        "Browser or user-visible surfaces should have explicit rendered evidence when a target URL exists.",
+      ],
       sources: profile.browserVisible,
     });
   }
@@ -201,19 +267,31 @@ export function inferSkillReviewStack(
   if (profile.docsTemplates.length > 0) {
     addVerification(verification, "Docs/template artifact review", {
       confidence: "medium",
-      reasons: ["Docs and templates need review for durable source-of-truth language without heavier code gates."],
+      reasons: [
+        "Docs and templates need review for durable source-of-truth language without heavier code gates.",
+      ],
       sources: profile.docsTemplates,
     });
   }
 
   const broadSources = docsTemplateOnly ? [] : broadContractSources(profile);
   if (broadSources.length > 0) {
-    addRecommendation(skills, "review-swarm", "high", [
-      "The plan spans broad contract, app, server, or runtime boundaries.",
-    ], broadSources);
-    addRecommendation(reviewStack, "review-swarm", "high", [
-      "Use an additional broad read-only review for cross-boundary workflow risk.",
-    ], broadSources);
+    addRecommendation(
+      skills,
+      "review-swarm",
+      "high",
+      ["The plan spans broad contract, app, server, or runtime boundaries."],
+      broadSources
+    );
+    addRecommendation(
+      reviewStack,
+      "review-swarm",
+      "high",
+      [
+        "Use an additional broad read-only review for cross-boundary workflow risk.",
+      ],
+      broadSources
+    );
   }
 
   return WorkerPlanInferredRecommendations.make({
@@ -238,7 +316,7 @@ function isDocsTemplateOnly(surfaces: ReadonlyArray<string>) {
 }
 
 export function markdownInferredRecommendations(
-  recommendations: WorkerPlanInferredRecommendations,
+  recommendations: WorkerPlanInferredRecommendations
 ) {
   return [
     "### Skills",
@@ -255,33 +333,33 @@ export function markdownInferredRecommendations(
 function surfaceProfile(input: InferenceInput): SurfaceProfile {
   const sources = [
     ...input.likelyTouchedSurfaces.map((surface) =>
-      source("planned-surface", surface, "Listed as a likely touched surface."),
+      source("planned-surface", surface, "Listed as a likely touched surface.")
     ),
     ...input.planningContext.likelyFiles.map((file) =>
-      source("likely-file", file.path, file.reason),
+      source("likely-file", file.path, file.reason)
     ),
     ...input.planningContext.packages.map((workspacePackage) =>
-      source("package", workspacePackage.name, workspacePackage.reason),
+      source("package", workspacePackage.name, workspacePackage.reason)
     ),
     ...input.planningContext.sourceDocs.map((doc) =>
-      source("source-doc", doc.path, doc.reason),
+      source("source-doc", doc.path, doc.reason)
     ),
     ...input.planningContext.similarTests.map((test) =>
-      source("similar-test", test.path, test.reason),
+      source("similar-test", test.path, test.reason)
     ),
     ...input.domainReferences.map((reference) =>
       source(
         "domain-reference",
         reference.value,
-        `Classified as ${reference.kind}.`,
-      ),
+        `Classified as ${reference.kind}.`
+      )
     ),
     ...input.verificationChecks.map((check) =>
       source(
         "verification-check",
         check.command ?? check.expectation,
-        check.expectation,
-      ),
+        check.expectation
+      )
     ),
   ];
   return {
@@ -332,7 +410,7 @@ function isExplicitServerSource(source: InferenceSource) {
 
 function matchingSources(
   sources: ReadonlyArray<InferenceSource>,
-  predicate: (source: InferenceSource) => boolean,
+  predicate: (source: InferenceSource) => boolean
 ) {
   return uniqueSources(sources.filter(predicate));
 }
@@ -420,7 +498,7 @@ function githubPrSurface(candidate: InferenceSource) {
   return (
     /\bgithub\b/u.test(text) ||
     /\bpr[-\s]?(?:loop|check|checks|feedback|review|comment|comments)\b/u.test(
-      text,
+      text
     ) ||
     /\bpull request\b/u.test(text) ||
     /\bci\b/u.test(text) ||
@@ -452,9 +530,7 @@ function docsTemplateSurface(candidate: InferenceSource) {
 }
 
 function isBehaviorSource(candidate: InferenceSource) {
-  return (
-    candidate.kind !== "similar-test" && candidate.kind !== "source-doc"
-  );
+  return candidate.kind !== "similar-test" && candidate.kind !== "source-doc";
 }
 
 function sourceText(candidate: InferenceSource) {
@@ -466,7 +542,7 @@ function addRecommendation(
   name: string,
   confidence: Confidence,
   reasons: ReadonlyArray<string>,
-  sources: ReadonlyArray<InferenceSource>,
+  sources: ReadonlyArray<InferenceSource>
 ) {
   const existing = target.get(name);
   target.set(name, {
@@ -487,7 +563,7 @@ function addVerification(
     readonly confidence: Confidence;
     readonly reasons: ReadonlyArray<string>;
     readonly sources: ReadonlyArray<InferenceSource>;
-  },
+  }
 ) {
   const existing = target.get(check);
   target.set(check, {
@@ -504,7 +580,7 @@ function addVerification(
 }
 
 function recommendationsFromMap(
-  recommendations: ReadonlyMap<string, SkillAccumulator>,
+  recommendations: ReadonlyMap<string, SkillAccumulator>
 ) {
   return [...recommendations.entries()].map(([name, recommendation]) =>
     InferenceRecommendation.make({
@@ -512,12 +588,12 @@ function recommendationsFromMap(
       name,
       reasons: [...recommendation.reasons],
       sources: [...recommendation.sources],
-    }),
+    })
   );
 }
 
 function verificationFromMap(
-  recommendations: ReadonlyMap<string, VerificationAccumulator>,
+  recommendations: ReadonlyMap<string, VerificationAccumulator>
 ) {
   return [...recommendations.entries()].map(([check, recommendation]) =>
     InferredVerificationExpectation.make({
@@ -528,7 +604,7 @@ function verificationFromMap(
       confidence: recommendation.confidence,
       reasons: [...recommendation.reasons],
       sources: [...recommendation.sources],
-    }),
+    })
   );
 }
 

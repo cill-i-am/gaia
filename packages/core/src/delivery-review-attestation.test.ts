@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
+import { describe, expect, it } from "vitest";
+
 import {
   DeliveryLocalReviewAttestationIntent,
   DeliveryLocalReviewAttestationConfirmed,
@@ -70,16 +71,36 @@ describe("local operator paired-review attestation contracts", () => {
     const canonical = deliveryLocalReviewAttestationCanonicalPayload(binding);
     const receipt = DeliveryLocalReviewAttestationIntent.make({
       ...binding,
-      attestationPayloadDigest: deliveryLocalReviewAttestationPayloadDigest(binding),
+      attestationPayloadDigest:
+        deliveryLocalReviewAttestationPayloadDigest(binding),
       state: "intentRecorded",
     });
 
-    expect(canonical).toContain("gaia.delivery.local-paired-review-attestation.v1");
-    expect(parseDeliveryLocalReviewAttestationReceipt(receipt)).toEqual(receipt);
+    expect(canonical).toContain(
+      "gaia.delivery.local-paired-review-attestation.v1"
+    );
+    expect(parseDeliveryLocalReviewAttestationReceipt(receipt)).toEqual(
+      receipt
+    );
     expect(receipt.attestationPayloadDigest).toHaveLength(64);
-    expect(() => parseDeliveryLocalReviewAttestationReceipt({ ...receipt, gaiaEvidenceId: "linear:comment:provider-id" })).toThrow();
-    expect(() => parseDeliveryLocalReviewAttestationReceipt({ ...receipt, gaiaEvidenceDigest: "not-a-digest" })).toThrow();
-    expect(() => parseDeliveryLocalReviewAttestationReceipt({ ...receipt, reviewText: "approved" })).toThrow();
+    expect(() =>
+      parseDeliveryLocalReviewAttestationReceipt({
+        ...receipt,
+        gaiaEvidenceId: "linear:comment:provider-id",
+      })
+    ).toThrow();
+    expect(() =>
+      parseDeliveryLocalReviewAttestationReceipt({
+        ...receipt,
+        gaiaEvidenceDigest: "not-a-digest",
+      })
+    ).toThrow();
+    expect(() =>
+      parseDeliveryLocalReviewAttestationReceipt({
+        ...receipt,
+        reviewText: "approved",
+      })
+    ).toThrow();
   });
 
   it("records a strict exact-authority approval source in V2 readiness decisions", () => {
@@ -116,14 +137,30 @@ describe("local operator paired-review attestation contracts", () => {
     };
     const decision = DeliveryMergeReadinessDecisionV2.make({
       ...decisionBinding,
-      payloadDigest: deliveryMergeReadinessDecisionV2PayloadDigest(decisionBinding),
+      payloadDigest:
+        deliveryMergeReadinessDecisionV2PayloadDigest(decisionBinding),
     });
 
     expect(parseDeliveryMergeReadinessDecision(decision)).toEqual(decision);
     expect(decision.payloadDigest).toHaveLength(64);
-    expect(() => parseDeliveryMergeReadinessDecision({ ...decision, approvalSource: { ...source, reviewerIdentity: "cill-i-am" } })).toThrow();
-    expect(() => parseDeliveryMergeReadinessDecision({ ...decision, runId: "run-wrong00000" })).not.toThrow();
-    expect(() => parseDeliveryMergeReadinessDecision({ ...decision, externalEvidenceUrl: "https://linear.app/example" })).toThrow();
+    expect(() =>
+      parseDeliveryMergeReadinessDecision({
+        ...decision,
+        approvalSource: { ...source, reviewerIdentity: "cill-i-am" },
+      })
+    ).toThrow();
+    expect(() =>
+      parseDeliveryMergeReadinessDecision({
+        ...decision,
+        runId: "run-wrong00000",
+      })
+    ).not.toThrow();
+    expect(() =>
+      parseDeliveryMergeReadinessDecision({
+        ...decision,
+        externalEvidenceUrl: "https://linear.app/example",
+      })
+    ).toThrow();
   });
 
   it("advances authority only for publication confirmation and confirmed remediation", () => {
@@ -149,30 +186,77 @@ describe("local operator paired-review attestation contracts", () => {
       prUrl: binding.prUrl,
       state: "confirmed",
     });
-    const event = (sequence: number, type: Parameters<typeof makeRunEvent>[0]["type"], payload: Readonly<Record<string, Schema.Json>>) =>
-      makeRunEvent({ payload, runId, sequence, timestamp: `2026-07-11T19:00:${String(sequence).padStart(2, "0")}.000Z`, type });
+    const event = (
+      sequence: number,
+      type: Parameters<typeof makeRunEvent>[0]["type"],
+      payload: Readonly<Record<string, Schema.Json>>
+    ) =>
+      makeRunEvent({
+        payload,
+        runId,
+        sequence,
+        timestamp: `2026-07-11T19:00:${String(sequence).padStart(2, "0")}.000Z`,
+        type,
+      });
     const publicationEvents = [
-      event(1, "DELIVERY_PUBLICATION_INTENT_RECORDED", { publication: encodeDeliveryPublicationJson(DeliveryPublicationIntent.make({ ...publicationBase, state: "intentRecorded" })) }),
-      event(2, "DELIVERY_PUBLICATION_ATTEMPTED", { publication: encodeDeliveryPublicationJson(DeliveryPublicationAttempted.make({ ...publicationBase, commitSha: publication.commitSha, state: "attempted" })) }),
-      event(3, "DELIVERY_PUBLICATION_CONFIRMED", { publication: encodeDeliveryPublicationJson(publication) }),
+      event(1, "DELIVERY_PUBLICATION_INTENT_RECORDED", {
+        publication: encodeDeliveryPublicationJson(
+          DeliveryPublicationIntent.make({
+            ...publicationBase,
+            state: "intentRecorded",
+          })
+        ),
+      }),
+      event(2, "DELIVERY_PUBLICATION_ATTEMPTED", {
+        publication: encodeDeliveryPublicationJson(
+          DeliveryPublicationAttempted.make({
+            ...publicationBase,
+            commitSha: publication.commitSha,
+            state: "attempted",
+          })
+        ),
+      }),
+      event(3, "DELIVERY_PUBLICATION_CONFIRMED", {
+        publication: encodeDeliveryPublicationJson(publication),
+      }),
     ];
     const remediationBase = {
       attempt: 1 as const,
       commitTimestamp: "2026-07-11T19:01:00.000Z",
       expectedHeadSha: publication.headSha,
       feedbackDigest: "d".repeat(64),
-      feedbackIds: [parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`)],
+      feedbackIds: [
+        parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`),
+      ],
       inputId: "remediation-run-1234567890-1",
       operationId: "remediation:run-1234567890:1",
     };
-    const intent = DeliveryRemediationIntent.make({ ...remediationBase, state: "intentRecorded" });
-    const attempted = DeliveryRemediationDispatchAttempted.make({ ...remediationBase, state: "dispatchAttempted" });
-    const failed = DeliveryRemediationFailed.make({ ...remediationBase, code: "Rejected", message: "failed", recoverable: true, state: "failed" });
+    const intent = DeliveryRemediationIntent.make({
+      ...remediationBase,
+      state: "intentRecorded",
+    });
+    const attempted = DeliveryRemediationDispatchAttempted.make({
+      ...remediationBase,
+      state: "dispatchAttempted",
+    });
+    const failed = DeliveryRemediationFailed.make({
+      ...remediationBase,
+      code: "Rejected",
+      message: "failed",
+      recoverable: true,
+      state: "failed",
+    });
     const failedEvents = [
       ...publicationEvents,
-      event(4, "DELIVERY_REMEDIATION_RECORDED", { remediation: encodeDeliveryRemediationJson(intent) }),
-      event(5, "DELIVERY_REMEDIATION_RECORDED", { remediation: encodeDeliveryRemediationJson(attempted) }),
-      event(6, "DELIVERY_REMEDIATION_RECORDED", { remediation: encodeDeliveryRemediationJson(failed) }),
+      event(4, "DELIVERY_REMEDIATION_RECORDED", {
+        remediation: encodeDeliveryRemediationJson(intent),
+      }),
+      event(5, "DELIVERY_REMEDIATION_RECORDED", {
+        remediation: encodeDeliveryRemediationJson(attempted),
+      }),
+      event(6, "DELIVERY_REMEDIATION_RECORDED", {
+        remediation: encodeDeliveryRemediationJson(failed),
+      }),
     ];
     expect(deriveDeliveryAuthority(publication, failedEvents)).toEqual({
       authoritySequence: 3,
@@ -180,12 +264,22 @@ describe("local operator paired-review attestation contracts", () => {
       publicationConfirmationSequence: 3,
     });
 
-    const confirmed = DeliveryRemediationConfirmed.make({ ...remediationBase, commitSha: "b".repeat(40), state: "confirmed" });
+    const confirmed = DeliveryRemediationConfirmed.make({
+      ...remediationBase,
+      commitSha: "b".repeat(40),
+      state: "confirmed",
+    });
     const confirmedEvents = [
       ...publicationEvents,
-      event(4, "DELIVERY_REMEDIATION_RECORDED", { remediation: encodeDeliveryRemediationJson(intent) }),
-      event(5, "DELIVERY_REMEDIATION_RECORDED", { remediation: encodeDeliveryRemediationJson(attempted) }),
-      event(6, "DELIVERY_REMEDIATION_RECORDED", { remediation: encodeDeliveryRemediationJson(confirmed) }),
+      event(4, "DELIVERY_REMEDIATION_RECORDED", {
+        remediation: encodeDeliveryRemediationJson(intent),
+      }),
+      event(5, "DELIVERY_REMEDIATION_RECORDED", {
+        remediation: encodeDeliveryRemediationJson(attempted),
+      }),
+      event(6, "DELIVERY_REMEDIATION_RECORDED", {
+        remediation: encodeDeliveryRemediationJson(confirmed),
+      }),
     ];
     expect(deriveDeliveryAuthority(publication, confirmedEvents)).toEqual({
       authoritySequence: 6,
@@ -195,27 +289,57 @@ describe("local operator paired-review attestation contracts", () => {
   });
 
   it("keeps one monotone idempotent attestation history per immutable action tuple", () => {
-    const attestationPayloadDigest = deliveryLocalReviewAttestationPayloadDigest(binding);
-    const intent = DeliveryLocalReviewAttestationIntent.make({ ...binding, attestationPayloadDigest, state: "intentRecorded" });
-    const confirmed = DeliveryLocalReviewAttestationConfirmed.make({ ...binding, attestationPayloadDigest, state: "confirmed" });
+    const attestationPayloadDigest =
+      deliveryLocalReviewAttestationPayloadDigest(binding);
+    const intent = DeliveryLocalReviewAttestationIntent.make({
+      ...binding,
+      attestationPayloadDigest,
+      state: "intentRecorded",
+    });
+    const confirmed = DeliveryLocalReviewAttestationConfirmed.make({
+      ...binding,
+      attestationPayloadDigest,
+      state: "confirmed",
+    });
     const history = deriveDeliveryLocalReviewAttestationHistories([
       { receipt: intent, sequence: 15 },
       { receipt: confirmed, sequence: 16 },
     ]);
 
     expect(history.active).toBeUndefined();
-    expect(history.latest).toMatchObject({ actionId: binding.actionId, latest: { state: "confirmed" } });
-    expect(() => deriveDeliveryLocalReviewAttestationHistories([
-      { receipt: intent, sequence: 15 },
-      { receipt: DeliveryLocalReviewAttestationConfirmed.make({ ...confirmed, headSha: "f".repeat(40) }), sequence: 16 },
-    ])).toThrow("Local review attestation binding changed");
-    expect(() => deriveDeliveryLocalReviewAttestationHistories([
-      { receipt: intent, sequence: 15 },
-      { receipt: DeliveryLocalReviewAttestationIntent.make({ ...intent, actionId: "attest-2" }), sequence: 16 },
-    ])).toThrow("An unresolved local review attestation cannot be superseded");
-    expect(() => deriveDeliveryLocalReviewAttestationHistories([
-      { receipt: confirmed, sequence: 16 },
-    ])).toThrow("Local review attestation must begin with intent");
+    expect(history.latest).toMatchObject({
+      actionId: binding.actionId,
+      latest: { state: "confirmed" },
+    });
+    expect(() =>
+      deriveDeliveryLocalReviewAttestationHistories([
+        { receipt: intent, sequence: 15 },
+        {
+          receipt: DeliveryLocalReviewAttestationConfirmed.make({
+            ...confirmed,
+            headSha: "f".repeat(40),
+          }),
+          sequence: 16,
+        },
+      ])
+    ).toThrow("Local review attestation binding changed");
+    expect(() =>
+      deriveDeliveryLocalReviewAttestationHistories([
+        { receipt: intent, sequence: 15 },
+        {
+          receipt: DeliveryLocalReviewAttestationIntent.make({
+            ...intent,
+            actionId: "attest-2",
+          }),
+          sequence: 16,
+        },
+      ])
+    ).toThrow("An unresolved local review attestation cannot be superseded");
+    expect(() =>
+      deriveDeliveryLocalReviewAttestationHistories([
+        { receipt: confirmed, sequence: 16 },
+      ])
+    ).toThrow("Local review attestation must begin with intent");
 
     const failed = DeliveryLocalReviewAttestationFailed.make({
       ...binding,
@@ -224,10 +348,12 @@ describe("local operator paired-review attestation contracts", () => {
       message: "The pull request is closed.",
       state: "failed",
     });
-    expect(deriveDeliveryLocalReviewAttestationHistories([
-      { receipt: intent, sequence: 15 },
-      { receipt: failed, sequence: 16 },
-    ]).latest?.latest.state).toBe("failed");
+    expect(
+      deriveDeliveryLocalReviewAttestationHistories([
+        { receipt: intent, sequence: 15 },
+        { receipt: failed, sequence: 16 },
+      ]).latest?.latest.state
+    ).toBe("failed");
   });
 
   it("replays a local attestation only when publication, authority, and post-authority ready confirmation are exact", () => {
@@ -244,7 +370,15 @@ describe("local operator paired-review attestation contracts", () => {
       sourcePaths: ["feature.ts"],
       treeSha: "2".repeat(40),
     };
-    const publication = DeliveryPublicationConfirmed.make({ ...publicationBase, commitSha: binding.headSha, draft: true, headSha: binding.headSha, prNumber: binding.prNumber, prUrl: binding.prUrl, state: "confirmed" });
+    const publication = DeliveryPublicationConfirmed.make({
+      ...publicationBase,
+      commitSha: binding.headSha,
+      draft: true,
+      headSha: binding.headSha,
+      prNumber: binding.prNumber,
+      prUrl: binding.prUrl,
+      state: "confirmed",
+    });
     const readyBase = {
       actionId: binding.readyConfirmationActionId,
       branchName: binding.branchName,
@@ -257,7 +391,10 @@ describe("local operator paired-review attestation contracts", () => {
       runId,
       version: 1 as const,
     };
-    const ready = { ...readyBase, payloadDigest: deliveryPullRequestReadyPayloadDigest(readyBase) };
+    const ready = {
+      ...readyBase,
+      payloadDigest: deliveryPullRequestReadyPayloadDigest(readyBase),
+    };
     const attestationBase = {
       ...binding,
       authoritySequence: 5,
@@ -265,19 +402,88 @@ describe("local operator paired-review attestation contracts", () => {
       readyConfirmationPayloadDigest: ready.payloadDigest,
       readyConfirmationSequence: 7,
     };
-    const attestation = { ...attestationBase, attestationPayloadDigest: deliveryLocalReviewAttestationPayloadDigest(attestationBase) };
-    const event = (sequence: number, type: Parameters<typeof makeRunEvent>[0]["type"], payload: Readonly<Record<string, Schema.Json>>) =>
-      makeRunEvent({ payload, runId, sequence, timestamp: `2026-07-11T19:00:${String(sequence).padStart(2, "0")}.000Z`, type });
+    const attestation = {
+      ...attestationBase,
+      attestationPayloadDigest:
+        deliveryLocalReviewAttestationPayloadDigest(attestationBase),
+    };
+    const event = (
+      sequence: number,
+      type: Parameters<typeof makeRunEvent>[0]["type"],
+      payload: Readonly<Record<string, Schema.Json>>
+    ) =>
+      makeRunEvent({
+        payload,
+        runId,
+        sequence,
+        timestamp: `2026-07-11T19:00:${String(sequence).padStart(2, "0")}.000Z`,
+        type,
+      });
     const events = [
       event(1, "RUN_CREATED", { specPath: "spec.md" }),
-      event(2, "DELIVERY_STARTED", { delivery: { baseBranch: "main", baseRevision: "0".repeat(40), headBranch: binding.branchName, mode: "pullRequest", remote: "origin", stage: "readyToPublish" } }),
-      event(3, "DELIVERY_PUBLICATION_INTENT_RECORDED", { publication: encodeDeliveryPublicationJson(DeliveryPublicationIntent.make({ ...publicationBase, state: "intentRecorded" })) }),
-      event(4, "DELIVERY_PUBLICATION_ATTEMPTED", { publication: encodeDeliveryPublicationJson(DeliveryPublicationAttempted.make({ ...publicationBase, commitSha: binding.headSha, state: "attempted" })) }),
-      event(5, "DELIVERY_PUBLICATION_CONFIRMED", { publication: encodeDeliveryPublicationJson(publication) }),
-      event(6, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(DeliveryPullRequestReadyIntent.make({ ...ready, state: "intentRecorded" })) }),
-      event(7, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(DeliveryPullRequestReadyConfirmedWithoutDispatch.make({ ...ready, draft: false, state: "confirmedWithoutDispatch" })) }),
-      event(8, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", { attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationIntent.make({ ...attestation, state: "intentRecorded" })) }),
-      event(9, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", { attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationConfirmed.make({ ...attestation, state: "confirmed" })) }),
+      event(2, "DELIVERY_STARTED", {
+        delivery: {
+          baseBranch: "main",
+          baseRevision: "0".repeat(40),
+          headBranch: binding.branchName,
+          mode: "pullRequest",
+          remote: "origin",
+          stage: "readyToPublish",
+        },
+      }),
+      event(3, "DELIVERY_PUBLICATION_INTENT_RECORDED", {
+        publication: encodeDeliveryPublicationJson(
+          DeliveryPublicationIntent.make({
+            ...publicationBase,
+            state: "intentRecorded",
+          })
+        ),
+      }),
+      event(4, "DELIVERY_PUBLICATION_ATTEMPTED", {
+        publication: encodeDeliveryPublicationJson(
+          DeliveryPublicationAttempted.make({
+            ...publicationBase,
+            commitSha: binding.headSha,
+            state: "attempted",
+          })
+        ),
+      }),
+      event(5, "DELIVERY_PUBLICATION_CONFIRMED", {
+        publication: encodeDeliveryPublicationJson(publication),
+      }),
+      event(6, "DELIVERY_PR_READY_RECORDED", {
+        readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(
+          DeliveryPullRequestReadyIntent.make({
+            ...ready,
+            state: "intentRecorded",
+          })
+        ),
+      }),
+      event(7, "DELIVERY_PR_READY_RECORDED", {
+        readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(
+          DeliveryPullRequestReadyConfirmedWithoutDispatch.make({
+            ...ready,
+            draft: false,
+            state: "confirmedWithoutDispatch",
+          })
+        ),
+      }),
+      event(8, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", {
+        attestation: encodeDeliveryLocalReviewAttestationReceiptJson(
+          DeliveryLocalReviewAttestationIntent.make({
+            ...attestation,
+            state: "intentRecorded",
+          })
+        ),
+      }),
+      event(9, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", {
+        attestation: encodeDeliveryLocalReviewAttestationReceiptJson(
+          DeliveryLocalReviewAttestationConfirmed.make({
+            ...attestation,
+            state: "confirmed",
+          })
+        ),
+      }),
     ];
 
     expect(() => snapshotFromReplay(events)).not.toThrow();
@@ -299,22 +505,78 @@ describe("local operator paired-review attestation contracts", () => {
     };
     const duplicate = {
       ...duplicateBase,
-      attestationPayloadDigest: deliveryLocalReviewAttestationPayloadDigest(duplicateBase),
+      attestationPayloadDigest:
+        deliveryLocalReviewAttestationPayloadDigest(duplicateBase),
     };
     const duplicateEvents = [
       ...events,
-      event(10, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(DeliveryPullRequestReadyIntent.make({ ...readyB, state: "intentRecorded" })) }),
-      event(11, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(DeliveryPullRequestReadyConfirmedWithoutDispatch.make({ ...readyB, draft: false, state: "confirmedWithoutDispatch" })) }),
-      event(12, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", { attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationIntent.make({ ...duplicate, state: "intentRecorded" })) }),
-      event(13, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", { attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationConfirmed.make({ ...duplicate, state: "confirmed" })) }),
+      event(10, "DELIVERY_PR_READY_RECORDED", {
+        readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(
+          DeliveryPullRequestReadyIntent.make({
+            ...readyB,
+            state: "intentRecorded",
+          })
+        ),
+      }),
+      event(11, "DELIVERY_PR_READY_RECORDED", {
+        readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(
+          DeliveryPullRequestReadyConfirmedWithoutDispatch.make({
+            ...readyB,
+            draft: false,
+            state: "confirmedWithoutDispatch",
+          })
+        ),
+      }),
+      event(12, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", {
+        attestation: encodeDeliveryLocalReviewAttestationReceiptJson(
+          DeliveryLocalReviewAttestationIntent.make({
+            ...duplicate,
+            state: "intentRecorded",
+          })
+        ),
+      }),
+      event(13, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", {
+        attestation: encodeDeliveryLocalReviewAttestationReceiptJson(
+          DeliveryLocalReviewAttestationConfirmed.make({
+            ...duplicate,
+            state: "confirmed",
+          })
+        ),
+      }),
     ];
-    expect(() => deriveDeliveryLocalReviewAttestationHistories(duplicateEvents.flatMap((candidate) =>
-      candidate.type === "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED"
-        ? [{ receipt: parseDeliveryLocalReviewAttestationReceipt(candidate.payload["attestation"]), sequence: candidate.sequence }]
-        : []
-    ))).toThrow("Only one local review attestation may confirm the same delivery authority");
-    expect(() => snapshotFromReplay(duplicateEvents)).toThrow("Only one local review attestation may confirm the same delivery authority");
-    const wrongDigest = [...events.slice(0, 8), event(9, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", { attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationConfirmed.make({ ...attestation, attestationPayloadDigest: "f".repeat(64), state: "confirmed" })) })];
+    expect(() =>
+      deriveDeliveryLocalReviewAttestationHistories(
+        duplicateEvents.flatMap((candidate) =>
+          candidate.type === "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED"
+            ? [
+                {
+                  receipt: parseDeliveryLocalReviewAttestationReceipt(
+                    candidate.payload["attestation"]
+                  ),
+                  sequence: candidate.sequence,
+                },
+              ]
+            : []
+        )
+      )
+    ).toThrow(
+      "Only one local review attestation may confirm the same delivery authority"
+    );
+    expect(() => snapshotFromReplay(duplicateEvents)).toThrow(
+      "Only one local review attestation may confirm the same delivery authority"
+    );
+    const wrongDigest = [
+      ...events.slice(0, 8),
+      event(9, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", {
+        attestation: encodeDeliveryLocalReviewAttestationReceiptJson(
+          DeliveryLocalReviewAttestationConfirmed.make({
+            ...attestation,
+            attestationPayloadDigest: "f".repeat(64),
+            state: "confirmed",
+          })
+        ),
+      }),
+    ];
     expect(() => snapshotFromReplay(wrongDigest)).toThrow();
 
     const source = DeliveryLocalOperatorReviewSource.make({
@@ -329,43 +591,124 @@ describe("local operator paired-review attestation contracts", () => {
       version: 1,
     });
     const decisionBase = {
-      actionId: "readiness-attested-1", approved: true, approvalSource: source,
-      authoritySequence: 5, blockers: [], branchName: binding.branchName, headSha: binding.headSha,
-      mergeMethod: "merge" as const, policyDigest: "a".repeat(64), policyVersion: 1 as const,
-      prNumber: binding.prNumber, prUrl: binding.prUrl, publicationConfirmationSequence: 5,
-      publicationOperationId: binding.publicationOperationId, publicationPayloadDigest: binding.publicationPayloadDigest,
-      repository: binding.repository, runId, version: 2 as const,
+      actionId: "readiness-attested-1",
+      approved: true,
+      approvalSource: source,
+      authoritySequence: 5,
+      blockers: [],
+      branchName: binding.branchName,
+      headSha: binding.headSha,
+      mergeMethod: "merge" as const,
+      policyDigest: "a".repeat(64),
+      policyVersion: 1 as const,
+      prNumber: binding.prNumber,
+      prUrl: binding.prUrl,
+      publicationConfirmationSequence: 5,
+      publicationOperationId: binding.publicationOperationId,
+      publicationPayloadDigest: binding.publicationPayloadDigest,
+      repository: binding.repository,
+      runId,
+      version: 2 as const,
     };
-    const decision = DeliveryMergeReadinessDecisionV2.make({ ...decisionBase, payloadDigest: deliveryMergeReadinessDecisionV2PayloadDigest(decisionBase) });
-    const withDecision = [...events, event(10, "DELIVERY_MERGE_READINESS_RECORDED", { decision: encodeDeliveryMergeReadinessDecisionJson(decision) })];
+    const decision = DeliveryMergeReadinessDecisionV2.make({
+      ...decisionBase,
+      payloadDigest:
+        deliveryMergeReadinessDecisionV2PayloadDigest(decisionBase),
+    });
+    const withDecision = [
+      ...events,
+      event(10, "DELIVERY_MERGE_READINESS_RECORDED", {
+        decision: encodeDeliveryMergeReadinessDecisionJson(decision),
+      }),
+    ];
     expect(() => snapshotFromReplay(withDecision)).not.toThrow();
-    expect(() => snapshotFromReplay([...events, event(10, "DELIVERY_MERGE_READINESS_RECORDED", { decision: encodeDeliveryMergeReadinessDecisionJson(DeliveryMergeReadinessDecisionV2.make({ ...decision, runId: parseRunId("run-wrong12345") })) })])).toThrow("current delivery authority");
-    expect(() => snapshotFromReplay([...events, event(10, "DELIVERY_MERGE_READINESS_RECORDED", { decision: encodeDeliveryMergeReadinessDecisionJson(DeliveryMergeReadinessDecisionV2.make({ ...decision, payloadDigest: "0".repeat(64) })) })])).toThrow("payload digest");
+    expect(() =>
+      snapshotFromReplay([
+        ...events,
+        event(10, "DELIVERY_MERGE_READINESS_RECORDED", {
+          decision: encodeDeliveryMergeReadinessDecisionJson(
+            DeliveryMergeReadinessDecisionV2.make({
+              ...decision,
+              runId: parseRunId("run-wrong12345"),
+            })
+          ),
+        }),
+      ])
+    ).toThrow("current delivery authority");
+    expect(() =>
+      snapshotFromReplay([
+        ...events,
+        event(10, "DELIVERY_MERGE_READINESS_RECORDED", {
+          decision: encodeDeliveryMergeReadinessDecisionJson(
+            DeliveryMergeReadinessDecisionV2.make({
+              ...decision,
+              payloadDigest: "0".repeat(64),
+            })
+          ),
+        }),
+      ])
+    ).toThrow("payload digest");
 
     const remediationBase = {
       attempt: 1 as const,
       commitTimestamp: "2026-07-11T19:02:00.000Z",
       expectedHeadSha: publication.headSha,
       feedbackDigest: "d".repeat(64),
-      feedbackIds: [parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`)],
+      feedbackIds: [
+        parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`),
+      ],
       inputId: "remediation-run-1234567890-1",
       operationId: "remediation:run-1234567890:1",
     };
     const remediatedHead = "b".repeat(40);
     const remediations = [
-      DeliveryRemediationIntent.make({ ...remediationBase, state: "intentRecorded" }),
-      DeliveryRemediationDispatchAttempted.make({ ...remediationBase, state: "dispatchAttempted" }),
-      DeliveryRemediationTurnCompleted.make({ ...remediationBase, state: "turnCompleted" }),
-      DeliveryRemediationVerified.make({ ...remediationBase, state: "verified" }),
-      DeliveryRemediationCommitAttempted.make({ ...remediationBase, commitSha: remediatedHead, state: "commitAttempted" }),
-      DeliveryRemediationPushAttempted.make({ ...remediationBase, commitSha: remediatedHead, state: "pushAttempted" }),
-      DeliveryRemediationConfirmed.make({ ...remediationBase, commitSha: remediatedHead, state: "confirmed" }),
+      DeliveryRemediationIntent.make({
+        ...remediationBase,
+        state: "intentRecorded",
+      }),
+      DeliveryRemediationDispatchAttempted.make({
+        ...remediationBase,
+        state: "dispatchAttempted",
+      }),
+      DeliveryRemediationTurnCompleted.make({
+        ...remediationBase,
+        state: "turnCompleted",
+      }),
+      DeliveryRemediationVerified.make({
+        ...remediationBase,
+        state: "verified",
+      }),
+      DeliveryRemediationCommitAttempted.make({
+        ...remediationBase,
+        commitSha: remediatedHead,
+        state: "commitAttempted",
+      }),
+      DeliveryRemediationPushAttempted.make({
+        ...remediationBase,
+        commitSha: remediatedHead,
+        state: "pushAttempted",
+      }),
+      DeliveryRemediationConfirmed.make({
+        ...remediationBase,
+        commitSha: remediatedHead,
+        state: "confirmed",
+      }),
     ];
     const laterRemediation = [
       ...events,
-      ...remediations.map((remediation, index) => event(10 + index, "DELIVERY_REMEDIATION_RECORDED", { remediation: encodeDeliveryRemediationJson(remediation) })),
+      ...remediations.map((remediation, index) =>
+        event(10 + index, "DELIVERY_REMEDIATION_RECORDED", {
+          remediation: encodeDeliveryRemediationJson(remediation),
+        })
+      ),
     ];
     expect(() => snapshotFromReplay(laterRemediation)).not.toThrow();
-    expect(currentDeliveryLocalReviewAttestation(laterRemediation, { publication, repository: binding.repository, runId })).toBeUndefined();
+    expect(
+      currentDeliveryLocalReviewAttestation(laterRemediation, {
+        publication,
+        repository: binding.repository,
+        runId,
+      })
+    ).toBeUndefined();
   });
 });

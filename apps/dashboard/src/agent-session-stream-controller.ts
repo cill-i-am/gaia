@@ -48,7 +48,7 @@ export function createAgentSessionStreamController(input: {
     handlers: {
       readonly onError: (error: unknown) => void;
       readonly onUpdate: (update: typeof AgentSessionUpdateDto.Type) => void;
-    },
+    }
   ) => StreamHandle;
   readonly serverUrl: LocalGaiaServerUrl;
 }) {
@@ -70,7 +70,7 @@ export function createAgentSessionStreamController(input: {
   };
 
   const canOpen = (
-    nextTarget: StreamTarget | undefined,
+    nextTarget: StreamTarget | undefined
   ): nextTarget is OpenStreamTarget =>
     nextTarget?.isOpen === true &&
     nextTarget.runId !== undefined &&
@@ -90,13 +90,15 @@ export function createAgentSessionStreamController(input: {
           agentId: currentTarget.agentId,
           runId: currentTarget.runId,
           serverUrl: input.serverUrl,
-          ...(lastSequence === undefined ? {} : { afterSequence: lastSequence }),
+          ...(lastSequence === undefined
+            ? {}
+            : { afterSequence: lastSequence }),
         },
         {
           onError: (error) => handleGenerationError(openingGeneration, error),
           onUpdate: (update) =>
             handleGenerationUpdate(openingGeneration, update),
-        },
+        }
       );
       input.onConnectionChange("connected");
     } catch (error) {
@@ -108,7 +110,7 @@ export function createAgentSessionStreamController(input: {
 
   function handleGenerationUpdate(
     updateGeneration: number,
-    update: typeof AgentSessionUpdateDto.Type,
+    update: typeof AgentSessionUpdateDto.Type
   ) {
     if (updateGeneration !== generation) return;
 
@@ -126,7 +128,8 @@ export function createAgentSessionStreamController(input: {
       return;
     }
 
-    if (lastSequence !== undefined && update.eventSequence <= lastSequence) return;
+    if (lastSequence !== undefined && update.eventSequence <= lastSequence)
+      return;
 
     lastSequence = update.eventSequence;
     input.onUpdate(update);
@@ -191,7 +194,7 @@ export function createAgentSessionStreamController(input: {
       } else {
         lastSequence = maximumDefined(
           lastSequence,
-          nextTarget.snapshotSequence,
+          nextTarget.snapshotSequence
         );
       }
 
@@ -199,7 +202,7 @@ export function createAgentSessionStreamController(input: {
         terminal = false;
         lastSequence = Math.max(
           lastSequence ?? 0,
-          nextTarget.rearmSequence ?? 0,
+          nextTarget.rearmSequence ?? 0
         );
         closeCurrent();
       }
@@ -211,10 +214,7 @@ export function createAgentSessionStreamController(input: {
   };
 }
 
-function maximumDefined(
-  left: number | undefined,
-  right: number | undefined,
-) {
+function maximumDefined(left: number | undefined, right: number | undefined) {
   if (left === undefined) return right;
   if (right === undefined) return left;
   return Math.max(left, right);

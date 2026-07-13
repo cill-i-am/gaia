@@ -1,3 +1,5 @@
+import nodePath from "node:path";
+
 import {
   parseHarnessEvent,
   parseHarnessSessionId,
@@ -10,14 +12,12 @@ import {
   type RunId,
 } from "@gaia/core";
 import { Effect, FileSystem, Option, Schema, Stream } from "effect";
-import nodePath from "node:path";
-import { appendHarnessSessionEvent, readEvents } from "./event-store.js";
+
+import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
-import {
-  codexAppServerHarnessName,
-  HarnessRunResult,
-  type GaiaHarness,
-} from "./harness.js";
+import { appendHarnessSessionEvent, readEvents } from "./event-store.js";
+import { issueDeliveryAgentIds } from "./factory-workflows.js";
+import { issueDeliveryWorkerHarnessCapabilities } from "./harness-provider-registry.js";
 import {
   HarnessInput,
   HarnessResumeError,
@@ -25,9 +25,11 @@ import {
   startHarnessSession,
   type HarnessProvider,
 } from "./harness-session.js";
-import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
-import { issueDeliveryAgentIds } from "./factory-workflows.js";
-import { issueDeliveryWorkerHarnessCapabilities } from "./harness-provider-registry.js";
+import {
+  codexAppServerHarnessName,
+  HarnessRunResult,
+  type GaiaHarness,
+} from "./harness.js";
 import { makeRunPaths, type RunPaths } from "./paths.js";
 import {
   diffWorkspaceSnapshots,
@@ -57,28 +59,36 @@ export function interactiveSessionHarness(input: {
         const sessionId = parseHarnessSessionId(`session-${request.runId}`);
         const fullHistory = harnessHistory(existing, sessionId);
         const recoverySequence = latestRecoveryCheckpointSequence(existing);
-        const continuationEpochSequence = latestWorkerContinuationEpochSequence(existing);
-        const correlationEpochSequence = latestWorkerCorrelationEpochSequence(existing);
+        const continuationEpochSequence =
+          latestWorkerContinuationEpochSequence(existing);
+        const correlationEpochSequence =
+          latestWorkerCorrelationEpochSequence(existing);
         const historyStartSequence = Math.max(
           recoverySequence ?? 0,
           continuationEpochSequence ?? 0,
-          correlationEpochSequence ?? 0,
+          correlationEpochSequence ?? 0
         );
-        const history = historyStartSequence === 0
-          ? fullHistory
-          : harnessHistory(existing.filter(({ sequence }) => sequence > historyStartSequence), sessionId);
+        const history =
+          historyStartSequence === 0
+            ? fullHistory
+            : harnessHistory(
+                existing.filter(
+                  ({ sequence }) => sequence > historyStartSequence
+                ),
+                sessionId
+              );
         const existingTerminal = terminalSessionEvent(history);
 
         let terminal = existingTerminal;
         if (terminal === undefined) {
           const sessionStarted = fullHistory.some(
-            (event) => event.kind === "sessionStarted",
+            (event) => event.kind === "sessionStarted"
           );
           if (!sessionStarted) {
             const baseline = yield* snapshotWorkspace(request.workspacePath);
             yield* writeWorkspaceSnapshot(
               paths.harnessWorkspaceBaseline,
-              baseline,
+              baseline
             );
           }
           terminal = yield* Effect.scoped(
@@ -88,23 +98,27 @@ export function interactiveSessionHarness(input: {
                 return yield* Effect.fail(
                   makeRuntimeError({
                     code: "HarnessProviderUnavailable",
-                    message: "Harness provider is unavailable for a non-terminal session.",
+                    message:
+                      "Harness provider is unavailable for a non-terminal session.",
                     recoverable: false,
-                  }),
+                  })
                 );
               }
               const session = sessionStarted
                 ? yield* resumeHarnessSession({
                     provider,
                     request: {
-                      ...(input.expectedNativeTurnId === undefined ? {} : { expectedNativeTurnId: input.expectedNativeTurnId }),
+                      ...(input.expectedNativeTurnId === undefined
+                        ? {}
+                        : { expectedNativeTurnId: input.expectedNativeTurnId }),
                       sessionId,
                       workspacePath: workspacePathFromRoot(
                         input.rootDirectory,
-                        request.workspacePath,
+                        request.workspacePath
                       ),
                     },
-                    requiredCapabilities: issueDeliveryWorkerHarnessCapabilities,
+                    requiredCapabilities:
+                      issueDeliveryWorkerHarnessCapabilities,
                   })
                 : yield* startHarnessSession({
                     provider,
@@ -113,10 +127,11 @@ export function interactiveSessionHarness(input: {
                       sessionId,
                       workspacePath: workspacePathFromRoot(
                         input.rootDirectory,
-                        request.workspacePath,
+                        request.workspacePath
                       ),
                     },
-                    requiredCapabilities: issueDeliveryWorkerHarnessCapabilities,
+                    requiredCapabilities:
+                      issueDeliveryWorkerHarnessCapabilities,
                   });
               if (input.sessionCoordinator !== undefined) {
                 yield* input.sessionCoordinator.register({
@@ -128,22 +143,23 @@ export function interactiveSessionHarness(input: {
               }
               const last = yield* session.events.pipe(
                 Stream.tap((event) =>
-                  appendHarnessSessionEvent(request.runId, paths, event),
+                  appendHarnessSessionEvent(request.runId, paths, event)
                 ),
                 Stream.takeUntil(shouldStopLiveSessionStream),
-                Stream.runLast,
+                Stream.runLast
               );
               if (Option.isNone(last) || !isTerminalSessionEvent(last.value)) {
                 return yield* Effect.fail(
                   makeRuntimeError({
                     code: "HarnessSessionInterrupted",
-                    message: "Harness session ended before a terminal worker turn.",
+                    message:
+                      "Harness session ended before a terminal worker turn.",
                     recoverable: true,
-                  }),
+                  })
                 );
               }
               return last.value;
-            }),
+            })
           );
         }
 
@@ -152,10 +168,11 @@ export function interactiveSessionHarness(input: {
             makeRuntimeError({
               code: "HarnessSessionFailed",
               message: harnessFailureMessage(terminal.failure),
-              recoverable: terminal.failure.kind === "providerFailure"
-                ? terminal.failure.recoverable
-                : false,
-            }),
+              recoverable:
+                terminal.failure.kind === "providerFailure"
+                  ? terminal.failure.recoverable
+                  : false,
+            })
           );
         }
         if (terminal.status !== "completed") {
@@ -170,7 +187,7 @@ export function interactiveSessionHarness(input: {
                   ? "Harness worker turn was interrupted."
                   : "Harness worker turn failed.",
               recoverable: terminal.status === "interrupted",
-            }),
+            })
           );
         }
 
@@ -192,12 +209,12 @@ export function interactiveSessionHarness(input: {
                     "Harness session correlation is missing or corrupt for resume.",
                   recoverable: false,
                 })
-            : makeRuntimeError({
-                code: "HarnessSessionFailed",
-                message: "Interactive harness execution failed.",
-                recoverable: true,
-              }),
-        ),
+              : makeRuntimeError({
+                  code: "HarnessSessionFailed",
+                  message: "Interactive harness execution failed.",
+                  recoverable: true,
+                })
+        )
       ),
   };
 }
@@ -212,15 +229,15 @@ export function refreshInteractiveHarnessResult(input: {
 }) {
   return Effect.gen(function* () {
     const baseline = yield* readWorkspaceSnapshot(
-      input.paths.harnessWorkspaceBaseline,
+      input.paths.harnessWorkspaceBaseline
     ).pipe(
       Effect.mapError(() =>
         makeRuntimeError({
           code: "HarnessWorkspaceBaselineMissing",
           message: "Harness workspace baseline is unavailable for completion.",
           recoverable: false,
-        }),
-      ),
+        })
+      )
     );
     const after = yield* snapshotWorkspace(input.workspacePath);
     const workspaceDiff = diffWorkspaceSnapshots(baseline, after);
@@ -244,22 +261,19 @@ export function refreshInteractiveHarnessResult(input: {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(
       input.workerResultPath,
-      `${JSON.stringify(encodeHarnessRunResult(result), null, 2)}\n`,
+      `${JSON.stringify(encodeHarnessRunResult(result), null, 2)}\n`
     );
     yield* fs.writeFileString(
       input.workerLogPath,
       "Interactive harness worker turn completed.\n",
-      { flag: "a" },
+      { flag: "a" }
     );
     return result;
   });
 }
 
 function harnessFailureMessage(
-  failure: Extract<
-    HarnessEvent,
-    { readonly kind: "sessionFailed" }
-  >["failure"],
+  failure: Extract<HarnessEvent, { readonly kind: "sessionFailed" }>["failure"]
 ) {
   return failure.kind === "capabilityMismatch"
     ? "Harness provider lacks required capabilities."
@@ -268,7 +282,7 @@ function harnessFailureMessage(
 
 function harnessHistory(
   events: ReadonlyArray<RunEvent>,
-  sessionId: ReturnType<typeof parseHarnessSessionId>,
+  sessionId: ReturnType<typeof parseHarnessSessionId>
 ): ReadonlyArray<HarnessEvent> {
   return events.flatMap((event) => {
     if (event.type !== "HARNESS_SESSION_EVENT_RECORDED") return [];
@@ -284,11 +298,14 @@ function terminalSessionEvent(events: ReadonlyArray<HarnessEvent>) {
 function shouldStopLiveSessionStream(event: HarnessEvent) {
   if (event.kind === "turnCompleted") return true;
   if (event.kind !== "sessionFailed") return false;
-  return event.failure.kind !== "providerFailure" || event.failure.recoverable !== true;
+  return (
+    event.failure.kind !== "providerFailure" ||
+    event.failure.recoverable !== true
+  );
 }
 
 function isTerminalSessionEvent(
-  event: HarnessEvent,
+  event: HarnessEvent
 ): event is Extract<
   HarnessEvent,
   { readonly kind: "sessionFailed" | "turnCompleted" }
@@ -302,16 +319,24 @@ function workspacePathFromRoot(rootDirectory: string, workspacePath: string) {
 }
 
 function latestRecoveryCheckpointSequence(events: ReadonlyArray<RunEvent>) {
-  return [...events].reverse().find((event) =>
-    event.type === "WORKER_RECOVERY_RECORDED" &&
-    parseWorkerRecoveryReceipt(event.payload["recovery"]).state === "dispatchConfirmed"
-  )?.sequence;
+  return [...events]
+    .reverse()
+    .find(
+      (event) =>
+        event.type === "WORKER_RECOVERY_RECORDED" &&
+        parseWorkerRecoveryReceipt(event.payload["recovery"]).state ===
+          "dispatchConfirmed"
+    )?.sequence;
 }
 
-function latestWorkerContinuationEpochSequence(events: ReadonlyArray<RunEvent>) {
+function latestWorkerContinuationEpochSequence(
+  events: ReadonlyArray<RunEvent>
+) {
   return [...events].reverse().flatMap((event) => {
     if (event.type !== "WORKER_CONTINUATION_RECORDED") return [];
-    const continuation = parseWorkerContinuationReceipt(event.payload["continuation"]);
+    const continuation = parseWorkerContinuationReceipt(
+      event.payload["continuation"]
+    );
     return [continuation.workerEvidenceEpochSequence];
   })[0];
 }
@@ -319,7 +344,9 @@ function latestWorkerContinuationEpochSequence(events: ReadonlyArray<RunEvent>) 
 function latestWorkerCorrelationEpochSequence(events: ReadonlyArray<RunEvent>) {
   return [...events].reverse().flatMap((event) => {
     if (event.type !== "WORKER_CORRELATION_RECONCILIATION_RECORDED") return [];
-    const reconciliation = parseWorkerCorrelationReconciliationReceipt(event.payload["reconciliation"]);
+    const reconciliation = parseWorkerCorrelationReconciliationReceipt(
+      event.payload["reconciliation"]
+    );
     return [reconciliation.workerEvidenceEpochSequence];
   })[0];
 }

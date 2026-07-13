@@ -1,5 +1,6 @@
 import type { RunId } from "@gaia/core";
 import { Cause, Effect, FileSystem, Path, Ref } from "effect";
+
 import type { RunStorageOptions } from "./paths.js";
 import {
   listLocalRuns,
@@ -13,7 +14,7 @@ import {
 export type LocalRunReadIndex = {
   readonly list: Effect.Effect<LocalRunList>;
   readonly read: (
-    runId: RunId,
+    runId: RunId
   ) => Effect.Effect<LocalRunDetail, LocalRunReadDiagnostic>;
   readonly rebuild: Effect.Effect<
     void,
@@ -21,7 +22,7 @@ export type LocalRunReadIndex = {
     FileSystem.FileSystem | Path.Path
   >;
   readonly refreshRun: (
-    runId: RunId,
+    runId: RunId
   ) => Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>;
 };
 
@@ -32,7 +33,7 @@ type LocalRunIndexSnapshot = {
 };
 
 export function makeLocalRunReadIndex(
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ): Effect.Effect<
   LocalRunReadIndex,
   unknown,
@@ -46,7 +47,7 @@ export function makeLocalRunReadIndex(
       list: Ref.get(snapshot).pipe(Effect.map(listFromSnapshot)),
       read: (runId) => readIndexedRun(snapshot, runId),
       rebuild: rebuildLocalRunIndexSnapshot(options).pipe(
-        Effect.flatMap((next) => Ref.set(snapshot, next)),
+        Effect.flatMap((next) => Ref.set(snapshot, next))
       ),
       refreshRun: (runId) => refreshIndexedRun(snapshot, runId, options),
     } satisfies LocalRunReadIndex;
@@ -66,7 +67,7 @@ function snapshotFromList(list: LocalRunList): LocalRunIndexSnapshot {
 }
 
 function indexDiagnosticsByRunId(
-  diagnostics: ReadonlyArray<LocalRunReadDiagnostic>,
+  diagnostics: ReadonlyArray<LocalRunReadDiagnostic>
 ): ReadonlyMap<RunId, LocalRunReadDiagnostic> {
   const byRunId = new Map<RunId, LocalRunReadDiagnostic>();
   for (const diagnostic of diagnostics) {
@@ -99,7 +100,7 @@ function compareRunsDescending(left: LocalRunSummary, right: LocalRunSummary) {
 
 function readIndexedRun(
   snapshot: Ref.Ref<LocalRunIndexSnapshot>,
-  runId: RunId,
+  runId: RunId
 ) {
   return Effect.gen(function* () {
     const current = yield* Ref.get(snapshot);
@@ -120,13 +121,13 @@ function readIndexedRun(
 function refreshIndexedRun(
   snapshot: Ref.Ref<LocalRunIndexSnapshot>,
   runId: RunId,
-  options: RunStorageOptions,
+  options: RunStorageOptions
 ) {
   return Effect.gen(function* () {
     const exit = yield* Effect.exit(readLocalRun(runId, options));
     if (exit._tag === "Success") {
       yield* Ref.update(snapshot, (current) =>
-        storeSuccessfulRun(current, runId, exit.value),
+        storeSuccessfulRun(current, runId, exit.value)
       );
       return;
     }
@@ -145,7 +146,7 @@ function refreshIndexedRun(
 function storeSuccessfulRun(
   snapshot: LocalRunIndexSnapshot,
   runId: RunId,
-  run: LocalRunSummary,
+  run: LocalRunSummary
 ): LocalRunIndexSnapshot {
   const diagnosticsByRunId = new Map(snapshot.diagnosticsByRunId);
   diagnosticsByRunId.delete(runId);
@@ -158,7 +159,7 @@ function storeSuccessfulRun(
 
 function removeRun(
   snapshot: LocalRunIndexSnapshot,
-  runId: RunId,
+  runId: RunId
 ): LocalRunIndexSnapshot {
   const runsById = new Map(snapshot.runsById);
   runsById.delete(runId);
@@ -173,7 +174,7 @@ function removeRun(
 
 function storeRunDiagnostic(
   snapshot: LocalRunIndexSnapshot,
-  diagnostic: LocalRunReadDiagnostic,
+  diagnostic: LocalRunReadDiagnostic
 ): LocalRunIndexSnapshot {
   if (diagnostic.runId === undefined) {
     return snapshot;
@@ -193,7 +194,7 @@ function storeRunDiagnostic(
 
 function removeRunDiagnostic(
   diagnostics: ReadonlyArray<LocalRunReadDiagnostic>,
-  runId: RunId,
+  runId: RunId
 ): ReadonlyArray<LocalRunReadDiagnostic> {
   return diagnostics.filter((diagnostic) => diagnostic.runId !== runId);
 }
@@ -209,7 +210,7 @@ function runNotFoundDiagnostic(runId: RunId): LocalRunReadDiagnostic {
 
 function diagnosticFromCause(
   cause: Cause.Cause<unknown>,
-  runId: RunId,
+  runId: RunId
 ): LocalRunReadDiagnostic {
   for (const reason of cause.reasons) {
     if (Cause.isFailReason(reason) && isReadDiagnostic(reason.error)) {

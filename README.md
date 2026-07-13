@@ -61,6 +61,36 @@ pnpm gaia checks <run-id> <pr-number-or-url>
 pnpm gaia checks <run-id> <pr-number-or-url> --wait
 ```
 
+## Repository Tooling
+
+Ultracite provides Gaia's root Oxlint and Oxfmt presets. The canonical tooling
+commands are:
+
+```sh
+pnpm lint
+pnpm lint:audit
+pnpm format
+pnpm format:check
+pnpm test:tooling
+pnpm tooling:doctor
+```
+
+`pnpm lint` is the green compatibility gate over Gaia-owned product source.
+`pnpm lint:audit` runs the unsoftened preset over the same product directories;
+it is intentionally non-gating and exits non-zero while inherited findings
+remain. See [`docs/oxlint-compatibility.md`](docs/oxlint-compatibility.md) for
+the individually measured rule profile and removal policy.
+
+Oxfmt owns formatting, import ordering, and Tailwind v4 class ordering. The
+Tailwind sorter uses the dashboard stylesheet and recognizes `cn`, `clsx`, and
+`cva`. `pnpm test:tooling` proves representative TypeScript/TSX imports and
+Tailwind classes through the shipped CLI/config path, including second-run
+idempotence.
+
+Tracked `.agents/skills/**` files are vendored agent tooling and are outside
+Gaia product lint/format ownership. Generated `.gaia/**`, `dist/**`, `.turbo/**`,
+and `*.gen.*` outputs are also excluded.
+
 `pnpm gaia` resolves paths from the directory where the command was invoked and
 stores generated run state in that directory's `.gaia/` folder.
 Gaia uses `.gaia/lock` to serialize local run-store mutations such as new runs

@@ -7,6 +7,7 @@ import {
   type HarnessProfileId,
 } from "@gaia/core";
 import { Effect, Schema } from "effect";
+
 import {
   HarnessCapabilityMismatchError,
   HarnessIncompatibleError,
@@ -25,7 +26,7 @@ export const issueDeliveryWorkerHarnessCapabilities = [
 /** Fixed profile has no registered provider in the active runtime composition. */
 export class HarnessProfileNotFoundError extends Schema.TaggedErrorClass<HarnessProfileNotFoundError>()(
   "HarnessProfileNotFoundError",
-  { harnessProfileId: HarnessProfileIdSchema },
+  { harnessProfileId: HarnessProfileIdSchema }
 ) {}
 
 /** A detected compatible provider plus the safe immutable run assignment. */
@@ -42,16 +43,16 @@ export type HarnessProviderRegistration = {
 
 /** Build the bounded static provider registry for local issue delivery. */
 export function makeHarnessProviderRegistry(
-  registrations: ReadonlyArray<HarnessProviderRegistration>,
+  registrations: ReadonlyArray<HarnessProviderRegistration>
 ) {
   const providers = new Map(
-    registrations.map(({ profileId, provider }) => [profileId, provider]),
+    registrations.map(({ profileId, provider }) => [profileId, provider])
   );
 
   return {
     resolve: (
       selection: HarnessExecutionSelection,
-      requiredCapabilities: ReadonlyArray<HarnessCapability>,
+      requiredCapabilities: ReadonlyArray<HarnessCapability>
     ) =>
       Effect.gen(function* () {
         const provider = providers.get(selection.harnessProfileId);
@@ -66,7 +67,7 @@ export function makeHarnessProviderRegistry(
           case "available": {
             const missing = missingHarnessCapabilities(
               detection.capabilities,
-              requiredCapabilities,
+              requiredCapabilities
             );
             if (missing.length > 0) {
               return yield* new HarnessCapabilityMismatchError({

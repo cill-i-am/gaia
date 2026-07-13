@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
+import { describe, expect, it } from "vitest";
+
 import { makeRunEvent, parseRunId, snapshotFromReplay } from "./index.js";
 import {
   encodeWorkerContinuationReceiptJson,
@@ -31,15 +32,47 @@ const action = {
 describe("worker recovery contracts", () => {
   it("strictly parses the exact one-attempt action", () => {
     expect(parseWorkerRecoveryAction(action)).toEqual(action);
-    expect(() => parseWorkerRecoveryAction({ ...action, extra: true })).toThrow();
+    expect(() =>
+      parseWorkerRecoveryAction({ ...action, extra: true })
+    ).toThrow();
   });
 
   it("keeps pending and dispatching distinct from a confirmed worker", () => {
-    const base = { ...action, attempt: 1 as const, maxAttempts: 1 as const, payloadDigest: "a".repeat(64) };
-    expect(workerRecoveryProjection(parseWorkerRecoveryReceipt({ ...base, state: "intentRecorded" }))).toBe("workerRecoveryPending");
-    expect(workerRecoveryProjection(parseWorkerRecoveryReceipt({ ...base, state: "dispatchAttempted" }))).toBe("workerRecoveryDispatching");
-    expect(workerRecoveryProjection(parseWorkerRecoveryReceipt({ ...base, nativeTurnIdDigest: "b".repeat(64), state: "dispatchConfirmed" }))).toBe("runningWorker");
-    expect(workerRecoveryProjection(parseWorkerRecoveryReceipt({ ...base, code: "WorkerRecoveryOutcomeUnknown", message: "Ambiguous provider outcome.", state: "outcomeUnknown" }))).toBe("workerRecoveryOutcomeUnknown");
+    const base = {
+      ...action,
+      attempt: 1 as const,
+      maxAttempts: 1 as const,
+      payloadDigest: "a".repeat(64),
+    };
+    expect(
+      workerRecoveryProjection(
+        parseWorkerRecoveryReceipt({ ...base, state: "intentRecorded" })
+      )
+    ).toBe("workerRecoveryPending");
+    expect(
+      workerRecoveryProjection(
+        parseWorkerRecoveryReceipt({ ...base, state: "dispatchAttempted" })
+      )
+    ).toBe("workerRecoveryDispatching");
+    expect(
+      workerRecoveryProjection(
+        parseWorkerRecoveryReceipt({
+          ...base,
+          nativeTurnIdDigest: "b".repeat(64),
+          state: "dispatchConfirmed",
+        })
+      )
+    ).toBe("runningWorker");
+    expect(
+      workerRecoveryProjection(
+        parseWorkerRecoveryReceipt({
+          ...base,
+          code: "WorkerRecoveryOutcomeUnknown",
+          message: "Ambiguous provider outcome.",
+          state: "outcomeUnknown",
+        })
+      )
+    ).toBe("workerRecoveryOutcomeUnknown");
   });
 
   it("strictly limits public failure evidence to finite safe fields", () => {
@@ -51,9 +84,21 @@ describe("worker recovery contracts", () => {
       status: 422,
       timestamp: "2026-07-12T08:00:00.000Z",
     } as const;
-    expect(Schema.decodeUnknownSync(WorkerRecoveryFailureEvidence)(evidence)).toEqual(evidence);
-    expect(() => Schema.decodeUnknownSync(WorkerRecoveryFailureEvidence)({ ...evidence, rawCause: "secret" })).toThrow();
-    expect(() => Schema.decodeUnknownSync(WorkerRecoveryFailureEvidence)({ ...evidence, code: "ArbitraryCode" })).toThrow();
+    expect(
+      Schema.decodeUnknownSync(WorkerRecoveryFailureEvidence)(evidence)
+    ).toEqual(evidence);
+    expect(() =>
+      Schema.decodeUnknownSync(WorkerRecoveryFailureEvidence)({
+        ...evidence,
+        rawCause: "secret",
+      })
+    ).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(WorkerRecoveryFailureEvidence)({
+        ...evidence,
+        code: "ArbitraryCode",
+      })
+    ).toThrow();
   });
 
   it("strictly parses audited continuation actions without provider-native checkpoint material", () => {
@@ -70,9 +115,21 @@ describe("worker recovery contracts", () => {
     } as const;
 
     expect(parseWorkerContinuationAction(continuation)).toEqual(continuation);
-    expect(() => parseWorkerContinuationAction({ ...continuation, nativeTurnId: "turn-123" })).toThrow();
-    expect(() => parseWorkerContinuationAction({ ...continuation, nativeTurnIdDigest: "a".repeat(64) })).toThrow();
-    expect(() => parseWorkerContinuationAction({ ...continuation, protocol: "codex" })).toThrow();
+    expect(() =>
+      parseWorkerContinuationAction({
+        ...continuation,
+        nativeTurnId: "turn-123",
+      })
+    ).toThrow();
+    expect(() =>
+      parseWorkerContinuationAction({
+        ...continuation,
+        nativeTurnIdDigest: "a".repeat(64),
+      })
+    ).toThrow();
+    expect(() =>
+      parseWorkerContinuationAction({ ...continuation, protocol: "codex" })
+    ).toThrow();
   });
 
   it("strictly parses audited correlation reconciliation actions without provider-native material", () => {
@@ -91,10 +148,27 @@ describe("worker recovery contracts", () => {
       kind: "reconcileInterruptedWorkerCorrelation",
     } as const;
 
-    expect(parseWorkerCorrelationReconciliationAction(reconciliation)).toEqual(reconciliation);
-    expect(() => parseWorkerCorrelationReconciliationAction({ ...reconciliation, nativeTurnId: "turn-123" })).toThrow();
-    expect(() => parseWorkerCorrelationReconciliationAction({ ...reconciliation, nativeThreadId: "thread-123" })).toThrow();
-    expect(() => parseWorkerCorrelationReconciliationAction({ ...reconciliation, protocol: "codex" })).toThrow();
+    expect(parseWorkerCorrelationReconciliationAction(reconciliation)).toEqual(
+      reconciliation
+    );
+    expect(() =>
+      parseWorkerCorrelationReconciliationAction({
+        ...reconciliation,
+        nativeTurnId: "turn-123",
+      })
+    ).toThrow();
+    expect(() =>
+      parseWorkerCorrelationReconciliationAction({
+        ...reconciliation,
+        nativeThreadId: "thread-123",
+      })
+    ).toThrow();
+    expect(() =>
+      parseWorkerCorrelationReconciliationAction({
+        ...reconciliation,
+        protocol: "codex",
+      })
+    ).toThrow();
   });
 
   it("quarantines stale ready evidence behind a new authoritative worker epoch", () => {
@@ -124,7 +198,8 @@ describe("worker recovery contracts", () => {
             attempt: 1,
             code: "WorkerRecoveryContinuationFailed",
             maxAttempts: 1,
-            message: "The checkpoint turn was interrupted after zero product changes.",
+            message:
+              "The checkpoint turn was interrupted after zero product changes.",
             nativeTurnIdDigest: "b".repeat(64),
             payloadDigest: "a".repeat(64),
             state: "failed",
@@ -137,19 +212,21 @@ describe("worker recovery contracts", () => {
       }),
       makeRunEvent({
         payload: {
-          continuation: encodeWorkerContinuationReceiptJson(parseWorkerContinuationReceipt({
-            actionId: "continue-recovery-1",
-            expectedContaminatedReadySequence: 6,
-            expectedCurrentSequence: 8,
-            expectedDeliveryProvenanceDigest: "c".repeat(64),
-            expectedFailedRecoverySequence: 8,
-            expectedRecoveryActionId: "recover-1",
-            expectedSessionId: "session-run-OzzhMsXsBb",
-            harnessProfileId: "codexAppServer",
-            maxAttempts: 1,
-            state: "intentRecorded",
-            workerEvidenceEpochSequence: 9,
-          })),
+          continuation: encodeWorkerContinuationReceiptJson(
+            parseWorkerContinuationReceipt({
+              actionId: "continue-recovery-1",
+              expectedContaminatedReadySequence: 6,
+              expectedCurrentSequence: 8,
+              expectedDeliveryProvenanceDigest: "c".repeat(64),
+              expectedFailedRecoverySequence: 8,
+              expectedRecoveryActionId: "recover-1",
+              expectedSessionId: "session-run-OzzhMsXsBb",
+              harnessProfileId: "codexAppServer",
+              maxAttempts: 1,
+              state: "intentRecorded",
+              workerEvidenceEpochSequence: 9,
+            })
+          ),
         },
         runId,
         sequence: 9,
@@ -159,14 +236,20 @@ describe("worker recovery contracts", () => {
     ];
 
     const snapshot = snapshotFromReplay(events);
-    const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(snapshot.context.delivery);
-    const continuation = parseWorkerContinuationReceipt(delivery["workerContinuation"]);
+    const delivery = Schema.decodeUnknownSync(
+      Schema.Record(Schema.String, Schema.Json)
+    )(snapshot.context.delivery);
+    const continuation = parseWorkerContinuationReceipt(
+      delivery["workerContinuation"]
+    );
 
     expect(snapshot.state).toBe("delivering");
     expect(delivery["stage"]).toBe("workerContinuationPending");
     expect(delivery["workerEvidenceEpochSequence"]).toBe(9);
     expect(continuation.state).toBe("intentRecorded");
-    expect(workerContinuationProjection(continuation)).toBe("workerContinuationPending");
+    expect(workerContinuationProjection(continuation)).toBe(
+      "workerContinuationPending"
+    );
     expect(delivery["publication"]).toBeUndefined();
   });
 
@@ -197,7 +280,8 @@ describe("worker recovery contracts", () => {
             attempt: 1,
             code: "WorkerRecoveryContinuationFailed",
             maxAttempts: 1,
-            message: "The checkpoint turn was interrupted after zero product changes.",
+            message:
+              "The checkpoint turn was interrupted after zero product changes.",
             nativeTurnIdDigest: "b".repeat(64),
             payloadDigest: "a".repeat(64),
             state: "failed",
@@ -210,19 +294,21 @@ describe("worker recovery contracts", () => {
       }),
       makeRunEvent({
         payload: {
-          continuation: encodeWorkerContinuationReceiptJson(parseWorkerContinuationReceipt({
-            actionId: "continue-recovery-1",
-            expectedContaminatedReadySequence: 6,
-            expectedCurrentSequence: 8,
-            expectedDeliveryProvenanceDigest: "c".repeat(64),
-            expectedFailedRecoverySequence: 8,
-            expectedRecoveryActionId: "recover-1",
-            expectedSessionId: "session-run-OzzhMsXsBb",
-            harnessProfileId: "codexAppServer",
-            maxAttempts: 1,
-            state: "intentRecorded",
-            workerEvidenceEpochSequence: 9,
-          })),
+          continuation: encodeWorkerContinuationReceiptJson(
+            parseWorkerContinuationReceipt({
+              actionId: "continue-recovery-1",
+              expectedContaminatedReadySequence: 6,
+              expectedCurrentSequence: 8,
+              expectedDeliveryProvenanceDigest: "c".repeat(64),
+              expectedFailedRecoverySequence: 8,
+              expectedRecoveryActionId: "recover-1",
+              expectedSessionId: "session-run-OzzhMsXsBb",
+              harnessProfileId: "codexAppServer",
+              maxAttempts: 1,
+              state: "intentRecorded",
+              workerEvidenceEpochSequence: 9,
+            })
+          ),
         },
         runId,
         sequence: 9,
@@ -231,7 +317,9 @@ describe("worker recovery contracts", () => {
       }),
     ];
     const stable = snapshotFromReplay(intentEvents);
-    const stableDelivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(stable.context.delivery);
+    const stableDelivery = Schema.decodeUnknownSync(
+      Schema.Record(Schema.String, Schema.Json)
+    )(stable.context.delivery);
 
     expect(stable.state).toBe("delivering");
     expect(stableDelivery["stage"]).toBe("workerContinuationPending");
@@ -240,19 +328,21 @@ describe("worker recovery contracts", () => {
         ...intentEvents,
         makeRunEvent({
           payload: {
-            continuation: encodeWorkerContinuationReceiptJson(parseWorkerContinuationReceipt({
-              actionId: "continue-recovery-1",
-              expectedContaminatedReadySequence: 6,
-              expectedCurrentSequence: 8,
-              expectedDeliveryProvenanceDigest: "d".repeat(64),
-              expectedFailedRecoverySequence: 8,
-              expectedRecoveryActionId: "recover-1",
-              expectedSessionId: "session-run-OzzhMsXsBb",
-              harnessProfileId: "codexAppServer",
-              maxAttempts: 1,
-              state: "resumeAttempted",
-              workerEvidenceEpochSequence: 9,
-            })),
+            continuation: encodeWorkerContinuationReceiptJson(
+              parseWorkerContinuationReceipt({
+                actionId: "continue-recovery-1",
+                expectedContaminatedReadySequence: 6,
+                expectedCurrentSequence: 8,
+                expectedDeliveryProvenanceDigest: "d".repeat(64),
+                expectedFailedRecoverySequence: 8,
+                expectedRecoveryActionId: "recover-1",
+                expectedSessionId: "session-run-OzzhMsXsBb",
+                harnessProfileId: "codexAppServer",
+                maxAttempts: 1,
+                state: "resumeAttempted",
+                workerEvidenceEpochSequence: 9,
+              })
+            ),
           },
           runId,
           sequence: 10,
@@ -260,20 +350,28 @@ describe("worker recovery contracts", () => {
           type: "WORKER_CONTINUATION_RECORDED",
         }),
       ])
-    ).toThrow("Worker continuation action is already bound to different immutable input.");
+    ).toThrow(
+      "Worker continuation action is already bound to different immutable input."
+    );
   });
 
   it("creates an authoritative worker epoch for correlation reconciliation and rejects checkpoint digest drift", () => {
     const runId = parseRunId("run-xwcFbNNdfY");
     const intentEvents = eligibleCorrelationEvents(runId);
     const snapshot = snapshotFromReplay(intentEvents);
-    const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(snapshot.context.delivery);
-    const reconciliation = parseWorkerCorrelationReconciliationReceipt(delivery["workerCorrelationReconciliation"]);
+    const delivery = Schema.decodeUnknownSync(
+      Schema.Record(Schema.String, Schema.Json)
+    )(snapshot.context.delivery);
+    const reconciliation = parseWorkerCorrelationReconciliationReceipt(
+      delivery["workerCorrelationReconciliation"]
+    );
 
     expect(snapshot.state).toBe("delivering");
     expect(delivery["stage"]).toBe("workerCorrelationPending");
     expect(delivery["workerEvidenceEpochSequence"]).toBe(11);
-    expect(workerCorrelationReconciliationProjection(reconciliation)).toBe("workerCorrelationPending");
+    expect(workerCorrelationReconciliationProjection(reconciliation)).toBe(
+      "workerCorrelationPending"
+    );
     expect(delivery["publication"]).toBeUndefined();
 
     expect(() =>
@@ -281,22 +379,24 @@ describe("worker recovery contracts", () => {
         ...intentEvents,
         makeRunEvent({
           payload: {
-            reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(parseWorkerCorrelationReconciliationReceipt({
-              actionId: "reconcile-correlation-1",
-              expectedContaminatedReadySequence: 6,
-              expectedContinuationActionId: "continue-recovery-1",
-              expectedCurrentSequence: 10,
-              expectedDeliveryProvenanceDigest: "c".repeat(64),
-              expectedFailedContinuationSequence: 10,
-              expectedFailedRecoverySequence: 8,
-              expectedNativeTurnIdDigest: "d".repeat(64),
-              expectedRecoveryActionId: "recover-1",
-              expectedSessionId: "session-run-OzzhMsXsBb",
-              harnessProfileId: "codexAppServer",
-              maxAttempts: 1,
-              state: "correlationAttempted",
-              workerEvidenceEpochSequence: 11,
-            })),
+            reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(
+              parseWorkerCorrelationReconciliationReceipt({
+                actionId: "reconcile-correlation-1",
+                expectedContaminatedReadySequence: 6,
+                expectedContinuationActionId: "continue-recovery-1",
+                expectedCurrentSequence: 10,
+                expectedDeliveryProvenanceDigest: "c".repeat(64),
+                expectedFailedContinuationSequence: 10,
+                expectedFailedRecoverySequence: 8,
+                expectedNativeTurnIdDigest: "d".repeat(64),
+                expectedRecoveryActionId: "recover-1",
+                expectedSessionId: "session-run-OzzhMsXsBb",
+                harnessProfileId: "codexAppServer",
+                maxAttempts: 1,
+                state: "correlationAttempted",
+                workerEvidenceEpochSequence: 11,
+              })
+            ),
           },
           runId,
           sequence: 12,
@@ -304,7 +404,9 @@ describe("worker recovery contracts", () => {
           type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
         }),
       ])
-    ).toThrow("Worker correlation reconciliation action is already bound to different immutable input.");
+    ).toThrow(
+      "Worker correlation reconciliation action is already bound to different immutable input."
+    );
   });
 
   it("replays legal correlation reconciliation phases only in durable order", () => {
@@ -320,8 +422,12 @@ describe("worker recovery contracts", () => {
     ];
 
     const snapshot = snapshotFromReplay(legalEvents);
-    const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(snapshot.context.delivery);
-    const reconciliation = parseWorkerCorrelationReconciliationReceipt(delivery["workerCorrelationReconciliation"]);
+    const delivery = Schema.decodeUnknownSync(
+      Schema.Record(Schema.String, Schema.Json)
+    )(snapshot.context.delivery);
+    const reconciliation = parseWorkerCorrelationReconciliationReceipt(
+      delivery["workerCorrelationReconciliation"]
+    );
 
     expect(reconciliation.state).toBe("workerCompleted");
     expect(delivery["workerEvidenceEpochSequence"]).toBe(11);
@@ -336,7 +442,9 @@ describe("worker recovery contracts", () => {
         ...intentEvents,
         correlationReconciliationEvent(runId, 12, "followUpConfirmed"),
       ])
-    ).toThrow("Worker correlation reconciliation cannot transition from intentRecorded to followUpConfirmed.");
+    ).toThrow(
+      "Worker correlation reconciliation cannot transition from intentRecorded to followUpConfirmed."
+    );
 
     expect(() =>
       snapshotFromReplay([
@@ -344,7 +452,9 @@ describe("worker recovery contracts", () => {
         correlationReconciliationEvent(runId, 12, "correlationAttempted"),
         correlationReconciliationEvent(runId, 13, "followUpAttempted"),
       ])
-    ).toThrow("Worker correlation reconciliation cannot transition from correlationAttempted to followUpAttempted.");
+    ).toThrow(
+      "Worker correlation reconciliation cannot transition from correlationAttempted to followUpAttempted."
+    );
 
     expect(() =>
       snapshotFromReplay([
@@ -353,7 +463,9 @@ describe("worker recovery contracts", () => {
         correlationReconciliationEvent(runId, 13, "correlationConfirmed"),
         correlationReconciliationEvent(runId, 14, "correlationAttempted"),
       ])
-    ).toThrow("Worker correlation reconciliation cannot transition from correlationConfirmed to correlationAttempted.");
+    ).toThrow(
+      "Worker correlation reconciliation cannot transition from correlationConfirmed to correlationAttempted."
+    );
   });
 
   it("preserves only runtime-produced terminal correlation reconciliation edges", () => {
@@ -396,7 +508,9 @@ describe("worker recovery contracts", () => {
         correlationReconciliationEvent(runId, 13, "correlationConfirmed"),
         terminalCorrelationReconciliationEvent(runId, 14, "outcomeUnknown"),
       ])
-    ).toThrow("Worker correlation reconciliation cannot transition from correlationConfirmed to outcomeUnknown.");
+    ).toThrow(
+      "Worker correlation reconciliation cannot transition from correlationConfirmed to outcomeUnknown."
+    );
   });
 
   it("records a distinct desktop-origin correlation epoch after terminal source-classification failure", () => {
@@ -406,9 +520,15 @@ describe("worker recovery contracts", () => {
       desktopOriginCorrelationEvent(runId, 14, "intentRecorded"),
     ];
     const snapshot = snapshotFromReplay(intentEvents);
-    const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(snapshot.context.delivery);
-    const prior = parseWorkerCorrelationReconciliationReceipt(delivery["workerCorrelationReconciliation"]);
-    const desktop = parseWorkerDesktopOriginCorrelationReceipt(delivery["workerDesktopOriginCorrelation"]);
+    const delivery = Schema.decodeUnknownSync(
+      Schema.Record(Schema.String, Schema.Json)
+    )(snapshot.context.delivery);
+    const prior = parseWorkerCorrelationReconciliationReceipt(
+      delivery["workerCorrelationReconciliation"]
+    );
+    const desktop = parseWorkerDesktopOriginCorrelationReceipt(
+      delivery["workerDesktopOriginCorrelation"]
+    );
 
     expect(snapshot.state).toBe("delivering");
     expect(prior.state).toBe("failed");
@@ -416,18 +536,23 @@ describe("worker recovery contracts", () => {
     expect(desktop.state).toBe("intentRecorded");
     expect(delivery["stage"]).toBe("workerCorrelationPending");
     expect(delivery["workerEvidenceEpochSequence"]).toBe(14);
-    expect(workerDesktopOriginCorrelationProjection(desktop)).toBe("workerCorrelationPending");
+    expect(workerDesktopOriginCorrelationProjection(desktop)).toBe(
+      "workerCorrelationPending"
+    );
 
     expect(() =>
       snapshotFromReplay([
         ...intentEvents,
         makeRunEvent({
           payload: {
-            desktopOriginCorrelation: encodeWorkerDesktopOriginCorrelationReceiptJson(parseWorkerDesktopOriginCorrelationReceipt({
-              ...desktopOriginCorrelationBase,
-              expectedFailedCorrelationSequence: 12,
-              state: "sourceCorrelationAttempted",
-            })),
+            desktopOriginCorrelation:
+              encodeWorkerDesktopOriginCorrelationReceiptJson(
+                parseWorkerDesktopOriginCorrelationReceipt({
+                  ...desktopOriginCorrelationBase,
+                  expectedFailedCorrelationSequence: 12,
+                  state: "sourceCorrelationAttempted",
+                })
+              ),
           },
           runId,
           sequence: 15,
@@ -435,7 +560,9 @@ describe("worker recovery contracts", () => {
           type: "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED",
         }),
       ])
-    ).toThrow("Worker desktop-origin correlation action is already bound to different immutable input.");
+    ).toThrow(
+      "Worker desktop-origin correlation action is already bound to different immutable input."
+    );
   });
 
   it("replays legal Desktop-origin correlation phases only in durable order", () => {
@@ -454,8 +581,12 @@ describe("worker recovery contracts", () => {
     ];
 
     const snapshot = snapshotFromReplay(legalEvents);
-    const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(snapshot.context.delivery);
-    const desktop = parseWorkerDesktopOriginCorrelationReceipt(delivery["workerDesktopOriginCorrelation"]);
+    const delivery = Schema.decodeUnknownSync(
+      Schema.Record(Schema.String, Schema.Json)
+    )(snapshot.context.delivery);
+    const desktop = parseWorkerDesktopOriginCorrelationReceipt(
+      delivery["workerDesktopOriginCorrelation"]
+    );
 
     expect(desktop.state).toBe("workerCompleted");
     expect(delivery["workerEvidenceEpochSequence"]).toBe(14);
@@ -473,7 +604,9 @@ describe("worker recovery contracts", () => {
         ...intentEvents,
         desktopOriginCorrelationEvent(runId, 15, "followUpConfirmed"),
       ])
-    ).toThrow("Worker desktop-origin correlation cannot transition from intentRecorded to followUpConfirmed.");
+    ).toThrow(
+      "Worker desktop-origin correlation cannot transition from intentRecorded to followUpConfirmed."
+    );
 
     expect(() =>
       snapshotFromReplay([
@@ -481,7 +614,9 @@ describe("worker recovery contracts", () => {
         desktopOriginCorrelationEvent(runId, 15, "sourceCorrelationAttempted"),
         desktopOriginCorrelationEvent(runId, 16, "followUpAttempted"),
       ])
-    ).toThrow("Worker desktop-origin correlation cannot transition from sourceCorrelationAttempted to followUpAttempted.");
+    ).toThrow(
+      "Worker desktop-origin correlation cannot transition from sourceCorrelationAttempted to followUpAttempted."
+    );
 
     expect(() =>
       snapshotFromReplay([
@@ -490,21 +625,31 @@ describe("worker recovery contracts", () => {
         desktopOriginCorrelationEvent(runId, 16, "sourceCorrelationConfirmed"),
         terminalDesktopOriginCorrelationEvent(runId, 17, "outcomeUnknown"),
       ])
-    ).toThrow("Worker desktop-origin correlation cannot transition from sourceCorrelationConfirmed to outcomeUnknown.");
+    ).toThrow(
+      "Worker desktop-origin correlation cannot transition from sourceCorrelationConfirmed to outcomeUnknown."
+    );
   });
 });
 
 function desktopOriginCorrelationEvent(
   runId: ReturnType<typeof parseRunId>,
   sequence: number,
-  state: "intentRecorded" | "sourceCorrelationAttempted" | "sourceCorrelationConfirmed" | "followUpAttempted" | "followUpConfirmed" | "workerCompleted",
+  state:
+    | "intentRecorded"
+    | "sourceCorrelationAttempted"
+    | "sourceCorrelationConfirmed"
+    | "followUpAttempted"
+    | "followUpConfirmed"
+    | "workerCompleted"
 ) {
   return makeRunEvent({
     payload: {
-      desktopOriginCorrelation: encodeWorkerDesktopOriginCorrelationReceiptJson(parseWorkerDesktopOriginCorrelationReceipt({
-        ...desktopOriginCorrelationBase,
-        state,
-      })),
+      desktopOriginCorrelation: encodeWorkerDesktopOriginCorrelationReceiptJson(
+        parseWorkerDesktopOriginCorrelationReceipt({
+          ...desktopOriginCorrelationBase,
+          state,
+        })
+      ),
     },
     runId,
     sequence,
@@ -516,20 +661,24 @@ function desktopOriginCorrelationEvent(
 function terminalDesktopOriginCorrelationEvent(
   runId: ReturnType<typeof parseRunId>,
   sequence: number,
-  state: "failed" | "outcomeUnknown",
+  state: "failed" | "outcomeUnknown"
 ) {
   return makeRunEvent({
     payload: {
-      desktopOriginCorrelation: encodeWorkerDesktopOriginCorrelationReceiptJson(parseWorkerDesktopOriginCorrelationReceipt({
-        ...desktopOriginCorrelationBase,
-        code: state === "failed"
-          ? "WorkerDesktopOriginCorrelationFailed"
-          : "WorkerDesktopOriginCorrelationOutcomeUnknown",
-        message: state === "failed"
-          ? "Audited Desktop-origin correlation failed."
-          : "Audited Desktop-origin correlation outcome is unknown.",
-        state,
-      })),
+      desktopOriginCorrelation: encodeWorkerDesktopOriginCorrelationReceiptJson(
+        parseWorkerDesktopOriginCorrelationReceipt({
+          ...desktopOriginCorrelationBase,
+          code:
+            state === "failed"
+              ? "WorkerDesktopOriginCorrelationFailed"
+              : "WorkerDesktopOriginCorrelationOutcomeUnknown",
+          message:
+            state === "failed"
+              ? "Audited Desktop-origin correlation failed."
+              : "Audited Desktop-origin correlation outcome is unknown.",
+          state,
+        })
+      ),
     },
     runId,
     sequence,
@@ -567,14 +716,21 @@ function failedCorrelationEvents(runId: ReturnType<typeof parseRunId>) {
 function correlationReconciliationEvent(
   runId: ReturnType<typeof parseRunId>,
   sequence: number,
-  state: "correlationAttempted" | "correlationConfirmed" | "followUpAttempted" | "followUpConfirmed" | "workerCompleted",
+  state:
+    | "correlationAttempted"
+    | "correlationConfirmed"
+    | "followUpAttempted"
+    | "followUpConfirmed"
+    | "workerCompleted"
 ) {
   return makeRunEvent({
     payload: {
-      reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(parseWorkerCorrelationReconciliationReceipt({
-        ...correlationReconciliationBase,
-        state,
-      })),
+      reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(
+        parseWorkerCorrelationReconciliationReceipt({
+          ...correlationReconciliationBase,
+          state,
+        })
+      ),
     },
     runId,
     sequence,
@@ -586,20 +742,24 @@ function correlationReconciliationEvent(
 function terminalCorrelationReconciliationEvent(
   runId: ReturnType<typeof parseRunId>,
   sequence: number,
-  state: "failed" | "outcomeUnknown",
+  state: "failed" | "outcomeUnknown"
 ) {
   return makeRunEvent({
     payload: {
-      reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(parseWorkerCorrelationReconciliationReceipt({
-        ...correlationReconciliationBase,
-        code: state === "failed"
-          ? "WorkerCorrelationReconciliationFailed"
-          : "WorkerCorrelationOutcomeUnknown",
-        message: state === "failed"
-          ? "Audited worker correlation reconciliation failed."
-          : "Audited worker correlation reconciliation outcome is unknown.",
-        state,
-      })),
+      reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(
+        parseWorkerCorrelationReconciliationReceipt({
+          ...correlationReconciliationBase,
+          code:
+            state === "failed"
+              ? "WorkerCorrelationReconciliationFailed"
+              : "WorkerCorrelationOutcomeUnknown",
+          message:
+            state === "failed"
+              ? "Audited worker correlation reconciliation failed."
+              : "Audited worker correlation reconciliation outcome is unknown.",
+          state,
+        })
+      ),
     },
     runId,
     sequence,
@@ -650,7 +810,8 @@ function eligibleCorrelationEvents(runId: ReturnType<typeof parseRunId>) {
           attempt: 1,
           code: "WorkerRecoveryContinuationFailed",
           maxAttempts: 1,
-          message: "The checkpoint turn was interrupted after zero product changes.",
+          message:
+            "The checkpoint turn was interrupted after zero product changes.",
           nativeTurnIdDigest: "b".repeat(64),
           payloadDigest: "a".repeat(64),
           state: "failed",
@@ -663,19 +824,21 @@ function eligibleCorrelationEvents(runId: ReturnType<typeof parseRunId>) {
     }),
     makeRunEvent({
       payload: {
-        continuation: encodeWorkerContinuationReceiptJson(parseWorkerContinuationReceipt({
-          actionId: "continue-recovery-1",
-          expectedContaminatedReadySequence: 6,
-          expectedCurrentSequence: 8,
-          expectedDeliveryProvenanceDigest: "c".repeat(64),
-          expectedFailedRecoverySequence: 8,
-          expectedRecoveryActionId: "recover-1",
-          expectedSessionId: "session-run-OzzhMsXsBb",
-          harnessProfileId: "codexAppServer",
-          maxAttempts: 1,
-          state: "intentRecorded",
-          workerEvidenceEpochSequence: 9,
-        })),
+        continuation: encodeWorkerContinuationReceiptJson(
+          parseWorkerContinuationReceipt({
+            actionId: "continue-recovery-1",
+            expectedContaminatedReadySequence: 6,
+            expectedCurrentSequence: 8,
+            expectedDeliveryProvenanceDigest: "c".repeat(64),
+            expectedFailedRecoverySequence: 8,
+            expectedRecoveryActionId: "recover-1",
+            expectedSessionId: "session-run-OzzhMsXsBb",
+            harnessProfileId: "codexAppServer",
+            maxAttempts: 1,
+            state: "intentRecorded",
+            workerEvidenceEpochSequence: 9,
+          })
+        ),
       },
       runId,
       sequence: 9,
@@ -684,21 +847,23 @@ function eligibleCorrelationEvents(runId: ReturnType<typeof parseRunId>) {
     }),
     makeRunEvent({
       payload: {
-        continuation: encodeWorkerContinuationReceiptJson(parseWorkerContinuationReceipt({
-          actionId: "continue-recovery-1",
-          expectedContaminatedReadySequence: 6,
-          expectedCurrentSequence: 8,
-          expectedDeliveryProvenanceDigest: "c".repeat(64),
-          expectedFailedRecoverySequence: 8,
-          expectedRecoveryActionId: "recover-1",
-          expectedSessionId: "session-run-OzzhMsXsBb",
-          harnessProfileId: "codexAppServer",
-          maxAttempts: 1,
-          state: "failed",
-          code: "HarnessCorrelationUnavailable",
-          message: "The interrupted checkpoint correlation is unavailable.",
-          workerEvidenceEpochSequence: 9,
-        })),
+        continuation: encodeWorkerContinuationReceiptJson(
+          parseWorkerContinuationReceipt({
+            actionId: "continue-recovery-1",
+            expectedContaminatedReadySequence: 6,
+            expectedCurrentSequence: 8,
+            expectedDeliveryProvenanceDigest: "c".repeat(64),
+            expectedFailedRecoverySequence: 8,
+            expectedRecoveryActionId: "recover-1",
+            expectedSessionId: "session-run-OzzhMsXsBb",
+            harnessProfileId: "codexAppServer",
+            maxAttempts: 1,
+            state: "failed",
+            code: "HarnessCorrelationUnavailable",
+            message: "The interrupted checkpoint correlation is unavailable.",
+            workerEvidenceEpochSequence: 9,
+          })
+        ),
       },
       runId,
       sequence: 10,
@@ -707,22 +872,24 @@ function eligibleCorrelationEvents(runId: ReturnType<typeof parseRunId>) {
     }),
     makeRunEvent({
       payload: {
-        reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(parseWorkerCorrelationReconciliationReceipt({
-          actionId: "reconcile-correlation-1",
-          expectedContaminatedReadySequence: 6,
-          expectedContinuationActionId: "continue-recovery-1",
-          expectedCurrentSequence: 10,
-          expectedDeliveryProvenanceDigest: "c".repeat(64),
-          expectedFailedContinuationSequence: 10,
-          expectedFailedRecoverySequence: 8,
-          expectedNativeTurnIdDigest: "b".repeat(64),
-          expectedRecoveryActionId: "recover-1",
-          expectedSessionId: "session-run-OzzhMsXsBb",
-          harnessProfileId: "codexAppServer",
-          maxAttempts: 1,
-          state: "intentRecorded",
-          workerEvidenceEpochSequence: 11,
-        })),
+        reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(
+          parseWorkerCorrelationReconciliationReceipt({
+            actionId: "reconcile-correlation-1",
+            expectedContaminatedReadySequence: 6,
+            expectedContinuationActionId: "continue-recovery-1",
+            expectedCurrentSequence: 10,
+            expectedDeliveryProvenanceDigest: "c".repeat(64),
+            expectedFailedContinuationSequence: 10,
+            expectedFailedRecoverySequence: 8,
+            expectedNativeTurnIdDigest: "b".repeat(64),
+            expectedRecoveryActionId: "recover-1",
+            expectedSessionId: "session-run-OzzhMsXsBb",
+            harnessProfileId: "codexAppServer",
+            maxAttempts: 1,
+            state: "intentRecorded",
+            workerEvidenceEpochSequence: 11,
+          })
+        ),
       },
       runId,
       sequence: 11,

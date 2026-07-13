@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import path from "node:path";
+
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -64,6 +66,14 @@ import {
   watchGitHubFeedback,
 } from "@gaia/runtime";
 import { runLocalGaiaServer } from "@gaia/server";
+import * as Console from "effect/Console";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Argument from "effect/unstable/cli/Argument";
+import * as Command from "effect/unstable/cli/Command";
+import * as Flag from "effect/unstable/cli/Flag";
+
+import { parseServerPort } from "./server-port.js";
 import {
   createRunFromServer,
   evaluateMergeReadinessFromServer,
@@ -74,14 +84,6 @@ import {
   statusRunFromServer,
   type ServerRunAcceptedSummary,
 } from "./server-read-client.js";
-import { parseServerPort } from "./server-port.js";
-import path from "node:path";
-import * as Console from "effect/Console";
-import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-import * as Argument from "effect/unstable/cli/Argument";
-import * as Command from "effect/unstable/cli/Command";
-import * as Flag from "effect/unstable/cli/Flag";
 
 type FailureOutput = {
   readonly code: string;
@@ -99,110 +101,120 @@ const actionId = Argument.string("action-id");
 const optionalRunId = runId.pipe(Argument.optional);
 const optionalPullRequest = pullRequest.pipe(Argument.optional);
 const browserTargetUrl = Flag.string("url").pipe(
-  Flag.withDescription("HTTP or HTTPS URL to capture browser evidence from."),
+  Flag.withDescription("HTTP or HTTPS URL to capture browser evidence from.")
 );
 const browserRunTargetUrl = Flag.string("browser-url").pipe(
   Flag.withDescription(
-    "HTTP or HTTPS URL to capture during a run before evidence review.",
+    "HTTP or HTTPS URL to capture during a run before evidence review."
   ),
-  Flag.optional,
+  Flag.optional
 );
 const requireBrowserEvidence = Flag.boolean("require-browser-evidence").pipe(
   Flag.withDescription(
-    "Fail the run unless browser evidence is captured successfully.",
-  ),
+    "Fail the run unless browser evidence is captured successfully."
+  )
 );
 const json = Flag.boolean("json").pipe(
-  Flag.withDescription("Write a machine-readable JSON response."),
+  Flag.withDescription("Write a machine-readable JSON response.")
 );
 const serverUrl = Flag.string("server-url").pipe(
   Flag.withDescription(
-    "Opt into read-only CLI reads through an already-running local Gaia API server.",
+    "Opt into read-only CLI reads through an already-running local Gaia API server."
   ),
-  Flag.optional,
+  Flag.optional
 );
 const readinessServerUrl = Flag.string("server-url").pipe(
-  Flag.withDescription("URL of the authoritative local Gaia server."),
+  Flag.withDescription("URL of the authoritative local Gaia server.")
 );
-const mergeReadinessMethod = Flag.choice("method", ["merge", "squash", "rebase"] as const).pipe(
-  Flag.withDescription("Explicit merge method to evaluate; no default is permitted."),
+const mergeReadinessMethod = Flag.choice("method", [
+  "merge",
+  "squash",
+  "rebase",
+] as const).pipe(
+  Flag.withDescription(
+    "Explicit merge method to evaluate; no default is permitted."
+  )
 );
 const serverMode = Flag.boolean("server").pipe(
   Flag.withDescription(
-    "Opt into the workspace local Gaia server, autostarting it when needed.",
-  ),
+    "Opt into the workspace local Gaia server, autostarting it when needed."
+  )
 );
 const serverPort = Flag.string("port").pipe(
-  Flag.withDescription("Bind the foreground local Gaia server to an explicit loopback port."),
-  Flag.optional,
+  Flag.withDescription(
+    "Bind the foreground local Gaia server to an explicit loopback port."
+  ),
+  Flag.optional
 );
 const workspaceSource = Flag.string("workspace-source").pipe(
   Flag.withDescription("Copy a local directory into the run workspace."),
-  Flag.optional,
+  Flag.optional
 );
 const skillManifest = Flag.string("skill-manifest").pipe(
   Flag.withDescription("Record a JSON skill manifest as run evidence."),
-  Flag.optional,
+  Flag.optional
 );
 const runProfile = Flag.string("profile").pipe(
   Flag.withDescription(
-    "Select a run profile by name from profiles/<name>.json, or pass a JSON file path.",
+    "Select a run profile by name from profiles/<name>.json, or pass a JSON file path."
   ),
-  Flag.optional,
+  Flag.optional
 );
 const baseBranch = Flag.string("base").pipe(
   Flag.withDescription("Base branch for a Gaia GitHub pull request."),
-  Flag.optional,
+  Flag.optional
 );
 const workspacePreview = Flag.boolean("workspace").pipe(
-  Flag.withDescription("Preview a workspace-change PR instead of evidence-only PR."),
+  Flag.withDescription(
+    "Preview a workspace-change PR instead of evidence-only PR."
+  )
 );
 const waitForTerminal = Flag.boolean("wait").pipe(
-  Flag.withDescription("Poll until GitHub checks are no longer pending."),
+  Flag.withDescription("Poll until GitHub checks are no longer pending.")
 );
 const harness = Flag.string("harness").pipe(
   Flag.withDescription("Select the worker harness adapter."),
-  Flag.optional,
+  Flag.optional
 );
 const reviewer = Flag.string("reviewer").pipe(
   Flag.withDescription(
-    "Select the reviewer adapter. Supported values: deterministic, codex.",
+    "Select the reviewer adapter. Supported values: deterministic, codex."
   ),
-  Flag.optional,
+  Flag.optional
 );
 const harnessCommand = Flag.string("harness-command").pipe(
   Flag.withDescription("Executable command for the process harness."),
-  Flag.optional,
+  Flag.optional
 );
 const harnessArg = Flag.string("harness-arg").pipe(
   Flag.withDescription("Argument for the process harness command. Repeatable."),
-  Flag.atLeast(0),
+  Flag.atLeast(0)
 );
 const codexCommand = Flag.string("codex-command").pipe(
   Flag.withDescription("Codex executable command for the Codex harness."),
-  Flag.optional,
+  Flag.optional
 );
 const codexArg = Flag.string("codex-arg").pipe(
   Flag.withDescription("Extra argument for `codex exec`. Repeatable."),
-  Flag.atLeast(0),
+  Flag.atLeast(0)
 );
 const codexModel = Flag.string("codex-model").pipe(
   Flag.withDescription("Model passed to `codex exec --model`."),
-  Flag.optional,
+  Flag.optional
 );
 const codexProfile = Flag.string("codex-profile").pipe(
   Flag.withDescription("Codex profile passed to `codex exec --profile`."),
-  Flag.optional,
+  Flag.optional
 );
 const codexSandbox = Flag.string("codex-sandbox").pipe(
   Flag.withDescription(
-    "Codex sandbox mode. Supported values: read-only, workspace-write.",
+    "Codex sandbox mode. Supported values: read-only, workspace-write."
   ),
-  Flag.optional,
+  Flag.optional
 );
 const codexTimeoutMs = Flag.string("codex-timeout-ms").pipe(
   Flag.withDescription("Maximum Codex command runtime in milliseconds."),
-  Flag.optional,
+  Flag.optional
 );
 
 const run = Command.make("run", {
@@ -268,9 +280,9 @@ const run = Command.make("run", {
           workspaceSource,
         }),
         json,
-        renderRunCommandSummary,
-      ),
-  ),
+        renderRunCommandSummary
+      )
+  )
 );
 
 const resume = Command.make("resume", { json, runId }).pipe(
@@ -278,12 +290,12 @@ const resume = Command.make("resume", { json, runId }).pipe(
   Command.withHandler(({ json, runId }) =>
     renderEffect(
       withRunIdInput(runId, (parsedRunId) =>
-        resumeRun(parsedRunId, workflowOptions()),
+        resumeRun(parsedRunId, workflowOptions())
       ),
       json,
-      renderSummary,
-    ),
-  ),
+      renderSummary
+    )
+  )
 );
 
 const status = Command.make("status", {
@@ -292,7 +304,9 @@ const status = Command.make("status", {
   serverMode,
   serverUrl,
 }).pipe(
-  Command.withDescription("Show the latest run status or a specific run status."),
+  Command.withDescription(
+    "Show the latest run status or a specific run status."
+  ),
   Command.withHandler(({ json, runId, serverMode, serverUrl }) =>
     renderEffect(
       readStatus({
@@ -301,9 +315,9 @@ const status = Command.make("status", {
         serverMode,
       }),
       json,
-      renderSummary,
-    ),
-  ),
+      renderSummary
+    )
+  )
 );
 
 const doctorCommand = Command.make("doctor", { json }).pipe(
@@ -312,9 +326,9 @@ const doctorCommand = Command.make("doctor", { json }).pipe(
     renderEffect(
       doctor({ rootDirectory: invocationRoot() }),
       json,
-      renderDoctorSummary,
-    ),
-  ),
+      renderDoctorSummary
+    )
+  )
 );
 
 const list = Command.make("list", { json, serverMode, serverUrl }).pipe(
@@ -326,12 +340,17 @@ const list = Command.make("list", { json, serverMode, serverUrl }).pipe(
         serverMode,
       }),
       json,
-      renderRunList,
-    ),
-  ),
+      renderRunList
+    )
+  )
 );
 
-const events = Command.make("events", { json, runId, serverMode, serverUrl }).pipe(
+const events = Command.make("events", {
+  json,
+  runId,
+  serverMode,
+  serverUrl,
+}).pipe(
   Command.withDescription("Read a Gaia run's event log."),
   Command.withHandler(({ json, runId, serverMode, serverUrl }) =>
     renderEffect(
@@ -341,9 +360,9 @@ const events = Command.make("events", { json, runId, serverMode, serverUrl }).pi
         serverMode,
       }),
       json,
-      renderRunEvents,
-    ),
-  ),
+      renderRunEvents
+    )
+  )
 );
 
 const artifact = Command.make("artifact", {
@@ -361,9 +380,9 @@ const artifact = Command.make("artifact", {
         runId,
       }),
       json,
-      renderRunArtifact,
-    ),
-  ),
+      renderRunArtifact
+    )
+  )
 );
 
 const publishPr = Command.make("publish-pr", { baseBranch, json, runId }).pipe(
@@ -371,12 +390,12 @@ const publishPr = Command.make("publish-pr", { baseBranch, json, runId }).pipe(
   Command.withHandler(({ baseBranch, json, runId }) =>
     renderEffect(
       withRunIdInput(runId, (parsedRunId) =>
-        publishRunToGitHub(parsedRunId, githubPublishOptions({ baseBranch })),
+        publishRunToGitHub(parsedRunId, githubPublishOptions({ baseBranch }))
       ),
       json,
-      renderGitHubPrSummary,
-    ),
-  ),
+      renderGitHubPrSummary
+    )
+  )
 );
 
 const preflightGithub = Command.make("preflight-github", {
@@ -384,16 +403,21 @@ const preflightGithub = Command.make("preflight-github", {
   json,
   runId,
 }).pipe(
-  Command.withDescription("Check whether a completed Gaia run can publish to GitHub."),
+  Command.withDescription(
+    "Check whether a completed Gaia run can publish to GitHub."
+  ),
   Command.withHandler(({ baseBranch, json, runId }) =>
     renderEffect(
       withRunIdInput(runId, (parsedRunId) =>
-        preflightGitHubPublish(parsedRunId, githubPublishOptions({ baseBranch })),
+        preflightGitHubPublish(
+          parsedRunId,
+          githubPublishOptions({ baseBranch })
+        )
       ),
       json,
-      renderGitHubPreflightSummary,
-    ),
-  ),
+      renderGitHubPreflightSummary
+    )
+  )
 );
 
 const previewPr = Command.make("preview-pr", {
@@ -409,12 +433,12 @@ const previewPr = Command.make("preview-pr", {
         previewGitHubPublish(parsedRunId, {
           ...githubPublishOptions({ baseBranch }),
           mode: workspacePreview ? "workspace" : "evidence",
-        }),
+        })
       ),
       json,
-      renderGitHubPublishPreview,
-    ),
-  ),
+      renderGitHubPublishPreview
+    )
+  )
 );
 
 const publishWorkspacePr = Command.make("publish-workspace-pr", {
@@ -423,20 +447,20 @@ const publishWorkspacePr = Command.make("publish-workspace-pr", {
   runId,
 }).pipe(
   Command.withDescription(
-    "Publish completed Gaia workspace changes as a draft GitHub PR.",
+    "Publish completed Gaia workspace changes as a draft GitHub PR."
   ),
   Command.withHandler(({ baseBranch, json, runId }) =>
     renderEffect(
       withRunIdInput(runId, (parsedRunId) =>
         publishWorkspaceRunToGitHub(
           parsedRunId,
-          githubPublishOptions({ baseBranch }),
-        ),
+          githubPublishOptions({ baseBranch })
+        )
       ),
       json,
-      renderGitHubPrSummary,
-    ),
-  ),
+      renderGitHubPrSummary
+    )
+  )
 );
 
 const prChecks = Command.make("pr-checks", { json, pullRequest }).pipe(
@@ -445,9 +469,9 @@ const prChecks = Command.make("pr-checks", { json, pullRequest }).pipe(
     renderEffect(
       inspectGitHubChecks(pullRequest, { rootDirectory: invocationRoot() }),
       json,
-      renderGitHubChecksSummary,
-    ),
-  ),
+      renderGitHubChecksSummary
+    )
+  )
 );
 
 const checks = Command.make("checks", {
@@ -463,12 +487,12 @@ const checks = Command.make("checks", {
         recordGitHubChecks(parsedRunId, pullRequest, {
           rootDirectory: invocationRoot(),
           waitForTerminal,
-        }),
+        })
       ),
       json,
-      renderGitHubChecksRecord,
-    ),
-  ),
+      renderGitHubChecksRecord
+    )
+  )
 );
 
 const watchCi = Command.make("watch-ci", {
@@ -477,7 +501,7 @@ const watchCi = Command.make("watch-ci", {
   pullRequest: optionalPullRequest,
 }).pipe(
   Command.withDescription(
-    "Resume or start a bounded GitHub CI watcher for a Gaia run.",
+    "Resume or start a bounded GitHub CI watcher for a Gaia run."
   ),
   Command.withHandler(({ json, pullRequest, runId }) =>
     renderEffect(
@@ -487,12 +511,12 @@ const watchCi = Command.make("watch-ci", {
           ...(Option.isSome(pullRequest)
             ? { pullRequest: pullRequest.value }
             : {}),
-        }),
+        })
       ),
       json,
-      renderGitHubCiWatchSummary,
-    ),
-  ),
+      renderGitHubCiWatchSummary
+    )
+  )
 );
 
 const watchPrFeedback = Command.make("watch-pr-feedback", {
@@ -501,19 +525,19 @@ const watchPrFeedback = Command.make("watch-pr-feedback", {
   pullRequest,
 }).pipe(
   Command.withDescription(
-    "Record human GitHub pull request feedback against a Gaia run.",
+    "Record human GitHub pull request feedback against a Gaia run."
   ),
   Command.withHandler(({ json, pullRequest, runId }) =>
     renderEffect(
       withRunIdInput(runId, (parsedRunId) =>
         watchGitHubFeedback(parsedRunId, pullRequest, {
           rootDirectory: invocationRoot(),
-        }),
+        })
       ),
       json,
-      renderGitHubPrFeedbackSummary,
-    ),
-  ),
+      renderGitHubPrFeedbackSummary
+    )
+  )
 );
 
 const prLoop = Command.make("pr-loop", {
@@ -522,19 +546,19 @@ const prLoop = Command.make("pr-loop", {
   pullRequest,
 }).pipe(
   Command.withDescription(
-    "Record CI and review feedback, then recommend the next PR-loop action.",
+    "Record CI and review feedback, then recommend the next PR-loop action."
   ),
   Command.withHandler(({ json, pullRequest, runId }) =>
     renderEffect(
       withRunIdInput(runId, (parsedRunId) =>
         coordinateGitHubPrLoop(parsedRunId, pullRequest, {
           rootDirectory: invocationRoot(),
-        }),
+        })
       ),
       json,
-      renderGitHubPrLoopSummary,
-    ),
-  ),
+      renderGitHubPrLoopSummary
+    )
+  )
 );
 
 const planRemediation = Command.make("plan-remediation", {
@@ -542,19 +566,19 @@ const planRemediation = Command.make("plan-remediation", {
   runId,
 }).pipe(
   Command.withDescription(
-    "Create a follow-up remediation spec from a blocked PR-loop state.",
+    "Create a follow-up remediation spec from a blocked PR-loop state."
   ),
   Command.withHandler(({ json, runId }) =>
     renderEffect(
       withRunIdInput(runId, (parsedRunId) =>
         createGitHubRemediationSpec(parsedRunId, {
           rootDirectory: invocationRoot(),
-        }),
+        })
       ),
       json,
-      renderGitHubRemediationSpecSummary,
-    ),
-  ),
+      renderGitHubRemediationSpecSummary
+    )
+  )
 );
 
 const commentPr = Command.make("comment-pr", {
@@ -563,19 +587,19 @@ const commentPr = Command.make("comment-pr", {
   pullRequest,
 }).pipe(
   Command.withDescription(
-    "Publish a timestamped Gaia evidence comment to a GitHub PR.",
+    "Publish a timestamped Gaia evidence comment to a GitHub PR."
   ),
   Command.withHandler(({ json, pullRequest, runId }) =>
     renderEffect(
       withRunIdInput(runId, (parsedRunId) =>
         commentGitHubPullRequest(parsedRunId, pullRequest, {
           rootDirectory: invocationRoot(),
-        }),
+        })
       ),
       json,
-      renderGitHubPrCommentSummary,
-    ),
-  ),
+      renderGitHubPrCommentSummary
+    )
+  )
 );
 
 const linearIssue = Command.make("linear-issue", {
@@ -584,7 +608,7 @@ const linearIssue = Command.make("linear-issue", {
   linearIssueGraphFile,
 }).pipe(
   Command.withDescription(
-    "Record a Linear issue graph JSON snapshot against a Gaia run.",
+    "Record a Linear issue graph JSON snapshot against a Gaia run."
   ),
   Command.withHandler(({ json, linearIssueGraphFile, runId }) =>
     renderEffect(
@@ -594,13 +618,13 @@ const linearIssue = Command.make("linear-issue", {
           resolveInvocationPath(linearIssueGraphFile),
           {
             rootDirectory: invocationRoot(),
-          },
-        ),
+          }
+        )
       ),
       json,
-      renderLinearIssueGraphSummary,
-    ),
-  ),
+      renderLinearIssueGraphSummary
+    )
+  )
 );
 
 const mergeDecision = Command.make("merge-decision", {
@@ -608,19 +632,19 @@ const mergeDecision = Command.make("merge-decision", {
   runId,
 }).pipe(
   Command.withDescription(
-    "Record Gaia's explicit merge decision for a completed run.",
+    "Record Gaia's explicit merge decision for a completed run."
   ),
   Command.withHandler(({ json, runId }) =>
     renderEffect(
       withRunIdInput(runId, (parsedRunId) =>
         recordMergeDecision(parsedRunId, {
           rootDirectory: invocationRoot(),
-        }),
+        })
       ),
       json,
-      renderMergeDecisionSummary,
-    ),
-  ),
+      renderMergeDecisionSummary
+    )
+  )
 );
 
 const mergeReadiness = Command.make("merge-readiness", {
@@ -630,23 +654,27 @@ const mergeReadiness = Command.make("merge-readiness", {
   readinessServerUrl,
   runId,
 }).pipe(
-  Command.withDescription("Evaluate exact-head merge readiness without executing a merge."),
-  Command.withHandler(({ actionId, json, mergeReadinessMethod, readinessServerUrl, runId }) =>
-    renderEffect(
-      Effect.gen(function* () {
-        const parsedRunId = yield* parseRunIdInput(runId);
-        const parsedServerUrl = yield* parseServerUrlInput(readinessServerUrl);
-        return yield* evaluateMergeReadinessFromServer({
-          actionId,
-          mergeMethod: mergeReadinessMethod,
-          runId: parsedRunId,
-          serverUrl: parsedServerUrl,
-        });
-      }),
-      json,
-      (response) => renderMergeReadinessResponse(response.data),
-    ),
+  Command.withDescription(
+    "Evaluate exact-head merge readiness without executing a merge."
   ),
+  Command.withHandler(
+    ({ actionId, json, mergeReadinessMethod, readinessServerUrl, runId }) =>
+      renderEffect(
+        Effect.gen(function* () {
+          const parsedRunId = yield* parseRunIdInput(runId);
+          const parsedServerUrl =
+            yield* parseServerUrlInput(readinessServerUrl);
+          return yield* evaluateMergeReadinessFromServer({
+            actionId,
+            mergeMethod: mergeReadinessMethod,
+            runId: parsedRunId,
+            serverUrl: parsedServerUrl,
+          });
+        }),
+        json,
+        (response) => renderMergeReadinessResponse(response.data)
+      )
+  )
 );
 
 const collectBrowserEvidenceCommand = Command.make("collect-browser-evidence", {
@@ -654,18 +682,20 @@ const collectBrowserEvidenceCommand = Command.make("collect-browser-evidence", {
   json,
   runId,
 }).pipe(
-  Command.withDescription("Collect screenshot and console evidence for a completed run."),
+  Command.withDescription(
+    "Collect screenshot and console evidence for a completed run."
+  ),
   Command.withHandler(({ browserTargetUrl, json, runId }) =>
     renderEffect(
       withRunIdInput(runId, (parsedRunId) =>
         collectBrowserEvidence(parsedRunId, browserTargetUrl, {
           rootDirectory: invocationRoot(),
-        }),
+        })
       ),
       json,
-      renderBrowserEvidenceRecord,
-    ),
-  ),
+      renderBrowserEvidenceRecord
+    )
+  )
 );
 
 const serverCommand = Command.make("server", { port: serverPort }).pipe(
@@ -677,13 +707,13 @@ const serverCommand = Command.make("server", { port: serverPort }).pipe(
           runLocalGaiaServer({
             rootDirectory: invocationRoot(),
             ...(parsedPort === undefined ? {} : { port: parsedPort }),
-          }),
-        ),
+          })
+        )
       ),
       false,
-      () => "",
-    ),
-  ),
+      () => ""
+    )
+  )
 );
 
 const cli = Command.make("gaia").pipe(
@@ -712,7 +742,7 @@ const cli = Command.make("gaia").pipe(
     linearIssue,
     mergeDecision,
     mergeReadiness,
-  ]),
+  ])
 );
 
 const command = Command.run(cli, { version: "0.1.0" });
@@ -738,18 +768,20 @@ function workflowOptions(
     runProfile?: Option.Option<string>;
     skillManifest?: Option.Option<string>;
     workspaceSource?: Option.Option<string>;
-  }> = {},
+  }> = {}
 ) {
   const rootDirectory = invocationRoot();
   const workspaceSource = Option.map(
     input.workspaceSource ?? Option.none(),
-    (source) => localDirectoryWorkspaceSource(resolveInvocationPath(source)),
+    (source) => localDirectoryWorkspaceSource(resolveInvocationPath(source))
   );
   const harnessName = Option.map(
     input.harness ?? Option.none(),
-    parseHarnessName,
+    parseHarnessName
   );
-  const harnessNameValue = Option.getOrUndefined(input.harness ?? Option.none());
+  const harnessNameValue = Option.getOrUndefined(
+    input.harness ?? Option.none()
+  );
   const codexHarness =
     harnessNameValue === "codex"
       ? {
@@ -760,7 +792,7 @@ function workflowOptions(
             profile: Option.getOrUndefined(input.codexProfile ?? Option.none()),
             sandbox: Option.getOrUndefined(input.codexSandbox ?? Option.none()),
             timeoutMs: Option.getOrUndefined(
-              input.codexTimeoutMs ?? Option.none(),
+              input.codexTimeoutMs ?? Option.none()
             ),
           }),
         }
@@ -774,17 +806,18 @@ function workflowOptions(
   });
   const processHarness = Option.map(
     input.harnessCommand ?? Option.none(),
-    (command) => makeProcessHarnessConfig(command, input.harnessArgs ?? []),
+    (command) => makeProcessHarnessConfig(command, input.harnessArgs ?? [])
   );
   const skillManifestSource = Option.map(
     input.skillManifest ?? Option.none(),
-    (source) => localSkillManifestSource(resolveInvocationPath(source)),
+    (source) => localSkillManifestSource(resolveInvocationPath(source))
   );
   const runProfileSource = Option.map(
     input.runProfile ?? Option.none(),
-    (source) => localRunProfileSource(resolveRunProfilePath(source)),
+    (source) => localRunProfileSource(resolveRunProfilePath(source))
   );
-  const browserEvidenceTargetUrl = input.browserEvidenceTargetUrl ?? Option.none();
+  const browserEvidenceTargetUrl =
+    input.browserEvidenceTargetUrl ?? Option.none();
 
   return {
     rootDirectory,
@@ -819,7 +852,7 @@ function makeReviewer(
     codexProfile?: Option.Option<string> | undefined;
     codexTimeoutMs?: Option.Option<string> | undefined;
     reviewer?: Option.Option<string> | undefined;
-  }>,
+  }>
 ) {
   const reviewerName = Option.getOrUndefined(input.reviewer ?? Option.none());
 
@@ -839,18 +872,18 @@ function makeReviewer(
   }
 
   throw new Error(
-    `Unknown reviewer '${reviewerName}'. Supported reviewers: deterministic, codex.`,
+    `Unknown reviewer '${reviewerName}'. Supported reviewers: deterministic, codex.`
   );
 }
 
 function githubPublishOptions(
   input: Readonly<{
     baseBranch?: Option.Option<string>;
-  }> = {},
+  }> = {}
 ) {
   const rootDirectory = invocationRoot();
   const baseBranch = Option.map(input.baseBranch ?? Option.none(), (branch) =>
-    branch.trim(),
+    branch.trim()
   );
 
   return {
@@ -874,7 +907,7 @@ function serverUrlInput(serverUrl: string | undefined) {
 }
 
 function parseServerPortFlag(
-  port: Option.Option<string>,
+  port: Option.Option<string>
 ): Effect.Effect<number | undefined, GaiaRuntimeError> {
   if (Option.isNone(port)) {
     return Effect.succeed<number | undefined>(undefined);
@@ -887,7 +920,7 @@ function parseServerPortFlag(
         code: "InvalidServerPort",
         message: `Invalid local server port: ${port.value}`,
         recoverable: false,
-      }),
+      })
     );
   }
 
@@ -948,7 +981,7 @@ function runCommand(input: {
       skillManifest: input.skillManifest,
       reviewer: input.reviewer,
       workspaceSource: input.workspaceSource,
-    }),
+    })
   );
 }
 
@@ -996,7 +1029,7 @@ function validateServerRunOptions(input: {
       code: "UnsupportedServerRunOption",
       message: `--server run mode only accepts a Markdown spec path and --json in this slice. Unsupported flags: ${unsupported.join(", ")}.`,
       recoverable: false,
-    }),
+    })
   );
 }
 
@@ -1021,14 +1054,17 @@ function readStatus(input: {
             rootDirectory: invocationRoot(),
             serverUrl,
             ...(parsedRunId === undefined ? {} : { runId: parsedRunId }),
-          }),
-        ),
+          })
+        )
       );
-    }),
+    })
   );
 }
 
-function readList(input: { readonly serverMode: boolean; readonly serverUrl?: string }) {
+function readList(input: {
+  readonly serverMode: boolean;
+  readonly serverUrl?: string;
+}) {
   if (!input.serverMode && input.serverUrl === undefined) {
     return listRuns(workflowOptions());
   }
@@ -1038,8 +1074,8 @@ function readList(input: { readonly serverMode: boolean; readonly serverUrl?: st
       listRunsFromServer({
         rootDirectory: invocationRoot(),
         serverUrl,
-      }),
-    ),
+      })
+    )
   );
 }
 
@@ -1073,7 +1109,7 @@ function readArtifact(input: {
       return yield* readLocalRunArtifact(
         parsedRunId,
         input.artifactName,
-        workflowOptions(),
+        workflowOptions()
       );
     }
 
@@ -1103,11 +1139,13 @@ function serverUrlFor(input: {
       code: "ServerModeDisabled",
       message: "Server mode was not requested.",
       recoverable: false,
-    }),
+    })
   );
 }
 
-function parseRunIdInput(input: string): Effect.Effect<RunId, GaiaRuntimeError> {
+function parseRunIdInput(
+  input: string
+): Effect.Effect<RunId, GaiaRuntimeError> {
   return Effect.try({
     try: () => parseRunId(input),
     catch: (cause) =>
@@ -1121,7 +1159,7 @@ function parseRunIdInput(input: string): Effect.Effect<RunId, GaiaRuntimeError> 
 }
 
 function parseOptionalRunIdInput(
-  input: string | undefined,
+  input: string | undefined
 ): Effect.Effect<RunId | undefined, GaiaRuntimeError> {
   return input === undefined
     ? Effect.succeed<RunId | undefined>(undefined)
@@ -1129,12 +1167,14 @@ function parseOptionalRunIdInput(
 }
 
 function parseServerUrlInput(
-  input: string,
+  input: string
 ): Effect.Effect<LocalGaiaServerUrl, GaiaRuntimeError> {
   return Effect.try({
     try: () => {
       const serverUrl = parseLocalGaiaServerUrl(input);
-      new URL(serverUrl);
+      if (!URL.canParse(serverUrl)) {
+        throw new TypeError("Local Gaia server URL must be absolute.");
+      }
       return serverUrl;
     },
     catch: (cause) =>
@@ -1149,7 +1189,7 @@ function parseServerUrlInput(
 
 function withRunIdInput<A, E, R>(
   input: string,
-  useRunId: (runId: RunId) => Effect.Effect<A, E, R>,
+  useRunId: (runId: RunId) => Effect.Effect<A, E, R>
 ): Effect.Effect<A, GaiaRuntimeError | E, R> {
   return parseRunIdInput(input).pipe(Effect.flatMap(useRunId));
 }
@@ -1157,7 +1197,7 @@ function withRunIdInput<A, E, R>(
 function renderEffect<A>(
   effect: Effect.Effect<A, unknown, NodeServices.NodeServices>,
   json: boolean,
-  renderSuccess: (value: A) => string,
+  renderSuccess: (value: A) => string
 ) {
   return effect.pipe(
     Effect.matchEffect({
@@ -1165,7 +1205,7 @@ function renderEffect<A>(
         Effect.gen(function* () {
           const failure = failureOutput(error);
           yield* Console.log(
-            json ? JSON.stringify(failure, null, 2) : renderFailure(failure),
+            json ? JSON.stringify(failure, null, 2) : renderFailure(failure)
           );
           yield* Effect.sync(() => {
             process.exitCode = 1;
@@ -1173,9 +1213,9 @@ function renderEffect<A>(
         }),
       onSuccess: (value) =>
         Console.log(
-          json ? JSON.stringify(value, null, 2) : renderSuccess(value),
+          json ? JSON.stringify(value, null, 2) : renderSuccess(value)
         ),
-    }),
+    })
   );
 }
 
@@ -1216,7 +1256,7 @@ function failureOutput(error: unknown): FailureOutput {
 }
 
 function isLocalRunReadDiagnostic(
-  input: unknown,
+  input: unknown
 ): input is LocalRunReadDiagnostic {
   return (
     typeof input === "object" &&
@@ -1244,7 +1284,9 @@ function renderSummary(summary: CommandSummary) {
       ? undefined
       : `harness progress: ${summary.harnessProgressPath}`;
   const reportLine =
-    summary.reportPath === undefined ? undefined : `report: ${summary.reportPath}`;
+    summary.reportPath === undefined
+      ? undefined
+      : `report: ${summary.reportPath}`;
   const lines = [
     `${summary.status === "completed" ? "completed" : summary.status}: ${summary.runId}`,
     `state: ${summary.state}`,
@@ -1303,7 +1345,7 @@ function renderDoctorSummary(summary: DoctorSummary) {
   return [
     `doctor: ${summary.status}`,
     ...summary.checks.map(
-      (check) => `- ${check.name}: ${check.status} - ${check.detail}`,
+      (check) => `- ${check.name}: ${check.status} - ${check.detail}`
     ),
   ].join("\n");
 }
@@ -1326,7 +1368,7 @@ function renderBrowserEvidenceRecord(record: BrowserEvidenceRecord) {
     ...record.pages.flatMap((page) => [
       `- ${page.url}`,
       ...page.screenshots.map(
-        (screenshot) => `  screenshot: ${screenshot.path}`,
+        (screenshot) => `  screenshot: ${screenshot.path}`
       ),
       `  console: ${page.consoleMessages.length}`,
     ]),
@@ -1411,9 +1453,7 @@ function renderGitHubChecksSummary(summary: GitHubChecksSummary) {
 
   return [
     ...lines,
-    ...summary.checks.map(
-      (check) => `- ${check.name}: ${check.state}`,
-    ),
+    ...summary.checks.map((check) => `- ${check.name}: ${check.state}`),
   ].join("\n");
 }
 
@@ -1436,9 +1476,7 @@ function renderGitHubChecksRecord(record: GitHubChecksRecord) {
 
   return [
     ...lines,
-    ...record.checks.map(
-      (check) => `- ${check.name}: ${check.state}`,
-    ),
+    ...record.checks.map((check) => `- ${check.name}: ${check.state}`),
   ].join("\n");
 }
 
@@ -1461,18 +1499,14 @@ function renderGitHubCiWatchSummary(summary: GitHubCiWatchSummary) {
     return lines.join("\n");
   }
 
-  return [
-    ...lines,
-    "checks:",
-    ...summary.checks.map(formatCheckRun),
-  ].join("\n");
+  return [...lines, "checks:", ...summary.checks.map(formatCheckRun)].join(
+    "\n"
+  );
 }
 
 function renderGitHubPrFeedbackSummary(summary: GitHubPrFeedbackSummary) {
   const reviewDecision =
-    summary.reviewDecision === undefined
-      ? "unknown"
-      : summary.reviewDecision;
+    summary.reviewDecision === undefined ? "unknown" : summary.reviewDecision;
   const lines = [
     `pr feedback: ${summary.status}`,
     `outcome: ${gitHubFeedbackOutcome(summary.status)}`,
@@ -1519,8 +1553,7 @@ function renderGitHubPrLoopSummary(summary: GitHubPrLoopSummary) {
   return [
     ...lines,
     ...summary.blockers.map(
-      (blocker) =>
-        `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`,
+      (blocker) => `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`
     ),
   ].join("\n");
 }
@@ -1601,7 +1634,7 @@ function renderGitHubPrCommentSummary(summary: GitHubPrCommentSummary) {
 }
 
 function renderGitHubRemediationSpecSummary(
-  summary: GitHubRemediationSpecSummary,
+  summary: GitHubRemediationSpecSummary
 ) {
   const lines = [
     `remediation spec: ${summary.status}`,
@@ -1616,14 +1649,14 @@ function renderGitHubRemediationSpecSummary(
   return [
     ...lines,
     ...summary.blockers.map(
-      (blocker) =>
-        `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`,
+      (blocker) => `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`
     ),
   ].join("\n");
 }
 
 function renderLinearIssueGraphSummary(summary: LinearIssueGraphSummary) {
-  const issueUrl = summary.issueUrl === undefined ? "unknown" : summary.issueUrl;
+  const issueUrl =
+    summary.issueUrl === undefined ? "unknown" : summary.issueUrl;
 
   return [
     `linear issue: ${summary.issueIdentifier}`,
@@ -1655,15 +1688,22 @@ function renderMergeDecisionSummary(summary: MergeDecisionSummary) {
   return [
     ...lines,
     ...summary.blockers.map(
-      (blocker) =>
-        `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`,
+      (blocker) => `- ${blocker.kind}: ${blocker.action} - ${blocker.summary}`
     ),
   ].join("\n");
 }
 
-function renderMergeReadinessResponse(snapshot: { readonly mergeDecision?: { readonly approved: boolean; readonly blockers: ReadonlyArray<string>; readonly mergeMethod: string }; readonly runId: string }) {
+function renderMergeReadinessResponse(snapshot: {
+  readonly mergeDecision?: {
+    readonly approved: boolean;
+    readonly blockers: ReadonlyArray<string>;
+    readonly mergeMethod: string;
+  };
+  readonly runId: string;
+}) {
   const decision = snapshot.mergeDecision;
-  if (decision === undefined) return `run: ${snapshot.runId}\nmerge readiness: unavailable`;
+  if (decision === undefined)
+    return `run: ${snapshot.runId}\nmerge readiness: unavailable`;
   return [
     `run: ${snapshot.runId}`,
     `merge readiness: ${decision.approved ? "approved" : "blocked"}`,
@@ -1673,7 +1713,7 @@ function renderMergeReadinessResponse(snapshot: { readonly mergeDecision?: { rea
 }
 
 function formatGitHubFeedbackComments(
-  comments: GitHubPrFeedbackSummary["comments"],
+  comments: GitHubPrFeedbackSummary["comments"]
 ) {
   if (comments.length === 0) {
     return [];
@@ -1691,7 +1731,7 @@ function formatGitHubFeedbackComments(
 }
 
 function formatGitHubFeedbackReviews(
-  reviews: GitHubPrFeedbackSummary["latestReviews"],
+  reviews: GitHubPrFeedbackSummary["latestReviews"]
 ) {
   if (reviews.length === 0) {
     return [];
@@ -1713,17 +1753,16 @@ function firstLine(input: string) {
 }
 
 function formatCheckRun(check: GitHubCiWatchSummary["checks"][number]) {
-  const workflow =
-    check.workflow === undefined ? "" : ` (${check.workflow})`;
+  const workflow = check.workflow === undefined ? "" : ` (${check.workflow})`;
   const link = check.link === undefined ? "" : ` ${check.link}`;
 
   return `- ${check.name}: ${check.state}${workflow}${link}`;
 }
 
-function formatCommand(
-  command: GitHubPublishPreview["commands"][number],
-) {
-  return [command.command, ...command.args.map(formatCommandArgument)].join(" ");
+function formatCommand(command: GitHubPublishPreview["commands"][number]) {
+  return [command.command, ...command.args.map(formatCommandArgument)].join(
+    " "
+  );
 }
 
 function formatCommandArgument(argument: string) {

@@ -8,8 +8,9 @@ import {
   parseHarnessTurnId,
   parseWorkspaceRelativePath,
 } from "@gaia/core";
-import { describe, expect, it } from "vitest";
 import { Effect, Option, Stream } from "effect";
+import { describe, expect, it } from "vitest";
+
 import {
   resumeHarnessSession,
   startHarnessSession,
@@ -47,9 +48,7 @@ const snapshot = HarnessSessionSnapshot.make({
   resolvedInteractions: [],
   sessionId,
   state: "running",
-  turns: [
-    HarnessTurnSnapshot.make({ status: "running", turnId }),
-  ],
+  turns: [HarnessTurnSnapshot.make({ status: "running", turnId })],
 });
 
 function syntheticProvider(started: Array<string>): HarnessProvider {
@@ -113,8 +112,8 @@ describe("provider-neutral harness session SPI", () => {
             events: Array.from(events),
             snapshot: yield* session.snapshot,
           };
-        }),
-      ),
+        })
+      )
     );
 
     expect(started).toEqual([sessionId]);
@@ -137,8 +136,8 @@ describe("provider-neutral harness session SPI", () => {
             workspacePath: parseWorkspaceRelativePath("."),
           },
           requiredCapabilities: ["review"],
-        }).pipe(Effect.flip),
-      ),
+        }).pipe(Effect.flip)
+      )
     );
 
     expect(error._tag).toBe("HarnessCapabilityMismatchError");
@@ -155,9 +154,11 @@ describe("provider-neutral harness session SPI", () => {
     const contradictory: HarnessProvider = {
       ...provider,
       createSession: (request) =>
-        provider.createSession(request).pipe(
-          Effect.map((session) => ({ ...session, interrupt: Option.none() })),
-        ),
+        provider
+          .createSession(request)
+          .pipe(
+            Effect.map((session) => ({ ...session, interrupt: Option.none() }))
+          ),
     };
 
     const error = await Effect.runPromise(
@@ -170,8 +171,8 @@ describe("provider-neutral harness session SPI", () => {
             workspacePath: parseWorkspaceRelativePath("."),
           },
           requiredCapabilities: ["interruption"],
-        }).pipe(Effect.flip),
-      ),
+        }).pipe(Effect.flip)
+      )
     );
 
     expect(error._tag).toBe("HarnessSessionContractError");
@@ -192,7 +193,7 @@ describe("provider-neutral harness session SPI", () => {
           Effect.map((session) => ({
             ...session,
             steer: Option.some(() => Effect.void),
-          })),
+          }))
         ),
     };
 
@@ -206,8 +207,8 @@ describe("provider-neutral harness session SPI", () => {
             workspacePath: parseWorkspaceRelativePath("."),
           },
           requiredCapabilities: [],
-        }).pipe(Effect.flip),
-      ),
+        }).pipe(Effect.flip)
+      )
     );
 
     expect(error._tag).toBe("HarnessSessionContractError");
@@ -237,8 +238,8 @@ describe("provider-neutral harness session SPI", () => {
             workspacePath: parseWorkspaceRelativePath("."),
           },
           requiredCapabilities: ["review"],
-        }).pipe(Effect.flip),
-      ),
+        }).pipe(Effect.flip)
+      )
     );
 
     expect(error._tag).toBe("HarnessCapabilityMismatchError");

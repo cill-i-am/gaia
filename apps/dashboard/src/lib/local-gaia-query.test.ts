@@ -1,9 +1,9 @@
-import { expect, it, describe } from "vitest";
+import { parseLocalGaiaServerUrl, parseRunId } from "@gaia/core";
 import { QueryClient } from "@tanstack/react-query";
 import { Effect, Layer } from "effect";
 import { createEffectQuery } from "effect-query";
 import { FetchHttpClient } from "effect/unstable/http";
-import { parseLocalGaiaServerUrl, parseRunId } from "@gaia/core";
+import { expect, it, describe } from "vitest";
 
 import {
   defaultLocalGaiaServerUrl,
@@ -18,7 +18,6 @@ import {
   listFactoryArtifactsFromDashboardGaiaClient,
   listRunsFromDashboardGaiaClient,
 } from "@/lib/local-gaia-client";
-import { testFactoryExecution } from "@/test-factory-execution";
 import {
   localGaiaCreateRunMutationOptions,
   localGaiaDeliveryActionMutationOptions,
@@ -35,6 +34,7 @@ import {
   localGaiaRunQueryOptions,
   localGaiaRunsQueryOptions,
 } from "@/lib/local-gaia-query";
+import { testFactoryExecution } from "@/test-factory-execution";
 
 const runId = parseRunId("run-1234567890");
 const serverUrl = parseLocalGaiaServerUrl("http://127.0.0.1:4321");
@@ -156,8 +156,8 @@ describe("local Gaia query options", () => {
     const requests: Array<string> = [];
     const effectQuery = createEffectQuery(
       recordingFetchLayer(requests, () =>
-        jsonResponse({ data: factoryGraphEnvelope.data, status: "success" }),
-      ),
+        jsonResponse({ data: factoryGraphEnvelope.data, status: "success" })
+      )
     );
     const graph = localGaiaFactoryGraphQueryOptions({
       runId: undefined,
@@ -182,12 +182,15 @@ describe("local Gaia query options", () => {
       "factory-graph",
     ]);
     const queryClient = new QueryClient();
-    const unselected = localGaiaFactoryGraphQueryOptions({
-      runId: undefined,
-      serverUrl,
-    }, effectQuery);
+    const unselected = localGaiaFactoryGraphQueryOptions(
+      {
+        runId: undefined,
+        serverUrl,
+      },
+      effectQuery
+    );
     await expect(queryClient.fetchQuery(unselected)).rejects.toThrow(
-      "data is undefined",
+      "data is undefined"
     );
     expect(requests).toEqual([]);
     expect(agentActivity.enabled).toBe(false);
@@ -223,10 +226,10 @@ describe("local Gaia query options", () => {
             jsonResponse({
               data: { diagnostics: [], runs: [] },
               status: "success",
-            }),
-          ),
-        ),
-      ),
+            })
+          )
+        )
+      )
     );
 
     expect(result.data.runs).toEqual([]);
@@ -249,12 +252,12 @@ describe("local Gaia query options", () => {
                 runId,
                 status: 404,
               },
-              { status: 404 },
-            ),
-          ),
+              { status: 404 }
+            )
+          )
         ),
-        Effect.flip,
-      ),
+        Effect.flip
+      )
     );
 
     expect(error._tag).toBe("DashboardGaiaApiError");
@@ -312,12 +315,12 @@ describe("local Gaia query options", () => {
                     recoverable: false,
                     status: 404,
                   },
-                  { status: 404 },
+                  { status: 404 }
                 );
             }
-          }),
-        ),
-      ),
+          })
+        )
+      )
     );
 
     expect(requests).toEqual([
@@ -329,13 +332,13 @@ describe("local Gaia query options", () => {
     ]);
     expect(result.graph.data.agents[0]?.id).toBe("agent-worker");
     expect(result.activity.data.activities[0]?.activityId).toBe(
-      "activity-worker",
+      "activity-worker"
     );
     expect(result.agentActivity.data.activities[0]?.agentId).toBe(
-      "agent-worker",
+      "agent-worker"
     );
     expect(result.artifacts.data.artifacts[0]?.artifactId).toBe(
-      "artifact-plan",
+      "artifact-plan"
     );
     expect(result.artifact.data.body).toContain("Plan body");
   });
@@ -370,9 +373,9 @@ describe("local Gaia query options", () => {
               return jsonResponse(agentActionEnvelope);
             }
             return jsonResponse(agentSessionEnvelope);
-          }),
-        ),
-      ),
+          })
+        )
+      )
     );
 
     expect(requests).toEqual([
@@ -410,12 +413,12 @@ describe("local Gaia query options", () => {
                 runId,
                 status: 404,
               },
-              { status: 404 },
-            ),
-          ),
+              { status: 404 }
+            )
+          )
         ),
-        Effect.flip,
-      ),
+        Effect.flip
+      )
     );
 
     expect(error._tag).toBe("DashboardGaiaApiError");
@@ -443,10 +446,10 @@ describe("local Gaia query options", () => {
                 runId,
               },
               status: "success",
-            }),
-          ),
-        ),
-      ),
+            })
+          )
+        )
+      )
     );
 
     expect(requests).toEqual([
@@ -474,11 +477,11 @@ describe("local Gaia query options", () => {
                 runId,
               },
               status: "success",
-            }),
-          ),
+            })
+          )
         ),
-        Effect.flip,
-      ),
+        Effect.flip
+      )
     );
 
     expect(requests).toEqual([]);
@@ -499,9 +502,9 @@ describe("local Gaia query options", () => {
             runId,
             status: 404,
           },
-          { status: 404 },
-        ),
-      ),
+          { status: 404 }
+        )
+      )
     );
 
     const queryClient = new QueryClient();
@@ -515,7 +518,7 @@ describe("local Gaia query options", () => {
               serverUrl,
             }),
           retry: false,
-        }),
+        })
       )
       .then(
         () => {
@@ -523,7 +526,7 @@ describe("local Gaia query options", () => {
         },
         (error: unknown) => {
           expect(effectQueryFailure(error)?._tag).toBe("DashboardGaiaApiError");
-        },
+        }
       );
   });
 
@@ -551,13 +554,13 @@ describe("local Gaia query options", () => {
         const body: unknown = await request.json();
         bodies.push(body);
         return jsonResponse(createRunResponse, { status: 202 });
-      }),
+      })
     );
     const mutation = localGaiaCreateRunMutationOptions(
       {
         serverUrl,
       },
-      effectQuery,
+      effectQuery
     );
 
     expect(typeof mutation.mutationFn).toBe("function");
@@ -609,11 +612,11 @@ describe("local Gaia query options", () => {
           },
           status: "success",
         });
-      }),
+      })
     );
     const mutation = localGaiaDeliveryActionMutationOptions(
       { serverUrl },
-      effectQuery,
+      effectQuery
     );
     if (mutation.mutationFn === undefined) {
       throw new Error("Expected delivery action mutationFn to be defined.");
@@ -624,15 +627,13 @@ describe("local Gaia query options", () => {
         action: { expectedEventSequence: 9, kind: "reconcile" },
         runId,
       },
-      { client: new QueryClient(), meta: undefined },
+      { client: new QueryClient(), meta: undefined }
     );
 
     expect(requests).toEqual([
       "POST http://127.0.0.1:4321/runs/run-1234567890/delivery/actions",
     ]);
-    expect(bodies).toEqual([
-      { expectedEventSequence: 9, kind: "reconcile" },
-    ]);
+    expect(bodies).toEqual([{ expectedEventSequence: 9, kind: "reconcile" }]);
   });
 
   it("creates agent session action mutations with stable keys", async () => {
@@ -642,11 +643,11 @@ describe("local Gaia query options", () => {
       recordingFetchLayer(requests, async (request) => {
         bodies.push(await request.json());
         return jsonResponse(agentActionEnvelope);
-      }),
+      })
     );
     const mutation = localGaiaAgentSessionActionMutationOptions(
       { serverUrl },
-      effectQuery,
+      effectQuery
     );
 
     expect(mutation.mutationKey).toEqual([
@@ -669,7 +670,7 @@ describe("local Gaia query options", () => {
         agentId: "agent-worker",
         runId,
       },
-      { client: new QueryClient(), meta: undefined },
+      { client: new QueryClient(), meta: undefined }
     );
 
     expect(requests).toEqual([
@@ -688,7 +689,7 @@ describe("local Gaia query options", () => {
 
 function recordingFetchLayer(
   requests: Array<string>,
-  respond: (request: Request) => Response | Promise<Response>,
+  respond: (request: Request) => Response | Promise<Response>
 ) {
   const recordingFetch: typeof globalThis.fetch = (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
@@ -698,7 +699,7 @@ function recordingFetchLayer(
 
   return Layer.provide(
     FetchHttpClient.layer,
-    Layer.succeed(FetchHttpClient.Fetch, recordingFetch),
+    Layer.succeed(FetchHttpClient.Fetch, recordingFetch)
   );
 }
 
@@ -815,7 +816,13 @@ const artifactBodyEnvelope = {
 } as const;
 
 const sessionCapabilities = {
-  approvals: ["command", "fileChange", "permission", "userInput", "mcpElicitation"],
+  approvals: [
+    "command",
+    "fileChange",
+    "permission",
+    "userInput",
+    "mcpElicitation",
+  ],
   fileChangeEvents: true,
   interruption: true,
   resumableSessions: true,

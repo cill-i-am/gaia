@@ -6,4 +6,3 @@ export default defineConfig({
   sourcemap: true,
   dts: true,
 });
-

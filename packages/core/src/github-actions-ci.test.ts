@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+
 import { assert, describe, it } from "@effect/vitest";
 import { parse } from "yaml";
 
@@ -28,12 +29,16 @@ describe("GitHub Actions PR CI contract", () => {
     const steps = job.steps;
     assertStepUses(steps, "Checkout", "actions/checkout@v6");
     assertStepUses(steps, "Use Node.js 24", "actions/setup-node@v6");
-    assert.deepEqual(findStep(steps, "Use Node.js 24").with, { "node-version": "24" });
+    assert.deepEqual(findStep(steps, "Use Node.js 24").with, {
+      "node-version": "24",
+    });
     assertStepRun(steps, "Activate pnpm 11.7.0", [
       "corepack enable",
       "corepack prepare pnpm@11.7.0 --activate",
     ]);
-    assertStepRun(steps, "Install dependencies", ["pnpm install --frozen-lockfile"]);
+    assertStepRun(steps, "Install dependencies", [
+      "pnpm install --frozen-lockfile",
+    ]);
     assertStepRun(steps, "Check", ["pnpm check"]);
     assertStepRun(steps, "Test", ["pnpm test"]);
     assertStepRun(steps, "Build", ["pnpm build"]);
@@ -64,7 +69,7 @@ type WorkflowStep = {
 function assertStepUses(
   steps: readonly WorkflowStep[],
   name: string,
-  uses: string,
+  uses: string
 ): void {
   const step = findStep(steps, name);
   assert.strictEqual(step.uses, uses);
@@ -73,7 +78,7 @@ function assertStepUses(
 function assertStepRun(
   steps: readonly WorkflowStep[],
   name: string,
-  commands: readonly string[],
+  commands: readonly string[]
 ): void {
   const step = findStep(steps, name);
   const run = step.run ?? "";

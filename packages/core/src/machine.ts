@@ -1,20 +1,6 @@
 import * as Schema from "effect/Schema";
 import { assign, createActor, createMachine } from "xstate";
-import {
-  encodeDeliveryPublicationJson,
-  parseDeliveryPublication,
-  type DeliveryPublication,
-} from "./delivery-publication.js";
-import {
-  encodeDeliveryPullRequestObservationJson,
-  encodeDeliveryRemediationJson,
-  deriveAuthoritativeDeliveryHeadSha,
-  parseDeliveryPullRequestObservation,
-  parseDeliveryRemediation,
-  validateDeliveryRemediationTransition,
-  type DeliveryPullRequestObservation,
-  type DeliveryRemediation,
-} from "./delivery-remediation.js";
+
 import {
   encodeDeliveryCleanupReceiptJson,
   encodeDeliveryMergeReceiptJson,
@@ -38,6 +24,31 @@ import {
   type DeliveryLocalReviewAttestationReceipt,
 } from "./delivery-merge.js";
 import {
+  encodeDeliveryPublicationJson,
+  parseDeliveryPublication,
+  type DeliveryPublication,
+} from "./delivery-publication.js";
+import {
+  encodeDeliveryPullRequestObservationJson,
+  encodeDeliveryRemediationJson,
+  deriveAuthoritativeDeliveryHeadSha,
+  parseDeliveryPullRequestObservation,
+  parseDeliveryRemediation,
+  validateDeliveryRemediationTransition,
+  type DeliveryPullRequestObservation,
+  type DeliveryRemediation,
+} from "./delivery-remediation.js";
+import {
+  FailureStageSchema,
+  GaiaFailure,
+  ReviewPhaseSchema,
+  type RunEvent,
+  RunSnapshot,
+  type RunState,
+  RunStateSchema,
+} from "./events.js";
+import type { RunId } from "./run-id.js";
+import {
   encodeWorkerContinuationReceiptJson,
   encodeWorkerCorrelationReconciliationReceiptJson,
   encodeWorkerDesktopOriginCorrelationReceiptJson,
@@ -53,16 +64,6 @@ import {
   type WorkerDesktopOriginCorrelationReceipt,
   type WorkerRecoveryReceipt,
 } from "./worker-recovery.js";
-import {
-  FailureStageSchema,
-  GaiaFailure,
-  ReviewPhaseSchema,
-  type RunEvent,
-  RunSnapshot,
-  type RunState,
-  RunStateSchema,
-} from "./events.js";
-import type { RunId } from "./run-id.js";
 
 export type RunMachineContext = {
   readonly browserEvidencePath: string | undefined;
@@ -115,8 +116,15 @@ export type RunMachineContext = {
 };
 
 export type RunMachineEvent =
-  | { readonly type: "RUN_CREATED"; readonly runId: RunId; readonly specPath: string }
-  | { readonly type: "DELIVERY_STARTED"; readonly delivery: Record<string, Schema.Json> }
+  | {
+      readonly type: "RUN_CREATED";
+      readonly runId: RunId;
+      readonly specPath: string;
+    }
+  | {
+      readonly type: "DELIVERY_STARTED";
+      readonly delivery: Record<string, Schema.Json>;
+    }
   | {
       readonly type: "DELIVERY_READY_TO_PUBLISH";
       readonly delivery: Record<string, Schema.Json>;
@@ -136,12 +144,33 @@ export type RunMachineEvent =
       readonly remediation: DeliveryRemediation;
       readonly type: "DELIVERY_REMEDIATION_RECORDED";
     }
-  | { readonly type: "DELIVERY_PR_READY_RECORDED"; readonly readyForReviewAction: DeliveryPullRequestReadyReceipt }
-  | { readonly type: "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED"; readonly attestation: DeliveryLocalReviewAttestationReceipt }
-  | { readonly type: "DELIVERY_MERGE_RECORDED"; readonly mergeAction: DeliveryMergeReceipt }
-  | { readonly type: "DELIVERY_MERGE_READINESS_RECORDED"; readonly decision: ReturnType<typeof parseDeliveryMergeReadinessDecision>; readonly eventSequence: number }
-  | { readonly type: "DELIVERY_CLEANUP_RECORDED"; readonly cleanup: ReturnType<typeof parseDeliveryCleanupReceipt> }
-  | { readonly type: "DELIVERY_CLEANUP_PROVENANCE_RECORDED" | "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED" | "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED" }
+  | {
+      readonly type: "DELIVERY_PR_READY_RECORDED";
+      readonly readyForReviewAction: DeliveryPullRequestReadyReceipt;
+    }
+  | {
+      readonly type: "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED";
+      readonly attestation: DeliveryLocalReviewAttestationReceipt;
+    }
+  | {
+      readonly type: "DELIVERY_MERGE_RECORDED";
+      readonly mergeAction: DeliveryMergeReceipt;
+    }
+  | {
+      readonly type: "DELIVERY_MERGE_READINESS_RECORDED";
+      readonly decision: ReturnType<typeof parseDeliveryMergeReadinessDecision>;
+      readonly eventSequence: number;
+    }
+  | {
+      readonly type: "DELIVERY_CLEANUP_RECORDED";
+      readonly cleanup: ReturnType<typeof parseDeliveryCleanupReceipt>;
+    }
+  | {
+      readonly type:
+        | "DELIVERY_CLEANUP_PROVENANCE_RECORDED"
+        | "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED"
+        | "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED";
+    }
   | { readonly type: "WORKSPACE_PREPARED"; readonly workspacePath: string }
   | { readonly type: "REVIEW_STARTED" }
   | {
@@ -227,10 +256,22 @@ export type RunMachineEvent =
       readonly status: string;
     }
   | { readonly type: "HARNESS_SESSION_EVENT_RECORDED" }
-  | { readonly type: "WORKER_RECOVERY_RECORDED"; readonly recovery: WorkerRecoveryReceipt }
-  | { readonly continuation: WorkerContinuationReceipt; readonly type: "WORKER_CONTINUATION_RECORDED" }
-  | { readonly reconciliation: WorkerCorrelationReconciliationReceipt; readonly type: "WORKER_CORRELATION_RECONCILIATION_RECORDED" }
-  | { readonly desktopOriginCorrelation: WorkerDesktopOriginCorrelationReceipt; readonly type: "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" }
+  | {
+      readonly type: "WORKER_RECOVERY_RECORDED";
+      readonly recovery: WorkerRecoveryReceipt;
+    }
+  | {
+      readonly continuation: WorkerContinuationReceipt;
+      readonly type: "WORKER_CONTINUATION_RECORDED";
+    }
+  | {
+      readonly reconciliation: WorkerCorrelationReconciliationReceipt;
+      readonly type: "WORKER_CORRELATION_RECONCILIATION_RECORDED";
+    }
+  | {
+      readonly desktopOriginCorrelation: WorkerDesktopOriginCorrelationReceipt;
+      readonly type: "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED";
+    }
   | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
 
 const initialContext: RunMachineContext = {
@@ -295,19 +336,49 @@ export const runMachine = createMachine({
     completed: {
       on: {
         WORKER_CONTINUATION_RECORDED: [
-          { actions: "recordWorkerContinuation", guard: "workerContinuationRunning", target: "runningWorker" },
-          { actions: "recordWorkerContinuation", guard: "workerContinuationFailed", target: "failed" },
+          {
+            actions: "recordWorkerContinuation",
+            guard: "workerContinuationRunning",
+            target: "runningWorker",
+          },
+          {
+            actions: "recordWorkerContinuation",
+            guard: "workerContinuationFailed",
+            target: "failed",
+          },
           { actions: "recordWorkerContinuation", target: "delivering" },
         ],
         WORKER_CORRELATION_RECONCILIATION_RECORDED: [
-          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationRunning", target: "runningWorker" },
-          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationFailed", target: "failed" },
-          { actions: "recordWorkerCorrelationReconciliation", target: "delivering" },
+          {
+            actions: "recordWorkerCorrelationReconciliation",
+            guard: "workerCorrelationRunning",
+            target: "runningWorker",
+          },
+          {
+            actions: "recordWorkerCorrelationReconciliation",
+            guard: "workerCorrelationFailed",
+            target: "failed",
+          },
+          {
+            actions: "recordWorkerCorrelationReconciliation",
+            target: "delivering",
+          },
         ],
         WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
-          { actions: "recordWorkerDesktopOriginCorrelation", guard: "workerDesktopOriginCorrelationRunning", target: "runningWorker" },
-          { actions: "recordWorkerDesktopOriginCorrelation", guard: "workerDesktopOriginCorrelationFailed", target: "failed" },
-          { actions: "recordWorkerDesktopOriginCorrelation", target: "delivering" },
+          {
+            actions: "recordWorkerDesktopOriginCorrelation",
+            guard: "workerDesktopOriginCorrelationRunning",
+            target: "runningWorker",
+          },
+          {
+            actions: "recordWorkerDesktopOriginCorrelation",
+            guard: "workerDesktopOriginCorrelationFailed",
+            target: "failed",
+          },
+          {
+            actions: "recordWorkerDesktopOriginCorrelation",
+            target: "delivering",
+          },
         ],
         BROWSER_EVIDENCE_RECORDED: {
           actions: "recordBrowserEvidence",
@@ -353,11 +424,19 @@ export const runMachine = createMachine({
           target: "failed",
         },
         WORKER_CORRELATION_RECONCILIATION_RECORDED: [
-          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationFailed", target: "failed" },
+          {
+            actions: "recordWorkerCorrelationReconciliation",
+            guard: "workerCorrelationFailed",
+            target: "failed",
+          },
           { actions: "recordWorkerCorrelationReconciliation" },
         ],
         WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
-          { actions: "recordWorkerDesktopOriginCorrelation", guard: "workerDesktopOriginCorrelationFailed", target: "failed" },
+          {
+            actions: "recordWorkerDesktopOriginCorrelation",
+            guard: "workerDesktopOriginCorrelationFailed",
+            target: "failed",
+          },
           { actions: "recordWorkerDesktopOriginCorrelation" },
         ],
       },
@@ -365,19 +444,46 @@ export const runMachine = createMachine({
     failed: {
       on: {
         WORKER_CONTINUATION_RECORDED: [
-          { actions: "recordWorkerContinuation", guard: "workerContinuationRunning", target: "runningWorker" },
-          { actions: "recordWorkerContinuation", guard: "workerContinuationFailed" },
+          {
+            actions: "recordWorkerContinuation",
+            guard: "workerContinuationRunning",
+            target: "runningWorker",
+          },
+          {
+            actions: "recordWorkerContinuation",
+            guard: "workerContinuationFailed",
+          },
           { actions: "recordWorkerContinuation", target: "delivering" },
         ],
         WORKER_CORRELATION_RECONCILIATION_RECORDED: [
-          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationRunning", target: "runningWorker" },
-          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationFailed" },
-          { actions: "recordWorkerCorrelationReconciliation", target: "delivering" },
+          {
+            actions: "recordWorkerCorrelationReconciliation",
+            guard: "workerCorrelationRunning",
+            target: "runningWorker",
+          },
+          {
+            actions: "recordWorkerCorrelationReconciliation",
+            guard: "workerCorrelationFailed",
+          },
+          {
+            actions: "recordWorkerCorrelationReconciliation",
+            target: "delivering",
+          },
         ],
         WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
-          { actions: "recordWorkerDesktopOriginCorrelation", guard: "workerDesktopOriginCorrelationRunning", target: "runningWorker" },
-          { actions: "recordWorkerDesktopOriginCorrelation", guard: "workerDesktopOriginCorrelationFailed" },
-          { actions: "recordWorkerDesktopOriginCorrelation", target: "delivering" },
+          {
+            actions: "recordWorkerDesktopOriginCorrelation",
+            guard: "workerDesktopOriginCorrelationRunning",
+            target: "runningWorker",
+          },
+          {
+            actions: "recordWorkerDesktopOriginCorrelation",
+            guard: "workerDesktopOriginCorrelationFailed",
+          },
+          {
+            actions: "recordWorkerDesktopOriginCorrelation",
+            target: "delivering",
+          },
         ],
         WORKER_RECOVERY_RECORDED: [
           { guard: "workerRecoveryConfirmed", target: "runningWorker" },
@@ -426,24 +532,54 @@ export const runMachine = createMachine({
         },
         DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED: {},
         WORKER_CONTINUATION_RECORDED: [
-          { actions: "recordWorkerContinuation", guard: "workerContinuationRunning", target: "runningWorker" },
-          { actions: "recordWorkerContinuation", guard: "workerContinuationFailed", target: "failed" },
+          {
+            actions: "recordWorkerContinuation",
+            guard: "workerContinuationRunning",
+            target: "runningWorker",
+          },
+          {
+            actions: "recordWorkerContinuation",
+            guard: "workerContinuationFailed",
+            target: "failed",
+          },
           { actions: "recordWorkerContinuation" },
         ],
         WORKER_CORRELATION_RECONCILIATION_RECORDED: [
-          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationRunning", target: "runningWorker" },
-          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationFailed", target: "failed" },
+          {
+            actions: "recordWorkerCorrelationReconciliation",
+            guard: "workerCorrelationRunning",
+            target: "runningWorker",
+          },
+          {
+            actions: "recordWorkerCorrelationReconciliation",
+            guard: "workerCorrelationFailed",
+            target: "failed",
+          },
           { actions: "recordWorkerCorrelationReconciliation" },
         ],
         WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
-          { actions: "recordWorkerDesktopOriginCorrelation", guard: "workerDesktopOriginCorrelationRunning", target: "runningWorker" },
-          { actions: "recordWorkerDesktopOriginCorrelation", guard: "workerDesktopOriginCorrelationFailed", target: "failed" },
+          {
+            actions: "recordWorkerDesktopOriginCorrelation",
+            guard: "workerDesktopOriginCorrelationRunning",
+            target: "runningWorker",
+          },
+          {
+            actions: "recordWorkerDesktopOriginCorrelation",
+            guard: "workerDesktopOriginCorrelationFailed",
+            target: "failed",
+          },
           { actions: "recordWorkerDesktopOriginCorrelation" },
         ],
         DELIVERY_MERGE_RECORDED: { actions: "recordDeliveryMerge" },
-        DELIVERY_MERGE_READINESS_RECORDED: { actions: "recordDeliveryMergeReadiness" },
+        DELIVERY_MERGE_READINESS_RECORDED: {
+          actions: "recordDeliveryMergeReadiness",
+        },
         DELIVERY_CLEANUP_RECORDED: [
-          { actions: "recordDeliveryCleanup", guard: "cleanupCompleted", target: "completed" },
+          {
+            actions: "recordDeliveryCleanup",
+            guard: "cleanupCompleted",
+            target: "completed",
+          },
           { actions: "recordDeliveryCleanup" },
         ],
         RUN_FAILED: {
@@ -522,15 +658,27 @@ export const runMachine = createMachine({
         },
         WORKER_STARTED: {},
         WORKER_CONTINUATION_RECORDED: [
-          { actions: "recordWorkerContinuation", guard: "workerContinuationFailed", target: "failed" },
+          {
+            actions: "recordWorkerContinuation",
+            guard: "workerContinuationFailed",
+            target: "failed",
+          },
           { actions: "recordWorkerContinuation" },
         ],
         WORKER_CORRELATION_RECONCILIATION_RECORDED: [
-          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationFailed", target: "failed" },
+          {
+            actions: "recordWorkerCorrelationReconciliation",
+            guard: "workerCorrelationFailed",
+            target: "failed",
+          },
           { actions: "recordWorkerCorrelationReconciliation" },
         ],
         WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
-          { actions: "recordWorkerDesktopOriginCorrelation", guard: "workerDesktopOriginCorrelationFailed", target: "failed" },
+          {
+            actions: "recordWorkerDesktopOriginCorrelation",
+            guard: "workerDesktopOriginCorrelationFailed",
+            target: "failed",
+          },
           { actions: "recordWorkerDesktopOriginCorrelation" },
         ],
       },
@@ -550,11 +698,19 @@ export const runMachine = createMachine({
         },
         VERIFICATION_STARTED: {},
         WORKER_CORRELATION_RECONCILIATION_RECORDED: [
-          { actions: "recordWorkerCorrelationReconciliation", guard: "workerCorrelationFailed", target: "failed" },
+          {
+            actions: "recordWorkerCorrelationReconciliation",
+            guard: "workerCorrelationFailed",
+            target: "failed",
+          },
           { actions: "recordWorkerCorrelationReconciliation" },
         ],
         WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
-          { actions: "recordWorkerDesktopOriginCorrelation", guard: "workerDesktopOriginCorrelationFailed", target: "failed" },
+          {
+            actions: "recordWorkerDesktopOriginCorrelation",
+            guard: "workerDesktopOriginCorrelationFailed",
+            target: "failed",
+          },
           { actions: "recordWorkerDesktopOriginCorrelation" },
         ],
       },
@@ -587,15 +743,11 @@ export const runMachine = createMachine({
     }),
     recordGitHubChecks: assign({
       githubChecksPath: ({ event }) =>
-        event.type === "GITHUB_CHECKS_RECORDED"
-          ? event.checksPath
-          : undefined,
+        event.type === "GITHUB_CHECKS_RECORDED" ? event.checksPath : undefined,
       githubChecksStatus: ({ event }) =>
         event.type === "GITHUB_CHECKS_RECORDED" ? event.status : undefined,
       githubPullRequest: ({ event }) =>
-        event.type === "GITHUB_CHECKS_RECORDED"
-          ? event.pullRequest
-          : undefined,
+        event.type === "GITHUB_CHECKS_RECORDED" ? event.pullRequest : undefined,
       githubWatchStatePath: ({ context, event }) =>
         event.type === "GITHUB_CHECKS_RECORDED" &&
         event.watchStatePath !== undefined
@@ -628,80 +780,128 @@ export const runMachine = createMachine({
           ? deliveryWithRemediation(
               context.delivery,
               event.remediation,
-              event.eventSequence,
+              event.eventSequence
             )
           : context.delivery,
     }),
     recordDeliveryMerge: assign({
-      delivery: ({ context, event }) => event.type === "DELIVERY_MERGE_RECORDED"
-        ? deliveryWithMerge(context.delivery, event.mergeAction)
-        : context.delivery,
+      delivery: ({ context, event }) =>
+        event.type === "DELIVERY_MERGE_RECORDED"
+          ? deliveryWithMerge(context.delivery, event.mergeAction)
+          : context.delivery,
     }),
     recordDeliveryPullRequestReady: assign({
-      delivery: ({ context, event }) => event.type === "DELIVERY_PR_READY_RECORDED"
-        ? deliveryWithPullRequestReady(context.delivery, event.readyForReviewAction)
-        : context.delivery,
+      delivery: ({ context, event }) =>
+        event.type === "DELIVERY_PR_READY_RECORDED"
+          ? deliveryWithPullRequestReady(
+              context.delivery,
+              event.readyForReviewAction
+            )
+          : context.delivery,
     }),
     recordWorkerContinuation: assign({
-      delivery: ({ context, event }) => event.type === "WORKER_CONTINUATION_RECORDED"
-        ? deliveryWithWorkerContinuation(context.delivery, event.continuation)
-        : context.delivery,
-      evidenceReviewPath: ({ context, event }) => event.type === "WORKER_CONTINUATION_RECORDED" && event.continuation.state === "intentRecorded"
-        ? undefined
-        : context.evidenceReviewPath,
-      reportPath: ({ context, event }) => event.type === "WORKER_CONTINUATION_RECORDED" && event.continuation.state === "intentRecorded"
-        ? undefined
-        : context.reportPath,
-      verificationResultPath: ({ context, event }) => event.type === "WORKER_CONTINUATION_RECORDED" && event.continuation.state === "intentRecorded"
-        ? undefined
-        : context.verificationResultPath,
-      workerResultPath: ({ context, event }) => event.type === "WORKER_CONTINUATION_RECORDED" && event.continuation.state === "intentRecorded"
-        ? undefined
-        : context.workerResultPath,
+      delivery: ({ context, event }) =>
+        event.type === "WORKER_CONTINUATION_RECORDED"
+          ? deliveryWithWorkerContinuation(context.delivery, event.continuation)
+          : context.delivery,
+      evidenceReviewPath: ({ context, event }) =>
+        event.type === "WORKER_CONTINUATION_RECORDED" &&
+        event.continuation.state === "intentRecorded"
+          ? undefined
+          : context.evidenceReviewPath,
+      reportPath: ({ context, event }) =>
+        event.type === "WORKER_CONTINUATION_RECORDED" &&
+        event.continuation.state === "intentRecorded"
+          ? undefined
+          : context.reportPath,
+      verificationResultPath: ({ context, event }) =>
+        event.type === "WORKER_CONTINUATION_RECORDED" &&
+        event.continuation.state === "intentRecorded"
+          ? undefined
+          : context.verificationResultPath,
+      workerResultPath: ({ context, event }) =>
+        event.type === "WORKER_CONTINUATION_RECORDED" &&
+        event.continuation.state === "intentRecorded"
+          ? undefined
+          : context.workerResultPath,
     }),
     recordWorkerCorrelationReconciliation: assign({
-      delivery: ({ context, event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED"
-        ? deliveryWithWorkerCorrelationReconciliation(context.delivery, event.reconciliation)
-        : context.delivery,
-      evidenceReviewPath: ({ context, event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" && event.reconciliation.state === "intentRecorded"
-        ? undefined
-        : context.evidenceReviewPath,
-      reportPath: ({ context, event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" && event.reconciliation.state === "intentRecorded"
-        ? undefined
-        : context.reportPath,
-      verificationResultPath: ({ context, event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" && event.reconciliation.state === "intentRecorded"
-        ? undefined
-        : context.verificationResultPath,
-      workerResultPath: ({ context, event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" && event.reconciliation.state === "intentRecorded"
-        ? undefined
-        : context.workerResultPath,
+      delivery: ({ context, event }) =>
+        event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED"
+          ? deliveryWithWorkerCorrelationReconciliation(
+              context.delivery,
+              event.reconciliation
+            )
+          : context.delivery,
+      evidenceReviewPath: ({ context, event }) =>
+        event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
+        event.reconciliation.state === "intentRecorded"
+          ? undefined
+          : context.evidenceReviewPath,
+      reportPath: ({ context, event }) =>
+        event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
+        event.reconciliation.state === "intentRecorded"
+          ? undefined
+          : context.reportPath,
+      verificationResultPath: ({ context, event }) =>
+        event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
+        event.reconciliation.state === "intentRecorded"
+          ? undefined
+          : context.verificationResultPath,
+      workerResultPath: ({ context, event }) =>
+        event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
+        event.reconciliation.state === "intentRecorded"
+          ? undefined
+          : context.workerResultPath,
     }),
     recordWorkerDesktopOriginCorrelation: assign({
-      delivery: ({ context, event }) => event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED"
-        ? deliveryWithWorkerDesktopOriginCorrelation(context.delivery, event.desktopOriginCorrelation)
-        : context.delivery,
-      evidenceReviewPath: ({ context, event }) => event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" && event.desktopOriginCorrelation.state === "intentRecorded"
-        ? undefined
-        : context.evidenceReviewPath,
-      reportPath: ({ context, event }) => event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" && event.desktopOriginCorrelation.state === "intentRecorded"
-        ? undefined
-        : context.reportPath,
-      verificationResultPath: ({ context, event }) => event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" && event.desktopOriginCorrelation.state === "intentRecorded"
-        ? undefined
-        : context.verificationResultPath,
-      workerResultPath: ({ context, event }) => event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" && event.desktopOriginCorrelation.state === "intentRecorded"
-        ? undefined
-        : context.workerResultPath,
+      delivery: ({ context, event }) =>
+        event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED"
+          ? deliveryWithWorkerDesktopOriginCorrelation(
+              context.delivery,
+              event.desktopOriginCorrelation
+            )
+          : context.delivery,
+      evidenceReviewPath: ({ context, event }) =>
+        event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
+        event.desktopOriginCorrelation.state === "intentRecorded"
+          ? undefined
+          : context.evidenceReviewPath,
+      reportPath: ({ context, event }) =>
+        event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
+        event.desktopOriginCorrelation.state === "intentRecorded"
+          ? undefined
+          : context.reportPath,
+      verificationResultPath: ({ context, event }) =>
+        event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
+        event.desktopOriginCorrelation.state === "intentRecorded"
+          ? undefined
+          : context.verificationResultPath,
+      workerResultPath: ({ context, event }) =>
+        event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
+        event.desktopOriginCorrelation.state === "intentRecorded"
+          ? undefined
+          : context.workerResultPath,
     }),
     recordDeliveryMergeReadiness: assign({
-      delivery: ({ context, event }) => event.type === "DELIVERY_MERGE_READINESS_RECORDED" && context.delivery !== undefined
-        ? { ...context.delivery, mergeDecision: encodeDeliveryMergeReadinessDecisionJson(event.decision), mergeDecisionSequence: event.eventSequence, stage: event.decision.approved ? "awaitingMerge" : "waitingForPr" }
-        : context.delivery,
+      delivery: ({ context, event }) =>
+        event.type === "DELIVERY_MERGE_READINESS_RECORDED" &&
+        context.delivery !== undefined
+          ? {
+              ...context.delivery,
+              mergeDecision: encodeDeliveryMergeReadinessDecisionJson(
+                event.decision
+              ),
+              mergeDecisionSequence: event.eventSequence,
+              stage: event.decision.approved ? "awaitingMerge" : "waitingForPr",
+            }
+          : context.delivery,
     }),
     recordDeliveryCleanup: assign({
-      delivery: ({ context, event }) => event.type === "DELIVERY_CLEANUP_RECORDED"
-        ? deliveryWithCleanup(context.delivery, event.cleanup)
-        : context.delivery,
+      delivery: ({ context, event }) =>
+        event.type === "DELIVERY_CLEANUP_RECORDED"
+          ? deliveryWithCleanup(context.delivery, event.cleanup)
+          : context.delivery,
     }),
     recordGitHubFeedback: assign({
       githubFeedbackCommentCount: ({ event }) =>
@@ -725,9 +925,7 @@ export const runMachine = createMachine({
           ? event.reviewRequestCount
           : undefined,
       githubFeedbackStatus: ({ event }) =>
-        event.type === "GITHUB_FEEDBACK_RECORDED"
-          ? event.status
-          : undefined,
+        event.type === "GITHUB_FEEDBACK_RECORDED" ? event.status : undefined,
       githubPullRequest: ({ event }) =>
         event.type === "GITHUB_FEEDBACK_RECORDED"
           ? event.pullRequest
@@ -737,20 +935,19 @@ export const runMachine = createMachine({
       delivery: ({ context, event }) =>
         event.type === "GITHUB_PR_LOOP_RECORDED" &&
         event.observation !== undefined
-          ? deliveryWithPullRequestObservation(context.delivery, event.observation)
+          ? deliveryWithPullRequestObservation(
+              context.delivery,
+              event.observation
+            )
           : context.delivery,
       githubPrLoopBlockerCount: ({ event }) =>
         event.type === "GITHUB_PR_LOOP_RECORDED"
           ? event.blockerCount
           : undefined,
       githubPrLoopNextAction: ({ event }) =>
-        event.type === "GITHUB_PR_LOOP_RECORDED"
-          ? event.nextAction
-          : undefined,
+        event.type === "GITHUB_PR_LOOP_RECORDED" ? event.nextAction : undefined,
       githubPrLoopPath: ({ event }) =>
-        event.type === "GITHUB_PR_LOOP_RECORDED"
-          ? event.prLoopPath
-          : undefined,
+        event.type === "GITHUB_PR_LOOP_RECORDED" ? event.prLoopPath : undefined,
       githubPrLoopStatus: ({ event }) =>
         event.type === "GITHUB_PR_LOOP_RECORDED" ? event.status : undefined,
       githubPullRequest: ({ event }) =>
@@ -823,9 +1020,7 @@ export const runMachine = createMachine({
           ? event.blockerCount
           : undefined,
       mergeDecisionNextAction: ({ event }) =>
-        event.type === "MERGE_DECISION_RECORDED"
-          ? event.nextAction
-          : undefined,
+        event.type === "MERGE_DECISION_RECORDED" ? event.nextAction : undefined,
       mergeDecisionPath: ({ event }) =>
         event.type === "MERGE_DECISION_RECORDED"
           ? event.mergeDecisionPath
@@ -839,13 +1034,9 @@ export const runMachine = createMachine({
           ? event.deploymentPath
           : undefined,
       previewDeploymentStatus: ({ event }) =>
-        event.type === "PREVIEW_DEPLOYMENT_RECORDED"
-          ? event.status
-          : undefined,
+        event.type === "PREVIEW_DEPLOYMENT_RECORDED" ? event.status : undefined,
       previewDeploymentUrl: ({ event }) =>
-        event.type === "PREVIEW_DEPLOYMENT_RECORDED"
-          ? event.url
-          : undefined,
+        event.type === "PREVIEW_DEPLOYMENT_RECORDED" ? event.url : undefined,
     }),
     recordReportCompleted: assign({
       reportPath: ({ event }) =>
@@ -895,14 +1086,42 @@ export const runMachine = createMachine({
     }),
   },
   guards: {
-    workerRecoveryConfirmed: ({ event }) => event.type === "WORKER_RECOVERY_RECORDED" && event.recovery.state === "dispatchConfirmed",
-    workerContinuationFailed: ({ event }) => event.type === "WORKER_CONTINUATION_RECORDED" && (event.continuation.state === "failed" || event.continuation.state === "outcomeUnknown"),
-    workerContinuationRunning: ({ event }) => event.type === "WORKER_CONTINUATION_RECORDED" && (event.continuation.state === "resumeAttempted" || event.continuation.state === "resumeConfirmed" || event.continuation.state === "followUpAttempted" || event.continuation.state === "followUpConfirmed"),
-    workerCorrelationFailed: ({ event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" && (event.reconciliation.state === "failed" || event.reconciliation.state === "outcomeUnknown"),
-    workerCorrelationRunning: ({ event }) => event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" && (event.reconciliation.state === "correlationAttempted" || event.reconciliation.state === "correlationConfirmed" || event.reconciliation.state === "followUpAttempted" || event.reconciliation.state === "followUpConfirmed"),
-    workerDesktopOriginCorrelationFailed: ({ event }) => event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" && (event.desktopOriginCorrelation.state === "failed" || event.desktopOriginCorrelation.state === "outcomeUnknown"),
-    workerDesktopOriginCorrelationRunning: ({ event }) => event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" && (event.desktopOriginCorrelation.state === "sourceCorrelationAttempted" || event.desktopOriginCorrelation.state === "sourceCorrelationConfirmed" || event.desktopOriginCorrelation.state === "followUpAttempted" || event.desktopOriginCorrelation.state === "followUpConfirmed"),
-    cleanupCompleted: ({ event }) => event.type === "DELIVERY_CLEANUP_RECORDED" && event.cleanup.state === "completed",
+    workerRecoveryConfirmed: ({ event }) =>
+      event.type === "WORKER_RECOVERY_RECORDED" &&
+      event.recovery.state === "dispatchConfirmed",
+    workerContinuationFailed: ({ event }) =>
+      event.type === "WORKER_CONTINUATION_RECORDED" &&
+      (event.continuation.state === "failed" ||
+        event.continuation.state === "outcomeUnknown"),
+    workerContinuationRunning: ({ event }) =>
+      event.type === "WORKER_CONTINUATION_RECORDED" &&
+      (event.continuation.state === "resumeAttempted" ||
+        event.continuation.state === "resumeConfirmed" ||
+        event.continuation.state === "followUpAttempted" ||
+        event.continuation.state === "followUpConfirmed"),
+    workerCorrelationFailed: ({ event }) =>
+      event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
+      (event.reconciliation.state === "failed" ||
+        event.reconciliation.state === "outcomeUnknown"),
+    workerCorrelationRunning: ({ event }) =>
+      event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
+      (event.reconciliation.state === "correlationAttempted" ||
+        event.reconciliation.state === "correlationConfirmed" ||
+        event.reconciliation.state === "followUpAttempted" ||
+        event.reconciliation.state === "followUpConfirmed"),
+    workerDesktopOriginCorrelationFailed: ({ event }) =>
+      event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
+      (event.desktopOriginCorrelation.state === "failed" ||
+        event.desktopOriginCorrelation.state === "outcomeUnknown"),
+    workerDesktopOriginCorrelationRunning: ({ event }) =>
+      event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
+      (event.desktopOriginCorrelation.state === "sourceCorrelationAttempted" ||
+        event.desktopOriginCorrelation.state === "sourceCorrelationConfirmed" ||
+        event.desktopOriginCorrelation.state === "followUpAttempted" ||
+        event.desktopOriginCorrelation.state === "followUpConfirmed"),
+    cleanupCompleted: ({ event }) =>
+      event.type === "DELIVERY_CLEANUP_RECORDED" &&
+      event.cleanup.state === "completed",
   },
 });
 
@@ -911,15 +1130,27 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   let expectedSequence = 1;
   let publication: DeliveryPublication | undefined;
   let remediation: DeliveryRemediation | undefined;
-  const readyForReviewActions: Array<{ receipt: DeliveryPullRequestReadyReceipt; sequence: number }> = [];
-  const localReviewAttestations: Array<{ receipt: DeliveryLocalReviewAttestationReceipt; sequence: number }> = [];
-  const mergeActions: Array<{ receipt: DeliveryMergeReceipt; sequence: number }> = [];
-  const cleanupActions: Array<{ receipt: ReturnType<typeof parseDeliveryCleanupReceipt>; sequence: number }> = [];
+  const readyForReviewActions: Array<{
+    receipt: DeliveryPullRequestReadyReceipt;
+    sequence: number;
+  }> = [];
+  const localReviewAttestations: Array<{
+    receipt: DeliveryLocalReviewAttestationReceipt;
+    sequence: number;
+  }> = [];
+  const mergeActions: Array<{
+    receipt: DeliveryMergeReceipt;
+    sequence: number;
+  }> = [];
+  const cleanupActions: Array<{
+    receipt: ReturnType<typeof parseDeliveryCleanupReceipt>;
+    sequence: number;
+  }> = [];
 
   for (const event of events) {
     if (event.sequence !== expectedSequence) {
       throw new Error(
-        `Invalid event sequence: expected ${expectedSequence}, received ${event.sequence}.`,
+        `Invalid event sequence: expected ${expectedSequence}, received ${event.sequence}.`
       );
     }
 
@@ -927,7 +1158,7 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       const next = parseDeliveryPublication(event.payload["publication"]);
       assertPublicationDeliveryIdentity(
         actor.getSnapshot().context.delivery,
-        next,
+        next
       );
       validatePublicationTransition(publication, next);
       publication = next;
@@ -935,37 +1166,61 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
     if (event.type === "DELIVERY_REMEDIATION_RECORDED") {
       const next = parseDeliveryRemediation(event.payload["remediation"]);
       if (actor.getSnapshot().context.delivery?.["mode"] !== "pullRequest") {
-        throw new Error("Remediation requires accepted pull-request delivery state.");
+        throw new Error(
+          "Remediation requires accepted pull-request delivery state."
+        );
       }
       validateDeliveryRemediationTransition(remediation, next);
       if (
         next.state === "confirmed" &&
-        deriveDeliveryPullRequestReadyActionHistories(readyForReviewActions).active !== undefined
+        deriveDeliveryPullRequestReadyActionHistories(readyForReviewActions)
+          .active !== undefined
       ) {
-        throw new Error("Confirmed remediation cannot supersede an unresolved ready-for-review action.");
+        throw new Error(
+          "Confirmed remediation cannot supersede an unresolved ready-for-review action."
+        );
       }
       if (
         next.state === "confirmed" &&
-        deriveDeliveryLocalReviewAttestationHistories(localReviewAttestations).active !== undefined
+        deriveDeliveryLocalReviewAttestationHistories(localReviewAttestations)
+          .active !== undefined
       ) {
-        throw new Error("Confirmed remediation cannot supersede an unresolved local review attestation.");
+        throw new Error(
+          "Confirmed remediation cannot supersede an unresolved local review attestation."
+        );
       }
       remediation = next;
     }
     if (event.type === "DELIVERY_PR_READY_RECORDED") {
-      const next = parseDeliveryPullRequestReadyReceipt(event.payload["readyForReviewAction"]);
+      const next = parseDeliveryPullRequestReadyReceipt(
+        event.payload["readyForReviewAction"]
+      );
       const delivery = actor.getSnapshot().context.delivery;
-      if (delivery?.["mode"] !== "pullRequest") throw new Error("Ready-for-review action requires accepted pull-request delivery state.");
-      const confirmedPublication = parseDeliveryPublication(delivery["publication"]);
-      if (confirmedPublication.state !== "confirmed") throw new Error("Ready-for-review action requires a confirmed publication.");
-      const repositoryMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(confirmedPublication.prUrl);
-      if (repositoryMatch?.[1] === undefined) throw new Error("Confirmed publication has an invalid pull-request URL.");
+      if (delivery?.["mode"] !== "pullRequest")
+        throw new Error(
+          "Ready-for-review action requires accepted pull-request delivery state."
+        );
+      const confirmedPublication = parseDeliveryPublication(
+        delivery["publication"]
+      );
+      if (confirmedPublication.state !== "confirmed")
+        throw new Error(
+          "Ready-for-review action requires a confirmed publication."
+        );
+      const repositoryMatch =
+        /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(
+          confirmedPublication.prUrl
+        );
+      if (repositoryMatch?.[1] === undefined)
+        throw new Error(
+          "Confirmed publication has an invalid pull-request URL."
+        );
       assertDeliveryPullRequestReadyAuthority(next, {
         branchName: confirmedPublication.branchName,
         expectedHeadSha: deriveAuthoritativeDeliveryHeadSha(
           confirmedPublication,
           events,
-          event.sequence - 1,
+          event.sequence - 1
         ),
         prNumber: confirmedPublication.prNumber,
         prUrl: confirmedPublication.prUrl,
@@ -974,18 +1229,37 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
         repository: repositoryMatch[1],
         runId: event.runId,
       });
-      if (next.runId !== events[0]?.runId) throw new Error("Ready-for-review action does not match its enclosing run.");
+      if (next.runId !== events[0]?.runId)
+        throw new Error(
+          "Ready-for-review action does not match its enclosing run."
+        );
       readyForReviewActions.push({ receipt: next, sequence: event.sequence });
       deriveDeliveryPullRequestReadyActionHistories(readyForReviewActions);
     }
     if (event.type === "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED") {
-      const next = parseDeliveryLocalReviewAttestationReceipt(event.payload["attestation"]);
+      const next = parseDeliveryLocalReviewAttestationReceipt(
+        event.payload["attestation"]
+      );
       const delivery = actor.getSnapshot().context.delivery;
-      if (delivery?.["mode"] !== "pullRequest") throw new Error("Local review attestation requires accepted pull-request delivery state.");
-      const confirmedPublication = parseDeliveryPublication(delivery["publication"]);
-      if (confirmedPublication.state !== "confirmed") throw new Error("Local review attestation requires a confirmed publication.");
-      const repositoryMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(confirmedPublication.prUrl);
-      if (repositoryMatch?.[1] === undefined) throw new Error("Confirmed publication has an invalid pull-request URL.");
+      if (delivery?.["mode"] !== "pullRequest")
+        throw new Error(
+          "Local review attestation requires accepted pull-request delivery state."
+        );
+      const confirmedPublication = parseDeliveryPublication(
+        delivery["publication"]
+      );
+      if (confirmedPublication.state !== "confirmed")
+        throw new Error(
+          "Local review attestation requires a confirmed publication."
+        );
+      const repositoryMatch =
+        /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(
+          confirmedPublication.prUrl
+        );
+      if (repositoryMatch?.[1] === undefined)
+        throw new Error(
+          "Confirmed publication has an invalid pull-request URL."
+        );
       assertDeliveryLocalReviewAttestationAuthority(next, {
         enclosingRunId: event.runId,
         eventSequence: event.sequence,
@@ -997,14 +1271,28 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       deriveDeliveryLocalReviewAttestationHistories(localReviewAttestations);
     }
     if (event.type === "DELIVERY_MERGE_READINESS_RECORDED") {
-      const decision = parseDeliveryMergeReadinessDecision(event.payload["decision"]);
+      const decision = parseDeliveryMergeReadinessDecision(
+        event.payload["decision"]
+      );
       if (decision instanceof DeliveryMergeReadinessDecisionV2) {
         const delivery = actor.getSnapshot().context.delivery;
-        if (delivery?.["mode"] !== "pullRequest") throw new Error("Merge readiness requires accepted pull-request delivery state.");
-        const confirmedPublication = parseDeliveryPublication(delivery["publication"]);
-        if (confirmedPublication.state !== "confirmed") throw new Error("Merge readiness requires a confirmed publication.");
-        const repositoryMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(confirmedPublication.prUrl);
-        if (repositoryMatch?.[1] === undefined) throw new Error("Confirmed publication has an invalid pull-request URL.");
+        if (delivery?.["mode"] !== "pullRequest")
+          throw new Error(
+            "Merge readiness requires accepted pull-request delivery state."
+          );
+        const confirmedPublication = parseDeliveryPublication(
+          delivery["publication"]
+        );
+        if (confirmedPublication.state !== "confirmed")
+          throw new Error("Merge readiness requires a confirmed publication.");
+        const repositoryMatch =
+          /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(
+            confirmedPublication.prUrl
+          );
+        if (repositoryMatch?.[1] === undefined)
+          throw new Error(
+            "Confirmed publication has an invalid pull-request URL."
+          );
         assertDeliveryMergeReadinessDecisionAuthority(decision, {
           enclosingRunId: event.runId,
           eventSequence: event.sequence,
@@ -1020,34 +1308,52 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       deriveDeliveryMergeActionHistories(mergeActions);
     }
     if (event.type === "DELIVERY_CLEANUP_RECORDED") {
-      if (deriveDeliveryMergeActionHistories(mergeActions).latest?.latest.state !== "dispatchConfirmed") throw new Error("Cleanup requires a confirmed merge.");
-      cleanupActions.push({ receipt: parseDeliveryCleanupReceipt(event.payload["cleanup"]), sequence: event.sequence });
+      if (
+        deriveDeliveryMergeActionHistories(mergeActions).latest?.latest
+          .state !== "dispatchConfirmed"
+      )
+        throw new Error("Cleanup requires a confirmed merge.");
+      cleanupActions.push({
+        receipt: parseDeliveryCleanupReceipt(event.payload["cleanup"]),
+        sequence: event.sequence,
+      });
       deriveDeliveryCleanupActionHistories(cleanupActions);
     }
     if (event.type === "WORKER_CONTINUATION_RECORDED") {
-      const previousValue = actor.getSnapshot().context.delivery?.["workerContinuation"];
+      const previousValue =
+        actor.getSnapshot().context.delivery?.["workerContinuation"];
       if (previousValue !== undefined) {
         assertWorkerContinuationTransition(
           parseWorkerContinuationReceipt(previousValue),
-          parseWorkerContinuationReceipt(event.payload["continuation"]),
+          parseWorkerContinuationReceipt(event.payload["continuation"])
         );
       }
     }
     if (event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED") {
-      const previousValue = actor.getSnapshot().context.delivery?.["workerCorrelationReconciliation"];
+      const previousValue =
+        actor.getSnapshot().context.delivery?.[
+          "workerCorrelationReconciliation"
+        ];
       if (previousValue !== undefined) {
         assertWorkerCorrelationReconciliationTransition(
           parseWorkerCorrelationReconciliationReceipt(previousValue),
-          parseWorkerCorrelationReconciliationReceipt(event.payload["reconciliation"]),
+          parseWorkerCorrelationReconciliationReceipt(
+            event.payload["reconciliation"]
+          )
         );
       }
     }
     if (event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED") {
-      const previousValue = actor.getSnapshot().context.delivery?.["workerDesktopOriginCorrelation"];
+      const previousValue =
+        actor.getSnapshot().context.delivery?.[
+          "workerDesktopOriginCorrelation"
+        ];
       if (previousValue !== undefined) {
         assertWorkerDesktopOriginCorrelationTransition(
           parseWorkerDesktopOriginCorrelationReceipt(previousValue),
-          parseWorkerDesktopOriginCorrelationReceipt(event.payload["desktopOriginCorrelation"]),
+          parseWorkerDesktopOriginCorrelationReceipt(
+            event.payload["desktopOriginCorrelation"]
+          )
         );
       }
     }
@@ -1069,7 +1375,9 @@ function isDeliveryPublicationEvent(event: RunEvent) {
   );
 }
 
-export function snapshotFromReplay(events: ReadonlyArray<RunEvent>): RunSnapshot {
+export function snapshotFromReplay(
+  events: ReadonlyArray<RunEvent>
+): RunSnapshot {
   const replayed = replayRunEvents(events);
   const latest = events.at(-1);
 
@@ -1124,29 +1432,42 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
       };
     case "DELIVERY_PR_READY_RECORDED":
       return {
-        readyForReviewAction: parseDeliveryPullRequestReadyReceipt(event.payload["readyForReviewAction"]),
+        readyForReviewAction: parseDeliveryPullRequestReadyReceipt(
+          event.payload["readyForReviewAction"]
+        ),
         type: event.type,
       };
     case "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED":
       return {
-        attestation: parseDeliveryLocalReviewAttestationReceipt(event.payload["attestation"]),
+        attestation: parseDeliveryLocalReviewAttestationReceipt(
+          event.payload["attestation"]
+        ),
         type: event.type,
       };
     case "DELIVERY_MERGE_RECORDED":
-      return { mergeAction: parseDeliveryMergeReceipt(event.payload["mergeAction"]), type: event.type };
+      return {
+        mergeAction: parseDeliveryMergeReceipt(event.payload["mergeAction"]),
+        type: event.type,
+      };
     case "DELIVERY_MERGE_READINESS_RECORDED":
-      return { decision: parseDeliveryMergeReadinessDecision(event.payload["decision"]), eventSequence: event.sequence, type: event.type };
+      return {
+        decision: parseDeliveryMergeReadinessDecision(
+          event.payload["decision"]
+        ),
+        eventSequence: event.sequence,
+        type: event.type,
+      };
     case "DELIVERY_CLEANUP_RECORDED":
-      return { cleanup: parseDeliveryCleanupReceipt(event.payload["cleanup"]), type: event.type };
+      return {
+        cleanup: parseDeliveryCleanupReceipt(event.payload["cleanup"]),
+        type: event.type,
+      };
     case "DELIVERY_CLEANUP_PROVENANCE_RECORDED":
     case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
     case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
       return { type: event.type };
     case "GITHUB_CHECKS_RECORDED":
-      const watchStatePath = getOptionalStringPayload(
-        event,
-        "watchStatePath",
-      );
+      const watchStatePath = getOptionalStringPayload(event, "watchStatePath");
       return {
         checksPath: getStringPayload(event, "checksPath"),
         pullRequest: getStringPayload(event, "pullRequest"),
@@ -1167,9 +1488,10 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
       };
     case "GITHUB_PR_LOOP_RECORDED":
       const observationValue = event.payload["observation"];
-      const observation = observationValue === undefined
-        ? undefined
-        : parseDeliveryPullRequestObservation(observationValue);
+      const observation =
+        observationValue === undefined
+          ? undefined
+          : parseDeliveryPullRequestObservation(observationValue);
       return {
         blockerCount: getNumberPayload(event, "blockerCount"),
         nextAction: getStringPayload(event, "nextAction"),
@@ -1236,17 +1558,35 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
     case "HARNESS_SESSION_EVENT_RECORDED":
       return { type: event.type };
     case "WORKER_RECOVERY_RECORDED":
-      return { recovery: parseWorkerRecoveryReceipt(event.payload["recovery"]), type: event.type };
+      return {
+        recovery: parseWorkerRecoveryReceipt(event.payload["recovery"]),
+        type: event.type,
+      };
     case "WORKER_CONTINUATION_RECORDED":
-      return { continuation: parseWorkerContinuationReceipt(event.payload["continuation"]), type: event.type };
+      return {
+        continuation: parseWorkerContinuationReceipt(
+          event.payload["continuation"]
+        ),
+        type: event.type,
+      };
     case "WORKER_CORRELATION_RECONCILIATION_RECORDED":
-      return { reconciliation: parseWorkerCorrelationReconciliationReceipt(event.payload["reconciliation"]), type: event.type };
+      return {
+        reconciliation: parseWorkerCorrelationReconciliationReceipt(
+          event.payload["reconciliation"]
+        ),
+        type: event.type,
+      };
     case "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED":
-      return { desktopOriginCorrelation: parseWorkerDesktopOriginCorrelationReceipt(event.payload["desktopOriginCorrelation"]), type: event.type };
+      return {
+        desktopOriginCorrelation: parseWorkerDesktopOriginCorrelationReceipt(
+          event.payload["desktopOriginCorrelation"]
+        ),
+        type: event.type,
+      };
     case "REVIEW_COMPLETED":
       const reviewerSessionEvidencePath = getOptionalStringPayload(
         event,
-        "reviewerSessionEvidencePath",
+        "reviewerSessionEvidencePath"
       );
       return {
         phase: getReviewPhasePayload(event, "phase"),
@@ -1277,7 +1617,7 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
         type: event.type,
         verificationResultPath: getStringPayload(
           event,
-          "verificationResultPath",
+          "verificationResultPath"
         ),
       };
     case "WORKER_COMPLETED":
@@ -1308,18 +1648,20 @@ function normalizeGitHubChecksStatus(status: string): string {
 
 function deliveryWithPublication(
   delivery: Record<string, Schema.Json> | undefined,
-  publication: DeliveryPublication,
+  publication: DeliveryPublication
 ): Record<string, Schema.Json> {
   assertPublicationDeliveryIdentity(delivery, publication);
   if (delivery === undefined) {
-    throw new Error("Publication requires accepted pull-request delivery state.");
+    throw new Error(
+      "Publication requires accepted pull-request delivery state."
+    );
   }
   if (
     delivery["workerEvidenceEpochSequence"] !== undefined &&
     delivery["stage"] !== "readyToPublish"
   ) {
     throw new Error(
-      "Publication requires fresh post-continuation ready evidence.",
+      "Publication requires fresh post-continuation ready evidence."
     );
   }
 
@@ -1339,19 +1681,23 @@ function deliveryWithPublication(
 
 function deliveryWithWorkerContinuation(
   delivery: Record<string, Schema.Json> | undefined,
-  continuation: WorkerContinuationReceipt,
+  continuation: WorkerContinuationReceipt
 ): Record<string, Schema.Json> {
   if (delivery === undefined || delivery["mode"] !== "pullRequest") {
-    throw new Error("Worker continuation requires accepted pull-request delivery state.");
+    throw new Error(
+      "Worker continuation requires accepted pull-request delivery state."
+    );
   }
   const previousValue = delivery["workerContinuation"];
-  const previous = previousValue === undefined
-    ? undefined
-    : parseWorkerContinuationReceipt(previousValue);
+  const previous =
+    previousValue === undefined
+      ? undefined
+      : parseWorkerContinuationReceipt(previousValue);
   assertWorkerContinuationTransition(previous, continuation);
   const stage = workerContinuationProjection(continuation);
   const priorStage = delivery["stage"];
-  const nextStage = stage ?? (typeof priorStage === "string" ? priorStage : undefined);
+  const nextStage =
+    stage ?? (typeof priorStage === "string" ? priorStage : undefined);
   if (nextStage === undefined) {
     throw new Error("Worker continuation requires an existing delivery stage.");
   }
@@ -1365,76 +1711,109 @@ function deliveryWithWorkerContinuation(
 
 function deliveryWithWorkerCorrelationReconciliation(
   delivery: Record<string, Schema.Json> | undefined,
-  reconciliation: WorkerCorrelationReconciliationReceipt,
+  reconciliation: WorkerCorrelationReconciliationReceipt
 ): Record<string, Schema.Json> {
   if (delivery === undefined || delivery["mode"] !== "pullRequest") {
-    throw new Error("Worker correlation reconciliation requires accepted pull-request delivery state.");
+    throw new Error(
+      "Worker correlation reconciliation requires accepted pull-request delivery state."
+    );
   }
   const previousValue = delivery["workerCorrelationReconciliation"];
-  const previous = previousValue === undefined
-    ? undefined
-    : parseWorkerCorrelationReconciliationReceipt(previousValue);
+  const previous =
+    previousValue === undefined
+      ? undefined
+      : parseWorkerCorrelationReconciliationReceipt(previousValue);
   assertWorkerCorrelationReconciliationTransition(previous, reconciliation);
   const stage = workerCorrelationReconciliationProjection(reconciliation);
   const priorStage = delivery["stage"];
-  const nextStage = stage ?? (typeof priorStage === "string" ? priorStage : undefined);
+  const nextStage =
+    stage ?? (typeof priorStage === "string" ? priorStage : undefined);
   if (nextStage === undefined) {
-    throw new Error("Worker correlation reconciliation requires an existing delivery stage.");
+    throw new Error(
+      "Worker correlation reconciliation requires an existing delivery stage."
+    );
   }
   return {
     ...delivery,
     stage: nextStage,
-    workerCorrelationReconciliation: encodeWorkerCorrelationReconciliationReceiptJson(reconciliation),
+    workerCorrelationReconciliation:
+      encodeWorkerCorrelationReconciliationReceiptJson(reconciliation),
     workerEvidenceEpochSequence: reconciliation.workerEvidenceEpochSequence,
   };
 }
 
 function deliveryWithWorkerDesktopOriginCorrelation(
   delivery: Record<string, Schema.Json> | undefined,
-  desktopOriginCorrelation: WorkerDesktopOriginCorrelationReceipt,
+  desktopOriginCorrelation: WorkerDesktopOriginCorrelationReceipt
 ): Record<string, Schema.Json> {
   if (delivery === undefined || delivery["mode"] !== "pullRequest") {
-    throw new Error("Worker desktop-origin correlation requires accepted pull-request delivery state.");
+    throw new Error(
+      "Worker desktop-origin correlation requires accepted pull-request delivery state."
+    );
   }
   const previousValue = delivery["workerDesktopOriginCorrelation"];
-  const previous = previousValue === undefined
-    ? undefined
-    : parseWorkerDesktopOriginCorrelationReceipt(previousValue);
-  assertWorkerDesktopOriginCorrelationTransition(previous, desktopOriginCorrelation);
-  const stage = workerDesktopOriginCorrelationProjection(desktopOriginCorrelation);
+  const previous =
+    previousValue === undefined
+      ? undefined
+      : parseWorkerDesktopOriginCorrelationReceipt(previousValue);
+  assertWorkerDesktopOriginCorrelationTransition(
+    previous,
+    desktopOriginCorrelation
+  );
+  const stage = workerDesktopOriginCorrelationProjection(
+    desktopOriginCorrelation
+  );
   const priorStage = delivery["stage"];
-  const nextStage = stage ?? (typeof priorStage === "string" ? priorStage : undefined);
+  const nextStage =
+    stage ?? (typeof priorStage === "string" ? priorStage : undefined);
   if (nextStage === undefined) {
-    throw new Error("Worker desktop-origin correlation requires an existing delivery stage.");
+    throw new Error(
+      "Worker desktop-origin correlation requires an existing delivery stage."
+    );
   }
   return {
     ...delivery,
     stage: nextStage,
-    workerDesktopOriginCorrelation: encodeWorkerDesktopOriginCorrelationReceiptJson(desktopOriginCorrelation),
-    workerEvidenceEpochSequence: desktopOriginCorrelation.workerEvidenceEpochSequence,
+    workerDesktopOriginCorrelation:
+      encodeWorkerDesktopOriginCorrelationReceiptJson(desktopOriginCorrelation),
+    workerEvidenceEpochSequence:
+      desktopOriginCorrelation.workerEvidenceEpochSequence,
   };
 }
 
 function assertWorkerContinuationTransition(
   previous: WorkerContinuationReceipt | undefined,
-  next: WorkerContinuationReceipt,
+  next: WorkerContinuationReceipt
 ) {
   if (previous === undefined) {
     if (next.state !== "intentRecorded") {
-      throw new Error("Worker continuation must record intent before continuation work.");
+      throw new Error(
+        "Worker continuation must record intent before continuation work."
+      );
     }
     return;
   }
-  if (JSON.stringify(workerContinuationBinding(previous)) !== JSON.stringify(workerContinuationBinding(next))) {
-    throw new Error("Worker continuation action is already bound to different immutable input.");
+  if (
+    JSON.stringify(workerContinuationBinding(previous)) !==
+    JSON.stringify(workerContinuationBinding(next))
+  ) {
+    throw new Error(
+      "Worker continuation action is already bound to different immutable input."
+    );
   }
   const previousRank = workerContinuationStateRank(previous.state);
   const nextRank = workerContinuationStateRank(next.state);
-  if (previousRank === undefined || nextRank === undefined || nextRank < previousRank) {
+  if (
+    previousRank === undefined ||
+    nextRank === undefined ||
+    nextRank < previousRank
+  ) {
     throw new Error("Worker continuation cannot move backward.");
   }
   if (
-    (previous.state === "failed" || previous.state === "outcomeUnknown" || previous.state === "workerCompleted") &&
+    (previous.state === "failed" ||
+      previous.state === "outcomeUnknown" ||
+      previous.state === "workerCompleted") &&
     previous.state !== next.state
   ) {
     throw new Error("Terminal worker continuation state cannot change.");
@@ -1443,26 +1822,41 @@ function assertWorkerContinuationTransition(
 
 function assertWorkerCorrelationReconciliationTransition(
   previous: WorkerCorrelationReconciliationReceipt | undefined,
-  next: WorkerCorrelationReconciliationReceipt,
+  next: WorkerCorrelationReconciliationReceipt
 ) {
   if (previous === undefined) {
     if (next.state !== "intentRecorded") {
-      throw new Error("Worker correlation reconciliation must record intent before continuation work.");
+      throw new Error(
+        "Worker correlation reconciliation must record intent before continuation work."
+      );
     }
     return;
   }
-  if (JSON.stringify(workerCorrelationReconciliationBinding(previous)) !== JSON.stringify(workerCorrelationReconciliationBinding(next))) {
-    throw new Error("Worker correlation reconciliation action is already bound to different immutable input.");
+  if (
+    JSON.stringify(workerCorrelationReconciliationBinding(previous)) !==
+    JSON.stringify(workerCorrelationReconciliationBinding(next))
+  ) {
+    throw new Error(
+      "Worker correlation reconciliation action is already bound to different immutable input."
+    );
   }
-  if (!isLegalWorkerCorrelationReconciliationTransition(previous.state, next.state)) {
-    throw new Error(`Worker correlation reconciliation cannot transition from ${previous.state} to ${next.state}.`);
+  if (
+    !isLegalWorkerCorrelationReconciliationTransition(
+      previous.state,
+      next.state
+    )
+  ) {
+    throw new Error(
+      `Worker correlation reconciliation cannot transition from ${previous.state} to ${next.state}.`
+    );
   }
 }
 
 function workerContinuationBinding(receipt: WorkerContinuationReceipt) {
   return {
     actionId: receipt.actionId,
-    expectedContaminatedReadySequence: receipt.expectedContaminatedReadySequence,
+    expectedContaminatedReadySequence:
+      receipt.expectedContaminatedReadySequence,
     expectedCurrentSequence: receipt.expectedCurrentSequence,
     expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
     expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
@@ -1474,14 +1868,18 @@ function workerContinuationBinding(receipt: WorkerContinuationReceipt) {
   };
 }
 
-function workerCorrelationReconciliationBinding(receipt: WorkerCorrelationReconciliationReceipt) {
+function workerCorrelationReconciliationBinding(
+  receipt: WorkerCorrelationReconciliationReceipt
+) {
   return {
     actionId: receipt.actionId,
-    expectedContaminatedReadySequence: receipt.expectedContaminatedReadySequence,
+    expectedContaminatedReadySequence:
+      receipt.expectedContaminatedReadySequence,
     expectedContinuationActionId: receipt.expectedContinuationActionId,
     expectedCurrentSequence: receipt.expectedCurrentSequence,
     expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
-    expectedFailedContinuationSequence: receipt.expectedFailedContinuationSequence,
+    expectedFailedContinuationSequence:
+      receipt.expectedFailedContinuationSequence,
     expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
     expectedNativeTurnIdDigest: receipt.expectedNativeTurnIdDigest,
     expectedRecoveryActionId: receipt.expectedRecoveryActionId,
@@ -1494,32 +1892,48 @@ function workerCorrelationReconciliationBinding(receipt: WorkerCorrelationReconc
 
 function assertWorkerDesktopOriginCorrelationTransition(
   previous: WorkerDesktopOriginCorrelationReceipt | undefined,
-  next: WorkerDesktopOriginCorrelationReceipt,
+  next: WorkerDesktopOriginCorrelationReceipt
 ) {
   if (previous === undefined) {
     if (next.state !== "intentRecorded") {
-      throw new Error("Worker desktop-origin correlation must record intent before continuation work.");
+      throw new Error(
+        "Worker desktop-origin correlation must record intent before continuation work."
+      );
     }
     return;
   }
-  if (JSON.stringify(workerDesktopOriginCorrelationBinding(previous)) !== JSON.stringify(workerDesktopOriginCorrelationBinding(next))) {
-    throw new Error("Worker desktop-origin correlation action is already bound to different immutable input.");
+  if (
+    JSON.stringify(workerDesktopOriginCorrelationBinding(previous)) !==
+    JSON.stringify(workerDesktopOriginCorrelationBinding(next))
+  ) {
+    throw new Error(
+      "Worker desktop-origin correlation action is already bound to different immutable input."
+    );
   }
-  if (!isLegalWorkerDesktopOriginCorrelationTransition(previous.state, next.state)) {
-    throw new Error(`Worker desktop-origin correlation cannot transition from ${previous.state} to ${next.state}.`);
+  if (
+    !isLegalWorkerDesktopOriginCorrelationTransition(previous.state, next.state)
+  ) {
+    throw new Error(
+      `Worker desktop-origin correlation cannot transition from ${previous.state} to ${next.state}.`
+    );
   }
 }
 
-function workerDesktopOriginCorrelationBinding(receipt: WorkerDesktopOriginCorrelationReceipt) {
+function workerDesktopOriginCorrelationBinding(
+  receipt: WorkerDesktopOriginCorrelationReceipt
+) {
   return {
     actionId: receipt.actionId,
-    expectedContaminatedReadySequence: receipt.expectedContaminatedReadySequence,
+    expectedContaminatedReadySequence:
+      receipt.expectedContaminatedReadySequence,
     expectedContinuationActionId: receipt.expectedContinuationActionId,
     expectedCorrelationActionId: receipt.expectedCorrelationActionId,
     expectedCurrentSequence: receipt.expectedCurrentSequence,
     expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
-    expectedFailedContinuationSequence: receipt.expectedFailedContinuationSequence,
-    expectedFailedCorrelationSequence: receipt.expectedFailedCorrelationSequence,
+    expectedFailedContinuationSequence:
+      receipt.expectedFailedContinuationSequence,
+    expectedFailedCorrelationSequence:
+      receipt.expectedFailedCorrelationSequence,
     expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
     expectedNativeTurnIdDigest: receipt.expectedNativeTurnIdDigest,
     expectedRecoveryActionId: receipt.expectedRecoveryActionId,
@@ -1530,7 +1944,9 @@ function workerDesktopOriginCorrelationBinding(receipt: WorkerDesktopOriginCorre
   };
 }
 
-function workerContinuationStateRank(state: WorkerContinuationReceipt["state"]) {
+function workerContinuationStateRank(
+  state: WorkerContinuationReceipt["state"]
+) {
   switch (state) {
     case "intentRecorded":
       return 0;
@@ -1551,13 +1967,17 @@ function workerContinuationStateRank(state: WorkerContinuationReceipt["state"]) 
 
 function isLegalWorkerCorrelationReconciliationTransition(
   previous: WorkerCorrelationReconciliationReceipt["state"],
-  next: WorkerCorrelationReconciliationReceipt["state"],
+  next: WorkerCorrelationReconciliationReceipt["state"]
 ) {
   switch (previous) {
     case "intentRecorded":
       return next === "correlationAttempted";
     case "correlationAttempted":
-      return next === "correlationConfirmed" || next === "failed" || next === "outcomeUnknown";
+      return (
+        next === "correlationConfirmed" ||
+        next === "failed" ||
+        next === "outcomeUnknown"
+      );
     case "correlationConfirmed":
       return next === "followUpAttempted";
     case "followUpAttempted":
@@ -1573,13 +1993,17 @@ function isLegalWorkerCorrelationReconciliationTransition(
 
 function isLegalWorkerDesktopOriginCorrelationTransition(
   previous: WorkerDesktopOriginCorrelationReceipt["state"],
-  next: WorkerDesktopOriginCorrelationReceipt["state"],
+  next: WorkerDesktopOriginCorrelationReceipt["state"]
 ) {
   switch (previous) {
     case "intentRecorded":
       return next === "sourceCorrelationAttempted";
     case "sourceCorrelationAttempted":
-      return next === "sourceCorrelationConfirmed" || next === "failed" || next === "outcomeUnknown";
+      return (
+        next === "sourceCorrelationConfirmed" ||
+        next === "failed" ||
+        next === "outcomeUnknown"
+      );
     case "sourceCorrelationConfirmed":
       return next === "followUpAttempted";
     case "followUpAttempted":
@@ -1595,40 +2019,42 @@ function isLegalWorkerDesktopOriginCorrelationTransition(
 
 function deliveryWithMerge(
   delivery: Record<string, Schema.Json> | undefined,
-  mergeAction: DeliveryMergeReceipt,
+  mergeAction: DeliveryMergeReceipt
 ): Record<string, Schema.Json> {
-  if (delivery?.["mode"] !== "pullRequest") throw new Error("Merge requires pull-request delivery.");
+  if (delivery?.["mode"] !== "pullRequest")
+    throw new Error("Merge requires pull-request delivery.");
   return {
     ...delivery,
-    stage: mergeAction.state === "dispatchConfirmed"
-      ? "cleanupRequired"
-      : mergeAction.state === "outcomeUnknown"
-        ? "mergeReconciliationRequired"
-        : mergeAction.state === "dispatchFailed"
-          ? "awaitingMerge"
-          : "merging",
+    stage:
+      mergeAction.state === "dispatchConfirmed"
+        ? "cleanupRequired"
+        : mergeAction.state === "outcomeUnknown"
+          ? "mergeReconciliationRequired"
+          : mergeAction.state === "dispatchFailed"
+            ? "awaitingMerge"
+            : "merging",
   };
 }
 
 function deliveryWithCleanup(
   delivery: Record<string, Schema.Json> | undefined,
-  cleanup: ReturnType<typeof parseDeliveryCleanupReceipt>,
+  cleanup: ReturnType<typeof parseDeliveryCleanupReceipt>
 ): Record<string, Schema.Json> {
-  if (delivery?.["mode"] !== "pullRequest") throw new Error("Cleanup requires pull-request delivery.");
+  if (delivery?.["mode"] !== "pullRequest")
+    throw new Error("Cleanup requires pull-request delivery.");
   return {
     ...delivery,
     stage: cleanup.state === "completed" ? "completed" : "cleanupRequired",
   };
 }
 
-
 function deliveryReadyToPublish(
   delivery: Record<string, Schema.Json> | undefined,
-  ready: Record<string, Schema.Json>,
+  ready: Record<string, Schema.Json>
 ): Record<string, Schema.Json> {
   if (delivery === undefined || delivery["mode"] !== "pullRequest") {
     throw new Error(
-      "Ready publication requires accepted pull-request delivery state.",
+      "Ready publication requires accepted pull-request delivery state."
     );
   }
   if (
@@ -1640,7 +2066,7 @@ function deliveryReadyToPublish(
     delivery["remote"] !== ready["remote"]
   ) {
     throw new Error(
-      "Ready publication identity does not match accepted delivery state.",
+      "Ready publication identity does not match accepted delivery state."
     );
   }
   return { ...delivery, stage: "readyToPublish" };
@@ -1648,10 +2074,12 @@ function deliveryReadyToPublish(
 
 function assertPublicationDeliveryIdentity(
   delivery: Record<string, Schema.Json> | undefined,
-  publication: DeliveryPublication,
+  publication: DeliveryPublication
 ) {
   if (delivery === undefined || delivery["mode"] !== "pullRequest") {
-    throw new Error("Publication requires accepted pull-request delivery state.");
+    throw new Error(
+      "Publication requires accepted pull-request delivery state."
+    );
   }
   if (
     delivery["baseBranch"] !== publication.baseBranch ||
@@ -1659,14 +2087,14 @@ function assertPublicationDeliveryIdentity(
     delivery["headBranch"] !== publication.branchName
   ) {
     throw new Error(
-      "Publication identity does not match accepted delivery provenance.",
+      "Publication identity does not match accepted delivery provenance."
     );
   }
 }
 
 function validatePublicationTransition(
   previous: DeliveryPublication | undefined,
-  next: DeliveryPublication,
+  next: DeliveryPublication
 ) {
   if (previous === undefined) {
     if (next.state !== "intentRecorded") {
@@ -1681,16 +2109,18 @@ function validatePublicationTransition(
       previous.operationId === next.operationId
     ) {
       assertPublicationBinding(previous, next);
-      if (
-        previous.treeSha !== undefined &&
-        previous.treeSha !== next.treeSha
-      ) {
+      if (previous.treeSha !== undefined && previous.treeSha !== next.treeSha) {
         throw new Error("Publication intent changed its prepared tree.");
       }
       return;
     }
-    if (previous.state !== "failed" || previous.operationId === next.operationId) {
-      throw new Error("Publication intent cannot replace an active operation ID.");
+    if (
+      previous.state !== "failed" ||
+      previous.operationId === next.operationId
+    ) {
+      throw new Error(
+        "Publication intent cannot replace an active operation ID."
+      );
     }
     return;
   }
@@ -1705,10 +2135,7 @@ function validatePublicationTransition(
       ) {
         throw new Error("Publication attempt requires matching intent.");
       }
-      if (
-        previous.treeSha === undefined ||
-        previous.treeSha !== next.treeSha
-      ) {
+      if (previous.treeSha === undefined || previous.treeSha !== next.treeSha) {
         throw new Error("Publication attempt changed the prepared tree.");
       }
       return;
@@ -1717,7 +2144,9 @@ function validatePublicationTransition(
         previous.state !== "attempted" &&
         previous.state !== "outcomeUnknown"
       ) {
-        throw new Error("Publication confirmation requires an attempted operation.");
+        throw new Error(
+          "Publication confirmation requires an attempted operation."
+        );
       }
       if (
         "commitSha" in previous &&
@@ -1742,20 +2171,20 @@ function validatePublicationTransition(
 
 function assertPublicationBinding(
   previous: DeliveryPublication,
-  next: DeliveryPublication,
+  next: DeliveryPublication
 ) {
   const previousBinding = publicationBinding(previous);
   const nextBinding = publicationBinding(next);
   if (JSON.stringify(previousBinding) !== JSON.stringify(nextBinding)) {
     throw new Error(
-      "Publication operation ID is already bound to different immutable input.",
+      "Publication operation ID is already bound to different immutable input."
     );
   }
 }
 
 function assertMonotonicPublicationIdentity(
   previous: DeliveryPublication,
-  next: DeliveryPublication,
+  next: DeliveryPublication
 ) {
   if (previous.treeSha !== undefined && next.treeSha !== previous.treeSha) {
     throw new Error("Publication changed or discarded its known treeSha.");
@@ -1799,26 +2228,30 @@ function publicationStage(publication: DeliveryPublication) {
 function deliveryWithRemediation(
   delivery: Record<string, Schema.Json> | undefined,
   remediation: DeliveryRemediation,
-  eventSequence: number,
+  eventSequence: number
 ): Record<string, Schema.Json> {
   if (delivery === undefined || delivery["mode"] !== "pullRequest") {
-    throw new Error("Remediation requires accepted pull-request delivery state.");
+    throw new Error(
+      "Remediation requires accepted pull-request delivery state."
+    );
   }
   const previousValue = delivery["remediation"];
-  const previous = previousValue === undefined
-    ? undefined
-    : parseDeliveryRemediation(previousValue);
+  const previous =
+    previousValue === undefined
+      ? undefined
+      : parseDeliveryRemediation(previousValue);
   validateDeliveryRemediationTransition(previous, remediation);
   const priorRearm = delivery["remediationRearmSequence"];
-  const remediationRearmSequence = remediation.state === "intentRecorded"
-    ? eventSequence
-    : priorRearm;
+  const remediationRearmSequence =
+    remediation.state === "intentRecorded" ? eventSequence : priorRearm;
   if (
     typeof remediationRearmSequence !== "number" ||
     !Number.isInteger(remediationRearmSequence) ||
     remediationRearmSequence < 1
   ) {
-    throw new Error("Remediation is missing its authoritative re-arm sequence.");
+    throw new Error(
+      "Remediation is missing its authoritative re-arm sequence."
+    );
   }
   return {
     ...delivery,
@@ -1830,14 +2263,17 @@ function deliveryWithRemediation(
 
 function deliveryWithPullRequestReady(
   delivery: Record<string, Schema.Json> | undefined,
-  readyForReviewAction: DeliveryPullRequestReadyReceipt,
+  readyForReviewAction: DeliveryPullRequestReadyReceipt
 ): Record<string, Schema.Json> {
   if (delivery === undefined || delivery["mode"] !== "pullRequest") {
-    throw new Error("Ready-for-review action requires accepted pull-request delivery state.");
+    throw new Error(
+      "Ready-for-review action requires accepted pull-request delivery state."
+    );
   }
   return {
     ...delivery,
-    readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(readyForReviewAction),
+    readyForReviewAction:
+      encodeDeliveryPullRequestReadyReceiptJson(readyForReviewAction),
   };
 }
 
@@ -1861,10 +2297,12 @@ function remediationStage(remediation: DeliveryRemediation) {
 
 function deliveryWithPullRequestObservation(
   delivery: Record<string, Schema.Json> | undefined,
-  observation: DeliveryPullRequestObservation,
+  observation: DeliveryPullRequestObservation
 ): Record<string, Schema.Json> {
   if (delivery === undefined || delivery["mode"] !== "pullRequest") {
-    throw new Error("Pull-request observation requires accepted delivery state.");
+    throw new Error(
+      "Pull-request observation requires accepted delivery state."
+    );
   }
   const publicationValue = delivery["publication"];
   if (publicationValue === undefined) {
@@ -1874,13 +2312,15 @@ function deliveryWithPullRequestObservation(
   if (publication.state !== "confirmed") {
     throw new Error("Pull-request observation requires confirmed publication.");
   }
-  const url = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/([1-9]\d*)$/u.exec(
-    publication.prUrl,
-  );
+  const url =
+    /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/([1-9]\d*)$/u.exec(
+      publication.prUrl
+    );
   const remediationValue = delivery["remediation"];
-  const remediation = remediationValue === undefined
-    ? undefined
-    : parseDeliveryRemediation(remediationValue);
+  const remediation =
+    remediationValue === undefined
+      ? undefined
+      : parseDeliveryRemediation(remediationValue);
   const allowedHeads = new Set([
     publication.commitSha,
     ...(remediation !== undefined && "commitSha" in remediation
@@ -1932,7 +2372,7 @@ function getNumberPayload(event: RunEvent, key: string): number {
 
 function getOptionalStringPayload(
   event: RunEvent,
-  key: string,
+  key: string
 ): string | undefined {
   const value = event.payload[key];
   if (value === undefined) {
@@ -1948,7 +2388,7 @@ function getOptionalStringPayload(
 
 function getJsonObjectPayload(
   event: RunEvent,
-  key: string,
+  key: string
 ): Record<string, Schema.Json> {
   const value = event.payload[key];
   if (value !== null && typeof value === "object" && !Array.isArray(value)) {
@@ -1970,7 +2410,7 @@ function getReviewPhasePayload(event: RunEvent, key: string) {
 }
 
 function snapshotContext(
-  context: RunMachineContext,
+  context: RunMachineContext
 ): Readonly<Record<string, Schema.Json>> {
   const output: Record<string, Schema.Json> = {};
 
@@ -2040,8 +2480,7 @@ function snapshotContext(
       context.githubRemediationBlockerCount;
   }
   if (context.githubRemediationNextAction !== undefined) {
-    output.githubRemediationNextAction =
-      context.githubRemediationNextAction;
+    output.githubRemediationNextAction = context.githubRemediationNextAction;
   }
   if (context.githubRemediationSpecPath !== undefined) {
     output.githubRemediationSpecPath = context.githubRemediationSpecPath;
@@ -2089,12 +2528,10 @@ function snapshotContext(
     output.previewDeploymentUrl = context.previewDeploymentUrl;
   }
   if (context.evidenceReviewerSessionPath !== undefined) {
-    output.evidenceReviewerSessionPath =
-      context.evidenceReviewerSessionPath;
+    output.evidenceReviewerSessionPath = context.evidenceReviewerSessionPath;
   }
   if (context.planReviewerSessionPath !== undefined) {
-    output.planReviewerSessionPath =
-      context.planReviewerSessionPath;
+    output.planReviewerSessionPath = context.planReviewerSessionPath;
   }
   if (context.reportPath !== undefined) {
     output.reportPath = context.reportPath;

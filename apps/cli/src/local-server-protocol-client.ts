@@ -8,7 +8,11 @@ import {
   type RunId,
 } from "@gaia/core";
 import { Cause, Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientError } from "effect/unstable/http";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientError,
+} from "effect/unstable/http";
 import { HttpApiClient } from "effect/unstable/httpapi";
 
 const fetchTimeoutMs = 2_000;
@@ -44,7 +48,7 @@ export function listRunsFromLocalServerProtocol(input: {
   readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
-    client.runs.listRuns(undefined),
+    client.runs.listRuns(undefined)
   );
 }
 
@@ -56,7 +60,7 @@ export function getRunFromLocalServerProtocol(input: {
   readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
-    client.runs.getRun({ params: { runId: input.runId } }),
+    client.runs.getRun({ params: { runId: input.runId } })
   );
 }
 
@@ -68,7 +72,7 @@ export function getRunEventsFromLocalServerProtocol(input: {
   readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
-    client.runs.getRunEvents({ params: { runId: input.runId } }),
+    client.runs.getRunEvents({ params: { runId: input.runId } })
   );
 }
 
@@ -89,7 +93,7 @@ export function getRunArtifactFromLocalServerProtocol(input: {
           runId: input.runId,
         },
       });
-    }),
+    })
   );
 }
 
@@ -101,7 +105,7 @@ export function createRunFromLocalServerProtocol(input: {
   readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
-    client.runs.createRun({ payload: input.payload }),
+    client.runs.createRun({ payload: input.payload })
   );
 }
 
@@ -111,7 +115,10 @@ export function evaluateMergeReadinessFromLocalServerProtocol(input: {
   readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
-    client.runs.actOnDelivery({ params: { runId: input.runId }, payload: DeliveryEvaluateMergeReadinessActionRequest.make(input.payload) }),
+    client.runs.actOnDelivery({
+      params: { runId: input.runId },
+      payload: DeliveryEvaluateMergeReadinessActionRequest.make(input.payload),
+    })
   );
 }
 
@@ -122,16 +129,20 @@ export function healthFromLocalServerProtocol(input: {
   readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
-    client.health.health(undefined),
+    client.health.health(undefined)
   );
 }
 
 function withLocalGaiaServerClient<A, E, R>(
   serverUrl: LocalGaiaServerUrl,
   useClient: (
-    client: HttpApiClient.ForApi<typeof LocalGaiaServerApi>,
-  ) => Effect.Effect<A, E, R>,
-): Effect.Effect<A, E | LocalGaiaServerProtocolError, R | HttpClient.HttpClient> {
+    client: HttpApiClient.ForApi<typeof LocalGaiaServerApi>
+  ) => Effect.Effect<A, E, R>
+): Effect.Effect<
+  A,
+  E | LocalGaiaServerProtocolError,
+  R | HttpClient.HttpClient
+> {
   return Effect.gen(function* () {
     const client = yield* HttpApiClient.make(LocalGaiaServerApi, {
       baseUrl: normalizedServerUrl(serverUrl),
@@ -142,13 +153,13 @@ function withLocalGaiaServerClient<A, E, R>(
 
 function decodeArtifactIdParameter(input: string) {
   return Schema.decodeUnknownEffect(FactoryArtifactIdSchema)(input).pipe(
-    Effect.mapError((cause) => protocolParameterError("artifactId", cause)),
+    Effect.mapError((cause) => protocolParameterError("artifactId", cause))
   );
 }
 
 function protocolParameterError(
   parameter: LocalGaiaServerProtocolParameterError["parameter"],
-  cause: Schema.SchemaError,
+  cause: Schema.SchemaError
 ): LocalGaiaServerProtocolParameterError {
   return {
     _tag: "LocalGaiaServerProtocolParameterError",

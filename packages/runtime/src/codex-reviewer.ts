@@ -1,4 +1,5 @@
 import { Effect, FileSystem, Path, Schema } from "effect";
+
 import {
   makeCodexCommandArgs,
   makeCodexHarnessConfig,
@@ -9,6 +10,7 @@ import {
   type CodexHarnessConfigInput,
 } from "./codex-harness.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import { ReviewerSessionEvidence } from "./reviewer-session-evidence.js";
 import {
   ReviewFinding,
   ReviewResult,
@@ -16,12 +18,10 @@ import {
   type GaiaReviewer,
   type ReviewRunRequest,
 } from "./reviewer.js";
-import { ReviewerSessionEvidence } from "./reviewer-session-evidence.js";
 
 /** Stable reviewer name for the read-only Codex reviewer adapter. */
-export const codexReviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
-  "codex-reviewer",
-);
+export const codexReviewerName =
+  Schema.decodeUnknownSync(ReviewerNameSchema)("codex-reviewer");
 
 /** Safe Codex settings accepted by the read-only reviewer adapter. */
 export type CodexReviewerConfigInput = Pick<
@@ -47,7 +47,7 @@ type CodexReviewDecision = {
 
 /** Build a Codex config for read-only reviewer execution. */
 export function makeCodexReviewerConfig(
-  input: CodexReviewerConfigInput = {},
+  input: CodexReviewerConfigInput = {}
 ): CodexHarnessConfig {
   return makeCodexHarnessConfig({
     command: input.command,
@@ -98,7 +98,7 @@ export function makeCodexReviewerPrompt(input: CodexReviewerPromptInput) {
 
 function runCodexReviewer(
   request: ReviewRunRequest,
-  options: CodexReviewerOptions,
+  options: CodexReviewerOptions
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -106,11 +106,11 @@ function runCodexReviewer(
     const runRoot = path.dirname(request.resultPath);
     const lastMessagePath = path.join(
       runRoot,
-      `${request.phase}-codex-reviewer-last-message.md`,
+      `${request.phase}-codex-reviewer-last-message.md`
     );
     const reviewerLogPath = path.join(
       runRoot,
-      `${request.phase}-codex-reviewer.log`,
+      `${request.phase}-codex-reviewer.log`
     );
     const runner = options.commandRunner ?? nodeCodexCommandRunner;
     const execution = yield* runner({
@@ -127,7 +127,7 @@ function runCodexReviewer(
 
     yield* fs.writeFileString(
       reviewerLogPath,
-      formatCodexReviewerOutput(execution),
+      formatCodexReviewerOutput(execution)
     );
 
     if (execution.exitCode !== 0) {
@@ -136,7 +136,7 @@ function runCodexReviewer(
           code: "CodexReviewerCommandFailed",
           message: `Codex reviewer command '${options.config.command}' exited with code ${execution.exitCode}.`,
           recoverable: true,
-        }),
+        })
       );
     }
 
@@ -148,7 +148,7 @@ function runCodexReviewer(
           message:
             "Codex reviewer completed without writing its last-message artifact.",
           recoverable: true,
-        }),
+        })
       );
     }
 
@@ -200,9 +200,9 @@ function runCodexReviewer(
           code: "CodexReviewerArtifactFailed",
           message: `Codex reviewer could not read or write ${request.phase} review artifacts.`,
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -226,7 +226,7 @@ function artifactsForPhase(request: ReviewRunRequest) {
 }
 
 function parseCodexReviewDecision(
-  lastMessage: string,
+  lastMessage: string
 ): Effect.Effect<CodexReviewDecision, GaiaRuntimeError> {
   const lines = lastMessage
     .split(/\r?\n/u)
@@ -236,21 +236,21 @@ function parseCodexReviewDecision(
 
   if (firstLine === undefined) {
     return invalidCodexReviewDecision(
-      "Codex reviewer returned an empty response.",
+      "Codex reviewer returned an empty response."
     );
   }
 
   const status = statusFromLine(firstLine);
   if (status === undefined) {
     return invalidCodexReviewDecision(
-      "Codex reviewer response must start with `Status: approved` or `Status: blocked`.",
+      "Codex reviewer response must start with `Status: approved` or `Status: blocked`."
     );
   }
 
   const summary = summaryFromLines(lines);
   if (summary === undefined) {
     return invalidCodexReviewDecision(
-      "Codex reviewer response must include a non-empty `Summary: ...` line.",
+      "Codex reviewer response must include a non-empty `Summary: ...` line."
     );
   }
 
@@ -287,7 +287,7 @@ function invalidCodexReviewDecision(message: string) {
       code: "CodexReviewerDecisionInvalid",
       message,
       recoverable: true,
-    }),
+    })
   );
 }
 

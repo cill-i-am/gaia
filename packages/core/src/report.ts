@@ -1,7 +1,11 @@
 import * as Schema from "effect/Schema";
+
 import { RunIdSchema } from "./run-id.js";
 
-export const ReportStatusSchema = Schema.Literals(["completed", "failed"] as const);
+export const ReportStatusSchema = Schema.Literals([
+  "completed",
+  "failed",
+] as const);
 
 /** Machine-readable Gaia run report. */
 export class RunReport extends Schema.Class<RunReport>("RunReport")({

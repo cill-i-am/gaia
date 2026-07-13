@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   DeliveryFeedbackTrustPolicyV1,
   deliveryFeedbackRequiresApprovedReview,
@@ -38,11 +40,52 @@ import {
   type RunId,
   type RunState,
 } from "@gaia/core";
+import {
+  Effect,
+  FileSystem,
+  Option,
+  Path,
+  Schema,
+  type Duration,
+} from "effect";
 import { customAlphabet } from "nanoid";
-import { Effect, FileSystem, Option, Path, Schema, type Duration } from "effect";
-import { createHash } from "node:crypto";
-import { appendEvent, loadRun } from "./event-store.js";
+
+import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
+import {
+  coordinateDeliveryCleanup,
+  coordinateDeliveryMerge,
+  coordinateDeliveryMergeReadiness,
+  makeGitHubFreshMergeStateReader,
+  requiredCheckPolicyFromTrustPolicy,
+} from "./delivery-merge-coordinator.js";
+import {
+  publishReadyDeliveryRun,
+  retryFailedDeliveryPublication,
+} from "./delivery-publication.js";
+import { coordinateDeliveryPullRequestReady } from "./delivery-ready-for-review-coordinator.js";
+import {
+  continueDeliveryRemediation,
+  defaultDeliveryFeedbackTrustPolicy,
+  type DeliveryPullRequestReader,
+} from "./delivery-remediation-coordinator.js";
+import { coordinateDeliveryLocalReviewAttestation } from "./delivery-review-attestation-coordinator.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
+import { appendEvent, loadRun } from "./event-store.js";
+import {
+  writeInitialFactoryRunIndexes,
+  type FactoryRunCreateInput,
+} from "./factory-run-store.js";
+import {
+  parseDeliveryProvenance,
+  prepareDeliveryWorktree,
+  resolveDeliveryGitHubRepository,
+  resolveDeliveryProvenance,
+  type DeliveryAcceptanceProvenancePolicyV1,
+  type DeliveryProvenance,
+  type GitDeliveryCommandRunner,
+} from "./git-delivery.js";
+import type { GitHubCommandRunner } from "./github-publisher.js";
+import type { DeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
 import {
   HarnessProfileNotFoundError,
   issueDeliveryWorkerHarnessCapabilities,
@@ -54,10 +97,7 @@ import {
   HarnessIncompatibleError,
   HarnessUnavailableError,
 } from "./harness-session.js";
-import {
-  writeInitialFactoryRunIndexes,
-  type FactoryRunCreateInput,
-} from "./factory-run-store.js";
+import { interactiveSessionHarness } from "./interactive-harness.js";
 import {
   makeRunPaths,
   makeRunStorePaths,
@@ -67,83 +107,81 @@ import {
 import type { ReviewerRunOptions } from "./reviewer.js";
 import { withRunStoreLock } from "./run-store-lock.js";
 import {
-  continueAcceptedRun,
-  type CommandSummary,
-  type WorkerContinuationState,
-} from "./workflows.js";
-import { interactiveSessionHarness } from "./interactive-harness.js";
-import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
-import {
   readPrivateWorkerCorrelationFollowUpTurn,
   readPrivateWorkerRecoveryTurn,
 } from "./worker-recovery.js";
 import {
+  continueAcceptedRun,
+  type CommandSummary,
+  type WorkerContinuationState,
+} from "./workflows.js";
+import {
   localDirectoryWorkspaceSource,
   type WorkspaceSource,
 } from "./workspace.js";
-import {
-  parseDeliveryProvenance,
-  prepareDeliveryWorktree,
-  resolveDeliveryGitHubRepository,
-  resolveDeliveryProvenance,
-  type DeliveryAcceptanceProvenancePolicyV1,
-  type DeliveryProvenance,
-  type GitDeliveryCommandRunner,
-} from "./git-delivery.js";
-import {
-  publishReadyDeliveryRun,
-  retryFailedDeliveryPublication,
-} from "./delivery-publication.js";
-import type { GitHubCommandRunner } from "./github-publisher.js";
-import {
-  continueDeliveryRemediation,
-  defaultDeliveryFeedbackTrustPolicy,
-  type DeliveryPullRequestReader,
-} from "./delivery-remediation-coordinator.js";
-import type { DeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
-import {
-  coordinateDeliveryCleanup,
-  coordinateDeliveryMerge,
-  coordinateDeliveryMergeReadiness,
-  makeGitHubFreshMergeStateReader,
-  requiredCheckPolicyFromTrustPolicy,
-} from "./delivery-merge-coordinator.js";
-import { coordinateDeliveryPullRequestReady } from "./delivery-ready-for-review-coordinator.js";
-import { coordinateDeliveryLocalReviewAttestation } from "./delivery-review-attestation-coordinator.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
-  10,
+  10
 );
 
-export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
-  readonly deliveryAcceptanceProvenancePolicy?: DeliveryAcceptanceProvenancePolicyV1;
-  readonly deliveryMergeActivator?: DeliveryMergeActionHandler;
-  readonly deliveryReadyForReviewActivator?: DeliveryReadyForReviewActionHandler;
-  readonly deliveryLocalReviewAttestationActivator?: DeliveryLocalReviewAttestationActionHandler;
-  readonly deliveryRemediationActivator?: DeliveryRemediationActionHandler;
-  readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
-  readonly deliveryPublicationCommandRunner?: GitHubCommandRunner;
-  readonly deliveryPublisher?: typeof publishReadyDeliveryRun;
-  readonly deliveryObservationEnabled?: boolean;
-  readonly deliveryObservationMaxAttempts?: number;
-  readonly deliveryObservationPollInterval?: Duration.Input;
-  readonly deliveryFeedbackAuthorization?: DeliveryFeedbackSmokeAuthorization;
-  readonly deliveryFeedbackTrustPolicy?: DeliveryFeedbackTrustPolicyV1;
-  readonly deliveryPullRequestReader?: DeliveryPullRequestReader;
-  readonly deliveryRetryPublisher?: typeof retryFailedDeliveryPublication;
-  readonly harnessProviderRegistry?: HarnessProviderRegistry;
-  readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
-  readonly workspaceSource?: WorkspaceSource;
-  readonly workerRecoveryActivator?: (runId: RunId, action: WorkerRecoveryAction) => Effect.Effect<WorkerRecoveryReceipt, unknown, FileSystem.FileSystem | Path.Path>;
-  readonly workerContinuationRunner?: (runId: RunId, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
-  readonly workerCorrelationReconciler?: WorkerCorrelationReconciler;
-  readonly workerCorrelationFollowUpDispatcher?: WorkerCorrelationFollowUpDispatcher;
-  readonly workerCorrelationRunner?: (runId: RunId, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
-  readonly workerDesktopOriginCorrelationReconciler?: WorkerDesktopOriginCorrelationReconciler;
-  readonly workerDesktopOriginCorrelationFollowUpDispatcher?: WorkerDesktopOriginCorrelationFollowUpDispatcher;
-  readonly workerDesktopOriginCorrelationRunner?: (runId: RunId, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
-};
+export type ServerWorkflowOptions = RunStorageOptions &
+  ReviewerRunOptions & {
+    readonly deliveryAcceptanceProvenancePolicy?: DeliveryAcceptanceProvenancePolicyV1;
+    readonly deliveryMergeActivator?: DeliveryMergeActionHandler;
+    readonly deliveryReadyForReviewActivator?: DeliveryReadyForReviewActionHandler;
+    readonly deliveryLocalReviewAttestationActivator?: DeliveryLocalReviewAttestationActionHandler;
+    readonly deliveryRemediationActivator?: DeliveryRemediationActionHandler;
+    readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
+    readonly deliveryPublicationCommandRunner?: GitHubCommandRunner;
+    readonly deliveryPublisher?: typeof publishReadyDeliveryRun;
+    readonly deliveryObservationEnabled?: boolean;
+    readonly deliveryObservationMaxAttempts?: number;
+    readonly deliveryObservationPollInterval?: Duration.Input;
+    readonly deliveryFeedbackAuthorization?: DeliveryFeedbackSmokeAuthorization;
+    readonly deliveryFeedbackTrustPolicy?: DeliveryFeedbackTrustPolicyV1;
+    readonly deliveryPullRequestReader?: DeliveryPullRequestReader;
+    readonly deliveryRetryPublisher?: typeof retryFailedDeliveryPublication;
+    readonly harnessProviderRegistry?: HarnessProviderRegistry;
+    readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
+    readonly workspaceSource?: WorkspaceSource;
+    readonly workerRecoveryActivator?: (
+      runId: RunId,
+      action: WorkerRecoveryAction
+    ) => Effect.Effect<
+      WorkerRecoveryReceipt,
+      unknown,
+      FileSystem.FileSystem | Path.Path
+    >;
+    readonly workerContinuationRunner?: (
+      runId: RunId,
+      options: ServerWorkflowOptions
+    ) => Effect.Effect<
+      CommandSummary,
+      unknown,
+      FileSystem.FileSystem | Path.Path
+    >;
+    readonly workerCorrelationReconciler?: WorkerCorrelationReconciler;
+    readonly workerCorrelationFollowUpDispatcher?: WorkerCorrelationFollowUpDispatcher;
+    readonly workerCorrelationRunner?: (
+      runId: RunId,
+      options: ServerWorkflowOptions
+    ) => Effect.Effect<
+      CommandSummary,
+      unknown,
+      FileSystem.FileSystem | Path.Path
+    >;
+    readonly workerDesktopOriginCorrelationReconciler?: WorkerDesktopOriginCorrelationReconciler;
+    readonly workerDesktopOriginCorrelationFollowUpDispatcher?: WorkerDesktopOriginCorrelationFollowUpDispatcher;
+    readonly workerDesktopOriginCorrelationRunner?: (
+      runId: RunId,
+      options: ServerWorkflowOptions
+    ) => Effect.Effect<
+      CommandSummary,
+      unknown,
+      FileSystem.FileSystem | Path.Path
+    >;
+  };
 
 export type WorkerCorrelationReconciliationInput = {
   readonly action: WorkerCorrelationReconciliationAction;
@@ -155,11 +193,11 @@ export type WorkerCorrelationReconciliationInput = {
 };
 
 export type WorkerCorrelationReconciler = (
-  input: WorkerCorrelationReconciliationInput,
+  input: WorkerCorrelationReconciliationInput
 ) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
 
 export type WorkerCorrelationFollowUpDispatcher = (
-  input: WorkerCorrelationReconciliationInput,
+  input: WorkerCorrelationReconciliationInput
 ) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
 
 export type WorkerDesktopOriginCorrelationInput = {
@@ -172,23 +210,33 @@ export type WorkerDesktopOriginCorrelationInput = {
 };
 
 export type WorkerDesktopOriginCorrelationReconciler = (
-  input: WorkerDesktopOriginCorrelationInput,
+  input: WorkerDesktopOriginCorrelationInput
 ) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
 
 export type WorkerDesktopOriginCorrelationFollowUpDispatcher = (
-  input: WorkerDesktopOriginCorrelationInput,
+  input: WorkerDesktopOriginCorrelationInput
 ) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
 
-export function actOnWorkerRecovery(runId: RunId, action: WorkerRecoveryAction, options: ServerWorkflowOptions) {
+export function actOnWorkerRecovery(
+  runId: RunId,
+  action: WorkerRecoveryAction,
+  options: ServerWorkflowOptions
+) {
   return options.workerRecoveryActivator === undefined
-    ? Effect.fail(makeRuntimeError({ code: "DeliveryActionFailed", message: "Worker recovery is unavailable.", recoverable: false }))
+    ? Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryActionFailed",
+          message: "Worker recovery is unavailable.",
+          recoverable: false,
+        })
+      )
     : options.workerRecoveryActivator(runId, action);
 }
 
 export function actOnWorkerContinuation(
   runId: RunId,
   actionInput: WorkerContinuationAction,
-  options: ServerWorkflowOptions = {},
+  options: ServerWorkflowOptions = {}
 ) {
   return withRunStoreLock(
     options,
@@ -197,24 +245,26 @@ export function actOnWorkerContinuation(
       nextSafeAction:
         "Refresh delivery state before retrying the audited worker continuation action.",
       operation: "Gaia audited worker continuation action",
-    },
+    }
   ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
 }
 
 function actOnWorkerContinuationUnlocked(
   runId: RunId,
   actionInput: WorkerContinuationAction,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
     const action = parseWorkerContinuationAction(actionInput);
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths);
     const prior = latestWorkerContinuationReceipt(loaded.events);
-    const epochSequence = prior?.workerEvidenceEpochSequence ?? action.expectedCurrentSequence + 1;
+    const epochSequence =
+      prior?.workerEvidenceEpochSequence ?? action.expectedCurrentSequence + 1;
     const base = {
       actionId: action.actionId,
-      expectedContaminatedReadySequence: action.expectedContaminatedReadySequence,
+      expectedContaminatedReadySequence:
+        action.expectedContaminatedReadySequence,
       expectedCurrentSequence: action.expectedCurrentSequence,
       expectedDeliveryProvenanceDigest: action.expectedDeliveryProvenanceDigest,
       expectedFailedRecoverySequence: action.expectedFailedRecoverySequence,
@@ -227,11 +277,15 @@ function actOnWorkerContinuationUnlocked(
 
     if (prior !== undefined) {
       yield* assertWorkerContinuationReplay(prior, base);
-      if (prior.state === "resumeAttempted" || prior.state === "followUpAttempted") {
+      if (
+        prior.state === "resumeAttempted" ||
+        prior.state === "followUpAttempted"
+      ) {
         return yield* recordWorkerContinuationReceipt(runId, paths, {
           ...prior,
           code: "WorkerContinuationOutcomeUnknown",
-          message: "A prior audited continuation attempt has no durable terminal receipt.",
+          message:
+            "A prior audited continuation attempt has no durable terminal receipt.",
           state: "outcomeUnknown",
         });
       }
@@ -251,25 +305,31 @@ function actOnWorkerContinuationUnlocked(
       state: "resumeAttempted",
     });
     const continued = yield* Effect.exit(
-      (options.workerContinuationRunner ?? continueServerRunWorkerOnly)(runId, options),
+      (options.workerContinuationRunner ?? continueServerRunWorkerOnly)(
+        runId,
+        options
+      )
     );
     if (continued._tag === "Failure") {
       return yield* recordWorkerContinuationReceipt(runId, paths, {
         ...base,
         code: "WorkerContinuationFailed",
-        message: "Audited worker continuation failed before fresh worker evidence completed.",
+        message:
+          "Audited worker continuation failed before fresh worker evidence completed.",
         state: "failed",
       });
     }
     const refreshed = yield* loadRun(paths);
     const hasFreshWorkerCompletion = refreshed.events.some(
-      ({ sequence, type }) => type === "WORKER_COMPLETED" && sequence > epochSequence,
+      ({ sequence, type }) =>
+        type === "WORKER_COMPLETED" && sequence > epochSequence
     );
     if (!hasFreshWorkerCompletion) {
       return yield* recordWorkerContinuationReceipt(runId, paths, {
         ...base,
         code: "WorkerContinuationNoFreshWorkerCompletion",
-        message: "Audited worker continuation did not produce fresh worker evidence.",
+        message:
+          "Audited worker continuation did not produce fresh worker evidence.",
         state: "failed",
       });
     }
@@ -283,7 +343,7 @@ function actOnWorkerContinuationUnlocked(
 export function actOnWorkerCorrelationReconciliation(
   runId: RunId,
   actionInput: WorkerCorrelationReconciliationAction,
-  options: ServerWorkflowOptions = {},
+  options: ServerWorkflowOptions = {}
 ) {
   return withRunStoreLock(
     options,
@@ -292,14 +352,14 @@ export function actOnWorkerCorrelationReconciliation(
       nextSafeAction:
         "Refresh delivery state before retrying the audited worker correlation reconciliation action.",
       operation: "Gaia audited worker correlation reconciliation action",
-    },
+    }
   ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
 }
 
 function actOnWorkerCorrelationReconciliationUnlocked(
   runId: RunId,
   actionInput: WorkerCorrelationReconciliationAction,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
     if (
@@ -311,21 +371,24 @@ function actOnWorkerCorrelationReconciliationUnlocked(
           code: "DeliveryActionFailed",
           message: "Worker correlation reconciliation is unavailable.",
           recoverable: false,
-        }),
+        })
       );
     }
     const action = parseWorkerCorrelationReconciliationAction(actionInput);
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths);
     const prior = latestWorkerCorrelationReconciliationReceipt(loaded.events);
-    const epochSequence = prior?.workerEvidenceEpochSequence ?? action.expectedCurrentSequence + 1;
+    const epochSequence =
+      prior?.workerEvidenceEpochSequence ?? action.expectedCurrentSequence + 1;
     const base = {
       actionId: action.actionId,
-      expectedContaminatedReadySequence: action.expectedContaminatedReadySequence,
+      expectedContaminatedReadySequence:
+        action.expectedContaminatedReadySequence,
       expectedContinuationActionId: action.expectedContinuationActionId,
       expectedCurrentSequence: action.expectedCurrentSequence,
       expectedDeliveryProvenanceDigest: action.expectedDeliveryProvenanceDigest,
-      expectedFailedContinuationSequence: action.expectedFailedContinuationSequence,
+      expectedFailedContinuationSequence:
+        action.expectedFailedContinuationSequence,
       expectedFailedRecoverySequence: action.expectedFailedRecoverySequence,
       expectedNativeTurnIdDigest: action.expectedNativeTurnIdDigest,
       expectedRecoveryActionId: action.expectedRecoveryActionId,
@@ -336,7 +399,10 @@ function actOnWorkerCorrelationReconciliationUnlocked(
     };
     const input = {
       action,
-      clientInputId: workerCorrelationFollowUpClientInputId(runId, action.actionId),
+      clientInputId: workerCorrelationFollowUpClientInputId(
+        runId,
+        action.actionId
+      ),
       events: loaded.events,
       followUpText: workerCorrelationFollowUpText,
       paths,
@@ -345,19 +411,34 @@ function actOnWorkerCorrelationReconciliationUnlocked(
 
     if (prior !== undefined) {
       yield* assertWorkerCorrelationReconciliationReplay(prior, base);
-      if (prior.state === "correlationAttempted" || prior.state === "followUpAttempted") {
-        return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
-          ...prior,
-          code: "WorkerCorrelationOutcomeUnknown",
-          message: "A prior audited correlation reconciliation attempt has no durable terminal receipt.",
-          state: "outcomeUnknown",
-        });
+      if (
+        prior.state === "correlationAttempted" ||
+        prior.state === "followUpAttempted"
+      ) {
+        return yield* recordWorkerCorrelationReconciliationReceipt(
+          runId,
+          paths,
+          {
+            ...prior,
+            code: "WorkerCorrelationOutcomeUnknown",
+            message:
+              "A prior audited correlation reconciliation attempt has no durable terminal receipt.",
+            state: "outcomeUnknown",
+          }
+        );
       }
-      if (prior.state === "failed" || prior.state === "outcomeUnknown" || prior.state === "workerCompleted") {
+      if (
+        prior.state === "failed" ||
+        prior.state === "outcomeUnknown" ||
+        prior.state === "workerCompleted"
+      ) {
         return prior;
       }
     } else {
-      yield* assertWorkerCorrelationReconciliationEligibility(loaded.events, action);
+      yield* assertWorkerCorrelationReconciliationEligibility(
+        loaded.events,
+        action
+      );
       yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
         ...base,
         state: "intentRecorded",
@@ -369,14 +450,21 @@ function actOnWorkerCorrelationReconciliationUnlocked(
         ...base,
         state: "correlationAttempted",
       });
-      const reconciled = yield* Effect.exit(options.workerCorrelationReconciler(input));
+      const reconciled = yield* Effect.exit(
+        options.workerCorrelationReconciler(input)
+      );
       if (reconciled._tag === "Failure") {
-        return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
-          ...base,
-          code: "WorkerCorrelationReconciliationFailed",
-          message: "Audited worker correlation reconciliation failed before the private checkpoint was durably confirmed.",
-          state: "failed",
-        });
+        return yield* recordWorkerCorrelationReconciliationReceipt(
+          runId,
+          paths,
+          {
+            ...base,
+            code: "WorkerCorrelationReconciliationFailed",
+            message:
+              "Audited worker correlation reconciliation failed before the private checkpoint was durably confirmed.",
+            state: "failed",
+          }
+        );
       }
       yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
         ...base,
@@ -384,19 +472,30 @@ function actOnWorkerCorrelationReconciliationUnlocked(
       });
     }
 
-    if (prior === undefined || prior.state === "intentRecorded" || prior.state === "correlationConfirmed") {
+    if (
+      prior === undefined ||
+      prior.state === "intentRecorded" ||
+      prior.state === "correlationConfirmed"
+    ) {
       yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
         ...base,
         state: "followUpAttempted",
       });
-      const dispatched = yield* Effect.exit(options.workerCorrelationFollowUpDispatcher(input));
+      const dispatched = yield* Effect.exit(
+        options.workerCorrelationFollowUpDispatcher(input)
+      );
       if (dispatched._tag === "Failure") {
-        return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
-          ...base,
-          code: "WorkerCorrelationFollowUpOutcomeUnknown",
-          message: "Audited worker correlation follow-up acceptance could not be confirmed.",
-          state: "outcomeUnknown",
-        });
+        return yield* recordWorkerCorrelationReconciliationReceipt(
+          runId,
+          paths,
+          {
+            ...base,
+            code: "WorkerCorrelationFollowUpOutcomeUnknown",
+            message:
+              "Audited worker correlation follow-up acceptance could not be confirmed.",
+            state: "outcomeUnknown",
+          }
+        );
       }
       yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
         ...base,
@@ -405,25 +504,32 @@ function actOnWorkerCorrelationReconciliationUnlocked(
     }
 
     const continued = yield* Effect.exit(
-      (options.workerCorrelationRunner ?? options.workerContinuationRunner ?? continueServerRunWorkerOnly)(runId, options),
+      (
+        options.workerCorrelationRunner ??
+        options.workerContinuationRunner ??
+        continueServerRunWorkerOnly
+      )(runId, options)
     );
     if (continued._tag === "Failure") {
       return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
         ...base,
         code: "WorkerCorrelationContinuationFailed",
-        message: "Audited worker correlation reconciliation failed before fresh worker evidence completed.",
+        message:
+          "Audited worker correlation reconciliation failed before fresh worker evidence completed.",
         state: "failed",
       });
     }
     const refreshed = yield* loadRun(paths);
     const hasFreshWorkerCompletion = refreshed.events.some(
-      ({ sequence, type }) => type === "WORKER_COMPLETED" && sequence > epochSequence,
+      ({ sequence, type }) =>
+        type === "WORKER_COMPLETED" && sequence > epochSequence
     );
     if (!hasFreshWorkerCompletion) {
       return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
         ...base,
         code: "WorkerCorrelationNoFreshWorkerCompletion",
-        message: "Audited worker correlation reconciliation did not produce fresh worker evidence.",
+        message:
+          "Audited worker correlation reconciliation did not produce fresh worker evidence.",
         state: "failed",
       });
     }
@@ -437,7 +543,7 @@ function actOnWorkerCorrelationReconciliationUnlocked(
 export function actOnWorkerDesktopOriginCorrelation(
   runId: RunId,
   actionInput: WorkerDesktopOriginCorrelationAction,
-  options: ServerWorkflowOptions = {},
+  options: ServerWorkflowOptions = {}
 ) {
   return withRunStoreLock(
     options,
@@ -446,14 +552,14 @@ export function actOnWorkerDesktopOriginCorrelation(
       nextSafeAction:
         "Refresh delivery state before retrying the audited Desktop-origin correlation action.",
       operation: "Gaia audited Desktop-origin correlation action",
-    },
+    }
   ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
 }
 
 function actOnWorkerDesktopOriginCorrelationUnlocked(
   runId: RunId,
   actionInput: WorkerDesktopOriginCorrelationAction,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
     if (
@@ -463,25 +569,30 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
       return yield* Effect.fail(
         makeRuntimeError({
           code: "DeliveryActionFailed",
-          message: "Worker Desktop-origin correlation reconciliation is unavailable.",
+          message:
+            "Worker Desktop-origin correlation reconciliation is unavailable.",
           recoverable: false,
-        }),
+        })
       );
     }
     const action = parseWorkerDesktopOriginCorrelationAction(actionInput);
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths);
     const prior = latestWorkerDesktopOriginCorrelationReceipt(loaded.events);
-    const epochSequence = prior?.workerEvidenceEpochSequence ?? action.expectedCurrentSequence + 1;
+    const epochSequence =
+      prior?.workerEvidenceEpochSequence ?? action.expectedCurrentSequence + 1;
     const base = {
       actionId: action.actionId,
-      expectedContaminatedReadySequence: action.expectedContaminatedReadySequence,
+      expectedContaminatedReadySequence:
+        action.expectedContaminatedReadySequence,
       expectedContinuationActionId: action.expectedContinuationActionId,
       expectedCorrelationActionId: action.expectedCorrelationActionId,
       expectedCurrentSequence: action.expectedCurrentSequence,
       expectedDeliveryProvenanceDigest: action.expectedDeliveryProvenanceDigest,
-      expectedFailedContinuationSequence: action.expectedFailedContinuationSequence,
-      expectedFailedCorrelationSequence: action.expectedFailedCorrelationSequence,
+      expectedFailedContinuationSequence:
+        action.expectedFailedContinuationSequence,
+      expectedFailedCorrelationSequence:
+        action.expectedFailedCorrelationSequence,
       expectedFailedRecoverySequence: action.expectedFailedRecoverySequence,
       expectedNativeTurnIdDigest: action.expectedNativeTurnIdDigest,
       expectedRecoveryActionId: action.expectedRecoveryActionId,
@@ -492,7 +603,10 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
     };
     const input = {
       action,
-      clientInputId: workerCorrelationFollowUpClientInputId(runId, action.actionId),
+      clientInputId: workerCorrelationFollowUpClientInputId(
+        runId,
+        action.actionId
+      ),
       events: loaded.events,
       followUpText: workerCorrelationFollowUpText,
       paths,
@@ -501,19 +615,34 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
 
     if (prior !== undefined) {
       yield* assertWorkerDesktopOriginCorrelationReplay(prior, base);
-      if (prior.state === "sourceCorrelationAttempted" || prior.state === "followUpAttempted") {
-        return yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
-          ...prior,
-          code: "WorkerDesktopOriginCorrelationOutcomeUnknown",
-          message: "A prior audited Desktop-origin correlation attempt has no durable terminal receipt.",
-          state: "outcomeUnknown",
-        });
+      if (
+        prior.state === "sourceCorrelationAttempted" ||
+        prior.state === "followUpAttempted"
+      ) {
+        return yield* recordWorkerDesktopOriginCorrelationReceipt(
+          runId,
+          paths,
+          {
+            ...prior,
+            code: "WorkerDesktopOriginCorrelationOutcomeUnknown",
+            message:
+              "A prior audited Desktop-origin correlation attempt has no durable terminal receipt.",
+            state: "outcomeUnknown",
+          }
+        );
       }
-      if (prior.state === "failed" || prior.state === "outcomeUnknown" || prior.state === "workerCompleted") {
+      if (
+        prior.state === "failed" ||
+        prior.state === "outcomeUnknown" ||
+        prior.state === "workerCompleted"
+      ) {
         return prior;
       }
     } else {
-      yield* assertWorkerDesktopOriginCorrelationEligibility(loaded.events, action);
+      yield* assertWorkerDesktopOriginCorrelationEligibility(
+        loaded.events,
+        action
+      );
       yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
         ...base,
         state: "intentRecorded",
@@ -525,14 +654,21 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
         ...base,
         state: "sourceCorrelationAttempted",
       });
-      const reconciled = yield* Effect.exit(options.workerDesktopOriginCorrelationReconciler(input));
+      const reconciled = yield* Effect.exit(
+        options.workerDesktopOriginCorrelationReconciler(input)
+      );
       if (reconciled._tag === "Failure") {
-        return yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
-          ...base,
-          code: "WorkerDesktopOriginCorrelationFailed",
-          message: "Audited Desktop-origin correlation failed before the private checkpoint was durably confirmed.",
-          state: "failed",
-        });
+        return yield* recordWorkerDesktopOriginCorrelationReceipt(
+          runId,
+          paths,
+          {
+            ...base,
+            code: "WorkerDesktopOriginCorrelationFailed",
+            message:
+              "Audited Desktop-origin correlation failed before the private checkpoint was durably confirmed.",
+            state: "failed",
+          }
+        );
       }
       yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
         ...base,
@@ -540,19 +676,30 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
       });
     }
 
-    if (prior === undefined || prior.state === "intentRecorded" || prior.state === "sourceCorrelationConfirmed") {
+    if (
+      prior === undefined ||
+      prior.state === "intentRecorded" ||
+      prior.state === "sourceCorrelationConfirmed"
+    ) {
       yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
         ...base,
         state: "followUpAttempted",
       });
-      const dispatched = yield* Effect.exit(options.workerDesktopOriginCorrelationFollowUpDispatcher(input));
+      const dispatched = yield* Effect.exit(
+        options.workerDesktopOriginCorrelationFollowUpDispatcher(input)
+      );
       if (dispatched._tag === "Failure") {
-        return yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
-          ...base,
-          code: "WorkerDesktopOriginCorrelationFollowUpOutcomeUnknown",
-          message: "Audited Desktop-origin correlation follow-up acceptance could not be confirmed.",
-          state: "outcomeUnknown",
-        });
+        return yield* recordWorkerDesktopOriginCorrelationReceipt(
+          runId,
+          paths,
+          {
+            ...base,
+            code: "WorkerDesktopOriginCorrelationFollowUpOutcomeUnknown",
+            message:
+              "Audited Desktop-origin correlation follow-up acceptance could not be confirmed.",
+            state: "outcomeUnknown",
+          }
+        );
       }
       yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
         ...base,
@@ -561,25 +708,33 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
     }
 
     const continued = yield* Effect.exit(
-      (options.workerDesktopOriginCorrelationRunner ?? options.workerCorrelationRunner ?? options.workerContinuationRunner ?? continueServerRunWorkerOnly)(runId, options),
+      (
+        options.workerDesktopOriginCorrelationRunner ??
+        options.workerCorrelationRunner ??
+        options.workerContinuationRunner ??
+        continueServerRunWorkerOnly
+      )(runId, options)
     );
     if (continued._tag === "Failure") {
       return yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
         ...base,
         code: "WorkerDesktopOriginCorrelationContinuationFailed",
-        message: "Audited Desktop-origin correlation failed before fresh worker evidence completed.",
+        message:
+          "Audited Desktop-origin correlation failed before fresh worker evidence completed.",
         state: "failed",
       });
     }
     const refreshed = yield* loadRun(paths);
     const hasFreshWorkerCompletion = refreshed.events.some(
-      ({ sequence, type }) => type === "WORKER_COMPLETED" && sequence > epochSequence,
+      ({ sequence, type }) =>
+        type === "WORKER_COMPLETED" && sequence > epochSequence
     );
     if (!hasFreshWorkerCompletion) {
       return yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
         ...base,
         code: "WorkerDesktopOriginCorrelationNoFreshWorkerCompletion",
-        message: "Audited Desktop-origin correlation did not produce fresh worker evidence.",
+        message:
+          "Audited Desktop-origin correlation did not produce fresh worker evidence.",
         state: "failed",
       });
     }
@@ -592,30 +747,35 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
 
 export type DeliveryMergeActionHandler = (
   runId: RunId,
-  action: DeliveryMergeActionRequest | DeliveryRetryCleanupActionRequest | DeliveryEvaluateMergeReadinessActionRequest,
-  options: ServerWorkflowOptions,
+  action:
+    | DeliveryMergeActionRequest
+    | DeliveryRetryCleanupActionRequest
+    | DeliveryEvaluateMergeReadinessActionRequest,
+  options: ServerWorkflowOptions
 ) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
 
 export type DeliveryReadyForReviewActionHandler = (
   runId: RunId,
   action: DeliveryMarkReadyForReviewActionRequest,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
 
 export type DeliveryLocalReviewAttestationActionHandler = (
   runId: RunId,
   action: DeliveryAttestPairedReviewActionRequest,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
 
 export function actOnDeliveryReadyForReview(
   runId: RunId,
   action: DeliveryMarkReadyForReviewActionRequest,
-  options: ServerWorkflowOptions = {},
+  options: ServerWorkflowOptions = {}
 ) {
   return Effect.gen(function* () {
     return yield* coordinateDeliveryPullRequestReady(runId, action, {
-      ...(options.deliveryPublicationCommandRunner === undefined ? {} : { commandRunner: options.deliveryPublicationCommandRunner }),
+      ...(options.deliveryPublicationCommandRunner === undefined
+        ? {}
+        : { commandRunner: options.deliveryPublicationCommandRunner }),
       rootDirectory: options.rootDirectory ?? ".",
     });
   });
@@ -624,11 +784,13 @@ export function actOnDeliveryReadyForReview(
 export function actOnDeliveryLocalReviewAttestation(
   runId: RunId,
   action: DeliveryAttestPairedReviewActionRequest,
-  options: ServerWorkflowOptions = {},
+  options: ServerWorkflowOptions = {}
 ) {
   return Effect.gen(function* () {
     return yield* coordinateDeliveryLocalReviewAttestation(runId, action, {
-      ...(options.deliveryPublicationCommandRunner === undefined ? {} : { commandRunner: options.deliveryPublicationCommandRunner }),
+      ...(options.deliveryPublicationCommandRunner === undefined
+        ? {}
+        : { commandRunner: options.deliveryPublicationCommandRunner }),
       rootDirectory: options.rootDirectory ?? ".",
     });
   });
@@ -636,20 +798,36 @@ export function actOnDeliveryLocalReviewAttestation(
 
 export function actOnDeliveryMerge(
   runId: RunId,
-  action: DeliveryMergeActionRequest | DeliveryRetryCleanupActionRequest | DeliveryEvaluateMergeReadinessActionRequest,
-  options: ServerWorkflowOptions = {},
+  action:
+    | DeliveryMergeActionRequest
+    | DeliveryRetryCleanupActionRequest
+    | DeliveryEvaluateMergeReadinessActionRequest,
+  options: ServerWorkflowOptions = {}
 ) {
   return Effect.gen(function* () {
-    const trustPolicy = options.deliveryFeedbackTrustPolicy ?? defaultDeliveryFeedbackTrustPolicy("unknown/unknown");
+    const trustPolicy =
+      options.deliveryFeedbackTrustPolicy ??
+      defaultDeliveryFeedbackTrustPolicy("unknown/unknown");
     const coordinatorOptions = {
-      ...(options.deliveryPublicationCommandRunner === undefined ? {} : { commandRunner: options.deliveryPublicationCommandRunner }),
-      ...(options.deliveryFeedbackTrustPolicy === undefined ? {} : { requiredCheckPolicy: requiredCheckPolicyFromTrustPolicy(trustPolicy) }),
+      ...(options.deliveryPublicationCommandRunner === undefined
+        ? {}
+        : { commandRunner: options.deliveryPublicationCommandRunner }),
+      ...(options.deliveryFeedbackTrustPolicy === undefined
+        ? {}
+        : {
+            requiredCheckPolicy:
+              requiredCheckPolicyFromTrustPolicy(trustPolicy),
+          }),
       rootDirectory: options.rootDirectory ?? ".",
     };
     return action.kind === "merge"
       ? yield* coordinateDeliveryMerge(runId, action, coordinatorOptions)
       : action.kind === "evaluateMergeReadiness"
-        ? yield* coordinateDeliveryMergeReadiness(runId, action, coordinatorOptions)
+        ? yield* coordinateDeliveryMergeReadiness(
+            runId,
+            action,
+            coordinatorOptions
+          )
         : yield* coordinateDeliveryCleanup(runId, action, coordinatorOptions);
   });
 }
@@ -657,17 +835,17 @@ export function actOnDeliveryMerge(
 export type DeliveryRemediationActionHandler = (
   runId: RunId,
   action: DeliveryRemediationActivationActionRequest,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
 
 const encodeResolvedHarnessExecution = Schema.encodeSync(
-  ResolvedHarnessExecution,
+  ResolvedHarnessExecution
 );
 const decodeHarnessExecutionSelection = Schema.decodeUnknownSync(
-  HarnessExecutionSelection,
+  HarnessExecutionSelection
 );
 const decodeResolvedHarnessExecution = Schema.decodeUnknownSync(
-  ResolvedHarnessExecution,
+  ResolvedHarnessExecution
 );
 
 export type ServerRunAcceptance = {
@@ -687,32 +865,24 @@ export function acceptServerRun(
     readonly specMarkdown: string;
     readonly title?: string | undefined;
   },
-  options: ServerWorkflowOptions = {},
+  options: ServerWorkflowOptions = {}
 ) {
-  return withRunStoreLock(
-    options,
-    acceptServerRunUnlocked(input, options),
-    {
-      nextSafeAction:
-        "Wait for the active Gaia server run acceptance to finish, then retry.",
-      operation: "Gaia server run acceptance",
-    },
-  ).pipe(Effect.mapError(toServerWorkflowError("ServerRunAcceptFailed")));
+  return withRunStoreLock(options, acceptServerRunUnlocked(input, options), {
+    nextSafeAction:
+      "Wait for the active Gaia server run acceptance to finish, then retry.",
+    operation: "Gaia server run acceptance",
+  }).pipe(Effect.mapError(toServerWorkflowError("ServerRunAcceptFailed")));
 }
 
 export function acceptFactoryRun(
   input: FactoryRunCreateInput,
-  options: ServerWorkflowOptions = {},
+  options: ServerWorkflowOptions = {}
 ) {
-  return withRunStoreLock(
-    options,
-    acceptFactoryRunUnlocked(input, options),
-    {
-      nextSafeAction:
-        "Wait for the active Gaia factory run acceptance to finish, then retry.",
-      operation: "Gaia factory run acceptance",
-    },
-  ).pipe(Effect.mapError(toServerWorkflowError("FactoryRunAcceptFailed")));
+  return withRunStoreLock(options, acceptFactoryRunUnlocked(input, options), {
+    nextSafeAction:
+      "Wait for the active Gaia factory run acceptance to finish, then retry.",
+    operation: "Gaia factory run acceptance",
+  }).pipe(Effect.mapError(toServerWorkflowError("FactoryRunAcceptFailed")));
 }
 
 function acceptServerRunUnlocked(
@@ -720,7 +890,7 @@ function acceptServerRunUnlocked(
     readonly specMarkdown: string;
     readonly title?: string | undefined;
   },
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ): Effect.Effect<
   ServerRunAcceptance,
   GaiaRuntimeError,
@@ -740,8 +910,8 @@ function acceptServerRunUnlocked(
           code: "ServerRunAcceptFailed",
           message: "Gaia server could not create the accepted run directory.",
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
     yield* fs.writeFileString(paths.input, input.specMarkdown).pipe(
       Effect.mapError((cause) =>
@@ -750,8 +920,8 @@ function acceptServerRunUnlocked(
           code: "ServerRunAcceptFailed",
           message: "Gaia server could not persist the accepted run input.",
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
     yield* fs.writeFileString(paths.latest, runId).pipe(
       Effect.mapError((cause) =>
@@ -760,8 +930,8 @@ function acceptServerRunUnlocked(
           code: "ServerRunAcceptFailed",
           message: "Gaia server could not update the latest-run pointer.",
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
     const { event } = yield* appendEvent(runId, paths, {
       payload: { source: "server", specPath: "input.md" },
@@ -775,8 +945,8 @@ function acceptServerRunUnlocked(
               code: "ServerRunAcceptFailed",
               message: "Gaia server could not append RUN_CREATED.",
               recoverable: true,
-            }),
-      ),
+            })
+      )
     );
 
     return {
@@ -790,7 +960,7 @@ function acceptServerRunUnlocked(
 
 function acceptFactoryRunUnlocked(
   input: FactoryRunCreateInput,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ): Effect.Effect<
   ServerRunAcceptance,
   GaiaRuntimeError,
@@ -809,14 +979,11 @@ function acceptFactoryRunUnlocked(
           code: "HarnessProviderRegistryMissing",
           message: "No harness provider registry is available for this run.",
           recoverable: true,
-        }),
+        })
       );
     }
     const resolved = yield* registry
-      .resolve(
-        input.execution,
-        issueDeliveryWorkerHarnessCapabilities,
-      )
+      .resolve(input.execution, issueDeliveryWorkerHarnessCapabilities)
       .pipe(Effect.mapError(harnessAcceptanceError));
 
     const runId = yield* generateRunId;
@@ -825,31 +992,34 @@ function acceptFactoryRunUnlocked(
     const delivery = yield* acceptedDeliveryProvenance(
       runId,
       input.delivery ?? { mode: "local" },
-      options,
+      options
     );
-    const deliveryFeedbackTrustPolicy = delivery.mode === "pullRequest"
-      ? yield* acceptedDeliveryFeedbackTrustPolicy(delivery, options)
-      : undefined;
+    const deliveryFeedbackTrustPolicy =
+      delivery.mode === "pullRequest"
+        ? yield* acceptedDeliveryFeedbackTrustPolicy(delivery, options)
+        : undefined;
 
     yield* fs.makeDirectory(paths.root, { recursive: true }).pipe(
       Effect.mapError((cause) =>
         makeRuntimeError({
           cause,
           code: "FactoryRunAcceptFailed",
-          message: "Gaia server could not create the accepted factory run directory.",
+          message:
+            "Gaia server could not create the accepted factory run directory.",
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
     yield* fs.writeFileString(paths.input, input.workItem.description).pipe(
       Effect.mapError((cause) =>
         makeRuntimeError({
           cause,
           code: "FactoryRunAcceptFailed",
-          message: "Gaia server could not persist the accepted factory run input.",
+          message:
+            "Gaia server could not persist the accepted factory run input.",
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
     yield* fs.writeFileString(paths.latest, runId).pipe(
       Effect.mapError((cause) =>
@@ -858,8 +1028,8 @@ function acceptFactoryRunUnlocked(
           code: "FactoryRunAcceptFailed",
           message: "Gaia server could not update the latest-run pointer.",
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
     const { event } = yield* appendEvent(runId, paths, {
       payload: {
@@ -870,9 +1040,13 @@ function acceptFactoryRunUnlocked(
           },
         },
         delivery,
-        ...(deliveryFeedbackTrustPolicy === undefined ? {} : {
-          deliveryFeedbackTrustPolicy: Schema.encodeSync(DeliveryFeedbackTrustPolicyV1)(deliveryFeedbackTrustPolicy),
-        }),
+        ...(deliveryFeedbackTrustPolicy === undefined
+          ? {}
+          : {
+              deliveryFeedbackTrustPolicy: Schema.encodeSync(
+                DeliveryFeedbackTrustPolicyV1
+              )(deliveryFeedbackTrustPolicy),
+            }),
         source: "server",
         specPath: "input.md",
         workflow: input.workflow,
@@ -901,8 +1075,8 @@ function acceptFactoryRunUnlocked(
               code: "FactoryRunAcceptFailed",
               message: "Gaia server could not append factory RUN_CREATED.",
               recoverable: true,
-            }),
-      ),
+            })
+      )
     );
 
     yield* writeInitialFactoryRunIndexes({
@@ -913,10 +1087,11 @@ function acceptFactoryRunUnlocked(
         makeRuntimeError({
           cause,
           code: "FactoryRunProjectionWriteFailed",
-          message: "Gaia server could not write initial factory run projections.",
+          message:
+            "Gaia server could not write initial factory run projections.",
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
 
     return {
@@ -930,26 +1105,24 @@ function acceptFactoryRunUnlocked(
 
 export function continueServerRun(
   runId: RunId,
-  options: ServerWorkflowOptions = {},
+  options: ServerWorkflowOptions = {}
 ): Effect.Effect<
   CommandSummary,
   GaiaRuntimeError,
   FileSystem.FileSystem | Path.Path
 > {
-  return withRunStoreLock(
-    options,
-    continueServerRunUnlocked(runId, options),
-    {
-      nextSafeAction:
-        "Wait for the active Gaia server run continuation to finish, then retry.",
-      operation: "Gaia server run continuation",
-    },
-  ).pipe(Effect.mapError(toServerWorkflowError("ServerRunContinuationFailed")));
+  return withRunStoreLock(options, continueServerRunUnlocked(runId, options), {
+    nextSafeAction:
+      "Wait for the active Gaia server run continuation to finish, then retry.",
+    operation: "Gaia server run continuation",
+  }).pipe(
+    Effect.mapError(toServerWorkflowError("ServerRunContinuationFailed"))
+  );
 }
 
 function continueServerRunUnlocked(
   runId: RunId,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options);
@@ -960,8 +1133,8 @@ function continueServerRunUnlocked(
           code: "ServerRunUnreadable",
           message: `Gaia server could not read accepted run ${runId}.`,
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
     const firstEvent = loaded.events[0];
     if (
@@ -974,14 +1147,15 @@ function continueServerRunUnlocked(
           code: "RunNotServerCreated",
           message: `Run ${runId} was not accepted by the local Gaia server.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
     const snapshot = snapshotFromReplay(loaded.events);
     if (snapshot.state === "completed" || snapshot.state === "failed") {
       return {
-        reportPath: snapshot.state === "completed" ? paths.reportMarkdown : undefined,
+        reportPath:
+          snapshot.state === "completed" ? paths.reportMarkdown : undefined,
         runDirectory: paths.root,
         runId,
         state: snapshot.state,
@@ -1004,8 +1178,8 @@ function continueServerRunUnlocked(
           code: "ServerRunInputUnreadable",
           message: `Gaia server could not read accepted input for ${runId}.`,
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
     const spec = yield* parseServerSpec({
       specMarkdown,
@@ -1015,13 +1189,17 @@ function continueServerRunUnlocked(
     const summary = yield* Effect.gen(function* () {
       const continuationOptions =
         firstEvent.payload["workflow"] === "issueDelivery"
-          ? yield* factoryContinuationOptions(firstEvent, loaded.events, options)
+          ? yield* factoryContinuationOptions(
+              firstEvent,
+              loaded.events,
+              options
+            )
           : options;
       return yield* continueAcceptedRun(
         runId,
         paths,
         spec,
-        continuationOptions,
+        continuationOptions
       );
     }).pipe(
       Effect.mapError((error) =>
@@ -1032,11 +1210,11 @@ function continueServerRunUnlocked(
               code: "ServerRunContinuationFailed",
               message: `Gaia server could not continue accepted run ${runId}.`,
               recoverable: true,
-            }),
+            })
       ),
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        failServerRunIfNeeded(runId, paths, "runningWorker", error),
-      ),
+        failServerRunIfNeeded(runId, paths, "runningWorker", error)
+      )
     );
     if (
       firstEvent.payload["workflow"] === "issueDelivery" &&
@@ -1053,7 +1231,7 @@ function continueServerRunUnlocked(
 
 function continueServerRunWorkerOnly(
   runId: RunId,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options);
@@ -1064,8 +1242,8 @@ function continueServerRunWorkerOnly(
           code: "ServerRunUnreadable",
           message: `Gaia server could not read accepted run ${runId}.`,
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
     const firstEvent = loaded.events[0];
     if (
@@ -1078,16 +1256,17 @@ function continueServerRunWorkerOnly(
           code: "RunNotServerCreated",
           message: `Run ${runId} was not accepted by the local Gaia server.`,
           recoverable: false,
-        }),
+        })
       );
     }
     if (firstEvent.payload["workflow"] !== "issueDelivery") {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "DeliveryActionConflict",
-          message: "Audited worker continuation is only available for issue delivery runs.",
+          message:
+            "Audited worker continuation is only available for issue delivery runs.",
           recoverable: false,
-        }),
+        })
       );
     }
     const fs = yield* FileSystem.FileSystem;
@@ -1098,8 +1277,8 @@ function continueServerRunWorkerOnly(
           code: "ServerRunInputUnreadable",
           message: `Gaia server could not read accepted input for ${runId}.`,
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
     const spec = yield* parseServerSpec({
       specMarkdown,
@@ -1110,13 +1289,13 @@ function continueServerRunWorkerOnly(
       const continuationOptions = yield* factoryContinuationOptions(
         firstEvent,
         loaded.events,
-        options,
+        options
       );
       return yield* continueAcceptedRun(
         runId,
         paths,
         spec,
-        continuationOptions,
+        continuationOptions
       );
     }).pipe(
       Effect.mapError((error) =>
@@ -1127,11 +1306,11 @@ function continueServerRunWorkerOnly(
               code: "ServerRunContinuationFailed",
               message: `Gaia server could not continue accepted run ${runId}.`,
               recoverable: true,
-            }),
+            })
       ),
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        failServerRunIfNeeded(runId, paths, "runningWorker", error),
-      ),
+        failServerRunIfNeeded(runId, paths, "runningWorker", error)
+      )
     );
   });
 }
@@ -1142,7 +1321,7 @@ export function actOnDeliveryPublication(
     readonly expectedEventSequence: number;
     readonly kind: "reconcile" | "retry";
   },
-  options: ServerWorkflowOptions = {},
+  options: ServerWorkflowOptions = {}
 ) {
   return withRunStoreLock(
     options,
@@ -1154,15 +1333,18 @@ export function actOnDeliveryPublication(
         return yield* Effect.fail(
           makeRuntimeError({
             code: "DeliveryActionConflict",
-            message: "Delivery state changed before the recovery action was accepted.",
+            message:
+              "Delivery state changed before the recovery action was accepted.",
             recoverable: true,
-          }),
+          })
         );
       }
       const snapshot = snapshotFromReplay(loaded.events);
       const delivery = snapshot.context["delivery"];
       const publicationValue =
-        delivery !== null && typeof delivery === "object" && !Array.isArray(delivery)
+        delivery !== null &&
+        typeof delivery === "object" &&
+        !Array.isArray(delivery)
           ? Object.getOwnPropertyDescriptor(delivery, "publication")?.value
           : undefined;
       const publication =
@@ -1171,33 +1353,35 @@ export function actOnDeliveryPublication(
           : parseDeliveryPublication(publicationValue);
       if (
         publication === undefined ||
-        (action.kind === "reconcile" && publication.state !== "outcomeUnknown") ||
+        (action.kind === "reconcile" &&
+          publication.state !== "outcomeUnknown") ||
         (action.kind === "retry" &&
           (publication.state !== "failed" || !publication.recoverable))
       ) {
         return yield* Effect.fail(
           makeRuntimeError({
             code: "DeliveryActionConflict",
-            message: "The requested recovery action is not valid for current delivery state.",
+            message:
+              "The requested recovery action is not valid for current delivery state.",
             recoverable: true,
-          }),
+          })
         );
       }
       const publicationOptions = deliveryPublicationOptions(options);
       return action.kind === "reconcile"
         ? yield* (options.deliveryPublisher ?? publishReadyDeliveryRun)(
             runId,
-            publicationOptions,
+            publicationOptions
           )
-        : yield* (options.deliveryRetryPublisher ?? retryFailedDeliveryPublication)(
-            runId,
-            publicationOptions,
-          );
+        : yield* (
+            options.deliveryRetryPublisher ?? retryFailedDeliveryPublication
+          )(runId, publicationOptions);
     }),
     {
-      nextSafeAction: "Refresh delivery state before retrying the recovery action.",
+      nextSafeAction:
+        "Refresh delivery state before retrying the recovery action.",
       operation: "Gaia delivery recovery action",
-    },
+    }
   ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
 }
 
@@ -1205,7 +1389,7 @@ export function actOnDeliveryPublication(
 export function actOnDeliveryRemediation(
   runId: RunId,
   action: DeliveryRemediationActivationActionRequest,
-  options: ServerWorkflowOptions = {},
+  options: ServerWorkflowOptions = {}
 ) {
   return withRunStoreLock(
     options,
@@ -1238,19 +1422,19 @@ export function actOnDeliveryRemediation(
       nextSafeAction:
         "Wait for the active delivery action to finish, then refresh before retrying.",
       operation: "Gaia controlled remediation activation",
-    },
+    }
   ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
 }
 
 function continueDeliveryPublication(
   runId: RunId,
   paths: RunPaths,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
     yield* (options.deliveryPublisher ?? publishReadyDeliveryRun)(
       runId,
-      deliveryPublicationOptions(options),
+      deliveryPublicationOptions(options)
     );
     if (options.deliveryObservationEnabled === true) {
       yield* continueDeliveryRemediationLoop(runId, options);
@@ -1272,24 +1456,36 @@ function latestWorkerContinuationReceipt(events: ReadonlyArray<RunEvent>) {
   })[0];
 }
 
-function latestWorkerCorrelationReconciliationReceipt(events: ReadonlyArray<RunEvent>) {
+function latestWorkerCorrelationReconciliationReceipt(
+  events: ReadonlyArray<RunEvent>
+) {
   return [...events].reverse().flatMap((event) => {
     if (event.type !== "WORKER_CORRELATION_RECONCILIATION_RECORDED") return [];
-    return [parseWorkerCorrelationReconciliationReceipt(event.payload["reconciliation"])];
+    return [
+      parseWorkerCorrelationReconciliationReceipt(
+        event.payload["reconciliation"]
+      ),
+    ];
   })[0];
 }
 
-function latestWorkerDesktopOriginCorrelationReceipt(events: ReadonlyArray<RunEvent>) {
+function latestWorkerDesktopOriginCorrelationReceipt(
+  events: ReadonlyArray<RunEvent>
+) {
   return [...events].reverse().flatMap((event) => {
     if (event.type !== "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED") return [];
-    return [parseWorkerDesktopOriginCorrelationReceipt(event.payload["desktopOriginCorrelation"])];
+    return [
+      parseWorkerDesktopOriginCorrelationReceipt(
+        event.payload["desktopOriginCorrelation"]
+      ),
+    ];
   })[0];
 }
 
 function recordWorkerContinuationReceipt(
   runId: RunId,
   paths: RunPaths,
-  receipt: WorkerContinuationReceipt,
+  receipt: WorkerContinuationReceipt
 ) {
   return appendEvent(runId, paths, {
     payload: { continuation: encodeWorkerContinuationReceiptJson(receipt) },
@@ -1300,10 +1496,12 @@ function recordWorkerContinuationReceipt(
 function recordWorkerCorrelationReconciliationReceipt(
   runId: RunId,
   paths: RunPaths,
-  receipt: WorkerCorrelationReconciliationReceipt,
+  receipt: WorkerCorrelationReconciliationReceipt
 ) {
   return appendEvent(runId, paths, {
-    payload: { reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(receipt) },
+    payload: {
+      reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(receipt),
+    },
     type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
   }).pipe(Effect.as(receipt));
 }
@@ -1311,62 +1509,90 @@ function recordWorkerCorrelationReconciliationReceipt(
 function recordWorkerDesktopOriginCorrelationReceipt(
   runId: RunId,
   paths: RunPaths,
-  receipt: WorkerDesktopOriginCorrelationReceipt,
+  receipt: WorkerDesktopOriginCorrelationReceipt
 ) {
   return appendEvent(runId, paths, {
-    payload: { desktopOriginCorrelation: encodeWorkerDesktopOriginCorrelationReceiptJson(receipt) },
+    payload: {
+      desktopOriginCorrelation:
+        encodeWorkerDesktopOriginCorrelationReceiptJson(receipt),
+    },
     type: "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED",
   }).pipe(Effect.as(receipt));
 }
 
 function assertWorkerContinuationReplay(
   prior: WorkerContinuationReceipt,
-  expected: Omit<WorkerContinuationReceipt, "code" | "message" | "state">,
+  expected: Omit<WorkerContinuationReceipt, "code" | "message" | "state">
 ) {
-  if (JSON.stringify(workerContinuationBinding(prior)) !== JSON.stringify(expected)) {
-    return Effect.fail(makeRuntimeError({
-      code: "DeliveryActionConflict",
-      message: "Another audited worker continuation action is already authoritative.",
-      recoverable: false,
-    }));
+  if (
+    JSON.stringify(workerContinuationBinding(prior)) !==
+    JSON.stringify(expected)
+  ) {
+    return Effect.fail(
+      makeRuntimeError({
+        code: "DeliveryActionConflict",
+        message:
+          "Another audited worker continuation action is already authoritative.",
+        recoverable: false,
+      })
+    );
   }
   return Effect.void;
 }
 
 function assertWorkerCorrelationReconciliationReplay(
   prior: WorkerCorrelationReconciliationReceipt,
-  expected: Omit<WorkerCorrelationReconciliationReceipt, "code" | "message" | "state">,
+  expected: Omit<
+    WorkerCorrelationReconciliationReceipt,
+    "code" | "message" | "state"
+  >
 ) {
-  if (JSON.stringify(workerCorrelationReconciliationBinding(prior)) !== JSON.stringify(expected)) {
-    return Effect.fail(makeRuntimeError({
-      code: "DeliveryActionConflict",
-      message: "Another audited worker correlation reconciliation action is already authoritative.",
-      recoverable: false,
-    }));
+  if (
+    JSON.stringify(workerCorrelationReconciliationBinding(prior)) !==
+    JSON.stringify(expected)
+  ) {
+    return Effect.fail(
+      makeRuntimeError({
+        code: "DeliveryActionConflict",
+        message:
+          "Another audited worker correlation reconciliation action is already authoritative.",
+        recoverable: false,
+      })
+    );
   }
   return Effect.void;
 }
 
 function assertWorkerDesktopOriginCorrelationReplay(
   prior: WorkerDesktopOriginCorrelationReceipt,
-  expected: Omit<WorkerDesktopOriginCorrelationReceipt, "code" | "message" | "state">,
+  expected: Omit<
+    WorkerDesktopOriginCorrelationReceipt,
+    "code" | "message" | "state"
+  >
 ) {
-  if (JSON.stringify(workerDesktopOriginCorrelationBinding(prior)) !== JSON.stringify(expected)) {
-    return Effect.fail(makeRuntimeError({
-      code: "DeliveryActionConflict",
-      message: "Another audited Desktop-origin correlation action is already authoritative.",
-      recoverable: false,
-    }));
+  if (
+    JSON.stringify(workerDesktopOriginCorrelationBinding(prior)) !==
+    JSON.stringify(expected)
+  ) {
+    return Effect.fail(
+      makeRuntimeError({
+        code: "DeliveryActionConflict",
+        message:
+          "Another audited Desktop-origin correlation action is already authoritative.",
+        recoverable: false,
+      })
+    );
   }
   return Effect.void;
 }
 
 function workerContinuationBinding(
-  receipt: Omit<WorkerContinuationReceipt, "code" | "message" | "state">,
+  receipt: Omit<WorkerContinuationReceipt, "code" | "message" | "state">
 ) {
   return {
     actionId: receipt.actionId,
-    expectedContaminatedReadySequence: receipt.expectedContaminatedReadySequence,
+    expectedContaminatedReadySequence:
+      receipt.expectedContaminatedReadySequence,
     expectedCurrentSequence: receipt.expectedCurrentSequence,
     expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
     expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
@@ -1379,15 +1605,20 @@ function workerContinuationBinding(
 }
 
 function workerCorrelationReconciliationBinding(
-  receipt: Omit<WorkerCorrelationReconciliationReceipt, "code" | "message" | "state">,
+  receipt: Omit<
+    WorkerCorrelationReconciliationReceipt,
+    "code" | "message" | "state"
+  >
 ) {
   return {
     actionId: receipt.actionId,
-    expectedContaminatedReadySequence: receipt.expectedContaminatedReadySequence,
+    expectedContaminatedReadySequence:
+      receipt.expectedContaminatedReadySequence,
     expectedContinuationActionId: receipt.expectedContinuationActionId,
     expectedCurrentSequence: receipt.expectedCurrentSequence,
     expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
-    expectedFailedContinuationSequence: receipt.expectedFailedContinuationSequence,
+    expectedFailedContinuationSequence:
+      receipt.expectedFailedContinuationSequence,
     expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
     expectedNativeTurnIdDigest: receipt.expectedNativeTurnIdDigest,
     expectedRecoveryActionId: receipt.expectedRecoveryActionId,
@@ -1399,17 +1630,23 @@ function workerCorrelationReconciliationBinding(
 }
 
 function workerDesktopOriginCorrelationBinding(
-  receipt: Omit<WorkerDesktopOriginCorrelationReceipt, "code" | "message" | "state">,
+  receipt: Omit<
+    WorkerDesktopOriginCorrelationReceipt,
+    "code" | "message" | "state"
+  >
 ) {
   return {
     actionId: receipt.actionId,
-    expectedContaminatedReadySequence: receipt.expectedContaminatedReadySequence,
+    expectedContaminatedReadySequence:
+      receipt.expectedContaminatedReadySequence,
     expectedContinuationActionId: receipt.expectedContinuationActionId,
     expectedCorrelationActionId: receipt.expectedCorrelationActionId,
     expectedCurrentSequence: receipt.expectedCurrentSequence,
     expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
-    expectedFailedContinuationSequence: receipt.expectedFailedContinuationSequence,
-    expectedFailedCorrelationSequence: receipt.expectedFailedCorrelationSequence,
+    expectedFailedContinuationSequence:
+      receipt.expectedFailedContinuationSequence,
+    expectedFailedCorrelationSequence:
+      receipt.expectedFailedCorrelationSequence,
     expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
     expectedNativeTurnIdDigest: receipt.expectedNativeTurnIdDigest,
     expectedRecoveryActionId: receipt.expectedRecoveryActionId,
@@ -1422,44 +1659,58 @@ function workerDesktopOriginCorrelationBinding(
 
 function assertWorkerContinuationEligibility(
   events: ReadonlyArray<RunEvent>,
-  action: WorkerContinuationAction,
+  action: WorkerContinuationAction
 ) {
   return Effect.gen(function* () {
     const currentSequence = events.at(-1)?.sequence ?? 0;
     if (currentSequence !== action.expectedCurrentSequence) {
-      return yield* Effect.fail(makeRuntimeError({
-        code: "DeliveryActionConflict",
-        message: "Delivery state changed before audited worker continuation was accepted.",
-        recoverable: true,
-      }));
-    }
-    if (action.expectedFailedRecoverySequence !== action.expectedCurrentSequence) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited continuation requires the current failed recovery receipt."),
+        makeRuntimeError({
+          code: "DeliveryActionConflict",
+          message:
+            "Delivery state changed before audited worker continuation was accepted.",
+          recoverable: true,
+        })
+      );
+    }
+    if (
+      action.expectedFailedRecoverySequence !== action.expectedCurrentSequence
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict(
+          "Audited continuation requires the current failed recovery receipt."
+        )
       );
     }
     const firstEvent = events[0];
-    const delivery = firstEvent === undefined
-      ? undefined
-      : yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
+    const delivery =
+      firstEvent === undefined
+        ? undefined
+        : yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
     if (
       delivery?.mode !== "pullRequest" ||
       action.expectedDeliveryProvenanceDigest !==
         deliveryProvenanceDigest(delivery.provenance)
     ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited continuation requires the accepted delivery provenance."),
+        workerContinuationConflict(
+          "Audited continuation requires the accepted delivery provenance."
+        )
       );
     }
     const failedRecoveryEvent = events.find(
-      (event) => event.sequence === action.expectedFailedRecoverySequence,
+      (event) => event.sequence === action.expectedFailedRecoverySequence
     );
     if (failedRecoveryEvent?.type !== "WORKER_RECOVERY_RECORDED") {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited continuation requires the exact failed recovery receipt."),
+        workerContinuationConflict(
+          "Audited continuation requires the exact failed recovery receipt."
+        )
       );
     }
-    const failedRecovery = parseWorkerRecoveryReceipt(failedRecoveryEvent.payload["recovery"]);
+    const failedRecovery = parseWorkerRecoveryReceipt(
+      failedRecoveryEvent.payload["recovery"]
+    );
     if (
       failedRecovery.state !== "failed" ||
       failedRecovery.code !== "WorkerRecoveryContinuationFailed" ||
@@ -1469,27 +1720,34 @@ function assertWorkerContinuationEligibility(
       failedRecovery.nativeTurnIdDigest === undefined
     ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited continuation requires the exact failed interrupted recovery checkpoint."),
+        workerContinuationConflict(
+          "Audited continuation requires the exact failed interrupted recovery checkpoint."
+        )
       );
     }
     const readyEvent = events.find(
-      (event) => event.sequence === action.expectedContaminatedReadySequence,
+      (event) => event.sequence === action.expectedContaminatedReadySequence
     );
     if (readyEvent?.type !== "DELIVERY_READY_TO_PUBLISH") {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited continuation requires the contaminated ready boundary."),
+        workerContinuationConflict(
+          "Audited continuation requires the contaminated ready boundary."
+        )
       );
     }
     if (
       events.some(isDeliveryPublicationEvent) ||
-      events.some(({ type }) =>
-        type === "GITHUB_PR_LOOP_RECORDED" ||
-        type === "GITHUB_CHECKS_RECORDED" ||
-        type === "GITHUB_FEEDBACK_RECORDED"
+      events.some(
+        ({ type }) =>
+          type === "GITHUB_PR_LOOP_RECORDED" ||
+          type === "GITHUB_CHECKS_RECORDED" ||
+          type === "GITHUB_FEEDBACK_RECORDED"
       )
     ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited continuation is unavailable after publication or pull-request evidence exists."),
+        workerContinuationConflict(
+          "Audited continuation is unavailable after publication or pull-request evidence exists."
+        )
       );
     }
   });
@@ -1497,44 +1755,59 @@ function assertWorkerContinuationEligibility(
 
 function assertWorkerCorrelationReconciliationEligibility(
   events: ReadonlyArray<RunEvent>,
-  action: WorkerCorrelationReconciliationAction,
+  action: WorkerCorrelationReconciliationAction
 ) {
   return Effect.gen(function* () {
     const currentSequence = events.at(-1)?.sequence ?? 0;
     if (currentSequence !== action.expectedCurrentSequence) {
-      return yield* Effect.fail(makeRuntimeError({
-        code: "DeliveryActionConflict",
-        message: "Delivery state changed before audited worker correlation reconciliation was accepted.",
-        recoverable: true,
-      }));
-    }
-    if (action.expectedFailedContinuationSequence !== action.expectedCurrentSequence) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited correlation reconciliation requires the current failed continuation receipt."),
+        makeRuntimeError({
+          code: "DeliveryActionConflict",
+          message:
+            "Delivery state changed before audited worker correlation reconciliation was accepted.",
+          recoverable: true,
+        })
+      );
+    }
+    if (
+      action.expectedFailedContinuationSequence !==
+      action.expectedCurrentSequence
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict(
+          "Audited correlation reconciliation requires the current failed continuation receipt."
+        )
       );
     }
     const firstEvent = events[0];
-    const delivery = firstEvent === undefined
-      ? undefined
-      : yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
+    const delivery =
+      firstEvent === undefined
+        ? undefined
+        : yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
     if (
       delivery?.mode !== "pullRequest" ||
       action.expectedDeliveryProvenanceDigest !==
         deliveryProvenanceDigest(delivery.provenance)
     ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited correlation reconciliation requires the accepted delivery provenance."),
+        workerContinuationConflict(
+          "Audited correlation reconciliation requires the accepted delivery provenance."
+        )
       );
     }
     const failedRecoveryEvent = events.find(
-      (event) => event.sequence === action.expectedFailedRecoverySequence,
+      (event) => event.sequence === action.expectedFailedRecoverySequence
     );
     if (failedRecoveryEvent?.type !== "WORKER_RECOVERY_RECORDED") {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited correlation reconciliation requires the exact failed recovery receipt."),
+        workerContinuationConflict(
+          "Audited correlation reconciliation requires the exact failed recovery receipt."
+        )
       );
     }
-    const failedRecovery = parseWorkerRecoveryReceipt(failedRecoveryEvent.payload["recovery"]);
+    const failedRecovery = parseWorkerRecoveryReceipt(
+      failedRecoveryEvent.payload["recovery"]
+    );
     if (
       failedRecovery.state !== "failed" ||
       failedRecovery.code !== "WorkerRecoveryContinuationFailed" ||
@@ -1544,50 +1817,67 @@ function assertWorkerCorrelationReconciliationEligibility(
       failedRecovery.nativeTurnIdDigest !== action.expectedNativeTurnIdDigest
     ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited correlation reconciliation requires the exact failed interrupted recovery checkpoint."),
+        workerContinuationConflict(
+          "Audited correlation reconciliation requires the exact failed interrupted recovery checkpoint."
+        )
       );
     }
     const failedContinuationEvent = events.find(
-      (event) => event.sequence === action.expectedFailedContinuationSequence,
+      (event) => event.sequence === action.expectedFailedContinuationSequence
     );
     if (failedContinuationEvent?.type !== "WORKER_CONTINUATION_RECORDED") {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited correlation reconciliation requires the exact failed audited continuation receipt."),
+        workerContinuationConflict(
+          "Audited correlation reconciliation requires the exact failed audited continuation receipt."
+        )
       );
     }
-    const failedContinuation = parseWorkerContinuationReceipt(failedContinuationEvent.payload["continuation"]);
+    const failedContinuation = parseWorkerContinuationReceipt(
+      failedContinuationEvent.payload["continuation"]
+    );
     if (
       failedContinuation.state !== "failed" ||
       failedContinuation.actionId !== action.expectedContinuationActionId ||
-      failedContinuation.expectedContaminatedReadySequence !== action.expectedContaminatedReadySequence ||
-      failedContinuation.expectedDeliveryProvenanceDigest !== action.expectedDeliveryProvenanceDigest ||
-      failedContinuation.expectedFailedRecoverySequence !== action.expectedFailedRecoverySequence ||
-      failedContinuation.expectedRecoveryActionId !== action.expectedRecoveryActionId ||
+      failedContinuation.expectedContaminatedReadySequence !==
+        action.expectedContaminatedReadySequence ||
+      failedContinuation.expectedDeliveryProvenanceDigest !==
+        action.expectedDeliveryProvenanceDigest ||
+      failedContinuation.expectedFailedRecoverySequence !==
+        action.expectedFailedRecoverySequence ||
+      failedContinuation.expectedRecoveryActionId !==
+        action.expectedRecoveryActionId ||
       failedContinuation.expectedSessionId !== action.expectedSessionId ||
       failedContinuation.harnessProfileId !== action.harnessProfileId
     ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited correlation reconciliation requires the exact failed continuation binding."),
+        workerContinuationConflict(
+          "Audited correlation reconciliation requires the exact failed continuation binding."
+        )
       );
     }
     const readyEvent = events.find(
-      (event) => event.sequence === action.expectedContaminatedReadySequence,
+      (event) => event.sequence === action.expectedContaminatedReadySequence
     );
     if (readyEvent?.type !== "DELIVERY_READY_TO_PUBLISH") {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited correlation reconciliation requires the contaminated ready boundary."),
+        workerContinuationConflict(
+          "Audited correlation reconciliation requires the contaminated ready boundary."
+        )
       );
     }
     if (
       events.some(isDeliveryPublicationEvent) ||
-      events.some(({ type }) =>
-        type === "GITHUB_PR_LOOP_RECORDED" ||
-        type === "GITHUB_CHECKS_RECORDED" ||
-        type === "GITHUB_FEEDBACK_RECORDED"
+      events.some(
+        ({ type }) =>
+          type === "GITHUB_PR_LOOP_RECORDED" ||
+          type === "GITHUB_CHECKS_RECORDED" ||
+          type === "GITHUB_FEEDBACK_RECORDED"
       )
     ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited correlation reconciliation is unavailable after publication or pull-request evidence exists."),
+        workerContinuationConflict(
+          "Audited correlation reconciliation is unavailable after publication or pull-request evidence exists."
+        )
       );
     }
   });
@@ -1595,44 +1885,59 @@ function assertWorkerCorrelationReconciliationEligibility(
 
 function assertWorkerDesktopOriginCorrelationEligibility(
   events: ReadonlyArray<RunEvent>,
-  action: WorkerDesktopOriginCorrelationAction,
+  action: WorkerDesktopOriginCorrelationAction
 ) {
   return Effect.gen(function* () {
     const currentSequence = events.at(-1)?.sequence ?? 0;
     if (currentSequence !== action.expectedCurrentSequence) {
-      return yield* Effect.fail(makeRuntimeError({
-        code: "DeliveryActionConflict",
-        message: "Delivery state changed before audited Desktop-origin correlation was accepted.",
-        recoverable: true,
-      }));
-    }
-    if (action.expectedFailedCorrelationSequence !== action.expectedCurrentSequence) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited Desktop-origin correlation requires the current failed source-classification receipt."),
+        makeRuntimeError({
+          code: "DeliveryActionConflict",
+          message:
+            "Delivery state changed before audited Desktop-origin correlation was accepted.",
+          recoverable: true,
+        })
+      );
+    }
+    if (
+      action.expectedFailedCorrelationSequence !==
+      action.expectedCurrentSequence
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict(
+          "Audited Desktop-origin correlation requires the current failed source-classification receipt."
+        )
       );
     }
     const firstEvent = events[0];
-    const delivery = firstEvent === undefined
-      ? undefined
-      : yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
+    const delivery =
+      firstEvent === undefined
+        ? undefined
+        : yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
     if (
       delivery?.mode !== "pullRequest" ||
       action.expectedDeliveryProvenanceDigest !==
         deliveryProvenanceDigest(delivery.provenance)
     ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited Desktop-origin correlation requires the accepted delivery provenance."),
+        workerContinuationConflict(
+          "Audited Desktop-origin correlation requires the accepted delivery provenance."
+        )
       );
     }
     const failedRecoveryEvent = events.find(
-      (event) => event.sequence === action.expectedFailedRecoverySequence,
+      (event) => event.sequence === action.expectedFailedRecoverySequence
     );
     if (failedRecoveryEvent?.type !== "WORKER_RECOVERY_RECORDED") {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited Desktop-origin correlation requires the exact failed recovery receipt."),
+        workerContinuationConflict(
+          "Audited Desktop-origin correlation requires the exact failed recovery receipt."
+        )
       );
     }
-    const failedRecovery = parseWorkerRecoveryReceipt(failedRecoveryEvent.payload["recovery"]);
+    const failedRecovery = parseWorkerRecoveryReceipt(
+      failedRecoveryEvent.payload["recovery"]
+    );
     if (
       failedRecovery.state !== "failed" ||
       failedRecovery.code !== "WorkerRecoveryContinuationFailed" ||
@@ -1642,77 +1947,110 @@ function assertWorkerDesktopOriginCorrelationEligibility(
       failedRecovery.nativeTurnIdDigest !== action.expectedNativeTurnIdDigest
     ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited Desktop-origin correlation requires the exact failed interrupted recovery checkpoint."),
+        workerContinuationConflict(
+          "Audited Desktop-origin correlation requires the exact failed interrupted recovery checkpoint."
+        )
       );
     }
     const failedContinuationEvent = events.find(
-      (event) => event.sequence === action.expectedFailedContinuationSequence,
+      (event) => event.sequence === action.expectedFailedContinuationSequence
     );
     if (failedContinuationEvent?.type !== "WORKER_CONTINUATION_RECORDED") {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited Desktop-origin correlation requires the exact failed audited continuation receipt."),
+        workerContinuationConflict(
+          "Audited Desktop-origin correlation requires the exact failed audited continuation receipt."
+        )
       );
     }
-    const failedContinuation = parseWorkerContinuationReceipt(failedContinuationEvent.payload["continuation"]);
+    const failedContinuation = parseWorkerContinuationReceipt(
+      failedContinuationEvent.payload["continuation"]
+    );
     if (
       failedContinuation.state !== "failed" ||
       failedContinuation.actionId !== action.expectedContinuationActionId ||
-      failedContinuation.expectedContaminatedReadySequence !== action.expectedContaminatedReadySequence ||
-      failedContinuation.expectedDeliveryProvenanceDigest !== action.expectedDeliveryProvenanceDigest ||
-      failedContinuation.expectedFailedRecoverySequence !== action.expectedFailedRecoverySequence ||
-      failedContinuation.expectedRecoveryActionId !== action.expectedRecoveryActionId ||
+      failedContinuation.expectedContaminatedReadySequence !==
+        action.expectedContaminatedReadySequence ||
+      failedContinuation.expectedDeliveryProvenanceDigest !==
+        action.expectedDeliveryProvenanceDigest ||
+      failedContinuation.expectedFailedRecoverySequence !==
+        action.expectedFailedRecoverySequence ||
+      failedContinuation.expectedRecoveryActionId !==
+        action.expectedRecoveryActionId ||
       failedContinuation.expectedSessionId !== action.expectedSessionId ||
       failedContinuation.harnessProfileId !== action.harnessProfileId
     ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited Desktop-origin correlation requires the exact failed continuation binding."),
+        workerContinuationConflict(
+          "Audited Desktop-origin correlation requires the exact failed continuation binding."
+        )
       );
     }
     const failedCorrelationEvent = events.find(
-      (event) => event.sequence === action.expectedFailedCorrelationSequence,
+      (event) => event.sequence === action.expectedFailedCorrelationSequence
     );
-    if (failedCorrelationEvent?.type !== "WORKER_CORRELATION_RECONCILIATION_RECORDED") {
+    if (
+      failedCorrelationEvent?.type !==
+      "WORKER_CORRELATION_RECONCILIATION_RECORDED"
+    ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited Desktop-origin correlation requires the exact failed source-classification receipt."),
+        workerContinuationConflict(
+          "Audited Desktop-origin correlation requires the exact failed source-classification receipt."
+        )
       );
     }
-    const failedCorrelation = parseWorkerCorrelationReconciliationReceipt(failedCorrelationEvent.payload["reconciliation"]);
+    const failedCorrelation = parseWorkerCorrelationReconciliationReceipt(
+      failedCorrelationEvent.payload["reconciliation"]
+    );
     if (
       failedCorrelation.state !== "failed" ||
       failedCorrelation.code !== "WorkerCorrelationReconciliationFailed" ||
       failedCorrelation.actionId !== action.expectedCorrelationActionId ||
-      failedCorrelation.expectedContaminatedReadySequence !== action.expectedContaminatedReadySequence ||
-      failedCorrelation.expectedContinuationActionId !== action.expectedContinuationActionId ||
-      failedCorrelation.expectedDeliveryProvenanceDigest !== action.expectedDeliveryProvenanceDigest ||
-      failedCorrelation.expectedFailedContinuationSequence !== action.expectedFailedContinuationSequence ||
-      failedCorrelation.expectedFailedRecoverySequence !== action.expectedFailedRecoverySequence ||
-      failedCorrelation.expectedNativeTurnIdDigest !== action.expectedNativeTurnIdDigest ||
-      failedCorrelation.expectedRecoveryActionId !== action.expectedRecoveryActionId ||
+      failedCorrelation.expectedContaminatedReadySequence !==
+        action.expectedContaminatedReadySequence ||
+      failedCorrelation.expectedContinuationActionId !==
+        action.expectedContinuationActionId ||
+      failedCorrelation.expectedDeliveryProvenanceDigest !==
+        action.expectedDeliveryProvenanceDigest ||
+      failedCorrelation.expectedFailedContinuationSequence !==
+        action.expectedFailedContinuationSequence ||
+      failedCorrelation.expectedFailedRecoverySequence !==
+        action.expectedFailedRecoverySequence ||
+      failedCorrelation.expectedNativeTurnIdDigest !==
+        action.expectedNativeTurnIdDigest ||
+      failedCorrelation.expectedRecoveryActionId !==
+        action.expectedRecoveryActionId ||
       failedCorrelation.expectedSessionId !== action.expectedSessionId ||
       failedCorrelation.harnessProfileId !== action.harnessProfileId
     ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited Desktop-origin correlation requires the exact failed source-classification binding."),
+        workerContinuationConflict(
+          "Audited Desktop-origin correlation requires the exact failed source-classification binding."
+        )
       );
     }
     const readyEvent = events.find(
-      (event) => event.sequence === action.expectedContaminatedReadySequence,
+      (event) => event.sequence === action.expectedContaminatedReadySequence
     );
     if (readyEvent?.type !== "DELIVERY_READY_TO_PUBLISH") {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited Desktop-origin correlation requires the contaminated ready boundary."),
+        workerContinuationConflict(
+          "Audited Desktop-origin correlation requires the contaminated ready boundary."
+        )
       );
     }
     if (
       events.some(isDeliveryPublicationEvent) ||
-      events.some(({ type }) =>
-        type === "GITHUB_PR_LOOP_RECORDED" ||
-        type === "GITHUB_CHECKS_RECORDED" ||
-        type === "GITHUB_FEEDBACK_RECORDED"
+      events.some(
+        ({ type }) =>
+          type === "GITHUB_PR_LOOP_RECORDED" ||
+          type === "GITHUB_CHECKS_RECORDED" ||
+          type === "GITHUB_FEEDBACK_RECORDED"
       )
     ) {
       return yield* Effect.fail(
-        workerContinuationConflict("Audited Desktop-origin correlation is unavailable after publication or pull-request evidence exists."),
+        workerContinuationConflict(
+          "Audited Desktop-origin correlation is unavailable after publication or pull-request evidence exists."
+        )
       );
     }
   });
@@ -1729,9 +2067,14 @@ function workerContinuationConflict(message: string) {
 const workerCorrelationFollowUpText =
   "Continue the interrupted worker recovery from the audited checkpoint. Do not restart the run, publish, merge, or change recovery policy.";
 
-function workerCorrelationFollowUpClientInputId(runId: RunId, actionId: string) {
+function workerCorrelationFollowUpClientInputId(
+  runId: RunId,
+  actionId: string
+) {
   const digest = createHash("sha256")
-    .update(["gaia-worker-correlation-follow-up-v1", runId, actionId].join("\0"))
+    .update(
+      ["gaia-worker-correlation-follow-up-v1", runId, actionId].join("\0")
+    )
     .digest("hex");
   return `gaia-worker-correlation:${digest}`;
 }
@@ -1748,24 +2091,26 @@ function isDeliveryPublicationEvent(event: RunEvent) {
 
 function deliveryProvenanceDigest(provenance: DeliveryProvenance) {
   return createHash("sha256")
-    .update([
-      "gaia-worker-continuation-delivery-provenance-v1",
-      provenance.baseBranch,
-      provenance.baseRevision,
-      provenance.headBranch,
-      provenance.remote,
-    ].join("\0"))
+    .update(
+      [
+        "gaia-worker-continuation-delivery-provenance-v1",
+        provenance.baseBranch,
+        provenance.baseRevision,
+        provenance.headBranch,
+        provenance.remote,
+      ].join("\0")
+    )
     .digest("hex");
 }
 
 function continueDeliveryRemediationLoop(
   runId: RunId,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
     const maxAttempts = Math.min(
       20,
-      Math.max(1, options.deliveryObservationMaxAttempts ?? 6),
+      Math.max(1, options.deliveryObservationMaxAttempts ?? 6)
     );
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const result = yield* continueDeliveryRemediation(runId, {
@@ -1797,19 +2142,22 @@ function continueDeliveryRemediationLoop(
       if (
         result.observation.status === "ready" ||
         remediation?.state === "outcomeUnknown" ||
-        remediation?.state === "failed" && !remediation.recoverable ||
-        remediation?.attempt === 2 && remediation.state === "confirmed" ||
-        result.observation.blockers.some(({ kind }) =>
-          kind === "operatorReviewRequired" ||
-          kind === "budgetExhausted" ||
-          kind === "mergeConflict" ||
-          kind === "expectedHeadChanged"
+        (remediation?.state === "failed" && !remediation.recoverable) ||
+        (remediation?.attempt === 2 && remediation.state === "confirmed") ||
+        result.observation.blockers.some(
+          ({ kind }) =>
+            kind === "operatorReviewRequired" ||
+            kind === "budgetExhausted" ||
+            kind === "mergeConflict" ||
+            kind === "expectedHeadChanged"
         )
       ) {
         return result;
       }
       if (attempt < maxAttempts) {
-        yield* Effect.sleep(options.deliveryObservationPollInterval ?? "10 seconds");
+        yield* Effect.sleep(
+          options.deliveryObservationPollInterval ?? "10 seconds"
+        );
       }
     }
     return undefined;
@@ -1829,19 +2177,20 @@ function deliveryPublicationOptions(options: ServerWorkflowOptions) {
 }
 
 function isDeliveryPublicationReady(events: ReadonlyArray<RunEvent>) {
-  const workerEvidenceEpochSequence = latestWorkerContinuationEpochSequence(events) ?? 0;
+  const workerEvidenceEpochSequence =
+    latestWorkerContinuationEpochSequence(events) ?? 0;
   return events.some(
     ({ sequence, type }) =>
       sequence > workerEvidenceEpochSequence &&
       (type === "DELIVERY_READY_TO_PUBLISH" ||
-      type === "DELIVERY_PUBLICATION_INTENT_RECORDED" ||
-      type === "DELIVERY_PUBLICATION_ATTEMPTED" ||
-      type === "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN"),
+        type === "DELIVERY_PUBLICATION_INTENT_RECORDED" ||
+        type === "DELIVERY_PUBLICATION_ATTEMPTED" ||
+        type === "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN")
   );
 }
 
 export function reconcileInterruptedServerRuns(
-  options: ServerWorkflowOptions = {},
+  options: ServerWorkflowOptions = {}
 ) {
   return withRunStoreLock(
     options,
@@ -1850,12 +2199,12 @@ export function reconcileInterruptedServerRuns(
       nextSafeAction:
         "Wait for local Gaia server startup reconciliation to finish, then retry.",
       operation: "Gaia server startup reconciliation",
-    },
+    }
   ).pipe(Effect.mapError(toServerWorkflowError("ServerRunReconcileFailed")));
 }
 
 function reconcileInterruptedServerRunsUnlocked(
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -1912,14 +2261,17 @@ function reconcileInterruptedServerRunsUnlocked(
               "Server process stopped before completing the accepted run.",
             recoverable: true,
           }),
-          failureStageFromRunState(snapshot.state),
+          failureStageFromRunState(snapshot.state)
         ),
         type: "RUN_FAILED",
       });
       reconciledRunIds.push(runId);
     }
 
-    return { reconciledRunIds, resumableRunIds } satisfies ServerRunReconciliation;
+    return {
+      reconciledRunIds,
+      resumableRunIds,
+    } satisfies ServerRunReconciliation;
   });
 }
 
@@ -1928,7 +2280,8 @@ function parseServerSpec(input: {
   readonly title?: string | undefined;
 }) {
   return Effect.try({
-    try: () => parseMarkdownSpec(input.specMarkdown, input.title ?? "server-run"),
+    try: () =>
+      parseMarkdownSpec(input.specMarkdown, input.title ?? "server-run"),
     catch: (cause) =>
       makeRuntimeError({
         cause,
@@ -1943,7 +2296,7 @@ function failServerRunIfNeeded(
   runId: RunId,
   paths: RunPaths,
   stage: GaiaFailure["stage"],
-  error: GaiaRuntimeError,
+  error: GaiaRuntimeError
 ) {
   return Effect.gen(function* () {
     const loadedExit = yield* Effect.exit(loadRun(paths));
@@ -1962,10 +2315,7 @@ function failServerRunIfNeeded(
   });
 }
 
-function failurePayload(
-  error: GaiaRuntimeError,
-  stage: GaiaFailure["stage"],
-) {
+function failurePayload(error: GaiaRuntimeError, stage: GaiaFailure["stage"]) {
   return {
     code: error.code,
     message: error.message,
@@ -1975,7 +2325,7 @@ function failurePayload(
 }
 
 function failureStageFromRunState(
-  state: Exclude<RunState, "completed" | "failed">,
+  state: Exclude<RunState, "completed" | "failed">
 ): GaiaFailure["stage"] {
   switch (state) {
     case "created":
@@ -2065,28 +2415,33 @@ function harnessAcceptanceError(error: unknown): GaiaRuntimeError {
 
 function acceptedDeliveryFeedbackTrustPolicy(
   provenance: DeliveryProvenance,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
     if (options.deliveryFeedbackTrustPolicy !== undefined) {
       return yield* Effect.try({
-        try: () => Schema.decodeUnknownSync(DeliveryFeedbackTrustPolicyV1)(
-          options.deliveryFeedbackTrustPolicy,
-        ),
-        catch: (cause) => makeRuntimeError({
-          cause,
-          code: "DeliveryFeedbackTrustPolicyInvalid",
-          message: "Accepted delivery feedback trust policy is invalid.",
-          recoverable: false,
-        }),
+        try: () =>
+          Schema.decodeUnknownSync(DeliveryFeedbackTrustPolicyV1)(
+            options.deliveryFeedbackTrustPolicy
+          ),
+        catch: (cause) =>
+          makeRuntimeError({
+            cause,
+            code: "DeliveryFeedbackTrustPolicyInvalid",
+            message: "Accepted delivery feedback trust policy is invalid.",
+            recoverable: false,
+          }),
       });
     }
-    const repository = yield* resolveDeliveryGitHubRepository({
-      rootDirectory: options.rootDirectory ?? ".",
-      ...(options.deliveryGitCommandRunner === undefined
-        ? {}
-        : { commandRunner: options.deliveryGitCommandRunner }),
-    }, provenance.remote);
+    const repository = yield* resolveDeliveryGitHubRepository(
+      {
+        rootDirectory: options.rootDirectory ?? ".",
+        ...(options.deliveryGitCommandRunner === undefined
+          ? {}
+          : { commandRunner: options.deliveryGitCommandRunner }),
+      },
+      provenance.remote
+    );
     return repository === undefined
       ? DeliveryFeedbackTrustPolicyV1.make({
           allowPullRequestAuthor: false,
@@ -2101,18 +2456,23 @@ function acceptedDeliveryFeedbackTrustPolicy(
 function factoryContinuationOptions(
   firstEvent: RunEvent,
   events: ReadonlyArray<RunEvent>,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
     const paths = yield* makeRunPaths(firstEvent.runId, options);
-    const delivery = yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
+    const delivery = yield* parseAcceptedDelivery(
+      firstEvent.payload["delivery"]
+    );
     if (delivery.mode === "pullRequest") {
-      yield* assertAcceptedDeliveryProvenancePolicy(delivery.provenance, options.deliveryAcceptanceProvenancePolicy);
+      yield* assertAcceptedDeliveryProvenancePolicy(
+        delivery.provenance,
+        options.deliveryAcceptanceProvenancePolicy
+      );
       const feedbackTrustPolicy = yield* acceptedRunDeliveryFeedbackTrustPolicy(
         firstEvent,
         delivery.provenance,
-        options,
+        options
       );
       yield* prepareDeliveryWorktree({
         options: {
@@ -2130,7 +2490,7 @@ function factoryContinuationOptions(
             delivery: {
               ...delivery.provenance,
               feedbackTrustPolicy: Schema.encodeSync(
-                DeliveryFeedbackTrustPolicyV1,
+                DeliveryFeedbackTrustPolicyV1
               )(feedbackTrustPolicy),
               mode: "pullRequest",
               stage: "delivering",
@@ -2144,10 +2504,10 @@ function factoryContinuationOptions(
     const acceptedExecution = yield* Effect.try({
       try: () => ({
         resolved: decodeResolvedHarnessExecution(
-          jsonObjectField(execution, "resolved"),
+          jsonObjectField(execution, "resolved")
         ),
         selection: decodeHarnessExecutionSelection(
-          jsonObjectField(execution, "selection"),
+          jsonObjectField(execution, "selection")
         ),
       }),
       catch: () =>
@@ -2164,9 +2524,10 @@ function factoryContinuationOptions(
       return yield* Effect.fail(
         makeRuntimeError({
           code: "HarnessExecutionSelectionMismatch",
-          message: "Accepted run harness selection does not match its resolution.",
+          message:
+            "Accepted run harness selection does not match its resolution.",
           recoverable: false,
-        }),
+        })
       );
     }
     const commonOptions = {
@@ -2175,19 +2536,23 @@ function factoryContinuationOptions(
         ? { deliveryProvenance: delivery.provenance }
         : {}),
       ...(delivery.mode === "local"
-        ? { workspaceSource: options.workspaceSource ?? localDirectoryWorkspaceSource(rootDirectory) }
+        ? {
+            workspaceSource:
+              options.workspaceSource ??
+              localDirectoryWorkspaceSource(rootDirectory),
+          }
         : {}),
     };
     const sessionEvents = issueDeliveryWorkerSessionEvents(
       firstEvent.runId,
-      events,
+      events
     );
     if (
       sessionEvents.some(
         (event) =>
           event.kind === "sessionStarted" &&
           event.provider.providerId !==
-            acceptedExecution.resolved.provider.providerId,
+            acceptedExecution.resolved.provider.providerId
       )
     ) {
       return yield* Effect.fail(
@@ -2196,20 +2561,21 @@ function factoryContinuationOptions(
           message:
             "Persisted harness session does not match the accepted provider.",
           recoverable: false,
-        }),
+        })
       );
     }
     const continuationState = issueDeliveryWorkerContinuationState(
       events,
-      sessionEvents,
+      sessionEvents
     );
     if (continuationState === "invalid") {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "HarnessWorkerCompletionMismatch",
-          message: "Persisted worker completion has no canonical completed turn.",
+          message:
+            "Persisted worker completion has no canonical completed turn.",
           recoverable: false,
-        }),
+        })
       );
     }
     if (continuationState === "completed") {
@@ -2224,7 +2590,9 @@ function factoryContinuationOptions(
         workerContinuationState: continuationState,
         workerHarness: interactiveSessionHarness({
           rootDirectory,
-          ...(options.sessionCoordinator === undefined ? {} : { sessionCoordinator: options.sessionCoordinator }),
+          ...(options.sessionCoordinator === undefined
+            ? {}
+            : { sessionCoordinator: options.sessionCoordinator }),
         }),
       };
     }
@@ -2236,13 +2604,13 @@ function factoryContinuationOptions(
           code: "HarnessProviderRegistryMissing",
           message: "No harness provider registry is available for this run.",
           recoverable: true,
-        }),
+        })
       );
     }
     const resolved = yield* registry
       .resolve(
         acceptedExecution.selection,
-        issueDeliveryWorkerHarnessCapabilities,
+        issueDeliveryWorkerHarnessCapabilities
       )
       .pipe(Effect.mapError(harnessAcceptanceError));
     if (
@@ -2254,21 +2622,34 @@ function factoryContinuationOptions(
           code: "HarnessExecutionResolutionChanged",
           message: "Resolved harness execution changed after run acceptance.",
           recoverable: false,
-        }),
+        })
       );
     }
-    const latestRunFailureSequence = [...events].reverse().find(({ type }) => type === "RUN_FAILED")?.sequence;
+    const latestRunFailureSequence = [...events]
+      .reverse()
+      .find(({ type }) => type === "RUN_FAILED")?.sequence;
     const recovery = [...events].reverse().flatMap((event) => {
       if (event.type !== "WORKER_RECOVERY_RECORDED") return [];
       const receipt = parseWorkerRecoveryReceipt(event.payload["recovery"]);
-      return receipt.state === "dispatchConfirmed" && (latestRunFailureSequence === undefined || receipt.expectedFailureSequence === latestRunFailureSequence) ? [receipt] : [];
+      return receipt.state === "dispatchConfirmed" &&
+        (latestRunFailureSequence === undefined ||
+          receipt.expectedFailureSequence === latestRunFailureSequence)
+        ? [receipt]
+        : [];
     })[0];
-    const latestCorrelation = latestWorkerCorrelationReconciliationReceipt(events);
-    const expectedNativeTurnId = latestCorrelation?.state === "followUpConfirmed" || latestCorrelation?.state === "workerCompleted"
-      ? yield* readPrivateWorkerCorrelationFollowUpTurn(paths.root)
-      : recovery === undefined
-        ? undefined
-        : yield* readPrivateWorkerRecoveryTurn(paths.root, recovery.nativeTurnIdDigest, recovery);
+    const latestCorrelation =
+      latestWorkerCorrelationReconciliationReceipt(events);
+    const expectedNativeTurnId =
+      latestCorrelation?.state === "followUpConfirmed" ||
+      latestCorrelation?.state === "workerCompleted"
+        ? yield* readPrivateWorkerCorrelationFollowUpTurn(paths.root)
+        : recovery === undefined
+          ? undefined
+          : yield* readPrivateWorkerRecoveryTurn(
+              paths.root,
+              recovery.nativeTurnIdDigest,
+              recovery
+            );
     return {
       ...commonOptions,
       workerContinuationState: continuationState,
@@ -2276,7 +2657,9 @@ function factoryContinuationOptions(
         ...(expectedNativeTurnId === undefined ? {} : { expectedNativeTurnId }),
         provider: resolved.provider,
         rootDirectory,
-        ...(options.sessionCoordinator === undefined ? {} : { sessionCoordinator: options.sessionCoordinator }),
+        ...(options.sessionCoordinator === undefined
+          ? {}
+          : { sessionCoordinator: options.sessionCoordinator }),
       }),
     };
   });
@@ -2285,37 +2668,50 @@ function factoryContinuationOptions(
 function acceptedRunDeliveryFeedbackTrustPolicy(
   firstEvent: RunEvent,
   provenance: DeliveryProvenance,
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
     const persisted = firstEvent.payload["deliveryFeedbackTrustPolicy"];
-    const { deliveryFeedbackTrustPolicy: _requestedPolicy, ...legacyOptions } = options;
-    const accepted = persisted === undefined
-      ? yield* acceptedDeliveryFeedbackTrustPolicy(provenance, legacyOptions)
-      : yield* Effect.try({
-          try: () => Schema.decodeUnknownSync(DeliveryFeedbackTrustPolicyV1)(persisted),
-          catch: (cause) => makeRuntimeError({
-            cause,
-            code: "DeliveryFeedbackTrustPolicyInvalid",
-            message: "Accepted delivery feedback trust policy is invalid.",
-            recoverable: false,
-          }),
-        });
+    const { deliveryFeedbackTrustPolicy: _requestedPolicy, ...legacyOptions } =
+      options;
+    const accepted =
+      persisted === undefined
+        ? yield* acceptedDeliveryFeedbackTrustPolicy(provenance, legacyOptions)
+        : yield* Effect.try({
+            try: () =>
+              Schema.decodeUnknownSync(DeliveryFeedbackTrustPolicyV1)(
+                persisted
+              ),
+            catch: (cause) =>
+              makeRuntimeError({
+                cause,
+                code: "DeliveryFeedbackTrustPolicyInvalid",
+                message: "Accepted delivery feedback trust policy is invalid.",
+                recoverable: false,
+              }),
+          });
     if (
       options.deliveryFeedbackTrustPolicy !== undefined &&
-      canonicalDeliveryFeedbackTrustPolicy(options.deliveryFeedbackTrustPolicy) !== canonicalDeliveryFeedbackTrustPolicy(accepted)
+      canonicalDeliveryFeedbackTrustPolicy(
+        options.deliveryFeedbackTrustPolicy
+      ) !== canonicalDeliveryFeedbackTrustPolicy(accepted)
     ) {
-      return yield* Effect.fail(makeRuntimeError({
-        code: "DeliveryFeedbackTrustPolicyChanged",
-        message: "Delivery feedback trust policy changed after run acceptance.",
-        recoverable: false,
-      }));
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryFeedbackTrustPolicyChanged",
+          message:
+            "Delivery feedback trust policy changed after run acceptance.",
+          recoverable: false,
+        })
+      );
     }
     return accepted;
   });
 }
 
-function canonicalDeliveryFeedbackTrustPolicy(policy: DeliveryFeedbackTrustPolicyV1) {
+function canonicalDeliveryFeedbackTrustPolicy(
+  policy: DeliveryFeedbackTrustPolicyV1
+) {
   return JSON.stringify({
     allowPullRequestAuthor: policy.allowPullRequestAuthor,
     requireApprovedReview: deliveryFeedbackRequiresApprovedReview(policy),
@@ -2328,34 +2724,42 @@ function canonicalDeliveryFeedbackTrustPolicy(policy: DeliveryFeedbackTrustPolic
 function acceptedDeliveryProvenance(
   runId: RunId,
   delivery: { readonly mode: "local" | "pullRequest" },
-  options: ServerWorkflowOptions,
+  options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
     if (delivery.mode === "local") {
       return { mode: "local" as const };
     }
     const rootDirectory = options.rootDirectory ?? ".";
-    return yield* resolveDeliveryProvenance(runId, {
-      rootDirectory,
-      ...(options.deliveryGitCommandRunner === undefined
-        ? {}
-        : { commandRunner: options.deliveryGitCommandRunner }),
-    }, options.deliveryAcceptanceProvenancePolicy);
+    return yield* resolveDeliveryProvenance(
+      runId,
+      {
+        rootDirectory,
+        ...(options.deliveryGitCommandRunner === undefined
+          ? {}
+          : { commandRunner: options.deliveryGitCommandRunner }),
+      },
+      options.deliveryAcceptanceProvenancePolicy
+    );
   });
 }
 
 function assertAcceptedDeliveryProvenancePolicy(
   provenance: DeliveryProvenance,
-  requested: DeliveryAcceptanceProvenancePolicyV1 | undefined,
+  requested: DeliveryAcceptanceProvenancePolicyV1 | undefined
 ) {
   if (requested === undefined) return Effect.void;
-  return requested.remote === provenance.remote && requested.baseBranch === provenance.baseBranch && requested.headBranch === provenance.headBranch
+  return requested.remote === provenance.remote &&
+    requested.baseBranch === provenance.baseBranch &&
+    requested.headBranch === provenance.headBranch
     ? Effect.void
-    : Effect.fail(makeRuntimeError({
-        code: "DeliveryProvenancePolicyChanged",
-        message: "Delivery provenance policy changed after run acceptance.",
-        recoverable: false,
-      }));
+    : Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryProvenancePolicyChanged",
+          message: "Delivery provenance policy changed after run acceptance.",
+          recoverable: false,
+        })
+      );
 }
 
 function parseAcceptedDelivery(value: Schema.Json | undefined) {
@@ -2367,7 +2771,7 @@ function parseAcceptedDelivery(value: Schema.Json | undefined) {
           code: "DeliveryPolicyInvalid",
           message: "Accepted delivery policy is invalid.",
           recoverable: false,
-        }),
+        })
       );
     }
     const delivery = value as Record<string, Schema.Json>;
@@ -2379,17 +2783,20 @@ function parseAcceptedDelivery(value: Schema.Json | undefined) {
           code: "DeliveryPolicyInvalid",
           message: "Accepted delivery policy is invalid.",
           recoverable: false,
-        }),
+        })
       );
     }
-    const provenance = parseDeliveryProvenance(delivery).pipe(Option.getOrUndefined);
+    const provenance = parseDeliveryProvenance(delivery).pipe(
+      Option.getOrUndefined
+    );
     if (provenance === undefined) {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "DeliveryWorktreeIdentityMismatch",
-          message: "Accepted pull-request delivery provenance is missing or invalid.",
+          message:
+            "Accepted pull-request delivery provenance is missing or invalid.",
           recoverable: false,
-        }),
+        })
       );
     }
     return { mode: "pullRequest", provenance } as const;
@@ -2399,29 +2806,44 @@ function parseAcceptedDelivery(value: Schema.Json | undefined) {
 /** Replay table: no session -> start, live session -> resume, first terminal -> own it. */
 function issueDeliveryWorkerContinuationState(
   events: ReadonlyArray<RunEvent>,
-  sessionEvents: ReadonlyArray<ReturnType<typeof parseHarnessEvent>>,
+  sessionEvents: ReadonlyArray<ReturnType<typeof parseHarnessEvent>>
 ): WorkerContinuationState | "invalid" {
-  const recoverySequence = [...events].reverse().find((event) =>
-    event.type === "WORKER_RECOVERY_RECORDED" &&
-    parseWorkerRecoveryReceipt(event.payload["recovery"]).state === "dispatchConfirmed"
-  )?.sequence;
-  const continuationEpochSequence = latestWorkerContinuationEpochSequence(events);
+  const recoverySequence = [...events]
+    .reverse()
+    .find(
+      (event) =>
+        event.type === "WORKER_RECOVERY_RECORDED" &&
+        parseWorkerRecoveryReceipt(event.payload["recovery"]).state ===
+          "dispatchConfirmed"
+    )?.sequence;
+  const continuationEpochSequence =
+    latestWorkerContinuationEpochSequence(events);
   const evidenceEpochSequence = Math.max(
     recoverySequence ?? 0,
-    continuationEpochSequence ?? 0,
+    continuationEpochSequence ?? 0
   );
-  const relevantSessionEvents = evidenceEpochSequence === 0
-    ? sessionEvents
-    : events.filter((event) => event.sequence > evidenceEpochSequence && event.type === "HARNESS_SESSION_EVENT_RECORDED").map((event) => parseHarnessEvent(event.payload.event));
+  const relevantSessionEvents =
+    evidenceEpochSequence === 0
+      ? sessionEvents
+      : events
+          .filter(
+            (event) =>
+              event.sequence > evidenceEpochSequence &&
+              event.type === "HARNESS_SESSION_EVENT_RECORDED"
+          )
+          .map((event) => parseHarnessEvent(event.payload.event));
   const workerCompletionPersisted = events.some(
-    ({ sequence, type }) => type === "WORKER_COMPLETED" && sequence > evidenceEpochSequence,
+    ({ sequence, type }) =>
+      type === "WORKER_COMPLETED" && sequence > evidenceEpochSequence
   );
   const terminal = relevantSessionEvents.find(
-    ({ kind }) => kind === "turnCompleted" || kind === "sessionFailed",
+    ({ kind }) => kind === "turnCompleted" || kind === "sessionFailed"
   );
   if (terminal === undefined) {
     if (workerCompletionPersisted) return "invalid";
-    return recoverySequence !== undefined || relevantSessionEvents.length > 0 ? "resume" : "start";
+    return recoverySequence !== undefined || relevantSessionEvents.length > 0
+      ? "resume"
+      : "start";
   }
   if (
     terminal.kind === "turnCompleted" &&
@@ -2433,18 +2855,27 @@ function issueDeliveryWorkerContinuationState(
   return "terminal";
 }
 
-function latestWorkerContinuationEpochSequence(events: ReadonlyArray<RunEvent>) {
+function latestWorkerContinuationEpochSequence(
+  events: ReadonlyArray<RunEvent>
+) {
   return [...events].reverse().flatMap((event) => {
     if (event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED") {
-      const desktopOriginCorrelation = parseWorkerDesktopOriginCorrelationReceipt(event.payload["desktopOriginCorrelation"]);
+      const desktopOriginCorrelation =
+        parseWorkerDesktopOriginCorrelationReceipt(
+          event.payload["desktopOriginCorrelation"]
+        );
       return [desktopOriginCorrelation.workerEvidenceEpochSequence];
     }
     if (event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED") {
-      const reconciliation = parseWorkerCorrelationReconciliationReceipt(event.payload["reconciliation"]);
+      const reconciliation = parseWorkerCorrelationReconciliationReceipt(
+        event.payload["reconciliation"]
+      );
       return [reconciliation.workerEvidenceEpochSequence];
     }
     if (event.type === "WORKER_CONTINUATION_RECORDED") {
-      const continuation = parseWorkerContinuationReceipt(event.payload["continuation"]);
+      const continuation = parseWorkerContinuationReceipt(
+        event.payload["continuation"]
+      );
       return [continuation.workerEvidenceEpochSequence];
     }
     return [];
@@ -2453,7 +2884,7 @@ function latestWorkerContinuationEpochSequence(events: ReadonlyArray<RunEvent>) 
 
 function issueDeliveryWorkerSessionEvents(
   runId: RunId,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ) {
   const sessionId = parseHarnessSessionId(`session-${runId}`);
   return events.flatMap((event) => {
@@ -2463,7 +2894,10 @@ function issueDeliveryWorkerSessionEvents(
   });
 }
 
-function jsonObjectField(value: Schema.Json | undefined, field: string): unknown {
+function jsonObjectField(
+  value: Schema.Json | undefined,
+  field: string
+): unknown {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }

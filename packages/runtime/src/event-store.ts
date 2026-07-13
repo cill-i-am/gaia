@@ -13,7 +13,15 @@ import {
   type RunId,
   RunSnapshot,
 } from "@gaia/core";
-import { Effect, FileSystem, PartitionedSemaphore, Queue, Schema, Stream } from "effect";
+import {
+  Effect,
+  FileSystem,
+  PartitionedSemaphore,
+  Queue,
+  Schema,
+  Stream,
+} from "effect";
+
 import { makeRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
 
@@ -31,13 +39,15 @@ type RunSubscriber = {
   overflowed: boolean;
   readonly queue: Queue.Queue<RunEvent>;
 };
-const runEventSemaphore = PartitionedSemaphore.makeUnsafe<string>({ permits: 1 });
+const runEventSemaphore = PartitionedSemaphore.makeUnsafe<string>({
+  permits: 1,
+});
 const runSubscribers = new Map<string, Set<RunSubscriber>>();
 
 /** Serialize sequence allocation, persistence, validation, and publication per run log. */
 export function withRunEventSerialization<A, E, R>(
   paths: RunPaths,
-  effect: Effect.Effect<A, E, R>,
+  effect: Effect.Effect<A, E, R>
 ) {
   return runEventSemaphore.withPermits(paths.events, 1)(effect);
 }
@@ -45,15 +55,18 @@ export function withRunEventSerialization<A, E, R>(
 export function appendEvent(
   runId: RunId,
   paths: RunPaths,
-  input: AppendEventInput,
+  input: AppendEventInput
 ) {
-  return withRunEventSerialization(paths, appendEventWithinSerialization(runId, paths, input));
+  return withRunEventSerialization(
+    paths,
+    appendEventWithinSerialization(runId, paths, input)
+  );
 }
 
 export function appendEventWithinSerialization(
   runId: RunId,
   paths: RunPaths,
-  input: AppendEventInput,
+  input: AppendEventInput
 ) {
   return Effect.gen(function* () {
     if (
@@ -66,7 +79,7 @@ export function appendEventWithinSerialization(
           message:
             "Harness session events must use the finite appendHarnessSessionEvent path.",
           recoverable: false,
-        }),
+        })
       );
     }
     const existingEvents = yield* readEvents(paths);
@@ -93,7 +106,7 @@ export function appendEventWithinSerialization(
     yield* appendJsonLine(paths.events, Schema.encodeSync(RunEvent)(event));
     yield* appendJsonLine(
       paths.snapshots,
-      Schema.encodeSync(RunSnapshot)(snapshot),
+      Schema.encodeSync(RunSnapshot)(snapshot)
     );
 
     yield* publishRunEvent(paths, event);
@@ -105,11 +118,11 @@ export function appendEventWithinSerialization(
 export function appendHarnessSessionEvent(
   runId: RunId,
   paths: RunPaths,
-  input: HarnessEvent,
+  input: HarnessEvent
 ) {
   return withRunEventSerialization(
     paths,
-    appendHarnessSessionEventWithinSerialization(runId, paths, input),
+    appendHarnessSessionEventWithinSerialization(runId, paths, input)
   );
 }
 
@@ -117,7 +130,7 @@ export function appendHarnessSessionEvent(
 export function appendHarnessSessionEventWithinSerialization(
   runId: RunId,
   paths: RunPaths,
-  input: HarnessEvent,
+  input: HarnessEvent
 ) {
   return Effect.gen(function* () {
     const existingEvents = yield* readEvents(paths);
@@ -134,7 +147,7 @@ export function appendHarnessSessionEventWithinSerialization(
     yield* appendJsonLine(paths.events, Schema.encodeSync(RunEvent)(event));
     yield* appendJsonLine(
       paths.snapshots,
-      Schema.encodeSync(RunSnapshot)(snapshot),
+      Schema.encodeSync(RunSnapshot)(snapshot)
     );
     yield* publishRunEvent(paths, event);
     return { event, snapshot };
@@ -149,7 +162,8 @@ export function subscribeRunEventFeed(paths: RunPaths, capacity = 256) {
       Effect.gen(function* () {
         const queue = yield* Queue.dropping<RunEvent>(capacity);
         const subscriber: RunSubscriber = { overflowed: false, queue };
-        const subscribers = runSubscribers.get(paths.events) ?? new Set<RunSubscriber>();
+        const subscribers =
+          runSubscribers.get(paths.events) ?? new Set<RunSubscriber>();
         subscribers.add(subscriber);
         runSubscribers.set(paths.events, subscribers);
         const backlog = yield* readEvents(paths);
@@ -161,15 +175,22 @@ export function subscribeRunEventFeed(paths: RunPaths, capacity = 256) {
               Stream.fromEffect(
                 Effect.suspend(() =>
                   subscriber.overflowed
-                    ? Effect.fail(makeRuntimeError({ code: "RunEventFeedOverflow", message: "Run event subscriber exceeded its bounded capacity.", recoverable: true }))
-                    : Effect.void,
-                ),
-              ).pipe(Stream.drain),
-            ),
+                    ? Effect.fail(
+                        makeRuntimeError({
+                          code: "RunEventFeedOverflow",
+                          message:
+                            "Run event subscriber exceeded its bounded capacity.",
+                          recoverable: true,
+                        })
+                      )
+                    : Effect.void
+                )
+              ).pipe(Stream.drain)
+            )
           ),
           subscriber,
         };
-      }),
+      })
     ),
     ({ subscriber }) =>
       withRunEventSerialization(
@@ -179,10 +200,10 @@ export function subscribeRunEventFeed(paths: RunPaths, capacity = 256) {
           subscribers?.delete(subscriber);
           if (subscribers?.size === 0) runSubscribers.delete(paths.events);
           yield* Queue.shutdown(subscriber.queue);
-        }),
-      ),
+        })
+      )
   ).pipe(
-    Effect.map(({ subscriber: _subscriber, ...subscription }) => subscription),
+    Effect.map(({ subscriber: _subscriber, ...subscription }) => subscription)
   );
 }
 
@@ -199,7 +220,7 @@ function publishRunEvent(paths: RunPaths, event: RunEvent) {
 }
 
 export function loadRun(
-  paths: RunPaths,
+  paths: RunPaths
 ): Effect.Effect<LoadedRunState, unknown, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const events = yield* readEvents(paths);
@@ -222,7 +243,9 @@ export function readEvents(paths: RunPaths) {
     let expectedSequence = 1;
 
     for (const [index, line] of lines.entries()) {
-      const parsed = parseRunEvent(parseJsonLine(line, paths.events, index + 1));
+      const parsed = parseRunEvent(
+        parseJsonLine(line, paths.events, index + 1)
+      );
 
       if (parsed.sequence !== expectedSequence) {
         return yield* Effect.fail(
@@ -230,7 +253,7 @@ export function readEvents(paths: RunPaths) {
             code: "InvalidEventSequence",
             message: `Event sequence mismatch at line ${index + 1}.`,
             recoverable: false,
-          }),
+          })
         );
       }
 
@@ -282,7 +305,11 @@ function readOptionalFile(path: string) {
   });
 }
 
-function parseJsonLine(line: string, path: string, lineNumber: number): unknown {
+function parseJsonLine(
+  line: string,
+  path: string,
+  lineNumber: number
+): unknown {
   try {
     return JSON.parse(line);
   } catch (cause) {

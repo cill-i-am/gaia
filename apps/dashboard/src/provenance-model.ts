@@ -70,7 +70,7 @@ export function buildEvidenceProvenanceModel(input: {
     replayReachabilityClaim(
       input.selectedNode,
       input.relatedEvents,
-      input.replayState,
+      input.replayState
     ),
     evidenceSnippetClaim(input.selectedNode),
     ...runSignalClaims(input.selectedRun),
@@ -80,25 +80,25 @@ export function buildEvidenceProvenanceModel(input: {
 
   return {
     claims,
-    supportedCount: claims.filter(
-      (claim) => claim.availability === "supported",
-    ).length,
+    supportedCount: claims.filter((claim) => claim.availability === "supported")
+      .length,
     unavailableCount: claims.filter(
-      (claim) => claim.availability === "unavailable",
+      (claim) => claim.availability === "unavailable"
     ).length,
     unsupportedCount: claims.filter(
-      (claim) => claim.availability === "unsupported",
+      (claim) => claim.availability === "unsupported"
     ).length,
   };
 }
 
 function nodeStatusClaim(
   node: RunNode,
-  relatedEvents: ReadonlyArray<DashboardEvent>,
+  relatedEvents: ReadonlyArray<DashboardEvent>
 ): ProvenanceClaim {
   const sources = [
     apiSource({
-      detail: "Status is carried from public run detail or derived from loaded public events for this node.",
+      detail:
+        "Status is carried from public run detail or derived from loaded public events for this node.",
       label: "Dashboard model",
       path: `nodes.${node.id}.status`,
     }),
@@ -117,14 +117,14 @@ function nodeStatusClaim(
 function eventCountClaim(
   node: RunNode,
   relatedEvents: ReadonlyArray<DashboardEvent>,
-  run: DashboardRun,
+  run: DashboardRun
 ): ProvenanceClaim {
   const eventSources =
     relatedEvents.length > 0
       ? relatedEvents.slice(0, 4).map(eventSource)
       : [
           unavailableSource(
-            "No related ordered events are exposed for this claim.",
+            "No related ordered events are exposed for this claim."
           ),
         ];
 
@@ -134,7 +134,8 @@ function eventCountClaim(
     label: "Event count",
     sources: [
       apiSource({
-        detail: "Loaded through GET /runs/:runId/events and reconciled with live stream events when available.",
+        detail:
+          "Loaded through GET /runs/:runId/events and reconciled with live stream events when available.",
         label: "Public events API",
         path: `runs.${run.id}.events`,
       }),
@@ -150,7 +151,7 @@ function artifactCountClaim(node: RunNode): ProvenanceClaim {
       ? node.artifacts.map(artifactSource)
       : [
           unavailableSource(
-            "No allowlisted artifacts are attached to this visible claim.",
+            "No allowlisted artifacts are attached to this visible claim."
           ),
         ];
 
@@ -166,10 +167,10 @@ function artifactCountClaim(node: RunNode): ProvenanceClaim {
 function replayReachabilityClaim(
   node: RunNode,
   relatedEvents: ReadonlyArray<DashboardEvent>,
-  replayState: RunReplayState,
+  replayState: RunReplayState
 ): ProvenanceClaim {
   const visibleRelatedEvents = relatedEvents.filter((event) =>
-    replayState.visibleEventIds.includes(event.id),
+    replayState.visibleEventIds.includes(event.id)
   );
   const isReached =
     relatedEvents.length === 0 || visibleRelatedEvents.length > 0;
@@ -196,7 +197,7 @@ function evidenceSnippetClaim(node: RunNode): ProvenanceClaim {
       label: "Evidence snippets",
       sources: [
         unavailableSource(
-          "The current dashboard model has no evidence notes for this node.",
+          "The current dashboard model has no evidence notes for this node."
         ),
       ],
       value: "No evidence notes",
@@ -212,7 +213,7 @@ function evidenceSnippetClaim(node: RunNode): ProvenanceClaim {
         detail: item,
         label: "Visible evidence note",
         path: `nodes.${node.id}.evidence`,
-      }),
+      })
     ),
     value: `${node.evidence.length} visible notes`,
   };
@@ -262,11 +263,11 @@ function signalClaim(input: {
     ...new Set(
       input.run.nodes
         .flatMap((node) => node.artifacts)
-        .filter((artifactId) => input.artifactIds.includes(artifactId)),
+        .filter((artifactId) => input.artifactIds.includes(artifactId))
     ),
   ];
   const matchingEvents = input.run.events.filter((event) =>
-    input.eventTypes.includes(event.type),
+    input.eventTypes.includes(event.type)
   );
   const sources = [
     ...matchingEvents.map(eventSource),
@@ -300,7 +301,7 @@ function runCompareClaim(runCompare: RunCompareModel): ProvenanceClaim {
       label: "Run compare summary",
       sources: [
         unavailableSource(
-          "Two loaded public run summaries are required before comparison claims can be proven.",
+          "Two loaded public run summaries are required before comparison claims can be proven."
         ),
       ],
       value: "Unavailable",
@@ -319,9 +320,9 @@ function runCompareClaim(runCompare: RunCompareModel): ProvenanceClaim {
         label: "Compare model",
         path: "runCompare.metrics",
       }),
-      ...runCompare.missingData.slice(0, 3).map((item) =>
-        unavailableSource(item),
-      ),
+      ...runCompare.missingData
+        .slice(0, 3)
+        .map((item) => unavailableSource(item)),
     ],
     value: runCompare.summary,
   };
@@ -338,7 +339,7 @@ function threadIdentityClaim(node: RunNode): ProvenanceClaim | undefined {
     label: "Thread identity",
     sources: [
       unsupportedSource(
-        "The public API does not expose Codex thread IDs, private relationships, or hidden reasoning.",
+        "The public API does not expose Codex thread IDs, private relationships, or hidden reasoning."
       ),
     ],
     value: "Unsupported by current public API",

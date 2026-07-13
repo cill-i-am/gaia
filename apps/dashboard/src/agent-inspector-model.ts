@@ -97,7 +97,7 @@ export function buildAgentInspectorSessionModel(input: {
     interrupt: interruptFor(input.session, activeTurn),
     notice: input.lastError,
     pendingInteractions: input.session.pendingInteractions.map(
-      pendingInteractionModel,
+      pendingInteractionModel
     ),
     status: input.session.state,
     timeline: input.session.items.map(timelineItemModel),
@@ -113,7 +113,7 @@ function unavailableModel(input: {
     composer: disabledComposer(
       input.status === "unavailable"
         ? "Agent session is unavailable."
-        : input.notice,
+        : input.notice
     ),
     eventSequence: input.eventSequence,
     interrupt: {
@@ -129,19 +129,19 @@ function unavailableModel(input: {
 }
 
 function latestActiveTurn(
-  turns: ReadonlyArray<typeof HarnessTurnSnapshot.Type>,
+  turns: ReadonlyArray<typeof HarnessTurnSnapshot.Type>
 ) {
   return [...turns]
     .reverse()
     .find(
       (turn) =>
-        turn.status === "running" || turn.status === "waitingForOperator",
+        turn.status === "running" || turn.status === "waitingForOperator"
     );
 }
 
 function composerFor(
   session: typeof AgentSessionSnapshotDto.Type,
-  activeTurn: typeof HarnessTurnSnapshot.Type | undefined,
+  activeTurn: typeof HarnessTurnSnapshot.Type | undefined
 ): AgentInspectorComposer {
   if (isTerminalSessionState(session.state)) {
     return disabledComposer(`Agent session is ${session.state}.`);
@@ -174,7 +174,9 @@ function composerFor(
   }
 
   if (!session.capabilities.resumableSessions) {
-    return disabledComposer("Follow-up turns are not supported by this session.");
+    return disabledComposer(
+      "Follow-up turns are not supported by this session."
+    );
   }
 
   return disabledComposer(`Agent session is ${session.state}.`);
@@ -182,7 +184,7 @@ function composerFor(
 
 function interruptFor(
   session: typeof AgentSessionSnapshotDto.Type,
-  activeTurn: typeof HarnessTurnSnapshot.Type | undefined,
+  activeTurn: typeof HarnessTurnSnapshot.Type | undefined
 ) {
   if (!session.capabilities.interruption) {
     return {
@@ -217,9 +219,7 @@ function disabledComposer(reason: string): AgentInspectorComposer {
 }
 
 function isTerminalSessionState(state: HarnessSessionState) {
-  return (
-    state === "completed" || state === "failed" || state === "interrupted"
-  );
+  return state === "completed" || state === "failed" || state === "interrupted";
 }
 
 function isActiveSessionState(state: HarnessSessionState) {
@@ -297,7 +297,7 @@ function timelineItemModel(item: HarnessItem): AgentInspectorTimelineItem {
 }
 
 function pendingInteractionModel(
-  interaction: HarnessPendingInteraction,
+  interaction: HarnessPendingInteraction
 ): AgentInspectorPendingInteraction {
   switch (interaction.kind) {
     case "commandApproval":
@@ -347,7 +347,7 @@ function questionSummary(
   question: Extract<
     HarnessPendingInteraction,
     { readonly kind: "userInput" }
-  >["questions"][number],
+  >["questions"][number]
 ) {
   const options =
     question.options.length === 0

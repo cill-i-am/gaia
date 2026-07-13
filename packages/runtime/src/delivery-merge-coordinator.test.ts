@@ -1,7 +1,14 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
+
 import { NodePath, NodeServices } from "@effect/platform-node";
 import {
   DeliveryFeedbackTrustPolicyV1,
@@ -39,102 +46,339 @@ import {
 } from "@gaia/core";
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  coordinateDeliveryMerge,
+  coordinateDeliveryMergeReadiness,
+  normalizeGitHubReviewDecision,
+  requiredCheckPolicyFromTrustPolicy,
+  type FreshMergeState,
+} from "./delivery-merge-coordinator.js";
 import { defaultDeliveryFeedbackTrustPolicy } from "./delivery-remediation-coordinator.js";
-import { coordinateDeliveryMerge, coordinateDeliveryMergeReadiness, normalizeGitHubReviewDecision, requiredCheckPolicyFromTrustPolicy, type FreshMergeState } from "./delivery-merge-coordinator.js";
 import { coordinateDeliveryLocalReviewAttestation } from "./delivery-review-attestation-coordinator.js";
 import { makeRunPaths } from "./paths.js";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
+afterEach(() => {
+  for (const root of roots.splice(0))
+    rmSync(root, { force: true, recursive: true });
+});
 
 function fixture(
   state: "ready" | "attempted" | "checkpoint" | "unknown",
   requireApprovedReview?: boolean,
-  readyHeadSha = "a".repeat(40),
+  readyHeadSha = "a".repeat(40)
 ) {
-  const root = mkdtempSync(path.join(tmpdir(), "gaia-merge-restart-")); roots.push(root);
+  const root = mkdtempSync(path.join(tmpdir(), "gaia-merge-restart-"));
+  roots.push(root);
   const runId = parseRunId("run-1234567890");
-  const paths = Effect.runSync(makeRunPaths(runId, { rootDirectory: root }).pipe(Effect.provide(NodePath.layer)));
-  mkdirSync(paths.root, { recursive: true }); writeFileSync(paths.snapshots, "");
+  const paths = Effect.runSync(
+    makeRunPaths(runId, { rootDirectory: root }).pipe(
+      Effect.provide(NodePath.layer)
+    )
+  );
+  mkdirSync(paths.root, { recursive: true });
+  writeFileSync(paths.snapshots, "");
   const trust = DeliveryFeedbackTrustPolicyV1.make({
     ...defaultDeliveryFeedbackTrustPolicy("cill-i-am/gaia"),
     ...(requireApprovedReview === undefined ? {} : { requireApprovedReview }),
   });
-  const policyDigest = createHash("sha256").update(deliveryRequiredCheckPolicyCanonicalPayload(requiredCheckPolicyFromTrustPolicy(trust))).digest("hex");
-  const publicationBase = { baseBranch: "main", baseRevision: "0".repeat(40), branchName: "gaia/run-1234567890", commitMessage: "feat: delivery", commitTimestamp: "2026-07-11T19:00:00.000Z", digestVersion: 1 as const, operationId: "delivery:run-1234567890:1", payloadDigest: "1".repeat(64), sourcePaths: ["feature.ts"], treeSha: "2".repeat(40) };
-  const pubIntent = DeliveryPublicationIntent.make({ ...publicationBase, state: "intentRecorded" });
-  const pubAttempt = DeliveryPublicationAttempted.make({ ...publicationBase, commitSha: "a".repeat(40), state: "attempted" });
-  const publication = DeliveryPublicationConfirmed.make({ ...pubAttempt, draft: true, headSha: "a".repeat(40), prNumber: 74, prUrl: "https://github.com/cill-i-am/gaia/pull/74", state: "confirmed" });
-  const readyBase = { actionId: "ready-1", branchName: publication.branchName, expectedHeadSha: readyHeadSha, prNumber: 74, prUrl: publication.prUrl, publicationOperationId: publication.operationId, publicationPayloadDigest: publication.payloadDigest, repository: "cill-i-am/gaia", runId, version: 1 as const };
-  const readyBinding = { ...readyBase, payloadDigest: createHash("sha256").update(deliveryPullRequestReadyCanonicalPayload(readyBase)).digest("hex") };
-  const readyIntent = DeliveryPullRequestReadyIntent.make({ ...readyBinding, state: "intentRecorded" });
-  const readyAttempted = DeliveryPullRequestReadyDispatchAttempted.make({ ...readyBinding, state: "dispatchAttempted" });
-  const readyConfirmed = DeliveryPullRequestReadyDispatchConfirmed.make({ ...readyBinding, draft: false, state: "dispatchConfirmed" });
-  const binding = { actionId: "merge-1", branchName: publication.branchName, decisionSequence: 9, expectedHeadSha: publication.headSha, mergeMethod: "merge" as const, payloadDigest: createHash("sha256").update(["merge-1", runId, publication.prUrl, publication.branchName, publication.headSha, "9", "merge", policyDigest].join("\0")).digest("hex"), policyDigest, policyVersion: 1 as const, prNumber: 74, prUrl: publication.prUrl, repository: "cill-i-am/gaia" };
-  const decision = DeliveryMergeReadinessDecision.make({ actionId: "readiness-1", approved: true, blockers: [], branchName: binding.branchName, headSha: binding.expectedHeadSha, mergeMethod: binding.mergeMethod, payloadDigest: createHash("sha256").update(["readiness-1", runId, binding.prUrl, binding.branchName, binding.mergeMethod, policyDigest].join("\0")).digest("hex"), policyDigest, policyVersion: 1, prNumber: 74, prUrl: binding.prUrl });
-  const intent = DeliveryMergeIntent.make({ ...binding, state: "intentRecorded" });
-  const attempted = DeliveryMergeDispatchAttempted.make({ ...binding, state: "dispatchAttempted" });
-  const event = (sequence: number, type: Parameters<typeof makeRunEvent>[0]["type"], payload: Readonly<Record<string, Schema.Json>>) => makeRunEvent({ payload, runId, sequence, timestamp: `2026-07-11T19:00:${String(sequence).padStart(2, "0")}.000Z`, type });
+  const policyDigest = createHash("sha256")
+    .update(
+      deliveryRequiredCheckPolicyCanonicalPayload(
+        requiredCheckPolicyFromTrustPolicy(trust)
+      )
+    )
+    .digest("hex");
+  const publicationBase = {
+    baseBranch: "main",
+    baseRevision: "0".repeat(40),
+    branchName: "gaia/run-1234567890",
+    commitMessage: "feat: delivery",
+    commitTimestamp: "2026-07-11T19:00:00.000Z",
+    digestVersion: 1 as const,
+    operationId: "delivery:run-1234567890:1",
+    payloadDigest: "1".repeat(64),
+    sourcePaths: ["feature.ts"],
+    treeSha: "2".repeat(40),
+  };
+  const pubIntent = DeliveryPublicationIntent.make({
+    ...publicationBase,
+    state: "intentRecorded",
+  });
+  const pubAttempt = DeliveryPublicationAttempted.make({
+    ...publicationBase,
+    commitSha: "a".repeat(40),
+    state: "attempted",
+  });
+  const publication = DeliveryPublicationConfirmed.make({
+    ...pubAttempt,
+    draft: true,
+    headSha: "a".repeat(40),
+    prNumber: 74,
+    prUrl: "https://github.com/cill-i-am/gaia/pull/74",
+    state: "confirmed",
+  });
+  const readyBase = {
+    actionId: "ready-1",
+    branchName: publication.branchName,
+    expectedHeadSha: readyHeadSha,
+    prNumber: 74,
+    prUrl: publication.prUrl,
+    publicationOperationId: publication.operationId,
+    publicationPayloadDigest: publication.payloadDigest,
+    repository: "cill-i-am/gaia",
+    runId,
+    version: 1 as const,
+  };
+  const readyBinding = {
+    ...readyBase,
+    payloadDigest: createHash("sha256")
+      .update(deliveryPullRequestReadyCanonicalPayload(readyBase))
+      .digest("hex"),
+  };
+  const readyIntent = DeliveryPullRequestReadyIntent.make({
+    ...readyBinding,
+    state: "intentRecorded",
+  });
+  const readyAttempted = DeliveryPullRequestReadyDispatchAttempted.make({
+    ...readyBinding,
+    state: "dispatchAttempted",
+  });
+  const readyConfirmed = DeliveryPullRequestReadyDispatchConfirmed.make({
+    ...readyBinding,
+    draft: false,
+    state: "dispatchConfirmed",
+  });
+  const binding = {
+    actionId: "merge-1",
+    branchName: publication.branchName,
+    decisionSequence: 9,
+    expectedHeadSha: publication.headSha,
+    mergeMethod: "merge" as const,
+    payloadDigest: createHash("sha256")
+      .update(
+        [
+          "merge-1",
+          runId,
+          publication.prUrl,
+          publication.branchName,
+          publication.headSha,
+          "9",
+          "merge",
+          policyDigest,
+        ].join("\0")
+      )
+      .digest("hex"),
+    policyDigest,
+    policyVersion: 1 as const,
+    prNumber: 74,
+    prUrl: publication.prUrl,
+    repository: "cill-i-am/gaia",
+  };
+  const decision = DeliveryMergeReadinessDecision.make({
+    actionId: "readiness-1",
+    approved: true,
+    blockers: [],
+    branchName: binding.branchName,
+    headSha: binding.expectedHeadSha,
+    mergeMethod: binding.mergeMethod,
+    payloadDigest: createHash("sha256")
+      .update(
+        [
+          "readiness-1",
+          runId,
+          binding.prUrl,
+          binding.branchName,
+          binding.mergeMethod,
+          policyDigest,
+        ].join("\0")
+      )
+      .digest("hex"),
+    policyDigest,
+    policyVersion: 1,
+    prNumber: 74,
+    prUrl: binding.prUrl,
+  });
+  const intent = DeliveryMergeIntent.make({
+    ...binding,
+    state: "intentRecorded",
+  });
+  const attempted = DeliveryMergeDispatchAttempted.make({
+    ...binding,
+    state: "dispatchAttempted",
+  });
+  const event = (
+    sequence: number,
+    type: Parameters<typeof makeRunEvent>[0]["type"],
+    payload: Readonly<Record<string, Schema.Json>>
+  ) =>
+    makeRunEvent({
+      payload,
+      runId,
+      sequence,
+      timestamp: `2026-07-11T19:00:${String(sequence).padStart(2, "0")}.000Z`,
+      type,
+    });
   const events = [
     event(1, "RUN_CREATED", { specPath: "spec.md" }),
-    event(2, "DELIVERY_STARTED", { delivery: { baseBranch: "main", baseRevision: "0".repeat(40), feedbackTrustPolicy: Schema.encodeSync(DeliveryFeedbackTrustPolicyV1)(trust), headBranch: publication.branchName, mode: "pullRequest", remote: "origin", stage: "delivering" } }),
-    event(3, "DELIVERY_PUBLICATION_INTENT_RECORDED", { publication: encodeDeliveryPublicationJson(pubIntent) }),
-    event(4, "DELIVERY_PUBLICATION_ATTEMPTED", { publication: encodeDeliveryPublicationJson(pubAttempt) }),
-    event(5, "DELIVERY_PUBLICATION_CONFIRMED", { publication: encodeDeliveryPublicationJson(publication) }),
-    event(6, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(readyIntent) }),
-    event(7, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(readyAttempted) }),
-    event(8, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(readyConfirmed) }),
-    event(9, "DELIVERY_MERGE_READINESS_RECORDED", { decision: encodeDeliveryMergeReadinessDecisionJson(decision) }),
-    ...(state === "ready" ? [] : [
-      event(10, "DELIVERY_MERGE_RECORDED", { mergeAction: encodeDeliveryMergeReceiptJson(intent) }),
-      event(11, "DELIVERY_MERGE_RECORDED", { mergeAction: encodeDeliveryMergeReceiptJson(attempted) }),
-    ]),
-    ...(state === "checkpoint" ? [event(12, "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED", { checkpoint: { actionId: binding.actionId, payloadDigest: binding.payloadDigest, state: "attemptRecorded", version: 1 } })] : []),
-    ...(state === "unknown" ? [event(12, "DELIVERY_MERGE_RECORDED", { mergeAction: encodeDeliveryMergeReceiptJson(DeliveryMergeTerminalFailure.make({ ...binding, code: "DeliveryMergeOutcomeUnknown", message: "ambiguous", state: "outcomeUnknown" })) })] : []),
+    event(2, "DELIVERY_STARTED", {
+      delivery: {
+        baseBranch: "main",
+        baseRevision: "0".repeat(40),
+        feedbackTrustPolicy: Schema.encodeSync(DeliveryFeedbackTrustPolicyV1)(
+          trust
+        ),
+        headBranch: publication.branchName,
+        mode: "pullRequest",
+        remote: "origin",
+        stage: "delivering",
+      },
+    }),
+    event(3, "DELIVERY_PUBLICATION_INTENT_RECORDED", {
+      publication: encodeDeliveryPublicationJson(pubIntent),
+    }),
+    event(4, "DELIVERY_PUBLICATION_ATTEMPTED", {
+      publication: encodeDeliveryPublicationJson(pubAttempt),
+    }),
+    event(5, "DELIVERY_PUBLICATION_CONFIRMED", {
+      publication: encodeDeliveryPublicationJson(publication),
+    }),
+    event(6, "DELIVERY_PR_READY_RECORDED", {
+      readyForReviewAction:
+        encodeDeliveryPullRequestReadyReceiptJson(readyIntent),
+    }),
+    event(7, "DELIVERY_PR_READY_RECORDED", {
+      readyForReviewAction:
+        encodeDeliveryPullRequestReadyReceiptJson(readyAttempted),
+    }),
+    event(8, "DELIVERY_PR_READY_RECORDED", {
+      readyForReviewAction:
+        encodeDeliveryPullRequestReadyReceiptJson(readyConfirmed),
+    }),
+    event(9, "DELIVERY_MERGE_READINESS_RECORDED", {
+      decision: encodeDeliveryMergeReadinessDecisionJson(decision),
+    }),
+    ...(state === "ready"
+      ? []
+      : [
+          event(10, "DELIVERY_MERGE_RECORDED", {
+            mergeAction: encodeDeliveryMergeReceiptJson(intent),
+          }),
+          event(11, "DELIVERY_MERGE_RECORDED", {
+            mergeAction: encodeDeliveryMergeReceiptJson(attempted),
+          }),
+        ]),
+    ...(state === "checkpoint"
+      ? [
+          event(12, "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED", {
+            checkpoint: {
+              actionId: binding.actionId,
+              payloadDigest: binding.payloadDigest,
+              state: "attemptRecorded",
+              version: 1,
+            },
+          }),
+        ]
+      : []),
+    ...(state === "unknown"
+      ? [
+          event(12, "DELIVERY_MERGE_RECORDED", {
+            mergeAction: encodeDeliveryMergeReceiptJson(
+              DeliveryMergeTerminalFailure.make({
+                ...binding,
+                code: "DeliveryMergeOutcomeUnknown",
+                message: "ambiguous",
+                state: "outcomeUnknown",
+              })
+            ),
+          }),
+        ]
+      : []),
   ];
-  writeFileSync(paths.events, `${events.map((value) => JSON.stringify(Schema.encodeSync(RunEvent)(value))).join("\n")}\n`);
-  const action = { actionId: binding.actionId, expectedBranchName: binding.branchName, expectedDecisionSequence: 9, expectedHeadSha: binding.expectedHeadSha, expectedPolicyDigest: policyDigest, expectedPrUrl: binding.prUrl, kind: "merge" as const, mergeMethod: "merge" as const };
+  writeFileSync(
+    paths.events,
+    `${events.map((value) => JSON.stringify(Schema.encodeSync(RunEvent)(value))).join("\n")}\n`
+  );
+  const action = {
+    actionId: binding.actionId,
+    expectedBranchName: binding.branchName,
+    expectedDecisionSequence: 9,
+    expectedHeadSha: binding.expectedHeadSha,
+    expectedPolicyDigest: policyDigest,
+    expectedPrUrl: binding.prUrl,
+    kind: "merge" as const,
+    mergeMethod: "merge" as const,
+  };
   return { action, binding, root, runId };
 }
 
 function retainedPreReadyFixture() {
   const result = fixture("attempted");
-  const eventsPath = path.join(result.root, ".gaia", "runs", result.runId, "events.jsonl");
+  const eventsPath = path.join(
+    result.root,
+    ".gaia",
+    "runs",
+    result.runId,
+    "events.jsonl"
+  );
   const retained = readFileSync(eventsPath, "utf8")
     .trim()
     .split("\n")
     .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)))
     .filter(({ type }) => type !== "DELIVERY_PR_READY_RECORDED")
-    .map((event, index) => makeRunEvent({
-      payload: event.payload,
-      runId: event.runId,
-      sequence: index + 1,
-      timestamp: event.timestamp,
-      type: event.type,
-    }));
-  writeFileSync(eventsPath, `${retained.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`);
+    .map((event, index) =>
+      makeRunEvent({
+        payload: event.payload,
+        runId: event.runId,
+        sequence: index + 1,
+        timestamp: event.timestamp,
+        type: event.type,
+      })
+    );
+  writeFileSync(
+    eventsPath,
+    `${retained.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`
+  );
   return result;
 }
 
 function corruptReadyReceipts(
   result: ReturnType<typeof fixture>,
-  corruption: "digest" | "publication generation" | "pull request tuple",
+  corruption: "digest" | "publication generation" | "pull request tuple"
 ) {
-  const eventsPath = path.join(result.root, ".gaia", "runs", result.runId, "events.jsonl");
+  const eventsPath = path.join(
+    result.root,
+    ".gaia",
+    "runs",
+    result.runId,
+    "events.jsonl"
+  );
   const events = readFileSync(eventsPath, "utf8")
     .trim()
     .split("\n")
     .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)))
     .map((event) => {
       if (event.type !== "DELIVERY_PR_READY_RECORDED") return event;
-      const receipt = parseDeliveryPullRequestReadyReceipt(event.payload["readyForReviewAction"]);
+      const receipt = parseDeliveryPullRequestReadyReceipt(
+        event.payload["readyForReviewAction"]
+      );
       const binding = {
         actionId: receipt.actionId,
         branchName: receipt.branchName,
         expectedHeadSha: receipt.expectedHeadSha,
-        prNumber: corruption === "pull request tuple" ? receipt.prNumber + 1 : receipt.prNumber,
-        prUrl: corruption === "pull request tuple" ? "https://github.com/cill-i-am/gaia/pull/75" : receipt.prUrl,
-        publicationOperationId: corruption === "publication generation" ? `${receipt.publicationOperationId}:forged` : receipt.publicationOperationId,
+        prNumber:
+          corruption === "pull request tuple"
+            ? receipt.prNumber + 1
+            : receipt.prNumber,
+        prUrl:
+          corruption === "pull request tuple"
+            ? "https://github.com/cill-i-am/gaia/pull/75"
+            : receipt.prUrl,
+        publicationOperationId:
+          corruption === "publication generation"
+            ? `${receipt.publicationOperationId}:forged`
+            : receipt.publicationOperationId,
         publicationPayloadDigest: receipt.publicationPayloadDigest,
         repository: receipt.repository,
         runId: receipt.runId,
@@ -143,21 +387,39 @@ function corruptReadyReceipts(
       const changed = parseDeliveryPullRequestReadyReceipt({
         ...receipt,
         ...binding,
-        payloadDigest: corruption === "digest" ? "f".repeat(64) : deliveryPullRequestReadyPayloadDigest(binding),
+        payloadDigest:
+          corruption === "digest"
+            ? "f".repeat(64)
+            : deliveryPullRequestReadyPayloadDigest(binding),
       });
       return makeRunEvent({
-        payload: { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(changed) },
+        payload: {
+          readyForReviewAction:
+            encodeDeliveryPullRequestReadyReceiptJson(changed),
+        },
         runId: event.runId,
         sequence: event.sequence,
         timestamp: event.timestamp,
         type: event.type,
       });
     });
-  writeFileSync(eventsPath, `${events.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`);
+  writeFileSync(
+    eventsPath,
+    `${events.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`
+  );
 }
 
-function appendConfirmedRemediation(result: ReturnType<typeof fixture>, commitSha = "b".repeat(40)) {
-  const eventsPath = path.join(result.root, ".gaia", "runs", result.runId, "events.jsonl");
+function appendConfirmedRemediation(
+  result: ReturnType<typeof fixture>,
+  commitSha = "b".repeat(40)
+) {
+  const eventsPath = path.join(
+    result.root,
+    ".gaia",
+    "runs",
+    result.runId,
+    "events.jsonl"
+  );
   const events = readFileSync(eventsPath, "utf8")
     .trim()
     .split("\n")
@@ -167,35 +429,66 @@ function appendConfirmedRemediation(result: ReturnType<typeof fixture>, commitSh
     commitTimestamp: "2026-07-13T07:02:00.000Z",
     expectedHeadSha: result.binding.expectedHeadSha,
     feedbackDigest: "e".repeat(64),
-    feedbackIds: [parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`)],
+    feedbackIds: [
+      parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`),
+    ],
     inputId: "remediation-run-1234567890-1",
     operationId: "remediation:run-1234567890:1",
   };
   const remediations = [
     DeliveryRemediationIntent.make({ ...base, state: "intentRecorded" }),
-    DeliveryRemediationDispatchAttempted.make({ ...base, state: "dispatchAttempted" }),
+    DeliveryRemediationDispatchAttempted.make({
+      ...base,
+      state: "dispatchAttempted",
+    }),
     DeliveryRemediationTurnCompleted.make({ ...base, state: "turnCompleted" }),
     DeliveryRemediationVerified.make({ ...base, state: "verified" }),
-    DeliveryRemediationCommitAttempted.make({ ...base, commitSha, state: "commitAttempted" }),
-    DeliveryRemediationPushAttempted.make({ ...base, commitSha, state: "pushAttempted" }),
-    DeliveryRemediationConfirmed.make({ ...base, commitSha, state: "confirmed" }),
+    DeliveryRemediationCommitAttempted.make({
+      ...base,
+      commitSha,
+      state: "commitAttempted",
+    }),
+    DeliveryRemediationPushAttempted.make({
+      ...base,
+      commitSha,
+      state: "pushAttempted",
+    }),
+    DeliveryRemediationConfirmed.make({
+      ...base,
+      commitSha,
+      state: "confirmed",
+    }),
   ];
   const next = [
     ...events,
-    ...remediations.map((remediation, index) => makeRunEvent({
-      payload: { remediation: encodeDeliveryRemediationJson(remediation) },
-      runId: result.runId,
-      sequence: events.length + index + 1,
-      timestamp: `2026-07-13T07:02:${String(index).padStart(2, "0")}.000Z`,
-      type: "DELIVERY_REMEDIATION_RECORDED",
-    })),
+    ...remediations.map((remediation, index) =>
+      makeRunEvent({
+        payload: { remediation: encodeDeliveryRemediationJson(remediation) },
+        runId: result.runId,
+        sequence: events.length + index + 1,
+        timestamp: `2026-07-13T07:02:${String(index).padStart(2, "0")}.000Z`,
+        type: "DELIVERY_REMEDIATION_RECORDED",
+      })
+    ),
   ];
-  writeFileSync(eventsPath, `${next.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`);
+  writeFileSync(
+    eventsPath,
+    `${next.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`
+  );
   return commitSha;
 }
 
-function appendCurrentReadyConfirmation(result: ReturnType<typeof fixture>, expectedHeadSha: string) {
-  const eventsPath = path.join(result.root, ".gaia", "runs", result.runId, "events.jsonl");
+function appendCurrentReadyConfirmation(
+  result: ReturnType<typeof fixture>,
+  expectedHeadSha: string
+) {
+  const eventsPath = path.join(
+    result.root,
+    ".gaia",
+    "runs",
+    result.runId,
+    "events.jsonl"
+  );
   const events = readFileSync(eventsPath, "utf8")
     .trim()
     .split("\n")
@@ -212,78 +505,275 @@ function appendCurrentReadyConfirmation(result: ReturnType<typeof fixture>, expe
     runId: result.runId,
     version: 1 as const,
   };
-  const binding = { ...base, payloadDigest: deliveryPullRequestReadyPayloadDigest(base) };
+  const binding = {
+    ...base,
+    payloadDigest: deliveryPullRequestReadyPayloadDigest(base),
+  };
   const receipts = [
-    DeliveryPullRequestReadyIntent.make({ ...binding, state: "intentRecorded" }),
-    DeliveryPullRequestReadyConfirmedWithoutDispatch.make({ ...binding, draft: false, state: "confirmedWithoutDispatch" }),
+    DeliveryPullRequestReadyIntent.make({
+      ...binding,
+      state: "intentRecorded",
+    }),
+    DeliveryPullRequestReadyConfirmedWithoutDispatch.make({
+      ...binding,
+      draft: false,
+      state: "confirmedWithoutDispatch",
+    }),
   ];
   const next = [
     ...events,
-    ...receipts.map((receipt, index) => makeRunEvent({
-      payload: { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(receipt) },
-      runId: result.runId,
-      sequence: events.length + index + 1,
-      timestamp: `2026-07-13T07:03:0${index}.000Z`,
-      type: "DELIVERY_PR_READY_RECORDED",
-    })),
+    ...receipts.map((receipt, index) =>
+      makeRunEvent({
+        payload: {
+          readyForReviewAction:
+            encodeDeliveryPullRequestReadyReceiptJson(receipt),
+        },
+        runId: result.runId,
+        sequence: events.length + index + 1,
+        timestamp: `2026-07-13T07:03:0${index}.000Z`,
+        type: "DELIVERY_PR_READY_RECORDED",
+      })
+    ),
   ];
-  writeFileSync(eventsPath, `${next.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`);
+  writeFileSync(
+    eventsPath,
+    `${next.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`
+  );
 }
 
-const merged = (binding: ReturnType<typeof fixture>["binding"]): FreshMergeState => ({ branchName: binding.branchName, checks: [], draft: false, feedbackBlockers: 0, headSha: binding.expectedHeadSha, mergeCommitSha: "d".repeat(40), mergeability: "mergeable", mergedAt: "2026-07-11T20:00:00.000Z", prNumber: binding.prNumber, prUrl: binding.prUrl, repository: binding.repository, reviewDecision: "APPROVED", state: "merged", supportedMethods: ["merge"], unresolvedActionableThreads: 0 });
+const merged = (
+  binding: ReturnType<typeof fixture>["binding"]
+): FreshMergeState => ({
+  branchName: binding.branchName,
+  checks: [],
+  draft: false,
+  feedbackBlockers: 0,
+  headSha: binding.expectedHeadSha,
+  mergeCommitSha: "d".repeat(40),
+  mergeability: "mergeable",
+  mergedAt: "2026-07-11T20:00:00.000Z",
+  prNumber: binding.prNumber,
+  prUrl: binding.prUrl,
+  repository: binding.repository,
+  reviewDecision: "APPROVED",
+  state: "merged",
+  supportedMethods: ["merge"],
+  unresolvedActionableThreads: 0,
+});
 
 describe("delivery merge reconstructed coordinator", () => {
   it("satisfies strict review policy from one current exact-head local operator attestation but never overrides changes requested", async () => {
     const f = fixture("ready", true);
     const current = merged(f.binding);
-    const { mergedAt: _mergedAt, mergeCommitSha: _mergeCommitSha, reviewDecision: _reviewDecision, ...openBase } = current;
+    const {
+      mergedAt: _mergedAt,
+      mergeCommitSha: _mergeCommitSha,
+      reviewDecision: _reviewDecision,
+      ...openBase
+    } = current;
     const open = { ...openBase, state: "open" as const };
-    await Effect.runPromise(coordinateDeliveryLocalReviewAttestation(f.runId, {
-      actionId: "paired-review-attestation-1",
-      decision: "approved",
-      expectedBranchName: f.binding.branchName,
-      expectedHeadSha: f.binding.expectedHeadSha,
-      expectedPrNumber: f.binding.prNumber,
-      expectedPrUrl: f.binding.prUrl,
-      kind: "attestPairedReviewApproval",
-    }, { freshStateReader: () => Effect.succeed(open), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
+    await Effect.runPromise(
+      coordinateDeliveryLocalReviewAttestation(
+        f.runId,
+        {
+          actionId: "paired-review-attestation-1",
+          decision: "approved",
+          expectedBranchName: f.binding.branchName,
+          expectedHeadSha: f.binding.expectedHeadSha,
+          expectedPrNumber: f.binding.prNumber,
+          expectedPrUrl: f.binding.prUrl,
+          kind: "attestPairedReviewApproval",
+        },
+        { freshStateReader: () => Effect.succeed(open), rootDirectory: f.root }
+      ).pipe(Effect.provide(NodeServices.layer))
+    );
 
-    const checks = [{ appSlug: "github-actions", headSha: f.binding.expectedHeadSha, name: "gaia-pr-ci", repository: f.binding.repository, state: "passing" as const, workflow: "Gaia PR CI" }];
-    const approved = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: "readiness-local-attestation", kind: "evaluateMergeReadiness", mergeMethod: "merge" }, { freshStateReader: () => Effect.succeed({ ...open, checks }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
-    expect(approved).toMatchObject({ approved: true, approvalSource: { kind: "localOperatorPairedReview" }, version: 2 });
+    const checks = [
+      {
+        appSlug: "github-actions",
+        headSha: f.binding.expectedHeadSha,
+        name: "gaia-pr-ci",
+        repository: f.binding.repository,
+        state: "passing" as const,
+        workflow: "Gaia PR CI",
+      },
+    ];
+    const approved = await Effect.runPromise(
+      coordinateDeliveryMergeReadiness(
+        f.runId,
+        {
+          actionId: "readiness-local-attestation",
+          kind: "evaluateMergeReadiness",
+          mergeMethod: "merge",
+        },
+        {
+          freshStateReader: () => Effect.succeed({ ...open, checks }),
+          rootDirectory: f.root,
+        }
+      ).pipe(Effect.provide(NodeServices.layer))
+    );
+    expect(approved).toMatchObject({
+      approved: true,
+      approvalSource: { kind: "localOperatorPairedReview" },
+      version: 2,
+    });
     let replayReads = 0;
-    const replay = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: "readiness-local-attestation", kind: "evaluateMergeReadiness", mergeMethod: "merge" }, { freshStateReader: () => Effect.sync(() => { replayReads += 1; return { ...open, checks }; }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
+    const replay = await Effect.runPromise(
+      coordinateDeliveryMergeReadiness(
+        f.runId,
+        {
+          actionId: "readiness-local-attestation",
+          kind: "evaluateMergeReadiness",
+          mergeMethod: "merge",
+        },
+        {
+          freshStateReader: () =>
+            Effect.sync(() => {
+              replayReads += 1;
+              return { ...open, checks };
+            }),
+          rootDirectory: f.root,
+        }
+      ).pipe(Effect.provide(NodeServices.layer))
+    );
     expect(replay.payloadDigest).toBe(approved.payloadDigest);
     expect(replayReads).toBe(0);
 
-    const rejected = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: "readiness-changes-requested", kind: "evaluateMergeReadiness", mergeMethod: "merge" }, { freshStateReader: () => Effect.succeed({ ...open, checks, reviewDecision: "CHANGES_REQUESTED" }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
+    const rejected = await Effect.runPromise(
+      coordinateDeliveryMergeReadiness(
+        f.runId,
+        {
+          actionId: "readiness-changes-requested",
+          kind: "evaluateMergeReadiness",
+          mergeMethod: "merge",
+        },
+        {
+          freshStateReader: () =>
+            Effect.succeed({
+              ...open,
+              checks,
+              reviewDecision: "CHANGES_REQUESTED",
+            }),
+          rootDirectory: f.root,
+        }
+      ).pipe(Effect.provide(NodeServices.layer))
+    );
     expect(rejected).toMatchObject({ approved: false, version: 2 });
-    expect("approvalSource" in rejected ? rejected.approvalSource : undefined).toBeUndefined();
+    expect(
+      "approvalSource" in rejected ? rejected.approvalSource : undefined
+    ).toBeUndefined();
   });
 
   it("rejects a local-attested readiness decision after a later authority generation even when the tree SHA is unchanged", async () => {
     const f = fixture("ready", true);
     const current = merged(f.binding);
-    const { mergedAt: _mergedAt, mergeCommitSha: _mergeCommitSha, reviewDecision: _reviewDecision, ...openBase } = current;
+    const {
+      mergedAt: _mergedAt,
+      mergeCommitSha: _mergeCommitSha,
+      reviewDecision: _reviewDecision,
+      ...openBase
+    } = current;
     const open = { ...openBase, state: "open" as const };
-    await Effect.runPromise(coordinateDeliveryLocalReviewAttestation(f.runId, { actionId: "paired-review-attestation-1", decision: "approved", expectedBranchName: f.binding.branchName, expectedHeadSha: f.binding.expectedHeadSha, expectedPrNumber: f.binding.prNumber, expectedPrUrl: f.binding.prUrl, kind: "attestPairedReviewApproval" }, { freshStateReader: () => Effect.succeed(open), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
-    const checks = [{ appSlug: "github-actions", headSha: f.binding.expectedHeadSha, name: "gaia-pr-ci", repository: f.binding.repository, state: "passing" as const, workflow: "Gaia PR CI" }];
-    await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: "readiness-local-attestation", kind: "evaluateMergeReadiness", mergeMethod: "merge" }, { freshStateReader: () => Effect.succeed({ ...open, checks }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
-    const eventsPath = path.join(f.root, ".gaia", "runs", f.runId, "events.jsonl");
-    const decisionSequence = readFileSync(eventsPath, "utf8").trim().split("\n").length;
+    await Effect.runPromise(
+      coordinateDeliveryLocalReviewAttestation(
+        f.runId,
+        {
+          actionId: "paired-review-attestation-1",
+          decision: "approved",
+          expectedBranchName: f.binding.branchName,
+          expectedHeadSha: f.binding.expectedHeadSha,
+          expectedPrNumber: f.binding.prNumber,
+          expectedPrUrl: f.binding.prUrl,
+          kind: "attestPairedReviewApproval",
+        },
+        { freshStateReader: () => Effect.succeed(open), rootDirectory: f.root }
+      ).pipe(Effect.provide(NodeServices.layer))
+    );
+    const checks = [
+      {
+        appSlug: "github-actions",
+        headSha: f.binding.expectedHeadSha,
+        name: "gaia-pr-ci",
+        repository: f.binding.repository,
+        state: "passing" as const,
+        workflow: "Gaia PR CI",
+      },
+    ];
+    await Effect.runPromise(
+      coordinateDeliveryMergeReadiness(
+        f.runId,
+        {
+          actionId: "readiness-local-attestation",
+          kind: "evaluateMergeReadiness",
+          mergeMethod: "merge",
+        },
+        {
+          freshStateReader: () => Effect.succeed({ ...open, checks }),
+          rootDirectory: f.root,
+        }
+      ).pipe(Effect.provide(NodeServices.layer))
+    );
+    const eventsPath = path.join(
+      f.root,
+      ".gaia",
+      "runs",
+      f.runId,
+      "events.jsonl"
+    );
+    const decisionSequence = readFileSync(eventsPath, "utf8")
+      .trim()
+      .split("\n").length;
     appendConfirmedRemediation(f, f.binding.expectedHeadSha);
     let reads = 0;
     let providerCalls = 0;
 
-    await expect(Effect.runPromise(coordinateDeliveryMerge(f.runId, { actionId: "merge-stale-attestation", expectedBranchName: f.binding.branchName, expectedDecisionSequence: decisionSequence, expectedHeadSha: f.binding.expectedHeadSha, expectedPolicyDigest: f.binding.policyDigest, expectedPrUrl: f.binding.prUrl, kind: "merge", mergeMethod: "merge" }, { commandRunner: () => Effect.sync(() => { providerCalls += 1; return { exitCode: 0, stderr: "", stdout: "" }; }), freshStateReader: () => Effect.sync(() => { reads += 1; return open; }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    await expect(
+      Effect.runPromise(
+        coordinateDeliveryMerge(
+          f.runId,
+          {
+            actionId: "merge-stale-attestation",
+            expectedBranchName: f.binding.branchName,
+            expectedDecisionSequence: decisionSequence,
+            expectedHeadSha: f.binding.expectedHeadSha,
+            expectedPolicyDigest: f.binding.policyDigest,
+            expectedPrUrl: f.binding.prUrl,
+            kind: "merge",
+            mergeMethod: "merge",
+          },
+          {
+            commandRunner: () =>
+              Effect.sync(() => {
+                providerCalls += 1;
+                return { exitCode: 0, stderr: "", stdout: "" };
+              }),
+            freshStateReader: () =>
+              Effect.sync(() => {
+                reads += 1;
+                return open;
+              }),
+            rootDirectory: f.root,
+          }
+        ).pipe(Effect.provide(NodeServices.layer))
+      )
+    ).rejects.toMatchObject({ code: "DeliveryActionConflict" });
     expect(reads).toBe(0);
     expect(providerCalls).toBe(0);
   });
   it("canonicalizes legacy and explicit strict review policy while distinguishing solo policy", () => {
     const legacy = defaultDeliveryFeedbackTrustPolicy("cill-i-am/gaia");
-    const strict = DeliveryFeedbackTrustPolicyV1.make({ ...legacy, requireApprovedReview: true });
-    const solo = DeliveryFeedbackTrustPolicyV1.make({ ...legacy, requireApprovedReview: false });
-    const canonical = (policy: DeliveryFeedbackTrustPolicyV1) => deliveryRequiredCheckPolicyCanonicalPayload(requiredCheckPolicyFromTrustPolicy(policy));
+    const strict = DeliveryFeedbackTrustPolicyV1.make({
+      ...legacy,
+      requireApprovedReview: true,
+    });
+    const solo = DeliveryFeedbackTrustPolicyV1.make({
+      ...legacy,
+      requireApprovedReview: false,
+    });
+    const canonical = (policy: DeliveryFeedbackTrustPolicyV1) =>
+      deliveryRequiredCheckPolicyCanonicalPayload(
+        requiredCheckPolicyFromTrustPolicy(policy)
+      );
 
     expect(canonical(legacy)).toBe(canonical(strict));
     expect(canonical(legacy)).toContain("review:1");
@@ -293,43 +783,87 @@ describe("delivery merge reconstructed coordinator", () => {
 
   it("rejects strict-to-solo process drift before intent or provider invocation", async () => {
     const f = fixture("ready", false);
-    const strict = requiredCheckPolicyFromTrustPolicy(defaultDeliveryFeedbackTrustPolicy("cill-i-am/gaia"));
+    const strict = requiredCheckPolicyFromTrustPolicy(
+      defaultDeliveryFeedbackTrustPolicy("cill-i-am/gaia")
+    );
     let providerCalls = 0;
 
-    await expect(Effect.runPromise(coordinateDeliveryMerge(f.runId, f.action, {
-      commandRunner: () => Effect.sync(() => { providerCalls += 1; return { exitCode: 0, stderr: "", stdout: "" }; }),
-      freshStateReader: () => Effect.succeed(merged(f.binding)),
-      requiredCheckPolicy: strict,
-      rootDirectory: f.root,
-    }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    await expect(
+      Effect.runPromise(
+        coordinateDeliveryMerge(f.runId, f.action, {
+          commandRunner: () =>
+            Effect.sync(() => {
+              providerCalls += 1;
+              return { exitCode: 0, stderr: "", stdout: "" };
+            }),
+          freshStateReader: () => Effect.succeed(merged(f.binding)),
+          requiredCheckPolicy: strict,
+          rootDirectory: f.root,
+        }).pipe(Effect.provide(NodeServices.layer))
+      )
+    ).rejects.toMatchObject({ code: "DeliveryActionConflict" });
     expect(providerCalls).toBe(0);
-    expect(readFileSync(path.join(f.root, ".gaia", "runs", f.runId, "events.jsonl"), "utf8")).not.toContain('"DELIVERY_MERGE_RECORDED"');
+    expect(
+      readFileSync(
+        path.join(f.root, ".gaia", "runs", f.runId, "events.jsonl"),
+        "utf8"
+      )
+    ).not.toContain('"DELIVERY_MERGE_RECORDED"');
   });
 
   it("requires durable ready confirmation for the exact current head before readiness or merge", async () => {
     const f = fixture("ready", false, "b".repeat(40));
-    const { mergeCommitSha: _mergeCommitSha, mergedAt: _mergedAt, ...base } = merged(f.binding);
+    const {
+      mergeCommitSha: _mergeCommitSha,
+      mergedAt: _mergedAt,
+      ...base
+    } = merged(f.binding);
     const fresh = {
       ...base,
-      checks: [{ appSlug: "github-actions", headSha: f.binding.expectedHeadSha, name: "gaia-pr-ci", repository: f.binding.repository, state: "passing" as const, workflow: "Gaia PR CI" }],
+      checks: [
+        {
+          appSlug: "github-actions",
+          headSha: f.binding.expectedHeadSha,
+          name: "gaia-pr-ci",
+          repository: f.binding.repository,
+          state: "passing" as const,
+          workflow: "Gaia PR CI",
+        },
+      ],
       state: "open" as const,
     };
     let providerCalls = 0;
 
-    await expect(Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, {
-      actionId: "readiness-current-head",
-      kind: "evaluateMergeReadiness",
-      mergeMethod: "merge",
-    }, {
-      freshStateReader: () => Effect.succeed(fresh),
-      rootDirectory: f.root,
-    }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    await expect(
+      Effect.runPromise(
+        coordinateDeliveryMergeReadiness(
+          f.runId,
+          {
+            actionId: "readiness-current-head",
+            kind: "evaluateMergeReadiness",
+            mergeMethod: "merge",
+          },
+          {
+            freshStateReader: () => Effect.succeed(fresh),
+            rootDirectory: f.root,
+          }
+        ).pipe(Effect.provide(NodeServices.layer))
+      )
+    ).rejects.toMatchObject({ code: "DeliveryActionConflict" });
 
-    await expect(Effect.runPromise(coordinateDeliveryMerge(f.runId, f.action, {
-      commandRunner: () => Effect.sync(() => { providerCalls += 1; return { exitCode: 0, stderr: "", stdout: "" }; }),
-      freshStateReader: () => Effect.succeed(fresh),
-      rootDirectory: f.root,
-    }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    await expect(
+      Effect.runPromise(
+        coordinateDeliveryMerge(f.runId, f.action, {
+          commandRunner: () =>
+            Effect.sync(() => {
+              providerCalls += 1;
+              return { exitCode: 0, stderr: "", stdout: "" };
+            }),
+          freshStateReader: () => Effect.succeed(fresh),
+          rootDirectory: f.root,
+        }).pipe(Effect.provide(NodeServices.layer))
+      )
+    ).rejects.toMatchObject({ code: "DeliveryActionConflict" });
     expect(providerCalls).toBe(0);
   });
 
@@ -338,14 +872,26 @@ describe("delivery merge reconstructed coordinator", () => {
     appendConfirmedRemediation(f);
     let reads = 0;
 
-    await expect(Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, {
-      actionId: "readiness-1",
-      kind: "evaluateMergeReadiness",
-      mergeMethod: "merge",
-    }, {
-      freshStateReader: () => Effect.sync(() => { reads += 1; return merged(f.binding); }),
-      rootDirectory: f.root,
-    }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    await expect(
+      Effect.runPromise(
+        coordinateDeliveryMergeReadiness(
+          f.runId,
+          {
+            actionId: "readiness-1",
+            kind: "evaluateMergeReadiness",
+            mergeMethod: "merge",
+          },
+          {
+            freshStateReader: () =>
+              Effect.sync(() => {
+                reads += 1;
+                return merged(f.binding);
+              }),
+            rootDirectory: f.root,
+          }
+        ).pipe(Effect.provide(NodeServices.layer))
+      )
+    ).rejects.toMatchObject({ code: "DeliveryActionConflict" });
     expect(reads).toBe(0);
   });
 
@@ -355,11 +901,23 @@ describe("delivery merge reconstructed coordinator", () => {
     let reads = 0;
     let providerCalls = 0;
 
-    await expect(Effect.runPromise(coordinateDeliveryMerge(f.runId, f.action, {
-      commandRunner: () => Effect.sync(() => { providerCalls += 1; return { exitCode: 0, stderr: "", stdout: "" }; }),
-      freshStateReader: () => Effect.sync(() => { reads += 1; return merged(f.binding); }),
-      rootDirectory: f.root,
-    }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    await expect(
+      Effect.runPromise(
+        coordinateDeliveryMerge(f.runId, f.action, {
+          commandRunner: () =>
+            Effect.sync(() => {
+              providerCalls += 1;
+              return { exitCode: 0, stderr: "", stdout: "" };
+            }),
+          freshStateReader: () =>
+            Effect.sync(() => {
+              reads += 1;
+              return merged(f.binding);
+            }),
+          rootDirectory: f.root,
+        }).pipe(Effect.provide(NodeServices.layer))
+      )
+    ).rejects.toMatchObject({ code: "DeliveryActionConflict" });
     expect(reads).toBe(0);
     expect(providerCalls).toBe(0);
   });
@@ -368,47 +926,94 @@ describe("delivery merge reconstructed coordinator", () => {
     const f = fixture("ready", false);
     const currentHeadSha = appendConfirmedRemediation(f);
     appendCurrentReadyConfirmation(f, currentHeadSha);
-    const { mergeCommitSha: _mergeCommitSha, mergedAt: _mergedAt, ...base } = merged(f.binding);
+    const {
+      mergeCommitSha: _mergeCommitSha,
+      mergedAt: _mergedAt,
+      ...base
+    } = merged(f.binding);
     const fresh = {
       ...base,
-      checks: [{ appSlug: "github-actions", headSha: currentHeadSha, name: "gaia-pr-ci", repository: f.binding.repository, state: "passing" as const, workflow: "Gaia PR CI" }],
+      checks: [
+        {
+          appSlug: "github-actions",
+          headSha: currentHeadSha,
+          name: "gaia-pr-ci",
+          repository: f.binding.repository,
+          state: "passing" as const,
+          workflow: "Gaia PR CI",
+        },
+      ],
       headSha: currentHeadSha,
       state: "open" as const,
     };
 
-    const decision = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, {
-      actionId: "readiness-remediated-1",
-      kind: "evaluateMergeReadiness",
-      mergeMethod: "merge",
-    }, {
-      freshStateReader: () => Effect.succeed(fresh),
-      rootDirectory: f.root,
-    }).pipe(Effect.provide(NodeServices.layer)));
+    const decision = await Effect.runPromise(
+      coordinateDeliveryMergeReadiness(
+        f.runId,
+        {
+          actionId: "readiness-remediated-1",
+          kind: "evaluateMergeReadiness",
+          mergeMethod: "merge",
+        },
+        {
+          freshStateReader: () => Effect.succeed(fresh),
+          rootDirectory: f.root,
+        }
+      ).pipe(Effect.provide(NodeServices.layer))
+    );
 
     expect(decision).toMatchObject({ approved: true, headSha: currentHeadSha });
   });
 
-  for (const corruption of ["publication generation", "pull request tuple", "digest"] as const) {
+  for (const corruption of [
+    "publication generation",
+    "pull request tuple",
+    "digest",
+  ] as const) {
     it(`rejects a ready receipt with a mismatched ${corruption} before readiness or merge side effects`, async () => {
       const f = fixture("ready", false);
       corruptReadyReceipts(f, corruption);
       let reads = 0;
       let providerCalls = 0;
 
-      await expect(Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, {
-        actionId: "readiness-corrupt-history",
-        kind: "evaluateMergeReadiness",
-        mergeMethod: "merge",
-      }, {
-        freshStateReader: () => Effect.sync(() => { reads += 1; return merged(f.binding); }),
-        rootDirectory: f.root,
-      }).pipe(Effect.provide(NodeServices.layer)))).rejects.toThrow();
+      await expect(
+        Effect.runPromise(
+          coordinateDeliveryMergeReadiness(
+            f.runId,
+            {
+              actionId: "readiness-corrupt-history",
+              kind: "evaluateMergeReadiness",
+              mergeMethod: "merge",
+            },
+            {
+              freshStateReader: () =>
+                Effect.sync(() => {
+                  reads += 1;
+                  return merged(f.binding);
+                }),
+              rootDirectory: f.root,
+            }
+          ).pipe(Effect.provide(NodeServices.layer))
+        )
+      ).rejects.toThrow();
 
-      await expect(Effect.runPromise(coordinateDeliveryMerge(f.runId, f.action, {
-        commandRunner: () => Effect.sync(() => { providerCalls += 1; return { exitCode: 0, stderr: "", stdout: "" }; }),
-        freshStateReader: () => Effect.sync(() => { reads += 1; return merged(f.binding); }),
-        rootDirectory: f.root,
-      }).pipe(Effect.provide(NodeServices.layer)))).rejects.toThrow();
+      await expect(
+        Effect.runPromise(
+          coordinateDeliveryMerge(f.runId, f.action, {
+            commandRunner: () =>
+              Effect.sync(() => {
+                providerCalls += 1;
+                return { exitCode: 0, stderr: "", stdout: "" };
+              }),
+            freshStateReader: () =>
+              Effect.sync(() => {
+                reads += 1;
+                return merged(f.binding);
+              }),
+            rootDirectory: f.root,
+          }).pipe(Effect.provide(NodeServices.layer))
+        )
+      ).rejects.toThrow();
       expect(reads).toBe(0);
       expect(providerCalls).toBe(0);
     });
@@ -428,9 +1033,41 @@ describe("delivery merge reconstructed coordinator", () => {
   ] as const) {
     it(`applies review truth table required=${required} state=${reviewDecision ?? "none"}`, async () => {
       const f = fixture("attempted", required);
-      const { mergeCommitSha: _mergeCommitSha, mergedAt: _mergedAt, reviewDecision: _reviewDecision, ...base } = merged(f.binding);
-      const fresh = { ...base, checks: [{ appSlug: "github-actions", headSha: f.binding.expectedHeadSha, name: "gaia-pr-ci", repository: f.binding.repository, state: "passing" as const, workflow: "Gaia PR CI" }], ...(reviewDecision === undefined ? {} : { reviewDecision }), state: "open" as const };
-      const decision = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: `readiness-${required}-${reviewDecision ?? "none"}`, kind: "evaluateMergeReadiness", mergeMethod: "merge" }, { freshStateReader: () => Effect.succeed(fresh), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
+      const {
+        mergeCommitSha: _mergeCommitSha,
+        mergedAt: _mergedAt,
+        reviewDecision: _reviewDecision,
+        ...base
+      } = merged(f.binding);
+      const fresh = {
+        ...base,
+        checks: [
+          {
+            appSlug: "github-actions",
+            headSha: f.binding.expectedHeadSha,
+            name: "gaia-pr-ci",
+            repository: f.binding.repository,
+            state: "passing" as const,
+            workflow: "Gaia PR CI",
+          },
+        ],
+        ...(reviewDecision === undefined ? {} : { reviewDecision }),
+        state: "open" as const,
+      };
+      const decision = await Effect.runPromise(
+        coordinateDeliveryMergeReadiness(
+          f.runId,
+          {
+            actionId: `readiness-${required}-${reviewDecision ?? "none"}`,
+            kind: "evaluateMergeReadiness",
+            mergeMethod: "merge",
+          },
+          {
+            freshStateReader: () => Effect.succeed(fresh),
+            rootDirectory: f.root,
+          }
+        ).pipe(Effect.provide(NodeServices.layer))
+      );
       expect(decision.approved).toBe(approved);
     });
   }
@@ -445,17 +1082,47 @@ describe("delivery merge reconstructed coordinator", () => {
   ] as const) {
     it(`normalizes provider review decision ${String(providerValue)}`, async () => {
       expect(normalizeGitHubReviewDecision(providerValue)).toBe(normalized);
-      for (const [required, approved] of [[true, strictApproved], [false, soloApproved]] as const) {
+      for (const [required, approved] of [
+        [true, strictApproved],
+        [false, soloApproved],
+      ] as const) {
         const f = fixture("attempted", required);
-        const { mergeCommitSha: _mergeCommitSha, mergedAt: _mergedAt, reviewDecision: _reviewDecision, ...base } = merged(f.binding);
+        const {
+          mergeCommitSha: _mergeCommitSha,
+          mergedAt: _mergedAt,
+          reviewDecision: _reviewDecision,
+          ...base
+        } = merged(f.binding);
         const decision = normalizeGitHubReviewDecision(providerValue);
         const fresh = {
           ...base,
-          checks: [{ appSlug: "github-actions", headSha: f.binding.expectedHeadSha, name: "gaia-pr-ci", repository: f.binding.repository, state: "passing" as const, workflow: "Gaia PR CI" }],
+          checks: [
+            {
+              appSlug: "github-actions",
+              headSha: f.binding.expectedHeadSha,
+              name: "gaia-pr-ci",
+              repository: f.binding.repository,
+              state: "passing" as const,
+              workflow: "Gaia PR CI",
+            },
+          ],
           ...(decision === undefined ? {} : { reviewDecision: decision }),
           state: "open" as const,
         };
-        const readiness = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: `provider-${String(providerValue)}-${required}`, kind: "evaluateMergeReadiness", mergeMethod: "merge" }, { freshStateReader: () => Effect.succeed(fresh), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
+        const readiness = await Effect.runPromise(
+          coordinateDeliveryMergeReadiness(
+            f.runId,
+            {
+              actionId: `provider-${String(providerValue)}-${required}`,
+              kind: "evaluateMergeReadiness",
+              mergeMethod: "merge",
+            },
+            {
+              freshStateReader: () => Effect.succeed(fresh),
+              rootDirectory: f.root,
+            }
+          ).pipe(Effect.provide(NodeServices.layer))
+        );
         expect(readiness.approved).toBe(approved);
       }
     });
@@ -472,64 +1139,240 @@ describe("delivery merge reconstructed coordinator", () => {
     ["unsupported method", { supportedMethods: [] }],
     ["changes requested", { reviewDecision: "CHANGES_REQUESTED" }],
     ["missing required check", { checks: [] }],
-    ["pending required check", { checks: [{ appSlug: "github-actions", headSha: "a".repeat(40), name: "gaia-pr-ci", repository: "cill-i-am/gaia", state: "pending" as const, workflow: "Gaia PR CI" }] }],
-    ["failed required check", { checks: [{ appSlug: "github-actions", headSha: "a".repeat(40), name: "gaia-pr-ci", repository: "cill-i-am/gaia", state: "failed" as const, workflow: "Gaia PR CI" }] }],
+    [
+      "pending required check",
+      {
+        checks: [
+          {
+            appSlug: "github-actions",
+            headSha: "a".repeat(40),
+            name: "gaia-pr-ci",
+            repository: "cill-i-am/gaia",
+            state: "pending" as const,
+            workflow: "Gaia PR CI",
+          },
+        ],
+      },
+    ],
+    [
+      "failed required check",
+      {
+        checks: [
+          {
+            appSlug: "github-actions",
+            headSha: "a".repeat(40),
+            name: "gaia-pr-ci",
+            repository: "cill-i-am/gaia",
+            state: "failed" as const,
+            workflow: "Gaia PR CI",
+          },
+        ],
+      },
+    ],
   ] as const) {
     it(`keeps ${name} blocking under solo review policy before intent`, async () => {
       const f = fixture("ready", false);
-      const { mergeCommitSha: _mergeCommitSha, mergedAt: _mergedAt, ...base } = merged(f.binding);
-      const fresh = { ...base, checks: [{ appSlug: "github-actions", headSha: f.binding.expectedHeadSha, name: "gaia-pr-ci", repository: f.binding.repository, state: "passing" as const, workflow: "Gaia PR CI" }], state: "open" as const, ...change };
+      const {
+        mergeCommitSha: _mergeCommitSha,
+        mergedAt: _mergedAt,
+        ...base
+      } = merged(f.binding);
+      const fresh = {
+        ...base,
+        checks: [
+          {
+            appSlug: "github-actions",
+            headSha: f.binding.expectedHeadSha,
+            name: "gaia-pr-ci",
+            repository: f.binding.repository,
+            state: "passing" as const,
+            workflow: "Gaia PR CI",
+          },
+        ],
+        state: "open" as const,
+        ...change,
+      };
       let providerCalls = 0;
 
-      await expect(Effect.runPromise(coordinateDeliveryMerge(f.runId, f.action, { commandRunner: () => Effect.sync(() => { providerCalls += 1; return { exitCode: 0, stderr: "", stdout: "" }; }), freshStateReader: () => Effect.succeed(fresh), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryMergePreconditionFailed" });
+      await expect(
+        Effect.runPromise(
+          coordinateDeliveryMerge(f.runId, f.action, {
+            commandRunner: () =>
+              Effect.sync(() => {
+                providerCalls += 1;
+                return { exitCode: 0, stderr: "", stdout: "" };
+              }),
+            freshStateReader: () => Effect.succeed(fresh),
+            rootDirectory: f.root,
+          }).pipe(Effect.provide(NodeServices.layer))
+        )
+      ).rejects.toMatchObject({ code: "DeliveryMergePreconditionFailed" });
       expect(providerCalls).toBe(0);
-      expect(readFileSync(path.join(f.root, ".gaia", "runs", f.runId, "events.jsonl"), "utf8")).not.toContain('"DELIVERY_MERGE_RECORDED"');
+      expect(
+        readFileSync(
+          path.join(f.root, ".gaia", "runs", f.runId, "events.jsonl"),
+          "utf8"
+        )
+      ).not.toContain('"DELIVERY_MERGE_RECORDED"');
     });
   }
   it("replays identical readiness action without reread and rejects changed method", async () => {
-    const f = fixture("attempted"); let reads = 0;
-    const options = { freshStateReader: () => Effect.sync(() => { reads += 1; return merged(f.binding); }), rootDirectory: f.root };
-    const replay = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: "readiness-1", kind: "evaluateMergeReadiness", mergeMethod: "merge" }, options).pipe(Effect.provide(NodeServices.layer)));
-    expect(replay.actionId).toBe("readiness-1"); expect(reads).toBe(0);
-    await expect(Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: "readiness-1", kind: "evaluateMergeReadiness", mergeMethod: "rebase" }, options).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    const f = fixture("attempted");
+    let reads = 0;
+    const options = {
+      freshStateReader: () =>
+        Effect.sync(() => {
+          reads += 1;
+          return merged(f.binding);
+        }),
+      rootDirectory: f.root,
+    };
+    const replay = await Effect.runPromise(
+      coordinateDeliveryMergeReadiness(
+        f.runId,
+        {
+          actionId: "readiness-1",
+          kind: "evaluateMergeReadiness",
+          mergeMethod: "merge",
+        },
+        options
+      ).pipe(Effect.provide(NodeServices.layer))
+    );
+    expect(replay.actionId).toBe("readiness-1");
+    expect(reads).toBe(0);
+    await expect(
+      Effect.runPromise(
+        coordinateDeliveryMergeReadiness(
+          f.runId,
+          {
+            actionId: "readiness-1",
+            kind: "evaluateMergeReadiness",
+            mergeMethod: "rebase",
+          },
+          options
+        ).pipe(Effect.provide(NodeServices.layer))
+      )
+    ).rejects.toMatchObject({ code: "DeliveryActionConflict" });
     expect(reads).toBe(0);
   });
 
   it("rejects a retained pre-slice readiness decision without exact ready confirmation", async () => {
     const f = retainedPreReadyFixture();
     let reads = 0;
-    await expect(Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, {
-      actionId: "readiness-1",
-      kind: "evaluateMergeReadiness",
-      mergeMethod: "merge",
-    }, {
-      freshStateReader: () => Effect.sync(() => { reads += 1; return merged(f.binding); }),
-      rootDirectory: f.root,
-    }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    await expect(
+      Effect.runPromise(
+        coordinateDeliveryMergeReadiness(
+          f.runId,
+          {
+            actionId: "readiness-1",
+            kind: "evaluateMergeReadiness",
+            mergeMethod: "merge",
+          },
+          {
+            freshStateReader: () =>
+              Effect.sync(() => {
+                reads += 1;
+                return merged(f.binding);
+              }),
+            rootDirectory: f.root,
+          }
+        ).pipe(Effect.provide(NodeServices.layer))
+      )
+    ).rejects.toMatchObject({ code: "DeliveryActionConflict" });
     expect(reads).toBe(0);
   });
   for (const state of ["attempted", "checkpoint", "unknown"] as const) {
     it(`reconciles ${state} with zero provider redispatch`, async () => {
-      const f = fixture(state); let providerCalls = 0; let reconciliationCalls = 0;
-      const receipt = await Effect.runPromise(coordinateDeliveryMerge(f.runId, f.action, { commandRunner: () => Effect.sync(() => { providerCalls += 1; return { exitCode: 0, stderr: "", stdout: "" }; }), freshStateReader: () => Effect.sync(() => { reconciliationCalls += 1; return merged(f.binding); }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
-      expect(receipt.state).toBe("dispatchConfirmed"); expect(providerCalls).toBe(0); expect(reconciliationCalls).toBe(1);
+      const f = fixture(state);
+      let providerCalls = 0;
+      let reconciliationCalls = 0;
+      const receipt = await Effect.runPromise(
+        coordinateDeliveryMerge(f.runId, f.action, {
+          commandRunner: () =>
+            Effect.sync(() => {
+              providerCalls += 1;
+              return { exitCode: 0, stderr: "", stdout: "" };
+            }),
+          freshStateReader: () =>
+            Effect.sync(() => {
+              reconciliationCalls += 1;
+              return merged(f.binding);
+            }),
+          rootDirectory: f.root,
+        }).pipe(Effect.provide(NodeServices.layer))
+      );
+      expect(receipt.state).toBe("dispatchConfirmed");
+      expect(providerCalls).toBe(0);
+      expect(reconciliationCalls).toBe(1);
     });
   }
 
   it("serializes concurrent duplicate replay without provider invocation", async () => {
-    const f = fixture("unknown"); let providerCalls = 0; let reconciliationCalls = 0;
-    const options = { commandRunner: () => Effect.sync(() => { providerCalls += 1; return { exitCode: 0, stderr: "", stdout: "" }; }), freshStateReader: () => Effect.sync(() => { reconciliationCalls += 1; return merged(f.binding); }), rootDirectory: f.root };
-    const results = await Promise.allSettled([Effect.runPromise(coordinateDeliveryMerge(f.runId, f.action, options).pipe(Effect.provide(NodeServices.layer))), Effect.runPromise(coordinateDeliveryMerge(f.runId, f.action, options).pipe(Effect.provide(NodeServices.layer)))]);
-    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
-    expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
-    expect(providerCalls).toBe(0); expect(reconciliationCalls).toBe(1);
+    const f = fixture("unknown");
+    let providerCalls = 0;
+    let reconciliationCalls = 0;
+    const options = {
+      commandRunner: () =>
+        Effect.sync(() => {
+          providerCalls += 1;
+          return { exitCode: 0, stderr: "", stdout: "" };
+        }),
+      freshStateReader: () =>
+        Effect.sync(() => {
+          reconciliationCalls += 1;
+          return merged(f.binding);
+        }),
+      rootDirectory: f.root,
+    };
+    const results = await Promise.allSettled([
+      Effect.runPromise(
+        coordinateDeliveryMerge(f.runId, f.action, options).pipe(
+          Effect.provide(NodeServices.layer)
+        )
+      ),
+      Effect.runPromise(
+        coordinateDeliveryMerge(f.runId, f.action, options).pipe(
+          Effect.provide(NodeServices.layer)
+        )
+      ),
+    ]);
+    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(
+      1
+    );
+    expect(results.filter(({ status }) => status === "rejected")).toHaveLength(
+      1
+    );
+    expect(providerCalls).toBe(0);
+    expect(reconciliationCalls).toBe(1);
   });
 
   it("retains outcome unknown when fresh exact state cannot prove acceptance or rejection", async () => {
-    const f = fixture("checkpoint"); let providerCalls = 0; let reconciliationCalls = 0;
-    const { mergeCommitSha: _mergeCommitSha, mergedAt: _mergedAt, ...fresh } = merged(f.binding);
+    const f = fixture("checkpoint");
+    let providerCalls = 0;
+    let reconciliationCalls = 0;
+    const {
+      mergeCommitSha: _mergeCommitSha,
+      mergedAt: _mergedAt,
+      ...fresh
+    } = merged(f.binding);
     const open = { ...fresh, state: "open" as const };
-    const receipt = await Effect.runPromise(coordinateDeliveryMerge(f.runId, f.action, { commandRunner: () => Effect.sync(() => { providerCalls += 1; return { exitCode: 0, stderr: "", stdout: "" }; }), freshStateReader: () => Effect.sync(() => { reconciliationCalls += 1; return open; }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
-    expect(receipt.state).toBe("outcomeUnknown"); expect(providerCalls).toBe(0); expect(reconciliationCalls).toBe(1);
+    const receipt = await Effect.runPromise(
+      coordinateDeliveryMerge(f.runId, f.action, {
+        commandRunner: () =>
+          Effect.sync(() => {
+            providerCalls += 1;
+            return { exitCode: 0, stderr: "", stdout: "" };
+          }),
+        freshStateReader: () =>
+          Effect.sync(() => {
+            reconciliationCalls += 1;
+            return open;
+          }),
+        rootDirectory: f.root,
+      }).pipe(Effect.provide(NodeServices.layer))
+    );
+    expect(receipt.state).toBe("outcomeUnknown");
+    expect(providerCalls).toBe(0);
+    expect(reconciliationCalls).toBe(1);
   });
 });

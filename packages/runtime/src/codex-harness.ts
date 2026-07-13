@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
+
 import { RunIdSchema } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { execFile } from "node:child_process";
 import type { PlatformError } from "effect/PlatformError";
+
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 
 const codexCommandMaxBufferBytes = 10 * 1024 * 1024;
@@ -10,7 +12,7 @@ const defaultCodexSandbox = "workspace-write";
 const defaultCodexCommandTimeoutMs = 10 * 60 * 1000;
 
 export const CodexCommandSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("CodexCommand"),
+  Schema.brand("CodexCommand")
 );
 
 export type CodexCommand = typeof CodexCommandSchema.Type;
@@ -19,14 +21,13 @@ export const CodexCommandTimeoutMsSchema = Schema.Number.check(
   Schema.isInt({ identifier: "CodexCommandTimeoutMsInt" }),
   Schema.isGreaterThanOrEqualTo(1, {
     identifier: "CodexCommandTimeoutMsPositive",
-  }),
+  })
 ).pipe(Schema.brand("CodexCommandTimeoutMs"));
 
-export type CodexCommandTimeoutMs =
-  typeof CodexCommandTimeoutMsSchema.Type;
+export type CodexCommandTimeoutMs = typeof CodexCommandTimeoutMsSchema.Type;
 
 const parseCodexCommandTimeoutMs = Schema.decodeUnknownSync(
-  CodexCommandTimeoutMsSchema,
+  CodexCommandTimeoutMsSchema
 );
 
 export const CodexSandboxModeSchema = Schema.Literals([
@@ -64,7 +65,7 @@ export type CodexHarnessStallClassification =
   typeof CodexHarnessStallClassificationSchema.Type;
 
 export class CodexHarnessProgress extends Schema.Class<CodexHarnessProgress>(
-  "CodexHarnessProgress",
+  "CodexHarnessProgress"
 )({
   command: CodexCommandSchema,
   cwd: Schema.NonEmptyString,
@@ -75,12 +76,12 @@ export class CodexHarnessProgress extends Schema.Class<CodexHarnessProgress>(
     Schema.isInt({ identifier: "ObservedOutputBytesInt" }),
     Schema.isGreaterThanOrEqualTo(0, {
       identifier: "ObservedOutputBytesNonNegative",
-    }),
+    })
   ),
   progressPath: Schema.NonEmptyString,
   runId: RunIdSchema,
   stallClassification: Schema.optionalKey(
-    CodexHarnessStallClassificationSchema,
+    CodexHarnessStallClassificationSchema
   ),
   startedAt: Schema.NonEmptyString,
   status: CodexHarnessProgressStatusSchema,
@@ -93,15 +94,15 @@ export class CodexHarnessProgress extends Schema.Class<CodexHarnessProgress>(
 const CodexHarnessProgressJson = Schema.toCodecJson(CodexHarnessProgress);
 
 export const encodeCodexHarnessProgress = Schema.encodeSync(
-  CodexHarnessProgressJson,
+  CodexHarnessProgressJson
 );
 
 export const parseCodexHarnessProgressJson = Schema.decodeUnknownSync(
-  CodexHarnessProgressJson,
+  CodexHarnessProgressJson
 );
 
 export class CodexHarnessConfig extends Schema.Class<CodexHarnessConfig>(
-  "CodexHarnessConfig",
+  "CodexHarnessConfig"
 )({
   command: CodexCommandSchema,
   extraArgs: Schema.Array(Schema.String),
@@ -124,7 +125,7 @@ export type CodexHarnessConfigInput = {
 };
 
 export function makeCodexHarnessConfig(
-  input: CodexHarnessConfigInput = {},
+  input: CodexHarnessConfigInput = {}
 ): CodexHarnessConfig {
   return parseCodexHarnessConfig({
     command: input.command ?? defaultCodexCommand,
@@ -152,7 +153,7 @@ export type CodexCommandOutputObservation = {
 };
 
 export type CodexCommandProgressRecorder = (
-  observation: CodexCommandOutputObservation,
+  observation: CodexCommandOutputObservation
 ) => Promise<void>;
 
 export type CodexCommandResult = {
@@ -162,7 +163,7 @@ export type CodexCommandResult = {
 };
 
 export type CodexCommandRunner = (
-  input: CodexCommandInput,
+  input: CodexCommandInput
 ) => Effect.Effect<
   CodexCommandResult,
   GaiaRuntimeError | PlatformError,
@@ -205,7 +206,7 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
         };
         const observeOutput = (
           stream: CodexCommandOutputStream,
-          chunk: Buffer | string,
+          chunk: Buffer | string
         ) => {
           const bytes = Buffer.byteLength(chunk);
           if (bytes === 0 || input.recordProgress === undefined) {
@@ -221,11 +222,11 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
         };
         const settleAfterProgressWrites = (
           complete: () => void,
-          fail: (cause: unknown) => void,
+          fail: (cause: unknown) => void
         ) => {
           Promise.allSettled([...pendingProgressWrites]).then((results) => {
             const rejected = results.find(
-              (result) => result.status === "rejected",
+              (result) => result.status === "rejected"
             );
             if (rejected?.status === "rejected") {
               fail(rejected.reason);
@@ -252,7 +253,7 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
             if (error !== null && error.code === "ENOENT") {
               settleAfterProgressWrites(
                 () => reject(error),
-                (cause) => reject(cause),
+                (cause) => reject(cause)
               );
               return;
             }
@@ -265,7 +266,7 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
             ) {
               settleAfterProgressWrites(
                 () => reject(error),
-                (cause) => reject(cause),
+                (cause) => reject(cause)
               );
               return;
             }
@@ -277,15 +278,15 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
                   stderr: String(stderr),
                   stdout: String(stdout),
                 }),
-              (cause) => reject(cause),
+              (cause) => reject(cause)
             );
-          },
+          }
         );
         child.stdout?.on("data", (chunk: Buffer | string) =>
-          observeOutput("stdout", chunk),
+          observeOutput("stdout", chunk)
         );
         child.stderr?.on("data", (chunk: Buffer | string) =>
-          observeOutput("stderr", chunk),
+          observeOutput("stderr", chunk)
         );
         child.stdin?.end(input.stdin);
       }),
@@ -321,9 +322,7 @@ export function makeCodexHarnessPrompt(input: CodexHarnessPromptInput) {
   ].join("\n\n");
 }
 
-function formatResolvedSkillPaths(
-  resolvedSkillPaths: ReadonlyArray<string>,
-) {
+function formatResolvedSkillPaths(resolvedSkillPaths: ReadonlyArray<string>) {
   if (resolvedSkillPaths.length === 0) {
     return ["- No local resolved skill paths are available for this run."];
   }
@@ -347,7 +346,9 @@ export function makeCodexCommandArgs(input: CodexCommandArgsInput) {
     input.config.sandbox,
     "--output-last-message",
     input.lastMessagePath,
-    ...(input.config.model === undefined ? [] : ["--model", input.config.model]),
+    ...(input.config.model === undefined
+      ? []
+      : ["--model", input.config.model]),
     ...(input.config.profile === undefined
       ? []
       : ["--profile", input.config.profile]),
@@ -357,7 +358,7 @@ export function makeCodexCommandArgs(input: CodexCommandArgsInput) {
 }
 
 function parseCodexCommandTimeoutInput(
-  input: CodexHarnessConfigInput["timeoutMs"],
+  input: CodexHarnessConfigInput["timeoutMs"]
 ) {
   if (input === undefined) {
     return parseCodexCommandTimeoutMs(defaultCodexCommandTimeoutMs);
@@ -365,7 +366,7 @@ function parseCodexCommandTimeoutInput(
 
   if (typeof input === "string") {
     return parseCodexCommandTimeoutMs(
-      Schema.decodeUnknownSync(Schema.NumberFromString)(input),
+      Schema.decodeUnknownSync(Schema.NumberFromString)(input)
     );
   }
 

@@ -92,7 +92,7 @@ describe("run compare model", () => {
         comparisonValue: "Failed",
         isDifferent: true,
         primaryValue: "Completed",
-      }),
+      })
     );
     expect(model.artifactDelta).toEqual({
       comparisonOnly: ["worker-log"],
@@ -139,7 +139,7 @@ describe("run compare model", () => {
 function localRunSummary(
   input: Partial<typeof LocalRunSummaryDto.Type> & {
     readonly runId: typeof LocalRunSummaryDto.Type.runId;
-  },
+  }
 ): typeof LocalRunSummaryDto.Type {
   return {
     artifacts: ["input"],

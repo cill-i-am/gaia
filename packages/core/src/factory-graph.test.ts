@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Schema } from "effect";
+
 import {
   FactoryActivityDto,
   FactoryAgentDto,
@@ -104,9 +105,11 @@ describe("FactoryGraph core contracts", () => {
         state: "running",
         title: "Worker",
         workItemId: "work-item-root",
-      }),
+      })
     );
-    assert.throws(() => Schema.decodeUnknownSync(FactoryRelationshipTypeSchema)("blocks"));
+    assert.throws(() =>
+      Schema.decodeUnknownSync(FactoryRelationshipTypeSchema)("blocks")
+    );
     assert.throws(() =>
       Schema.decodeUnknownSync(FactoryArtifactDto)({
         artifactId: "artifact-plan",
@@ -116,7 +119,7 @@ describe("FactoryGraph core contracts", () => {
         label: "Trace",
         ownerAgentId: "agent-worker",
         visibility: "run",
-      }),
+      })
     );
     assert.throws(() =>
       Schema.decodeUnknownSync(FactoryActivityDto)({
@@ -128,24 +131,24 @@ describe("FactoryGraph core contracts", () => {
         sequence: 1,
         state: "waiting",
         timestamp: "2026-07-08T18:00:00.000Z",
-      }),
+      })
     );
   });
 
   it("defines the issueDelivery workflow as typed code", () => {
     const definition = Schema.decodeUnknownSync(FactoryWorkflowDefinitionDto)(
-      IssueDeliveryWorkflowDefinition,
+      IssueDeliveryWorkflowDefinition
     );
 
     assert.strictEqual(definition.workflow, "issueDelivery");
     assert.strictEqual(definition.rootWorkItemKind, "issue");
     assert.deepEqual(
       definition.agentRoles.map((agent) => agent.role),
-      ["orchestrator", "worker", "reviewer", "tester", "ciWatcher"],
+      ["orchestrator", "worker", "reviewer", "tester", "ciWatcher"]
     );
     assert.deepEqual(
       definition.relationships.map((relationship) => relationship.type),
-      ["owns", "spawned", "reviewed", "tested", "watched"],
+      ["owns", "spawned", "reviewed", "tested", "watched"]
     );
   });
 });

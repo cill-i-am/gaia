@@ -1,7 +1,9 @@
-import type { HarnessDetection } from "@gaia/core";
-import { Effect } from "effect";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+
+import type { HarnessDetection } from "@gaia/core";
+import { Effect } from "effect";
+
 import { supportedCodexCliVersion } from "./codex-app-server-protocol.js";
 import { CodexHarnessCapabilities } from "./codex-harness-provider.js";
 
@@ -11,24 +13,26 @@ const probeMaxBufferBytes = 16_384;
 const missingDetection = (): HarnessDetection => ({ state: "missing" });
 
 export type CodexDetectionProbeRunner = (
-  args: ReadonlyArray<string>,
+  args: ReadonlyArray<string>
 ) => Effect.Effect<string, unknown>;
 
 /** Build a bounded finite detector around an injectable safe command seam. */
 export function makeCodexAppServerDetectionProbe(
-  run: CodexDetectionProbeRunner,
+  run: CodexDetectionProbeRunner
 ): Effect.Effect<HarnessDetection> {
   return Effect.gen(function* () {
     const versionExit = yield* Effect.exit(run(["--version"]));
     if (versionExit._tag === "Failure") return missingDetection();
 
-    const match = /^codex-cli\s+(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\s*$/u.exec(
-      versionExit.value,
-    );
+    const match =
+      /^codex-cli\s+(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\s*$/u.exec(
+        versionExit.value
+      );
     const actualVersion = (match?.[1] ?? "unknown").slice(0, 200);
     if (actualVersion !== supportedCodexCliVersion) {
       return {
-        reason: "Installed Codex CLI version is incompatible with this Gaia adapter.",
+        reason:
+          "Installed Codex CLI version is incompatible with this Gaia adapter.",
         state: "incompatible",
         version: actualVersion,
       };
@@ -68,5 +72,5 @@ const runInstalledCodexProbe: CodexDetectionProbeRunner = (args) =>
 
 /** Bounded local CLI probe that returns only safe finite detection states. */
 export const detectInstalledCodexAppServer = makeCodexAppServerDetectionProbe(
-  runInstalledCodexProbe,
+  runInstalledCodexProbe
 );

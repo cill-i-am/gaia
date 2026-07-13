@@ -1,9 +1,7 @@
-import {
-  ReviewPhaseSchema,
-  RunIdSchema,
-  type ReviewPhase,
-} from "@gaia/core";
+import { ReviewPhaseSchema, RunIdSchema, type ReviewPhase } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
+
+import { parseBrowserEvidenceJson } from "./browser-evidence.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { HarnessRunResult } from "./harness.js";
 import {
@@ -12,33 +10,32 @@ import {
   type ReviewerSessionAdapterKind,
   type ReviewerSessionKind,
 } from "./reviewer-session-evidence.js";
-import { parseBrowserEvidenceJson } from "./browser-evidence.js";
 import { VerificationResult } from "./verifier.js";
 import { parseWorkerPlanJson } from "./worker-plan.js";
-import { WorkspacePreparationResult } from "./workspace.js";
 import {
   changedPaths,
   snapshotWorkspace,
   type WorkspaceDiffSummary,
   type WorkspaceSnapshot,
 } from "./workspace-snapshot.js";
+import { WorkspacePreparationResult } from "./workspace.js";
 
 export const ReviewerNameSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("ReviewerName"),
+  Schema.brand("ReviewerName")
 );
 
 export type ReviewerName = typeof ReviewerNameSchema.Type;
 
 export const defaultReviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
-  "deterministic-reviewer",
+  "deterministic-reviewer"
 );
 
-export class ReviewFinding extends Schema.Class<ReviewFinding>(
-  "ReviewFinding",
-)({
-  message: Schema.NonEmptyString,
-  severity: Schema.Literals(["info", "warning", "blocker"] as const),
-}) {}
+export class ReviewFinding extends Schema.Class<ReviewFinding>("ReviewFinding")(
+  {
+    message: Schema.NonEmptyString,
+    severity: Schema.Literals(["info", "warning", "blocker"] as const),
+  }
+) {}
 
 export class ReviewResult extends Schema.Class<ReviewResult>("ReviewResult")({
   findings: Schema.Array(ReviewFinding),
@@ -52,7 +49,7 @@ export class ReviewResult extends Schema.Class<ReviewResult>("ReviewResult")({
 }) {}
 
 export class ReviewRunRequest extends Schema.Class<ReviewRunRequest>(
-  "ReviewRunRequest",
+  "ReviewRunRequest"
 )({
   browserEvidencePath: Schema.NonEmptyString,
   markdownPath: Schema.NonEmptyString,
@@ -73,7 +70,7 @@ export type GaiaReviewer = {
   readonly adapterKind?: ReviewerSessionAdapterKind;
   readonly name: ReviewerName;
   readonly run: (
-    request: ReviewRunRequest,
+    request: ReviewRunRequest
   ) => Effect.Effect<
     ReviewResult,
     GaiaRuntimeError,
@@ -89,21 +86,22 @@ export type ReviewerRunOptions = {
 const ReviewResultJson = Schema.toCodecJson(ReviewResult);
 const encodeReviewResult = Schema.encodeSync(ReviewResultJson);
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
-const parseHarnessRunResultJson = Schema.decodeUnknownSync(HarnessRunResultJson);
+const parseHarnessRunResultJson =
+  Schema.decodeUnknownSync(HarnessRunResultJson);
 const VerificationResultJson = Schema.toCodecJson(VerificationResult);
 const parseVerificationResultJson = Schema.decodeUnknownSync(
-  VerificationResultJson,
+  VerificationResultJson
 );
 const WorkspacePreparationResultJson = Schema.toCodecJson(
-  WorkspacePreparationResult,
+  WorkspacePreparationResult
 );
 const parseWorkspacePreparationResultJson = Schema.decodeUnknownSync(
-  WorkspacePreparationResultJson,
+  WorkspacePreparationResultJson
 );
 
 export function runReviewer(
   request: ReviewRunRequest,
-  options: ReviewerRunOptions = {},
+  options: ReviewerRunOptions = {}
 ): Effect.Effect<
   ReviewResult,
   GaiaRuntimeError,
@@ -112,15 +110,17 @@ export function runReviewer(
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     const reviewer = options.reviewer ?? deterministicReviewer;
-    const beforeWorkspace = yield* snapshotWorkspace(request.workspacePath).pipe(
+    const beforeWorkspace = yield* snapshotWorkspace(
+      request.workspacePath
+    ).pipe(
       Effect.mapError((cause) =>
         makeRuntimeError({
           cause,
           code: "ReviewerWorkspaceSnapshotFailed",
           message: "Reviewer could not snapshot the workspace before review.",
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
     const result = yield* reviewer.run(request);
     const afterWorkspace = yield* snapshotWorkspace(request.workspacePath).pipe(
@@ -130,14 +130,14 @@ export function runReviewer(
           code: "ReviewerWorkspaceSnapshotFailed",
           message: "Reviewer could not snapshot the workspace after review.",
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
 
     yield* requireReviewerDidNotMutateWorkspace(
       beforeWorkspace,
       afterWorkspace,
-      reviewer,
+      reviewer
     );
 
     const sessionEvidence =
@@ -145,7 +145,7 @@ export function runReviewer(
       makeDefaultReviewerSessionEvidence(request, result, reviewer, path);
     const resultWithSessionEvidence = withSessionEvidence(
       result,
-      sessionEvidence,
+      sessionEvidence
     );
 
     yield* writeReviewerSessionEvidence({
@@ -168,7 +168,7 @@ const deterministicReviewer: GaiaReviewer = {
 function requireReviewerDidNotMutateWorkspace(
   beforeWorkspace: WorkspaceSnapshot,
   afterWorkspace: WorkspaceSnapshot,
-  reviewer: GaiaReviewer,
+  reviewer: GaiaReviewer
 ) {
   const mutatedPaths = changedPaths(beforeWorkspace, afterWorkspace);
 
@@ -181,7 +181,7 @@ function requireReviewerDidNotMutateWorkspace(
       code: "ReviewerWorkspaceMutated",
       message: `Reviewer '${reviewer.name}' mutated workspace path(s): ${mutatedPaths.join(", ")}.`,
       recoverable: true,
-    }),
+    })
   );
 }
 
@@ -190,12 +190,12 @@ function reviewPlan(request: ReviewRunRequest) {
     const workspaceManifest = yield* decodeJsonArtifact(
       request.workspaceManifestPath,
       parseWorkspacePreparationResultJson,
-      "WorkspaceManifest",
+      "WorkspaceManifest"
     );
     const workerPlan = yield* decodeJsonArtifact(
       request.workerPlanPath,
       parseWorkerPlanJson,
-      "WorkerPlan",
+      "WorkerPlan"
     );
 
     return ReviewResult.make({
@@ -238,17 +238,17 @@ function reviewEvidence(request: ReviewRunRequest) {
     const browserEvidence = yield* decodeJsonArtifact(
       request.browserEvidencePath,
       parseBrowserEvidenceJson,
-      "BrowserEvidence",
+      "BrowserEvidence"
     );
     const harnessResult = yield* decodeJsonArtifact(
       request.workerResultPath,
       parseHarnessRunResultJson,
-      "HarnessRunResult",
+      "HarnessRunResult"
     );
     const verificationResult = yield* decodeJsonArtifact(
       request.verificationResultPath,
       parseVerificationResultJson,
-      "VerificationResult",
+      "VerificationResult"
     );
 
     return ReviewResult.make({
@@ -278,7 +278,7 @@ function reviewEvidence(request: ReviewRunRequest) {
 }
 
 function workspaceDiffFindings(
-  workspaceDiff: WorkspaceDiffSummary | undefined,
+  workspaceDiff: WorkspaceDiffSummary | undefined
 ) {
   if (workspaceDiff === undefined) {
     return [];
@@ -296,7 +296,7 @@ function workspaceDiffFindings(
       ReviewFinding.make({
         message: `Generated workspace paths omitted from product diff evidence (${workspaceDiff.omittedGeneratedPathCount}): ${formatGeneratedPathSummaries(workspaceDiff)}.`,
         severity: "info",
-      }),
+      })
     );
   }
 
@@ -321,7 +321,7 @@ function formatGeneratedPathSummaries(workspaceDiff: WorkspaceDiffSummary) {
   return workspaceDiff.omittedGeneratedPaths
     .map(
       (entry) =>
-        `${entry.path} (${entry.changedFileCount} file(s); ${entry.reason})`,
+        `${entry.path} (${entry.changedFileCount} file(s); ${entry.reason})`
     )
     .join("; ");
 }
@@ -329,7 +329,7 @@ function formatGeneratedPathSummaries(workspaceDiff: WorkspaceDiffSummary) {
 function decodeJsonArtifact<T>(
   path: string,
   parse: (input: unknown) => T,
-  artifactName: string,
+  artifactName: string
 ): Effect.Effect<T, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -341,9 +341,9 @@ function decodeJsonArtifact<T>(
             code: "ReviewArtifactReadFailed",
             message: `Reviewer could not read ${artifactName}.`,
             recoverable: true,
-          }),
-        ),
-      ),
+          })
+        )
+      )
     );
     const parsed = yield* Effect.try({
       try: (): unknown => JSON.parse(text),
@@ -369,16 +369,13 @@ function decodeJsonArtifact<T>(
   });
 }
 
-function writeReviewArtifacts(
-  request: ReviewRunRequest,
-  result: ReviewResult,
-) {
+function writeReviewArtifacts(request: ReviewRunRequest, result: ReviewResult) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(request.markdownPath, markdownReview(result));
     yield* fs.writeFileString(
       request.resultPath,
-      `${JSON.stringify(encodeReviewResult(result), null, 2)}\n`,
+      `${JSON.stringify(encodeReviewResult(result), null, 2)}\n`
     );
   }).pipe(
     Effect.catchTag("PlatformError", (cause) =>
@@ -388,9 +385,9 @@ function writeReviewArtifacts(
           code: "ReviewArtifactWriteFailed",
           message: `Reviewer could not write ${request.phase} review artifacts.`,
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -398,7 +395,7 @@ function makeDefaultReviewerSessionEvidence(
   request: ReviewRunRequest,
   result: ReviewResult,
   reviewer: GaiaReviewer,
-  path: Path.Path,
+  path: Path.Path
 ) {
   return ReviewerSessionEvidence.make({
     adapterKind: reviewer.adapterKind ?? "custom",
@@ -416,7 +413,7 @@ function makeDefaultReviewerSessionEvidence(
 
 function withSessionEvidence(
   result: ReviewResult,
-  sessionEvidence: ReviewerSessionEvidence,
+  sessionEvidence: ReviewerSessionEvidence
 ) {
   return ReviewResult.make({
     findings: result.findings,

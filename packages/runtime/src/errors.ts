@@ -8,7 +8,7 @@ export class GaiaRuntimeError extends Schema.TaggedErrorClass<GaiaRuntimeError>(
     code: Schema.NonEmptyString,
     message: Schema.NonEmptyString,
     recoverable: Schema.Boolean,
-  },
+  }
 ) {}
 
 /** Build a runtime error with a stable code and safe message. */

@@ -118,13 +118,13 @@ export function buildSelectedNodeInspectorModel(input: {
 
   if (input.selectedNode.kind === "agent") {
     const agent = input.graph.agents.find(
-      (candidate) => candidate.id === input.selectedNode?.rawId,
+      (candidate) => candidate.id === input.selectedNode?.rawId
     );
 
     if (agent === undefined) {
       return unavailableSelection(
         "Agent unavailable",
-        "The selected agent is no longer present in the public FactoryGraph.",
+        "The selected agent is no longer present in the public FactoryGraph."
       );
     }
 
@@ -142,21 +142,21 @@ export function buildSelectedNodeInspectorModel(input: {
   }
 
   const workItem = input.graph.workItems.find(
-    (candidate) => candidate.id === input.selectedNode?.rawId,
+    (candidate) => candidate.id === input.selectedNode?.rawId
   );
 
   if (workItem === undefined) {
     return unavailableSelection(
       "Work item unavailable",
-      "The selected work item is no longer present in the public FactoryGraph.",
+      "The selected work item is no longer present in the public FactoryGraph."
     );
   }
 
   const agents = input.graph.agents.filter(
-    (agent) => agent.workItemId === workItem.id,
+    (agent) => agent.workItemId === workItem.id
   );
   const workItemActivity = activity.filter(
-    (entry) => entry.workItemId === workItem.id,
+    (entry) => entry.workItemId === workItem.id
   );
 
   return {
@@ -179,7 +179,7 @@ export function buildSelectedNodeInspectorModel(input: {
 
 function unavailableSelection(
   title: string,
-  message: string,
+  message: string
 ): SelectedNodeInspectorModel {
   return {
     kind: "empty",
@@ -190,13 +190,13 @@ function unavailableSelection(
 }
 
 function activityData(
-  resource: InspectorResource<typeof FactoryActivityDto.Type>,
+  resource: InspectorResource<typeof FactoryActivityDto.Type>
 ) {
   return resource.status === "ready" ? resource.data : [];
 }
 
 function artifactData(
-  resource: InspectorResource<typeof FactoryArtifactDto.Type>,
+  resource: InspectorResource<typeof FactoryArtifactDto.Type>
 ) {
   return resource.status === "ready" ? resource.data : [];
 }
@@ -213,7 +213,7 @@ function resourceNotices(input: {
 
 function resourceNotice<T>(
   label: string,
-  resource: InspectorResource<T>,
+  resource: InspectorResource<T>
 ): InspectorNotice | undefined {
   if (resource.status === "ready") {
     return undefined;
@@ -231,14 +231,14 @@ function resourceNotice<T>(
 
 function scopedAgentActivity(
   activities: ReadonlyArray<typeof FactoryActivityDto.Type>,
-  agentId: typeof FactoryAgentDto.Type.id,
+  agentId: typeof FactoryAgentDto.Type.id
 ) {
   return activities.filter((activity) => activity.agentId === agentId);
 }
 
 function agentOwnedArtifacts(
   artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>,
-  agentId: typeof FactoryAgentDto.Type.id,
+  agentId: typeof FactoryAgentDto.Type.id
 ) {
   return artifacts.filter((artifact) => artifact.ownerAgentId === agentId);
 }
@@ -250,15 +250,15 @@ function workItemArtifacts(input: {
 }) {
   const linkedArtifactIds = new Set(
     input.activities.flatMap((activity) =>
-      activity.artifactIds.map((artifactId) => String(artifactId)),
-    ),
+      activity.artifactIds.map((artifactId) => String(artifactId))
+    )
   );
   const agentIds = new Set(input.agents.map((agent) => String(agent.id)));
 
   return input.artifacts.filter(
     (artifact) =>
       agentIds.has(String(artifact.ownerAgentId)) ||
-      linkedArtifactIds.has(String(artifact.artifactId)),
+      linkedArtifactIds.has(String(artifact.artifactId))
   );
 }
 

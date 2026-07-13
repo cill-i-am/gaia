@@ -1,11 +1,11 @@
-import { skipToken } from "@tanstack/react-query";
-import { createEffectQuery } from "effect-query";
 import {
   FactoryAgentIdSchema,
   FactoryArtifactIdSchema,
   type RunId,
 } from "@gaia/core";
+import { skipToken } from "@tanstack/react-query";
 import { Option, Schema } from "effect";
+import { createEffectQuery } from "effect-query";
 
 import {
   DashboardGaiaFetchClientLive,
@@ -45,10 +45,7 @@ export const localGaiaQueryKeys = {
       input.agentId,
       "activity",
     ] as const,
-  agentSession: (input: {
-    readonly agentId: string;
-    readonly runId: RunId;
-  }) =>
+  agentSession: (input: { readonly agentId: string; readonly runId: RunId }) =>
     [
       ...localGaiaQueryKeys.run(input.runId),
       "agents",
@@ -90,9 +87,7 @@ export const localGaiaQueryKeys = {
 const localGaiaEffectQuery = createEffectQuery(DashboardGaiaFetchClientLive);
 type LocalGaiaEffectQuery = typeof localGaiaEffectQuery;
 
-export function localGaiaHealthQueryOptions(
-  config: DashboardGaiaClientConfig,
-) {
+export function localGaiaHealthQueryOptions(config: DashboardGaiaClientConfig) {
   return localGaiaEffectQuery.queryOptions({
     queryKey: localGaiaQueryKeys.health(),
     queryFn: () => healthFromDashboardGaiaClient(config),
@@ -109,7 +104,7 @@ export function localGaiaRunsQueryOptions(config: DashboardGaiaClientConfig) {
 }
 
 export function localGaiaRunQueryOptions(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined },
+  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined }
 ) {
   const runId = config.runId;
   return localGaiaEffectQuery.queryOptions({
@@ -126,7 +121,7 @@ export function localGaiaRunQueryOptions(
 }
 
 export function localGaiaRunEventsQueryOptions(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined },
+  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined }
 ) {
   const runId = config.runId;
   return localGaiaEffectQuery.queryOptions({
@@ -146,7 +141,7 @@ export function localGaiaRunArtifactQueryOptions(
   config: DashboardGaiaClientConfig & {
     readonly artifactId: string;
     readonly runId: RunId | undefined;
-  },
+  }
 ) {
   const runId = config.runId;
   const enabled = runId !== undefined && config.artifactId.length > 0;
@@ -165,7 +160,7 @@ export function localGaiaRunArtifactQueryOptions(
 
 export function localGaiaFactoryGraphQueryOptions(
   config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined },
-  effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery,
+  effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery
 ) {
   const runId = config.runId;
   return effectQuery.queryOptions({
@@ -182,7 +177,7 @@ export function localGaiaFactoryGraphQueryOptions(
 }
 
 export function localGaiaFactoryRunActivityQueryOptions(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined },
+  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined }
 ) {
   const runId = config.runId;
   return localGaiaEffectQuery.queryOptions({
@@ -200,7 +195,7 @@ export function localGaiaFactoryRunActivityQueryOptions(
 }
 
 export function localGaiaDeliveryQueryOptions(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined },
+  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined }
 ) {
   const runId = config.runId;
   return localGaiaEffectQuery.queryOptions({
@@ -221,7 +216,7 @@ export function localGaiaFactoryAgentActivityQueryOptions(
   config: DashboardGaiaClientConfig & {
     readonly agentId: string;
     readonly runId: RunId | undefined;
-  },
+  }
 ) {
   const agentId = parseAgentId(config.agentId);
   const runId = config.runId;
@@ -250,7 +245,7 @@ export function localGaiaAgentSessionQueryOptions(
   config: DashboardGaiaClientConfig & {
     readonly agentId: string;
     readonly runId: RunId | undefined;
-  },
+  }
 ) {
   const agentId = parseAgentId(config.agentId);
   const runId = config.runId;
@@ -272,7 +267,7 @@ export function localGaiaAgentSessionQueryOptions(
 }
 
 export function localGaiaFactoryArtifactsQueryOptions(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined },
+  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined }
 ) {
   const runId = config.runId;
   return localGaiaEffectQuery.queryOptions({
@@ -293,7 +288,7 @@ export function localGaiaFactoryArtifactQueryOptions(
   config: DashboardGaiaClientConfig & {
     readonly artifactId: string;
     readonly runId: RunId | undefined;
-  },
+  }
 ) {
   const artifactId = parseArtifactId(config.artifactId);
   const runId = config.runId;
@@ -305,7 +300,7 @@ export function localGaiaFactoryArtifactQueryOptions(
         : localGaiaQueryKeys.factoryArtifact({
             artifactId: Option.getOrElse(
               artifactId,
-              () => "invalid-artifact-id",
+              () => "invalid-artifact-id"
             ),
             runId,
           }),
@@ -319,7 +314,7 @@ export function localGaiaFactoryArtifactQueryOptions(
 
 export function localGaiaCreateRunMutationOptions(
   config: DashboardGaiaClientConfig,
-  effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery,
+  effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery
 ) {
   return effectQuery.mutationOptions({
     mutationKey: [...localGaiaQueryKeys.all, "create-run"] as const,
@@ -333,7 +328,7 @@ export function localGaiaCreateRunMutationOptions(
 
 export function localGaiaDeliveryActionMutationOptions(
   config: DashboardGaiaClientConfig,
-  effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery,
+  effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery
 ) {
   return effectQuery.mutationOptions({
     mutationKey: [...localGaiaQueryKeys.all, "delivery", "action"] as const,
@@ -344,10 +339,14 @@ export function localGaiaDeliveryActionMutationOptions(
 
 export function localGaiaAgentSessionActionMutationOptions(
   config: DashboardGaiaClientConfig,
-  effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery,
+  effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery
 ) {
   return effectQuery.mutationOptions({
-    mutationKey: [...localGaiaQueryKeys.all, "agent-session", "action"] as const,
+    mutationKey: [
+      ...localGaiaQueryKeys.all,
+      "agent-session",
+      "action",
+    ] as const,
     mutationFn: (input: {
       readonly action: unknown;
       readonly agentId: string;

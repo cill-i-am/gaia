@@ -1,8 +1,11 @@
-import { RunIdSchema } from "@gaia/core";
-import { Effect, FileSystem, Path, Schema } from "effect";
 import { execFile } from "node:child_process";
 import process from "node:process";
 import { promisify } from "node:util";
+
+import { RunIdSchema } from "@gaia/core";
+import { Effect, FileSystem, Path, Schema } from "effect";
+
+import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
 import {
   makeCodexCommandArgs,
   makeCodexHarnessPrompt,
@@ -14,7 +17,6 @@ import {
   type CodexHarnessOptions,
   type CodexCommandOutputObservation,
 } from "./codex-harness.js";
-import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
   diffWorkspaceSnapshots,
@@ -24,7 +26,7 @@ import {
 } from "./workspace-snapshot.js";
 
 export const HarnessNameSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("HarnessName"),
+  Schema.brand("HarnessName")
 );
 
 export type HarnessName = typeof HarnessNameSchema.Type;
@@ -40,13 +42,13 @@ const processHarnessMaxBufferBytes = 10 * 1024 * 1024;
 const harnessContractVersion = "1";
 
 export const ProcessHarnessCommandSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("ProcessHarnessCommand"),
+  Schema.brand("ProcessHarnessCommand")
 );
 
 export type ProcessHarnessCommand = typeof ProcessHarnessCommandSchema.Type;
 
 export class ProcessHarnessConfig extends Schema.Class<ProcessHarnessConfig>(
-  "ProcessHarnessConfig",
+  "ProcessHarnessConfig"
 )({
   args: Schema.Array(Schema.String),
   command: ProcessHarnessCommandSchema,
@@ -57,13 +59,13 @@ export const parseProcessHarnessConfig =
 
 export function makeProcessHarnessConfig(
   command: string,
-  args: ReadonlyArray<string> = [],
+  args: ReadonlyArray<string> = []
 ): ProcessHarnessConfig {
   return parseProcessHarnessConfig({ args, command });
 }
 
 export class HarnessRunRequest extends Schema.Class<HarnessRunRequest>(
-  "HarnessRunRequest",
+  "HarnessRunRequest"
 )({
   codexHarnessProgressPath: Schema.NonEmptyString,
   harnessName: HarnessNameSchema,
@@ -79,12 +81,12 @@ export class HarnessRunRequest extends Schema.Class<HarnessRunRequest>(
 }) {}
 
 export class HarnessRunResult extends Schema.Class<HarnessRunResult>(
-  "HarnessRunResult",
+  "HarnessRunResult"
 )({
   browserTargetUrl: Schema.optionalKey(BrowserEvidenceTargetUrlSchema),
   changedWorkspacePaths: Schema.Array(Schema.NonEmptyString),
   exitCode: Schema.Number.pipe(
-    Schema.check(Schema.isInt({ identifier: "ProcessExitCode" })),
+    Schema.check(Schema.isInt({ identifier: "ProcessExitCode" }))
   ),
   harnessName: HarnessNameSchema,
   outputArtifacts: Schema.Array(Schema.NonEmptyString),
@@ -97,7 +99,7 @@ export class HarnessRunResult extends Schema.Class<HarnessRunResult>(
 }) {}
 
 class ProcessHarnessDeclaration extends Schema.Class<ProcessHarnessDeclaration>(
-  "ProcessHarnessDeclaration",
+  "ProcessHarnessDeclaration"
 )({
   browserTargetUrl: Schema.optionalKey(BrowserEvidenceTargetUrlSchema),
   previewDeploymentUrl: Schema.optionalKey(BrowserEvidenceTargetUrlSchema),
@@ -106,7 +108,7 @@ class ProcessHarnessDeclaration extends Schema.Class<ProcessHarnessDeclaration>(
 export type GaiaHarness = {
   readonly name: HarnessName;
   readonly run: (
-    request: HarnessRunRequest,
+    request: HarnessRunRequest
   ) => Effect.Effect<
     HarnessRunResult,
     GaiaRuntimeError,
@@ -117,10 +119,10 @@ export type GaiaHarness = {
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const encodeHarnessRunResult = Schema.encodeSync(HarnessRunResultJson);
 const ProcessHarnessDeclarationJson = Schema.toCodecJson(
-  ProcessHarnessDeclaration,
+  ProcessHarnessDeclaration
 );
 const decodeProcessHarnessDeclaration = Schema.decodeUnknownSync(
-  ProcessHarnessDeclarationJson,
+  ProcessHarnessDeclarationJson
 );
 const execFileAsync = promisify(execFile);
 
@@ -134,7 +136,7 @@ const fakeHarness: GaiaHarness = {
       yield* fs.writeFileString(
         request.workerLogPath,
         "Fake harness started.\n",
-        { flag: "a" },
+        { flag: "a" }
       );
       yield* fs.writeFileString(request.workspaceOutputPath, output);
       const workspaceDiff = productOnlyWorkspaceDiff(["output.txt"]);
@@ -152,12 +154,12 @@ const fakeHarness: GaiaHarness = {
       yield* requireDeclaredOutputArtifacts(request, result);
       yield* fs.writeFileString(
         request.workerResultPath,
-        `${JSON.stringify(encodeHarnessRunResult(result), null, 2)}\n`,
+        `${JSON.stringify(encodeHarnessRunResult(result), null, 2)}\n`
       );
       yield* fs.writeFileString(
         request.workerLogPath,
         "Fake harness completed.\n",
-        { flag: "a" },
+        { flag: "a" }
       );
 
       return result;
@@ -169,9 +171,9 @@ const fakeHarness: GaiaHarness = {
             code: "HarnessArtifactWriteFailed",
             message: `Harness '${request.harnessName}' could not write its artifacts.`,
             recoverable: true,
-          }),
-        ),
-      ),
+          })
+        )
+      )
     ),
 };
 
@@ -184,7 +186,7 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
         yield* fs.writeFileString(
           request.workerLogPath,
           `Process harness started: ${config.command}\n`,
-          { flag: "a" },
+          { flag: "a" }
         );
 
         const beforeWorkspace = yield* snapshotWorkspace(request.workspacePath);
@@ -193,12 +195,12 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
         const afterWorkspace = yield* snapshotWorkspace(request.workspacePath);
         const workspaceDiff = diffWorkspaceSnapshots(
           beforeWorkspace,
-          afterWorkspace,
+          afterWorkspace
         );
         yield* fs.writeFileString(
           request.workerLogPath,
           formatProcessOutput(execution),
-          { flag: "a" },
+          { flag: "a" }
         );
 
         const result = HarnessRunResult.make({
@@ -224,7 +226,7 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
         yield* fs.writeFileString(
           request.workerLogPath,
           "Process harness completed.\n",
-          { flag: "a" },
+          { flag: "a" }
         );
 
         return result;
@@ -236,9 +238,9 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
               code: "HarnessArtifactWriteFailed",
               message: `Harness '${request.harnessName}' could not write its artifacts.`,
               recoverable: true,
-            }),
-          ),
-        ),
+            })
+          )
+        )
       ),
   };
 }
@@ -253,7 +255,7 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
         const runner = options.commandRunner ?? nodeCodexCommandRunner;
         const lastMessagePath = path.join(
           path.dirname(request.workerResultPath),
-          "codex-last-message.md",
+          "codex-last-message.md"
         );
         const startedAt = new Date().toISOString();
         let progress = CodexHarnessProgress.make({
@@ -273,10 +275,10 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
         const writeProgress = (nextProgress: CodexHarnessProgress) =>
           fs.writeFileString(
             request.codexHarnessProgressPath,
-            `${JSON.stringify(encodeCodexHarnessProgress(nextProgress), null, 2)}\n`,
+            `${JSON.stringify(encodeCodexHarnessProgress(nextProgress), null, 2)}\n`
           );
         const recordOutputProgress = (
-          observation: CodexCommandOutputObservation,
+          observation: CodexCommandOutputObservation
         ) => {
           const observedAt = new Date().toISOString();
           progress = CodexHarnessProgress.make({
@@ -300,7 +302,7 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
           return Effect.runPromise(writeProgress(progress));
         };
         const recordTerminalProgress = (
-          status: Exclude<CodexHarnessProgressStatus, "running">,
+          status: Exclude<CodexHarnessProgressStatus, "running">
         ) =>
           Effect.gen(function* () {
             const updatedAt = new Date().toISOString();
@@ -329,7 +331,7 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
         yield* fs.writeFileString(
           request.workerLogPath,
           `Codex harness started: ${options.config.command}\n`,
-          { flag: "a" },
+          { flag: "a" }
         );
         yield* writeProgress(progress);
 
@@ -356,15 +358,15 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
           timeoutMs: options.config.timeoutMs,
         }).pipe(
           Effect.catchTag("GaiaRuntimeError", (error) =>
-            recordTerminalProgress(
-              codexProgressStatusFromError(error),
-            ).pipe(Effect.flatMap(() => Effect.fail(error))),
-          ),
+            recordTerminalProgress(codexProgressStatusFromError(error)).pipe(
+              Effect.flatMap(() => Effect.fail(error))
+            )
+          )
         );
         yield* fs.writeFileString(
           request.workerLogPath,
           formatCodexOutput(execution),
-          { flag: "a" },
+          { flag: "a" }
         );
 
         if (execution.exitCode !== 0) {
@@ -374,7 +376,7 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
               code: "CodexCommandFailed",
               message: `Codex command '${options.config.command}' exited with code ${execution.exitCode}.`,
               recoverable: true,
-            }),
+            })
           );
         }
 
@@ -387,14 +389,14 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
               message:
                 "Codex completed without writing its last-message artifact.",
               recoverable: true,
-            }),
+            })
           );
         }
 
         const afterWorkspace = yield* snapshotWorkspace(request.workspacePath);
         const workspaceDiff = diffWorkspaceSnapshots(
           beforeWorkspace,
-          afterWorkspace,
+          afterWorkspace
         );
         const result = HarnessRunResult.make({
           changedWorkspacePaths: workspaceDiff.productChangedPaths,
@@ -414,7 +416,7 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
         yield* fs.writeFileString(
           request.workerLogPath,
           "Codex harness completed.\n",
-          { flag: "a" },
+          { flag: "a" }
         );
 
         return result;
@@ -426,15 +428,15 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
               code: "HarnessArtifactWriteFailed",
               message: `Harness '${request.harnessName}' could not write its artifacts.`,
               recoverable: true,
-            }),
-          ),
-        ),
+            })
+          )
+        )
       ),
   };
 }
 
 function codexProgressStatusFromError(
-  error: GaiaRuntimeError,
+  error: GaiaRuntimeError
 ): Exclude<CodexHarnessProgressStatus, "running"> {
   if (error.code === "CodexCommandTimedOut") {
     return "timed-out";
@@ -469,7 +471,7 @@ export const availableHarnessNames: ReadonlyArray<HarnessName> = [
 
 export function runHarness(
   request: HarnessRunRequest,
-  options: HarnessRunOptions = {},
+  options: HarnessRunOptions = {}
 ): Effect.Effect<
   HarnessRunResult,
   GaiaRuntimeError,
@@ -488,7 +490,7 @@ export type HarnessRunOptions = {
 
 function selectHarness(
   harnessName: HarnessName,
-  options: HarnessRunOptions,
+  options: HarnessRunOptions
 ): Effect.Effect<GaiaHarness, GaiaRuntimeError> {
   if (harnessName === fakeHarness.name) {
     return Effect.succeed(fakeHarness);
@@ -499,10 +501,9 @@ function selectHarness(
       return Effect.fail(
         makeRuntimeError({
           code: "ProcessHarnessCommandMissing",
-          message:
-            "Harness 'process' requires a process harness command.",
+          message: "Harness 'process' requires a process harness command.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -516,7 +517,7 @@ function selectHarness(
           code: "CodexHarnessConfigMissing",
           message: "Harness 'codex' requires Codex harness config.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -528,7 +529,7 @@ function selectHarness(
       code: "UnknownHarness",
       message: `Harness '${harnessName}' is not registered. Available harnesses: ${availableHarnessNames.join(", ")}.`,
       recoverable: false,
-    }),
+    })
   );
 }
 
@@ -540,7 +541,7 @@ type ProcessExecutionResult = {
 
 function runProcessHarnessCommand(
   config: ProcessHarnessConfig,
-  request: HarnessRunRequest,
+  request: HarnessRunRequest
 ) {
   return Effect.tryPromise({
     try: () =>
@@ -551,7 +552,7 @@ function runProcessHarnessCommand(
           GAIA_RUN_ID: request.runId,
           GAIA_HARNESS_CONTRACT_VERSION: harnessContractVersion,
           GAIA_RESOLVED_SKILL_PATHS_JSON: JSON.stringify(
-            request.resolvedSkillPaths,
+            request.resolvedSkillPaths
           ),
           GAIA_SKILL_BUNDLE_PATH: request.skillBundlePath,
           GAIA_SPEC_BODY: request.specBody,
@@ -575,7 +576,7 @@ function runProcessHarnessCommand(
       exitCode: 0,
       stderr: String(result.stderr),
       stdout: String(result.stdout),
-    })),
+    }))
   );
 }
 
@@ -609,7 +610,7 @@ function formatCodexOutput(execution: CodexCommandResult) {
 
 function requireDeclaredOutputArtifacts(
   request: HarnessRunRequest,
-  result: HarnessRunResult,
+  result: HarnessRunResult
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -622,7 +623,7 @@ function requireDeclaredOutputArtifacts(
 
       const relativePath = artifact.slice("workspace/".length);
       const exists = yield* fs.exists(
-        path.join(request.workspacePath, relativePath),
+        path.join(request.workspacePath, relativePath)
       );
       if (!exists) {
         return yield* Effect.fail(
@@ -630,7 +631,7 @@ function requireDeclaredOutputArtifacts(
             code: "HarnessOutputArtifactMissing",
             message: `Harness '${request.harnessName}' declared missing output artifact '${artifact}'.`,
             recoverable: true,
-          }),
+          })
         );
       }
     }
@@ -639,20 +640,24 @@ function requireDeclaredOutputArtifacts(
 
 function writeHarnessRunResult(
   request: HarnessRunRequest,
-  result: HarnessRunResult,
+  result: HarnessRunResult
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(
       request.workerResultPath,
-      `${JSON.stringify(encodeHarnessRunResult(result), null, 2)}\n`,
+      `${JSON.stringify(encodeHarnessRunResult(result), null, 2)}\n`
     );
   });
 }
 
 function readProcessHarnessDeclaration(
-  request: HarnessRunRequest,
-): Effect.Effect<ProcessHarnessDeclaration, GaiaRuntimeError, FileSystem.FileSystem> {
+  request: HarnessRunRequest
+): Effect.Effect<
+  ProcessHarnessDeclaration,
+  GaiaRuntimeError,
+  FileSystem.FileSystem
+> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const exists = yield* fs.exists(request.workerResultPath);
@@ -671,15 +676,15 @@ function readProcessHarnessDeclaration(
           message:
             "Process harness completed, but Gaia could not read its worker result declaration.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function parseProcessHarnessDeclaration(
   contents: string,
-  request: HarnessRunRequest,
+  request: HarnessRunRequest
 ) {
   return Effect.try({
     try: () => decodeProcessHarnessDeclaration(JSON.parse(contents)),

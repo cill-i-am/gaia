@@ -8,9 +8,9 @@ export const RunIdSchema = Schema.String.pipe(
     Schema.isPattern(runIdPattern, {
       identifier: "RunId",
       message: "Run id must look like run-<10 url-safe chars>.",
-    }),
+    })
   ),
-  Schema.brand("RunId"),
+  Schema.brand("RunId")
 );
 
 /** A parsed Gaia run identifier. */

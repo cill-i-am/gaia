@@ -95,7 +95,11 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
     const path = yield* Path.Path;
     const store = yield* makeRunStorePaths(options);
     const root = path.join(store.runsRoot, runId);
-    const promotedEvidenceDirectory = path.join(store.gaiaRoot, "promoted", runId);
+    const promotedEvidenceDirectory = path.join(
+      store.gaiaRoot,
+      "promoted",
+      runId
+    );
     const workspace = path.join(root, "workspace");
 
     return {
@@ -110,51 +114,54 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       evidenceReviewResult: path.join(root, "evidence-review.json"),
       evidenceReviewerSession: path.join(
         root,
-        "evidence-reviewer-session.json",
+        "evidence-reviewer-session.json"
       ),
       events: path.join(root, "events.jsonl"),
       factoryActivityIndex: path.join(root, "activity-index.json"),
       factoryArtifactsDirectory: path.join(root, "artifacts"),
       factoryArtifactsIndex: path.join(root, "artifacts", "index.json"),
       factoryGraph: path.join(root, "factory-graph.json"),
-      factoryRetroJson: path.join(promotedEvidenceDirectory, "factory-retro.json"),
+      factoryRetroJson: path.join(
+        promotedEvidenceDirectory,
+        "factory-retro.json"
+      ),
       factoryRetroMarkdown: path.join(
         promotedEvidenceDirectory,
-        "factory-retro.md",
+        "factory-retro.md"
       ),
       factoryScorecardJson: path.join(
         promotedEvidenceDirectory,
-        "factory-scorecard.json",
+        "factory-scorecard.json"
       ),
       factoryScorecardMarkdown: path.join(
         promotedEvidenceDirectory,
-        "factory-scorecard.md",
+        "factory-scorecard.md"
       ),
       gaiaRoot: store.gaiaRoot,
       githubChecks: path.join(root, "github-checks"),
       githubFeedback: path.join(root, "github-feedback.json"),
       githubPrComment: path.join(root, "github-pr-comment.md"),
       githubRemediationSpec: path.join(root, "remediation-spec.md"),
-      harnessWorkspaceBaseline: path.join(root, ".harness-workspace-baseline.json"),
+      harnessWorkspaceBaseline: path.join(
+        root,
+        ".harness-workspace-baseline.json"
+      ),
       input: path.join(root, "input.md"),
       latest: store.latest,
       linearIssueGraph: path.join(root, "linear-issue-graph.json"),
       mergeDecision: path.join(root, "merge-decision.json"),
       planReviewMarkdown: path.join(root, "plan-review.md"),
       planReviewResult: path.join(root, "plan-review.json"),
-      planReviewerSession: path.join(
-        root,
-        "plan-reviewer-session.json",
-      ),
+      planReviewerSession: path.join(root, "plan-reviewer-session.json"),
       previewDeployment: path.join(root, "preview-deployment.json"),
       promotedEvidenceDirectory,
       evidencePromotionJson: path.join(
         promotedEvidenceDirectory,
-        "evidence-promotion.json",
+        "evidence-promotion.json"
       ),
       evidencePromotionMarkdown: path.join(
         promotedEvidenceDirectory,
-        "evidence-promotion.md",
+        "evidence-promotion.md"
       ),
       prLoopState: path.join(root, "pr-loop-state.json"),
       reportJson: path.join(root, "report.json"),

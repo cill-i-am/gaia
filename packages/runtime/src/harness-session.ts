@@ -17,16 +17,16 @@ import {
 import { Effect, Option, Schema, type Scope, type Stream } from "effect";
 
 const RuntimeMessageSchema = Schema.NonEmptyString.pipe(
-  Schema.check(Schema.isMaxLength(16_384)),
+  Schema.check(Schema.isMaxLength(16_384))
 );
 const RuntimeVersionSchema = Schema.NonEmptyString.pipe(
-  Schema.check(Schema.isMaxLength(200)),
+  Schema.check(Schema.isMaxLength(200))
 );
 
 /** Parsed text input sent to a provider-neutral harness session. */
 export class HarnessInput extends Schema.Class<HarnessInput>("HarnessInput")({
   clientInputId: Schema.optionalKey(
-    Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+    Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200)))
   ),
   text: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(16_384))),
 }) {}
@@ -35,9 +35,12 @@ export class HarnessInput extends Schema.Class<HarnessInput>("HarnessInput")({
 export const HarnessInteractionResponseSchema = Schema.Union([
   Schema.Struct({
     actionId: HarnessActionIdSchema,
-    decision: Schema.Literals(
-      ["approve", "approveForSession", "decline", "cancel"] as const,
-    ),
+    decision: Schema.Literals([
+      "approve",
+      "approveForSession",
+      "decline",
+      "cancel",
+    ] as const),
     interactionId: HarnessInteractionIdSchema,
     kind: Schema.Literal("approval"),
   }),
@@ -46,10 +49,10 @@ export const HarnessInteractionResponseSchema = Schema.Union([
     answers: Schema.Array(
       Schema.Struct({
         answers: Schema.Array(
-          Schema.String.pipe(Schema.check(Schema.isMaxLength(16_384))),
+          Schema.String.pipe(Schema.check(Schema.isMaxLength(16_384)))
         ).pipe(Schema.check(Schema.isMaxLength(20))),
         questionId: HarnessQuestionIdSchema,
-      }),
+      })
     ).pipe(Schema.check(Schema.isMaxLength(20))),
     interactionId: HarnessInteractionIdSchema,
     kind: Schema.Literal("userInput"),
@@ -68,7 +71,7 @@ export type HarnessInteractionResponse =
 
 /** Request to create one provider-neutral harness session. */
 export class HarnessSessionStart extends Schema.Class<HarnessSessionStart>(
-  "HarnessSessionStart",
+  "HarnessSessionStart"
 )({
   input: HarnessInput,
   sessionId: HarnessSessionIdSchema,
@@ -77,7 +80,7 @@ export class HarnessSessionStart extends Schema.Class<HarnessSessionStart>(
 
 /** Request to resume one provider-neutral harness session. */
 export class HarnessSessionResume extends Schema.Class<HarnessSessionResume>(
-  "HarnessSessionResume",
+  "HarnessSessionResume"
 )({
   allowInterruptedCheckpoint: Schema.optionalKey(Schema.Boolean),
   expectedNativeTurnId: Schema.optionalKey(Schema.String),
@@ -91,7 +94,7 @@ export class HarnessDetectionError extends Schema.TaggedErrorClass<HarnessDetect
   {
     message: RuntimeMessageSchema,
     providerId: HarnessProviderIdSchema,
-  },
+  }
 ) {}
 
 /** Required capabilities absent from a detected provider. */
@@ -99,10 +102,10 @@ export class HarnessCapabilityMismatchError extends Schema.TaggedErrorClass<Harn
   "HarnessCapabilityMismatchError",
   {
     missing: Schema.Array(HarnessCapabilitySchema).pipe(
-      Schema.check(Schema.isMaxLength(15)),
+      Schema.check(Schema.isMaxLength(15))
     ),
     providerId: HarnessProviderIdSchema,
-  },
+  }
 ) {}
 
 /** Provider cannot start because it is missing or needs authentication. */
@@ -112,7 +115,7 @@ export class HarnessUnavailableError extends Schema.TaggedErrorClass<HarnessUnav
     providerId: HarnessProviderIdSchema,
     state: Schema.Literals(["missing", "authenticationRequired"] as const),
     version: Schema.optionalKey(RuntimeVersionSchema),
-  },
+  }
 ) {}
 
 /** Provider version is outside the adapter's supported range. */
@@ -122,7 +125,7 @@ export class HarnessIncompatibleError extends Schema.TaggedErrorClass<HarnessInc
     message: RuntimeMessageSchema,
     providerId: HarnessProviderIdSchema,
     version: RuntimeVersionSchema,
-  },
+  }
 ) {}
 
 /** Provider capabilities contradict the optional operations on its session. */
@@ -130,40 +133,43 @@ export class HarnessSessionContractError extends Schema.TaggedErrorClass<Harness
   "HarnessSessionContractError",
   {
     contradictions: Schema.Array(
-      Schema.Literals(["steering", "interruption"] as const),
+      Schema.Literals(["steering", "interruption"] as const)
     ).pipe(Schema.check(Schema.isMaxLength(2))),
     providerId: HarnessProviderIdSchema,
-  },
+  }
 ) {}
 
 /** Typed failure while creating a provider session. */
 export class HarnessStartError extends Schema.TaggedErrorClass<HarnessStartError>()(
   "HarnessStartError",
-  { message: RuntimeMessageSchema, providerId: HarnessProviderIdSchema },
+  { message: RuntimeMessageSchema, providerId: HarnessProviderIdSchema }
 ) {}
 
 /** Typed failure while resuming a provider session. */
 export class HarnessResumeError extends Schema.TaggedErrorClass<HarnessResumeError>()(
   "HarnessResumeError",
-  { message: RuntimeMessageSchema, providerId: HarnessProviderIdSchema },
+  { message: RuntimeMessageSchema, providerId: HarnessProviderIdSchema }
 ) {}
 
 /** Typed failure while reading session state or events. */
 export class HarnessSessionError extends Schema.TaggedErrorClass<HarnessSessionError>()(
   "HarnessSessionError",
-  { message: RuntimeMessageSchema, providerId: HarnessProviderIdSchema },
+  { message: RuntimeMessageSchema, providerId: HarnessProviderIdSchema }
 ) {}
 
 /** Typed failure while dispatching an operator action. */
 export class HarnessActionError extends Schema.TaggedErrorClass<HarnessActionError>()(
   "HarnessActionError",
   {
-    actionKind: Schema.Literals(
-      ["send", "steer", "interrupt", "resolveInteraction"] as const,
-    ),
+    actionKind: Schema.Literals([
+      "send",
+      "steer",
+      "interrupt",
+      "resolveInteraction",
+    ] as const),
     message: RuntimeMessageSchema,
     providerId: HarnessProviderIdSchema,
-  },
+  }
 ) {}
 
 /** Live provider-neutral session capability returned by a harness provider. */
@@ -171,9 +177,11 @@ export interface HarnessSession {
   readonly events: Stream.Stream<HarnessEvent, HarnessSessionError>;
   readonly interrupt: Option.Option<Effect.Effect<void, HarnessActionError>>;
   readonly resolveInteraction: (
-    response: HarnessInteractionResponse,
+    response: HarnessInteractionResponse
   ) => Effect.Effect<void, HarnessActionError>;
-  readonly send: (input: HarnessInput) => Effect.Effect<void, HarnessActionError>;
+  readonly send: (
+    input: HarnessInput
+  ) => Effect.Effect<void, HarnessActionError>;
   readonly snapshot: Effect.Effect<HarnessSessionSnapshot, HarnessSessionError>;
   readonly steer: Option.Option<
     (input: HarnessInput) => Effect.Effect<void, HarnessActionError>
@@ -183,12 +191,12 @@ export interface HarnessSession {
 /** Narrow provider SPI for detecting, starting, and resuming harness sessions. */
 export interface HarnessProvider {
   readonly createSession: (
-    request: HarnessSessionStart,
+    request: HarnessSessionStart
   ) => Effect.Effect<HarnessSession, HarnessStartError, Scope.Scope>;
   readonly descriptor: HarnessProviderDescriptor;
   readonly detect: Effect.Effect<HarnessDetection, HarnessDetectionError>;
   readonly resumeSession: (
-    request: HarnessSessionResume,
+    request: HarnessSessionResume
   ) => Effect.Effect<HarnessSession, HarnessResumeError, Scope.Scope>;
 }
 
@@ -200,21 +208,21 @@ export function startHarnessSession(input: {
 }) {
   return Effect.gen(function* () {
     const request = yield* Schema.decodeUnknownEffect(HarnessSessionStart)(
-      input.request,
+      input.request
     ).pipe(
       Effect.mapError(
         () =>
           new HarnessStartError({
             message: "Harness session start input is invalid.",
             providerId: input.provider.descriptor.providerId,
-          }),
-      ),
+          })
+      )
     );
     const detection = yield* input.provider.detect;
     const capabilities = yield* requireAvailableCapabilities(
       input.provider,
       detection,
-      input.requiredCapabilities,
+      input.requiredCapabilities
     );
     const session = yield* input.provider.createSession(request);
     yield* validateSessionContract(input.provider, capabilities, session);
@@ -230,21 +238,21 @@ export function resumeHarnessSession(input: {
 }) {
   return Effect.gen(function* () {
     const request = yield* Schema.decodeUnknownEffect(HarnessSessionResume)(
-      input.request,
+      input.request
     ).pipe(
       Effect.mapError(
         () =>
           new HarnessResumeError({
             message: "Harness session resume input is invalid.",
             providerId: input.provider.descriptor.providerId,
-          }),
-      ),
+          })
+      )
     );
     const detection = yield* input.provider.detect;
     const capabilities = yield* requireAvailableCapabilities(
       input.provider,
       detection,
-      ["resumableSessions", ...input.requiredCapabilities],
+      ["resumableSessions", ...input.requiredCapabilities]
     );
     const session = yield* input.provider.resumeSession(request);
     yield* validateSessionContract(input.provider, capabilities, session);
@@ -255,13 +263,13 @@ export function resumeHarnessSession(input: {
 function requireAvailableCapabilities(
   provider: HarnessProvider,
   detection: HarnessDetection,
-  required: ReadonlyArray<HarnessCapability>,
+  required: ReadonlyArray<HarnessCapability>
 ) {
   switch (detection.state) {
     case "available": {
       const missing = missingHarnessCapabilities(
         detection.capabilities,
-        required,
+        required
       );
       return missing.length === 0
         ? Effect.succeed(detection.capabilities)
@@ -269,7 +277,7 @@ function requireAvailableCapabilities(
             new HarnessCapabilityMismatchError({
               missing,
               providerId: provider.descriptor.providerId,
-            }),
+            })
           );
     }
     case "missing":
@@ -277,7 +285,7 @@ function requireAvailableCapabilities(
         new HarnessUnavailableError({
           providerId: provider.descriptor.providerId,
           state: "missing",
-        }),
+        })
       );
     case "authenticationRequired":
       return Effect.fail(
@@ -285,7 +293,7 @@ function requireAvailableCapabilities(
           providerId: provider.descriptor.providerId,
           state: "authenticationRequired",
           version: detection.version,
-        }),
+        })
       );
     case "incompatible":
       return Effect.fail(
@@ -293,7 +301,7 @@ function requireAvailableCapabilities(
           message: detection.reason,
           providerId: provider.descriptor.providerId,
           version: detection.version,
-        }),
+        })
       );
   }
 }
@@ -301,7 +309,7 @@ function requireAvailableCapabilities(
 function validateSessionContract(
   provider: HarnessProvider,
   capabilities: HarnessCapabilities,
-  session: HarnessSession,
+  session: HarnessSession
 ) {
   const contradictions: Array<"steering" | "interruption"> = [];
   if (capabilities.steering !== Option.isSome(session.steer)) {
@@ -317,6 +325,6 @@ function validateSessionContract(
         new HarnessSessionContractError({
           contradictions,
           providerId: provider.descriptor.providerId,
-        }),
+        })
       );
 }

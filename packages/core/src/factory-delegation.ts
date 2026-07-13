@@ -42,7 +42,7 @@ export type FactoryDelegationValidationStatus =
   typeof FactoryDelegationValidationStatusSchema.Type;
 
 export class FactoryDelegationPromptValidationInput extends Schema.Class<FactoryDelegationPromptValidationInput>(
-  "FactoryDelegationPromptValidationInput",
+  "FactoryDelegationPromptValidationInput"
 )({
   laneRole: FactoryLaneRoleSchema,
   promptMarkdown: Schema.NonEmptyString,
@@ -50,7 +50,7 @@ export class FactoryDelegationPromptValidationInput extends Schema.Class<Factory
 }) {}
 
 export class FactoryDelegationPromptValidationFinding extends Schema.Class<FactoryDelegationPromptValidationFinding>(
-  "FactoryDelegationPromptValidationFinding",
+  "FactoryDelegationPromptValidationFinding"
 )({
   code: FactoryDelegationFindingCodeSchema,
   message: Schema.NonEmptyString,
@@ -58,7 +58,7 @@ export class FactoryDelegationPromptValidationFinding extends Schema.Class<Facto
 }) {}
 
 export class FactoryDelegationPromptValidation extends Schema.Class<FactoryDelegationPromptValidation>(
-  "FactoryDelegationPromptValidation",
+  "FactoryDelegationPromptValidation"
 )({
   findings: Schema.Array(FactoryDelegationPromptValidationFinding),
   laneRole: FactoryLaneRoleSchema,
@@ -69,25 +69,23 @@ export class FactoryDelegationPromptValidation extends Schema.Class<FactoryDeleg
 export const parseFactoryDelegationPromptValidationInput =
   Schema.decodeUnknownSync(FactoryDelegationPromptValidationInput);
 
-export const parseFactoryDelegationPromptValidation =
-  Schema.decodeUnknownSync(FactoryDelegationPromptValidation);
+export const parseFactoryDelegationPromptValidation = Schema.decodeUnknownSync(
+  FactoryDelegationPromptValidation
+);
 
 export function validateFactoryDelegationPrompt(
-  input: unknown,
+  input: unknown
 ): FactoryDelegationPromptValidation {
   const decodedInput = parseFactoryDelegationPromptValidationInput(input);
   const prompt = decodedInput.promptMarkdown.toLowerCase();
   const findings: Array<FactoryDelegationPromptValidationFinding> = [];
-  const addBlocker = (
-    code: FactoryDelegationFindingCode,
-    message: string,
-  ) => {
+  const addBlocker = (code: FactoryDelegationFindingCode, message: string) => {
     findings.push(
       new FactoryDelegationPromptValidationFinding({
         code,
         message,
         severity: "blocker",
-      }),
+      })
     );
   };
 
@@ -97,14 +95,14 @@ export function validateFactoryDelegationPrompt(
   if (uniqueDeclaredLaneRoles.length > 1) {
     addBlocker(
       "lane-role-conflict",
-      "Delegation prompts must not declare more than one factory lane role.",
+      "Delegation prompts must not declare more than one factory lane role."
     );
   }
 
   if (!uniqueDeclaredLaneRoles.includes(decodedInput.laneRole)) {
     addBlocker(
       "lane-role-missing",
-      "Delegation prompts must explicitly declare the selected factory lane role.",
+      "Delegation prompts must explicitly declare the selected factory lane role."
     );
   }
 
@@ -114,7 +112,7 @@ export function validateFactoryDelegationPrompt(
   ) {
     addBlocker(
       "dogfood-requirement-on-non-dogfood-lane",
-      "Non-dogfood lanes must not require Gaia dogfood run IDs, retrospectives, or promoted dogfood evidence.",
+      "Non-dogfood lanes must not require Gaia dogfood run IDs, retrospectives, or promoted dogfood evidence."
     );
   }
 
@@ -122,19 +120,19 @@ export function validateFactoryDelegationPrompt(
     if (!containsDogfoodRunEvidence(prompt)) {
       addBlocker(
         "dogfood-run-evidence-missing",
-        "Gaia dogfood lanes must require Gaia run IDs or run artifact evidence.",
+        "Gaia dogfood lanes must require Gaia run IDs or run artifact evidence."
       );
     }
     if (!containsDogfoodRetrospective(prompt)) {
       addBlocker(
         "dogfood-retrospective-missing",
-        "Gaia dogfood lanes must require a dogfood retrospective or factory-retro artifact.",
+        "Gaia dogfood lanes must require a dogfood retrospective or factory-retro artifact."
       );
     }
     if (!containsDogfoodPromotionEvidence(prompt)) {
       addBlocker(
         "dogfood-promotion-evidence-missing",
-        "Gaia dogfood lanes must require selected evidence to be promoted to Linear or PR text before cleanup.",
+        "Gaia dogfood lanes must require selected evidence to be promoted to Linear or PR text before cleanup."
       );
     }
   }
@@ -143,25 +141,25 @@ export function validateFactoryDelegationPrompt(
     if (!containsBaseCommit(prompt)) {
       addBlocker(
         "base-commit-missing",
-        "A/B lanes must name the base commit before dispatch.",
+        "A/B lanes must name the base commit before dispatch."
       );
     }
     if (!containsWorktreeBranchExpectation(prompt)) {
       addBlocker(
         "worktree-branch-expectations-missing",
-        "A/B lanes must state isolated worktree and branch expectations before dispatch.",
+        "A/B lanes must state isolated worktree and branch expectations before dispatch."
       );
     }
     if (!containsCleanupRules(prompt)) {
       addBlocker(
         "cleanup-rules-missing",
-        "A/B lanes must state cleanup rules for generated Gaia run state before handoff.",
+        "A/B lanes must state cleanup rules for generated Gaia run state before handoff."
       );
     }
     if (!containsComparisonWaitRules(prompt)) {
       addBlocker(
         "comparison-wait-rules-missing",
-        "A/B lanes must state whether lane comparison waits for both PRs.",
+        "A/B lanes must state whether lane comparison waits for both PRs."
       );
     }
   }
@@ -210,25 +208,25 @@ function laneRoleFromDeclaration(line: string): FactoryLaneRole | undefined {
 
 function containsDogfoodRequirement(prompt: string) {
   return /dogfood\s+(evidence|requirement|retrospective|retro|run id|run ids)/u.test(
-    prompt,
+    prompt
   );
 }
 
 function containsDogfoodRunEvidence(prompt: string) {
   return /\b(run ids?|run-id|gaia run ids?|gaia run artifacts?|\.gaia\/runs?|run artifact evidence)\b/u.test(
-    prompt,
+    prompt
   );
 }
 
 function containsDogfoodRetrospective(prompt: string) {
   return /\b(dogfood retrospective|dogfood retro|factory-retro|factory retro)\b/u.test(
-    prompt,
+    prompt
   );
 }
 
 function containsDogfoodPromotionEvidence(prompt: string) {
   return /\b(promote|promoted|promotion|linear\/pr|pr text|pr evidence|before cleanup)\b/u.test(
-    prompt,
+    prompt
   );
 }
 
@@ -238,18 +236,18 @@ function containsBaseCommit(prompt: string) {
 
 function containsWorktreeBranchExpectation(prompt: string) {
   return /\b(isolated worktree|worktree branch|branch expectations|expected branch)\b/u.test(
-    prompt,
+    prompt
   );
 }
 
 function containsCleanupRules(prompt: string) {
   return /\b(clean up|cleanup|delete generated|remove generated)\b/u.test(
-    prompt,
+    prompt
   );
 }
 
 function containsComparisonWaitRules(prompt: string) {
   return /\b(wait for both|both .+ before comparing|comparison wait|compare .+ after both|do not compare .+ until)\b/u.test(
-    prompt,
+    prompt
   );
 }

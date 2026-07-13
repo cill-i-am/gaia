@@ -1,3 +1,4 @@
+import type { FactoryAgentRole, FactoryAgentState } from "@gaia/core";
 import type { LucideIcon } from "lucide-react";
 import {
   BotIcon,
@@ -8,8 +9,6 @@ import {
   ShieldCheckIcon,
   WorkflowIcon,
 } from "lucide-react";
-
-import type { FactoryAgentRole, FactoryAgentState } from "@gaia/core";
 
 export type FactoryAgentRoleVisual = {
   readonly accentClassName: string;
@@ -79,7 +78,7 @@ const factoryAgentStateVisuals = {
 } satisfies Record<FactoryAgentState, FactoryAgentStateVisual>;
 
 export function factoryAgentRoleVisual(
-  role: FactoryAgentRole | undefined,
+  role: FactoryAgentRole | undefined
 ): FactoryAgentRoleVisual {
   return factoryAgentRoleVisuals[role ?? "unknown"];
 }
@@ -93,7 +92,9 @@ export function factoryAgentStateLabel(state: FactoryAgentState | undefined) {
 }
 
 export function factoryAgentStateBadgeVariant(
-  state: FactoryAgentState | undefined,
+  state: FactoryAgentState | undefined
 ): "destructive" | "outline" | "secondary" {
-  return state === undefined ? "outline" : factoryAgentStateVisuals[state].variant;
+  return state === undefined
+    ? "outline"
+    : factoryAgentStateVisuals[state].variant;
 }

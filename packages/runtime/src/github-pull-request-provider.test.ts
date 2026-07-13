@@ -48,268 +48,308 @@ describe("delivery GitHub pull request provider", () => {
           ["comment", "Please update the focused parser test."],
           ["review", "The parser must reject extra fields."],
           ["thread", "Please cover the stale cursor case."],
-        ],
+        ]
       );
 
       const byUrl = new Map(
-        result.observation.feedback.map((item) => [item.url, item.classification]),
+        result.observation.feedback.map((item) => [
+          item.url,
+          item.classification,
+        ])
       );
-      assert.strictEqual(byUrl.get("https://github.com/cill-i-am/gaia/pull/92#issuecomment-101"), "actionable");
-      assert.strictEqual(byUrl.get("https://github.com/cill-i-am/gaia/pull/92#issuecomment-102"), "informational");
-      assert.strictEqual(byUrl.get("https://github.com/cill-i-am/gaia/pull/92#issuecomment-103"), "untrusted");
-      assert.strictEqual(byUrl.get("https://github.com/cill-i-am/gaia/pull/92#issuecomment-104"), "informational");
-      assert.strictEqual(byUrl.get("https://github.com/cill-i-am/gaia/pull/92#issuecomment-105"), "informational");
-      assert.strictEqual(byUrl.get("https://github.com/cill-i-am/gaia/pull/92#issuecomment-106"), "informational");
+      assert.strictEqual(
+        byUrl.get("https://github.com/cill-i-am/gaia/pull/92#issuecomment-101"),
+        "actionable"
+      );
+      assert.strictEqual(
+        byUrl.get("https://github.com/cill-i-am/gaia/pull/92#issuecomment-102"),
+        "informational"
+      );
+      assert.strictEqual(
+        byUrl.get("https://github.com/cill-i-am/gaia/pull/92#issuecomment-103"),
+        "untrusted"
+      );
+      assert.strictEqual(
+        byUrl.get("https://github.com/cill-i-am/gaia/pull/92#issuecomment-104"),
+        "informational"
+      );
+      assert.strictEqual(
+        byUrl.get("https://github.com/cill-i-am/gaia/pull/92#issuecomment-105"),
+        "informational"
+      );
+      assert.strictEqual(
+        byUrl.get("https://github.com/cill-i-am/gaia/pull/92#issuecomment-106"),
+        "informational"
+      );
 
       const durable = JSON.stringify(result.observation);
       assert.notInclude(durable, "Please update the focused parser test");
       assert.notInclude(durable, "native-comment-101");
       assert.match(durable, /feedback-comment-[a-f0-9]{64}/u);
-    }),
+    })
   );
 
-  it.effect("authorizes one exact tuple and rejects reuse against changed restart state", () =>
-    Effect.gen(function* () {
-      const emptyPolicy = DeliveryFeedbackTrustPolicyV1.make({
-        allowPullRequestAuthor: false,
-        trustedChecks: [],
-        trustedHumanLogins: [],
-        version: 1,
-      });
-      const untrusted = yield* readGitHubPullRequest({
-        commandRunner: fixtureRunner([], pullRequestFixture()),
-        prNumber: 92,
-        repository: "cill-i-am/gaia",
-        rootDirectory: ".",
-        trustPolicy: emptyPolicy,
-      });
-      const controlledFeedback = untrusted.observation.feedback.find(
-        ({ url }) =>
-          url ===
-          "https://github.com/cill-i-am/gaia/pull/92#issuecomment-104",
-      );
-      if (controlledFeedback === undefined) {
-        assert.fail("Expected the controlled feedback observation.");
-      }
-      assert.deepEqual(untrusted.remediationInputs, []);
-      assert.strictEqual(controlledFeedback.classification, "informational");
-      const authorizationInput = {
-        actorLogin: "cill-i-am",
-        actorType: "User" as const,
-        authorAssociation: "OWNER" as const,
-        commentDatabaseId: "native-comment-104",
-        contentDigest: controlledFeedback.contentDigest,
-        feedbackId: controlledFeedback.id,
-        headSha,
-        prNumber: 92,
-        repository: "cill-i-am/gaia",
-      };
-      const authorization =
-        makeDeliveryFeedbackSmokeAuthorization(authorizationInput);
-      assert.strictEqual(
-        authorization.authorizationDigest,
-        deliveryFeedbackSmokeAuthorizationDigest(authorization),
-      );
-      const accepted = yield* readGitHubPullRequest({
-        authorization,
-        commandRunner: fixtureRunner([], pullRequestFixture()),
-        prNumber: 92,
-        repository: "cill-i-am/gaia",
-        rootDirectory: ".",
-        trustPolicy: emptyPolicy,
-      });
-
-      assert.deepEqual(
-        accepted.remediationInputs.map(({ kind, text }) => [kind, text]),
-        [["comment", "Self-authored request."]],
-      );
-      assert.notInclude(JSON.stringify(accepted.observation), "native-comment-104");
-
-      const wrongStableId = makeDeliveryFeedbackSmokeAuthorization({
-        ...authorizationInput,
-        feedbackId: parseDeliveryFeedbackId(
-          `feedback-comment-${"0".repeat(64)}`,
-        ),
-      });
-      const mismatches = [
-        {
-          authorization,
-          fixture: controlledCommentFixture({
-            body: "<!-- gaia-remediation-request:v1 -->\nA different marked request.",
-          }),
-          name: "edited body",
-        },
-        {
-          authorization: wrongStableId,
-          fixture: pullRequestFixture(),
-          name: "stable feedback ID",
-        },
-        {
-          authorization,
-          fixture: controlledCommentFixture({
-            author: { __typename: "Bot", login: "cill-i-am" },
-          }),
-          name: "actor type",
-        },
-        {
-          authorization,
-          fixture: controlledCommentFixture({ authorAssociation: "MEMBER" }),
-          name: "association",
-        },
-        {
-          authorization: makeDeliveryFeedbackSmokeAuthorization({
-            ...authorizationInput,
-            commentDatabaseId: "another-native-comment",
-          }),
-          fixture: pullRequestFixture(),
-          name: "native ID",
-        },
-        {
-          authorization: makeDeliveryFeedbackSmokeAuthorization({
-            ...authorizationInput,
-            headSha: "c".repeat(40),
-          }),
-          fixture: pullRequestFixture(),
-          name: "head",
-        },
-        {
-          authorization: makeDeliveryFeedbackSmokeAuthorization({
-            ...authorizationInput,
-            actorLogin: "another-owner",
-          }),
-          fixture: pullRequestFixture(),
-          name: "login",
-        },
-        {
-          authorization: DeliveryFeedbackSmokeAuthorization.make({
-            ...authorization,
-            authorizationDigest: "b".repeat(64),
-          }),
-          fixture: pullRequestFixture(),
-          name: "authorization digest",
-        },
-      ];
-
-      for (const mismatch of mismatches) {
-        const denied = yield* readGitHubPullRequest({
-          authorization: mismatch.authorization,
-          commandRunner: fixtureRunner([], mismatch.fixture),
+  it.effect(
+    "authorizes one exact tuple and rejects reuse against changed restart state",
+    () =>
+      Effect.gen(function* () {
+        const emptyPolicy = DeliveryFeedbackTrustPolicyV1.make({
+          allowPullRequestAuthor: false,
+          trustedChecks: [],
+          trustedHumanLogins: [],
+          version: 1,
+        });
+        const untrusted = yield* readGitHubPullRequest({
+          commandRunner: fixtureRunner([], pullRequestFixture()),
           prNumber: 92,
           repository: "cill-i-am/gaia",
           rootDirectory: ".",
           trustPolicy: emptyPolicy,
         });
-        assert.deepEqual(
-          denied.remediationInputs,
-          [],
-          `${mismatch.name} must not produce remediation input`,
+        const controlledFeedback = untrusted.observation.feedback.find(
+          ({ url }) =>
+            url === "https://github.com/cill-i-am/gaia/pull/92#issuecomment-104"
         );
+        if (controlledFeedback === undefined) {
+          assert.fail("Expected the controlled feedback observation.");
+        }
+        assert.deepEqual(untrusted.remediationInputs, []);
+        assert.strictEqual(controlledFeedback.classification, "informational");
+        const authorizationInput = {
+          actorLogin: "cill-i-am",
+          actorType: "User" as const,
+          authorAssociation: "OWNER" as const,
+          commentDatabaseId: "native-comment-104",
+          contentDigest: controlledFeedback.contentDigest,
+          feedbackId: controlledFeedback.id,
+          headSha,
+          prNumber: 92,
+          repository: "cill-i-am/gaia",
+        };
+        const authorization =
+          makeDeliveryFeedbackSmokeAuthorization(authorizationInput);
         assert.strictEqual(
-          denied.observation.feedback.find(
-            ({ url }) =>
-              url ===
-              "https://github.com/cill-i-am/gaia/pull/92#issuecomment-104",
-          )?.classification,
-          "informational",
-          `${mismatch.name} must remain informational`,
+          authorization.authorizationDigest,
+          deliveryFeedbackSmokeAuthorizationDigest(authorization)
         );
-      }
-    }),
+        const accepted = yield* readGitHubPullRequest({
+          authorization,
+          commandRunner: fixtureRunner([], pullRequestFixture()),
+          prNumber: 92,
+          repository: "cill-i-am/gaia",
+          rootDirectory: ".",
+          trustPolicy: emptyPolicy,
+        });
+
+        assert.deepEqual(
+          accepted.remediationInputs.map(({ kind, text }) => [kind, text]),
+          [["comment", "Self-authored request."]]
+        );
+        assert.notInclude(
+          JSON.stringify(accepted.observation),
+          "native-comment-104"
+        );
+
+        const wrongStableId = makeDeliveryFeedbackSmokeAuthorization({
+          ...authorizationInput,
+          feedbackId: parseDeliveryFeedbackId(
+            `feedback-comment-${"0".repeat(64)}`
+          ),
+        });
+        const mismatches = [
+          {
+            authorization,
+            fixture: controlledCommentFixture({
+              body: "<!-- gaia-remediation-request:v1 -->\nA different marked request.",
+            }),
+            name: "edited body",
+          },
+          {
+            authorization: wrongStableId,
+            fixture: pullRequestFixture(),
+            name: "stable feedback ID",
+          },
+          {
+            authorization,
+            fixture: controlledCommentFixture({
+              author: { __typename: "Bot", login: "cill-i-am" },
+            }),
+            name: "actor type",
+          },
+          {
+            authorization,
+            fixture: controlledCommentFixture({ authorAssociation: "MEMBER" }),
+            name: "association",
+          },
+          {
+            authorization: makeDeliveryFeedbackSmokeAuthorization({
+              ...authorizationInput,
+              commentDatabaseId: "another-native-comment",
+            }),
+            fixture: pullRequestFixture(),
+            name: "native ID",
+          },
+          {
+            authorization: makeDeliveryFeedbackSmokeAuthorization({
+              ...authorizationInput,
+              headSha: "c".repeat(40),
+            }),
+            fixture: pullRequestFixture(),
+            name: "head",
+          },
+          {
+            authorization: makeDeliveryFeedbackSmokeAuthorization({
+              ...authorizationInput,
+              actorLogin: "another-owner",
+            }),
+            fixture: pullRequestFixture(),
+            name: "login",
+          },
+          {
+            authorization: DeliveryFeedbackSmokeAuthorization.make({
+              ...authorization,
+              authorizationDigest: "b".repeat(64),
+            }),
+            fixture: pullRequestFixture(),
+            name: "authorization digest",
+          },
+        ];
+
+        for (const mismatch of mismatches) {
+          const denied = yield* readGitHubPullRequest({
+            authorization: mismatch.authorization,
+            commandRunner: fixtureRunner([], mismatch.fixture),
+            prNumber: 92,
+            repository: "cill-i-am/gaia",
+            rootDirectory: ".",
+            trustPolicy: emptyPolicy,
+          });
+          assert.deepEqual(
+            denied.remediationInputs,
+            [],
+            `${mismatch.name} must not produce remediation input`
+          );
+          assert.strictEqual(
+            denied.observation.feedback.find(
+              ({ url }) =>
+                url ===
+                "https://github.com/cill-i-am/gaia/pull/92#issuecomment-104"
+            )?.classification,
+            "informational",
+            `${mismatch.name} must remain informational`
+          );
+        }
+      })
   );
 
-  it.effect("retains bounded evidence but clears every remediation input when any surface is truncated", () =>
-    Effect.gen(function* () {
-      const surfaces = [
-        "comments",
-        "reviews",
-        "threads",
-        "thread comments",
-        "check suites",
-        "check runs",
-      ] as const;
+  it.effect(
+    "retains bounded evidence but clears every remediation input when any surface is truncated",
+    () =>
+      Effect.gen(function* () {
+        const surfaces = [
+          "comments",
+          "reviews",
+          "threads",
+          "thread comments",
+          "check suites",
+          "check runs",
+        ] as const;
 
-      for (const surface of surfaces) {
-        const result = yield* readGitHubPullRequest({
-          commandRunner: fixtureRunner([], truncatedFixture(surface)),
+        for (const surface of surfaces) {
+          const result = yield* readGitHubPullRequest({
+            commandRunner: fixtureRunner([], truncatedFixture(surface)),
+            prNumber: 92,
+            repository: "cill-i-am/gaia",
+            rootDirectory: ".",
+            trustPolicy: trustPolicy(),
+          });
+          assert.deepEqual(
+            result.remediationInputs,
+            [],
+            `${surface} truncation must fail closed`
+          );
+          assert.isTrue(
+            result.observation.blockers.some(
+              ({ kind }) => kind === "feedbackTruncated"
+            ),
+            `${surface} truncation must remain operator-visible`
+          );
+          assert.isAbove(result.observation.feedback.length, 0);
+          assert.isAbove(result.observation.checks.length, 0);
+        }
+      })
+  );
+
+  it.effect(
+    "requires one exact trusted hosted-check identity before a pull request can be ready",
+    () =>
+      Effect.gen(function* () {
+        const trusted = yield* readGitHubPullRequest({
+          commandRunner: fixtureRunner([], readyPullRequestFixture()),
           prNumber: 92,
           repository: "cill-i-am/gaia",
           rootDirectory: ".",
           trustPolicy: trustPolicy(),
         });
-        assert.deepEqual(result.remediationInputs, [], `${surface} truncation must fail closed`);
-        assert.isTrue(
-          result.observation.blockers.some(({ kind }) => kind === "feedbackTruncated"),
-          `${surface} truncation must remain operator-visible`,
-        );
-        assert.isAbove(result.observation.feedback.length, 0);
-        assert.isAbove(result.observation.checks.length, 0);
-      }
-    }),
-  );
+        assert.strictEqual(trusted.observation.status, "ready");
 
-  it.effect("requires one exact trusted hosted-check identity before a pull request can be ready", () =>
-    Effect.gen(function* () {
-      const trusted = yield* readGitHubPullRequest({
-        commandRunner: fixtureRunner([], readyPullRequestFixture()),
-        prNumber: 92,
-        repository: "cill-i-am/gaia",
-        rootDirectory: ".",
-        trustPolicy: trustPolicy(),
-      });
-      assert.strictEqual(trusted.observation.status, "ready");
-
-      const mismatches = [
-        {
-          mutate: (fixture: PullRequestFixture) => {
-            fixtureParts(fixture).suite.app = { slug: "another-app" };
+        const mismatches = [
+          {
+            mutate: (fixture: PullRequestFixture) => {
+              fixtureParts(fixture).suite.app = { slug: "another-app" };
+            },
+            name: "app",
           },
-          name: "app",
-        },
-        {
-          mutate: (fixture: PullRequestFixture) => {
-            fixtureParts(fixture).suite.workflowRun = {
+          {
+            mutate: (fixture: PullRequestFixture) => {
+              fixtureParts(fixture).suite.workflowRun = {
                 workflow: { name: "Another Workflow" },
               };
+            },
+            name: "workflow",
           },
-          name: "workflow",
-        },
-        {
-          mutate: (fixture: PullRequestFixture) => {
-            fixtureParts(fixture).check.name = "another-check";
+          {
+            mutate: (fixture: PullRequestFixture) => {
+              fixtureParts(fixture).check.name = "another-check";
+            },
+            name: "name",
           },
-          name: "name",
-        },
-      ];
-      for (const mismatch of mismatches) {
-        const fixture = readyPullRequestFixture();
-        mismatch.mutate(fixture);
-        const result = yield* readGitHubPullRequest({
-          commandRunner: fixtureRunner([], fixture),
+        ];
+        for (const mismatch of mismatches) {
+          const fixture = readyPullRequestFixture();
+          mismatch.mutate(fixture);
+          const result = yield* readGitHubPullRequest({
+            commandRunner: fixtureRunner([], fixture),
+            prNumber: 92,
+            repository: "cill-i-am/gaia",
+            rootDirectory: ".",
+            trustPolicy: trustPolicy(),
+          });
+          assert.strictEqual(
+            result.observation.checks[0]?.classification,
+            "untrusted"
+          );
+          assert.isTrue(
+            result.observation.blockers.some(
+              ({ kind }) => kind === "missingHostedChecks"
+            ),
+            `wrong ${mismatch.name} must not satisfy hosted-check presence`
+          );
+          assert.notStrictEqual(result.observation.status, "ready");
+          assert.deepEqual(result.remediationInputs, []);
+        }
+
+        const wrongHead = readyPullRequestFixture();
+        fixtureParts(wrongHead).commit.oid = "b".repeat(40);
+        const wrongHeadExit = yield* readGitHubPullRequest({
+          commandRunner: fixtureRunner([], wrongHead),
           prNumber: 92,
           repository: "cill-i-am/gaia",
           rootDirectory: ".",
           trustPolicy: trustPolicy(),
-        });
-        assert.strictEqual(result.observation.checks[0]?.classification, "untrusted");
-        assert.isTrue(
-          result.observation.blockers.some(({ kind }) => kind === "missingHostedChecks"),
-          `wrong ${mismatch.name} must not satisfy hosted-check presence`,
-        );
-        assert.notStrictEqual(result.observation.status, "ready");
-        assert.deepEqual(result.remediationInputs, []);
-      }
-
-      const wrongHead = readyPullRequestFixture();
-      fixtureParts(wrongHead).commit.oid = "b".repeat(40);
-      const wrongHeadExit = yield* readGitHubPullRequest({
-        commandRunner: fixtureRunner([], wrongHead),
-        prNumber: 92,
-        repository: "cill-i-am/gaia",
-        rootDirectory: ".",
-        trustPolicy: trustPolicy(),
-      }).pipe(Effect.exit);
-      assert.strictEqual(wrongHeadExit._tag, "Failure");
-    }),
+        }).pipe(Effect.exit);
+        assert.strictEqual(wrongHeadExit._tag, "Failure");
+      })
   );
 
   it.effect("rejects excess provider response fields", () =>
@@ -324,8 +364,8 @@ describe("delivery GitHub pull request provider", () => {
       trustPolicy: trustPolicy(),
     }).pipe(
       Effect.exit,
-      Effect.map((exit) => assert.strictEqual(exit._tag, "Failure")),
-    ),
+      Effect.map((exit) => assert.strictEqual(exit._tag, "Failure"))
+    )
   );
 });
 
@@ -347,7 +387,7 @@ function trustPolicy() {
 
 function fixtureRunner(
   commands: Array<GitHubCommandInput>,
-  fixture: unknown,
+  fixture: unknown
 ): GitHubCommandRunner {
   return (input) => {
     commands.push(input);
@@ -440,7 +480,8 @@ function pullRequestFixture() {
                           nodes: [
                             {
                               conclusion: "FAILURE",
-                              detailsUrl: "https://github.com/cill-i-am/gaia/actions/runs/1",
+                              detailsUrl:
+                                "https://github.com/cill-i-am/gaia/actions/runs/1",
                               name: "gaia-pr-ci",
                               status: "COMPLETED",
                             },
@@ -530,7 +571,7 @@ function truncatedFixture(
     | "comments"
     | "reviews"
     | "thread comments"
-    | "threads",
+    | "threads"
 ) {
   const fixture = pullRequestFixture();
   const pr = fixture.data.repository.pullRequest;
@@ -562,11 +603,7 @@ function fixtureParts(fixture: PullRequestFixture) {
   const commit = pr.commits.nodes[0]?.commit;
   const suite = commit?.checkSuites.nodes[0];
   const check = suite?.checkRuns.nodes[0];
-  if (
-    commit === undefined ||
-    suite === undefined ||
-    check === undefined
-  ) {
+  if (commit === undefined || suite === undefined || check === undefined) {
     throw new Error("Expected complete pull-request fixture surfaces.");
   }
   return { check, commit, pr, suite };
@@ -588,7 +625,7 @@ function controlledCommentFixture(input: {
 }) {
   const fixture = pullRequestFixture();
   const controlled = fixture.data.repository.pullRequest.comments.nodes.find(
-    ({ databaseId }) => databaseId === "native-comment-104",
+    ({ databaseId }) => databaseId === "native-comment-104"
   );
   if (controlled === undefined) {
     throw new Error("Expected the controlled comment fixture.");

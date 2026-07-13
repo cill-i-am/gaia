@@ -1,9 +1,11 @@
+import { execFile } from "node:child_process";
+
 import { RunIdSchema, type RunId } from "@gaia/core";
 import { Duration, Effect, FileSystem, Path, Schedule, Schema } from "effect";
-import { execFile } from "node:child_process";
-import { appendEvent, readEvents } from "./event-store.js";
-import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+
 import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
+import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import { appendEvent, readEvents } from "./event-store.js";
 import { HarnessRunResult } from "./harness.js";
 import {
   makeRunPaths,
@@ -13,12 +15,12 @@ import {
 } from "./paths.js";
 import { repositoryCommandEnvironment } from "./repository-command-environment.js";
 import { withRunStoreLock } from "./run-store-lock.js";
-import { copyWorkspaceDirectoryContents } from "./workspace.js";
+import { statusRun } from "./workflows.js";
 import {
   evaluateWorkspacePrQualityGate,
   WorkspacePrQualityGate,
 } from "./workspace-pr-gate.js";
-import { statusRun } from "./workflows.js";
+import { copyWorkspaceDirectoryContents } from "./workspace.js";
 
 const commandMaxBufferBytes = 10 * 1024 * 1024;
 const defaultRemoteName = "origin";
@@ -54,39 +56,39 @@ const GitHubPublishSourceChangeClaimSchema = Schema.Literals([
 ] as const);
 
 const GitHubCheckPollAttemptCountSchema = Schema.Int.check(
-  Schema.isGreaterThanOrEqualTo(1),
+  Schema.isGreaterThanOrEqualTo(1)
 ).pipe(Schema.brand("GitHubCheckPollAttemptCount"));
 
 type GitHubCheckPollAttemptCount =
   typeof GitHubCheckPollAttemptCountSchema.Type;
 
 const GitHubFeedbackCountSchema = Schema.Int.check(
-  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isGreaterThanOrEqualTo(0)
 ).pipe(Schema.brand("GitHubFeedbackCount"));
 
 type GitHubFeedbackCount = typeof GitHubFeedbackCountSchema.Type;
 
 const parseGitHubFeedbackCount = Schema.decodeUnknownSync(
-  GitHubFeedbackCountSchema,
+  GitHubFeedbackCountSchema
 );
 
 const parseGitHubCheckPollAttemptCount = Schema.decodeUnknownSync(
-  GitHubCheckPollAttemptCountSchema,
+  GitHubCheckPollAttemptCountSchema
 );
 
 export const GitHubPullRequestSelectorSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("GitHubPullRequestSelector"),
+  Schema.brand("GitHubPullRequestSelector")
 );
 
 export type GitHubPullRequestSelector =
   typeof GitHubPullRequestSelectorSchema.Type;
 
 export const parseGitHubPullRequestSelector = Schema.decodeUnknownSync(
-  GitHubPullRequestSelectorSchema,
+  GitHubPullRequestSelectorSchema
 );
 
 const GitHubPrHeadShaSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("GitHubPrHeadSha"),
+  Schema.brand("GitHubPrHeadSha")
 );
 
 type GitHubPrHeadSha = typeof GitHubPrHeadShaSchema.Type;
@@ -115,8 +117,7 @@ export const GitHubPrFeedbackStatusSchema = Schema.Literals([
 ] as const);
 
 /** GitHub PR human-feedback status recorded for a Gaia run. */
-export type GitHubPrFeedbackStatus =
-  typeof GitHubPrFeedbackStatusSchema.Type;
+export type GitHubPrFeedbackStatus = typeof GitHubPrFeedbackStatusSchema.Type;
 
 export const GitHubPrFeedbackNextActionSchema = Schema.Literals([
   "address-review-comments",
@@ -130,7 +131,7 @@ export type GitHubPrFeedbackNextAction =
   typeof GitHubPrFeedbackNextActionSchema.Type;
 
 export class GitHubCheckRun extends Schema.Class<GitHubCheckRun>(
-  "GitHubCheckRun",
+  "GitHubCheckRun"
 )({
   link: Schema.optionalKey(Schema.String),
   name: Schema.NonEmptyString,
@@ -139,7 +140,7 @@ export class GitHubCheckRun extends Schema.Class<GitHubCheckRun>(
 }) {}
 
 export class GitHubPrFeedbackComment extends Schema.Class<GitHubPrFeedbackComment>(
-  "GitHubPrFeedbackComment",
+  "GitHubPrFeedbackComment"
 )({
   authorLogin: Schema.optionalKey(Schema.String),
   body: Schema.String,
@@ -148,7 +149,7 @@ export class GitHubPrFeedbackComment extends Schema.Class<GitHubPrFeedbackCommen
 }) {}
 
 export class GitHubPrFeedbackReview extends Schema.Class<GitHubPrFeedbackReview>(
-  "GitHubPrFeedbackReview",
+  "GitHubPrFeedbackReview"
 )({
   authorLogin: Schema.optionalKey(Schema.String),
   body: Schema.optionalKey(Schema.String),
@@ -158,7 +159,7 @@ export class GitHubPrFeedbackReview extends Schema.Class<GitHubPrFeedbackReview>
 }) {}
 
 export class GitHubPrFeedback extends Schema.Class<GitHubPrFeedback>(
-  "GitHubPrFeedback",
+  "GitHubPrFeedback"
 )({
   commentCount: GitHubFeedbackCountSchema,
   comments: Schema.Array(GitHubPrFeedbackComment),
@@ -177,7 +178,7 @@ export class GitHubPrFeedback extends Schema.Class<GitHubPrFeedback>(
 }) {}
 
 export class GitHubPrFeedbackSummary extends Schema.Class<GitHubPrFeedbackSummary>(
-  "GitHubPrFeedbackSummary",
+  "GitHubPrFeedbackSummary"
 )({
   commentCount: GitHubFeedbackCountSchema,
   comments: Schema.Array(GitHubPrFeedbackComment),
@@ -197,7 +198,7 @@ export class GitHubPrFeedbackSummary extends Schema.Class<GitHubPrFeedbackSummar
 }) {}
 
 export class GitHubChecksSummary extends Schema.Class<GitHubChecksSummary>(
-  "GitHubChecksSummary",
+  "GitHubChecksSummary"
 )({
   checks: Schema.Array(GitHubCheckRun),
   pr: GitHubPullRequestSelectorSchema,
@@ -205,7 +206,7 @@ export class GitHubChecksSummary extends Schema.Class<GitHubChecksSummary>(
 }) {}
 
 export class GitHubChecksSnapshot extends Schema.Class<GitHubChecksSnapshot>(
-  "GitHubChecksSnapshot",
+  "GitHubChecksSnapshot"
 )({
   attempts: GitHubCheckPollAttemptCountSchema,
   checks: Schema.Array(GitHubCheckRun),
@@ -218,7 +219,7 @@ export class GitHubChecksSnapshot extends Schema.Class<GitHubChecksSnapshot>(
 }) {}
 
 export class GitHubChecksRecord extends Schema.Class<GitHubChecksRecord>(
-  "GitHubChecksRecord",
+  "GitHubChecksRecord"
 )({
   attempts: GitHubCheckPollAttemptCountSchema,
   checks: Schema.Array(GitHubCheckRun),
@@ -240,11 +241,10 @@ export const GitHubCiWatchNextActionSchema = Schema.Literals([
 ] as const);
 
 /** Next operator or agent action recommended by the CI watcher. */
-export type GitHubCiWatchNextAction =
-  typeof GitHubCiWatchNextActionSchema.Type;
+export type GitHubCiWatchNextAction = typeof GitHubCiWatchNextActionSchema.Type;
 
 export class GitHubCiWatchState extends Schema.Class<GitHubCiWatchState>(
-  "GitHubCiWatchState",
+  "GitHubCiWatchState"
 )({
   attempts: GitHubCheckPollAttemptCountSchema,
   headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
@@ -269,7 +269,7 @@ export type GitHubCiWatchResultSource =
 
 /** Agent-facing summary returned by the resumable GitHub CI watcher. */
 export class GitHubCiWatchSummary extends Schema.Class<GitHubCiWatchSummary>(
-  "GitHubCiWatchSummary",
+  "GitHubCiWatchSummary"
 )({
   attempts: GitHubCheckPollAttemptCountSchema,
   checks: Schema.Array(GitHubCheckRun),
@@ -306,8 +306,7 @@ export const GitHubPrLoopNextActionSchema = Schema.Literals([
 ] as const);
 
 /** Next operator or agent action recommended by the combined PR-loop watcher. */
-export type GitHubPrLoopNextAction =
-  typeof GitHubPrLoopNextActionSchema.Type;
+export type GitHubPrLoopNextAction = typeof GitHubPrLoopNextActionSchema.Type;
 
 export const GitHubPrLoopBlockerKindSchema = Schema.Literals([
   "awaiting-review",
@@ -319,11 +318,10 @@ export const GitHubPrLoopBlockerKindSchema = Schema.Literals([
 ] as const);
 
 /** Why a PR loop is not ready for a merge decision. */
-export type GitHubPrLoopBlockerKind =
-  typeof GitHubPrLoopBlockerKindSchema.Type;
+export type GitHubPrLoopBlockerKind = typeof GitHubPrLoopBlockerKindSchema.Type;
 
 export class GitHubPrLoopBlocker extends Schema.Class<GitHubPrLoopBlocker>(
-  "GitHubPrLoopBlocker",
+  "GitHubPrLoopBlocker"
 )({
   action: GitHubPrLoopNextActionSchema,
   kind: GitHubPrLoopBlockerKindSchema,
@@ -331,7 +329,7 @@ export class GitHubPrLoopBlocker extends Schema.Class<GitHubPrLoopBlocker>(
 }) {}
 
 export class GitHubPrLoopState extends Schema.Class<GitHubPrLoopState>(
-  "GitHubPrLoopState",
+  "GitHubPrLoopState"
 )({
   blockerCount: GitHubFeedbackCountSchema,
   blockers: Schema.Array(GitHubPrLoopBlocker),
@@ -349,7 +347,7 @@ export class GitHubPrLoopState extends Schema.Class<GitHubPrLoopState>(
 }) {}
 
 export class GitHubPrLoopSummary extends Schema.Class<GitHubPrLoopSummary>(
-  "GitHubPrLoopSummary",
+  "GitHubPrLoopSummary"
 )({
   blockerCount: GitHubFeedbackCountSchema,
   blockers: Schema.Array(GitHubPrLoopBlocker),
@@ -366,7 +364,7 @@ export class GitHubPrLoopSummary extends Schema.Class<GitHubPrLoopSummary>(
 }) {}
 
 export class GitHubPrCommentSummary extends Schema.Class<GitHubPrCommentSummary>(
-  "GitHubPrCommentSummary",
+  "GitHubPrCommentSummary"
 )({
   commentPath: Schema.NonEmptyString,
   commentUrl: Schema.optionalKey(Schema.String),
@@ -376,7 +374,7 @@ export class GitHubPrCommentSummary extends Schema.Class<GitHubPrCommentSummary>
 }) {}
 
 export class GitHubRemediationSpecSummary extends Schema.Class<GitHubRemediationSpecSummary>(
-  "GitHubRemediationSpecSummary",
+  "GitHubRemediationSpecSummary"
 )({
   blockerCount: GitHubFeedbackCountSchema,
   blockers: Schema.Array(GitHubPrLoopBlocker),
@@ -390,7 +388,7 @@ export class GitHubRemediationSpecSummary extends Schema.Class<GitHubRemediation
 }) {}
 
 export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
-  "GitHubPrSummary",
+  "GitHubPrSummary"
 )({
   baseBranch: Schema.NonEmptyString,
   branchName: Schema.NonEmptyString,
@@ -403,13 +401,13 @@ export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
 
 /** Strict normalized shape used to reconcile one owned draft pull request. */
 export class GitHubDraftPullRequestView extends Schema.Class<GitHubDraftPullRequestView>(
-  "GitHubDraftPullRequestView",
+  "GitHubDraftPullRequestView"
 )({
   baseRefName: Schema.NonEmptyString,
   body: Schema.String,
   headRefName: Schema.NonEmptyString,
   headRefOid: Schema.String.pipe(
-    Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
+    Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))
   ),
   isDraft: Schema.Boolean,
   number: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
@@ -417,32 +415,32 @@ export class GitHubDraftPullRequestView extends Schema.Class<GitHubDraftPullRequ
   url: Schema.String.pipe(
     Schema.check(
       Schema.isPattern(
-        /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u,
-      ),
-    ),
+        /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
+      )
+    )
   ),
 }) {}
 
 const GitHubDraftPullRequestViews = Schema.Array(
-  GitHubDraftPullRequestView,
+  GitHubDraftPullRequestView
 ).pipe(Schema.check(Schema.isMaxLength(10)));
 
 /** Parse bounded `gh pr list --json` output at the GitHub adapter boundary. */
 export function parseGitHubDraftPullRequestViewsJson(input: string) {
   return Schema.decodeUnknownSync(GitHubDraftPullRequestViews)(
-    JSON.parse(input),
+    JSON.parse(input)
   );
 }
 
 export class GitHubPreflightCheck extends Schema.Class<GitHubPreflightCheck>(
-  "GitHubPreflightCheck",
+  "GitHubPreflightCheck"
 )({
   name: GitHubPreflightCheckNameSchema,
   status: Schema.Literal("passed"),
 }) {}
 
 export class GitHubPublishPreflightSummary extends Schema.Class<GitHubPublishPreflightSummary>(
-  "GitHubPublishPreflightSummary",
+  "GitHubPublishPreflightSummary"
 )({
   baseBranch: Schema.NonEmptyString,
   checks: Schema.Array(GitHubPreflightCheck),
@@ -453,14 +451,14 @@ export class GitHubPublishPreflightSummary extends Schema.Class<GitHubPublishPre
 }) {}
 
 export class GitHubPublishPreviewCommand extends Schema.Class<GitHubPublishPreviewCommand>(
-  "GitHubPublishPreviewCommand",
+  "GitHubPublishPreviewCommand"
 )({
   args: Schema.Array(Schema.String),
   command: Schema.NonEmptyString,
 }) {}
 
 export class GitHubPublishPreview extends Schema.Class<GitHubPublishPreview>(
-  "GitHubPublishPreview",
+  "GitHubPublishPreview"
 )({
   baseBranch: Schema.NonEmptyString,
   branchName: Schema.NonEmptyString,
@@ -476,13 +474,13 @@ export class GitHubPublishPreview extends Schema.Class<GitHubPublishPreview>(
 }) {}
 
 class GitHubPrViewAuthor extends Schema.Class<GitHubPrViewAuthor>(
-  "GitHubPrViewAuthor",
+  "GitHubPrViewAuthor"
 )({
   login: Schema.optionalKey(Schema.String),
 }) {}
 
 class GitHubPrViewComment extends Schema.Class<GitHubPrViewComment>(
-  "GitHubPrViewComment",
+  "GitHubPrViewComment"
 )({
   author: Schema.optionalKey(Schema.NullOr(GitHubPrViewAuthor)),
   body: Schema.String,
@@ -491,7 +489,7 @@ class GitHubPrViewComment extends Schema.Class<GitHubPrViewComment>(
 }) {}
 
 class GitHubPrViewReview extends Schema.Class<GitHubPrViewReview>(
-  "GitHubPrViewReview",
+  "GitHubPrViewReview"
 )({
   author: Schema.optionalKey(Schema.NullOr(GitHubPrViewAuthor)),
   body: Schema.optionalKey(Schema.String),
@@ -501,7 +499,7 @@ class GitHubPrViewReview extends Schema.Class<GitHubPrViewReview>(
 }) {}
 
 class GitHubPrFeedbackView extends Schema.Class<GitHubPrFeedbackView>(
-  "GitHubPrFeedbackView",
+  "GitHubPrFeedbackView"
 )({
   comments: Schema.Array(GitHubPrViewComment),
   headRefOid: Schema.optionalKey(GitHubPrHeadShaSchema),
@@ -514,35 +512,34 @@ class GitHubPrFeedbackView extends Schema.Class<GitHubPrFeedbackView>(
 }) {}
 
 class GitHubPrHeadView extends Schema.Class<GitHubPrHeadView>(
-  "GitHubPrHeadView",
+  "GitHubPrHeadView"
 )({
   headRefOid: GitHubPrHeadShaSchema,
 }) {}
 
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
-const parseHarnessRunResultJson = Schema.decodeUnknownSync(
-  HarnessRunResultJson,
-);
+const parseHarnessRunResultJson =
+  Schema.decodeUnknownSync(HarnessRunResultJson);
 const GitHubPrFeedbackJson = Schema.toCodecJson(GitHubPrFeedback);
 const encodeGitHubPrFeedbackJson = Schema.encodeSync(GitHubPrFeedbackJson);
 export const parseGitHubPrFeedbackJson =
   Schema.decodeUnknownSync(GitHubPrFeedbackJson);
 const GitHubChecksSnapshotJson = Schema.toCodecJson(GitHubChecksSnapshot);
 const encodeGitHubChecksSnapshotJson = Schema.encodeSync(
-  GitHubChecksSnapshotJson,
+  GitHubChecksSnapshotJson
 );
 const decodeGitHubChecksSnapshotJson = Schema.decodeUnknownSync(
-  GitHubChecksSnapshotJson,
+  GitHubChecksSnapshotJson
 );
 const GitHubCiWatchStateJson = Schema.toCodecJson(GitHubCiWatchState);
 const encodeGitHubCiWatchStateJson = Schema.encodeSync(GitHubCiWatchStateJson);
 const decodeGitHubCiWatchStateJson = Schema.decodeUnknownSync(
-  GitHubCiWatchStateJson,
+  GitHubCiWatchStateJson
 );
 const GitHubPrLoopStateJson = Schema.toCodecJson(GitHubPrLoopState);
 const encodeGitHubPrLoopStateJson = Schema.encodeSync(GitHubPrLoopStateJson);
 const decodeGitHubPrLoopStateJson = Schema.decodeUnknownSync(
-  GitHubPrLoopStateJson,
+  GitHubPrLoopStateJson
 );
 
 export function parseGitHubCiWatchStateJson(input: unknown) {
@@ -564,11 +561,10 @@ function normalizeGitHubChecksStatusFields(input: unknown): unknown {
 
   const output: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
-    const normalizedValue = key === "status" ||
-      key === "lastStatus" ||
-      key === "checksStatus"
-      ? normalizeGitHubChecksStatusValue(value)
-      : value;
+    const normalizedValue =
+      key === "status" || key === "lastStatus" || key === "checksStatus"
+        ? normalizeGitHubChecksStatusValue(value)
+        : value;
     output[key] = normalizeGitHubChecksStatusFields(normalizedValue);
   }
 
@@ -597,7 +593,7 @@ export type GitHubCommandInput = {
 };
 
 export type GitHubCommandRunner = (
-  input: GitHubCommandInput,
+  input: GitHubCommandInput
 ) => Effect.Effect<CommandExecutionResult, GaiaRuntimeError>;
 
 export type GitHubPublishOptions = RunStorageOptions & {
@@ -642,29 +638,34 @@ class GitHubChecksPending extends Schema.TaggedErrorClass<GitHubChecksPending>()
   {
     attempts: GitHubCheckPollAttemptCountSchema,
     summary: GitHubChecksSummary,
-  },
+  }
 ) {}
 
 export const nodeGitHubCommandRunner: GitHubCommandRunner = (input) =>
   Effect.tryPromise({
     try: () =>
       new Promise<CommandExecutionResult>((resolve, reject) => {
-        execFile(input.command, [...input.args], {
-          cwd: input.cwd,
-          env: repositoryCommandEnvironment(input.env),
-          maxBuffer: commandMaxBufferBytes,
-        }, (error, stdout, stderr) => {
-          if (error !== null && error.code === undefined) {
-            reject(error);
-            return;
-          }
+        execFile(
+          input.command,
+          [...input.args],
+          {
+            cwd: input.cwd,
+            env: repositoryCommandEnvironment(input.env),
+            maxBuffer: commandMaxBufferBytes,
+          },
+          (error, stdout, stderr) => {
+            if (error !== null && error.code === undefined) {
+              reject(error);
+              return;
+            }
 
-          resolve({
-            exitCode: normalizeExitCode(error?.code),
-            stderr: String(stderr),
-            stdout: String(stdout),
-          });
-        });
+            resolve({
+              exitCode: normalizeExitCode(error?.code),
+              stderr: String(stderr),
+              stdout: String(stdout),
+            });
+          }
+        );
       }),
     catch: (cause) =>
       makeRuntimeError({
@@ -678,7 +679,7 @@ export const nodeGitHubCommandRunner: GitHubCommandRunner = (input) =>
 /** Verify that a completed run can be published to GitHub without mutating git. */
 export function preflightGitHubPublish(
   runIdInput: RunId,
-  options: GitHubPublishOptions = {},
+  options: GitHubPublishOptions = {}
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -693,7 +694,7 @@ export function preflightGitHubPublish(
           code: "RunNotCompleted",
           message: `Run ${run.runId} must be completed before GitHub publish preflight can pass.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -705,7 +706,7 @@ export function preflightGitHubPublish(
       runner,
       rootDirectory,
       remoteName,
-      baseBranch,
+      baseBranch
     );
     const localHead = yield* currentGitHead(runner, rootDirectory);
     yield* requireLocalHeadMatchesRemoteBase({
@@ -739,7 +740,7 @@ export function preflightGitHubPublish(
 /** Build a read-only preview of the GitHub PR commands Gaia would run. */
 export function previewGitHubPublish(
   runIdInput: RunId,
-  options: GitHubPublishPreviewOptions = {},
+  options: GitHubPublishPreviewOptions = {}
 ) {
   return Effect.gen(function* () {
     const mode = options.mode ?? "evidence";
@@ -781,7 +782,7 @@ export function previewGitHubPublish(
 
 export function publishRunToGitHub(
   runIdInput: RunId,
-  options: GitHubPublishOptions = {},
+  options: GitHubPublishOptions = {}
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -804,7 +805,7 @@ export function publishRunToGitHub(
       ]);
       const evidencePath = yield* writePullRequestEvidence(
         preflight.runId,
-        rootDirectory,
+        rootDirectory
       );
       yield* copyRunArtifacts(paths, evidencePath);
       yield* runRequiredCommand(runner, rootDirectory, "git", [
@@ -843,8 +844,8 @@ export function publishRunToGitHub(
         runRequiredCommand(runner, rootDirectory, "git", [
           "checkout",
           preflight.currentBranch,
-        ]).pipe(Effect.ignore),
-      ),
+        ]).pipe(Effect.ignore)
+      )
     );
 
     return GitHubPrSummary.make({
@@ -858,12 +859,14 @@ export function publishRunToGitHub(
   });
 }
 
-function publishPreviewCommands(input: Readonly<{
-  branchName: string;
-  evidencePath: string;
-  mode: GitHubPublishMode;
-  preflight: GitHubPublishPreflightSummary;
-}>): ReadonlyArray<GitHubPublishPreviewCommand> {
+function publishPreviewCommands(
+  input: Readonly<{
+    branchName: string;
+    evidencePath: string;
+    mode: GitHubPublishMode;
+    preflight: GitHubPublishPreflightSummary;
+  }>
+): ReadonlyArray<GitHubPublishPreviewCommand> {
   const commitMessage =
     input.mode === "workspace"
       ? `feat: apply gaia workspace for ${input.preflight.runId}`
@@ -887,19 +890,8 @@ function publishPreviewCommands(input: Readonly<{
     ]),
     ...(input.mode === "workspace"
       ? [
-          previewCommand("git", [
-            "add",
-            "--all",
-            "--",
-            ".",
-          ]),
-          previewCommand("git", [
-            "diff",
-            "--cached",
-            "--quiet",
-            "--",
-            ".",
-          ]),
+          previewCommand("git", ["add", "--all", "--", "."]),
+          previewCommand("git", ["diff", "--cached", "--quiet", "--", "."]),
         ]
       : []),
     previewCommand("git", ["add", input.evidencePath]),
@@ -930,7 +922,7 @@ function publishPreviewCommands(input: Readonly<{
 
 function previewCommand(
   command: string,
-  args: ReadonlyArray<string>,
+  args: ReadonlyArray<string>
 ): GitHubPublishPreviewCommand {
   return GitHubPublishPreviewCommand.make({ args, command });
 }
@@ -938,7 +930,7 @@ function previewCommand(
 /** Publish a completed Gaia run workspace as a draft GitHub pull request. */
 export function publishWorkspaceRunToGitHub(
   runIdInput: RunId,
-  options: GitHubPublishOptions = {},
+  options: GitHubPublishOptions = {}
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -948,7 +940,7 @@ export function publishWorkspaceRunToGitHub(
     const paths = yield* makeRunPaths(preflight.runId, { rootDirectory });
     const workspaceGate = yield* evaluateWorkspacePrQualityGate(
       preflight.runId,
-      paths,
+      paths
     );
     yield* writeDogfoodRetrospective(preflight.runId, paths);
 
@@ -972,7 +964,7 @@ export function publishWorkspaceRunToGitHub(
 
       const evidencePath = yield* writePullRequestEvidence(
         preflight.runId,
-        rootDirectory,
+        rootDirectory
       );
       yield* copyRunArtifacts(paths, evidencePath);
       yield* runRequiredCommand(runner, rootDirectory, "git", [
@@ -1011,8 +1003,8 @@ export function publishWorkspaceRunToGitHub(
         runRequiredCommand(runner, rootDirectory, "git", [
           "checkout",
           preflight.currentBranch,
-        ]).pipe(Effect.ignore),
-      ),
+        ]).pipe(Effect.ignore)
+      )
     );
 
     return GitHubPrSummary.make({
@@ -1029,7 +1021,7 @@ export function publishWorkspaceRunToGitHub(
 
 export function inspectGitHubChecks(
   prInput: string,
-  options: GitHubPublishOptions = {},
+  options: GitHubPublishOptions = {}
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -1047,8 +1039,8 @@ export function inspectGitHubChecks(
         Effect.succeed({
           summary: providerUnavailableGitHubChecksSummary(pr),
           type: "summary" as const,
-        }),
-      ),
+        })
+      )
     );
 
     if (checked.type === "summary") {
@@ -1075,8 +1067,8 @@ export function inspectGitHubChecks(
         Effect.succeed({
           summary: providerUnavailableGitHubChecksSummary(pr),
           type: "summary" as const,
-        }),
-      ),
+        })
+      )
     );
 
     if (parsed.type === "summary") {
@@ -1094,7 +1086,7 @@ export function inspectGitHubChecks(
 export function recordGitHubChecks(
   runIdInput: RunId,
   prInput: string,
-  options: GitHubCheckRecordOptions = {},
+  options: GitHubCheckRecordOptions = {}
 ) {
   return withRunStoreLock(
     options,
@@ -1102,14 +1094,14 @@ export function recordGitHubChecks(
     {
       nextSafeAction: `Wait for the active command to finish, then rerun pnpm gaia pr-loop ${runIdInput} ${prInput} to serialize check and feedback evidence.`,
       operation: "GitHub check evidence recording",
-    },
+    }
   );
 }
 
 /** Resume or start a bounded CI watch for a completed Gaia run. */
 export function watchGitHubChecks(
   runIdInput: RunId,
-  options: GitHubCiWatchOptions = {},
+  options: GitHubCiWatchOptions = {}
 ) {
   return withRunStoreLock(
     options,
@@ -1120,7 +1112,7 @@ export function watchGitHubChecks(
           ? `Wait for the active command to finish, then rerun pnpm gaia watch-ci ${runIdInput}.`
           : `Wait for the active command to finish, then rerun pnpm gaia pr-loop ${runIdInput} ${options.pullRequest} to serialize check and feedback evidence.`,
       operation: "GitHub CI watch",
-    },
+    }
   );
 }
 
@@ -1128,7 +1120,7 @@ export function watchGitHubChecks(
 export function watchGitHubFeedback(
   runIdInput: RunId,
   prInput: string,
-  options: GitHubPrFeedbackOptions = {},
+  options: GitHubPrFeedbackOptions = {}
 ) {
   return withRunStoreLock(
     options,
@@ -1136,7 +1128,7 @@ export function watchGitHubFeedback(
     {
       nextSafeAction: `Wait for the active command to finish, then rerun pnpm gaia pr-loop ${runIdInput} ${prInput} to serialize check and feedback evidence.`,
       operation: "GitHub PR feedback watch",
-    },
+    }
   );
 }
 
@@ -1144,7 +1136,7 @@ export function watchGitHubFeedback(
 export function coordinateGitHubPrLoop(
   runIdInput: RunId,
   prInput: string,
-  options: GitHubPrLoopOptions = {},
+  options: GitHubPrLoopOptions = {}
 ) {
   return withRunStoreLock(
     options,
@@ -1152,14 +1144,14 @@ export function coordinateGitHubPrLoop(
     {
       nextSafeAction: `Wait for the active command to finish, then rerun pnpm gaia pr-loop ${runIdInput} ${prInput}.`,
       operation: "GitHub PR-loop evidence coordination",
-    },
+    }
   );
 }
 
 /** Create a follow-up remediation spec from a blocked GitHub PR loop. */
 export function createGitHubRemediationSpec(
   runIdInput: RunId,
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ) {
   return withRunStoreLock(
     options,
@@ -1167,7 +1159,7 @@ export function createGitHubRemediationSpec(
     {
       nextSafeAction: `Wait for the active command to finish, then rerun pnpm gaia plan-remediation ${runIdInput}.`,
       operation: "GitHub PR-loop remediation planning",
-    },
+    }
   );
 }
 
@@ -1175,7 +1167,7 @@ export function createGitHubRemediationSpec(
 export function commentGitHubPullRequest(
   runIdInput: RunId,
   prInput: string,
-  options: GitHubPrCommentOptions = {},
+  options: GitHubPrCommentOptions = {}
 ) {
   return withRunStoreLock(
     options,
@@ -1183,14 +1175,14 @@ export function commentGitHubPullRequest(
     {
       nextSafeAction: `Wait for the active command to finish, then rerun pnpm gaia comment-pr ${runIdInput} ${prInput}.`,
       operation: "GitHub PR evidence comment publishing",
-    },
+    }
   );
 }
 
 function recordGitHubChecksUnlocked(
   runIdInput: RunId,
   prInput: string,
-  options: GitHubCheckRecordOptions,
+  options: GitHubCheckRecordOptions
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -1203,28 +1195,30 @@ function recordGitHubChecksUnlocked(
           code: "RunNotCompleted",
           message: `Run ${run.runId} must be completed before recording GitHub checks.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
     const pr = yield* parseGitHubPullRequestSelectorEffect(prInput);
     const attempts = yield* parseGitHubCheckPollAttemptCountEffect(
-      options.maxAttempts ?? defaultGitHubCheckPollAttempts,
+      options.maxAttempts ?? defaultGitHubCheckPollAttempts
     );
-    const observed = options.waitForTerminal === true
-      ? yield* waitForTerminalGitHubChecks(prInput, {
-          attempts,
-          pollInterval: options.pollInterval ?? defaultGitHubCheckPollInterval,
-          rootDirectory,
-          runner,
-        })
-      : {
-          attempts: parseGitHubCheckPollAttemptCount(1),
-          summary: yield* inspectGitHubChecks(pr, {
-            commandRunner: runner,
+    const observed =
+      options.waitForTerminal === true
+        ? yield* waitForTerminalGitHubChecks(prInput, {
+            attempts,
+            pollInterval:
+              options.pollInterval ?? defaultGitHubCheckPollInterval,
             rootDirectory,
-          }),
-        };
+            runner,
+          })
+        : {
+            attempts: parseGitHubCheckPollAttemptCount(1),
+            summary: yield* inspectGitHubChecks(pr, {
+              commandRunner: runner,
+              rootDirectory,
+            }),
+          };
     const paths = yield* makeRunPaths(run.runId, { rootDirectory });
     const headSha = yield* readOptionalGitHubPullRequestHeadSha(pr, {
       rootDirectory,
@@ -1253,7 +1247,9 @@ function recordGitHubChecksUnlocked(
       payload: {
         attempts: recorded.attempts,
         checksPath,
-        ...(recorded.headSha === undefined ? {} : { headSha: recorded.headSha }),
+        ...(recorded.headSha === undefined
+          ? {}
+          : { headSha: recorded.headSha }),
         pullRequest: recorded.pr,
         status: recorded.status,
         terminal: recorded.terminal,
@@ -1269,7 +1265,7 @@ function recordGitHubChecksUnlocked(
 function watchGitHubFeedbackUnlocked(
   runIdInput: RunId,
   prInput: string,
-  options: GitHubPrFeedbackOptions,
+  options: GitHubPrFeedbackOptions
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -1282,7 +1278,7 @@ function watchGitHubFeedbackUnlocked(
           code: "RunNotCompleted",
           message: `Run ${run.runId} must be completed before watching GitHub PR feedback.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -1296,7 +1292,7 @@ function watchGitHubFeedbackUnlocked(
     const reusable = yield* findReusableGitHubPrFeedback(
       paths,
       feedback,
-      run.runId,
+      run.runId
     );
 
     if (reusable !== undefined) {
@@ -1311,7 +1307,9 @@ function watchGitHubFeedbackUnlocked(
       payload: {
         commentCount: feedback.commentCount,
         feedbackPath,
-        ...(feedback.headSha === undefined ? {} : { headSha: feedback.headSha }),
+        ...(feedback.headSha === undefined
+          ? {}
+          : { headSha: feedback.headSha }),
         nextAction: feedback.nextAction,
         pullRequest: feedback.pr,
         reviewCount: feedback.reviewCount,
@@ -1328,7 +1326,7 @@ function watchGitHubFeedbackUnlocked(
 function coordinateGitHubPrLoopUnlocked(
   runIdInput: RunId,
   prInput: string,
-  options: GitHubPrLoopOptions,
+  options: GitHubPrLoopOptions
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -1341,7 +1339,7 @@ function coordinateGitHubPrLoopUnlocked(
           code: "RunNotCompleted",
           message: `Run ${run.runId} must be completed before coordinating the GitHub PR loop.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -1386,7 +1384,7 @@ function coordinateGitHubPrLoopUnlocked(
 
 function createGitHubRemediationSpecUnlocked(
   runIdInput: RunId,
-  options: RunStorageOptions,
+  options: RunStorageOptions
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -1398,7 +1396,7 @@ function createGitHubRemediationSpecUnlocked(
           code: "RunNotCompleted",
           message: `Run ${run.runId} must be completed before creating a remediation spec.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -1411,7 +1409,7 @@ function createGitHubRemediationSpecUnlocked(
           code: "GitHubPrLoopNotBlocked",
           message: `Run ${run.runId} has PR-loop status '${prLoop.status}', so there is no remediation spec to create.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -1450,7 +1448,7 @@ function createGitHubRemediationSpecUnlocked(
 function commentGitHubPullRequestUnlocked(
   runIdInput: RunId,
   prInput: string,
-  options: GitHubPrCommentOptions,
+  options: GitHubPrCommentOptions
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -1463,7 +1461,7 @@ function commentGitHubPullRequestUnlocked(
           code: "RunNotCompleted",
           message: `Run ${run.runId} must be completed before Gaia can comment on a pull request.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -1512,7 +1510,7 @@ function inspectGitHubFeedback(
   options: Readonly<{
     commandRunner: GitHubCommandRunner;
     rootDirectory: string;
-  }>,
+  }>
 ) {
   return Effect.gen(function* () {
     const result = yield* runRequiredCommand(
@@ -1525,7 +1523,7 @@ function inspectGitHubFeedback(
         pr,
         "--json",
         "comments,headRefOid,isDraft,latestReviews,reviewDecision,reviewRequests,title,url",
-      ],
+      ]
     );
 
     const parsed = yield* Effect.try({
@@ -1554,7 +1552,7 @@ function inspectGitHubFeedback(
 
 function watchGitHubChecksUnlocked(
   runIdInput: RunId,
-  options: GitHubCiWatchOptions,
+  options: GitHubCiWatchOptions
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -1566,15 +1564,16 @@ function watchGitHubChecksUnlocked(
           code: "RunNotCompleted",
           message: `Run ${run.runId} must be completed before watching GitHub checks.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
     const paths = yield* makeRunPaths(run.runId, { rootDirectory });
     const storedWatchState = yield* readOptionalGitHubCiWatchState(paths);
-    const requestedPr = options.pullRequest === undefined
-      ? undefined
-      : yield* parseGitHubPullRequestSelectorEffect(options.pullRequest);
+    const requestedPr =
+      options.pullRequest === undefined
+        ? undefined
+        : yield* parseGitHubPullRequestSelectorEffect(options.pullRequest);
 
     if (
       requestedPr === undefined &&
@@ -1583,7 +1582,7 @@ function watchGitHubChecksUnlocked(
     ) {
       const snapshot = yield* readGitHubChecksSnapshot(
         paths,
-        storedWatchState.lastSnapshotPath,
+        storedWatchState.lastSnapshotPath
       );
 
       return ciWatchSummaryFromSnapshot({
@@ -1603,7 +1602,7 @@ function watchGitHubChecksUnlocked(
           message:
             "Gaia cannot resume CI watching because this run has no ci-watch-state.json yet. Pass a pull request selector to start the watch.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -1621,7 +1620,7 @@ function watchGitHubChecksUnlocked(
       if (headSha !== undefined && storedWatchState.headSha === headSha) {
         const snapshot = yield* readGitHubChecksSnapshot(
           paths,
-          storedWatchState.lastSnapshotPath,
+          storedWatchState.lastSnapshotPath
         );
 
         return ciWatchSummaryFromSnapshot({
@@ -1636,7 +1635,7 @@ function watchGitHubChecksUnlocked(
     const record = yield* recordGitHubChecksUnlocked(
       run.runId,
       pr,
-      gitHubCheckRecordOptionsForWatch(rootDirectory, options),
+      gitHubCheckRecordOptionsForWatch(rootDirectory, options)
     );
 
     return ciWatchSummaryFromRecord(record, "recorded");
@@ -1645,7 +1644,7 @@ function watchGitHubChecksUnlocked(
 
 function gitHubCheckRecordOptionsForWatch(
   rootDirectory: string,
-  options: GitHubCiWatchOptions,
+  options: GitHubCiWatchOptions
 ): GitHubCheckRecordOptions {
   return {
     rootDirectory,
@@ -1664,7 +1663,7 @@ function gitHubCheckRecordOptionsForWatch(
 
 function makeGitHubPrFeedback(
   pr: GitHubPullRequestSelector,
-  view: GitHubPrFeedbackView,
+  view: GitHubPrFeedbackView
 ) {
   const comments = view.comments.map(normalizeGitHubComment);
   const latestReviews = view.latestReviews.map(normalizeGitHubReview);
@@ -1694,20 +1693,22 @@ function makeGitHubPrFeedback(
 }
 
 function normalizeGitHubComment(
-  comment: GitHubPrViewComment,
+  comment: GitHubPrViewComment
 ): GitHubPrFeedbackComment {
   return GitHubPrFeedbackComment.make({
     ...(comment.author?.login === undefined
       ? {}
       : { authorLogin: comment.author.login }),
     body: comment.body,
-    ...(comment.createdAt === undefined ? {} : { createdAt: comment.createdAt }),
+    ...(comment.createdAt === undefined
+      ? {}
+      : { createdAt: comment.createdAt }),
     ...(comment.url === undefined ? {} : { url: comment.url }),
   });
 }
 
 function normalizeGitHubReview(
-  review: GitHubPrViewReview,
+  review: GitHubPrViewReview
 ): GitHubPrFeedbackReview {
   return GitHubPrFeedbackReview.make({
     ...(review.author?.login === undefined
@@ -1722,15 +1723,12 @@ function normalizeGitHubReview(
   });
 }
 
-function writeGitHubPrFeedback(
-  paths: RunPaths,
-  feedback: GitHubPrFeedback,
-) {
+function writeGitHubPrFeedback(paths: RunPaths, feedback: GitHubPrFeedback) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(
       paths.githubFeedback,
-      `${JSON.stringify(encodeGitHubPrFeedbackJson(feedback), null, 2)}\n`,
+      `${JSON.stringify(encodeGitHubPrFeedbackJson(feedback), null, 2)}\n`
     );
   }).pipe(
     Effect.catchTag("PlatformError", (cause) =>
@@ -1740,16 +1738,16 @@ function writeGitHubPrFeedback(
           code: "GitHubFeedbackWriteFailed",
           message: "Gaia could not write GitHub PR feedback evidence.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function findReusableGitHubPrFeedback(
   paths: RunPaths,
   feedback: GitHubPrFeedback,
-  runId: RunId,
+  runId: RunId
 ) {
   return Effect.gen(function* () {
     if (feedback.headSha === undefined) {
@@ -1758,10 +1756,7 @@ function findReusableGitHubPrFeedback(
 
     const stored = yield* readOptionalGitHubPrFeedback(paths);
 
-    if (
-      stored === undefined ||
-      !sameGitHubPrFeedback(stored, feedback)
-    ) {
+    if (stored === undefined || !sameGitHubPrFeedback(stored, feedback)) {
       return undefined;
     }
 
@@ -1808,16 +1803,16 @@ function readOptionalGitHubPrFeedback(paths: RunPaths) {
           code: "GitHubFeedbackReadFailed",
           message: "Gaia could not read GitHub PR feedback evidence.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function gitHubPrFeedbackSummaryFromFeedback(
   paths: RunPaths,
   feedback: GitHubPrFeedback,
-  runId: RunId,
+  runId: RunId
 ) {
   return GitHubPrFeedbackSummary.make({
     commentCount: feedback.commentCount,
@@ -1840,10 +1835,7 @@ function gitHubPrFeedbackSummaryFromFeedback(
   });
 }
 
-function sameGitHubPrFeedback(
-  left: GitHubPrFeedback,
-  right: GitHubPrFeedback,
-) {
+function sameGitHubPrFeedback(left: GitHubPrFeedback, right: GitHubPrFeedback) {
   return (
     left.headSha !== undefined &&
     left.headSha === right.headSha &&
@@ -1866,7 +1858,7 @@ function makeGitHubPrLoopState(
     checks: GitHubChecksRecord;
     feedback: GitHubPrFeedbackSummary;
     paths: RunPaths;
-  }>,
+  }>
 ) {
   const blockers = gitHubPrLoopBlockers(input.checks, input.feedback);
   const firstBlocker = blockers.at(0);
@@ -1898,7 +1890,7 @@ function makeGitHubPrLoopState(
 
 function requireMatchingGitHubPrHead(
   checks: GitHubChecksRecord,
-  feedback: GitHubPrFeedbackSummary,
+  feedback: GitHubPrFeedbackSummary
 ) {
   if (
     checks.headSha === undefined ||
@@ -1914,13 +1906,13 @@ function requireMatchingGitHubPrHead(
       message:
         "GitHub PR checks and feedback were observed from different head SHAs. Rerun the PR-loop command so Gaia records one coherent PR state.",
       recoverable: true,
-    }),
+    })
   );
 }
 
 function gitHubPrLoopBlockers(
   checks: GitHubChecksRecord,
-  feedback: GitHubPrFeedbackSummary,
+  feedback: GitHubPrFeedbackSummary
 ) {
   const blockers: Array<GitHubPrLoopBlocker> = [];
 
@@ -1930,7 +1922,7 @@ function gitHubPrLoopBlockers(
         action: "address-review-comments",
         kind: "changes-requested",
         summary: "GitHub review requested changes.",
-      }),
+      })
     );
   }
 
@@ -1940,7 +1932,7 @@ function gitHubPrLoopBlockers(
         action: "fix-failed-checks",
         kind: "failed-checks",
         summary: `${failedChecks(checks.checks).length} check(s) failed.`,
-      }),
+      })
     );
   }
 
@@ -1950,7 +1942,7 @@ function gitHubPrLoopBlockers(
         action: "restore-check-provider",
         kind: "provider-unavailable",
         summary: "GitHub check provider was unavailable.",
-      }),
+      })
     );
   }
 
@@ -1960,7 +1952,7 @@ function gitHubPrLoopBlockers(
         action: "respond-to-comments",
         kind: "pr-comments",
         summary: `${feedback.commentCount} PR comment(s) need response.`,
-      }),
+      })
     );
   }
 
@@ -1970,7 +1962,7 @@ function gitHubPrLoopBlockers(
         action: "wait-for-ci",
         kind: "pending-checks",
         summary: `${pendingChecks(checks.checks).length} check(s) pending.`,
-      }),
+      })
     );
   }
 
@@ -1980,7 +1972,7 @@ function gitHubPrLoopBlockers(
         action: "await-review",
         kind: "awaiting-review",
         summary: "PR is waiting for review.",
-      }),
+      })
     );
   }
 
@@ -1988,7 +1980,7 @@ function gitHubPrLoopBlockers(
 }
 
 function gitHubPrLoopStatus(
-  blockers: ReadonlyArray<GitHubPrLoopBlocker>,
+  blockers: ReadonlyArray<GitHubPrLoopBlocker>
 ): GitHubPrLoopStatus {
   if (blockers.length === 0) {
     return "ready";
@@ -2000,7 +1992,7 @@ function gitHubPrLoopStatus(
         blocker.kind === "changes-requested" ||
         blocker.kind === "failed-checks" ||
         blocker.kind === "provider-unavailable" ||
-        blocker.kind === "pr-comments",
+        blocker.kind === "pr-comments"
     )
   ) {
     return "blocked";
@@ -2009,15 +2001,12 @@ function gitHubPrLoopStatus(
   return "waiting";
 }
 
-function writeGitHubPrLoopState(
-  paths: RunPaths,
-  state: GitHubPrLoopState,
-) {
+function writeGitHubPrLoopState(paths: RunPaths, state: GitHubPrLoopState) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(
       paths.prLoopState,
-      `${JSON.stringify(encodeGitHubPrLoopStateJson(state), null, 2)}\n`,
+      `${JSON.stringify(encodeGitHubPrLoopStateJson(state), null, 2)}\n`
     );
   }).pipe(
     Effect.catchTag("PlatformError", (cause) =>
@@ -2027,15 +2016,15 @@ function writeGitHubPrLoopState(
           code: "GitHubPrLoopStateWriteFailed",
           message: "Gaia could not write GitHub PR loop state.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function findReusableGitHubPrLoopState(
   paths: RunPaths,
-  state: GitHubPrLoopState,
+  state: GitHubPrLoopState
 ) {
   return Effect.gen(function* () {
     if (state.headSha === undefined) {
@@ -2054,7 +2043,7 @@ function findReusableGitHubPrLoopState(
 
 function gitHubPrLoopSummaryFromState(
   paths: RunPaths,
-  state: GitHubPrLoopState,
+  state: GitHubPrLoopState
 ) {
   return GitHubPrLoopSummary.make({
     blockerCount: state.blockerCount,
@@ -2074,7 +2063,7 @@ function gitHubPrLoopSummaryFromState(
 
 function sameGitHubPrLoopState(
   left: GitHubPrLoopState,
-  right: GitHubPrLoopState,
+  right: GitHubPrLoopState
 ) {
   return (
     left.headSha !== undefined &&
@@ -2103,7 +2092,7 @@ function readGitHubPrLoopState(paths: RunPaths) {
           code: "GitHubPrLoopStateMissing",
           message: "Gaia could not find pr-loop-state.json for this run.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -2137,9 +2126,9 @@ function readGitHubPrLoopState(paths: RunPaths) {
           code: "GitHubPrLoopStateReadFailed",
           message: "Gaia could not read GitHub PR loop state.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -2156,15 +2145,15 @@ function readOptionalGitHubPrLoopState(paths: RunPaths) {
           code: "GitHubPrLoopStateReadFailed",
           message: "Gaia could not read GitHub PR loop state.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function writeGitHubRemediationSpec(
   paths: RunPaths,
-  input: Readonly<{ body: string }>,
+  input: Readonly<{ body: string }>
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -2177,9 +2166,9 @@ function writeGitHubRemediationSpec(
           code: "GitHubRemediationSpecWriteFailed",
           message: "Gaia could not write the GitHub remediation spec.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -2188,7 +2177,7 @@ function gitHubPrCommentMarkdown(
     paths: RunPaths;
     pr: GitHubPullRequestSelector;
     runId: RunId;
-  }>,
+  }>
 ) {
   return Effect.gen(function* () {
     const artifacts = yield* gitHubPrCommentArtifacts(input.paths, input.runId);
@@ -2218,7 +2207,7 @@ function gitHubPrCommentMarkdown(
       "If this PR branch contains Gaia evidence, inspect:",
       "",
       ...artifacts.map(
-        (artifact) => `- ${artifact.label}: \`${artifact.path}\``,
+        (artifact) => `- ${artifact.label}: \`${artifact.path}\``
       ),
       "",
       "Gaia has not approved, merged, or resolved review feedback with this comment.",
@@ -2292,15 +2281,15 @@ function gitHubPrCommentArtifacts(paths: RunPaths, runId: RunId) {
           code: "GitHubPrCommentArtifactReadFailed",
           message: "Gaia could not inspect run artifacts for the PR comment.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function writeGitHubPrComment(
   paths: RunPaths,
-  input: Readonly<{ body: string }>,
+  input: Readonly<{ body: string }>
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -2313,9 +2302,9 @@ function writeGitHubPrComment(
           code: "GitHubPrCommentWriteFailed",
           message: "Gaia could not write the GitHub PR comment body.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -2328,7 +2317,7 @@ function gitHubRemediationSpecMarkdown(
   input: Readonly<{
     prLoop: GitHubPrLoopState;
     title: string;
-  }>,
+  }>
 ) {
   const blockerLines = input.prLoop.blockers
     .map(formatGitHubRemediationBlocker)
@@ -2383,7 +2372,7 @@ function formatGitHubRemediationBlocker(blocker: GitHubPrLoopBlocker) {
 }
 
 function classifyGitHubFeedback(
-  view: GitHubPrFeedbackView,
+  view: GitHubPrFeedbackView
 ): GitHubPrFeedbackStatus {
   if (
     view.reviewDecision === "CHANGES_REQUESTED" ||
@@ -2408,7 +2397,7 @@ function classifyGitHubFeedback(
 }
 
 function nextActionForGitHubFeedbackStatus(
-  status: GitHubPrFeedbackStatus,
+  status: GitHubPrFeedbackStatus
 ): GitHubPrFeedbackNextAction {
   switch (status) {
     case "awaiting-review":
@@ -2432,7 +2421,8 @@ function normalizeGitHubReviewState(state: string) {
 
 function applyRunWorkspace(paths: RunPaths, rootDirectory: string) {
   return Effect.gen(function* () {
-    const skippedRelativePaths = yield* readWorkspaceArtifactRelativePaths(paths);
+    const skippedRelativePaths =
+      yield* readWorkspaceArtifactRelativePaths(paths);
     yield* copyWorkspaceDirectoryContents(paths.workspace, rootDirectory, {
       deleteExtraneous: true,
       skippedRelativePaths,
@@ -2445,15 +2435,13 @@ function applyRunWorkspace(paths: RunPaths, rootDirectory: string) {
           code: "WorkspacePrApplyFailed",
           message: "Gaia could not apply the run workspace to the PR branch.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
-function requireWorkspacePrQualityGatePassed(
-  gate: WorkspacePrQualityGate,
-) {
+function requireWorkspacePrQualityGatePassed(gate: WorkspacePrQualityGate) {
   if (gate.status === "passed") {
     return Effect.void;
   }
@@ -2463,7 +2451,7 @@ function requireWorkspacePrQualityGatePassed(
       code: "WorkspacePrQualityGateFailed",
       message: workspacePrQualityGateFailureMessage(gate),
       recoverable: false,
-    }),
+    })
   );
 }
 
@@ -2485,10 +2473,12 @@ function workspacePrQualityGateFailureMessage(gate: WorkspacePrQualityGate) {
 }
 
 function formatWorkspacePrGateFailure(
-  item: WorkspacePrQualityGate["items"][number],
+  item: WorkspacePrQualityGate["items"][number]
 ) {
   const files =
-    item.changedFiles.length === 0 ? "unknown files" : item.changedFiles.join(", ");
+    item.changedFiles.length === 0
+      ? "unknown files"
+      : item.changedFiles.join(", ");
 
   return `${item.severity}: ${files} - ${item.reason} Remediation: ${item.remediation}`;
 }
@@ -2504,9 +2494,9 @@ function readWorkspaceArtifactRelativePaths(paths: RunPaths) {
             code: "WorkspaceArtifactReadFailed",
             message: "Gaia could not read the harness artifact manifest.",
             recoverable: true,
-          }),
-        ),
-      ),
+          })
+        )
+      )
     );
     const parsedJson = yield* Effect.try({
       try: (): unknown => JSON.parse(rawResult),
@@ -2548,7 +2538,7 @@ function readWorkspaceArtifactRelativePaths(paths: RunPaths) {
 
 function stageWorkspaceChanges(
   runner: GitHubCommandRunner,
-  rootDirectory: string,
+  rootDirectory: string
 ) {
   return Effect.gen(function* () {
     yield* runRequiredCommand(runner, rootDirectory, "git", [
@@ -2572,7 +2562,7 @@ function stageWorkspaceChanges(
           message:
             "Gaia run workspace has no source changes to publish. Use publish-pr for evidence-only PRs.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -2582,7 +2572,7 @@ function stageWorkspaceChanges(
           code: "GitHubCommandFailed",
           message: "git diff --cached --quiet failed.",
           recoverable: true,
-        }),
+        })
       );
     }
   });
@@ -2592,7 +2582,7 @@ function runCommand(
   runner: GitHubCommandRunner,
   cwd: string,
   command: string,
-  args: ReadonlyArray<string>,
+  args: ReadonlyArray<string>
 ) {
   return runner({ args, command, cwd });
 }
@@ -2601,7 +2591,7 @@ function runRequiredCommand(
   runner: GitHubCommandRunner,
   cwd: string,
   command: string,
-  args: ReadonlyArray<string>,
+  args: ReadonlyArray<string>
 ) {
   return Effect.gen(function* () {
     const result = yield* runCommand(runner, cwd, command, args);
@@ -2612,7 +2602,7 @@ function runRequiredCommand(
           code: "GitHubCommandFailed",
           message: `${command} ${args.join(" ")} failed.`,
           recoverable: true,
-        }),
+        })
       );
     }
 
@@ -2628,7 +2618,7 @@ function runRequiredPreflightCommand(
   error: Readonly<{
     code: string;
     message: string;
-  }>,
+  }>
 ) {
   return Effect.gen(function* () {
     const result = yield* runCommand(runner, cwd, command, args);
@@ -2639,7 +2629,7 @@ function runRequiredPreflightCommand(
           code: error.code,
           message: error.message,
           recoverable: true,
-        }),
+        })
       );
     }
 
@@ -2647,15 +2637,13 @@ function runRequiredPreflightCommand(
   });
 }
 
-function preflightCheck(
-  name: GitHubPreflightCheckName,
-): GitHubPreflightCheck {
+function preflightCheck(name: GitHubPreflightCheckName): GitHubPreflightCheck {
   return GitHubPreflightCheck.make({ name, status: "passed" });
 }
 
 function requireGitRepository(
   runner: GitHubCommandRunner,
-  rootDirectory: string,
+  rootDirectory: string
 ) {
   return Effect.gen(function* () {
     const result = yield* runRequiredPreflightCommand(
@@ -2666,7 +2654,7 @@ function requireGitRepository(
       {
         code: "GitRepositoryUnavailable",
         message: "Gaia GitHub publishing must run inside a git worktree.",
-      },
+      }
     );
 
     if (result.stdout.trim() !== "true") {
@@ -2675,7 +2663,7 @@ function requireGitRepository(
           code: "GitRepositoryUnavailable",
           message: "Gaia GitHub publishing must run inside a git worktree.",
           recoverable: true,
-        }),
+        })
       );
     }
   });
@@ -2683,7 +2671,7 @@ function requireGitRepository(
 
 function requireCleanWorktree(
   runner: GitHubCommandRunner,
-  rootDirectory: string,
+  rootDirectory: string
 ) {
   return Effect.gen(function* () {
     const result = yield* runRequiredCommand(runner, rootDirectory, "git", [
@@ -2697,7 +2685,7 @@ function requireCleanWorktree(
           code: "GitWorktreeDirty",
           message: "Git worktree must be clean before Gaia opens a PR.",
           recoverable: false,
-        }),
+        })
       );
     }
   });
@@ -2706,7 +2694,7 @@ function requireCleanWorktree(
 function requireRemote(
   runner: GitHubCommandRunner,
   rootDirectory: string,
-  remoteName: string,
+  remoteName: string
 ) {
   return runRequiredPreflightCommand(
     runner,
@@ -2716,7 +2704,7 @@ function requireRemote(
     {
       code: "GitRemoteUnavailable",
       message: `Git remote '${remoteName}' is not configured.`,
-    },
+    }
   );
 }
 
@@ -2724,7 +2712,7 @@ function remoteBaseBranchHead(
   runner: GitHubCommandRunner,
   rootDirectory: string,
   remoteName: string,
-  baseBranch: string,
+  baseBranch: string
 ) {
   return Effect.gen(function* () {
     const result = yield* runRequiredPreflightCommand(
@@ -2735,7 +2723,7 @@ function remoteBaseBranchHead(
       {
         code: "GitBaseBranchUnavailable",
         message: `Git remote '${remoteName}' does not expose base branch '${baseBranch}'.`,
-      },
+      }
     );
     const head = result.stdout.trim().split(/\s+/u)[0];
 
@@ -2745,7 +2733,7 @@ function remoteBaseBranchHead(
           code: "GitBaseBranchUnavailable",
           message: `Git remote '${remoteName}' did not report a commit for base branch '${baseBranch}'.`,
           recoverable: true,
-        }),
+        })
       );
     }
 
@@ -2753,10 +2741,7 @@ function remoteBaseBranchHead(
   });
 }
 
-function requireGitHubAuth(
-  runner: GitHubCommandRunner,
-  rootDirectory: string,
-) {
+function requireGitHubAuth(runner: GitHubCommandRunner, rootDirectory: string) {
   return runRequiredPreflightCommand(
     runner,
     rootDirectory,
@@ -2765,14 +2750,11 @@ function requireGitHubAuth(
     {
       code: "GitHubAuthUnavailable",
       message: "GitHub CLI authentication is not available.",
-    },
+    }
   );
 }
 
-function currentGitBranch(
-  runner: GitHubCommandRunner,
-  rootDirectory: string,
-) {
+function currentGitBranch(runner: GitHubCommandRunner, rootDirectory: string) {
   return Effect.gen(function* () {
     const result = yield* runRequiredCommand(runner, rootDirectory, "git", [
       "rev-parse",
@@ -2787,7 +2769,7 @@ function currentGitBranch(
           code: "GitBranchUnavailable",
           message: "Gaia cannot open a PR from a detached HEAD.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -2795,10 +2777,7 @@ function currentGitBranch(
   });
 }
 
-function currentGitHead(
-  runner: GitHubCommandRunner,
-  rootDirectory: string,
-) {
+function currentGitHead(runner: GitHubCommandRunner, rootDirectory: string) {
   return Effect.gen(function* () {
     const result = yield* runRequiredCommand(runner, rootDirectory, "git", [
       "rev-parse",
@@ -2812,7 +2791,7 @@ function currentGitHead(
           code: "GitHeadUnavailable",
           message: "Gaia cannot identify the current git HEAD.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -2835,7 +2814,7 @@ function requireLocalHeadMatchesRemoteBase(input: {
       code: "GitBaseBranchOutOfSync",
       message: `Local HEAD must match '${input.remoteName}/${input.baseBranch}' before Gaia opens a PR.`,
       recoverable: false,
-    }),
+    })
   );
 }
 
@@ -2859,16 +2838,13 @@ function writePullRequestEvidence(runId: RunId, rootDirectory: string) {
           code: "PullRequestEvidencePrepareFailed",
           message: "Gaia could not prepare the PR evidence directory.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
-function copyRunArtifacts(
-  paths: RunPaths,
-  evidencePath: string,
-) {
+function copyRunArtifacts(paths: RunPaths, evidencePath: string) {
   const artifacts = [
     ["input.md", "input.md"],
     ["report.md", "README.md"],
@@ -2894,7 +2870,7 @@ function copyRunArtifacts(
     for (const [source, destination] of artifacts) {
       yield* fs.copyFile(
         path.join(paths.root, source),
-        path.join(evidencePath, destination),
+        path.join(evidencePath, destination)
       );
     }
 
@@ -2902,7 +2878,7 @@ function copyRunArtifacts(
     if (hasBrowserScreenshots) {
       yield* copyWorkspaceDirectoryContents(
         paths.browserScreenshots,
-        path.join(evidencePath, "browser"),
+        path.join(evidencePath, "browser")
       );
     }
 
@@ -2910,7 +2886,7 @@ function copyRunArtifacts(
     if (hasGitHubFeedback) {
       yield* fs.copyFile(
         paths.githubFeedback,
-        path.join(evidencePath, "github-feedback.json"),
+        path.join(evidencePath, "github-feedback.json")
       );
     }
 
@@ -2918,7 +2894,7 @@ function copyRunArtifacts(
     if (hasWorkspacePrGate) {
       yield* fs.copyFile(
         paths.workspacePrGate,
-        path.join(evidencePath, "workspace-pr-gate.json"),
+        path.join(evidencePath, "workspace-pr-gate.json")
       );
     }
 
@@ -2926,17 +2902,17 @@ function copyRunArtifacts(
     if (hasEvidencePromotion) {
       yield* fs.copyFile(
         paths.evidencePromotionJson,
-        path.join(evidencePath, "evidence-promotion.json"),
+        path.join(evidencePath, "evidence-promotion.json")
       );
     }
 
     const hasEvidencePromotionMarkdown = yield* fs.exists(
-      paths.evidencePromotionMarkdown,
+      paths.evidencePromotionMarkdown
     );
     if (hasEvidencePromotionMarkdown) {
       yield* fs.copyFile(
         paths.evidencePromotionMarkdown,
-        path.join(evidencePath, "evidence-promotion.md"),
+        path.join(evidencePath, "evidence-promotion.md")
       );
     }
   }).pipe(
@@ -2947,9 +2923,9 @@ function copyRunArtifacts(
           code: "PullRequestEvidenceCopyFailed",
           message: "Gaia could not copy run evidence into the PR branch.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -2961,7 +2937,7 @@ function parsePullRequestUrl(input: string) {
         code: "PullRequestUrlMissing",
         message: "GitHub CLI did not return a pull request URL.",
         recoverable: true,
-      }),
+      })
     );
   }
 
@@ -2986,14 +2962,14 @@ function readOptionalGitHubPullRequestHeadSha(
   options: Readonly<{
     rootDirectory: string;
     runner: GitHubCommandRunner;
-  }>,
+  }>
 ): Effect.Effect<GitHubPrHeadSha | undefined, never> {
   return Effect.gen(function* () {
     const result = yield* runCommand(
       options.runner,
       options.rootDirectory,
       "gh",
-      ["pr", "view", pr, "--json", "headRefOid"],
+      ["pr", "view", pr, "--json", "headRefOid"]
     );
 
     if (result.exitCode !== 0) {
@@ -3026,7 +3002,7 @@ function readOptionalGitHubPullRequestHeadSha(
     Effect.matchEffect({
       onFailure: () => Effect.succeed(undefined),
       onSuccess: (headSha) => Effect.succeed(headSha),
-    }),
+    })
   );
 }
 
@@ -3050,7 +3026,7 @@ function waitForTerminalGitHubChecks(
     pollInterval: Duration.Input;
     rootDirectory: string;
     runner: GitHubCommandRunner;
-  }>,
+  }>
 ) {
   let attempt = 0;
   const inspectTerminal = Effect.gen(function* () {
@@ -3065,9 +3041,7 @@ function waitForTerminalGitHubChecks(
       return { attempts, summary };
     }
 
-    return yield* Effect.fail(
-      GitHubChecksPending.make({ attempts, summary }),
-    );
+    return yield* Effect.fail(GitHubChecksPending.make({ attempts, summary }));
   });
 
   return inspectTerminal.pipe(
@@ -3079,8 +3053,8 @@ function waitForTerminalGitHubChecks(
       Effect.succeed({
         attempts: pending.attempts,
         summary: pending.summary,
-      }),
-    ),
+      })
+    )
   );
 }
 
@@ -3091,7 +3065,7 @@ function writeGitHubChecksSnapshot(
     headSha: GitHubPrHeadSha | undefined;
     runId: RunId;
     summary: GitHubChecksSummary;
-  }>,
+  }>
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -3100,7 +3074,7 @@ function writeGitHubChecksSnapshot(
     const nextSequence = events.length + 1;
     const snapshotPath = path.join(
       paths.githubChecks,
-      `checks-${nextSequence}.json`,
+      `checks-${nextSequence}.json`
     );
     const observedAt = new Date().toISOString();
     const snapshot = GitHubChecksSnapshot.make({
@@ -3117,7 +3091,7 @@ function writeGitHubChecksSnapshot(
     yield* fs.makeDirectory(paths.githubChecks, { recursive: true });
     yield* fs.writeFileString(
       snapshotPath,
-      `${JSON.stringify(encodeGitHubChecksSnapshotJson(snapshot), null, 2)}\n`,
+      `${JSON.stringify(encodeGitHubChecksSnapshotJson(snapshot), null, 2)}\n`
     );
 
     return GitHubChecksRecord.make({
@@ -3140,21 +3114,25 @@ function writeGitHubChecksSnapshot(
           code: "GitHubChecksSnapshotWriteFailed",
           message: "Gaia could not write GitHub check evidence.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function readGitHubChecksSnapshot(
   paths: RunPaths,
-  snapshotPath: string,
-): Effect.Effect<GitHubChecksSnapshot, GaiaRuntimeError, FileSystem.FileSystem | Path.Path> {
+  snapshotPath: string
+): Effect.Effect<
+  GitHubChecksSnapshot,
+  GaiaRuntimeError,
+  FileSystem.FileSystem | Path.Path
+> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const resolvedSnapshotPath = yield* resolveRunArtifactPath(
       paths,
-      snapshotPath,
+      snapshotPath
     );
     const contents = yield* fs.readFileString(resolvedSnapshotPath);
     const parsed = yield* Effect.try({
@@ -3170,7 +3148,9 @@ function readGitHubChecksSnapshot(
 
     return yield* Effect.try({
       try: () =>
-        decodeGitHubChecksSnapshotJson(normalizeGitHubChecksStatusFields(parsed)),
+        decodeGitHubChecksSnapshotJson(
+          normalizeGitHubChecksStatusFields(parsed)
+        ),
       catch: (cause) =>
         makeRuntimeError({
           cause,
@@ -3187,16 +3167,13 @@ function readGitHubChecksSnapshot(
           code: "GitHubChecksSnapshotReadFailed",
           message: "Gaia could not read GitHub check snapshot evidence.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
-function writeGitHubCiWatchState(
-  paths: RunPaths,
-  record: GitHubChecksRecord,
-) {
+function writeGitHubCiWatchState(paths: RunPaths, record: GitHubChecksRecord) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const state = GitHubCiWatchState.make({
@@ -3214,7 +3191,7 @@ function writeGitHubCiWatchState(
 
     yield* fs.writeFileString(
       paths.ciWatchState,
-      `${JSON.stringify(encodeGitHubCiWatchStateJson(state), null, 2)}\n`,
+      `${JSON.stringify(encodeGitHubCiWatchStateJson(state), null, 2)}\n`
     );
 
     return { path: paths.ciWatchState, state };
@@ -3226,15 +3203,19 @@ function writeGitHubCiWatchState(
           code: "GitHubCiWatchStateWriteFailed",
           message: "Gaia could not write GitHub CI watch state.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function readOptionalGitHubCiWatchState(
-  paths: RunPaths,
-): Effect.Effect<GitHubCiWatchState | undefined, GaiaRuntimeError, FileSystem.FileSystem> {
+  paths: RunPaths
+): Effect.Effect<
+  GitHubCiWatchState | undefined,
+  GaiaRuntimeError,
+  FileSystem.FileSystem
+> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const exists = yield* fs.exists(paths.ciWatchState);
@@ -3272,9 +3253,9 @@ function readOptionalGitHubCiWatchState(
           code: "GitHubCiWatchStateReadFailed",
           message: "Gaia could not read GitHub CI watch state.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -3283,7 +3264,7 @@ function findReusableGitHubChecksRecord(
   input: Readonly<{
     headSha: GitHubPrHeadSha | undefined;
     summary: GitHubChecksSummary;
-  }>,
+  }>
 ) {
   return Effect.gen(function* () {
     if (input.headSha === undefined) {
@@ -3302,7 +3283,7 @@ function findReusableGitHubChecksRecord(
 
     const snapshot = yield* readGitHubChecksSnapshot(
       paths,
-      storedWatchState.lastSnapshotPath,
+      storedWatchState.lastSnapshotPath
     );
 
     if (!sameGitHubChecksSnapshot(snapshot, input.summary, input.headSha)) {
@@ -3311,7 +3292,7 @@ function findReusableGitHubChecksRecord(
 
     const snapshotPath = yield* resolveRunArtifactPath(
       paths,
-      storedWatchState.lastSnapshotPath,
+      storedWatchState.lastSnapshotPath
     );
 
     return GitHubChecksRecord.make({
@@ -3332,7 +3313,7 @@ function findReusableGitHubChecksRecord(
 function sameGitHubChecksSnapshot(
   snapshot: GitHubChecksSnapshot,
   summary: GitHubChecksSummary,
-  headSha: GitHubPrHeadSha,
+  headSha: GitHubPrHeadSha
 ) {
   return (
     snapshot.headSha === headSha &&
@@ -3355,7 +3336,7 @@ function resolveRunArtifactPath(paths: RunPaths, artifactPath: string) {
 
 function ciWatchSummaryFromRecord(
   record: GitHubChecksRecord,
-  source: GitHubCiWatchResultSource,
+  source: GitHubCiWatchResultSource
 ) {
   return GitHubCiWatchSummary.make({
     attempts: record.attempts,
@@ -3374,12 +3355,14 @@ function ciWatchSummaryFromRecord(
   });
 }
 
-function ciWatchSummaryFromSnapshot(input: Readonly<{
-  paths: RunPaths;
-  snapshot: GitHubChecksSnapshot;
-  source: GitHubCiWatchResultSource;
-  state: GitHubCiWatchState;
-}>) {
+function ciWatchSummaryFromSnapshot(
+  input: Readonly<{
+    paths: RunPaths;
+    snapshot: GitHubChecksSnapshot;
+    source: GitHubCiWatchResultSource;
+    state: GitHubCiWatchState;
+  }>
+) {
   return GitHubCiWatchSummary.make({
     attempts: input.snapshot.attempts,
     checks: input.snapshot.checks,
@@ -3404,9 +3387,7 @@ function isNoChecksOutput(result: CommandExecutionResult) {
   return output.includes("no checks reported");
 }
 
-function providerUnavailableGitHubChecksSummary(
-  pr: GitHubPullRequestSelector,
-) {
+function providerUnavailableGitHubChecksSummary(pr: GitHubPullRequestSelector) {
   return GitHubChecksSummary.make({
     checks: [],
     pr,
@@ -3443,7 +3424,7 @@ function parseGitHubChecks(result: CommandExecutionResult) {
 }
 
 function classifyChecks(
-  checks: ReadonlyArray<GitHubCheckRun>,
+  checks: ReadonlyArray<GitHubCheckRun>
 ): GitHubChecksStatus {
   if (checks.length === 0) {
     return "no-checks-configured";
@@ -3465,7 +3446,7 @@ function isTerminalGitHubChecksStatus(status: GitHubChecksStatus) {
 }
 
 function nextActionForGitHubChecksStatus(
-  status: GitHubChecksStatus,
+  status: GitHubChecksStatus
 ): GitHubCiWatchNextAction {
   switch (status) {
     case "failing":
@@ -3483,7 +3464,7 @@ function nextActionForGitHubChecksStatus(
 function failedChecks(checks: ReadonlyArray<GitHubCheckRun>) {
   return checks.filter(
     (check) =>
-      !isPendingCheckState(check.state) && !isPassingCheckState(check.state),
+      !isPendingCheckState(check.state) && !isPassingCheckState(check.state)
   );
 }
 
@@ -3516,12 +3497,7 @@ const pendingCheckStates = new Set([
   "waiting",
 ]);
 
-const passingCheckStates = new Set([
-  "neutral",
-  "passed",
-  "skipped",
-  "success",
-]);
+const passingCheckStates = new Set(["neutral", "passed", "skipped", "success"]);
 
 function normalizeExitCode(code: string | number | null | undefined) {
   if (typeof code === "number") {

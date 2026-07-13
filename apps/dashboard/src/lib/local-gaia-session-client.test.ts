@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
 import { parseLocalGaiaServerUrl, parseRunId } from "@gaia/core";
+import { describe, expect, it } from "vitest";
+
 import {
   openAgentSessionEventSource,
   openDeliverySnapshotEventSource,
@@ -17,10 +18,18 @@ describe("local Gaia agent session SSE client", () => {
     const errors: Array<unknown> = [];
     const handle = openAgentSessionEventSource(
       { afterSequence: 4, agentId: "agent-worker", runId, serverUrl },
-      { onError: (error) => errors.push(error), onUpdate: (update) => updates.push(update.eventSequence) },
-      (input) => { url = input; return source; },
+      {
+        onError: (error) => errors.push(error),
+        onUpdate: (update) => updates.push(update.eventSequence),
+      },
+      (input) => {
+        url = input;
+        return source;
+      }
     );
-    expect(url).toBe("/gaia-api/runs/run-1234567890/agents/agent-worker/session/stream?afterSequence=4");
+    expect(url).toBe(
+      "/gaia-api/runs/run-1234567890/agents/agent-worker/session/stream?afterSequence=4"
+    );
     expect(source.listenerCount("agent-session-update")).toBe(1);
     expect(source.onmessage).toBeNull();
 
@@ -48,8 +57,14 @@ describe("local Gaia agent session SSE client", () => {
     const updates: Array<string> = [];
     const handle = openDeliverySnapshotEventSource(
       { afterSequence: 12, runId, serverUrl },
-      { onError: () => undefined, onUpdate: (value) => updates.push(value.stage) },
-      (input) => { url = input; return source; },
+      {
+        onError: () => undefined,
+        onUpdate: (value) => updates.push(value.stage),
+      },
+      (input) => {
+        url = input;
+        return source;
+      }
     );
 
     source.dispatch("delivery-update", {
@@ -65,7 +80,9 @@ describe("local Gaia agent session SSE client", () => {
       lastEventId: "14",
     });
 
-    expect(url).toBe("/gaia-api/runs/run-1234567890/delivery/stream?afterSequence=12");
+    expect(url).toBe(
+      "/gaia-api/runs/run-1234567890/delivery/stream?afterSequence=12"
+    );
     expect(updates).toEqual(["remediating"]);
     expect(source.closed).toBe(0);
     handle.close();
@@ -76,12 +93,22 @@ describe("local Gaia agent session SSE client", () => {
 class TestAgentSessionEventSource implements AgentSessionEventSource {
   closed = 0;
   onerror: ((event: unknown) => void) | null = null;
-  onmessage: ((event: { readonly data: string; readonly lastEventId: string }) => void) | null = null;
-  readonly #listeners = new Map<string, Set<(event: { readonly data: string; readonly lastEventId: string }) => void>>();
+  onmessage:
+    | ((event: { readonly data: string; readonly lastEventId: string }) => void)
+    | null = null;
+  readonly #listeners = new Map<
+    string,
+    Set<
+      (event: { readonly data: string; readonly lastEventId: string }) => void
+    >
+  >();
 
   addEventListener(
     event: string,
-    listener: (message: { readonly data: string; readonly lastEventId: string }) => void,
+    listener: (message: {
+      readonly data: string;
+      readonly lastEventId: string;
+    }) => void
   ) {
     const listeners = this.#listeners.get(event) ?? new Set();
     listeners.add(listener);
@@ -94,7 +121,7 @@ class TestAgentSessionEventSource implements AgentSessionEventSource {
 
   dispatch(
     event: string,
-    message: { readonly data: string; readonly lastEventId: string },
+    message: { readonly data: string; readonly lastEventId: string }
   ) {
     for (const listener of this.#listeners.get(event) ?? []) {
       listener(message);
@@ -107,7 +134,10 @@ class TestAgentSessionEventSource implements AgentSessionEventSource {
 
   removeEventListener(
     event: string,
-    listener: (message: { readonly data: string; readonly lastEventId: string }) => void,
+    listener: (message: {
+      readonly data: string;
+      readonly lastEventId: string;
+    }) => void
   ) {
     this.#listeners.get(event)?.delete(listener);
   }
@@ -116,10 +146,36 @@ class TestAgentSessionEventSource implements AgentSessionEventSource {
 function update(eventSequence: number) {
   const snapshot = {
     agentId: "agent-worker",
-    capabilities: { approvals: [], fileChangeEvents: false, interruption: true, resumableSessions: true, review: false, steering: true, streamingMessages: true, structuredOutput: false, subagents: false, toolEvents: false, usageReporting: false, userQuestions: false },
+    capabilities: {
+      approvals: [],
+      fileChangeEvents: false,
+      interruption: true,
+      resumableSessions: true,
+      review: false,
+      steering: true,
+      streamingMessages: true,
+      structuredOutput: false,
+      subagents: false,
+      toolEvents: false,
+      usageReporting: false,
+      userQuestions: false,
+    },
     eventSequence,
-    items: [], pendingInteractions: [], recovered: false, resolvedInteractions: [],
-    runId: "run-1234567890", sessionId: "session-run-1234567890", state: "running", turns: [],
+    items: [],
+    pendingInteractions: [],
+    recovered: false,
+    resolvedInteractions: [],
+    runId: "run-1234567890",
+    sessionId: "session-run-1234567890",
+    state: "running",
+    turns: [],
   };
-  return { agentId: "agent-worker", eventSequence, runId: "run-1234567890", sessionId: "session-run-1234567890", snapshot, terminal: false };
+  return {
+    agentId: "agent-worker",
+    eventSequence,
+    runId: "run-1234567890",
+    sessionId: "session-run-1234567890",
+    snapshot,
+    terminal: false,
+  };
 }
