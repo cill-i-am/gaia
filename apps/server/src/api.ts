@@ -844,7 +844,7 @@ function deliveryUpdatesFromEvents(
   });
 }
 
-function deliveryUpdateFromEvents(
+export function deliveryUpdateFromEvents(
   runId: RunId,
   events: ReadonlyArray<RunEvent>,
 ) {
@@ -879,7 +879,15 @@ function deliveryUpdateFromEvents(
   const desktopOriginCorrelationStage = workerDesktopOriginCorrelationProjection(workerDesktopOriginCorrelation);
   const continuationStage = workerContinuationProjection(workerContinuation);
   const recoveryStage = workerRecoveryProjection(workerRecovery);
-  const stage = desktopOriginCorrelationStage ?? correlationStage ?? continuationStage ?? recoveryStage ?? (snapshot.state === "failed" ? "failed" : delivery.stage);
+  const terminalStage = snapshot.state === "completed"
+    ? delivery.stage
+    : snapshot.state === "failed"
+      ? "failed"
+      : undefined;
+  const activeWorkerStage = snapshot.state === "runningWorker"
+    ? desktopOriginCorrelationStage ?? correlationStage ?? continuationStage ?? recoveryStage
+    : undefined;
+  const stage = terminalStage ?? activeWorkerStage ?? delivery.stage;
   const publication =
     delivery.publication === undefined
       ? undefined

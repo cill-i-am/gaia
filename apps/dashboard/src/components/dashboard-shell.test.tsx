@@ -2344,6 +2344,132 @@ describe("DashboardShell Run Console", () => {
     expect(screen.queryByRole("button", { name: "Merge pull request" })).toBeNull();
   });
 
+  it("renders terminal merge and cleanup outcomes without delivery commands", async () => {
+    const runId = parseRunId("run-7777777777");
+    const branchName = "gaia/run-7777777777";
+    const headSha = "a".repeat(40);
+    const mergeCommitSha = "d".repeat(40);
+    const publicationOperationId = "delivery:run-7777777777:1";
+    const publicationPayloadDigest = "e".repeat(64);
+    renderDashboardWithQueries({
+      deliverySnapshotsByRunId: {
+        [runId]: {
+          activeLocalReviewAttestation: {
+            actionId: "attestation-active-terminal",
+            attestationPayloadDigest: "f".repeat(64),
+            authority: "localOperator",
+            authoritySequence: 10,
+            branchName,
+            decision: "approved",
+            gaiaEvidenceId: "evidence-0123456789abcdef",
+            headSha,
+            prNumber: 94,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/94",
+            publicationConfirmationSequence: 5,
+            publicationOperationId,
+            publicationPayloadDigest,
+            readyConfirmationActionId: "ready-terminal-1",
+            readyConfirmationPayloadDigest: "7".repeat(64),
+            readyConfirmationSequence: 9,
+            repository: "cill-i-am/gaia",
+            runId,
+            state: "intentRecorded",
+            version: 1,
+          },
+          authoritativeHeadSha: headSha,
+          eventSequence: 16,
+          latestCleanupAction: {
+            actionId: "cleanup-terminal-1",
+            branch: "absent",
+            branchName,
+            mergeCommitSha,
+            ownershipDigest: "6".repeat(64),
+            state: "completed",
+            worktree: "absent",
+          },
+          latestMergeAction: {
+            actionId: "merge-terminal-1",
+            branchName,
+            decisionSequence: 11,
+            expectedHeadSha: headSha,
+            mergeCommitSha,
+            mergedAt: "2026-07-13T12:01:00.000Z",
+            mergeMethod: "merge",
+            payloadDigest: "3".repeat(64),
+            policyDigest: "4".repeat(64),
+            policyVersion: 1,
+            prNumber: 94,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/94",
+            repository: "cill-i-am/gaia",
+            state: "dispatchConfirmed",
+          },
+          latestReadyForReviewAction: {
+            actionId: "ready-terminal-1",
+            branchName,
+            draft: false,
+            expectedHeadSha: headSha,
+            payloadDigest: "7".repeat(64),
+            prNumber: 94,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/94",
+            publicationOperationId,
+            publicationPayloadDigest,
+            repository: "cill-i-am/gaia",
+            runId,
+            state: "dispatchConfirmed",
+            version: 1,
+          },
+          mergeDecision: {
+            actionId: "readiness-terminal-1",
+            approved: true,
+            blockers: [],
+            branchName,
+            headSha,
+            mergeMethod: "merge",
+            payloadDigest: "5".repeat(64),
+            policyDigest: "4".repeat(64),
+            policyVersion: 1,
+            prNumber: 94,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/94",
+          },
+          mergeDecisionSequence: 11,
+          mode: "pullRequest",
+          observation: {
+            blockers: [],
+            branchName,
+            checks: [],
+            draft: false,
+            feedback: [],
+            headSha,
+            mergeability: "mergeable",
+            observedAt: "2026-07-13T12:00:00.000Z",
+            prNumber: 94,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/94",
+            repository: "cill-i-am/gaia",
+            reviewDecision: "REVIEW_REQUIRED",
+            snapshotDigest: "b".repeat(64),
+            status: "ready",
+            version: 1,
+          },
+          publication: { branchName, commitSha: headSha, draft: true, prNumber: 94, prUrl: "https://github.com/cill-i-am/gaia/pull/94", state: "confirmed" },
+          recoveryActions: ["retryCleanup"],
+          runId,
+          stage: "completed",
+          status: "completed",
+        },
+      },
+      runs: [localRunSummary({ latestEventType: "DELIVERY_CLEANUP_RECORDED", runId, state: "completed", status: "completed" })],
+    });
+
+    expect((await screen.findByTestId("selected-run-delivery-status")).textContent).toBe("Delivery: completed");
+    expect(screen.getByTestId("selected-run-merge-status").textContent).toBe(`Merged ${mergeCommitSha.slice(0, 7)}`);
+    expect(screen.getByTestId("selected-run-cleanup-status").textContent).toBe("Cleanup complete");
+    expect(screen.queryByRole("button", { name: "Merge pull request" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /paired review/iu })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Evaluate/u })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry cleanup" })).toBeNull();
+    expect(queryFixture.deliveryActionInputs).toEqual([]);
+  });
+
   it("uses a fresh action identity for each deliberate readiness reevaluation", async () => {
     const runId = parseRunId("run-7777777777");
     renderDashboardWithQueries({

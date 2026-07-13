@@ -1,6 +1,21 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
-import { codexAppServerExecutionSelection, DeliveryMergeReadinessDecision, encodeDeliveryMergeReadinessDecisionJson, parseRunId } from "@gaia/core";
+import {
+  codexAppServerExecutionSelection,
+  DeliveryCleanupCompleted,
+  DeliveryCleanupRequired,
+  DeliveryMergeDispatchAttempted,
+  DeliveryMergeDispatchConfirmed,
+  DeliveryMergeIntent,
+  DeliveryMergeReadinessDecision,
+  encodeDeliveryCleanupReceiptJson,
+  encodeDeliveryMergeReadinessDecisionJson,
+  encodeDeliveryMergeReceiptJson,
+  encodeWorkerRecoveryReceiptJson,
+  parseHarnessProfileId,
+  parseHarnessSessionId,
+  parseRunId,
+} from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 import {
   ReviewFinding,
@@ -240,6 +255,54 @@ describe("factory run read api", () => {
         yield* appendEvent(runId, paths, { payload: { decision: encodeDeliveryMergeReadinessDecisionJson(decision) }, type: "DELIVERY_MERGE_READINESS_RECORDED" });
         const graph = yield* readFactoryGraph(runId, { rootDirectory: cwd });
         assert.strictEqual(graph.runId, runId);
+      }),
+    );
+
+    it.effect("settles the recovered delivery graph after confirmed merge and completed cleanup", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-factory-terminal-delivery-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry,
+          rootDirectory: cwd,
+        });
+        const runId = parseRunId(accepted.runId);
+        const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+        const branchName = `gaia/${runId}`;
+        const headSha = "a".repeat(40);
+        const mergeCommitSha = "d".repeat(40);
+        const provenance = { baseBranch: "main", baseRevision: "0".repeat(40), headBranch: branchName, mode: "pullRequest" as const, remote: "origin" };
+
+        yield* appendEvent(runId, paths, { payload: { delivery: { ...provenance, stage: "delivering" } }, type: "DELIVERY_STARTED" });
+        yield* appendEvent(runId, paths, { payload: { code: "HarnessSessionFailed", message: "Worker recovery required.", recoverable: true, stage: "runningWorker" }, type: "RUN_FAILED" });
+        yield* appendEvent(runId, paths, {
+          payload: { recovery: encodeWorkerRecoveryReceiptJson({ actionId: "recover-terminal-1", attempt: 1, expectedFailureSequence: 3, expectedSessionId: parseHarnessSessionId(`session-${runId}`), harnessProfileId: parseHarnessProfileId("codexAppServer"), maxAttempts: 1, model: "gpt-5.4", nativeTurnIdDigest: "7".repeat(64), payloadDigest: "8".repeat(64), state: "dispatchConfirmed" }) },
+          type: "WORKER_RECOVERY_RECORDED",
+        });
+        yield* appendEvent(runId, paths, { payload: { workerResultPath: "worker-result.json" }, type: "WORKER_COMPLETED" });
+        yield* appendEvent(runId, paths, { payload: { verificationResultPath: "verification.json" }, type: "VERIFICATION_COMPLETED" });
+        yield* appendEvent(runId, paths, { payload: { delivery: { ...provenance, stage: "readyToPublish" }, reportPath: "report.md" }, type: "DELIVERY_READY_TO_PUBLISH" });
+
+        const decision = DeliveryMergeReadinessDecision.make({ actionId: "readiness-terminal-1", approved: true, blockers: [], branchName, headSha, mergeMethod: "merge", payloadDigest: "5".repeat(64), policyDigest: "4".repeat(64), policyVersion: 1, prNumber: 94, prUrl: "https://github.com/cill-i-am/gaia/pull/94" });
+        yield* appendEvent(runId, paths, { payload: { decision: encodeDeliveryMergeReadinessDecisionJson(decision) }, type: "DELIVERY_MERGE_READINESS_RECORDED" });
+        const mergeBinding = { actionId: "merge-terminal-1", branchName, decisionSequence: 8, expectedHeadSha: headSha, mergeMethod: "merge" as const, payloadDigest: "3".repeat(64), policyDigest: decision.policyDigest, policyVersion: 1 as const, prNumber: 94, prUrl: decision.prUrl, repository: "cill-i-am/gaia" };
+        const mergeReceipts = [
+          DeliveryMergeIntent.make({ ...mergeBinding, state: "intentRecorded" }),
+          DeliveryMergeDispatchAttempted.make({ ...mergeBinding, state: "dispatchAttempted" }),
+          DeliveryMergeDispatchConfirmed.make({ ...mergeBinding, mergeCommitSha, mergedAt: "2026-07-13T12:01:00.000Z", state: "dispatchConfirmed" }),
+        ];
+        for (const mergeAction of mergeReceipts) {
+          yield* appendEvent(runId, paths, { payload: { mergeAction: encodeDeliveryMergeReceiptJson(mergeAction) }, type: "DELIVERY_MERGE_RECORDED" });
+        }
+        const cleanupRequired = DeliveryCleanupRequired.make({ actionId: "cleanup-terminal-1", branch: "present", branchName, mergeCommitSha, ownershipDigest: "6".repeat(64), state: "cleanupRequired", worktree: "absent" });
+        yield* appendEvent(runId, paths, { payload: { cleanup: encodeDeliveryCleanupReceiptJson(cleanupRequired) }, type: "DELIVERY_CLEANUP_RECORDED" });
+        yield* appendEvent(runId, paths, { payload: { cleanup: encodeDeliveryCleanupReceiptJson(DeliveryCleanupCompleted.make({ actionId: cleanupRequired.actionId, branch: "absent", branchName, mergeCommitSha, ownershipDigest: cleanupRequired.ownershipDigest, state: "completed", worktree: "absent" })) }, type: "DELIVERY_CLEANUP_RECORDED" });
+
+        const graph = yield* readFactoryGraph(runId, { rootDirectory: cwd });
+        const states = new Map(graph.agents.map(({ role, state }) => [role, state]));
+        assert.strictEqual(states.get("orchestrator"), "succeeded");
+        assert.strictEqual(states.get("ciWatcher"), "succeeded");
+        assert.notInclude(graph.agents.map(({ state }) => state), "running");
       }),
     );
 

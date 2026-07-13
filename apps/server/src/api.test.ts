@@ -7,6 +7,13 @@ import {
   DeliveryPublicationConfirmed,
   DeliveryPublicationIntent,
   DeliveryPublicationOutcomeUnknown,
+  DeliveryCleanupCompleted,
+  DeliveryCleanupRequired,
+  DeliveryMergeDispatchAttempted,
+  DeliveryMergeDispatchConfirmed,
+  DeliveryMergeIntent,
+  DeliveryMergeReadinessDecision,
+  DeliveryMergeTerminalFailure,
   DeliveryBlocker,
   DeliveryFeedbackObservation,
   DeliveryPullRequestObservation,
@@ -22,8 +29,13 @@ import {
   encodeDeliveryPullRequestObservationJson,
   encodeDeliveryPullRequestReadyReceiptJson,
   encodeDeliveryPublicationJson,
+  encodeDeliveryCleanupReceiptJson,
+  encodeDeliveryMergeReadinessDecisionJson,
+  encodeDeliveryMergeReceiptJson,
   encodeDeliveryRemediationJson,
   encodeWorkerRecoveryReceiptJson,
+  encodeWorkerContinuationReceiptJson,
+  encodeWorkerCorrelationReconciliationReceiptJson,
   HarnessCapabilities,
   HarnessProviderDescriptor,
   deliveryPullRequestReadyPayloadDigest,
@@ -71,8 +83,156 @@ import {
   HttpServer,
   type HttpClientResponse,
 } from "effect/unstable/http";
-import { makeLocalGaiaServerLayer } from "./api.js";
+import { deliveryUpdateFromEvents, makeLocalGaiaServerLayer } from "./api.js";
 import type { LocalServerIdentity } from "./discovery.js";
+
+function recoveredCompletedDeliveryEvents(runId = parseRunId("run-1234567890")) {
+  const branchName = `gaia/${runId}`;
+  const headSha = "a".repeat(40);
+  const mergeCommitSha = "d".repeat(40);
+  const provenance = {
+    baseBranch: "main",
+    baseRevision: "0".repeat(40),
+    headBranch: branchName,
+    mode: "pullRequest" as const,
+    remote: "origin",
+  };
+  const publicationBase = {
+    baseBranch: provenance.baseBranch,
+    baseRevision: provenance.baseRevision,
+    branchName,
+    commitMessage: "fix: project terminal delivery state",
+    commitTimestamp: "2026-07-13T12:00:00.000Z",
+    digestVersion: 1 as const,
+    operationId: `delivery:${runId}:1`,
+    payloadDigest: "1".repeat(64),
+    sourcePaths: ["apps/server/src/api.ts"],
+    treeSha: "2".repeat(40),
+  };
+  const publicationIntent = DeliveryPublicationIntent.make({
+    ...publicationBase,
+    state: "intentRecorded",
+  });
+  const publicationAttempted = DeliveryPublicationAttempted.make({
+    ...publicationBase,
+    commitSha: headSha,
+    state: "attempted",
+  });
+  const publicationConfirmed = DeliveryPublicationConfirmed.make({
+    ...publicationAttempted,
+    draft: true,
+    headSha,
+    prNumber: 94,
+    prUrl: "https://github.com/cill-i-am/gaia/pull/94",
+    state: "confirmed",
+  });
+  const mergeBinding = {
+    actionId: "merge-terminal-1",
+    branchName,
+    decisionSequence: 11,
+    expectedHeadSha: headSha,
+    mergeMethod: "merge" as const,
+    payloadDigest: "3".repeat(64),
+    policyDigest: "4".repeat(64),
+    policyVersion: 1 as const,
+    prNumber: publicationConfirmed.prNumber,
+    prUrl: publicationConfirmed.prUrl,
+    repository: "cill-i-am/gaia",
+  };
+  const mergeDecision = DeliveryMergeReadinessDecision.make({
+    actionId: "readiness-terminal-1",
+    approved: true,
+    blockers: [],
+    branchName,
+    headSha,
+    mergeMethod: "merge",
+    payloadDigest: "5".repeat(64),
+    policyDigest: mergeBinding.policyDigest,
+    policyVersion: 1,
+    prNumber: publicationConfirmed.prNumber,
+    prUrl: publicationConfirmed.prUrl,
+  });
+  const mergeIntent = DeliveryMergeIntent.make({
+    ...mergeBinding,
+    state: "intentRecorded",
+  });
+  const mergeAttempted = DeliveryMergeDispatchAttempted.make({
+    ...mergeBinding,
+    state: "dispatchAttempted",
+  });
+  const mergeConfirmed = DeliveryMergeDispatchConfirmed.make({
+    ...mergeBinding,
+    mergeCommitSha,
+    mergedAt: "2026-07-13T12:01:00.000Z",
+    state: "dispatchConfirmed",
+  });
+  const cleanupRequired = DeliveryCleanupRequired.make({
+    actionId: "cleanup-terminal-1",
+    branch: "present",
+    branchName,
+    mergeCommitSha,
+    ownershipDigest: "6".repeat(64),
+    state: "cleanupRequired",
+    worktree: "absent",
+  });
+  const cleanupCompleted = DeliveryCleanupCompleted.make({
+    actionId: cleanupRequired.actionId,
+    branch: "absent",
+    branchName,
+    mergeCommitSha,
+    ownershipDigest: cleanupRequired.ownershipDigest,
+    state: "completed",
+    worktree: "absent",
+  });
+  const event = (
+    sequence: number,
+    type: Parameters<typeof makeRunEvent>[0]["type"],
+    payload: Readonly<Record<string, Schema.Json>>,
+  ) => makeRunEvent({
+    payload,
+    runId,
+    sequence,
+    timestamp: `2026-07-13T12:00:${String(sequence).padStart(2, "0")}.000Z`,
+    type,
+  });
+
+  return [
+    event(1, "RUN_CREATED", { specPath: "spec.md" }),
+    event(2, "DELIVERY_STARTED", { delivery: { ...provenance, stage: "delivering" } }),
+    event(3, "RUN_FAILED", { code: "HarnessSessionFailed", message: "Worker recovery required.", recoverable: true, stage: "runningWorker" }),
+    event(4, "WORKER_RECOVERY_RECORDED", { recovery: encodeWorkerRecoveryReceiptJson({ actionId: "recover-terminal-1", attempt: 1, expectedFailureSequence: 3, expectedSessionId: parseHarnessSessionId(`session-${runId}`), harnessProfileId: parseHarnessProfileId("codexAppServer"), maxAttempts: 1, model: "gpt-5.4", nativeTurnIdDigest: "7".repeat(64), payloadDigest: "8".repeat(64), state: "dispatchConfirmed" }) }),
+    event(5, "WORKER_COMPLETED", { workerResultPath: "worker-result.json" }),
+    event(6, "VERIFICATION_COMPLETED", { verificationResultPath: "verification.json" }),
+    event(7, "DELIVERY_READY_TO_PUBLISH", { delivery: { ...provenance, stage: "readyToPublish" }, reportPath: "report.md" }),
+    event(8, "DELIVERY_PUBLICATION_INTENT_RECORDED", { publication: encodeDeliveryPublicationJson(publicationIntent) }),
+    event(9, "DELIVERY_PUBLICATION_ATTEMPTED", { publication: encodeDeliveryPublicationJson(publicationAttempted) }),
+    event(10, "DELIVERY_PUBLICATION_CONFIRMED", { publication: encodeDeliveryPublicationJson(publicationConfirmed) }),
+    event(11, "DELIVERY_MERGE_READINESS_RECORDED", { decision: encodeDeliveryMergeReadinessDecisionJson(mergeDecision) }),
+    event(12, "DELIVERY_MERGE_RECORDED", { mergeAction: encodeDeliveryMergeReceiptJson(mergeIntent) }),
+    event(13, "DELIVERY_MERGE_RECORDED", { mergeAction: encodeDeliveryMergeReceiptJson(mergeAttempted) }),
+    event(14, "DELIVERY_MERGE_RECORDED", { mergeAction: encodeDeliveryMergeReceiptJson(mergeConfirmed) }),
+    event(15, "DELIVERY_CLEANUP_RECORDED", { cleanup: encodeDeliveryCleanupReceiptJson(cleanupRequired) }),
+    event(16, "DELIVERY_CLEANUP_RECORDED", { cleanup: encodeDeliveryCleanupReceiptJson(cleanupCompleted) }),
+  ];
+}
+
+function appendProjectionEvent(
+  events: ReadonlyArray<RunEvent>,
+  type: Parameters<typeof makeRunEvent>[0]["type"],
+  payload: Readonly<Record<string, Schema.Json>>,
+) {
+  const sequence = events.length + 1;
+  return [
+    ...events,
+    makeRunEvent({
+      payload,
+      runId: events[0]!.runId,
+      sequence,
+      timestamp: `2026-07-13T12:01:${String(sequence).padStart(2, "0")}.000Z`,
+      type,
+    }),
+  ];
+}
 
 describe("local run api http boundary", () => {
   layer(NodeServices.layer)((it) => {
@@ -832,6 +992,135 @@ describe("local run api http boundary", () => {
       }),
       20_000,
     );
+
+    it.effect("projects recovered delivery as terminal after confirmed merge and completed cleanup", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({
+          prefix: "gaia-server-terminal-delivery-",
+        });
+        const runId = parseRunId("run-5555555555");
+        const events = recoveredCompletedDeliveryEvents(runId);
+        const direct = deliveryUpdateFromEvents(runId, events);
+        const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+        yield* fs.makeDirectory(paths.root, { recursive: true });
+        yield* fs.writeFileString(
+          paths.events,
+          `${events.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`,
+        );
+        yield* fs.writeFileString(paths.snapshots, "");
+
+        assert.strictEqual(direct?.stage, "completed");
+        assert.strictEqual(direct?.status, "completed");
+        assert.deepEqual(direct?.recoveryActions, []);
+        assert.strictEqual(direct?.authoritativeHeadSha, "a".repeat(40));
+        assert.strictEqual(direct?.publication?.state, "confirmed");
+        assert.strictEqual(direct?.latestMergeAction?.state, "dispatchConfirmed");
+        assert.strictEqual(direct?.latestCleanupAction?.state, "completed");
+        assert.deepEqual(direct?.actionAudit?.merge, [
+          { actionId: "merge-terminal-1", latestSequence: 14, state: "dispatchConfirmed" },
+        ]);
+        assert.deepEqual(direct?.actionAudit?.cleanup, [
+          { actionId: "cleanup-terminal-1", latestSequence: 16, state: "completed" },
+        ]);
+
+        const response = yield* HttpClient.get(`/runs/${runId}/delivery`).pipe(
+          Effect.provide(testServerLayer(cwd)),
+        );
+        const projected = getObject(yield* responseJsonObject(response), "data");
+
+        assert.strictEqual(response.status, 200);
+        assert.strictEqual(getString(projected, "stage"), "completed");
+        assert.strictEqual(getString(projected, "status"), "completed");
+        assert.deepEqual(getArray(projected, "recoveryActions"), []);
+        assert.strictEqual(getString(getObject(projected, "latestMergeAction"), "state"), "dispatchConfirmed");
+        assert.strictEqual(getString(getObject(projected, "latestCleanupAction"), "state"), "completed");
+      }),
+      20_000,
+    );
+
+    it("preserves nonterminal recovery and delivery action precedence", () => {
+      const terminal = recoveredCompletedDeliveryEvents();
+      const recovery = terminal.slice(0, 4);
+      const continuation = appendProjectionEvent(recovery, "WORKER_CONTINUATION_RECORDED", {
+        continuation: encodeWorkerContinuationReceiptJson({
+          actionId: "continue-terminal-1",
+          expectedContaminatedReadySequence: 2,
+          expectedCurrentSequence: 4,
+          expectedDeliveryProvenanceDigest: "9".repeat(64),
+          expectedFailedRecoverySequence: 3,
+          expectedRecoveryActionId: "recover-terminal-1",
+          expectedSessionId: parseHarnessSessionId("session-run-1234567890"),
+          harnessProfileId: parseHarnessProfileId("codexAppServer"),
+          maxAttempts: 1,
+          state: "intentRecorded",
+          workerEvidenceEpochSequence: 4,
+        }),
+      });
+      const correlation = appendProjectionEvent(continuation, "WORKER_CORRELATION_RECONCILIATION_RECORDED", {
+        reconciliation: encodeWorkerCorrelationReconciliationReceiptJson({
+          actionId: "correlate-terminal-1",
+          expectedContaminatedReadySequence: 2,
+          expectedContinuationActionId: "continue-terminal-1",
+          expectedCurrentSequence: 5,
+          expectedDeliveryProvenanceDigest: "9".repeat(64),
+          expectedFailedContinuationSequence: 5,
+          expectedFailedRecoverySequence: 3,
+          expectedNativeTurnIdDigest: "7".repeat(64),
+          expectedRecoveryActionId: "recover-terminal-1",
+          expectedSessionId: parseHarnessSessionId("session-run-1234567890"),
+          harnessProfileId: parseHarnessProfileId("codexAppServer"),
+          maxAttempts: 1,
+          state: "intentRecorded",
+          workerEvidenceEpochSequence: 5,
+        }),
+      });
+      const failedAfterRecovery = appendProjectionEvent(recovery, "RUN_FAILED", {
+        code: "HarnessSessionFailed",
+        message: "Recovered worker failed again.",
+        recoverable: false,
+        stage: "runningWorker",
+      });
+      const mergeUnknown = [
+        ...terminal.slice(0, 13),
+        makeRunEvent({
+          payload: {
+            mergeAction: encodeDeliveryMergeReceiptJson(DeliveryMergeTerminalFailure.make({
+              ...DeliveryMergeDispatchAttempted.make({
+                actionId: "merge-terminal-1",
+                branchName: "gaia/run-1234567890",
+                decisionSequence: 11,
+                expectedHeadSha: "a".repeat(40),
+                mergeMethod: "merge",
+                payloadDigest: "3".repeat(64),
+                policyDigest: "4".repeat(64),
+                policyVersion: 1,
+                prNumber: 94,
+                prUrl: "https://github.com/cill-i-am/gaia/pull/94",
+                repository: "cill-i-am/gaia",
+                state: "dispatchAttempted",
+              }),
+              code: "DeliveryMergeOutcomeUnknown",
+              message: "Merge outcome is ambiguous.",
+              state: "outcomeUnknown",
+            })),
+          },
+          runId: terminal[0]!.runId,
+          sequence: 14,
+          timestamp: "2026-07-13T12:01:14.000Z",
+          type: "DELIVERY_MERGE_RECORDED",
+        }),
+      ];
+
+      assert.strictEqual(deliveryUpdateFromEvents(terminal[0]!.runId, recovery)?.stage, "runningWorker");
+      assert.strictEqual(deliveryUpdateFromEvents(terminal[0]!.runId, continuation)?.stage, "workerContinuationPending");
+      assert.strictEqual(deliveryUpdateFromEvents(terminal[0]!.runId, correlation)?.stage, "workerCorrelationPending");
+      assert.strictEqual(deliveryUpdateFromEvents(terminal[0]!.runId, failedAfterRecovery)?.stage, "failed");
+      assert.strictEqual(deliveryUpdateFromEvents(terminal[0]!.runId, mergeUnknown)?.stage, "mergeReconciliationRequired");
+      assert.strictEqual(deliveryUpdateFromEvents(terminal[0]!.runId, mergeUnknown)?.status, "mergeReconciliationRequired");
+      assert.deepEqual(deliveryUpdateFromEvents(terminal[0]!.runId, terminal.slice(0, 15))?.recoveryActions, ["retryCleanup"]);
+      assert.strictEqual(deliveryUpdateFromEvents(terminal[0]!.runId, terminal.slice(0, 15))?.stage, "cleanupRequired");
+    });
 
     it.effect("exposes one worker recovery action for the latest eligible failure generation", () =>
       Effect.gen(function* () {
