@@ -1,17 +1,107 @@
+import nodePath from "node:path";
+
 import { Schema } from "effect";
 
 export const supportedCodexCliVersion = "0.137.0" as const;
-export const CodexRequestIdSchema = Schema.Union([
-  Schema.String,
-  Schema.Number,
-]);
-export type CodexRequestId = typeof CodexRequestIdSchema.Type;
+const CodexProviderIdentifierSchema = Schema.NonEmptyString.pipe(
+  Schema.check(Schema.isMaxLength(4_096))
+);
 
-export const CodexThreadIdSchema = Schema.String.pipe(
+/** JSON-RPC request identity accepted by Codex App Server 0.137.0. */
+export const CodexRequestIdSchema = Schema.Union([
+  CodexProviderIdentifierSchema,
+  Schema.Number.pipe(Schema.check(Schema.makeFilter(Number.isSafeInteger))),
+]).pipe(Schema.brand("CodexRequestId"));
+export type CodexRequestId = typeof CodexRequestIdSchema.Type;
+/** Parse a provider JSON-RPC request identity at the boundary. */
+export const parseCodexRequestId =
+  Schema.decodeUnknownSync(CodexRequestIdSchema);
+
+/** Provider-native Codex thread identity. */
+export const CodexThreadIdSchema = CodexProviderIdentifierSchema.pipe(
   Schema.brand("CodexThreadId")
 );
-export const CodexTurnIdSchema = Schema.String.pipe(
+/** Provider-native Codex turn identity. */
+export const CodexTurnIdSchema = CodexProviderIdentifierSchema.pipe(
   Schema.brand("CodexTurnId")
+);
+/** Provider-native Codex item identity. */
+export const CodexItemIdSchema = CodexProviderIdentifierSchema.pipe(
+  Schema.brand("CodexItemId")
+);
+/** Provider-native Codex model identity. */
+export const CodexModelIdSchema = CodexProviderIdentifierSchema.pipe(
+  Schema.brand("CodexModelId")
+);
+export type CodexModelId = typeof CodexModelIdSchema.Type;
+/** Semver-compatible client version sent during initialize. */
+export const CodexClientVersionSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(
+      /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*)|(?:\d*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:(?:0|[1-9]\d*)|(?:\d*[A-Za-z-][0-9A-Za-z-]*)))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u
+    ),
+    Schema.isMaxLength(200)
+  ),
+  Schema.brand("CodexClientVersion")
+);
+/** Non-empty bounded command text received from the provider. */
+export const CodexProtocolCommandSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (value) => value.trim().length > 0 && !value.includes("\0")
+    ),
+    Schema.isMaxLength(16_384)
+  ),
+  Schema.brand("CodexProtocolCommand")
+);
+/** Bounded MCP server name received from the provider. */
+export const CodexServerNameSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.makeFilter((value) => value.length > 0 && value === value.trim()),
+    Schema.isMaxLength(200)
+  ),
+  Schema.brand("CodexServerName")
+);
+/** HTTP(S) URL decoded from a Codex provider message. */
+export const CodexHttpUrlSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.makeFilter((value) => {
+      if (value !== value.trim() || /[\u0000-\u001f\u007f]/u.test(value))
+        return false;
+      try {
+        const protocol = new URL(value).protocol;
+        return protocol === "http:" || protocol === "https:";
+      } catch {
+        return false;
+      }
+    })
+  ),
+  Schema.check(Schema.isMaxLength(8_192)),
+  Schema.brand("CodexHttpUrl")
+);
+/** Absolute normalized path used by Codex permission requests. */
+export const CodexPermissionAbsolutePathSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (value) =>
+        value.length > 0 &&
+        !value.includes("\0") &&
+        nodePath.isAbsolute(value) &&
+        nodePath.normalize(value) === value
+    )
+  ),
+  Schema.check(Schema.isMaxLength(16_384)),
+  Schema.brand("CodexPermissionAbsolutePath")
+);
+/** Parse a Codex model identity at the adapter boundary. */
+export const parseCodexModelId = Schema.decodeUnknownSync(CodexModelIdSchema);
+/** Parse a Codex client version before initialize. */
+export const parseCodexClientVersion = Schema.decodeUnknownSync(
+  CodexClientVersionSchema
+);
+/** Parse an absolute normalized provider permission path. */
+export const parseCodexPermissionAbsolutePath = Schema.decodeUnknownSync(
+  CodexPermissionAbsolutePathSchema
 );
 export type CodexThreadId = typeof CodexThreadIdSchema.Type;
 export type CodexTurnId = typeof CodexTurnIdSchema.Type;
@@ -19,7 +109,7 @@ export const parseCodexThreadId = Schema.decodeUnknownSync(CodexThreadIdSchema);
 export const parseCodexTurnId = Schema.decodeUnknownSync(CodexTurnIdSchema);
 const ThreadId = CodexThreadIdSchema;
 const TurnId = CodexTurnIdSchema;
-const ItemId = Schema.String.pipe(Schema.brand("CodexItemId"));
+const ItemId = CodexItemIdSchema;
 export type CodexItemId = typeof ItemId.Type;
 export const parseCodexItemId = Schema.decodeUnknownSync(ItemId);
 const CodexFileChange = Schema.Struct({
@@ -37,8 +127,14 @@ const CodexFileChange = Schema.Struct({
 export const CodexThreadItemSchema = Schema.Union([
   Schema.Struct({
     clientId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    content: Schema.Array(Schema.Json),
     id: ItemId,
     type: Schema.Literal("userMessage"),
+  }),
+  Schema.Struct({
+    fragments: Schema.Array(Schema.Json),
+    id: ItemId,
+    type: Schema.Literal("hookPrompt"),
   }),
   Schema.Struct({
     id: ItemId,
@@ -101,9 +197,35 @@ export const CodexThreadItemSchema = Schema.Union([
     type: Schema.Literal("dynamicToolCall"),
   }),
   Schema.Struct({
+    agentsStates: Schema.Record(Schema.String, Schema.Json),
+    id: ItemId,
+    model: Schema.optionalKey(Schema.NullOr(CodexModelIdSchema)),
+    prompt: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    receiverThreadIds: Schema.Array(ThreadId),
+    senderThreadId: ThreadId,
+    status: Schema.String,
+    tool: Schema.String,
+    type: Schema.Literal("collabAgentToolCall"),
+  }),
+  Schema.Struct({
     id: ItemId,
     query: Schema.String,
     type: Schema.Literal("webSearch"),
+  }),
+  Schema.Struct({
+    id: ItemId,
+    path: CodexPermissionAbsolutePathSchema,
+    type: Schema.Literal("imageView"),
+  }),
+  Schema.Struct({
+    id: ItemId,
+    result: Schema.String,
+    revisedPrompt: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    savedPath: Schema.optionalKey(
+      Schema.NullOr(CodexPermissionAbsolutePathSchema)
+    ),
+    status: Schema.String,
+    type: Schema.Literal("imageGeneration"),
   }),
   Schema.Struct({
     id: ItemId,
@@ -218,9 +340,9 @@ export const CodexListedThreadSchema = Schema.Struct({
   updatedAt: Schema.Number,
 });
 export const ThreadListResultSchema = Schema.Struct({
-  backwardsCursor: Schema.NullOr(Schema.String),
+  backwardsCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
   data: Schema.Array(CodexListedThreadSchema),
-  nextCursor: Schema.NullOr(Schema.String),
+  nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 export type ThreadListParams = typeof ThreadListParamsSchema.Type;
 export type ThreadListResult = typeof ThreadListResultSchema.Type;
@@ -229,11 +351,12 @@ export type CodexListedThread = typeof CodexListedThreadSchema.Type;
 export const InitializeParamsSchema = Schema.Struct({
   clientInfo: Schema.Struct({
     name: Schema.String,
-    title: Schema.String,
-    version: Schema.String,
+    title: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    version: CodexClientVersionSchema,
   }),
 });
 export const InitializeResultSchema = Schema.Struct({
+  codexHome: Schema.String,
   platformFamily: Schema.String,
   platformOs: Schema.String,
   userAgent: Schema.String,
@@ -244,7 +367,7 @@ export const ThreadStartParamsSchema = Schema.Struct({
   ),
   cwd: Schema.optionalKey(Schema.String),
   ephemeral: Schema.optionalKey(Schema.Boolean),
-  model: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(CodexModelIdSchema),
   sandbox: Schema.optionalKey(
     Schema.Literals([
       "read-only",
@@ -259,6 +382,7 @@ export const ThreadReadParamsSchema = Schema.Struct({
   threadId: ThreadId,
 });
 export const ThreadResultSchema = Schema.Struct({ thread: Thread });
+export type ThreadResult = typeof ThreadResultSchema.Type;
 export const TextInputSchema = Schema.Struct({
   text: Schema.String,
   type: Schema.Literal("text"),
@@ -268,7 +392,7 @@ export const TurnStartParamsSchema = Schema.Struct({
   input: Schema.Array(TextInputSchema).pipe(
     Schema.check(Schema.isMaxLength(100))
   ),
-  model: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  model: Schema.optionalKey(Schema.NullOr(CodexModelIdSchema)),
   threadId: ThreadId,
 });
 export const ModelListParamsSchema = Schema.Struct({
@@ -279,12 +403,12 @@ export const ModelListParamsSchema = Schema.Struct({
 export const CodexModelSchema = Schema.Struct({
   displayName: Schema.String,
   hidden: Schema.Boolean,
-  id: Schema.String,
-  model: Schema.String,
+  id: CodexModelIdSchema,
+  model: CodexModelIdSchema,
 });
 export const ModelListResultSchema = Schema.Struct({
   data: Schema.Array(CodexModelSchema),
-  nextCursor: Schema.NullOr(Schema.String),
+  nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 export const TurnSteerParamsSchema = Schema.Struct({
   expectedTurnId: TurnId,
@@ -312,11 +436,11 @@ const CommandRequest = Schema.Struct({
   params: Schema.Struct({
     ...BaseInteraction,
     approvalId: Schema.optionalKey(Schema.NullOr(Schema.String)),
-    command: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    command: Schema.optionalKey(Schema.NullOr(CodexProtocolCommandSchema)),
     commandActions: Schema.optionalKey(
       Schema.NullOr(Schema.Array(Schema.Json))
     ),
-    cwd: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    cwd: Schema.optionalKey(Schema.NullOr(CodexPermissionAbsolutePathSchema)),
     networkApprovalContext: Schema.optionalKey(Schema.NullOr(Schema.Json)),
     proposedExecpolicyAmendment: Schema.optionalKey(
       Schema.NullOr(Schema.Array(Schema.String))
@@ -333,18 +457,28 @@ const FileRequest = Schema.Struct({
   method: Schema.Literal("item/fileChange/requestApproval"),
   params: Schema.Struct({
     ...BaseInteraction,
-    grantRoot: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    grantRoot: Schema.optionalKey(
+      Schema.NullOr(CodexPermissionAbsolutePathSchema)
+    ),
     reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
     startedAtMs: Schema.Number,
   }),
 });
 const AdditionalNetworkPermissionsSchema = Schema.Struct({
-  enabled: Schema.NullOr(Schema.Boolean),
+  enabled: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
 });
 const FileSystemPathSchema = Schema.Union([
-  Schema.Struct({ path: Schema.String, type: Schema.Literal("path") }),
   Schema.Struct({
-    pattern: Schema.String,
+    path: CodexPermissionAbsolutePathSchema,
+    type: Schema.Literal("path"),
+  }),
+  Schema.Struct({
+    pattern: Schema.String.pipe(
+      Schema.check(
+        Schema.makeFilter((value) => value.length > 0 && !value.includes("\0")),
+        Schema.isMaxLength(16_384)
+      )
+    ),
     type: Schema.Literal("glob_pattern"),
   }),
   Schema.Struct({
@@ -371,28 +505,46 @@ const FileSystemSandboxEntrySchema = Schema.Struct({
   path: FileSystemPathSchema,
 });
 const AdditionalFileSystemPermissionsSchema = Schema.Struct({
-  entries: Schema.optionalKey(Schema.Array(FileSystemSandboxEntrySchema)),
-  globScanMaxDepth: Schema.optionalKey(Schema.Number),
-  read: Schema.NullOr(Schema.Array(Schema.String)),
-  write: Schema.NullOr(Schema.Array(Schema.String)),
+  entries: Schema.optionalKey(
+    Schema.NullOr(Schema.Array(FileSystemSandboxEntrySchema))
+  ),
+  globScanMaxDepth: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1)))
+    )
+  ),
+  read: Schema.optionalKey(
+    Schema.NullOr(Schema.Array(CodexPermissionAbsolutePathSchema))
+  ),
+  write: Schema.optionalKey(
+    Schema.NullOr(Schema.Array(CodexPermissionAbsolutePathSchema))
+  ),
 });
 const RequestPermissionProfileSchema = Schema.Struct({
-  fileSystem: Schema.NullOr(AdditionalFileSystemPermissionsSchema),
-  network: Schema.NullOr(AdditionalNetworkPermissionsSchema),
+  fileSystem: Schema.optionalKey(
+    Schema.NullOr(AdditionalFileSystemPermissionsSchema)
+  ),
+  network: Schema.optionalKey(
+    Schema.NullOr(AdditionalNetworkPermissionsSchema)
+  ),
 });
 const GrantedPermissionProfileSchema = Schema.Struct({
-  fileSystem: Schema.optionalKey(AdditionalFileSystemPermissionsSchema),
-  network: Schema.optionalKey(AdditionalNetworkPermissionsSchema),
+  fileSystem: Schema.optionalKey(
+    Schema.NullOr(AdditionalFileSystemPermissionsSchema)
+  ),
+  network: Schema.optionalKey(
+    Schema.NullOr(AdditionalNetworkPermissionsSchema)
+  ),
 });
 const PermissionRequest = Schema.Struct({
   id: CodexRequestIdSchema,
   method: Schema.Literal("item/permissions/requestApproval"),
   params: Schema.Struct({
     ...BaseInteraction,
-    cwd: Schema.String,
-    environmentId: Schema.NullOr(Schema.String),
+    cwd: CodexPermissionAbsolutePathSchema,
+    environmentId: Schema.optionalKey(Schema.NullOr(Schema.String)),
     permissions: RequestPermissionProfileSchema,
-    reason: Schema.NullOr(Schema.String),
+    reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
     startedAtMs: Schema.Number,
   }),
 });
@@ -417,11 +569,11 @@ const UserInputRequest = Schema.Struct({
   }),
 });
 const ElicitationBase = {
-  _meta: Schema.NullOr(Schema.Json),
+  _meta: Schema.optionalKey(Schema.Json),
   message: Schema.String,
-  serverName: Schema.String,
+  serverName: CodexServerNameSchema,
   threadId: ThreadId,
-  turnId: Schema.NullOr(TurnId),
+  turnId: Schema.optionalKey(Schema.NullOr(TurnId)),
 } as const;
 const ElicitationRequest = Schema.Struct({
   id: CodexRequestIdSchema,
@@ -436,7 +588,7 @@ const ElicitationRequest = Schema.Struct({
       ...ElicitationBase,
       elicitationId: Schema.String,
       mode: Schema.Literal("url"),
-      url: Schema.String,
+      url: CodexHttpUrlSchema,
     }),
   ]),
 });
@@ -449,10 +601,15 @@ export const CodexServerRequestSchema = Schema.Union([
 ]);
 export type CodexServerRequest = typeof CodexServerRequestSchema.Type;
 
-const ItemParams = Schema.Struct({
-  completedAtMs: Schema.optionalKey(Schema.Number),
+const ItemStartedParams = Schema.Struct({
   item: CodexThreadItemSchema,
-  startedAtMs: Schema.optionalKey(Schema.Number),
+  startedAtMs: Schema.Number,
+  threadId: ThreadId,
+  turnId: TurnId,
+});
+const ItemCompletedParams = Schema.Struct({
+  completedAtMs: Schema.Number,
+  item: CodexThreadItemSchema,
   threadId: ThreadId,
   turnId: TurnId,
 });
@@ -507,8 +664,8 @@ export const CodexNotificationSchema = Schema.Union([
       turnId: TurnId,
     })
   ),
-  notification("item/started", ItemParams),
-  notification("item/completed", ItemParams),
+  notification("item/started", ItemStartedParams),
+  notification("item/completed", ItemCompletedParams),
   notification(
     "item/agentMessage/delta",
     Schema.Struct({
@@ -522,6 +679,24 @@ export const CodexNotificationSchema = Schema.Union([
     "item/commandExecution/outputDelta",
     Schema.Struct({
       delta: Schema.String,
+      itemId: ItemId,
+      threadId: ThreadId,
+      turnId: TurnId,
+    })
+  ),
+  notification(
+    "item/fileChange/outputDelta",
+    Schema.Struct({
+      delta: Schema.String,
+      itemId: ItemId,
+      threadId: ThreadId,
+      turnId: TurnId,
+    })
+  ),
+  notification(
+    "item/fileChange/patchUpdated",
+    Schema.Struct({
+      changes: Schema.Array(CodexFileChange),
       itemId: ItemId,
       threadId: ThreadId,
       turnId: TurnId,
@@ -583,10 +758,25 @@ export function isCuratedCodexNotificationMethod(method: string): boolean {
     case "item/completed":
     case "item/agentMessage/delta":
     case "item/commandExecution/outputDelta":
+    case "item/fileChange/outputDelta":
+    case "item/fileChange/patchUpdated":
     case "thread/tokenUsage/updated":
     case "warning":
     case "error":
     case "serverRequest/resolved":
+      return true;
+    default:
+      return false;
+  }
+}
+
+export function isCodexServerRequestMethod(method: string): boolean {
+  switch (method) {
+    case "item/commandExecution/requestApproval":
+    case "item/fileChange/requestApproval":
+    case "item/permissions/requestApproval":
+    case "item/tool/requestUserInput":
+    case "mcpServer/elicitation/request":
       return true;
     default:
       return false;
@@ -604,8 +794,8 @@ export const CommandApprovalResponseSchema = Schema.Struct({
 export const FileApprovalResponseSchema = CommandApprovalResponseSchema;
 export const PermissionApprovalResponseSchema = Schema.Struct({
   permissions: GrantedPermissionProfileSchema,
-  scope: Schema.Literals(["turn", "session"] as const),
-  strictAutoReview: Schema.optionalKey(Schema.Boolean),
+  scope: Schema.optionalKey(Schema.Literals(["turn", "session"] as const)),
+  strictAutoReview: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
 });
 export const UserInputResponseSchema = Schema.Struct({
   answers: Schema.Record(
@@ -618,9 +808,9 @@ export const UserInputResponseSchema = Schema.Struct({
   ),
 });
 export const ElicitationResponseSchema = Schema.Struct({
-  _meta: Schema.NullOr(Schema.Json),
+  _meta: Schema.optionalKey(Schema.Json),
   action: Schema.Literals(["accept", "decline", "cancel"] as const),
-  content: Schema.NullOr(Schema.Json),
+  content: Schema.optionalKey(Schema.Json),
 });
 
 export type InitializeParams = typeof InitializeParamsSchema.Type;

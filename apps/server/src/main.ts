@@ -8,26 +8,31 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import {
   codexAppServerHarnessProfileId,
+  parseWorkerRecoveryDigest,
   parseWorkerRecoveryReceipt,
   parseWorkspaceRelativePath,
+  WorkerRecoveryModelIdSchema,
   type HarnessDetection,
   type RunId,
   type ServerMetadata,
 } from "@gaia/core";
 import {
   createCodexHarnessProvider,
+  CodexAppServerSpawnConfig,
+  CodexHarnessProviderConfig,
   detectInstalledCodexAppServer,
   makeCodexAppServerClient,
   makeCodexAppServerConnection,
   makeFileCodexHarnessCorrelationStore,
   decodeCodexHarnessCorrelation,
   encodeCodexHarnessCorrelation,
+  encodeCodexHarnessCheckpoint,
   listCodexModels,
   recoverWorkerSession,
   parseCodexThreadId,
-  readPrivateWorkerRecoveryTurn,
+  readPrivateWorkerRecoveryCheckpoint,
   resumeHarnessSession,
-  writePrivateWorkerCorrelationFollowUpTurn,
+  writePrivateWorkerCorrelationFollowUpCheckpoint,
   makeHarnessProviderRegistry,
   issueDeliveryWorkerHarnessCapabilities,
   inspectContinuableDeliveryWorktreeOwnership,
@@ -38,9 +43,22 @@ import {
   loadRun,
   parseDeliveryProvenance,
   type RunPaths,
+  type CodexModelId,
+  type CodexListedThread,
+  type ThreadListParams,
+  type ThreadListResult,
+  type ThreadReadParams,
+  type ThreadResult,
+  CodexModelIdSchema,
   type HarnessProviderRegistry,
   type WorkerRecoveryProvider,
-  type WorkerRecoveryWorkspaceValidation,
+  WorkerRecoveryModel,
+  WorkerRecoveryProviderError,
+  WorkerRecoveryTurnStarted,
+  WorkerRecoveryThreadState,
+  WorkerRecoveryWorkspaceValidation,
+  WorkerRecoveryWorkspaceValidationError,
+  type WorkerRecoveryWorkspaceValidationResult,
   type WorkerRecoveryThreadStatus,
 } from "@gaia/runtime";
 import {
@@ -49,7 +67,7 @@ import {
   type WorkerCorrelationReconciliationInput,
 } from "@gaia/runtime/server-workflows";
 import { makeTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
-import { Effect, FileSystem, Layer, Path } from "effect";
+import { Effect, FileSystem, Layer, Path, Schema } from "effect";
 import * as Console from "effect/Console";
 import { HttpServer } from "effect/unstable/http";
 
@@ -160,16 +178,18 @@ export function runLocalGaiaServer(input: {
 function makeProductionHarnessServices(rootDirectory: string) {
   return Effect.gen(function* () {
     const connection = yield* makeCodexAppServerConnection({
-      cwd: rootDirectory,
+      config: CodexAppServerSpawnConfig.make({ cwd: rootDirectory }),
     });
     const client = makeCodexAppServerClient(connection);
     const correlationStore =
       makeFileCodexHarnessCorrelationStore(rootDirectory);
     const provider = createCodexHarnessProvider({
       client,
+      config: CodexHarnessProviderConfig.make({
+        workspaceRoot: rootDirectory,
+      }),
       correlationStore,
       detectionProbe: detectInstalledCodexAppServer,
-      workspaceRoot: rootDirectory,
     });
     const registry = makeHarnessProviderRegistry([
       { profileId: codexAppServerHarnessProfileId, provider },
@@ -195,40 +215,70 @@ function makeProductionHarnessServices(rootDirectory: string) {
             })
           );
         }
+        let selectedCodexModel: CodexModelId | undefined;
         return yield* recoverWorkerSession(runId, action, {
-          nativeThreadId,
           rootDirectory,
           provider: makeProductionWorkerRecoveryProvider({
             detect: provider.detect,
             listModels: () =>
               listCodexModels(connection, { includeHidden: false }).pipe(
                 Effect.map(({ data }) =>
-                  data.map(({ hidden, id }) => ({ hidden, id }))
-                )
+                  data.flatMap(({ hidden, id }) => {
+                    if (
+                      Schema.encodeSync(CodexModelIdSchema)(id) !==
+                      Schema.encodeSync(WorkerRecoveryModelIdSchema)(
+                        action.model
+                      )
+                    )
+                      return [];
+                    selectedCodexModel = id;
+                    return [
+                      WorkerRecoveryModel.make({
+                        hidden,
+                        id: action.model,
+                      }),
+                    ];
+                  })
+                ),
+                Effect.mapError(() => workerRecoveryProviderError("listModels"))
               ),
-            readThread: (threadId) =>
+            readThread: () =>
               client
                 .readThread({
                   includeTurns: true,
-                  threadId: parseCodexThreadId(threadId),
+                  threadId: nativeThreadId,
                 })
                 .pipe(
-                  Effect.map(({ thread }) => ({
-                    status: toWorkerRecoveryThreadStatus(thread.status?.type),
-                    threadId: thread.id,
-                  }))
+                  Effect.flatMap(({ thread }) =>
+                    projectWorkerRecoveryThreadState(
+                      nativeThreadId,
+                      thread,
+                      "readThread"
+                    )
+                  ),
+                  Effect.mapError(() =>
+                    workerRecoveryProviderError("readThread")
+                  )
                 ),
-            resumeThread: (threadId) =>
-              client
-                .resumeThread({ threadId: parseCodexThreadId(threadId) })
-                .pipe(
-                  Effect.map(({ thread }) => ({
-                    status: toWorkerRecoveryThreadStatus(thread.status?.type),
-                    threadId: thread.id,
-                  }))
+            resumeThread: () =>
+              client.resumeThread({ threadId: nativeThreadId }).pipe(
+                Effect.flatMap(({ thread }) =>
+                  projectWorkerRecoveryThreadState(
+                    nativeThreadId,
+                    thread,
+                    "resumeThread"
+                  )
                 ),
-            startTurn: ({ model, threadId }) =>
-              client
+                Effect.mapError(() =>
+                  workerRecoveryProviderError("resumeThread")
+                )
+              ),
+            startTurn: ({ model }) => {
+              const codexModel =
+                model === action.model ? selectedCodexModel : undefined;
+              if (codexModel === undefined)
+                return Effect.fail(workerRecoveryProviderError("startTurn"));
+              return client
                 .startTurn({
                   input: [
                     {
@@ -236,10 +286,23 @@ function makeProductionHarnessServices(rootDirectory: string) {
                       type: "text",
                     },
                   ],
-                  model,
-                  threadId: parseCodexThreadId(threadId),
+                  model: codexModel,
+                  threadId: nativeThreadId,
                 })
-                .pipe(Effect.map(({ turn }) => ({ turnId: turn.id }))),
+                .pipe(
+                  Effect.map(({ turn }) =>
+                    WorkerRecoveryTurnStarted.make({
+                      checkpoint: encodeCodexHarnessCheckpoint(turn.id),
+                      nativeTurnIdDigest: parseWorkerRecoveryDigest(
+                        createHash("sha256").update(turn.id).digest("hex")
+                      ),
+                    })
+                  ),
+                  Effect.mapError(() =>
+                    workerRecoveryProviderError("startTurn")
+                  )
+                );
+            },
           }),
           validateWorkspace: (_workspacePath, expectedHead) =>
             validateProductionWorkerRecoveryWorkspace({
@@ -422,16 +485,16 @@ function makeProductionHarnessServices(rootDirectory: string) {
             input.events,
             input.action
           );
-          const checkpointTurnId = yield* readPrivateWorkerRecoveryTurn(
+          const checkpointTurnId = yield* readPrivateWorkerRecoveryCheckpoint(
             input.paths.root,
-            input.action.expectedNativeTurnIdDigest,
+            parseWorkerRecoveryDigest(input.action.expectedNativeTurnIdDigest),
             recoveryReceipt
           );
           yield* resumeHarnessSession({
             provider,
             request: {
               allowInterruptedCheckpoint: true,
-              expectedNativeTurnId: checkpointTurnId,
+              expectedCheckpoint: checkpointTurnId,
               sessionId: input.action.expectedSessionId,
               workspacePath: parseWorkspaceRelativePath(
                 nodePath.relative(rootDirectory, workspacePath)
@@ -461,9 +524,9 @@ function makeProductionHarnessServices(rootDirectory: string) {
             input: [{ text: input.followUpText, type: "text" }],
             threadId,
           });
-          yield* writePrivateWorkerCorrelationFollowUpTurn(
+          yield* writePrivateWorkerCorrelationFollowUpCheckpoint(
             input.paths.root,
-            turn.turn.id
+            encodeCodexHarnessCheckpoint(turn.turn.id)
           );
         })
       );
@@ -590,49 +653,15 @@ function digestStableNativeId(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-type ListedCodexThreadForReconciliation = {
-  readonly createdAt: number;
-  readonly cwd: string;
-  readonly id: ReturnType<typeof parseCodexThreadId>;
-  readonly sessionId: string;
-  readonly source: unknown;
-  readonly status?: { readonly type: string };
-};
-
 type StableCodexThreadListClient = {
-  readonly listThreads: (params: {
-    readonly archived: boolean;
-    readonly cursor: string | null;
-    readonly cwd: string;
-    readonly limit: number;
-    readonly sortDirection: "asc";
-    readonly sortKey: "created_at";
-    readonly sourceKinds: ReadonlyArray<"appServer" | "vscode">;
-    readonly useStateDbOnly: boolean;
-  }) => Effect.Effect<
-    {
-      readonly data: ReadonlyArray<ListedCodexThreadForReconciliation>;
-      readonly nextCursor: string | null;
-    },
-    unknown
-  >;
+  readonly listThreads: (
+    params: ThreadListParams
+  ) => Effect.Effect<ThreadListResult, unknown>;
 };
 type StableCodexThreadReadClient = {
-  readonly readThread: (params: {
-    readonly includeTurns: true;
-    readonly threadId: ReturnType<typeof parseCodexThreadId>;
-  }) => Effect.Effect<
-    {
-      readonly thread: {
-        readonly id: ReturnType<typeof parseCodexThreadId>;
-        readonly turns?: ReadonlyArray<{
-          readonly id: string;
-          readonly status?: string;
-        }>;
-      };
-    },
-    unknown
-  >;
+  readonly readThread: (
+    params: ThreadReadParams
+  ) => Effect.Effect<ThreadResult, unknown>;
 };
 type StableCodexThreadClient = StableCodexThreadListClient &
   StableCodexThreadReadClient;
@@ -642,15 +671,12 @@ export function listStableCodexThreadsForWorkspace(
   workspacePath: string
 ) {
   return Effect.gen(function* () {
-    const byId = new Map<string, ListedCodexThreadForReconciliation>();
+    const byId = new Map<string, CodexListedThread>();
     for (const archived of [false, true] as const) {
       const seenCursors = new Set<string>();
       let cursor: string | null = null;
       do {
-        const page: {
-          readonly data: ReadonlyArray<ListedCodexThreadForReconciliation>;
-          readonly nextCursor: string | null;
-        } = yield* client.listThreads({
+        const page: ThreadListResult = yield* client.listThreads({
           archived,
           cursor,
           cwd: workspacePath,
@@ -663,7 +689,7 @@ export function listStableCodexThreadsForWorkspace(
         for (const thread of page.data) {
           byId.set(thread.id, thread);
         }
-        if (page.nextCursor !== null) {
+        if (page.nextCursor != null) {
           if (seenCursors.has(page.nextCursor)) {
             return yield* Effect.fail(
               makeRuntimeError({
@@ -676,7 +702,7 @@ export function listStableCodexThreadsForWorkspace(
           }
           seenCursors.add(page.nextCursor);
         }
-        cursor = page.nextCursor;
+        cursor = page.nextCursor ?? null;
       } while (cursor !== null);
     }
     return [...byId.values()];
@@ -706,7 +732,7 @@ export function findStableDesktopOriginCorrelationThread(input: {
       input.acceptedAtSeconds - desktopOriginCorrelationAcceptedWindowSeconds;
     const latestAcceptedCandidate =
       input.acceptedAtSeconds + desktopOriginCorrelationAcceptedWindowSeconds;
-    const candidateFilter = (thread: ListedCodexThreadForReconciliation) =>
+    const candidateFilter = (thread: CodexListedThread) =>
       thread.cwd === input.workspacePath &&
       (thread.source === "appServer" || thread.source === "vscode") &&
       thread.createdAt >= earliestAcceptedCandidate &&
@@ -802,7 +828,7 @@ function listStableCodexThreadsForWorkspaceBySource(
   sourceKinds: ReadonlyArray<"appServer" | "vscode">
 ) {
   return Effect.gen(function* () {
-    const observations: Array<ListedCodexThreadForReconciliation> = [];
+    const observations: Array<CodexListedThread> = [];
     for (const archived of [false, true] as const) {
       const seenCursors = new Set<string>();
       let observationCount = 0;
@@ -819,10 +845,7 @@ function listStableCodexThreadsForWorkspaceBySource(
             })
           );
         }
-        const page: {
-          readonly data: ReadonlyArray<ListedCodexThreadForReconciliation>;
-          readonly nextCursor: string | null;
-        } = yield* client
+        const page: ThreadListResult = yield* client
           .listThreads({
             archived,
             cursor,
@@ -856,7 +879,7 @@ function listStableCodexThreadsForWorkspaceBySource(
           );
         }
         observations.push(...page.data);
-        if (page.nextCursor !== null) {
+        if (page.nextCursor != null) {
           if (seenCursors.has(page.nextCursor)) {
             return yield* Effect.fail(
               makeRuntimeError({
@@ -869,7 +892,7 @@ function listStableCodexThreadsForWorkspaceBySource(
           }
           seenCursors.add(page.nextCursor);
         }
-        cursor = page.nextCursor;
+        cursor = page.nextCursor ?? null;
       } while (cursor !== null);
     }
     return observations;
@@ -903,11 +926,11 @@ export function makeProductionWorkerRecoveryProvider(
   return {
     listModels: () =>
       Effect.gen(function* () {
-        const detection = yield* input.detect;
+        const detection = yield* input.detect.pipe(
+          Effect.mapError(() => workerRecoveryProviderError("listModels"))
+        );
         if (detection.state !== "available") {
-          return yield* Effect.fail(
-            new Error("Codex App Server is unavailable or incompatible.")
-          );
+          return yield* Effect.fail(workerRecoveryProviderError("listModels"));
         }
         return yield* input.listModels();
       }),
@@ -917,14 +940,37 @@ export function makeProductionWorkerRecoveryProvider(
   };
 }
 
+export function projectWorkerRecoveryThreadState(
+  expectedThreadId: ReturnType<typeof parseCodexThreadId>,
+  thread: ThreadResult["thread"],
+  operation: "readThread" | "resumeThread"
+) {
+  return thread.id === expectedThreadId
+    ? Effect.succeed(
+        WorkerRecoveryThreadState.make({
+          status: toWorkerRecoveryThreadStatus(thread.status?.type),
+        })
+      )
+    : Effect.fail(workerRecoveryProviderError(operation));
+}
+
+function workerRecoveryProviderError(
+  operation: WorkerRecoveryProviderError["operation"]
+) {
+  return new WorkerRecoveryProviderError({
+    message: `Worker recovery provider ${operation} failed.`,
+    operation,
+  });
+}
+
 export function validateProductionWorkerRecoveryWorkspace(input: {
   readonly action: Parameters<typeof recoverWorkerSession>[1];
   readonly expectedHead: string;
   readonly rootDirectory: string;
   readonly runId: RunId;
 }): Effect.Effect<
-  WorkerRecoveryWorkspaceValidation,
-  unknown,
+  WorkerRecoveryWorkspaceValidationResult,
+  WorkerRecoveryWorkspaceValidationError,
   FileSystem.FileSystem | Path.Path
 > {
   return Effect.gen(function* () {
@@ -949,10 +995,29 @@ export function validateProductionWorkerRecoveryWorkspace(input: {
       paths,
       provenance: provenance.value,
     };
-    return shouldAllowRetainedPayloadWorkerRecovery(loaded.events, input.action)
+    const inspected = shouldAllowRetainedPayloadWorkerRecovery(
+      loaded.events,
+      input.action
+    )
       ? yield* inspectRetainedPayloadDeliveryWorktreeOwnership(inspection)
       : yield* inspectRecoverableDeliveryWorktreeOwnership(inspection);
-  });
+    return inspected === undefined
+      ? undefined
+      : WorkerRecoveryWorkspaceValidation.make({
+          trackedPayloadDigest: parseWorkerRecoveryDigest(
+            inspected.trackedPayloadDigest
+          ),
+          trackedPayloadEntryCount: inspected.trackedPayloadEntryCount,
+        });
+  }).pipe(
+    Effect.mapError(
+      () =>
+        new WorkerRecoveryWorkspaceValidationError({
+          message: "Worker recovery workspace validation failed.",
+          operation: "validateWorkspace",
+        })
+    )
+  );
 }
 
 function shouldAllowRetainedPayloadWorkerRecovery(

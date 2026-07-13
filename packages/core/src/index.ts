@@ -1,5 +1,7 @@
 export {
   WorkerRecoveryAction,
+  WorkerRecoveryActionIdSchema,
+  WorkerRecoveryDigestSchema,
   WorkerRecoveryFailureEvidence,
   WorkerRecoveryFailureCodeSchema,
   WorkerRecoveryFailureStageSchema,
@@ -10,6 +12,7 @@ export {
   WorkerDesktopOriginCorrelationReceiptSchema,
   WorkerContinuationReceiptSchema,
   WorkerRecoveryReceiptSchema,
+  WorkerRecoveryModelIdSchema,
   encodeWorkerContinuationReceiptJson,
   encodeWorkerCorrelationReconciliationReceiptJson,
   encodeWorkerDesktopOriginCorrelationReceiptJson,
@@ -22,6 +25,9 @@ export {
   parseWorkerDesktopOriginCorrelationAction,
   parseWorkerDesktopOriginCorrelationReceipt,
   parseWorkerRecoveryAction,
+  parseWorkerRecoveryActionId,
+  parseWorkerRecoveryDigest,
+  parseWorkerRecoveryModelId,
   parseWorkerRecoveryReceipt,
   workerContinuationProjection,
   workerCorrelationReconciliationProjection,
@@ -31,6 +37,9 @@ export {
   type WorkerCorrelationReconciliationReceipt,
   type WorkerDesktopOriginCorrelationReceipt,
   type WorkerRecoveryReceipt,
+  type WorkerRecoveryActionId,
+  type WorkerRecoveryDigest,
+  type WorkerRecoveryModelId,
 } from "./worker-recovery.js";
 export {
   DeliveryCleanupCompleted,

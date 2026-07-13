@@ -24,6 +24,7 @@ import {
   resumeHarnessSession,
   startHarnessSession,
   type HarnessProvider,
+  type HarnessCheckpointToken,
 } from "./harness-session.js";
 import {
   codexAppServerHarnessName,
@@ -43,7 +44,7 @@ const encodeHarnessRunResult = Schema.encodeSync(HarnessRunResultJson);
 
 /** Adapt one provider-neutral interactive session into the existing worker stage. */
 export function interactiveSessionHarness(input: {
-  readonly expectedNativeTurnId?: string;
+  readonly expectedCheckpoint?: HarnessCheckpointToken;
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly provider?: HarnessProvider;
   readonly rootDirectory: string;
@@ -108,9 +109,9 @@ export function interactiveSessionHarness(input: {
                 ? yield* resumeHarnessSession({
                     provider,
                     request: {
-                      ...(input.expectedNativeTurnId === undefined
+                      ...(input.expectedCheckpoint === undefined
                         ? {}
-                        : { expectedNativeTurnId: input.expectedNativeTurnId }),
+                        : { expectedCheckpoint: input.expectedCheckpoint }),
                       sessionId,
                       workspacePath: workspacePathFromRoot(
                         input.rootDirectory,

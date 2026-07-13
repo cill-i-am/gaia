@@ -20,11 +20,14 @@ import { Effect, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  CodexAppServerSpawnConfig,
   listCodexModels,
   makeCodexAppServerClient,
   makeCodexAppServerConnection,
 } from "./codex-app-server-client.js";
+import { parseCodexClientVersion } from "./codex-app-server-protocol.js";
 import {
+  CodexHarnessProviderConfig,
   createCodexHarnessProvider,
   makeFileCodexHarnessCorrelationStore,
 } from "./codex-harness-provider.js";
@@ -36,6 +39,15 @@ import {
 } from "./harness-session.js";
 import { acceptFactoryRun, continueServerRun } from "./server-workflows.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
+
+function codexAppServerSpawnConfig(cwd: string, codexHome: string) {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  env["CODEX_HOME"] = codexHome;
+  return CodexAppServerSpawnConfig.make({ cwd, env });
+}
 
 const runSmoke = process.env.GAIA_CODEX_APP_SERVER_SMOKE === "1";
 
@@ -60,8 +72,7 @@ describe("Codex App Server installed CLI smoke", () => {
           Effect.scoped(
             Effect.gen(function* () {
               const connection = yield* makeCodexAppServerConnection({
-                cwd,
-                env: { ...process.env, CODEX_HOME: codexHome },
+                config: codexAppServerSpawnConfig(cwd, codexHome),
               });
               const client = makeCodexAppServerClient(connection);
               let sawItem = false;
@@ -72,7 +83,11 @@ describe("Codex App Server installed CLI smoke", () => {
                 if (method === "turn/completed") completed = true;
               });
               yield* client.initialize({
-                clientInfo: { name: "gaia", title: "Gaia", version: "0.1.0" },
+                clientInfo: {
+                  name: "gaia",
+                  title: "Gaia",
+                  version: parseCodexClientVersion("0.1.0"),
+                },
               });
               const catalog = yield* listCodexModels(connection, {
                 includeHidden: false,
@@ -162,15 +177,16 @@ describe("Codex App Server installed CLI smoke", () => {
           Effect.scoped(
             Effect.gen(function* () {
               const connection = yield* makeCodexAppServerConnection({
-                cwd: factoryRoot,
-                env: { ...process.env, CODEX_HOME: codexHome },
+                config: codexAppServerSpawnConfig(factoryRoot, codexHome),
               });
               const provider = createCodexHarnessProvider({
                 client: makeCodexAppServerClient(connection),
                 correlationStore:
                   makeFileCodexHarnessCorrelationStore(factoryRoot),
                 detectionProbe: detectInstalledCodexAppServer,
-                workspaceRoot: factoryRoot,
+                config: CodexHarnessProviderConfig.make({
+                  workspaceRoot: factoryRoot,
+                }),
               });
               const registry = makeHarnessProviderRegistry([
                 {
@@ -251,8 +267,7 @@ describe("Codex App Server installed CLI smoke", () => {
           Effect.scoped(
             Effect.gen(function* () {
               const connection = yield* makeCodexAppServerConnection({
-                cwd: workspace,
-                env: { ...process.env, CODEX_HOME: codexHome },
+                config: codexAppServerSpawnConfig(workspace, codexHome),
               });
               const client = makeCodexAppServerClient(connection);
               let completed = false;
@@ -260,7 +275,11 @@ describe("Codex App Server installed CLI smoke", () => {
                 if (method === "turn/completed") completed = true;
               });
               yield* client.initialize({
-                clientInfo: { name: "gaia", title: "Gaia", version: "0.1.0" },
+                clientInfo: {
+                  name: "gaia",
+                  title: "Gaia",
+                  version: parseCodexClientVersion("0.1.0"),
+                },
               });
               const catalog = yield* listCodexModels(connection, {
                 includeHidden: false,
@@ -301,12 +320,15 @@ describe("Codex App Server installed CLI smoke", () => {
           Effect.scoped(
             Effect.gen(function* () {
               const connection = yield* makeCodexAppServerConnection({
-                cwd: workspace,
-                env: { ...process.env, CODEX_HOME: codexHome },
+                config: codexAppServerSpawnConfig(workspace, codexHome),
               });
               const client = makeCodexAppServerClient(connection);
               yield* client.initialize({
-                clientInfo: { name: "gaia", title: "Gaia", version: "0.1.0" },
+                clientInfo: {
+                  name: "gaia",
+                  title: "Gaia",
+                  version: parseCodexClientVersion("0.1.0"),
+                },
               });
               const coldRead = yield* client.readThread({
                 includeTurns: true,
@@ -376,15 +398,16 @@ describe("Codex App Server installed CLI smoke", () => {
           Effect.scoped(
             Effect.gen(function* () {
               const connection = yield* makeCodexAppServerConnection({
-                cwd: workspace,
-                env: { ...process.env, CODEX_HOME: codexHome },
+                config: codexAppServerSpawnConfig(workspace, codexHome),
               });
               const session = yield* startHarnessSession({
                 provider: createCodexHarnessProvider({
                   client: makeCodexAppServerClient(connection),
                   correlationStore: makeFileCodexHarnessCorrelationStore(root),
                   detectionProbe: detectInstalledCodexAppServer,
-                  workspaceRoot: root,
+                  config: CodexHarnessProviderConfig.make({
+                    workspaceRoot: root,
+                  }),
                 }),
                 request: {
                   input: {
@@ -419,15 +442,16 @@ describe("Codex App Server installed CLI smoke", () => {
           Effect.scoped(
             Effect.gen(function* () {
               const connection = yield* makeCodexAppServerConnection({
-                cwd: workspace,
-                env: { ...process.env, CODEX_HOME: codexHome },
+                config: codexAppServerSpawnConfig(workspace, codexHome),
               });
               const session = yield* resumeHarnessSession({
                 provider: createCodexHarnessProvider({
                   client: makeCodexAppServerClient(connection),
                   correlationStore: makeFileCodexHarnessCorrelationStore(root),
                   detectionProbe: detectInstalledCodexAppServer,
-                  workspaceRoot: root,
+                  config: CodexHarnessProviderConfig.make({
+                    workspaceRoot: root,
+                  }),
                 }),
                 request: { sessionId, workspacePath },
                 requiredCapabilities: [

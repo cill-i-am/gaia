@@ -20,6 +20,9 @@ import {
   parseHarnessProfileId,
   parseHarnessSessionId,
   parseRunId,
+  parseWorkerRecoveryActionId,
+  parseWorkerRecoveryDigest,
+  parseWorkerRecoveryModelId,
 } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -34,10 +37,18 @@ import {
   prepareDeliveryWorktree,
   type DeliveryProvenance,
 } from "./git-delivery.js";
+import { parseHarnessCheckpointToken } from "./harness-session.js";
 import { makeRunPaths } from "./paths.js";
 import { actOnWorkerRecovery } from "./server-workflows.js";
 import {
-  readPrivateWorkerRecoveryTurn,
+  WorkerRecoveryConfig,
+  WorkerRecoveryModel,
+  WorkerRecoveryProviderError,
+  WorkerRecoveryTurnStarted,
+  WorkerRecoveryThreadState,
+  WorkerRecoveryWorkspaceValidation,
+  WorkerRecoveryWorkspaceValidationError,
+  readPrivateWorkerRecoveryCheckpoint,
   recoverWorkerSession,
   type WorkerRecoveryProvider,
   type WorkerRecoveryThreadStatus,
@@ -241,23 +252,43 @@ async function realOwnedFixture() {
         paths: f.paths,
         provenance: accepted.value,
       });
-    });
+    }).pipe(Effect.mapError(() => workspaceValidationError()));
   return { ...f, head, provenance, validateWorkspace };
 }
 const action = WorkerRecoveryAction.make({
-  actionId: "recover-1",
+  actionId: parseWorkerRecoveryActionId("recover-1"),
   expectedFailureSequence: 10,
   expectedSessionId: parseHarnessSessionId("session-run-1234567890"),
   harnessProfileId: parseHarnessProfileId("codexAppServer"),
   kind: "retryRecoverableWorkerFailure",
-  model: "gpt-5.4",
+  model: parseWorkerRecoveryModelId("gpt-5.4"),
 });
-const threadState = (
-  status: WorkerRecoveryThreadStatus,
-  threadId = "thread-1"
-) => ({ status, threadId });
+const workspaceValidationError = () =>
+  new WorkerRecoveryWorkspaceValidationError({
+    message: "Worker recovery workspace validation failed.",
+    operation: "validateWorkspace",
+  });
+const threadState = (status: WorkerRecoveryThreadStatus) =>
+  WorkerRecoveryThreadState.make({ status });
 const sha256 = (value: string) =>
-  createHash("sha256").update(value).digest("hex");
+  parseWorkerRecoveryDigest(createHash("sha256").update(value).digest("hex"));
+const workerRecoveryModel = (input?: {
+  readonly hidden?: boolean;
+  readonly id?: typeof action.model;
+}) =>
+  WorkerRecoveryModel.make({
+    hidden: input?.hidden ?? false,
+    id: input?.id ?? action.model,
+  });
+const startTurnResult = (turnId: string) =>
+  WorkerRecoveryTurnStarted.make({
+    checkpoint: parseHarnessCheckpointToken(`hchk1_${turnId}`),
+    nativeTurnIdDigest: sha256(turnId),
+  });
+const providerError = (
+  operation: WorkerRecoveryProviderError["operation"],
+  message = `${operation} failed`
+) => new WorkerRecoveryProviderError({ message, operation });
 function rewriteStoredEvents(
   eventsPath: string,
   mutate: (events: Array<Record<string, unknown>>) => void
@@ -274,24 +305,34 @@ function rewriteStoredEvents(
 }
 
 describe("recoverWorkerSession", () => {
+  it("schema-owns serializable run-storage configuration", () => {
+    const decode = Schema.decodeUnknownSync(WorkerRecoveryConfig);
+
+    expect(decode({ rootDirectory: "/tmp/gaia" })).toEqual({
+      rootDirectory: "/tmp/gaia",
+    });
+    expect(() => decode({ rootDirectory: "" })).toThrow();
+    expect(() =>
+      decode({ provider: {}, rootDirectory: "/tmp/gaia" })
+    ).toThrow();
+  });
+
   it("partitions worker recovery authority by exact failure generation", async () => {
     const f = fixture();
     let starts = 0;
     const provider: WorkerRecoveryProvider = {
-      listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
-      resumeThread: (threadId) => Effect.succeed(threadState("idle", threadId)),
-      readThread: (threadId) =>
-        Effect.succeed(threadState("systemError", threadId)),
+      listModels: () => Effect.succeed([workerRecoveryModel()]),
+      resumeThread: () => Effect.succeed(threadState("idle")),
+      readThread: () => Effect.succeed(threadState("systemError")),
       startTurn: () =>
         Effect.sync(() => {
           starts++;
-          return { turnId: `turn-recovery-${starts}` };
+          return startTurnResult(`turn-recovery-${starts}`);
         }),
     };
 
     const first = await run(
       recoverWorkerSession(f.runId, action, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace: () => Effect.void,
@@ -329,13 +370,12 @@ describe("recoverWorkerSession", () => {
     );
     const secondAction = WorkerRecoveryAction.make({
       ...action,
-      actionId: "recover-2",
+      actionId: parseWorkerRecoveryActionId("recover-2"),
       expectedFailureSequence: secondFailure.event.sequence,
     });
 
     const replayOld = await run(
       recoverWorkerSession(f.runId, action, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace: () => Effect.void,
@@ -354,14 +394,13 @@ describe("recoverWorkerSession", () => {
 
     const second = await run(
       recoverWorkerSession(f.runId, secondAction, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace: () => Effect.void,
       })
     );
     expect(second).toMatchObject({
-      actionId: "recover-2",
+      actionId: parseWorkerRecoveryActionId("recover-2"),
       expectedFailureSequence: secondFailure.event.sequence,
       state: "dispatchConfirmed",
     });
@@ -369,7 +408,6 @@ describe("recoverWorkerSession", () => {
 
     const replaySecond = await run(
       recoverWorkerSession(f.runId, secondAction, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace: () => Effect.void,
@@ -388,12 +426,11 @@ describe("recoverWorkerSession", () => {
 
     const drift = WorkerRecoveryAction.make({
       ...secondAction,
-      actionId: "recover-2-drift",
+      actionId: parseWorkerRecoveryActionId("recover-2-drift"),
     });
     await expect(
       run(
         recoverWorkerSession(f.runId, drift, {
-          nativeThreadId: "thread-1",
           provider,
           rootDirectory: f.root,
           validateWorkspace: () => Effect.void,
@@ -406,15 +443,13 @@ describe("recoverWorkerSession", () => {
   it("rejects stale private checkpoints from older recovery generations", async () => {
     const f = fixture();
     const provider: WorkerRecoveryProvider = {
-      listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
-      resumeThread: (threadId) => Effect.succeed(threadState("idle", threadId)),
-      readThread: (threadId) =>
-        Effect.succeed(threadState("systemError", threadId)),
-      startTurn: () => Effect.succeed({ turnId: "turn-recovery-1" }),
+      listModels: () => Effect.succeed([workerRecoveryModel()]),
+      resumeThread: () => Effect.succeed(threadState("idle")),
+      readThread: () => Effect.succeed(threadState("systemError")),
+      startTurn: () => Effect.succeed(startTurnResult("turn-recovery-1")),
     };
     const first = await run(
       recoverWorkerSession(f.runId, action, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace: () => Effect.void,
@@ -425,14 +460,14 @@ describe("recoverWorkerSession", () => {
 
     const second = {
       ...first,
-      actionId: "recover-2",
+      actionId: parseWorkerRecoveryActionId("recover-2"),
       expectedFailureSequence: 16,
       nativeTurnIdDigest: sha256("turn-recovery-1"),
     };
 
     await expect(
       run(
-        readPrivateWorkerRecoveryTurn(
+        readPrivateWorkerRecoveryCheckpoint(
           f.paths.root,
           second.nativeTurnIdDigest,
           second
@@ -484,7 +519,7 @@ describe("recoverWorkerSession", () => {
     );
     const secondAction = WorkerRecoveryAction.make({
       ...action,
-      actionId: "recover-2",
+      actionId: parseWorkerRecoveryActionId("recover-2"),
       expectedFailureSequence: secondFailure.event.sequence,
     });
     const before = readFileSync(f.paths.events, "utf8");
@@ -493,7 +528,7 @@ describe("recoverWorkerSession", () => {
       listModels: () =>
         Effect.sync(() => {
           calls++;
-          return [{ hidden: false, id: "gpt-5.4" }];
+          return [workerRecoveryModel()];
         }),
       resumeThread: () => Effect.die("not called"),
       readThread: () => Effect.die("not called"),
@@ -503,7 +538,6 @@ describe("recoverWorkerSession", () => {
     await expect(
       run(
         recoverWorkerSession(f.runId, secondAction, {
-          nativeThreadId: "thread-1",
           provider,
           rootDirectory: f.root,
           validateWorkspace: () => Effect.void,
@@ -518,21 +552,19 @@ describe("recoverWorkerSession", () => {
     const f = fixture();
     let starts = 0;
     const provider: WorkerRecoveryProvider = {
-      listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
-      resumeThread: (threadId) => Effect.succeed(threadState("idle", threadId)),
-      readThread: (threadId) =>
-        Effect.succeed(threadState("systemError", threadId)),
+      listModels: () => Effect.succeed([workerRecoveryModel()]),
+      resumeThread: () => Effect.succeed(threadState("idle")),
+      readThread: () => Effect.succeed(threadState("systemError")),
       startTurn: () =>
         Effect.sync(() => {
           starts++;
-          return { turnId: `turn-concurrent-${starts}` };
+          return startTurnResult(`turn-concurrent-${starts}`);
         }),
     };
 
     const results = await Promise.allSettled([
       run(
         recoverWorkerSession(f.runId, action, {
-          nativeThreadId: "thread-1",
           provider,
           rootDirectory: f.root,
           validateWorkspace: () => Effect.void,
@@ -540,7 +572,6 @@ describe("recoverWorkerSession", () => {
       ),
       run(
         recoverWorkerSession(f.runId, action, {
-          nativeThreadId: "thread-1",
           provider,
           rootDirectory: f.root,
           validateWorkspace: () => Effect.void,
@@ -559,11 +590,10 @@ describe("recoverWorkerSession", () => {
 
     const drift = WorkerRecoveryAction.make({
       ...action,
-      actionId: "recover-drift",
+      actionId: parseWorkerRecoveryActionId("recover-drift"),
     });
     const driftResult = await run(
       recoverWorkerSession(f.runId, drift, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace: () => Effect.void,
@@ -886,7 +916,6 @@ describe("recoverWorkerSession", () => {
       await expect(
         run(
           recoverWorkerSession(f.runId, action, {
-            nativeThreadId: "thread-1",
             provider,
             rootDirectory: f.root,
             validateWorkspace: f.validateWorkspace,
@@ -912,20 +941,18 @@ describe("recoverWorkerSession", () => {
     const beforeInventory = git(f.root, "worktree", "list", "--porcelain");
     let starts = 0;
     const provider: WorkerRecoveryProvider = {
-      listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
-      resumeThread: (threadId) => Effect.succeed({ status: "idle", threadId }),
-      readThread: (threadId) =>
-        Effect.succeed({ status: "systemError", threadId }),
+      listModels: () => Effect.succeed([workerRecoveryModel()]),
+      resumeThread: () => Effect.succeed(threadState("idle")),
+      readThread: () => Effect.succeed(threadState("systemError")),
       startTurn: () =>
         Effect.sync(() => {
           starts++;
-          return { turnId: "turn-recovery" };
+          return startTurnResult("turn-recovery");
         }),
     };
     expect(rootA).not.toBe(f.root);
     const activate = (runId: typeof f.runId, request: typeof action) =>
       recoverWorkerSession(runId, request, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace: f.validateWorkspace,
@@ -971,28 +998,27 @@ describe("recoverWorkerSession", () => {
       listModels: () =>
         Effect.sync(() => {
           calls.push("models");
-          return [{ hidden: false, id: "gpt-5.4" }];
+          return [workerRecoveryModel()];
         }),
-      resumeThread: (threadId) =>
+      resumeThread: () =>
         Effect.sync(() => {
           calls.push("resume:idle");
-          return { status: "idle", threadId };
+          return threadState("idle");
         }),
-      readThread: (threadId) =>
+      readThread: () =>
         Effect.sync(() => {
           calls.push("read:notLoaded");
-          return { status: "notLoaded", threadId };
+          return threadState("notLoaded");
         }),
       startTurn: ({ model }) =>
         Effect.sync(() => {
           calls.push(`start:${model}`);
-          return { turnId: "turn-recovery" };
+          return startTurnResult("turn-recovery");
         }),
     };
     const validateWorkspace = () => Effect.void;
     const result = await run(
       recoverWorkerSession(f.runId, action, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace,
@@ -1014,28 +1040,27 @@ describe("recoverWorkerSession", () => {
       listModels: () =>
         Effect.sync(() => {
           calls.push("models");
-          return [{ hidden: false, id: "gpt-5.4" }];
+          return [workerRecoveryModel()];
         }),
-      resumeThread: (threadId) =>
+      resumeThread: () =>
         Effect.sync(() => {
           calls.push("resume");
-          return { status: "idle", threadId };
+          return threadState("idle");
         }),
-      readThread: (threadId) =>
+      readThread: () =>
         Effect.sync(() => {
           calls.push("read");
-          return { status: "systemError", threadId };
+          return threadState("systemError");
         }),
       startTurn: ({ model }) =>
         Effect.sync(() => {
           calls.push(`start:${model}`);
-          return { turnId: "turn-recovery" };
+          return startTurnResult("turn-recovery");
         }),
     };
     const validateWorkspace = () => Effect.void;
     const result = await run(
       recoverWorkerSession(f.runId, action, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace,
@@ -1046,7 +1071,6 @@ describe("recoverWorkerSession", () => {
     expect(readFileSync(f.paths.events, "utf8")).not.toContain("thread-1");
     await run(
       recoverWorkerSession(f.runId, action, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace,
@@ -1059,10 +1083,9 @@ describe("recoverWorkerSession", () => {
     const f = fixture();
     let starts = 0;
     const provider: WorkerRecoveryProvider = {
-      listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
-      resumeThread: (threadId) => Effect.succeed({ status: "idle", threadId }),
-      readThread: (threadId) =>
-        Effect.succeed({ status: "systemError", threadId }),
+      listModels: () => Effect.succeed([workerRecoveryModel()]),
+      resumeThread: () => Effect.succeed(threadState("idle")),
+      readThread: () => Effect.succeed(threadState("systemError")),
       startTurn: () =>
         Effect.sync(() => {
           starts++;
@@ -1072,7 +1095,6 @@ describe("recoverWorkerSession", () => {
     const validateWorkspace = () => Effect.void;
     const first = await run(
       recoverWorkerSession(f.runId, action, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace,
@@ -1081,7 +1103,6 @@ describe("recoverWorkerSession", () => {
     expect(first.state).toBe("outcomeUnknown");
     const second = await run(
       recoverWorkerSession(f.runId, action, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace,
@@ -1184,27 +1205,26 @@ describe("recoverWorkerSession", () => {
         listModels: () =>
           Effect.sync(() => {
             calls.push("models");
-            return [{ hidden: false, id: "gpt-5.4" }];
+            return [workerRecoveryModel()];
           }),
-        resumeThread: (threadId) =>
+        resumeThread: () =>
           Effect.sync(() => {
             calls.push("resume");
-            return threadState("idle", threadId);
+            return threadState("idle");
           }),
-        readThread: (threadId) =>
+        readThread: () =>
           Effect.sync(() => {
             calls.push("read");
-            return threadState("notLoaded", threadId);
+            return threadState("notLoaded");
           }),
         startTurn: () =>
           Effect.sync(() => {
             calls.push("start");
-            return { turnId: "turn-recovery" };
+            return startTurnResult("turn-recovery");
           }),
       };
       const exit = await run(
         recoverWorkerSession(f.runId, request, {
-          nativeThreadId: "thread-1",
           provider,
           rootDirectory: f.root,
           validateWorkspace: () => Effect.void,
@@ -1217,8 +1237,6 @@ describe("recoverWorkerSession", () => {
   );
 
   it.each([
-    ["wrong resume id", { resume: threadState("idle", "thread-other") }],
-    ["wrong read id", { read: threadState("idle", "thread-other") }],
     ["active resume", { resume: threadState("active") }],
     ["active read", { read: threadState("active") }],
     ["unknown resume", { resume: threadState("unknown") }],
@@ -1233,31 +1251,23 @@ describe("recoverWorkerSession", () => {
       let starts = 0;
       let validations = 0;
       const provider: WorkerRecoveryProvider = {
-        listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
-        resumeThread: (
-          threadId
-        ): ReturnType<WorkerRecoveryProvider["resumeThread"]> =>
+        listModels: () => Effect.succeed([workerRecoveryModel()]),
+        resumeThread: (): ReturnType<WorkerRecoveryProvider["resumeThread"]> =>
           "resumeError" in scenario && scenario.resumeError === true
-            ? Effect.fail(new Error("resume failed"))
+            ? Effect.fail(providerError("resumeThread"))
             : Effect.succeed(
-                "resume" in scenario
-                  ? scenario.resume
-                  : threadState("idle", threadId)
+                "resume" in scenario ? scenario.resume : threadState("idle")
               ),
-        readThread: (
-          threadId
-        ): ReturnType<WorkerRecoveryProvider["readThread"]> =>
+        readThread: (): ReturnType<WorkerRecoveryProvider["readThread"]> =>
           "readError" in scenario && scenario.readError === true
-            ? Effect.fail(new Error("read failed"))
+            ? Effect.fail(providerError("readThread"))
             : Effect.succeed(
-                "read" in scenario
-                  ? scenario.read
-                  : threadState("idle", threadId)
+                "read" in scenario ? scenario.read : threadState("idle")
               ),
         startTurn: () =>
           Effect.sync(() => {
             starts++;
-            return { turnId: "turn-recovery" };
+            return startTurnResult("turn-recovery");
           }),
       };
       const validateWorkspace = () => {
@@ -1265,12 +1275,11 @@ describe("recoverWorkerSession", () => {
         return "workspaceRace" in scenario &&
           scenario.workspaceRace === true &&
           validations === 2
-          ? Effect.fail(new Error("workspace race"))
+          ? Effect.fail(workspaceValidationError())
           : Effect.void;
       };
       const result = await run(
         recoverWorkerSession(f.runId, action, {
-          nativeThreadId: "thread-1",
           provider,
           rootDirectory: f.root,
           validateWorkspace,
@@ -1294,15 +1303,13 @@ describe("recoverWorkerSession", () => {
   it("returns a prior terminal failed recovery without another provider dispatch", async () => {
     const f = fixture();
     const failingProvider: WorkerRecoveryProvider = {
-      listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
-      resumeThread: (threadId) =>
-        Effect.succeed(threadState("active", threadId)),
-      readThread: (threadId) => Effect.succeed(threadState("idle", threadId)),
+      listModels: () => Effect.succeed([workerRecoveryModel()]),
+      resumeThread: () => Effect.succeed(threadState("active")),
+      readThread: () => Effect.succeed(threadState("idle")),
       startTurn: () => Effect.die("not called"),
     };
     const first = await run(
       recoverWorkerSession(f.runId, action, {
-        nativeThreadId: "thread-1",
         provider: failingProvider,
         rootDirectory: f.root,
         validateWorkspace: () => Effect.void,
@@ -1314,27 +1321,26 @@ describe("recoverWorkerSession", () => {
       listModels: () =>
         Effect.sync(() => {
           calls.push("models");
-          return [{ hidden: false, id: "gpt-5.4" }];
+          return [workerRecoveryModel()];
         }),
-      resumeThread: (threadId) =>
+      resumeThread: () =>
         Effect.sync(() => {
           calls.push("resume");
-          return threadState("idle", threadId);
+          return threadState("idle");
         }),
-      readThread: (threadId) =>
+      readThread: () =>
         Effect.sync(() => {
           calls.push("read");
-          return threadState("idle", threadId);
+          return threadState("idle");
         }),
       startTurn: () =>
         Effect.sync(() => {
           calls.push("start");
-          return { turnId: "turn-recovery" };
+          return startTurnResult("turn-recovery");
         }),
     };
     const second = await run(
       recoverWorkerSession(f.runId, action, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace: () => Effect.void,
@@ -1350,11 +1356,16 @@ describe("recoverWorkerSession", () => {
   it.each([
     [
       "WorkerRecoveryModelCatalogUnavailable",
-      () => Effect.fail(new Error("private catalog cause")),
+      () => Effect.fail(providerError("listModels", "private catalog cause")),
     ],
     [
       "WorkerRecoveryModelUnavailable",
-      () => Effect.succeed([{ hidden: false, id: "other-model" }]),
+      () =>
+        Effect.succeed([
+          workerRecoveryModel({
+            id: parseWorkerRecoveryModelId("other-model"),
+          }),
+        ]),
     ],
   ] as const)(
     "fails before intent with %s and zero provider mutation",
@@ -1367,22 +1378,21 @@ describe("recoverWorkerSession", () => {
         readThread: () =>
           Effect.sync(() => {
             mutations++;
-            return { status: "systemError", threadId: "thread-1" };
+            return threadState("systemError");
           }),
         resumeThread: () =>
           Effect.sync(() => {
             mutations++;
-            return { status: "idle", threadId: "thread-1" };
+            return threadState("idle");
           }),
         startTurn: () =>
           Effect.sync(() => {
             mutations++;
-            return { turnId: "turn-recovery" };
+            return startTurnResult("turn-recovery");
           }),
       };
       const exit = await run(
         recoverWorkerSession(f.runId, action, {
-          nativeThreadId: "thread-1",
           provider,
           rootDirectory: f.root,
           validateWorkspace: () => Effect.void,
@@ -1404,7 +1414,7 @@ describe("recoverWorkerSession", () => {
     const before = readFileSync(f.paths.events, "utf8");
     let mutations = 0;
     const provider: WorkerRecoveryProvider = {
-      listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
+      listModels: () => Effect.succeed([workerRecoveryModel()]),
       readThread: () =>
         Effect.sync(() => {
           mutations++;
@@ -1418,7 +1428,7 @@ describe("recoverWorkerSession", () => {
       startTurn: () =>
         Effect.sync(() => {
           mutations++;
-          return { turnId: "turn-recovery" };
+          return startTurnResult("turn-recovery");
         }),
     };
     const exit = await run(
@@ -1431,7 +1441,6 @@ describe("recoverWorkerSession", () => {
               message: "write failed",
             })
           ),
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace: () => Effect.void,
@@ -1451,29 +1460,29 @@ describe("recoverWorkerSession", () => {
     let starts = 0;
     let currentDigest = "1".repeat(64);
     const validation = () =>
-      Effect.succeed({
-        trackedPayloadDigest: currentDigest,
-        trackedPayloadEntryCount: 1,
-      });
+      Effect.succeed(
+        WorkerRecoveryWorkspaceValidation.make({
+          trackedPayloadDigest: parseWorkerRecoveryDigest(currentDigest),
+          trackedPayloadEntryCount: 1,
+        })
+      );
     const provider: WorkerRecoveryProvider = {
-      listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
-      resumeThread: (threadId) =>
+      listModels: () => Effect.succeed([workerRecoveryModel()]),
+      resumeThread: () =>
         Effect.sync(() => {
           currentDigest = "2".repeat(64);
-          return threadState("idle", threadId);
+          return threadState("idle");
         }),
-      readThread: (threadId) =>
-        Effect.succeed(threadState("systemError", threadId)),
+      readThread: () => Effect.succeed(threadState("systemError")),
       startTurn: () =>
         Effect.sync(() => {
           starts++;
-          return { turnId: "turn-recovery" };
+          return startTurnResult("turn-recovery");
         }),
     };
 
     const result = await run(
       recoverWorkerSession(f.runId, action, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace: validation,
@@ -1519,35 +1528,36 @@ describe("recoverWorkerSession", () => {
       listModels: () =>
         Effect.sync(() => {
           models++;
-          return [{ hidden: false, id: "gpt-5.4" }];
+          return [workerRecoveryModel()];
         }),
-      resumeThread: (threadId) =>
+      resumeThread: () =>
         Effect.sync(() => {
           resumeReads++;
-          return threadState("idle", threadId);
+          return threadState("idle");
         }),
-      readThread: (threadId) =>
+      readThread: () =>
         Effect.sync(() => {
           resumeReads++;
-          return threadState("systemError", threadId);
+          return threadState("systemError");
         }),
       startTurn: () =>
         Effect.sync(() => {
           starts++;
-          return { turnId: "turn-recovery" };
+          return startTurnResult("turn-recovery");
         }),
     };
 
     const result = await run(
       recoverWorkerSession(f.runId, action, {
-        nativeThreadId: "thread-1",
         provider,
         rootDirectory: f.root,
         validateWorkspace: () =>
-          Effect.succeed({
-            trackedPayloadDigest: "2".repeat(64),
-            trackedPayloadEntryCount: 1,
-          }),
+          Effect.succeed(
+            WorkerRecoveryWorkspaceValidation.make({
+              trackedPayloadDigest: parseWorkerRecoveryDigest("2".repeat(64)),
+              trackedPayloadEntryCount: 1,
+            })
+          ),
       })
     );
 

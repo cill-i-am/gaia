@@ -8,14 +8,16 @@ import {
   parseHarnessSessionId,
   parseWorkspaceRelativePath,
 } from "@gaia/core";
-import { Effect, Fiber, Option, Stream } from "effect";
+import { Effect, Fiber, Option, Schema, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { type CodexAppServerClient } from "./codex-app-server-client.js";
 import {
   parseCodexThreadId,
+  parseCodexRequestId,
   parseCodexTurnId,
   parseCodexItemId,
+  parseCodexPermissionAbsolutePath,
   type CodexThread,
   type CodexNotification,
   type CodexAppServerError,
@@ -25,16 +27,51 @@ import {
 } from "./codex-app-server-protocol.js";
 import {
   createCodexHarnessProvider,
+  CodexHarnessProviderConfig,
+  CodexHarnessOpaqueCorrelation,
+  decodeCodexHarnessCheckpoint,
+  decodeCodexHarnessCorrelation,
+  encodeCodexHarnessCheckpoint,
+  encodeCodexHarnessCorrelation,
   makeFileCodexHarnessCorrelationStore,
   makeInMemoryCodexHarnessCorrelationStore,
 } from "./codex-harness-provider.js";
 import {
   HarnessInput,
+  parseHarnessCheckpointToken,
+  parseHarnessCorrelationToken,
   resumeHarnessSession,
   startHarnessSession,
 } from "./harness-session.js";
 
 type RecoveredTurn = NonNullable<CodexThread["turns"]>[number];
+
+describe("CodexHarnessProviderConfig", () => {
+  it("round-trips JSON-safe configuration and rejects capability data", () => {
+    const decode = Schema.decodeUnknownSync(CodexHarnessProviderConfig);
+    const config = decode({
+      sensitiveValues: ["secret"],
+      workspaceRoot: "/workspace",
+    });
+
+    expect(Schema.encodeSync(CodexHarnessProviderConfig)(config)).toEqual({
+      sensitiveValues: ["secret"],
+      workspaceRoot: "/workspace",
+    });
+    expect(() => decode({ client: {}, workspaceRoot: "/workspace" })).toThrow();
+  });
+});
+
+function mutateOpaqueToken(
+  token: string,
+  prefix: "hchk1_" | "hcor1_",
+  mutation: Readonly<Record<string, unknown>>
+) {
+  const payload = JSON.parse(
+    Buffer.from(token.slice(prefix.length), "base64url").toString("utf8")
+  ) as Record<string, unknown>;
+  return `${prefix}${Buffer.from(JSON.stringify({ ...payload, ...mutation }), "utf8").toString("base64url")}`;
+}
 
 function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
   const notifications = new Set<(notification: CodexNotification) => void>();
@@ -52,6 +89,7 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
     initialize: (params) => {
       initializations.push(params);
       return Effect.succeed({
+        codexHome: "/tmp/codex-home",
         platformFamily: "unix",
         platformOs: "macos",
         userAgent: "Codex/0.137.0",
@@ -136,7 +174,9 @@ describe("Codex HarnessProvider adapter", () => {
           provider: createCodexHarnessProvider({
             client: first.client,
             correlationStore: store,
-            workspaceRoot: "/workspace",
+            config: CodexHarnessProviderConfig.make({
+              workspaceRoot: "/workspace",
+            }),
           }),
           request: {
             input: { text: "start" },
@@ -171,10 +211,12 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: second.client,
               correlationStore: store,
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
-              expectedNativeTurnId: first.turnId,
+              expectedCheckpoint: encodeCodexHarnessCheckpoint(first.turnId),
               sessionId,
               workspacePath: parseWorkspaceRelativePath("project"),
             },
@@ -237,7 +279,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: first.client,
               correlationStore: store,
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               input: { text: "start" },
@@ -262,10 +306,12 @@ describe("Codex HarnessProvider adapter", () => {
               provider: createCodexHarnessProvider({
                 client: second.client,
                 correlationStore: store,
-                workspaceRoot: "/workspace",
+                config: CodexHarnessProviderConfig.make({
+                  workspaceRoot: "/workspace",
+                }),
               }),
               request: {
-                expectedNativeTurnId: first.turnId,
+                expectedCheckpoint: encodeCodexHarnessCheckpoint(first.turnId),
                 sessionId,
                 workspacePath: parseWorkspaceRelativePath("project"),
               },
@@ -293,7 +339,9 @@ describe("Codex HarnessProvider adapter", () => {
           provider: createCodexHarnessProvider({
             client: first.client,
             correlationStore: store,
-            workspaceRoot: "/workspace",
+            config: CodexHarnessProviderConfig.make({
+              workspaceRoot: "/workspace",
+            }),
           }),
           request: {
             input: { text: "start" },
@@ -326,7 +374,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: second.client,
               correlationStore: store,
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               sessionId,
@@ -362,7 +412,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: first.client,
               correlationStore: store,
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               input: { text: "start" },
@@ -397,10 +449,12 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: second.client,
               correlationStore: store,
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
-              expectedNativeTurnId: first.turnId,
+              expectedCheckpoint: encodeCodexHarnessCheckpoint(first.turnId),
               sessionId,
               workspacePath: parseWorkspaceRelativePath("project"),
             },
@@ -427,7 +481,9 @@ describe("Codex HarnessProvider adapter", () => {
           provider: createCodexHarnessProvider({
             client: first.client,
             correlationStore: store,
-            workspaceRoot: "/workspace",
+            config: CodexHarnessProviderConfig.make({
+              workspaceRoot: "/workspace",
+            }),
           }),
           request: {
             input: { text: "start" },
@@ -448,11 +504,13 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: second.client,
               correlationStore: store,
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               allowInterruptedCheckpoint: true,
-              expectedNativeTurnId: first.turnId,
+              expectedCheckpoint: encodeCodexHarnessCheckpoint(first.turnId),
               sessionId,
               workspacePath: parseWorkspaceRelativePath("project"),
             },
@@ -485,15 +543,21 @@ describe("Codex HarnessProvider adapter", () => {
     const sessionId = parseHarnessSessionId("session-durable-correlation");
     const store = makeFileCodexHarnessCorrelationStore(root);
 
-    await Effect.runPromise(
-      store.save(sessionId, { token: "opaque-native-correlation" })
+    const correlation = encodeCodexHarnessCorrelation(
+      parseCodexThreadId("durable-native-thread")
     );
+    await Effect.runPromise(store.save(sessionId, correlation));
     const reconstructed = makeFileCodexHarnessCorrelationStore(root);
     await expect(
       Effect.runPromise(reconstructed.load(sessionId))
-    ).resolves.toEqual({
-      token: "opaque-native-correlation",
-    });
+    ).resolves.toEqual(correlation);
+    const maximumCorrelation = encodeCodexHarnessCorrelation(
+      parseCodexThreadId("界".repeat(4_096))
+    );
+    await Effect.runPromise(store.save(sessionId, maximumCorrelation));
+    await expect(
+      Effect.runPromise(reconstructed.load(sessionId))
+    ).resolves.toEqual(maximumCorrelation);
 
     const directory = path.join(
       root,
@@ -518,7 +582,7 @@ describe("Codex HarnessProvider adapter", () => {
         harnessProfileId: "codexAppServer",
         providerId: "codex-app-server",
         sessionId,
-        token: "x".repeat(20_000),
+        token: "x".repeat(60_000),
         version: 1,
       })}\n`
     );
@@ -526,6 +590,45 @@ describe("Codex HarnessProvider adapter", () => {
       reconstructed.load(sessionId)
     );
     expect(oversized._tag).toBe("Failure");
+  });
+
+  it("uses versioned provider-specific codecs for opaque correlation and checkpoint tokens", () => {
+    const threadId = parseCodexThreadId("native-thread-codec");
+    const turnId = parseCodexTurnId("native-turn-codec");
+    const correlation = encodeCodexHarnessCorrelation(threadId);
+    const checkpoint = encodeCodexHarnessCheckpoint(turnId);
+
+    expect(decodeCodexHarnessCorrelation(correlation)).toBe(threadId);
+    expect(decodeCodexHarnessCheckpoint(checkpoint)).toBe(turnId);
+    expect(correlation.token).toMatch(/^hcor1_[A-Za-z0-9_-]+$/u);
+    expect(checkpoint).toMatch(/^hchk1_[A-Za-z0-9_-]+$/u);
+    expect(correlation.token).not.toBe(checkpoint);
+
+    for (const mutation of [
+      { provider: "other-provider" },
+      { version: 2 },
+      { unexpected: true },
+    ]) {
+      const tamperedCorrelation = CodexHarnessOpaqueCorrelation.make({
+        token: parseHarnessCorrelationToken(
+          mutateOpaqueToken(correlation.token, "hcor1_", mutation)
+        ),
+      });
+      const tamperedCheckpoint = parseHarnessCheckpointToken(
+        mutateOpaqueToken(checkpoint, "hchk1_", mutation)
+      );
+      expect(
+        decodeCodexHarnessCorrelation(tamperedCorrelation)
+      ).toBeUndefined();
+      expect(decodeCodexHarnessCheckpoint(tamperedCheckpoint)).toBeUndefined();
+    }
+  });
+
+  it("round-trips the largest permitted native checkpoint identity", () => {
+    const turnId = parseCodexTurnId("界".repeat(4_096));
+    const checkpoint = encodeCodexHarnessCheckpoint(turnId);
+
+    expect(decodeCodexHarnessCheckpoint(checkpoint)).toBe(turnId);
   });
 
   it("implements the neutral SPI while keeping Codex correlation adapter-private", async () => {
@@ -539,9 +642,11 @@ describe("Codex HarnessProvider adapter", () => {
           const session = yield* startHarnessSession({
             provider: createCodexHarnessProvider({
               client: fake.client,
+              config: CodexHarnessProviderConfig.make({
+                sensitiveValues: ["provider-secret"],
+                workspaceRoot: "/workspace",
+              }),
               correlationStore,
-              sensitiveValues: ["provider-secret"],
-              workspaceRoot: "/workspace",
             }),
             request: {
               input: { text: "Implement the issue" },
@@ -558,6 +663,7 @@ describe("Codex HarnessProvider adapter", () => {
             listener({
               method: "item/completed",
               params: {
+                completedAtMs: 1,
                 item: {
                   id: parseCodexItemId("native-item-private"),
                   memoryCitation: null,
@@ -621,7 +727,9 @@ describe("Codex HarnessProvider adapter", () => {
           provider: createCodexHarnessProvider({
             client: first.client,
             correlationStore,
-            workspaceRoot: "/workspace",
+            config: CodexHarnessProviderConfig.make({
+              workspaceRoot: "/workspace",
+            }),
           }),
           request: {
             input: { text: "start" },
@@ -641,7 +749,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: second.client,
               correlationStore,
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               sessionId,
@@ -683,7 +793,9 @@ describe("Codex HarnessProvider adapter", () => {
           provider: createCodexHarnessProvider({
             client: first.client,
             correlationStore,
-            workspaceRoot: "/workspace",
+            config: CodexHarnessProviderConfig.make({
+              workspaceRoot: "/workspace",
+            }),
           }),
           request: {
             input: { text: "start" },
@@ -727,7 +839,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client,
               correlationStore,
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               sessionId,
@@ -766,7 +880,9 @@ describe("Codex HarnessProvider adapter", () => {
           provider: createCodexHarnessProvider({
             client: first.client,
             correlationStore,
-            workspaceRoot: "/workspace",
+            config: CodexHarnessProviderConfig.make({
+              workspaceRoot: "/workspace",
+            }),
           }),
           request: {
             input: { text: "start" },
@@ -791,7 +907,9 @@ describe("Codex HarnessProvider adapter", () => {
           provider: createCodexHarnessProvider({
             client,
             correlationStore,
-            workspaceRoot: "/workspace",
+            config: CodexHarnessProviderConfig.make({
+              workspaceRoot: "/workspace",
+            }),
           }),
           request: {
             sessionId,
@@ -822,7 +940,9 @@ describe("Codex HarnessProvider adapter", () => {
           provider: createCodexHarnessProvider({
             client: first.client,
             correlationStore,
-            workspaceRoot: "/workspace",
+            config: CodexHarnessProviderConfig.make({
+              workspaceRoot: "/workspace",
+            }),
           }),
           request: {
             input: { text: "start" },
@@ -851,7 +971,9 @@ describe("Codex HarnessProvider adapter", () => {
           provider: createCodexHarnessProvider({
             client,
             correlationStore,
-            workspaceRoot: "/workspace",
+            config: CodexHarnessProviderConfig.make({
+              workspaceRoot: "/workspace",
+            }),
           }),
           request: {
             sessionId,
@@ -890,7 +1012,9 @@ describe("Codex HarnessProvider adapter", () => {
       createCodexHarnessProvider({
         client,
         correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
-        workspaceRoot: "/workspace",
+        config: CodexHarnessProviderConfig.make({
+          workspaceRoot: "/workspace",
+        }),
       }).detect
     );
 
@@ -917,7 +1041,9 @@ describe("Codex HarnessProvider adapter", () => {
       createCodexHarnessProvider({
         client,
         correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
-        workspaceRoot: "/workspace",
+        config: CodexHarnessProviderConfig.make({
+          workspaceRoot: "/workspace",
+        }),
       }).detect
     );
 
@@ -939,7 +1065,7 @@ describe("Codex HarnessProvider adapter", () => {
     const provider = createCodexHarnessProvider({
       client,
       correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
-      workspaceRoot: "/workspace",
+      config: CodexHarnessProviderConfig.make({ workspaceRoot: "/workspace" }),
     });
 
     const detections = await Effect.runPromise(
@@ -965,7 +1091,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: fake.client,
               correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               input: { text: "start" },
@@ -990,6 +1118,7 @@ describe("Codex HarnessProvider adapter", () => {
             listener({
               method: "item/completed",
               params: {
+                completedAtMs: 1,
                 item: {
                   id: parseCodexItemId("post-terminal-item"),
                   phase: "final_answer",
@@ -1024,7 +1153,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: fake.client,
               correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               input: { text: "start" },
@@ -1035,10 +1166,10 @@ describe("Codex HarnessProvider adapter", () => {
           });
           for (const listener of fake.requests) {
             listener({
-              id: 99,
+              id: parseCodexRequestId(99),
               method: "item/permissions/requestApproval",
               params: {
-                cwd: "/workspace/project",
+                cwd: parseCodexPermissionAbsolutePath("/workspace/project"),
                 environmentId: null,
                 itemId: parseCodexItemId("native-permission-item"),
                 permissions: { fileSystem: null, network: null },
@@ -1100,7 +1231,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: fake.client,
               correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               input: { text: "start" },
@@ -1138,7 +1271,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: fake.client,
               correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               input: { text: "start" },
@@ -1252,7 +1387,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: fake.client,
               correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               input: { text: "start" },
@@ -1320,7 +1457,9 @@ describe("Codex HarnessProvider adapter", () => {
           provider: createCodexHarnessProvider({
             client: first.client,
             correlationStore,
-            workspaceRoot: "/workspace",
+            config: CodexHarnessProviderConfig.make({
+              workspaceRoot: "/workspace",
+            }),
           }),
           request: {
             input: { text: "start" },
@@ -1349,7 +1488,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client,
               correlationStore,
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               sessionId,
@@ -1383,7 +1524,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: fake.client,
               correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               input: { text: "start" },
@@ -1394,10 +1537,10 @@ describe("Codex HarnessProvider adapter", () => {
           });
           for (const listener of fake.requests) {
             listener({
-              id: "outside-file-request",
+              id: parseCodexRequestId("outside-file-request"),
               method: "item/fileChange/requestApproval",
               params: {
-                grantRoot: "/private/outside",
+                grantRoot: parseCodexPermissionAbsolutePath("/private/outside"),
                 itemId: parseCodexItemId("outside-file-item"),
                 reason: "outside",
                 startedAtMs: 1,
@@ -1445,7 +1588,9 @@ describe("Codex HarnessProvider adapter", () => {
             provider: createCodexHarnessProvider({
               client: fake.client,
               correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
-              workspaceRoot: "/workspace",
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
             }),
             request: {
               input: { text: "start" },
@@ -1456,10 +1601,10 @@ describe("Codex HarnessProvider adapter", () => {
           });
           for (const listener of fake.requests) {
             listener({
-              id: "permission-request",
+              id: parseCodexRequestId("permission-request"),
               method: "item/permissions/requestApproval",
               params: {
-                cwd: "/workspace/project",
+                cwd: parseCodexPermissionAbsolutePath("/workspace/project"),
                 environmentId: null,
                 itemId: parseCodexItemId("permission-item"),
                 permissions: {
@@ -1468,7 +1613,9 @@ describe("Codex HarnessProvider adapter", () => {
                       {
                         access: "write",
                         path: {
-                          path: "/workspace/project/src",
+                          path: parseCodexPermissionAbsolutePath(
+                            "/workspace/project/src"
+                          ),
                           type: "path",
                         },
                       },

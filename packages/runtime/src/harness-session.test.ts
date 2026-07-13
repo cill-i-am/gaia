@@ -8,10 +8,13 @@ import {
   parseHarnessTurnId,
   parseWorkspaceRelativePath,
 } from "@gaia/core";
-import { Effect, Option, Stream } from "effect";
+import { Effect, Option, Schema, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  HarnessCheckpointTokenSchema,
+  HarnessCorrelationTokenSchema,
+  HarnessSessionResume,
   resumeHarnessSession,
   startHarnessSession,
   type HarnessProvider,
@@ -91,6 +94,32 @@ function syntheticProvider(started: Array<string>): HarnessProvider {
 }
 
 describe("provider-neutral harness session SPI", () => {
+  it("keeps correlation and checkpoint tokens opaque, bounded, and differently encoded", () => {
+    const correlation = Schema.decodeUnknownSync(HarnessCorrelationTokenSchema)(
+      "hcor1_eyJwcm92aWRlciI6InRlc3QifQ"
+    );
+    const checkpoint = Schema.decodeUnknownSync(HarnessCheckpointTokenSchema)(
+      "hchk1_eyJwcm92aWRlciI6InRlc3QifQ"
+    );
+
+    expect(correlation).not.toBe(checkpoint);
+    expect(() =>
+      Schema.decodeUnknownSync(HarnessCheckpointTokenSchema)("turn-1")
+    ).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(HarnessCorrelationTokenSchema)(
+        `hcor1_${"x".repeat(36_865)}`
+      )
+    ).toThrow();
+    expect(
+      Schema.decodeUnknownSync(HarnessSessionResume)({
+        expectedCheckpoint: checkpoint,
+        sessionId,
+        workspacePath: ".",
+      }).expectedCheckpoint
+    ).toBe(checkpoint);
+  });
+
   it("runs a synthetic non-Codex provider through the public session contract", async () => {
     const started: Array<string> = [];
     const provider = syntheticProvider(started);

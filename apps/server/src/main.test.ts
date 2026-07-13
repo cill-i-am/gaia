@@ -12,6 +12,9 @@ import {
   parseHarnessSessionId,
   parseHarnessTurnId,
   parseRunId,
+  parseWorkerRecoveryActionId,
+  parseWorkerRecoveryDigest,
+  parseWorkerRecoveryModelId,
   projectHarnessEvents,
   RunEvent,
   WorkerRecoveryAction,
@@ -20,8 +23,18 @@ import {
 } from "@gaia/core";
 import {
   makeHarnessProviderRegistry,
+  CodexListedThreadSchema,
+  parseHarnessCheckpointToken,
   parseCodexThreadId,
   recoverWorkerSession,
+  WorkerRecoveryModel,
+  WorkerRecoveryTurnStarted,
+  WorkerRecoveryThreadState,
+  ThreadListResultSchema,
+  ThreadResultSchema,
+  type ThreadListParams,
+  type ThreadReadParams,
+  type WorkerRecoveryThreadStatus,
   type HarnessProvider,
   type HarnessProviderRegistry,
 } from "@gaia/runtime";
@@ -51,6 +64,7 @@ import {
   findStableDesktopOriginCorrelationThread,
   listStableCodexThreadsForWorkspace,
   makeProductionWorkerRecoveryProvider,
+  projectWorkerRecoveryThreadState,
   resolveAuditedWorkerWorkspacePath,
   runLocalGaiaServer,
   toWorkerRecoveryThreadStatus,
@@ -81,29 +95,28 @@ describe("local Gaia server process", () => {
                 calls.push(
                   detected ? "model/list" : "model/list-before-detect"
                 );
-                return [{ hidden: false, id: "gpt-5.4" }];
+                return [workerRecoveryModel()];
               }),
-            readThread: (threadId) =>
+            readThread: () =>
               Effect.sync(() => {
                 calls.push("read");
-                return { status: "systemError", threadId };
+                return workerRecoveryThreadState("systemError");
               }),
-            resumeThread: (threadId) =>
+            resumeThread: () =>
               Effect.sync(() => {
                 calls.push("resume");
-                return { status: "idle", threadId };
+                return workerRecoveryThreadState("idle");
               }),
             startTurn: ({ model }) =>
               Effect.sync(() => {
                 calls.push(`start:${model}`);
-                return { turnId: "turn-recovery" };
+                return workerRecoveryStartTurn("turn-recovery");
               }),
           });
           const result = yield* recoverWorkerSession(
             fixture.runId,
             workerRecoveryAction,
             {
-              nativeThreadId: "thread-private",
               provider,
               rootDirectory: fixture.root,
               validateWorkspace: () => Effect.void,
@@ -134,6 +147,25 @@ describe("local Gaia server process", () => {
       assert.strictEqual(toWorkerRecoveryThreadStatus(undefined), "unknown");
       assert.strictEqual(toWorkerRecoveryThreadStatus("paused"), "unknown");
     });
+
+    it.effect("rejects mismatched read and resume thread responses", () =>
+      Effect.gen(function* () {
+        const expected = parseCodexThreadId("expected-thread");
+        const mismatched = Schema.decodeUnknownSync(ThreadResultSchema)({
+          thread: { id: "other-thread", status: { type: "idle" } },
+        }).thread;
+
+        for (const operation of ["readThread", "resumeThread"] as const) {
+          const exit = yield* projectWorkerRecoveryThreadState(
+            expected,
+            mismatched,
+            operation
+          ).pipe(Effect.exit);
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), operation);
+        }
+      })
+    );
 
     it.effect(
       "fails closed when stable App Server thread pagination repeats a cursor",
@@ -1106,32 +1138,28 @@ describe("local Gaia server process", () => {
                 listModels: () =>
                   Effect.sync(() => {
                     calls.push("model/list");
-                    return [{ hidden: false, id: "gpt-5.4" }];
+                    return [workerRecoveryModel()];
                   }),
                 readThread: () =>
                   Effect.sync(() => {
                     calls.push("read");
-                    return {
-                      status: "systemError",
-                      threadId: "thread-private",
-                    };
+                    return workerRecoveryThreadState("systemError");
                   }),
                 resumeThread: () =>
                   Effect.sync(() => {
                     calls.push("resume");
-                    return { status: "idle", threadId: "thread-private" };
+                    return workerRecoveryThreadState("idle");
                   }),
                 startTurn: () =>
                   Effect.sync(() => {
                     calls.push("start");
-                    return { turnId: "turn-recovery" };
+                    return workerRecoveryStartTurn("turn-recovery");
                   }),
               });
               const exit = yield* recoverWorkerSession(
                 fixture.runId,
                 workerRecoveryAction,
                 {
-                  nativeThreadId: "thread-private",
                   provider,
                   rootDirectory: fixture.root,
                   validateWorkspace: () => Effect.void,
@@ -1388,13 +1416,25 @@ describe("local Gaia server process", () => {
 });
 
 const workerRecoveryAction = WorkerRecoveryAction.make({
-  actionId: "recover-1",
+  actionId: parseWorkerRecoveryActionId("recover-1"),
   expectedFailureSequence: 10,
   expectedSessionId: parseHarnessSessionId("session-run-1234567890"),
   harnessProfileId: parseHarnessProfileId("codexAppServer"),
   kind: "retryRecoverableWorkerFailure",
-  model: "gpt-5.4",
+  model: parseWorkerRecoveryModelId("gpt-5.4"),
 });
+
+const workerRecoveryModel = () =>
+  WorkerRecoveryModel.make({ hidden: false, id: workerRecoveryAction.model });
+const workerRecoveryThreadState = (status: WorkerRecoveryThreadStatus) =>
+  WorkerRecoveryThreadState.make({ status });
+const workerRecoveryStartTurn = (turnId: string) =>
+  WorkerRecoveryTurnStarted.make({
+    checkpoint: parseHarnessCheckpointToken(`hchk1_${turnId}`),
+    nativeTurnIdDigest: parseWorkerRecoveryDigest(
+      createHash("sha256").update(turnId).digest("hex")
+    ),
+  });
 
 function makeWorkerRecoveryFixture() {
   return Effect.gen(function* () {
@@ -1746,15 +1786,18 @@ function stableThread(input: {
   readonly source: "appServer" | "cli" | "vscode";
   readonly statusType?: "active" | "idle" | "notLoaded" | "systemError";
 }) {
-  return {
+  return Schema.decodeUnknownSync(CodexListedThreadSchema)({
     createdAt: input.createdAt ?? 1_010,
     cwd: input.cwd ?? "/tmp/gaia/owned-workspace",
     id: input.id,
     sessionId: input.sessionId ?? "session-private-stable",
     source: input.source,
-    status: { type: input.statusType ?? "notLoaded" },
+    status:
+      input.statusType === "active"
+        ? { activeFlags: [], type: "active" }
+        : { type: input.statusType ?? "notLoaded" },
     updatedAt: input.createdAt ?? 1_010,
-  };
+  });
 }
 
 function makeStableThreadClient(input: {
@@ -1785,11 +1828,7 @@ function makeStableThreadClient(input: {
       const stateArchivedThreads = input.stateArchivedThreads ?? [];
       const jsonlArchivedThreads = input.jsonlArchivedThreads ?? [];
       const client = {
-        listThreads: (params: {
-          readonly archived?: boolean | null;
-          readonly sourceKinds?: ReadonlyArray<string> | null;
-          readonly useStateDbOnly?: boolean;
-        }) =>
+        listThreads: (params: ThreadListParams) =>
           Effect.gen(function* () {
             const store = params.useStateDbOnly === true ? "state" : "jsonl";
             const archived = params.archived === true ? "archived" : "open";
@@ -1801,7 +1840,7 @@ function makeStableThreadClient(input: {
             if (input.listError !== undefined) {
               return yield* Effect.fail(input.listError);
             }
-            return {
+            return Schema.decodeUnknownSync(ThreadListResultSchema)({
               backwardsCursor: null,
               data:
                 params.archived === true
@@ -1812,12 +1851,9 @@ function makeStableThreadClient(input: {
                     ? stateThreads
                     : jsonlThreads,
               nextCursor: null,
-            };
+            });
           }),
-        readThread: (params: {
-          readonly includeTurns?: boolean;
-          readonly threadId: ReturnType<typeof parseCodexThreadId>;
-        }) =>
+        readThread: (params: ThreadReadParams) =>
           Effect.gen(function* () {
             yield* Ref.update(calls, (value) => ({
               ...value,
@@ -1826,12 +1862,12 @@ function makeStableThreadClient(input: {
             if (input.readError !== undefined) {
               return yield* Effect.fail(input.readError);
             }
-            return {
+            return Schema.decodeUnknownSync(ThreadResultSchema)({
               thread: {
                 id: params.threadId,
                 turns: [...input.readTurns],
               },
-            };
+            });
           }),
       };
       return { calls, ...client };

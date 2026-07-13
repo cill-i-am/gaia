@@ -50,6 +50,8 @@ import {
   parseHarnessSessionId,
   parseHarnessTurnId,
   parseRunId,
+  parseWorkerRecoveryActionId,
+  parseWorkerRecoveryModelId,
   parseWorkspaceRelativePath,
   projectHarnessEvents,
   RunEvent,
@@ -321,14 +323,14 @@ describe("local run api http boundary", () => {
               prefix: "gaia-recovery-error-",
             });
             const action = WorkerRecoveryAction.make({
-              actionId: `action-${inputCode}`,
+              actionId: parseWorkerRecoveryActionId(`action-${inputCode}`),
               expectedFailureSequence: 15,
               expectedSessionId: parseHarnessSessionId(
                 "session-run-1234567890"
               ),
               harnessProfileId: parseHarnessProfileId("codexAppServer"),
               kind: "retryRecoverableWorkerFailure",
-              model: "gpt-5.5",
+              model: parseWorkerRecoveryModelId("gpt-5.5"),
             });
             const response = yield* HttpClientRequest.post(
               "/runs/run-1234567890/recovery/actions"
@@ -394,12 +396,12 @@ describe("local run api http boundary", () => {
             prefix: "gaia-recovery-log-failure-",
           });
           const action = WorkerRecoveryAction.make({
-            actionId: "action-log-failure",
+            actionId: parseWorkerRecoveryActionId("action-log-failure"),
             expectedFailureSequence: 15,
             expectedSessionId: parseHarnessSessionId("session-run-1234567890"),
             harnessProfileId: parseHarnessProfileId("codexAppServer"),
             kind: "retryRecoverableWorkerFailure",
-            model: "gpt-5.5",
+            model: parseWorkerRecoveryModelId("gpt-5.5"),
           });
           const response = yield* HttpClientRequest.post(
             "/runs/run-1234567890/recovery/actions"
