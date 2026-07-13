@@ -504,9 +504,10 @@ durably persist the returned native turn receipt, the recovery becomes
 dispatch are reported separately from an actively running worker. Native
 thread and turn identifiers remain private run evidence.
 
-It checks `.gaia` writability, git repository presence, GitHub CLI auth, Codex
-CLI availability, and Playwright Chromium availability. Missing optional tools
-produce warnings instead of failing the command.
+It checks `.gaia` writability, git repository presence, git worktree readiness,
+GitHub CLI auth, Codex CLI availability, and Playwright Chromium availability.
+Missing optional tools or unsupported repository capabilities produce warnings
+instead of failing the command.
 
 Demo fixtures live under `examples/*`:
 
@@ -637,7 +638,8 @@ Runtime tests cover:
 - run-scoped GitHub PR evidence comment creation and command invocation;
 - run-scoped Linear issue graph parsing and event recording;
 - run-scoped merge decision gate approval and blocker recording;
-- local doctor health and warning results through fake command seams;
+- local doctor health, warning, and git worktree readiness results through fake
+  command seams;
 - verification failure when a worker artifact is missing.
 
 Tests use temp run roots instead of the repository `.gaia/` directory.

@@ -36,6 +36,7 @@ import {
 } from "./codex-reviewer.js";
 import {
   doctor,
+  type DoctorCommandInput,
   type DoctorCommandRunner,
 } from "./doctor.js";
 import {
@@ -1000,7 +1001,129 @@ describe("runtime workflows", () => {
         assert.strictEqual(summary.status, "healthy");
         assert.deepEqual(
           summary.checks.map((check) => check.status),
-          ["passed", "passed", "passed", "passed", "passed"],
+          ["passed", "passed", "passed", "passed", "passed", "passed"],
+        );
+      }),
+    );
+
+    it.effect("reports supported git worktree readiness through the doctor command seam", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const commands: Array<DoctorCommandInput> = [];
+
+        const summary = yield* doctor({
+          browserInspector: () => Effect.succeed(true),
+          commandRunner: recordingGitWorktreeDoctorCommandRunner(commands, {
+            exitCode: 0,
+            stderr: "",
+            stdout: "worktree /tmp/gaia\nHEAD abc123\n",
+          }),
+          rootDirectory: cwd,
+        });
+
+        const worktreeCheck = summary.checks.find(
+          (check) => check.name === "git-worktree",
+        );
+
+        assert.isDefined(worktreeCheck);
+        assert.strictEqual(worktreeCheck.status, "passed");
+        assert.strictEqual(
+          worktreeCheck.detail,
+          "Git worktrees are supported in this repository.",
+        );
+        assert.deepInclude(
+          commands.map((command) => [command.command, command.args]),
+          ["git", ["worktree", "list", "--porcelain"]],
+        );
+      }),
+    );
+
+    it.effect("reports a git worktree warning outside a supported repository", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+
+        const summary = yield* doctor({
+          browserInspector: () => Effect.succeed(true),
+          commandRunner: recordingGitWorktreeDoctorCommandRunner([], {
+            exitCode: 128,
+            stderr: "fatal: not a git repository\n",
+            stdout: "",
+          }),
+          rootDirectory: cwd,
+        });
+
+        const worktreeCheck = summary.checks.find(
+          (check) => check.name === "git-worktree",
+        );
+
+        assert.strictEqual(summary.status, "warnings");
+        assert.isDefined(worktreeCheck);
+        assert.strictEqual(worktreeCheck.status, "warning");
+        assert.strictEqual(
+          worktreeCheck.detail,
+          "Git worktree readiness could not be confirmed because the current directory is not inside a git repository. Workspace PR workflows will be unavailable.",
+        );
+      }),
+    );
+
+    it.effect("does not echo absolute git worktree diagnostics into doctor details", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const checkoutPath = "/Users/example/private/gaia/.git";
+
+        const summary = yield* doctor({
+          browserInspector: () => Effect.succeed(true),
+          commandRunner: recordingGitWorktreeDoctorCommandRunner([], {
+            exitCode: 128,
+            stderr: `fatal: ${checkoutPath}: not a git repository\n`,
+            stdout: "",
+          }),
+          rootDirectory: cwd,
+        });
+
+        const worktreeCheck = summary.checks.find(
+          (check) => check.name === "git-worktree",
+        );
+
+        assert.strictEqual(summary.status, "warnings");
+        assert.isDefined(worktreeCheck);
+        assert.strictEqual(worktreeCheck.status, "warning");
+        assert.notInclude(worktreeCheck.detail, checkoutPath);
+        assert.strictEqual(
+          worktreeCheck.detail,
+          "Git worktree readiness could not be confirmed because the current directory is not inside a git repository. Workspace PR workflows will be unavailable.",
+        );
+      }),
+    );
+
+    it.effect("reports a git worktree warning when the command is unavailable", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+
+        const summary = yield* doctor({
+          browserInspector: () => Effect.succeed(true),
+          commandRunner: recordingGitWorktreeDoctorCommandRunner([], {
+            exitCode: 1,
+            stderr: "git: 'worktree' is not a git command\n",
+            stdout: "",
+          }),
+          rootDirectory: cwd,
+        });
+
+        const worktreeCheck = summary.checks.find(
+          (check) => check.name === "git-worktree",
+        );
+
+        assert.strictEqual(summary.status, "warnings");
+        assert.isDefined(worktreeCheck);
+        assert.strictEqual(worktreeCheck.status, "warning");
+        assert.strictEqual(
+          worktreeCheck.detail,
+          "Git worktree readiness could not be confirmed because this Git installation does not support worktree commands. Workspace PR workflows will be unavailable.",
         );
       }),
     );
@@ -1022,6 +1145,7 @@ describe("runtime workflows", () => {
           [
             ["gaia-store-writable", "passed"],
             ["git-repository", "warning"],
+            ["git-worktree", "warning"],
             ["gh-auth", "warning"],
             ["codex-cli", "warning"],
             ["playwright-browser", "warning"],
@@ -6409,8 +6533,16 @@ function installingSkillRunner(
 
 const passingDoctorCommandRunner: DoctorCommandRunner = (input) =>
   Effect.sync(() => {
-    if (input.command === "git") {
+    if (input.command === "git" && input.args[0] === "rev-parse") {
       return { exitCode: 0, stderr: "", stdout: "true\n" };
+    }
+
+    if (input.command === "git" && input.args[0] === "worktree") {
+      return {
+        exitCode: 0,
+        stderr: "",
+        stdout: "worktree /tmp/gaia\nHEAD abc123\n",
+      };
     }
 
     return { exitCode: 0, stderr: "", stdout: "" };
@@ -6422,6 +6554,30 @@ const warningDoctorCommandRunner: DoctorCommandRunner = (input) =>
     stderr: `${input.command} unavailable`,
     stdout: "",
   }));
+
+function recordingGitWorktreeDoctorCommandRunner(
+  commands: Array<DoctorCommandInput>,
+  worktreeResult: {
+    readonly exitCode: number;
+    readonly stderr: string;
+    readonly stdout: string;
+  },
+): DoctorCommandRunner {
+  return (input) =>
+    Effect.sync(() => {
+      commands.push(input);
+
+      if (input.command === "git" && input.args[0] === "rev-parse") {
+        return { exitCode: 0, stderr: "", stdout: "true\n" };
+      }
+
+      if (input.command === "git" && input.args[0] === "worktree") {
+        return worktreeResult;
+      }
+
+      return { exitCode: 0, stderr: "", stdout: "" };
+    });
+}
 
 const collectedBrowserEvidenceCollector: BrowserEvidenceCollector = (input) =>
   Effect.sync(() =>

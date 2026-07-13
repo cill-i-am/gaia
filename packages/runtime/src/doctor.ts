@@ -9,6 +9,7 @@ export const DoctorCheckNameSchema = Schema.Literals([
   "gaia-store-writable",
   "gh-auth",
   "git-repository",
+  "git-worktree",
   "playwright-browser",
 ] as const);
 
@@ -80,6 +81,7 @@ export function doctor(options: DoctorOptions = {}) {
     const checks = [
       yield* checkRunStoreWritable(rootDirectory),
       yield* checkGitRepository(rootDirectory, runner),
+      yield* checkGitWorktree(rootDirectory, runner),
       yield* checkGitHubAuth(rootDirectory, runner),
       yield* checkCodexCli(rootDirectory, runner),
       yield* checkPlaywrightBrowser(browserInspector),
@@ -230,6 +232,31 @@ function checkGitHubAuth(
   );
 }
 
+function checkGitWorktree(
+  rootDirectory: string,
+  runner: DoctorCommandRunner,
+) {
+  return runner({
+    args: ["worktree", "list", "--porcelain"],
+    command: "git",
+    cwd: rootDirectory,
+  }).pipe(
+    Effect.map((result) =>
+      result.exitCode === 0
+        ? DoctorCheck.make({
+            detail: "Git worktrees are supported in this repository.",
+            name: "git-worktree",
+            status: "passed",
+          })
+        : DoctorCheck.make({
+            detail: gitWorktreeWarningDetail(result),
+            name: "git-worktree",
+            status: "warning",
+          }),
+    ),
+  );
+}
+
 function checkCodexCli(
   rootDirectory: string,
   runner: DoctorCommandRunner,
@@ -297,4 +324,21 @@ function doctorStatus(checks: ReadonlyArray<DoctorCheck>): DoctorStatus {
 
 function safeCauseMessage(cause: unknown) {
   return cause instanceof Error ? cause.message : "unknown error";
+}
+
+function gitWorktreeWarningDetail(result: DoctorCommandResult) {
+  const output = [result.stderr, result.stdout].join("\n").toLowerCase();
+
+  if (output.includes("not a git repository")) {
+    return "Git worktree readiness could not be confirmed because the current directory is not inside a git repository. Workspace PR workflows will be unavailable.";
+  }
+
+  if (
+    output.includes("'worktree' is not a git command") ||
+    output.includes("unknown subcommand: worktree")
+  ) {
+    return "Git worktree readiness could not be confirmed because this Git installation does not support worktree commands. Workspace PR workflows will be unavailable.";
+  }
+
+  return "Git worktree readiness could not be confirmed. Workspace PR workflows will be unavailable.";
 }
