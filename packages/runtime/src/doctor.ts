@@ -327,13 +327,18 @@ function safeCauseMessage(cause: unknown) {
 }
 
 function gitWorktreeWarningDetail(result: DoctorCommandResult) {
-  const output = [result.stderr, result.stdout]
-    .map((value) => value.trim())
-    .find((value) => value.length > 0);
+  const output = [result.stderr, result.stdout].join("\n").toLowerCase();
 
-  if (output === undefined) {
-    return "Git worktree readiness could not be confirmed; the current directory may be outside a supported git repository or git worktree may be unavailable. Workspace PR workflows will be unavailable.";
+  if (output.includes("not a git repository")) {
+    return "Git worktree readiness could not be confirmed because the current directory is not inside a git repository. Workspace PR workflows will be unavailable.";
   }
 
-  return `Git worktree readiness could not be confirmed: ${output}. Workspace PR workflows will be unavailable.`;
+  if (
+    output.includes("'worktree' is not a git command") ||
+    output.includes("unknown subcommand: worktree")
+  ) {
+    return "Git worktree readiness could not be confirmed because this Git installation does not support worktree commands. Workspace PR workflows will be unavailable.";
+  }
+
+  return "Git worktree readiness could not be confirmed. Workspace PR workflows will be unavailable.";
 }

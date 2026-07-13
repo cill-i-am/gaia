@@ -1061,9 +1061,40 @@ describe("runtime workflows", () => {
         assert.strictEqual(summary.status, "warnings");
         assert.isDefined(worktreeCheck);
         assert.strictEqual(worktreeCheck.status, "warning");
-        assert.include(
+        assert.strictEqual(
           worktreeCheck.detail,
-          "Git worktree readiness could not be confirmed: fatal: not a git repository",
+          "Git worktree readiness could not be confirmed because the current directory is not inside a git repository. Workspace PR workflows will be unavailable.",
+        );
+      }),
+    );
+
+    it.effect("does not echo absolute git worktree diagnostics into doctor details", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const checkoutPath = "/Users/example/private/gaia/.git";
+
+        const summary = yield* doctor({
+          browserInspector: () => Effect.succeed(true),
+          commandRunner: recordingGitWorktreeDoctorCommandRunner([], {
+            exitCode: 128,
+            stderr: `fatal: ${checkoutPath}: not a git repository\n`,
+            stdout: "",
+          }),
+          rootDirectory: cwd,
+        });
+
+        const worktreeCheck = summary.checks.find(
+          (check) => check.name === "git-worktree",
+        );
+
+        assert.strictEqual(summary.status, "warnings");
+        assert.isDefined(worktreeCheck);
+        assert.strictEqual(worktreeCheck.status, "warning");
+        assert.notInclude(worktreeCheck.detail, checkoutPath);
+        assert.strictEqual(
+          worktreeCheck.detail,
+          "Git worktree readiness could not be confirmed because the current directory is not inside a git repository. Workspace PR workflows will be unavailable.",
         );
       }),
     );
@@ -1090,9 +1121,9 @@ describe("runtime workflows", () => {
         assert.strictEqual(summary.status, "warnings");
         assert.isDefined(worktreeCheck);
         assert.strictEqual(worktreeCheck.status, "warning");
-        assert.include(
+        assert.strictEqual(
           worktreeCheck.detail,
-          "Git worktree readiness could not be confirmed: git: 'worktree' is not a git command",
+          "Git worktree readiness could not be confirmed because this Git installation does not support worktree commands. Workspace PR workflows will be unavailable.",
         );
       }),
     );
