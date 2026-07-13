@@ -20,6 +20,9 @@ importers:
       turbo:
         specifier: ^2.10.3
         version: 2.10.3
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
       ultracite:
         specifier: 7.9.3
         version: 7.9.3(eslint@10.7.0(jiti@2.7.0))(oxfmt@0.58.0)(oxlint@1.73.0)(typescript@6.0.3)

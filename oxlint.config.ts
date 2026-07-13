@@ -138,6 +138,7 @@ export default defineConfig({
     ".agents/skills/**",
     ".gaia/**",
   ],
+  jsPlugins: ["./scripts/oxlint/gaia-schema-contract-plugin.mjs"],
   options: {
     denyWarnings: true,
     reportUnusedDisableDirectives: "error",

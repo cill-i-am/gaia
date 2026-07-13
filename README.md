@@ -69,8 +69,10 @@ commands are:
 ```sh
 pnpm lint
 pnpm lint:audit
+pnpm schema-contracts:audit
 pnpm format
 pnpm format:check
+pnpm test:schema-contracts
 pnpm test:tooling
 pnpm tooling:doctor
 ```
@@ -80,6 +82,12 @@ pnpm tooling:doctor
 it is intentionally non-gating and exits non-zero while inherited findings
 remain. See [`docs/oxlint-compatibility.md`](docs/oxlint-compatibility.md) for
 the individually measured rule profile and removal policy.
+
+`pnpm test:schema-contracts` verifies Gaia's schema-first syntax rules and the
+TypeScript-checker ownership proof. `pnpm schema-contracts:audit` reports the
+current migration backlog from both engines and intentionally remains outside
+`pnpm check`; it exits non-zero while findings remain. GAIA-104 owns source
+remediation rather than this tooling slice.
 
 Oxfmt owns formatting, import ordering, and Tailwind v4 class ordering. The
 Tailwind sorter uses the dashboard stylesheet and recognizes `cn`, `clsx`, and
