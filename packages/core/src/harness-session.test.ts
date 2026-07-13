@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+
 import {
   HarnessCapabilities,
   HarnessProviderDescriptor,
@@ -27,7 +28,7 @@ const recoveredTurnId = parseHarnessTurnId("turn-gaia-84-recovered");
 const itemId = parseHarnessItemId("item-gaia-84");
 const interactionId = parseHarnessInteractionId("interaction-gaia-84");
 const recoveredInteractionId = parseHarnessInteractionId(
-  "interaction-gaia-84-recovered",
+  "interaction-gaia-84-recovered"
 );
 
 const capabilities = HarnessCapabilities.make({
@@ -53,14 +54,25 @@ const provider = HarnessProviderDescriptor.make({
 
 describe("provider-neutral harness contracts", () => {
   it("brands IDs and admits only workspace-relative non-traversing paths", () => {
-    assert.strictEqual(parseHarnessProviderId("codex-app-server"), "codex-app-server");
+    assert.strictEqual(
+      parseHarnessProviderId("codex-app-server"),
+      "codex-app-server"
+    );
     assert.strictEqual(parseHarnessSessionId("session-1"), "session-1");
     assert.strictEqual(parseHarnessTurnId("turn-1"), "turn-1");
     assert.strictEqual(parseHarnessItemId("item-1"), "item-1");
-    assert.strictEqual(parseHarnessInteractionId("interaction-1"), "interaction-1");
+    assert.strictEqual(
+      parseHarnessInteractionId("interaction-1"),
+      "interaction-1"
+    );
     assert.strictEqual(parseHarnessActionId("action-1"), "action-1");
-    assert.strictEqual(parseWorkspaceRelativePath("src/index.ts"), "src/index.ts");
-    assert.throws(() => parseWorkspaceRelativePath("/Users/operator/secret.txt"));
+    assert.strictEqual(
+      parseWorkspaceRelativePath("src/index.ts"),
+      "src/index.ts"
+    );
+    assert.throws(() =>
+      parseWorkspaceRelativePath("/Users/operator/secret.txt")
+    );
     assert.throws(() => parseWorkspaceRelativePath("../secret.txt"));
     assert.throws(() => parseWorkspaceRelativePath("src/../../secret.txt"));
     assert.throws(() => parseWorkspaceRelativePath("C:\\secret.txt"));
@@ -74,7 +86,7 @@ describe("provider-neutral harness contracts", () => {
         "review",
         "approval:fileChange",
       ]),
-      ["review", "approval:fileChange"],
+      ["review", "approval:fileChange"]
     );
   });
 
@@ -199,20 +211,23 @@ describe("provider-neutral harness contracts", () => {
         runId,
         sequence: index + 1,
         timestamp: `2026-07-10T10:00:${String(index).padStart(2, "0")}.000Z`,
-      }),
+      })
     );
 
     const first = replayHarnessSession(events, sessionId);
     const second = replayHarnessSession(
       events.map((event) => parseRunEvent(JSON.parse(JSON.stringify(event)))),
-      sessionId,
+      sessionId
     );
 
     assert.deepStrictEqual(first, second);
     assert.instanceOf(first, HarnessSessionSnapshot);
     assert.strictEqual(first.state, "completed");
     assert.strictEqual(first.items[0]?.kind, "message");
-    assert.strictEqual(first.items[0]?.kind === "message" ? first.items[0].text : "", "Hello from the final item");
+    assert.strictEqual(
+      first.items[0]?.kind === "message" ? first.items[0].text : "",
+      "Hello from the final item"
+    );
     assert.strictEqual(first.pendingInteractions.length, 0);
     assert.strictEqual(first.resolvedInteractions.length, 1);
     assert.strictEqual(first.turns[0]?.status, "completed");
@@ -231,9 +246,13 @@ describe("provider-neutral harness contracts", () => {
       sequence: 1,
       timestamp: "2026-07-10T10:00:00.000Z",
     });
-    const invalid = Object.assign(Object.create(Object.getPrototypeOf(event)), event, {
-      payload: { event: { kind: "rawVendorPacket", secret: "token" } },
-    });
+    const invalid = Object.assign(
+      Object.create(Object.getPrototypeOf(event)),
+      event,
+      {
+        payload: { event: { kind: "rawVendorPacket", secret: "token" } },
+      }
+    );
 
     assert.throws(() => replayHarnessSession([invalid], sessionId));
   });
@@ -261,7 +280,7 @@ describe("provider-neutral harness contracts", () => {
         runId,
         sequence: 1,
         timestamp: "2026-07-10T10:00:00.000Z",
-      }),
+      })
     );
   });
 
@@ -295,11 +314,7 @@ describe("provider-neutral harness contracts", () => {
   });
 
   it("recovers deterministically and keeps every terminal state monotonic", () => {
-    const terminalCases = [
-      "completed",
-      "interrupted",
-      "unavailable",
-    ] as const;
+    const terminalCases = ["completed", "interrupted", "unavailable"] as const;
     for (const terminalState of terminalCases) {
       const events = [
         makeHarnessRunEvent({
@@ -379,7 +394,7 @@ describe("provider-neutral harness contracts", () => {
           timestamp: "2026-07-10T10:00:01.000Z",
         }),
       ],
-      sessionId,
+      sessionId
     );
     assert.strictEqual(failed.state, "failed");
     assert.strictEqual(failed.failure?.kind, "providerFailure");
@@ -425,7 +440,7 @@ describe("provider-neutral harness contracts", () => {
           sessionId,
         }),
       ],
-      sessionId,
+      sessionId
     );
 
     assert.strictEqual(projection.state, "running");
@@ -436,7 +451,7 @@ describe("provider-neutral harness contracts", () => {
       [
         { status: "failed", turnId },
         { status: "running", turnId: recoveredTurnId },
-      ],
+      ]
     );
     assert.deepStrictEqual(
       projection.pendingInteractions.map(({ interactionId, kind, turnId }) => ({
@@ -450,9 +465,12 @@ describe("provider-neutral harness contracts", () => {
           kind: "commandApproval",
           turnId: recoveredTurnId,
         },
-      ],
+      ]
     );
-    assert.deepStrictEqual(projection.turns[0]?.failure, recoverableProviderFailure);
+    assert.deepStrictEqual(
+      projection.turns[0]?.failure,
+      recoverableProviderFailure
+    );
   });
 
   it("terminalizes nonterminal turns and clears pending interactions on session failure", () => {
@@ -481,7 +499,7 @@ describe("provider-neutral harness contracts", () => {
           sessionId,
         }),
       ],
-      sessionId,
+      sessionId
     );
 
     assert.strictEqual(projection.state, "failed");
@@ -498,7 +516,7 @@ describe("provider-neutral harness contracts", () => {
           status: "failed",
           turnId,
         },
-      ],
+      ]
     );
   });
 
@@ -506,7 +524,11 @@ describe("provider-neutral harness contracts", () => {
     const terminalCases: ReadonlyArray<{
       readonly label: string;
       readonly terminalEvent: HarnessEvent;
-      readonly expectedState: "completed" | "failed" | "interrupted" | "unavailable";
+      readonly expectedState:
+        | "completed"
+        | "failed"
+        | "interrupted"
+        | "unavailable";
     }> = [
       {
         expectedState: "completed",
@@ -590,18 +612,21 @@ describe("provider-neutral harness contracts", () => {
             turnId: recoveredTurnId,
           }),
           harnessRunEvent(6, {
-            interaction: commandApproval(recoveredInteractionId, recoveredTurnId),
+            interaction: commandApproval(
+              recoveredInteractionId,
+              recoveredTurnId
+            ),
             kind: "interactionRequested",
             sessionId,
           }),
         ],
-        sessionId,
+        sessionId
       );
 
       assert.strictEqual(
         projection.state,
         expectedState,
-        `${label} must remain terminal`,
+        `${label} must remain terminal`
       );
       assert.strictEqual(projection.turns.length, 1);
       assert.strictEqual(projection.pendingInteractions.length, 0);
@@ -633,7 +658,9 @@ describe("provider-neutral harness contracts", () => {
       sequence: 2,
       timestamp: "2026-07-10T10:00:00.000Z",
     });
-    assert.throws(() => replayHarnessSession([startedAtSequenceTwo], sessionId));
+    assert.throws(() =>
+      replayHarnessSession([startedAtSequenceTwo], sessionId)
+    );
   });
 
   it("rejects failed starts and state changes without a typed terminal failure", () => {
@@ -644,14 +671,14 @@ describe("provider-neutral harness contracts", () => {
         provider,
         sessionId,
         state: "failed",
-      }),
+      })
     );
     assert.throws(() =>
       parseHarnessEvent({
         kind: "sessionStateChanged",
         sessionId,
         state: "failed",
-      }),
+      })
     );
   });
 
@@ -704,7 +731,7 @@ describe("provider-neutral harness contracts", () => {
 
     for (const invalidEvent of invalidEvents) {
       assert.throws(() =>
-        projectHarnessEvents([start, invalidEvent], sessionId),
+        projectHarnessEvents([start, invalidEvent], sessionId)
       );
     }
   });
@@ -712,26 +739,26 @@ describe("provider-neutral harness contracts", () => {
   it("uses authoritative run-event order instead of provider-local revisions", () => {
     const runEvents = [
       makeHarnessRunEvent({
-          event: {
-            capabilities,
-            kind: "sessionStarted",
-            provider,
-            sessionId,
-            state: "connecting",
-          },
-          runId,
-          sequence: 1,
-          timestamp: "2026-07-10T10:00:00.000Z",
+        event: {
+          capabilities,
+          kind: "sessionStarted",
+          provider,
+          sessionId,
+          state: "connecting",
+        },
+        runId,
+        sequence: 1,
+        timestamp: "2026-07-10T10:00:00.000Z",
       }),
       makeHarnessRunEvent({
-          event: {
-            kind: "sessionStateChanged",
-            sessionId,
-            state: "idle",
-          },
-          runId,
-          sequence: 2,
-          timestamp: "2026-07-10T10:00:01.000Z",
+        event: {
+          kind: "sessionStateChanged",
+          sessionId,
+          state: "idle",
+        },
+        runId,
+        sequence: 2,
+        timestamp: "2026-07-10T10:00:01.000Z",
       }),
     ];
     const firstRunEvent = runEvents[0];
@@ -743,7 +770,7 @@ describe("provider-neutral harness contracts", () => {
       typeof firstPayload === "object" &&
         firstPayload !== null &&
         "revision" in firstPayload,
-      false,
+      false
     );
     const projection = replayHarnessSession(runEvents, sessionId);
 
@@ -801,15 +828,13 @@ describe("provider-neutral harness contracts", () => {
         runId,
         sequence: index + 1,
         timestamp: `2026-07-10T10:00:0${index}.000Z`,
-      }),
+      })
     );
 
     const projection = replayHarnessSession(events, sessionId);
     assert.strictEqual(
-      projection.items[0]?.kind === "message"
-        ? projection.items[0].text
-        : "",
-      "authoritative final",
+      projection.items[0]?.kind === "message" ? projection.items[0].text : "",
+      "authoritative final"
     );
   });
 
@@ -866,8 +891,8 @@ describe("provider-neutral harness contracts", () => {
             timestamp: "2026-07-10T10:00:02.000Z",
           }),
         ],
-        sessionId,
-      ),
+        sessionId
+      )
     );
 
     const noTools = HarnessCapabilities.make({
@@ -908,8 +933,8 @@ describe("provider-neutral harness contracts", () => {
             timestamp: "2026-07-10T10:00:01.000Z",
           }),
         ],
-        sessionId,
-      ),
+        sessionId
+      )
     );
   });
 
@@ -1074,8 +1099,8 @@ describe("provider-neutral harness contracts", () => {
               timestamp: "2026-07-10T10:00:01.000Z",
             }),
           ],
-          sessionId,
-        ),
+          sessionId
+        )
       );
     }
 
@@ -1109,8 +1134,8 @@ describe("provider-neutral harness contracts", () => {
             timestamp: "2026-07-10T10:00:01.000Z",
           }),
         ],
-        sessionId,
-      ),
+        sessionId
+      )
     );
   });
 });
@@ -1122,10 +1147,7 @@ const recoverableProviderFailure = {
   recoverable: true,
 };
 
-function harnessRunEvent(
-  sequence: number,
-  event: HarnessEvent,
-) {
+function harnessRunEvent(sequence: number, event: HarnessEvent) {
   return makeHarnessRunEvent({
     event,
     runId,
@@ -1136,7 +1158,7 @@ function harnessRunEvent(
 
 function commandApproval(
   interactionId: typeof recoveredInteractionId,
-  turnId: typeof recoveredTurnId,
+  turnId: typeof recoveredTurnId
 ) {
   return {
     allowedDecisions: ["decline", "cancel"] as const,

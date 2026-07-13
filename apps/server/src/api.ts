@@ -63,11 +63,6 @@ import {
   encodeWorkerRecoveryReceiptJson,
   type WorkerRecoveryAction,
 } from "@gaia/core";
-import type {
-  LocalRunList,
-  LocalRunReadDiagnostic,
-} from "@gaia/runtime/run-read-api";
-import { readLocalRunEvents } from "@gaia/runtime/run-read-api";
 import {
   GaiaRuntimeError,
   appendEvent,
@@ -81,16 +76,18 @@ import {
   streamAgentSessionUpdates,
   type LocalRunReadIndex,
 } from "@gaia/runtime";
-import { Cause, Context, Effect, FileSystem, Layer, Option, Path, Schema, Scope, Stream } from "effect";
-import type { Generator } from "effect/unstable/http/Etag";
-import type { HttpPlatform } from "effect/unstable/http/HttpPlatform";
 import {
-  HttpEffect,
-  HttpRouter,
-  HttpServer,
-  HttpServerResponse,
-} from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+  listFactoryRunArtifacts,
+  readFactoryAgentActivity,
+  readFactoryGraph,
+  readFactoryRunActivity,
+  readFactoryRunArtifact,
+} from "@gaia/runtime/factory-run-read-api";
+import type {
+  LocalRunList,
+  LocalRunReadDiagnostic,
+} from "@gaia/runtime/run-read-api";
+import { readLocalRunEvents } from "@gaia/runtime/run-read-api";
 import {
   actOnDeliveryPublication,
   actOnDeliveryRemediation,
@@ -107,12 +104,27 @@ import {
   type ServerWorkflowOptions,
 } from "@gaia/runtime/server-workflows";
 import {
-  listFactoryRunArtifacts,
-  readFactoryAgentActivity,
-  readFactoryGraph,
-  readFactoryRunActivity,
-  readFactoryRunArtifact,
-} from "@gaia/runtime/factory-run-read-api";
+  Cause,
+  Context,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Schema,
+  Scope,
+  Stream,
+} from "effect";
+import {
+  HttpEffect,
+  HttpRouter,
+  HttpServer,
+  HttpServerResponse,
+} from "effect/unstable/http";
+import type { Generator } from "effect/unstable/http/Etag";
+import type { HttpPlatform } from "effect/unstable/http/HttpPlatform";
+import { HttpApiBuilder } from "effect/unstable/httpapi";
+
 import {
   appendServerLog,
   serverMetadataFromAddress,
@@ -129,10 +141,14 @@ type LocalServerConfigValue = LocalServerIdentity & {
   readonly runIndex: LocalRunReadIndex;
   readonly runRegistry: ServerRunRegistryService;
   readonly runScope: Scope.Scope;
-  readonly sessionCoordinator: ReturnType<typeof makeLiveHarnessSessionCoordinator>;
+  readonly sessionCoordinator: ReturnType<
+    typeof makeLiveHarnessSessionCoordinator
+  >;
   readonly subscribeDeliveryRunEventFeed: typeof subscribeRunEventFeed;
   readonly workflowOptions: ServerWorkflowOptions;
-  readonly afterCreateRunAccepted: (accepted: ServerRunAcceptance) => Effect.Effect<void>;
+  readonly afterCreateRunAccepted: (
+    accepted: ServerRunAcceptance
+  ) => Effect.Effect<void>;
   readonly writeWorkerRecoveryFailureEvidence: WorkerRecoveryFailureEvidenceWriter;
 };
 
@@ -140,7 +156,7 @@ type WorkerRecoveryFailureEvidenceWriter = (
   rootDirectory: string,
   runId: RunId,
   actionId: string,
-  error: LocalRunActionApiError,
+  error: LocalRunActionApiError
 ) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
 
 /** Finite recovery transaction: persist one receipt, then join its confirmed continuation. */
@@ -160,7 +176,7 @@ export function executeWorkerRecoveryTransaction(input: {
           ...input.identity.workflowOptions,
           rootDirectory: input.identity.rootDirectory,
           sessionCoordinator: input.identity.sessionCoordinator,
-        }),
+        })
       );
       if (continuation._tag === "Failure") {
         const failed = {
@@ -169,7 +185,9 @@ export function executeWorkerRecoveryTransaction(input: {
           message: "Confirmed worker recovery could not be continued safely.",
           state: "failed" as const,
         };
-        const paths = yield* makeRunPaths(input.runId, { rootDirectory: input.identity.rootDirectory });
+        const paths = yield* makeRunPaths(input.runId, {
+          rootDirectory: input.identity.rootDirectory,
+        });
         yield* appendEvent(input.runId, paths, {
           payload: { recovery: encodeWorkerRecoveryReceiptJson(failed) },
           type: "WORKER_RECOVERY_RECORDED",
@@ -203,7 +221,7 @@ const decodeDeliveryProjection = Schema.decodeUnknownOption(
     remediationRearmSequence: Schema.optionalKey(Schema.Int),
     remote: Schema.NonEmptyString,
     stage: DeliveryStatusSchema,
-  }),
+  })
 );
 
 export const HealthLive = HttpApiBuilder.group(
@@ -216,14 +234,14 @@ export const HealthLive = HttpApiBuilder.group(
         const server = yield* HttpServer.HttpServer;
         const metadata = yield* serverMetadataFromAddress(
           identity,
-          server.address,
+          server.address
         ).pipe(Effect.mapError((error) => internalApiError(error)));
         return HealthResponse.make({
           ...metadata,
           status: "ok",
         });
-      }),
-    ),
+      })
+    )
 );
 
 export const RunsLive = HttpApiBuilder.group(
@@ -235,15 +253,18 @@ export const RunsLive = HttpApiBuilder.group(
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
           yield* identity.runIndex.rebuild.pipe(
-            Effect.mapError((error) => internalApiError(error)),
+            Effect.mapError((error) => internalApiError(error))
           );
           const runs = yield* identity.runIndex.list;
-          const factoryRuns = yield* factoryRunListFromLocalRuns(identity, runs);
+          const factoryRuns = yield* factoryRunListFromLocalRuns(
+            identity,
+            runs
+          );
           return FactoryRunListSuccessEnvelope.make({
             data: factoryRuns,
             status: "success",
           });
-        }),
+        })
       )
       .handle("createRun", ({ payload }) =>
         Effect.gen(function* () {
@@ -253,28 +274,31 @@ export const RunsLive = HttpApiBuilder.group(
                 code: "InvalidRequest",
                 message: "Create run requests must include a JSON body.",
                 recoverable: false,
-              }),
+              })
             );
           }
 
           const identity = yield* LocalServerConfig;
           const accepted = yield* Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {
-              const reservation = yield* identity.runRegistry.reserveCreate.pipe(
-                Effect.mapError((error) => activeRunConflictApiError(error)),
-              );
+              const reservation =
+                yield* identity.runRegistry.reserveCreate.pipe(
+                  Effect.mapError((error) => activeRunConflictApiError(error))
+                );
               const acceptedExit = yield* Effect.exit(
                 restore(
                   acceptFactoryRun(payload, {
                     ...identity.workflowOptions,
                     rootDirectory: identity.rootDirectory,
-                  }).pipe(Effect.onInterrupt(() => reservation.rollback)),
-                ),
+                  }).pipe(Effect.onInterrupt(() => reservation.rollback))
+                )
               );
 
               if (acceptedExit._tag === "Failure") {
                 yield* reservation.rollback;
-                return yield* Effect.fail(apiErrorFromCause(acceptedExit.cause));
+                return yield* Effect.fail(
+                  apiErrorFromCause(acceptedExit.cause)
+                );
               }
 
               const accepted = acceptedExit.value;
@@ -286,7 +310,7 @@ export const RunsLive = HttpApiBuilder.group(
                 reservation,
               });
               return accepted;
-            }),
+            })
           );
           yield* identity.afterCreateRunAccepted(accepted);
 
@@ -301,13 +325,15 @@ export const RunsLive = HttpApiBuilder.group(
               run: `/runs/${accepted.runId}`,
             },
           });
-        }),
+        })
       )
       .handle("getRun", ({ params }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
           yield* identity.runIndex.refreshRun(params.runId);
-          const exit = yield* Effect.exit(readFactoryRunProjection(identity, params.runId));
+          const exit = yield* Effect.exit(
+            readFactoryRunProjection(identity, params.runId)
+          );
           if (exit._tag === "Success") {
             return FactoryRunDetailSuccessEnvelope.make({
               data: factoryRunDetailFromProjection(exit.value),
@@ -316,7 +342,7 @@ export const RunsLive = HttpApiBuilder.group(
           }
 
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
-        }),
+        })
       )
       .handle("getFactoryGraph", ({ params }) =>
         Effect.gen(function* () {
@@ -324,7 +350,7 @@ export const RunsLive = HttpApiBuilder.group(
           const exit = yield* Effect.exit(
             readFactoryGraph(params.runId, {
               rootDirectory: identity.rootDirectory,
-            }),
+            })
           );
           if (exit._tag === "Success") {
             return FactoryGraphSuccessEnvelope.make({
@@ -334,7 +360,7 @@ export const RunsLive = HttpApiBuilder.group(
           }
 
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
-        }),
+        })
       )
       .handle("getRunActivity", ({ params }) =>
         Effect.gen(function* () {
@@ -342,7 +368,7 @@ export const RunsLive = HttpApiBuilder.group(
           const exit = yield* Effect.exit(
             readFactoryRunActivity(params.runId, {
               rootDirectory: identity.rootDirectory,
-            }),
+            })
           );
           if (exit._tag === "Success") {
             return FactoryActivitySuccessEnvelope.make({
@@ -352,13 +378,13 @@ export const RunsLive = HttpApiBuilder.group(
           }
 
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
-        }),
+        })
       )
       .handle("getDeliverySnapshot", ({ params }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
           const exit = yield* Effect.exit(
-            readDeliverySnapshot(params.runId, identity.rootDirectory),
+            readDeliverySnapshot(params.runId, identity.rootDirectory)
           );
           if (exit._tag === "Success") {
             return DeliverySnapshotSuccessEnvelope.make({
@@ -368,7 +394,7 @@ export const RunsLive = HttpApiBuilder.group(
           }
 
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
-        }),
+        })
       )
       .handle("streamDeliverySnapshot", ({ params, query }) =>
         Effect.gen(function* () {
@@ -379,7 +405,7 @@ export const RunsLive = HttpApiBuilder.group(
             {
               rootDirectory: identity.rootDirectory,
               subscribeRunEventFeed: identity.subscribeDeliveryRunEventFeed,
-            },
+            }
           );
           return stream.pipe(
             Stream.map((update) => ({
@@ -387,9 +413,11 @@ export const RunsLive = HttpApiBuilder.group(
               event: "delivery-update" as const,
               id: String(update.eventSequence),
             })),
-            Stream.mapError(streamApiError),
+            Stream.mapError(streamApiError)
           );
-        }).pipe(Effect.mapError((error) => actionApiErrorFromCause(Cause.fail(error)))),
+        }).pipe(
+          Effect.mapError((error) => actionApiErrorFromCause(Cause.fail(error)))
+        )
       )
       .handle("actOnDelivery", ({ params, payload }) =>
         Effect.gen(function* () {
@@ -400,83 +428,98 @@ export const RunsLive = HttpApiBuilder.group(
           };
           const exit = yield* Effect.exit(
             payload.kind === "activateRemediation"
-              ? (identity.workflowOptions.deliveryRemediationActivator ??
-                  actOnDeliveryRemediation)(
-                    params.runId,
-                    payload,
-                    workflowOptions,
-                  )
+              ? (
+                  identity.workflowOptions.deliveryRemediationActivator ??
+                  actOnDeliveryRemediation
+                )(params.runId, payload, workflowOptions)
               : payload.kind === "markReadyForReview"
-                ? (identity.workflowOptions.deliveryReadyForReviewActivator ?? actOnDeliveryReadyForReview)(
-                    params.runId,
-                    payload,
-                    workflowOptions,
-                  )
-              : payload.kind === "attestPairedReviewApproval"
-                ? (identity.workflowOptions.deliveryLocalReviewAttestationActivator ?? actOnDeliveryLocalReviewAttestation)(
-                    params.runId,
-                    payload,
-                    workflowOptions,
-                  )
-              : payload.kind === "merge" || payload.kind === "retryCleanup" || payload.kind === "evaluateMergeReadiness"
-                ? (identity.workflowOptions.deliveryMergeActivator ?? actOnDeliveryMerge)(
-                    params.runId,
-                    payload,
-                    workflowOptions,
-                  )
-              : payload.kind === "continueInterruptedWorkerRecovery"
-                ? actOnWorkerContinuation(
-                    params.runId,
-                    payload,
-                    workflowOptions,
-                  )
-              : payload.kind === "reconcileInterruptedWorkerCorrelation"
-                ? actOnWorkerCorrelationReconciliation(
-                    params.runId,
-                    payload,
-                    workflowOptions,
-                  )
-              : payload.kind === "reconcileDesktopOriginatedWorkerCorrelation"
-                ? actOnWorkerDesktopOriginCorrelation(
-                    params.runId,
-                    payload,
-                    workflowOptions,
-                  )
-              : actOnDeliveryPublication(
-                  params.runId,
-                  payload,
-                  workflowOptions,
-                ),
+                ? (
+                    identity.workflowOptions.deliveryReadyForReviewActivator ??
+                    actOnDeliveryReadyForReview
+                  )(params.runId, payload, workflowOptions)
+                : payload.kind === "attestPairedReviewApproval"
+                  ? (
+                      identity.workflowOptions
+                        .deliveryLocalReviewAttestationActivator ??
+                      actOnDeliveryLocalReviewAttestation
+                    )(params.runId, payload, workflowOptions)
+                  : payload.kind === "merge" ||
+                      payload.kind === "retryCleanup" ||
+                      payload.kind === "evaluateMergeReadiness"
+                    ? (
+                        identity.workflowOptions.deliveryMergeActivator ??
+                        actOnDeliveryMerge
+                      )(params.runId, payload, workflowOptions)
+                    : payload.kind === "continueInterruptedWorkerRecovery"
+                      ? actOnWorkerContinuation(
+                          params.runId,
+                          payload,
+                          workflowOptions
+                        )
+                      : payload.kind === "reconcileInterruptedWorkerCorrelation"
+                        ? actOnWorkerCorrelationReconciliation(
+                            params.runId,
+                            payload,
+                            workflowOptions
+                          )
+                        : payload.kind ===
+                            "reconcileDesktopOriginatedWorkerCorrelation"
+                          ? actOnWorkerDesktopOriginCorrelation(
+                              params.runId,
+                              payload,
+                              workflowOptions
+                            )
+                          : actOnDeliveryPublication(
+                              params.runId,
+                              payload,
+                              workflowOptions
+                            )
           );
           if (exit._tag === "Failure") {
             return yield* Effect.fail(actionApiErrorFromCause(exit.cause));
           }
           const snapshotExit = yield* Effect.exit(
-            readDeliverySnapshot(params.runId, identity.rootDirectory),
+            readDeliverySnapshot(params.runId, identity.rootDirectory)
           );
           if (snapshotExit._tag === "Failure") {
-            return yield* Effect.fail(readApiErrorFromCause(snapshotExit.cause));
+            return yield* Effect.fail(
+              readApiErrorFromCause(snapshotExit.cause)
+            );
           }
           return DeliverySnapshotSuccessEnvelope.make({
             data: snapshotExit.value,
             status: "success",
           });
-        }),
+        })
       )
       .handle("recoverWorker", ({ params, payload }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
-          const exit = yield* Effect.exit(executeWorkerRecoveryTransaction({ action: payload, identity, runId: params.runId }));
+          const exit = yield* Effect.exit(
+            executeWorkerRecoveryTransaction({
+              action: payload,
+              identity,
+              runId: params.runId,
+            })
+          );
           if (exit._tag === "Failure") {
             const error = actionApiErrorFromCause(exit.cause);
-            yield* identity.writeWorkerRecoveryFailureEvidence(identity.rootDirectory, params.runId, payload.actionId, error).pipe(
-              Effect.orElseSucceed(() => undefined),
-            );
+            yield* identity
+              .writeWorkerRecoveryFailureEvidence(
+                identity.rootDirectory,
+                params.runId,
+                payload.actionId,
+                error
+              )
+              .pipe(Effect.orElseSucceed(() => undefined));
             return yield* Effect.fail(error);
           }
           yield* identity.runIndex.refreshRun(params.runId);
-          return WorkerRecoverySuccessEnvelope.make({ data: exit.value, status: "success" });
-        }),
+          return WorkerRecoverySuccessEnvelope.make({
+            data: exit.value,
+            status: "success",
+          });
+        })
       )
       .handle("getAgentActivity", ({ params }) =>
         Effect.gen(function* () {
@@ -484,7 +527,7 @@ export const RunsLive = HttpApiBuilder.group(
           const exit = yield* Effect.exit(
             readFactoryAgentActivity(params.runId, params.agentId, {
               rootDirectory: identity.rootDirectory,
-            }),
+            })
           );
           if (exit._tag === "Success") {
             return FactoryActivitySuccessEnvelope.make({
@@ -494,33 +537,64 @@ export const RunsLive = HttpApiBuilder.group(
           }
 
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
-        }),
+        })
       )
       .handle("getAgentSession", ({ params }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
-          const exit = yield* Effect.exit(readAgentSessionSnapshot(params.runId, params.agentId, { rootDirectory: identity.rootDirectory }));
-          if (exit._tag === "Failure") return yield* Effect.fail(readApiErrorFromCause(exit.cause));
-          return AgentSessionSnapshotSuccessEnvelope.make({ data: exit.value, status: "success" });
-        }),
+          const exit = yield* Effect.exit(
+            readAgentSessionSnapshot(params.runId, params.agentId, {
+              rootDirectory: identity.rootDirectory,
+            })
+          );
+          if (exit._tag === "Failure")
+            return yield* Effect.fail(readApiErrorFromCause(exit.cause));
+          return AgentSessionSnapshotSuccessEnvelope.make({
+            data: exit.value,
+            status: "success",
+          });
+        })
       )
       .handle("streamAgentSession", ({ params, query }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
-          const stream = yield* streamAgentSessionUpdates(params.runId, params.agentId, query.afterSequence, { rootDirectory: identity.rootDirectory });
-          return stream.pipe(
-            Stream.map((update) => ({ data: update, event: "agent-session-update" as const, id: String(update.eventSequence) })),
-            Stream.mapError(streamApiError),
+          const stream = yield* streamAgentSessionUpdates(
+            params.runId,
+            params.agentId,
+            query.afterSequence,
+            { rootDirectory: identity.rootDirectory }
           );
-        }).pipe(Effect.mapError((error) => actionApiErrorFromCause(Cause.fail(error)))),
+          return stream.pipe(
+            Stream.map((update) => ({
+              data: update,
+              event: "agent-session-update" as const,
+              id: String(update.eventSequence),
+            })),
+            Stream.mapError(streamApiError)
+          );
+        }).pipe(
+          Effect.mapError((error) => actionApiErrorFromCause(Cause.fail(error)))
+        )
       )
       .handle("actOnAgentSession", ({ params, payload }) =>
         Effect.gen(function* () {
           const identity = yield* LocalServerConfig;
-          const exit = yield* Effect.exit(dispatchAgentSessionAction({ action: payload, agentId: params.agentId, coordinator: identity.sessionCoordinator, options: { rootDirectory: identity.rootDirectory }, runId: params.runId }));
-          if (exit._tag === "Failure") return yield* Effect.fail(actionApiErrorFromCause(exit.cause));
-          return AgentActionSuccessEnvelope.make({ data: exit.value, status: "success" });
-        }),
+          const exit = yield* Effect.exit(
+            dispatchAgentSessionAction({
+              action: payload,
+              agentId: params.agentId,
+              coordinator: identity.sessionCoordinator,
+              options: { rootDirectory: identity.rootDirectory },
+              runId: params.runId,
+            })
+          );
+          if (exit._tag === "Failure")
+            return yield* Effect.fail(actionApiErrorFromCause(exit.cause));
+          return AgentActionSuccessEnvelope.make({
+            data: exit.value,
+            status: "success",
+          });
+        })
       )
       .handle("listRunArtifacts", ({ params }) =>
         Effect.gen(function* () {
@@ -528,7 +602,7 @@ export const RunsLive = HttpApiBuilder.group(
           const exit = yield* Effect.exit(
             listFactoryRunArtifacts(params.runId, {
               rootDirectory: identity.rootDirectory,
-            }),
+            })
           );
           if (exit._tag === "Success") {
             return FactoryArtifactListSuccessEnvelope.make({
@@ -538,7 +612,7 @@ export const RunsLive = HttpApiBuilder.group(
           }
 
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
-        }),
+        })
       )
       .handle("getRunEvents", ({ params }) =>
         Effect.gen(function* () {
@@ -546,17 +620,20 @@ export const RunsLive = HttpApiBuilder.group(
           const exit = yield* Effect.exit(
             readLocalRunEvents(params.runId, {
               rootDirectory: identity.rootDirectory,
-            }),
+            })
           );
           if (exit._tag === "Success") {
             return LocalRunEventsSuccessEnvelope.make({
-              data: { ...exit.value, events: exit.value.events.map(publicRunEvent) },
+              data: {
+                ...exit.value,
+                events: exit.value.events.map(publicRunEvent),
+              },
               status: "success",
             });
           }
 
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
-        }),
+        })
       )
       .handle("streamRunEvents", ({ params }) =>
         Effect.gen(function* () {
@@ -564,18 +641,20 @@ export const RunsLive = HttpApiBuilder.group(
           const initialRead = yield* Effect.exit(
             readLocalRunEvents(params.runId, {
               rootDirectory: identity.rootDirectory,
-            }),
+            })
           );
           if (initialRead._tag === "Failure") {
             return yield* Effect.fail(readApiErrorFromCause(initialRead.cause));
           }
 
-          const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
+          const context = yield* Effect.context<
+            FileSystem.FileSystem | Path.Path
+          >();
           return streamRunEvents({
             rootDirectory: identity.rootDirectory,
             runId: params.runId,
           }).pipe(Stream.map(publicRunEvent), Stream.provideContext(context));
-        }),
+        })
       )
       .handle("getRunArtifact", ({ params }) =>
         Effect.gen(function* () {
@@ -583,7 +662,7 @@ export const RunsLive = HttpApiBuilder.group(
           const exit = yield* Effect.exit(
             readFactoryRunArtifact(params.runId, params.artifactId, {
               rootDirectory: identity.rootDirectory,
-            }),
+            })
           );
           if (exit._tag === "Success") {
             return FactoryArtifactSuccessEnvelope.make({
@@ -593,24 +672,25 @@ export const RunsLive = HttpApiBuilder.group(
           }
 
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
-        }),
-      ),
+        })
+      )
 );
 
-export const LocalGaiaServerApiLayer = HttpApiBuilder.layer(LocalGaiaServerApi).pipe(
-  Layer.provide(HealthLive),
-  Layer.provide(RunsLive),
-);
+export const LocalGaiaServerApiLayer = HttpApiBuilder.layer(
+  LocalGaiaServerApi
+).pipe(Layer.provide(HealthLive), Layer.provide(RunsLive));
 
 export function makeLocalGaiaServerLayer(
   identity: LocalServerIdentity,
   workflowOptions: ServerWorkflowOptions = {},
   resumableRunIds: ReadonlyArray<RunId> = [],
   options: {
-    readonly afterCreateRunAccepted?: (accepted: ServerRunAcceptance) => Effect.Effect<void>;
+    readonly afterCreateRunAccepted?: (
+      accepted: ServerRunAcceptance
+    ) => Effect.Effect<void>;
     readonly subscribeDeliveryRunEventFeed?: typeof subscribeRunEventFeed;
     readonly writeWorkerRecoveryFailureEvidence?: WorkerRecoveryFailureEvidenceWriter;
-  } = {},
+  } = {}
 ): Layer.Layer<
   never,
   unknown,
@@ -641,11 +721,11 @@ export function makeLocalGaiaServerLayer(
             onFailure: (error) =>
               appendServerLog(
                 identity.rootDirectory,
-                `${new Date().toISOString()} ${identity.serverId} resumed run ${runId} failed ${error.code}`,
+                `${new Date().toISOString()} ${identity.serverId} resumed run ${runId} failed ${error.code}`
               ).pipe(Effect.ignore),
             onSuccess: () => Effect.void,
           }),
-          Effect.forkIn(runScope),
+          Effect.forkIn(runScope)
         );
       }
       const scopedWorkflowOptions = { ...workflowOptions, sessionCoordinator };
@@ -655,23 +735,23 @@ export function makeLocalGaiaServerLayer(
         runRegistry,
         runScope,
         sessionCoordinator,
-        afterCreateRunAccepted: options.afterCreateRunAccepted ?? (() => Effect.void),
+        afterCreateRunAccepted:
+          options.afterCreateRunAccepted ?? (() => Effect.void),
         subscribeDeliveryRunEventFeed:
           options.subscribeDeliveryRunEventFeed ?? subscribeRunEventFeed,
         workflowOptions: scopedWorkflowOptions,
         writeWorkerRecoveryFailureEvidence:
-          options.writeWorkerRecoveryFailureEvidence ?? appendWorkerRecoveryFailureEvidence,
+          options.writeWorkerRecoveryFailureEvidence ??
+          appendWorkerRecoveryFailureEvidence,
       } satisfies LocalServerConfigValue;
-    }),
+    })
   );
 
   return HttpRouter.serve(LocalGaiaServerApiLayer, {
     disableListenLog: true,
     disableLogger: true,
     middleware: structuredServerErrors,
-  }).pipe(
-    Layer.provide(configLayer),
-  );
+  }).pipe(Layer.provide(configLayer));
 }
 
 type FactoryRunProjection = {
@@ -679,21 +759,26 @@ type FactoryRunProjection = {
   readonly artifacts: typeof FactoryArtifactListDto.Type;
   readonly graph: typeof FactoryGraphDto.Type;
 };
-type FactoryListDiagnostic = typeof FactoryGraphDto.Type["diagnostics"][number];
+type FactoryListDiagnostic =
+  (typeof FactoryGraphDto.Type)["diagnostics"][number];
 
 function factoryRunListFromLocalRuns(
   identity: LocalServerConfigValue,
-  runs: LocalRunList,
-): Effect.Effect<typeof FactoryRunListDto.Type, never, FileSystem.FileSystem | Path.Path> {
+  runs: LocalRunList
+): Effect.Effect<
+  typeof FactoryRunListDto.Type,
+  never,
+  FileSystem.FileSystem | Path.Path
+> {
   return Effect.gen(function* () {
     const summaries: Array<typeof FactoryRunSummaryDto.Type> = [];
     const diagnostics: Array<FactoryListDiagnostic> = runs.diagnostics.map(
-      factoryListDiagnosticFromLocalRead,
+      factoryListDiagnosticFromLocalRead
     );
 
     for (const run of runs.runs) {
       const projectionExit = yield* Effect.exit(
-        readFactoryRunProjection(identity, run.runId),
+        readFactoryRunProjection(identity, run.runId)
       );
       if (projectionExit._tag === "Success") {
         summaries.push(factoryRunSummaryFromProjection(projectionExit.value));
@@ -703,8 +788,8 @@ function factoryRunListFromLocalRuns(
       diagnostics.push(
         factoryListDiagnosticFromApiDiagnostic(
           causeToDiagnostic(projectionExit.cause),
-          run.runId,
-        ),
+          run.runId
+        )
       );
     }
 
@@ -717,8 +802,12 @@ function factoryRunListFromLocalRuns(
 
 function readFactoryRunProjection(
   identity: LocalServerConfigValue,
-  runId: RunId,
-): Effect.Effect<FactoryRunProjection, unknown, FileSystem.FileSystem | Path.Path> {
+  runId: RunId
+): Effect.Effect<
+  FactoryRunProjection,
+  unknown,
+  FileSystem.FileSystem | Path.Path
+> {
   return Effect.gen(function* () {
     const options = { rootDirectory: identity.rootDirectory };
     const graph = yield* readFactoryGraph(runId, options);
@@ -739,8 +828,12 @@ function readFactoryRunProjection(
 
 function readDeliverySnapshot(
   runId: RunId,
-  rootDirectory: string,
-): Effect.Effect<typeof DeliverySnapshotDto.Type, unknown, FileSystem.FileSystem | Path.Path> {
+  rootDirectory: string
+): Effect.Effect<
+  typeof DeliverySnapshotDto.Type,
+  unknown,
+  FileSystem.FileSystem | Path.Path
+> {
   return Effect.gen(function* () {
     const events = yield* readLocalRunEvents(runId, { rootDirectory });
     const update = deliveryUpdateFromEvents(events.runId, events.events);
@@ -766,8 +859,12 @@ function streamDeliveryUpdates(
   options: {
     readonly rootDirectory: string;
     readonly subscribeRunEventFeed: typeof subscribeRunEventFeed;
-  },
-): Effect.Effect<Stream.Stream<typeof DeliverySnapshotDto.Type, GaiaRuntimeError>, GaiaRuntimeError, FileSystem.FileSystem | Path.Path | Scope.Scope> {
+  }
+): Effect.Effect<
+  Stream.Stream<typeof DeliverySnapshotDto.Type, GaiaRuntimeError>,
+  GaiaRuntimeError,
+  FileSystem.FileSystem | Path.Path | Scope.Scope
+> {
   return Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options).pipe(
       Effect.mapError((cause) =>
@@ -776,8 +873,8 @@ function streamDeliveryUpdates(
           code: "InvalidRunDirectory",
           message: "Run directory could not be resolved.",
           recoverable: false,
-        }),
-      ),
+        })
+      )
     );
     const subscription = yield* options.subscribeRunEventFeed(paths).pipe(
       Effect.mapError((cause) =>
@@ -786,8 +883,8 @@ function streamDeliveryUpdates(
           code: "RunUnreadable",
           message: "Run could not be read from events.jsonl.",
           recoverable: false,
-        }),
-      ),
+        })
+      )
     );
     if (subscription.backlog.length === 0) {
       return yield* Effect.fail(
@@ -795,35 +892,67 @@ function streamDeliveryUpdates(
           code: "RunHasNoEvents",
           message: "Run does not have an events.jsonl history.",
           recoverable: false,
-        }),
+        })
       );
     }
-    if (afterSequence !== undefined && (!Number.isInteger(afterSequence) || afterSequence < 1)) {
-      return yield* Effect.fail(makeRuntimeError({ code: "InvalidRequest", message: "Delivery stream cursor must be a positive Gaia sequence.", recoverable: false }));
+    if (
+      afterSequence !== undefined &&
+      (!Number.isInteger(afterSequence) || afterSequence < 1)
+    ) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "InvalidRequest",
+          message: "Delivery stream cursor must be a positive Gaia sequence.",
+          recoverable: false,
+        })
+      );
     }
     if (afterSequence !== undefined && afterSequence > subscription.highWater) {
-      return yield* Effect.fail(makeRuntimeError({ code: "DeliveryStreamCursorConflict", message: "Delivery stream cursor is ahead of authoritative run history.", recoverable: true }));
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryStreamCursorConflict",
+          message:
+            "Delivery stream cursor is ahead of authoritative run history.",
+          recoverable: true,
+        })
+      );
     }
     const cursor = afterSequence ?? 0;
-    const backlogEvents = subscription.backlog.filter((event) => event.sequence > cursor && event.sequence <= subscription.highWater);
-    const backlog = deliveryUpdatesFromEvents(runId, subscription.backlog, backlogEvents);
+    const backlogEvents = subscription.backlog.filter(
+      (event) =>
+        event.sequence > cursor && event.sequence <= subscription.highWater
+    );
+    const backlog = deliveryUpdatesFromEvents(
+      runId,
+      subscription.backlog,
+      backlogEvents
+    );
     const live = subscription.live.pipe(
       Stream.filter((event) => event.sequence > subscription.highWater),
-      Stream.mapAccum(() => subscription.backlog, (history, event) => {
-        const next = [...history, event];
-        const update = deliveryUpdateFromEvents(runId, next);
-        return [next, update === undefined || update.eventSequence !== event.sequence ? [] : [update]] as const;
-      }),
+      Stream.mapAccum(
+        () => subscription.backlog,
+        (history, event) => {
+          const next = [...history, event];
+          const update = deliveryUpdateFromEvents(runId, next);
+          return [
+            next,
+            update === undefined || update.eventSequence !== event.sequence
+              ? []
+              : [update],
+          ] as const;
+        }
+      )
     );
     return Stream.fromIterable(backlog).pipe(
       Stream.concat(live),
-      Stream.takeUntil((update) =>
-        update.stage === "publicationFailed" ||
-        update.stage === "publicationOutcomeUnknown" ||
-        update.stage === "remediationFailed" ||
-        update.stage === "remediationOutcomeUnknown" ||
-        update.stage === "failed"
-      ),
+      Stream.takeUntil(
+        (update) =>
+          update.stage === "publicationFailed" ||
+          update.stage === "publicationOutcomeUnknown" ||
+          update.stage === "remediationFailed" ||
+          update.stage === "remediationOutcomeUnknown" ||
+          update.stage === "failed"
+      )
     );
   });
 }
@@ -831,38 +960,73 @@ function streamDeliveryUpdates(
 function deliveryUpdatesFromEvents(
   runId: RunId,
   history: ReadonlyArray<RunEvent>,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ) {
   return events.flatMap((event) => {
     const update = deliveryUpdateFromEvents(
       runId,
-      history.filter((candidate) => candidate.sequence <= event.sequence),
+      history.filter((candidate) => candidate.sequence <= event.sequence)
     );
-    return update === undefined || update.eventSequence !== event.sequence ? [] : [update];
+    return update === undefined || update.eventSequence !== event.sequence
+      ? []
+      : [update];
   });
 }
 
 export function deliveryUpdateFromEvents(
   runId: RunId,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ) {
   if (events.length === 0) return undefined;
   const snapshot = snapshotFromReplay(events);
   const delivery = decodeDeliveryProjection(snapshot.context["delivery"]).pipe(
-    Option.getOrUndefined,
+    Option.getOrUndefined
   );
   const eventSequence = events.at(-1)?.sequence ?? 0;
-  const workerRecoveryEvent = [...events].reverse().find(({ type }) => type === "WORKER_RECOVERY_RECORDED");
-  const workerRecovery = workerRecoveryEvent === undefined ? undefined : parseWorkerRecoveryReceipt(workerRecoveryEvent.payload["recovery"]);
-  const workerContinuationEvent = [...events].reverse().find(({ type }) => type === "WORKER_CONTINUATION_RECORDED");
-  const workerContinuation = workerContinuationEvent === undefined ? undefined : parseWorkerContinuationReceipt(workerContinuationEvent.payload["continuation"]);
-  const workerCorrelationEvent = [...events].reverse().find(({ type }) => type === "WORKER_CORRELATION_RECONCILIATION_RECORDED");
-  const workerCorrelationReconciliation = workerCorrelationEvent === undefined ? undefined : parseWorkerCorrelationReconciliationReceipt(workerCorrelationEvent.payload["reconciliation"]);
-  const workerDesktopOriginCorrelationEvent = [...events].reverse().find(({ type }) => type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED");
-  const workerDesktopOriginCorrelation = workerDesktopOriginCorrelationEvent === undefined ? undefined : parseWorkerDesktopOriginCorrelationReceipt(workerDesktopOriginCorrelationEvent.payload["desktopOriginCorrelation"]);
+  const workerRecoveryEvent = [...events]
+    .reverse()
+    .find(({ type }) => type === "WORKER_RECOVERY_RECORDED");
+  const workerRecovery =
+    workerRecoveryEvent === undefined
+      ? undefined
+      : parseWorkerRecoveryReceipt(workerRecoveryEvent.payload["recovery"]);
+  const workerContinuationEvent = [...events]
+    .reverse()
+    .find(({ type }) => type === "WORKER_CONTINUATION_RECORDED");
+  const workerContinuation =
+    workerContinuationEvent === undefined
+      ? undefined
+      : parseWorkerContinuationReceipt(
+          workerContinuationEvent.payload["continuation"]
+        );
+  const workerCorrelationEvent = [...events]
+    .reverse()
+    .find(({ type }) => type === "WORKER_CORRELATION_RECONCILIATION_RECORDED");
+  const workerCorrelationReconciliation =
+    workerCorrelationEvent === undefined
+      ? undefined
+      : parseWorkerCorrelationReconciliationReceipt(
+          workerCorrelationEvent.payload["reconciliation"]
+        );
+  const workerDesktopOriginCorrelationEvent = [...events]
+    .reverse()
+    .find(({ type }) => type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED");
+  const workerDesktopOriginCorrelation =
+    workerDesktopOriginCorrelationEvent === undefined
+      ? undefined
+      : parseWorkerDesktopOriginCorrelationReceipt(
+          workerDesktopOriginCorrelationEvent.payload[
+            "desktopOriginCorrelation"
+          ]
+        );
 
   if (delivery === undefined || delivery.mode === "local") {
-    const status = snapshot.state === "failed" ? "failed" : snapshot.state === "completed" ? "readyToPublish" : "unavailable";
+    const status =
+      snapshot.state === "failed"
+        ? "failed"
+        : snapshot.state === "completed"
+          ? "readyToPublish"
+          : "unavailable";
     return DeliverySnapshotDto.make({
       eventSequence,
       mode: "local",
@@ -873,45 +1037,67 @@ export function deliveryUpdateFromEvents(
     });
   }
 
-  const correlationStage = workerCorrelationReconciliationProjection(workerCorrelationReconciliation);
-  const desktopOriginCorrelationStage = workerDesktopOriginCorrelationProjection(workerDesktopOriginCorrelation);
+  const correlationStage = workerCorrelationReconciliationProjection(
+    workerCorrelationReconciliation
+  );
+  const desktopOriginCorrelationStage =
+    workerDesktopOriginCorrelationProjection(workerDesktopOriginCorrelation);
   const continuationStage = workerContinuationProjection(workerContinuation);
   const recoveryStage = workerRecoveryProjection(workerRecovery);
-  const terminalStage = snapshot.state === "completed"
-    ? delivery.stage
-    : snapshot.state === "failed"
-      ? "failed"
+  const terminalStage =
+    snapshot.state === "completed"
+      ? delivery.stage
+      : snapshot.state === "failed"
+        ? "failed"
+        : undefined;
+  const activeWorkerStage =
+    snapshot.state === "runningWorker"
+      ? (desktopOriginCorrelationStage ??
+        correlationStage ??
+        continuationStage ??
+        recoveryStage)
       : undefined;
-  const activeWorkerStage = snapshot.state === "runningWorker"
-    ? desktopOriginCorrelationStage ?? correlationStage ?? continuationStage ?? recoveryStage
-    : undefined;
   const stage = terminalStage ?? activeWorkerStage ?? delivery.stage;
   const publication =
     delivery.publication === undefined
       ? undefined
       : parseDeliveryPublication(delivery.publication);
-  const observation = delivery.observation === undefined
-    ? undefined
-    : parseDeliveryPullRequestObservation(delivery.observation);
-  const remediation = delivery.remediation === undefined
-    ? undefined
-    : parseDeliveryRemediation(delivery.remediation);
+  const observation =
+    delivery.observation === undefined
+      ? undefined
+      : parseDeliveryPullRequestObservation(delivery.observation);
+  const remediation =
+    delivery.remediation === undefined
+      ? undefined
+      : parseDeliveryRemediation(delivery.remediation);
   const actionHistories = deriveDeliveryActionHistoriesFromEvents(events);
   const activeMergeAction = actionHistories.merge.active?.latest;
   const latestMergeAction = actionHistories.merge.latest?.latest;
-  const activeReadyForReviewAction = actionHistories.readyForReview.active?.latest;
-  const latestReadyForReviewAction = actionHistories.readyForReview.latest?.latest;
-  const activeLocalReviewAttestation = actionHistories.localReviewAttestation.active?.latest;
-  const latestLocalReviewAttestation = actionHistories.localReviewAttestation.latest?.latest;
-  const mergeDecision = delivery.mergeDecision === undefined
-    ? undefined
-    : parseDeliveryMergeReadinessDecision(delivery.mergeDecision);
+  const activeReadyForReviewAction =
+    actionHistories.readyForReview.active?.latest;
+  const latestReadyForReviewAction =
+    actionHistories.readyForReview.latest?.latest;
+  const activeLocalReviewAttestation =
+    actionHistories.localReviewAttestation.active?.latest;
+  const latestLocalReviewAttestation =
+    actionHistories.localReviewAttestation.latest?.latest;
+  const mergeDecision =
+    delivery.mergeDecision === undefined
+      ? undefined
+      : parseDeliveryMergeReadinessDecision(delivery.mergeDecision);
   const activeCleanupAction = actionHistories.cleanup.active?.latest;
   const latestCleanupAction = actionHistories.cleanup.latest?.latest;
-  const workerRecoveryActions = hasCurrentWorkerRecoveryAction(events) ? ["retryWorkerRecovery" as const] : [];
+  const workerRecoveryActions = hasCurrentWorkerRecoveryAction(events)
+    ? ["retryWorkerRecovery" as const]
+    : [];
   return DeliverySnapshotDto.make({
     ...(publication?.state === "confirmed"
-      ? { authoritativeHeadSha: deriveAuthoritativeDeliveryHeadSha(publication, events) }
+      ? {
+          authoritativeHeadSha: deriveAuthoritativeDeliveryHeadSha(
+            publication,
+            events
+          ),
+        }
       : {}),
     eventSequence,
     mode: "pullRequest",
@@ -923,25 +1109,36 @@ export function deliveryUpdateFromEvents(
     recoveryActions:
       workerRecoveryActions.length > 0
         ? workerRecoveryActions
-        : activeMergeAction?.state === "outcomeUnknown" || activeMergeAction?.state === "dispatchAttempted"
-        ? ["reconcileMerge"]
-        : delivery.stage === "cleanupRequired"
-          ? ["retryCleanup"]
-      : publication?.state === "outcomeUnknown"
-        ? ["reconcile"]
-        : publication?.state === "failed" && publication.recoverable
-          ? ["retry"]
-          : [],
+        : activeMergeAction?.state === "outcomeUnknown" ||
+            activeMergeAction?.state === "dispatchAttempted"
+          ? ["reconcileMerge"]
+          : delivery.stage === "cleanupRequired"
+            ? ["retryCleanup"]
+            : publication?.state === "outcomeUnknown"
+              ? ["reconcile"]
+              : publication?.state === "failed" && publication.recoverable
+                ? ["retry"]
+                : [],
     runId,
     ...(remediation === undefined ? {} : { remediation }),
     ...(activeMergeAction === undefined ? {} : { activeMergeAction }),
     ...(latestMergeAction === undefined ? {} : { latestMergeAction }),
-    ...(activeReadyForReviewAction === undefined ? {} : { activeReadyForReviewAction }),
-    ...(latestReadyForReviewAction === undefined ? {} : { latestReadyForReviewAction }),
-    ...(activeLocalReviewAttestation === undefined ? {} : { activeLocalReviewAttestation }),
-    ...(latestLocalReviewAttestation === undefined ? {} : { latestLocalReviewAttestation }),
+    ...(activeReadyForReviewAction === undefined
+      ? {}
+      : { activeReadyForReviewAction }),
+    ...(latestReadyForReviewAction === undefined
+      ? {}
+      : { latestReadyForReviewAction }),
+    ...(activeLocalReviewAttestation === undefined
+      ? {}
+      : { activeLocalReviewAttestation }),
+    ...(latestLocalReviewAttestation === undefined
+      ? {}
+      : { latestLocalReviewAttestation }),
     ...(mergeDecision === undefined ? {} : { mergeDecision }),
-    ...(delivery.mergeDecisionSequence === undefined ? {} : { mergeDecisionSequence: delivery.mergeDecisionSequence }),
+    ...(delivery.mergeDecisionSequence === undefined
+      ? {}
+      : { mergeDecisionSequence: delivery.mergeDecisionSequence }),
     ...(activeCleanupAction === undefined ? {} : { activeCleanupAction }),
     ...(latestCleanupAction === undefined ? {} : { latestCleanupAction }),
     actionAudit: deliveryActionAuditSummary(actionHistories, 20),
@@ -951,32 +1148,66 @@ export function deliveryUpdateFromEvents(
     stage,
     status: stage,
     ...(workerContinuation === undefined ? {} : { workerContinuation }),
-    ...(workerCorrelationReconciliation === undefined ? {} : { workerCorrelationReconciliation }),
-    ...(workerDesktopOriginCorrelation === undefined ? {} : { workerDesktopOriginCorrelation }),
+    ...(workerCorrelationReconciliation === undefined
+      ? {}
+      : { workerCorrelationReconciliation }),
+    ...(workerDesktopOriginCorrelation === undefined
+      ? {}
+      : { workerDesktopOriginCorrelation }),
     ...(workerRecovery === undefined ? {} : { workerRecovery }),
   });
 }
 
 function hasCurrentWorkerRecoveryAction(events: ReadonlyArray<RunEvent>) {
   const latest = events.at(-1);
-  if (latest?.type !== "RUN_FAILED" || latest.payload["recoverable"] !== true || latest.payload["stage"] !== "runningWorker") return false;
+  if (
+    latest?.type !== "RUN_FAILED" ||
+    latest.payload["recoverable"] !== true ||
+    latest.payload["stage"] !== "runningWorker"
+  )
+    return false;
   const previous = events.at(-2);
   if (previous?.type !== "HARNESS_SESSION_EVENT_RECORDED") return false;
   const harness = parseHarnessEvent(previous.payload["event"]);
-  if (harness.kind !== "sessionFailed" || harness.failure.kind !== "providerFailure" || !harness.failure.recoverable) return false;
-  const receipts = events.flatMap((event) => event.type === "WORKER_RECOVERY_RECORDED" ? [parseWorkerRecoveryReceipt(event.payload["recovery"])] : []);
-  if (receipts.some((receipt) => receipt.expectedFailureSequence === latest.sequence)) return false;
+  if (
+    harness.kind !== "sessionFailed" ||
+    harness.failure.kind !== "providerFailure" ||
+    !harness.failure.recoverable
+  )
+    return false;
+  const receipts = events.flatMap((event) =>
+    event.type === "WORKER_RECOVERY_RECORDED"
+      ? [parseWorkerRecoveryReceipt(event.payload["recovery"])]
+      : []
+  );
+  if (
+    receipts.some(
+      (receipt) => receipt.expectedFailureSequence === latest.sequence
+    )
+  )
+    return false;
   const latestByFailure = new Map<number, (typeof receipts)[number]>();
-  for (const receipt of receipts) latestByFailure.set(receipt.expectedFailureSequence, receipt);
-  return [...latestByFailure.values()].every((receipt) => receipt.expectedFailureSequence < latest.sequence && isWorkerRecoveryReceiptTerminal(receipt));
+  for (const receipt of receipts)
+    latestByFailure.set(receipt.expectedFailureSequence, receipt);
+  return [...latestByFailure.values()].every(
+    (receipt) =>
+      receipt.expectedFailureSequence < latest.sequence &&
+      isWorkerRecoveryReceiptTerminal(receipt)
+  );
 }
 
-function isWorkerRecoveryReceiptTerminal(receipt: ReturnType<typeof parseWorkerRecoveryReceipt>) {
-  return receipt.state === "dispatchConfirmed" || receipt.state === "failed" || receipt.state === "outcomeUnknown";
+function isWorkerRecoveryReceiptTerminal(
+  receipt: ReturnType<typeof parseWorkerRecoveryReceipt>
+) {
+  return (
+    receipt.state === "dispatchConfirmed" ||
+    receipt.state === "failed" ||
+    receipt.state === "outcomeUnknown"
+  );
 }
 
 function publicDeliveryPublication(
-  publication: ReturnType<typeof parseDeliveryPublication>,
+  publication: ReturnType<typeof parseDeliveryPublication>
 ): DeliveryPublicationDto {
   switch (publication.state) {
     case "intentRecorded":
@@ -1016,7 +1247,7 @@ function publicDeliveryPublication(
 }
 
 function factoryListDiagnosticFromLocalRead(
-  diagnostic: LocalRunReadDiagnostic,
+  diagnostic: LocalRunReadDiagnostic
 ) {
   return {
     code: diagnostic.code,
@@ -1031,7 +1262,7 @@ function factoryListDiagnosticFromLocalRead(
 
 function factoryListDiagnosticFromApiDiagnostic(
   diagnostic: ApiDiagnostic,
-  fallbackSourceId: string,
+  fallbackSourceId: string
 ) {
   return {
     code: diagnostic.code,
@@ -1046,7 +1277,7 @@ function factoryListDiagnosticFromApiDiagnostic(
 }
 
 function factoryRunSummaryFromProjection(
-  projection: FactoryRunProjection,
+  projection: FactoryRunProjection
 ): typeof FactoryRunSummaryDto.Type {
   const rootWorkItem = projection.graph.workItems[0];
   if (rootWorkItem === undefined) {
@@ -1071,13 +1302,14 @@ function factoryRunSummaryFromProjection(
     runId: projection.graph.runId,
     state: factoryRunState(projection),
     updatedAt:
-      projection.activity.activities.at(-1)?.timestamp ?? new Date(0).toISOString(),
+      projection.activity.activities.at(-1)?.timestamp ??
+      new Date(0).toISOString(),
     workflow: projection.graph.workflow,
   });
 }
 
 function factoryRunDetailFromProjection(
-  projection: FactoryRunProjection,
+  projection: FactoryRunProjection
 ): typeof FactoryRunDetailDto.Type {
   const summary = factoryRunSummaryFromProjection(projection);
   return decodeFactoryRunDetail({
@@ -1094,17 +1326,17 @@ function factoryRunDetailFromProjection(
 
 function activeFactoryAgentSummary(projection: FactoryRunProjection) {
   const runningAgent = projection.graph.agents.find(
-    (agent) => agent.state === "running",
+    (agent) => agent.state === "running"
   );
   const latestAgentId = projection.activity.activities
     .slice()
     .reverse()
     .find((activity) => activity.agentId !== undefined)?.agentId;
   const latestAgent = projection.graph.agents.find(
-    (agent) => agent.id === latestAgentId,
+    (agent) => agent.id === latestAgentId
   );
   const fallbackAgent = projection.graph.agents.find(
-    (agent) => agent.role === "orchestrator",
+    (agent) => agent.role === "orchestrator"
   );
   const agent = runningAgent ?? latestAgent ?? fallbackAgent;
   if (agent === undefined) {
@@ -1132,7 +1364,7 @@ function factoryRunState(projection: FactoryRunProjection) {
   }
   if (
     projection.graph.agents.some(
-      (agent) => agent.role === "orchestrator" && agent.state === "succeeded",
+      (agent) => agent.role === "orchestrator" && agent.state === "succeeded"
     )
   ) {
     return "succeeded";
@@ -1144,7 +1376,7 @@ function factoryRunState(projection: FactoryRunProjection) {
 }
 
 function structuredServerErrors<E, R>(
-  effect: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+  effect: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>
 ) {
   return HttpEffect.withPreResponseHandler(effect, (request, response) => {
     if (!isAllowedMethod(request.method, request.url)) {
@@ -1153,7 +1385,7 @@ function structuredServerErrors<E, R>(
           code: "MethodNotAllowed",
           message: "Local Gaia API method is not supported for this endpoint.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -1167,7 +1399,7 @@ function structuredServerErrors<E, R>(
           code: "EndpointNotFound",
           message: "Local Gaia API endpoint was not found.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -1179,7 +1411,7 @@ function structuredServerErrors<E, R>(
             code: "ArtifactNotAllowed",
             message: "Artifact is not allowlisted for local API reads.",
             recoverable: false,
-          }),
+          })
         );
       }
 
@@ -1191,7 +1423,7 @@ function structuredServerErrors<E, R>(
               : "InvalidRequest",
           message: "Local Gaia API request could not be parsed.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -1215,11 +1447,12 @@ function isAllowedMethod(method: string, url: string) {
   }
 
   const path = pathnameFromUrl(url);
-  return method === "POST" && (
-    path === "/runs" ||
-    /^\/runs\/[^/]+\/agents\/[^/]+\/session\/actions$/u.test(path) ||
-    /^\/runs\/[^/]+\/delivery\/actions$/u.test(path) ||
-    /^\/runs\/[^/]+\/recovery\/actions$/u.test(path)
+  return (
+    method === "POST" &&
+    (path === "/runs" ||
+      /^\/runs\/[^/]+\/agents\/[^/]+\/session\/actions$/u.test(path) ||
+      /^\/runs\/[^/]+\/delivery\/actions$/u.test(path) ||
+      /^\/runs\/[^/]+\/recovery\/actions$/u.test(path))
   );
 }
 
@@ -1292,11 +1525,15 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
   }
 }
 
-function readApiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunReadApiError {
+function readApiErrorFromCause(
+  cause: Cause.Cause<unknown>
+): LocalRunReadApiError {
   return readApiError(causeToDiagnostic(cause));
 }
 
-function apiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunCreateApiError {
+function apiErrorFromCause(
+  cause: Cause.Cause<unknown>
+): LocalRunCreateApiError {
   for (const reason of cause.reasons) {
     if (Cause.isFailReason(reason)) {
       if (reason.error instanceof GaiaRuntimeError) {
@@ -1312,17 +1549,24 @@ function apiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunCreateApiError 
   return internalApiError(cause);
 }
 
-function actionApiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunActionApiError {
+function actionApiErrorFromCause(
+  cause: Cause.Cause<unknown>
+): LocalRunActionApiError {
   const diagnostic = causeToDiagnostic(cause);
   switch (diagnostic.code) {
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
-      return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
+      return LocalRunApiConflict.make({
+        ...publicDiagnosticFields(diagnostic),
+        code: diagnostic.code,
+        status: 409,
+      });
     case "DeliveryActionConflict":
       return LocalRunApiConflict.make({
         code: diagnostic.code,
-        message: "Delivery action conflicts with the current authoritative run state.",
+        message:
+          "Delivery action conflicts with the current authoritative run state.",
         recoverable: true,
         ...(diagnostic.runId === undefined ? {} : { runId: diagnostic.runId }),
         status: 409,
@@ -1346,28 +1590,50 @@ function actionApiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunActionApi
   }
 }
 
-function appendWorkerRecoveryFailureEvidence(rootDirectory: string, runId: RunId, actionId: string, error: LocalRunActionApiError) {
-  return appendServerLog(rootDirectory, JSON.stringify(encodeWorkerRecoveryFailureEvidenceJson(WorkerRecoveryFailureEvidence.make({
-    actionId,
-    code: recoveryFailureEvidenceCode(error.code),
-    runId,
-    stage: recoveryFailureEvidenceStage(error.code),
-    status: error.status === 409 || error.status === 422 ? error.status : 500,
-    timestamp: new Date().toISOString(),
-  }))));
+function appendWorkerRecoveryFailureEvidence(
+  rootDirectory: string,
+  runId: RunId,
+  actionId: string,
+  error: LocalRunActionApiError
+) {
+  return appendServerLog(
+    rootDirectory,
+    JSON.stringify(
+      encodeWorkerRecoveryFailureEvidenceJson(
+        WorkerRecoveryFailureEvidence.make({
+          actionId,
+          code: recoveryFailureEvidenceCode(error.code),
+          runId,
+          stage: recoveryFailureEvidenceStage(error.code),
+          status:
+            error.status === 409 || error.status === 422 ? error.status : 500,
+          timestamp: new Date().toISOString(),
+        })
+      )
+    )
+  );
 }
 
-function recoveryFailureEvidenceStage(code: LocalRunActionApiError["code"]): typeof WorkerRecoveryFailureEvidence.Type["stage"] {
+function recoveryFailureEvidenceStage(
+  code: LocalRunActionApiError["code"]
+): (typeof WorkerRecoveryFailureEvidence.Type)["stage"] {
   switch (code) {
-    case "WorkerRecoveryCorrelationUnavailable": return "correlation";
-    case "WorkerRecoveryIntentPersistenceFailed": return "intentPersistence";
-    case "WorkerRecoveryModelCatalogUnavailable": return "modelCatalog";
-    case "WorkerRecoveryModelUnavailable": return "modelSelection";
-    default: return "unknown";
+    case "WorkerRecoveryCorrelationUnavailable":
+      return "correlation";
+    case "WorkerRecoveryIntentPersistenceFailed":
+      return "intentPersistence";
+    case "WorkerRecoveryModelCatalogUnavailable":
+      return "modelCatalog";
+    case "WorkerRecoveryModelUnavailable":
+      return "modelSelection";
+    default:
+      return "unknown";
   }
 }
 
-function recoveryFailureEvidenceCode(code: LocalRunActionApiError["code"]): typeof WorkerRecoveryFailureEvidence.Type["code"] {
+function recoveryFailureEvidenceCode(
+  code: LocalRunActionApiError["code"]
+): (typeof WorkerRecoveryFailureEvidence.Type)["code"] {
   switch (code) {
     case "DeliveryActionConflict":
     case "WorkerRecoveryCorrelationUnavailable":
@@ -1516,7 +1782,7 @@ function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
 }
 
 function methodNotAllowedApiError(
-  diagnostic: MethodNotAllowedDiagnostic,
+  diagnostic: MethodNotAllowedDiagnostic
 ): typeof LocalRunApiMethodNotAllowed.Type {
   return LocalRunApiMethodNotAllowed.make({
     ...diagnostic,
@@ -1527,17 +1793,19 @@ function methodNotAllowedApiError(
 
 function publicDiagnosticFields(diagnostic: ApiDiagnostic) {
   return {
-    ...(diagnostic.artifactName === undefined ? {} : { artifactName: diagnostic.artifactName }),
+    ...(diagnostic.artifactName === undefined
+      ? {}
+      : { artifactName: diagnostic.artifactName }),
     message: diagnostic.message,
-    ...(diagnostic.pathSegment === undefined ? {} : { pathSegment: diagnostic.pathSegment }),
+    ...(diagnostic.pathSegment === undefined
+      ? {}
+      : { pathSegment: diagnostic.pathSegment }),
     recoverable: diagnostic.recoverable,
     ...(diagnostic.runId === undefined ? {} : { runId: diagnostic.runId }),
   };
 }
 
-function apiError(
-  diagnostic: ApiDiagnostic,
-): LocalRunApiError {
+function apiError(diagnostic: ApiDiagnostic): LocalRunApiError {
   switch (diagnostic.code) {
     case "InvalidRequest":
       return LocalRunApiBadRequest.make({
@@ -1609,7 +1877,11 @@ function apiError(
     case "DeliveryActionConflict":
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
-      return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
+      return LocalRunApiConflict.make({
+        ...publicDiagnosticFields(diagnostic),
+        code: diagnostic.code,
+        status: 409,
+      });
     case "RunStoreLocked":
       return LocalRunApiConflict.make({
         ...diagnostic,
@@ -1696,7 +1968,11 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
     case "DeliveryActionConflict":
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
-      return LocalRunApiConflict.make({ ...publicDiagnosticFields(diagnostic), code: diagnostic.code, status: 409 });
+      return LocalRunApiConflict.make({
+        ...publicDiagnosticFields(diagnostic),
+        code: diagnostic.code,
+        status: 409,
+      });
     case "RunStoreLocked":
       return LocalRunApiConflict.make({
         ...diagnostic,
@@ -1747,7 +2023,9 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
   }
 }
 
-function apiErrorFromRuntimeError(error: GaiaRuntimeError): LocalRunCreateApiError {
+function apiErrorFromRuntimeError(
+  error: GaiaRuntimeError
+): LocalRunCreateApiError {
   switch (error.code) {
     case "InvalidSpec":
       return createApiError({
@@ -1777,7 +2055,7 @@ function apiErrorFromRuntimeError(error: GaiaRuntimeError): LocalRunCreateApiErr
 }
 
 function activeRunConflictApiError(
-  error: ActiveServerRunConflict,
+  error: ActiveServerRunConflict
 ): typeof LocalRunApiConflict.Type {
   return LocalRunApiConflict.make({
     code: "ActiveRunConflict",
@@ -1799,11 +2077,13 @@ function forkServerContinuation(input: {
     Effect.tapError((error) =>
       appendServerLog(
         input.identity.rootDirectory,
-        `${new Date().toISOString()} ${input.identity.serverId} run ${input.accepted.runId} failed ${error.code}`,
-      ).pipe(Effect.ignore),
+        `${new Date().toISOString()} ${input.identity.serverId} run ${input.accepted.runId} failed ${error.code}`
+      ).pipe(Effect.ignore)
     ),
     Effect.ensuring(
-      input.identity.runIndex.refreshRun(input.accepted.runId).pipe(Effect.ignore),
+      input.identity.runIndex
+        .refreshRun(input.accepted.runId)
+        .pipe(Effect.ignore)
     ),
     Effect.ensuring(input.reservation.clear),
     Effect.matchEffect({
@@ -1811,7 +2091,7 @@ function forkServerContinuation(input: {
       onSuccess: () => Effect.void,
     }),
     Effect.forkIn(input.identity.runScope),
-    Effect.asVoid,
+    Effect.asVoid
   );
 }
 
@@ -1833,12 +2113,12 @@ function streamRunEvents(input: {
       rootDirectory: input.rootDirectory,
       runId: input.runId,
     } satisfies EventStreamState,
-    readNextStreamEvent,
+    readNextStreamEvent
   );
 }
 
 function readNextStreamEvent(
-  state: EventStreamState,
+  state: EventStreamState
 ): Effect.Effect<
   readonly [RunEvent, EventStreamState] | undefined,
   typeof LocalRunApiErrorEnvelope.Type,
@@ -1851,11 +2131,9 @@ function readNextStreamEvent(
   return Effect.gen(function* () {
     const events = yield* readLocalRunEvents(state.runId, {
       rootDirectory: state.rootDirectory,
-    }).pipe(
-      Effect.mapError((error: unknown) => streamApiError(error)),
-    );
+    }).pipe(Effect.mapError((error: unknown) => streamApiError(error)));
     const event = events.events.find(
-      (candidate) => candidate.sequence === state.nextSequence,
+      (candidate) => candidate.sequence === state.nextSequence
     );
 
     if (event === undefined) {
@@ -1896,7 +2174,9 @@ function isTerminalRunEvent(event: RunEvent) {
 }
 
 function isRuntimeDiagnostic(input: unknown): input is LocalRunReadDiagnostic {
-  return Option.isSome(Schema.decodeUnknownOption(LocalRunReadDiagnosticDto)(input));
+  return Option.isSome(
+    Schema.decodeUnknownOption(LocalRunReadDiagnosticDto)(input)
+  );
 }
 
 function isApiDiagnostic(input: unknown): input is ApiDiagnostic {
@@ -1929,7 +2209,9 @@ type LocalRunActionApiError =
   | LocalRunReadApiError
   | typeof LocalRunApiConflict.Type;
 
-function internalApiError(error: unknown): typeof LocalRunApiInternalServerError.Type {
+function internalApiError(
+  error: unknown
+): typeof LocalRunApiInternalServerError.Type {
   const message =
     typeof error === "object" &&
     error !== null &&

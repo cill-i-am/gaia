@@ -1,10 +1,11 @@
 import { RunIdSchema } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
+
 import { makeRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
 
 export class VerificationResult extends Schema.Class<VerificationResult>(
-  "VerificationResult",
+  "VerificationResult"
 )({
   checkedArtifacts: Schema.Array(Schema.NonEmptyString),
   runId: RunIdSchema,
@@ -17,14 +18,14 @@ const encodeVerificationResult = Schema.encodeSync(VerificationResultJson);
 export function verifyHarnessOutput(
   runId: typeof RunIdSchema.Type,
   paths: RunPaths,
-  options: { readonly requireLegacyWorkspaceMarker?: boolean } = {},
+  options: { readonly requireLegacyWorkspaceMarker?: boolean } = {}
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(
       paths.verificationLog,
       "Verifying harness output.\n",
-      { flag: "a" },
+      { flag: "a" }
     );
 
     const requireLegacyWorkspaceMarker =
@@ -37,7 +38,7 @@ export function verifyHarnessOutput(
             code: "VerificationArtifactMissing",
             message: "Expected workspace/output.txt to exist.",
             recoverable: true,
-          }),
+          })
         );
       }
 
@@ -48,7 +49,7 @@ export function verifyHarnessOutput(
             code: "VerificationMarkerMissing",
             message: "Expected workspace/output.txt to include the run id.",
             recoverable: true,
-          }),
+          })
         );
       }
     }
@@ -63,7 +64,7 @@ export function verifyHarnessOutput(
 
     yield* fs.writeFileString(
       paths.verificationResult,
-      `${JSON.stringify(encodeVerificationResult(result), null, 2)}\n`,
+      `${JSON.stringify(encodeVerificationResult(result), null, 2)}\n`
     );
     yield* fs.writeFileString(paths.verificationLog, "Verification passed.\n", {
       flag: "a",

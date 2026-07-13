@@ -11,8 +11,9 @@ import {
   parseRunId,
   RunEvent,
 } from "@gaia/core";
-import { describe, expect, it } from "vitest";
 import { Effect, FileSystem, Schema } from "effect";
+import { describe, expect, it } from "vitest";
+
 import {
   appendEvent,
   appendHarnessSessionEvent,
@@ -52,7 +53,9 @@ describe("harness session event persistence", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
-          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-event-store-" });
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-event-store-",
+          });
           const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
           yield* fs.makeDirectory(paths.root, { recursive: true });
           yield* appendEvent(runId, paths, {
@@ -71,7 +74,7 @@ describe("harness session event persistence", () => {
           const raw = yield* appendEvent(
             runId,
             paths,
-            unsafeHarnessAppend,
+            unsafeHarnessAppend
           ).pipe(Effect.exit);
           expect(raw._tag).toBe("Failure");
 
@@ -88,8 +91,8 @@ describe("harness session event persistence", () => {
             kind: "sessionStarted",
             sessionId,
           });
-        }),
-      ).pipe(Effect.provide(NodeServices.layer)),
+        })
+      ).pipe(Effect.provide(NodeServices.layer))
     );
   });
 
@@ -98,7 +101,9 @@ describe("harness session event persistence", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
-          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-event-store-" });
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-event-store-",
+          });
           const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
           yield* fs.makeDirectory(paths.root, { recursive: true });
           const events = [
@@ -122,14 +127,16 @@ describe("harness session event persistence", () => {
           yield* fs.writeFileString(
             paths.events,
             `${events
-              .map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event)))
-              .join("\n")}\n`,
+              .map((event) =>
+                JSON.stringify(Schema.encodeSync(RunEvent)(event))
+              )
+              .join("\n")}\n`
           );
 
           const result = yield* readEvents(paths).pipe(Effect.exit);
           expect(result._tag).toBe("Failure");
-        }),
-      ).pipe(Effect.provide(NodeServices.layer)),
+        })
+      ).pipe(Effect.provide(NodeServices.layer))
     );
   });
 
@@ -138,7 +145,9 @@ describe("harness session event persistence", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
-          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-event-store-" });
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-event-store-",
+          });
           const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
           yield* fs.makeDirectory(paths.root, { recursive: true });
           yield* appendEvent(runId, paths, {
@@ -156,9 +165,9 @@ describe("harness session event persistence", () => {
           }).pipe(Effect.exit);
 
           expect(result._tag).toBe("Failure");
-          expect((yield* readEvents(paths))).toHaveLength(1);
-        }),
-      ).pipe(Effect.provide(NodeServices.layer)),
+          expect(yield* readEvents(paths)).toHaveLength(1);
+        })
+      ).pipe(Effect.provide(NodeServices.layer))
     );
   });
 
@@ -167,7 +176,9 @@ describe("harness session event persistence", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
-          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-event-store-" });
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-event-store-",
+          });
           const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
           yield* fs.makeDirectory(paths.root, { recursive: true });
           const events = [
@@ -207,14 +218,16 @@ describe("harness session event persistence", () => {
           yield* fs.writeFileString(
             paths.events,
             `${events
-              .map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event)))
-              .join("\n")}\n`,
+              .map((event) =>
+                JSON.stringify(Schema.encodeSync(RunEvent)(event))
+              )
+              .join("\n")}\n`
           );
 
           const result = yield* readEvents(paths).pipe(Effect.exit);
           expect(result._tag).toBe("Failure");
-        }),
-      ).pipe(Effect.provide(NodeServices.layer)),
+        })
+      ).pipe(Effect.provide(NodeServices.layer))
     );
   });
 
@@ -223,7 +236,9 @@ describe("harness session event persistence", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
-          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-event-store-" });
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-event-store-",
+          });
           const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
           yield* fs.makeDirectory(paths.root, { recursive: true });
           yield* appendEvent(runId, paths, {
@@ -246,7 +261,7 @@ describe("harness session event persistence", () => {
           yield* fs.writeFileString(
             paths.events,
             `${JSON.stringify(Schema.encodeSync(RunEvent)(event))}\n`,
-            { flag: "a" },
+            { flag: "a" }
           );
 
           const loaded = yield* loadRun(paths);
@@ -255,8 +270,8 @@ describe("harness session event persistence", () => {
             eventSequence: 2,
             state: "preparingWorkspace",
           });
-        }),
-      ).pipe(Effect.provide(NodeServices.layer)),
+        })
+      ).pipe(Effect.provide(NodeServices.layer))
     );
   });
 
@@ -265,7 +280,9 @@ describe("harness session event persistence", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
-          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-event-store-" });
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-event-store-",
+          });
           const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
           yield* fs.makeDirectory(paths.root, { recursive: true });
           const events = [
@@ -288,19 +305,21 @@ describe("harness session event persistence", () => {
                 runId,
                 sequence: index + 2,
                 timestamp: "2026-07-10T10:00:01.000Z",
-              }),
+              })
             ),
           ];
           yield* fs.writeFileString(
             paths.events,
             `${events
-              .map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event)))
-              .join("\n")}\n`,
+              .map((event) =>
+                JSON.stringify(Schema.encodeSync(RunEvent)(event))
+              )
+              .join("\n")}\n`
           );
 
           expect(yield* readEvents(paths)).toHaveLength(251);
-        }),
-      ).pipe(Effect.provide(NodeServices.layer)),
+        })
+      ).pipe(Effect.provide(NodeServices.layer))
     );
   });
 });

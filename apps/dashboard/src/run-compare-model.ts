@@ -51,10 +51,7 @@ export function buildRunCompareModel(input: {
   readonly primaryRun: LocalRunSummary | undefined;
 }): RunCompareModel {
   const primary = toCompareSide(input.primaryRun, input.primaryEvents);
-  const comparison = toCompareSide(
-    input.comparisonRun,
-    input.comparisonEvents,
-  );
+  const comparison = toCompareSide(input.comparisonRun, input.comparisonEvents);
 
   if (primary === undefined || comparison === undefined) {
     return {
@@ -78,7 +75,7 @@ export function buildRunCompareModel(input: {
   const metrics = compareMetrics(primary, comparison);
   const artifactDelta = compareArtifacts(
     primary.artifactNames,
-    comparison.artifactNames,
+    comparison.artifactNames
   );
   const differenceCount = metrics.filter((metric) => metric.isDifferent).length;
   const missingData = [
@@ -102,7 +99,7 @@ export function buildRunCompareModel(input: {
 
 function toCompareSide(
   run: LocalRunSummary | undefined,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ): RunCompareSide | undefined {
   if (run === undefined) {
     return undefined;
@@ -118,7 +115,7 @@ function toCompareSide(
     missingData.push("ordered events unavailable");
   } else if (run.eventCount !== events.length) {
     missingData.push(
-      `${run.eventCount} events reported, ${events.length} loaded`,
+      `${run.eventCount} events reported, ${events.length} loaded`
     );
   }
 
@@ -161,13 +158,17 @@ function toCompareSide(
 
 function compareMetrics(
   primary: RunCompareSide,
-  comparison: RunCompareSide,
+  comparison: RunCompareSide
 ): ReadonlyArray<RunCompareMetric> {
   return [
     metric("Status", primary.statusLabel, comparison.statusLabel),
     metric("Lifecycle", primary.lifecycleLabel, comparison.lifecycleLabel),
     metric("Events", primary.eventCountLabel, comparison.eventCountLabel),
-    metric("Artifacts", primary.artifactCountLabel, comparison.artifactCountLabel),
+    metric(
+      "Artifacts",
+      primary.artifactCountLabel,
+      comparison.artifactCountLabel
+    ),
     metric("Report", primary.reportSignal.label, comparison.reportSignal.label),
     metric("Checks", primary.checkSignal.label, comparison.checkSignal.label),
     metric("Review", primary.reviewSignal.label, comparison.reviewSignal.label),
@@ -180,7 +181,7 @@ function compareMetrics(
 function metric(
   label: string,
   primaryValue: string,
-  comparisonValue: string,
+  comparisonValue: string
 ): RunCompareMetric {
   return {
     comparisonValue,
@@ -192,23 +193,30 @@ function metric(
 
 function compareArtifacts(
   primaryArtifacts: ReadonlyArray<string>,
-  comparisonArtifacts: ReadonlyArray<string>,
+  comparisonArtifacts: ReadonlyArray<string>
 ) {
   const primary = new Set(primaryArtifacts);
   const comparison = new Set(comparisonArtifacts);
 
   return {
-    comparisonOnly: comparisonArtifacts.filter((artifact) => !primary.has(artifact)),
-    primaryOnly: primaryArtifacts.filter((artifact) => !comparison.has(artifact)),
+    comparisonOnly: comparisonArtifacts.filter(
+      (artifact) => !primary.has(artifact)
+    ),
+    primaryOnly: primaryArtifacts.filter(
+      (artifact) => !comparison.has(artifact)
+    ),
     shared: primaryArtifacts.filter((artifact) => comparison.has(artifact)),
   };
 }
 
 function reportSignalFor(
   run: LocalRunSummary,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ): RunCompareSignal {
-  if (run.status === "failed" || events.some((event) => event.type === "RUN_FAILED")) {
+  if (
+    run.status === "failed" ||
+    events.some((event) => event.type === "RUN_FAILED")
+  ) {
     return {
       label: "Run failed",
       state: "failed",
@@ -234,7 +242,7 @@ function reportSignalFor(
 
 function checkSignalFor(
   run: LocalRunSummary,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ): RunCompareSignal {
   if (
     run.artifacts.includes("verification-result") ||
@@ -254,7 +262,7 @@ function checkSignalFor(
 
 function reviewSignalFor(
   run: LocalRunSummary,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ): RunCompareSignal {
   if (
     run.artifacts.some((artifact) => artifact.includes("review")) ||
@@ -276,11 +284,7 @@ function durationBetween(createdAt: string, updatedAt: string) {
   const created = new Date(createdAt).getTime();
   const updated = new Date(updatedAt).getTime();
 
-  if (
-    Number.isNaN(created) ||
-    Number.isNaN(updated) ||
-    updated < created
-  ) {
+  if (Number.isNaN(created) || Number.isNaN(updated) || updated < created) {
     return "Unavailable";
   }
 

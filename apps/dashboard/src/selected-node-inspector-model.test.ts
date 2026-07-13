@@ -10,11 +10,11 @@ import {
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
+import type { FactoryCanvasNode } from "@/factory-canvas-model";
 import {
   buildSelectedNodeInspectorModel,
   type InspectorResource,
 } from "@/selected-node-inspector-model";
-import type { FactoryCanvasNode } from "@/factory-canvas-model";
 import { testFactoryExecution } from "@/test-factory-execution";
 
 describe("selected node inspector model", () => {
@@ -27,7 +27,7 @@ describe("selected node inspector model", () => {
         graphIsLoading: false,
         selectedNode: undefined,
         selectedRunId: undefined,
-      }),
+      })
     ).toMatchObject({
       kind: "empty",
       reason: "no-run",
@@ -42,7 +42,7 @@ describe("selected node inspector model", () => {
         graphIsLoading: true,
         selectedNode: undefined,
         selectedRunId: runId("run-1234567890"),
-      }),
+      })
     ).toMatchObject({
       kind: "empty",
       reason: "loading",
@@ -57,7 +57,7 @@ describe("selected node inspector model", () => {
         graphIsLoading: false,
         selectedNode: undefined,
         selectedRunId: runId("run-1234567890"),
-      }),
+      })
     ).toMatchObject({
       kind: "empty",
       reason: "no-selection",
@@ -352,9 +352,7 @@ function activityFixture(input: {
     sequence: input.sequence ?? 1,
     state: "running",
     timestamp: "2026-07-08T12:00:00.000Z",
-    ...(input.agentId === undefined
-      ? {}
-      : { agentId: agentId(input.agentId) }),
+    ...(input.agentId === undefined ? {} : { agentId: agentId(input.agentId) }),
     ...(input.workItemId === undefined
       ? {}
       : { workItemId: workItemId(input.workItemId) }),

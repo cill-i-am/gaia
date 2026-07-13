@@ -1,11 +1,12 @@
 import { Effect, FileSystem, Path, Schema } from "effect";
+
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { makeRunStorePaths, type RunStorageOptions } from "./paths.js";
 
 const lockMetadataFileName = "metadata.json";
 
 class RunStoreLockMetadata extends Schema.Class<RunStoreLockMetadata>(
-  "RunStoreLockMetadata",
+  "RunStoreLockMetadata"
 )({
   acquiredAt: Schema.NonEmptyString,
   nextSafeAction: Schema.NonEmptyString,
@@ -15,10 +16,10 @@ class RunStoreLockMetadata extends Schema.Class<RunStoreLockMetadata>(
 
 const RunStoreLockMetadataJson = Schema.toCodecJson(RunStoreLockMetadata);
 const encodeRunStoreLockMetadataJson = Schema.encodeSync(
-  RunStoreLockMetadataJson,
+  RunStoreLockMetadataJson
 );
 const parseRunStoreLockMetadataJson = Schema.decodeUnknownSync(
-  RunStoreLockMetadataJson,
+  RunStoreLockMetadataJson
 );
 
 export type RunStoreLockContext = {
@@ -30,7 +31,7 @@ export type RunStoreLockContext = {
 export function withRunStoreLock<A, E, R>(
   options: RunStorageOptions,
   effect: Effect.Effect<A, E, R>,
-  context: RunStoreLockContext = {},
+  context: RunStoreLockContext = {}
 ): Effect.Effect<
   A,
   E | GaiaRuntimeError,
@@ -40,14 +41,14 @@ export function withRunStoreLock<A, E, R>(
     const lockPath = yield* acquireRunStoreLock(options, context);
 
     return yield* effect.pipe(
-      Effect.ensuring(releaseRunStoreLock(lockPath).pipe(Effect.ignore)),
+      Effect.ensuring(releaseRunStoreLock(lockPath).pipe(Effect.ignore))
     );
   });
 }
 
 function acquireRunStoreLock(
   options: RunStorageOptions,
-  context: RunStoreLockContext,
+  context: RunStoreLockContext
 ): Effect.Effect<string, GaiaRuntimeError, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -61,17 +62,19 @@ function acquireRunStoreLock(
             code: "RunStoreLockPrepareFailed",
             message: "Gaia could not prepare the local run-store lock.",
             recoverable: true,
-          }),
-        ),
-      ),
+          })
+        )
+      )
     );
-    yield* fs.makeDirectory(store.lock).pipe(
-      Effect.catchTag("PlatformError", (cause) =>
-        runStoreLocked(store.lock, cause),
-      ),
-    );
+    yield* fs
+      .makeDirectory(store.lock)
+      .pipe(
+        Effect.catchTag("PlatformError", (cause) =>
+          runStoreLocked(store.lock, cause)
+        )
+      );
     yield* writeRunStoreLockMetadata(store.lock, context).pipe(
-      Effect.tapError(() => releaseRunStoreLock(store.lock).pipe(Effect.ignore)),
+      Effect.tapError(() => releaseRunStoreLock(store.lock).pipe(Effect.ignore))
     );
 
     return store.lock;
@@ -80,7 +83,7 @@ function acquireRunStoreLock(
 
 function writeRunStoreLockMetadata(
   lockPath: string,
-  context: RunStoreLockContext,
+  context: RunStoreLockContext
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -96,7 +99,7 @@ function writeRunStoreLockMetadata(
 
     yield* fs.writeFileString(
       path.join(lockPath, lockMetadataFileName),
-      `${JSON.stringify(encodeRunStoreLockMetadataJson(metadata), null, 2)}\n`,
+      `${JSON.stringify(encodeRunStoreLockMetadataJson(metadata), null, 2)}\n`
     );
   }).pipe(
     Effect.catchTag("PlatformError", (cause) =>
@@ -106,15 +109,15 @@ function writeRunStoreLockMetadata(
           code: "RunStoreLockPrepareFailed",
           message: "Gaia could not write the local run-store lock metadata.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function runStoreLocked(
   lockPath: string,
-  cause: unknown,
+  cause: unknown
 ): Effect.Effect<never, GaiaRuntimeError, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const metadata = yield* readOptionalRunStoreLockMetadata(lockPath);
@@ -125,13 +128,13 @@ function runStoreLocked(
         code: "RunStoreLocked",
         message: runStoreLockedMessage(metadata),
         recoverable: true,
-      }),
+      })
     );
   });
 }
 
 function readOptionalRunStoreLockMetadata(
-  lockPath: string,
+  lockPath: string
 ): Effect.Effect<
   RunStoreLockMetadata | undefined,
   never,
@@ -165,8 +168,7 @@ function readOptionalRunStoreLockMetadata(
         makeRuntimeError({
           cause: parseCause,
           code: "RunStoreLockMetadataInvalid",
-          message:
-            "Gaia run-store lock metadata did not match Gaia's schema.",
+          message: "Gaia run-store lock metadata did not match Gaia's schema.",
           recoverable: true,
         }),
     });
@@ -174,13 +176,11 @@ function readOptionalRunStoreLockMetadata(
     Effect.matchEffect({
       onFailure: () => Effect.succeed(undefined),
       onSuccess: (metadata) => Effect.succeed(metadata),
-    }),
+    })
   );
 }
 
-function runStoreLockedMessage(
-  metadata: RunStoreLockMetadata | undefined,
-) {
+function runStoreLockedMessage(metadata: RunStoreLockMetadata | undefined) {
   if (metadata === undefined) {
     return "Another Gaia run-store mutation is already in progress. Wait for it to finish before starting another mutating run command.";
   }

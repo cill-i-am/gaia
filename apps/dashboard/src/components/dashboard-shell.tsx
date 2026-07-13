@@ -1,15 +1,4 @@
 import {
-  Background,
-  Controls,
-  Position,
-  ReactFlow,
-  type Edge,
-  type FitViewOptions,
-  type Node,
-  type NodeMouseHandler,
-} from "@xyflow/react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import {
   type AgentSessionSnapshotDto,
   type DeliverySnapshotDto,
   type FactoryActivityDto,
@@ -22,6 +11,17 @@ import {
   type RunId,
   RunEvent,
 } from "@gaia/core";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import {
+  Background,
+  Controls,
+  Position,
+  ReactFlow,
+  type Edge,
+  type FitViewOptions,
+  type Node,
+  type NodeMouseHandler,
+} from "@xyflow/react";
 import { Option, Schema } from "effect";
 import {
   ActivityIcon,
@@ -47,39 +47,7 @@ import {
   XIcon,
 } from "lucide-react";
 import * as React from "react";
-import {
-  createReadinessActionId,
-  mergeDecisionIdentity,
-} from "@/components/delivery-action-identity";
-import { DeliveryMergeConfirmation } from "@/components/delivery-merge-confirmation";
 
-import {
-  type DashboardRun,
-  type RunReplayState,
-  type RunStatus,
-  buildRunCanvasModel,
-  buildRunReplayState,
-  eventTypeLabel,
-  isTerminalRunEvent,
-  mergeRunEvents,
-  stateLabel,
-} from "@/run-canvas-model";
-import {
-  buildFactoryCanvasModel,
-  type FactoryCanvasModel,
-  type FactoryCanvasNode,
-} from "@/factory-canvas-model";
-import {
-  buildSelectedNodeInspectorModel,
-  type InspectorNotice,
-  type InspectorResource,
-  type SelectedNodeInspectorModel,
-} from "@/selected-node-inspector-model";
-import {
-  factoryAgentRoleVisual,
-  factoryAgentStateBadgeVariant,
-  factoryAgentStateLabel,
-} from "@/factory-agent-visuals";
 import {
   buildAgentInspectorSessionModel,
   type AgentInspectorConnection,
@@ -88,38 +56,10 @@ import {
 } from "@/agent-inspector-model";
 import { createAgentSessionStreamController } from "@/agent-session-stream-controller";
 import {
-  buildRunCompareModel,
-  type RunCompareModel,
-  type RunCompareSignal,
-} from "@/run-compare-model";
-import {
-  defaultLocalGaiaServerUrl,
-  openDeliverySnapshotEventSource,
-} from "@/lib/local-gaia-client";
-import {
-  localGaiaDeliveryQueryOptions,
-  localGaiaDeliveryActionMutationOptions,
-  localGaiaFactoryAgentActivityQueryOptions,
-  localGaiaFactoryArtifactQueryOptions,
-  localGaiaFactoryArtifactsQueryOptions,
-  localGaiaFactoryGraphQueryOptions,
-  localGaiaFactoryRunActivityQueryOptions,
-  localGaiaAgentSessionActionMutationOptions,
-  localGaiaAgentSessionQueryOptions,
-  localGaiaCreateRunMutationOptions,
-  localGaiaHealthQueryOptions,
-  localGaiaRunEventsQueryOptions,
-  localGaiaRunQueryOptions,
-  localGaiaRunsQueryOptions,
-} from "@/lib/local-gaia-query";
-import {
-  buildRunConsoleState,
-  dashboardQueryFailure,
-  reconcileSelectedRunId,
-  selectedRunFromConsoleState,
-  type RunConsoleRun,
-  type RunConsoleState,
-} from "@/run-console-model";
+  createReadinessActionId,
+  mergeDecisionIdentity,
+} from "@/components/delivery-action-identity";
+import { DeliveryMergeConfirmation } from "@/components/delivery-merge-confirmation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -179,7 +119,67 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  factoryAgentRoleVisual,
+  factoryAgentStateBadgeVariant,
+  factoryAgentStateLabel,
+} from "@/factory-agent-visuals";
+import {
+  buildFactoryCanvasModel,
+  type FactoryCanvasModel,
+  type FactoryCanvasNode,
+} from "@/factory-canvas-model";
+import {
+  defaultLocalGaiaServerUrl,
+  openDeliverySnapshotEventSource,
+} from "@/lib/local-gaia-client";
+import {
+  localGaiaDeliveryQueryOptions,
+  localGaiaDeliveryActionMutationOptions,
+  localGaiaFactoryAgentActivityQueryOptions,
+  localGaiaFactoryArtifactQueryOptions,
+  localGaiaFactoryArtifactsQueryOptions,
+  localGaiaFactoryGraphQueryOptions,
+  localGaiaFactoryRunActivityQueryOptions,
+  localGaiaAgentSessionActionMutationOptions,
+  localGaiaAgentSessionQueryOptions,
+  localGaiaCreateRunMutationOptions,
+  localGaiaHealthQueryOptions,
+  localGaiaRunEventsQueryOptions,
+  localGaiaRunQueryOptions,
+  localGaiaRunsQueryOptions,
+} from "@/lib/local-gaia-query";
 import { cn } from "@/lib/utils";
+import {
+  type DashboardRun,
+  type RunReplayState,
+  type RunStatus,
+  buildRunCanvasModel,
+  buildRunReplayState,
+  eventTypeLabel,
+  isTerminalRunEvent,
+  mergeRunEvents,
+  stateLabel,
+} from "@/run-canvas-model";
+import {
+  buildRunCompareModel,
+  type RunCompareModel,
+  type RunCompareSignal,
+} from "@/run-compare-model";
+import {
+  buildRunConsoleState,
+  dashboardQueryFailure,
+  reconcileSelectedRunId,
+  selectedRunFromConsoleState,
+  type RunConsoleRun,
+  type RunConsoleState,
+} from "@/run-console-model";
+import {
+  buildSelectedNodeInspectorModel,
+  type InspectorNotice,
+  type InspectorResource,
+  type SelectedNodeInspectorModel,
+} from "@/selected-node-inspector-model";
 
 const statusLabels = {
   running: "Running",
@@ -201,7 +201,7 @@ function statusBadgeVariant(status: RunStatus) {
 }
 
 function signalBadgeVariant(
-  signal: RunCompareSignal | undefined,
+  signal: RunCompareSignal | undefined
 ): "destructive" | "outline" | "secondary" {
   if (signal?.state === "failed") {
     return "destructive";
@@ -323,7 +323,7 @@ function artifactNoun(count: number) {
 }
 
 function uniqueArtifactCount(
-  artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>,
+  artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>
 ) {
   return new Set(artifacts.map((artifact) => String(artifact.artifactId))).size;
 }
@@ -351,7 +351,7 @@ export function DashboardShell() {
   const healthQuery = useQuery(localGaiaHealthQueryOptions({ serverUrl }));
   const runsQuery = useQuery(localGaiaRunsQueryOptions({ serverUrl }));
   const createRunMutation = useMutation(
-    localGaiaCreateRunMutationOptions({ serverUrl }),
+    localGaiaCreateRunMutationOptions({ serverUrl })
   );
   const runConsole = React.useMemo(
     () =>
@@ -378,14 +378,14 @@ export function DashboardShell() {
       runsQuery.isFetching,
       runsQuery.isPending,
       serverUrl,
-    ],
+    ]
   );
   const [requestedSelectedRunId, setRequestedSelectedRunId] = React.useState<
     RunId | undefined
   >();
   const selectedRunId = reconcileSelectedRunId(
     requestedSelectedRunId,
-    runConsole.runs,
+    runConsole.runs
   );
   const [requestedComparisonRunId, setRequestedComparisonRunId] =
     React.useState<RunId | undefined>();
@@ -398,39 +398,39 @@ export function DashboardShell() {
   const comparisonModeEnabled = commandMode === "compare";
   const selectedConsoleRun = selectedRunFromConsoleState(
     selectedRunId,
-    runConsole.runs,
+    runConsole.runs
   );
   const selectedRunShouldStream =
     selectedRunId !== undefined && selectedConsoleRun?.isTerminal === false;
   const selectedRunSummaryFromList = runsQuery.data?.data.runs.find(
-    (run) => run.runId === selectedRunId,
+    (run) => run.runId === selectedRunId
   );
   const comparisonRunSummaryFromList = runsQuery.data?.data.runs.find(
-    (run) => run.runId === comparisonRunId,
+    (run) => run.runId === comparisonRunId
   );
   const selectedRunDetailQuery = useQuery(
     localGaiaRunQueryOptions({
       runId: selectedRunId,
       serverUrl,
-    }),
+    })
   );
   const selectedFactoryGraphQuery = useQuery(
     localGaiaFactoryGraphQueryOptions({
       runId: selectedRunId,
       serverUrl,
-    }),
+    })
   );
   const selectedFactoryRunActivityQuery = useQuery(
     localGaiaFactoryRunActivityQueryOptions({
       runId: selectedRunId,
       serverUrl,
-    }),
+    })
   );
   const selectedDeliveryQuery = useQuery(
     localGaiaDeliveryQueryOptions({
       runId: selectedRunId,
       serverUrl,
-    }),
+    })
   );
   const selectedDeliverySnapshot = useDeliverySnapshotStream({
     initial: selectedDeliveryQuery.data?.data,
@@ -438,31 +438,31 @@ export function DashboardShell() {
     serverUrl,
   });
   const deliveryActionMutation = useMutation(
-    localGaiaDeliveryActionMutationOptions({ serverUrl }),
+    localGaiaDeliveryActionMutationOptions({ serverUrl })
   );
   const selectedFactoryArtifactsQuery = useQuery(
     localGaiaFactoryArtifactsQueryOptions({
       runId: selectedRunId,
       serverUrl,
-    }),
+    })
   );
   const selectedRunEventsQuery = useQuery(
     localGaiaRunEventsQueryOptions({
       runId: selectedRunId,
       serverUrl,
-    }),
+    })
   );
   const comparisonRunDetailQuery = useQuery(
     localGaiaRunQueryOptions({
       runId: comparisonModeEnabled ? comparisonRunId : undefined,
       serverUrl,
-    }),
+    })
   );
   const comparisonRunEventsQuery = useQuery(
     localGaiaRunEventsQueryOptions({
       runId: comparisonModeEnabled ? comparisonRunId : undefined,
       serverUrl,
-    }),
+    })
   );
   const runEventStream = useRunEventStream({
     enabled: selectedRunShouldStream,
@@ -475,7 +475,7 @@ export function DashboardShell() {
         historical: selectedRunEventsQuery.data?.data.events ?? [],
         live: runEventStream.events,
       }),
-    [selectedRunEventsQuery.data?.data.events, runEventStream.events],
+    [selectedRunEventsQuery.data?.data.events, runEventStream.events]
   );
   const selectedRunSummary =
     selectedRunDetailQuery.data?.data ?? selectedRunSummaryFromList;
@@ -487,7 +487,7 @@ export function DashboardShell() {
         events: selectedRunEvents,
         run: selectedRunSummary,
       }),
-    [selectedRunEvents, selectedRunSummary],
+    [selectedRunEvents, selectedRunSummary]
   );
   const [requestedReplayIndex, setRequestedReplayIndex] = React.useState<
     number | undefined
@@ -499,7 +499,7 @@ export function DashboardShell() {
         requestedIndex: requestedReplayIndex,
         run: selectedRun,
       }),
-    [requestedReplayIndex, selectedRun],
+    [requestedReplayIndex, selectedRun]
   );
   const runCompare = React.useMemo(
     () =>
@@ -514,7 +514,7 @@ export function DashboardShell() {
       comparisonRunSummary,
       selectedRunEvents,
       selectedRunSummary,
-    ],
+    ]
   );
   const [selectedNodeId, setSelectedNodeId] = React.useState<
     string | undefined
@@ -530,17 +530,18 @@ export function DashboardShell() {
     [
       selectedFactoryGraphQuery.data?.data,
       selectedFactoryRunActivityQuery.data?.data.activities,
-    ],
+    ]
   );
-  const selectedFactoryNode =
-    selectedFactoryCanvas?.nodes.find((node) => node.id === selectedNodeId);
+  const selectedFactoryNode = selectedFactoryCanvas?.nodes.find(
+    (node) => node.id === selectedNodeId
+  );
   const selectedFactoryAgentActivityQuery = useQuery(
     localGaiaFactoryAgentActivityQueryOptions({
       agentId:
         selectedFactoryNode?.kind === "agent" ? selectedFactoryNode.rawId : "",
       runId: selectedRunId,
       serverUrl,
-    }),
+    })
   );
   const runCanvas = {
     graphError: dashboardQueryFailure(selectedFactoryGraphQuery.error),
@@ -548,13 +549,13 @@ export function DashboardShell() {
       selectedRunId !== undefined && selectedFactoryGraphQuery.isPending,
   };
   const agentActivityFailure = dashboardQueryFailure(
-    selectedFactoryAgentActivityQuery.error,
+    selectedFactoryAgentActivityQuery.error
   );
   const runActivityFailure = dashboardQueryFailure(
-    selectedFactoryRunActivityQuery.error,
+    selectedFactoryRunActivityQuery.error
   );
   const artifactsFailure = dashboardQueryFailure(
-    selectedFactoryArtifactsQuery.error,
+    selectedFactoryArtifactsQuery.error
   );
   const inspectorActivityResource = React.useMemo<
     InspectorResource<typeof FactoryActivityDto.Type>
@@ -575,7 +576,7 @@ export function DashboardShell() {
         return {
           message: dashboardFailureMessage(
             agentActivityFailure,
-            "Agent activity could not be loaded.",
+            "Agent activity could not be loaded."
           ),
           status: "error",
         };
@@ -598,7 +599,7 @@ export function DashboardShell() {
       return {
         message: dashboardFailureMessage(
           runActivityFailure,
-          "Run activity could not be loaded.",
+          "Run activity could not be loaded."
         ),
         status: "error",
       };
@@ -627,7 +628,8 @@ export function DashboardShell() {
 
     if (selectedFactoryArtifactsQuery.isPending) {
       return {
-        message: "Artifact catalog is loading from the public artifact endpoint.",
+        message:
+          "Artifact catalog is loading from the public artifact endpoint.",
         status: "loading",
       };
     }
@@ -636,7 +638,7 @@ export function DashboardShell() {
       return {
         message: dashboardFailureMessage(
           artifactsFailure,
-          "Artifact catalog could not be loaded.",
+          "Artifact catalog could not be loaded."
         ),
         status: "error",
       };
@@ -670,7 +672,7 @@ export function DashboardShell() {
       selectedFactoryGraphQuery.data?.data,
       selectedFactoryNode,
       selectedRunId,
-    ],
+    ]
   );
   const selectedRunArtifactEvidence = React.useMemo(
     () =>
@@ -688,7 +690,7 @@ export function DashboardShell() {
       selectedFactoryCanvas,
       selectedFactoryGraphQuery.data?.data,
       selectedRunId,
-    ],
+    ]
   );
   const serverConnection: ServerConnectionState = {
     runConsole,
@@ -741,14 +743,14 @@ export function DashboardShell() {
         selectedFactoryGraphQuery.refetch(),
         selectedFactoryRunActivityQuery.refetch(),
         selectedRunDetailQuery.refetch(),
-        selectedRunEventsQuery.refetch(),
+        selectedRunEventsQuery.refetch()
       );
     }
 
     if (comparisonRunId !== undefined) {
       refreshes.push(
         comparisonRunDetailQuery.refetch(),
-        comparisonRunEventsQuery.refetch(),
+        comparisonRunEventsQuery.refetch()
       );
     }
 
@@ -863,7 +865,7 @@ export function DashboardShell() {
           <CommandHeader
             commandMode={commandMode}
             deliveryActionError={dashboardQueryFailure(
-              deliveryActionMutation.error,
+              deliveryActionMutation.error
             )}
             deliveryActionPending={deliveryActionMutation.isPending}
             deliverySnapshot={selectedDeliverySnapshot}
@@ -944,7 +946,7 @@ function RunReplayScrubber({
   const previousIndex = Math.max(replayState.currentIndex - 1, 0);
   const nextIndex = Math.min(
     replayState.currentIndex + 1,
-    Math.max(replayState.steps.length - 1, 0),
+    Math.max(replayState.steps.length - 1, 0)
   );
   const isDisabled = replayState.steps.length === 0;
   const canPlay = replayState.steps.length > 1;
@@ -957,9 +959,8 @@ function RunReplayScrubber({
     currentStep === undefined
       ? "Select a run with public events."
       : `Event #${currentStep.event.sequence}`;
-  const handleReplayRangeInput = (
-    event: React.FormEvent<HTMLInputElement>,
-  ) => onSelectReplayIndex(Number(event.currentTarget.value));
+  const handleReplayRangeInput = (event: React.FormEvent<HTMLInputElement>) =>
+    onSelectReplayIndex(Number(event.currentTarget.value));
 
   return (
     <section
@@ -1105,7 +1106,7 @@ function RunComparePanel({
           <div className="flex min-w-0 items-start gap-2">
             <GitCompareArrowsIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             <div className="min-w-0">
-              <p className="text-xs font-medium uppercase text-muted-foreground">
+              <p className="text-xs font-medium text-muted-foreground uppercase">
                 Run Compare
               </p>
               <p className="truncate text-sm font-medium">
@@ -1338,11 +1339,7 @@ function ArtifactDelta({
   );
 }
 
-function MissingDataList({
-  items,
-}: {
-  readonly items: ReadonlyArray<string>;
-}) {
+function MissingDataList({ items }: { readonly items: ReadonlyArray<string> }) {
   return (
     <div className="rounded-md border bg-background p-2">
       <p className="text-xs font-medium text-muted-foreground">
@@ -1412,7 +1409,7 @@ function RunConsole({
       ]
         .join(" ")
         .toLowerCase()
-        .includes(normalizedFilter),
+        .includes(normalizedFilter)
     );
   }, [filter, runConsole.runs]);
 
@@ -1447,7 +1444,7 @@ function RunConsole({
         </div>
         <div className="relative">
           <SearchIcon
-            className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+            className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
             data-testid="run-console-search-icon"
           />
           <Input
@@ -1515,7 +1512,7 @@ function RunConsole({
           <div
             className={cn(
               "flex items-center justify-between gap-3 rounded-md border px-2 py-1.5",
-              serverStatusPillClassName(runConsole.health),
+              serverStatusPillClassName(runConsole.health)
             )}
             data-testid="run-console-server-status"
           >
@@ -1533,7 +1530,7 @@ function RunConsole({
                     aria-live="polite"
                     className={cn(
                       "size-5 gap-0 rounded-full px-0",
-                      serverStatusBadgeClassName(runConsole.health),
+                      serverStatusBadgeClassName(runConsole.health)
                     )}
                     role="status"
                     tabIndex={0}
@@ -1585,8 +1582,7 @@ function IssueDeliveryIntake({
   const normalizedDescription = description.trim();
   const normalizedTitle = title.trim();
   const titleError = submitted && normalizedTitle.length === 0;
-  const descriptionError =
-    submitted && normalizedDescription.length === 0;
+  const descriptionError = submitted && normalizedDescription.length === 0;
   const isOffline = runConsole.health === "offline";
   const canSubmit =
     !isPending &&
@@ -1627,17 +1623,19 @@ function IssueDeliveryIntake({
             className="grid grid-cols-2 rounded-md border bg-muted/30 p-0.5"
             role="radiogroup"
           >
-            {([
-              ["local", "Local"],
-              ["pullRequest", "Draft PR"],
-            ] as const).map(([mode, label]) => (
+            {(
+              [
+                ["local", "Local"],
+                ["pullRequest", "Draft PR"],
+              ] as const
+            ).map(([mode, label]) => (
               <button
                 aria-checked={deliveryMode === mode}
                 className={cn(
                   "h-7 rounded-sm px-2 text-xs font-medium transition-colors",
                   deliveryMode === mode
                     ? "bg-background text-foreground shadow-xs"
-                    : "text-muted-foreground hover:text-foreground",
+                    : "text-muted-foreground hover:text-foreground"
                 )}
                 disabled={isPending || isOffline}
                 key={mode}
@@ -1674,18 +1672,13 @@ function IssueDeliveryIntake({
             </p>
           ) : null}
         </div>
-        <div
-          className="flex flex-col gap-1.5"
-          data-invalid={descriptionError}
-        >
+        <div className="flex flex-col gap-1.5" data-invalid={descriptionError}>
           <Label className="text-xs" htmlFor="issue-delivery-description">
             Issue description
           </Label>
           <Textarea
             aria-describedby={
-              descriptionError
-                ? "issue-delivery-description-error"
-                : undefined
+              descriptionError ? "issue-delivery-description-error" : undefined
             }
             aria-invalid={descriptionError}
             className="max-h-36 min-h-24 resize-y"
@@ -1833,7 +1826,9 @@ function RunConsoleRuns({
         {runs.map((run) => {
           const artifactCountLabel = runArtifactCountLabel({
             evidence:
-              run.id === selectedRunId ? selectedRunArtifactEvidence : undefined,
+              run.id === selectedRunId
+                ? selectedRunArtifactEvidence
+                : undefined,
             run,
           });
 
@@ -1847,7 +1842,9 @@ function RunConsoleRuns({
               >
                 <WorkflowIcon />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">{run.title}</span>
+                  <span className="block truncate font-medium">
+                    {run.title}
+                  </span>
                   {run.specHint === undefined ? null : (
                     <span className="block truncate text-xs text-muted-foreground">
                       {run.specHint}
@@ -1954,22 +1951,28 @@ function CommandHeader({
           sequence: deliverySnapshot.mergeDecisionSequence,
         });
   const mergeActionId = mergeDecisionKey;
-  const readyForReviewConfirmed = deliverySnapshot === undefined
-    ? false
-    : hasCurrentReadyForReviewConfirmation(deliverySnapshot);
-  const readyForReviewReconciliation = deliverySnapshot === undefined
-    ? undefined
-    : authoritativeReadyForReviewAction(deliverySnapshot);
-  const canStartReadyForReview = deliverySnapshot === undefined
-    ? false
-    : hasExactDraftPullRequestObservation(deliverySnapshot);
-  const localReviewAttestation = deliverySnapshot === undefined
-    ? undefined
-    : authoritativeLocalReviewAttestation(deliverySnapshot);
-  const localReviewAttestationConfirmed = localReviewAttestation?.state === "confirmed";
-  const canStartLocalReviewAttestation = deliverySnapshot === undefined
-    ? false
-    : hasExactLocalReviewAttestationObservation(deliverySnapshot);
+  const readyForReviewConfirmed =
+    deliverySnapshot === undefined
+      ? false
+      : hasCurrentReadyForReviewConfirmation(deliverySnapshot);
+  const readyForReviewReconciliation =
+    deliverySnapshot === undefined
+      ? undefined
+      : authoritativeReadyForReviewAction(deliverySnapshot);
+  const canStartReadyForReview =
+    deliverySnapshot === undefined
+      ? false
+      : hasExactDraftPullRequestObservation(deliverySnapshot);
+  const localReviewAttestation =
+    deliverySnapshot === undefined
+      ? undefined
+      : authoritativeLocalReviewAttestation(deliverySnapshot);
+  const localReviewAttestationConfirmed =
+    localReviewAttestation?.state === "confirmed";
+  const canStartLocalReviewAttestation =
+    deliverySnapshot === undefined
+      ? false
+      : hasExactLocalReviewAttestationObservation(deliverySnapshot);
   const terminalDelivery = deliverySnapshot?.stage === "completed";
   const selectedConsoleRun = serverConnection.selectedRun;
   const selectedStatusLabel =
@@ -2014,7 +2017,8 @@ function CommandHeader({
               )}
               {deliverySnapshot.remediation === undefined ? null : (
                 <span data-testid="selected-run-remediation-status">
-                  Attempt {deliverySnapshot.remediation.attempt}/2: {deliverySnapshot.remediation.state}
+                  Attempt {deliverySnapshot.remediation.attempt}/2:{" "}
+                  {deliverySnapshot.remediation.state}
                 </span>
               )}
               {deliverySnapshot.publication?.state === "confirmed" ? (
@@ -2028,60 +2032,136 @@ function CommandHeader({
                   <ExternalLinkIcon className="size-3" />
                 </a>
               ) : null}
-              {terminalDelivery && deliverySnapshot.latestMergeAction?.state === "dispatchConfirmed" ? (
-                <span className="inline-flex items-center gap-1 font-medium text-foreground" data-testid="selected-run-merge-status" title={deliverySnapshot.latestMergeAction.mergeCommitSha}>
+              {terminalDelivery &&
+              deliverySnapshot.latestMergeAction?.state ===
+                "dispatchConfirmed" ? (
+                <span
+                  className="inline-flex items-center gap-1 font-medium text-foreground"
+                  data-testid="selected-run-merge-status"
+                  title={deliverySnapshot.latestMergeAction.mergeCommitSha}
+                >
                   <GitCompareArrowsIcon className="size-3" />
-                  Merged {deliverySnapshot.latestMergeAction.mergeCommitSha.slice(0, 7)}
+                  Merged{" "}
+                  {deliverySnapshot.latestMergeAction.mergeCommitSha.slice(
+                    0,
+                    7
+                  )}
                 </span>
               ) : null}
-              {terminalDelivery && deliverySnapshot.latestCleanupAction?.state === "completed" ? (
-                <span className="inline-flex items-center gap-1 font-medium text-foreground" data-testid="selected-run-cleanup-status">
+              {terminalDelivery &&
+              deliverySnapshot.latestCleanupAction?.state === "completed" ? (
+                <span
+                  className="inline-flex items-center gap-1 font-medium text-foreground"
+                  data-testid="selected-run-cleanup-status"
+                >
                   <BadgeCheckIcon className="size-3" />
                   Cleanup complete
                 </span>
               ) : null}
-              {!terminalDelivery && deliverySnapshot.publication?.state === "confirmed" && !readyForReviewConfirmed && (readyForReviewReconciliation !== undefined || canStartReadyForReview) ? (
+              {!terminalDelivery &&
+              deliverySnapshot.publication?.state === "confirmed" &&
+              !readyForReviewConfirmed &&
+              (readyForReviewReconciliation !== undefined ||
+                canStartReadyForReview) ? (
                 <Button
                   disabled={deliveryActionPending}
-                  onClick={() => void onDeliveryAction(readyForReviewAction(deliverySnapshot))}
+                  onClick={() =>
+                    void onDeliveryAction(
+                      readyForReviewAction(deliverySnapshot)
+                    )
+                  }
                   size="xs"
                   variant="outline"
                 >
                   {readyForReviewReconciliation !== undefined ? (
-                    <RefreshCwIcon className={cn(deliveryActionPending && "animate-spin")} data-icon="inline-start" />
+                    <RefreshCwIcon
+                      className={cn(deliveryActionPending && "animate-spin")}
+                      data-icon="inline-start"
+                    />
                   ) : null}
                   {readyForReviewReconciliation !== undefined
                     ? "Reconcile ready state"
                     : "Mark ready for review"}
                 </Button>
               ) : null}
-              {deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed ? (
-                <span className="font-medium text-foreground" data-testid="selected-run-ready-status">Ready for review</span>
+              {deliverySnapshot.publication?.state === "confirmed" &&
+              readyForReviewConfirmed ? (
+                <span
+                  className="font-medium text-foreground"
+                  data-testid="selected-run-ready-status"
+                >
+                  Ready for review
+                </span>
               ) : null}
-              {!terminalDelivery && deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && !localReviewAttestationConfirmed && (localReviewAttestation?.state === "intentRecorded" || canStartLocalReviewAttestation) ? (
+              {!terminalDelivery &&
+              deliverySnapshot.publication?.state === "confirmed" &&
+              readyForReviewConfirmed &&
+              !localReviewAttestationConfirmed &&
+              (localReviewAttestation?.state === "intentRecorded" ||
+                canStartLocalReviewAttestation) ? (
                 <Button
                   disabled={deliveryActionPending}
-                  onClick={() => void onDeliveryAction(localReviewAttestationAction(deliverySnapshot))}
+                  onClick={() =>
+                    void onDeliveryAction(
+                      localReviewAttestationAction(deliverySnapshot)
+                    )
+                  }
                   size="xs"
                   variant="outline"
                 >
-                  {localReviewAttestation?.state === "intentRecorded" ? <RefreshCwIcon className={cn(deliveryActionPending && "animate-spin")} data-icon="inline-start" /> : <BadgeCheckIcon data-icon="inline-start" />}
-                  {localReviewAttestation?.state === "intentRecorded" ? "Resume paired review" : "Record paired review"}
+                  {localReviewAttestation?.state === "intentRecorded" ? (
+                    <RefreshCwIcon
+                      className={cn(deliveryActionPending && "animate-spin")}
+                      data-icon="inline-start"
+                    />
+                  ) : (
+                    <BadgeCheckIcon data-icon="inline-start" />
+                  )}
+                  {localReviewAttestation?.state === "intentRecorded"
+                    ? "Resume paired review"
+                    : "Record paired review"}
                 </Button>
               ) : null}
               {localReviewAttestationConfirmed ? (
-                <span className="font-medium text-foreground" data-testid="selected-run-local-review-status">Paired review attested</span>
+                <span
+                  className="font-medium text-foreground"
+                  data-testid="selected-run-local-review-status"
+                >
+                  Paired review attested
+                </span>
               ) : null}
-              {!terminalDelivery && deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && deliverySnapshot.mergeDecision?.approved !== true ? (
-                <div className="flex flex-wrap items-center gap-1" aria-label="Evaluate merge readiness">
+              {!terminalDelivery &&
+              deliverySnapshot.publication?.state === "confirmed" &&
+              readyForReviewConfirmed &&
+              deliverySnapshot.mergeDecision?.approved !== true ? (
+                <div
+                  className="flex flex-wrap items-center gap-1"
+                  aria-label="Evaluate merge readiness"
+                >
                   {(["merge", "squash", "rebase"] as const).map((method) => (
-                    <Button disabled={deliveryActionPending} key={method} onClick={() => void onDeliveryAction({ actionId: createReadinessActionId(), kind: "evaluateMergeReadiness", mergeMethod: method })} size="xs" variant="outline">
+                    <Button
+                      disabled={deliveryActionPending}
+                      key={method}
+                      onClick={() =>
+                        void onDeliveryAction({
+                          actionId: createReadinessActionId(),
+                          kind: "evaluateMergeReadiness",
+                          mergeMethod: method,
+                        })
+                      }
+                      size="xs"
+                      variant="outline"
+                    >
                       Evaluate {method}
                     </Button>
                   ))}
                 </div>
               ) : null}
-              {deliverySnapshot?.stage === "awaitingMerge" && deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && deliverySnapshot.mergeDecision?.approved === true && deliverySnapshot.mergeDecisionSequence !== undefined ? (
+              {deliverySnapshot?.stage === "awaitingMerge" &&
+              deliverySnapshot.publication?.state === "confirmed" &&
+              readyForReviewConfirmed &&
+              deliverySnapshot.mergeDecision?.approved === true &&
+              deliverySnapshot.mergeDecisionSequence !== undefined ? (
                 <DeliveryMergeConfirmation
                   actionId={mergeActionId}
                   branch={deliverySnapshot.mergeDecision.branchName}
@@ -2089,43 +2169,65 @@ function CommandHeader({
                   disabled={deliverySnapshot.stage !== "awaitingMerge"}
                   headSha={deliverySnapshot.mergeDecision.headSha}
                   method={deliverySnapshot.mergeDecision.mergeMethod}
-                  onConfirm={() => onDeliveryAction({
-                    actionId: mergeActionId,
-                    expectedBranchName: deliverySnapshot.mergeDecision!.branchName,
-                    expectedDecisionSequence: deliverySnapshot.mergeDecisionSequence!,
-                    expectedHeadSha: deliverySnapshot.mergeDecision!.headSha,
-                    expectedPolicyDigest: deliverySnapshot.mergeDecision!.policyDigest,
-                    expectedPrUrl: deliverySnapshot.mergeDecision!.prUrl,
-                    kind: "merge",
-                    mergeMethod: deliverySnapshot.mergeDecision!.mergeMethod,
-                  })}
+                  onConfirm={() =>
+                    onDeliveryAction({
+                      actionId: mergeActionId,
+                      expectedBranchName:
+                        deliverySnapshot.mergeDecision!.branchName,
+                      expectedDecisionSequence:
+                        deliverySnapshot.mergeDecisionSequence!,
+                      expectedHeadSha: deliverySnapshot.mergeDecision!.headSha,
+                      expectedPolicyDigest:
+                        deliverySnapshot.mergeDecision!.policyDigest,
+                      expectedPrUrl: deliverySnapshot.mergeDecision!.prUrl,
+                      kind: "merge",
+                      mergeMethod: deliverySnapshot.mergeDecision!.mergeMethod,
+                    })
+                  }
                   pending={deliveryActionPending}
                   prUrl={deliverySnapshot.mergeDecision.prUrl}
-                  {...(deliveryActionError === undefined ? {} : { error: dashboardFailureMessage(deliveryActionError, "Merge action failed.") })}
+                  {...(deliveryActionError === undefined
+                    ? {}
+                    : {
+                        error: dashboardFailureMessage(
+                          deliveryActionError,
+                          "Merge action failed."
+                        ),
+                      })}
                 />
               ) : null}
-              {(terminalDelivery ? [] : deliverySnapshot.recoveryActions).map((action) => (
-                <Button
-                  disabled={deliveryActionPending}
-                  key={action}
-                  onClick={() => {
-                    void onDeliveryAction(deliveryRecoveryAction(deliverySnapshot, action));
-                  }}
-                  size="xs"
-                  variant="outline"
-                >
-                  <RefreshCwIcon
-                    className={cn(deliveryActionPending && "animate-spin")}
-                    data-icon="inline-start"
-                  />
-                  {action === "reconcile" ? "Reconcile publication" : action === "retry" ? "Retry publication" : action === "reconcileMerge" ? "Reconcile merge" : "Retry cleanup"}
-                </Button>
-              ))}
+              {(terminalDelivery ? [] : deliverySnapshot.recoveryActions).map(
+                (action) => (
+                  <Button
+                    disabled={deliveryActionPending}
+                    key={action}
+                    onClick={() => {
+                      void onDeliveryAction(
+                        deliveryRecoveryAction(deliverySnapshot, action)
+                      );
+                    }}
+                    size="xs"
+                    variant="outline"
+                  >
+                    <RefreshCwIcon
+                      className={cn(deliveryActionPending && "animate-spin")}
+                      data-icon="inline-start"
+                    />
+                    {action === "reconcile"
+                      ? "Reconcile publication"
+                      : action === "retry"
+                        ? "Retry publication"
+                        : action === "reconcileMerge"
+                          ? "Reconcile merge"
+                          : "Retry cleanup"}
+                  </Button>
+                )
+              )}
               {deliveryActionError === undefined ? null : (
                 <span className="text-destructive" role="alert">
                   {dashboardFailureMessage(
                     deliveryActionError,
-                    "Delivery recovery failed.",
+                    "Delivery recovery failed."
                   )}
                 </span>
               )}
@@ -2181,7 +2283,8 @@ function deliveryStatusLabel(snapshot: typeof DeliverySnapshotDto.Type) {
     case "publishing":
       return `Delivery: publishing ${snapshot.provenance?.headBranch ?? "worktree"}`;
     case "waitingForPr":
-      if (hasCurrentReadyForReviewConfirmation(snapshot)) return `Delivery: PR #${snapshot.publication?.state === "confirmed" ? snapshot.publication.prNumber : ""} ready for review`;
+      if (hasCurrentReadyForReviewConfirmation(snapshot))
+        return `Delivery: PR #${snapshot.publication?.state === "confirmed" ? snapshot.publication.prNumber : ""} ready for review`;
       return snapshot.publication?.state === "confirmed"
         ? `Delivery: draft PR #${snapshot.publication.prNumber} waiting`
         : "Delivery: waiting for draft PR";
@@ -2246,16 +2349,18 @@ function deliveryCiLabel(snapshot: typeof DeliverySnapshotDto.Type) {
   const pending = checks.filter(({ state }) => state === "pending").length;
   if (failing > 0) return `CI: ${failing} failing`;
   if (pending > 0) return `CI: ${pending} pending`;
-  return checks.length === 0 ? "CI: unavailable" : `CI: ${checks.length} passing`;
+  return checks.length === 0
+    ? "CI: unavailable"
+    : `CI: ${checks.length} passing`;
 }
 
 function deliveryReviewLabel(snapshot: typeof DeliverySnapshotDto.Type) {
   const feedback = snapshot.observation?.feedback ?? [];
   const actionable = feedback.filter(
-    ({ classification }) => classification === "actionable",
+    ({ classification }) => classification === "actionable"
   ).length;
   const untrusted = feedback.filter(
-    ({ classification }) => classification === "untrusted",
+    ({ classification }) => classification === "untrusted"
   ).length;
   if (actionable > 0) return `Review: ${actionable} actionable`;
   if (untrusted > 0) return `Review: ${untrusted} untrusted`;
@@ -2333,7 +2438,7 @@ function SecondaryCommandPanel({
   return (
     <section
       aria-label={`${secondaryCommandTitle(commandMode)} panel`}
-      className="absolute inset-x-0 top-0 z-30 max-h-[min(28rem,52svh)] overflow-y-auto border-b bg-background shadow-lg animate-in fade-in-0 slide-in-from-top-2 duration-200 motion-reduce:animate-none"
+      className="absolute inset-x-0 top-0 z-30 max-h-[min(28rem,52svh)] animate-in overflow-y-auto border-b bg-background shadow-lg duration-200 fade-in-0 slide-in-from-top-2 motion-reduce:animate-none"
       data-testid={`secondary-command-panel-${commandMode}`}
     >
       {commandMode === "replay" ? (
@@ -2512,25 +2617,25 @@ function RunCanvas({
 }) {
   const handleNodeSelect = React.useCallback(
     (nodeId: string) => onSelectNode(nodeId),
-    [onSelectNode],
+    [onSelectNode]
   );
   const nodes = React.useMemo(
     () =>
       factoryCanvas === undefined
         ? []
         : toFactoryFlowNodes(factoryCanvas, selectedNode?.id, handleNodeSelect),
-    [factoryCanvas, handleNodeSelect, selectedNode?.id],
+    [factoryCanvas, handleNodeSelect, selectedNode?.id]
   );
   const edges = React.useMemo(
     () =>
       factoryCanvas === undefined
         ? []
         : toFactoryFlowEdges(factoryCanvas, selectedNode?.id),
-    [factoryCanvas, selectedNode?.id],
+    [factoryCanvas, selectedNode?.id]
   );
   const handleNodeClick = React.useCallback<NodeMouseHandler>(
     (_event, node) => handleNodeSelect(node.id),
-    [handleNodeSelect],
+    [handleNodeSelect]
   );
 
   return (
@@ -2604,7 +2709,7 @@ function noticeFor(
     SelectedNodeInspectorModel,
     { readonly kind: "agent" | "workItem" }
   >,
-  prefix: "Activity" | "Artifacts",
+  prefix: "Activity" | "Artifacts"
 ) {
   return model.notices.find((notice) => notice.title.startsWith(prefix));
 }
@@ -2655,17 +2760,17 @@ function AgentInspector({
       artifactId: selectedArtifactId ?? "",
       runId: selectedRunId,
       serverUrl,
-    }),
+    })
   );
   const sessionQuery = useQuery(
     localGaiaAgentSessionQueryOptions({
       agentId: selectedAgentId,
       runId: selectedRunId,
       serverUrl,
-    }),
+    })
   );
   const sessionAction = useMutation(
-    localGaiaAgentSessionActionMutationOptions({ serverUrl }),
+    localGaiaAgentSessionActionMutationOptions({ serverUrl })
   );
   const [streamSession, setStreamSession] = React.useState<
     typeof AgentSessionSnapshotDto.Type | undefined
@@ -2738,23 +2843,23 @@ function AgentInspector({
       streamController.current?.dispose();
       streamController.current = undefined;
     },
-    [],
+    []
   );
   const sessionConnection: AgentInspectorConnection =
     inspector.kind !== "agent"
       ? "unavailable"
       : sessionQuery.isPending && streamSession === undefined
-      ? "connecting"
-      : sessionQuery.isError
-        ? "unavailable"
-        : streamConnection;
+        ? "connecting"
+        : sessionQuery.isError
+          ? "unavailable"
+          : streamConnection;
   const sessionError =
     inspector.kind === "agent"
       ? dashboardQueryFailure(sessionQuery.error) === undefined
         ? streamError
         : dashboardFailureMessage(
             dashboardQueryFailure(sessionQuery.error),
-            "Agent session could not be loaded.",
+            "Agent session could not be loaded."
           )
       : "Live sessions are only available for factory agents.";
   const sessionModel = buildAgentInspectorSessionModel({
@@ -2770,17 +2875,20 @@ function AgentInspector({
   const submitSessionAction = React.useCallback(
     (action: unknown) => {
       if (selectedRunId === undefined || selectedAgentId.length === 0) return;
-      sessionAction.mutate({
-        action,
-        agentId: selectedAgentId,
-        runId: selectedRunId,
-      }, {
-        onSuccess: () => {
-          void sessionQuery.refetch();
+      sessionAction.mutate(
+        {
+          action,
+          agentId: selectedAgentId,
+          runId: selectedRunId,
         },
-      });
+        {
+          onSuccess: () => {
+            void sessionQuery.refetch();
+          },
+        }
+      );
     },
-    [selectedAgentId, selectedRunId, sessionAction, sessionQuery],
+    [selectedAgentId, selectedRunId, sessionAction, sessionQuery]
   );
 
   React.useEffect(() => {
@@ -2789,7 +2897,7 @@ function AgentInspector({
       current.nodeId === selectedInspectorNodeId(inspector) &&
       artifactIdStrings.includes(current.artifactId)
         ? current
-        : undefined,
+        : undefined
     );
   }, [artifactKey, inspector]);
 
@@ -2962,7 +3070,7 @@ function AgentInspectorSession({
   readonly onInteraction: (
     interaction: HarnessPendingInteraction,
     action: string,
-    value: string,
+    value: string
   ) => void;
   readonly onInterrupt: () => void;
   readonly onSteer: (text: string, turnId: string) => void;
@@ -2983,20 +3091,22 @@ function AgentInspectorSession({
             <p className="mt-2 text-xs text-muted-foreground">{model.notice}</p>
           )}
         </div>
-        <Badge variant={model.status === "failed" ? "destructive" : "secondary"}>
+        <Badge
+          variant={model.status === "failed" ? "destructive" : "secondary"}
+        >
           {sessionStateLabel(model.status)}
         </Badge>
       </div>
 
       {model.pendingInteractions.length === 0 ? null : (
         <section className="flex flex-col gap-2">
-          <p className="text-xs font-medium uppercase text-muted-foreground">
+          <p className="text-xs font-medium text-muted-foreground uppercase">
             Pending operator input
           </p>
           {model.pendingInteractions.map((interaction) => {
             const request = pendingRequests.find(
               (candidate) =>
-                candidate.interactionId === interaction.interactionId,
+                candidate.interactionId === interaction.interactionId
             );
             return (
               <PendingInteractionCard
@@ -3011,7 +3121,7 @@ function AgentInspectorSession({
       )}
 
       <section className="flex flex-col gap-2">
-        <p className="text-xs font-medium uppercase text-muted-foreground">
+        <p className="text-xs font-medium text-muted-foreground uppercase">
           Session activity
         </p>
         {model.timeline.length === 0 ? (
@@ -3033,8 +3143,9 @@ function AgentInspectorSession({
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium">{item.title}</p>
-                    {item.details === undefined || item.details === "" ? null : (
-                      <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded-md bg-muted px-3 py-2 text-xs">
+                    {item.details === undefined ||
+                    item.details === "" ? null : (
+                      <pre className="mt-2 max-h-36 overflow-auto rounded-md bg-muted px-3 py-2 text-xs whitespace-pre-wrap">
                         {item.details}
                       </pre>
                     )}
@@ -3111,7 +3222,7 @@ function PendingInteractionCard({
   readonly onInteraction: (
     interaction: HarnessPendingInteraction,
     action: string,
-    value: string,
+    value: string
   ) => void;
 }) {
   const [value, setValue] = React.useState("");
@@ -3123,7 +3234,7 @@ function PendingInteractionCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium">{interaction.title}</p>
-          <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
+          <p className="mt-1 text-xs whitespace-pre-wrap text-muted-foreground">
             {interaction.body}
           </p>
         </div>
@@ -3148,7 +3259,11 @@ function PendingInteractionCard({
             key={action}
             size="sm"
             type="button"
-            variant={action === "approve" || action === "submit" ? "default" : "outline"}
+            variant={
+              action === "approve" || action === "submit"
+                ? "default"
+                : "outline"
+            }
             onClick={() => {
               if (request !== undefined) {
                 onInteraction(request, action, value);
@@ -3250,7 +3365,7 @@ function FactoryEvidenceSummary({
             value: countLabel(
               inspector.artifacts.length,
               "artifact",
-              "artifacts",
+              "artifacts"
             ),
           },
         ]
@@ -3270,7 +3385,7 @@ function FactoryEvidenceSummary({
             value: countLabel(
               inspector.artifacts.length,
               "artifact",
-              "artifacts",
+              "artifacts"
             ),
           },
         ];
@@ -3285,7 +3400,7 @@ function FactoryEvidenceSummary({
           <RoleIcon className="size-4" />
         </div>
         <div className="min-w-0">
-          <p className="text-xs font-medium uppercase text-muted-foreground">
+          <p className="text-xs font-medium text-muted-foreground uppercase">
             Selected {selectedNode.kind === "agent" ? "agent" : "work item"}
           </p>
           <h3 className="mt-1 text-lg font-semibold">{selectedNode.label}</h3>
@@ -3360,7 +3475,7 @@ function SummaryFacts({
           className="min-w-0 rounded-md border bg-muted/20 px-3 py-2"
           key={`${fact.label}:${fact.value}`}
         >
-          <dt className="text-xs font-medium uppercase text-muted-foreground">
+          <dt className="text-xs font-medium text-muted-foreground uppercase">
             {fact.label}
           </dt>
           <dd className="mt-1 truncate text-sm">{fact.value}</dd>
@@ -3384,7 +3499,7 @@ function EvidenceSummarySection({
 }) {
   return (
     <section className="flex flex-col gap-2">
-      <p className="text-xs font-medium uppercase text-muted-foreground">
+      <p className="text-xs font-medium text-muted-foreground uppercase">
         {title}
       </p>
       {items.length === 0 ? (
@@ -3416,7 +3531,10 @@ function FactoryEvidenceActivity({
 }) {
   if (status === "loading") {
     return (
-      <div className="flex flex-col gap-3" data-testid="evidence-events-loading">
+      <div
+        className="flex flex-col gap-3"
+        data-testid="evidence-events-loading"
+      >
         <Skeleton className="h-20 w-full" />
         <Skeleton className="h-20 w-full" />
         <Skeleton className="h-20 w-full" />
@@ -3484,7 +3602,9 @@ function FactoryEvidenceActivity({
                 <p className="mt-2 truncate text-xs text-muted-foreground">
                   Artifacts:{" "}
                   {activity.artifactIds
-                    .map((artifactId) => factoryArtifactLabel(String(artifactId)))
+                    .map((artifactId) =>
+                      factoryArtifactLabel(String(artifactId))
+                    )
                     .join(", ")}
                 </p>
               )}
@@ -3532,7 +3652,9 @@ function FactoryEvidenceArtifacts({
   if (catalogStatus === "error" || catalogStatus === "unavailable") {
     return (
       <DiagnosticCallout
-        message={catalogNotice?.message ?? "Artifact catalog could not be loaded."}
+        message={
+          catalogNotice?.message ?? "Artifact catalog could not be loaded."
+        }
         title={catalogNotice?.title ?? "Artifacts unavailable"}
       />
     );
@@ -3594,7 +3716,7 @@ function FactoryEvidenceArtifacts({
             <EmptyDescription>
               {dashboardFailureMessage(
                 artifactFailure,
-                "The selected artifact could not be loaded.",
+                "The selected artifact could not be loaded."
               )}
             </EmptyDescription>
           </EmptyHeader>
@@ -3729,10 +3851,8 @@ function EventStrip({
                 aria-label={eventStripEventLabel(event, replayState)}
                 className={cn(
                   "flex w-56 shrink-0 flex-col gap-1.5 rounded-md border bg-background p-3",
-                  event.id === replayState.activeEventId &&
-                    "ring-2 ring-ring",
-                  replayState.futureEventIds.includes(event.id) &&
-                    "opacity-55",
+                  event.id === replayState.activeEventId && "ring-2 ring-ring",
+                  replayState.futureEventIds.includes(event.id) && "opacity-55"
                 )}
                 data-testid={`event-strip-event-${event.sequence}`}
                 key={event.id}
@@ -3742,9 +3862,7 @@ function EventStrip({
                     #{event.sequence}
                   </span>
                   <span aria-hidden="true">·</span>
-                  <span className="truncate">
-                    {event.time}
-                  </span>
+                  <span className="truncate">{event.time}</span>
                 </div>
                 <p className="truncate text-sm font-medium">{event.label}</p>
                 <p className="truncate text-xs text-muted-foreground">
@@ -3772,7 +3890,7 @@ function EventStrip({
 
 function eventStripEventLabel(
   event: DashboardRun["events"][number],
-  replayState: RunReplayState,
+  replayState: RunReplayState
 ) {
   const artifactText =
     event.artifactHints.length === 0
@@ -3811,7 +3929,7 @@ function useDeliverySnapshotStream({
       initial !== undefined &&
       current.eventSequence > initial.eventSequence
         ? current
-        : initial,
+        : initial
     );
   }, [initial]);
 
@@ -3839,13 +3957,14 @@ function useDeliverySnapshotStream({
         onError: () => undefined,
         onUpdate: (update) => {
           setSnapshot((current) =>
-            current === undefined || update.eventSequence > current.eventSequence
+            current === undefined ||
+            update.eventSequence > current.eventSequence
               ? update
-              : current,
+              : current
           );
           if (isDeliveryTerminal(update)) handle?.close();
         },
-      },
+      }
     );
     return () => handle?.close();
   }, [initial?.eventSequence, initial?.mode, initial?.stage, runId, serverUrl]);
@@ -3854,11 +3973,13 @@ function useDeliverySnapshotStream({
 }
 
 function isDeliveryTerminal(snapshot: typeof DeliverySnapshotDto.Type) {
-  return snapshot.stage === "failed" ||
+  return (
+    snapshot.stage === "failed" ||
     snapshot.stage === "publicationFailed" ||
     snapshot.stage === "publicationOutcomeUnknown" ||
     snapshot.stage === "remediationFailed" ||
-    snapshot.stage === "remediationOutcomeUnknown";
+    snapshot.stage === "remediationOutcomeUnknown"
+  );
 }
 
 type RunEventStreamStatus =
@@ -3999,7 +4120,7 @@ function runEventStreamUrl(serverUrl: LocalGaiaServerUrl, runId: RunId) {
 }
 
 function parseStreamMessage(
-  message: MessageEvent<string>,
+  message: MessageEvent<string>
 ): RunEvent | undefined {
   try {
     const parsedJson: unknown = JSON.parse(message.data);
@@ -4081,7 +4202,7 @@ function eventStripDisplay({
 function toFactoryFlowNodes(
   model: FactoryCanvasModel,
   selectedNodeId: string | undefined,
-  onSelectNode: (nodeId: string) => void,
+  onSelectNode: (nodeId: string) => void
 ): Array<Node<{ label: React.ReactNode }>> {
   return model.nodes.map((node) => {
     const roleVisual = factoryAgentRoleVisual(node.role);
@@ -4091,7 +4212,7 @@ function toFactoryFlowNodes(
     return {
       className: cn(
         "factory-flow-node h-36 w-80 rounded-xl border-0 bg-transparent p-0 shadow-none",
-        node.id === selectedNodeId && "ring-2 ring-ring",
+        node.id === selectedNodeId && "ring-2 ring-ring"
       ),
       data: {
         label: (
@@ -4110,7 +4231,7 @@ function toFactoryFlowNodes(
                   <RoleIcon className="size-5" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <CardTitle className="truncate text-base font-semibold leading-tight">
+                  <CardTitle className="truncate text-base leading-tight font-semibold">
                     {node.label}
                   </CardTitle>
                   <CardDescription className="truncate">
@@ -4119,7 +4240,7 @@ function toFactoryFlowNodes(
                 </div>
               </CardHeader>
               <CardFooter className="mt-auto h-12 justify-between gap-3 px-4 py-0">
-                <span className="min-w-0 truncate font-mono text-xs uppercase tracking-[0.08em] text-muted-foreground">
+                <span className="min-w-0 truncate font-mono text-xs tracking-[0.08em] text-muted-foreground uppercase">
                   {factoryNodeFooterLabel(node)}
                 </span>
                 {metric === undefined ? null : (
@@ -4197,9 +4318,11 @@ const factoryFlowMobileFitViewOptions = {
 
 function toFactoryFlowEdges(
   model: FactoryCanvasModel,
-  selectedNodeId: string | undefined,
+  selectedNodeId: string | undefined
 ): Array<Edge> {
-  const stateByNodeId = new Map(model.nodes.map((node) => [node.id, node.state]));
+  const stateByNodeId = new Map(
+    model.nodes.map((node) => [node.id, node.state])
+  );
 
   return model.edges.map((edge) => {
     const sourceState = stateByNodeId.get(edge.source);
@@ -4234,7 +4357,7 @@ type FactoryCanvasNodeState = FactoryCanvasModel["nodes"][number]["state"];
 
 export function shouldAnimateFactoryEdge(
   sourceState: FactoryCanvasNodeState | undefined,
-  targetState: FactoryCanvasNodeState | undefined,
+  targetState: FactoryCanvasNodeState | undefined
 ) {
   return sourceState === "running" || targetState === "running";
 }
@@ -4250,7 +4373,7 @@ export function factoryFlowEdgeClassName(input: {
     input.selectedPath && "factory-flow-edge-selected",
     input.hasSelectedNode &&
       !input.selectedPath &&
-      "factory-flow-edge-unselected",
+      "factory-flow-edge-unselected"
   );
 }
 
@@ -4312,7 +4435,7 @@ function serverStatusTooltip(runConsole: RunConsoleState) {
 }
 
 function localRunBadgeVariant(
-  status: RunConsoleRun["status"],
+  status: RunConsoleRun["status"]
 ): "destructive" | "outline" | "secondary" {
   if (status === "failed") {
     return "destructive";
@@ -4325,9 +4448,7 @@ function localRunBadgeVariant(
   return "outline";
 }
 
-function diagnosticLabel(
-  diagnostic: RunConsoleState["diagnostics"][number],
-) {
+function diagnosticLabel(diagnostic: RunConsoleState["diagnostics"][number]) {
   const target =
     diagnostic.runId ?? diagnostic.pathSegment ?? diagnostic.artifactName;
 
@@ -4344,13 +4465,13 @@ type RunCanvasQueryState = {
 function runCanvasErrorMessage(state: RunCanvasQueryState) {
   return dashboardFailureMessage(
     state.graphError,
-    "The selected FactoryGraph could not be loaded.",
+    "The selected FactoryGraph could not be loaded."
   );
 }
 
 function dashboardFailureMessage(
   failure: ReturnType<typeof dashboardQueryFailure>,
-  fallback: string,
+  fallback: string
 ) {
   if (failure?._tag === "DashboardGaiaApiError") {
     return `${failure.error.code}: ${failure.error.message}`;
@@ -4408,10 +4529,36 @@ function stringifyJson(value: unknown) {
   }
 }
 
-export function deliveryRecoveryAction(snapshot: typeof DeliverySnapshotDto.Type, action: typeof snapshot.recoveryActions[number]) {
-  if (action === "reconcileMerge" && snapshot.activeMergeAction !== undefined) return { actionId: snapshot.activeMergeAction.actionId, expectedBranchName: snapshot.activeMergeAction.branchName, expectedDecisionSequence: snapshot.activeMergeAction.decisionSequence, expectedHeadSha: snapshot.activeMergeAction.expectedHeadSha, expectedPolicyDigest: snapshot.activeMergeAction.policyDigest, expectedPrUrl: snapshot.activeMergeAction.prUrl, kind: "merge" as const, mergeMethod: snapshot.activeMergeAction.mergeMethod };
-  if (action === "retryCleanup" && snapshot.activeCleanupAction !== undefined) return { actionId: snapshot.activeCleanupAction.actionId, expectedMergeCommitSha: snapshot.activeCleanupAction.mergeCommitSha, kind: "retryCleanup" as const };
-  if (action === "retryCleanup" && snapshot.latestMergeAction?.state === "dispatchConfirmed") return { actionId: `cleanup-${snapshot.latestMergeAction.actionId}`, expectedMergeCommitSha: snapshot.latestMergeAction.mergeCommitSha, kind: "retryCleanup" as const };
+export function deliveryRecoveryAction(
+  snapshot: typeof DeliverySnapshotDto.Type,
+  action: (typeof snapshot.recoveryActions)[number]
+) {
+  if (action === "reconcileMerge" && snapshot.activeMergeAction !== undefined)
+    return {
+      actionId: snapshot.activeMergeAction.actionId,
+      expectedBranchName: snapshot.activeMergeAction.branchName,
+      expectedDecisionSequence: snapshot.activeMergeAction.decisionSequence,
+      expectedHeadSha: snapshot.activeMergeAction.expectedHeadSha,
+      expectedPolicyDigest: snapshot.activeMergeAction.policyDigest,
+      expectedPrUrl: snapshot.activeMergeAction.prUrl,
+      kind: "merge" as const,
+      mergeMethod: snapshot.activeMergeAction.mergeMethod,
+    };
+  if (action === "retryCleanup" && snapshot.activeCleanupAction !== undefined)
+    return {
+      actionId: snapshot.activeCleanupAction.actionId,
+      expectedMergeCommitSha: snapshot.activeCleanupAction.mergeCommitSha,
+      kind: "retryCleanup" as const,
+    };
+  if (
+    action === "retryCleanup" &&
+    snapshot.latestMergeAction?.state === "dispatchConfirmed"
+  )
+    return {
+      actionId: `cleanup-${snapshot.latestMergeAction.actionId}`,
+      expectedMergeCommitSha: snapshot.latestMergeAction.mergeCommitSha,
+      kind: "retryCleanup" as const,
+    };
   return action;
 }
 
@@ -4420,22 +4567,42 @@ function currentDeliveryHead(snapshot: typeof DeliverySnapshotDto.Type) {
   return snapshot.authoritativeHeadSha;
 }
 
-function hasCurrentReadyForReviewConfirmation(snapshot: typeof DeliverySnapshotDto.Type) {
+function hasCurrentReadyForReviewConfirmation(
+  snapshot: typeof DeliverySnapshotDto.Type
+) {
   const receipt = snapshot.latestReadyForReviewAction;
   const headSha = currentDeliveryHead(snapshot);
-  return headSha !== undefined && receipt !== undefined &&
-    (receipt.state === "confirmedWithoutDispatch" || receipt.state === "dispatchConfirmed") &&
-    receipt.expectedHeadSha === headSha && snapshot.publication?.state === "confirmed" &&
-    receipt.branchName === snapshot.publication.branchName && receipt.prNumber === snapshot.publication.prNumber &&
-    receipt.prUrl === snapshot.publication.prUrl;
+  return (
+    headSha !== undefined &&
+    receipt !== undefined &&
+    (receipt.state === "confirmedWithoutDispatch" ||
+      receipt.state === "dispatchConfirmed") &&
+    receipt.expectedHeadSha === headSha &&
+    snapshot.publication?.state === "confirmed" &&
+    receipt.branchName === snapshot.publication.branchName &&
+    receipt.prNumber === snapshot.publication.prNumber &&
+    receipt.prUrl === snapshot.publication.prUrl
+  );
 }
 
-function authoritativeReadyForReviewAction(snapshot: typeof DeliverySnapshotDto.Type) {
-  const receipt = snapshot.activeReadyForReviewAction ??
-    (snapshot.latestReadyForReviewAction?.state === "dispatchFailed" ? snapshot.latestReadyForReviewAction : undefined);
+function authoritativeReadyForReviewAction(
+  snapshot: typeof DeliverySnapshotDto.Type
+) {
+  const receipt =
+    snapshot.activeReadyForReviewAction ??
+    (snapshot.latestReadyForReviewAction?.state === "dispatchFailed"
+      ? snapshot.latestReadyForReviewAction
+      : undefined);
   const headSha = currentDeliveryHead(snapshot);
-  if (receipt === undefined || headSha === undefined || snapshot.publication?.state !== "confirmed") return undefined;
-  const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(snapshot.publication.prUrl)?.[1];
+  if (
+    receipt === undefined ||
+    headSha === undefined ||
+    snapshot.publication?.state !== "confirmed"
+  )
+    return undefined;
+  const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(
+    snapshot.publication.prUrl
+  )?.[1];
   return receipt.expectedHeadSha === headSha &&
     receipt.branchName === snapshot.publication.branchName &&
     receipt.prNumber === snapshot.publication.prNumber &&
@@ -4446,25 +4613,48 @@ function authoritativeReadyForReviewAction(snapshot: typeof DeliverySnapshotDto.
     : undefined;
 }
 
-function hasExactDraftPullRequestObservation(snapshot: typeof DeliverySnapshotDto.Type) {
-  if (snapshot.publication?.state !== "confirmed" || snapshot.observation === undefined) return false;
+function hasExactDraftPullRequestObservation(
+  snapshot: typeof DeliverySnapshotDto.Type
+) {
+  if (
+    snapshot.publication?.state !== "confirmed" ||
+    snapshot.observation === undefined
+  )
+    return false;
   const headSha = currentDeliveryHead(snapshot);
-  const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(snapshot.publication.prUrl)?.[1];
-  return headSha !== undefined && repository !== undefined &&
+  const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(
+    snapshot.publication.prUrl
+  )?.[1];
+  return (
+    headSha !== undefined &&
+    repository !== undefined &&
     snapshot.observation.branchName === snapshot.publication.branchName &&
     snapshot.observation.draft &&
     snapshot.observation.headSha === headSha &&
     snapshot.observation.prNumber === snapshot.publication.prNumber &&
     snapshot.observation.prUrl === snapshot.publication.prUrl &&
-    snapshot.observation.repository === repository;
+    snapshot.observation.repository === repository
+  );
 }
 
-function authoritativeLocalReviewAttestation(snapshot: typeof DeliverySnapshotDto.Type) {
-  const receipt = snapshot.activeLocalReviewAttestation ??
-    (snapshot.latestLocalReviewAttestation?.state === "confirmed" ? snapshot.latestLocalReviewAttestation : undefined);
+function authoritativeLocalReviewAttestation(
+  snapshot: typeof DeliverySnapshotDto.Type
+) {
+  const receipt =
+    snapshot.activeLocalReviewAttestation ??
+    (snapshot.latestLocalReviewAttestation?.state === "confirmed"
+      ? snapshot.latestLocalReviewAttestation
+      : undefined);
   const headSha = currentDeliveryHead(snapshot);
-  if (receipt === undefined || headSha === undefined || snapshot.publication?.state !== "confirmed") return undefined;
-  const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(snapshot.publication.prUrl)?.[1];
+  if (
+    receipt === undefined ||
+    headSha === undefined ||
+    snapshot.publication?.state !== "confirmed"
+  )
+    return undefined;
+  const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(
+    snapshot.publication.prUrl
+  )?.[1];
   return receipt.runId === snapshot.runId &&
     receipt.repository === repository &&
     receipt.prNumber === snapshot.publication.prNumber &&
@@ -4475,33 +4665,56 @@ function authoritativeLocalReviewAttestation(snapshot: typeof DeliverySnapshotDt
     : undefined;
 }
 
-function hasExactLocalReviewAttestationObservation(snapshot: typeof DeliverySnapshotDto.Type) {
-  if (!hasCurrentReadyForReviewConfirmation(snapshot) || snapshot.publication?.state !== "confirmed" || snapshot.observation === undefined) return false;
+function hasExactLocalReviewAttestationObservation(
+  snapshot: typeof DeliverySnapshotDto.Type
+) {
+  if (
+    !hasCurrentReadyForReviewConfirmation(snapshot) ||
+    snapshot.publication?.state !== "confirmed" ||
+    snapshot.observation === undefined
+  )
+    return false;
   const headSha = currentDeliveryHead(snapshot);
-  const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(snapshot.publication.prUrl)?.[1];
+  const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(
+    snapshot.publication.prUrl
+  )?.[1];
   const reviewDecision = snapshot.observation.reviewDecision;
-  return headSha !== undefined && repository !== undefined &&
+  return (
+    headSha !== undefined &&
+    repository !== undefined &&
     snapshot.observation.branchName === snapshot.publication.branchName &&
     !snapshot.observation.draft &&
     snapshot.observation.headSha === headSha &&
     snapshot.observation.prNumber === snapshot.publication.prNumber &&
     snapshot.observation.prUrl === snapshot.publication.prUrl &&
     snapshot.observation.repository === repository &&
-    (reviewDecision === undefined || reviewDecision === "REVIEW_REQUIRED");
+    (reviewDecision === undefined || reviewDecision === "REVIEW_REQUIRED")
+  );
 }
 
-export function localReviewAttestationAction(snapshot: typeof DeliverySnapshotDto.Type) {
-  if (snapshot.publication?.state !== "confirmed") throw new Error("Confirmed pull request is required.");
+export function localReviewAttestationAction(
+  snapshot: typeof DeliverySnapshotDto.Type
+) {
+  if (snapshot.publication?.state !== "confirmed")
+    throw new Error("Confirmed pull request is required.");
   const authoritative = authoritativeLocalReviewAttestation(snapshot);
-  if (authoritative === undefined && !hasExactLocalReviewAttestationObservation(snapshot)) {
-    throw new Error("Exact current non-draft pull-request observation is required.");
+  if (
+    authoritative === undefined &&
+    !hasExactLocalReviewAttestationObservation(snapshot)
+  ) {
+    throw new Error(
+      "Exact current non-draft pull-request observation is required."
+    );
   }
-  const expectedHeadSha = authoritative?.headSha ?? currentDeliveryHead(snapshot);
-  if (expectedHeadSha === undefined) throw new Error("Authoritative current delivery head is required.");
+  const expectedHeadSha =
+    authoritative?.headSha ?? currentDeliveryHead(snapshot);
+  if (expectedHeadSha === undefined)
+    throw new Error("Authoritative current delivery head is required.");
   return {
     actionId: authoritative?.actionId ?? `attestation-${crypto.randomUUID()}`,
     decision: "approved" as const,
-    expectedBranchName: authoritative?.branchName ?? snapshot.publication.branchName,
+    expectedBranchName:
+      authoritative?.branchName ?? snapshot.publication.branchName,
     expectedHeadSha,
     expectedPrNumber: authoritative?.prNumber ?? snapshot.publication.prNumber,
     expectedPrUrl: authoritative?.prUrl ?? snapshot.publication.prUrl,
@@ -4509,17 +4722,28 @@ export function localReviewAttestationAction(snapshot: typeof DeliverySnapshotDt
   };
 }
 
-export function readyForReviewAction(snapshot: typeof DeliverySnapshotDto.Type) {
-  if (snapshot.publication?.state !== "confirmed") throw new Error("Confirmed pull request is required.");
+export function readyForReviewAction(
+  snapshot: typeof DeliverySnapshotDto.Type
+) {
+  if (snapshot.publication?.state !== "confirmed")
+    throw new Error("Confirmed pull request is required.");
   const authoritative = authoritativeReadyForReviewAction(snapshot);
-  if (authoritative === undefined && !hasExactDraftPullRequestObservation(snapshot)) {
-    throw new Error("Exact current draft pull-request observation is required.");
+  if (
+    authoritative === undefined &&
+    !hasExactDraftPullRequestObservation(snapshot)
+  ) {
+    throw new Error(
+      "Exact current draft pull-request observation is required."
+    );
   }
-  const expectedHeadSha = authoritative?.expectedHeadSha ?? currentDeliveryHead(snapshot);
-  if (expectedHeadSha === undefined) throw new Error("Authoritative current delivery head is required.");
+  const expectedHeadSha =
+    authoritative?.expectedHeadSha ?? currentDeliveryHead(snapshot);
+  if (expectedHeadSha === undefined)
+    throw new Error("Authoritative current delivery head is required.");
   return {
     actionId: authoritative?.actionId ?? `ready-${crypto.randomUUID()}`,
-    expectedBranchName: authoritative?.branchName ?? snapshot.publication.branchName,
+    expectedBranchName:
+      authoritative?.branchName ?? snapshot.publication.branchName,
     expectedHeadSha,
     expectedPrNumber: authoritative?.prNumber ?? snapshot.publication.prNumber,
     expectedPrUrl: authoritative?.prUrl ?? snapshot.publication.prUrl,

@@ -1,5 +1,6 @@
 import { ReviewPhaseSchema, RunIdSchema } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
+
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 
 export const ReviewerSessionAdapterKindSchema = Schema.Literals([
@@ -28,7 +29,7 @@ export type ReviewerSessionDecisionStatus =
   typeof ReviewerSessionDecisionStatusSchema.Type;
 
 export class ReviewerSessionEvidence extends Schema.Class<ReviewerSessionEvidence>(
-  "ReviewerSessionEvidence",
+  "ReviewerSessionEvidence"
 )({
   adapterKind: ReviewerSessionAdapterKindSchema,
   command: Schema.optionalKey(Schema.NonEmptyString),
@@ -47,15 +48,13 @@ export class ReviewerSessionEvidence extends Schema.Class<ReviewerSessionEvidenc
   version: Schema.Literal(1),
 }) {}
 
-const ReviewerSessionEvidenceJson = Schema.toCodecJson(
-  ReviewerSessionEvidence,
-);
+const ReviewerSessionEvidenceJson = Schema.toCodecJson(ReviewerSessionEvidence);
 const encodeReviewerSessionEvidenceJson = Schema.encodeSync(
-  ReviewerSessionEvidenceJson,
+  ReviewerSessionEvidenceJson
 );
 
 export const parseReviewerSessionEvidenceJson = Schema.decodeUnknownSync(
-  ReviewerSessionEvidenceJson,
+  ReviewerSessionEvidenceJson
 );
 
 export function writeReviewerSessionEvidence(input: {
@@ -70,7 +69,7 @@ export function writeReviewerSessionEvidence(input: {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(
       input.path,
-      `${JSON.stringify(encodeReviewerSessionEvidenceJson(input.evidence), null, 2)}\n`,
+      `${JSON.stringify(encodeReviewerSessionEvidenceJson(input.evidence), null, 2)}\n`
     );
 
     return input.evidence;
@@ -80,10 +79,11 @@ export function writeReviewerSessionEvidence(input: {
         makeRuntimeError({
           cause,
           code: "ReviewerSessionEvidenceWriteFailed",
-          message: "Gaia could not write the reviewer session evidence artifact.",
+          message:
+            "Gaia could not write the reviewer session evidence artifact.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }

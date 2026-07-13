@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
+
 import { Effect, FileSystem, Path, Schema } from "effect";
+
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
 import {
@@ -26,7 +28,7 @@ export const SkillBundleStatusSchema = Schema.Literals([
 export type SkillBundleStatus = typeof SkillBundleStatusSchema.Type;
 
 export class SkillBundleEntry extends Schema.Class<SkillBundleEntry>(
-  "SkillBundleEntry",
+  "SkillBundleEntry"
 )({
   commit: Schema.optionalKey(Schema.NonEmptyString),
   name: SkillNameSchema,
@@ -63,7 +65,7 @@ export type SkillInstallCommandResult = {
 };
 
 export type SkillInstallCommandRunner = (
-  input: SkillInstallCommandInput,
+  input: SkillInstallCommandInput
 ) => Effect.Effect<SkillInstallCommandResult, GaiaRuntimeError>;
 
 export type SkillInstallerOptions = {
@@ -72,26 +74,31 @@ export type SkillInstallerOptions = {
 };
 
 export const nodeSkillInstallCommandRunner: SkillInstallCommandRunner = (
-  input,
+  input
 ) =>
   Effect.tryPromise({
     try: () =>
       new Promise<SkillInstallCommandResult>((resolve, reject) => {
-        execFile(input.command, [...input.args], {
-          cwd: input.cwd,
-          maxBuffer: skillInstallCommandMaxBufferBytes,
-        }, (error, stdout, stderr) => {
-          if (error !== null && error.code === undefined) {
-            reject(error);
-            return;
-          }
+        execFile(
+          input.command,
+          [...input.args],
+          {
+            cwd: input.cwd,
+            maxBuffer: skillInstallCommandMaxBufferBytes,
+          },
+          (error, stdout, stderr) => {
+            if (error !== null && error.code === undefined) {
+              reject(error);
+              return;
+            }
 
-          resolve({
-            exitCode: normalizeExitCode(error?.code),
-            stderr: String(stderr),
-            stdout: String(stdout),
-          });
-        });
+            resolve({
+              exitCode: normalizeExitCode(error?.code),
+              stderr: String(stderr),
+              stdout: String(stdout),
+            });
+          }
+        );
       }),
     catch: (cause) =>
       makeRuntimeError({
@@ -124,7 +131,7 @@ export function writeSkillBundle(input: {
           paths: input.paths,
           skill,
           source: input.source,
-        }),
+        })
       );
     }
 
@@ -136,7 +143,7 @@ export function writeSkillBundle(input: {
 
     yield* fs.writeFileString(
       input.paths.skillBundle,
-      `${JSON.stringify(encodeSkillBundleJson(bundle), null, 2)}\n`,
+      `${JSON.stringify(encodeSkillBundleJson(bundle), null, 2)}\n`
     );
 
     return bundle;
@@ -148,17 +155,15 @@ export function writeSkillBundle(input: {
           code: "SkillBundleWriteFailed",
           message: "Gaia could not write the skill bundle artifact.",
           recoverable: false,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
-export function resolvedSkillPaths(
-  bundle: SkillBundle,
-): ReadonlyArray<string> {
+export function resolvedSkillPaths(bundle: SkillBundle): ReadonlyArray<string> {
   return bundle.skills.flatMap((skill) =>
-    skill.resolvedPath === undefined ? [] : [skill.resolvedPath],
+    skill.resolvedPath === undefined ? [] : [skill.resolvedPath]
   );
 }
 
@@ -191,7 +196,7 @@ function resolveExternalSkillBundleEntry(input: {
     const repositoryUrl = yield* resolveRepositoryCloneUrl(input.skill);
     const installDirectory = path.join(
       input.paths.skillInstallRoot,
-      `${input.index}-${safeSkillDirectoryName(input.skill.name)}`,
+      `${input.index}-${safeSkillDirectoryName(input.skill.name)}`
     );
     const repositoryDirectory = path.join(installDirectory, "repository");
     const checkoutRef = input.skill.commit ?? input.skill.version;
@@ -202,7 +207,7 @@ function resolveExternalSkillBundleEntry(input: {
           code: "SkillBundleEntryUnpinned",
           message: `Skill '${input.skill.name}' must pin either commit or version before installation.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -212,7 +217,7 @@ function resolveExternalSkillBundleEntry(input: {
           code: "SkillBundleExternalSourcePathAbsolute",
           message: `Skill '${input.skill.name}' external sourcePath must be relative to the checked out repository.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -224,9 +229,9 @@ function resolveExternalSkillBundleEntry(input: {
             code: "SkillBundleInstallDirectoryFailed",
             message: `Gaia could not create the install directory for skill '${input.skill.name}'.`,
             recoverable: false,
-          }),
-        ),
-      ),
+          })
+        )
+      )
     );
     yield* runSkillInstallCommand(
       {
@@ -235,7 +240,7 @@ function resolveExternalSkillBundleEntry(input: {
         cwd: input.paths.root,
       },
       input.skill,
-      runner,
+      runner
     );
     yield* runSkillInstallCommand(
       {
@@ -244,7 +249,7 @@ function resolveExternalSkillBundleEntry(input: {
         cwd: input.paths.root,
       },
       input.skill,
-      runner,
+      runner
     );
 
     const resolvedPath = path.join(repositoryDirectory, input.skill.sourcePath);
@@ -285,14 +290,14 @@ function resolveRepositoryCloneUrl(skill: SkillManifestEntry) {
       code: "SkillBundleRepositoryUnsupported",
       message: `Skill '${skill.name}' source repository '${skill.sourceRepository}' is not a supported git repository reference.`,
       recoverable: false,
-    }),
+    })
   );
 }
 
 function runSkillInstallCommand(
   input: SkillInstallCommandInput,
   skill: SkillManifestEntry,
-  runner: SkillInstallCommandRunner,
+  runner: SkillInstallCommandRunner
 ) {
   return Effect.gen(function* () {
     const result = yield* runner(input);
@@ -303,7 +308,7 @@ function runSkillInstallCommand(
           code: "SkillBundleInstallCommandFailed",
           message: `Skill '${skill.name}' install command '${input.command} ${input.args.join(" ")}' exited with code ${result.exitCode}.`,
           recoverable: true,
-        }),
+        })
       );
     }
 
@@ -313,7 +318,7 @@ function runSkillInstallCommand(
 
 function resolveLocalSkillBundleEntry(
   skill: SkillManifestEntry,
-  source: SkillManifestSource | undefined,
+  source: SkillManifestSource | undefined
 ) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -338,7 +343,7 @@ function resolveLocalSkillBundleEntry(
 
 function validateSkillDirectory(
   skill: SkillManifestEntry,
-  resolvedPath: string,
+  resolvedPath: string
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -351,9 +356,9 @@ function validateSkillDirectory(
             code: "SkillBundleSourceUnavailable",
             message: `Skill '${skill.name}' source '${resolvedPath}' is not available.`,
             recoverable: false,
-          }),
-        ),
-      ),
+          })
+        )
+      )
     );
 
     if (skillInfo.type !== "Directory") {
@@ -362,7 +367,7 @@ function validateSkillDirectory(
           code: "SkillBundleSourceNotDirectory",
           message: `Skill '${skill.name}' source '${resolvedPath}' must be a directory.`,
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -374,14 +379,14 @@ function validateSkillDirectory(
           code: "SkillBundleSkillMarkdownMissing",
           message: `Skill '${skill.name}' source '${resolvedPath}' must contain SKILL.md.`,
           recoverable: false,
-        }),
+        })
       );
     }
   });
 }
 
 function skillBundleStatus(
-  entries: ReadonlyArray<SkillBundleEntry>,
+  entries: ReadonlyArray<SkillBundleEntry>
 ): SkillBundleStatus {
   if (entries.length === 0) {
     return "empty";

@@ -9,8 +9,9 @@ import {
   type RunId,
 } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { loadRun } from "./event-store.js";
+
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import { loadRun } from "./event-store.js";
 import { HarnessRunResult } from "./harness.js";
 import { runRelative, type RunPaths } from "./paths.js";
 import { ReviewResult } from "./reviewer.js";
@@ -33,7 +34,7 @@ const parseHarnessRunResultJson: (input: unknown) => HarnessRunResult =
   Schema.decodeUnknownSync(HarnessRunResultJson);
 const DogfoodRetrospectiveJson = Schema.toCodecJson(DogfoodRetrospective);
 const encodeDogfoodRetrospectiveJson = Schema.encodeSync(
-  DogfoodRetrospectiveJson,
+  DogfoodRetrospectiveJson
 );
 
 type DraftFinding = {
@@ -71,18 +72,23 @@ type HarnessResultParse =
 /** Derive and persist the Gaia dogfood retrospective artifact for a run. */
 export function writeDogfoodRetrospective(
   runId: RunId,
-  paths: RunPaths,
-): Effect.Effect<DogfoodRetrospective, GaiaRuntimeError, FileSystem.FileSystem | Path.Path> {
+  paths: RunPaths
+): Effect.Effect<
+  DogfoodRetrospective,
+  GaiaRuntimeError,
+  FileSystem.FileSystem | Path.Path
+> {
   return Effect.gen(function* () {
     const loaded = yield* loadRun(paths).pipe(
       Effect.mapError((cause) =>
         makeRuntimeError({
           cause,
           code: "DogfoodRetrospectiveEventReadFailed",
-          message: "Gaia could not read events.jsonl for dogfood retrospective generation.",
+          message:
+            "Gaia could not read events.jsonl for dogfood retrospective generation.",
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
     const drafts: Array<DraftFinding> = [];
 
@@ -93,17 +99,17 @@ export function writeDogfoodRetrospective(
       ...prLoopFindings(
         runId,
         paths,
-        yield* readOptionalJson(paths.prLoopState),
-      ),
+        yield* readOptionalJson(paths.prLoopState)
+      )
     );
     drafts.push(...eventFindings(runId, loaded.events));
 
     const findings = [...aggregateFindings(drafts)].sort(compareFindings);
     const linearCandidates = findings.flatMap((finding) =>
-      finding.candidateIssue === undefined ? [] : [finding.candidateIssue],
+      finding.candidateIssue === undefined ? [] : [finding.candidateIssue]
     );
     const highSignalFindingCount = findings.filter(
-      (finding) => finding.severity !== "info",
+      (finding) => finding.severity !== "info"
     ).length;
     const sourceArtifactPaths = yield* existingSourceArtifactPaths(paths);
     const summary =
@@ -129,21 +135,23 @@ export function writeDogfoodRetrospective(
     });
 
     const fs = yield* FileSystem.FileSystem;
-    yield* fs.writeFileString(
-      paths.dogfoodRetrospective,
-      `${JSON.stringify(encodeDogfoodRetrospectiveJson(retrospective), null, 2)}\n`,
-    ).pipe(
-      Effect.catchTag("PlatformError", (cause) =>
-        Effect.fail(
-          makeRuntimeError({
-            cause,
-            code: "DogfoodRetrospectiveWriteFailed",
-            message: "Gaia could not write dogfood-retrospective.json.",
-            recoverable: true,
-          }),
-        ),
-      ),
-    );
+    yield* fs
+      .writeFileString(
+        paths.dogfoodRetrospective,
+        `${JSON.stringify(encodeDogfoodRetrospectiveJson(retrospective), null, 2)}\n`
+      )
+      .pipe(
+        Effect.catchTag("PlatformError", (cause) =>
+          Effect.fail(
+            makeRuntimeError({
+              cause,
+              code: "DogfoodRetrospectiveWriteFailed",
+              message: "Gaia could not write dogfood-retrospective.json.",
+              recoverable: true,
+            })
+          )
+        )
+      );
 
     return retrospective;
   });
@@ -153,15 +161,19 @@ function reviewFindings(runId: RunId, paths: RunPaths) {
   return Effect.gen(function* () {
     const findings: Array<DraftFinding> = [];
     const planReview = yield* readReviewArtifact(paths.planReviewResult);
-    const evidenceReview = yield* readReviewArtifact(paths.evidenceReviewResult);
+    const evidenceReview = yield* readReviewArtifact(
+      paths.evidenceReviewResult
+    );
 
     if (planReview !== undefined) {
-      findings.push(...reviewResultFindings(runId, planReview, "plan-review.json"));
+      findings.push(
+        ...reviewResultFindings(runId, planReview, "plan-review.json")
+      );
     }
 
     if (evidenceReview !== undefined) {
       findings.push(
-        ...reviewResultFindings(runId, evidenceReview, "evidence-review.json"),
+        ...reviewResultFindings(runId, evidenceReview, "evidence-review.json")
       );
     }
 
@@ -191,7 +203,7 @@ function readReviewArtifact(artifactPath: string) {
 function reviewResultFindings(
   runId: RunId,
   review: ReviewResult,
-  artifactPath: string,
+  artifactPath: string
 ): ReadonlyArray<DraftFinding> {
   const source = sourceForRun({
     artifactPath,
@@ -287,7 +299,7 @@ function workerResultFindings(runId: RunId, paths: RunPaths) {
 
     const result = parsed.value;
     const noisyPaths = result.changedWorkspacePaths.filter((path) =>
-      noisePathPattern.test(path),
+      noisePathPattern.test(path)
     );
     const findings: Array<DraftFinding> = [];
     if (
@@ -403,7 +415,7 @@ function workspaceGateFindings(runId: RunId, paths: RunPaths) {
 function gateItemFinding(
   runId: RunId,
   gate: WorkspacePrQualityGate,
-  item: WorkspacePrQualityGateItem,
+  item: WorkspacePrQualityGateItem
 ): DraftFinding {
   const category = categoryFromGateItem(item);
   return {
@@ -424,7 +436,7 @@ function gateItemFinding(
 function prLoopFindings(
   runId: RunId,
   paths: RunPaths,
-  json: OptionalJson,
+  json: OptionalJson
 ): ReadonlyArray<DraftFinding> {
   if (json._tag !== "Valid" || !isRecord(json.value)) {
     return [];
@@ -459,14 +471,16 @@ function prLoopFindings(
     checksStatus === "pending" ||
     checksStatus === "provider-unavailable"
   ) {
-    const failingChecks = checksStatus === "failing" || checksStatus === "failed";
+    const failingChecks =
+      checksStatus === "failing" || checksStatus === "failed";
     findings.push({
       category: "verification",
       lesson:
         "PR checks should be recorded with terminal status before merge confidence is claimed.",
-      severity: failingChecks || checksStatus === "provider-unavailable"
-        ? "blocker"
-        : "warning",
+      severity:
+        failingChecks || checksStatus === "provider-unavailable"
+          ? "blocker"
+          : "warning",
       sources: [source],
       summary: `GitHub checks are ${checksStatus} in the PR-loop state.`,
     });
@@ -502,7 +516,7 @@ function prLoopFindings(
       lesson: lessonForCategory(
         kind === "failed-checks" || kind === "pending-checks"
           ? "verification"
-          : "operator-workflow",
+          : "operator-workflow"
       ),
       severity: kind === "failed-checks" ? "blocker" : "warning",
       sources: [source],
@@ -515,7 +529,7 @@ function prLoopFindings(
 
 function eventFindings(
   runId: RunId,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ): ReadonlyArray<DraftFinding> {
   const findings: Array<DraftFinding> = [];
   for (const event of events) {
@@ -551,7 +565,7 @@ function eventFindings(
       stringField(event.payload, "code") === "RunStoreLocked" &&
       (stringField(event.payload, "message") ?? "")
         .toLowerCase()
-        .includes("pr-loop"),
+        .includes("pr-loop")
   );
   if (lockFailure !== undefined) {
     findings.push({
@@ -574,7 +588,7 @@ function eventFindings(
 }
 
 function aggregateFindings(
-  drafts: ReadonlyArray<DraftFinding>,
+  drafts: ReadonlyArray<DraftFinding>
 ): ReadonlyArray<DogfoodFinding> {
   const grouped = new Map<string, DraftFinding>();
   const occurrenceCounts = new Map<string, number>();
@@ -620,7 +634,7 @@ function aggregateFindings(
 
 function candidateIssueForFinding(
   finding: DraftFinding,
-  occurrenceCount: number,
+  occurrenceCount: number
 ) {
   const title = `Address Gaia ${finding.category} finding: ${shortTitle(finding.summary)}`;
   const goal = `Prevent repeat Gaia dogfood failure: ${finding.summary}`;
@@ -659,7 +673,7 @@ function candidateIssueForFinding(
 
 function categoryFromText(
   text: string,
-  phase: ReviewResult["phase"],
+  phase: ReviewResult["phase"]
 ): DogfoodFindingCategory {
   const normalized = text.toLowerCase();
   if (
@@ -711,7 +725,7 @@ function categoryFromText(
 }
 
 function categoryFromGateItem(
-  item: WorkspacePrQualityGateItem,
+  item: WorkspacePrQualityGateItem
 ): DogfoodFindingCategory {
   switch (item.check) {
     case "worker-result-reviewable-size":
@@ -738,7 +752,7 @@ function categoryFromGateItem(
 function categoryFromFailure(
   code: string | undefined,
   message: string,
-  stage: string | undefined,
+  stage: string | undefined
 ): DogfoodFindingCategory {
   const text = `${code ?? ""} ${message} ${stage ?? ""}`.toLowerCase();
   if (text.includes("reviewblocked") && text.includes("plan")) {
@@ -807,7 +821,7 @@ function lessonForCategory(category: DogfoodFindingCategory) {
 }
 
 function acceptanceCriteriaForCategory(
-  category: DogfoodFindingCategory,
+  category: DogfoodFindingCategory
 ): ReadonlyArray<string> {
   switch (category) {
     case "boundary-contract":
@@ -880,16 +894,17 @@ function existingSourceArtifactPaths(paths: RunPaths) {
         makeRuntimeError({
           cause,
           code: "DogfoodRetrospectiveArtifactReadFailed",
-          message: "Gaia could not inspect source artifacts for dogfood retrospective generation.",
+          message:
+            "Gaia could not inspect source artifacts for dogfood retrospective generation.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function readOptionalJson(
-  artifactPath: string,
+  artifactPath: string
 ): Effect.Effect<OptionalJson, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -915,11 +930,12 @@ function readOptionalJson(
         makeRuntimeError({
           cause,
           code: "DogfoodRetrospectiveArtifactReadFailed",
-          message: "Gaia could not read an artifact for dogfood retrospective generation.",
+          message:
+            "Gaia could not read an artifact for dogfood retrospective generation.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -955,7 +971,7 @@ function sourceForRun(input: {
 
 function mergeSources(
   left: ReadonlyArray<DogfoodFindingSource>,
-  right: ReadonlyArray<DogfoodFindingSource>,
+  right: ReadonlyArray<DogfoodFindingSource>
 ) {
   const sources: Array<DogfoodFindingSource> = [];
   const seen = new Set<string>();
@@ -980,7 +996,7 @@ function mergeSources(
 
 function maxSeverity(
   left: DogfoodFindingSeverity,
-  right: DogfoodFindingSeverity,
+  right: DogfoodFindingSeverity
 ): DogfoodFindingSeverity {
   const rank: Readonly<Record<DogfoodFindingSeverity, number>> = {
     blocker: 3,
@@ -1035,9 +1051,15 @@ function shortTitle(summary: string) {
 
 function formatSourceEvidence(source: DogfoodFindingSource) {
   const details = [
-    source.artifactPath === undefined ? undefined : `artifact: \`${source.artifactPath}\``,
-    source.eventType === undefined ? undefined : `event: \`${source.eventType}\``,
-    source.pullRequest === undefined ? undefined : `PR: \`${source.pullRequest}\``,
+    source.artifactPath === undefined
+      ? undefined
+      : `artifact: \`${source.artifactPath}\``,
+    source.eventType === undefined
+      ? undefined
+      : `event: \`${source.eventType}\``,
+    source.pullRequest === undefined
+      ? undefined
+      : `PR: \`${source.pullRequest}\``,
     source.url === undefined ? undefined : `url: ${source.url}`,
   ].filter((item): item is string => item !== undefined);
 
@@ -1052,17 +1074,14 @@ function isRecord(input: unknown): input is Readonly<Record<string, unknown>> {
   return typeof input === "object" && input !== null;
 }
 
-function stringField(
-  input: Readonly<Record<string, unknown>>,
-  field: string,
-) {
+function stringField(input: Readonly<Record<string, unknown>>, field: string) {
   const value = input[field];
   return typeof value === "string" ? value : undefined;
 }
 
 function arrayField(
   input: Readonly<Record<string, unknown>>,
-  field: string,
+  field: string
 ): ReadonlyArray<unknown> {
   const value = input[field];
   return Array.isArray(value) ? value : [];

@@ -1,51 +1,52 @@
 import * as Schema from "effect/Schema";
+
 import { makeRunEvent, type RunEvent } from "./events.js";
 import type { RunId } from "./run-id.js";
 
 const IdTextSchema = Schema.NonEmptyString.pipe(
-  Schema.check(Schema.isMaxLength(200)),
+  Schema.check(Schema.isMaxLength(200))
 );
 const BoundedTextSchema = Schema.String.pipe(
-  Schema.check(Schema.isMaxLength(16_384)),
+  Schema.check(Schema.isMaxLength(16_384))
 );
 const BoundedOutputSchema = Schema.String.pipe(
-  Schema.check(Schema.isMaxLength(65_536)),
+  Schema.check(Schema.isMaxLength(65_536))
 );
 const BoundedDiffSchema = Schema.String.pipe(
-  Schema.check(Schema.isMaxLength(131_072)),
+  Schema.check(Schema.isMaxLength(131_072))
 );
 const NonNegativeIntegerSchema = Schema.Number.pipe(
   Schema.check(
     Schema.isInt({ identifier: "NonNegativeInteger" }),
-    Schema.isGreaterThanOrEqualTo(0),
-  ),
+    Schema.isGreaterThanOrEqualTo(0)
+  )
 );
 
 /** Stable Gaia identifier for a harness provider implementation. */
 export const HarnessProviderIdSchema = IdTextSchema.pipe(
-  Schema.brand("HarnessProviderId"),
+  Schema.brand("HarnessProviderId")
 );
 /** Stable Gaia identifier for one harness provider implementation. */
 export type HarnessProviderId = typeof HarnessProviderIdSchema.Type;
 /** Parse a harness provider identifier at a boundary. */
 export const parseHarnessProviderId = Schema.decodeUnknownSync(
-  HarnessProviderIdSchema,
+  HarnessProviderIdSchema
 );
 
 /** Stable Gaia identifier for an interactive harness session. */
 export const HarnessSessionIdSchema = IdTextSchema.pipe(
-  Schema.brand("HarnessSessionId"),
+  Schema.brand("HarnessSessionId")
 );
 /** Stable Gaia identifier for one interactive harness session. */
 export type HarnessSessionId = typeof HarnessSessionIdSchema.Type;
 /** Parse a harness session identifier at a boundary. */
 export const parseHarnessSessionId = Schema.decodeUnknownSync(
-  HarnessSessionIdSchema,
+  HarnessSessionIdSchema
 );
 
 /** Stable Gaia identifier for a provider-neutral turn. */
 export const HarnessTurnIdSchema = IdTextSchema.pipe(
-  Schema.brand("HarnessTurnId"),
+  Schema.brand("HarnessTurnId")
 );
 /** Stable Gaia identifier for one provider-neutral turn. */
 export type HarnessTurnId = typeof HarnessTurnIdSchema.Type;
@@ -54,7 +55,7 @@ export const parseHarnessTurnId = Schema.decodeUnknownSync(HarnessTurnIdSchema);
 
 /** Stable Gaia identifier for an operator-safe session item. */
 export const HarnessItemIdSchema = IdTextSchema.pipe(
-  Schema.brand("HarnessItemId"),
+  Schema.brand("HarnessItemId")
 );
 /** Stable Gaia identifier for one operator-safe session item. */
 export type HarnessItemId = typeof HarnessItemIdSchema.Type;
@@ -63,35 +64,35 @@ export const parseHarnessItemId = Schema.decodeUnknownSync(HarnessItemIdSchema);
 
 /** Stable Gaia identifier for a pending operator interaction. */
 export const HarnessInteractionIdSchema = IdTextSchema.pipe(
-  Schema.brand("HarnessInteractionId"),
+  Schema.brand("HarnessInteractionId")
 );
 /** Stable Gaia identifier for one pending operator interaction. */
 export type HarnessInteractionId = typeof HarnessInteractionIdSchema.Type;
 /** Parse a harness interaction identifier at a boundary. */
 export const parseHarnessInteractionId = Schema.decodeUnknownSync(
-  HarnessInteractionIdSchema,
+  HarnessInteractionIdSchema
 );
 
 /** Stable Gaia identifier for one operator question within an interaction. */
 export const HarnessQuestionIdSchema = IdTextSchema.pipe(
-  Schema.brand("HarnessQuestionId"),
+  Schema.brand("HarnessQuestionId")
 );
 /** Stable Gaia identifier for one operator question. */
 export type HarnessQuestionId = typeof HarnessQuestionIdSchema.Type;
 /** Parse a harness question identifier at a boundary. */
 export const parseHarnessQuestionId = Schema.decodeUnknownSync(
-  HarnessQuestionIdSchema,
+  HarnessQuestionIdSchema
 );
 
 /** Stable Gaia identifier for an operator action. */
 export const HarnessActionIdSchema = IdTextSchema.pipe(
-  Schema.brand("HarnessActionId"),
+  Schema.brand("HarnessActionId")
 );
 /** Stable Gaia identifier for one operator action. */
 export type HarnessActionId = typeof HarnessActionIdSchema.Type;
 /** Parse a harness action identifier at a boundary. */
 export const parseHarnessActionId = Schema.decodeUnknownSync(
-  HarnessActionIdSchema,
+  HarnessActionIdSchema
 );
 
 /** A workspace-relative path that cannot escape through traversal or platform roots. */
@@ -100,16 +101,16 @@ export const WorkspaceRelativePathSchema = Schema.NonEmptyString.pipe(
     Schema.isMaxLength(4_096),
     Schema.isPattern(
       /^(?!\/)(?![A-Za-z]:[\\/])(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*\\)(?:\.|.+)$/,
-      { identifier: "WorkspaceRelativePath" },
-    ),
+      { identifier: "WorkspaceRelativePath" }
+    )
   ),
-  Schema.brand("WorkspaceRelativePath"),
+  Schema.brand("WorkspaceRelativePath")
 );
 /** A parsed path relative to the accepted run workspace. */
 export type WorkspaceRelativePath = typeof WorkspaceRelativePathSchema.Type;
 /** Parse a public workspace-relative path. */
 export const parseWorkspaceRelativePath = Schema.decodeUnknownSync(
-  WorkspaceRelativePathSchema,
+  WorkspaceRelativePathSchema
 );
 
 /** Finite operator interaction categories supported by harnesses. */
@@ -121,8 +122,7 @@ export const HarnessInteractionKindSchema = Schema.Literals([
   "mcpElicitation",
 ] as const);
 /** An operator interaction category. */
-export type HarnessInteractionKind =
-  typeof HarnessInteractionKindSchema.Type;
+export type HarnessInteractionKind = typeof HarnessInteractionKindSchema.Type;
 
 /** Finite provider capability vocabulary used during assignment checks. */
 export const HarnessCapabilitySchema = Schema.Literals([
@@ -148,10 +148,10 @@ export type HarnessCapability = typeof HarnessCapabilitySchema.Type;
 
 /** Serializable, explicit capabilities advertised by a harness provider. */
 export class HarnessCapabilities extends Schema.Class<HarnessCapabilities>(
-  "HarnessCapabilities",
+  "HarnessCapabilities"
 )({
   approvals: Schema.Array(HarnessInteractionKindSchema).pipe(
-    Schema.check(Schema.isMaxLength(5)),
+    Schema.check(Schema.isMaxLength(5))
   ),
   fileChangeEvents: Schema.Boolean,
   interruption: Schema.Boolean,
@@ -168,13 +168,13 @@ export class HarnessCapabilities extends Schema.Class<HarnessCapabilities>(
 
 /** Stable provider metadata that is safe to persist with a run. */
 export class HarnessProviderDescriptor extends Schema.Class<HarnessProviderDescriptor>(
-  "HarnessProviderDescriptor",
+  "HarnessProviderDescriptor"
 )({
   displayName: Schema.NonEmptyString.pipe(
-    Schema.check(Schema.isMaxLength(200)),
+    Schema.check(Schema.isMaxLength(200))
   ),
   executionModes: Schema.Array(
-    Schema.Literals(["local", "remote"] as const),
+    Schema.Literals(["local", "remote"] as const)
   ).pipe(Schema.check(Schema.isMaxLength(2))),
   providerId: HarnessProviderIdSchema,
 }) {}
@@ -272,7 +272,7 @@ const PlanItemSchema = Schema.Struct({
   kind: Schema.Literal("plan"),
   status: Schema.Literals(["streaming", "completed"] as const),
   steps: Schema.Array(PlanStepSchema).pipe(
-    Schema.check(Schema.isMaxLength(100)),
+    Schema.check(Schema.isMaxLength(100))
   ),
   turnId: HarnessTurnIdSchema,
 });
@@ -283,9 +283,12 @@ const CommandItemSchema = Schema.Struct({
   itemId: HarnessItemIdSchema,
   kind: Schema.Literal("command"),
   output: Schema.optionalKey(BoundedOutputSchema),
-  status: Schema.Literals(
-    ["running", "completed", "failed", "declined"] as const,
-  ),
+  status: Schema.Literals([
+    "running",
+    "completed",
+    "failed",
+    "declined",
+  ] as const),
   turnId: HarnessTurnIdSchema,
   workspacePath: WorkspaceRelativePathSchema,
 });
@@ -296,13 +299,16 @@ const FileChangeSchema = Schema.Struct({
 });
 const FileChangeItemSchema = Schema.Struct({
   changes: Schema.Array(FileChangeSchema).pipe(
-    Schema.check(Schema.isMaxLength(200)),
+    Schema.check(Schema.isMaxLength(200))
   ),
   itemId: HarnessItemIdSchema,
   kind: Schema.Literal("fileChange"),
-  status: Schema.Literals(
-    ["running", "completed", "failed", "declined"] as const,
-  ),
+  status: Schema.Literals([
+    "running",
+    "completed",
+    "failed",
+    "declined",
+  ] as const),
   turnId: HarnessTurnIdSchema,
 });
 const ToolCallItemSchema = Schema.Struct({
@@ -350,12 +356,15 @@ export const HarnessItemSchema = Schema.Union([
 /** An operator-safe provider-neutral session item. */
 export type HarnessItem = typeof HarnessItemSchema.Type;
 
-const ApprovalDecisionSchema = Schema.Literals(
-  ["approve", "approveForSession", "decline", "cancel"] as const,
-);
+const ApprovalDecisionSchema = Schema.Literals([
+  "approve",
+  "approveForSession",
+  "decline",
+  "cancel",
+] as const);
 const CommandApprovalSchema = Schema.Struct({
   allowedDecisions: Schema.Array(ApprovalDecisionSchema).pipe(
-    Schema.check(Schema.isMaxLength(4)),
+    Schema.check(Schema.isMaxLength(4))
   ),
   command: BoundedTextSchema,
   interactionId: HarnessInteractionIdSchema,
@@ -368,21 +377,23 @@ const CommandApprovalSchema = Schema.Struct({
 });
 const FileChangeApprovalSchema = Schema.Struct({
   allowedDecisions: Schema.Array(ApprovalDecisionSchema).pipe(
-    Schema.check(Schema.isMaxLength(4)),
+    Schema.check(Schema.isMaxLength(4))
   ),
   interactionId: HarnessInteractionIdSchema,
   itemId: HarnessItemIdSchema,
   kind: Schema.Literal("fileChangeApproval"),
   paths: Schema.Array(WorkspaceRelativePathSchema).pipe(
-    Schema.check(Schema.isMaxLength(200)),
+    Schema.check(Schema.isMaxLength(200))
   ),
   reason: Schema.optionalKey(BoundedTextSchema),
   requestedAt: IdTextSchema,
   turnId: HarnessTurnIdSchema,
 });
-const HarnessPermissionAccessSchema = Schema.Literals(
-  ["read", "write", "deny"] as const,
-);
+const HarnessPermissionAccessSchema = Schema.Literals([
+  "read",
+  "write",
+  "deny",
+] as const);
 const HarnessPermissionPathSchema = Schema.Struct({
   access: HarnessPermissionAccessSchema,
   path: WorkspaceRelativePathSchema,
@@ -390,17 +401,20 @@ const HarnessPermissionPathSchema = Schema.Struct({
 /** Finite audited permission scope shown to an operator before approval. */
 export const HarnessPermissionScopeSchema = Schema.Struct({
   fileSystem: Schema.Array(HarnessPermissionPathSchema).pipe(
-    Schema.check(Schema.isMaxLength(200)),
+    Schema.check(Schema.isMaxLength(200))
   ),
-  network: Schema.Literals(
-    ["notRequested", "enabled", "disabled", "unspecified"] as const,
-  ),
+  network: Schema.Literals([
+    "notRequested",
+    "enabled",
+    "disabled",
+    "unspecified",
+  ] as const),
 });
 /** A finite audited permission scope safe for public projection. */
 export type HarnessPermissionScope = typeof HarnessPermissionScopeSchema.Type;
 const PermissionApprovalSchema = Schema.Struct({
   allowedDecisions: Schema.Array(ApprovalDecisionSchema).pipe(
-    Schema.check(Schema.isMaxLength(4)),
+    Schema.check(Schema.isMaxLength(4))
   ),
   interactionId: HarnessInteractionIdSchema,
   itemId: HarnessItemIdSchema,
@@ -412,7 +426,7 @@ const PermissionApprovalSchema = Schema.Struct({
 });
 const UserInputQuestionSchema = Schema.Struct({
   options: Schema.Array(BoundedTextSchema).pipe(
-    Schema.check(Schema.isMaxLength(20)),
+    Schema.check(Schema.isMaxLength(20))
   ),
   prompt: BoundedTextSchema,
   questionId: HarnessQuestionIdSchema,
@@ -423,7 +437,7 @@ const UserInputInteractionSchema = Schema.Struct({
   itemId: HarnessItemIdSchema,
   kind: Schema.Literal("userInput"),
   questions: Schema.Array(UserInputQuestionSchema).pipe(
-    Schema.check(Schema.isMaxLength(20)),
+    Schema.check(Schema.isMaxLength(20))
   ),
   requestedAt: IdTextSchema,
   turnId: HarnessTurnIdSchema,
@@ -480,7 +494,7 @@ export type HarnessInteractionResolution =
 
 /** A resolved interaction retains the safe request and audited response. */
 export class HarnessResolvedInteraction extends Schema.Class<HarnessResolvedInteraction>(
-  "HarnessResolvedInteraction",
+  "HarnessResolvedInteraction"
 )({
   request: HarnessPendingInteractionSchema,
   resolution: HarnessInteractionResolutionSchema,
@@ -532,7 +546,7 @@ export const HarnessFailureSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("capabilityMismatch"),
     missing: Schema.Array(HarnessCapabilitySchema).pipe(
-      Schema.check(Schema.isMaxLength(15)),
+      Schema.check(Schema.isMaxLength(15))
     ),
     providerId: HarnessProviderIdSchema,
   }),
@@ -550,9 +564,18 @@ const SessionEventBase = { sessionId: HarnessSessionIdSchema } as const;
 const OperatorActionBase = {
   ...SessionEventBase,
   actionId: HarnessActionIdSchema,
-  actionKind: Schema.Literals(["followUp", "steer", "interrupt", "approval", "userInput", "mcpElicitation"] as const),
+  actionKind: Schema.Literals([
+    "followUp",
+    "steer",
+    "interrupt",
+    "approval",
+    "userInput",
+    "mcpElicitation",
+  ] as const),
   agentId: IdTextSchema,
-  payloadDigest: Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))),
+  payloadDigest: Schema.String.pipe(
+    Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
+  ),
   targetId: Schema.optionalKey(IdTextSchema),
 } as const;
 
@@ -622,10 +645,23 @@ export const HarnessEventSchema = Schema.Union([
     failure: HarnessFailureSchema,
     kind: Schema.Literal("sessionFailed"),
   }),
-  Schema.Struct({ ...OperatorActionBase, kind: Schema.Literal("operatorActionIntentRecorded") }),
-  Schema.Struct({ ...OperatorActionBase, kind: Schema.Literal("operatorActionDispatchAttempted") }),
-  Schema.Struct({ ...OperatorActionBase, kind: Schema.Literal("operatorActionDispatchConfirmed") }),
-  Schema.Struct({ ...OperatorActionBase, kind: Schema.Literal("operatorActionDispatchFailed"), message: BoundedTextSchema }),
+  Schema.Struct({
+    ...OperatorActionBase,
+    kind: Schema.Literal("operatorActionIntentRecorded"),
+  }),
+  Schema.Struct({
+    ...OperatorActionBase,
+    kind: Schema.Literal("operatorActionDispatchAttempted"),
+  }),
+  Schema.Struct({
+    ...OperatorActionBase,
+    kind: Schema.Literal("operatorActionDispatchConfirmed"),
+  }),
+  Schema.Struct({
+    ...OperatorActionBase,
+    kind: Schema.Literal("operatorActionDispatchFailed"),
+    message: BoundedTextSchema,
+  }),
 ]);
 /** A decoded authoritative provider-neutral session event. */
 export type HarnessEvent = typeof HarnessEventSchema.Type;
@@ -644,14 +680,16 @@ export function parseHarnessEvent(input: unknown): HarnessEvent {
   const event = Schema.decodeUnknownSync(HarnessEventSchema)(input);
   const byteLength = harnessEventByteLength(event);
   if (byteLength > 1_048_576) {
-    throw new Error("Harness event exceeds the one-megabyte persistence limit.");
+    throw new Error(
+      "Harness event exceeds the one-megabyte persistence limit."
+    );
   }
   return event;
 }
 
 /** Derived snapshot of one provider-neutral turn. */
 export class HarnessTurnSnapshot extends Schema.Class<HarnessTurnSnapshot>(
-  "HarnessTurnSnapshot",
+  "HarnessTurnSnapshot"
 )({
   failure: Schema.optionalKey(HarnessFailureSchema),
   status: HarnessTurnStatusSchema,
@@ -660,35 +698,35 @@ export class HarnessTurnSnapshot extends Schema.Class<HarnessTurnSnapshot>(
 
 /** Deterministic provider-neutral session projection rebuilt from run events. */
 export class HarnessSessionSnapshot extends Schema.Class<HarnessSessionSnapshot>(
-  "HarnessSessionSnapshot",
+  "HarnessSessionSnapshot"
 )({
   capabilities: HarnessCapabilities,
   failure: Schema.optionalKey(HarnessFailureSchema),
   items: Schema.Array(HarnessItemSchema).pipe(
-    Schema.check(Schema.isMaxLength(2_000)),
+    Schema.check(Schema.isMaxLength(2_000))
   ),
   pendingInteractions: Schema.Array(HarnessPendingInteractionSchema).pipe(
-    Schema.check(Schema.isMaxLength(1_000)),
+    Schema.check(Schema.isMaxLength(1_000))
   ),
   provider: HarnessProviderDescriptor,
   recovered: Schema.Boolean,
   resolvedInteractions: Schema.Array(HarnessResolvedInteraction).pipe(
-    Schema.check(Schema.isMaxLength(1_000)),
+    Schema.check(Schema.isMaxLength(1_000))
   ),
   sessionId: HarnessSessionIdSchema,
   state: HarnessSessionStateSchema,
   turns: Schema.Array(HarnessTurnSnapshot).pipe(
-    Schema.check(Schema.isMaxLength(1_000)),
+    Schema.check(Schema.isMaxLength(1_000))
   ),
 }) {}
 
 /** Return the explicit required capabilities that a provider does not advertise. */
 export function missingHarnessCapabilities(
   capabilities: HarnessCapabilities,
-  required: ReadonlyArray<HarnessCapability>,
+  required: ReadonlyArray<HarnessCapability>
 ): ReadonlyArray<HarnessCapability> {
   return [...new Set(required)].filter(
-    (capability) => !hasHarnessCapability(capabilities, capability),
+    (capability) => !hasHarnessCapability(capabilities, capability)
   );
 }
 
@@ -700,7 +738,7 @@ export function makeHarnessRunEvent(input: {
   readonly timestamp: string;
 }): RunEvent {
   const encoded = Schema.encodeSync(HarnessEventSchema)(
-    parseHarnessEvent(input.event),
+    parseHarnessEvent(input.event)
   );
   return makeRunEvent({
     payload: { event: encoded },
@@ -714,7 +752,7 @@ export function makeHarnessRunEvent(input: {
 /** Rebuild one session projection from the full ordered authoritative run log. */
 export function replayHarnessSession(
   events: ReadonlyArray<RunEvent>,
-  sessionId: HarnessSessionId,
+  sessionId: HarnessSessionId
 ): HarnessSessionSnapshot {
   let expectedSequence = 1;
   let sessionEventBytes = 0;
@@ -723,7 +761,7 @@ export function replayHarnessSession(
   for (const runEvent of events) {
     if (runEvent.sequence !== expectedSequence) {
       throw new Error(
-        `Invalid event sequence: expected ${expectedSequence}, received ${runEvent.sequence}.`,
+        `Invalid event sequence: expected ${expectedSequence}, received ${runEvent.sequence}.`
       );
     }
     expectedSequence += 1;
@@ -749,7 +787,7 @@ export function replayHarnessSession(
 /** Project already-decoded live adapter events without weakening run-log replay authority. */
 export function projectHarnessEvents(
   events: ReadonlyArray<HarnessEvent>,
-  sessionId: HarnessSessionId,
+  sessionId: HarnessSessionId
 ): HarnessSessionSnapshot {
   let projection: MutableProjection | undefined;
   let sessionEventBytes = 0;
@@ -777,7 +815,9 @@ export function projectHarnessEvents(
 
   return HarnessSessionSnapshot.make({
     capabilities: projection.capabilities,
-    ...(projection.failure === undefined ? {} : { failure: projection.failure }),
+    ...(projection.failure === undefined
+      ? {}
+      : { failure: projection.failure }),
     items: [...projection.items.values()].map(({ item }) => item),
     pendingInteractions: [...projection.pendingInteractions.values()],
     provider: projection.provider,
@@ -790,7 +830,7 @@ export function projectHarnessEvents(
         ...(failure === undefined ? {} : { failure }),
         status,
         turnId,
-      }),
+      })
     ),
   });
 }
@@ -817,7 +857,7 @@ type MutableProjection = {
 };
 
 function startProjection(
-  event: Extract<HarnessEvent, { readonly kind: "sessionStarted" }>,
+  event: Extract<HarnessEvent, { readonly kind: "sessionStarted" }>
 ): MutableProjection {
   return {
     capabilities: event.capabilities,
@@ -848,7 +888,9 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
         !structurallyEqual(projection.provider, event.provider) ||
         !structurallyEqual(projection.capabilities, event.capabilities)
       ) {
-        throw new Error("Duplicate harness session start changed its contract.");
+        throw new Error(
+          "Duplicate harness session start changed its contract."
+        );
       }
       return;
     case "sessionStateChanged":
@@ -893,13 +935,14 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
       }
       if (
         projection.resolvedInteractions.some(
-          ({ request }) => request.interactionId === event.interaction.interactionId,
+          ({ request }) =>
+            request.interactionId === event.interaction.interactionId
         )
       ) {
         return;
       }
       const existingInteraction = projection.pendingInteractions.get(
-        event.interaction.interactionId,
+        event.interaction.interactionId
       );
       if (existingInteraction !== undefined) {
         if (!structurallyEqual(existingInteraction, event.interaction)) {
@@ -909,20 +952,22 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
       }
       projection.pendingInteractions.set(
         event.interaction.interactionId,
-        event.interaction,
+        event.interaction
       );
       if (projection.pendingInteractions.size > 1_000) {
-        throw new Error("Harness session exceeded its pending-interaction limit.");
+        throw new Error(
+          "Harness session exceeded its pending-interaction limit."
+        );
       }
       return;
     case "interactionResolved": {
       const request = projection.pendingInteractions.get(
-        event.resolution.interactionId,
+        event.resolution.interactionId
       );
       if (request === undefined) {
         const existingResolution = projection.resolvedInteractions.find(
           ({ resolution }) =>
-            resolution.interactionId === event.resolution.interactionId,
+            resolution.interactionId === event.resolution.interactionId
         )?.resolution;
         if (
           existingResolution !== undefined &&
@@ -935,10 +980,15 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
       requireCompatibleResolution(request, event.resolution);
       projection.pendingInteractions.delete(event.resolution.interactionId);
       projection.resolvedInteractions.push(
-        HarnessResolvedInteraction.make({ request, resolution: event.resolution }),
+        HarnessResolvedInteraction.make({
+          request,
+          resolution: event.resolution,
+        })
       );
       if (projection.resolvedInteractions.length > 1_000) {
-        throw new Error("Harness session exceeded its resolved-interaction limit.");
+        throw new Error(
+          "Harness session exceeded its resolved-interaction limit."
+        );
       }
       return;
     }
@@ -962,11 +1012,11 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
       turn.status = event.status;
       turn.terminal = isTerminalTurnStatus(event.status);
       if (event.failure !== undefined) turn.failure = event.failure;
-      for (const [interactionId, interaction] of projection.pendingInteractions) {
-        if (
-          "turnId" in interaction &&
-          interaction.turnId === event.turnId
-        ) {
+      for (const [
+        interactionId,
+        interaction,
+      ] of projection.pendingInteractions) {
+        if ("turnId" in interaction && interaction.turnId === event.turnId) {
           projection.pendingInteractions.delete(interactionId);
         }
       }
@@ -1003,17 +1053,19 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
 
 function canRecoverTerminalProjection(
   projection: MutableProjection,
-  event: HarnessEvent,
+  event: HarnessEvent
 ): event is Extract<HarnessEvent, { readonly kind: "sessionRecovered" }> {
-  return event.kind === "sessionRecovered" &&
+  return (
+    event.kind === "sessionRecovered" &&
     projection.state === "failed" &&
     projection.failure?.kind === "providerFailure" &&
-    projection.failure.recoverable === true;
+    projection.failure.recoverable === true
+  );
 }
 
 function applyItemDelta(
   projection: MutableProjection,
-  event: Extract<HarnessEvent, { readonly kind: "itemDeltaRecorded" }>,
+  event: Extract<HarnessEvent, { readonly kind: "itemDeltaRecorded" }>
 ): void {
   const existing = projection.items.get(event.itemId);
   const turn = projection.turns.get(event.turnId);
@@ -1025,7 +1077,8 @@ function applyItemDelta(
   }
 
   if (event.deltaKind === "message") {
-    const priorText = existing?.item.kind === "message" ? existing.item.text : "";
+    const priorText =
+      existing?.item.kind === "message" ? existing.item.text : "";
     projection.items.set(event.itemId, {
       final: false,
       item: Schema.decodeUnknownSync(HarnessItemSchema)({
@@ -1052,7 +1105,7 @@ function applyItemDelta(
 
 function applyItemUpsert(
   projection: MutableProjection,
-  event: Extract<HarnessEvent, { readonly kind: "itemUpserted" }>,
+  event: Extract<HarnessEvent, { readonly kind: "itemUpserted" }>
 ): void {
   const existing = projection.items.get(event.item.itemId);
   const eventTurnId = event.turnId;
@@ -1065,10 +1118,7 @@ function applyItemUpsert(
     throw new Error("Harness item turn does not match its event turn.");
   }
   const scopedTurnId = eventTurnId ?? itemTurnId;
-  if (
-    scopedTurnId !== undefined &&
-    !projection.turns.has(scopedTurnId)
-  ) {
+  if (scopedTurnId !== undefined && !projection.turns.has(scopedTurnId)) {
     throw new Error("Harness item references an unknown turn.");
   }
   if (
@@ -1100,7 +1150,7 @@ function structurallyEqual(left: unknown, right: unknown): boolean {
 
 function requireCompatibleResolution(
   request: HarnessPendingInteraction,
-  resolution: HarnessInteractionResolution,
+  resolution: HarnessInteractionResolution
 ): void {
   switch (request.kind) {
     case "commandApproval":
@@ -1110,12 +1160,16 @@ function requireCompatibleResolution(
         resolution.kind !== "approval" ||
         !request.allowedDecisions.includes(resolution.decision)
       ) {
-        throw new Error("Harness interaction resolution is not allowed by its request.");
+        throw new Error(
+          "Harness interaction resolution is not allowed by its request."
+        );
       }
       return;
     case "userInput":
       if (resolution.kind !== "userInput") {
-        throw new Error("Harness user-input interaction has an invalid resolution.");
+        throw new Error(
+          "Harness user-input interaction has an invalid resolution."
+        );
       }
       return;
     case "mcpElicitation":
@@ -1131,7 +1185,7 @@ function requireEventCapability(
     | Extract<HarnessEvent, { readonly kind: "itemDeltaRecorded" }>
     | Extract<HarnessEvent, { readonly kind: "itemUpserted" }>
     | Extract<HarnessEvent, { readonly kind: "interactionRequested" }>
-    | Extract<HarnessEvent, { readonly kind: "sessionRecovered" }>,
+    | Extract<HarnessEvent, { readonly kind: "sessionRecovered" }>
 ): void {
   let required: HarnessCapability | undefined;
   switch (event.kind) {
@@ -1139,7 +1193,8 @@ function requireEventCapability(
       required = "resumableSessions";
       break;
     case "itemDeltaRecorded":
-      required = event.deltaKind === "message" ? "streamingMessages" : undefined;
+      required =
+        event.deltaKind === "message" ? "streamingMessages" : undefined;
       break;
     case "itemUpserted":
       required =
@@ -1168,19 +1223,23 @@ function requireEventCapability(
         event.interaction.kind === "userInput" &&
         !hasHarnessCapability(capabilities, "userQuestions")
       ) {
-        throw new Error("Harness event contradicts provider capability userQuestions.");
+        throw new Error(
+          "Harness event contradicts provider capability userQuestions."
+        );
       }
       break;
   }
 
   if (required !== undefined && !hasHarnessCapability(capabilities, required)) {
-    throw new Error(`Harness event contradicts provider capability ${required}.`);
+    throw new Error(
+      `Harness event contradicts provider capability ${required}.`
+    );
   }
 }
 
 function hasHarnessCapability(
   capabilities: HarnessCapabilities,
-  capability: HarnessCapability,
+  capability: HarnessCapability
 ): boolean {
   switch (capability) {
     case "streamingMessages":
@@ -1218,5 +1277,7 @@ function isTerminalSessionState(state: HarnessSessionState): boolean {
 }
 
 function isTerminalTurnStatus(status: HarnessTurnStatus): boolean {
-  return status === "interrupted" || status === "failed" || status === "completed";
+  return (
+    status === "interrupted" || status === "failed" || status === "completed"
+  );
 }

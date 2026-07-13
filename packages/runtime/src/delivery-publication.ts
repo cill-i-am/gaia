@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   DeliveryPublicationAttempted,
   DeliveryPublicationConfirmed,
@@ -11,8 +13,9 @@ import {
   type RunEvent,
   type RunId,
 } from "@gaia/core";
-import { createHash } from "node:crypto";
 import { Effect, FileSystem, Option, Schema } from "effect";
+
+import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import { appendEvent, readEvents } from "./event-store.js";
 import {
   inspectDeliveryWorktreeOwnership,
@@ -28,8 +31,11 @@ import {
   type GitHubCommandRunner,
 } from "./github-publisher.js";
 import { HarnessRunResult } from "./harness.js";
-import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
-import { makeRunPaths, type RunPaths, type RunStorageOptions } from "./paths.js";
+import {
+  makeRunPaths,
+  type RunPaths,
+  type RunStorageOptions,
+} from "./paths.js";
 import { evaluateWorkspacePrQualityGate } from "./workspace-pr-gate.js";
 
 const digestVersion = 1 as const;
@@ -44,7 +50,8 @@ const generatedRoots = new Set([
   "node_modules",
 ]);
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
-const parseHarnessRunResultJson = Schema.decodeUnknownSync(HarnessRunResultJson);
+const parseHarnessRunResultJson =
+  Schema.decodeUnknownSync(HarnessRunResultJson);
 
 export type DeliveryPublicationOptions = RunStorageOptions & {
   readonly commandRunner?: GitHubCommandRunner;
@@ -54,7 +61,7 @@ export type DeliveryPublicationOptions = RunStorageOptions & {
 /** Commit, push, and reconcile one verified run-owned delivery draft PR. */
 export function publishReadyDeliveryRun(
   runId: RunId,
-  options: DeliveryPublicationOptions = {},
+  options: DeliveryPublicationOptions = {}
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -77,7 +84,9 @@ export function publishReadyDeliveryRun(
 
     const expectedHeads = [
       provenance.baseRevision,
-      ...(existing !== undefined && "commitSha" in existing && existing.commitSha !== undefined
+      ...(existing !== undefined &&
+      "commitSha" in existing &&
+      existing.commitSha !== undefined
         ? [existing.commitSha]
         : []),
       ...(candidateHead === undefined ? [] : [candidateHead]),
@@ -96,7 +105,7 @@ export function publishReadyDeliveryRun(
     const repository = yield* githubRepositorySelector(
       paths,
       provenance,
-      runner,
+      runner
     );
 
     if (existing?.state === "outcomeUnknown") {
@@ -106,7 +115,7 @@ export function publishReadyDeliveryRun(
         provenance,
         repository,
         existing,
-        runner,
+        runner
       );
     }
 
@@ -117,31 +126,33 @@ export function publishReadyDeliveryRun(
         provenance,
         existing,
         existing.commitSha,
-        runner,
+        runner
       );
       if (verified.treeSha !== existing.treeSha) {
         return yield* Effect.fail(
           makeRuntimeError({
             code: "DeliveryCommitIdentityMismatch",
-            message: "The persisted delivery tree no longer matches its commit.",
+            message:
+              "The persisted delivery tree no longer matches its commit.",
             recoverable: false,
-          }),
+          })
         );
       }
       attempted = existing;
     } else {
-      let intentOrFailure: DeliveryPublicationIntent | DeliveryPublicationFailed;
+      let intentOrFailure:
+        | DeliveryPublicationIntent
+        | DeliveryPublicationFailed;
       if (existing?.state === "intentRecorded") {
         if (existing.treeSha === undefined) {
           const sourcePaths = yield* verifiedSourcePaths(
             runId,
             paths,
             provenance,
-            runner,
+            runner
           );
           if (
-            JSON.stringify(sourcePaths) !==
-            JSON.stringify(existing.sourcePaths)
+            JSON.stringify(sourcePaths) !== JSON.stringify(existing.sourcePaths)
           ) {
             return yield* recordFailedFromIntent(runId, paths, existing, {
               code: "DeliveryDiffMismatch",
@@ -156,7 +167,7 @@ export function publishReadyDeliveryRun(
             provenance,
             repository,
             existing,
-            runner,
+            runner
           );
         } else {
           intentOrFailure = existing;
@@ -168,18 +179,12 @@ export function publishReadyDeliveryRun(
           provenance,
           repository,
           runner,
-          events,
+          events
         );
       }
       if (intentOrFailure.state === "failed") return intentOrFailure;
       const intent = intentOrFailure;
-      attempted = yield* ensureCommit(
-        runId,
-        paths,
-        provenance,
-        intent,
-        runner,
-      );
+      attempted = yield* ensureCommit(runId, paths, provenance, intent, runner);
       yield* appendPublication(runId, paths, attempted);
     }
     return yield* publishRemoteAndPullRequest(
@@ -188,7 +193,7 @@ export function publishReadyDeliveryRun(
       provenance,
       repository,
       attempted,
-      runner,
+      runner
     );
   });
 }
@@ -196,7 +201,7 @@ export function publishReadyDeliveryRun(
 /** Start one explicit retry after a definitive recoverable publication failure. */
 export function retryFailedDeliveryPublication(
   runId: RunId,
-  options: DeliveryPublicationOptions = {},
+  options: DeliveryPublicationOptions = {}
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -214,7 +219,7 @@ export function retryFailedDeliveryPublication(
           code: "DeliveryPublicationRetryUnavailable",
           message: "The run has no failed delivery publication to retry.",
           recoverable: false,
-        }),
+        })
       );
     }
     if (existing.state === "confirmed") return existing;
@@ -227,7 +232,7 @@ export function retryFailedDeliveryPublication(
           code: "DeliveryPublicationRetryUnavailable",
           message: "The delivery publication is not safely retryable.",
           recoverable: false,
-        }),
+        })
       );
     }
     yield* requireHistoricalPublicationGates(events);
@@ -247,17 +252,17 @@ export function retryFailedDeliveryPublication(
       const repository = yield* githubRepositorySelector(
         paths,
         provenance,
-        runner,
+        runner
       );
       const sourcePaths = yield* verifiedSourcePaths(
         runId,
         paths,
         provenance,
-        runner,
+        runner
       );
       const operationId = nextPublicationOperationId(runId, events);
       const commitTimestamp = new Date(
-        Math.floor(Date.now() / 1000) * 1000,
+        Math.floor(Date.now() / 1000) * 1000
       ).toISOString();
       const intentInput = {
         baseBranch: provenance.baseBranch,
@@ -282,7 +287,7 @@ export function retryFailedDeliveryPublication(
         provenance,
         repository,
         intent,
-        runner,
+        runner
       );
       if (target.state === "failed") return target;
       const attempted = yield* ensureCommit(
@@ -290,7 +295,7 @@ export function retryFailedDeliveryPublication(
         paths,
         provenance,
         target,
-        runner,
+        runner
       );
       yield* appendPublication(runId, paths, attempted);
       return yield* publishRemoteAndPullRequest(
@@ -299,7 +304,7 @@ export function retryFailedDeliveryPublication(
         provenance,
         repository,
         attempted,
-        runner,
+        runner
       );
     }
 
@@ -317,21 +322,22 @@ export function retryFailedDeliveryPublication(
     const repository = yield* githubRepositorySelector(
       paths,
       provenance,
-      runner,
+      runner
     );
     const sourcePaths = yield* verifiedSourcePaths(
       runId,
       paths,
       provenance,
-      runner,
+      runner
     );
     if (JSON.stringify(sourcePaths) !== JSON.stringify(existing.sourcePaths)) {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "DeliveryDiffMismatch",
-          message: "The verified delivery diff changed before publication retry.",
+          message:
+            "The verified delivery diff changed before publication retry.",
           recoverable: false,
-        }),
+        })
       );
     }
     const verified = yield* verifyCommit(
@@ -339,7 +345,7 @@ export function retryFailedDeliveryPublication(
       provenance,
       existing,
       existing.commitSha,
-      runner,
+      runner
     );
     if (verified.treeSha !== existing.treeSha) {
       return yield* Effect.fail(
@@ -347,7 +353,7 @@ export function retryFailedDeliveryPublication(
           code: "DeliveryCommitIdentityMismatch",
           message: "The retry commit no longer matches its durable receipt.",
           recoverable: false,
-        }),
+        })
       );
     }
     const remote = yield* remoteBranchHead(paths, provenance, runner);
@@ -357,14 +363,14 @@ export function retryFailedDeliveryPublication(
           code: "DeliveryRemoteBranchConflict",
           message: "The remote delivery branch changed before retry.",
           recoverable: false,
-        }),
+        })
       );
     }
     const pullRequests = yield* readPullRequests(
       paths,
       repository,
       existing,
-      runner,
+      runner
     );
     if (pullRequests.length > 0) {
       return yield* Effect.fail(
@@ -372,7 +378,7 @@ export function retryFailedDeliveryPublication(
           code: "DeliveryPullRequestConflict",
           message: "A pull request appeared before retry reconciliation.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -408,7 +414,7 @@ export function retryFailedDeliveryPublication(
       provenance,
       repository,
       attempted,
-      runner,
+      runner
     );
   });
 }
@@ -419,7 +425,7 @@ function createIntent(
   provenance: DeliveryProvenance,
   repository: string,
   runner: GitHubCommandRunner,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ) {
   return Effect.gen(function* () {
     yield* requireAuthoritativePublicationGates(events);
@@ -427,11 +433,11 @@ function createIntent(
       runId,
       paths,
       provenance,
-      runner,
+      runner
     );
     const operationId = nextPublicationOperationId(runId, events);
     const commitTimestamp = new Date(
-      Math.floor(Date.now() / 1000) * 1000,
+      Math.floor(Date.now() / 1000) * 1000
     ).toISOString();
     const commitMessage = `feat: deliver ${runId}`;
     const payloadDigest = structuralDigest({
@@ -464,7 +470,7 @@ function createIntent(
       provenance,
       repository,
       intent,
-      runner,
+      runner
     );
   });
 }
@@ -475,11 +481,11 @@ function preflightPublicationTarget(
   provenance: DeliveryProvenance,
   repository: string,
   intent: DeliveryPublicationIntent,
-  runner: GitHubCommandRunner,
+  runner: GitHubCommandRunner
 ) {
   return Effect.gen(function* () {
     const remoteExit = yield* Effect.exit(
-      remoteBranchHead(paths, provenance, runner),
+      remoteBranchHead(paths, provenance, runner)
     );
     if (remoteExit._tag === "Failure") {
       return yield* recordFailedFromIntent(runId, paths, intent, {
@@ -499,7 +505,7 @@ function preflightPublicationTarget(
       });
     }
     const pullRequestsExit = yield* Effect.exit(
-      readPullRequests(paths, repository, intent, runner),
+      readPullRequests(paths, repository, intent, runner)
     );
     if (pullRequestsExit._tag === "Failure") {
       return yield* recordFailedFromIntent(runId, paths, intent, {
@@ -513,7 +519,8 @@ function preflightPublicationTarget(
     if (pullRequests.length > 0) {
       return yield* recordFailedFromIntent(runId, paths, intent, {
         code: "DeliveryPullRequestConflict",
-        message: "A pull request already exists for the deterministic delivery branch.",
+        message:
+          "A pull request already exists for the deterministic delivery branch.",
         recoverable: false,
         step: "validation",
       });
@@ -526,7 +533,7 @@ function verifiedSourcePaths(
   runId: RunId,
   paths: RunPaths,
   provenance: DeliveryProvenance,
-  runner: GitHubCommandRunner,
+  runner: GitHubCommandRunner
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -541,7 +548,7 @@ function verifiedSourcePaths(
           code: "DeliveryWorkerResultInvalid",
           message: "The delivery worker result belongs to a different run.",
           recoverable: false,
-        }),
+        })
       );
     }
     const gate = yield* evaluateWorkspacePrQualityGate(result.runId, paths);
@@ -551,28 +558,29 @@ function verifiedSourcePaths(
           code: "DeliveryQualityGateFailed",
           message: "The workspace pull-request quality gate did not pass.",
           recoverable: true,
-        }),
+        })
       );
     }
     const harnessPaths = new Set(
       result.outputArtifacts.flatMap((artifact) =>
         artifact.startsWith("workspace/")
           ? [artifact.slice("workspace/".length)]
-          : [],
-      ),
+          : []
+      )
     );
     const declared = uniqueSorted(
       result.workspaceDiff.productChangedPaths.filter(
-        (path) => !isExcluded(path, harnessPaths),
-      ),
+        (path) => !isExcluded(path, harnessPaths)
+      )
     );
     if (declared.length === 0) {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "DeliveryNoSourceChanges",
-          message: "The verified delivery contains no publishable source changes.",
+          message:
+            "The verified delivery contains no publishable source changes.",
           recoverable: false,
-        }),
+        })
       );
     }
     yield* parseDeliveryGitPaths(() => declared.forEach(requireSafeGitPath));
@@ -599,16 +607,17 @@ function verifiedSourcePaths(
       return parsed;
     });
     const unexpected = actual.filter(
-      (path) => !declared.includes(path) && !isExcluded(path, harnessPaths),
+      (path) => !declared.includes(path) && !isExcluded(path, harnessPaths)
     );
     const missing = declared.filter((path) => !actual.includes(path));
     if (unexpected.length > 0 || missing.length > 0) {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "DeliveryDiffMismatch",
-          message: "The actual git diff does not match the verified source paths.",
+          message:
+            "The actual git diff does not match the verified source paths.",
           recoverable: false,
-        }),
+        })
       );
     }
     return declared;
@@ -620,7 +629,7 @@ function ensureCommit(
   paths: RunPaths,
   provenance: DeliveryProvenance,
   intent: DeliveryPublicationIntent,
-  runner: GitHubCommandRunner,
+  runner: GitHubCommandRunner
 ) {
   return Effect.gen(function* () {
     const branchRef = `refs/heads/${intent.branchName}`;
@@ -631,12 +640,10 @@ function ensureCommit(
       branchRef,
     ]);
     if (existingBranch.exitCode === 0) {
-      const branchHead = (
-        yield* runRequired(runner, paths.workspace, "git", [
-          "rev-parse",
-          branchRef,
-        ])
-      ).stdout.trim();
+      const branchHead = (yield* runRequired(runner, paths.workspace, "git", [
+        "rev-parse",
+        branchRef,
+      ])).stdout.trim();
       if (branchHead !== provenance.baseRevision) {
         if (intent.treeSha === undefined) {
           return yield* Effect.fail(
@@ -644,7 +651,7 @@ function ensureCommit(
               code: "DeliveryCommitIdentityMismatch",
               message: "The persisted delivery intent has no prepared tree.",
               recoverable: false,
-            }),
+            })
           );
         }
         const verified = yield* verifyCommit(
@@ -652,7 +659,7 @@ function ensureCommit(
           provenance,
           intent,
           branchHead,
-          runner,
+          runner
         );
         return DeliveryPublicationAttempted.make({
           ...intent,
@@ -690,33 +697,34 @@ function ensureCommit(
       return yield* Effect.fail(
         makeRuntimeError({
           code: "DeliveryIndexMismatch",
-          message: "The git index does not contain exactly the approved source paths.",
+          message:
+            "The git index does not contain exactly the approved source paths.",
           recoverable: false,
-        }),
+        })
       );
     }
-    const preparedTreeSha = (
-      yield* runRequired(runner, paths.workspace, "git", ["write-tree"])
-    ).stdout.trim();
+    const preparedTreeSha = (yield* runRequired(
+      runner,
+      paths.workspace,
+      "git",
+      ["write-tree"]
+    )).stdout.trim();
     if (!/^[a-f0-9]{40}$/u.test(preparedTreeSha)) {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "DeliveryCommitIdentityMismatch",
           message: "Git did not return a valid prepared delivery tree.",
           recoverable: false,
-        }),
+        })
       );
     }
-    if (
-      intent.treeSha !== undefined &&
-      intent.treeSha !== preparedTreeSha
-    ) {
+    if (intent.treeSha !== undefined && intent.treeSha !== preparedTreeSha) {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "DeliveryCommitIdentityMismatch",
           message: "The staged delivery tree changed after durable intent.",
           recoverable: false,
-        }),
+        })
       );
     }
     const preparedIntent =
@@ -750,17 +758,18 @@ function ensureCommit(
         "-m",
         preparedIntent.commitMessage,
       ],
-      commitEnvironment,
+      commitEnvironment
     );
-    const commitSha = (
-      yield* runRequired(runner, paths.workspace, "git", ["rev-parse", "HEAD"])
-    ).stdout.trim();
+    const commitSha = (yield* runRequired(runner, paths.workspace, "git", [
+      "rev-parse",
+      "HEAD",
+    ])).stdout.trim();
     const verified = yield* verifyCommit(
       paths,
       provenance,
       preparedIntent,
       commitSha,
-      runner,
+      runner
     );
     return DeliveryPublicationAttempted.make({
       ...preparedIntent,
@@ -774,7 +783,7 @@ function ensureCommit(
 function cachedPaths(
   paths: RunPaths,
   provenance: DeliveryProvenance,
-  runner: GitHubCommandRunner,
+  runner: GitHubCommandRunner
 ) {
   return runRequired(runner, paths.workspace, "git", [
     "diff",
@@ -785,8 +794,8 @@ function cachedPaths(
     "--",
   ]).pipe(
     Effect.flatMap(({ stdout }) =>
-      parseDeliveryGitPaths(() => uniqueSorted(parseNameStatusZ(stdout))),
-    ),
+      parseDeliveryGitPaths(() => uniqueSorted(parseNameStatusZ(stdout)))
+    )
   );
 }
 
@@ -795,7 +804,7 @@ function verifyCommit(
   provenance: DeliveryProvenance,
   intent: PublicationCommitIdentity,
   commitSha: string,
-  runner: GitHubCommandRunner,
+  runner: GitHubCommandRunner
 ) {
   return Effect.gen(function* () {
     const inspected = yield* runRequired(runner, paths.workspace, "git", [
@@ -823,7 +832,7 @@ function verifyCommit(
           code: "DeliveryCommitIdentityMismatch",
           message: "The delivery commit does not match its durable intent.",
           recoverable: false,
-        }),
+        })
       );
     }
     const treeSha = fields[1];
@@ -833,7 +842,7 @@ function verifyCommit(
           code: "DeliveryCommitIdentityMismatch",
           message: "The delivery commit tree could not be verified.",
           recoverable: false,
-        }),
+        })
       );
     }
     const commitDiff = yield* runRequired(runner, paths.workspace, "git", [
@@ -847,7 +856,7 @@ function verifyCommit(
       "--",
     ]);
     const commitPaths = yield* parseDeliveryGitPaths(() =>
-      uniqueSorted(parseNameStatusZ(commitDiff.stdout)),
+      uniqueSorted(parseNameStatusZ(commitDiff.stdout))
     );
     if (JSON.stringify(commitPaths) !== JSON.stringify(intent.sourcePaths)) {
       return yield* Effect.fail(
@@ -855,7 +864,7 @@ function verifyCommit(
           code: "DeliveryCommitIdentityMismatch",
           message: "The delivery commit contains paths outside durable intent.",
           recoverable: false,
-        }),
+        })
       );
     }
     return { treeSha };
@@ -874,7 +883,7 @@ type PublicationCommitIdentity = PublicationMarkerInput & {
 function optionalLocalBranchHead(
   paths: RunPaths,
   branchName: string,
-  runner: GitHubCommandRunner,
+  runner: GitHubCommandRunner
 ) {
   return Effect.gen(function* () {
     const ref = `refs/heads/${branchName}`;
@@ -888,14 +897,18 @@ function optionalLocalBranchHead(
     if (exists.exitCode !== 0) {
       return yield* Effect.fail(commandFailed("git show-ref"));
     }
-    return (
-      yield* runRequired(runner, paths.workspace, "git", ["rev-parse", ref])
-    ).stdout.trim();
+    return (yield* runRequired(runner, paths.workspace, "git", [
+      "rev-parse",
+      ref,
+    ])).stdout.trim();
   });
 }
 
 function requireAuthoritativePublicationGates(
-  events: ReadonlyArray<{ readonly payload?: Readonly<Record<string, unknown>>; readonly type: string }>,
+  events: ReadonlyArray<{
+    readonly payload?: Readonly<Record<string, unknown>>;
+    readonly type: string;
+  }>
 ) {
   const historical = historicalPublicationGates(events);
   const ready = events.at(-1)?.type === "DELIVERY_READY_TO_PUBLISH";
@@ -906,7 +919,7 @@ function requireAuthoritativePublicationGates(
         message:
           "Publication requires authoritative verification, evidence review, and ready-to-publish state.",
         recoverable: false,
-      }),
+      })
     );
   }
   return Effect.void;
@@ -916,7 +929,7 @@ function requireHistoricalPublicationGates(
   events: ReadonlyArray<{
     readonly payload?: Readonly<Record<string, unknown>>;
     readonly type: string;
-  }>,
+  }>
 ) {
   return historicalPublicationGates(events)
     ? Effect.void
@@ -926,7 +939,7 @@ function requireHistoricalPublicationGates(
           message:
             "Publication retry requires authoritative verification, evidence review, and ready history.",
           recoverable: false,
-        }),
+        })
       );
 }
 
@@ -934,14 +947,16 @@ function historicalPublicationGates(
   events: ReadonlyArray<{
     readonly payload?: Readonly<Record<string, unknown>>;
     readonly type: string;
-  }>,
+  }>
 ) {
-  return events.some(({ type }) => type === "VERIFICATION_COMPLETED") &&
+  return (
+    events.some(({ type }) => type === "VERIFICATION_COMPLETED") &&
     events.some(
       ({ payload, type }) =>
-        type === "REVIEW_COMPLETED" && payload?.["phase"] === "evidence",
+        type === "REVIEW_COMPLETED" && payload?.["phase"] === "evidence"
     ) &&
-    events.some(({ type }) => type === "DELIVERY_READY_TO_PUBLISH");
+    events.some(({ type }) => type === "DELIVERY_READY_TO_PUBLISH")
+  );
 }
 
 function publishRemoteAndPullRequest(
@@ -950,14 +965,18 @@ function publishRemoteAndPullRequest(
   provenance: DeliveryProvenance,
   repository: string,
   attempted: DeliveryPublicationAttempted,
-  runner: GitHubCommandRunner,
+  runner: GitHubCommandRunner
 ) {
   return Effect.gen(function* () {
-    const bodyPreparation = yield* writePullRequestBody(paths, runId, attempted).pipe(
+    const bodyPreparation = yield* writePullRequestBody(
+      paths,
+      runId,
+      attempted
+    ).pipe(
       Effect.map(() => ({ _tag: "Ready" }) as const),
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        Effect.succeed({ _tag: "Failed", error } as const),
-      ),
+        Effect.succeed({ _tag: "Failed", error } as const)
+      )
     );
     if (bodyPreparation._tag === "Failed") {
       return yield* recordFailed(runId, paths, attempted, {
@@ -1001,7 +1020,7 @@ function publishRemoteAndPullRequest(
     }
 
     let pullRequestsExit = yield* Effect.exit(
-      readPullRequests(paths, repository, attempted, runner),
+      readPullRequests(paths, repository, attempted, runner)
     );
     if (pullRequestsExit._tag === "Failure") {
       return yield* recordUnknown(runId, paths, attempted, "reconciliation");
@@ -1012,7 +1031,7 @@ function publishRemoteAndPullRequest(
         runId,
         paths,
         attempted,
-        "pullRequest",
+        "pullRequest"
       );
       yield* runCommand(runner, paths.workspace, "gh", [
         "pr",
@@ -1030,7 +1049,7 @@ function publishRemoteAndPullRequest(
         paths.deliveryPullRequestBody,
       ]).pipe(Effect.exit);
       pullRequestsExit = yield* Effect.exit(
-        readPullRequests(paths, repository, attempted, runner),
+        readPullRequests(paths, repository, attempted, runner)
       );
       if (pullRequestsExit._tag === "Failure") {
         return unknown;
@@ -1069,13 +1088,14 @@ function reconcileUnknownPublication(
   provenance: DeliveryProvenance,
   repository: string,
   unknown: DeliveryPublicationOutcomeUnknown,
-  runner: GitHubCommandRunner,
+  runner: GitHubCommandRunner
 ) {
   return Effect.gen(function* () {
     if (unknown.commitSha === undefined || unknown.treeSha === undefined) {
       return yield* recordFailedFromUnknown(runId, paths, unknown, {
         code: "DeliveryPublicationReceiptInvalid",
-        message: "The ambiguous publication receipt is missing commit identity.",
+        message:
+          "The ambiguous publication receipt is missing commit identity.",
         recoverable: false,
         step: "reconciliation",
       });
@@ -1083,7 +1103,7 @@ function reconcileUnknownPublication(
     const remote = yield* observeRemoteHead(paths, provenance, runner);
     if (remote._tag === "Unavailable") return unknown;
     const pullRequestsExit = yield* Effect.exit(
-      readPullRequests(paths, repository, unknown, runner),
+      readPullRequests(paths, repository, unknown, runner)
     );
     if (pullRequestsExit._tag === "Failure") return unknown;
     const pullRequests = pullRequestsExit.value;
@@ -1144,7 +1164,7 @@ function readPullRequests(
   paths: RunPaths,
   repository: string,
   publication: PublicationMarkerInput,
-  runner: GitHubCommandRunner,
+  runner: GitHubCommandRunner
 ) {
   return Effect.gen(function* () {
     const result = yield* runRequired(runner, paths.workspace, "gh", [
@@ -1162,16 +1182,16 @@ function readPullRequests(
     return yield* parseEffect(
       () => parseGitHubDraftPullRequestViewsJson(result.stdout),
       {
-      code: "DeliveryPullRequestReadInvalid",
-      message: "GitHub pull-request output did not match Gaia's schema.",
-      },
+        code: "DeliveryPullRequestReadInvalid",
+        message: "GitHub pull-request output did not match Gaia's schema.",
+      }
     );
   });
 }
 
 function requireOwnedPullRequest(
   pullRequests: ReadonlyArray<GitHubDraftPullRequestView>,
-  publication: DeliveryPublicationAttempted,
+  publication: DeliveryPublicationAttempted
 ) {
   if (pullRequests.length !== 1) return Option.none();
   const pullRequest = pullRequests[0];
@@ -1192,12 +1212,12 @@ function requireOwnedPullRequest(
 function writePullRequestBody(
   paths: RunPaths,
   runId: RunId,
-  publication: DeliveryPublicationAttempted,
+  publication: DeliveryPublicationAttempted
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const lines = publication.sourcePaths.map(
-      (path) => `- ${markdownCodeSpan(JSON.stringify(path))}`,
+      (path) => `- ${markdownCodeSpan(JSON.stringify(path))}`
     );
     const body = [
       publicationMarker(publication),
@@ -1217,9 +1237,10 @@ function writePullRequestBody(
       return yield* Effect.fail(
         makeRuntimeError({
           code: "DeliveryPullRequestBodyTooLarge",
-          message: "The safe delivery pull-request body exceeds its size limit.",
+          message:
+            "The safe delivery pull-request body exceeds its size limit.",
           recoverable: false,
-        }),
+        })
       );
     }
     yield* fs.writeFileString(paths.deliveryPullRequestBody, body).pipe(
@@ -1229,8 +1250,8 @@ function writePullRequestBody(
           code: "DeliveryPullRequestBodyWriteFailed",
           message: "Gaia could not persist the safe pull-request body.",
           recoverable: true,
-        }),
-      ),
+        })
+      )
     );
   });
 }
@@ -1257,7 +1278,7 @@ type PublicationMarkerInput = {
 function githubRepositorySelector(
   paths: RunPaths,
   provenance: DeliveryProvenance,
-  runner: GitHubCommandRunner,
+  runner: GitHubCommandRunner
 ) {
   return Effect.gen(function* () {
     const remote = yield* runRequired(runner, paths.workspace, "git", [
@@ -1269,8 +1290,9 @@ function githubRepositorySelector(
       () => parseGitHubRepositorySelector(remote.stdout.trim()),
       {
         code: "DeliveryGitHubRepositoryInvalid",
-        message: "The accepted delivery remote is not an owned GitHub repository.",
-      },
+        message:
+          "The accepted delivery remote is not an owned GitHub repository.",
+      }
     );
   });
 }
@@ -1316,21 +1338,21 @@ function parseGitHubRepositorySelector(remote: string) {
 function observeRemoteHead(
   paths: RunPaths,
   provenance: DeliveryProvenance,
-  runner: GitHubCommandRunner,
+  runner: GitHubCommandRunner
 ) {
   return Effect.exit(remoteBranchHead(paths, provenance, runner)).pipe(
     Effect.map((exit) =>
       exit._tag === "Failure"
         ? ({ _tag: "Unavailable" } as const)
-        : ({ _tag: "Available", head: exit.value } as const),
-    ),
+        : ({ _tag: "Available", head: exit.value } as const)
+    )
   );
 }
 
 function remoteBranchHead(
   paths: RunPaths,
   provenance: DeliveryProvenance,
-  runner: GitHubCommandRunner,
+  runner: GitHubCommandRunner
 ) {
   return Effect.gen(function* () {
     const result = yield* runRequired(runner, paths.workspace, "git", [
@@ -1348,7 +1370,7 @@ function remoteBranchHead(
           code: "DeliveryRemoteBranchReadInvalid",
           message: "The remote branch observation was ambiguous.",
           recoverable: true,
-        }),
+        })
       );
     }
     const [sha, ref] = lines[0]?.split(/\s+/u) ?? [];
@@ -1362,7 +1384,7 @@ function remoteBranchHead(
           code: "DeliveryRemoteBranchReadInvalid",
           message: "The remote branch observation was invalid.",
           recoverable: true,
-        }),
+        })
       );
     }
     return sha;
@@ -1378,7 +1400,7 @@ function recordFailed(
     readonly message: string;
     readonly recoverable: boolean;
     readonly step: DeliveryPublicationFailed["step"];
-  },
+  }
 ) {
   return Effect.gen(function* () {
     const failed = DeliveryPublicationFailed.make({
@@ -1400,7 +1422,7 @@ function recordFailedFromIntent(
     readonly message: string;
     readonly recoverable: boolean;
     readonly step: DeliveryPublicationFailed["step"];
-  },
+  }
 ) {
   return Effect.gen(function* () {
     const failed = DeliveryPublicationFailed.make({
@@ -1417,7 +1439,7 @@ function recordUnknown(
   runId: RunId,
   paths: RunPaths,
   attempted: DeliveryPublicationAttempted,
-  step: DeliveryPublicationOutcomeUnknown["step"],
+  step: DeliveryPublicationOutcomeUnknown["step"]
 ) {
   return Effect.gen(function* () {
     const unknown = DeliveryPublicationOutcomeUnknown.make({
@@ -1443,7 +1465,7 @@ function recordFailedFromUnknown(
     readonly message: string;
     readonly recoverable: boolean;
     readonly step: DeliveryPublicationFailed["step"];
-  },
+  }
 ) {
   return Effect.gen(function* () {
     const failed = DeliveryPublicationFailed.make({
@@ -1459,7 +1481,7 @@ function recordFailedFromUnknown(
 function appendPublication(
   runId: RunId,
   paths: RunPaths,
-  publication: DeliveryPublication,
+  publication: DeliveryPublication
 ) {
   const type = publicationEventType(publication);
   return appendEvent(runId, paths, {
@@ -1490,14 +1512,16 @@ function optionalPublication(value: unknown) {
 
 function nextPublicationOperationId(
   runId: RunId,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ) {
   const operationIds = new Set(
     events.flatMap((event) => {
       if (event.type !== "DELIVERY_PUBLICATION_INTENT_RECORDED") return [];
-      const publication = parseDeliveryPublication(event.payload["publication"]);
+      const publication = parseDeliveryPublication(
+        event.payload["publication"]
+      );
       return [publication.operationId];
-    }),
+    })
   );
   return `publish-${runId}-${operationIds.size + 1}`;
 }
@@ -1509,7 +1533,7 @@ function parseProvenance(delivery: Record<string, Schema.Json>) {
       {
         code: "DeliveryPolicyInvalid",
         message: "Accepted pull-request delivery provenance is invalid.",
-      },
+      }
     );
     return provenance;
   });
@@ -1517,11 +1541,14 @@ function parseProvenance(delivery: Record<string, Schema.Json>) {
 
 function parseDelivery(value: unknown) {
   return parseEffect(
-    () => Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(value),
+    () =>
+      Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(
+        value
+      ),
     {
       code: "DeliveryPolicyInvalid",
       message: "The authoritative delivery projection is invalid.",
-    },
+    }
   );
 }
 
@@ -1531,7 +1558,7 @@ function parseJsonFile(fs: FileSystem.FileSystem, path: string) {
       parseEffect(() => JSON.parse(text), {
         code: "DeliveryArtifactJsonInvalid",
         message: "A required delivery artifact was not valid JSON.",
-      }),
+      })
     ),
     Effect.mapError((cause) =>
       cause instanceof GaiaRuntimeError
@@ -1541,14 +1568,14 @@ function parseJsonFile(fs: FileSystem.FileSystem, path: string) {
             code: "DeliveryArtifactUnreadable",
             message: "A required delivery artifact could not be read.",
             recoverable: true,
-          }),
-    ),
+          })
+    )
   );
 }
 
 function parseEffect<A>(
   parse: () => A,
-  error: { readonly code: string; readonly message: string },
+  error: { readonly code: string; readonly message: string }
 ) {
   return Effect.try({
     try: parse,
@@ -1582,7 +1609,7 @@ function runCommand(
   cwd: string,
   command: string,
   args: ReadonlyArray<string>,
-  env?: Readonly<Record<string, string>>,
+  env?: Readonly<Record<string, string>>
 ) {
   return runner({ args, command, cwd, ...(env === undefined ? {} : { env }) });
 }
@@ -1592,7 +1619,7 @@ function runRequired(
   cwd: string,
   command: string,
   args: ReadonlyArray<string>,
-  env?: Readonly<Record<string, string>>,
+  env?: Readonly<Record<string, string>>
 ) {
   return Effect.gen(function* () {
     const result = yield* runCommand(runner, cwd, command, args, env);
@@ -1665,8 +1692,11 @@ function requireSafeGitPath(path: string) {
     path.startsWith("/") ||
     path.includes("\\") ||
     /[\u0000-\u001f\u007f]/u.test(path) ||
-    path.split("/").some((segment) =>
-      segment.length === 0 || segment === "." || segment === "..")
+    path
+      .split("/")
+      .some(
+        (segment) => segment.length === 0 || segment === "." || segment === ".."
+      )
   ) {
     throw makeRuntimeError({
       code: "DeliveryGitPathUnsafe",
@@ -1677,8 +1707,10 @@ function requireSafeGitPath(path: string) {
 }
 
 function isExcluded(path: string, harnessPaths: ReadonlySet<string>) {
-  return harnessPaths.has(path) ||
-    path.split("/").some((segment) => generatedRoots.has(segment));
+  return (
+    harnessPaths.has(path) ||
+    path.split("/").some((segment) => generatedRoots.has(segment))
+  );
 }
 
 function uniqueSorted(values: ReadonlyArray<string>) {
@@ -1693,9 +1725,7 @@ function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
     return `{${Object.entries(value)
-      .toSorted(([left], [right]) =>
-        left < right ? -1 : left > right ? 1 : 0,
-      )
+      .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
       .join(",")}}`;
   }
@@ -1703,6 +1733,8 @@ function canonicalJson(value: unknown): string {
 }
 
 function sameTimestamp(left: string | undefined, right: string) {
-  return left !== undefined &&
-    new Date(left.trim()).getTime() === new Date(right).getTime();
+  return (
+    left !== undefined &&
+    new Date(left.trim()).getTime() === new Date(right).getTime()
+  );
 }

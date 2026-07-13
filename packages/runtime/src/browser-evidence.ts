@@ -1,6 +1,10 @@
 import { RunIdSchema, type RunId } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { chromium, type ConsoleMessage as PlaywrightConsoleMessage } from "playwright";
+import {
+  chromium,
+  type ConsoleMessage as PlaywrightConsoleMessage,
+} from "playwright";
+
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { runRelative, type RunPaths } from "./paths.js";
 
@@ -20,7 +24,7 @@ export const BrowserConsoleLevelSchema = Schema.Literals([
 ] as const);
 
 export class BrowserConsoleMessage extends Schema.Class<BrowserConsoleMessage>(
-  "BrowserConsoleMessage",
+  "BrowserConsoleMessage"
 )({
   level: BrowserConsoleLevelSchema,
   message: Schema.NonEmptyString,
@@ -28,14 +32,14 @@ export class BrowserConsoleMessage extends Schema.Class<BrowserConsoleMessage>(
 }) {}
 
 export class BrowserScreenshotEvidence extends Schema.Class<BrowserScreenshotEvidence>(
-  "BrowserScreenshotEvidence",
+  "BrowserScreenshotEvidence"
 )({
   description: Schema.NonEmptyString,
   path: Schema.NonEmptyString,
 }) {}
 
 export class BrowserPageEvidence extends Schema.Class<BrowserPageEvidence>(
-  "BrowserPageEvidence",
+  "BrowserPageEvidence"
 )({
   consoleMessages: Schema.Array(BrowserConsoleMessage),
   screenshots: Schema.Array(BrowserScreenshotEvidence),
@@ -43,7 +47,7 @@ export class BrowserPageEvidence extends Schema.Class<BrowserPageEvidence>(
 }) {}
 
 export class BrowserEvidence extends Schema.Class<BrowserEvidence>(
-  "BrowserEvidence",
+  "BrowserEvidence"
 )({
   notes: Schema.Array(Schema.NonEmptyString),
   pages: Schema.Array(BrowserPageEvidence),
@@ -56,18 +60,18 @@ export const BrowserEvidenceTargetUrlSchema = Schema.NonEmptyString.pipe(
     identifier: "BrowserEvidenceTargetUrl",
     message: "Expected an HTTP or HTTPS URL.",
   }),
-  Schema.brand("BrowserEvidenceTargetUrl"),
+  Schema.brand("BrowserEvidenceTargetUrl")
 );
 
 export type BrowserEvidenceTargetUrl =
   typeof BrowserEvidenceTargetUrlSchema.Type;
 
 export const parseBrowserEvidenceTargetUrl = Schema.decodeUnknownSync(
-  BrowserEvidenceTargetUrlSchema,
+  BrowserEvidenceTargetUrlSchema
 );
 
 export class BrowserEvidenceRecord extends Schema.Class<BrowserEvidenceRecord>(
-  "BrowserEvidenceRecord",
+  "BrowserEvidenceRecord"
 )({
   evidencePath: Schema.NonEmptyString,
   pages: Schema.Array(BrowserPageEvidence),
@@ -82,7 +86,7 @@ export type BrowserEvidenceCollectorInput = {
 };
 
 export type BrowserEvidenceCollector = (
-  input: BrowserEvidenceCollectorInput,
+  input: BrowserEvidenceCollectorInput
 ) => Effect.Effect<
   BrowserEvidence,
   GaiaRuntimeError,
@@ -102,9 +106,7 @@ export function writeEmptyBrowserEvidence(input: {
 }): Effect.Effect<BrowserEvidence, GaiaRuntimeError, FileSystem.FileSystem> {
   return writeBrowserEvidence({
     evidence: BrowserEvidence.make({
-      notes: [
-        "Browser automation is not collected for this run yet.",
-      ],
+      notes: ["Browser automation is not collected for this run yet."],
       pages: [],
       status: "not-collected",
       version: 1,
@@ -121,7 +123,7 @@ export function writeBrowserEvidence(input: {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(
       input.paths.browserEvidence,
-      `${JSON.stringify(encodeBrowserEvidenceJson(input.evidence), null, 2)}\n`,
+      `${JSON.stringify(encodeBrowserEvidenceJson(input.evidence), null, 2)}\n`
     );
 
     return input.evidence;
@@ -133,9 +135,9 @@ export function writeBrowserEvidence(input: {
           code: "BrowserEvidenceWriteFailed",
           message: "Gaia could not write the browser evidence artifact.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -170,29 +172,32 @@ export function browserEvidenceRecord(input: {
 }
 
 export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
-  input,
+  input
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const screenshotPath = path.join(
       input.paths.browserScreenshots,
-      "page-1.png",
+      "page-1.png"
     );
     const consoleMessages: Array<BrowserConsoleMessage> = [];
 
-    yield* fs.makeDirectory(input.paths.browserScreenshots, { recursive: true }).pipe(
-      Effect.catchTag("PlatformError", (cause) =>
-        Effect.fail(
-          makeRuntimeError({
-            cause,
-            code: "BrowserEvidenceScreenshotDirectoryFailed",
-            message: "Gaia could not create the browser screenshot directory.",
-            recoverable: true,
-          }),
-        ),
-      ),
-    );
+    yield* fs
+      .makeDirectory(input.paths.browserScreenshots, { recursive: true })
+      .pipe(
+        Effect.catchTag("PlatformError", (cause) =>
+          Effect.fail(
+            makeRuntimeError({
+              cause,
+              code: "BrowserEvidenceScreenshotDirectoryFailed",
+              message:
+                "Gaia could not create the browser screenshot directory.",
+              recoverable: true,
+            })
+          )
+        )
+      );
 
     const finalUrl = yield* Effect.tryPromise({
       try: async () => {
@@ -252,7 +257,7 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
   });
 
 function browserConsoleMessage(
-  message: PlaywrightConsoleMessage,
+  message: PlaywrightConsoleMessage
 ): BrowserConsoleMessage | undefined {
   const text = message.text().trim();
   if (text.length === 0) {

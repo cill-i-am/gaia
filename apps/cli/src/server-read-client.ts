@@ -1,3 +1,9 @@
+import { type ChildProcess, spawn } from "node:child_process";
+import { closeSync, openSync, unlinkSync } from "node:fs";
+import { realpath } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import {
   CreateRunAcceptedResponse,
   CreateRunRequest,
@@ -24,11 +30,7 @@ import {
 } from "@gaia/runtime";
 import { Cause, Effect, FileSystem, Option, Predicate, Schema } from "effect";
 import { HttpClient, HttpClientError } from "effect/unstable/http";
-import { type ChildProcess, spawn } from "node:child_process";
-import { closeSync, openSync, unlinkSync } from "node:fs";
-import { realpath } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+
 import {
   createRunFromLocalServerProtocol,
   evaluateMergeReadinessFromLocalServerProtocol,
@@ -47,10 +49,9 @@ const decodeRunId = Schema.decodeUnknownSync(RunIdSchema);
 const decodeLocalRunArtifact = Schema.decodeUnknownSync(LocalRunArtifactDto);
 const decodeServerMetadata = Schema.decodeUnknownSync(ServerMetadata);
 
-export type ServerRunAcceptedSummary =
-  typeof CreateRunAcceptedResponse.Type & {
-    readonly serverUrl: LocalGaiaServerUrl;
-  };
+export type ServerRunAcceptedSummary = typeof CreateRunAcceptedResponse.Type & {
+  readonly serverUrl: LocalGaiaServerUrl;
+};
 
 export function evaluateMergeReadinessFromServer(input: {
   readonly actionId: string;
@@ -61,7 +62,11 @@ export function evaluateMergeReadinessFromServer(input: {
   return requestServer({
     dataName: "merge readiness decision",
     effect: evaluateMergeReadinessFromLocalServerProtocol({
-      payload: { actionId: input.actionId, kind: "evaluateMergeReadiness", mergeMethod: input.mergeMethod },
+      payload: {
+        actionId: input.actionId,
+        kind: "evaluateMergeReadiness",
+        mergeMethod: input.mergeMethod,
+      },
       runId: input.runId,
       serverUrl: input.serverUrl,
     }),
@@ -84,7 +89,9 @@ export function listRunsFromServer(input: {
     const list = response.data;
     const summaries: Array<CommandSummary> = [];
     for (const run of list.runs) {
-      summaries.push(yield* commandSummaryFromLocalRun(run, input.rootDirectory));
+      summaries.push(
+        yield* commandSummaryFromLocalRun(run, input.rootDirectory)
+      );
     }
 
     return summaries;
@@ -108,7 +115,10 @@ export function statusRunFromServer(input: {
       serverUrl: input.serverUrl,
     });
 
-    return yield* commandSummaryFromLocalRun(response.data, input.rootDirectory);
+    return yield* commandSummaryFromLocalRun(
+      response.data,
+      input.rootDirectory
+    );
   });
 }
 
@@ -156,8 +166,8 @@ export function createRunFromServer(input: {
           code: "SpecReadFailed",
           message: `Gaia could not read spec file ${input.specPath}.`,
           recoverable: false,
-        }),
-      ),
+        })
+      )
     );
     const payload = yield* CreateRunRequest.makeEffect({
       delivery: { mode: "local" },
@@ -175,8 +185,8 @@ export function createRunFromServer(input: {
           code: "LocalRunApiInvalidResponse",
           message: "Local Gaia API returned invalid create run request data.",
           recoverable: false,
-        }),
-      ),
+        })
+      )
     );
     const accepted = yield* requestServer({
       dataName: "create run response",
@@ -194,9 +204,7 @@ export function createRunFromServer(input: {
   });
 }
 
-export function ensureLocalServer(input: {
-  readonly rootDirectory: string;
-}) {
+export function ensureLocalServer(input: { readonly rootDirectory: string }) {
   return Effect.gen(function* () {
     const rootDirectory = yield* canonicalRoot(input.rootDirectory);
     const existing = yield* readUsableMetadata(rootDirectory);
@@ -217,14 +225,17 @@ export function ensureLocalServer(input: {
       }
 
       const startedProcess = yield* startLocalServerProcess(rootDirectory);
-      const started = yield* waitForUsableMetadata(rootDirectory, startedProcess).pipe(
+      const started = yield* waitForUsableMetadata(
+        rootDirectory,
+        startedProcess
+      ).pipe(
         Effect.matchEffect({
           onFailure: (error) =>
             Effect.sync(() => stopStartedProcess(startedProcess)).pipe(
-              Effect.flatMap(() => Effect.fail(error)),
+              Effect.flatMap(() => Effect.fail(error))
             ),
           onSuccess: Effect.succeed,
-        }),
+        })
       );
       startedProcess.child.unref();
       return started.url;
@@ -245,7 +256,7 @@ function latestRunIdFromPointer(rootDirectory: string) {
           code: "NoRunsFound",
           message: "No Gaia runs found through the local server.",
           recoverable: false,
-        }),
+        })
       );
     }
 
@@ -266,8 +277,8 @@ function requestServer<A>(input: {
   return input.effect.pipe(
     Effect.provide(LocalGaiaServerProtocolClientLive),
     Effect.mapError((error) =>
-      runtimeErrorFromProtocolFailure(error, input.serverUrl, input.dataName),
-    ),
+      runtimeErrorFromProtocolFailure(error, input.serverUrl, input.dataName)
+    )
   );
 }
 
@@ -309,7 +320,7 @@ function acquireAutostartLock(rootDirectory: string) {
         code: "LocalServerStartLocked",
         message: "Another Gaia local server autostart did not finish in time.",
         recoverable: true,
-      }),
+      })
     );
   });
 }
@@ -335,7 +346,7 @@ function tryAcquireAutostartLock(lockPath: string): AutostartLock | undefined {
 function runtimeErrorFromProtocolFailure(
   error: LocalGaiaServerProtocolError,
   serverUrl: LocalGaiaServerUrl,
-  dataName: string,
+  dataName: string
 ) {
   const apiError = Schema.decodeUnknownOption(LocalRunApiErrorEnvelope)(error);
   if (Option.isSome(apiError)) {
@@ -364,7 +375,7 @@ function runtimeErrorFromProtocolFailure(
 }
 
 function isProtocolParameterError(
-  error: LocalGaiaServerProtocolError,
+  error: LocalGaiaServerProtocolError
 ): error is Extract<
   LocalGaiaServerProtocolError,
   { readonly _tag: "LocalGaiaServerProtocolParameterError" }
@@ -379,7 +390,7 @@ function runtimeErrorFromParameterFailure(
   error: Extract<
     LocalGaiaServerProtocolError,
     { readonly _tag: "LocalGaiaServerProtocolParameterError" }
-  >,
+  >
 ) {
   return makeRuntimeError({
     cause: error.cause,
@@ -392,7 +403,7 @@ function runtimeErrorFromParameterFailure(
 function decodeServerData<A>(
   input: unknown,
   decode: (value: unknown) => A,
-  dataName: string,
+  dataName: string
 ) {
   return Effect.try({
     try: () => decode(input),
@@ -408,7 +419,7 @@ function decodeServerData<A>(
 
 function commandSummaryFromLocalRun(
   run: typeof FactoryRunSummaryDto.Type | typeof FactoryRunDetailDto.Type,
-  rootDirectory: string,
+  rootDirectory: string
 ) {
   return Effect.gen(function* () {
     const summary = toLocalRunSummary(run);
@@ -425,7 +436,7 @@ function commandSummaryFromLocalRun(
 }
 
 function toLocalRunSummary(
-  input: typeof FactoryRunSummaryDto.Type | typeof FactoryRunDetailDto.Type,
+  input: typeof FactoryRunSummaryDto.Type | typeof FactoryRunDetailDto.Type
 ) {
   return {
     artifacts: [],
@@ -462,7 +473,9 @@ function toLocalRunArtifact(input: typeof FactoryArtifactBodyDto.Type) {
   } satisfies LocalRunArtifact;
 }
 
-function legacyStatusFromFactoryState(state: typeof FactoryRunSummaryDto.Type.state) {
+function legacyStatusFromFactoryState(
+  state: typeof FactoryRunSummaryDto.Type.state
+) {
   switch (state) {
     case "succeeded":
       return "completed";
@@ -478,7 +491,7 @@ function legacyStatusFromFactoryState(state: typeof FactoryRunSummaryDto.Type.st
 }
 
 function legacyRunStateFromFactoryState(
-  state: typeof FactoryRunSummaryDto.Type.state,
+  state: typeof FactoryRunSummaryDto.Type.state
 ) {
   switch (state) {
     case "succeeded":
@@ -496,7 +509,7 @@ function legacyRunStateFromFactoryState(
 }
 
 function legacyEventTypeFromFactoryState(
-  state: typeof FactoryRunSummaryDto.Type.state,
+  state: typeof FactoryRunSummaryDto.Type.state
 ) {
   switch (state) {
     case "succeeded":
@@ -514,7 +527,7 @@ function legacyEventTypeFromFactoryState(
 }
 
 function runtimeErrorFromDiagnostic(
-  diagnostic: typeof LocalRunApiErrorEnvelope.Type,
+  diagnostic: typeof LocalRunApiErrorEnvelope.Type
 ) {
   return makeRuntimeError({
     code: diagnostic.code,
@@ -538,10 +551,12 @@ function readUsableMetadata(rootDirectory: string) {
     }
 
     const health = yield* probeServerHealth(metadata).pipe(
-      Effect.orElseSucceed(() => undefined),
+      Effect.orElseSucceed(() => undefined)
     );
     const healthRoot =
-      health === undefined ? undefined : yield* canonicalRoot(health.workspaceRoot);
+      health === undefined
+        ? undefined
+        : yield* canonicalRoot(health.workspaceRoot);
     if (
       health === undefined ||
       health.serverId !== metadata.serverId ||
@@ -577,7 +592,7 @@ function rejectedServerMetadataDiagnostic(rootDirectory: string) {
     }
 
     const health = yield* probeServerHealth(metadata).pipe(
-      Effect.orElseSucceed(() => undefined),
+      Effect.orElseSucceed(() => undefined)
     );
     if (health === undefined) {
       return `${timestamp} discarding stale local server metadata ${summary}; health probe failed; starting replacement server`;
@@ -610,8 +625,8 @@ function readServerMetadata(rootDirectory: string) {
         Effect.try({
           try: () => decodeServerMetadata(JSON.parse(text)),
           catch: () => undefined,
-        }),
-      ),
+        })
+      )
     );
   });
 }
@@ -636,9 +651,10 @@ function probeServerHealth(metadata: ServerMetadata) {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "LocalRunApiUnavailable",
-          message: "Local Gaia server metadata did not describe a loopback server.",
+          message:
+            "Local Gaia server metadata did not describe a loopback server.",
           recoverable: true,
-        }),
+        })
       );
     }
 
@@ -693,7 +709,7 @@ function startLocalServerProcess(rootDirectory: string) {
 
 function waitForUsableMetadata(
   rootDirectory: string,
-  startedProcess?: StartedServerProcess,
+  startedProcess?: StartedServerProcess
 ) {
   return Effect.gen(function* () {
     for (let attempt = 0; attempt < autostartWaitAttempts; attempt += 1) {
@@ -710,9 +726,9 @@ function waitForUsableMetadata(
           return yield* Effect.fail(
             serverStartFailed(
               new Error(
-                `Local server process exited before readiness. exitCode=${startedProcess.child.exitCode ?? "none"} signal=${startedProcess.child.signalCode ?? "none"}`,
-              ),
-            ),
+                `Local server process exited before readiness. exitCode=${startedProcess.child.exitCode ?? "none"} signal=${startedProcess.child.signalCode ?? "none"}`
+              )
+            )
           );
         }
       }
@@ -730,7 +746,7 @@ function waitForUsableMetadata(
         code: "LocalServerStartTimeout",
         message: "Gaia local server did not become ready for --server mode.",
         recoverable: true,
-      }),
+      })
     );
   });
 }
@@ -742,7 +758,7 @@ function serverPaths(rootDirectory: string) {
       serverJson: path.join(paths.gaiaRoot, "server.json"),
       serverLog: path.join(paths.gaiaRoot, "server.log"),
       serverStartLock: path.join(paths.gaiaRoot, "server-start.lock"),
-    })),
+    }))
   );
 }
 
@@ -765,7 +781,7 @@ function serverProcessCommand(rootDirectory: string) {
         "server",
         "node_modules",
         ".bin",
-        "tsx",
+        "tsx"
       ),
     };
   }

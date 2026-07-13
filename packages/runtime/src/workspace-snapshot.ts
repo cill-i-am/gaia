@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
+
 import { Effect, FileSystem, Path, Schema } from "effect";
 import type { PlatformError } from "effect/PlatformError";
-import { createHash } from "node:crypto";
 
 const generatedWorkspaceEntryReasons = new Map([
   [
@@ -34,12 +35,12 @@ const generatedWorkspaceEntryReasons = new Map([
 ]);
 
 const NonNegativeIntegerSchema = Schema.Int.check(
-  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isGreaterThanOrEqualTo(0)
 );
 
 /** Generated workspace root summarized instead of expanded into raw path evidence. */
 export class WorkspaceDiffOmittedGeneratedPath extends Schema.Class<WorkspaceDiffOmittedGeneratedPath>(
-  "WorkspaceDiffOmittedGeneratedPath",
+  "WorkspaceDiffOmittedGeneratedPath"
 )({
   changedFileCount: NonNegativeIntegerSchema,
   path: Schema.NonEmptyString,
@@ -48,7 +49,7 @@ export class WorkspaceDiffOmittedGeneratedPath extends Schema.Class<WorkspaceDif
 
 /** Bounded review evidence for product/source changes and omitted generated churn. */
 export class WorkspaceDiffSummary extends Schema.Class<WorkspaceDiffSummary>(
-  "WorkspaceDiffSummary",
+  "WorkspaceDiffSummary"
 )({
   notes: Schema.Array(Schema.NonEmptyString),
   omittedGeneratedFileCount: NonNegativeIntegerSchema,
@@ -61,7 +62,7 @@ export class WorkspaceDiffSummary extends Schema.Class<WorkspaceDiffSummary>(
 
 const WorkspaceDiffSummaryJson = Schema.toCodecJson(WorkspaceDiffSummary);
 export const encodeWorkspaceDiffSummaryJson = Schema.encodeSync(
-  WorkspaceDiffSummaryJson,
+  WorkspaceDiffSummaryJson
 );
 
 export type WorkspaceSnapshot = {
@@ -76,15 +77,15 @@ const PersistedWorkspaceSnapshot = Schema.Struct({
       fileCount: Schema.Int,
       path: Schema.String,
       reason: Schema.String,
-    }),
+    })
   ),
   productFiles: Schema.Array(
-    Schema.Struct({ digest: Schema.String, path: Schema.String }),
+    Schema.Struct({ digest: Schema.String, path: Schema.String })
   ),
   version: Schema.Literal(1),
 });
 const decodePersistedWorkspaceSnapshot = Schema.decodeUnknownSync(
-  PersistedWorkspaceSnapshot,
+  PersistedWorkspaceSnapshot
 );
 
 type GeneratedPathSnapshot = {
@@ -106,7 +107,7 @@ export function snapshotWorkspace(workspacePath: string) {
 /** Persist a private restart baseline without exposing absolute workspace paths. */
 export function writeWorkspaceSnapshot(
   snapshotPath: string,
-  snapshot: WorkspaceSnapshot,
+  snapshot: WorkspaceSnapshot
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -114,12 +115,14 @@ export function writeWorkspaceSnapshot(
       snapshotPath,
       `${JSON.stringify({
         generatedPaths: [...snapshot.generatedPathSummaries.values()],
-        productFiles: [...snapshot.productFileDigests].map(([path, digest]) => ({
-          digest,
-          path,
-        })),
+        productFiles: [...snapshot.productFileDigests].map(
+          ([path, digest]) => ({
+            digest,
+            path,
+          })
+        ),
         version: 1,
-      })}\n`,
+      })}\n`
     );
   });
 }
@@ -129,14 +132,14 @@ export function readWorkspaceSnapshot(snapshotPath: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const parsed = decodePersistedWorkspaceSnapshot(
-      JSON.parse(yield* fs.readFileString(snapshotPath)),
+      JSON.parse(yield* fs.readFileString(snapshotPath))
     );
     return {
       generatedPathSummaries: new Map(
-        parsed.generatedPaths.map((entry) => [entry.path, entry]),
+        parsed.generatedPaths.map((entry) => [entry.path, entry])
       ),
       productFileDigests: new Map(
-        parsed.productFiles.map((entry) => [entry.path, entry.digest]),
+        parsed.productFiles.map((entry) => [entry.path, entry.digest])
       ),
     } satisfies WorkspaceSnapshot;
   });
@@ -144,7 +147,7 @@ export function readWorkspaceSnapshot(snapshotPath: string) {
 
 export function changedPaths(
   before: WorkspaceSnapshot,
-  after: WorkspaceSnapshot,
+  after: WorkspaceSnapshot
 ) {
   const diff = diffWorkspaceSnapshots(before, after);
   return [
@@ -155,19 +158,19 @@ export function changedPaths(
 
 export function diffWorkspaceSnapshots(
   before: WorkspaceSnapshot,
-  after: WorkspaceSnapshot,
+  after: WorkspaceSnapshot
 ) {
   const productChangedPaths = changedProductPaths(
     before.productFileDigests,
-    after.productFileDigests,
+    after.productFileDigests
   );
   const omittedGeneratedPaths = changedGeneratedPaths(
     before.generatedPathSummaries,
-    after.generatedPathSummaries,
+    after.generatedPathSummaries
   );
   const omittedGeneratedFileCount = omittedGeneratedPaths.reduce(
     (total, entry) => total + entry.changedFileCount,
-    0,
+    0
   );
 
   return WorkspaceDiffSummary.make({
@@ -182,7 +185,7 @@ export function diffWorkspaceSnapshots(
 }
 
 export function productOnlyWorkspaceDiff(
-  productChangedPaths: ReadonlyArray<string>,
+  productChangedPaths: ReadonlyArray<string>
 ) {
   const sortedProductChangedPaths = [...productChangedPaths].toSorted();
 
@@ -199,7 +202,7 @@ export function productOnlyWorkspaceDiff(
 
 function changedProductPaths(
   before: ReadonlyMap<string, string>,
-  after: ReadonlyMap<string, string>,
+  after: ReadonlyMap<string, string>
 ) {
   const paths = new Set([...before.keys(), ...after.keys()]);
   const changed: Array<string> = [];
@@ -215,7 +218,7 @@ function changedProductPaths(
 
 function changedGeneratedPaths(
   before: ReadonlyMap<string, GeneratedPathSnapshot>,
-  after: ReadonlyMap<string, GeneratedPathSnapshot>,
+  after: ReadonlyMap<string, GeneratedPathSnapshot>
 ) {
   const paths = new Set([...before.keys(), ...after.keys()]);
   const changed: Array<WorkspaceDiffOmittedGeneratedPath> = [];
@@ -240,11 +243,11 @@ function changedGeneratedPaths(
       WorkspaceDiffOmittedGeneratedPath.make({
         changedFileCount: changedGeneratedFileCount(
           beforeSummary,
-          afterSummary,
+          afterSummary
         ),
         path,
         reason: summary.reason,
-      }),
+      })
     );
   }
 
@@ -253,7 +256,7 @@ function changedGeneratedPaths(
 
 function changedGeneratedFileCount(
   before: GeneratedPathSnapshot | undefined,
-  after: GeneratedPathSnapshot | undefined,
+  after: GeneratedPathSnapshot | undefined
 ) {
   if (before === undefined) {
     return after?.fileCount ?? 0;
@@ -267,7 +270,7 @@ function changedGeneratedFileCount(
 }
 
 function workspaceDiffNotes(
-  omittedGeneratedPaths: ReadonlyArray<WorkspaceDiffOmittedGeneratedPath>,
+  omittedGeneratedPaths: ReadonlyArray<WorkspaceDiffOmittedGeneratedPath>
 ) {
   if (omittedGeneratedPaths.length === 0) {
     return [];
@@ -281,7 +284,7 @@ function workspaceDiffNotes(
 
 function snapshotDirectory(
   directoryPath: string,
-  relativePrefix: string,
+  relativePrefix: string
 ): Effect.Effect<
   WorkspaceSnapshot,
   PlatformError,
@@ -304,7 +307,7 @@ function snapshotDirectory(
         const summary = yield* summarizeGeneratedPath(
           absolutePath,
           relativePath,
-          generatedReason,
+          generatedReason
         );
         generatedPathSummaries.set(relativePath, summary);
         continue;
@@ -316,12 +319,15 @@ function snapshotDirectory(
         case "Directory": {
           const childSnapshot = yield* snapshotDirectory(
             absolutePath,
-            relativePath,
+            relativePath
           );
           for (const [childPath, digest] of childSnapshot.productFileDigests) {
             productFileDigests.set(childPath, digest);
           }
-          for (const [childPath, summary] of childSnapshot.generatedPathSummaries) {
+          for (const [
+            childPath,
+            summary,
+          ] of childSnapshot.generatedPathSummaries) {
             generatedPathSummaries.set(childPath, summary);
           }
           break;
@@ -344,7 +350,7 @@ function snapshotDirectory(
 function summarizeGeneratedPath(
   absolutePath: string,
   relativePath: string,
-  reason: string,
+  reason: string
 ): Effect.Effect<
   GeneratedPathSnapshot,
   PlatformError,
@@ -363,7 +369,7 @@ function summarizeGeneratedPath(
 }
 
 function digestGeneratedPath(
-  absolutePath: string,
+  absolutePath: string
 ): Effect.Effect<
   GeneratedPathDigest,
   PlatformError,

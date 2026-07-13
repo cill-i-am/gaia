@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { Effect, Ref, Schema } from "effect";
+
 import type { RunId } from "@gaia/core";
+import { Effect, Ref, Schema } from "effect";
 
 type ActiveServerRun = {
   readonly phase: "accepting" | "running";
@@ -13,7 +14,7 @@ export class ActiveServerRunConflict extends Schema.TaggedErrorClass<ActiveServe
   {
     message: Schema.NonEmptyString,
     recoverable: Schema.Boolean,
-  },
+  }
 ) {}
 
 export type ServerRunReservation = {
@@ -63,7 +64,7 @@ function reserveCreate(active: Ref.Ref<ActiveServerRun | undefined>) {
         {
           phase: "accepting",
           reservationId,
-        },
+        }
       );
     });
 
@@ -73,7 +74,7 @@ function reserveCreate(active: Ref.Ref<ActiveServerRun | undefined>) {
           message:
             "A server-created Gaia run is already accepting or executing.",
           recoverable: true,
-        }),
+        })
       );
     }
 
@@ -83,7 +84,7 @@ function reserveCreate(active: Ref.Ref<ActiveServerRun | undefined>) {
 
 function makeReservation(
   active: Ref.Ref<ActiveServerRun | undefined>,
-  reservationId: string,
+  reservationId: string
 ): ServerRunReservation {
   return {
     clear: clearReservation(active, reservationId),
@@ -91,7 +92,7 @@ function makeReservation(
       Ref.update(active, (current) =>
         current?.reservationId === reservationId
           ? runningState(reservationId, runId)
-          : current,
+          : current
       ),
     reservationId,
     rollback: clearAcceptingReservation(active, reservationId),
@@ -100,7 +101,7 @@ function makeReservation(
 
 function reserveRefResult(
   result: ReserveResult,
-  state: ActiveServerRun | undefined,
+  state: ActiveServerRun | undefined
 ): readonly [ReserveResult, ActiveServerRun | undefined] {
   return [result, state];
 }
@@ -115,20 +116,20 @@ function runningState(reservationId: string, runId: RunId): ActiveServerRun {
 
 function clearReservation(
   active: Ref.Ref<ActiveServerRun | undefined>,
-  reservationId: string,
+  reservationId: string
 ) {
   return Ref.update(active, (current) =>
-    current?.reservationId === reservationId ? undefined : current,
+    current?.reservationId === reservationId ? undefined : current
   );
 }
 
 function clearAcceptingReservation(
   active: Ref.Ref<ActiveServerRun | undefined>,
-  reservationId: string,
+  reservationId: string
 ) {
   return Ref.update(active, (current) =>
     current?.reservationId === reservationId && current.phase === "accepting"
       ? undefined
-      : current,
+      : current
   );
 }

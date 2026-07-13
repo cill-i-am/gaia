@@ -59,16 +59,17 @@ describe("run console model", () => {
       statusLabel: "Completed",
     });
     expect(reconcileSelectedRunId(undefined, state.runs)).toBe(
-      "run-1234567890",
-    );
-    expect(reconcileSelectedRunId(parseRunId("run-abcdefghij"), state.runs)).toBe(
-      "run-abcdefghij",
-    );
-    expect(reconcileSelectedRunId(parseRunId("run-missing000"), state.runs)).toBe(
-      "run-1234567890",
+      "run-1234567890"
     );
     expect(
-      selectedRunFromConsoleState(parseRunId("run-abcdefghij"), state.runs)?.status,
+      reconcileSelectedRunId(parseRunId("run-abcdefghij"), state.runs)
+    ).toBe("run-abcdefghij");
+    expect(
+      reconcileSelectedRunId(parseRunId("run-missing000"), state.runs)
+    ).toBe("run-1234567890");
+    expect(
+      selectedRunFromConsoleState(parseRunId("run-abcdefghij"), state.runs)
+        ?.status
     ).toBe("completed");
   });
 
@@ -89,7 +90,7 @@ describe("run console model", () => {
     expect(state.isError).toBe(false);
     expect(state.message).toBe("0 runs loaded through LocalGaiaServerApi.");
     expect(
-      reconcileSelectedRunId(parseRunId("run-1234567890"), state.runs),
+      reconcileSelectedRunId(parseRunId("run-1234567890"), state.runs)
     ).toBeUndefined();
   });
 
@@ -164,7 +165,7 @@ describe("run console model", () => {
     expect(state.hasStaleData).toBe(false);
     expect(state.isError).toBe(false);
     expect(state.message).toBe(
-      "Refreshing local server; showing 1 cached run.",
+      "Refreshing local server; showing 1 cached run."
     );
   });
 
@@ -197,7 +198,7 @@ describe("run console model", () => {
     expect(state.isError).toBe(false);
     expect(state.runs).toHaveLength(1);
     expect(state.message).toBe(
-      "Showing 1 cached run; latest refresh failed: server is not reachable.",
+      "Showing 1 cached run; latest refresh failed: server is not reachable."
     );
   });
 
@@ -291,7 +292,7 @@ describe("run console model", () => {
 function localRunSummary(
   input: Partial<typeof LocalRunSummaryDto.Type> & {
     readonly runId: typeof LocalRunSummaryDto.Type.runId;
-  },
+  }
 ): typeof LocalRunSummaryDto.Type {
   return {
     artifacts: ["input", "worker-plan"],
@@ -306,7 +307,7 @@ function localRunSummary(
 }
 
 function localRunApiError(
-  input: Partial<typeof LocalRunApiErrorEnvelope.Type>,
+  input: Partial<typeof LocalRunApiErrorEnvelope.Type>
 ): typeof LocalRunApiErrorEnvelope.Type {
   return {
     code: "InternalServerError",
@@ -318,7 +319,7 @@ function localRunApiError(
 }
 
 function localRunDiagnostic(
-  input: Partial<typeof LocalRunReadDiagnosticDto.Type>,
+  input: Partial<typeof LocalRunReadDiagnosticDto.Type>
 ): typeof LocalRunReadDiagnosticDto.Type {
   return {
     code: "RunUnreadable",

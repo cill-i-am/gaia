@@ -9,6 +9,7 @@ import {
   type HarnessSessionId,
 } from "@gaia/core";
 import { Effect, Option, Stream } from "effect";
+
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import type { HarnessProvider, HarnessSession } from "./harness-session.js";
 

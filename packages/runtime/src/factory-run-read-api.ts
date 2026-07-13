@@ -1,5 +1,6 @@
 import type { RunId } from "@gaia/core";
 import { Effect } from "effect";
+
 import {
   readFactoryArtifactBodyFromIndex,
   readFactoryRunIndexes,
@@ -10,30 +11,32 @@ import type { LocalRunReadDiagnostic } from "./run-read-api.js";
 
 export function readFactoryGraph(
   runId: RunId,
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ) {
   return readFactoryRunIndexes(runId, options).pipe(
-    Effect.map((indexes) => indexes.graph),
+    Effect.map((indexes) => indexes.graph)
   );
 }
 
 export function readFactoryRunActivity(
   runId: RunId,
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ) {
   return readFactoryRunIndexes(runId, options).pipe(
-    Effect.map((indexes) => indexes.activity),
+    Effect.map((indexes) => indexes.activity)
   );
 }
 
 export function readFactoryAgentActivity(
   runId: RunId,
   agentIdInput: string,
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ) {
   return Effect.gen(function* () {
     const indexes = yield* readFactoryRunIndexes(runId, options);
-    const agent = indexes.graph.agents.find((candidate) => candidate.id === agentIdInput);
+    const agent = indexes.graph.agents.find(
+      (candidate) => candidate.id === agentIdInput
+    );
     if (agent === undefined) {
       return yield* Effect.fail({
         code: "FactoryAgentNotFound",
@@ -46,7 +49,7 @@ export function readFactoryAgentActivity(
 
     return {
       activities: indexes.activity.activities.filter(
-        (activity) => activity.agentId === agent.id,
+        (activity) => activity.agentId === agent.id
       ),
       runId: indexes.activity.runId,
     } satisfies FactoryActivityIndex;
@@ -55,17 +58,17 @@ export function readFactoryAgentActivity(
 
 export function listFactoryRunArtifacts(
   runId: RunId,
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ) {
   return readFactoryRunIndexes(runId, options).pipe(
-    Effect.map((indexes) => indexes.artifacts),
+    Effect.map((indexes) => indexes.artifacts)
   );
 }
 
 export function readFactoryRunArtifact(
   runId: RunId,
   artifactIdInput: string,
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ) {
   return readFactoryArtifactBodyFromIndex(runId, artifactIdInput, options);
 }

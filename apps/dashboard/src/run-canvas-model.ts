@@ -103,7 +103,7 @@ export function buildRunCanvasModel(input: {
     role: "orchestrator",
     status,
     summary: `${input.run.runId} is ${input.run.status} in ${stateLabel(
-      input.run.state,
+      input.run.state
     )}. The canvas is derived from public run detail, ordered events, and exposed artifact names.`,
     evidence: [
       `${input.run.eventCount} events reported by LocalGaiaServerApi`,
@@ -130,7 +130,7 @@ export function buildRunCanvasModel(input: {
   }
 
   const eventNodes = input.events.map((event, index) =>
-    eventNode(event, index),
+    eventNode(event, index)
   );
   nodes.push(...eventNodes);
   if (eventNodes[0] !== undefined) {
@@ -155,7 +155,7 @@ export function buildRunCanvasModel(input: {
   }
 
   const artifactNodes = input.run.artifacts.map((artifact, index) =>
-    artifactNode(artifact, index, status, input.events),
+    artifactNode(artifact, index, status, input.events)
   );
   nodes.push(...artifactNodes);
   for (const node of artifactNodes) {
@@ -240,7 +240,7 @@ export function getInitialNode(run: DashboardRun): RunNode | undefined {
 
 export function eventsForNode(
   run: DashboardRun,
-  node: RunNode,
+  node: RunNode
 ): ReadonlyArray<DashboardEvent> {
   if (node.role === "orchestrator") {
     return run.events;
@@ -311,7 +311,7 @@ function emptyRunCanvasModel(): DashboardRun {
 
 function supportedLaneNodes(
   run: typeof LocalRunSummaryDto.Type,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ): ReadonlyArray<RunNode> {
   const nodes: Array<RunNode> = [];
   const artifactSet = new Set(run.artifacts);
@@ -357,7 +357,7 @@ function supportedLaneNodes(
       evidence: matchingEventLabels(events, "WORKER"),
       eventIds: matchingEventIds(events, "WORKER"),
       artifacts: run.artifacts.filter((artifact) =>
-        artifact.startsWith("worker"),
+        artifact.startsWith("worker")
       ),
       raw: {
         relationshipSource: "public worker events and artifacts",
@@ -383,7 +383,7 @@ function supportedLaneNodes(
       evidence: matchingEventLabels(events, "REVIEW"),
       eventIds: matchingEventIds(events, "REVIEW"),
       artifacts: run.artifacts.filter((artifact) =>
-        artifact.includes("review"),
+        artifact.includes("review")
       ),
       raw: {
         relationshipSource: "public review events and artifacts",
@@ -413,7 +413,7 @@ function supportedLaneNodes(
 
 function matchingEventLabels(
   events: ReadonlyArray<RunEvent>,
-  prefix: string,
+  prefix: string
 ): ReadonlyArray<string> {
   const labels = events
     .filter((event) => event.type.startsWith(prefix))
@@ -424,7 +424,7 @@ function matchingEventLabels(
 
 function matchingEventIds(
   events: ReadonlyArray<RunEvent>,
-  prefix: string,
+  prefix: string
 ): ReadonlyArray<string> {
   return events
     .filter((event) => event.type.startsWith(prefix))
@@ -453,7 +453,7 @@ function artifactNode(
   artifact: DashboardArtifactId,
   index: number,
   status: RunStatus,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ): RunNode {
   const column = Math.floor(index / 8);
   const row = index % 8;
@@ -481,21 +481,21 @@ function artifactNode(
 function artifactSource(
   artifact: DashboardArtifactId | undefined,
   events: ReadonlyArray<RunEvent>,
-  fallback: string,
+  fallback: string
 ) {
   if (artifact === undefined) {
     return fallback;
   }
 
   const source = events.find((event) =>
-    eventArtifactHints(event).includes(artifact),
+    eventArtifactHints(event).includes(artifact)
   );
 
   return source === undefined ? fallback : eventNodeId(source);
 }
 
 function eventArtifactHints(
-  event: RunEvent,
+  event: RunEvent
 ): ReadonlyArray<DashboardArtifactId> {
   switch (event.type) {
     case "RUN_CREATED":

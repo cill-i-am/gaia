@@ -1,5 +1,13 @@
-import { DeliveryPublicationConfirmedDto, DeliveryPullRequestObservation, DeliveryPullRequestReadyDispatchAttempted, DeliveryPullRequestReadyTerminalFailure, DeliverySnapshotDto, parseRunId } from "@gaia/core";
+import {
+  DeliveryPublicationConfirmedDto,
+  DeliveryPullRequestObservation,
+  DeliveryPullRequestReadyDispatchAttempted,
+  DeliveryPullRequestReadyTerminalFailure,
+  DeliverySnapshotDto,
+  parseRunId,
+} from "@gaia/core";
 import { describe, expect, it } from "vitest";
+
 import { readyForReviewAction } from "./dashboard-shell";
 
 const runId = parseRunId("run-7777777777");
@@ -41,7 +49,9 @@ describe("ready-for-review dashboard action", () => {
       status: "waitingForPr",
     });
 
-    expect(() => readyForReviewAction(snapshot)).toThrow("Exact current draft pull-request observation is required");
+    expect(() => readyForReviewAction(snapshot)).toThrow(
+      "Exact current draft pull-request observation is required"
+    );
   });
 
   it("creates the observed exact tuple for a deliberate first action", () => {
@@ -64,7 +74,9 @@ describe("ready-for-review dashboard action", () => {
       expectedPrUrl: publication.prUrl,
       kind: "markReadyForReview",
     });
-    expect(readyForReviewAction(snapshot).actionId).toMatch(/^ready-[0-9a-f-]{36}$/u);
+    expect(readyForReviewAction(snapshot).actionId).toMatch(
+      /^ready-[0-9a-f-]{36}$/u
+    );
   });
 
   for (const [name, changedObservation] of [
@@ -72,7 +84,10 @@ describe("ready-for-review dashboard action", () => {
     ["draft state", { ...observation, draft: false }],
     ["head", { ...observation, headSha: "b".repeat(40) }],
     ["pull request number", { ...observation, prNumber: 92 }],
-    ["pull request URL", { ...observation, prUrl: "https://github.com/cill-i-am/gaia/pull/92" }],
+    [
+      "pull request URL",
+      { ...observation, prUrl: "https://github.com/cill-i-am/gaia/pull/92" },
+    ],
     ["repository", { ...observation, repository: "cill-i-am/unrelated" }],
   ] as const) {
     it(`rejects a first action when the latest observation has a different ${name}`, () => {
@@ -88,7 +103,9 @@ describe("ready-for-review dashboard action", () => {
         status: "waitingForPr",
       });
 
-      expect(() => readyForReviewAction(snapshot)).toThrow("Exact current draft pull-request observation is required");
+      expect(() => readyForReviewAction(snapshot)).toThrow(
+        "Exact current draft pull-request observation is required"
+      );
     });
   }
 
@@ -173,7 +190,10 @@ describe("ready-for-review dashboard action", () => {
       authoritativeHeadSha,
       eventSequence: 20,
       mode: "pullRequest",
-      observation: DeliveryPullRequestObservation.make({ ...observation, headSha: authoritativeHeadSha }),
+      observation: DeliveryPullRequestObservation.make({
+        ...observation,
+        headSha: authoritativeHeadSha,
+      }),
       publication,
       recoveryActions: [],
       runId,
@@ -181,7 +201,9 @@ describe("ready-for-review dashboard action", () => {
       status: "waitingForPr",
     });
 
-    expect(readyForReviewAction(snapshot)).toMatchObject({ expectedHeadSha: authoritativeHeadSha });
+    expect(readyForReviewAction(snapshot)).toMatchObject({
+      expectedHeadSha: authoritativeHeadSha,
+    });
   });
 
   it("does not reuse a stale terminal action after the authoritative head advances", () => {
@@ -213,6 +235,8 @@ describe("ready-for-review dashboard action", () => {
       status: "waitingForPr",
     });
 
-    expect(() => readyForReviewAction(snapshot)).toThrow("Exact current draft pull-request observation is required");
+    expect(() => readyForReviewAction(snapshot)).toThrow(
+      "Exact current draft pull-request observation is required"
+    );
   });
 });

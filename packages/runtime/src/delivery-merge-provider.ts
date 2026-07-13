@@ -4,6 +4,7 @@ import {
   type DeliveryRequiredCheckIdentity,
 } from "@gaia/core";
 import { Data, Effect } from "effect";
+
 import { makeRuntimeError } from "./errors.js";
 import {
   nodeGitHubCommandRunner,
@@ -17,15 +18,21 @@ export type DeliveryMergeProviderInput = {
   readonly prUrl: string;
   readonly repository: string;
 };
-export class DeliveryMergeConclusivelyRejected extends Data.TaggedError("DeliveryMergeConclusivelyRejected")<{
+export class DeliveryMergeConclusivelyRejected extends Data.TaggedError(
+  "DeliveryMergeConclusivelyRejected"
+)<{
   readonly message: string;
 }> {}
 
-export class DeliveryReadyForReviewOutcomeUncertain extends Data.TaggedError("DeliveryReadyForReviewOutcomeUncertain")<{
+export class DeliveryReadyForReviewOutcomeUncertain extends Data.TaggedError(
+  "DeliveryReadyForReviewOutcomeUncertain"
+)<{
   readonly message: string;
 }> {}
 
-export class DeliveryReadyForReviewConclusivelyRejected extends Data.TaggedError("DeliveryReadyForReviewConclusivelyRejected")<{
+export class DeliveryReadyForReviewConclusivelyRejected extends Data.TaggedError(
+  "DeliveryReadyForReviewConclusivelyRejected"
+)<{
   readonly message: string;
 }> {}
 
@@ -38,7 +45,7 @@ export type DeliveryReadyForReviewProviderInput = {
 /** Invoke one exact ready-for-review mutation without branch inference. */
 export function invokeGitHubReadyForReview(
   input: DeliveryReadyForReviewProviderInput,
-  commandRunner: GitHubCommandRunner = nodeGitHubCommandRunner,
+  commandRunner: GitHubCommandRunner = nodeGitHubCommandRunner
 ) {
   return commandRunner({
     args: ["pr", "ready", input.prUrl, "--repo", input.repository],
@@ -48,17 +55,20 @@ export function invokeGitHubReadyForReview(
     Effect.flatMap((result) =>
       result.exitCode === 0
         ? Effect.void
-        : Effect.fail(new DeliveryReadyForReviewOutcomeUncertain({
-            message: "GitHub did not return a confirmable ready-for-review result.",
-          })),
-    ),
+        : Effect.fail(
+            new DeliveryReadyForReviewOutcomeUncertain({
+              message:
+                "GitHub did not return a confirmable ready-for-review result.",
+            })
+          )
+    )
   );
 }
 
 /** Invoke exactly one explicitly selected expected-head-protected GitHub merge. */
 export function invokeGitHubDeliveryMerge(
   input: DeliveryMergeProviderInput,
-  commandRunner: GitHubCommandRunner = nodeGitHubCommandRunner,
+  commandRunner: GitHubCommandRunner = nodeGitHubCommandRunner
 ) {
   const methodArgs = deliveryMergeMethodArguments[input.method];
   return commandRunner({
@@ -78,8 +88,13 @@ export function invokeGitHubDeliveryMerge(
     Effect.flatMap((result) =>
       result.exitCode === 0
         ? Effect.succeed(result)
-        : Effect.fail(new DeliveryMergeConclusivelyRejected({ message: "GitHub conclusively rejected the exact-head merge request." })),
-    ),
+        : Effect.fail(
+            new DeliveryMergeConclusivelyRejected({
+              message:
+                "GitHub conclusively rejected the exact-head merge request.",
+            })
+          )
+    )
   );
 }
 
@@ -96,14 +111,15 @@ export type RequiredCheckFact = {
 export function validateRequiredChecks(
   policy: ReadonlyArray<typeof DeliveryRequiredCheckIdentity.Type>,
   observations: ReadonlyArray<RequiredCheckFact>,
-  expectedHeadSha: string,
+  expectedHeadSha: string
 ) {
   for (const required of policy) {
-    const matches = observations.filter((candidate) =>
-      candidate.appSlug === required.appSlug &&
-      candidate.name === required.name &&
-      candidate.repository === required.repository &&
-      candidate.workflow === required.workflow
+    const matches = observations.filter(
+      (candidate) =>
+        candidate.appSlug === required.appSlug &&
+        candidate.name === required.name &&
+        candidate.repository === required.repository &&
+        candidate.workflow === required.workflow
     );
     if (
       matches.length !== 1 ||

@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+
 import {
   EvidencePromotion,
   EvidencePromotionDogfoodSummary,
@@ -45,7 +46,7 @@ describe("core contracts", () => {
   it("parses markdown specs with frontmatter", () => {
     const spec = parseMarkdownSpec(
       "---\ntitle: Smoke test\n---\n\nDo the smallest thing.",
-      "fallback",
+      "fallback"
     );
 
     assert.strictEqual(spec.title, "Smoke test");
@@ -155,7 +156,10 @@ describe("core contracts", () => {
     assert.strictEqual(parseFactoryRetro(serialized).runId, runId);
     assert.strictEqual(retro.helped[0]?.source, "observed");
     assert.strictEqual(retro.cleanupStatus, "not-completed");
-    assert.strictEqual(retro.recommendedNextFactoryImprovement.includes("commands"), true);
+    assert.strictEqual(
+      retro.recommendedNextFactoryImprovement.includes("commands"),
+      true
+    );
   });
 
   it("parses JSON-safe factory lane scorecards with acceptance separated from factory learning", () => {
@@ -177,11 +181,13 @@ describe("core contracts", () => {
               summary: "Correct but narrower.",
             }),
           ],
-          factoryLearningSignal: FactoryLaneScorecardFactoryLearningSignal.make({
-            evidence: ["Direct lane did not exercise Gaia artifacts."],
-            status: "weak",
-            summary: "Useful fallback but limited dogfood signal.",
-          }),
+          factoryLearningSignal: FactoryLaneScorecardFactoryLearningSignal.make(
+            {
+              evidence: ["Direct lane did not exercise Gaia artifacts."],
+              status: "weak",
+              summary: "Useful fallback but limited dogfood signal.",
+            }
+          ),
           headSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           implementationAcceptance:
             FactoryLaneScorecardImplementationAcceptance.make({
@@ -217,11 +223,13 @@ describe("core contracts", () => {
               summary: "Dogfood artifacts improved handoff evidence.",
             }),
           ],
-          factoryLearningSignal: FactoryLaneScorecardFactoryLearningSignal.make({
-            evidence: ["Gaia exposed command extraction and planning gaps."],
-            status: "strong",
-            summary: "Strong signal for Gaia self-improvement.",
-          }),
+          factoryLearningSignal: FactoryLaneScorecardFactoryLearningSignal.make(
+            {
+              evidence: ["Gaia exposed command extraction and planning gaps."],
+              status: "strong",
+              summary: "Strong signal for Gaia self-improvement.",
+            }
+          ),
           headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           implementationAcceptance:
             FactoryLaneScorecardImplementationAcceptance.make({
@@ -252,7 +260,8 @@ describe("core contracts", () => {
       notes: ["No-CI is not green; local verification remains evidence."],
       preferredLane: FactoryLaneScorecardPreferredLane.make({
         laneId: "lane-b",
-        rationale: "Lane B had stronger implementation quality and dogfood signal.",
+        rationale:
+          "Lane B had stronger implementation quality and dogfood signal.",
         tradeoffsPreserved: ["Lane A remains a smaller fallback/reference."],
       }),
       recommendationSummary:
@@ -266,7 +275,10 @@ describe("core contracts", () => {
 
     assert.strictEqual(parsed.runId, runId);
     assert.strictEqual(parsed.lanes[0]?.checkStatus, "no-checks-configured");
-    assert.strictEqual(parsed.lanes[1]?.implementationAcceptance.status, "accepted");
+    assert.strictEqual(
+      parsed.lanes[1]?.implementationAcceptance.status,
+      "accepted"
+    );
     assert.strictEqual(parsed.lanes[1]?.factoryLearningSignal.status, "strong");
     assert.strictEqual(parsed.preferredLane?.laneId, "lane-b");
   });
@@ -288,7 +300,7 @@ describe("core contracts", () => {
     assert.strictEqual(validation.status, "failed");
     assert.include(
       validation.findings.map((finding) => finding.code),
-      "dogfood-requirement-on-non-dogfood-lane",
+      "dogfood-requirement-on-non-dogfood-lane"
     );
   });
 
@@ -312,7 +324,7 @@ describe("core contracts", () => {
         "dogfood-run-evidence-missing",
         "dogfood-retrospective-missing",
         "dogfood-promotion-evidence-missing",
-      ],
+      ]
     );
   });
 
@@ -333,7 +345,7 @@ describe("core contracts", () => {
         "base-commit-missing",
         "cleanup-rules-missing",
         "comparison-wait-rules-missing",
-      ],
+      ]
     );
   });
 
@@ -351,7 +363,7 @@ describe("core contracts", () => {
 
     assert.deepEqual(
       validation.findings.map((finding) => finding.code),
-      ["worktree-branch-expectations-missing"],
+      ["worktree-branch-expectations-missing"]
     );
   });
 
@@ -364,7 +376,7 @@ describe("core contracts", () => {
 
     assert.deepEqual(
       validation.findings.map((finding) => finding.code),
-      ["lane-role-missing"],
+      ["lane-role-missing"]
     );
   });
 
@@ -385,7 +397,7 @@ describe("core contracts", () => {
     assert.strictEqual(validation.status, "failed");
     assert.include(
       validation.findings.map((finding) => finding.code),
-      "lane-role-conflict",
+      "lane-role-conflict"
     );
   });
 
@@ -410,7 +422,8 @@ describe("core contracts", () => {
   it("accepts valid delegation validation input lane roles", () => {
     const input = parseFactoryDelegationPromptValidationInput({
       laneRole: "ci-watch",
-      promptMarkdown: "Lane role: CI watch. Monitor the PR checks and comments.",
+      promptMarkdown:
+        "Lane role: CI watch. Monitor the PR checks and comments.",
       requiresComparisonWait: false,
     });
 
@@ -469,12 +482,14 @@ describe("core contracts", () => {
     const runId = parseRunId("run-V7kP9sQ2xY");
     const feedbackTrustPolicy = {
       allowPullRequestAuthor: false,
-      trustedChecks: [{
-        appSlug: "github-actions",
-        name: "gaia-pr-ci",
-        repository: "cill-i-am/gaia",
-        workflow: "Gaia PR CI",
-      }],
+      trustedChecks: [
+        {
+          appSlug: "github-actions",
+          name: "gaia-pr-ci",
+          repository: "cill-i-am/gaia",
+          workflow: "Gaia PR CI",
+        },
+      ],
       trustedHumanLogins: [],
       version: 1,
     };
@@ -644,15 +659,15 @@ describe("core contracts", () => {
 
     assert.strictEqual(
       (publishing.context.delivery as { stage: string }).stage,
-      "publishing",
+      "publishing"
     );
     assert.strictEqual(
       (waiting.context.delivery as { stage: string }).stage,
-      "waitingForPr",
+      "waitingForPr"
     );
     assert.deepEqual(
       (waiting.context.delivery as { publication: unknown }).publication,
-      encodeDeliveryPublicationJson(confirmed),
+      encodeDeliveryPublicationJson(confirmed)
     );
   });
 
@@ -672,25 +687,25 @@ describe("core contracts", () => {
 
     assert.deepEqual(
       encodeDeliveryPublicationJson(parseDeliveryPublication(publication)),
-      publication,
+      publication
     );
     assert.throws(() =>
       parseDeliveryPublication({
         ...publication,
         reportText: "private report body",
-      }),
+      })
     );
     assert.throws(() =>
       parseDeliveryPublication({
         ...publication,
         sourcePaths: ["../private.txt"],
-      }),
+      })
     );
     assert.throws(() =>
       parseDeliveryPublication({
         ...publication,
         sourcePaths: ["packages/core/dist/private.js"],
-      }),
+      })
     );
   });
 
@@ -750,30 +765,36 @@ describe("core contracts", () => {
         makeRunEvent({
           payload: {
             publication: encodeDeliveryPublicationJson(
-              publication as typeof intent,
+              publication as typeof intent
             ),
           },
           runId,
           sequence: index + 7,
           timestamp: `2026-07-11T08:00:0${index}.000Z`,
           type: type as "DELIVERY_PUBLICATION_INTENT_RECORDED",
-        }),
+        })
       ),
     ];
 
     assert.strictEqual(
-      (snapshotFromReplay(events.slice(0, 9)).context.delivery as { stage: string })
-        .stage,
-      "publicationOutcomeUnknown",
+      (
+        snapshotFromReplay(events.slice(0, 9)).context.delivery as {
+          stage: string;
+        }
+      ).stage,
+      "publicationOutcomeUnknown"
     );
     assert.strictEqual(
-      (snapshotFromReplay(events.slice(0, 10)).context.delivery as { stage: string })
-        .stage,
-      "publicationFailed",
+      (
+        snapshotFromReplay(events.slice(0, 10)).context.delivery as {
+          stage: string;
+        }
+      ).stage,
+      "publicationFailed"
     );
     assert.strictEqual(
       (snapshotFromReplay(events).context.delivery as { stage: string }).stage,
-      "publishing",
+      "publishing"
     );
   });
 
@@ -900,14 +921,14 @@ describe("core contracts", () => {
           makeRunEvent({
             payload: {
               publication: encodeDeliveryPublicationJson(
-                publication as typeof attempted,
+                publication as typeof attempted
               ),
             },
             runId,
             sequence: index + 7,
             timestamp: `2026-07-11T08:00:0${index}.000Z`,
             type: type as "DELIVERY_PUBLICATION_ATTEMPTED",
-          }),
+          })
         ),
       ];
 
@@ -940,14 +961,14 @@ describe("core contracts", () => {
         makeRunEvent({
           payload: {
             publication: encodeDeliveryPublicationJson(
-              publication as typeof attempted,
+              publication as typeof attempted
             ),
           },
           runId,
           sequence: index + 7,
           timestamp: `2026-07-11T08:00:1${index}.000Z`,
           type: type as "DELIVERY_PUBLICATION_ATTEMPTED",
-        }),
+        })
       ),
     ];
     assert.throws(() => snapshotFromReplay(events), /commit/u);
@@ -980,7 +1001,7 @@ describe("core contracts", () => {
 
     assert.throws(
       () => snapshotFromReplay(events),
-      /accepted delivery provenance/u,
+      /accepted delivery provenance/u
     );
   });
 
@@ -1048,18 +1069,21 @@ describe("core contracts", () => {
 
     const durableSnapshot = snapshotFromReplay(events);
     assert.strictEqual(durableSnapshot.state, "completed");
-    assert.strictEqual(durableSnapshot.context.planReviewPath, "plan-review.md");
+    assert.strictEqual(
+      durableSnapshot.context.planReviewPath,
+      "plan-review.md"
+    );
     assert.strictEqual(
       durableSnapshot.context.evidenceReviewPath,
-      "evidence-review.md",
+      "evidence-review.md"
     );
     assert.strictEqual(
       durableSnapshot.context.planReviewerSessionPath,
-      "plan-reviewer-session.json",
+      "plan-reviewer-session.json"
     );
     assert.strictEqual(
       durableSnapshot.context.evidenceReviewerSessionPath,
-      "evidence-reviewer-session.json",
+      "evidence-reviewer-session.json"
     );
   });
 
@@ -1119,7 +1143,7 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.eventSequence, 6);
     assert.strictEqual(
       durableSnapshot.context.githubChecksPath,
-      "github-checks/checks-6.json",
+      "github-checks/checks-6.json"
     );
     assert.strictEqual(durableSnapshot.context.githubChecksStatus, "green");
     assert.strictEqual(durableSnapshot.context.githubPullRequest, "1");
@@ -1185,15 +1209,15 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.eventSequence, 6);
     assert.strictEqual(
       durableSnapshot.context.githubFeedbackPath,
-      "github-feedback.json",
+      "github-feedback.json"
     );
     assert.strictEqual(
       durableSnapshot.context.githubFeedbackStatus,
-      "changes-requested",
+      "changes-requested"
     );
     assert.strictEqual(
       durableSnapshot.context.githubFeedbackNextAction,
-      "address-review-comments",
+      "address-review-comments"
     );
     assert.strictEqual(durableSnapshot.context.githubPullRequest, "1");
     assert.strictEqual(durableSnapshot.context.githubFeedbackCommentCount, 1);
@@ -1259,11 +1283,11 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.context.githubPrLoopBlockerCount, 2);
     assert.strictEqual(
       durableSnapshot.context.githubPrLoopNextAction,
-      "address-review-comments",
+      "address-review-comments"
     );
     assert.strictEqual(
       durableSnapshot.context.githubPrLoopPath,
-      "pr-loop-state.json",
+      "pr-loop-state.json"
     );
     assert.strictEqual(durableSnapshot.context.githubPrLoopStatus, "blocked");
   });
@@ -1326,15 +1350,15 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.context.githubPullRequest, "1");
     assert.strictEqual(
       durableSnapshot.context.githubRemediationBlockerCount,
-      2,
+      2
     );
     assert.strictEqual(
       durableSnapshot.context.githubRemediationNextAction,
-      "address-review-comments",
+      "address-review-comments"
     );
     assert.strictEqual(
       durableSnapshot.context.githubRemediationSpecPath,
-      "remediation-spec.md",
+      "remediation-spec.md"
     );
   });
 
@@ -1395,11 +1419,11 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.context.githubPullRequest, "1");
     assert.strictEqual(
       durableSnapshot.context.githubPrCommentPath,
-      "github-pr-comment.md",
+      "github-pr-comment.md"
     );
     assert.strictEqual(
       durableSnapshot.context.githubPrCommentUrl,
-      "https://github.com/cill-i-am/gaia/pull/1#issuecomment-1",
+      "https://github.com/cill-i-am/gaia/pull/1#issuecomment-1"
     );
   });
 
@@ -1461,12 +1485,15 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.eventSequence, 6);
     assert.strictEqual(
       durableSnapshot.context.linearIssueGraphPath,
-      "linear-issue-graph.json",
+      "linear-issue-graph.json"
     );
-    assert.strictEqual(durableSnapshot.context.linearIssueIdentifier, "GAI-123");
+    assert.strictEqual(
+      durableSnapshot.context.linearIssueIdentifier,
+      "GAI-123"
+    );
     assert.strictEqual(
       durableSnapshot.context.linearIssueUrl,
-      "https://linear.app/acme/issue/GAI-123/test",
+      "https://linear.app/acme/issue/GAI-123/test"
     );
     assert.strictEqual(durableSnapshot.context.linearBlockedByCount, 1);
     assert.strictEqual(durableSnapshot.context.linearBlocksCount, 2);
@@ -1530,10 +1557,13 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.eventSequence, 6);
     assert.strictEqual(durableSnapshot.context.githubPullRequest, "1");
     assert.strictEqual(durableSnapshot.context.mergeDecisionBlockerCount, 0);
-    assert.strictEqual(durableSnapshot.context.mergeDecisionNextAction, "ready-to-merge");
+    assert.strictEqual(
+      durableSnapshot.context.mergeDecisionNextAction,
+      "ready-to-merge"
+    );
     assert.strictEqual(
       durableSnapshot.context.mergeDecisionPath,
-      "merge-decision.json",
+      "merge-decision.json"
     );
     assert.strictEqual(durableSnapshot.context.mergeDecisionStatus, "approved");
   });
@@ -1594,15 +1624,15 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.eventSequence, 6);
     assert.strictEqual(
       durableSnapshot.context.browserEvidencePath,
-      "browser-evidence.json",
+      "browser-evidence.json"
     );
     assert.strictEqual(
       durableSnapshot.context.browserEvidenceStatus,
-      "collected",
+      "collected"
     );
     assert.strictEqual(
       durableSnapshot.context.browserEvidenceTargetUrl,
-      "http://localhost:3000",
+      "http://localhost:3000"
     );
   });
 
@@ -1662,15 +1692,15 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.eventSequence, 6);
     assert.strictEqual(
       durableSnapshot.context.browserEvidencePath,
-      "browser-evidence.json",
+      "browser-evidence.json"
     );
     assert.strictEqual(
       durableSnapshot.context.browserEvidenceStatus,
-      "collected",
+      "collected"
     );
     assert.strictEqual(
       durableSnapshot.context.browserEvidenceTargetUrl,
-      "http://localhost:3000",
+      "http://localhost:3000"
     );
   });
 
@@ -1730,15 +1760,15 @@ describe("core contracts", () => {
     assert.strictEqual(durableSnapshot.eventSequence, 6);
     assert.strictEqual(
       durableSnapshot.context.previewDeploymentPath,
-      "preview-deployment.json",
+      "preview-deployment.json"
     );
     assert.strictEqual(
       durableSnapshot.context.previewDeploymentStatus,
-      "available",
+      "available"
     );
     assert.strictEqual(
       durableSnapshot.context.previewDeploymentUrl,
-      "http://localhost:3000",
+      "http://localhost:3000"
     );
   });
 

@@ -1,6 +1,8 @@
-import { chromium } from "playwright";
 import { execFile } from "node:child_process";
+
 import { Effect, FileSystem, Path, Schema } from "effect";
+import { chromium } from "playwright";
+
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { makeRunStorePaths, type RunStorageOptions } from "./paths.js";
 
@@ -37,12 +39,12 @@ export class DoctorCheck extends Schema.Class<DoctorCheck>("DoctorCheck")({
   status: DoctorCheckStatusSchema,
 }) {}
 
-export class DoctorSummary extends Schema.Class<DoctorSummary>(
-  "DoctorSummary",
-)({
-  checks: Schema.Array(DoctorCheck),
-  status: DoctorStatusSchema,
-}) {}
+export class DoctorSummary extends Schema.Class<DoctorSummary>("DoctorSummary")(
+  {
+    checks: Schema.Array(DoctorCheck),
+    status: DoctorStatusSchema,
+  }
+) {}
 
 export type DoctorCommandInput = {
   readonly args: ReadonlyArray<string>;
@@ -57,7 +59,7 @@ export type DoctorCommandResult = {
 };
 
 export type DoctorCommandRunner = (
-  input: DoctorCommandInput,
+  input: DoctorCommandInput
 ) => Effect.Effect<DoctorCommandResult, GaiaRuntimeError>;
 
 export type DoctorBrowserInspector = () => Effect.Effect<
@@ -121,7 +123,7 @@ export const nodeDoctorCommandRunner: DoctorCommandRunner = (input) =>
               stderr,
               stdout,
             });
-          },
+          }
         );
       }),
   }).pipe(
@@ -130,8 +132,8 @@ export const nodeDoctorCommandRunner: DoctorCommandRunner = (input) =>
         exitCode: 1,
         stderr: "",
         stdout: "",
-      }),
-    ),
+      })
+    )
   );
 
 export const nodePlaywrightBrowserInspector: DoctorBrowserInspector = () =>
@@ -147,9 +149,9 @@ export const nodePlaywrightBrowserInspector: DoctorBrowserInspector = () =>
           code: "PlaywrightBrowserInspectFailed",
           message: "Gaia could not inspect Playwright Chromium.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 
 function checkRunStoreWritable(rootDirectory: string) {
@@ -176,15 +178,15 @@ function checkRunStoreWritable(rootDirectory: string) {
           detail: `Gaia could not write to .gaia: ${safeCauseMessage(cause)}`,
           name: "gaia-store-writable",
           status: "failed",
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function checkGitRepository(
   rootDirectory: string,
-  runner: DoctorCommandRunner,
+  runner: DoctorCommandRunner
 ) {
   return runner({
     args: ["rev-parse", "--is-inside-work-tree"],
@@ -199,18 +201,16 @@ function checkGitRepository(
             status: "passed",
           })
         : DoctorCheck.make({
-            detail: "Current directory is not inside a git repository; GitHub PR workflows will be unavailable.",
+            detail:
+              "Current directory is not inside a git repository; GitHub PR workflows will be unavailable.",
             name: "git-repository",
             status: "warning",
-          }),
-    ),
+          })
+    )
   );
 }
 
-function checkGitHubAuth(
-  rootDirectory: string,
-  runner: DoctorCommandRunner,
-) {
+function checkGitHubAuth(rootDirectory: string, runner: DoctorCommandRunner) {
   return runner({
     args: ["auth", "status"],
     command: "gh",
@@ -224,18 +224,16 @@ function checkGitHubAuth(
             status: "passed",
           })
         : DoctorCheck.make({
-            detail: "GitHub CLI is missing or not authenticated; PR publish/comment/check workflows will be unavailable.",
+            detail:
+              "GitHub CLI is missing or not authenticated; PR publish/comment/check workflows will be unavailable.",
             name: "gh-auth",
             status: "warning",
-          }),
-    ),
+          })
+    )
   );
 }
 
-function checkGitWorktree(
-  rootDirectory: string,
-  runner: DoctorCommandRunner,
-) {
+function checkGitWorktree(rootDirectory: string, runner: DoctorCommandRunner) {
   return runner({
     args: ["worktree", "list", "--porcelain"],
     command: "git",
@@ -252,15 +250,12 @@ function checkGitWorktree(
             detail: gitWorktreeWarningDetail(result),
             name: "git-worktree",
             status: "warning",
-          }),
-    ),
+          })
+    )
   );
 }
 
-function checkCodexCli(
-  rootDirectory: string,
-  runner: DoctorCommandRunner,
-) {
+function checkCodexCli(rootDirectory: string, runner: DoctorCommandRunner) {
   return runner({
     args: ["--version"],
     command: "codex",
@@ -274,11 +269,12 @@ function checkCodexCli(
             status: "passed",
           })
         : DoctorCheck.make({
-            detail: "Codex CLI is missing or unavailable; Codex harness/reviewer workflows will be unavailable.",
+            detail:
+              "Codex CLI is missing or unavailable; Codex harness/reviewer workflows will be unavailable.",
             name: "codex-cli",
             status: "warning",
-          }),
-    ),
+          })
+    )
   );
 }
 
@@ -293,7 +289,8 @@ function checkPlaywrightBrowser(inspector: DoctorBrowserInspector) {
           status: "passed",
         })
       : DoctorCheck.make({
-          detail: "Playwright Chromium browser was not found; browser evidence capture may fail.",
+          detail:
+            "Playwright Chromium browser was not found; browser evidence capture may fail.",
           name: "playwright-browser",
           status: "warning",
         });
@@ -304,9 +301,9 @@ function checkPlaywrightBrowser(inspector: DoctorBrowserInspector) {
           detail: `Gaia could not inspect Playwright Chromium: ${cause.message}`,
           name: "playwright-browser",
           status: "warning",
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 

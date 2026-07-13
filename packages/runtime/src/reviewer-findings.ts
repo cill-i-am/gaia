@@ -1,12 +1,14 @@
+import path from "node:path";
+
 import type { RunSpec } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
-import path from "node:path";
+
 import type { RunPaths } from "./paths.js";
+import type { WorkerPlanPlanningContext } from "./source-planning-context.js";
 import type {
   WorkerPlanDomainReference,
   WorkerPlanVerificationCheck,
 } from "./worker-plan.js";
-import type { WorkerPlanPlanningContext } from "./source-planning-context.js";
 
 export const ReviewerFindingSeveritySchema = Schema.Literals([
   "info",
@@ -14,8 +16,7 @@ export const ReviewerFindingSeveritySchema = Schema.Literals([
   "blocker",
 ] as const);
 
-export type ReviewerFindingSeverity =
-  typeof ReviewerFindingSeveritySchema.Type;
+export type ReviewerFindingSeverity = typeof ReviewerFindingSeveritySchema.Type;
 
 export const ReviewerFindingSourceStatusSchema = Schema.Literals([
   "current-blocker",
@@ -26,7 +27,7 @@ export type ReviewerFindingSourceStatus =
   typeof ReviewerFindingSourceStatusSchema.Type;
 
 export class ReviewerFindingSource extends Schema.Class<ReviewerFindingSource>(
-  "ReviewerFindingSource",
+  "ReviewerFindingSource"
 )({
   artifactPath: Schema.optionalKey(Schema.NonEmptyString),
   label: Schema.NonEmptyString,
@@ -35,7 +36,7 @@ export class ReviewerFindingSource extends Schema.Class<ReviewerFindingSource>(
 }) {}
 
 export class ReviewerFindingInput extends Schema.Class<ReviewerFindingInput>(
-  "ReviewerFindingInput",
+  "ReviewerFindingInput"
 )({
   id: Schema.optionalKey(Schema.NonEmptyString),
   severity: ReviewerFindingSeveritySchema,
@@ -58,7 +59,7 @@ export const ReviewerFindingRelevanceInputKindSchema = Schema.Literals([
 ] as const);
 
 export class ReviewerFindingRelevanceInput extends Schema.Class<ReviewerFindingRelevanceInput>(
-  "ReviewerFindingRelevanceInput",
+  "ReviewerFindingRelevanceInput"
 )({
   kind: ReviewerFindingRelevanceInputKindSchema,
   reason: Schema.NonEmptyString,
@@ -66,7 +67,7 @@ export class ReviewerFindingRelevanceInput extends Schema.Class<ReviewerFindingR
 }) {}
 
 export class WorkerPlanHistoricalRiskNote extends Schema.Class<WorkerPlanHistoricalRiskNote>(
-  "WorkerPlanHistoricalRiskNote",
+  "WorkerPlanHistoricalRiskNote"
 )({
   findingId: Schema.optionalKey(Schema.NonEmptyString),
   matchedSurfaces: Schema.Array(Schema.NonEmptyString),
@@ -80,7 +81,7 @@ export class WorkerPlanHistoricalRiskNote extends Schema.Class<WorkerPlanHistori
 }) {}
 
 export class ReviewerFindings extends Schema.Class<ReviewerFindings>(
-  "ReviewerFindings",
+  "ReviewerFindings"
 )({
   matchedRiskNotes: Schema.Array(WorkerPlanHistoricalRiskNote),
   relevanceInputs: Schema.Array(ReviewerFindingRelevanceInput),
@@ -98,7 +99,7 @@ const ReviewerFindingsInputDocument = Schema.Struct({
   version: Schema.optionalKey(Schema.Number),
 });
 const parseReviewerFindingsInputDocument = Schema.decodeUnknownSync(
-  ReviewerFindingsInputDocument,
+  ReviewerFindingsInputDocument
 );
 
 const LegacyReviewFinding = Schema.Struct({
@@ -109,7 +110,8 @@ const LegacyReviewArtifact = Schema.Struct({
   findings: Schema.Array(LegacyReviewFinding),
   summary: Schema.optionalKey(Schema.NonEmptyString),
 });
-const parseLegacyReviewArtifact = Schema.decodeUnknownSync(LegacyReviewArtifact);
+const parseLegacyReviewArtifact =
+  Schema.decodeUnknownSync(LegacyReviewArtifact);
 
 const LegacyReviewerSessionEvidence = Schema.Struct({
   decisionStatus: Schema.Literals(["approved", "blocked"] as const),
@@ -119,7 +121,7 @@ const LegacyReviewerSessionEvidence = Schema.Struct({
   reviewerName: Schema.NonEmptyString,
 });
 const parseLegacyReviewerSessionEvidence = Schema.decodeUnknownSync(
-  LegacyReviewerSessionEvidence,
+  LegacyReviewerSessionEvidence
 );
 
 const LegacyGitHubComment = Schema.Struct({
@@ -137,7 +139,8 @@ const LegacyGitHubFeedback = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
   url: Schema.optionalKey(Schema.String),
 });
-const parseLegacyGitHubFeedback = Schema.decodeUnknownSync(LegacyGitHubFeedback);
+const parseLegacyGitHubFeedback =
+  Schema.decodeUnknownSync(LegacyGitHubFeedback);
 
 export function writeReviewerFindings(input: {
   readonly domainReferences: ReadonlyArray<WorkerPlanDomainReference>;
@@ -170,7 +173,7 @@ export function writeReviewerFindings(input: {
 
     yield* fs.writeFileString(
       input.paths.reviewerFindings,
-      `${JSON.stringify(encodeReviewerFindingsJson(artifact), null, 2)}\n`,
+      `${JSON.stringify(encodeReviewerFindingsJson(artifact), null, 2)}\n`
     );
 
     return artifact;
@@ -185,30 +188,34 @@ function reviewerFindingRelevanceInputs(input: {
 }) {
   return uniqueRelevanceInputs([
     ...input.likelyTouchedSurfaces.map((value) =>
-      relevanceInput("touched-surface", value, "Spec-listed likely touched surface."),
+      relevanceInput(
+        "touched-surface",
+        value,
+        "Spec-listed likely touched surface."
+      )
     ),
     ...input.domainReferences.map((reference) =>
       relevanceInput(
         "domain-reference",
         reference.value,
-        `Spec domain reference classified as ${reference.kind}.`,
-      ),
+        `Spec domain reference classified as ${reference.kind}.`
+      )
     ),
     ...input.planningContext.likelyFiles.map((file) =>
-      relevanceInput("likely-file", file.path, file.reason),
+      relevanceInput("likely-file", file.path, file.reason)
     ),
     ...input.planningContext.packages.map((workspacePackage) =>
       relevanceInput(
         "package",
         workspacePackage.name,
-        `${workspacePackage.path}: ${workspacePackage.reason}`,
-      ),
+        `${workspacePackage.path}: ${workspacePackage.reason}`
+      )
     ),
     ...input.planningContext.sourceDocs.map((doc) =>
-      relevanceInput("source-doc", doc.path, doc.reason),
+      relevanceInput("source-doc", doc.path, doc.reason)
     ),
     ...input.planningContext.similarTests.map((test) =>
-      relevanceInput("similar-test", test.path, test.reason),
+      relevanceInput("similar-test", test.path, test.reason)
     ),
     ...input.verificationChecks.map((check) =>
       relevanceInput(
@@ -216,8 +223,8 @@ function reviewerFindingRelevanceInputs(input: {
         check.command ?? check.expectation,
         check.command === undefined
           ? "Spec verification expectation."
-          : `Spec verification command for: ${check.expectation}`,
-      ),
+          : `Spec verification command for: ${check.expectation}`
+      )
     ),
   ]);
 }
@@ -225,7 +232,7 @@ function reviewerFindingRelevanceInputs(input: {
 function relevanceInput(
   kind: typeof ReviewerFindingRelevanceInputKindSchema.Type,
   value: string,
-  reason: string,
+  reason: string
 ) {
   return ReviewerFindingRelevanceInput.make({
     kind,
@@ -245,7 +252,11 @@ function matchedHistoricalRiskNotes(input: {
   const contextTokens = tokenSet(context);
 
   return input.findings.flatMap((finding) => {
-    const matchedSurfaces = matchedFindingSurfaces(finding, context, contextTokens);
+    const matchedSurfaces = matchedFindingSurfaces(
+      finding,
+      context,
+      contextTokens
+    );
     if (matchedSurfaces.length === 0) {
       return [];
     }
@@ -269,7 +280,7 @@ function matchedHistoricalRiskNotes(input: {
 function matchedFindingSurfaces(
   finding: ReviewerFindingInput,
   context: string,
-  contextTokens: ReadonlySet<string>,
+  contextTokens: ReadonlySet<string>
 ) {
   const surfaces =
     finding.surfaces.length === 0
@@ -285,7 +296,7 @@ function matchedFindingSurfaces(
     const normalizedSurface = normalizeForIncludes(surface);
     const surfaceTokens = tokenSet(surface);
     const tokenMatches = [...surfaceTokens].filter((token) =>
-      contextTokens.has(token),
+      contextTokens.has(token)
     );
     const pathLikeMatch =
       surface.includes("/") && normalizedContext.includes(normalizedSurface);
@@ -337,21 +348,26 @@ function findingsFromSpec(spec: RunSpec) {
       surfaces: [],
       title: firstSentence(item),
       verificationPrompts: [],
-    }),
+    })
   );
 }
 
 function findingsFromWorkspaceArtifacts(
   fs: FileSystem.FileSystem,
-  paths: RunPaths,
+  paths: RunPaths
 ): Effect.Effect<ReadonlyArray<ReviewerFindingInput>, never> {
   return Effect.gen(function* () {
-    const artifactPaths = yield* listCandidateArtifactPaths(fs, paths.workspace);
+    const artifactPaths = yield* listCandidateArtifactPaths(
+      fs,
+      paths.workspace
+    );
     const findings: Array<ReviewerFindingInput> = [];
     for (const artifactPath of artifactPaths) {
-      const body = yield* fs.readFileString(
-        path.join(paths.workspace, artifactPath),
-      ).pipe(Effect.catchTag("PlatformError", () => Effect.succeed(undefined)));
+      const body = yield* fs
+        .readFileString(path.join(paths.workspace, artifactPath))
+        .pipe(
+          Effect.catchTag("PlatformError", () => Effect.succeed(undefined))
+        );
       if (body === undefined) {
         continue;
       }
@@ -381,7 +397,7 @@ function findingsFromArtifactBody(body: string, artifactPath: string) {
           sourceLabel: "GitHub PR feedback",
           text: comment.body,
           url: comment.url ?? decoded.url,
-        }),
+        })
       ),
       ...decoded.latestReviews.flatMap((review, index) =>
         findingFromFeedbackText({
@@ -390,7 +406,7 @@ function findingsFromArtifactBody(body: string, artifactPath: string) {
           sourceLabel: "GitHub PR review",
           text: review.body ?? review.state,
           url: review.url ?? decoded.url,
-        }),
+        })
       ),
     ];
   }
@@ -416,7 +432,7 @@ function findingsFromArtifactBody(body: string, artifactPath: string) {
         surfaces: [],
         title: firstSentence(finding.message),
         verificationPrompts: [],
-      }),
+      })
     );
   }
 
@@ -503,7 +519,7 @@ function findingFromFeedbackText(input: {
 
 function listCandidateArtifactPaths(
   fs: FileSystem.FileSystem,
-  workspaceRoot: string,
+  workspaceRoot: string
 ) {
   return Effect.gen(function* () {
     const files = yield* listFilesBelow(fs, workspaceRoot, ".");
@@ -514,23 +530,23 @@ function listCandidateArtifactPaths(
 function listFilesBelow(
   fs: FileSystem.FileSystem,
   workspaceRoot: string,
-  relativeDirectory: string,
+  relativeDirectory: string
 ): Effect.Effect<ReadonlyArray<string>, never> {
   return Effect.gen(function* () {
     const absoluteDirectory =
       relativeDirectory === "."
         ? workspaceRoot
         : path.join(workspaceRoot, relativeDirectory);
-    const info = yield* fs.stat(absoluteDirectory).pipe(
-      Effect.catchTag("PlatformError", () => Effect.succeed(undefined)),
-    );
+    const info = yield* fs
+      .stat(absoluteDirectory)
+      .pipe(Effect.catchTag("PlatformError", () => Effect.succeed(undefined)));
     if (info?.type !== "Directory") {
       return [];
     }
 
-    const entries = yield* fs.readDirectory(absoluteDirectory).pipe(
-      Effect.catchTag("PlatformError", () => Effect.succeed([])),
-    );
+    const entries = yield* fs
+      .readDirectory(absoluteDirectory)
+      .pipe(Effect.catchTag("PlatformError", () => Effect.succeed([])));
     const files: Array<string> = [];
     for (const entry of entries.toSorted()) {
       if (ignoredPathSegments.has(entry)) {
@@ -540,9 +556,11 @@ function listFilesBelow(
       const relativePath =
         relativeDirectory === "." ? entry : `${relativeDirectory}/${entry}`;
       const absolutePath = path.join(workspaceRoot, relativePath);
-      const entryInfo = yield* fs.stat(absolutePath).pipe(
-        Effect.catchTag("PlatformError", () => Effect.succeed(undefined)),
-      );
+      const entryInfo = yield* fs
+        .stat(absolutePath)
+        .pipe(
+          Effect.catchTag("PlatformError", () => Effect.succeed(undefined))
+        );
       if (entryInfo?.type === "Directory") {
         files.push(...(yield* listFilesBelow(fs, workspaceRoot, relativePath)));
         continue;
@@ -675,7 +693,7 @@ function uniqueFindings(findings: ReadonlyArray<ReviewerFindingInput>) {
 }
 
 function uniqueRelevanceInputs(
-  inputs: ReadonlyArray<ReviewerFindingRelevanceInput>,
+  inputs: ReadonlyArray<ReviewerFindingRelevanceInput>
 ) {
   const seen = new Set<string>();
   const unique: Array<ReviewerFindingRelevanceInput> = [];
@@ -717,12 +735,11 @@ function tokenSet(input: string) {
 }
 
 function tokensFrom(input: string) {
-  const rawTokens =
-    input
-      .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
-      .toLowerCase()
-      .split(/[^a-z0-9]+/u)
-      .filter((token) => token.length > 1 && !weakTokens.has(token));
+  const rawTokens = input
+    .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter((token) => token.length > 1 && !weakTokens.has(token));
   const expanded: Array<string> = [];
   for (const token of rawTokens) {
     expanded.push(token);
@@ -755,7 +772,7 @@ function fallbackText(input: string, fallback: string) {
 }
 
 export function markdownHistoricalRiskNotes(
-  notes: ReadonlyArray<WorkerPlanHistoricalRiskNote>,
+  notes: ReadonlyArray<WorkerPlanHistoricalRiskNote>
 ) {
   if (notes.length === 0) {
     return "No supplied reviewer findings matched this plan's touched surfaces.";
@@ -794,7 +811,9 @@ function formatSource(source: ReviewerFindingSource) {
     source.artifactPath === undefined
       ? undefined
       : `artifact: \`${source.artifactPath}\``,
-    source.pullRequest === undefined ? undefined : `PR: \`${source.pullRequest}\``,
+    source.pullRequest === undefined
+      ? undefined
+      : `PR: \`${source.pullRequest}\``,
     source.url === undefined ? undefined : `url: ${source.url}`,
   ].filter((detail) => detail !== undefined);
 
@@ -803,12 +822,7 @@ function formatSource(source: ReviewerFindingSource) {
     : `${source.label} (${details.join(", ")})`;
 }
 
-const ignoredPathSegments = new Set([
-  ".git",
-  ".turbo",
-  "dist",
-  "node_modules",
-]);
+const ignoredPathSegments = new Set([".git", ".turbo", "dist", "node_modules"]);
 
 const weakTokens = new Set([
   "add",

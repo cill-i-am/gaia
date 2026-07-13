@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Schema } from "effect";
+
 import {
   CreateRunRequest,
   DeliveryActionRequestSchema,
@@ -27,20 +28,20 @@ describe("LocalGaiaServerApi contract", () => {
 
     assert.strictEqual(
       Schema.decodeUnknownSync(ServerMetadata)(metadata).url,
-      metadata.url,
+      metadata.url
     );
     assert.strictEqual(
       Schema.decodeUnknownSync(HealthResponse)({
         ...metadata,
         status: "ok",
       }).url,
-      metadata.url,
+      metadata.url
     );
     assert.throws(() =>
       Schema.decodeUnknownSync(ServerMetadata)({
         ...metadata,
         url: "http://127.0.0.1:4321?debug=true",
-      }),
+      })
     );
     assert.deepNestedInclude(
       LocalGaiaServerOpenApi.components?.schemas?.HealthResponse,
@@ -48,11 +49,11 @@ describe("LocalGaiaServerApi contract", () => {
         "properties.url": {
           $ref: "#/components/schemas/LocalGaiaServerUrl",
         },
-      },
+      }
     );
     assert.deepInclude(
       LocalGaiaServerOpenApi.components?.schemas?.LocalGaiaServerUrl,
-      { type: "string" },
+      { type: "string" }
     );
   });
 
@@ -84,8 +85,12 @@ describe("LocalGaiaServerApi contract", () => {
     assert.isObject(paths["/runs/{runId}/activity"]?.get);
     assert.isObject(paths["/runs/{runId}/agents/{agentId}/activity"]?.get);
     assert.isObject(paths["/runs/{runId}/agents/{agentId}/session"]?.get);
-    assert.isObject(paths["/runs/{runId}/agents/{agentId}/session/actions"]?.post);
-    assert.isObject(paths["/runs/{runId}/agents/{agentId}/session/stream"]?.get);
+    assert.isObject(
+      paths["/runs/{runId}/agents/{agentId}/session/actions"]?.post
+    );
+    assert.isObject(
+      paths["/runs/{runId}/agents/{agentId}/session/stream"]?.get
+    );
     assert.isObject(paths["/runs/{runId}/delivery"]?.get);
     assert.isObject(paths["/runs/{runId}/delivery/actions"]?.post);
     assert.isObject(paths["/runs/{runId}/delivery/stream"]?.get);
@@ -107,7 +112,7 @@ describe("LocalGaiaServerApi contract", () => {
     ]);
     assertJsonSchemaRef(
       paths["/runs"]?.get?.responses["200"],
-      "#/components/schemas/FactoryRunListSuccessEnvelope",
+      "#/components/schemas/FactoryRunListSuccessEnvelope"
     );
     assert.deepEqual(responseStatuses(paths["/runs"]?.post?.responses), [
       "202",
@@ -126,77 +131,89 @@ describe("LocalGaiaServerApi contract", () => {
     ]);
     assertJsonSchemaRef(
       paths["/runs/{runId}"]?.get?.responses["200"],
-      "#/components/schemas/FactoryRunDetailSuccessEnvelope",
+      "#/components/schemas/FactoryRunDetailSuccessEnvelope"
     );
     assert.deepEqual(
       responseStatuses(paths["/runs/{runId}/factory-graph"]?.get?.responses),
-      ["200", "400", "404", "422", "500"],
+      ["200", "400", "404", "422", "500"]
     );
     assert.deepEqual(
       responseStatuses(paths["/runs/{runId}/activity"]?.get?.responses),
-      ["200", "400", "404", "422", "500"],
+      ["200", "400", "404", "422", "500"]
     );
     assert.deepEqual(
       responseStatuses(paths["/runs/{runId}/delivery"]?.get?.responses),
-      ["200", "400", "404", "422", "500"],
+      ["200", "400", "404", "422", "500"]
     );
     assertJsonSchemaRef(
       paths["/runs/{runId}/delivery"]?.get?.responses["200"],
-      "#/components/schemas/DeliverySnapshotSuccessEnvelope",
-    );
-    assert.deepEqual(
-      responseStatuses(paths["/runs/{runId}/delivery/actions"]?.post?.responses),
-      ["200", "400", "404", "409", "422", "500"],
-    );
-    assert.deepEqual(
-      responseStatuses(paths["/runs/{runId}/agents/{agentId}/activity"]?.get?.responses),
-      ["200", "400", "404", "422", "500"],
-    );
-    assert.deepEqual(
-      responseStatuses(paths["/runs/{runId}/agents/{agentId}/session"]?.get?.responses),
-      ["200", "400", "404", "422", "500"],
-    );
-    assertJsonSchemaRef(
-      paths["/runs/{runId}/agents/{agentId}/session"]?.get?.responses["200"],
-      "#/components/schemas/AgentSessionSnapshotSuccessEnvelope",
-    );
-    assert.deepEqual(
-      responseStatuses(paths["/runs/{runId}/agents/{agentId}/session/stream"]?.get?.responses),
-      ["200", "400", "404", "409", "405", "422", "500"].sort(),
-    );
-    assert.deepEqual(
-      responseStatuses(paths["/runs/{runId}/agents/{agentId}/session/actions"]?.post?.responses),
-      ["200", "400", "404", "409", "422", "500"],
-    );
-    assertJsonSchemaRef(
-      paths["/runs/{runId}/agents/{agentId}/session/actions"]?.post?.responses["200"],
-      "#/components/schemas/AgentActionSuccessEnvelope",
-    );
-    assert.deepEqual(
-      responseStatuses(paths["/runs/{runId}/artifacts"]?.get?.responses),
-      ["200", "400", "404", "422", "500"],
+      "#/components/schemas/DeliverySnapshotSuccessEnvelope"
     );
     assert.deepEqual(
       responseStatuses(
-        paths["/runs/{runId}/artifacts/{artifactId}"]?.get?.responses,
+        paths["/runs/{runId}/delivery/actions"]?.post?.responses
       ),
-      ["200", "400", "404", "422", "500"],
+      ["200", "400", "404", "409", "422", "500"]
+    );
+    assert.deepEqual(
+      responseStatuses(
+        paths["/runs/{runId}/agents/{agentId}/activity"]?.get?.responses
+      ),
+      ["200", "400", "404", "422", "500"]
+    );
+    assert.deepEqual(
+      responseStatuses(
+        paths["/runs/{runId}/agents/{agentId}/session"]?.get?.responses
+      ),
+      ["200", "400", "404", "422", "500"]
+    );
+    assertJsonSchemaRef(
+      paths["/runs/{runId}/agents/{agentId}/session"]?.get?.responses["200"],
+      "#/components/schemas/AgentSessionSnapshotSuccessEnvelope"
+    );
+    assert.deepEqual(
+      responseStatuses(
+        paths["/runs/{runId}/agents/{agentId}/session/stream"]?.get?.responses
+      ),
+      ["200", "400", "404", "409", "405", "422", "500"].sort()
+    );
+    assert.deepEqual(
+      responseStatuses(
+        paths["/runs/{runId}/agents/{agentId}/session/actions"]?.post?.responses
+      ),
+      ["200", "400", "404", "409", "422", "500"]
+    );
+    assertJsonSchemaRef(
+      paths["/runs/{runId}/agents/{agentId}/session/actions"]?.post?.responses[
+        "200"
+      ],
+      "#/components/schemas/AgentActionSuccessEnvelope"
+    );
+    assert.deepEqual(
+      responseStatuses(paths["/runs/{runId}/artifacts"]?.get?.responses),
+      ["200", "400", "404", "422", "500"]
+    );
+    assert.deepEqual(
+      responseStatuses(
+        paths["/runs/{runId}/artifacts/{artifactId}"]?.get?.responses
+      ),
+      ["200", "400", "404", "422", "500"]
     );
     assertJsonSchemaRef(
       paths["/runs/{runId}/artifacts/{artifactId}"]?.get?.responses["200"],
-      "#/components/schemas/FactoryArtifactSuccessEnvelope",
+      "#/components/schemas/FactoryArtifactSuccessEnvelope"
     );
     assertJsonSchemaRef(
       paths["/runs/{runId}"]?.get?.responses["400"],
-      "#/components/schemas/LocalRunApiBadRequest",
+      "#/components/schemas/LocalRunApiBadRequest"
     );
     assertJsonSchemaRef(
       paths["/runs/{runId}"]?.get?.responses["404"],
-      "#/components/schemas/LocalRunApiNotFound",
+      "#/components/schemas/LocalRunApiNotFound"
     );
     assertJsonSchemaRef(
       paths["/runs"]?.post?.responses["409"],
-      "#/components/schemas/LocalRunApiConflict",
+      "#/components/schemas/LocalRunApiConflict"
     );
   });
 
@@ -205,8 +222,8 @@ describe("LocalGaiaServerApi contract", () => {
       LocalGaiaServerOpenApi.paths["/runs/{runId}/artifacts/{artifactId}"]?.get
         ?.parameters;
     const agentActivityParameters =
-      LocalGaiaServerOpenApi.paths["/runs/{runId}/agents/{agentId}/activity"]?.get
-        ?.parameters;
+      LocalGaiaServerOpenApi.paths["/runs/{runId}/agents/{agentId}/activity"]
+        ?.get?.parameters;
 
     if (!Array.isArray(artifactParameters)) {
       assert.fail("Expected artifact endpoint parameters.");
@@ -250,7 +267,7 @@ describe("LocalGaiaServerApi contract", () => {
           "unknown",
         ],
         type: "string",
-      },
+      }
     );
     assert.deepEqual(
       LocalGaiaServerOpenApi.components?.schemas?.LocalRunApiNotFound,
@@ -277,7 +294,7 @@ describe("LocalGaiaServerApi contract", () => {
         },
         required: ["message", "recoverable", "code", "status"],
         type: "object",
-      },
+      }
     );
   });
 
@@ -295,7 +312,7 @@ describe("LocalGaiaServerApi contract", () => {
           kind: "issue",
           title: "Define FactoryGraph contracts",
         },
-      }),
+      })
     );
     assert.doesNotThrow(() =>
       decodeCreateRunRequest({
@@ -307,7 +324,7 @@ describe("LocalGaiaServerApi contract", () => {
           kind: "issue",
           title: "Define FactoryGraph contracts",
         },
-      }),
+      })
     );
     assert.throws(() =>
       decodeCreateRunRequest({
@@ -319,7 +336,7 @@ describe("LocalGaiaServerApi contract", () => {
           kind: "issue",
           title: "Define FactoryGraph contracts",
         },
-      }),
+      })
     );
     assert.throws(() =>
       decodeCreateRunRequest({
@@ -331,7 +348,7 @@ describe("LocalGaiaServerApi contract", () => {
           kind: "issue",
           title: "Define FactoryGraph contracts",
         },
-      }),
+      })
     );
     assert.throws(() =>
       decodeCreateRunRequest({
@@ -341,7 +358,7 @@ describe("LocalGaiaServerApi contract", () => {
           kind: "issue",
           title: "Define FactoryGraph contracts",
         },
-      }),
+      })
     );
     assert.throws(() =>
       decodeCreateRunRequest({
@@ -352,7 +369,7 @@ describe("LocalGaiaServerApi contract", () => {
           kind: "issue",
           title: "Define FactoryGraph contracts",
         },
-      }),
+      })
     );
     assert.throws(() =>
       decodeCreateRunRequest({
@@ -366,12 +383,12 @@ describe("LocalGaiaServerApi contract", () => {
           kind: "issue",
           title: "Define FactoryGraph contracts",
         },
-      }),
+      })
     );
     assert.throws(() =>
       decodeCreateRunRequest({
         specMarkdown: "Legacy body is not accepted.\n",
-      }),
+      })
     );
     assert.throws(() =>
       decodeCreateRunRequest({
@@ -382,7 +399,7 @@ describe("LocalGaiaServerApi contract", () => {
           kind: "project",
           title: "Project delivery",
         },
-      }),
+      })
     );
     assert.throws(() =>
       decodeCreateRunRequest({
@@ -394,7 +411,7 @@ describe("LocalGaiaServerApi contract", () => {
           kind: "issue",
           title: "Define FactoryGraph contracts",
         },
-      }),
+      })
     );
     assert.throws(() =>
       decodeCreateRunRequest({
@@ -406,33 +423,40 @@ describe("LocalGaiaServerApi contract", () => {
           title: "Define FactoryGraph contracts",
           workspaceSource: ".",
         },
-      }),
+      })
     );
   });
 
   it("strictly parses optimistic delivery recovery actions", () => {
     const decode = Schema.decodeUnknownSync(
-      DeliveryRecoveryActionRequestSchema,
+      DeliveryRecoveryActionRequestSchema
     );
 
     const action = decode({ expectedEventSequence: 9, kind: "reconcile" });
     assert.strictEqual(action.expectedEventSequence, 9);
     assert.strictEqual(action.kind, "reconcile");
-    assert.throws(() =>
-      decode({ expectedEventSequence: 0, kind: "retry" }),
-    );
+    assert.throws(() => decode({ expectedEventSequence: 0, kind: "retry" }));
     assert.throws(() =>
       decode({
         expectedEventSequence: 9,
         force: true,
         kind: "retry",
-      }),
+      })
     );
   });
 
   it("requires the exact expected branch on merge actions", () => {
     const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
-    const action = { actionId: "merge-1", expectedBranchName: "gaia/run-1234567890", expectedDecisionSequence: 9, expectedHeadSha: "a".repeat(40), expectedPolicyDigest: "b".repeat(64), expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/74", kind: "merge", mergeMethod: "merge" };
+    const action = {
+      actionId: "merge-1",
+      expectedBranchName: "gaia/run-1234567890",
+      expectedDecisionSequence: 9,
+      expectedHeadSha: "a".repeat(40),
+      expectedPolicyDigest: "b".repeat(64),
+      expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/74",
+      kind: "merge",
+      mergeMethod: "merge",
+    };
     assert.strictEqual(decode(action).kind, "merge");
     const { expectedBranchName: _expectedBranchName, ...missing } = action;
     assert.throws(() => decode(missing));
@@ -450,7 +474,9 @@ describe("LocalGaiaServerApi contract", () => {
       kind: "markReadyForReview",
     } as const;
     assert.strictEqual(decode(action).kind, "markReadyForReview");
-    assert.throws(() => decode({ ...action, publicationOperationId: "private-generation" }));
+    assert.throws(() =>
+      decode({ ...action, publicationOperationId: "private-generation" })
+    );
     assert.throws(() => decode({ ...action, expectedPrNumber: 0 }));
     assert.throws(() => decode({ ...action, expectedHeadSha: "not-a-sha" }));
     assert.throws(() => decode({ ...action, actionId: "bad action id" }));
@@ -471,8 +497,12 @@ describe("LocalGaiaServerApi contract", () => {
     } as const;
     assert.strictEqual(decode(action).kind, "attestPairedReviewApproval");
     assert.throws(() => decode({ ...action, actionId: "bad action id" }));
-    assert.throws(() => decode({ ...action, gaiaEvidenceDigest: "not-a-digest" }));
-    assert.throws(() => decode({ ...action, evidenceUrl: "https://linear.app/example" }));
+    assert.throws(() =>
+      decode({ ...action, gaiaEvidenceDigest: "not-a-digest" })
+    );
+    assert.throws(() =>
+      decode({ ...action, evidenceUrl: "https://linear.app/example" })
+    );
     assert.throws(() => decode({ ...action, reviewerIdentity: "cill-i-am" }));
     assert.throws(() => decode({ ...action, decision: "rejected" }));
   });
@@ -494,7 +524,9 @@ describe("LocalGaiaServerApi contract", () => {
     const decoded = decode(request);
     assert.strictEqual(decoded.kind, "continueInterruptedWorkerRecovery");
     assert.throws(() => decode({ ...request, nativeTurnId: "turn-private" }));
-    assert.throws(() => decode({ ...request, nativeTurnIdDigest: "a".repeat(64) }));
+    assert.throws(() =>
+      decode({ ...request, nativeTurnIdDigest: "a".repeat(64) })
+    );
     assert.throws(() => decode({ ...request, protocol: "codex-app-server" }));
   });
 
@@ -518,7 +550,9 @@ describe("LocalGaiaServerApi contract", () => {
     const decoded = decode(request);
     assert.strictEqual(decoded.kind, "reconcileInterruptedWorkerCorrelation");
     assert.throws(() => decode({ ...request, nativeTurnId: "turn-private" }));
-    assert.throws(() => decode({ ...request, nativeThreadId: "thread-private" }));
+    assert.throws(() =>
+      decode({ ...request, nativeThreadId: "thread-private" })
+    );
     assert.throws(() => decode({ ...request, protocol: "codex-app-server" }));
   });
 
@@ -542,9 +576,14 @@ describe("LocalGaiaServerApi contract", () => {
     } as const;
 
     const decoded = decode(request);
-    assert.strictEqual(decoded.kind, "reconcileDesktopOriginatedWorkerCorrelation");
+    assert.strictEqual(
+      decoded.kind,
+      "reconcileDesktopOriginatedWorkerCorrelation"
+    );
     assert.throws(() => decode({ ...request, nativeTurnId: "turn-private" }));
-    assert.throws(() => decode({ ...request, nativeThreadId: "thread-private" }));
+    assert.throws(() =>
+      decode({ ...request, nativeThreadId: "thread-private" })
+    );
     assert.throws(() => decode({ ...request, source: "vscode" }));
     assert.throws(() => decode({ ...request, protocol: "codex-app-server" }));
   });
@@ -558,7 +597,10 @@ describe("LocalGaiaServerApi contract", () => {
       eventSequence: 12,
       mode: "pullRequest",
       ownershipToken: hostile,
-      privateProvenance: { repositoryCommonDir: hostile, worktreePath: hostile },
+      privateProvenance: {
+        repositoryCommonDir: hostile,
+        worktreePath: hostile,
+      },
       recoveryActions: [],
       runId: "run-1234567890",
       stage: "cleanupRequired",
@@ -610,8 +652,13 @@ describe("LocalGaiaServerApi contract", () => {
       status: "waitingForPr",
     } as const;
 
-    assert.strictEqual(decode(snapshot).authoritativeHeadSha, snapshot.authoritativeHeadSha);
-    assert.throws(() => decode({ ...snapshot, authoritativeHeadSha: "not-a-git-sha" }));
+    assert.strictEqual(
+      decode(snapshot).authoritativeHeadSha,
+      snapshot.authoritativeHeadSha
+    );
+    assert.throws(() =>
+      decode({ ...snapshot, authoritativeHeadSha: "not-a-git-sha" })
+    );
   });
 
   it("strictly parses one exact controlled remediation activation", () => {
@@ -638,8 +685,14 @@ describe("LocalGaiaServerApi contract", () => {
     if (decoded.kind !== "activateRemediation") {
       assert.fail("Expected a controlled remediation activation.");
     }
-    assert.strictEqual(decoded.actionIdempotencyKey, request.actionIdempotencyKey);
-    assert.strictEqual(decoded.authorizationDigest, request.authorizationDigest);
+    assert.strictEqual(
+      decoded.actionIdempotencyKey,
+      request.actionIdempotencyKey
+    );
+    assert.strictEqual(
+      decoded.authorizationDigest,
+      request.authorizationDigest
+    );
     assert.throws(() => decode({ ...request, prompt: "do anything" }));
     assert.throws(() => decode({ ...request, actorType: "Bot" }));
     assert.throws(() => decode({ ...request, authorAssociation: "NONE" }));
@@ -647,8 +700,9 @@ describe("LocalGaiaServerApi contract", () => {
   });
 });
 
-type OpenApiResponses =
-  NonNullable<typeof LocalGaiaServerOpenApi.paths["/health"]["get"]>["responses"];
+type OpenApiResponses = NonNullable<
+  (typeof LocalGaiaServerOpenApi.paths)["/health"]["get"]
+>["responses"];
 
 function responseStatuses(responses: OpenApiResponses | undefined) {
   if (responses === undefined) {

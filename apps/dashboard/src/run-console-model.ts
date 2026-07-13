@@ -50,7 +50,9 @@ export function buildRunConsoleState(input: {
   readonly healthPending: boolean;
   readonly healthStatus: string | undefined;
   readonly runs: ReadonlyArray<typeof LocalRunSummaryDto.Type>;
-  readonly runsDiagnostics: ReadonlyArray<typeof LocalRunReadDiagnosticDto.Type>;
+  readonly runsDiagnostics: ReadonlyArray<
+    typeof LocalRunReadDiagnosticDto.Type
+  >;
   readonly runsError: unknown;
   readonly runsFetching?: boolean;
   readonly runsPending: boolean;
@@ -99,9 +101,12 @@ export function buildRunConsoleState(input: {
 
 export function reconcileSelectedRunId(
   selectedRunId: RunId | undefined,
-  runs: ReadonlyArray<RunConsoleRun>,
+  runs: ReadonlyArray<RunConsoleRun>
 ) {
-  if (selectedRunId !== undefined && runs.some((run) => run.id === selectedRunId)) {
+  if (
+    selectedRunId !== undefined &&
+    runs.some((run) => run.id === selectedRunId)
+  ) {
     return selectedRunId;
   }
 
@@ -110,19 +115,15 @@ export function reconcileSelectedRunId(
 
 export function selectedRunFromConsoleState(
   selectedRunId: RunId | undefined,
-  runs: ReadonlyArray<RunConsoleRun>,
+  runs: ReadonlyArray<RunConsoleRun>
 ) {
   return runs.find((run) => run.id === selectedRunId);
 }
 
 export function dashboardQueryFailure(
-  error: unknown,
+  error: unknown
 ): DashboardGaiaClientError | undefined {
-  if (
-    typeof error !== "object" ||
-    error === null ||
-    !("failure" in error)
-  ) {
+  if (typeof error !== "object" || error === null || !("failure" in error)) {
     return undefined;
   }
 
@@ -140,10 +141,9 @@ export function dashboardQueryFailure(
   return undefined;
 }
 
-function toRunConsoleRun(
-  run: typeof LocalRunSummaryDto.Type,
-): RunConsoleRun {
-  const hasError = run.status === "failed" || run.latestEventType === "RUN_FAILED";
+function toRunConsoleRun(run: typeof LocalRunSummaryDto.Type): RunConsoleRun {
+  const hasError =
+    run.status === "failed" || run.latestEventType === "RUN_FAILED";
 
   return {
     artifactCount: run.artifacts.length,

@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   FactoryActivityDto,
   AgentActionReceiptDto,
@@ -30,7 +29,7 @@ import {
   parseDeliveryFeedbackId,
   parseWorkspaceRelativePath,
 } from "@gaia/core";
-import { testFactoryExecution } from "@/test-factory-execution";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
   cleanup,
@@ -49,6 +48,7 @@ import {
   shouldAnimateFactoryEdge,
 } from "@/components/dashboard-shell";
 import type { DashboardGaiaClientError } from "@/lib/local-gaia-client";
+import { testFactoryExecution } from "@/test-factory-execution";
 
 type CreateRunAcceptedFixture = {
   readonly acceptedAt: string;
@@ -62,7 +62,8 @@ type CreateRunAcceptedFixture = {
   };
 };
 
-type FactoryAgentState = (typeof FactoryGraphDto.Type)["agents"][number]["state"];
+type FactoryAgentState =
+  (typeof FactoryGraphDto.Type)["agents"][number]["state"];
 type FactoryGraphAgent = (typeof FactoryGraphDto.Type)["agents"][number];
 type FactoryGraphEdge = (typeof FactoryGraphDto.Type)["edges"][number];
 
@@ -71,7 +72,10 @@ const queryFixture = vi.hoisted(
     artifactsByRunId: Record<string, Record<string, unknown>>;
     factoryActivitiesByRunId: Record<string, ReadonlyArray<unknown>>;
     factoryActivityErrorsByRunId: Record<string, unknown>;
-    factoryAgentActivitiesByRunId: Record<string, Record<string, ReadonlyArray<unknown>>>;
+    factoryAgentActivitiesByRunId: Record<
+      string,
+      Record<string, ReadonlyArray<unknown>>
+    >;
     factoryArtifactBodyRequests: Array<{
       readonly artifactId: string;
       readonly runId: string;
@@ -129,7 +133,7 @@ const queryFixture = vi.hoisted(
     runsDiagnostics: [],
     runsError: undefined,
     runsRequestCount: 0,
-  }),
+  })
 );
 
 vi.mock("@/lib/local-gaia-query", () => ({
@@ -226,8 +230,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
           runs: queryFixture.runs,
         },
         diagnostics: queryFixture.runsDiagnostics,
-        status:
-          queryFixture.runsDiagnostics.length > 0 ? "partial" : "success",
+        status: queryFixture.runsDiagnostics.length > 0 ? "partial" : "success",
       });
     },
     queryKey: ["local-gaia", "runs"] as const,
@@ -241,7 +244,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
           typeof candidate === "object" &&
           candidate !== null &&
           "runId" in candidate &&
-          candidate.runId === config.runId,
+          candidate.runId === config.runId
       );
 
       return Promise.resolve({
@@ -279,7 +282,13 @@ vi.mock("@/lib/local-gaia-query", () => ({
         },
         status: "success",
       }),
-    queryKey: ["local-gaia", "runs", "detail", config.runId, "delivery"] as const,
+    queryKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "delivery",
+    ] as const,
     retry: false,
   }),
   localGaiaRunArtifactQueryOptions: (config: {
@@ -346,7 +355,13 @@ vi.mock("@/lib/local-gaia-query", () => ({
         status: "success",
       });
     },
-    queryKey: ["local-gaia", "runs", "detail", config.runId, "activity"] as const,
+    queryKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "activity",
+    ] as const,
     retry: false,
   }),
   localGaiaFactoryAgentActivityQueryOptions: (config: {
@@ -442,7 +457,13 @@ vi.mock("@/lib/local-gaia-query", () => ({
         status: "success",
       });
     },
-    queryKey: ["local-gaia", "runs", "detail", config.runId, "artifacts"] as const,
+    queryKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "artifacts",
+    ] as const,
     retry: false,
   }),
   localGaiaFactoryArtifactQueryOptions: (config: {
@@ -455,9 +476,10 @@ vi.mock("@/lib/local-gaia-query", () => ({
         artifactId: config.artifactId,
         runId: config.runId,
       });
-      const error = queryFixture.factoryArtifactBodyErrorsByRunId[
-        config.runId
-      ]?.[config.artifactId];
+      const error =
+        queryFixture.factoryArtifactBodyErrorsByRunId[config.runId]?.[
+          config.artifactId
+        ];
       if (error !== undefined) {
         return Promise.reject({ failure: error });
       }
@@ -629,16 +651,18 @@ describe("DashboardShell Run Console", () => {
     await screen.findByTestId("selected-run-title");
 
     expect(screen.getByRole("heading", { name: "GAIA" }).className).toContain(
-      "gaia-logo-wordmark",
+      "gaia-logo-wordmark"
     );
-    expect(await screen.findAllByText("Issue orchestrator")).not.toHaveLength(0);
+    expect(await screen.findAllByText("Issue orchestrator")).not.toHaveLength(
+      0
+    );
     expect(await screen.findAllByText("Worker")).not.toHaveLength(0);
     expect(await screen.findAllByText("Reviewer")).not.toHaveLength(0);
     expect(await screen.findAllByText("Tester")).not.toHaveLength(0);
     expect(await screen.findAllByText("CI watcher")).not.toHaveLength(0);
     expect(screen.queryByText("Run Canvas")).toBeNull();
     expect(
-      screen.queryByText("FactoryGraph topology for the selected run"),
+      screen.queryByText("FactoryGraph topology for the selected run")
     ).toBeNull();
     expect(screen.queryByText("6 nodes")).toBeNull();
     expect(screen.queryByText("Run root")).toBeNull();
@@ -653,14 +677,16 @@ describe("DashboardShell Run Console", () => {
     expect(screen.queryByText("No node selected")).toBeNull();
     expect(screen.queryByTestId("evidence-studio-panel")).toBeNull();
     expect(screen.getByTestId("command-rail-footer").textContent).toContain(
-      "/gaia-api",
+      "/gaia-api"
     );
     expect(screen.getByTestId("mobile-workspace-canvas").className).toContain(
-      "h-[30rem]",
+      "h-[30rem]"
     );
     expect(view.container.querySelector('[data-id^="work-item:"]')).toBeNull();
 
-    const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
+    const workerNode = view.container.querySelector(
+      '[data-id="agent:agent-worker"]'
+    );
     if (workerNode === null) {
       throw new Error("Expected a worker FactoryGraph node.");
     }
@@ -671,10 +697,11 @@ describe("DashboardShell Run Console", () => {
     expect(workerNode.textContent).not.toContain("Activity linked");
     expect(workerNode.textContent).not.toContain("activities");
     const workerNodeIconClassName =
-      workerNode.querySelector("svg")?.parentElement?.getAttribute("class") ?? "";
+      workerNode.querySelector("svg")?.parentElement?.getAttribute("class") ??
+      "";
     expect(workerNodeIconClassName).toContain("border-border");
     expect(workerNodeIconClassName).not.toMatch(
-      /rose|amber|sky|cyan|emerald|indigo/,
+      /rose|amber|sky|cyan|emerald|indigo/
     );
   });
 
@@ -683,7 +710,9 @@ describe("DashboardShell Run Console", () => {
 
     await screen.findByTestId("selected-run-title");
     expect(await screen.findAllByText("Worker")).not.toHaveLength(0);
-    const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
+    const workerNode = view.container.querySelector(
+      '[data-id="agent:agent-worker"]'
+    );
     if (workerNode === null) {
       throw new Error("Expected a worker FactoryGraph node.");
     }
@@ -691,11 +720,13 @@ describe("DashboardShell Run Console", () => {
     fireEvent.click(workerNode);
 
     await waitFor(() => {
-      expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
+      expect(
+        screen.getAllByText("Worker produced code summary")
+      ).not.toHaveLength(0);
       expect(screen.getAllByText("Code summary")).not.toHaveLength(0);
-      expect(screen.getByTestId("agent-inspector-panel").getAttribute("data-slot")).toBe(
-        "sheet-content",
-      );
+      expect(
+        screen.getByTestId("agent-inspector-panel").getAttribute("data-slot")
+      ).toBe("sheet-content");
       const summaryIconClassName =
         screen
           .getByTestId("agent-inspector-panel")
@@ -703,32 +734,32 @@ describe("DashboardShell Run Console", () => {
           ?.getAttribute("class") ?? "";
       expect(summaryIconClassName).toContain("border-border");
       expect(summaryIconClassName).not.toMatch(
-        /rose|amber|sky|cyan|emerald|indigo/,
+        /rose|amber|sky|cyan|emerald|indigo/
       );
     });
-    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
-      "Role:",
-    );
-    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
-      "State:",
-    );
-    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
-      "Work item:",
+    expect(
+      screen.getByTestId("agent-inspector-panel").textContent
+    ).not.toContain("Role:");
+    expect(
+      screen.getByTestId("agent-inspector-panel").textContent
+    ).not.toContain("State:");
+    expect(
+      screen.getByTestId("agent-inspector-panel").textContent
+    ).not.toContain("Work item:");
+    expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
+      "Operator note"
     );
     expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
-      "Operator note",
-    );
-    expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
-      "Agent Inspector",
+      "Agent Inspector"
     );
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "Session",
       "Activity",
       "Artifacts",
     ]);
-    expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
-      "Query",
-    );
+    expect(
+      screen.getByTestId("agent-inspector-panel").textContent
+    ).not.toContain("Query");
   });
 
   it("loads Agent Inspector artifact bodies from public factory reads", async () => {
@@ -736,7 +767,9 @@ describe("DashboardShell Run Console", () => {
 
     await screen.findByTestId("selected-run-title");
     const workerNode = await waitFor(() => {
-      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      const node = view.container.querySelector(
+        '[data-id="agent:agent-worker"]'
+      );
       if (node === null) {
         throw new Error("Expected a worker FactoryGraph node.");
       }
@@ -745,18 +778,28 @@ describe("DashboardShell Run Console", () => {
 
     fireEvent.click(workerNode);
     await screen.findByTestId("agent-inspector-panel");
-    const artifactsTab = firstElement(screen.getAllByRole("tab", {
-      name: "Artifacts",
-    }));
+    const artifactsTab = firstElement(
+      screen.getAllByRole("tab", {
+        name: "Artifacts",
+      })
+    );
     fireEvent.click(artifactsTab);
     await waitFor(() => {
-      expect(screen.getAllByRole("button", { name: "Code summary" })).not.toHaveLength(0);
+      expect(
+        screen.getAllByRole("button", { name: "Code summary" })
+      ).not.toHaveLength(0);
     });
 
-    fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Code summary" })));
+    fireEvent.click(
+      firstElement(screen.getAllByRole("button", { name: "Code summary" }))
+    );
 
     await waitFor(() => {
-      expect(screen.getAllByText("Worker summary body from the factory artifact endpoint.")).not.toHaveLength(0);
+      expect(
+        screen.getAllByText(
+          "Worker summary body from the factory artifact endpoint."
+        )
+      ).not.toHaveLength(0);
     });
     expect(queryFixture.factoryArtifactBodyRequests).toContainEqual({
       artifactId,
@@ -769,7 +812,9 @@ describe("DashboardShell Run Console", () => {
 
     await screen.findByTestId("selected-run-title");
     const workerNode = await waitFor(() => {
-      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      const node = view.container.querySelector(
+        '[data-id="agent:agent-worker"]'
+      );
       if (node === null) {
         throw new Error("Expected a worker FactoryGraph node.");
       }
@@ -780,7 +825,11 @@ describe("DashboardShell Run Console", () => {
 
     await screen.findByTestId("agent-inspector-panel");
 
-    fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Close Agent Inspector" })));
+    fireEvent.click(
+      firstElement(
+        screen.getAllByRole("button", { name: "Close Agent Inspector" })
+      )
+    );
 
     await waitFor(() => {
       expect(screen.queryByTestId("agent-inspector-panel")).toBeNull();
@@ -791,7 +840,7 @@ describe("DashboardShell Run Console", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
-        "Worker produced code summary",
+        "Worker produced code summary"
       );
     });
   });
@@ -817,7 +866,9 @@ describe("DashboardShell Run Console", () => {
                 workspacePath: parseWorkspaceRelativePath("."),
               },
               {
-                interactionId: parseHarnessInteractionId("interaction-question"),
+                interactionId: parseHarnessInteractionId(
+                  "interaction-question"
+                ),
                 itemId: parseHarnessItemId("item-question"),
                 kind: "userInput",
                 questions: [
@@ -847,7 +898,9 @@ describe("DashboardShell Run Console", () => {
 
     await screen.findByTestId("selected-run-title");
     const workerNode = await waitFor(() => {
-      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      const node = view.container.querySelector(
+        '[data-id="agent:agent-worker"]'
+      );
       if (node === null) {
         throw new Error("Expected a worker FactoryGraph node.");
       }
@@ -857,13 +910,17 @@ describe("DashboardShell Run Console", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
-        "Agent Inspector",
+        "Agent Inspector"
       );
       expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
-        "Command approval",
+        "Command approval"
       );
-      expect(screen.getByRole("button", { name: "Submit operator input" })).toBeTruthy();
-      expect(screen.queryByRole("button", { name: "Decline operator input" })).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Submit operator input" })
+      ).toBeTruthy();
+      expect(
+        screen.queryByRole("button", { name: "Decline operator input" })
+      ).toBeNull();
     });
 
     const composer = screen.getByPlaceholderText("Steer the active turn");
@@ -872,12 +929,16 @@ describe("DashboardShell Run Console", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Send steer" }));
     fireEvent.click(screen.getByRole("button", { name: "Interrupt turn" }));
-    fireEvent.click(screen.getByRole("button", { name: "Approve command approval" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Approve command approval" })
+    );
 
     await waitFor(() => {
       expect(queryFixture.agentSessionActionInputs).toHaveLength(3);
     });
-    expect(queryFixture.agentSessionActionInputs.map((input) => input.action)).toEqual([
+    expect(
+      queryFixture.agentSessionActionInputs.map((input) => input.action)
+    ).toEqual([
       expect.objectContaining({
         kind: "steer",
         sessionId: "session-run-7070707070",
@@ -896,7 +957,11 @@ describe("DashboardShell Run Console", () => {
         sessionId: "session-run-7070707070",
       }),
     ]);
-    expect(screen.queryByRole("button", { name: "Approve for session command approval" })).toBeNull();
+    expect(
+      screen.queryByRole("button", {
+        name: "Approve for session command approval",
+      })
+    ).toBeNull();
   });
 
   it("keeps the cached agent session snapshot after closing and reselecting Inspector", async () => {
@@ -936,7 +1001,9 @@ describe("DashboardShell Run Console", () => {
 
     await screen.findByTestId("selected-run-title");
     const workerNode = await waitFor(() => {
-      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      const node = view.container.querySelector(
+        '[data-id="agent:agent-worker"]'
+      );
       if (node === null) {
         throw new Error("Expected a worker FactoryGraph node.");
       }
@@ -946,11 +1013,15 @@ describe("DashboardShell Run Console", () => {
     fireEvent.click(workerNode);
     await waitFor(() => {
       expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
-        "Command approval",
+        "Command approval"
       );
     });
 
-    fireEvent.click(firstElement(screen.getAllByRole("button", { name: "Close Agent Inspector" })));
+    fireEvent.click(
+      firstElement(
+        screen.getAllByRole("button", { name: "Close Agent Inspector" })
+      )
+    );
     await waitFor(() => {
       expect(screen.queryByTestId("agent-inspector-panel")).toBeNull();
     });
@@ -958,16 +1029,16 @@ describe("DashboardShell Run Console", () => {
     fireEvent.click(workerNode);
     await waitFor(() => {
       expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
-        "Command approval",
+        "Command approval"
       );
     });
     await waitFor(() => {
       expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
-        "I am working through the Agent Inspector.",
+        "I am working through the Agent Inspector."
       );
-      expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
-        "Agent session is connecting.",
-      );
+      expect(
+        screen.getByTestId("agent-inspector-panel").textContent
+      ).not.toContain("Agent session is connecting.");
     });
   });
 
@@ -997,7 +1068,9 @@ describe("DashboardShell Run Console", () => {
 
     await screen.findByTestId("selected-run-title");
     const workerNode = await waitFor(() => {
-      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      const node = view.container.querySelector(
+        '[data-id="agent:agent-worker"]'
+      );
       if (node === null) {
         throw new Error("Expected a worker FactoryGraph node.");
       }
@@ -1010,22 +1083,22 @@ describe("DashboardShell Run Console", () => {
       const activeCount = eventSource.instances.filter(
         (source) =>
           source.close.mock.calls.length === 0 &&
-          source.listenerCount("agent-session-update") === 1,
+          source.listenerCount("agent-session-update") === 1
       ).length;
       expect(activeCount).toBe(1);
       expect(
         eventSource.instances.filter(
-          (source) => source.listenerCount("agent-session-update") === 1,
-        ),
+          (source) => source.listenerCount("agent-session-update") === 1
+        )
       ).toHaveLength(1);
     });
     await waitFor(() => {
       expect(screen.getByTestId("agent-inspector-panel").textContent).toContain(
-        "I am working through the Agent Inspector.",
+        "I am working through the Agent Inspector."
       );
-      expect(screen.getByTestId("agent-inspector-panel").textContent).not.toContain(
-        "Agent session is connecting.",
-      );
+      expect(
+        screen.getByTestId("agent-inspector-panel").textContent
+      ).not.toContain("Agent session is connecting.");
     });
   });
 
@@ -1043,28 +1116,28 @@ describe("DashboardShell Run Console", () => {
         animated: false,
         hasSelectedNode: false,
         selectedPath: false,
-      }),
+      })
     ).toBe("factory-flow-edge");
     expect(
       factoryFlowEdgeClassName({
         animated: false,
         hasSelectedNode: true,
         selectedPath: false,
-      }),
+      })
     ).toContain("factory-flow-edge-unselected");
     expect(
       factoryFlowEdgeClassName({
         animated: false,
         hasSelectedNode: true,
         selectedPath: true,
-      }),
+      })
     ).toContain("factory-flow-edge-selected");
     expect(
       factoryFlowEdgeClassName({
         animated: true,
         hasSelectedNode: true,
         selectedPath: true,
-      }),
+      })
     ).toContain("factory-flow-edge-active");
   });
 
@@ -1146,25 +1219,25 @@ describe("DashboardShell Run Console", () => {
               "edge-spawned-a",
               "agent-orchestrator",
               "agent-worker-a",
-              "spawned",
+              "spawned"
             ),
             factoryGraphEdge(
               "edge-spawned-b",
               "agent-orchestrator",
               "agent-worker-b",
-              "spawned",
+              "spawned"
             ),
             factoryGraphEdge(
               "edge-reviewed-a",
               "agent-worker-a",
               "agent-reviewer",
-              "reviewed",
+              "reviewed"
             ),
             factoryGraphEdge(
               "edge-reviewed-b",
               "agent-worker-b",
               "agent-reviewer",
-              "reviewed",
+              "reviewed"
             ),
           ],
           linkedArtifacts: [
@@ -1194,7 +1267,7 @@ describe("DashboardShell Run Console", () => {
     expect(view.container.querySelector('[data-id^="work-item:"]')).toBeNull();
 
     const workerBNode = view.container.querySelector(
-      '[data-id="agent:agent-worker-b"]',
+      '[data-id="agent:agent-worker-b"]'
     );
     if (workerBNode === null) {
       throw new Error("Expected duplicate worker FactoryGraph node.");
@@ -1205,10 +1278,10 @@ describe("DashboardShell Run Console", () => {
     await waitFor(() => {
       expect(workerBNode.getAttribute("class")).toContain("ring-2");
       expect(
-        screen.getAllByText("Worker B produced implementation summary"),
+        screen.getAllByText("Worker B produced implementation summary")
       ).not.toHaveLength(0);
       expect(
-        screen.getByTestId("agent-inspector-panel").getAttribute("data-slot"),
+        screen.getByTestId("agent-inspector-panel").getAttribute("data-slot")
       ).toBe("sheet-content");
     });
   });
@@ -1259,7 +1332,9 @@ describe("DashboardShell Run Console", () => {
       expect(row.textContent).not.toContain("0 artifacts");
     });
 
-    const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
+    const workerNode = view.container.querySelector(
+      '[data-id="agent:agent-worker"]'
+    );
     if (workerNode === null) {
       throw new Error("Expected a worker FactoryGraph node.");
     }
@@ -1276,10 +1351,10 @@ describe("DashboardShell Run Console", () => {
 
     await waitFor(() => {
       expect(
-        screen.getAllByRole("button", { name: "Factory artifact 4" }),
+        screen.getAllByRole("button", { name: "Factory artifact 4" })
       ).not.toHaveLength(0);
       expect(
-        screen.queryByRole("button", { name: "Factory artifact 5" }),
+        screen.queryByRole("button", { name: "Factory artifact 5" })
       ).toBeNull();
     });
   });
@@ -1329,7 +1404,9 @@ describe("DashboardShell Run Console", () => {
     await screen.findByTestId("selected-run-title");
     await screen.findAllByText("Worker");
     const workerNode = await waitFor(() => {
-      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      const node = view.container.querySelector(
+        '[data-id="agent:agent-worker"]'
+      );
       if (node === null) {
         throw new Error("Expected a worker FactoryGraph node.");
       }
@@ -1343,12 +1420,12 @@ describe("DashboardShell Run Console", () => {
       fireEvent.click(artifactsTab);
     }
     fireEvent.click(
-      firstElement(screen.getAllByRole("button", { name: "Code summary" })),
+      firstElement(screen.getAllByRole("button", { name: "Code summary" }))
     );
 
     const error = await screen.findAllByTestId("evidence-artifact-error");
     expect(firstElement(error).textContent).toContain(
-      "ArtifactNotFound: Factory artifact was not found.",
+      "ArtifactNotFound: Factory artifact was not found."
     );
     expect(queryFixture.factoryArtifactBodyRequests).toContainEqual({
       artifactId,
@@ -1381,7 +1458,9 @@ describe("DashboardShell Run Console", () => {
     await screen.findByTestId("selected-run-title");
     await screen.findAllByText("Worker");
     const workerNode = await waitFor(() => {
-      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      const node = view.container.querySelector(
+        '[data-id="agent:agent-worker"]'
+      );
       if (node === null) {
         throw new Error("Expected a worker FactoryGraph node.");
       }
@@ -1394,17 +1473,17 @@ describe("DashboardShell Run Console", () => {
         screen
           .getAllByTestId("factory-diagnostic-callout")
           .some((callout) =>
-            callout.textContent?.includes("Artifacts unavailable"),
-          ),
+            callout.textContent?.includes("Artifacts unavailable")
+          )
       ).toBe(true);
       expect(
         screen
           .getAllByTestId("factory-diagnostic-callout")
           .some((callout) =>
             callout.textContent?.includes(
-              "InternalServerError: Artifact catalog could not be read.",
-            ),
-          ),
+              "InternalServerError: Artifact catalog could not be read."
+            )
+          )
       ).toBe(true);
     });
   });
@@ -1447,7 +1526,9 @@ describe("DashboardShell Run Console", () => {
     await screen.findByTestId("selected-run-title");
     await screen.findAllByText("Worker");
     const workerNode = await waitFor(() => {
-      const node = view.container.querySelector('[data-id="agent:agent-worker"]');
+      const node = view.container.querySelector(
+        '[data-id="agent:agent-worker"]'
+      );
       if (node === null) {
         throw new Error("Expected a worker FactoryGraph node.");
       }
@@ -1456,9 +1537,13 @@ describe("DashboardShell Run Console", () => {
     fireEvent.click(workerNode);
 
     await waitFor(() => {
-      expect(screen.getAllByText("Worker activity remains available")).not.toHaveLength(0);
+      expect(
+        screen.getAllByText("Worker activity remains available")
+      ).not.toHaveLength(0);
       expect(screen.queryByText("Run activity could not be read.")).toBeNull();
-      expect(screen.queryByText("Agent activity could not be loaded.")).toBeNull();
+      expect(
+        screen.queryByText("Agent activity could not be loaded.")
+      ).toBeNull();
     });
   });
 
@@ -1544,7 +1629,7 @@ describe("DashboardShell Run Console", () => {
       await screen.findByTestId("selected-run-title");
       const reviewerNode = await waitFor(() => {
         const node = view.container.querySelector(
-          '[data-id="agent:agent-reviewer"]',
+          '[data-id="agent:agent-reviewer"]'
         );
         if (node === null) {
           throw new Error("Expected a reviewer FactoryGraph node.");
@@ -1569,10 +1654,8 @@ describe("DashboardShell Run Console", () => {
       });
       expect(consoleErrors.messages).not.toEqual(
         expect.arrayContaining([
-          expect.stringContaining(
-            "Encountered two children with the same key",
-          ),
-        ]),
+          expect.stringContaining("Encountered two children with the same key"),
+        ])
       );
     } finally {
       consoleErrors.restore();
@@ -1583,10 +1666,10 @@ describe("DashboardShell Run Console", () => {
     renderTypedRunsDashboard();
 
     const firstRow = await screen.findByTestId(
-      "run-console-row-run-1111111111",
+      "run-console-row-run-1111111111"
     );
     const secondRow = await screen.findByTestId(
-      "run-console-row-run-2222222222",
+      "run-console-row-run-2222222222"
     );
 
     expect(firstRow.textContent).toContain("run-1111111111");
@@ -1597,17 +1680,17 @@ describe("DashboardShell Run Console", () => {
     expect(secondRow.textContent).toContain("Completed");
     expect(secondRow.textContent).toContain("Report Completed");
     expect(secondRow.textContent).not.toContain(
-      "Spec title not exposed by local API",
+      "Spec title not exposed by local API"
     );
     expect(screen.queryByText("Terminal")).toBeNull();
     expect(screen.getByTestId("selected-run-title").textContent).toBe(
-      "run-1111111111",
+      "run-1111111111"
     );
     fireEvent.click(secondRow);
 
     await waitFor(() => {
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
-        "run-2222222222",
+        "run-2222222222"
       );
       expect(screen.queryByTestId("run-replay-current-event")).toBeNull();
     });
@@ -1620,8 +1703,8 @@ describe("DashboardShell Run Console", () => {
     fireEvent.click(screen.getByRole("button", { name: "Replay" }));
     expect(
       screen.queryByText(
-        "Opened on demand; the FactoryGraph canvas remains the primary workspace.",
-      ),
+        "Opened on demand; the FactoryGraph canvas remains the primary workspace."
+      )
     ).toBeNull();
     expect(screen.getByRole("button", { name: "Close replay" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close replay" }));
@@ -1636,23 +1719,25 @@ describe("DashboardShell Run Console", () => {
     await screen.findByTestId("run-console-row-run-1111111111");
     fireEvent.click(screen.getByRole("button", { name: "Replay" }));
     expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
-      "Event #2",
+      "Event #2"
     );
     const replayScrubber = screen.getByTestId("run-replay-scrubber");
     expect(screen.getByTestId("run-replay-playback-toggle")).toHaveProperty(
       "ariaLabel",
-      "Play replay from beginning",
+      "Play replay from beginning"
     );
     expect(replayScrubber.textContent).not.toContain("ordered events");
     expect(replayScrubber.textContent).not.toContain("artifacts reached");
     fireEvent.click(screen.getByTestId("run-replay-playback-toggle"));
     await waitFor(() => {
       expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
-        "Event #1",
+        "Event #1"
       );
     });
     fireEvent.click(screen.getByTestId("run-replay-playback-toggle"));
-    expect(await screen.findAllByText("Issue orchestrator")).not.toHaveLength(0);
+    expect(await screen.findAllByText("Issue orchestrator")).not.toHaveLength(
+      0
+    );
     expect(screen.queryByText("Refactor dashboard canvas")).toBeNull();
     const workerLabels = await screen.findAllByText("Worker");
     expect(workerLabels).not.toHaveLength(0);
@@ -1664,10 +1749,10 @@ describe("DashboardShell Run Console", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("run-replay-current-event").textContent).toBe(
-        "Event #1",
+        "Event #1"
       );
       expect(
-        firstElement(screen.getAllByTestId("event-strip-event-1")).textContent,
+        firstElement(screen.getAllByTestId("event-strip-event-1")).textContent
       ).toContain("Replay");
       expect(screen.getAllByText("Replay")).not.toHaveLength(0);
     });
@@ -1697,22 +1782,22 @@ describe("DashboardShell Run Console", () => {
 
     const searchInput = await screen.findByLabelText("Search runs");
     const searchIcon = view.container.querySelector(
-      '[data-testid="run-console-search-icon"]',
+      '[data-testid="run-console-search-icon"]'
     );
     expect(searchIcon?.getAttribute("class")).toContain("size-4");
     expect(searchInput.getAttribute("class")).toContain("h-8");
 
     const firstRow = await screen.findByTestId(
-      "run-console-row-run-search0001",
+      "run-console-row-run-search0001"
     );
     const secondRow = await screen.findByTestId(
-      "run-console-row-run-search0002",
+      "run-console-row-run-search0002"
     );
 
     expect(firstRow.textContent).toContain("Input artifact available");
-    expect(
-      secondRow.textContent,
-    ).not.toContain("Spec title not exposed by local API");
+    expect(secondRow.textContent).not.toContain(
+      "Spec title not exposed by local API"
+    );
     expect(secondRow.textContent).toContain("Failed");
     expect(screen.queryByText("Terminal")).toBeNull();
 
@@ -1752,14 +1837,18 @@ describe("DashboardShell Run Console", () => {
     expect(screen.queryByTestId("source-detail-panel")).toBeNull();
     expect(await screen.findAllByText("Worker")).not.toHaveLength(0);
 
-    const workerNode = view.container.querySelector('[data-id="agent:agent-worker"]');
+    const workerNode = view.container.querySelector(
+      '[data-id="agent:agent-worker"]'
+    );
     if (workerNode === null) {
       throw new Error("Expected a worker FactoryGraph node.");
     }
     fireEvent.click(workerNode);
 
     await waitFor(() => {
-      expect(screen.getAllByText("Worker produced code summary")).not.toHaveLength(0);
+      expect(
+        screen.getAllByText("Worker produced code summary")
+      ).not.toHaveLength(0);
     });
 
     for (const artifactsTab of screen.getAllByRole("tab", {
@@ -1771,12 +1860,12 @@ describe("DashboardShell Run Console", () => {
       fireEvent.click(artifactsTab);
     }
     fireEvent.click(
-      firstElement(screen.getAllByRole("button", { name: "Code summary" })),
+      firstElement(screen.getAllByRole("button", { name: "Code summary" }))
     );
     await waitFor(() => {
       expect(
         firstElement(screen.getAllByTestId("evidence-artifact-content"))
-          .textContent,
+          .textContent
       ).toContain("artifact-summary factory artifact body");
     });
   });
@@ -1823,12 +1912,12 @@ describe("DashboardShell Run Console", () => {
     });
 
     expect(queryFixture.runsRequestCount).toBe(1);
-    expect(screen.getByTestId("run-console-row-run-3333333333").textContent).toContain(
-      "Running",
-    );
-    expect(screen.getByTestId("run-console-row-run-3333333333").textContent).toContain(
-      "1 event",
-    );
+    expect(
+      screen.getByTestId("run-console-row-run-3333333333").textContent
+    ).toContain("Running");
+    expect(
+      screen.getByTestId("run-console-row-run-3333333333").textContent
+    ).toContain("1 event");
 
     act(() => {
       queryFixture.eventsByRunId[runId] = [createdEvent, terminalEvent];
@@ -1849,15 +1938,15 @@ describe("DashboardShell Run Console", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId("run-console-row-run-3333333333").textContent).toContain(
-        "Completed",
-      );
-      expect(screen.getByTestId("run-console-row-run-3333333333").textContent).toContain(
-        "Report Completed",
-      );
-      expect(screen.getByTestId("run-console-row-run-3333333333").textContent).toContain(
-        "2 events",
-      );
+      expect(
+        screen.getByTestId("run-console-row-run-3333333333").textContent
+      ).toContain("Completed");
+      expect(
+        screen.getByTestId("run-console-row-run-3333333333").textContent
+      ).toContain("Report Completed");
+      expect(
+        screen.getByTestId("run-console-row-run-3333333333").textContent
+      ).toContain("2 events");
       expect(screen.getAllByText("Report Completed")).not.toHaveLength(0);
     });
     expect(queryFixture.runsRequestCount).toBe(2);
@@ -1991,32 +2080,30 @@ describe("DashboardShell Run Console", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("run-compare-panel").textContent).toContain(
-        "key differences",
+        "key differences"
       );
     });
 
     const primarySelect = screen.getByTestId(
-      "run-compare-primary-select",
+      "run-compare-primary-select"
     ) as HTMLSelectElement;
     const comparisonSelect = screen.getByTestId(
-      "run-compare-comparison-select",
+      "run-compare-comparison-select"
     ) as HTMLSelectElement;
 
     expect(primarySelect.value).toBe("run-4444444444");
     expect(comparisonSelect.value).toBe("run-5555555555");
-    const statusMetric = await screen.findByTestId(
-      "run-compare-metric-status",
-    );
+    const statusMetric = await screen.findByTestId("run-compare-metric-status");
     expect(statusMetric.textContent).toContain("Completed");
     expect(statusMetric.textContent).toContain("Failed");
-    expect(screen.getByTestId("run-compare-artifact-delta").textContent).toContain(
-      "Primary only",
-    );
-    expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
-      "Comparison: check outcome unavailable",
-    );
+    expect(
+      screen.getByTestId("run-compare-artifact-delta").textContent
+    ).toContain("Primary only");
+    expect(
+      screen.getByTestId("run-compare-missing-data").textContent
+    ).toContain("Comparison: check outcome unavailable");
     expect(screen.getByTestId("selected-run-title").textContent).toBe(
-      "run-4444444444",
+      "run-4444444444"
     );
 
     fireEvent.change(comparisonSelect, {
@@ -2027,28 +2114,28 @@ describe("DashboardShell Run Console", () => {
       expect(
         (
           screen.getByTestId(
-            "run-compare-comparison-select",
+            "run-compare-comparison-select"
           ) as HTMLSelectElement
-        ).value,
+        ).value
       ).toBe("run-6666666666");
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
-        "run-4444444444",
+        "run-4444444444"
       );
-      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
-        "Comparison: 3 events reported, 1 loaded",
-      );
-      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
-        "Comparison: no artifacts exposed",
-      );
-      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
-        "Comparison: report outcome unavailable",
-      );
-      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
-        "Comparison: check outcome unavailable",
-      );
-      expect(screen.getByTestId("run-compare-missing-data").textContent).toContain(
-        "Comparison: review outcome unavailable",
-      );
+      expect(
+        screen.getByTestId("run-compare-missing-data").textContent
+      ).toContain("Comparison: 3 events reported, 1 loaded");
+      expect(
+        screen.getByTestId("run-compare-missing-data").textContent
+      ).toContain("Comparison: no artifacts exposed");
+      expect(
+        screen.getByTestId("run-compare-missing-data").textContent
+      ).toContain("Comparison: report outcome unavailable");
+      expect(
+        screen.getByTestId("run-compare-missing-data").textContent
+      ).toContain("Comparison: check outcome unavailable");
+      expect(
+        screen.getByTestId("run-compare-missing-data").textContent
+      ).toContain("Comparison: review outcome unavailable");
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Close compare" }));
@@ -2056,13 +2143,13 @@ describe("DashboardShell Run Console", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("run-compare-panel")).toBeNull();
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
-        "run-4444444444",
+        "run-4444444444"
       );
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Compare" }));
     const reopenedPrimarySelect = await screen.findByTestId(
-      "run-compare-primary-select",
+      "run-compare-primary-select"
     );
 
     fireEvent.change(reopenedPrimarySelect, {
@@ -2071,7 +2158,7 @@ describe("DashboardShell Run Console", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
-        "run-5555555555",
+        "run-5555555555"
       );
       expect(screen.queryByTestId("run-compare-panel")).toBeNull();
     });
@@ -2083,16 +2170,18 @@ describe("DashboardShell Run Console", () => {
     const empty = await screen.findByTestId("run-console-empty");
 
     expect(empty.textContent).toContain("No local runs");
-    expect(screen.getByTestId("run-console-server-status").textContent).toContain(
-      "/gaia-api",
-    );
-    expect(screen.getByLabelText("Server status: /gaia-api online")).toBeTruthy();
-    expect(screen.getByTestId("run-console-server-status").textContent).not.toContain(
-      "online",
-    );
+    expect(
+      screen.getByTestId("run-console-server-status").textContent
+    ).toContain("/gaia-api");
+    expect(
+      screen.getByLabelText("Server status: /gaia-api online")
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("run-console-server-status").textContent
+    ).not.toContain("online");
     expect(screen.queryByTestId("run-console-server-message")).toBeNull();
     expect(screen.getByTestId("selected-run-title").textContent).toBe(
-      "No local run selected",
+      "No local run selected"
     );
   });
 
@@ -2120,11 +2209,9 @@ describe("DashboardShell Run Console", () => {
           title: "Ship dashboard intake",
         },
       ]);
-      expect(
-        screen.getByTestId("run-console-row-run-9999999999"),
-      ).toBeTruthy();
+      expect(screen.getByTestId("run-console-row-run-9999999999")).toBeTruthy();
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
-        "run-9999999999",
+        "run-9999999999"
       );
     });
   });
@@ -2177,9 +2264,9 @@ describe("DashboardShell Run Console", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId("selected-run-delivery-status").textContent).toBe(
-        "Delivery: ready to publish from gaia/run-7777777777",
-      );
+      expect(
+        screen.getByTestId("selected-run-delivery-status").textContent
+      ).toBe("Delivery: ready to publish from gaia/run-7777777777");
     });
     expect(screen.queryByRole("button", { name: /^Publish/u })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Merge/u })).toBeNull();
@@ -2223,9 +2310,11 @@ describe("DashboardShell Run Console", () => {
     });
 
     expect(
-      (await screen.findByTestId("selected-run-delivery-status")).textContent,
+      (await screen.findByTestId("selected-run-delivery-status")).textContent
     ).toBe("Delivery: publication outcome unknown");
-    fireEvent.click(screen.getByRole("button", { name: "Reconcile publication" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Reconcile publication" })
+    );
 
     await waitFor(() => {
       expect(queryFixture.deliveryActionInputs).toEqual([
@@ -2276,12 +2365,14 @@ describe("DashboardShell Run Console", () => {
     });
 
     expect(
-      (await screen.findByTestId("selected-run-delivery-status")).textContent,
+      (await screen.findByTestId("selected-run-delivery-status")).textContent
     ).toBe("Delivery: draft PR #91 waiting");
-    expect(screen.getByRole("link", { name: "PR #91" }).getAttribute("href")).toBe(
-      "https://github.com/cill-i-am/gaia/pull/91",
-    );
-    expect(screen.queryByRole("button", { name: "Mark ready for review" })).toBeNull();
+    expect(
+      screen.getByRole("link", { name: "PR #91" }).getAttribute("href")
+    ).toBe("https://github.com/cill-i-am/gaia/pull/91");
+    expect(
+      screen.queryByRole("button", { name: "Mark ready for review" })
+    ).toBeNull();
     expect(screen.queryByRole("button", { name: /^Merge/u })).toBeNull();
   });
 
@@ -2321,11 +2412,15 @@ describe("DashboardShell Run Console", () => {
           status: "awaitingMerge",
         },
       },
-      runs: [localRunSummary({ runId, state: "delivering", status: "running" })],
+      runs: [
+        localRunSummary({ runId, state: "delivering", status: "running" }),
+      ],
     });
 
     await screen.findByTestId("selected-run-delivery-status");
-    expect(screen.queryByRole("button", { name: "Merge pull request" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Merge pull request" })
+    ).toBeNull();
   });
 
   it("renders terminal merge and cleanup outcomes without delivery commands", async () => {
@@ -2434,21 +2529,45 @@ describe("DashboardShell Run Console", () => {
             status: "ready",
             version: 1,
           },
-          publication: { branchName, commitSha: headSha, draft: true, prNumber: 94, prUrl: "https://github.com/cill-i-am/gaia/pull/94", state: "confirmed" },
+          publication: {
+            branchName,
+            commitSha: headSha,
+            draft: true,
+            prNumber: 94,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/94",
+            state: "confirmed",
+          },
           recoveryActions: ["retryCleanup"],
           runId,
           stage: "completed",
           status: "completed",
         },
       },
-      runs: [localRunSummary({ latestEventType: "DELIVERY_CLEANUP_RECORDED", runId, state: "completed", status: "completed" })],
+      runs: [
+        localRunSummary({
+          latestEventType: "DELIVERY_CLEANUP_RECORDED",
+          runId,
+          state: "completed",
+          status: "completed",
+        }),
+      ],
     });
 
-    expect((await screen.findByTestId("selected-run-delivery-status")).textContent).toBe("Delivery: completed");
-    expect(screen.getByTestId("selected-run-merge-status").textContent).toBe(`Merged ${mergeCommitSha.slice(0, 7)}`);
-    expect(screen.getByTestId("selected-run-cleanup-status").textContent).toBe("Cleanup complete");
-    expect(screen.queryByRole("button", { name: "Merge pull request" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /paired review/iu })).toBeNull();
+    expect(
+      (await screen.findByTestId("selected-run-delivery-status")).textContent
+    ).toBe("Delivery: completed");
+    expect(screen.getByTestId("selected-run-merge-status").textContent).toBe(
+      `Merged ${mergeCommitSha.slice(0, 7)}`
+    );
+    expect(screen.getByTestId("selected-run-cleanup-status").textContent).toBe(
+      "Cleanup complete"
+    );
+    expect(
+      screen.queryByRole("button", { name: "Merge pull request" })
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /paired review/iu })
+    ).toBeNull();
     expect(screen.queryByRole("button", { name: /Evaluate/u })).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry cleanup" })).toBeNull();
     expect(queryFixture.deliveryActionInputs).toEqual([]);
@@ -2511,17 +2630,29 @@ describe("DashboardShell Run Console", () => {
           status: "awaitingMerge",
         },
       },
-      runs: [localRunSummary({ runId, state: "delivering", status: "running" })],
+      runs: [
+        localRunSummary({ runId, state: "delivering", status: "running" }),
+      ],
     });
 
-    const evaluate = await screen.findByRole("button", { name: "Evaluate squash" });
+    const evaluate = await screen.findByRole("button", {
+      name: "Evaluate squash",
+    });
     fireEvent.click(evaluate);
-    await waitFor(() => expect(queryFixture.deliveryActionInputs).toHaveLength(1));
+    await waitFor(() =>
+      expect(queryFixture.deliveryActionInputs).toHaveLength(1)
+    );
     fireEvent.click(evaluate);
-    await waitFor(() => expect(queryFixture.deliveryActionInputs).toHaveLength(2));
+    await waitFor(() =>
+      expect(queryFixture.deliveryActionInputs).toHaveLength(2)
+    );
 
-    const first = queryFixture.deliveryActionInputs[0]?.action as { actionId: string };
-    const second = queryFixture.deliveryActionInputs[1]?.action as { actionId: string };
+    const first = queryFixture.deliveryActionInputs[0]?.action as {
+      actionId: string;
+    };
+    const second = queryFixture.deliveryActionInputs[1]?.action as {
+      actionId: string;
+    };
     expect(first.actionId).not.toBe(second.actionId);
     expect(first.actionId).toMatch(/^readiness-/u);
     expect(second.actionId).toMatch(/^readiness-/u);
@@ -2560,59 +2691,180 @@ describe("DashboardShell Run Console", () => {
           authoritativeHeadSha: headSha,
           eventSequence: 11,
           latestReadyForReviewAction: {
-            actionId: "ready-1", branchName: "gaia/run-7777777777", draft: false, expectedHeadSha: headSha,
-            payloadDigest: "d".repeat(64), prNumber: 91, prUrl: "https://github.com/cill-i-am/gaia/pull/91",
-            publicationOperationId, publicationPayloadDigest, repository: "cill-i-am/gaia", runId, state: "dispatchConfirmed", version: 1,
+            actionId: "ready-1",
+            branchName: "gaia/run-7777777777",
+            draft: false,
+            expectedHeadSha: headSha,
+            payloadDigest: "d".repeat(64),
+            prNumber: 91,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+            publicationOperationId,
+            publicationPayloadDigest,
+            repository: "cill-i-am/gaia",
+            runId,
+            state: "dispatchConfirmed",
+            version: 1,
           },
           mode: "pullRequest",
           observation: {
-            blockers: [], branchName: "gaia/run-7777777777", checks: [], draft: false, feedback: [], headSha,
-            mergeability: "mergeable", observedAt: "2026-07-13T11:00:00.000Z", prNumber: 91,
-            prUrl: "https://github.com/cill-i-am/gaia/pull/91", repository: "cill-i-am/gaia",
-            reviewDecision: "REVIEW_REQUIRED", snapshotDigest: "b".repeat(64), status: "ready", version: 1,
+            blockers: [],
+            branchName: "gaia/run-7777777777",
+            checks: [],
+            draft: false,
+            feedback: [],
+            headSha,
+            mergeability: "mergeable",
+            observedAt: "2026-07-13T11:00:00.000Z",
+            prNumber: 91,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+            repository: "cill-i-am/gaia",
+            reviewDecision: "REVIEW_REQUIRED",
+            snapshotDigest: "b".repeat(64),
+            status: "ready",
+            version: 1,
           },
-          publication: { branchName: "gaia/run-7777777777", commitSha: headSha, draft: true, prNumber: 91, prUrl: "https://github.com/cill-i-am/gaia/pull/91", state: "confirmed" },
-          recoveryActions: [], runId, stage: "waitingForPr", status: "waitingForPr",
+          publication: {
+            branchName: "gaia/run-7777777777",
+            commitSha: headSha,
+            draft: true,
+            prNumber: 91,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+            state: "confirmed",
+          },
+          recoveryActions: [],
+          runId,
+          stage: "waitingForPr",
+          status: "waitingForPr",
         },
       },
-      runs: [localRunSummary({ runId, state: "delivering", status: "running" })],
+      runs: [
+        localRunSummary({ runId, state: "delivering", status: "running" }),
+      ],
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Resume paired review" }));
-    await waitFor(() => expect(queryFixture.deliveryActionInputs).toHaveLength(1));
-    expect(queryFixture.deliveryActionInputs[0]?.action).toMatchObject({ actionId: "attestation-active-1", decision: "approved", expectedHeadSha: headSha, kind: "attestPairedReviewApproval" });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Resume paired review" })
+    );
+    await waitFor(() =>
+      expect(queryFixture.deliveryActionInputs).toHaveLength(1)
+    );
+    expect(queryFixture.deliveryActionInputs[0]?.action).toMatchObject({
+      actionId: "attestation-active-1",
+      decision: "approved",
+      expectedHeadSha: headSha,
+      kind: "attestPairedReviewApproval",
+    });
   });
 
-  it.each([undefined, "CHANGES_REQUESTED", "HOSTILE_UNKNOWN"] as const)("withholds paired-review attestation for observation review state %s", async (reviewDecision) => {
-    const runId = parseRunId("run-7777777777");
-    const headSha = "a".repeat(40);
-    const snapshot = {
-      authoritativeHeadSha: headSha,
-      eventSequence: 10,
-      latestReadyForReviewAction: { actionId: "ready-1", branchName: "gaia/run-7777777777", draft: false, expectedHeadSha: headSha, payloadDigest: "d".repeat(64), prNumber: 91, prUrl: "https://github.com/cill-i-am/gaia/pull/91", publicationOperationId: "delivery:run-7777777777:1", publicationPayloadDigest: "e".repeat(64), repository: "cill-i-am/gaia", runId, state: "dispatchConfirmed", version: 1 },
-      mode: "pullRequest",
-      ...(reviewDecision === undefined ? {} : { observation: { blockers: [], branchName: "gaia/run-7777777777", checks: [], draft: false, feedback: [], headSha, mergeability: "mergeable", observedAt: "2026-07-13T11:00:00.000Z", prNumber: 91, prUrl: "https://github.com/cill-i-am/gaia/pull/91", repository: "cill-i-am/gaia", reviewDecision, snapshotDigest: "b".repeat(64), status: "ready", version: 1 } }),
-      publication: { branchName: "gaia/run-7777777777", commitSha: headSha, draft: true, prNumber: 91, prUrl: "https://github.com/cill-i-am/gaia/pull/91", state: "confirmed" },
-      recoveryActions: [], runId, stage: "waitingForPr", status: "waitingForPr",
-    };
-    renderDashboardWithQueries({ deliverySnapshotsByRunId: { [runId]: snapshot }, runs: [localRunSummary({ runId, state: "delivering", status: "running" })] });
-    await screen.findByTestId("selected-run-ready-status");
-    expect(screen.queryByRole("button", { name: /paired review/iu })).toBeNull();
-  });
+  it.each([undefined, "CHANGES_REQUESTED", "HOSTILE_UNKNOWN"] as const)(
+    "withholds paired-review attestation for observation review state %s",
+    async (reviewDecision) => {
+      const runId = parseRunId("run-7777777777");
+      const headSha = "a".repeat(40);
+      const snapshot = {
+        authoritativeHeadSha: headSha,
+        eventSequence: 10,
+        latestReadyForReviewAction: {
+          actionId: "ready-1",
+          branchName: "gaia/run-7777777777",
+          draft: false,
+          expectedHeadSha: headSha,
+          payloadDigest: "d".repeat(64),
+          prNumber: 91,
+          prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+          publicationOperationId: "delivery:run-7777777777:1",
+          publicationPayloadDigest: "e".repeat(64),
+          repository: "cill-i-am/gaia",
+          runId,
+          state: "dispatchConfirmed",
+          version: 1,
+        },
+        mode: "pullRequest",
+        ...(reviewDecision === undefined
+          ? {}
+          : {
+              observation: {
+                blockers: [],
+                branchName: "gaia/run-7777777777",
+                checks: [],
+                draft: false,
+                feedback: [],
+                headSha,
+                mergeability: "mergeable",
+                observedAt: "2026-07-13T11:00:00.000Z",
+                prNumber: 91,
+                prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+                repository: "cill-i-am/gaia",
+                reviewDecision,
+                snapshotDigest: "b".repeat(64),
+                status: "ready",
+                version: 1,
+              },
+            }),
+        publication: {
+          branchName: "gaia/run-7777777777",
+          commitSha: headSha,
+          draft: true,
+          prNumber: 91,
+          prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+          state: "confirmed",
+        },
+        recoveryActions: [],
+        runId,
+        stage: "waitingForPr",
+        status: "waitingForPr",
+      };
+      renderDashboardWithQueries({
+        deliverySnapshotsByRunId: { [runId]: snapshot },
+        runs: [
+          localRunSummary({ runId, state: "delivering", status: "running" }),
+        ],
+      });
+      await screen.findByTestId("selected-run-ready-status");
+      expect(
+        screen.queryByRole("button", { name: /paired review/iu })
+      ).toBeNull();
+    }
+  );
 
   it("renders CI, review, blocker, and remediation attempt state", async () => {
     const runId = parseRunId("run-7777777777");
-    const feedbackId = parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`);
+    const feedbackId = parseDeliveryFeedbackId(
+      `feedback-comment-${"f".repeat(64)}`
+    );
     renderDashboardWithQueries({
       deliverySnapshotsByRunId: {
         [runId]: {
           eventSequence: 14,
           mode: "pullRequest",
           observation: {
-            blockers: [{ feedbackIds: [feedbackId], kind: "actionableFeedback", summary: "Trusted feedback requires remediation." }],
-            checks: [{ appSlug: "github-actions", classification: "actionable", name: "gaia-pr-ci", state: "failing", workflow: "Gaia PR CI" }],
+            blockers: [
+              {
+                feedbackIds: [feedbackId],
+                kind: "actionableFeedback",
+                summary: "Trusted feedback requires remediation.",
+              },
+            ],
+            checks: [
+              {
+                appSlug: "github-actions",
+                classification: "actionable",
+                name: "gaia-pr-ci",
+                state: "failing",
+                workflow: "Gaia PR CI",
+              },
+            ],
             draft: true,
-            feedback: [{ actorLogin: "trusted-reviewer", authorAssociation: "MEMBER", classification: "actionable", contentDigest: "a".repeat(64), id: feedbackId, kind: "comment" }],
+            feedback: [
+              {
+                actorLogin: "trusted-reviewer",
+                authorAssociation: "MEMBER",
+                classification: "actionable",
+                contentDigest: "a".repeat(64),
+                id: feedbackId,
+                kind: "comment",
+              },
+            ],
             headSha: "a".repeat(40),
             mergeability: "mergeable",
             observedAt: "2026-07-11T11:00:00.000Z",
@@ -2640,21 +2892,31 @@ describe("DashboardShell Run Console", () => {
           status: "remediating",
         },
       },
-      runs: [localRunSummary({
-        latestEventType: "DELIVERY_REMEDIATION_RECORDED",
-        runId,
-        state: "delivering",
-        status: "running",
-      })],
+      runs: [
+        localRunSummary({
+          latestEventType: "DELIVERY_REMEDIATION_RECORDED",
+          runId,
+          state: "delivering",
+          status: "running",
+        }),
+      ],
     });
 
-    expect((await screen.findByTestId("selected-run-delivery-status")).textContent).toBe(
-      "Delivery: remediating attempt 1/2",
+    expect(
+      (await screen.findByTestId("selected-run-delivery-status")).textContent
+    ).toBe("Delivery: remediating attempt 1/2");
+    expect(screen.getByTestId("selected-run-ci-status").textContent).toBe(
+      "CI: 1 failing"
     );
-    expect(screen.getByTestId("selected-run-ci-status").textContent).toBe("CI: 1 failing");
-    expect(screen.getByTestId("selected-run-review-status").textContent).toBe("Review: 1 actionable");
-    expect(screen.getByTestId("selected-run-blocker-status").textContent).toBe("1 blockers");
-    expect(screen.getByTestId("selected-run-remediation-status").textContent).toBe("Attempt 1/2: intentRecorded");
+    expect(screen.getByTestId("selected-run-review-status").textContent).toBe(
+      "Review: 1 actionable"
+    );
+    expect(screen.getByTestId("selected-run-blocker-status").textContent).toBe(
+      "1 blockers"
+    );
+    expect(
+      screen.getByTestId("selected-run-remediation-status").textContent
+    ).toBe("Attempt 1/2: intentRecorded");
   });
 
   it("renders a definitive publication failure with only the advertised retry", async () => {
@@ -2696,7 +2958,7 @@ describe("DashboardShell Run Console", () => {
     });
 
     expect(
-      (await screen.findByTestId("selected-run-delivery-status")).textContent,
+      (await screen.findByTestId("selected-run-delivery-status")).textContent
     ).toBe("Delivery: publication failed (DeliveryPushNotAccepted)");
     fireEvent.click(screen.getByRole("button", { name: "Retry publication" }));
     await waitFor(() => {
@@ -2719,7 +2981,7 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByText("Enter an issue description.")).toBeTruthy();
     expect(
       (screen.getByRole("button", { name: "Create run" }) as HTMLButtonElement)
-        .disabled,
+        .disabled
     ).toBe(true);
   });
 
@@ -2745,7 +3007,7 @@ describe("DashboardShell Run Console", () => {
           screen.getByRole("button", {
             name: "Creating run",
           }) as HTMLButtonElement
-        ).disabled,
+        ).disabled
       ).toBe(true);
     });
     expect(queryFixture.createRunInputs).toHaveLength(1);
@@ -2764,7 +3026,7 @@ describe("DashboardShell Run Console", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
-        "run-1010101010",
+        "run-1010101010"
       );
       expect(screen.queryByTestId("issue-delivery-intake-form")).toBeNull();
     });
@@ -2794,7 +3056,7 @@ describe("DashboardShell Run Console", () => {
 
     const error = await screen.findByTestId("issue-delivery-intake-error");
     expect(error.textContent).toContain(
-      "InvalidRequest: Issue title is already in use.",
+      "InvalidRequest: Issue title is already in use."
     );
     expect(screen.queryByTestId("run-console-row-run-9999999999")).toBeNull();
   });
@@ -2816,20 +3078,22 @@ describe("DashboardShell Run Console", () => {
 
     expect(error.textContent).toContain("Local server unavailable");
     expect(error.textContent).toContain(
-      "InternalServerError: Local API failed.",
-    );
-    expect(screen.getByLabelText("Server status: /gaia-api offline")).toBeTruthy();
-    expect(screen.getByTestId("run-console-server-status").textContent).not.toContain(
-      "offline",
-    );
-    expect(screen.queryByTestId("run-console-server-message")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "New run" }));
-    expect(screen.getByTestId("issue-delivery-intake-offline").textContent).toContain(
-      "Local server unavailable",
+      "InternalServerError: Local API failed."
     );
     expect(
+      screen.getByLabelText("Server status: /gaia-api offline")
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("run-console-server-status").textContent
+    ).not.toContain("offline");
+    expect(screen.queryByTestId("run-console-server-message")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "New run" }));
+    expect(
+      screen.getByTestId("issue-delivery-intake-offline").textContent
+    ).toContain("Local server unavailable");
+    expect(
       (screen.getByRole("button", { name: "Create run" }) as HTMLButtonElement)
-        .disabled,
+        .disabled
     ).toBe(true);
   });
 
@@ -2848,7 +3112,7 @@ describe("DashboardShell Run Console", () => {
     });
 
     expect(
-      await screen.findByTestId("run-console-row-run-7777777777"),
+      await screen.findByTestId("run-console-row-run-7777777777")
     ).toBeTruthy();
 
     queryFixture.healthError = {
@@ -2858,15 +3122,17 @@ describe("DashboardShell Run Console", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh local runs" }));
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Server status: /gaia-api stale")).toBeTruthy();
-      expect(screen.getByTestId("command-rail-footer").textContent).not.toContain(
-        "stale",
-      );
-      expect(screen.getByTestId("run-console-stale-data").textContent).toContain(
-        "Cached run data is being preserved",
-      );
       expect(
-        screen.getByTestId("run-console-row-run-7777777777").textContent,
+        screen.getByLabelText("Server status: /gaia-api stale")
+      ).toBeTruthy();
+      expect(
+        screen.getByTestId("command-rail-footer").textContent
+      ).not.toContain("stale");
+      expect(
+        screen.getByTestId("run-console-stale-data").textContent
+      ).toContain("Cached run data is being preserved");
+      expect(
+        screen.getByTestId("run-console-row-run-7777777777").textContent
       ).toContain("Worker Started");
       expect(screen.queryByTestId("run-console-error")).toBeNull();
     });
@@ -2899,12 +3165,12 @@ describe("DashboardShell Run Console", () => {
     });
 
     expect(
-      await screen.findByTestId("run-console-row-run-8888888888"),
+      await screen.findByTestId("run-console-row-run-8888888888")
     ).toBeTruthy();
     expect(screen.queryByTestId("run-console-diagnostics")).toBeNull();
     expect(screen.queryByTestId("run-console-server-message")).toBeNull();
     expect(screen.getByTestId("command-rail-footer").textContent).not.toContain(
-      "diagnostics",
+      "diagnostics"
     );
   });
 
@@ -2924,9 +3190,9 @@ describe("DashboardShell Run Console", () => {
 
     expect(diagnostics.textContent).toContain("InvalidRunDirectory");
     expect(diagnostics.textContent).toContain("run-not-valid");
-    expect(screen.getByTestId("run-console-diagnostic-empty").textContent).toContain(
-      "No valid local runs",
-    );
+    expect(
+      screen.getByTestId("run-console-diagnostic-empty").textContent
+    ).toContain("No valid local runs");
     expect(screen.queryByTestId("run-console-empty")).toBeNull();
   });
 });
@@ -2938,7 +3204,10 @@ function renderDashboardWithQueries(input: {
   >;
   readonly eventsByRunId?: Record<string, ReadonlyArray<unknown>>;
   readonly deliverySnapshotsByRunId?: Record<string, unknown>;
-  readonly factoryActivitiesByRunId?: Record<string, ReadonlyArray<typeof FactoryActivityDto.Type>>;
+  readonly factoryActivitiesByRunId?: Record<
+    string,
+    ReadonlyArray<typeof FactoryActivityDto.Type>
+  >;
   readonly factoryActivityErrorsByRunId?: Record<
     string,
     DashboardGaiaClientError
@@ -2959,7 +3228,10 @@ function renderDashboardWithQueries(input: {
     string,
     DashboardGaiaClientError
   >;
-  readonly factoryArtifactsByRunId?: Record<string, ReadonlyArray<typeof FactoryArtifactDto.Type>>;
+  readonly factoryArtifactsByRunId?: Record<
+    string,
+    ReadonlyArray<typeof FactoryArtifactDto.Type>
+  >;
   readonly factoryGraphsByRunId?: Record<string, typeof FactoryGraphDto.Type>;
   readonly agentSessionsByRunId?: Record<
     string,
@@ -3025,13 +3297,15 @@ function renderDashboardWithQueries(input: {
     </QueryClientProvider>
   );
 
-  return render(input.strictMode === true ? <StrictMode>{tree}</StrictMode> : tree);
+  return render(
+    input.strictMode === true ? <StrictMode>{tree}</StrictMode> : tree
+  );
 }
 
 function localRunSummary(
   input: Partial<typeof LocalRunSummaryDto.Type> & {
     readonly runId: typeof LocalRunSummaryDto.Type.runId;
-  },
+  }
 ): typeof LocalRunSummaryDto.Type {
   return {
     artifacts: ["input", "worker-plan"],
@@ -3049,7 +3323,7 @@ function localRunArtifact(
   input: Partial<typeof LocalRunArtifactDto.Type> & {
     readonly artifactName: typeof LocalRunArtifactDto.Type.artifactName;
     readonly runId: typeof LocalRunArtifactDto.Type.runId;
-  },
+  }
 ): typeof LocalRunArtifactDto.Type {
   return {
     body: `${input.artifactName} artifact body`,
@@ -3059,7 +3333,7 @@ function localRunArtifact(
 }
 
 function localRunApiError(
-  input: Partial<typeof LocalRunApiErrorEnvelope.Type>,
+  input: Partial<typeof LocalRunApiErrorEnvelope.Type>
 ): typeof LocalRunApiErrorEnvelope.Type {
   return {
     code: "InternalServerError",
@@ -3071,7 +3345,7 @@ function localRunApiError(
 }
 
 function localRunDiagnostic(
-  input: Partial<typeof LocalRunReadDiagnosticDto.Type>,
+  input: Partial<typeof LocalRunReadDiagnosticDto.Type>
 ): typeof LocalRunReadDiagnosticDto.Type {
   return {
     code: "RunUnreadable",
@@ -3086,12 +3360,14 @@ function parseRunId(value: string): typeof RunIdSchema.Type {
 }
 
 function defaultFactoryDataForRuns(
-  runs: ReadonlyArray<typeof LocalRunSummaryDto.Type>,
+  runs: ReadonlyArray<typeof LocalRunSummaryDto.Type>
 ) {
   const workerId = agentId("agent-worker");
   const workerArtifactId = artifactIdValue("artifact-summary");
-  const activitiesByRunId: Record<string, ReadonlyArray<typeof FactoryActivityDto.Type>> =
-    {};
+  const activitiesByRunId: Record<
+    string,
+    ReadonlyArray<typeof FactoryActivityDto.Type>
+  > = {};
   const agentActivitiesByRunId: Record<
     string,
     Record<string, ReadonlyArray<typeof FactoryActivityDto.Type>>
@@ -3100,8 +3376,10 @@ function defaultFactoryDataForRuns(
     string,
     Record<string, typeof FactoryArtifactBodyDto.Type>
   > = {};
-  const artifactsByRunId: Record<string, ReadonlyArray<typeof FactoryArtifactDto.Type>> =
-    {};
+  const artifactsByRunId: Record<
+    string,
+    ReadonlyArray<typeof FactoryArtifactDto.Type>
+  > = {};
   const graphsByRunId: Record<string, typeof FactoryGraphDto.Type> = {};
   const agentSessionsByRunId: Record<
     string,
@@ -3186,7 +3464,7 @@ function factoryActivity(
     readonly activityId: typeof FactoryActivityDto.Type.activityId;
     readonly label: string;
     readonly runId: typeof RunIdSchema.Type;
-  },
+  }
 ): typeof FactoryActivityDto.Type {
   return {
     artifactIds: [],
@@ -3206,7 +3484,7 @@ function factoryArtifact(
     readonly artifactId: typeof FactoryArtifactDto.Type.artifactId;
     readonly label: string;
     readonly ownerAgentId: typeof FactoryArtifactDto.Type.ownerAgentId;
-  },
+  }
 ): typeof FactoryArtifactDto.Type {
   return {
     contentType: "text/markdown",
@@ -3225,7 +3503,7 @@ function factoryArtifactBody(
     readonly artifactId: typeof FactoryArtifactBodyDto.Type.artifactId;
     readonly body: string;
     readonly runId: typeof RunIdSchema.Type;
-  },
+  }
 ): typeof FactoryArtifactBodyDto.Type {
   return {
     contentType: "text/markdown",
@@ -3240,13 +3518,19 @@ function agentSessionSnapshot(
   input: Partial<typeof AgentSessionSnapshotDto.Type> & {
     readonly agentId: typeof AgentSessionSnapshotDto.Type.agentId;
     readonly runId: typeof AgentSessionSnapshotDto.Type.runId;
-  },
+  }
 ): typeof AgentSessionSnapshotDto.Type {
   const { agentId: inputAgentId, runId: inputRunId, ...overrides } = input;
   return {
     agentId: inputAgentId,
     capabilities: {
-      approvals: ["command", "fileChange", "permission", "userInput", "mcpElicitation"],
+      approvals: [
+        "command",
+        "fileChange",
+        "permission",
+        "userInput",
+        "mcpElicitation",
+      ],
       fileChangeEvents: true,
       interruption: true,
       resumableSessions: true,
@@ -3296,7 +3580,7 @@ function agentActionReceipt(
     readonly actionId: typeof AgentActionReceiptDto.Type.actionId;
     readonly agentId: typeof AgentActionReceiptDto.Type.agentId;
     readonly runId: typeof AgentActionReceiptDto.Type.runId;
-  },
+  }
 ): typeof AgentActionReceiptDto.Type {
   const {
     actionId: inputActionId,
@@ -3446,7 +3730,8 @@ function factoryGraph(input: {
     workflow: "issueDelivery",
     workItems: [
       {
-        description: "Replace legacy event-node canvas with FactoryGraph topology.",
+        description:
+          "Replace legacy event-node canvas with FactoryGraph topology.",
         externalRefs: [],
         id: rootWorkItemId,
         kind: "issue",
@@ -3460,7 +3745,7 @@ function factoryGraphEdge(
   id: string,
   sourceId: string,
   targetId: string,
-  type: FactoryGraphEdge["type"],
+  type: FactoryGraphEdge["type"]
 ): FactoryGraphEdge {
   return {
     id,
@@ -3473,10 +3758,13 @@ function factoryGraphEdge(
 type MockEventSourceInstance = {
   addEventListener: (
     event: string,
-    listener: (event: MessageEvent<string>) => void,
+    listener: (event: MessageEvent<string>) => void
   ) => void;
   readonly close: ReturnType<typeof vi.fn>;
-  dispatchEventSourceEvent: (event: string, message: MessageEvent<string>) => void;
+  dispatchEventSourceEvent: (
+    event: string,
+    message: MessageEvent<string>
+  ) => void;
   listenerCount: (event: string) => number;
   readonly url: string;
   onerror: ((event: Event) => void) | null;
@@ -3484,7 +3772,7 @@ type MockEventSourceInstance = {
   onopen: ((event: Event) => void) | null;
   removeEventListener: (
     event: string,
-    listener: (event: MessageEvent<string>) => void,
+    listener: (event: MessageEvent<string>) => void
   ) => void;
 };
 
@@ -3493,7 +3781,10 @@ function installMockEventSource() {
 
   class TestEventSource implements MockEventSourceInstance {
     readonly close = vi.fn();
-    readonly #listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
+    readonly #listeners = new Map<
+      string,
+      Set<(event: MessageEvent<string>) => void>
+    >();
     onerror: ((event: Event) => void) | null = null;
     onmessage: ((event: MessageEvent<string>) => void) | null = null;
     onopen: ((event: Event) => void) | null = null;
@@ -3504,7 +3795,7 @@ function installMockEventSource() {
 
     addEventListener(
       event: string,
-      listener: (message: MessageEvent<string>) => void,
+      listener: (message: MessageEvent<string>) => void
     ) {
       const listeners = this.#listeners.get(event) ?? new Set();
       listeners.add(listener);
@@ -3523,7 +3814,7 @@ function installMockEventSource() {
 
     removeEventListener(
       event: string,
-      listener: (message: MessageEvent<string>) => void,
+      listener: (message: MessageEvent<string>) => void
     ) {
       this.#listeners.get(event)?.delete(listener);
     }

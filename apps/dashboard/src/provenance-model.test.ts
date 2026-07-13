@@ -3,13 +3,13 @@ import { RunIdSchema, makeRunEvent } from "@gaia/core";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { buildEvidenceProvenanceModel } from "@/provenance-model";
 import {
   buildRunCanvasModel,
   buildRunReplayState,
   eventsForNode,
 } from "@/run-canvas-model";
 import { buildRunCompareModel } from "@/run-compare-model";
-import { buildEvidenceProvenanceModel } from "@/provenance-model";
 
 describe("evidence provenance model", () => {
   it("maps visible run and node claims to public source events and artifacts", () => {
@@ -76,38 +76,38 @@ describe("evidence provenance model", () => {
 
     expect(provenance.supportedCount).toBeGreaterThan(0);
     expect(
-      provenance.claims.find((claim) => claim.id === "node-status:lane:worker"),
+      provenance.claims.find((claim) => claim.id === "node-status:lane:worker")
     ).toEqual(
       expect.objectContaining({
         availability: "supported",
         label: "Node status",
         value: "complete",
-      }),
+      })
     );
     expect(
-      provenance.claims
-        .find((claim) => claim.id === "artifact-count:lane:worker")
-        ?.sources,
+      provenance.claims.find(
+        (claim) => claim.id === "artifact-count:lane:worker"
+      )?.sources
     ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           kind: "artifact",
           target: { artifactId: "worker-plan", type: "artifact" },
         }),
-      ]),
+      ])
     );
     expect(
-      provenance.claims.find((claim) => claim.id === "report-signal"),
+      provenance.claims.find((claim) => claim.id === "report-signal")
     ).toEqual(
       expect.objectContaining({
         availability: "supported",
         value: "Available",
-      }),
+      })
     );
     expect(
       provenance.claims
         .find((claim) => claim.id === "report-signal")
-        ?.sources.some((source) => source.kind === "event"),
+        ?.sources.some((source) => source.kind === "event")
     ).toBe(true);
   });
 
@@ -139,21 +139,21 @@ describe("evidence provenance model", () => {
 
     expect(
       provenance.claims.find(
-        (claim) => claim.id === "event-count:relationship:thread-identity",
-      ),
+        (claim) => claim.id === "event-count:relationship:thread-identity"
+      )
     ).toEqual(
       expect.objectContaining({
         availability: "unavailable",
         value: "0 related / 0 loaded",
-      }),
+      })
     );
     expect(
-      provenance.claims.find((claim) => claim.id === "thread-identity"),
+      provenance.claims.find((claim) => claim.id === "thread-identity")
     ).toEqual(
       expect.objectContaining({
         availability: "unsupported",
         value: "Unsupported by current public API",
-      }),
+      })
     );
     expect(provenance.unavailableCount).toBeGreaterThan(0);
     expect(provenance.unsupportedCount).toBe(1);
@@ -163,7 +163,7 @@ describe("evidence provenance model", () => {
 function localRunSummary(
   input: Partial<typeof LocalRunSummaryDto.Type> & {
     readonly runId: typeof LocalRunSummaryDto.Type.runId;
-  },
+  }
 ): typeof LocalRunSummaryDto.Type {
   return {
     artifacts: ["input"],
@@ -183,7 +183,7 @@ function parseRunId(value: string): typeof RunIdSchema.Type {
 
 function requiredNode(
   run: ReturnType<typeof buildRunCanvasModel>,
-  nodeId: string,
+  nodeId: string
 ) {
   const node = run.nodes.find((candidate) => candidate.id === nodeId);
   if (node === undefined) {

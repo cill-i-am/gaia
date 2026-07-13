@@ -1,15 +1,16 @@
 import { Effect, FileSystem, Schema } from "effect";
+
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
 
 export const SkillNameSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("SkillName"),
+  Schema.brand("SkillName")
 );
 
 export type SkillName = typeof SkillNameSchema.Type;
 
 export class SkillManifestEntry extends Schema.Class<SkillManifestEntry>(
-  "SkillManifestEntry",
+  "SkillManifestEntry"
 )({
   commit: Schema.optionalKey(Schema.NonEmptyString),
   name: SkillNameSchema,
@@ -18,11 +19,11 @@ export class SkillManifestEntry extends Schema.Class<SkillManifestEntry>(
   version: Schema.optionalKey(Schema.NonEmptyString),
 }) {}
 
-export class SkillManifest extends Schema.Class<SkillManifest>(
-  "SkillManifest",
-)({
-  skills: Schema.Array(SkillManifestEntry),
-}) {}
+export class SkillManifest extends Schema.Class<SkillManifest>("SkillManifest")(
+  {
+    skills: Schema.Array(SkillManifestEntry),
+  }
+) {}
 
 export type SkillManifestSource = {
   readonly path: string;
@@ -49,7 +50,7 @@ export function writeSkillManifest(input: {
 
     yield* fs.writeFileString(
       input.paths.skillManifest,
-      `${JSON.stringify(encodeSkillManifestJson(manifest), null, 2)}\n`,
+      `${JSON.stringify(encodeSkillManifestJson(manifest), null, 2)}\n`
     );
 
     return manifest;
@@ -61,20 +62,20 @@ export function writeSkillManifest(input: {
           code: "SkillManifestWriteFailed",
           message: "Gaia could not write the skill manifest artifact.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 export function selectedSkillNames(
-  manifest: SkillManifest,
+  manifest: SkillManifest
 ): ReadonlyArray<SkillName> {
   return manifest.skills.map((skill) => skill.name);
 }
 
 function readSkillManifest(
-  manifestPath: string,
+  manifestPath: string
 ): Effect.Effect<SkillManifest, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -88,7 +89,7 @@ function readSkillManifest(
             code: "SkillManifestEntryUnpinned",
             message: `Skill manifest entry '${skill.name}' must include a version or commit.`,
             recoverable: false,
-          }),
+          })
         );
       }
     }
@@ -102,9 +103,9 @@ function readSkillManifest(
           code: "SkillManifestReadFailed",
           message: `Gaia could not read skill manifest '${manifestPath}'.`,
           recoverable: false,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 

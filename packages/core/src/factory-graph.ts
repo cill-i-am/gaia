@@ -1,10 +1,11 @@
 import { Schema } from "effect";
-import { RunIdSchema } from "./run-id.js";
+
 import { ResolvedHarnessExecution } from "./harness-execution.js";
+import { RunIdSchema } from "./run-id.js";
 
 const NonNegativeInteger = Schema.Number.pipe(
   Schema.check(Schema.isInt({ identifier: "NonNegativeInteger" })),
-  Schema.check(Schema.isGreaterThanOrEqualTo(0)),
+  Schema.check(Schema.isGreaterThanOrEqualTo(0))
 );
 
 /** Factory workflow identifiers supported by the typed-code command center. */
@@ -102,7 +103,7 @@ export type FactoryArtifactContentType =
 
 /** A parsed factory work item identifier. */
 export const FactoryWorkItemIdSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("FactoryWorkItemId"),
+  Schema.brand("FactoryWorkItemId")
 ).annotate({ identifier: "FactoryWorkItemId" });
 
 /** A parsed factory work item identifier. */
@@ -110,7 +111,7 @@ export type FactoryWorkItemId = typeof FactoryWorkItemIdSchema.Type;
 
 /** A parsed factory agent identifier. */
 export const FactoryAgentIdSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("FactoryAgentId"),
+  Schema.brand("FactoryAgentId")
 ).annotate({ identifier: "FactoryAgentId" });
 
 /** A parsed factory agent identifier. */
@@ -118,7 +119,7 @@ export type FactoryAgentId = typeof FactoryAgentIdSchema.Type;
 
 /** A parsed factory artifact identifier. */
 export const FactoryArtifactIdSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("FactoryArtifactId"),
+  Schema.brand("FactoryArtifactId")
 ).annotate({ identifier: "FactoryArtifactId" });
 
 /** A parsed factory artifact identifier. */
@@ -126,7 +127,7 @@ export type FactoryArtifactId = typeof FactoryArtifactIdSchema.Type;
 
 /** A parsed factory activity identifier. */
 export const FactoryActivityIdSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("FactoryActivityId"),
+  Schema.brand("FactoryActivityId")
 ).annotate({ identifier: "FactoryActivityId" });
 
 /** A parsed factory activity identifier. */
@@ -134,7 +135,7 @@ export type FactoryActivityId = typeof FactoryActivityIdSchema.Type;
 
 /** External system reference attached to a Gaia-owned work item. */
 export class FactoryExternalRefDto extends Schema.Class<FactoryExternalRefDto>(
-  "FactoryExternalRefDto",
+  "FactoryExternalRefDto"
 )({
   id: Schema.NonEmptyString,
   provider: Schema.NonEmptyString,
@@ -143,7 +144,7 @@ export class FactoryExternalRefDto extends Schema.Class<FactoryExternalRefDto>(
 
 /** Gaia-owned work item shown in the public factory graph. */
 export class FactoryWorkItemDto extends Schema.Class<FactoryWorkItemDto>(
-  "FactoryWorkItemDto",
+  "FactoryWorkItemDto"
 )({
   description: Schema.optionalKey(Schema.String),
   externalRefs: Schema.Array(FactoryExternalRefDto),
@@ -155,7 +156,7 @@ export class FactoryWorkItemDto extends Schema.Class<FactoryWorkItemDto>(
 
 /** Agent node in a factory graph, including orchestrators. */
 export class FactoryAgentDto extends Schema.Class<FactoryAgentDto>(
-  "FactoryAgentDto",
+  "FactoryAgentDto"
 )({
   artifactCount: NonNegativeInteger,
   id: FactoryAgentIdSchema,
@@ -170,7 +171,7 @@ export class FactoryAgentDto extends Schema.Class<FactoryAgentDto>(
 
 /** Directed relationship between factory graph nodes. */
 export class FactoryEdgeDto extends Schema.Class<FactoryEdgeDto>(
-  "FactoryEdgeDto",
+  "FactoryEdgeDto"
 )({
   id: Schema.NonEmptyString,
   sourceId: Schema.NonEmptyString,
@@ -180,7 +181,7 @@ export class FactoryEdgeDto extends Schema.Class<FactoryEdgeDto>(
 
 /** First-class artifact metadata linked to a factory run. */
 export class FactoryArtifactDto extends Schema.Class<FactoryArtifactDto>(
-  "FactoryArtifactDto",
+  "FactoryArtifactDto"
 )({
   artifactId: FactoryArtifactIdSchema,
   contentType: FactoryArtifactContentTypeSchema,
@@ -194,7 +195,7 @@ export class FactoryArtifactDto extends Schema.Class<FactoryArtifactDto>(
 
 /** Public body returned for a factory artifact read. */
 export class FactoryArtifactBodyDto extends Schema.Class<FactoryArtifactBodyDto>(
-  "FactoryArtifactBodyDto",
+  "FactoryArtifactBodyDto"
 )({
   artifactId: FactoryArtifactIdSchema,
   body: Schema.String,
@@ -204,7 +205,7 @@ export class FactoryArtifactBodyDto extends Schema.Class<FactoryArtifactBodyDto>
 
 /** User-facing activity entry for a run or agent-scoped activity feed. */
 export class FactoryActivityDto extends Schema.Class<FactoryActivityDto>(
-  "FactoryActivityDto",
+  "FactoryActivityDto"
 )({
   activityId: FactoryActivityIdSchema,
   agentId: Schema.optionalKey(FactoryAgentIdSchema),
@@ -221,7 +222,7 @@ export class FactoryActivityDto extends Schema.Class<FactoryActivityDto>(
 
 /** Diagnostic attached to a rebuildable factory graph projection. */
 export class FactoryGraphDiagnosticDto extends Schema.Class<FactoryGraphDiagnosticDto>(
-  "FactoryGraphDiagnosticDto",
+  "FactoryGraphDiagnosticDto"
 )({
   code: Schema.NonEmptyString,
   message: Schema.NonEmptyString,
@@ -231,7 +232,7 @@ export class FactoryGraphDiagnosticDto extends Schema.Class<FactoryGraphDiagnost
 
 /** Public topology projection for a Gaia factory run. */
 export class FactoryGraphDto extends Schema.Class<FactoryGraphDto>(
-  "FactoryGraphDto",
+  "FactoryGraphDto"
 )({
   agents: Schema.Array(FactoryAgentDto),
   diagnostics: Schema.Array(FactoryGraphDiagnosticDto),
@@ -246,7 +247,7 @@ export class FactoryGraphDto extends Schema.Class<FactoryGraphDto>(
 
 /** Compact work item shape used in run list/detail responses. */
 export class FactoryRootWorkItemSummaryDto extends Schema.Class<FactoryRootWorkItemSummaryDto>(
-  "FactoryRootWorkItemSummaryDto",
+  "FactoryRootWorkItemSummaryDto"
 )({
   id: FactoryWorkItemIdSchema,
   kind: FactoryWorkItemKindSchema,
@@ -255,7 +256,7 @@ export class FactoryRootWorkItemSummaryDto extends Schema.Class<FactoryRootWorkI
 
 /** Compact active or terminal agent shape used in run list/detail responses. */
 export class FactoryRunAgentSummaryDto extends Schema.Class<FactoryRunAgentSummaryDto>(
-  "FactoryRunAgentSummaryDto",
+  "FactoryRunAgentSummaryDto"
 )({
   id: FactoryAgentIdSchema,
   role: FactoryAgentRoleSchema,
@@ -266,7 +267,7 @@ export class FactoryRunAgentSummaryDto extends Schema.Class<FactoryRunAgentSumma
 
 /** Count summary for a factory run projection. */
 export class FactoryRunCountsDto extends Schema.Class<FactoryRunCountsDto>(
-  "FactoryRunCountsDto",
+  "FactoryRunCountsDto"
 )({
   activity: NonNegativeInteger,
   agents: NonNegativeInteger,
@@ -276,7 +277,7 @@ export class FactoryRunCountsDto extends Schema.Class<FactoryRunCountsDto>(
 
 /** Factory-aware run summary for list responses. */
 export class FactoryRunSummaryDto extends Schema.Class<FactoryRunSummaryDto>(
-  "FactoryRunSummaryDto",
+  "FactoryRunSummaryDto"
 )({
   activeAgent: Schema.optionalKey(FactoryRunAgentSummaryDto),
   counts: FactoryRunCountsDto,
@@ -290,7 +291,7 @@ export class FactoryRunSummaryDto extends Schema.Class<FactoryRunSummaryDto>(
 
 /** Factory-aware run detail metadata; full topology lives on the graph endpoint. */
 export class FactoryRunDetailDto extends Schema.Class<FactoryRunDetailDto>(
-  "FactoryRunDetailDto",
+  "FactoryRunDetailDto"
 )({
   activeAgent: Schema.optionalKey(FactoryRunAgentSummaryDto),
   counts: FactoryRunCountsDto,
@@ -311,7 +312,7 @@ export class FactoryRunDetailDto extends Schema.Class<FactoryRunDetailDto>(
 
 /** Collection response data for factory run lists. */
 export class FactoryRunListDto extends Schema.Class<FactoryRunListDto>(
-  "FactoryRunListDto",
+  "FactoryRunListDto"
 )({
   diagnostics: Schema.Array(FactoryGraphDiagnosticDto),
   runs: Schema.Array(FactoryRunSummaryDto),
@@ -319,7 +320,7 @@ export class FactoryRunListDto extends Schema.Class<FactoryRunListDto>(
 
 /** Activity collection for a run or a single agent in a run. */
 export class FactoryActivityListDto extends Schema.Class<FactoryActivityListDto>(
-  "FactoryActivityListDto",
+  "FactoryActivityListDto"
 )({
   activities: Schema.Array(FactoryActivityDto),
   runId: RunIdSchema,
@@ -327,7 +328,7 @@ export class FactoryActivityListDto extends Schema.Class<FactoryActivityListDto>
 
 /** Artifact metadata collection for a run. */
 export class FactoryArtifactListDto extends Schema.Class<FactoryArtifactListDto>(
-  "FactoryArtifactListDto",
+  "FactoryArtifactListDto"
 )({
   artifacts: Schema.Array(FactoryArtifactDto),
   runId: RunIdSchema,
@@ -335,7 +336,7 @@ export class FactoryArtifactListDto extends Schema.Class<FactoryArtifactListDto>
 
 /** Agent step inside a typed-code workflow definition. */
 export class FactoryWorkflowAgentDefinitionDto extends Schema.Class<FactoryWorkflowAgentDefinitionDto>(
-  "FactoryWorkflowAgentDefinitionDto",
+  "FactoryWorkflowAgentDefinitionDto"
 )({
   role: FactoryAgentRoleSchema,
   title: Schema.NonEmptyString,
@@ -343,7 +344,7 @@ export class FactoryWorkflowAgentDefinitionDto extends Schema.Class<FactoryWorkf
 
 /** Relationship step inside a typed-code workflow definition. */
 export class FactoryWorkflowRelationshipDefinitionDto extends Schema.Class<FactoryWorkflowRelationshipDefinitionDto>(
-  "FactoryWorkflowRelationshipDefinitionDto",
+  "FactoryWorkflowRelationshipDefinitionDto"
 )({
   sourceRole: FactoryAgentRoleSchema,
   targetRole: FactoryAgentRoleSchema,
@@ -352,7 +353,7 @@ export class FactoryWorkflowRelationshipDefinitionDto extends Schema.Class<Facto
 
 /** Typed-code workflow definition contract for phase-one factory runs. */
 export class FactoryWorkflowDefinitionDto extends Schema.Class<FactoryWorkflowDefinitionDto>(
-  "FactoryWorkflowDefinitionDto",
+  "FactoryWorkflowDefinitionDto"
 )({
   agentRoles: Schema.Array(FactoryWorkflowAgentDefinitionDto),
   expectedArtifactKinds: Schema.Array(FactoryArtifactKindSchema),

@@ -11,6 +11,7 @@ import {
   type RunId,
 } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
+
 import { makeRuntimeError } from "./errors.js";
 import { runRelative, type RunPaths } from "./paths.js";
 
@@ -21,16 +22,18 @@ const VerificationResultArtifact = Schema.Struct({
   checkedArtifacts: Schema.Array(Schema.NonEmptyString),
   status: Schema.NonEmptyString,
 });
-const parseVerificationResultArtifact =
-  Schema.decodeUnknownSync(VerificationResultArtifact);
+const parseVerificationResultArtifact = Schema.decodeUnknownSync(
+  VerificationResultArtifact
+);
 
 const GitHubChecksSnapshotArtifact = Schema.Struct({
   headSha: Schema.optionalKey(Schema.NonEmptyString),
   pr: Schema.NonEmptyString,
   status: Schema.NonEmptyString,
 });
-const parseGitHubChecksSnapshotArtifact =
-  Schema.decodeUnknownSync(GitHubChecksSnapshotArtifact);
+const parseGitHubChecksSnapshotArtifact = Schema.decodeUnknownSync(
+  GitHubChecksSnapshotArtifact
+);
 
 const GitHubPrFeedbackArtifact = Schema.Struct({
   headSha: Schema.optionalKey(Schema.NonEmptyString),
@@ -38,8 +41,9 @@ const GitHubPrFeedbackArtifact = Schema.Struct({
   status: Schema.NonEmptyString,
   url: Schema.optionalKey(Schema.String),
 });
-const parseGitHubPrFeedbackArtifact =
-  Schema.decodeUnknownSync(GitHubPrFeedbackArtifact);
+const parseGitHubPrFeedbackArtifact = Schema.decodeUnknownSync(
+  GitHubPrFeedbackArtifact
+);
 
 const GitHubPrLoopArtifact = Schema.Struct({
   checksPath: Schema.NonEmptyString,
@@ -89,12 +93,18 @@ export function writeEvidencePromotion(input: WriteEvidencePromotionInput) {
       verification,
     });
     const promotion = EvidencePromotion.make({
-      artifactPath: gaiaRelative(input.paths, input.paths.evidencePromotionJson),
+      artifactPath: gaiaRelative(
+        input.paths,
+        input.paths.evidencePromotionJson
+      ),
       cleanupStatus,
       dogfood,
       generatedAt,
       markdown,
-      markdownPath: gaiaRelative(input.paths, input.paths.evidencePromotionMarkdown),
+      markdownPath: gaiaRelative(
+        input.paths,
+        input.paths.evidencePromotionMarkdown
+      ),
       promotionStatus,
       pullRequest,
       reportPaths,
@@ -110,7 +120,7 @@ export function writeEvidencePromotion(input: WriteEvidencePromotionInput) {
     yield* fs.writeFileString(input.paths.evidencePromotionMarkdown, markdown);
     yield* fs.writeFileString(
       input.paths.evidencePromotionJson,
-      `${JSON.stringify(encodeEvidencePromotion(promotion), null, 2)}\n`,
+      `${JSON.stringify(encodeEvidencePromotion(promotion), null, 2)}\n`
     );
 
     return promotion;
@@ -120,22 +130,29 @@ export function writeEvidencePromotion(input: WriteEvidencePromotionInput) {
         makeRuntimeError({
           cause,
           code: "EvidencePromotionWriteFailed",
-          message: "Gaia could not write selected evidence promotion artifacts.",
+          message:
+            "Gaia could not write selected evidence promotion artifacts.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function buildReportPaths(paths: RunPaths) {
   return Effect.gen(function* () {
-    const workerPlanPath = yield* existingRunPath(paths, paths.workerPlanMarkdown);
+    const workerPlanPath = yield* existingRunPath(
+      paths,
+      paths.workerPlanMarkdown
+    );
     const dogfoodRetrospectivePath = yield* existingRunPath(
       paths,
-      paths.dogfoodRetrospective,
+      paths.dogfoodRetrospective
     );
-    const reportMarkdownPath = yield* existingRunPath(paths, paths.reportMarkdown);
+    const reportMarkdownPath = yield* existingRunPath(
+      paths,
+      paths.reportMarkdown
+    );
     const reportJsonPath = yield* existingRunPath(paths, paths.reportJson);
 
     return EvidencePromotionReportPaths.make({
@@ -153,7 +170,7 @@ function buildVerificationSummary(paths: RunPaths) {
   return Effect.gen(function* () {
     const artifact = yield* readJsonIfExists(
       paths.verificationResult,
-      parseVerificationResultArtifact,
+      parseVerificationResultArtifact
     );
 
     if (artifact === undefined) {
@@ -175,26 +192,26 @@ function buildPullRequestSummary(paths: RunPaths) {
   return Effect.gen(function* () {
     const prLoop = yield* readJsonIfExists(
       paths.prLoopState,
-      parseGitHubPrLoopArtifact,
+      parseGitHubPrLoopArtifact
     );
     const feedback = yield* readJsonIfExists(
       paths.githubFeedback,
-      parseGitHubPrFeedbackArtifact,
+      parseGitHubPrFeedbackArtifact
     );
     const checks = yield* readLatestGitHubChecksSnapshot(paths);
     const artifactPaths = compactStrings([
       prLoop === undefined ? undefined : runRelative(paths, paths.prLoopState),
-      feedback === undefined ? undefined : runRelative(paths, paths.githubFeedback),
+      feedback === undefined
+        ? undefined
+        : runRelative(paths, paths.githubFeedback),
       checks?.path,
     ]);
-    const status =
-      artifactPaths.length === 0
-        ? "skipped"
-        : "promoted";
+    const status = artifactPaths.length === 0 ? "skipped" : "promoted";
     const pr = prLoop?.pr ?? feedback?.pr ?? checks?.snapshot.pr;
     const checksStatus = prLoop?.checksStatus ?? checks?.snapshot.status;
     const feedbackStatus = prLoop?.feedbackStatus ?? feedback?.status;
-    const headSha = prLoop?.headSha ?? feedback?.headSha ?? checks?.snapshot.headSha;
+    const headSha =
+      prLoop?.headSha ?? feedback?.headSha ?? checks?.snapshot.headSha;
     const url = feedback?.url;
 
     return EvidencePromotionPullRequestSummary.make({
@@ -217,7 +234,7 @@ function buildDogfoodSummary(paths: RunPaths) {
   return Effect.gen(function* () {
     const artifact = yield* readJsonIfExists(
       paths.dogfoodRetrospective,
-      parseDogfoodRetrospective,
+      parseDogfoodRetrospective
     );
 
     if (artifact === undefined) {
@@ -258,7 +275,8 @@ function buildSelectedEvidence(input: {
     promotedEvidenceItem({
       label: "Run report",
       path:
-        input.reportPaths.reportMarkdownPath ?? input.reportPaths.reportJsonPath,
+        input.reportPaths.reportMarkdownPath ??
+        input.reportPaths.reportJsonPath,
       status:
         input.reportPaths.reportMarkdownPath === undefined &&
         input.reportPaths.reportJsonPath === undefined
@@ -273,8 +291,7 @@ function buildSelectedEvidence(input: {
     promotedEvidenceItem({
       label: "Verification summary",
       path: input.verification.path,
-      status:
-        input.verification.path === undefined ? "skipped" : "promoted",
+      status: input.verification.path === undefined ? "skipped" : "promoted",
       summary:
         input.verification.path === undefined
           ? "Verification evidence was not available for this run."
@@ -288,8 +305,7 @@ function buildSelectedEvidence(input: {
     promotedEvidenceItem({
       label: "Dogfood findings",
       path: input.dogfood.artifactPath,
-      status:
-        input.dogfood.artifactPath === undefined ? "skipped" : "promoted",
+      status: input.dogfood.artifactPath === undefined ? "skipped" : "promoted",
       summary: input.dogfood.summary,
     }),
     promotedEvidenceItem({
@@ -327,8 +343,9 @@ function renderEvidencePromotionMarkdown(input: {
   readonly verification: EvidencePromotionVerificationSummary;
 }) {
   const selectedEvidence = input.selectedEvidence
-    .map((evidence) =>
-      `- ${evidence.status}: ${evidence.label}${formatPath(evidence.path)} - ${evidence.summary}`,
+    .map(
+      (evidence) =>
+        `- ${evidence.status}: ${evidence.label}${formatPath(evidence.path)} - ${evidence.summary}`
     )
     .join("\n");
   const checkedArtifacts =
@@ -416,7 +433,7 @@ function gaiaRelative(paths: RunPaths, absolutePath: string): string {
 
 function readJsonIfExists<A>(
   artifactPath: string,
-  parse: (input: unknown) => A,
+  parse: (input: unknown) => A
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -471,7 +488,7 @@ function readLatestGitHubChecksSnapshot(paths: RunPaths) {
     const artifactPath = path.join(paths.githubChecks, latest);
     const snapshot = yield* readJsonIfExists(
       artifactPath,
-      parseGitHubChecksSnapshotArtifact,
+      parseGitHubChecksSnapshotArtifact
     );
     if (snapshot === undefined) {
       return undefined;

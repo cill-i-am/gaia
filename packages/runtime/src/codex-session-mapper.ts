@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import path from "node:path";
+
 import {
   parseHarnessEvent,
   parseHarnessInteractionId,
@@ -19,9 +22,8 @@ import {
   type HarnessTurnId,
   type WorkspaceRelativePath,
 } from "@gaia/core";
-import { createHash } from "node:crypto";
-import path from "node:path";
 import { Option, Schema } from "effect";
+
 import {
   CodexNotificationSchema,
   CodexServerRequestSchema,
@@ -47,7 +49,7 @@ export type CodexSessionMapperOptions = {
 export interface CodexSessionMapper {
   readonly approvalDecisionAllowed: (
     requestId: string | number,
-    decision: "approve" | "approveForSession" | "decline" | "cancel",
+    decision: "approve" | "approveForSession" | "decline" | "cancel"
   ) => boolean;
   readonly mapNotification: (input: unknown) => ReadonlyArray<HarnessEvent>;
   readonly mapServerRequest: (input: unknown) => ReadonlyArray<HarnessEvent>;
@@ -57,10 +59,10 @@ export interface CodexSessionMapper {
     answers: ReadonlyArray<{
       readonly answers: ReadonlyArray<string>;
       readonly questionId: HarnessQuestionId;
-    }>,
+    }>
   ) => Record<string, { readonly answers: ReadonlyArray<string> }> | undefined;
   readonly permissionApproval: (
-    requestId: string | number,
+    requestId: string | number
   ) => typeof PermissionApprovalResponseSchema.Type.permissions | undefined;
   readonly resolveServerRequest: (
     requestId: string | number,
@@ -74,17 +76,19 @@ export interface CodexSessionMapper {
         | "submit";
       readonly resolvedAt: string;
       readonly responseKind: "approval" | "userInput" | "mcpElicitation";
-    },
+    }
   ) => ReadonlyArray<HarnessEvent>;
 }
 
 const decodeNotification = Schema.decodeUnknownOption(CodexNotificationSchema);
-const decodeServerRequest = Schema.decodeUnknownOption(CodexServerRequestSchema);
+const decodeServerRequest = Schema.decodeUnknownOption(
+  CodexServerRequestSchema
+);
 const decodeThread = Schema.decodeUnknownOption(CodexThreadSchema);
 
 /** Create a stateful adapter-local mapper with private vendor correlation state. */
 export function createCodexSessionMapper(
-  options: CodexSessionMapperOptions,
+  options: CodexSessionMapperOptions
 ): CodexSessionMapper {
   const state = new MapperState(options);
   return {
@@ -96,11 +100,15 @@ export function createCodexSessionMapper(
     },
     mapServerRequest: (input) => {
       const decoded = decodeServerRequest(input);
-      return Option.isNone(decoded) ? [] : state.mapServerRequest(decoded.value);
+      return Option.isNone(decoded)
+        ? []
+        : state.mapServerRequest(decoded.value);
     },
     mapRecoveredThread: (input) => {
       const decoded = decodeThread(input);
-      return Option.isNone(decoded) ? [] : state.mapRecoveredThread(decoded.value);
+      return Option.isNone(decoded)
+        ? []
+        : state.mapRecoveredThread(decoded.value);
     },
     mapUserInputAnswers: (requestId, answers) =>
       state.mapUserInputAnswers(requestId, answers),
@@ -143,11 +151,13 @@ class MapperState {
     this.#options = options;
     this.#deltaFlushCharacters = Math.max(
       1,
-      Math.trunc(options.deltaFlushCharacters ?? 1_024),
+      Math.trunc(options.deltaFlushCharacters ?? 1_024)
     );
   }
 
-  mapNotification(notification: CodexNotification): ReadonlyArray<HarnessEvent> {
+  mapNotification(
+    notification: CodexNotification
+  ): ReadonlyArray<HarnessEvent> {
     switch (notification.method) {
       case "thread/started": {
         const nativeThreadId = notification.params.thread.id;
@@ -295,7 +305,7 @@ class MapperState {
   }
 
   mapRecoveredThread(
-    thread: typeof CodexThreadSchema.Type,
+    thread: typeof CodexThreadSchema.Type
   ): ReadonlyArray<HarnessEvent> {
     if (!this.#ownsThread(thread.id)) return [];
     const events: Array<HarnessEvent> = [];
@@ -312,8 +322,8 @@ class MapperState {
                 turnId: turn.id,
               },
             },
-            true,
-          ),
+            true
+          )
         );
       }
       const status = mapTurnStatus(turn.status);
@@ -346,7 +356,7 @@ class MapperState {
             sessionId: this.#options.sessionId,
             status,
             turnId: this.#turnId(turn.id),
-          }),
+          })
         );
       }
     }
@@ -365,7 +375,7 @@ class MapperState {
           },
           kind: "sessionFailed",
           sessionId: this.#options.sessionId,
-        }),
+        })
       );
     } else if (state !== undefined) {
       events.push(
@@ -373,7 +383,7 @@ class MapperState {
           kind: "sessionStateChanged",
           sessionId: this.#options.sessionId,
           state,
-        }),
+        })
       );
     }
     return events;
@@ -384,7 +394,7 @@ class MapperState {
     answers: ReadonlyArray<{
       readonly answers: ReadonlyArray<string>;
       readonly questionId: HarnessQuestionId;
-    }>,
+    }>
   ): Record<string, { readonly answers: ReadonlyArray<string> }> | undefined {
     const questionIds = this.#requestIds.get(requestId)?.questionIds;
     if (questionIds === undefined || answers.length !== questionIds.size) {
@@ -403,7 +413,7 @@ class MapperState {
 
   approvalDecisionAllowed(
     requestId: CodexRequestId,
-    decision: "approve" | "approveForSession" | "decline" | "cancel",
+    decision: "approve" | "approveForSession" | "decline" | "cancel"
   ): boolean {
     const interaction = this.#requestIds.get(requestId)?.interaction;
     return (
@@ -416,7 +426,7 @@ class MapperState {
   }
 
   permissionApproval(
-    requestId: CodexRequestId,
+    requestId: CodexRequestId
   ): typeof PermissionApprovalResponseSchema.Type.permissions | undefined {
     return this.#auditedPermissionGrants.get(requestId);
   }
@@ -433,14 +443,14 @@ class MapperState {
         | "submit";
       readonly resolvedAt: string;
       readonly responseKind: "approval" | "userInput" | "mcpElicitation";
-    },
+    }
   ): ReadonlyArray<HarnessEvent> {
     const pending = this.#requestIds.get(requestId);
     if (pending === undefined) return [];
     const coreResolution = this.#resolution(
       pending.interaction,
       pending.interactionId,
-      resolution,
+      resolution
     );
     this.#requestIds.delete(requestId);
     this.#auditedPermissionGrants.delete(requestId);
@@ -491,7 +501,7 @@ class MapperState {
         | "submit";
       readonly resolvedAt: string;
       readonly responseKind: "approval" | "userInput" | "mcpElicitation";
-    },
+    }
   ): HarnessInteractionResolution {
     switch (request.kind) {
       case "commandApproval":
@@ -502,7 +512,9 @@ class MapperState {
           resolution.decision === "submit" ||
           !request.allowedDecisions.includes(resolution.decision)
         ) {
-          throw new Error("Codex approval response is not allowed by its request.");
+          throw new Error(
+            "Codex approval response is not allowed by its request."
+          );
         }
         return {
           actionId: resolution.actionId,
@@ -516,7 +528,9 @@ class MapperState {
           resolution.responseKind !== "userInput" ||
           resolution.decision !== "submit"
         ) {
-          throw new Error("Codex user-input response does not match its request.");
+          throw new Error(
+            "Codex user-input response does not match its request."
+          );
         }
         return {
           actionId: resolution.actionId,
@@ -544,7 +558,10 @@ class MapperState {
   }
 
   #mapTurnCompleted(
-    notification: Extract<CodexNotification, { readonly method: "turn/completed" }>,
+    notification: Extract<
+      CodexNotification,
+      { readonly method: "turn/completed" }
+    >
   ): ReadonlyArray<HarnessEvent> {
     if (!this.#ownsThread(notification.params.threadId)) return [];
     const nativeTurnId = notification.params.turn.id;
@@ -599,23 +616,25 @@ class MapperState {
             } as const),
           kind: "sessionFailed",
           sessionId: this.#options.sessionId,
-        }),
+        })
       );
     } else if (completedActiveTurn) {
       events.push(
         this.#event({
           kind: "sessionStateChanged",
           sessionId: this.#options.sessionId,
-          state:
-            this.#requestIds.size === 0 ? "idle" : "waitingForOperator",
-        }),
+          state: this.#requestIds.size === 0 ? "idle" : "waitingForOperator",
+        })
       );
     }
     return events;
   }
 
   #mapPlan(
-    notification: Extract<CodexNotification, { readonly method: "turn/plan/updated" }>,
+    notification: Extract<
+      CodexNotification,
+      { readonly method: "turn/plan/updated" }
+    >
   ): ReadonlyArray<HarnessEvent> {
     if (!this.#ownsThread(notification.params.threadId)) return [];
     const turnId = this.#turnId(notification.params.turnId);
@@ -638,10 +657,12 @@ class MapperState {
           itemId,
           kind: "plan",
           status: "streaming",
-          steps: notification.params.plan.slice(0, 50).map(({ status, step }) => ({
-            status,
-            step: this.#brief(step),
-          })),
+          steps: notification.params.plan
+            .slice(0, 50)
+            .map(({ status, step }) => ({
+              status,
+              step: this.#brief(step),
+            })),
           turnId,
         },
         kind: "itemUpserted",
@@ -652,7 +673,7 @@ class MapperState {
   }
 
   #cancelInteractionsForTurn(
-    turnId: HarnessTurnId,
+    turnId: HarnessTurnId
   ): ReadonlyArray<HarnessEvent> {
     const events: Array<HarnessEvent> = [];
     for (const [requestId, pending] of this.#requestIds) {
@@ -668,7 +689,7 @@ class MapperState {
             kind: "interactionCancelled",
             reason: "turnTerminal",
             sessionId: this.#options.sessionId,
-          }),
+          })
         );
       }
     }
@@ -680,7 +701,7 @@ class MapperState {
       CodexNotification,
       { readonly method: "item/started" | "item/completed" }
     >,
-    final: boolean,
+    final: boolean
   ): ReadonlyArray<HarnessEvent> {
     if (!this.#ownsThread(notification.params.threadId)) return [];
     const nativeItemId = notification.params.item.id;
@@ -720,7 +741,7 @@ class MapperState {
           | "item/commandExecution/outputDelta";
       }
     >,
-    deltaKind: "message" | "commandOutput",
+    deltaKind: "message" | "commandOutput"
   ): ReadonlyArray<HarnessEvent> {
     if (
       !this.#ownsThread(notification.params.threadId) ||
@@ -733,7 +754,7 @@ class MapperState {
     const remaining = 65_536 - emitted;
     if (remaining <= 0) return [];
     const nextBuffer = this.#output(
-      `${this.#messageBuffers.get(nativeItemId) ?? ""}${notification.params.delta}`,
+      `${this.#messageBuffers.get(nativeItemId) ?? ""}${notification.params.delta}`
     ).slice(0, remaining);
     if (nextBuffer.length < this.#deltaFlushCharacters) {
       this.#setMessageBuffer(nativeItemId, nextBuffer);
@@ -760,7 +781,7 @@ class MapperState {
     notification: Extract<
       CodexNotification,
       { readonly method: "thread/tokenUsage/updated" }
-    >,
+    >
   ): ReadonlyArray<HarnessEvent> {
     if (!this.#ownsThread(notification.params.threadId)) return [];
     const nativeTurnId = notification.params.turnId;
@@ -775,7 +796,8 @@ class MapperState {
       this.#event({
         final: false,
         item: {
-          ...(notification.params.tokenUsage.total.cachedInputTokens === undefined
+          ...(notification.params.tokenUsage.total.cachedInputTokens ===
+          undefined
             ? {}
             : {
                 cachedInputTokens:
@@ -813,11 +835,13 @@ class MapperState {
 
   #mapInteraction(
     request: CodexServerRequest,
-    interactionId: HarnessInteractionId,
+    interactionId: HarnessInteractionId
   ) {
     switch (request.method) {
       case "item/commandExecution/requestApproval": {
-        const workspacePath = this.#relativePath(request.params.cwd ?? this.#options.workspaceRoot);
+        const workspacePath = this.#relativePath(
+          request.params.cwd ?? this.#options.workspaceRoot
+        );
         const audited =
           workspacePath !== undefined &&
           (request.params.networkApprovalContext === null ||
@@ -842,7 +866,8 @@ class MapperState {
       }
       case "item/fileChange/requestApproval": {
         const grantRoot =
-          request.params.grantRoot === null || request.params.grantRoot === undefined
+          request.params.grantRoot === null ||
+          request.params.grantRoot === undefined
             ? undefined
             : this.#relativePath(request.params.grantRoot);
         const audited =
@@ -880,12 +905,15 @@ class MapperState {
           requestedAt: timestampFromMilliseconds(request.params.startedAtMs),
           scope:
             audited?.scope ??
-            ({ fileSystem: [], network: "notRequested" } satisfies HarnessPermissionScope),
+            ({
+              fileSystem: [],
+              network: "notRequested",
+            } satisfies HarnessPermissionScope),
           summary:
             audited === undefined
               ? "Permission scope could not be safely represented; approval is disabled."
               : this.#text(
-                  request.params.reason ?? "Additional permissions requested",
+                  request.params.reason ?? "Additional permissions requested"
                 ),
           turnId: this.#turnId(request.params.turnId),
         };
@@ -895,16 +923,18 @@ class MapperState {
           interactionId,
           itemId: this.#itemId(request.params.itemId),
           kind: "userInput" as const,
-          questions: request.params.questions.slice(0, 20).map((question, index) => ({
-            options: (question.options ?? [])
-              .slice(0, 20)
-              .map(({ label }) => this.#label(label)),
-            prompt: this.#brief(question.question),
-            questionId: parseHarnessQuestionId(
-              `${interactionId}-question-${index + 1}`,
-            ),
-            secret: question.isSecret ?? false,
-          })),
+          questions: request.params.questions
+            .slice(0, 20)
+            .map((question, index) => ({
+              options: (question.options ?? [])
+                .slice(0, 20)
+                .map(({ label }) => this.#label(label)),
+              prompt: this.#brief(question.question),
+              questionId: parseHarnessQuestionId(
+                `${interactionId}-question-${index + 1}`
+              ),
+              secret: question.isSecret ?? false,
+            })),
           requestedAt: new Date(0).toISOString(),
           turnId: this.#turnId(request.params.turnId),
         };
@@ -916,7 +946,8 @@ class MapperState {
           mode: request.params.mode,
           requestedAt: new Date(0).toISOString(),
           serverName: this.#text(request.params.serverName),
-          ...(request.params.turnId === null || request.params.turnId === undefined
+          ...(request.params.turnId === null ||
+          request.params.turnId === undefined
             ? {}
             : { turnId: this.#turnId(request.params.turnId) }),
         };
@@ -927,7 +958,7 @@ class MapperState {
     item: CodexThreadItem,
     itemId: HarnessItemId,
     turnId: HarnessTurnId,
-    final: boolean,
+    final: boolean
   ): HarnessItem | undefined {
     switch (item.type) {
       case "userMessage":
@@ -953,7 +984,10 @@ class MapperState {
           kind: "plan",
           status: final ? "completed" : "streaming",
           steps: [
-            { status: final ? "completed" : "pending", step: this.#text(item.text) },
+            {
+              status: final ? "completed" : "pending",
+              step: this.#text(item.text),
+            },
           ],
           turnId,
         };
@@ -970,7 +1004,8 @@ class MapperState {
             : { exitCode: item.exitCode }),
           itemId,
           kind: "command",
-          ...(item.aggregatedOutput === null || item.aggregatedOutput === undefined
+          ...(item.aggregatedOutput === null ||
+          item.aggregatedOutput === undefined
             ? {}
             : { output: this.#output(item.aggregatedOutput) }),
           status: mapItemStatus(item.status),
@@ -1057,7 +1092,7 @@ class MapperState {
     const existing = this.#turnIds.get(nativeTurnId);
     if (existing !== undefined) return existing;
     const created = parseHarnessTurnId(
-      `turn-${this.#opaqueId("turn", nativeTurnId)}`,
+      `turn-${this.#opaqueId("turn", nativeTurnId)}`
     );
     this.#turnIds.set(nativeTurnId, created);
     return created;
@@ -1086,9 +1121,7 @@ class MapperState {
   }
 
   #stableItemId(nativeKey: string): HarnessItemId {
-    return parseHarnessItemId(
-      `item-${this.#opaqueId("item", nativeKey)}`,
-    );
+    return parseHarnessItemId(`item-${this.#opaqueId("item", nativeKey)}`);
   }
 
   #interactionId(request: CodexServerRequest): HarnessInteractionId {
@@ -1101,7 +1134,7 @@ class MapperState {
       "itemId" in request.params ? request.params.itemId : "",
     ].join("\0");
     return parseHarnessInteractionId(
-      `interaction-${this.#opaqueId("interaction", nativeKey)}`,
+      `interaction-${this.#opaqueId("interaction", nativeKey)}`
     );
   }
 
@@ -1114,17 +1147,22 @@ class MapperState {
 
   #relativePath(input: string): WorkspaceRelativePath | undefined {
     const root = path.resolve(this.#options.workspaceRoot);
-    const resolved = path.isAbsolute(input) ? path.resolve(input) : path.resolve(root, input);
+    const resolved = path.isAbsolute(input)
+      ? path.resolve(input)
+      : path.resolve(root, input);
     const relative = path.relative(root, resolved);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
-    return parseWorkspaceRelativePath(relative === "" ? "." : relative.split(path.sep).join("/"));
+    if (relative.startsWith("..") || path.isAbsolute(relative))
+      return undefined;
+    return parseWorkspaceRelativePath(
+      relative === "" ? "." : relative.split(path.sep).join("/")
+    );
   }
 
   #auditPermissionScope(
     permissions: Extract<
       CodexServerRequest,
       { readonly method: "item/permissions/requestApproval" }
-    >["params"]["permissions"],
+    >["params"]["permissions"]
   ):
     | {
         readonly grant: typeof PermissionApprovalResponseSchema.Type.permissions;
@@ -1137,13 +1175,13 @@ class MapperState {
     }> = [];
     const addPath = (
       absolutePath: string,
-      access: "read" | "write" | "deny",
+      access: "read" | "write" | "deny"
     ): boolean => {
       const relative = this.#relativePath(absolutePath);
       if (relative === undefined) return false;
       if (
         !fileSystem.some(
-          (entry) => entry.access === access && entry.path === relative,
+          (entry) => entry.access === access && entry.path === relative
         )
       ) {
         fileSystem.push({ access, path: relative });
@@ -1212,7 +1250,9 @@ class MapperState {
       throw new Error("Codex delta buffer exceeded its item limit.");
     }
     const existingBytes =
-      existing === undefined ? 0 : new TextEncoder().encode(existing).byteLength;
+      existing === undefined
+        ? 0
+        : new TextEncoder().encode(existing).byteLength;
     const nextBytes = new TextEncoder().encode(value).byteLength;
     const aggregate = this.#bufferedDeltaBytes - existingBytes + nextBytes;
     if (aggregate > 1_048_576) {
@@ -1253,63 +1293,58 @@ class MapperState {
 function sanitizeText(
   input: string,
   options: CodexSessionMapperOptions,
-  limit: number,
+  limit: number
 ): string {
   let output = input;
   for (const sensitive of [...(options.sensitiveValues ?? [])].sort(
-    (left, right) => right.length - left.length,
+    (left, right) => right.length - left.length
   )) {
-    if (sensitive.length > 0) output = output.split(sensitive).join("[REDACTED]");
+    if (sensitive.length > 0)
+      output = output.split(sensitive).join("[REDACTED]");
   }
   output = output.split(options.workspaceRoot).join(".");
   output = output
     .replace(
       /(?<![A-Za-z0-9_])(["']?)(?:[A-Za-z][A-Za-z0-9]{0,31})?(?:Secret|Token|Password|[Aa]piKey|Authorization)\1\s*:\s*(?:"(?:Basic\s+|Bearer\s+)?[^"]*"|'(?:Basic\s+|Bearer\s+)?[^']*'|(?:Basic\s+|Bearer\s+)?[^,\s}]+)/gu,
-      "[credential]",
+      "[credential]"
     )
     .replace(
       /(["']?)[A-Z_][A-Z0-9_]{1,63}\1\s*:\s*(?:"[^"]*"|'[^']*'|[^,\s}]+)/gu,
-      "[environment]",
+      "[environment]"
     )
     .replace(
       /(?<![A-Za-z0-9_-])(["']?)(?:(?:[A-Za-z0-9]{1,32}[_-]){0,4}(?:authorization|proxy[_-]authorization|x[_-]api[_-]key|api[_-]key|password|secret|token))\1\s*:\s*(?:"(?:Basic\s+|Bearer\s+)?[^"]*"|'(?:Basic\s+|Bearer\s+)?[^']*'|(?:Basic\s+|Bearer\s+)?[^,\s}]+)/giu,
-      "[credential]",
+      "[credential]"
     )
     .replace(
       /\b[A-Za-z_][A-Za-z0-9_]{0,63}\s*=\s*(?:"[^"]*"|'[^']*'|\S+)/gu,
-      "[environment]",
+      "[environment]"
     )
     .replace(
       /\b[A-Z_][A-Z0-9_]{1,63}\s*:\s*(?:"[^"]*"|'[^']*'|\S+)/gu,
-      "[environment]",
+      "[environment]"
     )
     .replace(
       /\b(?:(?:[A-Za-z0-9]{1,32}[_-]){0,4}(?:authorization|proxy[_-]authorization|x[_-]api[_-]key|api[_-]key|password|secret|token))\s*:\s*(?:Basic\s+|Bearer\s+)?\S+/giu,
-      "[credential]",
+      "[credential]"
     )
     .replace(/\bBearer\s+\S+/giu, "Bearer [REDACTED]")
     .replace(
       /\b(?:gh[pousr]_[A-Za-z0-9]{8,}|sk-[A-Za-z0-9_-]{8,}|AKIA[0-9A-Z]{16})\b/gu,
-      "[REDACTED]",
+      "[REDACTED]"
     )
     .replace(
       /\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]+(?::[^\s/@]*)?@/giu,
-      "[REDACTED-AUTHORITY]@",
+      "[REDACTED-AUTHORITY]@"
     );
   output = redactQuotedAbsolutePaths(output);
   output = output
-    .replace(
-      /\\\\(?:\\ |[^\s`"'<>)}\],;])+/gu,
-      "[absolute-path]",
-    )
+    .replace(/\\\\(?:\\ |[^\s`"'<>)}\],;])+/gu, "[absolute-path]")
     .replace(
       /(^|[^A-Za-z0-9_./])\/(?!\/)(?:\\ |[^\s`"'<>)}\],;])+/gu,
-      "$1[absolute-path]",
+      "$1[absolute-path]"
     )
-    .replace(
-      /\b[A-Za-z]:\\(?:\\ |[^\s`"'<>)}\],;])+/gu,
-      "[absolute-path]",
-    );
+    .replace(/\b[A-Za-z]:\\(?:\\ |[^\s`"'<>)}\],;])+/gu, "[absolute-path]");
   return output.slice(0, limit);
 }
 
@@ -1362,7 +1397,7 @@ function redactQuotedAbsolutePaths(input: string): string {
     fragments.push(
       closed
         ? `${delimiter}[absolute-path]${delimiter}`
-        : `${delimiter}[absolute-path]`,
+        : `${delimiter}[absolute-path]`
     );
     copiedFrom = boundaryIndex;
     cursor = boundaryIndex;
@@ -1372,9 +1407,7 @@ function redactQuotedAbsolutePaths(input: string): string {
   return fragments.join("");
 }
 
-function isPathDelimiter(
-  value: string | undefined,
-): value is '"' | "'" | "`" {
+function isPathDelimiter(value: string | undefined): value is '"' | "'" | "`" {
   return value === '"' || value === "'" || value === "`";
 }
 
@@ -1434,7 +1467,9 @@ function mapTurnStatus(status: string | undefined) {
   }
 }
 
-function mapItemStatus(status: "inProgress" | "completed" | "failed" | "declined") {
+function mapItemStatus(
+  status: "inProgress" | "completed" | "failed" | "declined"
+) {
   return status === "inProgress" ? "running" : status;
 }
 

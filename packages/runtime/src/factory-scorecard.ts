@@ -19,6 +19,7 @@ import {
   type RunSpec,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
+
 import { makeRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
 
@@ -33,13 +34,9 @@ type WriteFactoryScorecardInput = {
 
 type LaneDraft = {
   checkStatus: FactoryLaneScorecardCheckStatus | undefined;
-  comparisonWaitStatus:
-    | FactoryLaneScorecardComparisonWaitStatus
-    | undefined;
+  comparisonWaitStatus: FactoryLaneScorecardComparisonWaitStatus | undefined;
   criteria: Array<FactoryLaneScorecardCriterionAssessment>;
-  factoryLearningSignal:
-    | FactoryLaneScorecardFactoryLearningSignal
-    | undefined;
+  factoryLearningSignal: FactoryLaneScorecardFactoryLearningSignal | undefined;
   headSha: string | undefined;
   implementationAcceptance:
     | FactoryLaneScorecardImplementationAcceptance
@@ -82,7 +79,7 @@ export function writeFactoryScorecard(input: WriteFactoryScorecardInput) {
     const lanes = parsed.lanes.map((lane, index) => laneFromDraft(lane, index));
     const preferredLane = preferredLaneFromRecommendation(
       parsed.recommendation,
-      lanes,
+      lanes
     );
     const recommendationSummary =
       preferredLane === undefined
@@ -104,7 +101,10 @@ export function writeFactoryScorecard(input: WriteFactoryScorecardInput) {
       generatedAt,
       lanes,
       markdown,
-      markdownPath: gaiaRelative(input.paths, input.paths.factoryScorecardMarkdown),
+      markdownPath: gaiaRelative(
+        input.paths,
+        input.paths.factoryScorecardMarkdown
+      ),
       notes: [...parsed.recommendation.notes],
       ...(preferredLane === undefined ? {} : { preferredLane }),
       recommendationSummary,
@@ -118,7 +118,7 @@ export function writeFactoryScorecard(input: WriteFactoryScorecardInput) {
     yield* fs.writeFileString(input.paths.factoryScorecardMarkdown, markdown);
     yield* fs.writeFileString(
       input.paths.factoryScorecardJson,
-      `${JSON.stringify(encodeFactoryLaneScorecard(scorecard), null, 2)}\n`,
+      `${JSON.stringify(encodeFactoryLaneScorecard(scorecard), null, 2)}\n`
     );
 
     return scorecard;
@@ -130,9 +130,9 @@ export function writeFactoryScorecard(input: WriteFactoryScorecardInput) {
           code: "FactoryScorecardWriteFailed",
           message: "Gaia could not write factory lane scorecard artifacts.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -147,7 +147,7 @@ function parseScorecardSections(body: string) {
 
   for (const line of body.split(/\r?\n/u)) {
     const laneHeading = line.match(
-      /^\s{0,3}(?:#{1,6}\s*)?factory scorecard lane\s+(.+?):?\s*$/iu,
+      /^\s{0,3}(?:#{1,6}\s*)?factory scorecard lane\s+(.+?):?\s*$/iu
     );
     if (laneHeading !== null) {
       currentLane = emptyLaneDraft(laneHeading[1]?.trim());
@@ -156,7 +156,11 @@ function parseScorecardSections(body: string) {
       continue;
     }
 
-    if (/^\s{0,3}(?:#{1,6}\s*)?factory scorecard recommendation:?\s*$/iu.test(line)) {
+    if (
+      /^\s{0,3}(?:#{1,6}\s*)?factory scorecard recommendation:?\s*$/iu.test(
+        line
+      )
+    ) {
       currentLane = undefined;
       inRecommendation = true;
       continue;
@@ -263,7 +267,9 @@ function applyLaneItem(lane: LaneDraft, item: string) {
       lane.localVerification.push(parseVerification(field.value));
       break;
     case "implementation-acceptance":
-      lane.implementationAcceptance = parseImplementationAcceptance(field.value);
+      lane.implementationAcceptance = parseImplementationAcceptance(
+        field.value
+      );
       break;
     case "factory-learning-signal":
       lane.factoryLearningSignal = parseFactoryLearningSignal(field.value);
@@ -288,7 +294,7 @@ function applyLaneItem(lane: LaneDraft, item: string) {
 
 function laneFromDraft(
   lane: LaneDraft,
-  index: number,
+  index: number
 ): FactoryLaneScorecardLane {
   const label = lane.label ?? `Lane ${index + 1}`;
   const laneId = lane.laneId ?? normalizeLaneId(label);
@@ -313,7 +319,9 @@ function laneFromDraft(
     label,
     laneId,
     localVerification: lane.localVerification,
-    ...(lane.pullRequest === undefined ? {} : { pullRequest: lane.pullRequest }),
+    ...(lane.pullRequest === undefined
+      ? {}
+      : { pullRequest: lane.pullRequest }),
     role: lane.role ?? "direct-fallback",
     sourceLinks: lane.sourceLinks,
     tradeoffs: lane.tradeoffs,
@@ -321,10 +329,12 @@ function laneFromDraft(
 }
 
 function completeCriteria(
-  criteria: ReadonlyArray<FactoryLaneScorecardCriterionAssessment>,
+  criteria: ReadonlyArray<FactoryLaneScorecardCriterionAssessment>
 ) {
   return requiredCriteria.map((criterion) => {
-    const supplied = criteria.find((candidate) => candidate.criterion === criterion);
+    const supplied = criteria.find(
+      (candidate) => candidate.criterion === criterion
+    );
     return (
       supplied ??
       FactoryLaneScorecardCriterionAssessment.make({
@@ -339,7 +349,7 @@ function completeCriteria(
 
 function preferredLaneFromRecommendation(
   recommendation: RecommendationDraft,
-  lanes: ReadonlyArray<FactoryLaneScorecardLane>,
+  lanes: ReadonlyArray<FactoryLaneScorecardLane>
 ) {
   if (recommendation.preferredLaneId === undefined) {
     return undefined;
@@ -347,7 +357,7 @@ function preferredLaneFromRecommendation(
 
   const preferredLaneId = recommendation.preferredLaneId;
   const lane = lanes.find((candidate) =>
-    laneIdsMatch(candidate.laneId, preferredLaneId),
+    laneIdsMatch(candidate.laneId, preferredLaneId)
   );
   const laneId = lane?.laneId ?? preferredLaneId;
   return FactoryLaneScorecardPreferredLane.make({
@@ -361,7 +371,7 @@ function preferredLaneFromRecommendation(
 
 function summarizeComparison(
   lanes: ReadonlyArray<FactoryLaneScorecardLane>,
-  preferredLane: FactoryLaneScorecardPreferredLane | undefined,
+  preferredLane: FactoryLaneScorecardPreferredLane | undefined
 ) {
   const laneLabels = lanes.map((lane) => lane.label).join(" vs ");
   if (preferredLane === undefined) {
@@ -440,7 +450,7 @@ function formatLaneCriteria(lane: FactoryLaneScorecardLane) {
       : lane.criteria
           .map(
             (criterion) =>
-              `- ${criterion.criterion}: ${criterion.classification} - ${criterion.summary}`,
+              `- ${criterion.criterion}: ${criterion.classification} - ${criterion.summary}`
           )
           .join("\n");
   return `### ${lane.label}
@@ -456,7 +466,7 @@ ${criteria}`;
 }
 
 function formatPreferredLane(
-  preferredLane: FactoryLaneScorecardPreferredLane | undefined,
+  preferredLane: FactoryLaneScorecardPreferredLane | undefined
 ) {
   if (preferredLane === undefined) {
     return "No preferred lane supplied.";
@@ -479,14 +489,12 @@ function formatPreferredLane(
 
 function formatLaneTradeoffs(lane: FactoryLaneScorecardLane) {
   const tradeoffs =
-    lane.tradeoffs.length === 0
-      ? "none"
-      : lane.tradeoffs.join("; ");
+    lane.tradeoffs.length === 0 ? "none" : lane.tradeoffs.join("; ");
   return `- ${lane.label}: ${tradeoffs}`;
 }
 
 function formatVerification(
-  evidence: FactoryLaneScorecardVerificationEvidence,
+  evidence: FactoryLaneScorecardVerificationEvidence
 ) {
   return `- local verification: ${evidence.command} - ${evidence.result}`;
 }
@@ -573,7 +581,7 @@ function parseCheckStatus(input: string): FactoryLaneScorecardCheckStatus {
 }
 
 function parseComparisonWaitStatus(
-  input: string,
+  input: string
 ): FactoryLaneScorecardComparisonWaitStatus {
   const normalized = input.toLowerCase();
   if (/\bvalid\b|\bpassed\b|\bwaited\b/u.test(normalized)) {
@@ -600,7 +608,7 @@ function parseVerification(input: string) {
 
 function parseCriterion(
   criterion: FactoryLaneScorecardCriterion,
-  input: string,
+  input: string
 ) {
   const parsed = parseClassificationSummary(input);
   return FactoryLaneScorecardCriterionAssessment.make({
@@ -639,7 +647,7 @@ function parseClassificationSummary(input: string) {
 }
 
 function parseCriterionClassification(
-  input: string,
+  input: string
 ): FactoryLaneScorecardCriterionClassification {
   switch (normalizeKey(input)) {
     case "strong":
@@ -662,7 +670,7 @@ function parseCriterionClassification(
 }
 
 function parseImplementationAcceptanceStatus(
-  input: string,
+  input: string
 ): FactoryLaneScorecardImplementationAcceptanceStatus {
   switch (normalizeKey(input)) {
     case "accepted":
@@ -681,7 +689,7 @@ function parseImplementationAcceptanceStatus(
 }
 
 function parseFactoryLearningSignalStatus(
-  input: string,
+  input: string
 ): FactoryLaneScorecardFactoryLearningSignalStatus {
   switch (normalizeKey(input)) {
     case "strong":

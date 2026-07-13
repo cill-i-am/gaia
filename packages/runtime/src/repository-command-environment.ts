@@ -30,7 +30,7 @@ const repositoryRedirectVariables = new Set([
 
 /** Build a child environment that cannot redirect git or gh repository scope. */
 export function repositoryCommandEnvironment(
-  overrides: Readonly<Record<string, string>> = {},
+  overrides: Readonly<Record<string, string>> = {}
 ) {
   const environment: NodeJS.ProcessEnv = { ...process.env, ...overrides };
   for (const key of Object.keys(environment)) {

@@ -26,7 +26,7 @@ const newHead = "2".repeat(40);
 const digest = "a".repeat(64);
 const commitTimestamp = "2026-07-11T11:00:00.000Z";
 const feedbackId = parseDeliveryFeedbackId(
-  `feedback-comment-${"f".repeat(64)}`,
+  `feedback-comment-${"f".repeat(64)}`
 );
 
 describe("delivery remediation contracts", () => {
@@ -38,11 +38,43 @@ describe("delivery remediation contracts", () => {
       version: 1,
     };
 
-    assert.strictEqual(deliveryFeedbackRequiresApprovedReview(parseDeliveryFeedbackTrustPolicy(legacy)), true);
-    assert.strictEqual(deliveryFeedbackRequiresApprovedReview(parseDeliveryFeedbackTrustPolicy({ ...legacy, requireApprovedReview: true })), true);
-    assert.strictEqual(deliveryFeedbackRequiresApprovedReview(parseDeliveryFeedbackTrustPolicy({ ...legacy, requireApprovedReview: false })), false);
-    assert.throws(() => parseDeliveryFeedbackTrustPolicy({ ...legacy, requireApprovedReview: "false" }));
-    assert.throws(() => parseDeliveryFeedbackTrustPolicy({ ...legacy, requireApprovedReview: false, unexpected: true }));
+    assert.strictEqual(
+      deliveryFeedbackRequiresApprovedReview(
+        parseDeliveryFeedbackTrustPolicy(legacy)
+      ),
+      true
+    );
+    assert.strictEqual(
+      deliveryFeedbackRequiresApprovedReview(
+        parseDeliveryFeedbackTrustPolicy({
+          ...legacy,
+          requireApprovedReview: true,
+        })
+      ),
+      true
+    );
+    assert.strictEqual(
+      deliveryFeedbackRequiresApprovedReview(
+        parseDeliveryFeedbackTrustPolicy({
+          ...legacy,
+          requireApprovedReview: false,
+        })
+      ),
+      false
+    );
+    assert.throws(() =>
+      parseDeliveryFeedbackTrustPolicy({
+        ...legacy,
+        requireApprovedReview: "false",
+      })
+    );
+    assert.throws(() =>
+      parseDeliveryFeedbackTrustPolicy({
+        ...legacy,
+        requireApprovedReview: false,
+        unexpected: true,
+      })
+    );
   });
 
   it("parses an immutable empty-by-default human trust policy", () => {
@@ -66,7 +98,7 @@ describe("delivery remediation contracts", () => {
       parseDeliveryFeedbackTrustPolicy({
         ...policy,
         unexpected: true,
-      }),
+      })
     );
   });
 
@@ -114,25 +146,25 @@ describe("delivery remediation contracts", () => {
     });
 
     assert.doesNotThrow(() =>
-      validateDeliveryRemediationTransition(undefined, intent),
+      validateDeliveryRemediationTransition(undefined, intent)
     );
     assert.doesNotThrow(() =>
-      validateDeliveryRemediationTransition(intent, attempted),
+      validateDeliveryRemediationTransition(intent, attempted)
     );
     assert.doesNotThrow(() =>
-      validateDeliveryRemediationTransition(attempted, turnCompleted),
+      validateDeliveryRemediationTransition(attempted, turnCompleted)
     );
     assert.doesNotThrow(() =>
-      validateDeliveryRemediationTransition(turnCompleted, verified),
+      validateDeliveryRemediationTransition(turnCompleted, verified)
     );
     assert.doesNotThrow(() =>
-      validateDeliveryRemediationTransition(verified, commitAttempted),
+      validateDeliveryRemediationTransition(verified, commitAttempted)
     );
     assert.doesNotThrow(() =>
-      validateDeliveryRemediationTransition(commitAttempted, pushAttempted),
+      validateDeliveryRemediationTransition(commitAttempted, pushAttempted)
     );
     assert.doesNotThrow(() =>
-      validateDeliveryRemediationTransition(pushAttempted, confirmed),
+      validateDeliveryRemediationTransition(pushAttempted, confirmed)
     );
     const secondIntent = DeliveryRemediationIntent.make({
       attempt: 2,
@@ -145,7 +177,7 @@ describe("delivery remediation contracts", () => {
       state: "intentRecorded",
     });
     assert.doesNotThrow(() =>
-      validateDeliveryRemediationTransition(confirmed, secondIntent),
+      validateDeliveryRemediationTransition(confirmed, secondIntent)
     );
     assert.throws(() =>
       validateDeliveryRemediationTransition(
@@ -153,8 +185,8 @@ describe("delivery remediation contracts", () => {
         DeliveryRemediationIntent.make({
           ...secondIntent,
           feedbackDigest: confirmed.feedbackDigest,
-        }),
-      ),
+        })
+      )
     );
   });
 
@@ -169,7 +201,7 @@ describe("delivery remediation contracts", () => {
         inputId: "remediation-run-1234567890-3",
         operationId: "remediation:run-1234567890:3",
         state: "intentRecorded",
-      }),
+      })
     );
 
     const intent = DeliveryRemediationIntent.make({
@@ -216,22 +248,30 @@ describe("delivery remediation contracts", () => {
     });
 
     const encoded = encodeDeliveryRemediationJson(intent);
-    if (encoded === null || typeof encoded !== "object" || Array.isArray(encoded)) {
+    if (
+      encoded === null ||
+      typeof encoded !== "object" ||
+      Array.isArray(encoded)
+    ) {
       assert.fail("Expected an encoded remediation object.");
     }
     assert.strictEqual(
       Object.getOwnPropertyDescriptor(encoded, "activationActionDigest")?.value,
-      activationActionDigest,
+      activationActionDigest
     );
     assert.strictEqual(
-      Object.getOwnPropertyDescriptor(encoded, "activationPredecessorDigest")?.value,
-      activationPredecessorDigest,
+      Object.getOwnPropertyDescriptor(encoded, "activationPredecessorDigest")
+        ?.value,
+      activationPredecessorDigest
     );
     assert.strictEqual(
-      Object.getOwnPropertyDescriptor(encoded, "activationReceiptDigest")?.value,
-      activationReceiptDigest,
+      Object.getOwnPropertyDescriptor(encoded, "activationReceiptDigest")
+        ?.value,
+      activationReceiptDigest
     );
-    assert.throws(() => validateDeliveryRemediationTransition(intent, attempted));
+    assert.throws(() =>
+      validateDeliveryRemediationTransition(intent, attempted)
+    );
   });
 
   it("rejects reusing a one-shot authorization digest for a new attempt", () => {
@@ -261,7 +301,9 @@ describe("delivery remediation contracts", () => {
       operationId: "remediation:run-1234567890:2",
     });
 
-    assert.doesNotThrow(() => validateDeliveryRemediationTransition(intent, failed));
+    assert.doesNotThrow(() =>
+      validateDeliveryRemediationTransition(intent, failed)
+    );
     assert.throws(() => validateDeliveryRemediationTransition(failed, reused));
   });
 
@@ -310,10 +352,13 @@ describe("delivery remediation contracts", () => {
       }),
     ]);
     const delivery = Schema.decodeUnknownSync(
-      Schema.Record(Schema.String, Schema.Json),
+      Schema.Record(Schema.String, Schema.Json)
     )(snapshot.context.delivery);
     assert.strictEqual(delivery["stage"], "remediating");
     assert.strictEqual(delivery["remediationRearmSequence"], 3);
-    assert.deepEqual(delivery["remediation"], encodeDeliveryRemediationJson(intent));
+    assert.deepEqual(
+      delivery["remediation"],
+      encodeDeliveryRemediationJson(intent)
+    );
   });
 });

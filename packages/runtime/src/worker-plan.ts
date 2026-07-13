@@ -1,5 +1,6 @@
 import { RunIdSchema, type RunSpec } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
+
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { HarnessNameSchema, type HarnessName } from "./harness.js";
 import type { RunPaths } from "./paths.js";
@@ -35,7 +36,7 @@ export {
 };
 
 export class WorkerPlanVerificationCheck extends Schema.Class<WorkerPlanVerificationCheck>(
-  "WorkerPlanVerificationCheck",
+  "WorkerPlanVerificationCheck"
 )({
   command: Schema.optionalKey(Schema.NonEmptyString),
   expectation: Schema.NonEmptyString,
@@ -51,7 +52,7 @@ export const WorkerPlanDomainReferenceKindSchema = Schema.Literals([
 ] as const);
 
 export class WorkerPlanDomainReference extends Schema.Class<WorkerPlanDomainReference>(
-  "WorkerPlanDomainReference",
+  "WorkerPlanDomainReference"
 )({
   kind: WorkerPlanDomainReferenceKindSchema,
   value: Schema.NonEmptyString,
@@ -134,10 +135,13 @@ export function writeWorkerPlan(input: {
       verificationChecks: derived.verificationChecks,
     });
 
-    yield* fs.writeFileString(input.paths.workerPlanMarkdown, markdownPlan(plan));
+    yield* fs.writeFileString(
+      input.paths.workerPlanMarkdown,
+      markdownPlan(plan)
+    );
     yield* fs.writeFileString(
       input.paths.workerPlanResult,
-      `${JSON.stringify(encodeWorkerPlan(plan), null, 2)}\n`,
+      `${JSON.stringify(encodeWorkerPlan(plan), null, 2)}\n`
     );
 
     return plan;
@@ -149,9 +153,9 @@ export function writeWorkerPlan(input: {
           code: "WorkerPlanWriteFailed",
           message: "Gaia could not write the worker plan artifacts.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -173,7 +177,7 @@ function derivePlanFromSpec(spec: RunSpec): DerivedWorkerPlan {
       "criteria",
       "success criteria",
     ]),
-    `Satisfy the parsed spec request: ${summary}`,
+    `Satisfy the parsed spec request: ${summary}`
   );
   const nonGoals = withFallback(
     extractSectionItems(spec.body, [
@@ -183,7 +187,7 @@ function derivePlanFromSpec(spec: RunSpec): DerivedWorkerPlan {
       "non goal",
       "out of scope",
     ]),
-    "No explicit non-goals were provided by the spec; avoid expanding beyond the stated request.",
+    "No explicit non-goals were provided by the spec; avoid expanding beyond the stated request."
   );
   const likelyTouchedSurfaces = withFallback(
     extractSectionItems(spec.body, [
@@ -194,7 +198,7 @@ function derivePlanFromSpec(spec: RunSpec): DerivedWorkerPlan {
       "touched surfaces",
       "files",
     ]),
-    "No explicit touched surfaces were provided by the spec; inspect the workspace before editing.",
+    "No explicit touched surfaces were provided by the spec; inspect the workspace before editing."
   );
   const verificationChecks = withFallback(
     extractVerificationChecks(spec.body, [
@@ -208,7 +212,7 @@ function derivePlanFromSpec(spec: RunSpec): DerivedWorkerPlan {
     WorkerPlanVerificationCheck.make({
       expectation:
         "The Gaia run completes with worker-result.json and verification-result.json evidence.",
-    }),
+    })
   );
   const stopConditions = withFallback(
     extractSectionItems(spec.body, [
@@ -217,7 +221,7 @@ function derivePlanFromSpec(spec: RunSpec): DerivedWorkerPlan {
       "abort conditions",
       "blockers",
     ]),
-    "Stop if required inputs, credentials, or scope decisions are missing from the spec.",
+    "Stop if required inputs, credentials, or scope decisions are missing from the spec."
   );
 
   return {
@@ -239,17 +243,17 @@ function markdownPlan(plan: WorkerPlan) {
   const nonGoals = markdownList(plan.nonGoals);
   const likelyTouchedSurfaces = markdownList(plan.likelyTouchedSurfaces);
   const domainReferences = markdownList(
-    plan.domainReferences.map(formatDomainReference),
+    plan.domainReferences.map(formatDomainReference)
   );
   const planningContext = markdownPlanningContext(plan.planningContext);
   const inferredRecommendations = markdownInferredRecommendations(
-    plan.inferredRecommendations,
+    plan.inferredRecommendations
   );
   const historicalRiskNotes = markdownHistoricalRiskNotes(
-    plan.historicalRiskNotes,
+    plan.historicalRiskNotes
   );
   const verificationChecks = markdownList(
-    plan.verificationChecks.map(formatVerificationCheck),
+    plan.verificationChecks.map(formatVerificationCheck)
   );
   const stopConditions = markdownList(plan.stopConditions);
 
@@ -318,32 +322,34 @@ function markdownPlanningContext(context: WorkerPlanPlanningContext) {
     "### Likely Files",
     markdownList(
       context.likelyFiles.map(
-        (file) => `${file.path} (owner: ${file.owner}) - ${file.reason}`,
-      ),
+        (file) => `${file.path} (owner: ${file.owner}) - ${file.reason}`
+      )
     ),
     "",
     "### Semantic Owners",
     markdownList(
       context.packages.map(
         (workspacePackage) =>
-          `${workspacePackage.name} via ${workspacePackage.path} - ${workspacePackage.reason}`,
-      ),
+          `${workspacePackage.name} via ${workspacePackage.path} - ${workspacePackage.reason}`
+      )
     ),
     "",
     "### Agent Instructions",
     markdownList(
       context.agentInstructions.map(
         (instruction) =>
-          `${instruction.path} (${instruction.scope}) - ${instruction.summary}`,
-      ),
+          `${instruction.path} (${instruction.scope}) - ${instruction.summary}`
+      )
     ),
     "",
     "### Source Docs",
-    markdownList(context.sourceDocs.map((doc) => `${doc.path} - ${doc.reason}`)),
+    markdownList(
+      context.sourceDocs.map((doc) => `${doc.path} - ${doc.reason}`)
+    ),
     "",
     "### Similar Tests",
     markdownList(
-      context.similarTests.map((test) => `${test.path} - ${test.reason}`),
+      context.similarTests.map((test) => `${test.path} - ${test.reason}`)
     ),
     "",
     "### Verification Seams",
@@ -356,7 +362,7 @@ function markdownPlanningContext(context: WorkerPlanPlanningContext) {
 
 function extractSectionItems(
   input: string,
-  labels: ReadonlyArray<string>,
+  labels: ReadonlyArray<string>
 ): ReadonlyArray<string> {
   const normalizedLabels = labels.map(normalizeSectionLabel);
   const items: Array<string> = [];
@@ -387,7 +393,7 @@ function extractSectionItems(
 
 function extractVerificationChecks(
   input: string,
-  labels: ReadonlyArray<string>,
+  labels: ReadonlyArray<string>
 ): ReadonlyArray<WorkerPlanVerificationCheck> {
   const normalizedLabels = labels.map(normalizeSectionLabel);
   const items: Array<WorkerPlanVerificationCheck> = [];
@@ -413,7 +419,7 @@ function extractVerificationChecks(
             WorkerPlanVerificationCheck.make({
               command,
               expectation: command,
-            }),
+            })
           );
         }
       }
@@ -477,9 +483,8 @@ function markdownHeadingLabel(line: string) {
 }
 
 function labeledLine(line: string) {
-  const labelMatch = /^(?<label>[A-Za-z][A-Za-z0-9 _/-]{0,80}):\s*(?<content>.*)$/u.exec(
-    line,
-  );
+  const labelMatch =
+    /^(?<label>[A-Za-z][A-Za-z0-9 _/-]{0,80}):\s*(?<content>.*)$/u.exec(line);
   const label = labelMatch?.groups?.["label"]?.trim();
   if (label === undefined || label.length === 0) {
     return undefined;
@@ -531,7 +536,7 @@ function uniqueItems(items: ReadonlyArray<string>) {
 }
 
 function uniqueVerificationChecks(
-  checks: ReadonlyArray<WorkerPlanVerificationCheck>,
+  checks: ReadonlyArray<WorkerPlanVerificationCheck>
 ) {
   const seen = new Set<string>();
   const unique: Array<WorkerPlanVerificationCheck> = [];
@@ -551,7 +556,7 @@ function uniqueVerificationChecks(
 
 function withFallback<T>(
   values: ReadonlyArray<T>,
-  fallback: T,
+  fallback: T
 ): ReadonlyArray<T> {
   return values.length === 0 ? [fallback] : values;
 }
@@ -610,7 +615,7 @@ function isKnownWorkspaceCommand(command: string) {
 }
 
 export function classifyDomainReferences(
-  input: string,
+  input: string
 ): ReadonlyArray<WorkerPlanDomainReference> {
   const references: Array<WorkerPlanDomainReference> = [];
   const seen = new Set<string>();
@@ -636,27 +641,27 @@ export function classifyDomainReferences(
       ...referenceMatches(
         sanitized,
         "http-route",
-        /\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\/[^\s`'")]+/gu,
+        /\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\/[^\s`'")]+/gu
       ),
       ...referenceMatches(
         sanitized,
         "effect-api",
-        /\b(?:Effect|Schema|HttpApi|HttpApiBuilder|HttpApiEndpoint|HttpApiGroup|Layer|Context|Stream|Exit|Cause)\.[A-Za-z_$][\w$]*/gu,
+        /\b(?:Effect|Schema|HttpApi|HttpApiBuilder|HttpApiEndpoint|HttpApiGroup|Layer|Context|Stream|Exit|Cause)\.[A-Za-z_$][\w$]*/gu
       ),
       ...referenceMatches(
         sanitized,
         "code-symbol",
-        /\b[A-Z][A-Za-z0-9_$]*(?:\.[A-Za-z_$][\w$]*)+\b/gu,
+        /\b[A-Z][A-Za-z0-9_$]*(?:\.[A-Za-z_$][\w$]*)+\b/gu
       ),
       ...referenceMatches(
         sanitized,
         "package-name",
-        /(?<![\w./-])@[a-z0-9][\w.-]*\/[a-z0-9][\w.-]*(?![\w./-])/giu,
+        /(?<![\w./-])@[a-z0-9][\w.-]*\/[a-z0-9][\w.-]*(?![\w./-])/giu
       ),
       ...referenceMatches(
         sanitized,
         "file-path",
-        /(?<![\w./-])(?:\.{1,2}\/)?(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]+(?![\w./-])/gu,
+        /(?<![\w./-])(?:\.{1,2}\/)?(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]+(?![\w./-])/gu
       ),
       ...quotedSymbolReferences(sanitized),
     ].sort((left, right) => left.index - right.index);
@@ -672,7 +677,7 @@ export function classifyDomainReferences(
         WorkerPlanDomainReference.make({
           kind: reference.kind,
           value: reference.value,
-        }),
+        })
       );
     }
   }
@@ -689,11 +694,15 @@ type DomainReferenceMatch = {
 function referenceMatches(
   input: string,
   kind: typeof WorkerPlanDomainReferenceKindSchema.Type,
-  pattern: RegExp,
+  pattern: RegExp
 ): ReadonlyArray<DomainReferenceMatch> {
   return [...input.matchAll(pattern)].flatMap((match) => {
     const value = match[0]?.trim();
-    if (value === undefined || value.length === 0 || match.index === undefined) {
+    if (
+      value === undefined ||
+      value.length === 0 ||
+      match.index === undefined
+    ) {
       return [];
     }
 
@@ -702,7 +711,7 @@ function referenceMatches(
 }
 
 function quotedSymbolReferences(
-  input: string,
+  input: string
 ): ReadonlyArray<DomainReferenceMatch> {
   return inlineCodeSnippetsWithIndex(input).flatMap((snippet) => {
     if (!/^[A-Za-z_$][\w$]*$/u.test(snippet.value)) {
@@ -773,7 +782,8 @@ function firstMeaningfulLine(input: string) {
 
 function isLikelySectionLabel(input: string) {
   return (
-    labeledLine(input) !== undefined || markdownHeadingLabel(input) !== undefined
+    labeledLine(input) !== undefined ||
+    markdownHeadingLabel(input) !== undefined
   );
 }
 

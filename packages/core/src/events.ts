@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+
 import { RunIdSchema } from "./run-id.js";
 
 export const RunStateSchema = Schema.Literals([
@@ -90,7 +91,9 @@ export class GaiaFailure extends Schema.Class<GaiaFailure>("GaiaFailure")({
 export class RunEvent extends Schema.Class<RunEvent>("RunEvent")({
   payload: Schema.Record(Schema.String, Schema.Json),
   runId: RunIdSchema,
-  sequence: Schema.Number.pipe(Schema.check(Schema.isInt({ identifier: "Sequence" }))),
+  sequence: Schema.Number.pipe(
+    Schema.check(Schema.isInt({ identifier: "Sequence" }))
+  ),
   timestamp: Schema.NonEmptyString,
   type: EventTypeSchema,
   version: Schema.Literal(1),
@@ -99,7 +102,7 @@ export class RunEvent extends Schema.Class<RunEvent>("RunEvent")({
 export class RunSnapshot extends Schema.Class<RunSnapshot>("RunSnapshot")({
   context: Schema.Record(Schema.String, Schema.Json),
   eventSequence: Schema.Number.pipe(
-    Schema.check(Schema.isInt({ identifier: "EventSequence" })),
+    Schema.check(Schema.isInt({ identifier: "EventSequence" }))
   ),
   runId: RunIdSchema,
   state: RunStateSchema,

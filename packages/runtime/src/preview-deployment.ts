@@ -1,5 +1,6 @@
 import { RunIdSchema, type RunId } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
+
 import {
   BrowserEvidenceTargetUrlSchema,
   type BrowserEvidenceTargetUrl,
@@ -14,11 +15,10 @@ export const PreviewDeploymentStatusSchema = Schema.Literals([
 ] as const);
 
 /** Status of the preview deployment artifact for a Gaia run. */
-export type PreviewDeploymentStatus =
-  typeof PreviewDeploymentStatusSchema.Type;
+export type PreviewDeploymentStatus = typeof PreviewDeploymentStatusSchema.Type;
 
 export class PreviewDeployment extends Schema.Class<PreviewDeployment>(
-  "PreviewDeployment",
+  "PreviewDeployment"
 )({
   notes: Schema.Array(Schema.NonEmptyString),
   status: PreviewDeploymentStatusSchema,
@@ -27,7 +27,7 @@ export class PreviewDeployment extends Schema.Class<PreviewDeployment>(
 }) {}
 
 export class PreviewDeploymentRecord extends Schema.Class<PreviewDeploymentRecord>(
-  "PreviewDeploymentRecord",
+  "PreviewDeploymentRecord"
 )({
   deploymentPath: Schema.NonEmptyString,
   runId: RunIdSchema,
@@ -39,8 +39,9 @@ const PreviewDeploymentJson = Schema.toCodecJson(PreviewDeployment);
 const encodePreviewDeploymentJson = Schema.encodeSync(PreviewDeploymentJson);
 
 /** Parse a preview deployment artifact from decoded JSON. */
-export const parsePreviewDeploymentJson =
-  Schema.decodeUnknownSync(PreviewDeploymentJson);
+export const parsePreviewDeploymentJson = Schema.decodeUnknownSync(
+  PreviewDeploymentJson
+);
 
 /** Create the empty preview deployment artifact written at run start. */
 export function emptyPreviewDeployment() {
@@ -83,7 +84,7 @@ export function writePreviewDeployment(input: {
 
     yield* fs.writeFileString(
       input.paths.previewDeployment,
-      `${JSON.stringify(encodePreviewDeploymentJson(input.deployment), null, 2)}\n`,
+      `${JSON.stringify(encodePreviewDeploymentJson(input.deployment), null, 2)}\n`
     );
 
     return input.deployment;
@@ -95,9 +96,9 @@ export function writePreviewDeployment(input: {
           code: "PreviewDeploymentWriteFailed",
           message: "Gaia could not write the preview deployment artifact.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -111,6 +112,8 @@ export function previewDeploymentRecord(input: {
     deploymentPath: runRelative(input.paths, input.paths.previewDeployment),
     runId: input.runId,
     status: input.deployment.status,
-    ...(input.deployment.url === undefined ? {} : { url: input.deployment.url }),
+    ...(input.deployment.url === undefined
+      ? {}
+      : { url: input.deployment.url }),
   });
 }

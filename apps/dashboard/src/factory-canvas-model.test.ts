@@ -48,13 +48,13 @@ describe("factory canvas model", () => {
     ]);
     expect(model.diagnostics).toEqual([]);
     expect(model.nodes.some((node) => node.id.startsWith("artifact:"))).toBe(
-      false,
+      false
     );
     expect(model.nodes.some((node) => node.id.startsWith("event:"))).toBe(
-      false,
+      false
     );
     expect(model.nodes.some((node) => node.id.startsWith("work-item:"))).toBe(
-      false,
+      false
     );
     expect(model.edges).toEqual([
       {
@@ -90,7 +90,7 @@ describe("factory canvas model", () => {
     });
     const worker = model.nodes.find((node) => node.id === "agent:agent-worker");
     const orchestrator = model.nodes.find(
-      (node) => node.id === "agent:agent-orchestrator",
+      (node) => node.id === "agent:agent-orchestrator"
     );
 
     expect(worker).toMatchObject({
@@ -134,7 +134,7 @@ describe("factory canvas model", () => {
         version: 1,
         workflow: "issueDelivery",
         workItems: [],
-      }),
+      })
     );
 
     expect(model.nodes).toEqual([]);
@@ -280,61 +280,61 @@ describe("factory canvas model", () => {
           "edge-spawned-a",
           "agent-orchestrator",
           "agent-worker-a",
-          "spawned",
+          "spawned"
         ),
         factoryEdge(
           "edge-spawned-b",
           "agent-orchestrator",
           "agent-worker-b",
-          "spawned",
+          "spawned"
         ),
         factoryEdge(
           "edge-spawned-c",
           "agent-orchestrator",
           "agent-worker-c",
-          "spawned",
+          "spawned"
         ),
         factoryEdge(
           "edge-supports-research",
           "agent-orchestrator",
           "agent-researcher",
-          "supports",
+          "supports"
         ),
         factoryEdge(
           "edge-reviewed-a",
           "agent-worker-a",
           "agent-reviewer-a",
-          "reviewed",
+          "reviewed"
         ),
         factoryEdge(
           "edge-reviewed-b",
           "agent-worker-b",
           "agent-reviewer-a",
-          "reviewed",
+          "reviewed"
         ),
         factoryEdge(
           "edge-reviewed-c",
           "agent-worker-c",
           "agent-reviewer-b",
-          "reviewed",
+          "reviewed"
         ),
         factoryEdge(
           "edge-tested-a",
           "agent-reviewer-a",
           "agent-tester",
-          "tested",
+          "tested"
         ),
         factoryEdge(
           "edge-tested-b",
           "agent-reviewer-b",
           "agent-tester",
-          "tested",
+          "tested"
         ),
         factoryEdge(
           "edge-watched",
           "agent-tester",
           "agent-ci-watcher",
-          "watched",
+          "watched"
         ),
       ],
     });
@@ -343,42 +343,34 @@ describe("factory canvas model", () => {
 
     expectNoNodeOverlap(model.nodes);
     expect(positionByRawId.get("agent-worker-a")?.y).toBe(
-      positionByRawId.get("agent-worker-b")?.y,
+      positionByRawId.get("agent-worker-b")?.y
     );
     expect(positionByRawId.get("agent-worker-b")?.y).toBe(
-      positionByRawId.get("agent-worker-c")?.y,
+      positionByRawId.get("agent-worker-c")?.y
     );
-    expectHorizontalGap(
-      positionByRawId,
-      "agent-worker-a",
-      "agent-worker-b",
-    );
-    expectHorizontalGap(
-      positionByRawId,
-      "agent-worker-b",
-      "agent-worker-c",
-    );
+    expectHorizontalGap(positionByRawId, "agent-worker-a", "agent-worker-b");
+    expectHorizontalGap(positionByRawId, "agent-worker-b", "agent-worker-c");
     expect(positionByRawId.get("agent-reviewer-a")?.y).toBeGreaterThan(
-      positionByRawId.get("agent-worker-a")?.y ?? Number.POSITIVE_INFINITY,
+      positionByRawId.get("agent-worker-a")?.y ?? Number.POSITIVE_INFINITY
     );
     expect(positionByRawId.get("agent-tester")?.x).toBeGreaterThan(
       Math.min(
         positionByRawId.get("agent-reviewer-a")?.x ?? 0,
-        positionByRawId.get("agent-reviewer-b")?.x ?? 0,
-      ),
+        positionByRawId.get("agent-reviewer-b")?.x ?? 0
+      )
     );
     expect(positionByRawId.get("agent-tester")?.x).toBeLessThan(
       Math.max(
         positionByRawId.get("agent-reviewer-a")?.x ?? 0,
-        positionByRawId.get("agent-reviewer-b")?.x ?? 0,
-      ),
+        positionByRawId.get("agent-reviewer-b")?.x ?? 0
+      )
     );
     for (const edge of model.edges) {
       const source = model.nodes.find((node) => node.id === edge.source);
       const target = model.nodes.find((node) => node.id === edge.target);
 
       expect(target?.position.y).toBeGreaterThan(
-        source?.position.y ?? Number.POSITIVE_INFINITY,
+        source?.position.y ?? Number.POSITIVE_INFINITY
       );
     }
   });
@@ -427,17 +419,13 @@ describe("factory canvas model", () => {
     expect(model.edges).toEqual([]);
     expectNoNodeOverlap(model.nodes);
     expect(positionByRawId.get("agent-worker")?.y).toBeGreaterThan(
-      positionByRawId.get("agent-orchestrator")?.y ?? Number.POSITIVE_INFINITY,
+      positionByRawId.get("agent-orchestrator")?.y ?? Number.POSITIVE_INFINITY
     );
     expect(positionByRawId.get("agent-unknown-a")?.y).toBe(
-      positionByRawId.get("agent-unknown-b")?.y,
+      positionByRawId.get("agent-unknown-b")?.y
     );
     expect(positionByRawId.get("agent-unknown-a")?.y).toBeLessThan(700);
-    expectHorizontalGap(
-      positionByRawId,
-      "agent-unknown-a",
-      "agent-unknown-b",
-    );
+    expectHorizontalGap(positionByRawId, "agent-unknown-a", "agent-unknown-b");
   });
 });
 
@@ -474,8 +462,8 @@ function factoryAgent(input: {
   readonly id: string;
   readonly latestActivityId?: string;
   readonly parentAgentId?: string;
-  readonly role: typeof FactoryGraphDto.Type.agents[number]["role"];
-  readonly state: typeof FactoryGraphDto.Type.agents[number]["state"];
+  readonly role: (typeof FactoryGraphDto.Type.agents)[number]["role"];
+  readonly state: (typeof FactoryGraphDto.Type.agents)[number]["state"];
   readonly title: string;
 }) {
   return {
@@ -498,7 +486,7 @@ function factoryEdge(
   id: string,
   sourceId: string,
   targetId: string,
-  type: typeof FactoryGraphDto.Type.edges[number]["type"],
+  type: (typeof FactoryGraphDto.Type.edges)[number]["type"]
 ) {
   return {
     id,
@@ -509,7 +497,7 @@ function factoryEdge(
 }
 
 function factoryGraphFixture(
-  input: Partial<typeof FactoryGraphDto.Type> = {},
+  input: Partial<typeof FactoryGraphDto.Type> = {}
 ): typeof FactoryGraphDto.Type {
   return FactoryGraphDto.make({
     execution: testFactoryExecution,
@@ -644,7 +632,7 @@ function factoryGraphFixture(
 }
 
 function positionsByRawId(
-  nodes: ReturnType<typeof buildFactoryCanvasModel>["nodes"],
+  nodes: ReturnType<typeof buildFactoryCanvasModel>["nodes"]
 ) {
   return new Map(nodes.map((node) => [node.rawId, node.position]));
 }
@@ -655,7 +643,7 @@ function expectHorizontalGap(
     ReturnType<typeof buildFactoryCanvasModel>["nodes"][number]["position"]
   >,
   leftId: string,
-  rightId: string,
+  rightId: string
 ) {
   const left = positions.get(leftId);
   const right = positions.get(rightId);
@@ -663,12 +651,12 @@ function expectHorizontalGap(
   expect(left).toBeDefined();
   expect(right).toBeDefined();
   expect(Math.abs((right?.x ?? 0) - (left?.x ?? 0))).toBeGreaterThanOrEqual(
-    400,
+    400
   );
 }
 
 function expectNoNodeOverlap(
-  nodes: ReturnType<typeof buildFactoryCanvasModel>["nodes"],
+  nodes: ReturnType<typeof buildFactoryCanvasModel>["nodes"]
 ) {
   const boxes = nodes.map((node) => ({
     bottom: node.position.y + 144,
@@ -695,7 +683,7 @@ function expectNoNodeOverlap(
           right.right <= left.left ||
           left.bottom <= right.top ||
           right.bottom <= left.top,
-        `${left.id} should not overlap ${right.id}`,
+        `${left.id} should not overlap ${right.id}`
       ).toBe(true);
     }
   }

@@ -61,8 +61,7 @@ type FactoryGraphAgent = (typeof FactoryGraphDto.Type)["agents"][number];
 const factoryCanvasRowGap = 224;
 const factoryCanvasColumnGap = 80;
 const factoryCanvasNodeWidth = 320;
-const factoryCanvasColumnStep =
-  factoryCanvasNodeWidth + factoryCanvasColumnGap;
+const factoryCanvasColumnStep = factoryCanvasNodeWidth + factoryCanvasColumnGap;
 
 const issueDeliveryRoleLayout = {
   ciWatcher: { fallbackDepth: 4, lane: "ci", order: 5 },
@@ -137,7 +136,7 @@ export function buildFactoryCanvasModel(
   graph: typeof FactoryGraphDto.Type,
   options: {
     readonly activities?: ReadonlyArray<typeof FactoryActivityDto.Type>;
-  } = {},
+  } = {}
 ): FactoryCanvasModel {
   const activities = options.activities ?? [];
   const agents = [...graph.agents].sort(compareAgents);
@@ -148,7 +147,7 @@ export function buildFactoryCanvasModel(
 
   const nodes = agents.map((agent, index) => {
     const scopedActivities = activities.filter(
-      (activity) => activity.agentId === agent.id,
+      (activity) => activity.agentId === agent.id
     );
     const linkedArtifactIds = graph.linkedArtifacts
       .filter((artifact) => artifact.ownerAgentId === agent.id)
@@ -185,7 +184,7 @@ export function buildFactoryCanvasModel(
   const edges = graph.edges
     .filter(
       (edge) =>
-        canvasNodeIds.has(edge.sourceId) && canvasNodeIds.has(edge.targetId),
+        canvasNodeIds.has(edge.sourceId) && canvasNodeIds.has(edge.targetId)
     )
     .map((edge) => ({
       id: `edge:${edge.id}`,
@@ -210,7 +209,7 @@ function factoryAgentSummary(agent: FactoryGraphAgent) {
 
 function diagnosticsForGraph(
   graph: typeof FactoryGraphDto.Type,
-  nodes: ReadonlyArray<FactoryCanvasNode>,
+  nodes: ReadonlyArray<FactoryCanvasNode>
 ) {
   const diagnostics = [...graph.diagnostics];
 
@@ -230,13 +229,16 @@ function diagnosticsForGraph(
 }
 
 function issueDeliveryDiagnostics(
-  graph: typeof FactoryGraphDto.Type,
+  graph: typeof FactoryGraphDto.Type
 ): ReadonlyArray<typeof FactoryGraphDiagnosticDto.Type> {
   const diagnostics: Array<typeof FactoryGraphDiagnosticDto.Type> = [];
   const rootWorkItem = graph.workItems.find(
-    (workItem) => workItem.kind === "issue",
+    (workItem) => workItem.kind === "issue"
   );
-  const agentByRole = new Map<FactoryAgentRole, (typeof graph.agents)[number]>();
+  const agentByRole = new Map<
+    FactoryAgentRole,
+    (typeof graph.agents)[number]
+  >();
 
   for (const agent of graph.agents) {
     if (!agentByRole.has(agent.role)) {
@@ -286,7 +288,7 @@ function issueDeliveryDiagnostics(
       (edge) =>
         edge.sourceId === sourceId &&
         edge.targetId === targetId &&
-        edge.type === expectedEdge.type,
+        edge.type === expectedEdge.type
     );
 
     if (!hasRelationship) {
@@ -303,20 +305,21 @@ function issueDeliveryDiagnostics(
 }
 
 function activityArtifactIds(
-  activities: ReadonlyArray<typeof FactoryActivityDto.Type>,
+  activities: ReadonlyArray<typeof FactoryActivityDto.Type>
 ) {
   return uniqueStrings(
     activities.flatMap((activity) =>
-      activity.artifactIds.map((artifactId) => String(artifactId)),
-    ),
+      activity.artifactIds.map((artifactId) => String(artifactId))
+    )
   );
 }
 
 function latestActivityId(
-  activities: ReadonlyArray<typeof FactoryActivityDto.Type>,
+  activities: ReadonlyArray<typeof FactoryActivityDto.Type>
 ) {
-  return [...activities].sort((left, right) => right.sequence - left.sequence)[0]
-    ?.activityId;
+  return [...activities].sort(
+    (left, right) => right.sequence - left.sequence
+  )[0]?.activityId;
 }
 
 function uniqueStrings(values: ReadonlyArray<string>) {
@@ -338,14 +341,14 @@ function layoutFactoryAgents(input: {
     edges: input.edges,
   });
   const depthByAgentId = compactDepths(
-    layoutDepths({ agents: input.agents, links }),
+    layoutDepths({ agents: input.agents, links })
   );
   const maxDepth = Math.max(0, ...depthByAgentId.values());
   const positions = new Map<string, FactoryCanvasNode["position"]>();
 
   for (let depth = 0; depth <= maxDepth; depth += 1) {
     const layerAgents = input.agents.filter(
-      (agent) => depthByAgentId.get(agent.id) === depth,
+      (agent) => depthByAgentId.get(agent.id) === depth
     );
     if (layerAgents.length === 0) {
       continue;
@@ -414,7 +417,7 @@ function layoutLinks(input: {
   }
 
   return [...linksById.values()].sort((left, right) =>
-    layoutLinkSortKey(left).localeCompare(layoutLinkSortKey(right)),
+    layoutLinkSortKey(left).localeCompare(layoutLinkSortKey(right))
   );
 }
 
@@ -423,10 +426,10 @@ function layoutDepths(input: {
   readonly links: ReadonlyArray<LayoutLink>;
 }): ReadonlyMap<string, number> {
   const agentById = new Map<string, FactoryGraphAgent>(
-    input.agents.map((agent) => [agent.id, agent]),
+    input.agents.map((agent) => [agent.id, agent])
   );
   const incomingCount = new Map<string, number>(
-    input.agents.map((agent) => [agent.id, 0]),
+    input.agents.map((agent) => [agent.id, 0])
   );
   const childrenByAgentId = new Map<string, Array<string>>();
   const depthByAgentId = new Map<string, number>();
@@ -435,12 +438,15 @@ function layoutDepths(input: {
     const hasIncoming = input.links.some((link) => link.targetId === agent.id);
     depthByAgentId.set(
       agent.id,
-      hasIncoming ? 0 : issueDeliveryRoleLayout[agent.role].fallbackDepth,
+      hasIncoming ? 0 : issueDeliveryRoleLayout[agent.role].fallbackDepth
     );
   }
 
   for (const link of input.links) {
-    incomingCount.set(link.targetId, (incomingCount.get(link.targetId) ?? 0) + 1);
+    incomingCount.set(
+      link.targetId,
+      (incomingCount.get(link.targetId) ?? 0) + 1
+    );
     const children = childrenByAgentId.get(link.sourceId) ?? [];
     children.push(link.targetId);
     childrenByAgentId.set(link.sourceId, children);
@@ -459,8 +465,8 @@ function layoutDepths(input: {
     const sourceDepth =
       depthByAgentId.get(agent.id) ??
       issueDeliveryRoleLayout[agent.role].fallbackDepth;
-    const children = (childrenByAgentId.get(agent.id) ?? []).sort((left, right) =>
-      compareAgentsById(agentById, left, right),
+    const children = (childrenByAgentId.get(agent.id) ?? []).sort(
+      (left, right) => compareAgentsById(agentById, left, right)
     );
 
     for (const childId of children) {
@@ -471,7 +477,7 @@ function layoutDepths(input: {
 
       depthByAgentId.set(
         childId,
-        Math.max(depthByAgentId.get(childId) ?? 0, sourceDepth + 1),
+        Math.max(depthByAgentId.get(childId) ?? 0, sourceDepth + 1)
       );
       const nextIncomingCount = (incomingCount.get(childId) ?? 0) - 1;
       incomingCount.set(childId, nextIncomingCount);
@@ -487,7 +493,7 @@ function layoutDepths(input: {
     if ((incomingCount.get(agent.id) ?? 0) > 0) {
       depthByAgentId.set(
         agent.id,
-        maxSettledDepth + issueDeliveryRoleLayout[agent.role].fallbackDepth + 1,
+        maxSettledDepth + issueDeliveryRoleLayout[agent.role].fallbackDepth + 1
       );
     }
   }
@@ -496,19 +502,19 @@ function layoutDepths(input: {
 }
 
 function compactDepths(
-  depthByAgentId: ReadonlyMap<string, number>,
+  depthByAgentId: ReadonlyMap<string, number>
 ): ReadonlyMap<string, number> {
   const compactDepthByRawDepth = new Map(
     [...new Set(depthByAgentId.values())]
       .sort((left, right) => left - right)
-      .map((depth, index) => [depth, index]),
+      .map((depth, index) => [depth, index])
   );
 
   return new Map(
     [...depthByAgentId.entries()].map(([agentId, depth]) => [
       agentId,
       compactDepthByRawDepth.get(depth) ?? depth,
-    ]),
+    ])
   );
 }
 
@@ -537,7 +543,7 @@ function layerDesiredPositions(input: {
           const position = input.positions.get(parentId);
 
           return position === undefined ? [] : [position.x];
-        },
+        }
       );
 
       return {
@@ -559,7 +565,7 @@ function layerDesiredPositions(input: {
 }
 
 function placeLayer(
-  desiredPositions: ReadonlyArray<LayerDesiredPosition>,
+  desiredPositions: ReadonlyArray<LayerDesiredPosition>
 ): ReadonlyArray<LayerDesiredPosition & { readonly x: number }> {
   const placed: Array<LayerDesiredPosition & { readonly x: number }> = [];
   let previousX: number | undefined;
@@ -613,7 +619,7 @@ function compareAgents(left: FactoryGraphAgent, right: FactoryGraphAgent) {
 function compareAgentsById(
   agentById: ReadonlyMap<string, FactoryGraphAgent>,
   leftId: string,
-  rightId: string,
+  rightId: string
 ) {
   const left = agentById.get(leftId);
   const right = agentById.get(rightId);

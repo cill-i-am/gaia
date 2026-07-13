@@ -6,6 +6,7 @@ import {
   type RunState,
 } from "@gaia/core";
 import { Cause, Effect, FileSystem } from "effect";
+
 import { loadRun } from "./event-store.js";
 import {
   makeRunPaths,
@@ -117,7 +118,9 @@ type ArtifactDefinition = {
   readonly path: (paths: RunPaths) => string;
 };
 
-const artifactDefinitions: Readonly<Record<LocalRunArtifactId, ArtifactDefinition>> = {
+const artifactDefinitions: Readonly<
+  Record<LocalRunArtifactId, ArtifactDefinition>
+> = {
   "evidence-review": {
     contentType: "application/json",
     path: (paths) => paths.evidenceReviewResult,
@@ -268,7 +271,7 @@ export function readLocalRun(runId: RunId, options: RunStorageOptions = {}) {
 
 export function readLocalRunEvents(
   runId: RunId,
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ) {
   return Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options);
@@ -297,7 +300,7 @@ export function readLocalRunEvents(
 export function readLocalRunArtifact(
   runId: RunId,
   artifactName: string,
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ) {
   return Effect.gen(function* () {
     const artifactId = parseArtifactId(artifactName);
@@ -435,7 +438,7 @@ function readFailureDiagnostic(runId: RunId): LocalRunReadDiagnostic {
 
 function diagnosticFromCause(
   cause: Cause.Cause<unknown>,
-  runId: RunId,
+  runId: RunId
 ): LocalRunReadDiagnostic {
   for (const reason of cause.reasons) {
     if (Cause.isFailReason(reason) && isReadDiagnostic(reason.error)) {

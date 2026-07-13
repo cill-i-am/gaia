@@ -1,5 +1,6 @@
 import { RunIdSchema, type RunId } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
+
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { HarnessRunResult } from "./harness.js";
 import { runRelative, type RunPaths } from "./paths.js";
@@ -19,7 +20,7 @@ const sourceFileExtensions = new Set([
 ]);
 
 const NonNegativeIntegerSchema = Schema.Int.check(
-  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isGreaterThanOrEqualTo(0)
 );
 
 export const WorkspacePrQualityGateSeveritySchema = Schema.Literals([
@@ -32,7 +33,7 @@ export type WorkspacePrQualityGateSeverity =
   typeof WorkspacePrQualityGateSeveritySchema.Type;
 
 export class WorkspacePrQualityGateItem extends Schema.Class<WorkspacePrQualityGateItem>(
-  "WorkspacePrQualityGateItem",
+  "WorkspacePrQualityGateItem"
 )({
   changedFiles: Schema.Array(Schema.NonEmptyString),
   check: Schema.NonEmptyString,
@@ -42,7 +43,7 @@ export class WorkspacePrQualityGateItem extends Schema.Class<WorkspacePrQualityG
 }) {}
 
 export class WorkspacePrQualityGate extends Schema.Class<WorkspacePrQualityGate>(
-  "WorkspacePrQualityGate",
+  "WorkspacePrQualityGate"
 )({
   artifactPath: Schema.NonEmptyString,
   failItemCount: NonNegativeIntegerSchema,
@@ -54,15 +55,14 @@ export class WorkspacePrQualityGate extends Schema.Class<WorkspacePrQualityGate>
 }) {}
 
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
-const parseHarnessRunResultJson = Schema.decodeUnknownSync(
-  HarnessRunResultJson,
-);
+const parseHarnessRunResultJson =
+  Schema.decodeUnknownSync(HarnessRunResultJson);
 const WorkspacePrQualityGateJson = Schema.toCodecJson(WorkspacePrQualityGate);
 const encodeWorkspacePrQualityGateJson = Schema.encodeSync(
-  WorkspacePrQualityGateJson,
+  WorkspacePrQualityGateJson
 );
 export const parseWorkspacePrQualityGateJson = Schema.decodeUnknownSync(
-  WorkspacePrQualityGateJson,
+  WorkspacePrQualityGateJson
 );
 
 type JsonDecodeResult =
@@ -87,8 +87,12 @@ type HarnessDecodeResult =
 
 export function evaluateWorkspacePrQualityGate(
   runId: RunId,
-  paths: RunPaths,
-): Effect.Effect<WorkspacePrQualityGate, GaiaRuntimeError, FileSystem.FileSystem | Path.Path> {
+  paths: RunPaths
+): Effect.Effect<
+  WorkspacePrQualityGate,
+  GaiaRuntimeError,
+  FileSystem.FileSystem | Path.Path
+> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const items: Array<WorkspacePrQualityGateItem> = [];
@@ -100,9 +104,9 @@ export function evaluateWorkspacePrQualityGate(
             code: "WorkspacePrQualityGateReadFailed",
             message: "Gaia could not inspect workspace PR quality gate inputs.",
             recoverable: true,
-          }),
-        ),
-      ),
+          })
+        )
+      )
     );
 
     if (!workerResultExists) {
@@ -110,10 +114,12 @@ export function evaluateWorkspacePrQualityGate(
         gateItem({
           changedFiles: ["worker-result.json"],
           check: "worker-result-present",
-          reason: "worker-result.json is missing, so Gaia cannot review the workspace PR payload.",
-          remediation: "Rerun the Gaia task to regenerate worker-result.json before publishing a workspace PR.",
+          reason:
+            "worker-result.json is missing, so Gaia cannot review the workspace PR payload.",
+          remediation:
+            "Rerun the Gaia task to regenerate worker-result.json before publishing a workspace PR.",
           severity: "fail",
-        }),
+        })
       );
       return yield* writeWorkspacePrQualityGate(runId, paths, items);
     }
@@ -125,9 +131,10 @@ export function evaluateWorkspacePrQualityGate(
           changedFiles: ["worker-result.json"],
           check: "worker-result-reviewable-size",
           reason: `worker-result.json is ${workerResultBytes} bytes, above the ${maxReviewableWorkerResultBytes} byte reviewability limit.`,
-          remediation: "Rerun with bounded workspaceDiff evidence instead of listing generated or noisy paths in worker-result.json.",
+          remediation:
+            "Rerun with bounded workspaceDiff evidence instead of listing generated or noisy paths in worker-result.json.",
           severity: "fail",
-        }),
+        })
       );
     }
 
@@ -137,11 +144,12 @@ export function evaluateWorkspacePrQualityGate(
           makeRuntimeError({
             cause,
             code: "WorkspacePrQualityGateReadFailed",
-            message: "Gaia could not read worker-result.json for the workspace PR quality gate.",
+            message:
+              "Gaia could not read worker-result.json for the workspace PR quality gate.",
             recoverable: true,
-          }),
-        ),
-      ),
+          })
+        )
+      )
     );
     const parsedJson = parseJson(rawWorkerResult);
 
@@ -151,9 +159,10 @@ export function evaluateWorkspacePrQualityGate(
           changedFiles: ["worker-result.json"],
           check: "worker-result-json",
           reason: `worker-result.json is not valid JSON: ${parsedJson.message}.`,
-          remediation: "Fix the harness so worker-result.json is valid JSON, then rerun Gaia before publishing.",
+          remediation:
+            "Fix the harness so worker-result.json is valid JSON, then rerun Gaia before publishing.",
           severity: "fail",
-        }),
+        })
       );
       return yield* writeWorkspacePrQualityGate(runId, paths, items);
     }
@@ -165,9 +174,10 @@ export function evaluateWorkspacePrQualityGate(
           changedFiles: ["worker-result.json"],
           check: "worker-result-schema",
           reason: `worker-result.json does not match Gaia's harness result schema: ${harnessResult.message}.`,
-          remediation: "Fix the harness result contract and rerun Gaia so workspaceDiff evidence is schema-valid.",
+          remediation:
+            "Fix the harness result contract and rerun Gaia so workspaceDiff evidence is schema-valid.",
           severity: "fail",
-        }),
+        })
       );
       return yield* writeWorkspacePrQualityGate(runId, paths, items);
     }
@@ -178,10 +188,12 @@ export function evaluateWorkspacePrQualityGate(
         gateItem({
           changedFiles: ["worker-result.json"],
           check: "workspace-diff-present",
-          reason: "worker-result.json does not include normalized workspaceDiff evidence.",
-          remediation: "Rerun the Gaia task with the current runtime so changed files are recorded in workspaceDiff.",
+          reason:
+            "worker-result.json does not include normalized workspaceDiff evidence.",
+          remediation:
+            "Rerun the Gaia task with the current runtime so changed files are recorded in workspaceDiff.",
           severity: "fail",
-        }),
+        })
       );
       return yield* writeWorkspacePrQualityGate(runId, paths, items);
     }
@@ -193,51 +205,57 @@ export function evaluateWorkspacePrQualityGate(
         reason: `workspaceDiff reports ${workspaceDiff.productChangedPathCount} reviewable product changed file(s).`,
         remediation: "No action required.",
         severity: "pass",
-      }),
+      })
     );
 
     const unsafeProductChangedPaths = unsafeRelativePaths(
-      workspaceDiff.productChangedPaths,
+      workspaceDiff.productChangedPaths
     );
     if (unsafeProductChangedPaths.length > 0) {
       items.push(
         gateItem({
           changedFiles: unsafeProductChangedPaths,
           check: "workspace-diff-product-safe-paths",
-          reason: "workspaceDiff productChangedPaths contains paths that are not safe relative workspace paths.",
-          remediation: "Emit workspaceDiff paths relative to the workspace root without absolute paths or parent-directory segments.",
+          reason:
+            "workspaceDiff productChangedPaths contains paths that are not safe relative workspace paths.",
+          remediation:
+            "Emit workspaceDiff paths relative to the workspace root without absolute paths or parent-directory segments.",
           severity: "fail",
-        }),
+        })
       );
     }
 
     const unsafeGeneratedPaths = unsafeRelativePaths(
-      workspaceDiff.omittedGeneratedPaths.map((entry) => entry.path),
+      workspaceDiff.omittedGeneratedPaths.map((entry) => entry.path)
     );
     if (unsafeGeneratedPaths.length > 0) {
       items.push(
         gateItem({
           changedFiles: unsafeGeneratedPaths,
           check: "workspace-diff-generated-safe-paths",
-          reason: "workspaceDiff omittedGeneratedPaths contains paths that are not safe relative workspace paths.",
-          remediation: "Emit generated path summaries relative to the workspace root without absolute paths or parent-directory segments.",
+          reason:
+            "workspaceDiff omittedGeneratedPaths contains paths that are not safe relative workspace paths.",
+          remediation:
+            "Emit generated path summaries relative to the workspace root without absolute paths or parent-directory segments.",
           severity: "fail",
-        }),
+        })
       );
     }
 
     const unsafeChangedWorkspacePaths = unsafeRelativePaths(
-      harnessResult.value.changedWorkspacePaths,
+      harnessResult.value.changedWorkspacePaths
     );
     if (unsafeChangedWorkspacePaths.length > 0) {
       items.push(
         gateItem({
           changedFiles: unsafeChangedWorkspacePaths,
           check: "changed-workspace-safe-paths",
-          reason: "changedWorkspacePaths contains paths that are not safe relative workspace paths.",
-          remediation: "Emit changedWorkspacePaths relative to the workspace root without absolute paths or parent-directory segments.",
+          reason:
+            "changedWorkspacePaths contains paths that are not safe relative workspace paths.",
+          remediation:
+            "Emit changedWorkspacePaths relative to the workspace root without absolute paths or parent-directory segments.",
           severity: "fail",
-        }),
+        })
       );
     }
 
@@ -250,24 +268,27 @@ export function evaluateWorkspacePrQualityGate(
           changedFiles: unsafeWorkerResultPaths,
           check: "worker-result-safe-paths",
           reason: "worker-result.json resultPath is not a safe relative path.",
-          remediation: "Emit resultPath relative to the run artifact root without absolute paths or parent-directory segments.",
+          remediation:
+            "Emit resultPath relative to the run artifact root without absolute paths or parent-directory segments.",
           severity: "fail",
-        }),
+        })
       );
     }
 
     const unsafeOutputArtifactPaths = unsafeOutputArtifacts(
-      harnessResult.value.outputArtifacts,
+      harnessResult.value.outputArtifacts
     );
     if (unsafeOutputArtifactPaths.length > 0) {
       items.push(
         gateItem({
           changedFiles: unsafeOutputArtifactPaths,
           check: "output-artifact-safe-paths",
-          reason: "outputArtifacts contains workspace artifact paths that are not safe relative paths.",
-          remediation: "Emit outputArtifacts as safe run-relative paths such as workspace/output.txt.",
+          reason:
+            "outputArtifacts contains workspace artifact paths that are not safe relative paths.",
+          remediation:
+            "Emit outputArtifacts as safe run-relative paths such as workspace/output.txt.",
           severity: "fail",
-        }),
+        })
       );
     }
 
@@ -275,29 +296,32 @@ export function evaluateWorkspacePrQualityGate(
       items.push(
         gateItem({
           changedFiles: workspaceDiff.omittedGeneratedPaths.map(
-            (entry) => entry.path,
+            (entry) => entry.path
           ),
           check: "generated-paths-summarized",
           reason: `workspaceDiff summarizes ${workspaceDiff.omittedGeneratedFileCount} generated file(s) under ${workspaceDiff.omittedGeneratedPathCount} generated path(s).`,
-          remediation: "Inspect the local .gaia workspace artifacts if needed; publish only if the source changes explain the generated output.",
+          remediation:
+            "Inspect the local .gaia workspace artifacts if needed; publish only if the source changes explain the generated output.",
           severity: "warn",
-        }),
+        })
       );
     }
 
     const runIdCastFiles = yield* changedSourceFilesContainingRunIdCast(
       paths,
-      workspaceDiff.productChangedPaths,
+      workspaceDiff.productChangedPaths
     );
     if (runIdCastFiles.length > 0) {
       items.push(
         gateItem({
           changedFiles: runIdCastFiles,
           check: "run-id-brand-cast",
-          reason: "Changed source casts a value with `as RunId`, bypassing the RunId parser/brand boundary.",
-          remediation: "Use parseRunId or RunIdSchema decoding at the boundary and carry the parsed RunId inward.",
+          reason:
+            "Changed source casts a value with `as RunId`, bypassing the RunId parser/brand boundary.",
+          remediation:
+            "Use parseRunId or RunIdSchema decoding at the boundary and carry the parsed RunId inward.",
           severity: "fail",
-        }),
+        })
       );
     }
 
@@ -308,12 +332,20 @@ export function evaluateWorkspacePrQualityGate(
 function writeWorkspacePrQualityGate(
   runId: RunId,
   paths: RunPaths,
-  items: ReadonlyArray<WorkspacePrQualityGateItem>,
-): Effect.Effect<WorkspacePrQualityGate, GaiaRuntimeError, FileSystem.FileSystem> {
+  items: ReadonlyArray<WorkspacePrQualityGateItem>
+): Effect.Effect<
+  WorkspacePrQualityGate,
+  GaiaRuntimeError,
+  FileSystem.FileSystem
+> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const failItemCount = items.filter((item) => item.severity === "fail").length;
-    const warnItemCount = items.filter((item) => item.severity === "warn").length;
+    const failItemCount = items.filter(
+      (item) => item.severity === "fail"
+    ).length;
+    const warnItemCount = items.filter(
+      (item) => item.severity === "warn"
+    ).length;
     const gate = WorkspacePrQualityGate.make({
       artifactPath: runRelative(paths, paths.workspacePrGate),
       failItemCount,
@@ -326,7 +358,7 @@ function writeWorkspacePrQualityGate(
 
     yield* fs.writeFileString(
       paths.workspacePrGate,
-      `${JSON.stringify(encodeWorkspacePrQualityGateJson(gate), null, 2)}\n`,
+      `${JSON.stringify(encodeWorkspacePrQualityGateJson(gate), null, 2)}\n`
     );
 
     return gate;
@@ -338,9 +370,9 @@ function writeWorkspacePrQualityGate(
           code: "WorkspacePrQualityGateWriteFailed",
           message: "Gaia could not write workspace-pr-gate.json.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -355,11 +387,12 @@ function fileSizeBytes(path: string) {
         makeRuntimeError({
           cause,
           code: "WorkspacePrQualityGateReadFailed",
-          message: "Gaia could not inspect worker-result.json size for the workspace PR quality gate.",
+          message:
+            "Gaia could not inspect worker-result.json size for the workspace PR quality gate.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -387,7 +420,7 @@ function decodeHarnessResult(input: unknown): HarnessDecodeResult {
 
 function changedSourceFilesContainingRunIdCast(
   paths: RunPaths,
-  changedPaths: ReadonlyArray<string>,
+  changedPaths: ReadonlyArray<string>
 ) {
   return Effect.gen(function* () {
     const matches: Array<string> = [];
@@ -412,8 +445,12 @@ function changedSourceFilesContainingRunIdCast(
 
 function readWorkspaceSourceFile(
   paths: RunPaths,
-  changedPath: string,
-): Effect.Effect<string | undefined, GaiaRuntimeError, FileSystem.FileSystem | Path.Path> {
+  changedPath: string
+): Effect.Effect<
+  string | undefined,
+  GaiaRuntimeError,
+  FileSystem.FileSystem | Path.Path
+> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -438,9 +475,9 @@ function readWorkspaceSourceFile(
           code: "WorkspacePrQualityGateReadFailed",
           message: `Gaia could not read changed source file '${changedPath}' for the workspace PR quality gate.`,
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
@@ -456,7 +493,7 @@ function isSafeRelativePath(input: string) {
 
   const segments = input.split("/");
   return segments.every(
-    (segment) => segment.length > 0 && segment !== "." && segment !== "..",
+    (segment) => segment.length > 0 && segment !== "." && segment !== ".."
   );
 }
 
@@ -474,7 +511,9 @@ function unsafeOutputArtifacts(paths: ReadonlyArray<string>) {
       return false;
     }
 
-    return !isSafeRelativePath(artifactPath.slice(workspaceArtifactPrefix.length));
+    return !isSafeRelativePath(
+      artifactPath.slice(workspaceArtifactPrefix.length)
+    );
   });
 }
 
@@ -499,7 +538,7 @@ function stripCommentsAndStrings(input: string) {
 function stripCode(
   input: string,
   startIndex: number,
-  stopOnTemplateExpressionClose: boolean,
+  stopOnTemplateExpressionClose: boolean
 ) {
   let output = "";
   let index = startIndex;
@@ -612,7 +651,7 @@ function stripBlockComment(input: string, startIndex: number) {
 function stripQuotedLiteral(
   input: string,
   startIndex: number,
-  closingCharacter: "'" | '"',
+  closingCharacter: "'" | '"'
 ) {
   let output = " ";
   let index = startIndex + 1;

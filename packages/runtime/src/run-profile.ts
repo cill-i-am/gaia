@@ -1,4 +1,5 @@
 import { Effect, FileSystem, Schema } from "effect";
+
 import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import type { RunPaths } from "./paths.js";
@@ -13,21 +14,21 @@ export type BrowserEvidenceRequirement =
   typeof BrowserEvidenceRequirementSchema.Type;
 
 export const RunProfileNameSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("RunProfileName"),
+  Schema.brand("RunProfileName")
 );
 
 /** Name of a reusable Gaia run profile. */
 export type RunProfileName = typeof RunProfileNameSchema.Type;
 
 export class RunProfileChecks extends Schema.Class<RunProfileChecks>(
-  "RunProfileChecks",
+  "RunProfileChecks"
 )({
   browserEvidence: BrowserEvidenceRequirementSchema,
 }) {}
 
 /** Browser automation defaults supplied by a reusable run profile. */
 export class RunProfileBrowser extends Schema.Class<RunProfileBrowser>(
-  "RunProfileBrowser",
+  "RunProfileBrowser"
 )({
   targetUrl: Schema.optionalKey(BrowserEvidenceTargetUrlSchema),
 }) {}
@@ -65,7 +66,7 @@ export function localRunProfileSource(path: string): RunProfileSource {
 
 /** Resolve the run profile that should govern a run. */
 export function resolveRunProfile(
-  source?: RunProfileSource,
+  source?: RunProfileSource
 ): Effect.Effect<RunProfile, GaiaRuntimeError, FileSystem.FileSystem> {
   if (source === undefined) {
     return Effect.succeed(defaultRunProfile);
@@ -84,7 +85,7 @@ export function writeRunProfile(input: {
 
     yield* fs.writeFileString(
       input.paths.runProfile,
-      `${JSON.stringify(encodeRunProfileJson(input.profile), null, 2)}\n`,
+      `${JSON.stringify(encodeRunProfileJson(input.profile), null, 2)}\n`
     );
 
     return input.profile;
@@ -96,14 +97,14 @@ export function writeRunProfile(input: {
           code: "RunProfileWriteFailed",
           message: "Gaia could not write the run profile artifact.",
           recoverable: true,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 
 function readRunProfile(
-  profilePath: string,
+  profilePath: string
 ): Effect.Effect<RunProfile, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -118,9 +119,9 @@ function readRunProfile(
           code: "RunProfileReadFailed",
           message: `Gaia could not read run profile '${profilePath}'.`,
           recoverable: false,
-        }),
-      ),
-    ),
+        })
+      )
+    )
   );
 }
 

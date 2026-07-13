@@ -21,6 +21,7 @@ import {
   type RunId,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
+
 import { loadRun } from "./event-store.js";
 import {
   issueDeliveryAgentIds,
@@ -47,17 +48,24 @@ export type FactoryProjectionIndexes = {
   readonly graph: FactoryGraphProjection;
 };
 
-type FactoryProjectionDiagnostic = typeof FactoryGraphDto.Type["diagnostics"][number];
+type FactoryProjectionDiagnostic =
+  (typeof FactoryGraphDto.Type)["diagnostics"][number];
 
 type StoredIndexRead<A> =
-  | { readonly _tag: "missing"; readonly diagnostic: FactoryProjectionDiagnostic }
+  | {
+      readonly _tag: "missing";
+      readonly diagnostic: FactoryProjectionDiagnostic;
+    }
   | { readonly _tag: "stale"; readonly diagnostic: FactoryProjectionDiagnostic }
-  | { readonly _tag: "unreadable"; readonly diagnostic: FactoryProjectionDiagnostic }
+  | {
+      readonly _tag: "unreadable";
+      readonly diagnostic: FactoryProjectionDiagnostic;
+    }
   | { readonly _tag: "valid"; readonly value: A };
 
 type FactoryArtifactDefinition = {
   readonly artifactId: FactoryArtifactId;
-  readonly contentType: typeof FactoryArtifactBodyDto.Type["contentType"];
+  readonly contentType: (typeof FactoryArtifactBodyDto.Type)["contentType"];
   readonly eventType: EventType;
   readonly kind: FactoryArtifactKind;
   readonly label: string;
@@ -77,160 +85,165 @@ type FactoryArtifactDefinitionInput = Omit<
 
 const decodeCreateRunRequest = Schema.decodeUnknownSync(CreateRunRequest);
 const decodeResolvedHarnessExecution = Schema.decodeUnknownSync(
-  ResolvedHarnessExecution,
+  ResolvedHarnessExecution
 );
-const decodeFactoryArtifactId = Schema.decodeUnknownSync(FactoryArtifactIdSchema);
+const decodeFactoryArtifactId = Schema.decodeUnknownSync(
+  FactoryArtifactIdSchema
+);
 const decodeFactoryGraph = Schema.decodeUnknownSync(FactoryGraphDto);
 const encodeFactoryGraph = Schema.encodeSync(FactoryGraphDto);
 const decodeActivityIndex = Schema.decodeUnknownSync(FactoryActivityListDto);
 const encodeActivityIndex = Schema.encodeSync(FactoryActivityListDto);
 const decodeArtifactIndex = Schema.decodeUnknownSync(FactoryArtifactListDto);
 const encodeArtifactIndex = Schema.encodeSync(FactoryArtifactListDto);
-const decodeFactoryArtifactBody = Schema.decodeUnknownSync(FactoryArtifactBodyDto);
+const decodeFactoryArtifactBody = Schema.decodeUnknownSync(
+  FactoryArtifactBodyDto
+);
 
-const factoryArtifactDefinitionInputs: ReadonlyArray<FactoryArtifactDefinitionInput> = [
-  {
-    artifactId: "worker-plan",
-    contentType: "application/json",
-    eventType: "WORKER_STARTED",
-    kind: "plan",
-    label: "Worker plan",
-    ownerRole: "worker",
-    path: (paths) => paths.workerPlanResult,
-  },
-  {
-    artifactId: "worker-plan-markdown",
-    contentType: "text/markdown",
-    eventType: "WORKER_STARTED",
-    kind: "plan",
-    label: "Worker plan markdown",
-    ownerRole: "worker",
-    path: (paths) => paths.workerPlanMarkdown,
-  },
-  {
-    artifactId: "worker-log",
-    contentType: "text/plain",
-    eventType: "WORKER_COMPLETED",
-    kind: "log",
-    label: "Worker log",
-    ownerRole: "worker",
-    path: (paths) => paths.workerLog,
-  },
-  {
-    artifactId: "worker-result",
-    contentType: "application/json",
-    eventType: "WORKER_COMPLETED",
-    kind: "codeSummary",
-    label: "Worker result",
-    ownerRole: "worker",
-    path: (paths) => paths.workerResult,
-  },
-  {
-    artifactId: "plan-review",
-    contentType: "application/json",
-    eventType: "REVIEW_COMPLETED",
-    kind: "review",
-    label: "Plan review",
-    ownerRole: "reviewer",
-    path: (paths) => paths.planReviewResult,
-  },
-  {
-    artifactId: "reviewer-findings",
-    contentType: "application/json",
-    eventType: "REVIEW_COMPLETED",
-    kind: "review",
-    label: "Reviewer findings",
-    ownerRole: "reviewer",
-    path: (paths) => paths.reviewerFindings,
-  },
-  {
-    artifactId: "evidence-review",
-    contentType: "application/json",
-    eventType: "REVIEW_COMPLETED",
-    kind: "review",
-    label: "Evidence review",
-    ownerRole: "reviewer",
-    path: (paths) => paths.evidenceReviewResult,
-  },
-  {
-    artifactId: "verification-result",
-    contentType: "application/json",
-    eventType: "VERIFICATION_COMPLETED",
-    kind: "testReport",
-    label: "Verification result",
-    ownerRole: "tester",
-    path: (paths) => paths.verificationResult,
-  },
-  {
-    artifactId: "browser-evidence",
-    contentType: "application/json",
-    eventType: "BROWSER_EVIDENCE_RECORDED",
-    kind: "browserEvidence",
-    label: "Browser evidence",
-    ownerRole: "tester",
-    path: (paths) => paths.browserEvidence,
-  },
-  {
-    artifactId: "report",
-    contentType: "text/markdown",
-    eventType: "REPORT_COMPLETED",
-    kind: "runReport",
-    label: "Run report",
-    ownerRole: "orchestrator",
-    path: (paths) => paths.reportMarkdown,
-  },
-  {
-    artifactId: "report-json",
-    contentType: "application/json",
-    eventType: "REPORT_COMPLETED",
-    kind: "runReport",
-    label: "Run report JSON",
-    ownerRole: "orchestrator",
-    path: (paths) => paths.reportJson,
-  },
-  {
-    artifactId: "factory-retro",
-    contentType: "application/json",
-    eventType: "REPORT_COMPLETED",
-    kind: "runReport",
-    label: "Factory retrospective",
-    ownerRole: "orchestrator",
-    path: (paths) => paths.factoryRetroJson,
-  },
-  {
-    artifactId: "factory-retro-markdown",
-    contentType: "text/markdown",
-    eventType: "REPORT_COMPLETED",
-    kind: "runReport",
-    label: "Factory retrospective markdown",
-    ownerRole: "orchestrator",
-    path: (paths) => paths.factoryRetroMarkdown,
-  },
-  {
-    artifactId: "factory-scorecard",
-    contentType: "application/json",
-    eventType: "REPORT_COMPLETED",
-    kind: "runReport",
-    label: "Factory scorecard",
-    ownerRole: "orchestrator",
-    path: (paths) => paths.factoryScorecardJson,
-  },
-  {
-    artifactId: "factory-scorecard-markdown",
-    contentType: "text/markdown",
-    eventType: "REPORT_COMPLETED",
-    kind: "runReport",
-    label: "Factory scorecard markdown",
-    ownerRole: "orchestrator",
-    path: (paths) => paths.factoryScorecardMarkdown,
-  },
-];
+const factoryArtifactDefinitionInputs: ReadonlyArray<FactoryArtifactDefinitionInput> =
+  [
+    {
+      artifactId: "worker-plan",
+      contentType: "application/json",
+      eventType: "WORKER_STARTED",
+      kind: "plan",
+      label: "Worker plan",
+      ownerRole: "worker",
+      path: (paths) => paths.workerPlanResult,
+    },
+    {
+      artifactId: "worker-plan-markdown",
+      contentType: "text/markdown",
+      eventType: "WORKER_STARTED",
+      kind: "plan",
+      label: "Worker plan markdown",
+      ownerRole: "worker",
+      path: (paths) => paths.workerPlanMarkdown,
+    },
+    {
+      artifactId: "worker-log",
+      contentType: "text/plain",
+      eventType: "WORKER_COMPLETED",
+      kind: "log",
+      label: "Worker log",
+      ownerRole: "worker",
+      path: (paths) => paths.workerLog,
+    },
+    {
+      artifactId: "worker-result",
+      contentType: "application/json",
+      eventType: "WORKER_COMPLETED",
+      kind: "codeSummary",
+      label: "Worker result",
+      ownerRole: "worker",
+      path: (paths) => paths.workerResult,
+    },
+    {
+      artifactId: "plan-review",
+      contentType: "application/json",
+      eventType: "REVIEW_COMPLETED",
+      kind: "review",
+      label: "Plan review",
+      ownerRole: "reviewer",
+      path: (paths) => paths.planReviewResult,
+    },
+    {
+      artifactId: "reviewer-findings",
+      contentType: "application/json",
+      eventType: "REVIEW_COMPLETED",
+      kind: "review",
+      label: "Reviewer findings",
+      ownerRole: "reviewer",
+      path: (paths) => paths.reviewerFindings,
+    },
+    {
+      artifactId: "evidence-review",
+      contentType: "application/json",
+      eventType: "REVIEW_COMPLETED",
+      kind: "review",
+      label: "Evidence review",
+      ownerRole: "reviewer",
+      path: (paths) => paths.evidenceReviewResult,
+    },
+    {
+      artifactId: "verification-result",
+      contentType: "application/json",
+      eventType: "VERIFICATION_COMPLETED",
+      kind: "testReport",
+      label: "Verification result",
+      ownerRole: "tester",
+      path: (paths) => paths.verificationResult,
+    },
+    {
+      artifactId: "browser-evidence",
+      contentType: "application/json",
+      eventType: "BROWSER_EVIDENCE_RECORDED",
+      kind: "browserEvidence",
+      label: "Browser evidence",
+      ownerRole: "tester",
+      path: (paths) => paths.browserEvidence,
+    },
+    {
+      artifactId: "report",
+      contentType: "text/markdown",
+      eventType: "REPORT_COMPLETED",
+      kind: "runReport",
+      label: "Run report",
+      ownerRole: "orchestrator",
+      path: (paths) => paths.reportMarkdown,
+    },
+    {
+      artifactId: "report-json",
+      contentType: "application/json",
+      eventType: "REPORT_COMPLETED",
+      kind: "runReport",
+      label: "Run report JSON",
+      ownerRole: "orchestrator",
+      path: (paths) => paths.reportJson,
+    },
+    {
+      artifactId: "factory-retro",
+      contentType: "application/json",
+      eventType: "REPORT_COMPLETED",
+      kind: "runReport",
+      label: "Factory retrospective",
+      ownerRole: "orchestrator",
+      path: (paths) => paths.factoryRetroJson,
+    },
+    {
+      artifactId: "factory-retro-markdown",
+      contentType: "text/markdown",
+      eventType: "REPORT_COMPLETED",
+      kind: "runReport",
+      label: "Factory retrospective markdown",
+      ownerRole: "orchestrator",
+      path: (paths) => paths.factoryRetroMarkdown,
+    },
+    {
+      artifactId: "factory-scorecard",
+      contentType: "application/json",
+      eventType: "REPORT_COMPLETED",
+      kind: "runReport",
+      label: "Factory scorecard",
+      ownerRole: "orchestrator",
+      path: (paths) => paths.factoryScorecardJson,
+    },
+    {
+      artifactId: "factory-scorecard-markdown",
+      contentType: "text/markdown",
+      eventType: "REPORT_COMPLETED",
+      kind: "runReport",
+      label: "Factory scorecard markdown",
+      ownerRole: "orchestrator",
+      path: (paths) => paths.factoryScorecardMarkdown,
+    },
+  ];
 
 const factoryArtifactDefinitions: ReadonlyArray<FactoryArtifactDefinition> =
   factoryArtifactDefinitionInputs.map(makeFactoryArtifactDefinition);
 
 function makeFactoryArtifactDefinition(
-  definition: FactoryArtifactDefinitionInput,
+  definition: FactoryArtifactDefinitionInput
 ): FactoryArtifactDefinition {
   return {
     ...definition,
@@ -251,7 +264,7 @@ export function writeInitialFactoryRunIndexes(input: {
 
 export function readFactoryRunIndexes(
   runId: RunId,
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ) {
   return Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options);
@@ -276,10 +289,17 @@ export function readFactoryRunIndexes(
         deriveDeliveryCleanupActionHistories(
           loadedExit.value.events.flatMap((event) =>
             event.type === "DELIVERY_CLEANUP_RECORDED"
-              ? [{ receipt: parseDeliveryCleanupReceipt(event.payload["cleanup"]), sequence: event.sequence }]
-              : [],
-          ),
-        ).latest?.latest.state === "completed",
+              ? [
+                  {
+                    receipt: parseDeliveryCleanupReceipt(
+                      event.payload["cleanup"]
+                    ),
+                    sequence: event.sequence,
+                  },
+                ]
+              : []
+          )
+        ).latest?.latest.state === "completed"
     );
     if (
       stored.graph._tag === "valid" &&
@@ -303,7 +323,7 @@ export function readFactoryRunIndexes(
 
 export function rebuildFactoryRunIndexes(
   runId: RunId,
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ) {
   return Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options);
@@ -318,12 +338,12 @@ export function rebuildFactoryRunIndexes(
 export function readFactoryArtifactBodyFromIndex(
   runId: RunId,
   artifactIdInput: string,
-  options: RunStorageOptions = {},
+  options: RunStorageOptions = {}
 ) {
   return Effect.gen(function* () {
     const indexes = yield* readFactoryRunIndexes(runId, options);
     const artifact = indexes.artifacts.artifacts.find(
-      (candidate) => candidate.artifactId === artifactIdInput,
+      (candidate) => candidate.artifactId === artifactIdInput
     );
     if (artifact === undefined) {
       return yield* Effect.fail({
@@ -336,7 +356,7 @@ export function readFactoryArtifactBodyFromIndex(
     }
 
     const definition = factoryArtifactDefinitions.find(
-      (candidate) => candidate.artifactId === artifactIdInput,
+      (candidate) => candidate.artifactId === artifactIdInput
     );
     if (definition === undefined) {
       return yield* Effect.fail({
@@ -350,7 +370,9 @@ export function readFactoryArtifactBodyFromIndex(
 
     const paths = yield* makeRunPaths(indexes.graph.runId, options);
     const fs = yield* FileSystem.FileSystem;
-    const bodyExit = yield* Effect.exit(fs.readFileString(definition.path(paths)));
+    const bodyExit = yield* Effect.exit(
+      fs.readFileString(definition.path(paths))
+    );
     if (bodyExit._tag === "Failure") {
       return yield* Effect.fail({
         artifactName: artifactIdInput,
@@ -386,7 +408,7 @@ function rebuildFactoryRunIndexesFromPaths(input: {
 
     const createInput = yield* parseFactoryCreateInput(loadedExit.value.events);
     const resolvedExecution = yield* parseFactoryResolvedExecution(
-      loadedExit.value.events,
+      loadedExit.value.events
     );
     const artifactResult = yield* collectFactoryArtifacts({
       events: loadedExit.value.events,
@@ -406,7 +428,10 @@ function rebuildFactoryRunIndexesFromPaths(input: {
       activity,
       artifacts: artifactIndex.artifacts,
       createInput,
-      diagnostics: [...input.additionalDiagnostics, ...artifactResult.diagnostics],
+      diagnostics: [
+        ...input.additionalDiagnostics,
+        ...artifactResult.diagnostics,
+      ],
       events: loadedExit.value.events,
       resolvedExecution,
       runId: input.runId,
@@ -428,41 +453,41 @@ function rebuildFactoryRunIndexesFromPaths(input: {
 function readStoredIndexes(
   paths: RunPaths,
   events: ReadonlyArray<RunEvent>,
-  terminalDeliveryCleanupCompleted: boolean,
+  terminalDeliveryCleanupCompleted: boolean
 ) {
   return Effect.gen(function* () {
     const graph = yield* readStoredJson(
       paths.factoryGraph,
       decodeFactoryGraph,
       "FactoryGraphIndexInvalid",
-      "factory-graph.json",
+      "factory-graph.json"
     );
     const activity = yield* readStoredJson(
       paths.factoryActivityIndex,
       decodeActivityIndex,
       "FactoryActivityIndexInvalid",
-      "activity-index.json",
+      "activity-index.json"
     );
     const artifacts = yield* readStoredJson(
       paths.factoryArtifactsIndex,
       decodeArtifactIndex,
       "FactoryArtifactIndexInvalid",
-      "artifacts/index.json",
+      "artifacts/index.json"
     );
 
     return {
       activity: markActivityStale(
         markRunIdMismatch(activity, events[0]?.runId, "activity-index.json"),
-        events.length,
+        events.length
       ),
       artifacts: markRunIdMismatch(
         artifacts,
         events[0]?.runId,
-        "artifacts/index.json",
+        "artifacts/index.json"
       ),
       graph: markTerminalDeliveryGraphStale(
         markRunIdMismatch(graph, events[0]?.runId, "factory-graph.json"),
-        terminalDeliveryCleanupCompleted,
+        terminalDeliveryCleanupCompleted
       ),
     };
   });
@@ -472,13 +497,16 @@ function readStoredJson<A>(
   path: string,
   decode: (input: unknown) => A,
   invalidCode: string,
-  sourceId: string,
+  sourceId: string
 ): Effect.Effect<StoredIndexRead<A>, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const existsExit = yield* Effect.exit(fs.exists(path));
     if (existsExit._tag === "Failure") {
-      return unreadableIndexDiagnostic(sourceId, "FactoryProjectionIndexUnreadable");
+      return unreadableIndexDiagnostic(
+        sourceId,
+        "FactoryProjectionIndexUnreadable"
+      );
     }
     const exists = existsExit.value;
     if (!exists) {
@@ -495,7 +523,10 @@ function readStoredJson<A>(
 
     const textExit = yield* Effect.exit(fs.readFileString(path));
     if (textExit._tag === "Failure") {
-      return unreadableIndexDiagnostic(sourceId, "FactoryProjectionIndexUnreadable");
+      return unreadableIndexDiagnostic(
+        sourceId,
+        "FactoryProjectionIndexUnreadable"
+      );
     }
 
     try {
@@ -508,7 +539,7 @@ function readStoredJson<A>(
 
 function markActivityStale(
   read: StoredIndexRead<FactoryActivityIndex>,
-  eventCount: number,
+  eventCount: number
 ): StoredIndexRead<FactoryActivityIndex> {
   if (read._tag !== "valid" || read.value.activities.length === eventCount) {
     return read;
@@ -528,17 +559,17 @@ function markActivityStale(
 
 function markTerminalDeliveryGraphStale(
   read: StoredIndexRead<FactoryGraphProjection>,
-  terminalDeliveryCleanupCompleted: boolean,
+  terminalDeliveryCleanupCompleted: boolean
 ): StoredIndexRead<FactoryGraphProjection> {
   if (read._tag !== "valid" || !terminalDeliveryCleanupCompleted) {
     return read;
   }
 
   const orchestrators = read.value.agents.filter(
-    ({ role }) => role === "orchestrator",
+    ({ role }) => role === "orchestrator"
   );
   const ciWatchers = read.value.agents.filter(
-    ({ role }) => role === "ciWatcher",
+    ({ role }) => role === "ciWatcher"
   );
   const settled =
     orchestrators.length === 1 &&
@@ -564,9 +595,13 @@ function markTerminalDeliveryGraphStale(
 function markRunIdMismatch<A extends { readonly runId: RunId }>(
   read: StoredIndexRead<A>,
   runId: RunId | undefined,
-  sourceId: string,
+  sourceId: string
 ): StoredIndexRead<A> {
-  if (read._tag !== "valid" || runId === undefined || read.value.runId === runId) {
+  if (
+    read._tag !== "valid" ||
+    runId === undefined ||
+    read.value.runId === runId
+  ) {
     return read;
   }
 
@@ -583,7 +618,7 @@ function markRunIdMismatch<A extends { readonly runId: RunId }>(
 
 function unreadableIndexDiagnostic(
   sourceId: string,
-  code: string,
+  code: string
 ): StoredIndexRead<never> {
   return {
     _tag: "unreadable",
@@ -613,28 +648,30 @@ function storedDiagnostics(input: {
 
 function writeProjectionIndexes(
   paths: RunPaths,
-  indexes: FactoryProjectionIndexes,
+  indexes: FactoryProjectionIndexes
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    yield* fs.makeDirectory(paths.factoryArtifactsDirectory, { recursive: true });
+    yield* fs.makeDirectory(paths.factoryArtifactsDirectory, {
+      recursive: true,
+    });
     yield* fs.writeFileString(
       paths.factoryGraph,
-      `${JSON.stringify(encodeFactoryGraph(indexes.graph), null, 2)}\n`,
+      `${JSON.stringify(encodeFactoryGraph(indexes.graph), null, 2)}\n`
     );
     yield* fs.writeFileString(
       paths.factoryActivityIndex,
-      `${JSON.stringify(encodeActivityIndex(indexes.activity), null, 2)}\n`,
+      `${JSON.stringify(encodeActivityIndex(indexes.activity), null, 2)}\n`
     );
     yield* fs.writeFileString(
       paths.factoryArtifactsIndex,
-      `${JSON.stringify(encodeArtifactIndex(indexes.artifacts), null, 2)}\n`,
+      `${JSON.stringify(encodeArtifactIndex(indexes.artifacts), null, 2)}\n`
     );
   });
 }
 
 function parseFactoryCreateInput(
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ): Effect.Effect<FactoryRunCreateInput, LocalRunReadDiagnostic> {
   const first = events[0];
   if (first === undefined) {
@@ -650,7 +687,7 @@ function parseFactoryCreateInput(
         execution: jsonObjectField(first.payload["execution"], "selection"),
         workflow: first.payload["workflow"],
         workItem: first.payload["workItem"],
-      }),
+      })
     );
   } catch {
     return Effect.fail({
@@ -664,7 +701,7 @@ function parseFactoryCreateInput(
 }
 
 function parseFactoryResolvedExecution(
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ): Effect.Effect<typeof ResolvedHarnessExecution.Type, LocalRunReadDiagnostic> {
   const first = events[0];
   if (first === undefined) {
@@ -673,8 +710,8 @@ function parseFactoryResolvedExecution(
   try {
     return Effect.succeed(
       decodeResolvedHarnessExecution(
-        jsonObjectField(first.payload["execution"], "resolved"),
-      ),
+        jsonObjectField(first.payload["execution"], "resolved")
+      )
     );
   } catch {
     return Effect.fail({
@@ -689,7 +726,7 @@ function parseFactoryResolvedExecution(
 
 function jsonObjectField(
   value: Schema.Json | undefined,
-  field: string,
+  field: string
 ): unknown {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -718,7 +755,9 @@ function buildFactoryGraph(input: {
   readonly runId: RunId;
 }): FactoryGraphProjection {
   const agentStates = agentStatesFromEvents(input.events);
-  const latestActivityByAgent = latestActivityIdByAgent(input.activity.activities);
+  const latestActivityByAgent = latestActivityIdByAgent(
+    input.activity.activities
+  );
   const artifactCounts = artifactCountByOwner(input.artifacts);
   const workItemId = issueDeliveryRootWorkItemId;
   const agents = issueDeliveryWorkflow.agentRoles.map((definition) => {
@@ -738,11 +777,14 @@ function buildFactoryGraph(input: {
     };
   });
 
-  const diagnostics: Array<FactoryProjectionDiagnostic> = [...input.diagnostics];
+  const diagnostics: Array<FactoryProjectionDiagnostic> = [
+    ...input.diagnostics,
+  ];
   if ((agentStates.get("ciWatcher") ?? "unknown") === "unknown") {
     diagnostics.push({
       code: "FactoryCiWatcherUnavailable",
-      message: "CI watcher state is unavailable until PR/check evidence is recorded.",
+      message:
+        "CI watcher state is unavailable until PR/check evidence is recorded.",
       recoverable: true,
     });
   }
@@ -840,7 +882,7 @@ function buildActivityIndex(input: {
 }
 
 function agentStatesFromEvents(
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ): ReadonlyMap<FactoryAgentRole, FactoryAgentState> {
   const states = new Map<FactoryAgentRole, FactoryAgentState>([
     ["orchestrator", "running"],
@@ -858,9 +900,9 @@ function agentStatesFromEvents(
 
 function updateStatesForEvent(
   states: Map<FactoryAgentRole, FactoryAgentState>,
-  event: RunEvent,
+  event: RunEvent
 ) {
-    switch (event.type) {
+  switch (event.type) {
     case "DELIVERY_STARTED":
       states.set("orchestrator", "running");
       return;
@@ -891,7 +933,7 @@ function updateStatesForEvent(
             ? "succeeded"
             : harnessEvent.status === "interrupted"
               ? "canceled"
-              : "failed",
+              : "failed"
         );
       } else {
         states.set("worker", "running");
@@ -931,9 +973,10 @@ function updateStatesForEvent(
     case "DELIVERY_REMEDIATION_RECORDED":
       states.set(
         "ciWatcher",
-        parseDeliveryRemediation(event.payload["remediation"]).state === "failed"
+        parseDeliveryRemediation(event.payload["remediation"]).state ===
+          "failed"
           ? "failed"
-          : "running",
+          : "running"
       );
       return;
     case "DELIVERY_MERGE_READINESS_RECORDED":
@@ -941,13 +984,25 @@ function updateStatesForEvent(
       states.set("ciWatcher", "running");
       return;
     case "DELIVERY_MERGE_RECORDED": {
-      const state = parseDeliveryMergeReceipt(event.payload["mergeAction"]).state;
-      states.set("orchestrator", state === "dispatchFailed" ? "failed" : state === "dispatchConfirmed" ? "blocked" : "running");
+      const state = parseDeliveryMergeReceipt(
+        event.payload["mergeAction"]
+      ).state;
+      states.set(
+        "orchestrator",
+        state === "dispatchFailed"
+          ? "failed"
+          : state === "dispatchConfirmed"
+            ? "blocked"
+            : "running"
+      );
       return;
     }
     case "DELIVERY_CLEANUP_RECORDED": {
       const state = parseDeliveryCleanupReceipt(event.payload["cleanup"]).state;
-      states.set("orchestrator", state === "completed" ? "succeeded" : "blocked");
+      states.set(
+        "orchestrator",
+        state === "completed" ? "succeeded" : "blocked"
+      );
       if (state === "completed") states.set("ciWatcher", "succeeded");
       return;
     }
@@ -1241,7 +1296,7 @@ function harnessActivityLabel(event: ReturnType<typeof parseHarnessEvent>) {
 }
 
 function latestActivityIdByAgent(
-  activities: ReadonlyArray<FactoryActivityIndex["activities"][number]>,
+  activities: ReadonlyArray<FactoryActivityIndex["activities"][number]>
 ): ReadonlyMap<string, string> {
   const latest = new Map<string, string>();
   for (const activity of activities) {
@@ -1254,24 +1309,27 @@ function latestActivityIdByAgent(
 }
 
 function artifactCountByOwner(
-  artifacts: ReadonlyArray<FactoryArtifactIndex["artifacts"][number]>,
+  artifacts: ReadonlyArray<FactoryArtifactIndex["artifacts"][number]>
 ): ReadonlyMap<string, number> {
   const counts = new Map<string, number>();
   for (const artifact of artifacts) {
-    counts.set(artifact.ownerAgentId, (counts.get(artifact.ownerAgentId) ?? 0) + 1);
+    counts.set(
+      artifact.ownerAgentId,
+      (counts.get(artifact.ownerAgentId) ?? 0) + 1
+    );
   }
 
   return counts;
 }
 
 function artifactsByEventType(
-  artifacts: ReadonlyArray<FactoryArtifactIndex["artifacts"][number]>,
+  artifacts: ReadonlyArray<FactoryArtifactIndex["artifacts"][number]>
 ): ReadonlyMap<EventType, ReadonlyArray<string>> {
   const byId = new Map<string, FactoryArtifactDefinition>(
     factoryArtifactDefinitions.map((definition) => [
       definition.artifactId,
       definition,
-    ]),
+    ])
   );
   const byEvent = new Map<EventType, Array<string>>();
   for (const artifact of artifacts) {
@@ -1298,7 +1356,9 @@ function collectFactoryArtifacts(input: {
     const artifacts = [];
     const diagnostics: Array<FactoryProjectionDiagnostic> = [];
     for (const definition of factoryArtifactDefinitions) {
-      const existsExit = yield* Effect.exit(fs.exists(definition.path(input.paths)));
+      const existsExit = yield* Effect.exit(
+        fs.exists(definition.path(input.paths))
+      );
       if (existsExit._tag === "Failure") {
         diagnostics.push({
           code: "FactoryArtifactAvailabilityUnknown",
@@ -1336,7 +1396,7 @@ function collectFactoryArtifacts(input: {
 
 function createdAtForArtifact(
   definition: FactoryArtifactDefinition,
-  events: ReadonlyArray<RunEvent>,
+  events: ReadonlyArray<RunEvent>
 ): string {
   return (
     events.find((event) => event.type === definition.eventType)?.timestamp ??

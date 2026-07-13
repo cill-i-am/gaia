@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Schema } from "effect";
+
 import {
   LocalGaiaServerUrlSchema,
   parseLocalGaiaServerUrl,
@@ -47,11 +48,11 @@ describe("LocalGaiaServerUrl", () => {
     const jsonCodec = Schema.fromJsonString(LocalGaiaServerUrlSchema);
     assert.strictEqual(
       Schema.encodeSync(jsonCodec)(value),
-      '"http://127.0.0.1:4321/"',
+      '"http://127.0.0.1:4321/"'
     );
     assert.strictEqual(
       Schema.decodeUnknownSync(jsonCodec)('"http://127.0.0.1:4321/"'),
-      value,
+      value
     );
   });
 
@@ -59,16 +60,11 @@ describe("LocalGaiaServerUrl", () => {
     const value = parseRunId("run-1234567890");
     const jsonCodec = Schema.fromJsonString(RunIdSchema);
 
-    assert.strictEqual(
-      Schema.encodeSync(jsonCodec)(value),
-      '"run-1234567890"',
-    );
+    assert.strictEqual(Schema.encodeSync(jsonCodec)(value), '"run-1234567890"');
     assert.strictEqual(
       Schema.decodeUnknownSync(jsonCodec)('"run-1234567890"'),
-      value,
+      value
     );
-    assert.throws(() =>
-      Schema.decodeUnknownSync(jsonCodec)('"not-a-run"'),
-    );
+    assert.throws(() => Schema.decodeUnknownSync(jsonCodec)('"not-a-run"'));
   });
 });

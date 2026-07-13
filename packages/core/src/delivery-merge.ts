@@ -1,33 +1,38 @@
-import { Schema } from "effect";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { utf8ToBytes } from "@noble/hashes/utils.js";
+import { Schema } from "effect";
+
+import type { DeliveryPublication } from "./delivery-publication.js";
+import { deriveDeliveryAuthority } from "./delivery-remediation.js";
 import type { RunEvent } from "./events.js";
 import { RunIdSchema } from "./run-id.js";
-import { deriveDeliveryAuthority } from "./delivery-remediation.js";
-import type { DeliveryPublication } from "./delivery-publication.js";
 
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
-const Digest = Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u)));
-const GitSha = Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u)));
+const Digest = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
+);
+const GitSha = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))
+);
 export const DeliveryActionIdSchema = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isPattern(/^[A-Za-z0-9:_-]+$/u)),
-  Schema.check(Schema.isMaxLength(200)),
+  Schema.check(Schema.isMaxLength(200))
 );
 const BoundedId = DeliveryActionIdSchema;
 const Repository = Schema.String.pipe(
   Schema.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)),
-  Schema.check(Schema.isMaxLength(200)),
+  Schema.check(Schema.isMaxLength(200))
 );
 const StableCheckField = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isPattern(/^[A-Za-z0-9_.:/ -]+$/u)),
-  Schema.check(Schema.isMaxLength(200)),
+  Schema.check(Schema.isMaxLength(200))
 );
 const GaiaEvidenceId = Schema.String.pipe(
   Schema.check(Schema.isPattern(/^evidence-[A-Za-z0-9_-]{16,120}$/u)),
-  Schema.check(Schema.isMaxLength(129)),
+  Schema.check(Schema.isMaxLength(129))
 );
 const PositiveSequence = Schema.Int.pipe(
-  Schema.check(Schema.isGreaterThanOrEqualTo(1)),
+  Schema.check(Schema.isGreaterThanOrEqualTo(1))
 );
 
 export const DeliveryMergeMethodSchema = Schema.Literals([
@@ -44,93 +49,138 @@ export const deliveryMergeMethodArguments = {
 } as const satisfies Record<DeliveryMergeMethod, readonly [string]>;
 
 export class DeliveryRequiredCheckIdentity extends Schema.Class<DeliveryRequiredCheckIdentity>(
-  "DeliveryRequiredCheckIdentity",
-)({
-  appSlug: StableCheckField,
-  name: StableCheckField,
-  repository: Repository,
-  workflow: StableCheckField,
-}, strict) {}
+  "DeliveryRequiredCheckIdentity"
+)(
+  {
+    appSlug: StableCheckField,
+    name: StableCheckField,
+    repository: Repository,
+    workflow: StableCheckField,
+  },
+  strict
+) {}
 
 export class DeliveryRequiredCheckPolicy extends Schema.Class<DeliveryRequiredCheckPolicy>(
-  "DeliveryRequiredCheckPolicy",
-)({
-  checks: Schema.Array(DeliveryRequiredCheckIdentity).pipe(
-    Schema.check(Schema.isMaxLength(20)),
-    Schema.check(Schema.makeFilter((checks) => {
-      const keys = checks.map(requiredCheckKey);
-      return keys.length === new Set(keys).size && keys.every((key, index) => index === 0 || keys[index - 1]! < key);
-    }, { identifier: "SortedUniqueRequiredChecks" })),
-  ),
-  requireApprovedReview: Schema.Boolean,
-  version: Schema.Literal(1),
-}, strict) {}
+  "DeliveryRequiredCheckPolicy"
+)(
+  {
+    checks: Schema.Array(DeliveryRequiredCheckIdentity).pipe(
+      Schema.check(Schema.isMaxLength(20)),
+      Schema.check(
+        Schema.makeFilter(
+          (checks) => {
+            const keys = checks.map(requiredCheckKey);
+            return (
+              keys.length === new Set(keys).size &&
+              keys.every((key, index) => index === 0 || keys[index - 1]! < key)
+            );
+          },
+          { identifier: "SortedUniqueRequiredChecks" }
+        )
+      )
+    ),
+    requireApprovedReview: Schema.Boolean,
+    version: Schema.Literal(1),
+  },
+  strict
+) {}
 
 export class DeliveryMergeReadinessDecision extends Schema.Class<DeliveryMergeReadinessDecision>(
-  "DeliveryMergeReadinessDecision",
-)({
-  actionId: BoundedId,
-  approved: Schema.Boolean,
-  blockers: Schema.Array(Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200)))).pipe(Schema.check(Schema.isMaxLength(20))),
-  branchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
-  headSha: GitSha,
-  mergeMethod: DeliveryMergeMethodSchema,
-  payloadDigest: Digest,
-  policyDigest: Digest,
-  policyVersion: Schema.Literal(1),
-  prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-  prUrl: Schema.String.pipe(Schema.check(Schema.isPattern(/^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u))),
-}, strict) {}
+  "DeliveryMergeReadinessDecision"
+)(
+  {
+    actionId: BoundedId,
+    approved: Schema.Boolean,
+    blockers: Schema.Array(
+      Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200)))
+    ).pipe(Schema.check(Schema.isMaxLength(20))),
+    branchName: Schema.NonEmptyString.pipe(
+      Schema.check(Schema.isMaxLength(240))
+    ),
+    headSha: GitSha,
+    mergeMethod: DeliveryMergeMethodSchema,
+    payloadDigest: Digest,
+    policyDigest: Digest,
+    policyVersion: Schema.Literal(1),
+    prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+    prUrl: Schema.String.pipe(
+      Schema.check(
+        Schema.isPattern(
+          /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
+        )
+      )
+    ),
+  },
+  strict
+) {}
 
 export class DeliveryGitHubApprovedReviewSource extends Schema.Class<DeliveryGitHubApprovedReviewSource>(
-  "DeliveryGitHubApprovedReviewSource",
-)({
-  kind: Schema.Literal("githubApproved"),
-  reviewDecision: Schema.Literal("APPROVED"),
-  version: Schema.Literal(1),
-}, strict) {}
+  "DeliveryGitHubApprovedReviewSource"
+)(
+  {
+    kind: Schema.Literal("githubApproved"),
+    reviewDecision: Schema.Literal("APPROVED"),
+    version: Schema.Literal(1),
+  },
+  strict
+) {}
 
 export class DeliveryLocalOperatorReviewSource extends Schema.Class<DeliveryLocalOperatorReviewSource>(
-  "DeliveryLocalOperatorReviewSource",
-)({
-  attestationActionId: BoundedId,
-  attestationConfirmationSequence: PositiveSequence,
-  attestationPayloadDigest: Digest,
-  authoritySequence: PositiveSequence,
-  gaiaEvidenceDigest: Schema.optionalKey(Digest),
-  gaiaEvidenceId: GaiaEvidenceId,
-  headSha: GitSha,
-  kind: Schema.Literal("localOperatorPairedReview"),
-  version: Schema.Literal(1),
-}, strict) {}
+  "DeliveryLocalOperatorReviewSource"
+)(
+  {
+    attestationActionId: BoundedId,
+    attestationConfirmationSequence: PositiveSequence,
+    attestationPayloadDigest: Digest,
+    authoritySequence: PositiveSequence,
+    gaiaEvidenceDigest: Schema.optionalKey(Digest),
+    gaiaEvidenceId: GaiaEvidenceId,
+    headSha: GitSha,
+    kind: Schema.Literal("localOperatorPairedReview"),
+    version: Schema.Literal(1),
+  },
+  strict
+) {}
 
 export class DeliveryReviewApprovalNotRequiredSource extends Schema.Class<DeliveryReviewApprovalNotRequiredSource>(
-  "DeliveryReviewApprovalNotRequiredSource",
-)({
-  kind: Schema.Literal("notRequired"),
-  version: Schema.Literal(1),
-}, strict) {}
+  "DeliveryReviewApprovalNotRequiredSource"
+)(
+  {
+    kind: Schema.Literal("notRequired"),
+    version: Schema.Literal(1),
+  },
+  strict
+) {}
 
 export const DeliveryReviewApprovalSourceSchema = Schema.Union([
   DeliveryGitHubApprovedReviewSource,
   DeliveryLocalOperatorReviewSource,
   DeliveryReviewApprovalNotRequiredSource,
 ]);
-export type DeliveryReviewApprovalSource = typeof DeliveryReviewApprovalSourceSchema.Type;
+export type DeliveryReviewApprovalSource =
+  typeof DeliveryReviewApprovalSourceSchema.Type;
 
 const readinessDecisionV2Binding = {
   actionId: BoundedId,
   approved: Schema.Boolean,
   approvalSource: Schema.optionalKey(DeliveryReviewApprovalSourceSchema),
   authoritySequence: PositiveSequence,
-  blockers: Schema.Array(Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200)))).pipe(Schema.check(Schema.isMaxLength(20))),
+  blockers: Schema.Array(
+    Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200)))
+  ).pipe(Schema.check(Schema.isMaxLength(20))),
   branchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
   headSha: GitSha,
   mergeMethod: DeliveryMergeMethodSchema,
   policyDigest: Digest,
   policyVersion: Schema.Literal(1),
   prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-  prUrl: Schema.String.pipe(Schema.check(Schema.isPattern(/^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u))),
+  prUrl: Schema.String.pipe(
+    Schema.check(
+      Schema.isPattern(
+        /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
+      )
+    )
+  ),
   publicationConfirmationSequence: PositiveSequence,
   publicationOperationId: BoundedId,
   publicationPayloadDigest: Digest,
@@ -140,30 +190,38 @@ const readinessDecisionV2Binding = {
 } as const;
 
 export type DeliveryMergeReadinessDecisionV2Binding = {
-      readonly actionId: string;
-      readonly approved: boolean;
-      readonly approvalSource?: DeliveryReviewApprovalSource;
-      readonly authoritySequence: number;
-      readonly blockers: ReadonlyArray<string>;
-      readonly branchName: string;
-      readonly headSha: string;
-      readonly mergeMethod: DeliveryMergeMethod;
-      readonly policyDigest: string;
-      readonly policyVersion: 1;
-      readonly prNumber: number;
-      readonly prUrl: string;
-      readonly publicationConfirmationSequence: number;
-      readonly publicationOperationId: string;
-      readonly publicationPayloadDigest: string;
-      readonly repository: string;
-      readonly runId: string;
-      readonly version: 2;
+  readonly actionId: string;
+  readonly approved: boolean;
+  readonly approvalSource?: DeliveryReviewApprovalSource;
+  readonly authoritySequence: number;
+  readonly blockers: ReadonlyArray<string>;
+  readonly branchName: string;
+  readonly headSha: string;
+  readonly mergeMethod: DeliveryMergeMethod;
+  readonly policyDigest: string;
+  readonly policyVersion: 1;
+  readonly prNumber: number;
+  readonly prUrl: string;
+  readonly publicationConfirmationSequence: number;
+  readonly publicationOperationId: string;
+  readonly publicationPayloadDigest: string;
+  readonly repository: string;
+  readonly runId: string;
+  readonly version: 2;
 };
 
-function readinessApprovalSourceCanonicalPayload(source: DeliveryReviewApprovalSource | undefined) {
+function readinessApprovalSourceCanonicalPayload(
+  source: DeliveryReviewApprovalSource | undefined
+) {
   if (source === undefined) return "none";
-  if (source.kind === "githubApproved") return canonicalFields([source.kind, source.reviewDecision, String(source.version)]);
-  if (source.kind === "notRequired") return canonicalFields([source.kind, String(source.version)]);
+  if (source.kind === "githubApproved")
+    return canonicalFields([
+      source.kind,
+      source.reviewDecision,
+      String(source.version),
+    ]);
+  if (source.kind === "notRequired")
+    return canonicalFields([source.kind, String(source.version)]);
   return canonicalFields([
     source.kind,
     source.attestationActionId,
@@ -177,7 +235,9 @@ function readinessApprovalSourceCanonicalPayload(source: DeliveryReviewApprovalS
   ]);
 }
 
-export function deliveryMergeReadinessDecisionV2CanonicalPayload(binding: DeliveryMergeReadinessDecisionV2Binding) {
+export function deliveryMergeReadinessDecisionV2CanonicalPayload(
+  binding: DeliveryMergeReadinessDecisionV2Binding
+) {
   return canonicalFields([
     "gaia.delivery.merge-readiness.v2",
     binding.actionId,
@@ -201,32 +261,46 @@ export function deliveryMergeReadinessDecisionV2CanonicalPayload(binding: Delive
   ]);
 }
 
-export function deliveryMergeReadinessDecisionV2PayloadDigest(binding: DeliveryMergeReadinessDecisionV2Binding) {
+export function deliveryMergeReadinessDecisionV2PayloadDigest(
+  binding: DeliveryMergeReadinessDecisionV2Binding
+) {
   return sha256Hex(deliveryMergeReadinessDecisionV2CanonicalPayload(binding));
 }
 
 export class DeliveryMergeReadinessDecisionV2 extends Schema.Class<DeliveryMergeReadinessDecisionV2>(
-  "DeliveryMergeReadinessDecisionV2",
-)({
-  ...readinessDecisionV2Binding,
-  payloadDigest: Digest,
-}, strict) {}
+  "DeliveryMergeReadinessDecisionV2"
+)(
+  {
+    ...readinessDecisionV2Binding,
+    payloadDigest: Digest,
+  },
+  strict
+) {}
 
 export const DeliveryMergeReadinessDecisionSchema = Schema.Union([
   DeliveryMergeReadinessDecision,
   DeliveryMergeReadinessDecisionV2,
 ]);
-export type DeliveryMergeReadinessDecisionReceipt = typeof DeliveryMergeReadinessDecisionSchema.Type;
-export const parseDeliveryMergeReadinessDecision = Schema.decodeUnknownSync(DeliveryMergeReadinessDecisionSchema);
-const DeliveryMergeReadinessDecisionJson = Schema.toCodecJson(DeliveryMergeReadinessDecisionSchema);
-export const encodeDeliveryMergeReadinessDecisionJson = Schema.encodeSync(DeliveryMergeReadinessDecisionJson);
+export type DeliveryMergeReadinessDecisionReceipt =
+  typeof DeliveryMergeReadinessDecisionSchema.Type;
+export const parseDeliveryMergeReadinessDecision = Schema.decodeUnknownSync(
+  DeliveryMergeReadinessDecisionSchema
+);
+const DeliveryMergeReadinessDecisionJson = Schema.toCodecJson(
+  DeliveryMergeReadinessDecisionSchema
+);
+export const encodeDeliveryMergeReadinessDecisionJson = Schema.encodeSync(
+  DeliveryMergeReadinessDecisionJson
+);
 
 function canonicalFields(fields: ReadonlyArray<string>) {
   return fields.map((field) => `${field.length}:${field}`).join("|");
 }
 
 function sha256Hex(value: string) {
-  return Array.from(sha256(utf8ToBytes(value)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return Array.from(sha256(utf8ToBytes(value)), (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
 }
 
 export function assertDeliveryMergeReadinessDecisionAuthority(
@@ -237,17 +311,23 @@ export function assertDeliveryMergeReadinessDecisionAuthority(
     readonly events: ReadonlyArray<RunEvent>;
     readonly publication: DeliveryPublication;
     readonly repository: string;
-  },
+  }
 ) {
   // Version 1 is retained as a compatibility-only historical receipt.
   if (!(decision instanceof DeliveryMergeReadinessDecisionV2)) return;
-  if (input.publication.state !== "confirmed") throw new Error("Merge readiness requires a confirmed publication.");
-  const authority = deriveDeliveryAuthority(input.publication, input.events, input.eventSequence - 1);
+  if (input.publication.state !== "confirmed")
+    throw new Error("Merge readiness requires a confirmed publication.");
+  const authority = deriveDeliveryAuthority(
+    input.publication,
+    input.events,
+    input.eventSequence - 1
+  );
   if (
     decision.runId !== input.enclosingRunId ||
     decision.publicationOperationId !== input.publication.operationId ||
     decision.publicationPayloadDigest !== input.publication.payloadDigest ||
-    decision.publicationConfirmationSequence !== authority.publicationConfirmationSequence ||
+    decision.publicationConfirmationSequence !==
+      authority.publicationConfirmationSequence ||
     decision.authoritySequence !== authority.authoritySequence ||
     decision.repository !== input.repository ||
     decision.prNumber !== input.publication.prNumber ||
@@ -255,29 +335,44 @@ export function assertDeliveryMergeReadinessDecisionAuthority(
     decision.branchName !== input.publication.branchName ||
     decision.headSha !== authority.headSha
   ) {
-    throw new Error("Merge readiness decision does not match the current delivery authority.");
+    throw new Error(
+      "Merge readiness decision does not match the current delivery authority."
+    );
   }
-  if (decision.payloadDigest !== deliveryMergeReadinessDecisionV2PayloadDigest(decision)) {
+  if (
+    decision.payloadDigest !==
+    deliveryMergeReadinessDecisionV2PayloadDigest(decision)
+  ) {
     throw new Error("Merge readiness decision payload digest is invalid.");
   }
   if (decision.approved !== (decision.blockers.length === 0)) {
     throw new Error("Merge readiness approval and blockers are inconsistent.");
   }
   if (!decision.approved) {
-    if (decision.approvalSource !== undefined) throw new Error("Denied merge readiness cannot claim an approval source.");
+    if (decision.approvalSource !== undefined)
+      throw new Error(
+        "Denied merge readiness cannot claim an approval source."
+      );
     return;
   }
-  if (decision.approvalSource === undefined) throw new Error("Approved merge readiness requires an approval source.");
+  if (decision.approvalSource === undefined)
+    throw new Error("Approved merge readiness requires an approval source.");
   if (decision.approvalSource.kind !== "localOperatorPairedReview") return;
   const source = decision.approvalSource;
-  const attestationEvent = input.events.find(({ sequence }) => sequence === source.attestationConfirmationSequence);
+  const attestationEvent = input.events.find(
+    ({ sequence }) => sequence === source.attestationConfirmationSequence
+  );
   if (
     attestationEvent?.type !== "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED" ||
     attestationEvent.sequence >= input.eventSequence
   ) {
-    throw new Error("Merge readiness local approval source is not a prior attestation confirmation.");
+    throw new Error(
+      "Merge readiness local approval source is not a prior attestation confirmation."
+    );
   }
-  const attestation = parseDeliveryLocalReviewAttestationReceipt(attestationEvent.payload["attestation"]);
+  const attestation = parseDeliveryLocalReviewAttestationReceipt(
+    attestationEvent.payload["attestation"]
+  );
   if (
     attestation.state !== "confirmed" ||
     attestation.actionId !== source.attestationActionId ||
@@ -289,17 +384,23 @@ export function assertDeliveryMergeReadinessDecisionAuthority(
     attestation.authoritySequence !== authority.authoritySequence ||
     attestation.headSha !== authority.headSha
   ) {
-    throw new Error("Merge readiness local approval source binding is invalid.");
+    throw new Error(
+      "Merge readiness local approval source binding is invalid."
+    );
   }
 }
 
-export function requiredCheckKey(check: typeof DeliveryRequiredCheckIdentity.Type) {
+export function requiredCheckKey(
+  check: typeof DeliveryRequiredCheckIdentity.Type
+) {
   return [check.repository, check.workflow, check.name, check.appSlug]
     .map((field) => `${field.length}:${field}`)
     .join("|");
 }
 
-export function deliveryRequiredCheckPolicyCanonicalPayload(policy: typeof DeliveryRequiredCheckPolicy.Type) {
+export function deliveryRequiredCheckPolicyCanonicalPayload(
+  policy: typeof DeliveryRequiredCheckPolicy.Type
+) {
   const entries = policy.checks.map(requiredCheckKey);
   return `v${policy.version}|review:${policy.requireApprovedReview ? "1" : "0"}|${entries.map((entry) => `${entry.length}:${entry}`).join("|")}`;
 }
@@ -307,37 +408,65 @@ export function deliveryRequiredCheckPolicyCanonicalPayload(policy: typeof Deliv
 const mergeBinding = {
   actionId: BoundedId,
   branchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
-  decisionSequence: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+  decisionSequence: Schema.Int.pipe(
+    Schema.check(Schema.isGreaterThanOrEqualTo(1))
+  ),
   expectedHeadSha: GitSha,
   mergeMethod: DeliveryMergeMethodSchema,
   payloadDigest: Digest,
   policyDigest: Digest,
   policyVersion: Schema.Literal(1),
   prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-  prUrl: Schema.String.pipe(Schema.check(Schema.isPattern(/^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u))),
+  prUrl: Schema.String.pipe(
+    Schema.check(
+      Schema.isPattern(
+        /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
+      )
+    )
+  ),
   repository: Repository,
 } as const;
 
-export class DeliveryMergeIntent extends Schema.Class<DeliveryMergeIntent>("DeliveryMergeIntent")({
-  ...mergeBinding,
-  state: Schema.Literal("intentRecorded"),
-}, strict) {}
-export class DeliveryMergeDispatchAttempted extends Schema.Class<DeliveryMergeDispatchAttempted>("DeliveryMergeDispatchAttempted")({
-  ...mergeBinding,
-  state: Schema.Literal("dispatchAttempted"),
-}, strict) {}
-export class DeliveryMergeDispatchConfirmed extends Schema.Class<DeliveryMergeDispatchConfirmed>("DeliveryMergeDispatchConfirmed")({
-  ...mergeBinding,
-  mergeCommitSha: GitSha,
-  mergedAt: Schema.NonEmptyString,
-  state: Schema.Literal("dispatchConfirmed"),
-}, strict) {}
-export class DeliveryMergeTerminalFailure extends Schema.Class<DeliveryMergeTerminalFailure>("DeliveryMergeTerminalFailure")({
-  ...mergeBinding,
-  code: Schema.NonEmptyString,
-  message: Schema.NonEmptyString,
-  state: Schema.Literals(["dispatchFailed", "outcomeUnknown"] as const),
-}, strict) {}
+export class DeliveryMergeIntent extends Schema.Class<DeliveryMergeIntent>(
+  "DeliveryMergeIntent"
+)(
+  {
+    ...mergeBinding,
+    state: Schema.Literal("intentRecorded"),
+  },
+  strict
+) {}
+export class DeliveryMergeDispatchAttempted extends Schema.Class<DeliveryMergeDispatchAttempted>(
+  "DeliveryMergeDispatchAttempted"
+)(
+  {
+    ...mergeBinding,
+    state: Schema.Literal("dispatchAttempted"),
+  },
+  strict
+) {}
+export class DeliveryMergeDispatchConfirmed extends Schema.Class<DeliveryMergeDispatchConfirmed>(
+  "DeliveryMergeDispatchConfirmed"
+)(
+  {
+    ...mergeBinding,
+    mergeCommitSha: GitSha,
+    mergedAt: Schema.NonEmptyString,
+    state: Schema.Literal("dispatchConfirmed"),
+  },
+  strict
+) {}
+export class DeliveryMergeTerminalFailure extends Schema.Class<DeliveryMergeTerminalFailure>(
+  "DeliveryMergeTerminalFailure"
+)(
+  {
+    ...mergeBinding,
+    code: Schema.NonEmptyString,
+    message: Schema.NonEmptyString,
+    state: Schema.Literals(["dispatchFailed", "outcomeUnknown"] as const),
+  },
+  strict
+) {}
 
 export const DeliveryMergeReceiptSchema = Schema.Union([
   DeliveryMergeIntent,
@@ -346,9 +475,13 @@ export const DeliveryMergeReceiptSchema = Schema.Union([
   DeliveryMergeTerminalFailure,
 ]);
 export type DeliveryMergeReceipt = typeof DeliveryMergeReceiptSchema.Type;
-export const parseDeliveryMergeReceipt = Schema.decodeUnknownSync(DeliveryMergeReceiptSchema);
+export const parseDeliveryMergeReceipt = Schema.decodeUnknownSync(
+  DeliveryMergeReceiptSchema
+);
 const DeliveryMergeReceiptJson = Schema.toCodecJson(DeliveryMergeReceiptSchema);
-export const encodeDeliveryMergeReceiptJson = Schema.encodeSync(DeliveryMergeReceiptJson);
+export const encodeDeliveryMergeReceiptJson = Schema.encodeSync(
+  DeliveryMergeReceiptJson
+);
 
 const readyForReviewBinding = {
   actionId: BoundedId,
@@ -356,7 +489,13 @@ const readyForReviewBinding = {
   expectedHeadSha: GitSha,
   payloadDigest: Digest,
   prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-  prUrl: Schema.String.pipe(Schema.check(Schema.isPattern(/^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u))),
+  prUrl: Schema.String.pipe(
+    Schema.check(
+      Schema.isPattern(
+        /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
+      )
+    )
+  ),
   publicationOperationId: BoundedId,
   publicationPayloadDigest: Digest,
   repository: Repository,
@@ -379,7 +518,7 @@ export type DeliveryPullRequestReadyBinding = {
 
 /** Canonical, domain-separated binding for one owned ready-for-review action. */
 export function deliveryPullRequestReadyCanonicalPayload(
-  binding: DeliveryPullRequestReadyBinding,
+  binding: DeliveryPullRequestReadyBinding
 ) {
   const fields = [
     binding.actionId,
@@ -398,11 +537,11 @@ export function deliveryPullRequestReadyCanonicalPayload(
 }
 
 export function deliveryPullRequestReadyPayloadDigest(
-  binding: DeliveryPullRequestReadyBinding,
+  binding: DeliveryPullRequestReadyBinding
 ) {
   return Array.from(
     sha256(utf8ToBytes(deliveryPullRequestReadyCanonicalPayload(binding))),
-    (byte) => byte.toString(16).padStart(2, "0"),
+    (byte) => byte.toString(16).padStart(2, "0")
   ).join("");
 }
 
@@ -417,10 +556,12 @@ export function assertDeliveryPullRequestReadyAuthority(
     readonly publicationPayloadDigest: string;
     readonly repository: string;
     readonly runId: string;
-  },
+  }
 ) {
   if (receipt.runId !== expected.runId) {
-    throw new Error("Ready-for-review action does not match its enclosing run.");
+    throw new Error(
+      "Ready-for-review action does not match its enclosing run."
+    );
   }
   if (
     receipt.branchName !== expected.branchName ||
@@ -431,51 +572,72 @@ export function assertDeliveryPullRequestReadyAuthority(
     receipt.publicationPayloadDigest !== expected.publicationPayloadDigest ||
     receipt.repository !== expected.repository
   ) {
-    throw new Error("Ready-for-review action does not match the confirmed publication.");
+    throw new Error(
+      "Ready-for-review action does not match the confirmed publication."
+    );
   }
-  if (receipt.payloadDigest !== deliveryPullRequestReadyPayloadDigest(receipt)) {
+  if (
+    receipt.payloadDigest !== deliveryPullRequestReadyPayloadDigest(receipt)
+  ) {
     throw new Error("Ready-for-review action digest is invalid.");
   }
 }
 
 export class DeliveryPullRequestReadyIntent extends Schema.Class<DeliveryPullRequestReadyIntent>(
-  "DeliveryPullRequestReadyIntent",
-)({
-  ...readyForReviewBinding,
-  state: Schema.Literal("intentRecorded"),
-}, strict) {}
+  "DeliveryPullRequestReadyIntent"
+)(
+  {
+    ...readyForReviewBinding,
+    state: Schema.Literal("intentRecorded"),
+  },
+  strict
+) {}
 
 export class DeliveryPullRequestReadyDispatchAttempted extends Schema.Class<DeliveryPullRequestReadyDispatchAttempted>(
-  "DeliveryPullRequestReadyDispatchAttempted",
-)({
-  ...readyForReviewBinding,
-  state: Schema.Literal("dispatchAttempted"),
-}, strict) {}
+  "DeliveryPullRequestReadyDispatchAttempted"
+)(
+  {
+    ...readyForReviewBinding,
+    state: Schema.Literal("dispatchAttempted"),
+  },
+  strict
+) {}
 
 export class DeliveryPullRequestReadyConfirmedWithoutDispatch extends Schema.Class<DeliveryPullRequestReadyConfirmedWithoutDispatch>(
-  "DeliveryPullRequestReadyConfirmedWithoutDispatch",
-)({
-  ...readyForReviewBinding,
-  draft: Schema.Literal(false),
-  state: Schema.Literal("confirmedWithoutDispatch"),
-}, strict) {}
+  "DeliveryPullRequestReadyConfirmedWithoutDispatch"
+)(
+  {
+    ...readyForReviewBinding,
+    draft: Schema.Literal(false),
+    state: Schema.Literal("confirmedWithoutDispatch"),
+  },
+  strict
+) {}
 
 export class DeliveryPullRequestReadyDispatchConfirmed extends Schema.Class<DeliveryPullRequestReadyDispatchConfirmed>(
-  "DeliveryPullRequestReadyDispatchConfirmed",
-)({
-  ...readyForReviewBinding,
-  draft: Schema.Literal(false),
-  state: Schema.Literal("dispatchConfirmed"),
-}, strict) {}
+  "DeliveryPullRequestReadyDispatchConfirmed"
+)(
+  {
+    ...readyForReviewBinding,
+    draft: Schema.Literal(false),
+    state: Schema.Literal("dispatchConfirmed"),
+  },
+  strict
+) {}
 
 export class DeliveryPullRequestReadyTerminalFailure extends Schema.Class<DeliveryPullRequestReadyTerminalFailure>(
-  "DeliveryPullRequestReadyTerminalFailure",
-)({
-  ...readyForReviewBinding,
-  code: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(160))),
-  message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1_024))),
-  state: Schema.Literals(["dispatchFailed", "outcomeUnknown"] as const),
-}, strict) {}
+  "DeliveryPullRequestReadyTerminalFailure"
+)(
+  {
+    ...readyForReviewBinding,
+    code: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(160))),
+    message: Schema.NonEmptyString.pipe(
+      Schema.check(Schema.isMaxLength(1_024))
+    ),
+    state: Schema.Literals(["dispatchFailed", "outcomeUnknown"] as const),
+  },
+  strict
+) {}
 
 export const DeliveryPullRequestReadyReceiptSchema = Schema.Union([
   DeliveryPullRequestReadyIntent,
@@ -484,10 +646,17 @@ export const DeliveryPullRequestReadyReceiptSchema = Schema.Union([
   DeliveryPullRequestReadyDispatchConfirmed,
   DeliveryPullRequestReadyTerminalFailure,
 ]);
-export type DeliveryPullRequestReadyReceipt = typeof DeliveryPullRequestReadyReceiptSchema.Type;
-export const parseDeliveryPullRequestReadyReceipt = Schema.decodeUnknownSync(DeliveryPullRequestReadyReceiptSchema);
-const DeliveryPullRequestReadyReceiptJson = Schema.toCodecJson(DeliveryPullRequestReadyReceiptSchema);
-export const encodeDeliveryPullRequestReadyReceiptJson = Schema.encodeSync(DeliveryPullRequestReadyReceiptJson);
+export type DeliveryPullRequestReadyReceipt =
+  typeof DeliveryPullRequestReadyReceiptSchema.Type;
+export const parseDeliveryPullRequestReadyReceipt = Schema.decodeUnknownSync(
+  DeliveryPullRequestReadyReceiptSchema
+);
+const DeliveryPullRequestReadyReceiptJson = Schema.toCodecJson(
+  DeliveryPullRequestReadyReceiptSchema
+);
+export const encodeDeliveryPullRequestReadyReceiptJson = Schema.encodeSync(
+  DeliveryPullRequestReadyReceiptJson
+);
 
 const localReviewAttestationBinding = {
   actionId: BoundedId,
@@ -500,7 +669,13 @@ const localReviewAttestationBinding = {
   gaiaEvidenceId: GaiaEvidenceId,
   headSha: GitSha,
   prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-  prUrl: Schema.String.pipe(Schema.check(Schema.isPattern(/^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u))),
+  prUrl: Schema.String.pipe(
+    Schema.check(
+      Schema.isPattern(
+        /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
+      )
+    )
+  ),
   publicationConfirmationSequence: PositiveSequence,
   publicationOperationId: BoundedId,
   publicationPayloadDigest: Digest,
@@ -536,7 +711,7 @@ export type DeliveryLocalReviewAttestationBinding = {
 
 /** Canonical Gaia action binding. This digest does not verify external evidence content. */
 export function deliveryLocalReviewAttestationCanonicalPayload(
-  binding: DeliveryLocalReviewAttestationBinding,
+  binding: DeliveryLocalReviewAttestationBinding
 ) {
   const fields = [
     binding.actionId,
@@ -565,46 +740,64 @@ export function deliveryLocalReviewAttestationCanonicalPayload(
 }
 
 export function deliveryLocalReviewAttestationPayloadDigest(
-  binding: DeliveryLocalReviewAttestationBinding,
+  binding: DeliveryLocalReviewAttestationBinding
 ) {
   return Array.from(
-    sha256(utf8ToBytes(deliveryLocalReviewAttestationCanonicalPayload(binding))),
-    (byte) => byte.toString(16).padStart(2, "0"),
+    sha256(
+      utf8ToBytes(deliveryLocalReviewAttestationCanonicalPayload(binding))
+    ),
+    (byte) => byte.toString(16).padStart(2, "0")
   ).join("");
 }
 
 export class DeliveryLocalReviewAttestationIntent extends Schema.Class<DeliveryLocalReviewAttestationIntent>(
-  "DeliveryLocalReviewAttestationIntent",
-)({
-  ...localReviewAttestationBinding,
-  state: Schema.Literal("intentRecorded"),
-}, strict) {}
+  "DeliveryLocalReviewAttestationIntent"
+)(
+  {
+    ...localReviewAttestationBinding,
+    state: Schema.Literal("intentRecorded"),
+  },
+  strict
+) {}
 
 export class DeliveryLocalReviewAttestationConfirmed extends Schema.Class<DeliveryLocalReviewAttestationConfirmed>(
-  "DeliveryLocalReviewAttestationConfirmed",
-)({
-  ...localReviewAttestationBinding,
-  state: Schema.Literal("confirmed"),
-}, strict) {}
+  "DeliveryLocalReviewAttestationConfirmed"
+)(
+  {
+    ...localReviewAttestationBinding,
+    state: Schema.Literal("confirmed"),
+  },
+  strict
+) {}
 
 export class DeliveryLocalReviewAttestationFailed extends Schema.Class<DeliveryLocalReviewAttestationFailed>(
-  "DeliveryLocalReviewAttestationFailed",
-)({
-  ...localReviewAttestationBinding,
-  code: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(160))),
-  message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1_024))),
-  state: Schema.Literal("failed"),
-}, strict) {}
+  "DeliveryLocalReviewAttestationFailed"
+)(
+  {
+    ...localReviewAttestationBinding,
+    code: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(160))),
+    message: Schema.NonEmptyString.pipe(
+      Schema.check(Schema.isMaxLength(1_024))
+    ),
+    state: Schema.Literal("failed"),
+  },
+  strict
+) {}
 
 export const DeliveryLocalReviewAttestationReceiptSchema = Schema.Union([
   DeliveryLocalReviewAttestationIntent,
   DeliveryLocalReviewAttestationConfirmed,
   DeliveryLocalReviewAttestationFailed,
 ]);
-export type DeliveryLocalReviewAttestationReceipt = typeof DeliveryLocalReviewAttestationReceiptSchema.Type;
-export const parseDeliveryLocalReviewAttestationReceipt = Schema.decodeUnknownSync(DeliveryLocalReviewAttestationReceiptSchema);
-const DeliveryLocalReviewAttestationReceiptJson = Schema.toCodecJson(DeliveryLocalReviewAttestationReceiptSchema);
-export const encodeDeliveryLocalReviewAttestationReceiptJson = Schema.encodeSync(DeliveryLocalReviewAttestationReceiptJson);
+export type DeliveryLocalReviewAttestationReceipt =
+  typeof DeliveryLocalReviewAttestationReceiptSchema.Type;
+export const parseDeliveryLocalReviewAttestationReceipt =
+  Schema.decodeUnknownSync(DeliveryLocalReviewAttestationReceiptSchema);
+const DeliveryLocalReviewAttestationReceiptJson = Schema.toCodecJson(
+  DeliveryLocalReviewAttestationReceiptSchema
+);
+export const encodeDeliveryLocalReviewAttestationReceiptJson =
+  Schema.encodeSync(DeliveryLocalReviewAttestationReceiptJson);
 
 export function assertDeliveryLocalReviewAttestationAuthority(
   receipt: DeliveryLocalReviewAttestationReceipt,
@@ -614,17 +807,27 @@ export function assertDeliveryLocalReviewAttestationAuthority(
     readonly events: ReadonlyArray<RunEvent>;
     readonly publication: DeliveryPublication;
     readonly repository: string;
-  },
-) {
-  if (input.publication.state !== "confirmed") throw new Error("Local review attestation requires a confirmed publication.");
-  if (receipt.runId !== input.enclosingRunId) {
-    throw new Error("Local review attestation does not match its enclosing run.");
   }
-  const authority = deriveDeliveryAuthority(input.publication, input.events, input.eventSequence - 1);
+) {
+  if (input.publication.state !== "confirmed")
+    throw new Error(
+      "Local review attestation requires a confirmed publication."
+    );
+  if (receipt.runId !== input.enclosingRunId) {
+    throw new Error(
+      "Local review attestation does not match its enclosing run."
+    );
+  }
+  const authority = deriveDeliveryAuthority(
+    input.publication,
+    input.events,
+    input.eventSequence - 1
+  );
   if (
     receipt.publicationOperationId !== input.publication.operationId ||
     receipt.publicationPayloadDigest !== input.publication.payloadDigest ||
-    receipt.publicationConfirmationSequence !== authority.publicationConfirmationSequence ||
+    receipt.publicationConfirmationSequence !==
+      authority.publicationConfirmationSequence ||
     receipt.authoritySequence !== authority.authoritySequence ||
     receipt.repository !== input.repository ||
     receipt.prNumber !== input.publication.prNumber ||
@@ -632,19 +835,28 @@ export function assertDeliveryLocalReviewAttestationAuthority(
     receipt.branchName !== input.publication.branchName ||
     receipt.headSha !== authority.headSha
   ) {
-    throw new Error("Local review attestation does not match the confirmed delivery authority.");
+    throw new Error(
+      "Local review attestation does not match the confirmed delivery authority."
+    );
   }
-  const readyEvent = input.events.find(({ sequence }) => sequence === receipt.readyConfirmationSequence);
+  const readyEvent = input.events.find(
+    ({ sequence }) => sequence === receipt.readyConfirmationSequence
+  );
   if (
     readyEvent?.type !== "DELIVERY_PR_READY_RECORDED" ||
     readyEvent.sequence >= input.eventSequence ||
     readyEvent.sequence <= authority.authoritySequence
   ) {
-    throw new Error("Local review attestation requires a post-authority ready confirmation.");
+    throw new Error(
+      "Local review attestation requires a post-authority ready confirmation."
+    );
   }
-  const ready = parseDeliveryPullRequestReadyReceipt(readyEvent.payload["readyForReviewAction"]);
+  const ready = parseDeliveryPullRequestReadyReceipt(
+    readyEvent.payload["readyForReviewAction"]
+  );
   if (
-    (ready.state !== "confirmedWithoutDispatch" && ready.state !== "dispatchConfirmed") ||
+    (ready.state !== "confirmedWithoutDispatch" &&
+      ready.state !== "dispatchConfirmed") ||
     ready.actionId !== receipt.readyConfirmationActionId ||
     ready.payloadDigest !== receipt.readyConfirmationPayloadDigest ||
     ready.runId !== receipt.runId ||
@@ -656,9 +868,14 @@ export function assertDeliveryLocalReviewAttestationAuthority(
     ready.branchName !== receipt.branchName ||
     ready.expectedHeadSha !== receipt.headSha
   ) {
-    throw new Error("Local review attestation ready confirmation binding is invalid.");
+    throw new Error(
+      "Local review attestation ready confirmation binding is invalid."
+    );
   }
-  if (receipt.attestationPayloadDigest !== deliveryLocalReviewAttestationPayloadDigest(receipt)) {
+  if (
+    receipt.attestationPayloadDigest !==
+    deliveryLocalReviewAttestationPayloadDigest(receipt)
+  ) {
     throw new Error("Local review attestation payload digest is invalid.");
   }
   return authority;
@@ -670,106 +887,177 @@ export function currentDeliveryLocalReviewAttestation(
     readonly publication: DeliveryPublication;
     readonly repository: string;
     readonly runId: string;
-  },
+  }
 ) {
-  if (input.publication.state !== "confirmed") throw new Error("Current local review attestation requires a confirmed publication.");
+  if (input.publication.state !== "confirmed")
+    throw new Error(
+      "Current local review attestation requires a confirmed publication."
+    );
   const publication = input.publication;
   const authority = deriveDeliveryAuthority(publication, events);
-  const histories = deriveDeliveryLocalReviewAttestationHistories(events.flatMap((event) =>
-    event.type === "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED"
-      ? [{ receipt: parseDeliveryLocalReviewAttestationReceipt(event.payload["attestation"]), sequence: event.sequence }]
-      : []
-  ));
-  const current = histories.histories.filter(({ latest, latestSequence }) =>
-    latest.state === "confirmed" &&
-    latest.runId === input.runId &&
-    latest.publicationOperationId === publication.operationId &&
-    latest.publicationPayloadDigest === publication.payloadDigest &&
-    latest.publicationConfirmationSequence === authority.publicationConfirmationSequence &&
-    latest.authoritySequence === authority.authoritySequence &&
-    latest.repository === input.repository &&
-    latest.prNumber === publication.prNumber &&
-    latest.prUrl === publication.prUrl &&
-    latest.branchName === publication.branchName &&
-    latest.headSha === authority.headSha &&
-    latest.readyConfirmationSequence > authority.authoritySequence &&
-    latestSequence >= latest.readyConfirmationSequence
+  const histories = deriveDeliveryLocalReviewAttestationHistories(
+    events.flatMap((event) =>
+      event.type === "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED"
+        ? [
+            {
+              receipt: parseDeliveryLocalReviewAttestationReceipt(
+                event.payload["attestation"]
+              ),
+              sequence: event.sequence,
+            },
+          ]
+        : []
+    )
   );
-  if (current.length > 1) throw new Error("Only one current local review attestation may be confirmed.");
+  const current = histories.histories.filter(
+    ({ latest, latestSequence }) =>
+      latest.state === "confirmed" &&
+      latest.runId === input.runId &&
+      latest.publicationOperationId === publication.operationId &&
+      latest.publicationPayloadDigest === publication.payloadDigest &&
+      latest.publicationConfirmationSequence ===
+        authority.publicationConfirmationSequence &&
+      latest.authoritySequence === authority.authoritySequence &&
+      latest.repository === input.repository &&
+      latest.prNumber === publication.prNumber &&
+      latest.prUrl === publication.prUrl &&
+      latest.branchName === publication.branchName &&
+      latest.headSha === authority.headSha &&
+      latest.readyConfirmationSequence > authority.authoritySequence &&
+      latestSequence >= latest.readyConfirmationSequence
+  );
+  if (current.length > 1)
+    throw new Error(
+      "Only one current local review attestation may be confirmed."
+    );
   return current[0];
 }
 
-export const DeliveryCleanupResourceStateSchema = Schema.Literals(["present", "absent"] as const);
+export const DeliveryCleanupResourceStateSchema = Schema.Literals([
+  "present",
+  "absent",
+] as const);
 const cleanupBase = {
   actionId: BoundedId,
   branchName: Schema.NonEmptyString,
   mergeCommitSha: GitSha,
   ownershipDigest: Digest,
 } as const;
-export class DeliveryCleanupRequired extends Schema.Class<DeliveryCleanupRequired>("DeliveryCleanupRequired")({
-  ...cleanupBase,
-  branch: DeliveryCleanupResourceStateSchema,
-  state: Schema.Literal("cleanupRequired"),
-  worktree: DeliveryCleanupResourceStateSchema,
-}, strict) {}
-export class DeliveryCleanupCompleted extends Schema.Class<DeliveryCleanupCompleted>("DeliveryCleanupCompleted")({
-  ...cleanupBase,
-  branch: Schema.Literal("absent"),
-  state: Schema.Literal("completed"),
-  worktree: Schema.Literal("absent"),
-}, strict) {}
-export const DeliveryCleanupReceiptSchema = Schema.Union([DeliveryCleanupRequired, DeliveryCleanupCompleted]);
-export const parseDeliveryCleanupReceipt = Schema.decodeUnknownSync(DeliveryCleanupReceiptSchema);
-const DeliveryCleanupReceiptJson = Schema.toCodecJson(DeliveryCleanupReceiptSchema);
-export const encodeDeliveryCleanupReceiptJson = Schema.encodeSync(DeliveryCleanupReceiptJson);
+export class DeliveryCleanupRequired extends Schema.Class<DeliveryCleanupRequired>(
+  "DeliveryCleanupRequired"
+)(
+  {
+    ...cleanupBase,
+    branch: DeliveryCleanupResourceStateSchema,
+    state: Schema.Literal("cleanupRequired"),
+    worktree: DeliveryCleanupResourceStateSchema,
+  },
+  strict
+) {}
+export class DeliveryCleanupCompleted extends Schema.Class<DeliveryCleanupCompleted>(
+  "DeliveryCleanupCompleted"
+)(
+  {
+    ...cleanupBase,
+    branch: Schema.Literal("absent"),
+    state: Schema.Literal("completed"),
+    worktree: Schema.Literal("absent"),
+  },
+  strict
+) {}
+export const DeliveryCleanupReceiptSchema = Schema.Union([
+  DeliveryCleanupRequired,
+  DeliveryCleanupCompleted,
+]);
+export const parseDeliveryCleanupReceipt = Schema.decodeUnknownSync(
+  DeliveryCleanupReceiptSchema
+);
+const DeliveryCleanupReceiptJson = Schema.toCodecJson(
+  DeliveryCleanupReceiptSchema
+);
+export const encodeDeliveryCleanupReceiptJson = Schema.encodeSync(
+  DeliveryCleanupReceiptJson
+);
 
 export type DeliveryMergeActionHistory = {
   readonly actionId: string;
   readonly latest: DeliveryMergeReceipt;
   readonly latestSequence: number;
-  readonly receipts: ReadonlyArray<{ readonly receipt: DeliveryMergeReceipt; readonly sequence: number }>;
+  readonly receipts: ReadonlyArray<{
+    readonly receipt: DeliveryMergeReceipt;
+    readonly sequence: number;
+  }>;
 };
-export type DeliveryCleanupActionReceipt = ReturnType<typeof parseDeliveryCleanupReceipt>;
+export type DeliveryCleanupActionReceipt = ReturnType<
+  typeof parseDeliveryCleanupReceipt
+>;
 export type DeliveryCleanupActionHistory = {
   readonly actionId: string;
   readonly latest: DeliveryCleanupActionReceipt;
   readonly latestSequence: number;
-  readonly receipts: ReadonlyArray<{ readonly receipt: DeliveryCleanupActionReceipt; readonly sequence: number }>;
+  readonly receipts: ReadonlyArray<{
+    readonly receipt: DeliveryCleanupActionReceipt;
+    readonly sequence: number;
+  }>;
 };
 export type DeliveryPullRequestReadyActionHistory = {
   readonly actionId: string;
   readonly latest: DeliveryPullRequestReadyReceipt;
   readonly latestSequence: number;
-  readonly receipts: ReadonlyArray<{ readonly receipt: DeliveryPullRequestReadyReceipt; readonly sequence: number }>;
+  readonly receipts: ReadonlyArray<{
+    readonly receipt: DeliveryPullRequestReadyReceipt;
+    readonly sequence: number;
+  }>;
 };
 export type DeliveryLocalReviewAttestationActionHistory = {
   readonly actionId: string;
   readonly latest: DeliveryLocalReviewAttestationReceipt;
   readonly latestSequence: number;
-  readonly receipts: ReadonlyArray<{ readonly receipt: DeliveryLocalReviewAttestationReceipt; readonly sequence: number }>;
+  readonly receipts: ReadonlyArray<{
+    readonly receipt: DeliveryLocalReviewAttestationReceipt;
+    readonly sequence: number;
+  }>;
 };
 
 export function deriveDeliveryLocalReviewAttestationHistories(
-  events: ReadonlyArray<{ readonly receipt: DeliveryLocalReviewAttestationReceipt; readonly sequence: number }>,
+  events: ReadonlyArray<{
+    readonly receipt: DeliveryLocalReviewAttestationReceipt;
+    readonly sequence: number;
+  }>
 ) {
-  const histories = new Map<string, DeliveryLocalReviewAttestationActionHistory>();
+  const histories = new Map<
+    string,
+    DeliveryLocalReviewAttestationActionHistory
+  >();
   for (const event of events) {
     const previous = histories.get(event.receipt.actionId);
     if (previous === undefined) {
-      const active = [...histories.values()].find(({ latest }) => latest.state === "intentRecorded");
+      const active = [...histories.values()].find(
+        ({ latest }) => latest.state === "intentRecorded"
+      );
       if (active !== undefined) {
-        throw new Error("An unresolved local review attestation cannot be superseded.");
+        throw new Error(
+          "An unresolved local review attestation cannot be superseded."
+        );
       }
     }
-    validateDeliveryLocalReviewAttestationTransition(previous?.latest, event.receipt);
+    validateDeliveryLocalReviewAttestationTransition(
+      previous?.latest,
+      event.receipt
+    );
     if (event.receipt.state === "confirmed") {
       const confirmed = event.receipt;
-      if ([...histories.values()].some(({ actionId, latest }) =>
-        actionId !== confirmed.actionId &&
-        latest.state === "confirmed" &&
-        sameDeliveryLocalReviewAttestationGeneration(latest, confirmed)
-      )) {
-        throw new Error("Only one local review attestation may confirm the same delivery authority.");
+      if (
+        [...histories.values()].some(
+          ({ actionId, latest }) =>
+            actionId !== confirmed.actionId &&
+            latest.state === "confirmed" &&
+            sameDeliveryLocalReviewAttestationGeneration(latest, confirmed)
+        )
+      ) {
+        throw new Error(
+          "Only one local review attestation may confirm the same delivery authority."
+        );
       }
     }
     histories.set(event.receipt.actionId, {
@@ -780,21 +1068,28 @@ export function deriveDeliveryLocalReviewAttestationHistories(
     });
   }
   const ordered = [...histories.values()].sort(
-    (left, right) => left.latestSequence - right.latestSequence || left.actionId.localeCompare(right.actionId),
+    (left, right) =>
+      left.latestSequence - right.latestSequence ||
+      left.actionId.localeCompare(right.actionId)
   );
-  const active = ordered.filter(({ latest }) => latest.state === "intentRecorded");
-  if (active.length > 1) throw new Error("Only one local review attestation may be active.");
+  const active = ordered.filter(
+    ({ latest }) => latest.state === "intentRecorded"
+  );
+  if (active.length > 1)
+    throw new Error("Only one local review attestation may be active.");
   return { active: active[0], histories: ordered, latest: ordered.at(-1) };
 }
 
 function sameDeliveryLocalReviewAttestationGeneration(
   left: DeliveryLocalReviewAttestationConfirmed,
-  right: DeliveryLocalReviewAttestationConfirmed,
+  right: DeliveryLocalReviewAttestationConfirmed
 ) {
-  return left.runId === right.runId &&
+  return (
+    left.runId === right.runId &&
     left.publicationOperationId === right.publicationOperationId &&
     left.publicationPayloadDigest === right.publicationPayloadDigest &&
-    left.publicationConfirmationSequence === right.publicationConfirmationSequence &&
+    left.publicationConfirmationSequence ===
+      right.publicationConfirmationSequence &&
     left.authoritySequence === right.authoritySequence &&
     left.repository === right.repository &&
     left.prNumber === right.prNumber &&
@@ -803,19 +1098,27 @@ function sameDeliveryLocalReviewAttestationGeneration(
     left.headSha === right.headSha &&
     left.decision === right.decision &&
     left.authority === right.authority &&
-    left.version === right.version;
+    left.version === right.version
+  );
 }
 
 export function deriveDeliveryPullRequestReadyActionHistories(
-  events: ReadonlyArray<{ readonly receipt: DeliveryPullRequestReadyReceipt; readonly sequence: number }>,
+  events: ReadonlyArray<{
+    readonly receipt: DeliveryPullRequestReadyReceipt;
+    readonly sequence: number;
+  }>
 ) {
   const histories = new Map<string, DeliveryPullRequestReadyActionHistory>();
   for (const event of events) {
     const previous = histories.get(event.receipt.actionId);
     if (previous === undefined) {
-      const active = [...histories.values()].find(({ latest }) => isActiveReadyForReviewState(latest.state));
+      const active = [...histories.values()].find(({ latest }) =>
+        isActiveReadyForReviewState(latest.state)
+      );
       if (active !== undefined) {
-        throw new Error("An unresolved ready-for-review action cannot be superseded.");
+        throw new Error(
+          "An unresolved ready-for-review action cannot be superseded."
+        );
       }
     }
     validateDeliveryPullRequestReadyTransition(previous?.latest, event.receipt);
@@ -827,14 +1130,24 @@ export function deriveDeliveryPullRequestReadyActionHistories(
     });
   }
   const ordered = [...histories.values()].sort(
-    (left, right) => left.latestSequence - right.latestSequence || left.actionId.localeCompare(right.actionId),
+    (left, right) =>
+      left.latestSequence - right.latestSequence ||
+      left.actionId.localeCompare(right.actionId)
   );
-  const active = ordered.filter(({ latest }) => isActiveReadyForReviewState(latest.state));
-  if (active.length > 1) throw new Error("Only one ready-for-review action may be active.");
+  const active = ordered.filter(({ latest }) =>
+    isActiveReadyForReviewState(latest.state)
+  );
+  if (active.length > 1)
+    throw new Error("Only one ready-for-review action may be active.");
   return { active: active[0], histories: ordered, latest: ordered.at(-1) };
 }
 
-export function deriveDeliveryMergeActionHistories(events: ReadonlyArray<{ readonly receipt: DeliveryMergeReceipt; readonly sequence: number }>) {
+export function deriveDeliveryMergeActionHistories(
+  events: ReadonlyArray<{
+    readonly receipt: DeliveryMergeReceipt;
+    readonly sequence: number;
+  }>
+) {
   const histories = new Map<string, DeliveryMergeActionHistory>();
   for (const event of events) {
     const previous = histories.get(event.receipt.actionId);
@@ -846,51 +1159,136 @@ export function deriveDeliveryMergeActionHistories(events: ReadonlyArray<{ reado
       receipts: [...(previous?.receipts ?? []), event],
     });
   }
-  const ordered = [...histories.values()].sort((left, right) => left.latestSequence - right.latestSequence || left.actionId.localeCompare(right.actionId));
-  const active = ordered.filter(({ latest }) => latest.state === "intentRecorded" || latest.state === "dispatchAttempted" || latest.state === "outcomeUnknown");
-  if (active.length > 1) throw new Error("Only one merge action may be active.");
+  const ordered = [...histories.values()].sort(
+    (left, right) =>
+      left.latestSequence - right.latestSequence ||
+      left.actionId.localeCompare(right.actionId)
+  );
+  const active = ordered.filter(
+    ({ latest }) =>
+      latest.state === "intentRecorded" ||
+      latest.state === "dispatchAttempted" ||
+      latest.state === "outcomeUnknown"
+  );
+  if (active.length > 1)
+    throw new Error("Only one merge action may be active.");
   for (let index = 1; index < ordered.length; index += 1) {
     const previous = ordered[index - 1]!;
     const next = ordered[index]!;
-    if (previous.latest.state !== "dispatchFailed" || next.latest.decisionSequence <= previous.latest.decisionSequence) throw new Error("A newer merge action requires conclusive failure and a newer readiness decision.");
+    if (
+      previous.latest.state !== "dispatchFailed" ||
+      next.latest.decisionSequence <= previous.latest.decisionSequence
+    )
+      throw new Error(
+        "A newer merge action requires conclusive failure and a newer readiness decision."
+      );
   }
   return { active: active[0], histories: ordered, latest: ordered.at(-1) };
 }
 
-export function deriveDeliveryCleanupActionHistories(events: ReadonlyArray<{ readonly receipt: DeliveryCleanupActionReceipt; readonly sequence: number }>) {
+export function deriveDeliveryCleanupActionHistories(
+  events: ReadonlyArray<{
+    readonly receipt: DeliveryCleanupActionReceipt;
+    readonly sequence: number;
+  }>
+) {
   const histories = new Map<string, DeliveryCleanupActionHistory>();
   for (const event of events) {
     const previous = histories.get(event.receipt.actionId);
     if (previous !== undefined) {
-      if (previous.latest.branchName !== event.receipt.branchName || previous.latest.mergeCommitSha !== event.receipt.mergeCommitSha || previous.latest.ownershipDigest !== event.receipt.ownershipDigest) throw new Error("Cleanup action binding changed.");
-      if (previous.latest.state === "completed" && event.receipt.state !== "completed") throw new Error("Completed cleanup cannot regress.");
-      if (previous.latest.worktree === "absent" && event.receipt.worktree !== "absent") throw new Error("Proven worktree absence cannot regress.");
-      if (previous.latest.branch === "absent" && event.receipt.branch !== "absent") throw new Error("Proven branch absence cannot regress.");
+      if (
+        previous.latest.branchName !== event.receipt.branchName ||
+        previous.latest.mergeCommitSha !== event.receipt.mergeCommitSha ||
+        previous.latest.ownershipDigest !== event.receipt.ownershipDigest
+      )
+        throw new Error("Cleanup action binding changed.");
+      if (
+        previous.latest.state === "completed" &&
+        event.receipt.state !== "completed"
+      )
+        throw new Error("Completed cleanup cannot regress.");
+      if (
+        previous.latest.worktree === "absent" &&
+        event.receipt.worktree !== "absent"
+      )
+        throw new Error("Proven worktree absence cannot regress.");
+      if (
+        previous.latest.branch === "absent" &&
+        event.receipt.branch !== "absent"
+      )
+        throw new Error("Proven branch absence cannot regress.");
     }
-    histories.set(event.receipt.actionId, { actionId: event.receipt.actionId, latest: event.receipt, latestSequence: event.sequence, receipts: [...(previous?.receipts ?? []), event] });
+    histories.set(event.receipt.actionId, {
+      actionId: event.receipt.actionId,
+      latest: event.receipt,
+      latestSequence: event.sequence,
+      receipts: [...(previous?.receipts ?? []), event],
+    });
   }
-  const ordered = [...histories.values()].sort((left, right) => left.latestSequence - right.latestSequence || left.actionId.localeCompare(right.actionId));
+  const ordered = [...histories.values()].sort(
+    (left, right) =>
+      left.latestSequence - right.latestSequence ||
+      left.actionId.localeCompare(right.actionId)
+  );
   const active = ordered.filter(({ latest }) => latest.state !== "completed");
-  if (active.length > 1) throw new Error("Only one cleanup action may be active.");
+  if (active.length > 1)
+    throw new Error("Only one cleanup action may be active.");
   return { active: active[0], histories: ordered, latest: ordered.at(-1) };
 }
 
-export function deliveryActionAuditSummary(input: { readonly cleanup: ReturnType<typeof deriveDeliveryCleanupActionHistories>; readonly localReviewAttestation?: ReturnType<typeof deriveDeliveryLocalReviewAttestationHistories>; readonly merge: ReturnType<typeof deriveDeliveryMergeActionHistories>; readonly readyForReview?: ReturnType<typeof deriveDeliveryPullRequestReadyActionHistories> }, limit = 20) {
+export function deliveryActionAuditSummary(
+  input: {
+    readonly cleanup: ReturnType<typeof deriveDeliveryCleanupActionHistories>;
+    readonly localReviewAttestation?: ReturnType<
+      typeof deriveDeliveryLocalReviewAttestationHistories
+    >;
+    readonly merge: ReturnType<typeof deriveDeliveryMergeActionHistories>;
+    readonly readyForReview?: ReturnType<
+      typeof deriveDeliveryPullRequestReadyActionHistories
+    >;
+  },
+  limit = 20
+) {
   const safeLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
   return {
-    cleanup: input.cleanup.histories.slice(-safeLimit).map(({ actionId, latest, latestSequence }) => ({ actionId, latestSequence, state: latest.state })),
-    localReviewAttestation: (input.localReviewAttestation?.histories ?? []).slice(-safeLimit).map(({ actionId, latest, latestSequence }) => ({ actionId, latestSequence, state: latest.state })),
-    merge: input.merge.histories.slice(-safeLimit).map(({ actionId, latest, latestSequence }) => ({ actionId, latestSequence, state: latest.state })),
-    readyForReview: (input.readyForReview?.histories ?? []).slice(-safeLimit).map(({ actionId, latest, latestSequence }) => ({ actionId, latestSequence, state: latest.state })),
+    cleanup: input.cleanup.histories
+      .slice(-safeLimit)
+      .map(({ actionId, latest, latestSequence }) => ({
+        actionId,
+        latestSequence,
+        state: latest.state,
+      })),
+    localReviewAttestation: (input.localReviewAttestation?.histories ?? [])
+      .slice(-safeLimit)
+      .map(({ actionId, latest, latestSequence }) => ({
+        actionId,
+        latestSequence,
+        state: latest.state,
+      })),
+    merge: input.merge.histories
+      .slice(-safeLimit)
+      .map(({ actionId, latest, latestSequence }) => ({
+        actionId,
+        latestSequence,
+        state: latest.state,
+      })),
+    readyForReview: (input.readyForReview?.histories ?? [])
+      .slice(-safeLimit)
+      .map(({ actionId, latest, latestSequence }) => ({
+        actionId,
+        latestSequence,
+        state: latest.state,
+      })),
   };
 }
 
 function validateDeliveryLocalReviewAttestationTransition(
   previous: DeliveryLocalReviewAttestationReceipt | undefined,
-  next: DeliveryLocalReviewAttestationReceipt,
+  next: DeliveryLocalReviewAttestationReceipt
 ) {
   if (previous === undefined) {
-    if (next.state !== "intentRecorded") throw new Error("Local review attestation must begin with intent.");
+    if (next.state !== "intentRecorded")
+      throw new Error("Local review attestation must begin with intent.");
     return;
   }
   const binding = [
@@ -919,27 +1317,60 @@ function validateDeliveryLocalReviewAttestationTransition(
     throw new Error("Local review attestation binding changed.");
   }
   if (previous.state === next.state) return;
-  if (previous.state === "intentRecorded" && (next.state === "confirmed" || next.state === "failed")) return;
-  throw new Error(`Illegal local review attestation transition ${previous.state} -> ${next.state}.`);
+  if (
+    previous.state === "intentRecorded" &&
+    (next.state === "confirmed" || next.state === "failed")
+  )
+    return;
+  throw new Error(
+    `Illegal local review attestation transition ${previous.state} -> ${next.state}.`
+  );
 }
 
-function validateDeliveryMergeActionTransition(previous: DeliveryMergeReceipt | undefined, next: DeliveryMergeReceipt) {
+function validateDeliveryMergeActionTransition(
+  previous: DeliveryMergeReceipt | undefined,
+  next: DeliveryMergeReceipt
+) {
   if (previous === undefined) {
-    if (next.state !== "intentRecorded") throw new Error("Merge action must begin with intent.");
+    if (next.state !== "intentRecorded")
+      throw new Error("Merge action must begin with intent.");
     return;
   }
-  const binding = ["actionId", "branchName", "decisionSequence", "expectedHeadSha", "mergeMethod", "payloadDigest", "policyDigest", "policyVersion", "prNumber", "prUrl", "repository"] as const;
-  if (binding.some((key) => previous[key] !== next[key])) throw new Error("Merge action binding changed.");
+  const binding = [
+    "actionId",
+    "branchName",
+    "decisionSequence",
+    "expectedHeadSha",
+    "mergeMethod",
+    "payloadDigest",
+    "policyDigest",
+    "policyVersion",
+    "prNumber",
+    "prUrl",
+    "repository",
+  ] as const;
+  if (binding.some((key) => previous[key] !== next[key]))
+    throw new Error("Merge action binding changed.");
   if (previous.state === next.state) return;
-  if (previous.state === "intentRecorded" && next.state === "dispatchAttempted") return;
-  if (previous.state === "dispatchAttempted" && (next.state === "dispatchConfirmed" || next.state === "dispatchFailed" || next.state === "outcomeUnknown")) return;
-  if (previous.state === "outcomeUnknown" && next.state === "dispatchConfirmed") return;
-  throw new Error(`Illegal merge action transition ${previous.state} -> ${next.state}.`);
+  if (previous.state === "intentRecorded" && next.state === "dispatchAttempted")
+    return;
+  if (
+    previous.state === "dispatchAttempted" &&
+    (next.state === "dispatchConfirmed" ||
+      next.state === "dispatchFailed" ||
+      next.state === "outcomeUnknown")
+  )
+    return;
+  if (previous.state === "outcomeUnknown" && next.state === "dispatchConfirmed")
+    return;
+  throw new Error(
+    `Illegal merge action transition ${previous.state} -> ${next.state}.`
+  );
 }
 
 function validateDeliveryPullRequestReadyTransition(
   previous: DeliveryPullRequestReadyReceipt | undefined,
-  next: DeliveryPullRequestReadyReceipt,
+  next: DeliveryPullRequestReadyReceipt
 ) {
   if (previous === undefined) {
     if (next.state !== "intentRecorded") {
@@ -966,25 +1397,95 @@ function validateDeliveryPullRequestReadyTransition(
   if (previous.state === next.state) return;
   if (
     previous.state === "intentRecorded" &&
-    (next.state === "dispatchAttempted" || next.state === "confirmedWithoutDispatch")
-  ) return;
+    (next.state === "dispatchAttempted" ||
+      next.state === "confirmedWithoutDispatch")
+  )
+    return;
   if (
     previous.state === "dispatchAttempted" &&
-    (next.state === "dispatchConfirmed" || next.state === "dispatchFailed" || next.state === "outcomeUnknown")
-  ) return;
-  if ((previous.state === "outcomeUnknown" || previous.state === "dispatchFailed") && next.state === "dispatchConfirmed") return;
-  throw new Error(`Illegal ready-for-review action transition ${previous.state} -> ${next.state}.`);
+    (next.state === "dispatchConfirmed" ||
+      next.state === "dispatchFailed" ||
+      next.state === "outcomeUnknown")
+  )
+    return;
+  if (
+    (previous.state === "outcomeUnknown" ||
+      previous.state === "dispatchFailed") &&
+    next.state === "dispatchConfirmed"
+  )
+    return;
+  throw new Error(
+    `Illegal ready-for-review action transition ${previous.state} -> ${next.state}.`
+  );
 }
 
-function isActiveReadyForReviewState(state: DeliveryPullRequestReadyReceipt["state"]) {
-  return state === "intentRecorded" || state === "dispatchAttempted" || state === "outcomeUnknown";
+function isActiveReadyForReviewState(
+  state: DeliveryPullRequestReadyReceipt["state"]
+) {
+  return (
+    state === "intentRecorded" ||
+    state === "dispatchAttempted" ||
+    state === "outcomeUnknown"
+  );
 }
 
-export function deriveDeliveryActionHistoriesFromEvents(events: ReadonlyArray<RunEvent>) {
+export function deriveDeliveryActionHistoriesFromEvents(
+  events: ReadonlyArray<RunEvent>
+) {
   return {
-    cleanup: deriveDeliveryCleanupActionHistories(events.flatMap((event) => event.type === "DELIVERY_CLEANUP_RECORDED" ? [{ receipt: parseDeliveryCleanupReceipt(event.payload["cleanup"]), sequence: event.sequence }] : [])),
-    localReviewAttestation: deriveDeliveryLocalReviewAttestationHistories(events.flatMap((event) => event.type === "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED" ? [{ receipt: parseDeliveryLocalReviewAttestationReceipt(event.payload["attestation"]), sequence: event.sequence }] : [])),
-    merge: deriveDeliveryMergeActionHistories(events.flatMap((event) => event.type === "DELIVERY_MERGE_RECORDED" ? [{ receipt: parseDeliveryMergeReceipt(event.payload["mergeAction"]), sequence: event.sequence }] : [])),
-    readyForReview: deriveDeliveryPullRequestReadyActionHistories(events.flatMap((event) => event.type === "DELIVERY_PR_READY_RECORDED" ? [{ receipt: parseDeliveryPullRequestReadyReceipt(event.payload["readyForReviewAction"]), sequence: event.sequence }] : [])),
+    cleanup: deriveDeliveryCleanupActionHistories(
+      events.flatMap((event) =>
+        event.type === "DELIVERY_CLEANUP_RECORDED"
+          ? [
+              {
+                receipt: parseDeliveryCleanupReceipt(event.payload["cleanup"]),
+                sequence: event.sequence,
+              },
+            ]
+          : []
+      )
+    ),
+    localReviewAttestation: deriveDeliveryLocalReviewAttestationHistories(
+      events.flatMap((event) =>
+        event.type === "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED"
+          ? [
+              {
+                receipt: parseDeliveryLocalReviewAttestationReceipt(
+                  event.payload["attestation"]
+                ),
+                sequence: event.sequence,
+              },
+            ]
+          : []
+      )
+    ),
+    merge: deriveDeliveryMergeActionHistories(
+      events.flatMap((event) =>
+        event.type === "DELIVERY_MERGE_RECORDED"
+          ? [
+              {
+                receipt: parseDeliveryMergeReceipt(
+                  event.payload["mergeAction"]
+                ),
+                sequence: event.sequence,
+              },
+            ]
+          : []
+      )
+    ),
+    readyForReview: deriveDeliveryPullRequestReadyActionHistories(
+      events.flatMap((event) =>
+        event.type === "DELIVERY_PR_READY_RECORDED"
+          ? [
+              {
+                receipt: parseDeliveryPullRequestReadyReceipt(
+                  event.payload["readyForReviewAction"]
+                ),
+                sequence: event.sequence,
+              },
+            ]
+          : []
+      )
+    ),
   };
 }

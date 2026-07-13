@@ -1,12 +1,13 @@
 import * as Schema from "effect/Schema";
+
 import { RunIdSchema } from "./run-id.js";
 
 const PositiveIntegerSchema = Schema.Int.check(
-  Schema.isGreaterThanOrEqualTo(1),
+  Schema.isGreaterThanOrEqualTo(1)
 );
 
 const NonNegativeIntegerSchema = Schema.Int.check(
-  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isGreaterThanOrEqualTo(0)
 );
 
 export const DogfoodFindingCategorySchema = Schema.Literals([
@@ -19,8 +20,7 @@ export const DogfoodFindingCategorySchema = Schema.Literals([
 ] as const);
 
 /** Normalized category for a Gaia dogfood finding. */
-export type DogfoodFindingCategory =
-  typeof DogfoodFindingCategorySchema.Type;
+export type DogfoodFindingCategory = typeof DogfoodFindingCategorySchema.Type;
 
 export const DogfoodFindingSeveritySchema = Schema.Literals([
   "info",
@@ -29,11 +29,10 @@ export const DogfoodFindingSeveritySchema = Schema.Literals([
 ] as const);
 
 /** Operator impact of a Gaia dogfood finding. */
-export type DogfoodFindingSeverity =
-  typeof DogfoodFindingSeveritySchema.Type;
+export type DogfoodFindingSeverity = typeof DogfoodFindingSeveritySchema.Type;
 
 export class DogfoodFindingSource extends Schema.Class<DogfoodFindingSource>(
-  "DogfoodFindingSource",
+  "DogfoodFindingSource"
 )({
   artifactPath: Schema.optionalKey(Schema.NonEmptyString),
   eventType: Schema.optionalKey(Schema.NonEmptyString),
@@ -44,7 +43,7 @@ export class DogfoodFindingSource extends Schema.Class<DogfoodFindingSource>(
 }) {}
 
 export class LinearCandidateIssue extends Schema.Class<LinearCandidateIssue>(
-  "LinearCandidateIssue",
+  "LinearCandidateIssue"
 )({
   acceptanceCriteria: Schema.Array(Schema.NonEmptyString),
   bodyMarkdown: Schema.NonEmptyString,
@@ -55,7 +54,7 @@ export class LinearCandidateIssue extends Schema.Class<LinearCandidateIssue>(
 }) {}
 
 export class DogfoodFinding extends Schema.Class<DogfoodFinding>(
-  "DogfoodFinding",
+  "DogfoodFinding"
 )({
   category: DogfoodFindingCategorySchema,
   candidateIssue: Schema.optionalKey(LinearCandidateIssue),
@@ -67,7 +66,7 @@ export class DogfoodFinding extends Schema.Class<DogfoodFinding>(
 }) {}
 
 export class DogfoodRetrospective extends Schema.Class<DogfoodRetrospective>(
-  "DogfoodRetrospective",
+  "DogfoodRetrospective"
 )({
   artifactPath: Schema.NonEmptyString,
   candidateIssueCount: NonNegativeIntegerSchema,
