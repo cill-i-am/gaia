@@ -4,6 +4,8 @@ import {
   HarnessCapabilities,
   HarnessProviderDescriptor,
   parseHarnessEvent,
+  parseHarnessInteractionId,
+  parseHarnessItemId,
   parseHarnessProviderId,
   parseRunId,
   parseHarnessSessionId,
@@ -151,6 +153,79 @@ describe("interactive issue-delivery harness", () => {
         assert.isBelow(
           types.indexOf("HARNESS_SESSION_EVENT_RECORDED"),
           types.indexOf("WORKER_COMPLETED"),
+        );
+      }),
+    );
+
+    it.effect("keeps a recovered provider stream open for the new pending interaction", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-interactive-recovered-" });
+        const runId = parseRunId("run-RecoLive01");
+        const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+        yield* fs.makeDirectory(paths.root, { recursive: true });
+        yield* fs.makeDirectory(paths.workspace, { recursive: true });
+        yield* appendEvent(runId, paths, {
+          payload: { specPath: "spec.md" },
+          type: "RUN_CREATED",
+        });
+
+        const sessionId = parseHarnessSessionId(`session-${runId}`);
+        const fiber = yield* interactiveSessionHarness({
+          provider: recoveredPendingProvider(),
+          rootDirectory: cwd,
+        }).run(
+          HarnessRunRequest.make({
+            codexHarnessProgressPath: paths.codexHarnessProgress,
+            harnessName: codexAppServerHarnessName,
+            resolvedSkillPaths: [],
+            runId,
+            skillBundlePath: paths.skillBundle,
+            specBody: "Recover and continue with a new pending interaction.",
+            specTitle: "Recovered pending interaction",
+            workerLogPath: paths.workerLog,
+            workerResultPath: paths.workerResult,
+            workspaceOutputPath: paths.workspaceOutput,
+            workspacePath: paths.workspace,
+          }),
+        ).pipe(Effect.forkChild);
+
+        let harnessEvents: ReadonlyArray<HarnessEvent> = [];
+        for (let attempt = 0; attempt < 1_000; attempt += 1) {
+          const observed = yield* readLocalRunEvents(runId, {
+            rootDirectory: cwd,
+          });
+          harnessEvents = observed.events.flatMap((event) =>
+            event.type === "HARNESS_SESSION_EVENT_RECORDED"
+              ? [parseHarnessEvent(event.payload.event)]
+              : [],
+          );
+          if (harnessEvents.length >= 7) break;
+          yield* Effect.yieldNow;
+        }
+        yield* Fiber.interrupt(fiber);
+
+        const snapshot = projectHarnessEvents(harnessEvents, sessionId);
+        assert.deepEqual(harnessEvents.map(({ kind }) => kind), [
+          "sessionStarted",
+          "turnStarted",
+          "interactionRequested",
+          "sessionFailed",
+          "sessionRecovered",
+          "turnStarted",
+          "interactionRequested",
+        ]);
+        assert.strictEqual(snapshot.state, "running");
+        assert.deepEqual(
+          snapshot.pendingInteractions.map(({ interactionId }) => interactionId),
+          [parseHarnessInteractionId("interaction-recovered-pending")],
+        );
+        assert.deepEqual(
+          snapshot.turns.map(({ status, turnId }) => ({ status, turnId })),
+          [
+            { status: "failed", turnId: parseHarnessTurnId("turn-recovered-old") },
+            { status: "running", turnId: parseHarnessTurnId("turn-recovered-new") },
+          ],
         );
       }),
     );
@@ -722,6 +797,98 @@ function syntheticSession(
       Stream.fromIterable([...events, postTerminalEvent]),
       Stream.never,
     ),
+    interrupt: Option.some(Effect.void),
+    resolveInteraction: () => Effect.void,
+    send: () => Effect.void,
+    snapshot: Effect.succeed(projectHarnessEvents(events, sessionId)),
+    steer: Option.none(),
+  };
+}
+
+function recoveredPendingProvider(): HarnessProvider {
+  const descriptor = HarnessProviderDescriptor.make({
+    displayName: "Recovered Pending Provider",
+    executionModes: ["local"],
+    providerId: parseHarnessProviderId("recovered-pending"),
+  });
+  return {
+    createSession: (request) =>
+      Effect.succeed(recoveredPendingSession(request.sessionId, descriptor)),
+    descriptor,
+    detect: Effect.succeed({
+      auth: { state: "notRequired" },
+      capabilities: recoveredPendingCapabilities,
+      state: "available",
+      version: "recovered-pending-1",
+    }),
+    resumeSession: (request) =>
+      Effect.succeed(recoveredPendingSession(request.sessionId, descriptor)),
+  };
+}
+
+const recoveredPendingCapabilities = HarnessCapabilities.make({
+  ...syntheticCapabilities,
+  approvals: ["command"],
+});
+
+function recoveredPendingSession(
+  sessionId: ReturnType<typeof parseHarnessSessionId>,
+  provider: HarnessProviderDescriptor,
+): HarnessSession {
+  const oldTurnId = parseHarnessTurnId("turn-recovered-old");
+  const newTurnId = parseHarnessTurnId("turn-recovered-new");
+  const events: ReadonlyArray<HarnessEvent> = [
+    {
+      capabilities: recoveredPendingCapabilities,
+      kind: "sessionStarted",
+      provider,
+      sessionId,
+      state: "running",
+    },
+    { kind: "turnStarted", sessionId, turnId: oldTurnId },
+    {
+      interaction: {
+        allowedDecisions: ["decline"],
+        command: "pnpm gaia doctor --json",
+        interactionId: parseHarnessInteractionId("interaction-recovered-old"),
+        itemId: parseHarnessItemId("item-recovered-old"),
+        kind: "commandApproval",
+        requestedAt: "2026-07-13T02:30:00.000Z",
+        turnId: oldTurnId,
+        workspacePath: parseWorkspaceRelativePath("."),
+      },
+      kind: "interactionRequested",
+      sessionId,
+    },
+    {
+      failure: {
+        code: "ProviderCrashed",
+        kind: "providerFailure",
+        message: "Provider stopped unexpectedly.",
+        recoverable: true,
+      },
+      kind: "sessionFailed",
+      sessionId,
+    },
+    { kind: "sessionRecovered", sessionId },
+    { kind: "turnStarted", sessionId, turnId: newTurnId },
+    {
+      interaction: {
+        allowedDecisions: ["decline"],
+        command: "pnpm gaia doctor --json",
+        interactionId: parseHarnessInteractionId("interaction-recovered-pending"),
+        itemId: parseHarnessItemId("item-recovered-pending"),
+        kind: "commandApproval",
+        requestedAt: "2026-07-13T02:30:01.000Z",
+        turnId: newTurnId,
+        workspacePath: parseWorkspaceRelativePath("."),
+      },
+      kind: "interactionRequested",
+      sessionId,
+    },
+  ];
+  return {
+    events: Stream.concat(Stream.fromIterable(events), Stream.never),
     interrupt: Option.some(Effect.void),
     resolveInteraction: () => Effect.void,
     send: () => Effect.void,

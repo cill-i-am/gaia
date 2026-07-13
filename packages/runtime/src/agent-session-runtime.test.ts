@@ -30,8 +30,14 @@ import { makeRunPaths } from "./paths.js";
 const runId = parseRunId("run-Gaia86rt01");
 const sessionId = parseHarnessSessionId(`session-${runId}`);
 const turnId = parseHarnessTurnId("turn-runtime");
+const recoveredTurnId = parseHarnessTurnId("turn-runtime-recovered");
+const oldInteractionId = parseHarnessInteractionId("interaction-runtime-old");
+const recoveredInteractionId = parseHarnessInteractionId(
+  "interaction-runtime-recovered",
+);
 const provider = HarnessProviderDescriptor.make({ displayName: "Synthetic", executionModes: ["local"], providerId: parseHarnessProviderId("private-provider") });
 const capabilities = HarnessCapabilities.make({ approvals: [], fileChangeEvents: false, interruption: true, resumableSessions: true, review: false, steering: true, streamingMessages: true, structuredOutput: false, subagents: false, toolEvents: false, usageReporting: false, userQuestions: false });
+const approvalCapabilities = HarnessCapabilities.make({ ...capabilities, approvals: ["command"] });
 
 describe("agent session runtime", () => {
   layer(NodeServices.layer)((it) => {
@@ -71,6 +77,62 @@ describe("agent session runtime", () => {
         const updates = yield* stream.pipe(Stream.runCollect);
         expect(updates.map(({ eventSequence }) => eventSequence)).toEqual([2, 3, 4]);
         expect(updates.at(-1)?.terminal).toBe(true);
+      })),
+    );
+
+    it.effect("streams recovered backlog after a historical recoverable failure without permanently closing", () =>
+      Effect.scoped(Effect.gen(function* () {
+        const rootDirectory = yield* setupRecoveredRun();
+        const stream = yield* streamAgentSessionUpdates(runId, "agent-worker", 2, { rootDirectory });
+        const updates = yield* stream.pipe(Stream.take(6), Stream.runCollect);
+
+        expect(updates.map(({ eventSequence }) => eventSequence)).toEqual([3, 4, 5, 6, 7, 8]);
+        expect(updates.map(({ terminal }) => terminal)).toEqual([false, false, false, false, false, false]);
+        expect(updates.at(-1)?.snapshot.state).toBe("running");
+        expect(updates.at(-1)?.snapshot.turns).toEqual([
+          { failure: recoverableProviderFailure, status: "failed", turnId },
+          { status: "running", turnId: recoveredTurnId },
+        ]);
+        expect(updates.at(-1)?.snapshot.pendingInteractions.map(({ interactionId }) => interactionId)).toEqual([recoveredInteractionId]);
+      })),
+    );
+
+    it.effect("still closes unrecovered terminal streams", () =>
+      Effect.scoped(Effect.gen(function* () {
+        const rootDirectory = yield* setupRun(approvalCapabilities);
+        const paths = yield* makeRunPaths(runId, { rootDirectory });
+        yield* appendHarnessSessionEvent(runId, paths, { kind: "turnStarted", sessionId, turnId });
+        yield* appendHarnessSessionEvent(runId, paths, {
+          failure: recoverableProviderFailure,
+          kind: "sessionFailed",
+          sessionId,
+        });
+        const stream = yield* streamAgentSessionUpdates(runId, "agent-worker", 2, { rootDirectory });
+        const updates = yield* stream.pipe(Stream.runCollect);
+
+        expect(updates.map(({ eventSequence }) => eventSequence)).toEqual([3, 4]);
+        expect(updates.at(-1)?.terminal).toBe(true);
+        expect(updates.at(-1)?.snapshot.state).toBe("failed");
+      })),
+    );
+
+    it.effect("still closes other terminal session-state streams", () =>
+      Effect.scoped(Effect.gen(function* () {
+        for (const state of ["completed", "interrupted", "unavailable"] as const) {
+          const rootDirectory = yield* setupRun();
+          const paths = yield* makeRunPaths(runId, { rootDirectory });
+          yield* appendHarnessSessionEvent(runId, paths, {
+            kind: "sessionStateChanged",
+            sessionId,
+            state,
+          });
+          const stream = yield* streamAgentSessionUpdates(runId, "agent-worker", 2, { rootDirectory });
+          const updates = yield* stream.pipe(Stream.runCollect);
+
+          expect(updates.map(({ eventSequence }) => eventSequence)).toEqual([3]);
+          expect(updates.at(-1)?.terminal).toBe(true);
+          expect(updates.at(-1)?.snapshot.state).toBe(state);
+        }
       })),
     );
 
@@ -154,6 +216,84 @@ describe("agent session runtime", () => {
 
         const duplicate = yield* dispatchAgentSessionAction({ action: { actionId: parseHarnessActionId("action-duplicate"), decision: "decline", interactionId: commandInteractionId, kind: "approval", sessionId }, agentId: "agent-worker", coordinator, options: { rootDirectory }, runId }).pipe(Effect.exit);
         expect(duplicate._tag).toBe("Failure");
+      })),
+    );
+
+    it.effect("resolves only the recovered pending interaction after replay and replays the same action canonically", () =>
+      Effect.scoped(Effect.gen(function* () {
+        const rootDirectory = yield* setupRecoveredRun();
+        const snapshot = yield* readAgentSessionSnapshot(runId, "agent-worker", { rootDirectory });
+
+        expect(snapshot.state).toBe("running");
+        expect(snapshot.turns).toEqual([
+          { failure: recoverableProviderFailure, status: "failed", turnId },
+          { status: "running", turnId: recoveredTurnId },
+        ]);
+        expect(snapshot.pendingInteractions.map(({ interactionId }) => interactionId)).toEqual([recoveredInteractionId]);
+
+        const resolutions: unknown[] = [];
+        const coordinator = makeLiveHarnessSessionCoordinator();
+        yield* coordinator.register({ agentId: "agent-worker", runId, session: fakeSession([], resolutions), sessionId });
+
+        const oldInteraction = yield* dispatchAgentSessionAction({
+          action: {
+            actionId: parseHarnessActionId("action-old-interaction"),
+            decision: "decline",
+            interactionId: oldInteractionId,
+            kind: "approval",
+            sessionId,
+          },
+          agentId: "agent-worker",
+          coordinator,
+          options: { rootDirectory },
+          runId,
+        }).pipe(Effect.exit);
+        expect(oldInteraction._tag).toBe("Failure");
+        expect(resolutions).toHaveLength(0);
+
+        const action = {
+          actionId: parseHarnessActionId("action-recovered-approval"),
+          decision: "decline" as const,
+          interactionId: recoveredInteractionId,
+          kind: "approval" as const,
+          sessionId,
+        };
+        const first = yield* dispatchAgentSessionAction({
+          action,
+          agentId: "agent-worker",
+          coordinator,
+          options: { rootDirectory },
+          runId,
+        });
+        const replay = yield* dispatchAgentSessionAction({
+          action,
+          agentId: "agent-worker",
+          coordinator,
+          options: { rootDirectory },
+          runId,
+        });
+        const differentAction = yield* dispatchAgentSessionAction({
+          action: {
+            ...action,
+            actionId: parseHarnessActionId("action-recovered-approval-other"),
+          },
+          agentId: "agent-worker",
+          coordinator,
+          options: { rootDirectory },
+          runId,
+        }).pipe(Effect.exit);
+
+        expect(first.state).toBe("dispatchConfirmed");
+        expect(replay).toEqual(first);
+        expect(differentAction._tag).toBe("Failure");
+        expect(resolutions).toEqual([
+          {
+            actionId: action.actionId,
+            decision: "decline",
+            interactionId: recoveredInteractionId,
+            kind: "approval",
+          },
+        ]);
       })),
     );
 
@@ -288,6 +428,56 @@ function setupRun(runCapabilities = capabilities) {
     yield* appendHarnessSessionEvent(runId, paths, { capabilities: runCapabilities, kind: "sessionStarted", provider, sessionId, state: "running" });
     return rootDirectory;
   });
+}
+
+function setupRecoveredRun() {
+  return Effect.gen(function* () {
+    const rootDirectory = yield* setupRun(approvalCapabilities);
+    const paths = yield* makeRunPaths(runId, { rootDirectory });
+    yield* appendHarnessSessionEvent(runId, paths, { kind: "turnStarted", sessionId, turnId });
+    yield* appendHarnessSessionEvent(runId, paths, {
+      interaction: commandApproval(oldInteractionId, turnId),
+      kind: "interactionRequested",
+      sessionId,
+    });
+    yield* appendHarnessSessionEvent(runId, paths, {
+      failure: recoverableProviderFailure,
+      kind: "sessionFailed",
+      sessionId,
+    });
+    yield* appendHarnessSessionEvent(runId, paths, { kind: "sessionRecovered", sessionId });
+    yield* appendHarnessSessionEvent(runId, paths, { kind: "turnStarted", sessionId, turnId: recoveredTurnId });
+    yield* appendHarnessSessionEvent(runId, paths, {
+      interaction: commandApproval(recoveredInteractionId, recoveredTurnId),
+      kind: "interactionRequested",
+      sessionId,
+    });
+    return rootDirectory;
+  });
+}
+
+const recoverableProviderFailure = {
+  code: "ProviderCrashed",
+  kind: "providerFailure" as const,
+  message: "Provider stopped unexpectedly.",
+  recoverable: true,
+};
+
+function commandApproval(
+  interactionId: typeof recoveredInteractionId,
+  turnId: typeof recoveredTurnId,
+) {
+  return {
+    allowedDecisions: ["decline", "cancel"] as const,
+    command: "pnpm gaia doctor --json",
+    interactionId,
+    itemId: parseHarnessItemId(`item-${interactionId}`),
+    kind: "commandApproval" as const,
+    reason: "Run doctor smoke",
+    requestedAt: "2026-07-10T00:00:00.000Z",
+    turnId,
+    workspacePath: parseWorkspaceRelativePath("."),
+  };
 }
 
 function fakeSession(calls: string[], resolutions: unknown[] = []): HarnessSession {
