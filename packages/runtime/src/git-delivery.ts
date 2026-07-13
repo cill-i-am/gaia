@@ -90,6 +90,20 @@ const parseDeliveryOwnershipManifest = Schema.decodeUnknownSync(
   DeliveryOwnershipManifest,
 );
 
+const generatedRoots = new Set([
+  ".gaia",
+  ".turbo",
+  "coverage",
+  "dist",
+  "gaia-runs",
+  "node_modules",
+]);
+
+export type TrackedDeliveryPayloadFingerprint = {
+  readonly trackedPayloadDigest: string;
+  readonly trackedPayloadEntryCount: number;
+};
+
 export type DeliveryOwnedCleanupResult = {
   readonly branch: "absent" | "present";
   readonly worktree: "absent" | "present";
@@ -444,6 +458,61 @@ export function inspectContinuableDeliveryWorktreeOwnership(input: {
   });
 }
 
+/** Retained-recovery inspection proves ownership and returns a privacy-safe stable tracked-payload fingerprint. */
+export function inspectRetainedPayloadDeliveryWorktreeOwnership(input: {
+  readonly expectedHeads: ReadonlyArray<string>;
+  readonly options: DeliveryWorkspaceOptions;
+  readonly paths: RunPaths;
+  readonly provenance: DeliveryProvenance;
+}): Effect.Effect<TrackedDeliveryPayloadFingerprint, unknown, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    yield* inspectContinuableDeliveryWorktreeOwnership(input);
+    const runner = input.options.commandRunner ?? nodeGitDeliveryCommandRunner;
+    const status = (yield* runGit(runner, input.paths.workspace, [
+      "status",
+      "--porcelain=v1",
+      "-z",
+      "--untracked-files=all",
+    ])).stdout;
+    const entries = parsePorcelainStatus(status);
+    if (entries.some(({ xy }) => isUntrackedStatus(xy))) {
+      return yield* retainedPayloadFailure();
+    }
+    const trackedEntries = entries.filter(({ xy }) => !isUntrackedStatus(xy));
+    if (trackedEntries.some(({ originalPath, path }) => pathHasGeneratedSegment(path) || (originalPath !== undefined && pathHasGeneratedSegment(originalPath)))) {
+      return yield* retainedPayloadFailure();
+    }
+    const unstagedDiff = (yield* runGit(runner, input.paths.workspace, [
+      "diff",
+      "--binary",
+      "--full-index",
+      "--no-ext-diff",
+      "--",
+    ])).stdout;
+    const stagedDiff = (yield* runGit(runner, input.paths.workspace, [
+      "diff",
+      "--cached",
+      "--binary",
+      "--full-index",
+      "--no-ext-diff",
+      "HEAD",
+      "--",
+    ])).stdout;
+    const canonical = {
+      stagedDiff,
+      status: trackedEntries
+        .map(({ originalPath, path, xy }) => originalPath === undefined ? { path, xy } : { originalPath, path, xy })
+        .toSorted((left, right) => `${left.path}\0${left.originalPath ?? ""}`.localeCompare(`${right.path}\0${right.originalPath ?? ""}`)),
+      unstagedDiff,
+      version: 1,
+    };
+    return {
+      trackedPayloadDigest: createHash("sha256").update(JSON.stringify(canonical)).digest("hex"),
+      trackedPayloadEntryCount: trackedEntries.length,
+    };
+  });
+}
+
 /** Recovery-grade inspection adds mutable cleanliness and registration checks to immutable ownership. */
 export function inspectRecoverableDeliveryWorktreeOwnership(input: {
   readonly expectedHeads: ReadonlyArray<string>;
@@ -464,6 +533,41 @@ export function inspectRecoverableDeliveryWorktreeOwnership(input: {
       return yield* Effect.fail(makeRuntimeError({ code: "DeliveryWorktreeIdentityMismatch", message: "Persisted delivery worktree is not a clean, registered, non-primary owned checkout.", recoverable: false }));
     }
   });
+}
+
+function retainedPayloadFailure() {
+  return Effect.fail(makeRuntimeError({
+    code: "DeliveryWorktreeIdentityMismatch",
+    message: "Persisted delivery worktree payload is not stable retained source payload.",
+    recoverable: false,
+  }));
+}
+
+function isUntrackedStatus(xy: string) {
+  return xy === "??";
+}
+
+function pathHasGeneratedSegment(path: string) {
+  return path.split("/").some((segment) => generatedRoots.has(segment));
+}
+
+function parsePorcelainStatus(raw: string) {
+  const fields = raw.split("\0").filter((field) => field.length > 0);
+  const entries: Array<{ readonly originalPath?: string; readonly path: string; readonly xy: string }> = [];
+  for (let index = 0; index < fields.length; index++) {
+    const field = fields[index] ?? "";
+    const xy = field.slice(0, 2);
+    const path = field.slice(3);
+    if (path.length === 0) continue;
+    if (xy.includes("R") || xy.includes("C")) {
+      const originalPath = fields[index + 1];
+      index++;
+      entries.push(originalPath === undefined ? { path, xy } : { originalPath, path, xy });
+    } else {
+      entries.push({ path, xy });
+    }
+  }
+  return entries;
 }
 
 export function isGitRepository(

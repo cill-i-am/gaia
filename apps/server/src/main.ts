@@ -27,6 +27,7 @@ import {
   issueDeliveryWorkerHarnessCapabilities,
   inspectContinuableDeliveryWorktreeOwnership,
   inspectRecoverableDeliveryWorktreeOwnership,
+  inspectRetainedPayloadDeliveryWorktreeOwnership,
   makeRunPaths,
   makeRuntimeError,
   loadRun,
@@ -34,6 +35,7 @@ import {
   type RunPaths,
   type HarnessProviderRegistry,
   type WorkerRecoveryProvider,
+  type WorkerRecoveryWorkspaceValidation,
   type WorkerRecoveryThreadStatus,
 } from "@gaia/runtime";
 import {
@@ -42,7 +44,7 @@ import {
   type WorkerCorrelationReconciliationInput,
 } from "@gaia/runtime/server-workflows";
 import { makeTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
-import { Effect, FileSystem, Layer } from "effect";
+import { Effect, FileSystem, Layer, Path } from "effect";
 import * as Console from "effect/Console";
 import { HttpServer } from "effect/unstable/http";
 import { createServer } from "node:http";
@@ -176,13 +178,13 @@ function makeProductionHarnessServices(rootDirectory: string) {
           resumeThread: (threadId) => client.resumeThread({ threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ thread }) => ({ status: toWorkerRecoveryThreadStatus(thread.status?.type), threadId: thread.id }))),
           startTurn: ({ model, threadId }) => client.startTurn({ input: [{ text: "Resume the retained worker task after the recoverable provider failure.", type: "text" }], model, threadId: parseCodexThreadId(threadId) }).pipe(Effect.map(({ turn }) => ({ turnId: turn.id }))),
         }),
-        validateWorkspace: (_workspacePath, expectedHead) => Effect.gen(function* () {
-          const paths = yield* makeRunPaths(parseRunId(runId), { rootDirectory });
-          const loaded = yield* loadRun(paths);
-          const provenance = parseDeliveryProvenance(loaded.events[0]?.payload["delivery"]);
-          if (provenance._tag === "None" || provenance.value.baseRevision !== expectedHead) return yield* Effect.fail(new Error("Accepted delivery provenance changed."));
-          yield* inspectRecoverableDeliveryWorktreeOwnership({ expectedHeads: [expectedHead], options: { rootDirectory }, paths, provenance: provenance.value });
-        }),
+        validateWorkspace: (_workspacePath, expectedHead) =>
+          validateProductionWorkerRecoveryWorkspace({
+            action,
+            expectedHead,
+            rootDirectory,
+            runId,
+          }),
       });
     });
     const reconcileCorrelation = (input: WorkerCorrelationReconciliationInput) =>
@@ -729,6 +731,91 @@ export function makeProductionWorkerRecoveryProvider(
     resumeThread: input.resumeThread,
     startTurn: input.startTurn,
   };
+}
+
+export function validateProductionWorkerRecoveryWorkspace(input: {
+  readonly action: Parameters<typeof recoverWorkerSession>[1];
+  readonly expectedHead: string;
+  readonly rootDirectory: string;
+  readonly runId: string;
+}): Effect.Effect<WorkerRecoveryWorkspaceValidation, unknown, FileSystem.FileSystem | Path.Path> {
+  return Effect.gen(function* () {
+    const paths = yield* makeRunPaths(parseRunId(input.runId), {
+      rootDirectory: input.rootDirectory,
+    });
+    const loaded = yield* loadRun(paths);
+    const provenance = parseDeliveryProvenance(loaded.events[0]?.payload["delivery"]);
+    if (provenance._tag === "None" || provenance.value.baseRevision !== input.expectedHead) {
+      return yield* Effect.fail(new Error("Accepted delivery provenance changed."));
+    }
+    const inspection = {
+      expectedHeads: [input.expectedHead],
+      options: { rootDirectory: input.rootDirectory },
+      paths,
+      provenance: provenance.value,
+    };
+    return shouldAllowRetainedPayloadWorkerRecovery(loaded.events, input.action)
+      ? yield* inspectRetainedPayloadDeliveryWorktreeOwnership(inspection)
+      : yield* inspectRecoverableDeliveryWorktreeOwnership(inspection);
+  });
+}
+
+function shouldAllowRetainedPayloadWorkerRecovery(
+  events: ReadonlyArray<{ readonly payload: Record<string, unknown>; readonly sequence: number; readonly type: string }>,
+  action: Parameters<typeof recoverWorkerSession>[1],
+) {
+  if (events.some(({ type }) => blocksRetainedPayloadWorkerRecovery(type))) return false;
+  const currentFailureIndex = events.findIndex((event) => event.sequence === action.expectedFailureSequence);
+  const currentFailure = currentFailureIndex < 0 ? undefined : events[currentFailureIndex];
+  if (
+    currentFailure?.sequence !== action.expectedFailureSequence ||
+    currentFailure.type !== "RUN_FAILED" ||
+    currentFailure.payload["recoverable"] !== true ||
+    currentFailure.payload["stage"] !== "runningWorker"
+  ) {
+    return false;
+  }
+  const actionDigest = createHash("sha256").update(JSON.stringify(action)).digest("hex");
+  const suffix = events.slice(currentFailureIndex + 1);
+  if (!suffix.every((event) => {
+    if (event.type !== "WORKER_RECOVERY_RECORDED") return false;
+    const receipt = parseWorkerRecoveryReceipt(event.payload["recovery"]);
+    return receipt.actionId === action.actionId &&
+      receipt.expectedFailureSequence === action.expectedFailureSequence &&
+      receipt.payloadDigest === actionDigest;
+  })) {
+    return false;
+  }
+  const latestPriorReceiptsByFailure = new Map<number, ReturnType<typeof parseWorkerRecoveryReceipt>>();
+  for (const event of events.slice(0, currentFailureIndex)) {
+    if (event.type !== "WORKER_RECOVERY_RECORDED") continue;
+    const receipt = parseWorkerRecoveryReceipt(event.payload["recovery"]);
+    if (receipt.expectedFailureSequence < action.expectedFailureSequence) {
+      latestPriorReceiptsByFailure.set(receipt.expectedFailureSequence, receipt);
+    }
+  }
+  const latestPriorReceipts = [...latestPriorReceiptsByFailure.values()];
+  return latestPriorReceipts.length > 0 &&
+    latestPriorReceipts.every((receipt) =>
+      receipt.state === "dispatchConfirmed" ||
+      receipt.state === "failed" ||
+      receipt.state === "outcomeUnknown"
+    );
+}
+
+function blocksRetainedPayloadWorkerRecovery(type: string) {
+  return type === "DELIVERY_READY_TO_PUBLISH" ||
+    type === "DELIVERY_PUBLICATION_INTENT_RECORDED" ||
+    type === "DELIVERY_REMEDIATION_RECORDED" ||
+    type === "DELIVERY_MERGE_READINESS_RECORDED" ||
+    type === "DELIVERY_MERGE_RECORDED" ||
+    type === "DELIVERY_CLEANUP_RECORDED" ||
+    type === "DELIVERY_CLEANUP_PROVENANCE_RECORDED" ||
+    type === "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED" ||
+    type === "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED" ||
+    type === "GITHUB_PR_LOOP_RECORDED" ||
+    type === "GITHUB_PR_COMMENT_RECORDED" ||
+    type === "MERGE_DECISION_RECORDED";
 }
 
 function findBoundWorkerRecoveryReceipt(
