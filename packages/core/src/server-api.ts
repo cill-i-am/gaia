@@ -347,7 +347,7 @@ export const DeliveryRecoveryActionKindSchema = Schema.Literals([
   "reconcile",
   "retry",
 ] as const);
-export const DeliveryPublicRecoveryActionKindSchema = Schema.Literals(["reconcile", "retry", "reconcileMerge", "retryCleanup"] as const);
+export const DeliveryPublicRecoveryActionKindSchema = Schema.Literals(["reconcile", "retry", "reconcileMerge", "retryCleanup", "retryWorkerRecovery"] as const);
 
 const EventSequenceSchema = Schema.Number.pipe(
   Schema.check(Schema.isInt({ identifier: "EventSequence" })),

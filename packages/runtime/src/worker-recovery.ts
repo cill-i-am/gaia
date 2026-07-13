@@ -16,8 +16,19 @@ export type WorkerRecoveryProvider = {
   readonly startTurn: (input: { readonly model: string; readonly threadId: string }) => Effect.Effect<{ readonly turnId: string }, unknown>;
 };
 
-const PrivateWorkerRecoveryTurn = Schema.Struct({ turnId: Schema.NonEmptyString, version: Schema.Literal(1) });
+const Digest = Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u)));
+const PrivateWorkerRecoveryTurn = Schema.Struct({
+  actionId: Schema.NonEmptyString,
+  expectedFailureSequence: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+  expectedSessionId: Schema.NonEmptyString,
+  harnessProfileId: Schema.NonEmptyString,
+  model: Schema.NonEmptyString,
+  payloadDigest: Digest,
+  turnId: Schema.NonEmptyString,
+  version: Schema.Literal(2),
+});
 const PrivateWorkerCorrelationFollowUpTurn = Schema.Struct({ turnId: Schema.NonEmptyString, version: Schema.Literal(1) });
+type WorkerRecoveryCheckpointBinding = Pick<WorkerRecoveryReceipt, "actionId" | "expectedFailureSequence" | "expectedSessionId" | "harnessProfileId" | "model" | "payloadDigest">;
 
 export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryAction, input: {
   readonly appendRecoveryEvent?: typeof appendEvent;
@@ -36,11 +47,12 @@ export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryA
       input.appendRecoveryEvent ?? appendEvent,
     );
     const loaded = yield* loadRun(paths);
-    const prior = latestReceipt(loaded.events);
     const payloadDigest = digest(action);
+    const prior = latestReceiptForFailure(loaded.events, action.expectedFailureSequence);
     if (prior !== undefined && (prior.actionId !== action.actionId || prior.payloadDigest !== payloadDigest)) return yield* conflict("Another worker recovery action is already authoritative.");
     if (prior?.state === "dispatchAttempted") return yield* recordReceipt({ ...prior, code: "WorkerRecoveryOutcomeUnknown", message: "A prior dispatch has no durable native turn receipt.", state: "outcomeUnknown" });
     if (prior?.state === "dispatchConfirmed" || prior?.state === "failed" || prior?.state === "outcomeUnknown") return prior;
+    if (prior === undefined && hasUnresolvedEarlierGeneration(loaded.events, action.expectedFailureSequence)) return yield* conflict("A prior worker recovery generation is not terminal.");
     assertEligible(loaded.events, action);
     const accepted = loaded.events[0]?.payload["delivery"] as { baseRevision?: unknown } | undefined;
     const expectedHead = typeof accepted?.baseRevision === "string" ? accepted.baseRevision : undefined;
@@ -71,7 +83,7 @@ export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryA
     if (started._tag === "Failure") {
       return yield* recordReceipt({ ...base, code: "WorkerRecoveryOutcomeUnknown", message: "Codex turn dispatch outcome is unknown.", state: "outcomeUnknown" });
     }
-    const checkpoint = yield* writePrivateTurnCheckpoint(paths.root, started.value.turnId).pipe(Effect.exit);
+    const checkpoint = yield* writePrivateTurnCheckpoint(paths.root, started.value.turnId, base).pipe(Effect.exit);
     if (checkpoint._tag === "Failure") return yield* recordReceipt({ ...base, code: "WorkerRecoveryOutcomeUnknown", message: "Codex returned a turn but its private receipt was not durable.", state: "outcomeUnknown" });
     return yield* recordReceipt({ ...base, nativeTurnIdDigest: digest(started.value.turnId), state: "dispatchConfirmed" });
   }));
@@ -90,9 +102,25 @@ function assertEligible(events: ReadonlyArray<{ readonly payload: Record<string,
   if (failureIndex !== events.length - 1 || failure?.type !== "RUN_FAILED" || failure.sequence !== action.expectedFailureSequence || failure.payload["recoverable"] !== true || failure.payload["stage"] !== "runningWorker" || session?.type !== "HARNESS_SESSION_EVENT_RECORDED" || harness?.kind !== "sessionFailed" || harness.failure.kind !== "providerFailure" || !harness.failure.recoverable || harness.sessionId !== action.expectedSessionId || createdExecution?.selection?.harnessProfileId !== action.harnessProfileId) throw makeRuntimeError({ code: "DeliveryActionConflict", message: "Run is not eligible for worker recovery.", recoverable: false });
 }
 
-function latestReceipt(events: ReadonlyArray<{ readonly payload: Record<string, unknown>; readonly type: string }>) {
-  const event = [...events].reverse().find(({ type }) => type === "WORKER_RECOVERY_RECORDED");
+function latestReceiptForFailure(events: ReadonlyArray<{ readonly payload: Record<string, unknown>; readonly type: string }>, expectedFailureSequence: number) {
+  const event = [...events].reverse().find(({ payload, type }) => {
+    if (type !== "WORKER_RECOVERY_RECORDED") return false;
+    const receipt = parseWorkerRecoveryReceipt(payload["recovery"]);
+    return receipt.expectedFailureSequence === expectedFailureSequence;
+  });
   return event === undefined ? undefined : parseWorkerRecoveryReceipt(event.payload["recovery"]);
+}
+function hasUnresolvedEarlierGeneration(events: ReadonlyArray<{ readonly payload: Record<string, unknown>; readonly type: string }>, expectedFailureSequence: number) {
+  const latestByFailure = new Map<number, WorkerRecoveryReceipt>();
+  for (const event of events) {
+    if (event.type !== "WORKER_RECOVERY_RECORDED") continue;
+    const receipt = parseWorkerRecoveryReceipt(event.payload["recovery"]);
+    latestByFailure.set(receipt.expectedFailureSequence, receipt);
+  }
+  return [...latestByFailure.values()].some((receipt) => receipt.expectedFailureSequence < expectedFailureSequence && !isRecoveryGenerationTerminal(receipt));
+}
+function isRecoveryGenerationTerminal(receipt: WorkerRecoveryReceipt) {
+  return receipt.state === "dispatchConfirmed" || receipt.state === "failed" || receipt.state === "outcomeUnknown";
 }
 function digest(value: unknown) { return createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex"); }
 function conflict(message: string) { return Effect.fail(makeRuntimeError({ code: "DeliveryActionConflict", message, recoverable: false })); }
@@ -100,21 +128,22 @@ function failure(code: string, message: string) { return makeRuntimeError({ code
 function record(runId: ReturnType<typeof parseRunId>, paths: RunPaths, receipt: WorkerRecoveryReceipt, appendRecoveryEvent: typeof appendEvent) {
   return appendRecoveryEvent(runId, paths, { payload: { recovery: encodeWorkerRecoveryReceiptJson(receipt) }, type: "WORKER_RECOVERY_RECORDED" }).pipe(Effect.as(receipt));
 }
-function writePrivateTurnCheckpoint(runRoot: string, turnId: string) {
+function writePrivateTurnCheckpoint(runRoot: string, turnId: string, binding: WorkerRecoveryCheckpointBinding) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    yield* fs.writeFileString(path.join(runRoot, ".worker-recovery-turn.json"), JSON.stringify({ turnId, version: 1 }));
+    yield* fs.writeFileString(path.join(runRoot, ".worker-recovery-turn.json"), JSON.stringify({ ...binding, turnId, version: 2 }));
   });
 }
 
-export function readPrivateWorkerRecoveryTurn(runRoot: string, expectedDigest: string) {
+export function readPrivateWorkerRecoveryTurn(runRoot: string, expectedDigest: string, binding: WorkerRecoveryCheckpointBinding) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const raw = yield* fs.readFileString(path.join(runRoot, ".worker-recovery-turn.json"));
     const checkpoint = yield* Schema.decodeUnknownEffect(PrivateWorkerRecoveryTurn)(JSON.parse(raw));
     if (digest(checkpoint.turnId) !== expectedDigest) return yield* Effect.fail(new Error("Worker recovery turn checkpoint digest mismatch."));
+    if (checkpoint.actionId !== binding.actionId || checkpoint.expectedFailureSequence !== binding.expectedFailureSequence || checkpoint.expectedSessionId !== binding.expectedSessionId || checkpoint.harnessProfileId !== binding.harnessProfileId || checkpoint.model !== binding.model || checkpoint.payloadDigest !== binding.payloadDigest) return yield* Effect.fail(new Error("Worker recovery turn checkpoint binding mismatch."));
     return checkpoint.turnId;
   }).pipe(Effect.mapError((cause) => makeRuntimeError({ cause, code: "WorkerRecoveryTurnCheckpointInvalid", message: "The exact recovered native turn checkpoint is missing or invalid.", recoverable: false })));
 }

@@ -46,6 +46,7 @@ import {
   parseDeliveryRemediation,
   parseDeliveryMergeReceipt,
   parseDeliveryMergeReadinessDecision,
+  parseHarnessEvent,
   parseRunId,
   parseDeliveryCleanupReceipt,
   snapshotFromReplay,
@@ -882,6 +883,7 @@ function deliveryUpdateFromEvents(
     : parseDeliveryMergeReadinessDecision(delivery.mergeDecision);
   const activeCleanupAction = actionHistories.cleanup.active?.latest;
   const latestCleanupAction = actionHistories.cleanup.latest?.latest;
+  const workerRecoveryActions = hasCurrentWorkerRecoveryAction(events) ? ["retryWorkerRecovery" as const] : [];
   return DeliverySnapshotDto.make({
     eventSequence,
     mode: "pullRequest",
@@ -891,7 +893,9 @@ function deliveryUpdateFromEvents(
     ...(observation === undefined ? {} : { observation }),
     provenance: DeliveryProvenanceDto.make(delivery),
     recoveryActions:
-      activeMergeAction?.state === "outcomeUnknown" || activeMergeAction?.state === "dispatchAttempted"
+      workerRecoveryActions.length > 0
+        ? workerRecoveryActions
+        : activeMergeAction?.state === "outcomeUnknown" || activeMergeAction?.state === "dispatchAttempted"
         ? ["reconcileMerge"]
         : delivery.stage === "cleanupRequired"
           ? ["retryCleanup"]
@@ -919,6 +923,24 @@ function deliveryUpdateFromEvents(
     ...(workerDesktopOriginCorrelation === undefined ? {} : { workerDesktopOriginCorrelation }),
     ...(workerRecovery === undefined ? {} : { workerRecovery }),
   });
+}
+
+function hasCurrentWorkerRecoveryAction(events: ReadonlyArray<RunEvent>) {
+  const latest = events.at(-1);
+  if (latest?.type !== "RUN_FAILED" || latest.payload["recoverable"] !== true || latest.payload["stage"] !== "runningWorker") return false;
+  const previous = events.at(-2);
+  if (previous?.type !== "HARNESS_SESSION_EVENT_RECORDED") return false;
+  const harness = parseHarnessEvent(previous.payload["event"]);
+  if (harness.kind !== "sessionFailed" || harness.failure.kind !== "providerFailure" || !harness.failure.recoverable) return false;
+  const receipts = events.flatMap((event) => event.type === "WORKER_RECOVERY_RECORDED" ? [parseWorkerRecoveryReceipt(event.payload["recovery"])] : []);
+  if (receipts.some((receipt) => receipt.expectedFailureSequence === latest.sequence)) return false;
+  const latestByFailure = new Map<number, (typeof receipts)[number]>();
+  for (const receipt of receipts) latestByFailure.set(receipt.expectedFailureSequence, receipt);
+  return [...latestByFailure.values()].every((receipt) => receipt.expectedFailureSequence < latest.sequence && isWorkerRecoveryReceiptTerminal(receipt));
+}
+
+function isWorkerRecoveryReceiptTerminal(receipt: ReturnType<typeof parseWorkerRecoveryReceipt>) {
+  return receipt.state === "dispatchConfirmed" || receipt.state === "failed" || receipt.state === "outcomeUnknown";
 }
 
 function publicDeliveryPublication(
