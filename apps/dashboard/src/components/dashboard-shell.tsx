@@ -1953,6 +1953,7 @@ function CommandHeader({
   const canStartLocalReviewAttestation = deliverySnapshot === undefined
     ? false
     : hasExactLocalReviewAttestationObservation(deliverySnapshot);
+  const terminalDelivery = deliverySnapshot?.stage === "completed";
   const selectedConsoleRun = serverConnection.selectedRun;
   const selectedStatusLabel =
     selectedConsoleRun?.statusLabel ?? statusLabels[selectedRun.status];
@@ -2010,7 +2011,19 @@ function CommandHeader({
                   <ExternalLinkIcon className="size-3" />
                 </a>
               ) : null}
-              {deliverySnapshot.publication?.state === "confirmed" && !readyForReviewConfirmed && (readyForReviewReconciliation !== undefined || canStartReadyForReview) ? (
+              {terminalDelivery && deliverySnapshot.latestMergeAction?.state === "dispatchConfirmed" ? (
+                <span className="inline-flex items-center gap-1 font-medium text-foreground" data-testid="selected-run-merge-status" title={deliverySnapshot.latestMergeAction.mergeCommitSha}>
+                  <GitCompareArrowsIcon className="size-3" />
+                  Merged {deliverySnapshot.latestMergeAction.mergeCommitSha.slice(0, 7)}
+                </span>
+              ) : null}
+              {terminalDelivery && deliverySnapshot.latestCleanupAction?.state === "completed" ? (
+                <span className="inline-flex items-center gap-1 font-medium text-foreground" data-testid="selected-run-cleanup-status">
+                  <BadgeCheckIcon className="size-3" />
+                  Cleanup complete
+                </span>
+              ) : null}
+              {!terminalDelivery && deliverySnapshot.publication?.state === "confirmed" && !readyForReviewConfirmed && (readyForReviewReconciliation !== undefined || canStartReadyForReview) ? (
                 <Button
                   disabled={deliveryActionPending}
                   onClick={() => void onDeliveryAction(readyForReviewAction(deliverySnapshot))}
@@ -2028,7 +2041,7 @@ function CommandHeader({
               {deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed ? (
                 <span className="font-medium text-foreground" data-testid="selected-run-ready-status">Ready for review</span>
               ) : null}
-              {deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && !localReviewAttestationConfirmed && (localReviewAttestation?.state === "intentRecorded" || canStartLocalReviewAttestation) ? (
+              {!terminalDelivery && deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && !localReviewAttestationConfirmed && (localReviewAttestation?.state === "intentRecorded" || canStartLocalReviewAttestation) ? (
                 <Button
                   disabled={deliveryActionPending}
                   onClick={() => void onDeliveryAction(localReviewAttestationAction(deliverySnapshot))}
@@ -2042,7 +2055,7 @@ function CommandHeader({
               {localReviewAttestationConfirmed ? (
                 <span className="font-medium text-foreground" data-testid="selected-run-local-review-status">Paired review attested</span>
               ) : null}
-              {deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && deliverySnapshot.mergeDecision?.approved !== true ? (
+              {!terminalDelivery && deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && deliverySnapshot.mergeDecision?.approved !== true ? (
                 <div className="flex flex-wrap items-center gap-1" aria-label="Evaluate merge readiness">
                   {(["merge", "squash", "rebase"] as const).map((method) => (
                     <Button disabled={deliveryActionPending} key={method} onClick={() => void onDeliveryAction({ actionId: createReadinessActionId(), kind: "evaluateMergeReadiness", mergeMethod: method })} size="xs" variant="outline">
@@ -2051,7 +2064,7 @@ function CommandHeader({
                   ))}
                 </div>
               ) : null}
-              {deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && deliverySnapshot.mergeDecision?.approved === true && deliverySnapshot.mergeDecisionSequence !== undefined ? (
+              {deliverySnapshot?.stage === "awaitingMerge" && deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && deliverySnapshot.mergeDecision?.approved === true && deliverySnapshot.mergeDecisionSequence !== undefined ? (
                 <DeliveryMergeConfirmation
                   actionId={mergeActionId}
                   branch={deliverySnapshot.mergeDecision.branchName}
@@ -2074,7 +2087,7 @@ function CommandHeader({
                   {...(deliveryActionError === undefined ? {} : { error: dashboardFailureMessage(deliveryActionError, "Merge action failed.") })}
                 />
               ) : null}
-              {deliverySnapshot.recoveryActions.map((action) => (
+              {(terminalDelivery ? [] : deliverySnapshot.recoveryActions).map((action) => (
                 <Button
                   disabled={deliveryActionPending}
                   key={action}

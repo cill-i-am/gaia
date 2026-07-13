@@ -900,6 +900,7 @@ function updateStatesForEvent(
     case "DELIVERY_CLEANUP_RECORDED": {
       const state = parseDeliveryCleanupReceipt(event.payload["cleanup"]).state;
       states.set("orchestrator", state === "completed" ? "succeeded" : "blocked");
+      if (state === "completed") states.set("ciWatcher", "succeeded");
       return;
     }
     case "DELIVERY_CLEANUP_PROVENANCE_RECORDED":

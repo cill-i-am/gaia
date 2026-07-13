@@ -260,7 +260,17 @@ describe("finite worker recovery HTTP lifecycle", () => {
         assert.isFalse(first.events.some(({ type }) => type === "WORKER_COMPLETED"));
         const projection = yield* fixture.getProjection();
         assert.strictEqual(projection.status, 200);
-        assert.include(yield* projection.text, '"workerRecoveryFailed"');
+        const projected = JSON.parse(yield* projection.text) as {
+          readonly data: {
+            readonly stage: string;
+            readonly status: string;
+            readonly workerRecovery: { readonly state: string };
+          };
+        };
+        const expectedStage = mode === "corrupt checkpoint" ? "workerRecoveryFailed" : "failed";
+        assert.strictEqual(projected.data.stage, expectedStage);
+        assert.strictEqual(projected.data.status, expectedStage);
+        assert.strictEqual(projected.data.workerRecovery.state, "failed");
         const eventCount = first.events.length;
         assert.strictEqual((yield* fixture.post()).status, 200);
         const repeated = yield* loadRun(fixture.paths);
