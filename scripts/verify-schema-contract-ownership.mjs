@@ -3,6 +3,8 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import ts from "typescript";
+
 import { runSchemaContractAudit } from "./audit-schema-contracts.mjs";
 import { analyzeSchemaContracts } from "./check-schema-contract-ownership.mjs";
 
@@ -32,7 +34,10 @@ const schemaDiagnostic = (
   rule: "gaia/schema-first-data-contract",
 });
 const projectRoot = await mkdtemp(
-  path.join(repoRoot, "packages/runtime/.gaia-schema-contract-ownership-")
+  path.join(
+    repoRoot,
+    "packages/runtime/node_modules/.gaia-schema-contract-ownership-"
+  )
 );
 
 try {
@@ -94,6 +99,78 @@ try {
         RunSchema
       );
       export type CurriedAnnotatedRun = typeof CurriedAnnotatedRunSchema.Type;
+      const RealArraySchema = Schema.Array(RunIdSchema);
+      export type RealArray = typeof RealArraySchema.Type;
+      const RealStructSchema = Schema.Struct({ value: RunIdSchema });
+      export type RealStruct = typeof RealStructSchema.Type;
+      const RealUnionSchema = Schema.Union([RunIdSchema, Schema.String]);
+      export type RealUnion = typeof RealUnionSchema.Type;
+      const RealRecordSchema = Schema.Record(Schema.String, RunIdSchema);
+      export type RealRecord = typeof RealRecordSchema.Type;
+      const RealFieldRecord = { value: RunIdSchema };
+      const RealRecordStructSchema = Schema.Struct(RealFieldRecord);
+      export type RealRecordStruct = typeof RealRecordStructSchema.Type;
+      const RealNestedStructSchema = Schema.Struct({
+        nested: Schema.Struct({ value: RunIdSchema }),
+      });
+      export type RealNestedStruct = typeof RealNestedStructSchema.Type;
+      const RealUnionMembers: [typeof RunIdSchema, typeof Schema.String] = [
+        RunIdSchema,
+        Schema.String,
+      ];
+      const RealSpreadUnionSchema = Schema.Union(RealUnionMembers);
+      export type RealSpreadUnion = typeof RealSpreadUnionSchema.Type;
+      const RealConstFields = { value: RunIdSchema } as const;
+      const RealConstStructSchema = Schema.Struct(RealConstFields);
+      export type RealConstStruct = typeof RealConstStructSchema.Type;
+      const RealSatisfiesFields = { value: RunIdSchema } satisfies Record<
+        string,
+        Schema.Top
+      >;
+      const RealSatisfiesStructSchema = Schema.Struct(RealSatisfiesFields);
+      export type RealSatisfiesStruct = typeof RealSatisfiesStructSchema.Type;
+      const RealConstUnionMembers = [RunIdSchema, Schema.String] as const;
+      const RealConstSpreadUnionSchema = Schema.Union(RealConstUnionMembers);
+      export type RealConstSpreadUnion =
+        typeof RealConstSpreadUnionSchema.Type;
+      const RealRecursiveSchema: Schema.Schema<Run> = Schema.suspend(
+        () => RealRecursiveSchema
+      );
+      export type RealRecursive = typeof RealRecursiveSchema.Type;
+      const CanonicalFieldsSchema = Schema.Struct({ ...RunSchema.fields });
+      export type CanonicalFields = typeof CanonicalFieldsSchema.Type;
+      const CanonicalMembersSchema = Schema.Union(RealUnionSchema.members);
+      export type CanonicalMembers = typeof CanonicalMembersSchema.Type;
+      const RealAliasedFields = { ...RealConstFields };
+      const RealAliasedStructSchema = Schema.Struct(RealAliasedFields);
+      export type RealAliasedStruct = typeof RealAliasedStructSchema.Type;
+      const RepeatedFieldsSchemaA = Schema.Struct(RealConstFields);
+      const RepeatedFieldsSchemaB = Schema.Struct(RealConstFields);
+      export type RepeatedFieldsA = typeof RepeatedFieldsSchemaA.Type;
+      export type RepeatedFieldsB = typeof RepeatedFieldsSchemaB.Type;
+      const exactSuspend = Schema.suspend;
+      const ExactSuspendAliasSchema: Schema.Schema<string> = exactSuspend(
+        () => Schema.String
+      );
+      export type ExactSuspendAlias = typeof ExactSuspendAliasSchema.Type;
+      const StructuralSelfSchema: Schema.Schema<string> = Schema.suspend(
+        () => StructuralSelfSchema
+      );
+      export type StructuralSelf = typeof StructuralSelfSchema.Type;
+      const OneLazyA: Schema.Schema<string> = Schema.suspend(() => OneLazyB);
+      const OneLazyB: Schema.Schema<string> = OneLazyA.annotate({
+        title: "OneLazyB",
+      });
+      export type OneLazy = typeof OneLazyA.Type;
+      const AllLazyA: Schema.Schema<string> = Schema.suspend(() => AllLazyB);
+      const AllLazyB: Schema.Schema<string> = Schema.suspend(() => AllLazyA);
+      export type AllLazy = typeof AllLazyA.Type;
+      const RecursiveAnnotatedSchema: Schema.Schema<string> = Schema.suspend(
+        () => RecursiveAnnotatedSchema.annotate({ title: "Recursive" })
+      );
+      export type RecursiveAnnotated = typeof RecursiveAnnotatedSchema.Type;
+      const LiteralVocabularySchema = Schema.Literals(["one", "two"] as const);
+      export type LiteralVocabulary = typeof LiteralVocabularySchema.Type;
     `
   );
   await writeFile(
@@ -118,6 +195,23 @@ try {
     `
   );
   await writeFile(
+    path.join(projectRoot, "external-schema-containers.d.ts"),
+    `
+      import { Schema } from "effect";
+      export type Fields = Record<
+        string,
+        Schema.Schema<Record<string, string>>
+      >;
+      export type Members = readonly [
+        Schema.Schema<Record<string, string>>,
+        typeof Schema.String,
+      ];
+      export declare const fields: Fields;
+      export declare const members: Members;
+      export declare function fakeFields(): Fields;
+    `
+  );
+  await writeFile(
     path.join(projectRoot, "counterfeit.ts"),
     `
       import { RunSchema } from "./reexport.js";
@@ -132,7 +226,7 @@ try {
   await writeFile(
     path.join(projectRoot, "counterfeit-schema-owner.ts"),
     `
-      import { Schema } from "effect";
+      import { Schema } from "effect"; import { fakeFields, fields, members, type Fields } from "./external-schema-containers.js";
 
       const FakeSchema = {} as Schema.Schema<Record<string, string>>;
       export type FakeDto = typeof FakeSchema.Type;
@@ -146,11 +240,163 @@ try {
         AnnotatedSchema
       );
       export type CurriedLaunderedDto = typeof CurriedLaunderedSchema.Type;
+      const ArrayLaundered = Schema.Array(FakeSchema);
+      export type ArrayDto = typeof ArrayLaundered.Type;
+      const StructLaundered = Schema.Struct({ value: AnnotatedSchema });
+      export type StructDto = typeof StructLaundered.Type;
+      const TypedSchema: Schema.Schema<Record<string, string>> = {} as never;
+      const UnionLaundered = Schema.Union([TypedSchema, Schema.String]);
+      export type UnionDto = typeof UnionLaundered.Type;
+      const FakeFieldRecord = { value: FakeSchema };
+      const RecordLaundered = Schema.Struct(FakeFieldRecord);
+      export type RecordDto = typeof RecordLaundered.Type;
+      const NestedStructLaundered = Schema.Struct({
+        nested: Schema.Struct({ value: FakeSchema }),
+      });
+      export type NestedStructDto = typeof NestedStructLaundered.Type;
+      const FakeUnionMembers: [
+        Schema.Schema<Record<string, string>>,
+        typeof Schema.String,
+      ] = [FakeSchema, Schema.String];
+      const SpreadUnionLaundered = Schema.Union(FakeUnionMembers);
+      export type SpreadUnionDto = typeof SpreadUnionLaundered.Type;
+      const DeclaredFieldsLaundered = Schema.Struct(fields);
+      export type DeclaredFieldsDto = typeof DeclaredFieldsLaundered.Type;
+      const AssertedFieldsLaundered = Schema.Struct({} as Fields);
+      export type AssertedFieldsDto = typeof AssertedFieldsLaundered.Type;
+      const HelperFieldsLaundered = Schema.Struct(fakeFields());
+      export type HelperFieldsDto = typeof HelperFieldsLaundered.Type;
+      const DeclaredMembersLaundered = Schema.Union(members);
+      export type DeclaredMembersDto = typeof DeclaredMembersLaundered.Type;
+      const MutableFields: Fields = {};
+      MutableFields.value = FakeSchema;
+      const MutableFieldsLaundered = Schema.Struct(MutableFields);
+      export type MutableFieldsDto = typeof MutableFieldsLaundered.Type;
+      const SuspendedLaundered = Schema.suspend(() => FakeSchema);
+      export type SuspendedDto = typeof SuspendedLaundered.Type;
     `
   );
   await writeFile(
     path.join(projectRoot, "manual.ts"),
     `export type ManualRun = { readonly runId: string };`
+  );
+  await writeFile(
+    path.join(projectRoot, "provenance-adversarial.ts"),
+    `
+      import { Schema } from "effect";
+
+      const FakeSchema = {} as typeof Schema.String;
+      let MutableSchema = Schema.String;
+      const MutableOwner = Schema.Array(MutableSchema);
+      export type MutableDto = typeof MutableOwner.Type;
+      var VariableSchema = Schema.String;
+      const VariableOwner = Schema.Array(VariableSchema);
+      export type VariableDto = typeof VariableOwner.Type;
+
+      const BeforeFields = { value: Schema.String };
+      BeforeFields.value = FakeSchema;
+      const BeforeOwner = Schema.Struct(BeforeFields);
+      export type BeforeDto = typeof BeforeOwner.Type;
+
+      const AfterFields = { value: Schema.String };
+      const AfterOwner = Schema.Struct(AfterFields);
+      AfterFields.value = FakeSchema;
+      export type AfterDto = typeof AfterOwner.Type;
+
+      const ElementMembers: [typeof Schema.String] = [Schema.String];
+      ElementMembers[0] = FakeSchema;
+      const ElementOwner = Schema.Union(ElementMembers);
+      export type ElementDto = typeof ElementOwner.Type;
+
+      const DeleteFields = { value: Schema.String };
+      delete (DeleteFields as Partial<typeof DeleteFields>).value;
+      const DeleteOwner = Schema.Struct(DeleteFields);
+      export type DeleteDto = typeof DeleteOwner.Type;
+
+      const UpdateMembers: [
+        typeof Schema.String,
+        ...Array<typeof Schema.String>,
+      ] = [Schema.String];
+      UpdateMembers.length++;
+      const UpdateOwner = Schema.Union(UpdateMembers);
+      export type UpdateDto = typeof UpdateOwner.Type;
+
+      const DestructuredFields = { value: Schema.String };
+      ({ value: DestructuredFields.value } = { value: FakeSchema });
+      const DestructuredOwner = Schema.Struct(DestructuredFields);
+      export type DestructuredDto = typeof DestructuredOwner.Type;
+
+      declare const escape: (value: unknown) => void;
+      const EscapedFields = { value: Schema.String };
+      escape(EscapedFields);
+      const EscapedOwner = Schema.Struct(EscapedFields);
+      export type EscapedDto = typeof EscapedOwner.Type;
+
+      const ReturnedFields = { value: Schema.String };
+      const returnFields = () => ReturnedFields;
+      const ReturnedOwner = Schema.Struct(ReturnedFields);
+      export type ReturnedDto = typeof ReturnedOwner.Type;
+      void returnFields;
+
+      export const ExportedFields = { value: Schema.String };
+      const ExportedOwner = Schema.Struct(ExportedFields);
+      export type ExportedDto = typeof ExportedOwner.Type;
+
+      declare const dynamicKey: "value";
+      const DynamicFields = { value: Schema.String };
+      const DynamicOwner = Schema.Struct({ value: DynamicFields[dynamicKey] });
+      export type DynamicDto = typeof DynamicOwner.Type;
+
+      declare const fakeSuspend: typeof Schema.suspend;
+      const FakeSuspendedOwner = fakeSuspend(() => Schema.String);
+      export type FakeSuspendedDto = typeof FakeSuspendedOwner.Type;
+
+      const CounterfeitCycleA: Schema.Schema<string> = Schema.suspend(
+        () => CounterfeitCycleB
+      );
+      const CounterfeitCycleB: Schema.Schema<string> = Schema.suspend(
+        () => FakeSchema
+      );
+      export type CounterfeitCycleDto = typeof CounterfeitCycleA.Type;
+
+      const FixedFieldsShape = Schema.Struct({ value: Schema.String });
+      declare const AmbientFixedFields: typeof FixedFieldsShape.fields;
+      const AmbientFixedOwner = Schema.Struct(AmbientFixedFields);
+      export type AmbientFixedDto = typeof AmbientFixedOwner.Type;
+
+      const failSchema = (): never => {
+        throw new Error("no schema");
+      };
+      const NeverLeaf: Schema.Schema<string> = failSchema();
+      export type NeverLeafDto = typeof NeverLeaf.Type;
+
+      declare const AnySchemaValue: any;
+      const AnyLeaf: Schema.Schema<string> = AnySchemaValue;
+      export type AnyLeafDto = typeof AnyLeaf.Type;
+
+      const NullLeaf: Schema.Schema<string> = null!;
+      export type NullLeafDto = typeof NullLeaf.Type;
+
+      const SuspendedNeverLeaf: Schema.Schema<string> = Schema.suspend(
+        () => NeverLeaf
+      );
+      export type SuspendedNeverLeafDto = typeof SuspendedNeverLeaf.Type;
+
+      declare const choose: boolean;
+      declare const arbitrary: any;
+      const ConditionalNull: Schema.Schema<string> = choose
+        ? Schema.String
+        : null!;
+      export type ConditionalNullDto = typeof ConditionalNull.Type;
+      const ConditionalAny: Schema.Schema<string> = choose
+        ? Schema.String
+        : arbitrary;
+      export type ConditionalAnyDto = typeof ConditionalAny.Type;
+
+      const MixedFields = { good: Schema.String, bad: arbitrary };
+      const MixedOwner = Schema.Struct(MixedFields);
+      export type MixedDto = typeof MixedOwner.Type;
+    `
   );
   await writeFile(
     path.join(projectRoot, "derived-manual.ts"),
@@ -263,6 +509,12 @@ try {
       type CallableWithData<T> = ((input: string) => void) & {
         readonly stored: T;
       };
+      class ConcreteWrapper {
+        declare readonly handler: CallableWithData<RunId>;
+      }
+      class PureCallableWrapper {
+        declare readonly handler: Handler<RunId>;
+      }
 
       declare const raw: unknown;
       export const genericHandler = raw as Handler<RunId>;
@@ -270,6 +522,8 @@ try {
       export const directHandler = raw as (input: RunId) => void;
       export const directFactory = raw as () => RunId;
       export const stored = raw as CallableWithData<RunId>;
+      export const nestedStored = raw as ConcreteWrapper;
+      export const nestedPureCallable = raw as PureCallableWrapper;
     `
   );
   await writeFile(
@@ -282,9 +536,51 @@ try {
     `
   );
 
+  const configPath = path.join(projectRoot, "tsconfig.json");
+  const config = ts.readConfigFile(configPath, ts.sys.readFile);
+  assert.equal(config.error, undefined);
+  const parsed = ts.parseJsonConfigFileContent(
+    config.config,
+    ts.sys,
+    projectRoot
+  );
+  const semanticProgram = ts.createProgram({
+    options: parsed.options,
+    rootNames: parsed.fileNames,
+  });
+  const semanticCleanFiles = new Set([
+    "counterfeit-schema-owner.ts",
+    "derived.ts",
+    "external-schema-containers.d.ts",
+    "provenance-adversarial.ts",
+    "reexport.ts",
+    "schema.ts",
+  ]);
+  assert.deepEqual(
+    [
+      ...semanticProgram.getSyntacticDiagnostics(),
+      ...semanticProgram.getSemanticDiagnostics(),
+    ]
+      .filter(
+        (diagnostic) =>
+          diagnostic.file !== undefined &&
+          semanticCleanFiles.has(path.basename(diagnostic.file.fileName))
+      )
+      .map(
+        (diagnostic) =>
+          `${path.basename(diagnostic.file.fileName)}: ${ts.flattenDiagnosticMessageText(
+            diagnostic.messageText,
+            "\n"
+          )}`
+      ),
+    [],
+    "ownership fixtures must be semantically valid for Effect beta.93"
+  );
+
   const diagnostics = analyzeSchemaContracts({
     cwd: projectRoot,
-    projectPath: path.join(projectRoot, "tsconfig.json"),
+    includeIgnoredPathsForTesting: true,
+    projectPath: configPath,
   });
 
   assert.deepEqual(diagnostics, [
@@ -299,7 +595,8 @@ try {
     brandDiagnostic("brand-casts.ts", 20, 28),
     brandDiagnostic("brand-casts.ts", 21, 35),
     brandDiagnostic("brand-casts.ts", 22, 29),
-    brandDiagnostic("callable-casts.ts", 15, 29),
+    brandDiagnostic("callable-casts.ts", 21, 29),
+    brandDiagnostic("callable-casts.ts", 22, 35),
     schemaDiagnostic(
       "capability.ts",
       5,
@@ -311,6 +608,18 @@ try {
     schemaDiagnostic("counterfeit-schema-owner.ts", 9, 19),
     schemaDiagnostic("counterfeit-schema-owner.ts", 11, 19),
     schemaDiagnostic("counterfeit-schema-owner.ts", 15, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 17, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 19, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 22, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 25, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 29, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 35, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 37, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 39, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 41, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 43, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 47, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 49, 19),
     schemaDiagnostic("counterfeit.ts", 6, 19),
     schemaDiagnostic("counterfeit.ts", 7, 19),
     schemaDiagnostic("counterfeit.ts", 8, 19),
@@ -319,6 +628,28 @@ try {
     schemaDiagnostic("fake-type.ts", 4, 19),
     schemaDiagnostic("manual.ts", 1, 13),
     schemaDiagnostic("mixed-framework.tsx", 2, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 7, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 10, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 15, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 20, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 25, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 30, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 38, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 43, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 49, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 54, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 59, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 64, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 68, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 76, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 81, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 87, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 91, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 94, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 99, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 106, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 110, 19),
+    schemaDiagnostic("provenance-adversarial.ts", 114, 19),
     schemaDiagnostic(
       "structural-spoof.ts",
       3,
@@ -326,6 +657,41 @@ try {
       "Nested operation data contract has no compiler-proven Schema origin."
     ),
   ]);
+
+  const boundedDiagnostics = analyzeSchemaContracts({
+    cwd: projectRoot,
+    includeIgnoredPathsForTesting: true,
+    projectPath: configPath,
+    provenanceLimits: {
+      maxDepth: 1,
+      maxWorkItems: 1,
+      maxShallowTypeDepth: 1,
+      maxShallowTypes: 1,
+    },
+  });
+  assert.deepEqual(
+    analyzeSchemaContracts({
+      cwd: projectRoot,
+      includeIgnoredPathsForTesting: true,
+      projectPath: configPath,
+      provenanceLimits: {
+        maxDepth: 1,
+        maxWorkItems: 1,
+        maxShallowTypeDepth: 1,
+        maxShallowTypes: 1,
+      },
+    }),
+    boundedDiagnostics,
+    "bounded unknown provenance must fail closed with deterministic diagnostics"
+  );
+  assert.ok(
+    boundedDiagnostics.some(
+      (diagnostic) =>
+        diagnostic.rule === "gaia/schema-first-data-contract" &&
+        diagnostic.filePath === "derived.ts"
+    ),
+    "bounded unknown provenance must use the existing schema-origin diagnostic"
+  );
   assert.equal(
     diagnostics.some(
       (diagnostic) =>
