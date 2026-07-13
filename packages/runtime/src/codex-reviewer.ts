@@ -4,10 +4,10 @@ import {
   makeCodexCommandArgs,
   makeCodexHarnessConfig,
   nodeCodexCommandRunner,
+  CodexCommandRequest,
   type CodexCommandResult,
   type CodexCommandRunner,
   type CodexHarnessConfig,
-  type CodexHarnessConfigInput,
 } from "./codex-harness.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { ReviewerSessionEvidence } from "./reviewer-session-evidence.js";
@@ -24,10 +24,14 @@ export const codexReviewerName =
   Schema.decodeUnknownSync(ReviewerNameSchema)("codex-reviewer");
 
 /** Safe Codex settings accepted by the read-only reviewer adapter. */
-export type CodexReviewerConfigInput = Pick<
-  CodexHarnessConfigInput,
-  "command" | "model" | "profile" | "timeoutMs"
->;
+export const CodexReviewerConfigInputSchema = Schema.Struct({
+  command: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.String),
+  profile: Schema.optional(Schema.String),
+  timeoutMs: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
+});
+export type CodexReviewerConfigInput =
+  typeof CodexReviewerConfigInputSchema.Type;
 
 /** Dependencies and configuration for the read-only Codex reviewer. */
 export type CodexReviewerOptions = {
@@ -35,27 +39,27 @@ export type CodexReviewerOptions = {
   readonly config: CodexHarnessConfig;
 };
 
-/** Inputs used to construct the Codex reviewer prompt. */
-export type CodexReviewerPromptInput = {
-  readonly request: ReviewRunRequest;
-};
-
-type CodexReviewDecision = {
-  readonly status: ReviewResult["status"];
-  readonly summary: string;
-};
+export class CodexReviewDecision extends Schema.Class<CodexReviewDecision>(
+  "CodexReviewDecision"
+)(
+  {
+    status: Schema.Literals(["approved", "blocked"] as const),
+    summary: Schema.NonEmptyString,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
 
 /** Build a Codex config for read-only reviewer execution. */
 export function makeCodexReviewerConfig(
   input: CodexReviewerConfigInput = {}
 ): CodexHarnessConfig {
   return makeCodexHarnessConfig({
-    command: input.command,
+    ...(input.command === undefined ? {} : { command: input.command }),
     extraArgs: [],
-    model: input.model,
-    profile: input.profile,
+    ...(input.model === undefined ? {} : { model: input.model }),
+    ...(input.profile === undefined ? {} : { profile: input.profile }),
     sandbox: "read-only",
-    timeoutMs: input.timeoutMs,
+    ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
   });
 }
 
@@ -70,20 +74,20 @@ export function makeCodexReviewer(options: CodexReviewerOptions): GaiaReviewer {
 }
 
 /** Build the review prompt sent to Codex over stdin. */
-export function makeCodexReviewerPrompt(input: CodexReviewerPromptInput) {
-  const phaseArtifacts = artifactsForPhase(input.request);
+export function makeCodexReviewerPrompt(request: ReviewRunRequest) {
+  const phaseArtifacts = artifactsForPhase(request);
 
   return [
     "You are the Gaia Codex reviewer.",
     "You are reviewing a Gaia software-factory run as a read-only reviewer.",
     "Do not write, edit, delete, move, or create files.",
     "Do not run mutating commands.",
-    `Review phase: ${input.request.phase}`,
-    `Run ID: ${input.request.runId}`,
-    `Workspace: ${input.request.workspacePath}`,
-    `Spec title: ${input.request.specTitle}`,
+    `Review phase: ${request.phase}`,
+    `Run ID: ${request.runId}`,
+    `Workspace: ${request.workspacePath}`,
+    `Spec title: ${request.specTitle}`,
     "Spec body:",
-    input.request.specBody,
+    request.specBody,
     "Artifacts to inspect:",
     ...phaseArtifacts.map((artifact) => `- ${artifact}`),
     "Inspect the worker plan acceptance criteria, non-goals, likely touched surfaces, verification checks, and stop conditions.",
@@ -114,15 +118,17 @@ function runCodexReviewer(
     );
     const runner = options.commandRunner ?? nodeCodexCommandRunner;
     const execution = yield* runner({
-      args: makeCodexCommandArgs({
-        config: options.config,
-        lastMessagePath,
-        workspacePath: runRoot,
+      request: CodexCommandRequest.make({
+        args: makeCodexCommandArgs({
+          config: options.config,
+          lastMessagePath,
+          workspacePath: runRoot,
+        }),
+        command: options.config.command,
+        cwd: runRoot,
+        stdin: makeCodexReviewerPrompt(request),
+        timeoutMs: options.config.timeoutMs,
       }),
-      command: options.config.command,
-      cwd: runRoot,
-      stdin: makeCodexReviewerPrompt({ request }),
-      timeoutMs: options.config.timeoutMs,
     });
 
     yield* fs.writeFileString(
@@ -254,7 +260,7 @@ function parseCodexReviewDecision(
     );
   }
 
-  return Effect.succeed({ status, summary });
+  return Effect.succeed(CodexReviewDecision.make({ status, summary }));
 }
 
 function statusFromLine(line: string): ReviewResult["status"] | undefined {

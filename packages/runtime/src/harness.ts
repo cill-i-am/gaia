@@ -10,6 +10,7 @@ import {
   makeCodexCommandArgs,
   makeCodexHarnessPrompt,
   nodeCodexCommandRunner,
+  CodexCommandRequest,
   CodexHarnessProgress,
   encodeCodexHarnessProgress,
   type CodexCommandResult,
@@ -337,25 +338,27 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
 
         const beforeWorkspace = yield* snapshotWorkspace(request.workspacePath);
         const execution = yield* runner({
-          args: makeCodexCommandArgs({
-            config: options.config,
-            lastMessagePath,
-            workspacePath: request.workspacePath,
-          }),
-          command: options.config.command,
-          cwd: request.workspacePath,
-          progressPath: request.codexHarnessProgressPath,
           recordProgress: recordOutputProgress,
-          stdin: makeCodexHarnessPrompt({
-            resolvedSkillPaths: request.resolvedSkillPaths,
-            runId: request.runId,
-            skillBundlePath: request.skillBundlePath,
-            specBody: request.specBody,
-            specTitle: request.specTitle,
-            workspaceOutputPath: request.workspaceOutputPath,
-            workspacePath: request.workspacePath,
+          request: CodexCommandRequest.make({
+            args: makeCodexCommandArgs({
+              config: options.config,
+              lastMessagePath,
+              workspacePath: request.workspacePath,
+            }),
+            command: options.config.command,
+            cwd: request.workspacePath,
+            progressPath: request.codexHarnessProgressPath,
+            stdin: makeCodexHarnessPrompt({
+              resolvedSkillPaths: request.resolvedSkillPaths,
+              runId: request.runId,
+              skillBundlePath: request.skillBundlePath,
+              specBody: request.specBody,
+              specTitle: request.specTitle,
+              workspaceOutputPath: request.workspaceOutputPath,
+              workspacePath: request.workspacePath,
+            }),
+            timeoutMs: options.config.timeoutMs,
           }),
-          timeoutMs: options.config.timeoutMs,
         }).pipe(
           Effect.catchTag("GaiaRuntimeError", (error) =>
             recordTerminalProgress(codexProgressStatusFromError(error)).pipe(

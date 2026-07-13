@@ -2,76 +2,182 @@ import { createHash } from "node:crypto";
 
 import {
   parseHarnessEvent,
+  parseWorkerRecoveryDigest,
   parseWorkerRecoveryReceipt,
   encodeWorkerRecoveryReceiptJson,
   type RunId,
   type WorkerRecoveryAction,
+  type WorkerRecoveryDigest,
+  WorkerRecoveryActionIdSchema,
+  WorkerRecoveryDigestSchema,
+  WorkerRecoveryModelIdSchema,
   type WorkerRecoveryReceipt,
 } from "@gaia/core";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Option, Path, Schema } from "effect";
 
 import { makeRuntimeError } from "./errors.js";
 import { appendEvent, loadRun } from "./event-store.js";
+import {
+  HarnessCheckpointTokenSchema,
+  type HarnessCheckpointToken,
+} from "./harness-session.js";
 import { makeRunPaths, type RunPaths } from "./paths.js";
 import { withRunStoreLock } from "./run-store-lock.js";
 
+export const WorkerRecoveryThreadStatusSchema = Schema.Literals([
+  "active",
+  "idle",
+  "notLoaded",
+  "systemError",
+  "unknown",
+] as const);
 export type WorkerRecoveryThreadStatus =
-  | "active"
-  | "idle"
-  | "notLoaded"
-  | "systemError"
-  | "unknown";
-export type WorkerRecoveryThreadState = {
-  readonly status: WorkerRecoveryThreadStatus;
-  readonly threadId: string;
-};
+  typeof WorkerRecoveryThreadStatusSchema.Type;
+
+export class WorkerRecoveryThreadState extends Schema.Class<WorkerRecoveryThreadState>(
+  "WorkerRecoveryThreadState"
+)(
+  { status: WorkerRecoveryThreadStatusSchema },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+export class WorkerRecoveryModel extends Schema.Class<WorkerRecoveryModel>(
+  "WorkerRecoveryModel"
+)(
+  { hidden: Schema.Boolean, id: WorkerRecoveryModelIdSchema },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+export const WorkerRecoveryModelCatalogSchema =
+  Schema.Array(WorkerRecoveryModel);
+export type WorkerRecoveryModelCatalog =
+  typeof WorkerRecoveryModelCatalogSchema.Type;
+
+export class WorkerRecoveryStartTurn extends Schema.Class<WorkerRecoveryStartTurn>(
+  "WorkerRecoveryStartTurn"
+)(
+  { model: WorkerRecoveryModelIdSchema },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+export class WorkerRecoveryTurnStarted extends Schema.Class<WorkerRecoveryTurnStarted>(
+  "WorkerRecoveryTurnStarted"
+)(
+  {
+    checkpoint: HarnessCheckpointTokenSchema,
+    nativeTurnIdDigest: WorkerRecoveryDigestSchema,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+export class WorkerRecoveryProviderError extends Schema.TaggedErrorClass<WorkerRecoveryProviderError>()(
+  "WorkerRecoveryProviderError",
+  {
+    message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1024))),
+    operation: Schema.Literals([
+      "listModels",
+      "readThread",
+      "resumeThread",
+      "startTurn",
+    ] as const),
+  }
+) {}
 
 export type WorkerRecoveryProvider = {
   readonly listModels: () => Effect.Effect<
-    ReadonlyArray<{ readonly hidden: boolean; readonly id: string }>,
-    unknown
+    WorkerRecoveryModelCatalog,
+    WorkerRecoveryProviderError
   >;
-  readonly readThread: (
-    threadId: string
-  ) => Effect.Effect<WorkerRecoveryThreadState, unknown>;
-  readonly resumeThread: (
-    threadId: string
-  ) => Effect.Effect<WorkerRecoveryThreadState, unknown>;
-  readonly startTurn: (input: {
-    readonly model: string;
-    readonly threadId: string;
-  }) => Effect.Effect<{ readonly turnId: string }, unknown>;
+  readonly readThread: () => Effect.Effect<
+    WorkerRecoveryThreadState,
+    WorkerRecoveryProviderError
+  >;
+  readonly resumeThread: () => Effect.Effect<
+    WorkerRecoveryThreadState,
+    WorkerRecoveryProviderError
+  >;
+  readonly startTurn: (
+    input: WorkerRecoveryStartTurn
+  ) => Effect.Effect<WorkerRecoveryTurnStarted, WorkerRecoveryProviderError>;
 };
 
-export type WorkerRecoveryWorkspaceValidation = void | {
-  readonly trackedPayloadDigest: string;
-  readonly trackedPayloadEntryCount: number;
-};
+export class WorkerRecoveryWorkspaceValidation extends Schema.Class<WorkerRecoveryWorkspaceValidation>(
+  "WorkerRecoveryWorkspaceValidation"
+)(
+  {
+    trackedPayloadDigest: WorkerRecoveryDigestSchema,
+    trackedPayloadEntryCount: Schema.Int.pipe(
+      Schema.check(Schema.isGreaterThanOrEqualTo(0))
+    ),
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+export class WorkerRecoveryWorkspaceValidationError extends Schema.TaggedErrorClass<WorkerRecoveryWorkspaceValidationError>()(
+  "WorkerRecoveryWorkspaceValidationError",
+  {
+    message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1024))),
+    operation: Schema.Literal("validateWorkspace"),
+  }
+) {}
+export const WorkerRecoveryWorkspaceValidationResultSchema = Schema.Union([
+  Schema.Void,
+  WorkerRecoveryWorkspaceValidation,
+]);
+export type WorkerRecoveryWorkspaceValidationResult =
+  typeof WorkerRecoveryWorkspaceValidationResultSchema.Type;
 
-type TrackedPayloadBinding = {
-  readonly trackedPayloadDigest: string;
-  readonly trackedPayloadEntryCount: number;
-};
+/** Serializable run-storage configuration for worker recovery. */
+export class WorkerRecoveryConfig extends Schema.Class<WorkerRecoveryConfig>(
+  "WorkerRecoveryConfig"
+)(
+  { rootDirectory: Schema.optionalKey(Schema.NonEmptyString) },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
 
-const Digest = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
+const decodeWorkerRecoveryConfig =
+  Schema.decodeUnknownSync(WorkerRecoveryConfig);
+
+type TrackedPayloadBinding = WorkerRecoveryWorkspaceValidation;
+
+class PrivateWorkerRecoveryCheckpoint extends Schema.Class<PrivateWorkerRecoveryCheckpoint>(
+  "PrivateWorkerRecoveryCheckpoint"
+)(
+  {
+    actionId: WorkerRecoveryActionIdSchema,
+    checkpoint: HarnessCheckpointTokenSchema,
+    expectedFailureSequence: Schema.Int.pipe(
+      Schema.check(Schema.isGreaterThanOrEqualTo(1))
+    ),
+    expectedSessionId: Schema.NonEmptyString,
+    harnessProfileId: Schema.NonEmptyString,
+    model: WorkerRecoveryModelIdSchema,
+    nativeTurnIdDigest: WorkerRecoveryDigestSchema,
+    payloadDigest: WorkerRecoveryDigestSchema,
+    version: Schema.Literal(3),
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+class PrivateWorkerCorrelationFollowUpTurn extends Schema.Class<PrivateWorkerCorrelationFollowUpTurn>(
+  "PrivateWorkerCorrelationFollowUpTurn"
+)(
+  {
+    checkpoint: HarnessCheckpointTokenSchema,
+    version: Schema.Literal(2),
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+const PrivateWorkerRecoveryCheckpointJson = Schema.toCodecJson(
+  PrivateWorkerRecoveryCheckpoint
 );
-const PrivateWorkerRecoveryTurn = Schema.Struct({
-  actionId: Schema.NonEmptyString,
-  expectedFailureSequence: Schema.Int.pipe(
-    Schema.check(Schema.isGreaterThanOrEqualTo(1))
-  ),
-  expectedSessionId: Schema.NonEmptyString,
-  harnessProfileId: Schema.NonEmptyString,
-  model: Schema.NonEmptyString,
-  payloadDigest: Digest,
-  turnId: Schema.NonEmptyString,
-  version: Schema.Literal(2),
-});
-const PrivateWorkerCorrelationFollowUpTurn = Schema.Struct({
-  turnId: Schema.NonEmptyString,
-  version: Schema.Literal(1),
-});
+const PrivateWorkerCorrelationFollowUpTurnJson = Schema.toCodecJson(
+  PrivateWorkerCorrelationFollowUpTurn
+);
+const encodePrivateWorkerRecoveryCheckpoint = Schema.encodeSync(
+  PrivateWorkerRecoveryCheckpointJson
+);
+const encodePrivateWorkerCorrelationFollowUpTurn = Schema.encodeSync(
+  PrivateWorkerCorrelationFollowUpTurnJson
+);
 type WorkerRecoveryCheckpointBinding = Pick<
   WorkerRecoveryReceipt,
   | "actionId"
@@ -85,25 +191,26 @@ type WorkerRecoveryCheckpointBinding = Pick<
 export function recoverWorkerSession(
   runId: RunId,
   action: WorkerRecoveryAction,
-  input: {
+  input: WorkerRecoveryConfig & {
     readonly appendRecoveryEvent?: typeof appendEvent;
-    readonly nativeThreadId: string;
     readonly provider: WorkerRecoveryProvider;
-    readonly rootDirectory?: string;
     readonly validateWorkspace: (
       workspacePath: string,
       expectedHead: string
     ) => Effect.Effect<
-      WorkerRecoveryWorkspaceValidation,
-      unknown,
+      WorkerRecoveryWorkspaceValidationResult,
+      WorkerRecoveryWorkspaceValidationError,
       FileSystem.FileSystem | Path.Path
     >;
   }
 ) {
+  const config = decodeWorkerRecoveryConfig({
+    rootDirectory: input.rootDirectory,
+  });
   return withRunStoreLock(
-    input,
+    config,
     Effect.gen(function* () {
-      const paths = yield* makeRunPaths(runId, input);
+      const paths = yield* makeRunPaths(runId, config);
       const recordReceipt = (receipt: WorkerRecoveryReceipt) =>
         record(runId, paths, receipt, input.appendRecoveryEvent ?? appendEvent);
       const loaded = yield* loadRun(paths);
@@ -211,13 +318,11 @@ export function recoverWorkerSession(
             expectedHead,
             expectedTrackedPayload
           );
-          const resumed = yield* input.provider.resumeThread(
-            input.nativeThreadId
-          );
-          const read = yield* input.provider.readThread(input.nativeThreadId);
+          const resumed = yield* input.provider.resumeThread();
+          const read = yield* input.provider.readThread();
           if (
-            !isSafeRecoveryThreadState(input.nativeThreadId, resumed) ||
-            !isSafeRecoveryThreadState(input.nativeThreadId, read)
+            !isSafeRecoveryThreadState(resumed) ||
+            !isSafeRecoveryThreadState(read)
           )
             return yield* Effect.fail(new Error("thread mismatch"));
           yield* validateTrackedWorkspace(
@@ -239,10 +344,9 @@ export function recoverWorkerSession(
         yield* recordReceipt({ ...base, state: "preflightConfirmed" });
       yield* recordReceipt({ ...base, state: "dispatchAttempted" });
       const started = yield* Effect.exit(
-        input.provider.startTurn({
-          model: action.model,
-          threadId: input.nativeThreadId,
-        })
+        input.provider.startTurn(
+          WorkerRecoveryStartTurn.make({ model: action.model })
+        )
       );
       if (started._tag === "Failure") {
         return yield* recordReceipt({
@@ -254,7 +358,7 @@ export function recoverWorkerSession(
       }
       const checkpoint = yield* writePrivateTurnCheckpoint(
         paths.root,
-        started.value.turnId,
+        started.value,
         base
       ).pipe(Effect.exit);
       if (checkpoint._tag === "Failure")
@@ -267,22 +371,18 @@ export function recoverWorkerSession(
         });
       return yield* recordReceipt({
         ...base,
-        nativeTurnIdDigest: digest(started.value.turnId),
+        nativeTurnIdDigest: started.value.nativeTurnIdDigest,
         state: "dispatchConfirmed",
       });
     })
   );
 }
 
-function isSafeRecoveryThreadState(
-  expectedThreadId: string,
-  state: WorkerRecoveryThreadState
-) {
+function isSafeRecoveryThreadState(state: WorkerRecoveryThreadState) {
   return (
-    state.threadId === expectedThreadId &&
-    (state.status === "idle" ||
-      state.status === "notLoaded" ||
-      state.status === "systemError")
+    state.status === "idle" ||
+    state.status === "notLoaded" ||
+    state.status === "systemError"
   );
 }
 
@@ -293,7 +393,7 @@ function assertEligible(
     readonly type: string;
   }>,
   action: WorkerRecoveryAction,
-  payloadDigest: string
+  payloadDigest: WorkerRecoveryDigest
 ) {
   const failure = events.find(
     (event) => event.sequence === action.expectedFailureSequence
@@ -336,7 +436,7 @@ function assertEligible(
 function isSameRecoveryGenerationReceipt(
   event: { readonly payload: Record<string, unknown>; readonly type: string },
   action: WorkerRecoveryAction,
-  payloadDigest: string
+  payloadDigest: WorkerRecoveryDigest
 ) {
   if (event.type !== "WORKER_RECOVERY_RECORDED") return false;
   const receipt = parseWorkerRecoveryReceipt(event.payload["recovery"]);
@@ -389,10 +489,12 @@ function isRecoveryGenerationTerminal(receipt: WorkerRecoveryReceipt) {
     receipt.state === "outcomeUnknown"
   );
 }
-function digest(value: unknown) {
-  return createHash("sha256")
-    .update(typeof value === "string" ? value : JSON.stringify(value))
-    .digest("hex");
+function digest(value: unknown): WorkerRecoveryDigest {
+  return parseWorkerRecoveryDigest(
+    createHash("sha256")
+      .update(typeof value === "string" ? value : JSON.stringify(value))
+      .digest("hex")
+  );
 }
 function conflict(message: string) {
   return Effect.fail(
@@ -425,20 +527,13 @@ function trackedPayloadFromReceipt(
   };
 }
 function trackedPayloadFromValidation(
-  validation: WorkerRecoveryWorkspaceValidation | undefined
+  validation: WorkerRecoveryWorkspaceValidationResult | undefined
 ): TrackedPayloadBinding | undefined {
   if (validation === undefined) return undefined;
-  if (typeof validation !== "object") return undefined;
-  if (
-    !/^[a-f0-9]{64}$/u.test(validation.trackedPayloadDigest) ||
-    !Number.isSafeInteger(validation.trackedPayloadEntryCount) ||
-    validation.trackedPayloadEntryCount < 0
-  )
-    return undefined;
-  return {
-    trackedPayloadDigest: validation.trackedPayloadDigest,
-    trackedPayloadEntryCount: validation.trackedPayloadEntryCount,
-  };
+  const decoded = Schema.decodeUnknownOption(WorkerRecoveryWorkspaceValidation)(
+    validation
+  );
+  return Option.isNone(decoded) ? undefined : decoded.value;
 }
 function trackedPayloadReceiptFields(
   binding: TrackedPayloadBinding | undefined
@@ -456,8 +551,8 @@ function validateTrackedWorkspace(
       workspacePath: string,
       expectedHead: string
     ) => Effect.Effect<
-      WorkerRecoveryWorkspaceValidation,
-      unknown,
+      WorkerRecoveryWorkspaceValidationResult,
+      WorkerRecoveryWorkspaceValidationError,
       FileSystem.FileSystem | Path.Path
     >;
   },
@@ -496,7 +591,7 @@ function record(
 }
 function writePrivateTurnCheckpoint(
   runRoot: string,
-  turnId: string,
+  result: WorkerRecoveryTurnStarted,
   binding: WorkerRecoveryCheckpointBinding
 ) {
   return Effect.gen(function* () {
@@ -504,14 +599,22 @@ function writePrivateTurnCheckpoint(
     const path = yield* Path.Path;
     yield* fs.writeFileString(
       path.join(runRoot, ".worker-recovery-turn.json"),
-      JSON.stringify({ ...binding, turnId, version: 2 })
+      JSON.stringify(
+        encodePrivateWorkerRecoveryCheckpoint(
+          PrivateWorkerRecoveryCheckpoint.make({
+            ...binding,
+            ...result,
+            version: 3,
+          })
+        )
+      )
     );
   });
 }
 
-export function readPrivateWorkerRecoveryTurn(
+export function readPrivateWorkerRecoveryCheckpoint(
   runRoot: string,
-  expectedDigest: string,
+  expectedDigest: WorkerRecoveryDigest,
   binding: WorkerRecoveryCheckpointBinding
 ) {
   return Effect.gen(function* () {
@@ -521,9 +624,9 @@ export function readPrivateWorkerRecoveryTurn(
       path.join(runRoot, ".worker-recovery-turn.json")
     );
     const checkpoint = yield* Schema.decodeUnknownEffect(
-      PrivateWorkerRecoveryTurn
+      PrivateWorkerRecoveryCheckpointJson
     )(JSON.parse(raw));
-    if (digest(checkpoint.turnId) !== expectedDigest)
+    if (checkpoint.nativeTurnIdDigest !== expectedDigest)
       return yield* Effect.fail(
         new Error("Worker recovery turn checkpoint digest mismatch.")
       );
@@ -538,7 +641,7 @@ export function readPrivateWorkerRecoveryTurn(
       return yield* Effect.fail(
         new Error("Worker recovery turn checkpoint binding mismatch.")
       );
-    return checkpoint.turnId;
+    return checkpoint.checkpoint;
   }).pipe(
     Effect.mapError((cause) =>
       makeRuntimeError({
@@ -552,16 +655,23 @@ export function readPrivateWorkerRecoveryTurn(
   );
 }
 
-export function writePrivateWorkerCorrelationFollowUpTurn(
+export function writePrivateWorkerCorrelationFollowUpCheckpoint(
   runRoot: string,
-  turnId: string
+  checkpoint: HarnessCheckpointToken
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     yield* fs.writeFileString(
       path.join(runRoot, ".worker-correlation-follow-up-turn.json"),
-      JSON.stringify({ turnId, version: 1 })
+      JSON.stringify(
+        encodePrivateWorkerCorrelationFollowUpTurn(
+          PrivateWorkerCorrelationFollowUpTurn.make({
+            checkpoint,
+            version: 2,
+          })
+        )
+      )
     );
   }).pipe(
     Effect.mapError((cause) =>
@@ -576,7 +686,9 @@ export function writePrivateWorkerCorrelationFollowUpTurn(
   );
 }
 
-export function readPrivateWorkerCorrelationFollowUpTurn(runRoot: string) {
+export function readPrivateWorkerCorrelationFollowUpCheckpoint(
+  runRoot: string
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -584,9 +696,9 @@ export function readPrivateWorkerCorrelationFollowUpTurn(runRoot: string) {
       path.join(runRoot, ".worker-correlation-follow-up-turn.json")
     );
     const checkpoint = yield* Schema.decodeUnknownEffect(
-      PrivateWorkerCorrelationFollowUpTurn
+      PrivateWorkerCorrelationFollowUpTurnJson
     )(JSON.parse(raw));
-    return checkpoint.turnId;
+    return checkpoint.checkpoint;
   }).pipe(
     Effect.mapError((cause) =>
       makeRuntimeError({

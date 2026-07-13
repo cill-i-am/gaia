@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
@@ -10,6 +11,9 @@ import {
   parseHarnessSessionId,
   encodeWorkerRecoveryReceiptJson,
   parseWorkerRecoveryReceipt,
+  parseWorkerRecoveryActionId,
+  parseWorkerRecoveryDigest,
+  parseWorkerRecoveryModelId,
   WorkerRecoveryAction,
   type WorkerRecoveryReceipt,
 } from "@gaia/core";
@@ -18,10 +22,15 @@ import {
   appendHarnessSessionEvent,
   HarnessResumeError,
   HarnessSessionError,
+  parseHarnessCheckpointToken,
   inspectRecoverableDeliveryWorktreeOwnership,
   loadRun,
   parseDeliveryProvenance,
   recoverWorkerSession,
+  WorkerRecoveryModel,
+  WorkerRecoveryTurnStarted,
+  WorkerRecoveryThreadState,
+  WorkerRecoveryWorkspaceValidationError,
 } from "@gaia/runtime";
 import { makeRunPaths } from "@gaia/runtime/paths";
 import { acceptFactoryRun } from "@gaia/runtime/server-workflows";
@@ -349,12 +358,12 @@ function makeFixture(
     let starts = 0;
     let mutated = false;
     const action = WorkerRecoveryAction.make({
-      actionId: "recover-http-1",
+      actionId: parseWorkerRecoveryActionId("recover-http-1"),
       expectedFailureSequence: failureSequence,
       expectedSessionId: parseHarnessSessionId(sessionId),
       harnessProfileId: parseHarnessProfileId("codexAppServer"),
       kind: "retryRecoverableWorkerFailure",
-      model: "gpt-5.4",
+      model: parseWorkerRecoveryModelId("gpt-5.4"),
     });
     const activator = (
       runId: typeof accepted.runId,
@@ -362,19 +371,34 @@ function makeFixture(
     ) =>
       Effect.gen(function* () {
         const receipt = yield* recoverWorkerSession(runId, request, {
-          nativeThreadId: "thread-private",
           rootDirectory: rootB,
           provider: {
             listModels: () =>
-              Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
-            readThread: (threadId) =>
-              Effect.succeed({ status: "systemError", threadId }),
-            resumeThread: (threadId) =>
-              Effect.succeed({ status: "idle", threadId }),
+              Effect.succeed([
+                WorkerRecoveryModel.make({
+                  hidden: false,
+                  id: request.model,
+                }),
+              ]),
+            readThread: () =>
+              Effect.succeed(
+                WorkerRecoveryThreadState.make({ status: "systemError" })
+              ),
+            resumeThread: () =>
+              Effect.succeed(
+                WorkerRecoveryThreadState.make({ status: "idle" })
+              ),
             startTurn: () =>
               Effect.sync(() => {
                 starts += 1;
-                return { turnId: "turn-recovery" };
+                return WorkerRecoveryTurnStarted.make({
+                  checkpoint: parseHarnessCheckpointToken(
+                    "hchk1_turn-recovery"
+                  ),
+                  nativeTurnIdDigest: parseWorkerRecoveryDigest(
+                    createHash("sha256").update("turn-recovery").digest("hex")
+                  ),
+                });
               }),
           },
           validateWorkspace: () =>
@@ -390,7 +414,15 @@ function makeFixture(
                   options: { rootDirectory: rootB },
                   paths,
                   provenance: provenance.value,
-                }),
+                }).pipe(
+                  Effect.mapError(
+                    () =>
+                      new WorkerRecoveryWorkspaceValidationError({
+                        message: "Worker recovery workspace validation failed.",
+                        operation: "validateWorkspace",
+                      })
+                  )
+                ),
         });
         if (
           mode !== undefined &&

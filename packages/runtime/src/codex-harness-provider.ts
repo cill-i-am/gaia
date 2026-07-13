@@ -29,8 +29,11 @@ import {
 
 import { type CodexAppServerClient } from "./codex-app-server-client.js";
 import {
+  CodexThreadIdSchema,
+  CodexTurnIdSchema,
   supportedCodexCliVersion,
   parseCodexThreadId,
+  parseCodexClientVersion,
   type CodexAppServerError,
   type CodexThread,
   type CodexThreadId,
@@ -40,12 +43,15 @@ import {
 import { createCodexSessionMapper } from "./codex-session-mapper.js";
 import {
   HarnessActionError,
+  HarnessCheckpointTokenSchema,
+  HarnessCorrelationTokenSchema,
   HarnessInput,
   HarnessInteractionResponseSchema,
   HarnessResumeError,
   HarnessSessionError,
   HarnessStartError,
   type HarnessInteractionResponse,
+  type HarnessCheckpointToken,
   type HarnessProvider,
   type HarnessSession,
   type HarnessSessionResume,
@@ -81,34 +87,54 @@ export const CodexHarnessProviderDescriptor = HarnessProviderDescriptor.make({
   providerId: parseHarnessProviderId("codex-app-server"),
 });
 
-/** Dependencies and privacy policy for the Codex harness provider adapter. */
+/** Serializable configuration for the Codex harness provider adapter. */
+export class CodexHarnessProviderConfig extends Schema.Class<CodexHarnessProviderConfig>(
+  "CodexHarnessProviderConfig"
+)(
+  {
+    sensitiveValues: Schema.optionalKey(Schema.Array(Schema.String)),
+    workspaceRoot: Schema.NonEmptyString,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+/** Capability dependencies plus schema-owned provider configuration. */
 export type CodexHarnessProviderOptions = {
   readonly client: CodexAppServerClient;
+  readonly config: CodexHarnessProviderConfig;
   readonly correlationStore: CodexHarnessCorrelationStore;
   readonly detectionProbe?: Effect.Effect<HarnessDetection>;
-  readonly sensitiveValues?: ReadonlyArray<string>;
-  readonly workspaceRoot: string;
 };
-
-/** Opaque adapter token; callers persist it without interpreting its contents. */
-const CodexHarnessCorrelationTokenSchema = Schema.NonEmptyString.pipe(
-  Schema.check(Schema.isMaxLength(4_096), Schema.isPattern(/^[A-Za-z0-9_-]+$/u))
-);
 
 /** Finite opaque adapter token persisted without exposing its native meaning. */
-export type CodexHarnessOpaqueCorrelation = {
-  readonly token: typeof CodexHarnessCorrelationTokenSchema.Type;
-};
+export class CodexHarnessOpaqueCorrelation extends Schema.Class<CodexHarnessOpaqueCorrelation>(
+  "CodexHarnessOpaqueCorrelation"
+)(
+  { token: HarnessCorrelationTokenSchema },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+/** Typed persistence failure for the adapter-private correlation store. */
+export class CodexHarnessCorrelationStoreError extends Schema.TaggedErrorClass<CodexHarnessCorrelationStoreError>()(
+  "CodexHarnessCorrelationStoreError",
+  {
+    message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(512))),
+    operation: Schema.Literals(["load", "save"] as const),
+  }
+) {}
 
 /** Adapter-owned persistence seam for opaque Codex session correlation. */
 export interface CodexHarnessCorrelationStore {
   readonly load: (
     sessionId: HarnessSessionId
-  ) => Effect.Effect<CodexHarnessOpaqueCorrelation | undefined, unknown>;
+  ) => Effect.Effect<
+    CodexHarnessOpaqueCorrelation | undefined,
+    CodexHarnessCorrelationStoreError
+  >;
   readonly save: (
     sessionId: HarnessSessionId,
     correlation: CodexHarnessOpaqueCorrelation
-  ) => Effect.Effect<void, unknown>;
+  ) => Effect.Effect<void, CodexHarnessCorrelationStoreError>;
 }
 
 /** In-memory correlation store for tests and single-process composition. */
@@ -133,20 +159,26 @@ class CodexHarnessCorrelationFile extends Schema.Class<CodexHarnessCorrelationFi
     harnessProfileId: Schema.Literal("codexAppServer"),
     providerId: Schema.Literal("codex-app-server"),
     sessionId: HarnessSessionIdSchema,
-    token: CodexHarnessCorrelationTokenSchema,
+    token: HarnessCorrelationTokenSchema,
     version: Schema.Literal(1),
   },
   {
     parseOptions: { onExcessProperty: "error" },
   }
 ) {}
-const decodeCodexHarnessCorrelationFile = Schema.decodeUnknownSync(
+const CodexHarnessCorrelationFileJson = Schema.toCodecJson(
   CodexHarnessCorrelationFile
 );
-const decodeCodexHarnessOpaqueCorrelation = Schema.decodeUnknownSync(
-  Schema.Struct({ token: CodexHarnessCorrelationTokenSchema })
+const decodeCodexHarnessCorrelationFile = Schema.decodeUnknownSync(
+  CodexHarnessCorrelationFileJson
 );
-const correlationFileMaxBytes = 16_384;
+const encodeCodexHarnessCorrelationFile = Schema.encodeSync(
+  CodexHarnessCorrelationFileJson
+);
+const decodeCodexHarnessOpaqueCorrelation = Schema.decodeUnknownSync(
+  CodexHarnessOpaqueCorrelation
+);
+const correlationFileMaxBytes = 49_152;
 
 /** Durable adapter-private correlation store excluded from public run contracts. */
 export function makeFileCodexHarnessCorrelationStore(
@@ -182,7 +214,7 @@ export function makeFileCodexHarnessCorrelationStore(
             if (parsed.sessionId !== sessionId) {
               throw new Error("Harness correlation session does not match.");
             }
-            return { token: parsed.token };
+            return CodexHarnessOpaqueCorrelation.make({ token: parsed.token });
           } catch (error) {
             if (
               typeof error === "object" &&
@@ -195,7 +227,11 @@ export function makeFileCodexHarnessCorrelationStore(
             throw error;
           }
         },
-        catch: (error) => error,
+        catch: () =>
+          new CodexHarnessCorrelationStoreError({
+            message: "Codex harness correlation could not be loaded.",
+            operation: "load",
+          }),
       }),
     save: (sessionId, correlation) =>
       Effect.tryPromise({
@@ -205,20 +241,25 @@ export function makeFileCodexHarnessCorrelationStore(
           await mkdir(directory, { recursive: true, mode: 0o700 });
           const target = correlationPath(sessionId);
           const temporary = `${target}.${process.pid}.tmp`;
+          const record = CodexHarnessCorrelationFile.make({
+            harnessProfileId: "codexAppServer",
+            providerId: "codex-app-server",
+            sessionId,
+            token: parsedCorrelation.token,
+            version: 1,
+          });
           await writeFile(
             temporary,
-            `${JSON.stringify({
-              harnessProfileId: "codexAppServer",
-              providerId: "codex-app-server",
-              sessionId,
-              token: parsedCorrelation.token,
-              version: 1,
-            })}\n`,
+            `${JSON.stringify(encodeCodexHarnessCorrelationFile(record))}\n`,
             { encoding: "utf8", mode: 0o600 }
           );
           await rename(temporary, target);
         },
-        catch: (error) => error,
+        catch: () =>
+          new CodexHarnessCorrelationStoreError({
+            message: "Codex harness correlation could not be saved.",
+            operation: "save",
+          }),
       }),
   };
 }
@@ -235,7 +276,11 @@ export function createCodexHarnessProvider(
         return Effect.succeed(initializedDetection);
       return options.client
         .initialize({
-          clientInfo: { name: "gaia", title: "Gaia", version: "0.1.0" },
+          clientInfo: {
+            name: "gaia",
+            title: "Gaia",
+            version: parseCodexClientVersion("0.1.0"),
+          },
         })
         .pipe(
           Effect.match({
@@ -276,7 +321,7 @@ export function createCodexHarnessProvider(
           .startThread({
             approvalPolicy: "on-request",
             cwd: absoluteWorkspacePath(
-              options.workspaceRoot,
+              options.config.workspaceRoot,
               request.workspacePath
             ),
             ephemeral: false,
@@ -389,13 +434,24 @@ export function createCodexHarnessProvider(
             providerId: CodexHarnessProviderDescriptor.providerId,
           });
         }
+        const expectedTurnId =
+          request.expectedCheckpoint === undefined
+            ? undefined
+            : decodeCodexHarnessCheckpoint(request.expectedCheckpoint);
+        if (
+          request.expectedCheckpoint !== undefined &&
+          expectedTurnId === undefined
+        ) {
+          return yield* new HarnessResumeError({
+            message: "Codex session checkpoint is invalid for this provider.",
+            providerId: CodexHarnessProviderDescriptor.providerId,
+          });
+        }
         let recoveredProjectionTurnId: CodexTurnId | undefined;
         let suppressRecoveredProjectionTurn = false;
-        if (request.expectedNativeTurnId !== undefined) {
+        if (expectedTurnId !== undefined) {
           const turns = recovered.thread.turns ?? [];
-          const matches = turns.filter(
-            ({ id }) => id === request.expectedNativeTurnId
-          );
+          const matches = turns.filter(({ id }) => id === expectedTurnId);
           const exact = matches[0];
           const allowedStatuses =
             request.allowInterruptedCheckpoint === true
@@ -403,7 +459,7 @@ export function createCodexHarnessProvider(
               : ["inProgress", "completed", "failed"];
           if (
             matches.length !== 1 ||
-            turns.at(-1)?.id !== request.expectedNativeTurnId ||
+            turns.at(-1)?.id !== expectedTurnId ||
             exact?.status === undefined ||
             !allowedStatuses.includes(exact.status)
           ) {
@@ -459,12 +515,12 @@ function makeCodexSession<E>(
     const mapper = createCodexSessionMapper({
       capabilities: CodexHarnessCapabilities,
       provider: CodexHarnessProviderDescriptor,
-      ...(input.options.sensitiveValues === undefined
+      ...(input.options.config.sensitiveValues === undefined
         ? {}
-        : { sensitiveValues: input.options.sensitiveValues }),
+        : { sensitiveValues: input.options.config.sensitiveValues }),
       sessionId: input.request.sessionId,
       workspaceRoot: absoluteWorkspacePath(
-        input.options.workspaceRoot,
+        input.options.config.workspaceRoot,
         input.request.workspacePath
       ),
     });
@@ -1086,20 +1142,109 @@ function boundedVersion(userAgent: string): string {
   return (match?.[1] ?? "unknown").slice(0, 200);
 }
 
+class CodexHarnessCorrelationPayload extends Schema.Class<CodexHarnessCorrelationPayload>(
+  "CodexHarnessCorrelationPayload"
+)(
+  {
+    provider: Schema.Literal("codex-app-server"),
+    threadId: CodexThreadIdSchema,
+    version: Schema.Literal(1),
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+class CodexHarnessCheckpointPayload extends Schema.Class<CodexHarnessCheckpointPayload>(
+  "CodexHarnessCheckpointPayload"
+)(
+  {
+    provider: Schema.Literal("codex-app-server"),
+    turnId: CodexTurnIdSchema,
+    version: Schema.Literal(1),
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+const CodexHarnessCorrelationPayloadJson = Schema.toCodecJson(
+  CodexHarnessCorrelationPayload
+);
+const CodexHarnessCheckpointPayloadJson = Schema.toCodecJson(
+  CodexHarnessCheckpointPayload
+);
+const encodeCodexHarnessCorrelationPayload = Schema.encodeSync(
+  CodexHarnessCorrelationPayloadJson
+);
+const encodeCodexHarnessCheckpointPayload = Schema.encodeSync(
+  CodexHarnessCheckpointPayloadJson
+);
+const decodeCodexHarnessCorrelationPayload = Schema.decodeUnknownSync(
+  CodexHarnessCorrelationPayloadJson
+);
+const decodeCodexHarnessCheckpointPayload = Schema.decodeUnknownSync(
+  CodexHarnessCheckpointPayloadJson
+);
+
+/** Encode a Codex thread identity into a versioned provider-neutral token. */
 export function encodeCodexHarnessCorrelation(
   threadId: CodexThreadId
 ): CodexHarnessOpaqueCorrelation {
-  return { token: Buffer.from(threadId, "utf8").toString("base64url") };
+  const payload = CodexHarnessCorrelationPayload.make({
+    provider: "codex-app-server",
+    threadId,
+    version: 1,
+  });
+  const encoded = Buffer.from(
+    JSON.stringify(encodeCodexHarnessCorrelationPayload(payload)),
+    "utf8"
+  ).toString("base64url");
+  const token = Schema.decodeUnknownSync(HarnessCorrelationTokenSchema)(
+    `hcor1_${encoded}`
+  );
+  return CodexHarnessOpaqueCorrelation.make({ token });
 }
 
 export function decodeCodexHarnessCorrelation(
   correlation: CodexHarnessOpaqueCorrelation
 ): CodexThreadId | undefined {
   try {
-    const decoded = Buffer.from(correlation.token, "base64url").toString(
-      "utf8"
+    const parsed = decodeCodexHarnessOpaqueCorrelation(correlation);
+    const encoded = parsed.token.slice("hcor1_".length);
+    const decoded = JSON.parse(
+      Buffer.from(encoded, "base64url").toString("utf8")
     );
-    return decoded.length === 0 ? undefined : parseCodexThreadId(decoded);
+    return decodeCodexHarnessCorrelationPayload(decoded).threadId;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Encode a Codex turn identity into a distinct versioned checkpoint token. */
+export function encodeCodexHarnessCheckpoint(
+  turnId: CodexTurnId
+): HarnessCheckpointToken {
+  const payload = CodexHarnessCheckpointPayload.make({
+    provider: "codex-app-server",
+    turnId,
+    version: 1,
+  });
+  const encoded = Buffer.from(
+    JSON.stringify(encodeCodexHarnessCheckpointPayload(payload)),
+    "utf8"
+  ).toString("base64url");
+  return Schema.decodeUnknownSync(HarnessCheckpointTokenSchema)(
+    `hchk1_${encoded}`
+  );
+}
+
+/** Decode an opaque checkpoint only inside the Codex adapter boundary. */
+export function decodeCodexHarnessCheckpoint(
+  checkpoint: HarnessCheckpointToken
+): CodexTurnId | undefined {
+  try {
+    const encoded = checkpoint.slice("hchk1_".length);
+    const decoded = JSON.parse(
+      Buffer.from(encoded, "base64url").toString("utf8")
+    );
+    return decodeCodexHarnessCheckpointPayload(decoded).turnId;
   } catch {
     return undefined;
   }

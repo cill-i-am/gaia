@@ -115,14 +115,15 @@ export class CodexHarnessConfig extends Schema.Class<CodexHarnessConfig>(
 export const parseCodexHarnessConfig =
   Schema.decodeUnknownSync(CodexHarnessConfig);
 
-export type CodexHarnessConfigInput = {
-  readonly command?: string | undefined;
-  readonly extraArgs?: ReadonlyArray<string> | undefined;
-  readonly model?: string | undefined;
-  readonly profile?: string | undefined;
-  readonly sandbox?: string | undefined;
-  readonly timeoutMs?: number | string | undefined;
-};
+export const CodexHarnessConfigInputSchema = Schema.Struct({
+  command: Schema.optional(Schema.String),
+  extraArgs: Schema.optional(Schema.Array(Schema.String)),
+  model: Schema.optional(Schema.String),
+  profile: Schema.optional(Schema.String),
+  sandbox: Schema.optional(Schema.String),
+  timeoutMs: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
+});
+export type CodexHarnessConfigInput = typeof CodexHarnessConfigInputSchema.Type;
 
 export function makeCodexHarnessConfig(
   input: CodexHarnessConfigInput = {}
@@ -137,33 +138,49 @@ export function makeCodexHarnessConfig(
   });
 }
 
-export type CodexCommandInput = {
-  readonly args: ReadonlyArray<string>;
-  readonly command: CodexCommand;
-  readonly cwd: string;
-  readonly progressPath?: string | undefined;
-  readonly recordProgress?: CodexCommandProgressRecorder | undefined;
-  readonly stdin: string;
-  readonly timeoutMs: CodexCommandTimeoutMs;
-};
+export class CodexCommandRequest extends Schema.Class<CodexCommandRequest>(
+  "CodexCommandRequest"
+)(
+  {
+    args: Schema.Array(Schema.String),
+    command: CodexCommandSchema,
+    cwd: Schema.NonEmptyString,
+    progressPath: Schema.optionalKey(Schema.NonEmptyString),
+    stdin: Schema.String,
+    timeoutMs: CodexCommandTimeoutMsSchema,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
 
-export type CodexCommandOutputObservation = {
-  readonly bytes: number;
-  readonly stream: CodexCommandOutputStream;
-};
+export class CodexCommandOutputObservation extends Schema.Class<CodexCommandOutputObservation>(
+  "CodexCommandOutputObservation"
+)(
+  {
+    bytes: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
+    stream: CodexCommandOutputStreamSchema,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
 
 export type CodexCommandProgressRecorder = (
   observation: CodexCommandOutputObservation
 ) => Promise<void>;
 
-export type CodexCommandResult = {
-  readonly exitCode: number;
-  readonly stderr: string;
-  readonly stdout: string;
+export class CodexCommandResult extends Schema.Class<CodexCommandResult>(
+  "CodexCommandResult"
+)(
+  { exitCode: Schema.Int, stderr: Schema.String, stdout: Schema.String },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+/** Manual capability shell; serializable request data is schema-owned. */
+export type CodexCommandInvocation = {
+  readonly recordProgress?: CodexCommandProgressRecorder;
+  readonly request: CodexCommandRequest;
 };
 
 export type CodexCommandRunner = (
-  input: CodexCommandInput
+  input: CodexCommandInvocation
 ) => Effect.Effect<
   CodexCommandResult,
   GaiaRuntimeError | PlatformError,
@@ -175,26 +192,37 @@ export type CodexHarnessOptions = {
   readonly config: CodexHarnessConfig;
 };
 
-export type CodexHarnessPromptInput = {
-  readonly resolvedSkillPaths: ReadonlyArray<string>;
-  readonly runId: string;
-  readonly skillBundlePath: string;
-  readonly specBody: string;
-  readonly specTitle: string;
-  readonly workspaceOutputPath: string;
-  readonly workspacePath: string;
-};
+export class CodexHarnessPromptInput extends Schema.Class<CodexHarnessPromptInput>(
+  "CodexHarnessPromptInput"
+)(
+  {
+    resolvedSkillPaths: Schema.Array(Schema.NonEmptyString),
+    runId: RunIdSchema,
+    skillBundlePath: Schema.NonEmptyString,
+    specBody: Schema.NonEmptyString,
+    specTitle: Schema.NonEmptyString,
+    workspaceOutputPath: Schema.NonEmptyString,
+    workspacePath: Schema.NonEmptyString,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
 
-export type CodexCommandArgsInput = {
-  readonly config: CodexHarnessConfig;
-  readonly lastMessagePath: string;
-  readonly workspacePath: string;
-};
+export class CodexCommandArgsInput extends Schema.Class<CodexCommandArgsInput>(
+  "CodexCommandArgsInput"
+)(
+  {
+    config: CodexHarnessConfig,
+    lastMessagePath: Schema.NonEmptyString,
+    workspacePath: Schema.NonEmptyString,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
 
 export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
   Effect.tryPromise({
     try: () =>
       new Promise<CodexCommandResult>((resolve, reject) => {
+        const request = input.request;
         const pendingProgressWrites = new Set<Promise<void>>();
         let progressWriteFailed = false;
         let progressWriteFailure: unknown;
@@ -215,7 +243,11 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
 
           const recordProgress = input.recordProgress;
           const pending = Promise.resolve()
-            .then(() => recordProgress({ bytes, stream }))
+            .then(() =>
+              recordProgress(
+                CodexCommandOutputObservation.make({ bytes, stream })
+              )
+            )
             .catch(recordProgressWriteFailure)
             .finally(() => pendingProgressWrites.delete(pending));
           pendingProgressWrites.add(pending);
@@ -242,12 +274,12 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
           }, fail);
         };
         const child = execFile(
-          input.command,
-          [...input.args],
+          request.command,
+          [...request.args],
           {
-            cwd: input.cwd,
+            cwd: request.cwd,
             maxBuffer: codexCommandMaxBufferBytes,
-            timeout: input.timeoutMs,
+            timeout: request.timeoutMs,
           },
           (error, stdout, stderr) => {
             if (error !== null && error.code === "ENOENT") {
@@ -273,11 +305,13 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
 
             settleAfterProgressWrites(
               () =>
-                resolve({
-                  exitCode: normalizeExitCode(error?.code),
-                  stderr: String(stderr),
-                  stdout: String(stdout),
-                }),
+                resolve(
+                  CodexCommandResult.make({
+                    exitCode: normalizeExitCode(error?.code),
+                    stderr: String(stderr),
+                    stdout: String(stdout),
+                  })
+                ),
               (cause) => reject(cause)
             );
           }
@@ -288,7 +322,7 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
         child.stderr?.on("data", (chunk: Buffer | string) =>
           observeOutput("stderr", chunk)
         );
-        child.stdin?.end(input.stdin);
+        child.stdin?.end(request.stdin);
       }),
     catch: (cause) =>
       cause instanceof GaiaRuntimeError
@@ -296,7 +330,7 @@ export const nodeCodexCommandRunner: CodexCommandRunner = (input) =>
         : makeRuntimeError({
             cause,
             code: codexCommandFailureCode(cause),
-            message: codexCommandFailureMessage(input.command, cause),
+            message: codexCommandFailureMessage(input.request.command, cause),
             recoverable: true,
           }),
   });

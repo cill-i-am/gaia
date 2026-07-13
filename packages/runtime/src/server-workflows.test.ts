@@ -29,6 +29,8 @@ import {
   parseRunId,
   parseHarnessProviderId,
   parseHarnessSessionId,
+  parseWorkerRecoveryActionId,
+  parseWorkerRecoveryDigest,
   ResolvedHarnessExecution,
   snapshotFromReplay,
 } from "@gaia/core";
@@ -42,7 +44,10 @@ import {
   type GitDeliveryCommandInput,
 } from "./git-delivery.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
-import type { HarnessProvider } from "./harness-session.js";
+import {
+  parseHarnessCheckpointToken,
+  type HarnessProvider,
+} from "./harness-session.js";
 import { makeRunPaths } from "./paths.js";
 import {
   ReviewFinding,
@@ -911,7 +916,7 @@ describe("server workflows", () => {
             );
 
             const action = WorkerContinuationAction.make({
-              actionId: "continue-recovery-1",
+              actionId: parseWorkerRecoveryActionId("continue-recovery-1"),
               expectedContaminatedReadySequence: contaminatedReady.sequence,
               expectedCurrentSequence: failedRecovery.event.sequence,
               expectedDeliveryProvenanceDigest: deliveryProvenanceDigest({
@@ -921,7 +926,8 @@ describe("server workflows", () => {
                 remote: "origin",
               }),
               expectedFailedRecoverySequence: failedRecovery.event.sequence,
-              expectedRecoveryActionId: "recover-1",
+              expectedRecoveryActionId:
+                parseWorkerRecoveryActionId("recover-1"),
               expectedSessionId: sessionId,
               harnessProfileId:
                 codexAppServerExecutionSelection.harnessProfileId,
@@ -996,7 +1002,7 @@ describe("server workflows", () => {
                 runId,
                 WorkerContinuationAction.make({
                   ...action,
-                  actionId: "continue-recovery-2",
+                  actionId: parseWorkerRecoveryActionId("continue-recovery-2"),
                 }),
                 {
                   deliveryPublisher:
@@ -1039,12 +1045,14 @@ describe("server workflows", () => {
           const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
           const sessionId = parseHarnessSessionId(`session-${runId}`);
           const action = WorkerContinuationAction.make({
-            actionId: "continue-recovery-1",
+            actionId: parseWorkerRecoveryActionId("continue-recovery-1"),
             expectedContaminatedReadySequence: accepted.eventSequence,
             expectedCurrentSequence: accepted.eventSequence,
-            expectedDeliveryProvenanceDigest: "c".repeat(64),
+            expectedDeliveryProvenanceDigest: parseWorkerRecoveryDigest(
+              "c".repeat(64)
+            ),
             expectedFailedRecoverySequence: accepted.eventSequence,
-            expectedRecoveryActionId: "recover-1",
+            expectedRecoveryActionId: parseWorkerRecoveryActionId("recover-1"),
             expectedSessionId: sessionId,
             harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
             kind: "continueInterruptedWorkerRecovery",
@@ -1256,9 +1264,11 @@ describe("server workflows", () => {
               type: "WORKER_CONTINUATION_RECORDED",
             });
             const action = WorkerCorrelationReconciliationAction.make({
-              actionId: "reconcile-correlation-1",
+              actionId: parseWorkerRecoveryActionId("reconcile-correlation-1"),
               expectedContaminatedReadySequence: contaminatedReady.sequence,
-              expectedContinuationActionId: "continue-recovery-1",
+              expectedContinuationActionId: parseWorkerRecoveryActionId(
+                "continue-recovery-1"
+              ),
               expectedCurrentSequence: failedContinuation.event.sequence,
               expectedDeliveryProvenanceDigest:
                 continuationBase.expectedDeliveryProvenanceDigest,
@@ -1266,7 +1276,8 @@ describe("server workflows", () => {
                 failedContinuation.event.sequence,
               expectedFailedRecoverySequence: failedRecovery.event.sequence,
               expectedNativeTurnIdDigest: recoveredTurnDigest,
-              expectedRecoveryActionId: "recover-1",
+              expectedRecoveryActionId:
+                parseWorkerRecoveryActionId("recover-1"),
               expectedSessionId: sessionId,
               harnessProfileId:
                 codexAppServerExecutionSelection.harnessProfileId,
@@ -1369,7 +1380,9 @@ describe("server workflows", () => {
                 runId,
                 WorkerCorrelationReconciliationAction.make({
                   ...action,
-                  actionId: "reconcile-correlation-2",
+                  actionId: parseWorkerRecoveryActionId(
+                    "reconcile-correlation-2"
+                  ),
                 }),
                 {
                   rootDirectory: cwd,
@@ -1564,10 +1577,16 @@ describe("server workflows", () => {
               type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
             });
             const action = WorkerDesktopOriginCorrelationAction.make({
-              actionId: "reconcile-desktop-origin-1",
+              actionId: parseWorkerRecoveryActionId(
+                "reconcile-desktop-origin-1"
+              ),
               expectedContaminatedReadySequence: contaminatedReady.sequence,
-              expectedContinuationActionId: "continue-recovery-1",
-              expectedCorrelationActionId: "reconcile-correlation-1",
+              expectedContinuationActionId: parseWorkerRecoveryActionId(
+                "continue-recovery-1"
+              ),
+              expectedCorrelationActionId: parseWorkerRecoveryActionId(
+                "reconcile-correlation-1"
+              ),
               expectedCurrentSequence: failedCorrelation.event.sequence,
               expectedDeliveryProvenanceDigest: provenanceDigest,
               expectedFailedContinuationSequence:
@@ -1576,7 +1595,8 @@ describe("server workflows", () => {
                 failedCorrelation.event.sequence,
               expectedFailedRecoverySequence: failedRecovery.event.sequence,
               expectedNativeTurnIdDigest: recoveredTurnDigest,
-              expectedRecoveryActionId: "recover-1",
+              expectedRecoveryActionId:
+                parseWorkerRecoveryActionId("recover-1"),
               expectedSessionId: sessionId,
               harnessProfileId:
                 codexAppServerExecutionSelection.harnessProfileId,
@@ -1681,7 +1701,9 @@ describe("server workflows", () => {
                 runId,
                 WorkerDesktopOriginCorrelationAction.make({
                   ...action,
-                  actionId: "reconcile-desktop-origin-2",
+                  actionId: parseWorkerRecoveryActionId(
+                    "reconcile-desktop-origin-2"
+                  ),
                 }),
                 {
                   rootDirectory: cwd,
@@ -1910,10 +1932,16 @@ describe("server workflows", () => {
               rootDirectory: cwd,
             });
             const action = WorkerDesktopOriginCorrelationAction.make({
-              actionId: "reconcile-desktop-origin-1",
+              actionId: parseWorkerRecoveryActionId(
+                "reconcile-desktop-origin-1"
+              ),
               expectedContaminatedReadySequence: contaminatedReady.sequence,
-              expectedContinuationActionId: "continue-recovery-1",
-              expectedCorrelationActionId: "reconcile-correlation-1",
+              expectedContinuationActionId: parseWorkerRecoveryActionId(
+                "continue-recovery-1"
+              ),
+              expectedCorrelationActionId: parseWorkerRecoveryActionId(
+                "reconcile-correlation-1"
+              ),
               expectedCurrentSequence: failedCorrelation.event.sequence,
               expectedDeliveryProvenanceDigest: provenanceDigest,
               expectedFailedContinuationSequence:
@@ -1922,7 +1950,8 @@ describe("server workflows", () => {
                 failedCorrelation.event.sequence,
               expectedFailedRecoverySequence: failedRecovery.event.sequence,
               expectedNativeTurnIdDigest: recoveredTurnDigest,
-              expectedRecoveryActionId: "recover-1",
+              expectedRecoveryActionId:
+                parseWorkerRecoveryActionId("recover-1"),
               expectedSessionId: sessionId,
               harnessProfileId:
                 codexAppServerExecutionSelection.harnessProfileId,
@@ -1970,12 +1999,14 @@ describe("server workflows", () => {
           const runId = parseRunId(accepted.runId);
           const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
           const action = WorkerContinuationAction.make({
-            actionId: "continue-recovery-1",
+            actionId: parseWorkerRecoveryActionId("continue-recovery-1"),
             expectedContaminatedReadySequence: accepted.eventSequence,
             expectedCurrentSequence: accepted.eventSequence,
-            expectedDeliveryProvenanceDigest: "c".repeat(64),
+            expectedDeliveryProvenanceDigest: parseWorkerRecoveryDigest(
+              "c".repeat(64)
+            ),
             expectedFailedRecoverySequence: accepted.eventSequence,
-            expectedRecoveryActionId: "recover-1",
+            expectedRecoveryActionId: parseWorkerRecoveryActionId("recover-1"),
             expectedSessionId: parseHarnessSessionId(`session-${runId}`),
             harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
             kind: "continueInterruptedWorkerRecovery",
@@ -2052,15 +2083,22 @@ describe("server workflows", () => {
             });
             const sessionId = parseHarnessSessionId(`session-${runId}`);
             const action = WorkerCorrelationReconciliationAction.make({
-              actionId: "reconcile-correlation-1",
+              actionId: parseWorkerRecoveryActionId("reconcile-correlation-1"),
               expectedContaminatedReadySequence: accepted.eventSequence,
-              expectedContinuationActionId: "continue-recovery-1",
+              expectedContinuationActionId: parseWorkerRecoveryActionId(
+                "continue-recovery-1"
+              ),
               expectedCurrentSequence: accepted.eventSequence,
-              expectedDeliveryProvenanceDigest: "c".repeat(64),
+              expectedDeliveryProvenanceDigest: parseWorkerRecoveryDigest(
+                "c".repeat(64)
+              ),
               expectedFailedContinuationSequence: accepted.eventSequence,
               expectedFailedRecoverySequence: accepted.eventSequence,
-              expectedNativeTurnIdDigest: "d".repeat(64),
-              expectedRecoveryActionId: "recover-1",
+              expectedNativeTurnIdDigest: parseWorkerRecoveryDigest(
+                "d".repeat(64)
+              ),
+              expectedRecoveryActionId:
+                parseWorkerRecoveryActionId("recover-1"),
               expectedSessionId: sessionId,
               harnessProfileId:
                 codexAppServerExecutionSelection.harnessProfileId,
@@ -2487,7 +2525,9 @@ function recordingDeliveryPublisher(calls: Array<string>) {
 }
 
 function digest(value: string) {
-  return createHash("sha256").update(value).digest("hex");
+  return parseWorkerRecoveryDigest(
+    createHash("sha256").update(value).digest("hex")
+  );
 }
 
 function workerRecoveryTurnCheckpoint(
@@ -2501,7 +2541,17 @@ function workerRecoveryTurnCheckpoint(
     readonly payloadDigest: string;
   }
 ) {
-  return JSON.stringify({ ...recovery, turnId, version: 2 });
+  return JSON.stringify({
+    actionId: recovery.actionId,
+    checkpoint: parseHarnessCheckpointToken(`hchk1_${turnId}`),
+    expectedFailureSequence: recovery.expectedFailureSequence,
+    expectedSessionId: recovery.expectedSessionId,
+    harnessProfileId: recovery.harnessProfileId,
+    model: recovery.model,
+    nativeTurnIdDigest: digest(turnId),
+    payloadDigest: recovery.payloadDigest,
+    version: 3,
+  });
 }
 
 function deliveryProvenanceDigest(input: {

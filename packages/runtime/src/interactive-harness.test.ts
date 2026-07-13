@@ -29,8 +29,10 @@ import {
 } from "./codex-app-server-protocol.js";
 import {
   CodexHarnessCapabilities,
+  CodexHarnessProviderConfig,
   CodexHarnessProviderDescriptor,
   createCodexHarnessProvider,
+  encodeCodexHarnessCheckpoint,
   makeInMemoryCodexHarnessCorrelationStore,
 } from "./codex-harness-provider.js";
 import { appendEvent, appendHarnessSessionEvent } from "./event-store.js";
@@ -297,7 +299,7 @@ describe("interactive issue-delivery harness", () => {
               provider: createCodexHarnessProvider({
                 client: first.client,
                 correlationStore,
-                workspaceRoot: cwd,
+                config: CodexHarnessProviderConfig.make({ workspaceRoot: cwd }),
               }),
               request: {
                 input: { text: "initial turn" },
@@ -341,10 +343,10 @@ describe("interactive issue-delivery harness", () => {
           const provider = createCodexHarnessProvider({
             client: second.client,
             correlationStore,
-            workspaceRoot: cwd,
+            config: CodexHarnessProviderConfig.make({ workspaceRoot: cwd }),
           });
           const resultFiber = yield* interactiveSessionHarness({
-            expectedNativeTurnId: checkpointTurnId,
+            expectedCheckpoint: encodeCodexHarnessCheckpoint(checkpointTurnId),
             provider,
             rootDirectory: cwd,
           })
@@ -997,6 +999,7 @@ function recordingCodexClient(input: {
   const client = {
     initialize: () =>
       Effect.succeed({
+        codexHome: "/tmp/codex-home",
         platformFamily: "unix",
         platformOs: "macos",
         userAgent: "Codex/0.137.0",

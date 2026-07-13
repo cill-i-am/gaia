@@ -22,6 +22,38 @@ const RuntimeMessageSchema = Schema.NonEmptyString.pipe(
 const RuntimeVersionSchema = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isMaxLength(200))
 );
+const HarnessOpaqueTokenMaxLength = 36_864;
+
+/** Provider-neutral opaque correlation token with a versioned wire prefix. */
+export const HarnessCorrelationTokenSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(/^hcor1_[A-Za-z0-9_-]+$/u),
+    Schema.isMaxLength(HarnessOpaqueTokenMaxLength)
+  ),
+  Schema.brand("HarnessCorrelationToken")
+);
+
+/** Provider-neutral opaque checkpoint token with a distinct wire prefix. */
+export const HarnessCheckpointTokenSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(/^hchk1_[A-Za-z0-9_-]+$/u),
+    Schema.isMaxLength(HarnessOpaqueTokenMaxLength)
+  ),
+  Schema.brand("HarnessCheckpointToken")
+);
+
+/** Opaque provider-neutral session correlation token. */
+export type HarnessCorrelationToken = typeof HarnessCorrelationTokenSchema.Type;
+
+/** Opaque provider-neutral resume checkpoint token. */
+export type HarnessCheckpointToken = typeof HarnessCheckpointTokenSchema.Type;
+
+export const parseHarnessCorrelationToken = Schema.decodeUnknownSync(
+  HarnessCorrelationTokenSchema
+);
+export const parseHarnessCheckpointToken = Schema.decodeUnknownSync(
+  HarnessCheckpointTokenSchema
+);
 
 /** Parsed text input sent to a provider-neutral harness session. */
 export class HarnessInput extends Schema.Class<HarnessInput>("HarnessInput")({
@@ -81,12 +113,15 @@ export class HarnessSessionStart extends Schema.Class<HarnessSessionStart>(
 /** Request to resume one provider-neutral harness session. */
 export class HarnessSessionResume extends Schema.Class<HarnessSessionResume>(
   "HarnessSessionResume"
-)({
-  allowInterruptedCheckpoint: Schema.optionalKey(Schema.Boolean),
-  expectedNativeTurnId: Schema.optionalKey(Schema.String),
-  sessionId: HarnessSessionIdSchema,
-  workspacePath: WorkspaceRelativePathSchema,
-}) {}
+)(
+  {
+    allowInterruptedCheckpoint: Schema.optionalKey(Schema.Boolean),
+    expectedCheckpoint: Schema.optionalKey(HarnessCheckpointTokenSchema),
+    sessionId: HarnessSessionIdSchema,
+    workspacePath: WorkspaceRelativePathSchema,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
 
 /** Detection failure before a provider can report availability. */
 export class HarnessDetectionError extends Schema.TaggedErrorClass<HarnessDetectionError>()(

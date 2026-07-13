@@ -4,20 +4,22 @@ import { createInterface } from "node:readline";
 import { Context, Effect, Layer, Option, Schema } from "effect";
 
 import {
-  CodexAppServerInboundRequestSchema,
+  CodexAppServerInboundRequestBoundarySchema,
   CodexAppServerNotificationSchema,
   CodexAppServerIncompatibilityError,
   CodexAppServerProcessExitError,
   CodexAppServerProtocolError,
-  CodexAppServerResponseSchema,
+  CodexAppServerResponseBoundarySchema,
   CodexAppServerTimeoutError,
   CodexAppServerTransportError,
-  CodexNotificationSchema,
-  CodexServerRequestSchema,
+  CodexNotificationBoundarySchema,
+  CodexServerRequestBoundarySchema,
   InitializeResultSchema,
-  ThreadResultSchema,
-  TurnResultSchema,
-  TurnSteerResultSchema,
+  ThreadReadBoundaryResultSchema,
+  ThreadResumeBoundaryResultSchema,
+  ThreadStartBoundaryResultSchema,
+  TurnBoundaryResultSchema,
+  TurnSteerBoundaryResultSchema,
   EmptyResultSchema,
   CommandApprovalResponseSchema,
   FileApprovalResponseSchema,
@@ -29,16 +31,20 @@ import {
   ThreadResumeParamsSchema,
   ThreadReadParamsSchema,
   ThreadListParamsSchema,
-  ThreadListResultSchema,
+  ThreadListBoundaryResultSchema,
   ModelListParamsSchema,
-  ModelListResultSchema,
+  ModelListBoundaryResultSchema,
   TurnStartParamsSchema,
   TurnSteerParamsSchema,
   TurnInterruptParamsSchema,
   isCuratedCodexNotificationMethod,
+  isCodexServerRequestMethod,
+  CodexRawRequestIdSchema,
+  parseCodexRequestId,
   supportedCodexCliVersion,
   type CodexAppServerError,
   type CodexRequestId,
+  CodexRequestIdSchema,
   type CodexNotification,
   type CodexServerRequest,
   type InitializeParams,
@@ -91,34 +97,53 @@ export interface CodexAppServerProcess {
   readonly write: (line: string) => void;
 }
 
-export interface CodexAppServerTransportOptions {
-  readonly command?: string;
-  readonly cwd?: string;
-  readonly env?: NodeJS.ProcessEnv;
-  readonly process?: CodexAppServerProcess;
-}
+/** Serializable process-spawn data for the Codex App Server adapter. */
+export class CodexAppServerSpawnConfig extends Schema.Class<CodexAppServerSpawnConfig>(
+  "CodexAppServerSpawnConfig"
+)(
+  {
+    command: Schema.optionalKey(
+      Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(4_096)))
+    ),
+    cwd: Schema.optionalKey(
+      Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(16_384)))
+    ),
+    env: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
 
-const decodeResponse = Schema.decodeUnknownOption(CodexAppServerResponseSchema);
-const decodeRequest = Schema.decodeUnknownOption(
-  CodexAppServerInboundRequestSchema
+/** Manual capability shell; spawn data remains schema-owned. */
+export type CodexAppServerTransportOptions = {
+  readonly config?: CodexAppServerSpawnConfig;
+  readonly process?: CodexAppServerProcess;
+};
+
+const decodeResponse = Schema.decodeUnknownOption(
+  CodexAppServerResponseBoundarySchema
 );
+const decodeRequest = Schema.decodeUnknownOption(
+  CodexAppServerInboundRequestBoundarySchema
+);
+const decodeRawRequestId = Schema.decodeUnknownOption(CodexRawRequestIdSchema);
 const decodeNotification = Schema.decodeUnknownOption(
   CodexAppServerNotificationSchema
 );
 const decodeServerRequest = Schema.decodeUnknownOption(
-  CodexServerRequestSchema
+  CodexServerRequestBoundarySchema
 );
 const decodeCuratedNotification = Schema.decodeUnknownOption(
-  CodexNotificationSchema
+  CodexNotificationBoundarySchema
 );
 
 function nodeProcess(
   options: CodexAppServerTransportOptions
 ): CodexAppServerProcess {
+  const config = options.config ?? CodexAppServerSpawnConfig.make({});
   const child: ChildProcessWithoutNullStreams = spawn(
-    options.command ?? "codex",
+    config.command ?? "codex",
     ["app-server", "--listen", "stdio://"],
-    { cwd: options.cwd, env: options.env, stdio: "pipe" }
+    { cwd: config.cwd, env: config.env, stdio: "pipe" }
   );
   const lines = createInterface({ input: child.stdout });
   let stderr = "";
@@ -188,6 +213,21 @@ export function makeCodexAppServerConnection(
         pending.clear();
         for (const listener of terminationListeners) listener(error);
       };
+      const rejectUnsupportedServerRequest = (
+        id: typeof CodexRawRequestIdSchema.Type
+      ) => {
+        try {
+          process.write(
+            `${JSON.stringify({ id, error: { code: -32601, message: "Unsupported server request" } })}\n`
+          );
+        } catch {
+          failAll(
+            new CodexAppServerTransportError({
+              message: "Failed to write to Codex App Server",
+            })
+          );
+        }
+      };
       const removeLine = process.onLine((line) => {
         if (closed) return;
         let value: unknown;
@@ -199,42 +239,52 @@ export function makeCodexAppServerConnection(
           );
           return;
         }
-        const response = decodeResponse(value);
-        if (Option.isSome(response)) {
-          const entry = pending.get(response.value.id);
-          if (!entry) return;
-          pending.delete(response.value.id);
-          if ("error" in response.value)
-            entry.fail(
-              new CodexAppServerProtocolError({
-                message: response.value.error.message,
-              })
-            );
-          else entry.succeed(response.value.result);
-          return;
-        }
-        const request = decodeRequest(value);
-        if (Option.isSome(request)) {
-          const decoded = decodeServerRequest(request.value);
-          if (Option.isNone(decoded)) {
-            try {
-              process.write(
-                `${JSON.stringify({ id: request.value.id, error: { code: -32601, message: "Unsupported server request" } })}\n`
-              );
-            } catch {
-              failAll(
-                new CodexAppServerTransportError({
-                  message: "Failed to write to Codex App Server",
-                })
-              );
+        if (!isUnknownRecord(value)) return;
+        const frame = value;
+        const hasMethod = "method" in frame;
+        const hasId = "id" in frame;
+        if (hasMethod && hasId) {
+          const request = decodeRequest(frame);
+          if (Option.isNone(request)) {
+            if (typeof frame.method === "string") {
+              const rawRequestId = decodeRawRequestId(frame.id);
+              if (Option.isSome(rawRequestId)) {
+                rejectUnsupportedServerRequest(rawRequestId.value);
+                return;
+              }
+              if (isCodexServerRequestMethod(frame.method))
+                failAll(
+                  new CodexAppServerProtocolError({
+                    message: `Invalid ${frame.method} server request`,
+                    method: frame.method,
+                  })
+                );
             }
             return;
           }
-          for (const listener of requestListeners) listener(decoded.value);
+          const decoded = decodeServerRequest(request.value);
+          if (Option.isSome(decoded)) {
+            for (const listener of requestListeners) listener(decoded.value);
+            return;
+          }
+          rejectUnsupportedServerRequest(request.value.id);
           return;
         }
-        const notification = decodeNotification(value);
-        if (Option.isSome(notification)) {
+        if (hasMethod) {
+          if (
+            typeof frame.method === "string" &&
+            isCodexServerRequestMethod(frame.method)
+          ) {
+            failAll(
+              new CodexAppServerProtocolError({
+                message: `Invalid ${frame.method} server request`,
+                method: frame.method,
+              })
+            );
+            return;
+          }
+          const notification = decodeNotification(frame);
+          if (Option.isNone(notification)) return;
           const decoded = decodeCuratedNotification(notification.value);
           if (Option.isSome(decoded)) {
             for (const listener of notificationListeners)
@@ -248,6 +298,35 @@ export function makeCodexAppServerConnection(
               })
             );
           }
+          return;
+        }
+        if (!hasId) return;
+        const response = decodeResponse(frame);
+        if (Option.isSome(response)) {
+          const entry = pending.get(response.value.id);
+          if (!entry) return;
+          pending.delete(response.value.id);
+          if ("error" in response.value)
+            entry.fail(
+              new CodexAppServerProtocolError({
+                message: response.value.error.message,
+              })
+            );
+          else entry.succeed(response.value.result);
+          return;
+        }
+        const responseId = Schema.decodeUnknownOption(CodexRequestIdSchema)(
+          frame.id
+        );
+        if (Option.isNone(responseId)) return;
+        const entry = pending.get(responseId.value);
+        if (entry !== undefined) {
+          pending.delete(responseId.value);
+          entry.fail(
+            new CodexAppServerProtocolError({
+              message: "Invalid Codex App Server response",
+            })
+          );
         }
       });
       const removeExit = process.onExit((code) =>
@@ -287,7 +366,7 @@ export function makeCodexAppServerConnection(
               resume(Effect.fail(terminalError));
               return Effect.void;
             }
-            const id = nextId++;
+            const id = parseCodexRequestId(nextId++);
             const timer = setTimeout(() => {
               if (!pending.delete(id)) return;
               resume(
@@ -343,6 +422,10 @@ export function makeCodexAppServerConnection(
     }),
     ({ close }) => Effect.sync(close)
   ).pipe(Effect.map(({ connection }) => connection));
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export class CodexAppServerConnectionService extends Context.Service<
@@ -420,14 +503,14 @@ export function makeCodexAppServerClient(connection: CodexAppServerConnection) {
         "thread/list",
         params,
         ThreadListParamsSchema,
-        ThreadListResultSchema
+        ThreadListBoundaryResultSchema
       ),
     readThread: (params: ThreadReadParams) =>
       request(
         "thread/read",
         params,
         ThreadReadParamsSchema,
-        ThreadResultSchema
+        ThreadReadBoundaryResultSchema
       ),
     respondCommandApproval: (
       request: CommandApprovalRequest,
@@ -469,23 +552,28 @@ export function makeCodexAppServerClient(connection: CodexAppServerConnection) {
         "thread/resume",
         params,
         ThreadResumeParamsSchema,
-        ThreadResultSchema
+        ThreadResumeBoundaryResultSchema
       ),
     startThread: (params: ThreadStartParams) =>
       request(
         "thread/start",
         params,
         ThreadStartParamsSchema,
-        ThreadResultSchema
+        ThreadStartBoundaryResultSchema
       ),
     startTurn: (params: TurnStartParams) =>
-      request("turn/start", params, TurnStartParamsSchema, TurnResultSchema),
+      request(
+        "turn/start",
+        params,
+        TurnStartParamsSchema,
+        TurnBoundaryResultSchema
+      ),
     steerTurn: (params: TurnSteerParams) =>
       request(
         "turn/steer",
         params,
         TurnSteerParamsSchema,
-        TurnSteerResultSchema
+        TurnSteerBoundaryResultSchema
       ),
   } as const;
 }
@@ -497,7 +585,7 @@ export function listCodexModels(
 ) {
   return Schema.decodeUnknownEffect(ModelListParamsSchema)(params).pipe(
     Effect.flatMap((parsed) => connection.request("model/list", parsed)),
-    Effect.flatMap(Schema.decodeUnknownEffect(ModelListResultSchema))
+    Effect.flatMap(Schema.decodeUnknownEffect(ModelListBoundaryResultSchema))
   );
 }
 export class CodexAppServerClientService extends Context.Service<
