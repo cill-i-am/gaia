@@ -34,12 +34,13 @@ import {
 } from "@gaia/runtime/test-support";
 import { Deferred, Effect, Fiber, FileSystem, Option, Ref, Schema, Stream } from "effect";
 import { createServer } from "node:net";
-import { readFile } from "node:fs/promises";
+import { readFile, symlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import {
   findStableDesktopOriginCorrelationThread,
   listStableCodexThreadsForWorkspace,
   makeProductionWorkerRecoveryProvider,
+  resolveAuditedWorkerWorkspacePath,
   runLocalGaiaServer,
   toWorkerRecoveryThreadStatus,
 } from "./main.js";
@@ -171,6 +172,279 @@ describe("local Gaia server process", () => {
           });
         }),
       ),
+    );
+
+    it.effect("resolves the persisted workspace-relative event path to the private owned workspace cwd", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const fixture = yield* makeAuditedWorkspacePathFixture("workspace");
+          const inspected = yield* Ref.make(0);
+          const workspacePath = yield* resolveAuditedWorkerWorkspacePath({
+            events: fixture.events,
+            inspectOwnership: () =>
+              Ref.update(inspected, (value) => value + 1),
+            paths: fixture.paths,
+            rootDirectory: fixture.root,
+          });
+          const threadId = parseCodexThreadId("desktop-relative-workspace-thread");
+          const client = makeStableThreadClient({
+            readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+            threads: [stableThread({ cwd: workspacePath, id: threadId, source: "vscode" })],
+          });
+
+          const result = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId("interrupted-turn"),
+            workspacePath,
+          });
+
+          assert.strictEqual(result.threadId, threadId);
+          assert.strictEqual(workspacePath, fixture.canonicalWorkspace);
+          assert.strictEqual(yield* Ref.get(inspected), 1);
+          assert.deepEqual((yield* Ref.get(client.calls)).read, [threadId]);
+        }),
+      ),
+    );
+
+    it.effect("rejects unsafe persisted workspace event paths before stable list/read", () =>
+      Effect.gen(function* () {
+        const cases = [
+          "../workspace",
+          "/tmp/gaia/absolute-workspace",
+          "C:\\workspace",
+          "workspace\u0000",
+          "",
+          "workspace/child",
+          "workspace-link",
+        ] as const;
+
+        for (const workspacePath of cases) {
+          const fixture = yield* makeAuditedWorkspacePathFixture(workspacePath);
+          if (workspacePath === "workspace/child") {
+            const fs = yield* FileSystem.FileSystem;
+            yield* fs.makeDirectory(`${fixture.paths.workspace}/child`, { recursive: true });
+          }
+          if (workspacePath === "workspace-link") {
+            const fs = yield* FileSystem.FileSystem;
+            const outside = yield* fs.makeTempDirectory({ prefix: "gaia-workspace-escape-" });
+            yield* Effect.tryPromise({
+              try: () => symlink(outside, `${fixture.paths.root}/workspace-link`),
+              catch: (cause) => cause,
+            });
+          }
+          const inspected = yield* Ref.make(0);
+          const client = makeStableThreadClient({
+            readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+            threads: [stableThread({
+              cwd: fixture.canonicalWorkspace,
+              id: parseCodexThreadId("unsafe-workspace-thread"),
+              source: "vscode",
+            })],
+          });
+
+          const exit = yield* resolveAuditedWorkerWorkspacePath({
+            events: fixture.events,
+            inspectOwnership: () =>
+              Ref.update(inspected, (value) => value + 1),
+            paths: fixture.paths,
+            rootDirectory: fixture.root,
+          }).pipe(
+            Effect.flatMap((resolvedWorkspacePath) =>
+              findStableDesktopOriginCorrelationThread({
+                acceptedAtSeconds: 1_000,
+                client,
+                expectedDigest: digestStableId("interrupted-turn"),
+                workspacePath: resolvedWorkspacePath,
+              })
+            ),
+            Effect.exit,
+          );
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+          assert.deepEqual((yield* Ref.get(client.calls)).list, []);
+          assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+          assert.strictEqual(yield* Ref.get(inspected), 0);
+        }
+      }),
+    );
+
+    it.effect("rejects a missing owned workspace before stable list/read", () =>
+      Effect.gen(function* () {
+        const fixture = yield* makeAuditedWorkspacePathFixture("workspace");
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.remove(fixture.paths.workspace, { recursive: true });
+        const inspected = yield* Ref.make(0);
+        const client = makeStableThreadClient({
+          readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+          threads: [stableThread({
+            cwd: fixture.canonicalWorkspace,
+            id: parseCodexThreadId("missing-workspace-thread"),
+            source: "vscode",
+          })],
+        });
+
+        const exit = yield* resolveAuditedWorkerWorkspacePath({
+          events: fixture.events,
+          inspectOwnership: () =>
+            Ref.update(inspected, (value) => value + 1),
+          paths: fixture.paths,
+          rootDirectory: fixture.root,
+        }).pipe(
+          Effect.flatMap((resolvedWorkspacePath) =>
+            findStableDesktopOriginCorrelationThread({
+              acceptedAtSeconds: 1_000,
+              client,
+              expectedDigest: digestStableId("interrupted-turn"),
+              workspacePath: resolvedWorkspacePath,
+            })
+          ),
+          Effect.exit,
+        );
+
+        assert.strictEqual(exit._tag, "Failure");
+        assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+        assert.deepEqual((yield* Ref.get(client.calls)).list, []);
+        assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+        assert.strictEqual(yield* Ref.get(inspected), 0);
+      }),
+    );
+
+    it.effect("rejects a symlinked owned workspace escape before stable list/read", () =>
+      Effect.gen(function* () {
+        const fixture = yield* makeAuditedWorkspacePathFixture("workspace");
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.remove(fixture.paths.workspace, { recursive: true });
+        const outside = yield* fs.makeTempDirectory({ prefix: "gaia-workspace-escape-" });
+        yield* Effect.tryPromise({
+          try: () => symlink(outside, fixture.paths.workspace),
+          catch: (cause) => cause,
+        });
+        const inspected = yield* Ref.make(0);
+        const client = makeStableThreadClient({
+          readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+          threads: [stableThread({
+            cwd: outside,
+            id: parseCodexThreadId("symlink-workspace-thread"),
+            source: "vscode",
+          })],
+        });
+
+        const exit = yield* resolveAuditedWorkerWorkspacePath({
+          events: fixture.events,
+          inspectOwnership: () =>
+            Ref.update(inspected, (value) => value + 1),
+          paths: fixture.paths,
+          rootDirectory: fixture.root,
+        }).pipe(
+          Effect.flatMap((resolvedWorkspacePath) =>
+            findStableDesktopOriginCorrelationThread({
+              acceptedAtSeconds: 1_000,
+              client,
+              expectedDigest: digestStableId("interrupted-turn"),
+              workspacePath: resolvedWorkspacePath,
+            })
+          ),
+          Effect.exit,
+        );
+
+        assert.strictEqual(exit._tag, "Failure");
+        assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+        assert.notInclude(JSON.stringify(exit), outside);
+        assert.deepEqual((yield* Ref.get(client.calls)).list, []);
+        assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+        assert.strictEqual(yield* Ref.get(inspected), 0);
+      }),
+    );
+
+    it.effect("rejects exact-owned absolute event paths before stable list/read", () =>
+      Effect.gen(function* () {
+        const fixture = yield* makeAuditedWorkspacePathFixture("workspace");
+        const absoluteFixture = {
+          ...fixture,
+          events: workspacePathEvents(fixture.canonicalWorkspace),
+        };
+        const inspected = yield* Ref.make(0);
+        const client = makeStableThreadClient({
+          readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+          threads: [stableThread({
+            cwd: fixture.canonicalWorkspace,
+            id: parseCodexThreadId("absolute-workspace-thread"),
+            source: "vscode",
+          })],
+        });
+
+        const exit = yield* resolveAuditedWorkerWorkspacePath({
+          events: absoluteFixture.events,
+          inspectOwnership: () =>
+            Ref.update(inspected, (value) => value + 1),
+          paths: absoluteFixture.paths,
+          rootDirectory: absoluteFixture.root,
+        }).pipe(
+          Effect.flatMap((resolvedWorkspacePath) =>
+            findStableDesktopOriginCorrelationThread({
+              acceptedAtSeconds: 1_000,
+              client,
+              expectedDigest: digestStableId("interrupted-turn"),
+              workspacePath: resolvedWorkspacePath,
+            })
+          ),
+          Effect.exit,
+        );
+
+        assert.strictEqual(exit._tag, "Failure");
+        assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+        assert.notInclude(JSON.stringify(exit), fixture.canonicalWorkspace);
+        assert.deepEqual((yield* Ref.get(client.calls)).list, []);
+        assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+        assert.strictEqual(yield* Ref.get(inspected), 0);
+      }),
+    );
+
+    it.effect("rejects ownership inspection drift before stable list/read", () =>
+      Effect.gen(function* () {
+        const fixture = yield* makeAuditedWorkspacePathFixture("workspace");
+        const inspected = yield* Ref.make(0);
+        const client = makeStableThreadClient({
+          readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+          threads: [stableThread({
+            cwd: fixture.canonicalWorkspace,
+            id: parseCodexThreadId("ownership-drift-thread"),
+            source: "vscode",
+          })],
+        });
+
+        const exit = yield* resolveAuditedWorkerWorkspacePath({
+          events: fixture.events,
+          inspectOwnership: () =>
+            Ref.update(inspected, (value) => value + 1).pipe(
+              Effect.flatMap(() =>
+                Effect.fail(new Error("private wrong common-dir/base/registration"))
+              ),
+            ),
+          paths: fixture.paths,
+          rootDirectory: fixture.root,
+        }).pipe(
+          Effect.flatMap((resolvedWorkspacePath) =>
+            findStableDesktopOriginCorrelationThread({
+              acceptedAtSeconds: 1_000,
+              client,
+              expectedDigest: digestStableId("interrupted-turn"),
+              workspacePath: resolvedWorkspacePath,
+            })
+          ),
+          Effect.exit,
+        );
+
+        assert.strictEqual(exit._tag, "Failure");
+        assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+        assert.notInclude(JSON.stringify(exit), "private wrong common-dir");
+        assert.deepEqual((yield* Ref.get(client.calls)).list, []);
+        assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+        assert.strictEqual(yield* Ref.get(inspected), 1);
+      }),
     );
 
     it.effect("fails closed before reading when vscode lacks private Desktop originator proof", () =>
@@ -972,6 +1246,56 @@ function makeWorkerRecoveryFixture() {
     yield* fs.writeFileString(paths.snapshots, "");
     return { paths, root, runId };
   });
+}
+
+function makeAuditedWorkspacePathFixture(workspacePath: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectory({
+      prefix: "gaia-server-audited-workspace-",
+    });
+    const runId = parseRunId("run-AuditPath1");
+    const paths = yield* makeRunPaths(runId, { rootDirectory: root });
+    yield* fs.makeDirectory(paths.root, { recursive: true });
+    yield* fs.makeDirectory(paths.workspace, { recursive: true });
+    const canonicalWorkspace = yield* fs.realPath(paths.workspace);
+    return {
+      canonicalWorkspace,
+      events: workspacePathEvents(workspacePath),
+      paths,
+      root,
+      runId,
+    };
+  });
+}
+
+function workspacePathEvents(workspacePath: string) {
+  return [
+    makeRunEvent({
+      payload: {
+        delivery: {
+          baseBranch: "main",
+          baseRevision: "a".repeat(40),
+          headBranch: "gaia/run-AuditPath1",
+          mode: "pullRequest",
+          remote: "origin",
+          stage: "delivering",
+        },
+        specPath: "input.md",
+      },
+      runId: parseRunId("run-AuditPath1"),
+      sequence: 1,
+      timestamp: "2026-07-11T00:16:40.000Z",
+      type: "RUN_CREATED",
+    }),
+    makeRunEvent({
+      payload: { workspacePath },
+      runId: parseRunId("run-AuditPath1"),
+      sequence: 2,
+      timestamp: "2026-07-11T00:16:41.000Z",
+      type: "WORKSPACE_PREPARED",
+    }),
+  ];
 }
 
 type TestServer = {
