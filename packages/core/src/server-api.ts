@@ -44,7 +44,7 @@ import {
   DeliveryPullRequestObservation,
   DeliveryRemediationSchema,
 } from "./delivery-remediation.js";
-import { DeliveryActionIdSchema, DeliveryCleanupReceiptSchema, DeliveryMergeMethodSchema, DeliveryMergeReadinessDecision, DeliveryMergeReceiptSchema, DeliveryPullRequestReadyReceiptSchema } from "./delivery-merge.js";
+import { DeliveryActionIdSchema, DeliveryCleanupReceiptSchema, DeliveryLocalReviewAttestationReceiptSchema, DeliveryMergeMethodSchema, DeliveryMergeReadinessDecisionSchema, DeliveryMergeReceiptSchema, DeliveryPullRequestReadyReceiptSchema } from "./delivery-merge.js";
 
 export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
@@ -434,6 +434,19 @@ export class DeliveryEvaluateMergeReadinessActionRequest extends Schema.Class<De
   mergeMethod: DeliveryMergeMethodSchema,
 }, { parseOptions: { onExcessProperty: "error" } }) {}
 
+export class DeliveryAttestPairedReviewActionRequest extends Schema.Class<DeliveryAttestPairedReviewActionRequest>(
+  "DeliveryAttestPairedReviewActionRequest",
+)({
+  actionId: DeliveryActionIdSchema,
+  decision: Schema.Literal("approved"),
+  expectedBranchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
+  expectedHeadSha: DeliveryActionGitShaSchema,
+  expectedPrNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+  expectedPrUrl: Schema.String.pipe(Schema.check(Schema.isPattern(/^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u))),
+  gaiaEvidenceDigest: Schema.optionalKey(Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u)))),
+  kind: Schema.Literal("attestPairedReviewApproval"),
+}, { parseOptions: { onExcessProperty: "error" } }) {}
+
 export class DeliveryRetryCleanupActionRequest extends Schema.Class<DeliveryRetryCleanupActionRequest>(
   "DeliveryRetryCleanupActionRequest",
 )({
@@ -449,6 +462,7 @@ export const DeliveryActionRequestSchema = Schema.Union([
   WorkerDesktopOriginCorrelationAction,
   DeliveryRemediationActivationActionRequest,
   DeliveryMarkReadyForReviewActionRequest,
+  DeliveryAttestPairedReviewActionRequest,
   DeliveryEvaluateMergeReadinessActionRequest,
   DeliveryMergeActionRequest,
   DeliveryRetryCleanupActionRequest,
@@ -548,12 +562,15 @@ export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   latestMergeAction: Schema.optionalKey(DeliveryMergeReceiptSchema),
   activeReadyForReviewAction: Schema.optionalKey(DeliveryPullRequestReadyReceiptSchema),
   latestReadyForReviewAction: Schema.optionalKey(DeliveryPullRequestReadyReceiptSchema),
-  mergeDecision: Schema.optionalKey(DeliveryMergeReadinessDecision),
+  activeLocalReviewAttestation: Schema.optionalKey(DeliveryLocalReviewAttestationReceiptSchema),
+  latestLocalReviewAttestation: Schema.optionalKey(DeliveryLocalReviewAttestationReceiptSchema),
+  mergeDecision: Schema.optionalKey(DeliveryMergeReadinessDecisionSchema),
   mergeDecisionSequence: Schema.optionalKey(EventSequenceSchema),
   activeCleanupAction: Schema.optionalKey(DeliveryCleanupReceiptSchema),
   latestCleanupAction: Schema.optionalKey(DeliveryCleanupReceiptSchema),
   actionAudit: Schema.optionalKey(Schema.Struct({
     cleanup: Schema.Array(Schema.Struct({ actionId: Schema.NonEmptyString, latestSequence: EventSequenceSchema, state: Schema.NonEmptyString })).pipe(Schema.check(Schema.isMaxLength(20))),
+    localReviewAttestation: Schema.optionalKey(Schema.Array(Schema.Struct({ actionId: Schema.NonEmptyString, latestSequence: EventSequenceSchema, state: Schema.NonEmptyString })).pipe(Schema.check(Schema.isMaxLength(20)))),
     merge: Schema.Array(Schema.Struct({ actionId: Schema.NonEmptyString, latestSequence: EventSequenceSchema, state: Schema.NonEmptyString })).pipe(Schema.check(Schema.isMaxLength(20))),
     readyForReview: Schema.Array(Schema.Struct({ actionId: Schema.NonEmptyString, latestSequence: EventSequenceSchema, state: Schema.NonEmptyString })).pipe(Schema.check(Schema.isMaxLength(20))),
   })),

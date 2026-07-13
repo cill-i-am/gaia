@@ -97,6 +97,7 @@ import {
   actOnDeliveryRemediation,
   actOnDeliveryMerge,
   actOnDeliveryReadyForReview,
+  actOnDeliveryLocalReviewAttestation,
   actOnWorkerDesktopOriginCorrelation,
   actOnWorkerCorrelationReconciliation,
   actOnWorkerContinuation,
@@ -409,6 +410,12 @@ export const RunsLive = HttpApiBuilder.group(
                   )
               : payload.kind === "markReadyForReview"
                 ? (identity.workflowOptions.deliveryReadyForReviewActivator ?? actOnDeliveryReadyForReview)(
+                    params.runId,
+                    payload,
+                    workflowOptions,
+                  )
+              : payload.kind === "attestPairedReviewApproval"
+                ? (identity.workflowOptions.deliveryLocalReviewAttestationActivator ?? actOnDeliveryLocalReviewAttestation)(
                     params.runId,
                     payload,
                     workflowOptions,
@@ -888,6 +895,8 @@ function deliveryUpdateFromEvents(
   const latestMergeAction = actionHistories.merge.latest?.latest;
   const activeReadyForReviewAction = actionHistories.readyForReview.active?.latest;
   const latestReadyForReviewAction = actionHistories.readyForReview.latest?.latest;
+  const activeLocalReviewAttestation = actionHistories.localReviewAttestation.active?.latest;
+  const latestLocalReviewAttestation = actionHistories.localReviewAttestation.latest?.latest;
   const mergeDecision = delivery.mergeDecision === undefined
     ? undefined
     : parseDeliveryMergeReadinessDecision(delivery.mergeDecision);
@@ -923,6 +932,8 @@ function deliveryUpdateFromEvents(
     ...(latestMergeAction === undefined ? {} : { latestMergeAction }),
     ...(activeReadyForReviewAction === undefined ? {} : { activeReadyForReviewAction }),
     ...(latestReadyForReviewAction === undefined ? {} : { latestReadyForReviewAction }),
+    ...(activeLocalReviewAttestation === undefined ? {} : { activeLocalReviewAttestation }),
+    ...(latestLocalReviewAttestation === undefined ? {} : { latestLocalReviewAttestation }),
     ...(mergeDecision === undefined ? {} : { mergeDecision }),
     ...(delivery.mergeDecisionSequence === undefined ? {} : { mergeDecisionSequence: delivery.mergeDecisionSequence }),
     ...(activeCleanupAction === undefined ? {} : { activeCleanupAction }),

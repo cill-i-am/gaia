@@ -41,6 +41,7 @@ import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultDeliveryFeedbackTrustPolicy } from "./delivery-remediation-coordinator.js";
 import { coordinateDeliveryMerge, coordinateDeliveryMergeReadiness, normalizeGitHubReviewDecision, requiredCheckPolicyFromTrustPolicy, type FreshMergeState } from "./delivery-merge-coordinator.js";
+import { coordinateDeliveryLocalReviewAttestation } from "./delivery-review-attestation-coordinator.js";
 import { makeRunPaths } from "./paths.js";
 
 const roots: string[] = [];
@@ -232,6 +233,52 @@ function appendCurrentReadyConfirmation(result: ReturnType<typeof fixture>, expe
 const merged = (binding: ReturnType<typeof fixture>["binding"]): FreshMergeState => ({ branchName: binding.branchName, checks: [], draft: false, feedbackBlockers: 0, headSha: binding.expectedHeadSha, mergeCommitSha: "d".repeat(40), mergeability: "mergeable", mergedAt: "2026-07-11T20:00:00.000Z", prNumber: binding.prNumber, prUrl: binding.prUrl, repository: binding.repository, reviewDecision: "APPROVED", state: "merged", supportedMethods: ["merge"], unresolvedActionableThreads: 0 });
 
 describe("delivery merge reconstructed coordinator", () => {
+  it("satisfies strict review policy from one current exact-head local operator attestation but never overrides changes requested", async () => {
+    const f = fixture("ready", true);
+    const current = merged(f.binding);
+    const { mergedAt: _mergedAt, mergeCommitSha: _mergeCommitSha, reviewDecision: _reviewDecision, ...openBase } = current;
+    const open = { ...openBase, state: "open" as const };
+    await Effect.runPromise(coordinateDeliveryLocalReviewAttestation(f.runId, {
+      actionId: "paired-review-attestation-1",
+      decision: "approved",
+      expectedBranchName: f.binding.branchName,
+      expectedHeadSha: f.binding.expectedHeadSha,
+      expectedPrNumber: f.binding.prNumber,
+      expectedPrUrl: f.binding.prUrl,
+      kind: "attestPairedReviewApproval",
+    }, { freshStateReader: () => Effect.succeed(open), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
+
+    const checks = [{ appSlug: "github-actions", headSha: f.binding.expectedHeadSha, name: "gaia-pr-ci", repository: f.binding.repository, state: "passing" as const, workflow: "Gaia PR CI" }];
+    const approved = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: "readiness-local-attestation", kind: "evaluateMergeReadiness", mergeMethod: "merge" }, { freshStateReader: () => Effect.succeed({ ...open, checks }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
+    expect(approved).toMatchObject({ approved: true, approvalSource: { kind: "localOperatorPairedReview" }, version: 2 });
+    let replayReads = 0;
+    const replay = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: "readiness-local-attestation", kind: "evaluateMergeReadiness", mergeMethod: "merge" }, { freshStateReader: () => Effect.sync(() => { replayReads += 1; return { ...open, checks }; }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
+    expect(replay.payloadDigest).toBe(approved.payloadDigest);
+    expect(replayReads).toBe(0);
+
+    const rejected = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: "readiness-changes-requested", kind: "evaluateMergeReadiness", mergeMethod: "merge" }, { freshStateReader: () => Effect.succeed({ ...open, checks, reviewDecision: "CHANGES_REQUESTED" }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
+    expect(rejected).toMatchObject({ approved: false, version: 2 });
+    expect("approvalSource" in rejected ? rejected.approvalSource : undefined).toBeUndefined();
+  });
+
+  it("rejects a local-attested readiness decision after a later authority generation even when the tree SHA is unchanged", async () => {
+    const f = fixture("ready", true);
+    const current = merged(f.binding);
+    const { mergedAt: _mergedAt, mergeCommitSha: _mergeCommitSha, reviewDecision: _reviewDecision, ...openBase } = current;
+    const open = { ...openBase, state: "open" as const };
+    await Effect.runPromise(coordinateDeliveryLocalReviewAttestation(f.runId, { actionId: "paired-review-attestation-1", decision: "approved", expectedBranchName: f.binding.branchName, expectedHeadSha: f.binding.expectedHeadSha, expectedPrNumber: f.binding.prNumber, expectedPrUrl: f.binding.prUrl, kind: "attestPairedReviewApproval" }, { freshStateReader: () => Effect.succeed(open), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
+    const checks = [{ appSlug: "github-actions", headSha: f.binding.expectedHeadSha, name: "gaia-pr-ci", repository: f.binding.repository, state: "passing" as const, workflow: "Gaia PR CI" }];
+    await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: "readiness-local-attestation", kind: "evaluateMergeReadiness", mergeMethod: "merge" }, { freshStateReader: () => Effect.succeed({ ...open, checks }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
+    const eventsPath = path.join(f.root, ".gaia", "runs", f.runId, "events.jsonl");
+    const decisionSequence = readFileSync(eventsPath, "utf8").trim().split("\n").length;
+    appendConfirmedRemediation(f, f.binding.expectedHeadSha);
+    let reads = 0;
+    let providerCalls = 0;
+
+    await expect(Effect.runPromise(coordinateDeliveryMerge(f.runId, { actionId: "merge-stale-attestation", expectedBranchName: f.binding.branchName, expectedDecisionSequence: decisionSequence, expectedHeadSha: f.binding.expectedHeadSha, expectedPolicyDigest: f.binding.policyDigest, expectedPrUrl: f.binding.prUrl, kind: "merge", mergeMethod: "merge" }, { commandRunner: () => Effect.sync(() => { providerCalls += 1; return { exitCode: 0, stderr: "", stdout: "" }; }), freshStateReader: () => Effect.sync(() => { reads += 1; return open; }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    expect(reads).toBe(0);
+    expect(providerCalls).toBe(0);
+  });
   it("canonicalizes legacy and explicit strict review policy while distinguishing solo policy", () => {
     const legacy = defaultDeliveryFeedbackTrustPolicy("cill-i-am/gaia");
     const strict = DeliveryFeedbackTrustPolicyV1.make({ ...legacy, requireApprovedReview: true });

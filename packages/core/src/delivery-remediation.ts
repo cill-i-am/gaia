@@ -1,5 +1,8 @@
 import { Schema } from "effect";
-import type { DeliveryPublication } from "./delivery-publication.js";
+import {
+  parseDeliveryPublication,
+  type DeliveryPublication,
+} from "./delivery-publication.js";
 import type { RunEvent } from "./events.js";
 
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
@@ -373,6 +376,46 @@ export function deriveAuthoritativeDeliveryHeadSha(
     headSha = remediation.commitSha;
   }
   return headSha;
+}
+
+/** Confirmed publication/remediation generation that owns the current PR head. */
+export function deriveDeliveryAuthority(
+  publication: DeliveryPublication,
+  events: ReadonlyArray<RunEvent>,
+  throughSequence = Number.POSITIVE_INFINITY,
+) {
+  if (publication.state !== "confirmed") {
+    throw new Error("Delivery authority requires confirmed publication.");
+  }
+  const publicationConfirmations = events.flatMap((event) => {
+    if (event.sequence > throughSequence || event.type !== "DELIVERY_PUBLICATION_CONFIRMED") return [];
+    const receipt = parseDeliveryPublication(event.payload["publication"]);
+    return receipt.state === "confirmed" &&
+      receipt.operationId === publication.operationId &&
+      receipt.payloadDigest === publication.payloadDigest
+      ? [event.sequence]
+      : [];
+  });
+  if (publicationConfirmations.length !== 1) {
+    throw new Error("Delivery authority requires one exact publication confirmation.");
+  }
+
+  const publicationConfirmationSequence = publicationConfirmations[0]!;
+  let authoritySequence = publicationConfirmationSequence;
+  let headSha = publication.headSha;
+  for (const event of events) {
+    if (event.sequence <= publicationConfirmationSequence) continue;
+    if (event.sequence > throughSequence) break;
+    if (event.type !== "DELIVERY_REMEDIATION_RECORDED") continue;
+    const remediation = parseDeliveryRemediation(event.payload["remediation"]);
+    if (remediation.state !== "confirmed") continue;
+    if (remediation.expectedHeadSha !== headSha) {
+      throw new Error("Confirmed remediation does not extend the delivery authority.");
+    }
+    headSha = remediation.commitSha;
+    authoritySequence = event.sequence;
+  }
+  return { authoritySequence, headSha, publicationConfirmationSequence };
 }
 
 /** Enforce operation binding, legal progression, and the two-attempt budget. */

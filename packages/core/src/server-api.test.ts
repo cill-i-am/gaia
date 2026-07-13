@@ -410,6 +410,26 @@ describe("LocalGaiaServerApi contract", () => {
     assert.throws(() => decode({ ...action, force: true }));
   });
 
+  it("strictly parses the public local paired-review attestation tuple", () => {
+    const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
+    const action = {
+      actionId: "attestation-1",
+      decision: "approved",
+      expectedBranchName: "gaia/run-1234567890",
+      expectedHeadSha: "a".repeat(40),
+      expectedPrNumber: 74,
+      expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/74",
+      gaiaEvidenceDigest: "b".repeat(64),
+      kind: "attestPairedReviewApproval",
+    } as const;
+    assert.strictEqual(decode(action).kind, "attestPairedReviewApproval");
+    assert.throws(() => decode({ ...action, actionId: "bad action id" }));
+    assert.throws(() => decode({ ...action, gaiaEvidenceDigest: "not-a-digest" }));
+    assert.throws(() => decode({ ...action, evidenceUrl: "https://linear.app/example" }));
+    assert.throws(() => decode({ ...action, reviewerIdentity: "cill-i-am" }));
+    assert.throws(() => decode({ ...action, decision: "rejected" }));
+  });
+
   it("accepts audited worker continuation actions without native checkpoint fields", () => {
     const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
     const request = {

@@ -30,6 +30,12 @@ import {
   encodeDeliveryPullRequestReadyReceiptJson,
   parseDeliveryPullRequestReadyReceipt,
   type DeliveryPullRequestReadyReceipt,
+  deriveDeliveryLocalReviewAttestationHistories,
+  assertDeliveryLocalReviewAttestationAuthority,
+  assertDeliveryMergeReadinessDecisionAuthority,
+  DeliveryMergeReadinessDecisionV2,
+  parseDeliveryLocalReviewAttestationReceipt,
+  type DeliveryLocalReviewAttestationReceipt,
 } from "./delivery-merge.js";
 import {
   encodeWorkerContinuationReceiptJson,
@@ -131,6 +137,7 @@ export type RunMachineEvent =
       readonly type: "DELIVERY_REMEDIATION_RECORDED";
     }
   | { readonly type: "DELIVERY_PR_READY_RECORDED"; readonly readyForReviewAction: DeliveryPullRequestReadyReceipt }
+  | { readonly type: "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED"; readonly attestation: DeliveryLocalReviewAttestationReceipt }
   | { readonly type: "DELIVERY_MERGE_RECORDED"; readonly mergeAction: DeliveryMergeReceipt }
   | { readonly type: "DELIVERY_MERGE_READINESS_RECORDED"; readonly decision: ReturnType<typeof parseDeliveryMergeReadinessDecision>; readonly eventSequence: number }
   | { readonly type: "DELIVERY_CLEANUP_RECORDED"; readonly cleanup: ReturnType<typeof parseDeliveryCleanupReceipt> }
@@ -417,6 +424,7 @@ export const runMachine = createMachine({
         DELIVERY_PR_READY_RECORDED: {
           actions: "recordDeliveryPullRequestReady",
         },
+        DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED: {},
         WORKER_CONTINUATION_RECORDED: [
           { actions: "recordWorkerContinuation", guard: "workerContinuationRunning", target: "runningWorker" },
           { actions: "recordWorkerContinuation", guard: "workerContinuationFailed", target: "failed" },
@@ -904,6 +912,7 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   let publication: DeliveryPublication | undefined;
   let remediation: DeliveryRemediation | undefined;
   const readyForReviewActions: Array<{ receipt: DeliveryPullRequestReadyReceipt; sequence: number }> = [];
+  const localReviewAttestations: Array<{ receipt: DeliveryLocalReviewAttestationReceipt; sequence: number }> = [];
   const mergeActions: Array<{ receipt: DeliveryMergeReceipt; sequence: number }> = [];
   const cleanupActions: Array<{ receipt: ReturnType<typeof parseDeliveryCleanupReceipt>; sequence: number }> = [];
 
@@ -935,6 +944,12 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       ) {
         throw new Error("Confirmed remediation cannot supersede an unresolved ready-for-review action.");
       }
+      if (
+        next.state === "confirmed" &&
+        deriveDeliveryLocalReviewAttestationHistories(localReviewAttestations).active !== undefined
+      ) {
+        throw new Error("Confirmed remediation cannot supersede an unresolved local review attestation.");
+      }
       remediation = next;
     }
     if (event.type === "DELIVERY_PR_READY_RECORDED") {
@@ -962,6 +977,42 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       if (next.runId !== events[0]?.runId) throw new Error("Ready-for-review action does not match its enclosing run.");
       readyForReviewActions.push({ receipt: next, sequence: event.sequence });
       deriveDeliveryPullRequestReadyActionHistories(readyForReviewActions);
+    }
+    if (event.type === "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED") {
+      const next = parseDeliveryLocalReviewAttestationReceipt(event.payload["attestation"]);
+      const delivery = actor.getSnapshot().context.delivery;
+      if (delivery?.["mode"] !== "pullRequest") throw new Error("Local review attestation requires accepted pull-request delivery state.");
+      const confirmedPublication = parseDeliveryPublication(delivery["publication"]);
+      if (confirmedPublication.state !== "confirmed") throw new Error("Local review attestation requires a confirmed publication.");
+      const repositoryMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(confirmedPublication.prUrl);
+      if (repositoryMatch?.[1] === undefined) throw new Error("Confirmed publication has an invalid pull-request URL.");
+      assertDeliveryLocalReviewAttestationAuthority(next, {
+        enclosingRunId: event.runId,
+        eventSequence: event.sequence,
+        events,
+        publication: confirmedPublication,
+        repository: repositoryMatch[1],
+      });
+      localReviewAttestations.push({ receipt: next, sequence: event.sequence });
+      deriveDeliveryLocalReviewAttestationHistories(localReviewAttestations);
+    }
+    if (event.type === "DELIVERY_MERGE_READINESS_RECORDED") {
+      const decision = parseDeliveryMergeReadinessDecision(event.payload["decision"]);
+      if (decision instanceof DeliveryMergeReadinessDecisionV2) {
+        const delivery = actor.getSnapshot().context.delivery;
+        if (delivery?.["mode"] !== "pullRequest") throw new Error("Merge readiness requires accepted pull-request delivery state.");
+        const confirmedPublication = parseDeliveryPublication(delivery["publication"]);
+        if (confirmedPublication.state !== "confirmed") throw new Error("Merge readiness requires a confirmed publication.");
+        const repositoryMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(confirmedPublication.prUrl);
+        if (repositoryMatch?.[1] === undefined) throw new Error("Confirmed publication has an invalid pull-request URL.");
+        assertDeliveryMergeReadinessDecisionAuthority(decision, {
+          enclosingRunId: event.runId,
+          eventSequence: event.sequence,
+          events,
+          publication: confirmedPublication,
+          repository: repositoryMatch[1],
+        });
+      }
     }
     if (event.type === "DELIVERY_MERGE_RECORDED") {
       const next = parseDeliveryMergeReceipt(event.payload["mergeAction"]);
@@ -1074,6 +1125,11 @@ function toMachineEvent(event: RunEvent): RunMachineEvent {
     case "DELIVERY_PR_READY_RECORDED":
       return {
         readyForReviewAction: parseDeliveryPullRequestReadyReceipt(event.payload["readyForReviewAction"]),
+        type: event.type,
+      };
+    case "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED":
+      return {
+        attestation: parseDeliveryLocalReviewAttestationReceipt(event.payload["attestation"]),
         type: event.type,
       };
     case "DELIVERY_MERGE_RECORDED":
