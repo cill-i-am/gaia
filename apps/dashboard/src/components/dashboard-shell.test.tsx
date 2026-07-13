@@ -12,6 +12,7 @@ import type {
   LocalRunArtifactDto,
   LocalRunReadDiagnosticDto,
   LocalRunSummaryDto,
+  RunId,
 } from "@gaia/core";
 import {
   FactoryActivityIdSchema,
@@ -176,24 +177,18 @@ vi.mock("@/lib/local-gaia-query", () => ({
     },
     mutationKey: ["local-gaia", "create-run"] as const,
   }),
-  localGaiaDeliveryActionMutationOptions: (config: {
-    readonly runId: string;
-  }) => ({
-    mutationFn: async (action: unknown) => {
-      queryFixture.deliveryActionInputs.push({ action, runId: config.runId });
+  localGaiaDeliveryActionMutationOptions: () => ({
+    mutationFn: async (input: {
+      readonly action: unknown;
+      readonly runId: RunId;
+    }) => {
+      queryFixture.deliveryActionInputs.push(input);
       return {
-        data: queryFixture.deliverySnapshotsByRunId[config.runId],
+        data: queryFixture.deliverySnapshotsByRunId[input.runId],
         status: "success",
       };
     },
-    mutationKey: [
-      "local-gaia",
-      "runs",
-      "detail",
-      config.runId,
-      "delivery",
-      "action",
-    ] as const,
+    mutationKey: ["local-gaia", "delivery", "action"] as const,
   }),
   localGaiaHealthQueryOptions: () => ({
     queryFn: () => {
@@ -239,7 +234,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
     retry: false,
   }),
   localGaiaRunQueryOptions: (config: { readonly runId: string }) => ({
-    enabled: config.runId.length > 0,
+    enabled: config.runId !== undefined,
     queryFn: () => {
       const run = queryFixture.runs.find(
         (candidate) =>
@@ -258,7 +253,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
     retry: false,
   }),
   localGaiaRunEventsQueryOptions: (config: { readonly runId: string }) => ({
-    enabled: config.runId.length > 0,
+    enabled: config.runId !== undefined,
     queryFn: () =>
       Promise.resolve({
         data: {
@@ -271,7 +266,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
     retry: false,
   }),
   localGaiaDeliveryQueryOptions: (config: { readonly runId: string }) => ({
-    enabled: config.runId.length > 0,
+    enabled: config.runId !== undefined,
     queryFn: () =>
       Promise.resolve({
         data: queryFixture.deliverySnapshotsByRunId[config.runId] ?? {
@@ -291,7 +286,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
     readonly artifactId: string;
     readonly runId: string;
   }) => ({
-    enabled: config.runId.length > 0 && config.artifactId.length > 0,
+    enabled: config.runId !== undefined && config.artifactId.length > 0,
     queryFn: () => {
       const artifact = queryFixture.artifactsByRunId[config.runId]?.[
         config.artifactId
@@ -318,7 +313,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
     retry: false,
   }),
   localGaiaFactoryGraphQueryOptions: (config: { readonly runId: string }) => ({
-    enabled: config.runId.length > 0,
+    enabled: config.runId !== undefined,
     queryFn: () =>
       Promise.resolve({
         data: queryFixture.factoryGraphsByRunId[config.runId],
@@ -336,7 +331,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
   localGaiaFactoryRunActivityQueryOptions: (config: {
     readonly runId: string;
   }) => ({
-    enabled: config.runId.length > 0,
+    enabled: config.runId !== undefined,
     queryFn: () => {
       const error = queryFixture.factoryActivityErrorsByRunId[config.runId];
       if (error !== undefined) {
@@ -358,7 +353,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
     readonly agentId: string;
     readonly runId: string;
   }) => ({
-    enabled: config.runId.length > 0 && config.agentId.length > 0,
+    enabled: config.runId !== undefined && config.agentId.length > 0,
     queryFn: () =>
       Promise.resolve({
         data: {
@@ -385,7 +380,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
     readonly agentId: string;
     readonly runId: string;
   }) => ({
-    enabled: config.runId.length > 0 && config.agentId.length > 0,
+    enabled: config.runId !== undefined && config.agentId.length > 0,
     queryFn: () =>
       Promise.resolve({
         data:
@@ -404,16 +399,14 @@ vi.mock("@/lib/local-gaia-query", () => ({
     ] as const,
     retry: false,
   }),
-  localGaiaAgentSessionActionMutationOptions: (config: {
-    readonly agentId: string;
-    readonly runId: string;
-  }) => ({
-    mutationFn: async (action: unknown) => {
-      queryFixture.agentSessionActionInputs.push({
-        action,
-        agentId: config.agentId,
-        runId: config.runId,
-      });
+  localGaiaAgentSessionActionMutationOptions: () => ({
+    mutationFn: async (input: {
+      readonly action: unknown;
+      readonly agentId: string;
+      readonly runId: RunId;
+    }) => {
+      queryFixture.agentSessionActionInputs.push(input);
+      const action = input.action;
       return {
         data: agentActionReceipt({
           actionId:
@@ -423,27 +416,18 @@ vi.mock("@/lib/local-gaia-query", () => ({
             typeof action.actionId === "string"
               ? parseHarnessActionId(action.actionId)
               : parseHarnessActionId("action-fixture"),
-          agentId: agentId(config.agentId),
-          runId: parseRunId(config.runId),
+          agentId: agentId(input.agentId),
+          runId: parseRunId(input.runId),
         }),
         status: "success",
       };
     },
-    mutationKey: [
-      "local-gaia",
-      "runs",
-      "detail",
-      config.runId,
-      "agents",
-      config.agentId,
-      "session",
-      "action",
-    ] as const,
+    mutationKey: ["local-gaia", "agent-session", "action"] as const,
   }),
   localGaiaFactoryArtifactsQueryOptions: (config: {
     readonly runId: string;
   }) => ({
-    enabled: config.runId.length > 0,
+    enabled: config.runId !== undefined,
     queryFn: () => {
       const error = queryFixture.factoryArtifactErrorsByRunId[config.runId];
       if (error !== undefined) {
@@ -465,7 +449,7 @@ vi.mock("@/lib/local-gaia-query", () => ({
     readonly artifactId: string;
     readonly runId: string;
   }) => ({
-    enabled: config.runId.length > 0 && config.artifactId.length > 0,
+    enabled: config.runId !== undefined && config.artifactId.length > 0,
     queryFn: () => {
       queryFixture.factoryArtifactBodyRequests.push({
         artifactId: config.artifactId,

@@ -12,7 +12,6 @@ import {
   parseDeliveryCleanupReceipt,
   parseHarnessEvent,
   ResolvedHarnessExecution,
-  parseRunId,
   type EventType,
   type FactoryAgentRole,
   type FactoryAgentState,
@@ -251,11 +250,10 @@ export function writeInitialFactoryRunIndexes(input: {
 }
 
 export function readFactoryRunIndexes(
-  runIdInput: string,
+  runId: RunId,
   options: RunStorageOptions = {},
 ) {
   return Effect.gen(function* () {
-    const runId = yield* parseRequestedRunId(runIdInput);
     const paths = yield* makeRunPaths(runId, options);
     const fs = yield* FileSystem.FileSystem;
     const runExists = yield* fs.exists(paths.root);
@@ -304,11 +302,10 @@ export function readFactoryRunIndexes(
 }
 
 export function rebuildFactoryRunIndexes(
-  runIdInput: string,
+  runId: RunId,
   options: RunStorageOptions = {},
 ) {
   return Effect.gen(function* () {
-    const runId = yield* parseRequestedRunId(runIdInput);
     const paths = yield* makeRunPaths(runId, options);
     return yield* rebuildFactoryRunIndexesFromPaths({
       additionalDiagnostics: [],
@@ -319,12 +316,12 @@ export function rebuildFactoryRunIndexes(
 }
 
 export function readFactoryArtifactBodyFromIndex(
-  runIdInput: string,
+  runId: RunId,
   artifactIdInput: string,
   options: RunStorageOptions = {},
 ) {
   return Effect.gen(function* () {
-    const indexes = yield* readFactoryRunIndexes(runIdInput, options);
+    const indexes = yield* readFactoryRunIndexes(runId, options);
     const artifact = indexes.artifacts.artifacts.find(
       (candidate) => candidate.artifactId === artifactIdInput,
     );
@@ -1382,21 +1379,6 @@ function parentAgentIdForRole(role: FactoryAgentRole): string | undefined {
     case "unknown":
       return undefined;
   }
-}
-
-function parseRequestedRunId(
-  runIdInput: string,
-): Effect.Effect<RunId, LocalRunReadDiagnostic> {
-  return Effect.try({
-    try: () => parseRunId(runIdInput),
-    catch: () =>
-      ({
-        code: "InvalidRunId",
-        message: "Requested run id is not a valid Gaia run id.",
-        pathSegment: runIdInput,
-        recoverable: false,
-      }) satisfies LocalRunReadDiagnostic,
-  });
 }
 
 function runNotFoundDiagnostic(runId: RunId): LocalRunReadDiagnostic {

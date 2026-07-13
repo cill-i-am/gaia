@@ -41,7 +41,7 @@ describe("selected node inspector model", () => {
         graph: undefined,
         graphIsLoading: true,
         selectedNode: undefined,
-        selectedRunId: "run-1234567890",
+        selectedRunId: runId("run-1234567890"),
       }),
     ).toMatchObject({
       kind: "empty",
@@ -56,7 +56,7 @@ describe("selected node inspector model", () => {
         graph: graphFixture(),
         graphIsLoading: false,
         selectedNode: undefined,
-        selectedRunId: "run-1234567890",
+        selectedRunId: runId("run-1234567890"),
       }),
     ).toMatchObject({
       kind: "empty",
@@ -98,7 +98,7 @@ describe("selected node inspector model", () => {
       graph,
       graphIsLoading: false,
       selectedNode: agentNode(),
-      selectedRunId: "run-1234567890",
+      selectedRunId: runId("run-1234567890"),
     });
 
     expect(model.kind).toBe("agent");
@@ -152,7 +152,7 @@ describe("selected node inspector model", () => {
       graph: graphFixture(),
       graphIsLoading: false,
       selectedNode: workItemNode(),
-      selectedRunId: "run-1234567890",
+      selectedRunId: runId("run-1234567890"),
     });
 
     expect(model.kind).toBe("workItem");
@@ -185,7 +185,7 @@ describe("selected node inspector model", () => {
       graph: graphFixture(),
       graphIsLoading: false,
       selectedNode: agentNode(),
-      selectedRunId: "run-1234567890",
+      selectedRunId: runId("run-1234567890"),
     });
 
     expect(loading.kind).toBe("agent");
@@ -211,7 +211,7 @@ describe("selected node inspector model", () => {
       graph: graphFixture(),
       graphIsLoading: false,
       selectedNode: agentNode(),
-      selectedRunId: "run-1234567890",
+      selectedRunId: runId("run-1234567890"),
     });
 
     expect(failed.kind).toBe("agent");

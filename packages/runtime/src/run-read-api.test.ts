@@ -87,21 +87,6 @@ describe("local run read api", () => {
       }),
     );
 
-    it.effect("fails a malformed requested run with a constrained diagnostic", () =>
-      Effect.gen(function* () {
-        const diagnostic = yield* Effect.flip(
-          readLocalRun("not-a-run-id", { rootDirectory: "." }),
-        );
-
-        assert.deepEqual(diagnostic, {
-          code: "InvalidRunId",
-          message: "Requested run id is not a valid Gaia run id.",
-          pathSegment: "not-a-run-id",
-          recoverable: false,
-        });
-      }),
-    );
-
     it.effect("reads logical artifacts and rejects arbitrary paths", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

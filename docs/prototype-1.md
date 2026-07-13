@@ -588,6 +588,8 @@ matters for machine orchestration.
 Boundary values are parsed before use:
 
 - run ids are branded by `RunIdSchema`;
+- local Gaia server URLs are branded by `LocalGaiaServerUrlSchema` without
+  normalizing the accepted string identity;
 - harness names are branded by `HarnessNameSchema`;
 - review phases are parsed by `ReviewPhaseSchema`;
 - Markdown specs are parsed into `RunSpec`;
@@ -609,6 +611,12 @@ Boundary values are parsed before use:
 
 The runtime persists plain JSON values. It does not serialize rich errors,
 functions, XState actors, Effect fibers, or platform services.
+
+Executable capability and function contracts are the sole schema-first
+exception: callbacks, clients, and Effect service functions remain TypeScript
+structural types because they are not serializable boundary data. Every raw or
+serializable value entering those functions is still parsed by its owning
+schema before it is carried inward.
 
 ## Testing Expectations
 

@@ -677,7 +677,7 @@ export const nodeGitHubCommandRunner: GitHubCommandRunner = (input) =>
 
 /** Verify that a completed run can be published to GitHub without mutating git. */
 export function preflightGitHubPublish(
-  runIdInput: string,
+  runIdInput: RunId,
   options: GitHubPublishOptions = {},
 ) {
   return Effect.gen(function* () {
@@ -738,7 +738,7 @@ export function preflightGitHubPublish(
 
 /** Build a read-only preview of the GitHub PR commands Gaia would run. */
 export function previewGitHubPublish(
-  runIdInput: string,
+  runIdInput: RunId,
   options: GitHubPublishPreviewOptions = {},
 ) {
   return Effect.gen(function* () {
@@ -780,7 +780,7 @@ export function previewGitHubPublish(
 }
 
 export function publishRunToGitHub(
-  runIdInput: string,
+  runIdInput: RunId,
   options: GitHubPublishOptions = {},
 ) {
   return Effect.gen(function* () {
@@ -937,7 +937,7 @@ function previewCommand(
 
 /** Publish a completed Gaia run workspace as a draft GitHub pull request. */
 export function publishWorkspaceRunToGitHub(
-  runIdInput: string,
+  runIdInput: RunId,
   options: GitHubPublishOptions = {},
 ) {
   return Effect.gen(function* () {
@@ -1092,7 +1092,7 @@ export function inspectGitHubChecks(
 }
 
 export function recordGitHubChecks(
-  runIdInput: string,
+  runIdInput: RunId,
   prInput: string,
   options: GitHubCheckRecordOptions = {},
 ) {
@@ -1108,7 +1108,7 @@ export function recordGitHubChecks(
 
 /** Resume or start a bounded CI watch for a completed Gaia run. */
 export function watchGitHubChecks(
-  runIdInput: string,
+  runIdInput: RunId,
   options: GitHubCiWatchOptions = {},
 ) {
   return withRunStoreLock(
@@ -1126,7 +1126,7 @@ export function watchGitHubChecks(
 
 /** Record human GitHub PR feedback for a completed Gaia run. */
 export function watchGitHubFeedback(
-  runIdInput: string,
+  runIdInput: RunId,
   prInput: string,
   options: GitHubPrFeedbackOptions = {},
 ) {
@@ -1142,7 +1142,7 @@ export function watchGitHubFeedback(
 
 /** Record CI and review feedback once, then recommend the next PR-loop action. */
 export function coordinateGitHubPrLoop(
-  runIdInput: string,
+  runIdInput: RunId,
   prInput: string,
   options: GitHubPrLoopOptions = {},
 ) {
@@ -1158,7 +1158,7 @@ export function coordinateGitHubPrLoop(
 
 /** Create a follow-up remediation spec from a blocked GitHub PR loop. */
 export function createGitHubRemediationSpec(
-  runIdInput: string,
+  runIdInput: RunId,
   options: RunStorageOptions = {},
 ) {
   return withRunStoreLock(
@@ -1173,7 +1173,7 @@ export function createGitHubRemediationSpec(
 
 /** Publish a timestamped Gaia evidence comment to a GitHub pull request. */
 export function commentGitHubPullRequest(
-  runIdInput: string,
+  runIdInput: RunId,
   prInput: string,
   options: GitHubPrCommentOptions = {},
 ) {
@@ -1188,7 +1188,7 @@ export function commentGitHubPullRequest(
 }
 
 function recordGitHubChecksUnlocked(
-  runIdInput: string,
+  runIdInput: RunId,
   prInput: string,
   options: GitHubCheckRecordOptions,
 ) {
@@ -1267,7 +1267,7 @@ function recordGitHubChecksUnlocked(
 }
 
 function watchGitHubFeedbackUnlocked(
-  runIdInput: string,
+  runIdInput: RunId,
   prInput: string,
   options: GitHubPrFeedbackOptions,
 ) {
@@ -1326,7 +1326,7 @@ function watchGitHubFeedbackUnlocked(
 }
 
 function coordinateGitHubPrLoopUnlocked(
-  runIdInput: string,
+  runIdInput: RunId,
   prInput: string,
   options: GitHubPrLoopOptions,
 ) {
@@ -1385,7 +1385,7 @@ function coordinateGitHubPrLoopUnlocked(
 }
 
 function createGitHubRemediationSpecUnlocked(
-  runIdInput: string,
+  runIdInput: RunId,
   options: RunStorageOptions,
 ) {
   return Effect.gen(function* () {
@@ -1448,7 +1448,7 @@ function createGitHubRemediationSpecUnlocked(
 }
 
 function commentGitHubPullRequestUnlocked(
-  runIdInput: string,
+  runIdInput: RunId,
   prInput: string,
   options: GitHubPrCommentOptions,
 ) {
@@ -1553,7 +1553,7 @@ function inspectGitHubFeedback(
 }
 
 function watchGitHubChecksUnlocked(
-  runIdInput: string,
+  runIdInput: RunId,
   options: GitHubCiWatchOptions,
 ) {
   return Effect.gen(function* () {

@@ -47,7 +47,6 @@ import {
   parseDeliveryMergeReceipt,
   parseDeliveryMergeReadinessDecision,
   parseHarnessEvent,
-  parseRunId,
   parseDeliveryCleanupReceipt,
   snapshotFromReplay,
   deriveDeliveryActionHistoriesFromEvents,
@@ -139,7 +138,7 @@ type LocalServerConfigValue = LocalServerIdentity & {
 
 type WorkerRecoveryFailureEvidenceWriter = (
   rootDirectory: string,
-  runId: string,
+  runId: RunId,
   actionId: string,
   error: LocalRunActionApiError,
 ) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
@@ -148,7 +147,7 @@ type WorkerRecoveryFailureEvidenceWriter = (
 export function executeWorkerRecoveryTransaction(input: {
   readonly action: WorkerRecoveryAction;
   readonly identity: LocalServerConfigValue;
-  readonly runId: string;
+  readonly runId: RunId;
 }) {
   return Effect.gen(function* () {
     const receipt = yield* actOnWorkerRecovery(input.runId, input.action, {
@@ -170,9 +169,8 @@ export function executeWorkerRecoveryTransaction(input: {
           message: "Confirmed worker recovery could not be continued safely.",
           state: "failed" as const,
         };
-        const runId = parseRunId(input.runId);
-        const paths = yield* makeRunPaths(runId, { rootDirectory: input.identity.rootDirectory });
-        yield* appendEvent(runId, paths, {
+        const paths = yield* makeRunPaths(input.runId, { rootDirectory: input.identity.rootDirectory });
+        yield* appendEvent(input.runId, paths, {
           payload: { recovery: encodeWorkerRecoveryReceiptJson(failed) },
           type: "WORKER_RECOVERY_RECORDED",
         });
@@ -607,7 +605,7 @@ export const LocalGaiaServerApiLayer = HttpApiBuilder.layer(LocalGaiaServerApi).
 export function makeLocalGaiaServerLayer(
   identity: LocalServerIdentity,
   workflowOptions: ServerWorkflowOptions = {},
-  resumableRunIds: ReadonlyArray<string> = [],
+  resumableRunIds: ReadonlyArray<RunId> = [],
   options: {
     readonly afterCreateRunAccepted?: (accepted: ServerRunAcceptance) => Effect.Effect<void>;
     readonly subscribeDeliveryRunEventFeed?: typeof subscribeRunEventFeed;
@@ -719,7 +717,7 @@ function factoryRunListFromLocalRuns(
 
 function readFactoryRunProjection(
   identity: LocalServerConfigValue,
-  runId: string,
+  runId: RunId,
 ): Effect.Effect<FactoryRunProjection, unknown, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const options = { rootDirectory: identity.rootDirectory };
@@ -1348,11 +1346,11 @@ function actionApiErrorFromCause(cause: Cause.Cause<unknown>): LocalRunActionApi
   }
 }
 
-function appendWorkerRecoveryFailureEvidence(rootDirectory: string, runId: string, actionId: string, error: LocalRunActionApiError) {
+function appendWorkerRecoveryFailureEvidence(rootDirectory: string, runId: RunId, actionId: string, error: LocalRunActionApiError) {
   return appendServerLog(rootDirectory, JSON.stringify(encodeWorkerRecoveryFailureEvidenceJson(WorkerRecoveryFailureEvidence.make({
     actionId,
     code: recoveryFailureEvidenceCode(error.code),
-    runId: parseRunId(runId),
+    runId,
     stage: recoveryFailureEvidenceStage(error.code),
     status: error.status === 409 || error.status === 422 ? error.status : 500,
     timestamp: new Date().toISOString(),
@@ -1821,12 +1819,12 @@ type EventStreamState = {
   readonly done: boolean;
   readonly nextSequence: number;
   readonly rootDirectory: string;
-  readonly runId: string;
+  readonly runId: RunId;
 };
 
 function streamRunEvents(input: {
   readonly rootDirectory: string;
-  readonly runId: string;
+  readonly runId: RunId;
 }) {
   return Stream.unfold(
     {

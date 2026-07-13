@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { parseLocalGaiaServerUrl, parseRunId } from "@gaia/core";
 import {
   openAgentSessionEventSource,
   openDeliverySnapshotEventSource,
   type AgentSessionEventSource,
 } from "./local-gaia-client.js";
+
+const runId = parseRunId("run-1234567890");
+const serverUrl = parseLocalGaiaServerUrl("/gaia-api");
 
 describe("local Gaia agent session SSE client", () => {
   it("subscribes to Gaia's named session event, cleans up, and pins sequence IDs", () => {
@@ -12,7 +16,7 @@ describe("local Gaia agent session SSE client", () => {
     const updates: Array<number> = [];
     const errors: Array<unknown> = [];
     const handle = openAgentSessionEventSource(
-      { afterSequence: 4, agentId: "agent-worker", runId: "run-1234567890", serverUrl: "/gaia-api" },
+      { afterSequence: 4, agentId: "agent-worker", runId, serverUrl },
       { onError: (error) => errors.push(error), onUpdate: (update) => updates.push(update.eventSequence) },
       (input) => { url = input; return source; },
     );
@@ -43,7 +47,7 @@ describe("local Gaia agent session SSE client", () => {
     const source = new TestAgentSessionEventSource();
     const updates: Array<string> = [];
     const handle = openDeliverySnapshotEventSource(
-      { afterSequence: 12, runId: "run-1234567890", serverUrl: "/gaia-api" },
+      { afterSequence: 12, runId, serverUrl },
       { onError: () => undefined, onUpdate: (value) => updates.push(value.stage) },
       (input) => { url = input; return source; },
     );

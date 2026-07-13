@@ -5,8 +5,8 @@ import {
   codexAppServerHarnessProfileId,
   parseWorkerRecoveryReceipt,
   parseWorkspaceRelativePath,
-  parseRunId,
   type HarnessDetection,
+  type RunId,
   type ServerMetadata,
 } from "@gaia/core";
 import {
@@ -158,7 +158,7 @@ function makeProductionHarnessServices(rootDirectory: string) {
     const registry = makeHarnessProviderRegistry([
       { profileId: codexAppServerHarnessProfileId, provider },
     ]);
-    const recover = (runId: string, action: Parameters<typeof recoverWorkerSession>[1]) => Effect.gen(function* () {
+    const recover = (runId: RunId, action: Parameters<typeof recoverWorkerSession>[1]) => Effect.gen(function* () {
       const correlation = yield* correlationStore.load(action.expectedSessionId);
       const nativeThreadId = correlation === undefined ? undefined : decodeCodexHarnessCorrelation(correlation);
       if (nativeThreadId === undefined) {
@@ -737,10 +737,10 @@ export function validateProductionWorkerRecoveryWorkspace(input: {
   readonly action: Parameters<typeof recoverWorkerSession>[1];
   readonly expectedHead: string;
   readonly rootDirectory: string;
-  readonly runId: string;
+  readonly runId: RunId;
 }): Effect.Effect<WorkerRecoveryWorkspaceValidation, unknown, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
-    const paths = yield* makeRunPaths(parseRunId(input.runId), {
+    const paths = yield* makeRunPaths(input.runId, {
       rootDirectory: input.rootDirectory,
     });
     const loaded = yield* loadRun(paths);

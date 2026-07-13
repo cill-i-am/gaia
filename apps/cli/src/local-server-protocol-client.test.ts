@@ -4,6 +4,8 @@ import {
   codexAppServerExecutionSelection,
   CreateRunRequest,
   LocalRunApiErrorEnvelope,
+  parseLocalGaiaServerUrl,
+  parseRunId,
 } from "@gaia/core";
 import { GaiaRuntimeError } from "@gaia/runtime";
 import { Effect, Layer, Option, Schema } from "effect";
@@ -16,15 +18,20 @@ import {
 } from "./local-server-protocol-client.js";
 import {
   readLocalRunArtifactFromServer,
-  statusRunFromServer,
 } from "./server-read-client.js";
 
 describe("local server protocol client", () => {
+  const runId = parseRunId("run-1234567890");
+  const serverUrl = parseLocalGaiaServerUrl("http://127.0.0.1:4321");
+  const trailingSlashServerUrl = parseLocalGaiaServerUrl(
+    "http://127.0.0.1:4321/",
+  );
+
   it.effect("decodes run lists through the Effect fetch-backed HttpApi client", () =>
     Effect.gen(function* () {
       const requests: Array<string> = [];
       const result = yield* listRunsFromLocalServerProtocol({
-        serverUrl: "http://127.0.0.1:4321",
+        serverUrl,
       }).pipe(
         Effect.provide(recordingFetchLayer(requests, () =>
           jsonResponse({
@@ -55,7 +62,7 @@ describe("local server protocol client", () => {
       });
       const result = yield* createRunFromLocalServerProtocol({
         payload,
-        serverUrl: "http://127.0.0.1:4321/",
+        serverUrl: trailingSlashServerUrl,
       }).pipe(
         Effect.provide(recordingFetchLayer(requests, async (request) => {
           const body: unknown = JSON.parse(await request.text());
@@ -97,8 +104,8 @@ describe("local server protocol client", () => {
   it.effect("surfaces declared API errors as typed decoded failures", () =>
     Effect.gen(function* () {
       const error = yield* getRunFromLocalServerProtocol({
-        runId: "run-1234567890",
-        serverUrl: "http://127.0.0.1:4321",
+        runId,
+        serverUrl,
       }).pipe(
         Effect.provide(recordingFetchLayer([], () =>
           jsonResponse(
@@ -133,8 +140,8 @@ describe("local server protocol client", () => {
         const bodies: unknown[] = [];
         const result = yield* evaluateMergeReadinessFromLocalServerProtocol({
           payload: { actionId: `readiness-${method}`, kind: "evaluateMergeReadiness", mergeMethod: method },
-          runId: "run-1234567890",
-          serverUrl: "http://127.0.0.1:4321",
+          runId,
+          serverUrl,
         }).pipe(Effect.provide(recordingFetchLayer(requests, async (request) => {
           bodies.push(JSON.parse(await request.text()));
           return jsonResponse({ data: { actionAudit: { cleanup: [], merge: [], readyForReview: [] }, eventSequence: 9, mode: "pullRequest", recoveryActions: [], runId: "run-1234567890", stage: "delivering", status: "delivering" }, status: "success" });
@@ -146,30 +153,19 @@ describe("local server protocol client", () => {
     );
   }
 
-  it.effect("maps invalid client-side path parameters to runtime diagnostics", () =>
+  it.effect("maps invalid artifact path parameters to runtime diagnostics", () =>
     Effect.gen(function* () {
-      const invalidRunId = yield* statusRunFromServer({
-        rootDirectory: ".",
-        runId: "not-a-run",
-        serverUrl: "http://127.0.0.1:4321",
-      }).pipe(Effect.flip);
       const invalidArtifact = yield* readLocalRunArtifactFromServer({
         artifactName: "",
-        runId: "run-1234567890",
-        serverUrl: "http://127.0.0.1:4321",
+        runId,
+        serverUrl,
       }).pipe(Effect.flip);
 
-      assert.instanceOf(invalidRunId, GaiaRuntimeError);
       assert.instanceOf(invalidArtifact, GaiaRuntimeError);
-      if (
-        !(invalidRunId instanceof GaiaRuntimeError) ||
-        !(invalidArtifact instanceof GaiaRuntimeError)
-      ) {
+      if (!(invalidArtifact instanceof GaiaRuntimeError)) {
         assert.fail("Expected Gaia runtime errors.");
       }
 
-      assert.strictEqual(invalidRunId.code, "InvalidRunId");
-      assert.strictEqual(invalidRunId.recoverable, false);
       assert.strictEqual(invalidArtifact.code, "ArtifactNotAllowed");
       assert.strictEqual(invalidArtifact.recoverable, false);
     }).pipe(Effect.provide(NodeServices.layer)),

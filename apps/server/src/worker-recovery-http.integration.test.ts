@@ -183,7 +183,7 @@ function makeFixture(mode?: FailureMode, options: {
     let starts = 0;
     let mutated = false;
     const action = WorkerRecoveryAction.make({ actionId: "recover-http-1", expectedFailureSequence: failureSequence, expectedSessionId: parseHarnessSessionId(sessionId), harnessProfileId: parseHarnessProfileId("codexAppServer"), kind: "retryRecoverableWorkerFailure", model: "gpt-5.4" });
-    const activator = (runId: string, request: WorkerRecoveryAction) => Effect.gen(function* () {
+    const activator = (runId: typeof accepted.runId, request: WorkerRecoveryAction) => Effect.gen(function* () {
       const receipt = yield* recoverWorkerSession(runId, request, { nativeThreadId: "thread-private", rootDirectory: rootB, provider: { listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]), readThread: (threadId) => Effect.succeed({ status: "systemError", threadId }), resumeThread: (threadId) => Effect.succeed({ status: "idle", threadId }), startTurn: () => Effect.sync(() => { starts += 1; return { turnId: "turn-recovery" }; }) }, validateWorkspace: () => options.productionWorkspaceValidation === true ? validateProductionWorkerRecoveryWorkspace({ action: request, expectedHead: provenance.value.baseRevision, rootDirectory: rootB, runId }) : inspectRecoverableDeliveryWorktreeOwnership({ expectedHeads: [provenance.value.baseRevision], options: { rootDirectory: rootB }, paths, provenance: provenance.value }) });
       if (mode !== undefined && receipt.state === "dispatchConfirmed" && !mutated) {
         mutated = true;

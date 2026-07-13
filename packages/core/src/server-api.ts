@@ -21,6 +21,7 @@ import {
   FactoryWorkflowIdSchema,
 } from "./factory-graph.js";
 import { RunIdSchema } from "./run-id.js";
+import { LocalGaiaServerUrlSchema } from "./local-gaia-server-url.js";
 import { HarnessExecutionSelection } from "./harness-execution.js";
 import {
   WorkerContinuationAction,
@@ -726,7 +727,7 @@ export class ServerMetadata extends Schema.Class<ServerMetadata>(
   serverId: Schema.NonEmptyString,
   startedAt: Schema.NonEmptyString,
   updatedAt: Schema.NonEmptyString,
-  url: Schema.NonEmptyString,
+  url: LocalGaiaServerUrlSchema,
   version: Schema.Literal(1),
   workspaceRoot: Schema.NonEmptyString,
 }) {}
@@ -742,7 +743,7 @@ export class HealthResponse extends Schema.Class<HealthResponse>(
   startedAt: Schema.NonEmptyString,
   status: Schema.Literal("ok"),
   updatedAt: Schema.NonEmptyString,
-  url: Schema.NonEmptyString,
+  url: LocalGaiaServerUrlSchema,
   version: Schema.Literal(1),
   workspaceRoot: Schema.NonEmptyString,
 }) {}

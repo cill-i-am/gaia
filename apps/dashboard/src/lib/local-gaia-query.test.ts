@@ -3,6 +3,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { Effect, Layer } from "effect";
 import { createEffectQuery } from "effect-query";
 import { FetchHttpClient } from "effect/unstable/http";
+import { parseLocalGaiaServerUrl, parseRunId } from "@gaia/core";
 
 import {
   defaultLocalGaiaServerUrl,
@@ -35,6 +36,9 @@ import {
   localGaiaRunsQueryOptions,
 } from "@/lib/local-gaia-query";
 
+const runId = parseRunId("run-1234567890");
+const serverUrl = parseLocalGaiaServerUrl("http://127.0.0.1:4321");
+
 describe("local Gaia query options", () => {
   it("keeps browser dashboard requests on the same-origin proxy path", () => {
     expect(defaultLocalGaiaServerUrl).toBe("/gaia-api");
@@ -42,42 +46,42 @@ describe("local Gaia query options", () => {
 
   it("constructs stable TanStack Query options through effect-query", () => {
     const health = localGaiaHealthQueryOptions({
-      serverUrl: "http://127.0.0.1:4321",
+      serverUrl,
     });
     const runs = localGaiaRunsQueryOptions({
-      serverUrl: "http://127.0.0.1:4321",
+      serverUrl,
     });
     const artifact = localGaiaRunArtifactQueryOptions({
       artifactId: "report",
-      runId: "run-1234567890",
-      serverUrl: "http://127.0.0.1:4321",
+      runId,
+      serverUrl,
     });
     const graph = localGaiaFactoryGraphQueryOptions({
-      runId: "run-1234567890",
-      serverUrl: "http://127.0.0.1:4321",
+      runId,
+      serverUrl,
     });
     const runActivity = localGaiaFactoryRunActivityQueryOptions({
-      runId: "run-1234567890",
-      serverUrl: "http://127.0.0.1:4321",
+      runId,
+      serverUrl,
     });
     const agentActivity = localGaiaFactoryAgentActivityQueryOptions({
       agentId: "agent-worker",
-      runId: "run-1234567890",
-      serverUrl: "http://127.0.0.1:4321",
+      runId,
+      serverUrl,
     });
     const artifactCatalog = localGaiaFactoryArtifactsQueryOptions({
-      runId: "run-1234567890",
-      serverUrl: "http://127.0.0.1:4321",
+      runId,
+      serverUrl,
     });
     const factoryArtifact = localGaiaFactoryArtifactQueryOptions({
       artifactId: "artifact-plan",
-      runId: "run-1234567890",
-      serverUrl: "http://127.0.0.1:4321",
+      runId,
+      serverUrl,
     });
     const agentSession = localGaiaAgentSessionQueryOptions({
       agentId: "agent-worker",
-      runId: "run-1234567890",
-      serverUrl: "http://127.0.0.1:4321",
+      runId,
+      serverUrl,
     });
 
     expect(health.queryKey).toEqual(localGaiaQueryKeys.health());
@@ -148,30 +152,44 @@ describe("local Gaia query options", () => {
     expect(typeof runs.queryFn).toBe("function");
   });
 
-  it("disables factory query options until identifiers parse", () => {
+  it("makes unselected run queries non-executable without fabricating an identity", async () => {
+    const requests: Array<string> = [];
+    const effectQuery = createEffectQuery(
+      recordingFetchLayer(requests, () =>
+        jsonResponse({ data: factoryGraphEnvelope.data, status: "success" }),
+      ),
+    );
     const graph = localGaiaFactoryGraphQueryOptions({
-      runId: "",
-      serverUrl: "http://127.0.0.1:4321",
+      runId: undefined,
+      serverUrl,
     });
     const agentActivity = localGaiaFactoryAgentActivityQueryOptions({
       agentId: "",
-      runId: "run-1234567890",
-      serverUrl: "http://127.0.0.1:4321",
+      runId,
+      serverUrl,
     });
     const agentSession = localGaiaAgentSessionQueryOptions({
       agentId: "",
-      runId: "run-1234567890",
-      serverUrl: "http://127.0.0.1:4321",
+      runId,
+      serverUrl,
     });
 
     expect(graph.enabled).toBe(false);
     expect(graph.queryKey).toEqual([
       "local-gaia",
       "runs",
-      "detail",
-      "invalid-run-id",
+      "unselected",
       "factory-graph",
     ]);
+    const queryClient = new QueryClient();
+    const unselected = localGaiaFactoryGraphQueryOptions({
+      runId: undefined,
+      serverUrl,
+    }, effectQuery);
+    await expect(queryClient.fetchQuery(unselected)).rejects.toThrow(
+      "data is undefined",
+    );
+    expect(requests).toEqual([]);
     expect(agentActivity.enabled).toBe(false);
     expect(agentActivity.queryKey).toEqual([
       "local-gaia",
@@ -198,7 +216,7 @@ describe("local Gaia query options", () => {
     const requests: Array<string> = [];
     const result = await Effect.runPromise(
       listRunsFromDashboardGaiaClient({
-        serverUrl: "http://127.0.0.1:4321",
+        serverUrl,
       }).pipe(
         Effect.provide(
           recordingFetchLayer(requests, () =>
@@ -218,8 +236,8 @@ describe("local Gaia query options", () => {
   it("maps declared API failures into a tagged dashboard query error", async () => {
     const error = await Effect.runPromise(
       getRunFromDashboardGaiaClient({
-        runId: "run-1234567890",
-        serverUrl: "http://127.0.0.1:4321",
+        runId,
+        serverUrl,
       }).pipe(
         Effect.provide(
           recordingFetchLayer([], () =>
@@ -228,7 +246,7 @@ describe("local Gaia query options", () => {
                 code: "RunNotFound",
                 message: "Run was not found.",
                 recoverable: false,
-                runId: "run-1234567890",
+                runId,
                 status: 404,
               },
               { status: 404 },
@@ -252,26 +270,26 @@ describe("local Gaia query options", () => {
     const result = await Effect.runPromise(
       Effect.all({
         activity: getFactoryRunActivityFromDashboardGaiaClient({
-          runId: "run-1234567890",
-          serverUrl: "http://127.0.0.1:4321",
+          runId,
+          serverUrl,
         }),
         agentActivity: getFactoryAgentActivityFromDashboardGaiaClient({
           agentId: "agent-worker",
-          runId: "run-1234567890",
-          serverUrl: "http://127.0.0.1:4321",
+          runId,
+          serverUrl,
         }),
         artifact: getFactoryArtifactFromDashboardGaiaClient({
           artifactId: "artifact-plan",
-          runId: "run-1234567890",
-          serverUrl: "http://127.0.0.1:4321",
+          runId,
+          serverUrl,
         }),
         artifacts: listFactoryArtifactsFromDashboardGaiaClient({
-          runId: "run-1234567890",
-          serverUrl: "http://127.0.0.1:4321",
+          runId,
+          serverUrl,
         }),
         graph: getFactoryGraphFromDashboardGaiaClient({
-          runId: "run-1234567890",
-          serverUrl: "http://127.0.0.1:4321",
+          runId,
+          serverUrl,
         }),
       }).pipe(
         Effect.provide(
@@ -336,13 +354,13 @@ describe("local Gaia query options", () => {
             turnId: "turn-1",
           },
           agentId: "agent-worker",
-          runId: "run-1234567890",
-          serverUrl: "http://127.0.0.1:4321",
+          runId,
+          serverUrl,
         }),
         session: getAgentSessionFromDashboardGaiaClient({
           agentId: "agent-worker",
-          runId: "run-1234567890",
-          serverUrl: "http://127.0.0.1:4321",
+          runId,
+          serverUrl,
         }),
       }).pipe(
         Effect.provide(
@@ -378,8 +396,8 @@ describe("local Gaia query options", () => {
     const error = await Effect.runPromise(
       getFactoryAgentActivityFromDashboardGaiaClient({
         agentId: "missing-agent",
-        runId: "run-1234567890",
-        serverUrl: "http://127.0.0.1:4321",
+        runId,
+        serverUrl,
       }).pipe(
         Effect.provide(
           recordingFetchLayer([], () =>
@@ -389,7 +407,7 @@ describe("local Gaia query options", () => {
                 message: "Factory agent was not found.",
                 pathSegment: "missing-agent",
                 recoverable: false,
-                runId: "run-1234567890",
+                runId,
                 status: 404,
               },
               { status: 404 },
@@ -412,8 +430,8 @@ describe("local Gaia query options", () => {
     const result = await Effect.runPromise(
       getRunArtifactFromDashboardGaiaClient({
         artifactId: "report",
-        runId: "run-1234567890",
-        serverUrl: "http://127.0.0.1:4321",
+        runId,
+        serverUrl,
       }).pipe(
         Effect.provide(
           recordingFetchLayer(requests, () =>
@@ -422,7 +440,7 @@ describe("local Gaia query options", () => {
                 artifactId: "report",
                 body: "# Report\n\nAll checks passed.\n",
                 contentType: "text/markdown",
-                runId: "run-1234567890",
+                runId,
               },
               status: "success",
             }),
@@ -443,8 +461,8 @@ describe("local Gaia query options", () => {
     const error = await Effect.runPromise(
       getRunArtifactFromDashboardGaiaClient({
         artifactId: "",
-        runId: "run-1234567890",
-        serverUrl: "http://127.0.0.1:4321",
+        runId,
+        serverUrl,
       }).pipe(
         Effect.provide(
           recordingFetchLayer(requests, () =>
@@ -453,7 +471,7 @@ describe("local Gaia query options", () => {
                 artifactName: "report",
                 body: "",
                 contentType: "text/plain",
-                runId: "run-1234567890",
+                runId,
               },
               status: "success",
             }),
@@ -478,7 +496,7 @@ describe("local Gaia query options", () => {
             code: "RunNotFound",
             message: "Run was not found.",
             recoverable: false,
-            runId: "run-1234567890",
+            runId,
             status: 404,
           },
           { status: 404 },
@@ -490,11 +508,11 @@ describe("local Gaia query options", () => {
     await queryClient
       .fetchQuery(
         effectQuery.queryOptions({
-          queryKey: localGaiaQueryKeys.run("run-1234567890"),
+          queryKey: localGaiaQueryKeys.run(runId),
           queryFn: () =>
             getRunFromDashboardGaiaClient({
-              runId: "run-1234567890",
-              serverUrl: "http://127.0.0.1:4321",
+              runId,
+              serverUrl,
             }),
           retry: false,
         }),
@@ -519,7 +537,7 @@ describe("local Gaia query options", () => {
     };
     const createRunResponse = {
       acceptedAt: "2026-07-07T00:00:00.000Z",
-      runId: "run-1234567890",
+      runId,
       status: "accepted",
       urls: {
         activity: "/runs/run-1234567890/activity",
@@ -537,7 +555,7 @@ describe("local Gaia query options", () => {
     );
     const mutation = localGaiaCreateRunMutationOptions(
       {
-        serverUrl: "http://127.0.0.1:4321",
+        serverUrl,
       },
       effectQuery,
     );
@@ -585,7 +603,7 @@ describe("local Gaia query options", () => {
               remote: "origin",
             },
             recoveryActions: [],
-            runId: "run-1234567890",
+            runId,
             stage: "publishing",
             status: "publishing",
           },
@@ -594,10 +612,7 @@ describe("local Gaia query options", () => {
       }),
     );
     const mutation = localGaiaDeliveryActionMutationOptions(
-      {
-        runId: "run-1234567890",
-        serverUrl: "http://127.0.0.1:4321",
-      },
+      { serverUrl },
       effectQuery,
     );
     if (mutation.mutationFn === undefined) {
@@ -605,7 +620,10 @@ describe("local Gaia query options", () => {
     }
 
     await mutation.mutationFn(
-      { expectedEventSequence: 9, kind: "reconcile" },
+      {
+        action: { expectedEventSequence: 9, kind: "reconcile" },
+        runId,
+      },
       { client: new QueryClient(), meta: undefined },
     );
 
@@ -627,22 +645,13 @@ describe("local Gaia query options", () => {
       }),
     );
     const mutation = localGaiaAgentSessionActionMutationOptions(
-      {
-        agentId: "agent-worker",
-        runId: "run-1234567890",
-        serverUrl: "http://127.0.0.1:4321",
-      },
+      { serverUrl },
       effectQuery,
     );
 
     expect(mutation.mutationKey).toEqual([
       "local-gaia",
-      "runs",
-      "detail",
-      "run-1234567890",
-      "agents",
-      "agent-worker",
-      "session",
+      "agent-session",
       "action",
     ]);
     if (mutation.mutationFn === undefined) {
@@ -651,10 +660,14 @@ describe("local Gaia query options", () => {
 
     await mutation.mutationFn(
       {
-        actionId: "action-interrupt-1",
-        kind: "interrupt",
-        sessionId: "session-run-1234567890",
-        turnId: "turn-1",
+        action: {
+          actionId: "action-interrupt-1",
+          kind: "interrupt",
+          sessionId: "session-run-1234567890",
+          turnId: "turn-1",
+        },
+        agentId: "agent-worker",
+        runId,
       },
       { client: new QueryClient(), meta: undefined },
     );
@@ -737,7 +750,7 @@ const factoryGraphEnvelope = {
         visibility: "run",
       },
     ],
-    runId: "run-1234567890",
+    runId,
     version: 1,
     workflow: "issueDelivery",
     workItems: [
@@ -761,14 +774,14 @@ const activityEnvelope = {
         artifactIds: ["artifact-plan"],
         kind: "worker.progress",
         label: "Worker produced a plan",
-        runId: "run-1234567890",
+        runId,
         sequence: 1,
         state: "running",
         timestamp: "2026-07-08T12:00:00.000Z",
         workItemId: "work-root",
       },
     ],
-    runId: "run-1234567890",
+    runId,
   },
   status: "success",
 } as const;
@@ -786,7 +799,7 @@ const artifactListEnvelope = {
         visibility: "run",
       },
     ],
-    runId: "run-1234567890",
+    runId,
   },
   status: "success",
 } as const;
@@ -796,7 +809,7 @@ const artifactBodyEnvelope = {
     artifactId: "artifact-plan",
     body: "# Plan body\n",
     contentType: "text/markdown",
-    runId: "run-1234567890",
+    runId,
   },
   status: "success",
 } as const;
@@ -834,7 +847,7 @@ const agentSessionEnvelope = {
     pendingInteractions: [],
     recovered: false,
     resolvedInteractions: [],
-    runId: "run-1234567890",
+    runId,
     sessionId: "session-run-1234567890",
     state: "running",
     turns: [{ status: "running", turnId: "turn-1" }],
@@ -849,7 +862,7 @@ const agentActionEnvelope = {
     eventSequence: 8,
     payloadDigest:
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    runId: "run-1234567890",
+    runId,
     sessionId: "session-run-1234567890",
     state: "dispatchConfirmed",
   },

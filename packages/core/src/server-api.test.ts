@@ -5,10 +5,57 @@ import {
   DeliveryActionRequestSchema,
   DeliveryRecoveryActionRequestSchema,
   DeliverySnapshotDto,
+  HealthResponse,
   LocalGaiaServerOpenApi,
+  ServerMetadata,
 } from "./server-api.js";
 
 describe("LocalGaiaServerApi contract", () => {
+  it("owns the exact local server URL contract in metadata and OpenAPI", () => {
+    const metadata = {
+      gaiaRoot: "/tmp/gaia/.gaia",
+      host: "127.0.0.1",
+      pid: 42,
+      port: 4321,
+      serverId: "server-1",
+      startedAt: "2026-07-13T12:00:00.000Z",
+      updatedAt: "2026-07-13T12:00:00.000Z",
+      url: "http://127.0.0.1:4321",
+      version: 1,
+      workspaceRoot: "/tmp/gaia",
+    };
+
+    assert.strictEqual(
+      Schema.decodeUnknownSync(ServerMetadata)(metadata).url,
+      metadata.url,
+    );
+    assert.strictEqual(
+      Schema.decodeUnknownSync(HealthResponse)({
+        ...metadata,
+        status: "ok",
+      }).url,
+      metadata.url,
+    );
+    assert.throws(() =>
+      Schema.decodeUnknownSync(ServerMetadata)({
+        ...metadata,
+        url: "http://127.0.0.1:4321?debug=true",
+      }),
+    );
+    assert.deepNestedInclude(
+      LocalGaiaServerOpenApi.components?.schemas?.HealthResponse,
+      {
+        "properties.url": {
+          $ref: "#/components/schemas/LocalGaiaServerUrl",
+        },
+      },
+    );
+    assert.deepInclude(
+      LocalGaiaServerOpenApi.components?.schemas?.LocalGaiaServerUrl,
+      { type: "string" },
+    );
+  });
+
   it("publishes fresh factory run paths", () => {
     const paths = LocalGaiaServerOpenApi.paths;
 

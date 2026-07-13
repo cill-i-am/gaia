@@ -1,4 +1,8 @@
-import type { AgentSessionUpdateDto } from "@gaia/core";
+import type {
+  AgentSessionUpdateDto,
+  LocalGaiaServerUrl,
+  RunId,
+} from "@gaia/core";
 
 import {
   openAgentSessionEventSource,
@@ -15,7 +19,7 @@ type StreamTarget = {
   readonly agentId: string | undefined;
   readonly isOpen: boolean;
   readonly rearmSequence?: number;
-  readonly runId: string | undefined;
+  readonly runId: RunId | undefined;
   readonly sessionId?: string;
   readonly snapshotSequence?: number;
 };
@@ -23,7 +27,7 @@ type StreamTarget = {
 type OpenStreamTarget = {
   readonly agentId: string;
   readonly isOpen: true;
-  readonly runId: string;
+  readonly runId: RunId;
   readonly sessionId: string;
 };
 
@@ -39,14 +43,14 @@ export function createAgentSessionStreamController(input: {
     config: DashboardGaiaClientConfig & {
       readonly afterSequence?: number;
       readonly agentId: string;
-      readonly runId: string;
+      readonly runId: RunId;
     },
     handlers: {
       readonly onError: (error: unknown) => void;
       readonly onUpdate: (update: typeof AgentSessionUpdateDto.Type) => void;
     },
   ) => StreamHandle;
-  readonly serverUrl: string;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   const openSource =
     input.openSource ??

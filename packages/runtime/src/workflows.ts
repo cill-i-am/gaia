@@ -563,9 +563,8 @@ function selectBrowserEvidenceTargetUrl(input: {
   );
 }
 
-export function resumeRun(runIdInput: string, options: WorkflowOptions = {}) {
+export function resumeRun(runId: RunId, options: WorkflowOptions = {}) {
   return Effect.gen(function* () {
-    const runId = yield* parseRunIdEffect(runIdInput);
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths);
 
@@ -603,13 +602,13 @@ export function resumeRun(runIdInput: string, options: WorkflowOptions = {}) {
 }
 
 export function collectBrowserEvidence(
-  runIdInput: string,
+  runId: RunId,
   targetUrlInput: string,
   options: BrowserEvidenceCollectionOptions = {},
 ) {
   return withRunStoreLock(
     options,
-    collectBrowserEvidenceUnlocked(runIdInput, targetUrlInput, options),
+    collectBrowserEvidenceUnlocked(runId, targetUrlInput, options),
   );
 }
 
@@ -703,14 +702,14 @@ export function reverifyRemediatedRun(input: {
 }
 
 function collectBrowserEvidenceUnlocked(
-  runIdInput: string,
+  runId: RunId,
   targetUrlInput: string,
   options: BrowserEvidenceCollectionOptions,
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
     const targetUrl = yield* parseBrowserEvidenceTargetUrlEffect(targetUrlInput);
-    const run = yield* statusRun(runIdInput, { rootDirectory });
+    const run = yield* statusRun(runId, { rootDirectory });
 
     if (run.status !== "completed") {
       return yield* Effect.fail(
@@ -728,14 +727,14 @@ function collectBrowserEvidenceUnlocked(
 }
 
 export function statusRun(
-  runIdInput?: string,
+  requestedRunId?: RunId,
   options: WorkflowOptions = {},
 ) {
   return Effect.gen(function* () {
     const runId =
-      runIdInput === undefined
+      requestedRunId === undefined
         ? yield* latestRunId(options)
-        : yield* parseRunIdEffect(runIdInput);
+        : requestedRunId;
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths);
 
@@ -817,7 +816,7 @@ function latestRunId(options: WorkflowOptions) {
     }
 
     const latest = (yield* fs.readFileString(store.latest)).trim();
-    return yield* parseRunIdEffect(latest);
+    return yield* parsePersistedRunIdEffect(latest);
   });
 }
 
@@ -834,7 +833,7 @@ function parseSpec(input: string, fallbackTitle: string) {
   });
 }
 
-function parseRunIdEffect(input: string) {
+function parsePersistedRunIdEffect(input: string) {
   return Effect.try({
     try: () => parseRunId(input),
     catch: (cause) =>

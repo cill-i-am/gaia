@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import {
+  parseLocalGaiaServerUrl,
+  parseRunId,
+  type LocalGaiaServerUrl,
+  type RunId,
+} from "@gaia/core";
 import type {
   BrowserEvidenceRecord,
   BrowserEvidenceRequirement,
@@ -270,7 +276,13 @@ const run = Command.make("run", {
 const resume = Command.make("resume", { json, runId }).pipe(
   Command.withDescription("Replay and validate an existing Gaia run."),
   Command.withHandler(({ json, runId }) =>
-    renderEffect(resumeRun(runId, workflowOptions()), json, renderSummary),
+    renderEffect(
+      withRunIdInput(runId, (parsedRunId) =>
+        resumeRun(parsedRunId, workflowOptions()),
+      ),
+      json,
+      renderSummary,
+    ),
   ),
 );
 
@@ -358,7 +370,9 @@ const publishPr = Command.make("publish-pr", { baseBranch, json, runId }).pipe(
   Command.withDescription("Publish a completed Gaia run as a draft GitHub PR."),
   Command.withHandler(({ baseBranch, json, runId }) =>
     renderEffect(
-      publishRunToGitHub(runId, githubPublishOptions({ baseBranch })),
+      withRunIdInput(runId, (parsedRunId) =>
+        publishRunToGitHub(parsedRunId, githubPublishOptions({ baseBranch })),
+      ),
       json,
       renderGitHubPrSummary,
     ),
@@ -373,7 +387,9 @@ const preflightGithub = Command.make("preflight-github", {
   Command.withDescription("Check whether a completed Gaia run can publish to GitHub."),
   Command.withHandler(({ baseBranch, json, runId }) =>
     renderEffect(
-      preflightGitHubPublish(runId, githubPublishOptions({ baseBranch })),
+      withRunIdInput(runId, (parsedRunId) =>
+        preflightGitHubPublish(parsedRunId, githubPublishOptions({ baseBranch })),
+      ),
       json,
       renderGitHubPreflightSummary,
     ),
@@ -389,10 +405,12 @@ const previewPr = Command.make("preview-pr", {
   Command.withDescription("Preview the GitHub PR commands Gaia would run."),
   Command.withHandler(({ baseBranch, json, runId, workspacePreview }) =>
     renderEffect(
-      previewGitHubPublish(runId, {
-        ...githubPublishOptions({ baseBranch }),
-        mode: workspacePreview ? "workspace" : "evidence",
-      }),
+      withRunIdInput(runId, (parsedRunId) =>
+        previewGitHubPublish(parsedRunId, {
+          ...githubPublishOptions({ baseBranch }),
+          mode: workspacePreview ? "workspace" : "evidence",
+        }),
+      ),
       json,
       renderGitHubPublishPreview,
     ),
@@ -409,7 +427,12 @@ const publishWorkspacePr = Command.make("publish-workspace-pr", {
   ),
   Command.withHandler(({ baseBranch, json, runId }) =>
     renderEffect(
-      publishWorkspaceRunToGitHub(runId, githubPublishOptions({ baseBranch })),
+      withRunIdInput(runId, (parsedRunId) =>
+        publishWorkspaceRunToGitHub(
+          parsedRunId,
+          githubPublishOptions({ baseBranch }),
+        ),
+      ),
       json,
       renderGitHubPrSummary,
     ),
@@ -436,10 +459,12 @@ const checks = Command.make("checks", {
   Command.withDescription("Record GitHub check evidence against a Gaia run."),
   Command.withHandler(({ json, pullRequest, runId, waitForTerminal }) =>
     renderEffect(
-      recordGitHubChecks(runId, pullRequest, {
-        rootDirectory: invocationRoot(),
-        waitForTerminal,
-      }),
+      withRunIdInput(runId, (parsedRunId) =>
+        recordGitHubChecks(parsedRunId, pullRequest, {
+          rootDirectory: invocationRoot(),
+          waitForTerminal,
+        }),
+      ),
       json,
       renderGitHubChecksRecord,
     ),
@@ -456,12 +481,14 @@ const watchCi = Command.make("watch-ci", {
   ),
   Command.withHandler(({ json, pullRequest, runId }) =>
     renderEffect(
-      watchGitHubChecks(runId, {
-        rootDirectory: invocationRoot(),
-        ...(Option.isSome(pullRequest)
-          ? { pullRequest: pullRequest.value }
-          : {}),
-      }),
+      withRunIdInput(runId, (parsedRunId) =>
+        watchGitHubChecks(parsedRunId, {
+          rootDirectory: invocationRoot(),
+          ...(Option.isSome(pullRequest)
+            ? { pullRequest: pullRequest.value }
+            : {}),
+        }),
+      ),
       json,
       renderGitHubCiWatchSummary,
     ),
@@ -478,9 +505,11 @@ const watchPrFeedback = Command.make("watch-pr-feedback", {
   ),
   Command.withHandler(({ json, pullRequest, runId }) =>
     renderEffect(
-      watchGitHubFeedback(runId, pullRequest, {
-        rootDirectory: invocationRoot(),
-      }),
+      withRunIdInput(runId, (parsedRunId) =>
+        watchGitHubFeedback(parsedRunId, pullRequest, {
+          rootDirectory: invocationRoot(),
+        }),
+      ),
       json,
       renderGitHubPrFeedbackSummary,
     ),
@@ -497,9 +526,11 @@ const prLoop = Command.make("pr-loop", {
   ),
   Command.withHandler(({ json, pullRequest, runId }) =>
     renderEffect(
-      coordinateGitHubPrLoop(runId, pullRequest, {
-        rootDirectory: invocationRoot(),
-      }),
+      withRunIdInput(runId, (parsedRunId) =>
+        coordinateGitHubPrLoop(parsedRunId, pullRequest, {
+          rootDirectory: invocationRoot(),
+        }),
+      ),
       json,
       renderGitHubPrLoopSummary,
     ),
@@ -515,9 +546,11 @@ const planRemediation = Command.make("plan-remediation", {
   ),
   Command.withHandler(({ json, runId }) =>
     renderEffect(
-      createGitHubRemediationSpec(runId, {
-        rootDirectory: invocationRoot(),
-      }),
+      withRunIdInput(runId, (parsedRunId) =>
+        createGitHubRemediationSpec(parsedRunId, {
+          rootDirectory: invocationRoot(),
+        }),
+      ),
       json,
       renderGitHubRemediationSpecSummary,
     ),
@@ -534,9 +567,11 @@ const commentPr = Command.make("comment-pr", {
   ),
   Command.withHandler(({ json, pullRequest, runId }) =>
     renderEffect(
-      commentGitHubPullRequest(runId, pullRequest, {
-        rootDirectory: invocationRoot(),
-      }),
+      withRunIdInput(runId, (parsedRunId) =>
+        commentGitHubPullRequest(parsedRunId, pullRequest, {
+          rootDirectory: invocationRoot(),
+        }),
+      ),
       json,
       renderGitHubPrCommentSummary,
     ),
@@ -553,12 +588,14 @@ const linearIssue = Command.make("linear-issue", {
   ),
   Command.withHandler(({ json, linearIssueGraphFile, runId }) =>
     renderEffect(
-      recordLinearIssueGraph(
-        runId,
-        resolveInvocationPath(linearIssueGraphFile),
-        {
-          rootDirectory: invocationRoot(),
-        },
+      withRunIdInput(runId, (parsedRunId) =>
+        recordLinearIssueGraph(
+          parsedRunId,
+          resolveInvocationPath(linearIssueGraphFile),
+          {
+            rootDirectory: invocationRoot(),
+          },
+        ),
       ),
       json,
       renderLinearIssueGraphSummary,
@@ -575,9 +612,11 @@ const mergeDecision = Command.make("merge-decision", {
   ),
   Command.withHandler(({ json, runId }) =>
     renderEffect(
-      recordMergeDecision(runId, {
-        rootDirectory: invocationRoot(),
-      }),
+      withRunIdInput(runId, (parsedRunId) =>
+        recordMergeDecision(parsedRunId, {
+          rootDirectory: invocationRoot(),
+        }),
+      ),
       json,
       renderMergeDecisionSummary,
     ),
@@ -594,7 +633,16 @@ const mergeReadiness = Command.make("merge-readiness", {
   Command.withDescription("Evaluate exact-head merge readiness without executing a merge."),
   Command.withHandler(({ actionId, json, mergeReadinessMethod, readinessServerUrl, runId }) =>
     renderEffect(
-      evaluateMergeReadinessFromServer({ actionId, mergeMethod: mergeReadinessMethod, runId, serverUrl: readinessServerUrl }),
+      Effect.gen(function* () {
+        const parsedRunId = yield* parseRunIdInput(runId);
+        const parsedServerUrl = yield* parseServerUrlInput(readinessServerUrl);
+        return yield* evaluateMergeReadinessFromServer({
+          actionId,
+          mergeMethod: mergeReadinessMethod,
+          runId: parsedRunId,
+          serverUrl: parsedServerUrl,
+        });
+      }),
       json,
       (response) => renderMergeReadinessResponse(response.data),
     ),
@@ -609,9 +657,11 @@ const collectBrowserEvidenceCommand = Command.make("collect-browser-evidence", {
   Command.withDescription("Collect screenshot and console evidence for a completed run."),
   Command.withHandler(({ browserTargetUrl, json, runId }) =>
     renderEffect(
-      collectBrowserEvidence(runId, browserTargetUrl, {
-        rootDirectory: invocationRoot(),
-      }),
+      withRunIdInput(runId, (parsedRunId) =>
+        collectBrowserEvidence(parsedRunId, browserTargetUrl, {
+          rootDirectory: invocationRoot(),
+        }),
+      ),
       json,
       renderBrowserEvidenceRecord,
     ),
@@ -959,18 +1009,22 @@ function readStatus(input: {
   readonly serverMode: boolean;
   readonly serverUrl?: string;
 }) {
-  if (!input.serverMode && input.serverUrl === undefined) {
-    return statusRun(input.runId, workflowOptions());
-  }
+  return parseOptionalRunIdInput(input.runId).pipe(
+    Effect.flatMap((parsedRunId) => {
+      if (!input.serverMode && input.serverUrl === undefined) {
+        return statusRun(parsedRunId, workflowOptions());
+      }
 
-  return serverUrlFor(input).pipe(
-    Effect.flatMap((serverUrl) =>
-      statusRunFromServer({
-        rootDirectory: invocationRoot(),
-        serverUrl,
-        ...(input.runId === undefined ? {} : { runId: input.runId }),
-      }),
-    ),
+      return serverUrlFor(input).pipe(
+        Effect.flatMap((serverUrl) =>
+          statusRunFromServer({
+            rootDirectory: invocationRoot(),
+            serverUrl,
+            ...(parsedRunId === undefined ? {} : { runId: parsedRunId }),
+          }),
+        ),
+      );
+    }),
   );
 }
 
@@ -994,18 +1048,18 @@ function readEvents(input: {
   readonly serverMode: boolean;
   readonly serverUrl?: string;
 }) {
-  if (!input.serverMode && input.serverUrl === undefined) {
-    return readLocalRunEvents(input.runId, workflowOptions());
-  }
+  return Effect.gen(function* () {
+    const parsedRunId = yield* parseRunIdInput(input.runId);
+    if (!input.serverMode && input.serverUrl === undefined) {
+      return yield* readLocalRunEvents(parsedRunId, workflowOptions());
+    }
 
-  return serverUrlFor(input).pipe(
-    Effect.flatMap((serverUrl) =>
-      readLocalRunEventsFromServer({
-        runId: input.runId,
-        serverUrl,
-      }),
-    ),
-  );
+    const parsedServerUrl = yield* serverUrlFor(input);
+    return yield* readLocalRunEventsFromServer({
+      runId: parsedRunId,
+      serverUrl: parsedServerUrl,
+    });
+  });
 }
 
 function readArtifact(input: {
@@ -1013,18 +1067,22 @@ function readArtifact(input: {
   readonly runId: string;
   readonly serverUrl?: string;
 }) {
-  if (input.serverUrl === undefined) {
-    return readLocalRunArtifact(
-      input.runId,
-      input.artifactName,
-      workflowOptions(),
-    );
-  }
+  return Effect.gen(function* () {
+    const parsedRunId = yield* parseRunIdInput(input.runId);
+    if (input.serverUrl === undefined) {
+      return yield* readLocalRunArtifact(
+        parsedRunId,
+        input.artifactName,
+        workflowOptions(),
+      );
+    }
 
-  return readLocalRunArtifactFromServer({
-    artifactName: input.artifactName,
-    runId: input.runId,
-    serverUrl: input.serverUrl,
+    const parsedServerUrl = yield* parseServerUrlInput(input.serverUrl);
+    return yield* readLocalRunArtifactFromServer({
+      artifactName: input.artifactName,
+      runId: parsedRunId,
+      serverUrl: parsedServerUrl,
+    });
   });
 }
 
@@ -1033,7 +1091,7 @@ function serverUrlFor(input: {
   readonly serverUrl?: string;
 }) {
   if (input.serverUrl !== undefined) {
-    return Effect.succeed(input.serverUrl);
+    return parseServerUrlInput(input.serverUrl);
   }
 
   if (input.serverMode) {
@@ -1047,6 +1105,53 @@ function serverUrlFor(input: {
       recoverable: false,
     }),
   );
+}
+
+function parseRunIdInput(input: string): Effect.Effect<RunId, GaiaRuntimeError> {
+  return Effect.try({
+    try: () => parseRunId(input),
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "InvalidRunId",
+        message: `Invalid Gaia run id '${input}'.`,
+        recoverable: false,
+      }),
+  });
+}
+
+function parseOptionalRunIdInput(
+  input: string | undefined,
+): Effect.Effect<RunId | undefined, GaiaRuntimeError> {
+  return input === undefined
+    ? Effect.succeed<RunId | undefined>(undefined)
+    : parseRunIdInput(input);
+}
+
+function parseServerUrlInput(
+  input: string,
+): Effect.Effect<LocalGaiaServerUrl, GaiaRuntimeError> {
+  return Effect.try({
+    try: () => {
+      const serverUrl = parseLocalGaiaServerUrl(input);
+      new URL(serverUrl);
+      return serverUrl;
+    },
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "InvalidServerUrl",
+        message: "Invalid local Gaia server URL.",
+        recoverable: false,
+      }),
+  });
+}
+
+function withRunIdInput<A, E, R>(
+  input: string,
+  useRunId: (runId: RunId) => Effect.Effect<A, E, R>,
+): Effect.Effect<A, GaiaRuntimeError | E, R> {
+  return parseRunIdInput(input).pipe(Effect.flatMap(useRunId));
 }
 
 function renderEffect<A>(

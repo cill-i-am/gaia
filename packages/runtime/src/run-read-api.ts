@@ -227,9 +227,8 @@ export function listLocalRuns(options: RunStorageOptions = {}) {
   });
 }
 
-export function readLocalRun(runIdInput: string, options: RunStorageOptions = {}) {
+export function readLocalRun(runId: RunId, options: RunStorageOptions = {}) {
   return Effect.gen(function* () {
-    const runId = yield* parseRequestedRunId(runIdInput);
     const paths = yield* makeRunPaths(runId, options);
     const fs = yield* FileSystem.FileSystem;
     const runExists = yield* fs.exists(paths.root);
@@ -268,11 +267,10 @@ export function readLocalRun(runIdInput: string, options: RunStorageOptions = {}
 }
 
 export function readLocalRunEvents(
-  runIdInput: string,
+  runId: RunId,
   options: RunStorageOptions = {},
 ) {
   return Effect.gen(function* () {
-    const runId = yield* parseRequestedRunId(runIdInput);
     const paths = yield* makeRunPaths(runId, options);
     const fs = yield* FileSystem.FileSystem;
     const runExists = yield* fs.exists(paths.root);
@@ -297,12 +295,11 @@ export function readLocalRunEvents(
 }
 
 export function readLocalRunArtifact(
-  runIdInput: string,
+  runId: RunId,
   artifactName: string,
   options: RunStorageOptions = {},
 ) {
   return Effect.gen(function* () {
-    const runId = yield* parseRequestedRunId(runIdInput);
     const artifactId = parseArtifactId(artifactName);
     if (artifactId._tag === "Failure") {
       return yield* Effect.fail({
@@ -368,19 +365,6 @@ function parseArtifactId(input: string): ParsedArtifactId {
   }
 
   return { _tag: "Failure" };
-}
-
-function parseRequestedRunId(runIdInput: string) {
-  return Effect.try({
-    try: () => parseRunId(runIdInput),
-    catch: () =>
-      ({
-        code: "InvalidRunId",
-        message: "Requested run id is not a valid Gaia run id.",
-        pathSegment: runIdInput,
-        recoverable: false,
-      }) satisfies LocalRunReadDiagnostic,
-  });
 }
 
 type ParsedRunDirectoryName =

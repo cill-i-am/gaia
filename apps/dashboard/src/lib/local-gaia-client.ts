@@ -20,7 +20,9 @@ import {
   LocalRunArtifactSuccessEnvelope,
   LocalRunDetailSuccessEnvelope,
   LocalRunListSuccessEnvelope,
-  RunIdSchema,
+  parseLocalGaiaServerUrl,
+  type LocalGaiaServerUrl,
+  type RunId,
 } from "@gaia/core";
 import { Cause, Effect, Option, Schema } from "effect";
 import {
@@ -32,7 +34,7 @@ import { HttpApiClient } from "effect/unstable/httpapi";
 
 const fetchTimeoutMs = 2_000;
 
-export const defaultLocalGaiaServerUrl = "/gaia-api";
+export const defaultLocalGaiaServerUrl = parseLocalGaiaServerUrl("/gaia-api");
 
 export type DashboardGaiaClientError =
   | {
@@ -46,7 +48,7 @@ export type DashboardGaiaClientError =
   | {
       readonly _tag: "DashboardGaiaParameterError";
       readonly cause: Schema.SchemaError;
-      readonly parameter: "action" | "agentId" | "artifactId" | "createRun" | "deliveryAction" | "runId";
+      readonly parameter: "action" | "agentId" | "artifactId" | "createRun" | "deliveryAction";
     }
   | {
       readonly _tag: "DashboardGaiaTimeoutError";
@@ -58,7 +60,7 @@ export type DashboardGaiaClientError =
     };
 
 export type DashboardGaiaClientConfig = {
-  readonly serverUrl: string;
+  readonly serverUrl: LocalGaiaServerUrl;
 };
 
 export const DashboardGaiaFetchClientLive = FetchHttpClient.layer;
@@ -119,12 +121,13 @@ export function listRunsFromDashboardGaiaClient(
 }
 
 export function getRunFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly runId: string },
+  config: DashboardGaiaClientConfig & { readonly runId: RunId },
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(config.runId);
-      const response = yield* client.runs.getRun({ params: { runId } });
+      const response = yield* client.runs.getRun({
+        params: { runId: config.runId },
+      });
       return yield* decodeLocalRunDetailSuccess({
         data: legacyRunSummaryFromFactoryRun(response.data),
         status: "success",
@@ -134,24 +137,20 @@ export function getRunFromDashboardGaiaClient(
 }
 
 export function getRunEventsFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly runId: string },
+  config: DashboardGaiaClientConfig & { readonly runId: RunId },
 ) {
   return withDashboardGaiaClient(config, (client) =>
-    Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(config.runId);
-      return yield* client.runs.getRunEvents({ params: { runId } });
-    }),
+    client.runs.getRunEvents({ params: { runId: config.runId } }),
   );
 }
 
 export function getFactoryGraphFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly runId: string },
+  config: DashboardGaiaClientConfig & { readonly runId: RunId },
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(config.runId);
       const response = yield* client.runs.getFactoryGraph({
-        params: { runId },
+        params: { runId: config.runId },
       });
       return yield* decodeFactoryGraphSuccess(response);
     }),
@@ -159,13 +158,12 @@ export function getFactoryGraphFromDashboardGaiaClient(
 }
 
 export function getFactoryRunActivityFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly runId: string },
+  config: DashboardGaiaClientConfig & { readonly runId: RunId },
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(config.runId);
       const response = yield* client.runs.getRunActivity({
-        params: { runId },
+        params: { runId: config.runId },
       });
       return yield* decodeFactoryActivitySuccess(response);
     }),
@@ -173,13 +171,12 @@ export function getFactoryRunActivityFromDashboardGaiaClient(
 }
 
 export function getDeliverySnapshotFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly runId: string },
+  config: DashboardGaiaClientConfig & { readonly runId: RunId },
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(config.runId);
       const response = yield* client.runs.getDeliverySnapshot({
-        params: { runId },
+        params: { runId: config.runId },
       });
       return yield* decodeDeliverySnapshotSuccess(response);
     }),
@@ -189,12 +186,12 @@ export function getDeliverySnapshotFromDashboardGaiaClient(
 export function actOnDeliveryFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig & {
     readonly action: unknown;
-    readonly runId: string;
+    readonly runId: RunId;
   },
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(config.runId);
+      const params = { runId: config.runId };
       const payload = yield* Schema.decodeUnknownEffect(
         DeliveryActionRequestSchema,
       )(config.action).pipe(
@@ -202,26 +199,26 @@ export function actOnDeliveryFromDashboardGaiaClient(
       );
       switch (payload.kind) {
         case "activateRemediation":
-          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+          return yield* client.runs.actOnDelivery({ params, payload });
         case "markReadyForReview":
-          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+          return yield* client.runs.actOnDelivery({ params, payload });
         case "attestPairedReviewApproval":
-          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+          return yield* client.runs.actOnDelivery({ params, payload });
         case "merge":
-          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+          return yield* client.runs.actOnDelivery({ params, payload });
         case "evaluateMergeReadiness":
-          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+          return yield* client.runs.actOnDelivery({ params, payload });
         case "retryCleanup":
-          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+          return yield* client.runs.actOnDelivery({ params, payload });
         case "continueInterruptedWorkerRecovery":
-          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+          return yield* client.runs.actOnDelivery({ params, payload });
         case "reconcileInterruptedWorkerCorrelation":
-          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+          return yield* client.runs.actOnDelivery({ params, payload });
         case "reconcileDesktopOriginatedWorkerCorrelation":
-          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+          return yield* client.runs.actOnDelivery({ params, payload });
         case "reconcile":
         case "retry":
-          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+          return yield* client.runs.actOnDelivery({ params, payload });
       }
     }),
   );
@@ -230,15 +227,14 @@ export function actOnDeliveryFromDashboardGaiaClient(
 export function getFactoryAgentActivityFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig & {
     readonly agentId: string;
-    readonly runId: string;
+    readonly runId: RunId;
   },
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(config.runId);
       const agentId = yield* decodeAgentIdParameter(config.agentId);
       const response = yield* client.runs.getAgentActivity({
-        params: { agentId, runId },
+        params: { agentId, runId: config.runId },
       });
       return yield* decodeFactoryActivitySuccess(response);
     }),
@@ -246,26 +242,24 @@ export function getFactoryAgentActivityFromDashboardGaiaClient(
 }
 
 export function getAgentSessionFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly agentId: string; readonly runId: string },
+  config: DashboardGaiaClientConfig & { readonly agentId: string; readonly runId: RunId },
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(config.runId);
       const agentId = yield* decodeAgentIdParameter(config.agentId);
-      return yield* client.runs.getAgentSession({ params: { agentId, runId } }).pipe(Effect.flatMap(decodeAgentSessionSnapshotSuccess));
+      return yield* client.runs.getAgentSession({ params: { agentId, runId: config.runId } }).pipe(Effect.flatMap(decodeAgentSessionSnapshotSuccess));
     }),
   );
 }
 
 export function actOnAgentSessionFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly action: unknown; readonly agentId: string; readonly runId: string },
+  config: DashboardGaiaClientConfig & { readonly action: unknown; readonly agentId: string; readonly runId: RunId },
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(config.runId);
       const agentId = yield* decodeAgentIdParameter(config.agentId);
       const payload = yield* Schema.decodeUnknownEffect(AgentOperatorActionRequestSchema)(config.action).pipe(Effect.mapError((cause) => parameterError("action", cause)));
-      const params = { agentId, runId };
+      const params = { agentId, runId: config.runId };
       switch (payload.kind) {
         case "followUp": return yield* client.runs.actOnAgentSession({ params, payload });
         case "steer": return yield* client.runs.actOnAgentSession({ params, payload });
@@ -308,7 +302,7 @@ export type DeliverySnapshotEventSource = {
 
 /** Browser-owned delivery SSE lifecycle for one selected run. */
 export function openDeliverySnapshotEventSource(
-  config: DashboardGaiaClientConfig & { readonly afterSequence?: number; readonly runId: string },
+  config: DashboardGaiaClientConfig & { readonly afterSequence?: number; readonly runId: RunId },
   handlers: { readonly onError: (error: unknown) => void; readonly onUpdate: (update: typeof DeliverySnapshotDto.Type) => void },
   create: (url: string) => DeliverySnapshotEventSource = (url) => new EventSource(url) as DeliverySnapshotEventSource,
 ) {
@@ -336,7 +330,7 @@ export function openDeliverySnapshotEventSource(
 
 /** Browser-owned SSE lifecycle. The caller closes on run/agent change or unmount. */
 export function openAgentSessionEventSource(
-  config: DashboardGaiaClientConfig & { readonly afterSequence?: number; readonly agentId: string; readonly runId: string },
+  config: DashboardGaiaClientConfig & { readonly afterSequence?: number; readonly agentId: string; readonly runId: RunId },
   handlers: { readonly onError: (error: unknown) => void; readonly onUpdate: (update: typeof AgentSessionUpdateDto.Type) => void },
   create: (url: string) => AgentSessionEventSource = (url) => new EventSource(url) as AgentSessionEventSource,
 ) {
@@ -363,13 +357,12 @@ export function openAgentSessionEventSource(
 }
 
 export function listFactoryArtifactsFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly runId: string },
+  config: DashboardGaiaClientConfig & { readonly runId: RunId },
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(config.runId);
       const response = yield* client.runs.listRunArtifacts({
-        params: { runId },
+        params: { runId: config.runId },
       });
       return yield* decodeFactoryArtifactListSuccess(response);
     }),
@@ -379,17 +372,16 @@ export function listFactoryArtifactsFromDashboardGaiaClient(
 export function getFactoryArtifactFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig & {
     readonly artifactId: string;
-    readonly runId: string;
+    readonly runId: RunId;
   },
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(config.runId);
       const artifactId = yield* decodeArtifactIdParameter(config.artifactId);
       const response = yield* client.runs.getRunArtifact({
         params: {
           artifactId,
-          runId,
+          runId: config.runId,
         },
       });
       return yield* decodeFactoryArtifactSuccess(response);
@@ -400,17 +392,16 @@ export function getFactoryArtifactFromDashboardGaiaClient(
 export function getRunArtifactFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig & {
     readonly artifactId: string;
-    readonly runId: string;
+    readonly runId: RunId;
   },
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(config.runId);
       const artifactId = yield* decodeArtifactIdParameter(config.artifactId);
       return yield* client.runs.getRunArtifact({
         params: {
           artifactId,
-          runId,
+          runId: config.runId,
         },
       }).pipe(
         Effect.flatMap((response) =>
@@ -478,12 +469,6 @@ function withDashboardGaiaClient<A, E, R>(
   }).pipe(
     Effect.timeout(`${fetchTimeoutMs} millis`),
     Effect.mapError(toDashboardGaiaClientError),
-  );
-}
-
-function decodeRunIdParameter(input: string) {
-  return Schema.decodeUnknownEffect(RunIdSchema)(input).pipe(
-    Effect.mapError((cause) => parameterError("runId", cause)),
   );
 }
 
@@ -566,7 +551,7 @@ function legacyEventTypeFromFactoryState(
 }
 
 function parameterError(
-  parameter: "action" | "agentId" | "artifactId" | "createRun" | "deliveryAction" | "runId",
+  parameter: "action" | "agentId" | "artifactId" | "createRun" | "deliveryAction",
   cause: Schema.SchemaError,
 ): DashboardGaiaClientError {
   return {
@@ -623,6 +608,6 @@ function isDashboardGaiaClientError(
   );
 }
 
-function normalizedServerUrl(serverUrl: string) {
+function normalizedServerUrl(serverUrl: LocalGaiaServerUrl) {
   return serverUrl.endsWith("/") ? serverUrl : `${serverUrl}/`;
 }

@@ -135,14 +135,14 @@ export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly harnessProviderRegistry?: HarnessProviderRegistry;
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly workspaceSource?: WorkspaceSource;
-  readonly workerRecoveryActivator?: (runId: string, action: WorkerRecoveryAction) => Effect.Effect<WorkerRecoveryReceipt, unknown, FileSystem.FileSystem | Path.Path>;
-  readonly workerContinuationRunner?: (runId: string, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
+  readonly workerRecoveryActivator?: (runId: RunId, action: WorkerRecoveryAction) => Effect.Effect<WorkerRecoveryReceipt, unknown, FileSystem.FileSystem | Path.Path>;
+  readonly workerContinuationRunner?: (runId: RunId, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
   readonly workerCorrelationReconciler?: WorkerCorrelationReconciler;
   readonly workerCorrelationFollowUpDispatcher?: WorkerCorrelationFollowUpDispatcher;
-  readonly workerCorrelationRunner?: (runId: string, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
+  readonly workerCorrelationRunner?: (runId: RunId, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
   readonly workerDesktopOriginCorrelationReconciler?: WorkerDesktopOriginCorrelationReconciler;
   readonly workerDesktopOriginCorrelationFollowUpDispatcher?: WorkerDesktopOriginCorrelationFollowUpDispatcher;
-  readonly workerDesktopOriginCorrelationRunner?: (runId: string, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
+  readonly workerDesktopOriginCorrelationRunner?: (runId: RunId, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
 };
 
 export type WorkerCorrelationReconciliationInput = {
@@ -179,20 +179,20 @@ export type WorkerDesktopOriginCorrelationFollowUpDispatcher = (
   input: WorkerDesktopOriginCorrelationInput,
 ) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
 
-export function actOnWorkerRecovery(runId: string, action: WorkerRecoveryAction, options: ServerWorkflowOptions) {
+export function actOnWorkerRecovery(runId: RunId, action: WorkerRecoveryAction, options: ServerWorkflowOptions) {
   return options.workerRecoveryActivator === undefined
     ? Effect.fail(makeRuntimeError({ code: "DeliveryActionFailed", message: "Worker recovery is unavailable.", recoverable: false }))
     : options.workerRecoveryActivator(runId, action);
 }
 
 export function actOnWorkerContinuation(
-  runIdInput: string,
+  runId: RunId,
   actionInput: WorkerContinuationAction,
   options: ServerWorkflowOptions = {},
 ) {
   return withRunStoreLock(
     options,
-    actOnWorkerContinuationUnlocked(runIdInput, actionInput, options),
+    actOnWorkerContinuationUnlocked(runId, actionInput, options),
     {
       nextSafeAction:
         "Refresh delivery state before retrying the audited worker continuation action.",
@@ -202,12 +202,11 @@ export function actOnWorkerContinuation(
 }
 
 function actOnWorkerContinuationUnlocked(
-  runIdInput: string,
+  runId: RunId,
   actionInput: WorkerContinuationAction,
   options: ServerWorkflowOptions,
 ) {
   return Effect.gen(function* () {
-    const runId = yield* parseRunIdEffect(runIdInput);
     const action = parseWorkerContinuationAction(actionInput);
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths);
@@ -282,13 +281,13 @@ function actOnWorkerContinuationUnlocked(
 }
 
 export function actOnWorkerCorrelationReconciliation(
-  runIdInput: string,
+  runId: RunId,
   actionInput: WorkerCorrelationReconciliationAction,
   options: ServerWorkflowOptions = {},
 ) {
   return withRunStoreLock(
     options,
-    actOnWorkerCorrelationReconciliationUnlocked(runIdInput, actionInput, options),
+    actOnWorkerCorrelationReconciliationUnlocked(runId, actionInput, options),
     {
       nextSafeAction:
         "Refresh delivery state before retrying the audited worker correlation reconciliation action.",
@@ -298,7 +297,7 @@ export function actOnWorkerCorrelationReconciliation(
 }
 
 function actOnWorkerCorrelationReconciliationUnlocked(
-  runIdInput: string,
+  runId: RunId,
   actionInput: WorkerCorrelationReconciliationAction,
   options: ServerWorkflowOptions,
 ) {
@@ -315,7 +314,6 @@ function actOnWorkerCorrelationReconciliationUnlocked(
         }),
       );
     }
-    const runId = yield* parseRunIdEffect(runIdInput);
     const action = parseWorkerCorrelationReconciliationAction(actionInput);
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths);
@@ -437,13 +435,13 @@ function actOnWorkerCorrelationReconciliationUnlocked(
 }
 
 export function actOnWorkerDesktopOriginCorrelation(
-  runIdInput: string,
+  runId: RunId,
   actionInput: WorkerDesktopOriginCorrelationAction,
   options: ServerWorkflowOptions = {},
 ) {
   return withRunStoreLock(
     options,
-    actOnWorkerDesktopOriginCorrelationUnlocked(runIdInput, actionInput, options),
+    actOnWorkerDesktopOriginCorrelationUnlocked(runId, actionInput, options),
     {
       nextSafeAction:
         "Refresh delivery state before retrying the audited Desktop-origin correlation action.",
@@ -453,7 +451,7 @@ export function actOnWorkerDesktopOriginCorrelation(
 }
 
 function actOnWorkerDesktopOriginCorrelationUnlocked(
-  runIdInput: string,
+  runId: RunId,
   actionInput: WorkerDesktopOriginCorrelationAction,
   options: ServerWorkflowOptions,
 ) {
@@ -470,7 +468,6 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
         }),
       );
     }
-    const runId = yield* parseRunIdEffect(runIdInput);
     const action = parseWorkerDesktopOriginCorrelationAction(actionInput);
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths);
@@ -594,30 +591,29 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
 }
 
 export type DeliveryMergeActionHandler = (
-  runId: string,
+  runId: RunId,
   action: DeliveryMergeActionRequest | DeliveryRetryCleanupActionRequest | DeliveryEvaluateMergeReadinessActionRequest,
   options: ServerWorkflowOptions,
 ) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
 
 export type DeliveryReadyForReviewActionHandler = (
-  runId: string,
+  runId: RunId,
   action: DeliveryMarkReadyForReviewActionRequest,
   options: ServerWorkflowOptions,
 ) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
 
 export type DeliveryLocalReviewAttestationActionHandler = (
-  runId: string,
+  runId: RunId,
   action: DeliveryAttestPairedReviewActionRequest,
   options: ServerWorkflowOptions,
 ) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
 
 export function actOnDeliveryReadyForReview(
-  runIdInput: string,
+  runId: RunId,
   action: DeliveryMarkReadyForReviewActionRequest,
   options: ServerWorkflowOptions = {},
 ) {
   return Effect.gen(function* () {
-    const runId = yield* parseRunIdEffect(runIdInput);
     return yield* coordinateDeliveryPullRequestReady(runId, action, {
       ...(options.deliveryPublicationCommandRunner === undefined ? {} : { commandRunner: options.deliveryPublicationCommandRunner }),
       rootDirectory: options.rootDirectory ?? ".",
@@ -626,12 +622,11 @@ export function actOnDeliveryReadyForReview(
 }
 
 export function actOnDeliveryLocalReviewAttestation(
-  runIdInput: string,
+  runId: RunId,
   action: DeliveryAttestPairedReviewActionRequest,
   options: ServerWorkflowOptions = {},
 ) {
   return Effect.gen(function* () {
-    const runId = yield* parseRunIdEffect(runIdInput);
     return yield* coordinateDeliveryLocalReviewAttestation(runId, action, {
       ...(options.deliveryPublicationCommandRunner === undefined ? {} : { commandRunner: options.deliveryPublicationCommandRunner }),
       rootDirectory: options.rootDirectory ?? ".",
@@ -640,12 +635,11 @@ export function actOnDeliveryLocalReviewAttestation(
 }
 
 export function actOnDeliveryMerge(
-  runIdInput: string,
+  runId: RunId,
   action: DeliveryMergeActionRequest | DeliveryRetryCleanupActionRequest | DeliveryEvaluateMergeReadinessActionRequest,
   options: ServerWorkflowOptions = {},
 ) {
   return Effect.gen(function* () {
-    const runId = yield* parseRunIdEffect(runIdInput);
     const trustPolicy = options.deliveryFeedbackTrustPolicy ?? defaultDeliveryFeedbackTrustPolicy("unknown/unknown");
     const coordinatorOptions = {
       ...(options.deliveryPublicationCommandRunner === undefined ? {} : { commandRunner: options.deliveryPublicationCommandRunner }),
@@ -661,7 +655,7 @@ export function actOnDeliveryMerge(
 }
 
 export type DeliveryRemediationActionHandler = (
-  runId: string,
+  runId: RunId,
   action: DeliveryRemediationActivationActionRequest,
   options: ServerWorkflowOptions,
 ) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
@@ -935,7 +929,7 @@ function acceptFactoryRunUnlocked(
 }
 
 export function continueServerRun(
-  runIdInput: string,
+  runId: RunId,
   options: ServerWorkflowOptions = {},
 ): Effect.Effect<
   CommandSummary,
@@ -944,7 +938,7 @@ export function continueServerRun(
 > {
   return withRunStoreLock(
     options,
-    continueServerRunUnlocked(runIdInput, options),
+    continueServerRunUnlocked(runId, options),
     {
       nextSafeAction:
         "Wait for the active Gaia server run continuation to finish, then retry.",
@@ -954,11 +948,10 @@ export function continueServerRun(
 }
 
 function continueServerRunUnlocked(
-  runIdInput: string,
+  runId: RunId,
   options: ServerWorkflowOptions,
 ) {
   return Effect.gen(function* () {
-    const runId = yield* parseRunIdEffect(runIdInput);
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths).pipe(
       Effect.mapError((cause) =>
@@ -1059,11 +1052,10 @@ function continueServerRunUnlocked(
 }
 
 function continueServerRunWorkerOnly(
-  runIdInput: string,
+  runId: RunId,
   options: ServerWorkflowOptions,
 ) {
   return Effect.gen(function* () {
-    const runId = yield* parseRunIdEffect(runIdInput);
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths).pipe(
       Effect.mapError((cause) =>
@@ -1145,7 +1137,7 @@ function continueServerRunWorkerOnly(
 }
 
 export function actOnDeliveryPublication(
-  runIdInput: string,
+  runId: RunId,
   action: {
     readonly expectedEventSequence: number;
     readonly kind: "reconcile" | "retry";
@@ -1155,7 +1147,6 @@ export function actOnDeliveryPublication(
   return withRunStoreLock(
     options,
     Effect.gen(function* () {
-      const runId = yield* parseRunIdEffect(runIdInput);
       const paths = yield* makeRunPaths(runId, options);
       const loaded = yield* loadRun(paths);
       const lastSequence = loaded.events.at(-1)?.sequence ?? 0;
@@ -1212,14 +1203,13 @@ export function actOnDeliveryPublication(
 
 /** Activate one exact controlled comment through the existing delivery coordinator. */
 export function actOnDeliveryRemediation(
-  runIdInput: string,
+  runId: RunId,
   action: DeliveryRemediationActivationActionRequest,
   options: ServerWorkflowOptions = {},
 ) {
   return withRunStoreLock(
     options,
     Effect.gen(function* () {
-      const runId = yield* parseRunIdEffect(runIdInput);
       return yield* continueDeliveryRemediation(runId, {
         activationRequest: action,
         ...(options.deliveryPublicationCommandRunner === undefined
@@ -2000,19 +1990,6 @@ function failureStageFromRunState(
     case "reporting":
       return "reporting";
   }
-}
-
-function parseRunIdEffect(input: string) {
-  return Effect.try({
-    try: () => parseRunId(input),
-    catch: (cause) =>
-      makeRuntimeError({
-        cause,
-        code: "InvalidRunId",
-        message: `Invalid Gaia run id '${input}'.`,
-        recoverable: false,
-      }),
-  });
 }
 
 function parseRunIdSafely(input: string): RunId | undefined {

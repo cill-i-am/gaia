@@ -3,8 +3,9 @@ import {
   DeliveryEvaluateMergeReadinessActionRequest,
   FactoryArtifactIdSchema,
   LocalGaiaServerApi,
+  type LocalGaiaServerUrl,
   type LocalRunApiError,
-  RunIdSchema,
+  type RunId,
 } from "@gaia/core";
 import { Cause, Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientError } from "effect/unstable/http";
@@ -28,7 +29,7 @@ export type LocalGaiaServerProtocolError =
 export type LocalGaiaServerProtocolParameterError = {
   readonly _tag: "LocalGaiaServerProtocolParameterError";
   readonly cause: Schema.SchemaError;
-  readonly parameter: "artifactId" | "runId";
+  readonly parameter: "artifactId";
 };
 
 /**
@@ -40,7 +41,7 @@ export const LocalGaiaServerProtocolClientLive = FetchHttpClient.layer;
  * Reads the local server run list through the shared `LocalGaiaServerApi` contract.
  */
 export function listRunsFromLocalServerProtocol(input: {
-  readonly serverUrl: string;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
     client.runs.listRuns(undefined),
@@ -51,14 +52,11 @@ export function listRunsFromLocalServerProtocol(input: {
  * Reads one local server run summary through the shared `LocalGaiaServerApi` contract.
  */
 export function getRunFromLocalServerProtocol(input: {
-  readonly runId: string;
-  readonly serverUrl: string;
+  readonly runId: RunId;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
-    Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(input.runId);
-      return yield* client.runs.getRun({ params: { runId } });
-    }),
+    client.runs.getRun({ params: { runId: input.runId } }),
   );
 }
 
@@ -66,14 +64,11 @@ export function getRunFromLocalServerProtocol(input: {
  * Reads one local server run's events through the shared `LocalGaiaServerApi` contract.
  */
 export function getRunEventsFromLocalServerProtocol(input: {
-  readonly runId: string;
-  readonly serverUrl: string;
+  readonly runId: RunId;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
-    Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(input.runId);
-      return yield* client.runs.getRunEvents({ params: { runId } });
-    }),
+    client.runs.getRunEvents({ params: { runId: input.runId } }),
   );
 }
 
@@ -82,17 +77,16 @@ export function getRunEventsFromLocalServerProtocol(input: {
  */
 export function getRunArtifactFromLocalServerProtocol(input: {
   readonly artifactName: string;
-  readonly runId: string;
-  readonly serverUrl: string;
+  readonly runId: RunId;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
     Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(input.runId);
       const artifactId = yield* decodeArtifactIdParameter(input.artifactName);
       return yield* client.runs.getRunArtifact({
         params: {
           artifactId,
-          runId,
+          runId: input.runId,
         },
       });
     }),
@@ -104,7 +98,7 @@ export function getRunArtifactFromLocalServerProtocol(input: {
  */
 export function createRunFromLocalServerProtocol(input: {
   readonly payload: typeof CreateRunRequest.Type;
-  readonly serverUrl: string;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
     client.runs.createRun({ payload: input.payload }),
@@ -113,14 +107,11 @@ export function createRunFromLocalServerProtocol(input: {
 
 export function evaluateMergeReadinessFromLocalServerProtocol(input: {
   readonly payload: typeof DeliveryEvaluateMergeReadinessActionRequest.Type;
-  readonly runId: string;
-  readonly serverUrl: string;
+  readonly runId: RunId;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
-    Effect.gen(function* () {
-      const runId = yield* decodeRunIdParameter(input.runId);
-      return yield* client.runs.actOnDelivery({ params: { runId }, payload: DeliveryEvaluateMergeReadinessActionRequest.make(input.payload) });
-    }),
+    client.runs.actOnDelivery({ params: { runId: input.runId }, payload: DeliveryEvaluateMergeReadinessActionRequest.make(input.payload) }),
   );
 }
 
@@ -128,7 +119,7 @@ export function evaluateMergeReadinessFromLocalServerProtocol(input: {
  * Reads local server health through the shared `LocalGaiaServerApi` contract.
  */
 export function healthFromLocalServerProtocol(input: {
-  readonly serverUrl: string;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
     client.health.health(undefined),
@@ -136,7 +127,7 @@ export function healthFromLocalServerProtocol(input: {
 }
 
 function withLocalGaiaServerClient<A, E, R>(
-  serverUrl: string,
+  serverUrl: LocalGaiaServerUrl,
   useClient: (
     client: HttpApiClient.ForApi<typeof LocalGaiaServerApi>,
   ) => Effect.Effect<A, E, R>,
@@ -147,12 +138,6 @@ function withLocalGaiaServerClient<A, E, R>(
     });
     return yield* useClient(client);
   }).pipe(Effect.timeout(`${fetchTimeoutMs} millis`));
-}
-
-function decodeRunIdParameter(input: string) {
-  return Schema.decodeUnknownEffect(RunIdSchema)(input).pipe(
-    Effect.mapError((cause) => protocolParameterError("runId", cause)),
-  );
 }
 
 function decodeArtifactIdParameter(input: string) {
@@ -172,6 +157,6 @@ function protocolParameterError(
   };
 }
 
-function normalizedServerUrl(serverUrl: string) {
+function normalizedServerUrl(serverUrl: LocalGaiaServerUrl) {
   return serverUrl.endsWith("/") ? serverUrl : `${serverUrl}/`;
 }

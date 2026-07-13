@@ -395,6 +395,61 @@ describe("gaia CLI local server read parity", () => {
       }),
     );
 
+    it.effect("rejects malformed run IDs and unusable server URLs at the CLI boundary without echoing them", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-domain-input-" });
+        const [
+          runIdFailure,
+          schemeFailure,
+          relativeFailure,
+          sensitiveFailure,
+        ] = yield* Effect.all(
+          [
+            runGaia(cwd, ["status", "not-a-run", "--json"]),
+            runGaia(cwd, [
+              "list",
+              "--json",
+              "--server-url",
+              "ftp://127.0.0.1:4321",
+            ]),
+            runGaia(cwd, ["list", "--json", "--server-url", "/gaia-api"]),
+            runGaia(cwd, [
+              "list",
+              "--json",
+              "--server-url",
+              "https://example.test/gaia?token=review-secret",
+            ]),
+          ],
+          { concurrency: "unbounded" },
+        );
+
+        expect(runIdFailure.exitCode).toBe(1);
+        expect(parseCliJson(runIdFailure.stdout)).toEqual({
+          code: "InvalidRunId",
+          message: "Invalid Gaia run id 'not-a-run'.",
+          recoverable: false,
+          status: "failed",
+        });
+        for (const failure of [
+          schemeFailure,
+          relativeFailure,
+          sensitiveFailure,
+        ]) {
+          expect(failure.exitCode).toBe(1);
+          expect(parseCliJson(failure.stdout)).toEqual({
+            code: "InvalidServerUrl",
+            message: "Invalid local Gaia server URL.",
+            recoverable: false,
+            status: "failed",
+          });
+        }
+        const sensitiveOutput = `${sensitiveFailure.stdout}\n${sensitiveFailure.stderr}`;
+        expect(sensitiveOutput).not.toContain("review-secret");
+        expect(sensitiveOutput).not.toContain("token=");
+      }),
+    );
+
     it.effect("requires one explicit finite merge-readiness method and exact inputs", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
