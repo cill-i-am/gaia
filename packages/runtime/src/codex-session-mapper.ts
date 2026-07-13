@@ -33,6 +33,9 @@ import {
   type CodexThreadItem,
   type CodexThread,
   type CodexRequestId,
+  type CodexItemId,
+  type CodexThreadId,
+  type CodexTurnId,
 } from "./codex-app-server-protocol.js";
 
 /** Schema-owned configuration for one adapter-local Codex session mapper. */
@@ -92,6 +95,21 @@ export interface CodexSessionMapper {
   ) => ReadonlyArray<HarnessEvent>;
 }
 
+/** Compile-time contract for the provider-native identities held by mapper state. */
+export type CodexSessionMapperNativeIdentityState = {
+  readonly activeTurnId: CodexTurnId | undefined;
+  readonly deltaEmittedCharacters: Map<CodexItemId, number>;
+  readonly finalItems: Set<CodexItemId>;
+  readonly itemIds: Map<CodexItemId, HarnessItemId>;
+  readonly messageBuffers: Map<CodexItemId, string>;
+  readonly planItemIds: Map<CodexTurnId, HarnessItemId>;
+  readonly startedTurns: Set<CodexTurnId>;
+  readonly terminalTurns: Set<CodexTurnId>;
+  readonly threadId: CodexThreadId | undefined;
+  readonly turnIds: Map<CodexTurnId, HarnessTurnId>;
+  readonly usageItemIds: Map<CodexTurnId, HarnessItemId>;
+};
+
 /** Create a stateful adapter-local mapper with private vendor correlation state. */
 export function createCodexSessionMapper(
   options: CodexSessionMapperOptions
@@ -120,12 +138,17 @@ class MapperState {
   >();
   #bufferedDeltaBytes = 0;
   readonly #deltaFlushCharacters: number;
-  readonly #deltaEmittedCharacters = new Map<string, number>();
-  readonly #finalItems = new Set<string>();
-  readonly #itemIds = new Map<string, HarnessItemId>();
-  readonly #messageBuffers = new Map<string, string>();
+  readonly #deltaEmittedCharacters: CodexSessionMapperNativeIdentityState["deltaEmittedCharacters"] =
+    new Map();
+  readonly #finalItems: CodexSessionMapperNativeIdentityState["finalItems"] =
+    new Set();
+  readonly #itemIds: CodexSessionMapperNativeIdentityState["itemIds"] =
+    new Map();
+  readonly #messageBuffers: CodexSessionMapperNativeIdentityState["messageBuffers"] =
+    new Map();
   readonly #options: CodexSessionMapperOptions;
-  readonly #planItemIds = new Map<string, HarnessItemId>();
+  readonly #planItemIds: CodexSessionMapperNativeIdentityState["planItemIds"] =
+    new Map();
   readonly #requestIds = new Map<
     CodexRequestId,
     {
@@ -135,12 +158,16 @@ class MapperState {
     }
   >();
   readonly #seenRequestIds = new Set<CodexRequestId>();
-  readonly #startedTurns = new Set<string>();
-  readonly #terminalTurns = new Set<string>();
-  readonly #turnIds = new Map<string, HarnessTurnId>();
-  readonly #usageItemIds = new Map<string, HarnessItemId>();
-  #activeTurnId: string | undefined;
-  #threadId: string | undefined;
+  readonly #startedTurns: CodexSessionMapperNativeIdentityState["startedTurns"] =
+    new Set();
+  readonly #terminalTurns: CodexSessionMapperNativeIdentityState["terminalTurns"] =
+    new Set();
+  readonly #turnIds: CodexSessionMapperNativeIdentityState["turnIds"] =
+    new Map();
+  readonly #usageItemIds: CodexSessionMapperNativeIdentityState["usageItemIds"] =
+    new Map();
+  #activeTurnId: CodexSessionMapperNativeIdentityState["activeTurnId"];
+  #threadId: CodexSessionMapperNativeIdentityState["threadId"];
 
   constructor(options: CodexSessionMapperOptions) {
     this.#options = options;
@@ -283,10 +310,11 @@ class MapperState {
       ...(questionIds === undefined ? {} : { questionIds }),
     });
     const turnEvents =
-      request.method === "mcpServer/elicitation/request" &&
-      request.params.turnId === undefined
-        ? []
-        : this.#ensureTurnStarted(request.params.turnId ?? "");
+      request.method === "mcpServer/elicitation/request"
+        ? request.params.turnId == null
+          ? []
+          : this.#ensureTurnStarted(request.params.turnId)
+        : this.#ensureTurnStarted(request.params.turnId);
     return [
       ...turnEvents,
       this.#event({
@@ -1085,11 +1113,11 @@ class MapperState {
     return parseHarnessEvent(event);
   }
 
-  #ownsThread(nativeThreadId: string): boolean {
+  #ownsThread(nativeThreadId: CodexThreadId): boolean {
     return this.#threadId !== undefined && this.#threadId === nativeThreadId;
   }
 
-  #turnId(nativeTurnId: string): HarnessTurnId {
+  #turnId(nativeTurnId: CodexTurnId): HarnessTurnId {
     const existing = this.#turnIds.get(nativeTurnId);
     if (existing !== undefined) return existing;
     const created = parseHarnessTurnId(
@@ -1099,8 +1127,8 @@ class MapperState {
     return created;
   }
 
-  #ensureTurnStarted(nativeTurnId: string): ReadonlyArray<HarnessEvent> {
-    if (nativeTurnId.length === 0 || this.#startedTurns.has(nativeTurnId)) {
+  #ensureTurnStarted(nativeTurnId: CodexTurnId): ReadonlyArray<HarnessEvent> {
+    if (this.#startedTurns.has(nativeTurnId)) {
       return [];
     }
     this.#startedTurns.add(nativeTurnId);
@@ -1113,7 +1141,7 @@ class MapperState {
     ];
   }
 
-  #itemId(nativeItemId: string): HarnessItemId {
+  #itemId(nativeItemId: CodexItemId): HarnessItemId {
     const existing = this.#itemIds.get(nativeItemId);
     if (existing !== undefined) return existing;
     const created = this.#stableItemId(`item:${nativeItemId}`);
@@ -1253,7 +1281,7 @@ class MapperState {
     };
   }
 
-  #setMessageBuffer(nativeItemId: string, value: string): void {
+  #setMessageBuffer(nativeItemId: CodexItemId, value: string): void {
     const existing = this.#messageBuffers.get(nativeItemId);
     if (existing === undefined && this.#messageBuffers.size >= 1_000) {
       throw new Error("Codex delta buffer exceeded its item limit.");
@@ -1271,7 +1299,7 @@ class MapperState {
     this.#messageBuffers.set(nativeItemId, value);
   }
 
-  #deleteMessageBuffer(nativeItemId: string): void {
+  #deleteMessageBuffer(nativeItemId: CodexItemId): void {
     const existing = this.#messageBuffers.get(nativeItemId);
     if (existing === undefined) return;
     this.#bufferedDeltaBytes -= new TextEncoder().encode(existing).byteLength;

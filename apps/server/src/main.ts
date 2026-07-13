@@ -15,6 +15,7 @@ import {
   type HarnessDetection,
   type RunId,
   type ServerMetadata,
+  type WorkerRecoveryDigest,
 } from "@gaia/core";
 import {
   createCodexHarnessProvider,
@@ -44,6 +45,8 @@ import {
   parseDeliveryProvenance,
   type RunPaths,
   type CodexModelId,
+  type CodexThreadId,
+  type CodexTurnId,
   type CodexListedThread,
   type ThreadListParams,
   type ThreadListResult,
@@ -458,22 +461,11 @@ function makeProductionHarnessServices(rootDirectory: string) {
     const dispatchDesktopOriginCorrelationFollowUp = (
       input: WorkerDesktopOriginCorrelationInput
     ) => dispatchCorrelationFollowUpFor(input);
-    const dispatchCorrelationFollowUpFor = (input: {
-      readonly action: {
-        readonly expectedFailedRecoverySequence: number;
-        readonly expectedNativeTurnIdDigest: string;
-        readonly expectedRecoveryActionId: string;
-        readonly expectedSessionId: WorkerCorrelationReconciliationInput["action"]["expectedSessionId"];
-      };
-      readonly clientInputId: string;
-      readonly events: ReadonlyArray<{
-        readonly payload: Record<string, unknown>;
-        readonly sequence: number;
-        readonly type: string;
-      }>;
-      readonly followUpText: string;
-      readonly paths: RunPaths;
-    }) =>
+    const dispatchCorrelationFollowUpFor = (
+      input:
+        | WorkerCorrelationReconciliationInput
+        | WorkerDesktopOriginCorrelationInput
+    ) =>
       Effect.scoped(
         Effect.gen(function* () {
           const workspacePath = yield* resolveAuditedWorkerWorkspacePath({
@@ -487,7 +479,7 @@ function makeProductionHarnessServices(rootDirectory: string) {
           );
           const checkpointTurnId = yield* readPrivateWorkerRecoveryCheckpoint(
             input.paths.root,
-            parseWorkerRecoveryDigest(input.action.expectedNativeTurnIdDigest),
+            input.action.expectedNativeTurnIdDigest,
             recoveryReceipt
           );
           yield* resumeHarnessSession({
@@ -649,8 +641,10 @@ function auditedWorkerWorkspacePathError() {
   });
 }
 
-function digestStableNativeId(value: string) {
-  return createHash("sha256").update(value).digest("hex");
+function digestStableNativeId(value: CodexTurnId): WorkerRecoveryDigest {
+  return parseWorkerRecoveryDigest(
+    createHash("sha256").update(value).digest("hex")
+  );
 }
 
 type StableCodexThreadListClient = {
@@ -671,7 +665,7 @@ export function listStableCodexThreadsForWorkspace(
   workspacePath: string
 ) {
   return Effect.gen(function* () {
-    const byId = new Map<string, CodexListedThread>();
+    const byId = new Map<CodexThreadId, CodexListedThread>();
     for (const archived of [false, true] as const) {
       const seenCursors = new Set<string>();
       let cursor: string | null = null;
@@ -712,7 +706,7 @@ export function listStableCodexThreadsForWorkspace(
 export function findStableDesktopOriginCorrelationThread(input: {
   readonly acceptedAtSeconds: number;
   readonly client: StableCodexThreadClient;
-  readonly expectedDigest: string;
+  readonly expectedDigest: WorkerRecoveryDigest;
   readonly workspacePath: string;
 }) {
   return Effect.gen(function* () {
@@ -1043,9 +1037,9 @@ function shouldAllowRetainedPayloadWorkerRecovery(
   ) {
     return false;
   }
-  const actionDigest = createHash("sha256")
-    .update(JSON.stringify(action))
-    .digest("hex");
+  const actionDigest = parseWorkerRecoveryDigest(
+    createHash("sha256").update(JSON.stringify(action)).digest("hex")
+  );
   const suffix = events.slice(currentFailureIndex + 1);
   if (
     !suffix.every((event) => {
@@ -1109,10 +1103,11 @@ function findBoundWorkerRecoveryReceipt(
     readonly sequence: number;
     readonly type: string;
   }>,
-  action: {
-    readonly expectedFailedRecoverySequence: number;
-    readonly expectedRecoveryActionId: string;
-  }
+  action: Pick<
+    | WorkerCorrelationReconciliationInput["action"]
+    | WorkerDesktopOriginCorrelationInput["action"],
+    "expectedFailedRecoverySequence" | "expectedRecoveryActionId"
+  >
 ) {
   return Effect.gen(function* () {
     const receipt = [...events].reverse().flatMap((event) => {

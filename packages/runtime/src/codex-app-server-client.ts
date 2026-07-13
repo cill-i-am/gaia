@@ -4,20 +4,22 @@ import { createInterface } from "node:readline";
 import { Context, Effect, Layer, Option, Schema } from "effect";
 
 import {
-  CodexAppServerInboundRequestSchema,
+  CodexAppServerInboundRequestBoundarySchema,
   CodexAppServerNotificationSchema,
   CodexAppServerIncompatibilityError,
   CodexAppServerProcessExitError,
   CodexAppServerProtocolError,
-  CodexAppServerResponseSchema,
+  CodexAppServerResponseBoundarySchema,
   CodexAppServerTimeoutError,
   CodexAppServerTransportError,
-  CodexNotificationSchema,
-  CodexServerRequestSchema,
+  CodexNotificationBoundarySchema,
+  CodexServerRequestBoundarySchema,
   InitializeResultSchema,
-  ThreadResultSchema,
-  TurnResultSchema,
-  TurnSteerResultSchema,
+  ThreadReadBoundaryResultSchema,
+  ThreadResumeBoundaryResultSchema,
+  ThreadStartBoundaryResultSchema,
+  TurnBoundaryResultSchema,
+  TurnSteerBoundaryResultSchema,
   EmptyResultSchema,
   CommandApprovalResponseSchema,
   FileApprovalResponseSchema,
@@ -29,9 +31,9 @@ import {
   ThreadResumeParamsSchema,
   ThreadReadParamsSchema,
   ThreadListParamsSchema,
-  ThreadListResultSchema,
+  ThreadListBoundaryResultSchema,
   ModelListParamsSchema,
-  ModelListResultSchema,
+  ModelListBoundaryResultSchema,
   TurnStartParamsSchema,
   TurnSteerParamsSchema,
   TurnInterruptParamsSchema,
@@ -116,18 +118,20 @@ export type CodexAppServerTransportOptions = {
   readonly process?: CodexAppServerProcess;
 };
 
-const decodeResponse = Schema.decodeUnknownOption(CodexAppServerResponseSchema);
+const decodeResponse = Schema.decodeUnknownOption(
+  CodexAppServerResponseBoundarySchema
+);
 const decodeRequest = Schema.decodeUnknownOption(
-  CodexAppServerInboundRequestSchema
+  CodexAppServerInboundRequestBoundarySchema
 );
 const decodeNotification = Schema.decodeUnknownOption(
   CodexAppServerNotificationSchema
 );
 const decodeServerRequest = Schema.decodeUnknownOption(
-  CodexServerRequestSchema
+  CodexServerRequestBoundarySchema
 );
 const decodeCuratedNotification = Schema.decodeUnknownOption(
-  CodexNotificationSchema
+  CodexNotificationBoundarySchema
 );
 
 function nodeProcess(
@@ -240,6 +244,15 @@ export function makeCodexAppServerConnection(
           const decoded = decodeServerRequest(request.value);
           if (Option.isSome(decoded)) {
             for (const listener of requestListeners) listener(decoded.value);
+            return;
+          }
+          if (isCodexServerRequestMethod(request.value.method)) {
+            failAll(
+              new CodexAppServerProtocolError({
+                message: `Invalid ${request.value.method} server request`,
+                method: request.value.method,
+              })
+            );
             return;
           }
           try {
@@ -488,14 +501,14 @@ export function makeCodexAppServerClient(connection: CodexAppServerConnection) {
         "thread/list",
         params,
         ThreadListParamsSchema,
-        ThreadListResultSchema
+        ThreadListBoundaryResultSchema
       ),
     readThread: (params: ThreadReadParams) =>
       request(
         "thread/read",
         params,
         ThreadReadParamsSchema,
-        ThreadResultSchema
+        ThreadReadBoundaryResultSchema
       ),
     respondCommandApproval: (
       request: CommandApprovalRequest,
@@ -537,23 +550,28 @@ export function makeCodexAppServerClient(connection: CodexAppServerConnection) {
         "thread/resume",
         params,
         ThreadResumeParamsSchema,
-        ThreadResultSchema
+        ThreadResumeBoundaryResultSchema
       ),
     startThread: (params: ThreadStartParams) =>
       request(
         "thread/start",
         params,
         ThreadStartParamsSchema,
-        ThreadResultSchema
+        ThreadStartBoundaryResultSchema
       ),
     startTurn: (params: TurnStartParams) =>
-      request("turn/start", params, TurnStartParamsSchema, TurnResultSchema),
+      request(
+        "turn/start",
+        params,
+        TurnStartParamsSchema,
+        TurnBoundaryResultSchema
+      ),
     steerTurn: (params: TurnSteerParams) =>
       request(
         "turn/steer",
         params,
         TurnSteerParamsSchema,
-        TurnSteerResultSchema
+        TurnSteerBoundaryResultSchema
       ),
   } as const;
 }
@@ -565,7 +583,7 @@ export function listCodexModels(
 ) {
   return Schema.decodeUnknownEffect(ModelListParamsSchema)(params).pipe(
     Effect.flatMap((parsed) => connection.request("model/list", parsed)),
-    Effect.flatMap(Schema.decodeUnknownEffect(ModelListResultSchema))
+    Effect.flatMap(Schema.decodeUnknownEffect(ModelListBoundaryResultSchema))
   );
 }
 export class CodexAppServerClientService extends Context.Service<

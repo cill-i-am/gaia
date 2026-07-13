@@ -1749,7 +1749,9 @@ function isJsonObject(
 }
 
 function digestStableId(value: string) {
-  return createHash("sha256").update(value).digest("hex");
+  return parseWorkerRecoveryDigest(
+    createHash("sha256").update(value).digest("hex")
+  );
 }
 
 function withCodexDesktopOriginator<A, E, R>(

@@ -14,6 +14,7 @@ import type {
   CodexTurnId,
   CodexModelId,
 } from "./codex-app-server-protocol.js";
+import type { CodexSessionMapperNativeIdentityState } from "./codex-session-mapper.js";
 import type {
   HarnessCheckpointToken,
   HarnessCorrelationToken,
@@ -21,6 +22,7 @@ import type {
 
 type IsAssignable<From, To> = [From] extends [To] ? true : false;
 type AssertFalse<Value extends false> = Value;
+type MapKey<Value> = Value extends Map<infer Key, unknown> ? Key : never;
 
 const separationProof: readonly [
   AssertFalse<IsAssignable<CodexThreadId, HarnessSessionId>>,
@@ -58,6 +60,28 @@ const separationProof: readonly [
   false,
 ];
 
+const mapperStateProof: readonly [
+  AssertFalse<
+    IsAssignable<
+      CodexTurnId,
+      MapKey<CodexSessionMapperNativeIdentityState["itemIds"]>
+    >
+  >,
+  AssertFalse<
+    IsAssignable<
+      CodexItemId,
+      MapKey<CodexSessionMapperNativeIdentityState["turnIds"]>
+    >
+  >,
+  AssertFalse<
+    IsAssignable<string, CodexSessionMapperNativeIdentityState["threadId"]>
+  >,
+  AssertFalse<
+    IsAssignable<string, CodexSessionMapperNativeIdentityState["activeTurnId"]>
+  >,
+] = [false, false, false, false];
+
 it("keeps provider-native, Gaia, correlation, and checkpoint brands mutually separate", () => {
   expect(separationProof.every((value) => value === false)).toBe(true);
+  expect(mapperStateProof.every((value) => value === false)).toBe(true);
 });

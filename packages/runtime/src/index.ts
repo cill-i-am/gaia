@@ -87,6 +87,8 @@ export {
   parseCodexPermissionAbsolutePath,
   type CodexAppServerError,
   type CodexModelId,
+  type CodexThreadId,
+  type CodexTurnId,
   type CodexListedThread,
   type ThreadListParams,
   type ThreadListResult,

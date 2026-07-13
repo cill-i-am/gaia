@@ -3,6 +3,26 @@ import nodePath from "node:path";
 import { Schema } from "effect";
 
 export const supportedCodexCliVersion = "0.137.0" as const;
+const CodexRawIntegerSchema = Schema.Number.pipe(
+  Schema.check(Schema.makeFilter(Number.isInteger))
+);
+const CodexRawNonNegativeIntegerSchema = CodexRawIntegerSchema.pipe(
+  Schema.check(Schema.isGreaterThanOrEqualTo(0))
+);
+const strictRawStruct = <const Fields extends Schema.Struct.Fields>(
+  identifier: string,
+  fields: Fields
+) => {
+  const StrictRawStruct = Schema.Class<object>(identifier)(fields, {
+    parseOptions: { onExcessProperty: "error" },
+  });
+  return StrictRawStruct.pipe(Schema.decodeTo(Schema.Struct(fields)));
+};
+/** Source-exact Codex App Server 0.137.0 RequestId wire encoding. */
+export const CodexRawRequestIdSchema = Schema.Union([
+  Schema.String,
+  CodexRawIntegerSchema,
+]);
 const CodexProviderIdentifierSchema = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isMaxLength(4_096))
 );
@@ -112,13 +132,486 @@ const TurnId = CodexTurnIdSchema;
 const ItemId = CodexItemIdSchema;
 export type CodexItemId = typeof ItemId.Type;
 export const parseCodexItemId = Schema.decodeUnknownSync(ItemId);
+
+const CodexRawThreadStatusSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("notLoaded") }),
+  Schema.Struct({ type: Schema.Literal("idle") }),
+  Schema.Struct({ type: Schema.Literal("systemError") }),
+  Schema.Struct({
+    activeFlags: Schema.Array(
+      Schema.Literals(["waitingOnApproval", "waitingOnUserInput"] as const)
+    ),
+    type: Schema.Literal("active"),
+  }),
+]);
+const CodexRawFileChangeSchema = Schema.Struct({
+  diff: Schema.String,
+  kind: Schema.Union([
+    Schema.Struct({ type: Schema.Literal("add") }),
+    Schema.Struct({ type: Schema.Literal("delete") }),
+    Schema.Struct({
+      move_path: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      type: Schema.Literal("update"),
+    }),
+  ]),
+  path: Schema.String,
+});
+const CodexRawByteRangeSchema = Schema.Struct({
+  end: CodexRawNonNegativeIntegerSchema,
+  start: CodexRawNonNegativeIntegerSchema,
+});
+const CodexRawTextElementSchema = Schema.Struct({
+  byteRange: CodexRawByteRangeSchema,
+  placeholder: Schema.optionalKey(Schema.NullOr(Schema.String)),
+});
+const CodexRawMemoryCitationEntrySchema = Schema.Struct({
+  lineEnd: CodexRawNonNegativeIntegerSchema,
+  lineStart: CodexRawNonNegativeIntegerSchema,
+  note: Schema.String,
+  path: Schema.String,
+});
+const CodexRawMemoryCitationSchema = Schema.Struct({
+  entries: Schema.Array(CodexRawMemoryCitationEntrySchema),
+  threadIds: Schema.Array(Schema.String),
+});
+const CodexRawWebSearchActionSchema = Schema.Union([
+  Schema.Struct({
+    queries: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+    query: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    type: Schema.Literal("search"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("openPage"),
+    url: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  }),
+  Schema.Struct({
+    pattern: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    type: Schema.Literal("findInPage"),
+    url: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  }),
+  Schema.Struct({ type: Schema.Literal("other") }),
+]);
+const CodexRawHttpConnectionFailedSchema = strictRawStruct(
+  "CodexRawHttpConnectionFailed",
+  {
+    httpConnectionFailed: Schema.Struct({
+      httpStatusCode: Schema.optionalKey(
+        Schema.NullOr(CodexRawNonNegativeIntegerSchema)
+      ),
+    }),
+  }
+);
+const CodexRawResponseStreamConnectionFailedSchema = strictRawStruct(
+  "CodexRawResponseStreamConnectionFailed",
+  {
+    responseStreamConnectionFailed: Schema.Struct({
+      httpStatusCode: Schema.optionalKey(
+        Schema.NullOr(CodexRawNonNegativeIntegerSchema)
+      ),
+    }),
+  }
+);
+const CodexRawResponseStreamDisconnectedSchema = strictRawStruct(
+  "CodexRawResponseStreamDisconnected",
+  {
+    responseStreamDisconnected: Schema.Struct({
+      httpStatusCode: Schema.optionalKey(
+        Schema.NullOr(CodexRawNonNegativeIntegerSchema)
+      ),
+    }),
+  }
+);
+const CodexRawResponseTooManyFailedAttemptsSchema = strictRawStruct(
+  "CodexRawResponseTooManyFailedAttempts",
+  {
+    responseTooManyFailedAttempts: Schema.Struct({
+      httpStatusCode: Schema.optionalKey(
+        Schema.NullOr(CodexRawNonNegativeIntegerSchema)
+      ),
+    }),
+  }
+);
+const CodexRawActiveTurnNotSteerableSchema = strictRawStruct(
+  "CodexRawActiveTurnNotSteerable",
+  {
+    activeTurnNotSteerable: Schema.Struct({
+      turnKind: Schema.Literals(["review", "compact"] as const),
+    }),
+  }
+);
+const CodexRawCodexErrorInfoSchema = Schema.Union([
+  Schema.Literals([
+    "contextWindowExceeded",
+    "usageLimitExceeded",
+    "serverOverloaded",
+    "cyberPolicy",
+    "internalServerError",
+    "unauthorized",
+    "badRequest",
+    "threadRollbackFailed",
+    "sandboxError",
+    "other",
+  ] as const),
+  CodexRawHttpConnectionFailedSchema,
+  CodexRawResponseStreamConnectionFailedSchema,
+  CodexRawResponseStreamDisconnectedSchema,
+  CodexRawResponseTooManyFailedAttemptsSchema,
+  CodexRawActiveTurnNotSteerableSchema,
+]);
+const CodexRawUserInputSchema = Schema.Union([
+  Schema.Struct({
+    text: Schema.String,
+    text_elements: Schema.optionalKey(Schema.Array(CodexRawTextElementSchema)),
+    type: Schema.Literal("text"),
+  }),
+  Schema.Struct({
+    detail: Schema.optionalKey(
+      Schema.NullOr(
+        Schema.Literals(["auto", "low", "high", "original"] as const)
+      )
+    ),
+    type: Schema.Literal("image"),
+    url: Schema.String,
+  }),
+  Schema.Struct({
+    detail: Schema.optionalKey(
+      Schema.NullOr(
+        Schema.Literals(["auto", "low", "high", "original"] as const)
+      )
+    ),
+    path: Schema.String,
+    type: Schema.Literal("localImage"),
+  }),
+  Schema.Struct({
+    name: Schema.String,
+    path: Schema.String,
+    type: Schema.Literal("skill"),
+  }),
+  Schema.Struct({
+    name: Schema.String,
+    path: Schema.String,
+    type: Schema.Literal("mention"),
+  }),
+]);
+const CodexRawCommandActionSchema = Schema.Union([
+  Schema.Struct({
+    command: Schema.String,
+    name: Schema.String,
+    path: Schema.String,
+    type: Schema.Literal("read"),
+  }),
+  Schema.Struct({
+    command: Schema.String,
+    path: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    type: Schema.Literal("listFiles"),
+  }),
+  Schema.Struct({
+    command: Schema.String,
+    path: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    query: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    type: Schema.Literal("search"),
+  }),
+  Schema.Struct({ command: Schema.String, type: Schema.Literal("unknown") }),
+]);
+/** Source-exact raw 0.137.0 ThreadItem family, before Gaia branding/projection. */
+export const CodexRawThreadItemSchema = Schema.Union([
+  Schema.Struct({
+    clientId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    content: Schema.Array(CodexRawUserInputSchema),
+    id: Schema.String,
+    type: Schema.Literal("userMessage"),
+  }),
+  Schema.Struct({
+    fragments: Schema.Array(
+      Schema.Struct({ hookRunId: Schema.String, text: Schema.String })
+    ),
+    id: Schema.String,
+    type: Schema.Literal("hookPrompt"),
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    memoryCitation: Schema.optionalKey(
+      Schema.NullOr(CodexRawMemoryCitationSchema)
+    ),
+    phase: Schema.optionalKey(
+      Schema.NullOr(Schema.Literals(["commentary", "final_answer"] as const))
+    ),
+    text: Schema.String,
+    type: Schema.Literal("agentMessage"),
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    text: Schema.String,
+    type: Schema.Literal("plan"),
+  }),
+  Schema.Struct({
+    content: Schema.optionalKey(Schema.Array(Schema.String)),
+    id: Schema.String,
+    summary: Schema.optionalKey(Schema.Array(Schema.String)),
+    type: Schema.Literal("reasoning"),
+  }),
+  Schema.Struct({
+    aggregatedOutput: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    command: Schema.String,
+    commandActions: Schema.Array(CodexRawCommandActionSchema),
+    cwd: Schema.String,
+    durationMs: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
+    exitCode: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
+    id: Schema.String,
+    processId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    source: Schema.optionalKey(
+      Schema.Literals([
+        "agent",
+        "userShell",
+        "unifiedExecStartup",
+        "unifiedExecInteraction",
+      ] as const)
+    ),
+    status: Schema.Literals([
+      "inProgress",
+      "completed",
+      "failed",
+      "declined",
+    ] as const),
+    type: Schema.Literal("commandExecution"),
+  }),
+  Schema.Struct({
+    changes: Schema.Array(CodexRawFileChangeSchema),
+    id: Schema.String,
+    status: Schema.Literals([
+      "inProgress",
+      "completed",
+      "failed",
+      "declined",
+    ] as const),
+    type: Schema.Literal("fileChange"),
+  }),
+  Schema.Struct({
+    arguments: Schema.Json,
+    durationMs: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
+    error: Schema.optionalKey(
+      Schema.NullOr(Schema.Struct({ message: Schema.String }))
+    ),
+    id: Schema.String,
+    mcpAppResourceUri: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    pluginId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    result: Schema.optionalKey(
+      Schema.NullOr(
+        Schema.Struct({
+          content: Schema.Array(Schema.Json),
+          structuredContent: Schema.optionalKey(Schema.NullOr(Schema.Json)),
+          _meta: Schema.optionalKey(Schema.NullOr(Schema.Json)),
+        })
+      )
+    ),
+    server: Schema.String,
+    status: Schema.Literals(["inProgress", "completed", "failed"] as const),
+    tool: Schema.String,
+    type: Schema.Literal("mcpToolCall"),
+  }),
+  Schema.Struct({
+    arguments: Schema.Json,
+    contentItems: Schema.optionalKey(
+      Schema.NullOr(
+        Schema.Array(
+          Schema.Union([
+            Schema.Struct({
+              text: Schema.String,
+              type: Schema.Literal("inputText"),
+            }),
+            Schema.Struct({
+              imageUrl: Schema.String,
+              type: Schema.Literal("inputImage"),
+            }),
+          ])
+        )
+      )
+    ),
+    durationMs: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
+    id: Schema.String,
+    namespace: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    status: Schema.Literals(["inProgress", "completed", "failed"] as const),
+    success: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+    tool: Schema.String,
+    type: Schema.Literal("dynamicToolCall"),
+  }),
+  Schema.Struct({
+    agentsStates: Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        message: Schema.optionalKey(Schema.NullOr(Schema.String)),
+        status: Schema.Literals([
+          "pendingInit",
+          "running",
+          "interrupted",
+          "completed",
+          "errored",
+          "shutdown",
+          "notFound",
+        ] as const),
+      })
+    ),
+    id: Schema.String,
+    model: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    prompt: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    reasoningEffort: Schema.optionalKey(
+      Schema.NullOr(
+        Schema.Literals([
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+        ] as const)
+      )
+    ),
+    receiverThreadIds: Schema.Array(Schema.String),
+    senderThreadId: Schema.String,
+    status: Schema.Literals(["inProgress", "completed", "failed"] as const),
+    tool: Schema.Literals([
+      "spawnAgent",
+      "sendInput",
+      "resumeAgent",
+      "wait",
+      "closeAgent",
+    ] as const),
+    type: Schema.Literal("collabAgentToolCall"),
+  }),
+  Schema.Struct({
+    action: Schema.optionalKey(Schema.NullOr(CodexRawWebSearchActionSchema)),
+    id: Schema.String,
+    query: Schema.String,
+    type: Schema.Literal("webSearch"),
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    path: Schema.String,
+    type: Schema.Literal("imageView"),
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    result: Schema.String,
+    revisedPrompt: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    savedPath: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    status: Schema.String,
+    type: Schema.Literal("imageGeneration"),
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    review: Schema.String,
+    type: Schema.Literal("enteredReviewMode"),
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    review: Schema.String,
+    type: Schema.Literal("exitedReviewMode"),
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    type: Schema.Literal("contextCompaction"),
+  }),
+]);
+const CodexRawTurnErrorSchema = Schema.Struct({
+  additionalDetails: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  codexErrorInfo: Schema.optionalKey(
+    Schema.NullOr(CodexRawCodexErrorInfoSchema)
+  ),
+  message: Schema.String,
+});
+export const CodexRawTurnSchema = Schema.Struct({
+  completedAt: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
+  durationMs: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
+  error: Schema.optionalKey(Schema.NullOr(CodexRawTurnErrorSchema)),
+  id: Schema.String,
+  items: Schema.Array(CodexRawThreadItemSchema),
+  itemsView: Schema.optionalKey(
+    Schema.Literals(["notLoaded", "summary", "full"] as const)
+  ),
+  startedAt: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
+  status: Schema.Literals([
+    "completed",
+    "interrupted",
+    "failed",
+    "inProgress",
+  ] as const),
+});
+const CodexRawThreadSpawnSourceSchema = strictRawStruct(
+  "CodexRawThreadSpawnSource",
+  {
+    thread_spawn: Schema.Struct({
+      agent_nickname: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      agent_path: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      agent_role: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      depth: Schema.Int,
+      parent_thread_id: Schema.String,
+    }),
+  }
+);
+const CodexRawOtherSubAgentSourceSchema = strictRawStruct(
+  "CodexRawOtherSubAgentSource",
+  { other: Schema.String }
+);
+const CodexRawSubAgentSourceSchema = Schema.Union([
+  Schema.Literals(["review", "compact", "memory_consolidation"] as const),
+  CodexRawThreadSpawnSourceSchema,
+  CodexRawOtherSubAgentSourceSchema,
+]);
+const CodexRawCustomSessionSourceSchema = strictRawStruct(
+  "CodexRawCustomSessionSource",
+  { custom: Schema.String }
+);
+const CodexRawSubAgentSessionSourceSchema = strictRawStruct(
+  "CodexRawSubAgentSessionSource",
+  { subAgent: CodexRawSubAgentSourceSchema }
+);
+const CodexRawSessionSourceSchema = Schema.Union([
+  Schema.Literals(["cli", "vscode", "exec", "appServer", "unknown"] as const),
+  CodexRawCustomSessionSourceSchema,
+  CodexRawSubAgentSessionSourceSchema,
+]);
+/** Source-exact raw 0.137.0 Thread contract. */
+export const CodexRawThreadSchema = Schema.Struct({
+  agentNickname: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  agentRole: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  cliVersion: Schema.String,
+  createdAt: CodexRawIntegerSchema,
+  cwd: Schema.String,
+  ephemeral: Schema.Boolean,
+  forkedFromId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  gitInfo: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        branch: Schema.optionalKey(Schema.NullOr(Schema.String)),
+        originUrl: Schema.optionalKey(Schema.NullOr(Schema.String)),
+        sha: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      })
+    )
+  ),
+  id: Schema.String,
+  modelProvider: Schema.String,
+  name: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  parentThreadId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  path: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  preview: Schema.String,
+  sessionId: Schema.String,
+  source: CodexRawSessionSourceSchema,
+  status: CodexRawThreadStatusSchema,
+  threadSource: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Literals(["user", "subagent", "memory_consolidation"] as const)
+    )
+  ),
+  turns: Schema.Array(CodexRawTurnSchema),
+  updatedAt: CodexRawIntegerSchema,
+});
 const CodexFileChange = Schema.Struct({
   diff: Schema.String,
   kind: Schema.Union([
     Schema.Struct({ type: Schema.Literal("add") }),
     Schema.Struct({ type: Schema.Literal("delete") }),
     Schema.Struct({
-      move_path: Schema.NullOr(Schema.String),
+      move_path: Schema.optionalKey(Schema.NullOr(Schema.String)),
       type: Schema.Literal("update"),
     }),
   ]),
@@ -344,6 +837,13 @@ export const ThreadListResultSchema = Schema.Struct({
   data: Schema.Array(CodexListedThreadSchema),
   nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
+export const CodexRawThreadListResultSchema = Schema.Struct({
+  backwardsCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  data: Schema.Array(CodexRawThreadSchema),
+  nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+});
+export const ThreadListBoundaryResultSchema =
+  CodexRawThreadListResultSchema.pipe(Schema.decodeTo(ThreadListResultSchema));
 export type ThreadListParams = typeof ThreadListParamsSchema.Type;
 export type ThreadListResult = typeof ThreadListResultSchema.Type;
 export type CodexListedThread = typeof CodexListedThreadSchema.Type;
@@ -383,6 +883,108 @@ export const ThreadReadParamsSchema = Schema.Struct({
 });
 export const ThreadResultSchema = Schema.Struct({ thread: Thread });
 export type ThreadResult = typeof ThreadResultSchema.Type;
+const CodexRawGranularApprovalPolicySchema = strictRawStruct(
+  "CodexRawGranularApprovalPolicy",
+  {
+    granular: Schema.Struct({
+      mcp_elicitations: Schema.Boolean,
+      request_permissions: Schema.optionalKey(Schema.Boolean),
+      rules: Schema.Boolean,
+      sandbox_approval: Schema.Boolean,
+      skill_approval: Schema.optionalKey(Schema.Boolean),
+    }),
+  }
+);
+const CodexRawThreadRuntimeResultFields = {
+  activePermissionProfile: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        extends: Schema.optionalKey(Schema.NullOr(Schema.String)),
+        id: Schema.String,
+      })
+    )
+  ),
+  approvalPolicy: Schema.Union([
+    Schema.Literals([
+      "untrusted",
+      "on-failure",
+      "on-request",
+      "never",
+    ] as const),
+    CodexRawGranularApprovalPolicySchema,
+  ]),
+  approvalsReviewer: Schema.Literals([
+    "user",
+    "auto_review",
+    "guardian_subagent",
+  ] as const),
+  cwd: Schema.String,
+  instructionSources: Schema.optionalKey(Schema.Array(Schema.String)),
+  model: Schema.String,
+  modelProvider: Schema.String,
+  reasoningEffort: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Literals([
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+      ] as const)
+    )
+  ),
+  runtimeWorkspaceRoots: Schema.optionalKey(Schema.Array(Schema.String)),
+  sandbox: Schema.Union([
+    Schema.Struct({ type: Schema.Literal("dangerFullAccess") }),
+    Schema.Struct({
+      networkAccess: Schema.optionalKey(Schema.Boolean),
+      type: Schema.Literal("readOnly"),
+    }),
+    Schema.Struct({
+      networkAccess: Schema.optionalKey(
+        Schema.Literals(["restricted", "enabled"] as const)
+      ),
+      type: Schema.Literal("externalSandbox"),
+    }),
+    Schema.Struct({
+      excludeSlashTmp: Schema.optionalKey(Schema.Boolean),
+      excludeTmpdirEnvVar: Schema.optionalKey(Schema.Boolean),
+      networkAccess: Schema.optionalKey(Schema.Boolean),
+      type: Schema.Literal("workspaceWrite"),
+      writableRoots: Schema.optionalKey(Schema.Array(Schema.String)),
+    }),
+  ]),
+  serviceTier: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  thread: CodexRawThreadSchema,
+} as const;
+/** Source-exact raw 0.137.0 thread/read result. */
+export const CodexRawThreadReadResultSchema = Schema.Struct({
+  thread: CodexRawThreadSchema,
+});
+/** Source-exact raw 0.137.0 thread/start result. */
+export const CodexRawThreadStartResultSchema = Schema.Struct(
+  CodexRawThreadRuntimeResultFields
+);
+/** Source-exact raw 0.137.0 thread/resume result. */
+export const CodexRawThreadResumeResultSchema = Schema.Struct({
+  ...CodexRawThreadRuntimeResultFields,
+  initialTurnsPage: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        backwardsCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+        data: Schema.Array(CodexRawTurnSchema),
+        nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      })
+    )
+  ),
+});
+export const ThreadReadBoundaryResultSchema =
+  CodexRawThreadReadResultSchema.pipe(Schema.decodeTo(ThreadResultSchema));
+export const ThreadStartBoundaryResultSchema =
+  CodexRawThreadStartResultSchema.pipe(Schema.decodeTo(ThreadResultSchema));
+export const ThreadResumeBoundaryResultSchema =
+  CodexRawThreadResumeResultSchema.pipe(Schema.decodeTo(ThreadResultSchema));
 export const TextInputSchema = Schema.Struct({
   text: Schema.String,
   type: Schema.Literal("text"),
@@ -406,10 +1008,76 @@ export const CodexModelSchema = Schema.Struct({
   id: CodexModelIdSchema,
   model: CodexModelIdSchema,
 });
+/** Source-exact raw 0.137.0 model/list item. */
+export const CodexRawModelSchema = Schema.Struct({
+  additionalSpeedTiers: Schema.optionalKey(Schema.Array(Schema.String)),
+  availabilityNux: Schema.optionalKey(
+    Schema.NullOr(Schema.Struct({ message: Schema.String }))
+  ),
+  defaultReasoningEffort: Schema.Literals([
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+  ] as const),
+  defaultServiceTier: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  description: Schema.String,
+  displayName: Schema.String,
+  hidden: Schema.Boolean,
+  id: Schema.String,
+  inputModalities: Schema.optionalKey(
+    Schema.Array(Schema.Literals(["text", "image"] as const))
+  ),
+  isDefault: Schema.Boolean,
+  model: Schema.String,
+  serviceTiers: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        description: Schema.String,
+        id: Schema.String,
+        name: Schema.String,
+      })
+    )
+  ),
+  supportedReasoningEfforts: Schema.Array(
+    Schema.Struct({
+      description: Schema.String,
+      reasoningEffort: Schema.Literals([
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+      ] as const),
+    })
+  ),
+  supportsPersonality: Schema.optionalKey(Schema.Boolean),
+  upgrade: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  upgradeInfo: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        migrationMarkdown: Schema.optionalKey(Schema.NullOr(Schema.String)),
+        model: Schema.String,
+        modelLink: Schema.optionalKey(Schema.NullOr(Schema.String)),
+        upgradeCopy: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      })
+    )
+  ),
+});
+export const CodexRawModelListResultSchema = Schema.Struct({
+  data: Schema.Array(CodexRawModelSchema),
+  nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+});
 export const ModelListResultSchema = Schema.Struct({
   data: Schema.Array(CodexModelSchema),
   nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
+export const ModelListBoundaryResultSchema = CodexRawModelListResultSchema.pipe(
+  Schema.decodeTo(ModelListResultSchema)
+);
 export const TurnSteerParamsSchema = Schema.Struct({
   expectedTurnId: TurnId,
   input: Schema.Array(TextInputSchema).pipe(
@@ -423,6 +1091,12 @@ export const TurnInterruptParamsSchema = Schema.Struct({
 });
 export const TurnResultSchema = Schema.Struct({ turn: Turn });
 export const TurnSteerResultSchema = Schema.Struct({ turnId: TurnId });
+export const TurnBoundaryResultSchema = Schema.Struct({
+  turn: CodexRawTurnSchema,
+}).pipe(Schema.decodeTo(TurnResultSchema));
+export const TurnSteerBoundaryResultSchema = Schema.Struct({
+  turnId: Schema.String,
+}).pipe(Schema.decodeTo(TurnSteerResultSchema));
 export const EmptyResultSchema = Empty;
 
 const BaseInteraction = {
@@ -488,14 +1162,14 @@ const FileSystemPathSchema = Schema.Union([
       Schema.Struct({ kind: Schema.Literal("minimal") }),
       Schema.Struct({
         kind: Schema.Literal("project_roots"),
-        subpath: Schema.NullOr(Schema.String),
+        subpath: Schema.optionalKey(Schema.NullOr(Schema.String)),
       }),
       Schema.Struct({ kind: Schema.Literal("tmpdir") }),
       Schema.Struct({ kind: Schema.Literal("slash_tmp") }),
       Schema.Struct({
         kind: Schema.Literal("unknown"),
         path: Schema.String,
-        subpath: Schema.NullOr(Schema.String),
+        subpath: Schema.optionalKey(Schema.NullOr(Schema.String)),
       }),
     ]),
   }),
@@ -592,13 +1266,377 @@ const ElicitationRequest = Schema.Struct({
     }),
   ]),
 });
-export const CodexServerRequestSchema = Schema.Union([
+const CodexRawBaseInteraction = {
+  itemId: Schema.String,
+  threadId: Schema.String,
+  turnId: Schema.String,
+} as const;
+const CodexRawFileSystemSpecialPathSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("root") }),
+  Schema.Struct({ kind: Schema.Literal("minimal") }),
+  Schema.Struct({
+    kind: Schema.Literal("project_roots"),
+    subpath: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  }),
+  Schema.Struct({ kind: Schema.Literal("tmpdir") }),
+  Schema.Struct({ kind: Schema.Literal("slash_tmp") }),
+  Schema.Struct({
+    kind: Schema.Literal("unknown"),
+    path: Schema.String,
+    subpath: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  }),
+]);
+const CodexRawFileSystemPathSchema = Schema.Union([
+  Schema.Struct({ path: Schema.String, type: Schema.Literal("path") }),
+  Schema.Struct({
+    pattern: Schema.String,
+    type: Schema.Literal("glob_pattern"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("special"),
+    value: CodexRawFileSystemSpecialPathSchema,
+  }),
+]);
+const CodexRawFileSystemSandboxEntrySchema = Schema.Struct({
+  access: Schema.Literals(["read", "write", "deny"] as const),
+  path: CodexRawFileSystemPathSchema,
+});
+const CodexRawAdditionalNetworkPermissionsSchema = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+});
+const CodexRawAdditionalFileSystemPermissionsSchema = Schema.Struct({
+  entries: Schema.optionalKey(
+    Schema.NullOr(Schema.Array(CodexRawFileSystemSandboxEntrySchema))
+  ),
+  globScanMaxDepth: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1)))
+    )
+  ),
+  read: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+  write: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+});
+const CodexRawAdditionalPermissionProfileSchema = Schema.Struct({
+  fileSystem: Schema.optionalKey(
+    Schema.NullOr(CodexRawAdditionalFileSystemPermissionsSchema)
+  ),
+  network: Schema.optionalKey(
+    Schema.NullOr(CodexRawAdditionalNetworkPermissionsSchema)
+  ),
+});
+const CodexRawRequestPermissionProfileSchema = strictRawStruct(
+  "CodexRawRequestPermissionProfile",
+  CodexRawAdditionalPermissionProfileSchema.fields
+);
+const CodexRawNetworkPolicyAmendmentSchema = Schema.Struct({
+  action: Schema.Literals(["allow", "deny"] as const),
+  host: Schema.String,
+});
+const CodexRawAcceptWithExecpolicyAmendmentSchema = strictRawStruct(
+  "CodexRawAcceptWithExecpolicyAmendment",
+  {
+    acceptWithExecpolicyAmendment: Schema.Struct({
+      execpolicy_amendment: Schema.Array(Schema.String),
+    }),
+  }
+);
+const CodexRawApplyNetworkPolicyAmendmentSchema = strictRawStruct(
+  "CodexRawApplyNetworkPolicyAmendment",
+  {
+    applyNetworkPolicyAmendment: Schema.Struct({
+      network_policy_amendment: CodexRawNetworkPolicyAmendmentSchema,
+    }),
+  }
+);
+const CodexRawCommandExecutionApprovalDecisionSchema = Schema.Union([
+  Schema.Literals(["accept", "acceptForSession", "decline", "cancel"] as const),
+  CodexRawAcceptWithExecpolicyAmendmentSchema,
+  CodexRawApplyNetworkPolicyAmendmentSchema,
+]);
+const CodexRawCommandRequest = Schema.Struct({
+  id: CodexRawRequestIdSchema,
+  method: Schema.Literal("item/commandExecution/requestApproval"),
+  params: Schema.Struct({
+    ...CodexRawBaseInteraction,
+    additionalPermissions: Schema.optionalKey(
+      Schema.NullOr(CodexRawAdditionalPermissionProfileSchema)
+    ),
+    approvalId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    availableDecisions: Schema.optionalKey(
+      Schema.NullOr(
+        Schema.Array(CodexRawCommandExecutionApprovalDecisionSchema)
+      )
+    ),
+    command: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    commandActions: Schema.optionalKey(
+      Schema.NullOr(Schema.Array(CodexRawCommandActionSchema))
+    ),
+    cwd: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    networkApprovalContext: Schema.optionalKey(
+      Schema.NullOr(
+        Schema.Struct({
+          host: Schema.String,
+          protocol: Schema.Literals([
+            "http",
+            "https",
+            "socks5Tcp",
+            "socks5Udp",
+          ] as const),
+        })
+      )
+    ),
+    proposedExecpolicyAmendment: Schema.optionalKey(
+      Schema.NullOr(Schema.Array(Schema.String))
+    ),
+    proposedNetworkPolicyAmendments: Schema.optionalKey(
+      Schema.NullOr(
+        Schema.Array(
+          Schema.Struct({
+            action: Schema.Literals(["allow", "deny"] as const),
+            host: Schema.String,
+          })
+        )
+      )
+    ),
+    reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    startedAtMs: CodexRawIntegerSchema,
+  }),
+});
+const CodexRawFileRequest = Schema.Struct({
+  id: CodexRawRequestIdSchema,
+  method: Schema.Literal("item/fileChange/requestApproval"),
+  params: Schema.Struct({
+    ...CodexRawBaseInteraction,
+    grantRoot: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    startedAtMs: CodexRawIntegerSchema,
+  }),
+});
+const CodexRawPermissionRequest = Schema.Struct({
+  id: CodexRawRequestIdSchema,
+  method: Schema.Literal("item/permissions/requestApproval"),
+  params: Schema.Struct({
+    ...CodexRawBaseInteraction,
+    cwd: Schema.String,
+    environmentId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    permissions: CodexRawRequestPermissionProfileSchema,
+    reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    startedAtMs: CodexRawIntegerSchema,
+  }),
+});
+const CodexRawUserInputRequest = Schema.Struct({
+  id: CodexRawRequestIdSchema,
+  method: Schema.Literal("item/tool/requestUserInput"),
+  params: Schema.Struct({
+    ...CodexRawBaseInteraction,
+    questions: Schema.Array(
+      Schema.Struct({
+        header: Schema.String,
+        id: Schema.String,
+        isOther: Schema.optionalKey(Schema.Boolean),
+        isSecret: Schema.optionalKey(Schema.Boolean),
+        options: Schema.optionalKey(
+          Schema.NullOr(
+            Schema.Array(
+              Schema.Struct({
+                description: Schema.String,
+                label: Schema.String,
+              })
+            )
+          )
+        ),
+        question: Schema.String,
+      })
+    ),
+  }),
+});
+const CodexRawMcpElicitationConstOptionSchema = strictRawStruct(
+  "CodexRawMcpElicitationConstOption",
+  { const: Schema.String, title: Schema.String }
+);
+const CodexRawMcpElicitationUntitledEnumItemsSchema = strictRawStruct(
+  "CodexRawMcpElicitationUntitledEnumItems",
+  {
+    enum: Schema.Array(Schema.String),
+    type: Schema.Literal("string"),
+  }
+);
+const CodexRawMcpElicitationTitledEnumItemsSchema = strictRawStruct(
+  "CodexRawMcpElicitationTitledEnumItems",
+  {
+    anyOf: Schema.Array(CodexRawMcpElicitationConstOptionSchema),
+  }
+);
+const CodexRawMcpElicitationUntitledSingleSelectSchema = strictRawStruct(
+  "CodexRawMcpElicitationUntitledSingleSelect",
+  {
+    default: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    description: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    enum: Schema.Array(Schema.String),
+    title: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    type: Schema.Literal("string"),
+  }
+);
+const CodexRawMcpElicitationTitledSingleSelectSchema = strictRawStruct(
+  "CodexRawMcpElicitationTitledSingleSelect",
+  {
+    default: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    description: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    oneOf: Schema.Array(CodexRawMcpElicitationConstOptionSchema),
+    title: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    type: Schema.Literal("string"),
+  }
+);
+const CodexRawMcpElicitationLegacyTitledEnumSchema = strictRawStruct(
+  "CodexRawMcpElicitationLegacyTitledEnum",
+  {
+    default: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    description: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    enum: Schema.Array(Schema.String),
+    enumNames: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+    title: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    type: Schema.Literal("string"),
+  }
+);
+const CodexRawMcpElicitationUntitledMultiSelectSchema = strictRawStruct(
+  "CodexRawMcpElicitationUntitledMultiSelect",
+  {
+    default: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+    description: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    items: CodexRawMcpElicitationUntitledEnumItemsSchema,
+    maxItems: Schema.optionalKey(
+      Schema.NullOr(CodexRawNonNegativeIntegerSchema)
+    ),
+    minItems: Schema.optionalKey(
+      Schema.NullOr(CodexRawNonNegativeIntegerSchema)
+    ),
+    title: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    type: Schema.Literal("array"),
+  }
+);
+const CodexRawMcpElicitationTitledMultiSelectSchema = strictRawStruct(
+  "CodexRawMcpElicitationTitledMultiSelect",
+  {
+    default: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+    description: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    items: CodexRawMcpElicitationTitledEnumItemsSchema,
+    maxItems: Schema.optionalKey(
+      Schema.NullOr(CodexRawNonNegativeIntegerSchema)
+    ),
+    minItems: Schema.optionalKey(
+      Schema.NullOr(CodexRawNonNegativeIntegerSchema)
+    ),
+    title: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    type: Schema.Literal("array"),
+  }
+);
+const CodexRawMcpElicitationEnumSchema = Schema.Union([
+  CodexRawMcpElicitationUntitledSingleSelectSchema,
+  CodexRawMcpElicitationTitledSingleSelectSchema,
+  CodexRawMcpElicitationUntitledMultiSelectSchema,
+  CodexRawMcpElicitationTitledMultiSelectSchema,
+  CodexRawMcpElicitationLegacyTitledEnumSchema,
+]);
+const CodexRawMcpElicitationStringSchema = strictRawStruct(
+  "CodexRawMcpElicitationString",
+  {
+    default: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    description: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    format: Schema.optionalKey(
+      Schema.NullOr(
+        Schema.Literals(["email", "uri", "date", "date-time"] as const)
+      )
+    ),
+    maxLength: Schema.optionalKey(
+      Schema.NullOr(CodexRawNonNegativeIntegerSchema)
+    ),
+    minLength: Schema.optionalKey(
+      Schema.NullOr(CodexRawNonNegativeIntegerSchema)
+    ),
+    title: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    type: Schema.Literal("string"),
+  }
+);
+const CodexRawMcpElicitationNumberSchema = strictRawStruct(
+  "CodexRawMcpElicitationNumber",
+  {
+    default: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+    description: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    maximum: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+    minimum: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+    title: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    type: Schema.Literals(["number", "integer"] as const),
+  }
+);
+const CodexRawMcpElicitationBooleanSchema = strictRawStruct(
+  "CodexRawMcpElicitationBoolean",
+  {
+    default: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+    description: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    title: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    type: Schema.Literal("boolean"),
+  }
+);
+const CodexRawMcpElicitationPrimitiveSchema = Schema.Union([
+  CodexRawMcpElicitationEnumSchema,
+  CodexRawMcpElicitationStringSchema,
+  CodexRawMcpElicitationNumberSchema,
+  CodexRawMcpElicitationBooleanSchema,
+]);
+const CodexRawMcpElicitationSchema = strictRawStruct("CodexRawMcpElicitation", {
+  $schema: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  properties: Schema.Record(
+    Schema.String,
+    CodexRawMcpElicitationPrimitiveSchema
+  ),
+  required: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+  type: Schema.Literal("object"),
+});
+const CodexRawElicitationRequest = Schema.Struct({
+  id: CodexRawRequestIdSchema,
+  method: Schema.Literal("mcpServer/elicitation/request"),
+  params: Schema.Union([
+    Schema.Struct({
+      _meta: Schema.optionalKey(Schema.Json),
+      message: Schema.String,
+      mode: Schema.Literal("form"),
+      requestedSchema: CodexRawMcpElicitationSchema,
+      serverName: Schema.String,
+      threadId: Schema.String,
+      turnId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    }),
+    Schema.Struct({
+      _meta: Schema.optionalKey(Schema.Json),
+      elicitationId: Schema.String,
+      message: Schema.String,
+      mode: Schema.Literal("url"),
+      serverName: Schema.String,
+      threadId: Schema.String,
+      turnId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      url: Schema.String,
+    }),
+  ]),
+});
+/** Source-exact raw 0.137.0 curated server-request family. */
+export const CodexRawServerRequestSchema = Schema.Union([
+  CodexRawCommandRequest,
+  CodexRawFileRequest,
+  CodexRawPermissionRequest,
+  CodexRawUserInputRequest,
+  CodexRawElicitationRequest,
+]);
+const CodexServerRequestProjectionSchema = Schema.Union([
   CommandRequest,
   FileRequest,
   PermissionRequest,
   UserInputRequest,
   ElicitationRequest,
 ]);
+export const CodexServerRequestSchema = CodexServerRequestProjectionSchema;
+export const CodexServerRequestBoundarySchema =
+  CodexRawServerRequestSchema.pipe(
+    Schema.decodeTo(CodexServerRequestProjectionSchema)
+  );
 export type CodexServerRequest = typeof CodexServerRequestSchema.Type;
 
 const ItemStartedParams = Schema.Struct({
@@ -618,7 +1656,155 @@ const notification = <M extends string, S extends Schema.Top>(
   method: M,
   params: S
 ) => Schema.Struct({ method: Schema.Literal(method), params });
-export const CodexNotificationSchema = Schema.Union([
+const rawNotification = notification;
+const CodexRawTokenUsageBreakdownSchema = Schema.Struct({
+  cachedInputTokens: CodexRawIntegerSchema,
+  inputTokens: CodexRawIntegerSchema,
+  outputTokens: CodexRawIntegerSchema,
+  reasoningOutputTokens: CodexRawIntegerSchema,
+  totalTokens: CodexRawIntegerSchema,
+});
+/** Source-exact raw 0.137.0 curated notification family. */
+export const CodexRawNotificationSchema = Schema.Union([
+  rawNotification(
+    "thread/started",
+    Schema.Struct({ thread: CodexRawThreadSchema })
+  ),
+  rawNotification(
+    "thread/status/changed",
+    Schema.Struct({
+      threadId: Schema.String,
+      status: CodexRawThreadStatusSchema,
+    })
+  ),
+  rawNotification(
+    "turn/started",
+    Schema.Struct({ threadId: Schema.String, turn: CodexRawTurnSchema })
+  ),
+  rawNotification(
+    "turn/completed",
+    Schema.Struct({ threadId: Schema.String, turn: CodexRawTurnSchema })
+  ),
+  rawNotification(
+    "turn/diff/updated",
+    Schema.Struct({
+      diff: Schema.String,
+      threadId: Schema.String,
+      turnId: Schema.String,
+    })
+  ),
+  rawNotification(
+    "turn/plan/updated",
+    Schema.Struct({
+      explanation: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      plan: Schema.Array(
+        Schema.Struct({
+          status: Schema.Literals([
+            "pending",
+            "inProgress",
+            "completed",
+          ] as const),
+          step: Schema.String,
+        })
+      ),
+      threadId: Schema.String,
+      turnId: Schema.String,
+    })
+  ),
+  rawNotification(
+    "item/started",
+    Schema.Struct({
+      item: CodexRawThreadItemSchema,
+      startedAtMs: CodexRawIntegerSchema,
+      threadId: Schema.String,
+      turnId: Schema.String,
+    })
+  ),
+  rawNotification(
+    "item/completed",
+    Schema.Struct({
+      completedAtMs: CodexRawIntegerSchema,
+      item: CodexRawThreadItemSchema,
+      threadId: Schema.String,
+      turnId: Schema.String,
+    })
+  ),
+  rawNotification(
+    "item/agentMessage/delta",
+    Schema.Struct({
+      delta: Schema.String,
+      itemId: Schema.String,
+      threadId: Schema.String,
+      turnId: Schema.String,
+    })
+  ),
+  rawNotification(
+    "item/commandExecution/outputDelta",
+    Schema.Struct({
+      delta: Schema.String,
+      itemId: Schema.String,
+      threadId: Schema.String,
+      turnId: Schema.String,
+    })
+  ),
+  rawNotification(
+    "item/fileChange/outputDelta",
+    Schema.Struct({
+      delta: Schema.String,
+      itemId: Schema.String,
+      threadId: Schema.String,
+      turnId: Schema.String,
+    })
+  ),
+  rawNotification(
+    "item/fileChange/patchUpdated",
+    Schema.Struct({
+      changes: Schema.Array(CodexRawFileChangeSchema),
+      itemId: Schema.String,
+      threadId: Schema.String,
+      turnId: Schema.String,
+    })
+  ),
+  rawNotification(
+    "thread/tokenUsage/updated",
+    Schema.Struct({
+      threadId: Schema.String,
+      tokenUsage: Schema.Struct({
+        last: CodexRawTokenUsageBreakdownSchema,
+        modelContextWindow: Schema.optionalKey(
+          Schema.NullOr(CodexRawIntegerSchema)
+        ),
+        total: CodexRawTokenUsageBreakdownSchema,
+      }),
+      turnId: Schema.String,
+    })
+  ),
+  rawNotification(
+    "warning",
+    Schema.Struct({
+      message: Schema.String,
+      threadId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    })
+  ),
+  rawNotification(
+    "error",
+    Schema.Struct({
+      error: CodexRawTurnErrorSchema,
+      threadId: Schema.String,
+      turnId: Schema.String,
+      willRetry: Schema.Boolean,
+    })
+  ),
+  rawNotification(
+    "serverRequest/resolved",
+    Schema.Struct({
+      requestId: CodexRawRequestIdSchema,
+      threadId: Schema.String,
+    })
+  ),
+]);
+
+const CodexNotificationProjectionSchema = Schema.Union([
   notification("thread/started", Schema.Struct({ thread: Thread })),
   notification(
     "thread/status/changed",
@@ -743,6 +1929,10 @@ export const CodexNotificationSchema = Schema.Union([
     Schema.Struct({ requestId: CodexRequestIdSchema, threadId: ThreadId })
   ),
 ]);
+export const CodexNotificationSchema = CodexNotificationProjectionSchema;
+export const CodexNotificationBoundarySchema = CodexRawNotificationSchema.pipe(
+  Schema.decodeTo(CodexNotificationProjectionSchema)
+);
 export type CodexNotification = typeof CodexNotificationSchema.Type;
 
 /** True when a raw notification belongs to Gaia's curated stable subset. */
@@ -784,6 +1974,9 @@ export function isCodexServerRequestMethod(method: string): boolean {
 }
 
 export const CommandApprovalResponseSchema = Schema.Struct({
+  decision: CodexRawCommandExecutionApprovalDecisionSchema,
+});
+export const FileApprovalResponseSchema = Schema.Struct({
   decision: Schema.Literals([
     "accept",
     "acceptForSession",
@@ -791,7 +1984,6 @@ export const CommandApprovalResponseSchema = Schema.Struct({
     "cancel",
   ] as const),
 });
-export const FileApprovalResponseSchema = CommandApprovalResponseSchema;
 export const PermissionApprovalResponseSchema = Schema.Struct({
   permissions: GrantedPermissionProfileSchema,
   scope: Schema.optionalKey(Schema.Literals(["turn", "session"] as const)),
@@ -848,11 +2040,26 @@ export const CodexAppServerResponseSchema = Schema.Union([
     id: CodexRequestIdSchema,
   }),
 ]);
+export const CodexAppServerResponseBoundarySchema = Schema.Union([
+  Schema.Struct({ id: CodexRawRequestIdSchema, result: Schema.Json }),
+  Schema.Struct({
+    error: Schema.Struct({
+      code: CodexRawIntegerSchema,
+      message: Schema.String,
+    }),
+    id: CodexRawRequestIdSchema,
+  }),
+]).pipe(Schema.decodeTo(CodexAppServerResponseSchema));
 export const CodexAppServerInboundRequestSchema = Schema.Struct({
   id: CodexRequestIdSchema,
   method: Schema.String,
   params: Schema.optionalKey(Schema.Unknown),
 });
+export const CodexAppServerInboundRequestBoundarySchema = Schema.Struct({
+  id: CodexRawRequestIdSchema,
+  method: Schema.String,
+  params: Schema.optionalKey(Schema.Unknown),
+}).pipe(Schema.decodeTo(CodexAppServerInboundRequestSchema));
 export const CodexAppServerNotificationSchema = Schema.Struct({
   method: Schema.String,
   params: Schema.optionalKey(Schema.Unknown),

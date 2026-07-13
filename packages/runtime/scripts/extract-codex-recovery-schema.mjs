@@ -85,17 +85,45 @@ try {
   const itemStarted = readSchema("v2/ItemStartedNotification.json");
   const itemCompleted = readSchema("v2/ItemCompletedNotification.json");
   const serverNotification = readSchema("ServerNotification.json");
+  const commandRequest = readSchema(
+    "CommandExecutionRequestApprovalParams.json"
+  );
+  const modelList = readSchema("v2/ModelListResponse.json");
+  const threadStart = readSchema("v2/ThreadStartResponse.json");
+  const threadResume = readSchema("v2/ThreadResumeResponse.json");
+  const turnPlan = readSchema("v2/TurnPlanUpdatedNotification.json");
+  const tokenUsage = readSchema("v2/ThreadTokenUsageUpdatedNotification.json");
+  const granularApprovalPolicy =
+    threadStart.definitions.AskForApproval.oneOf.find(
+      (entry) => entry.properties?.granular
+    );
   const fixture = {
     facts: {
       additionalFileSystemPermissionsRequired:
         permissions.definitions.AdditionalFileSystemPermissions.required ?? [],
       additionalNetworkPermissionsRequired:
         permissions.definitions.AdditionalNetworkPermissions.required ?? [],
+      activePermissionProfileRequired:
+        threadStart.definitions.ActivePermissionProfile.required ?? [],
+      commandApprovalDecisionVariants:
+        commandRequest.definitions.CommandExecutionApprovalDecision.oneOf.map(
+          (entry) => entry.enum?.[0] ?? Object.keys(entry.properties ?? {})[0]
+        ),
       elicitationRequestRequired: elicitationRequest.required,
       elicitationResponseRequired: elicitationResponse.required,
+      gitInfoRequired: threadStart.definitions.GitInfo.required ?? [],
+      granularApprovalPolicyAdditionalProperties:
+        granularApprovalPolicy.additionalProperties,
+      mcpElicitationSchemaAdditionalProperties:
+        elicitationRequest.definitions.McpElicitationSchema
+          .additionalProperties,
+      mcpElicitationSchemaRequired:
+        elicitationRequest.definitions.McpElicitationSchema.required,
       itemCompletedRequired: itemCompleted.required,
       itemStartedRequired: itemStarted.required,
-      modelListRequired: readSchema("v2/ModelListResponse.json").required,
+      modelListRequired: modelList.required,
+      modelRequired: modelList.definitions.Model.required,
+      modelUpgradeInfoRequired: modelList.definitions.ModelUpgradeInfo.required,
       notificationMethods: serverNotification.oneOf.map(
         (entry) => entry.properties.method.enum[0]
       ),
@@ -108,10 +136,28 @@ try {
       ),
       requestPermissionProfileRequired:
         permissions.definitions.RequestPermissionProfile.required ?? [],
+      requestPermissionProfileAdditionalProperties:
+        permissions.definitions.RequestPermissionProfile.additionalProperties,
+      threadItemRequired: Object.fromEntries(
+        itemStarted.definitions.ThreadItem.oneOf.map((entry) => [
+          entry.properties.type.enum[0],
+          entry.required,
+        ])
+      ),
       threadItemTypes: itemStarted.definitions.ThreadItem.oneOf.map(
         (entry) => entry.properties.type.enum[0]
       ),
       threadListRequired: readSchema("v2/ThreadListResponse.json").required,
+      threadRequired: threadStart.definitions.Thread.required,
+      threadResumeRequired: threadResume.required,
+      threadStartRequired: threadStart.required,
+      threadTokenUsageRequired:
+        tokenUsage.definitions.ThreadTokenUsage.required,
+      tokenUsageBreakdownRequired:
+        tokenUsage.definitions.TokenUsageBreakdown.required,
+      turnPlanRequired: turnPlan.required,
+      turnRequired: threadStart.definitions.Turn.required,
+      turnsPageRequired: threadResume.definitions.TurnsPage.required,
     },
     generatedBy: expectedVersion,
     schemas: Object.fromEntries(

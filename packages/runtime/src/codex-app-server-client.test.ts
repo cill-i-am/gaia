@@ -215,7 +215,41 @@ describe("Codex App Server connection", () => {
     expect(result.terminations).toEqual([]);
   });
 
-  it("routes curated notifications and fails closed on unknown server requests", async () => {
+  it("rejects a partial thread/start wire result and keeps the connection live", async () => {
+    const fake = fakeProcess();
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const client = makeCodexAppServerClient(connection);
+          const invalid = yield* client
+            .startThread({})
+            .pipe(Effect.exit, Effect.forkChild);
+          yield* Effect.yieldNow;
+          for (const listener of fake.lines)
+            listener(
+              JSON.stringify({ id: 1, result: { thread: { id: "thread-1" } } })
+            );
+          const invalidExit = yield* Fiber.join(invalid);
+
+          const healthy = yield* connection
+            .request("healthy")
+            .pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          for (const listener of fake.lines)
+            listener(JSON.stringify({ id: 2, result: { ok: true } }));
+          return { healthy: yield* Fiber.join(healthy), invalidExit };
+        })
+      )
+    );
+
+    expect(result.invalidExit._tag).toBe("Failure");
+    expect(result.healthy).toEqual({ ok: true });
+  });
+
+  it("routes curated notifications and classifies unknown versus malformed known requests", async () => {
     const fake = fakeProcess();
     await Effect.runPromise(
       Effect.scoped(
@@ -225,15 +259,17 @@ describe("Codex App Server connection", () => {
           });
           const notifications: Array<string> = [];
           const requests: Array<string> = [];
+          const terminations: Array<string> = [];
           connection.onNotification(({ method }) => notifications.push(method));
           connection.onServerRequest(({ method }) => requests.push(method));
+          connection.onTermination((error) => terminations.push(error._tag));
           for (const listener of fake.lines)
             listener(
               JSON.stringify({
                 method: "turn/started",
                 params: {
                   threadId: "thr-1",
-                  turn: { id: "turn-1", status: "inProgress" },
+                  turn: { id: "turn-1", items: [], status: "inProgress" },
                 },
               })
             );
@@ -253,8 +289,9 @@ describe("Codex App Server connection", () => {
             );
           expect(notifications).toEqual(["turn/started"]);
           expect(requests).toEqual([]);
+          expect(terminations).toEqual(["CodexAppServerProtocolError"]);
           expect(fake.writes.at(-1)).toEqual({
-            id: 41,
+            id: 40,
             error: { code: -32601, message: "Unsupported server request" },
           });
         })
@@ -593,15 +630,29 @@ describe("Codex App Server connection", () => {
           });
           const client = makeCodexAppServerClient(connection);
           let preserved = 0;
+          const routedMethods: Array<string> = [];
           client.onServerRequest((request) => {
+            routedMethods.push(request.method);
             if (request.method === "item/commandExecution/requestApproval") {
               expect(request.params).toMatchObject({
                 approvalId: "approval-1",
-                commandActions: [{ type: "read" }],
+                commandActions: [
+                  {
+                    command: "cat /tmp/file",
+                    name: "file",
+                    path: "/tmp/file",
+                    type: "read",
+                  },
+                ],
                 cwd: "/tmp",
-                networkApprovalContext: { host: "example.com" },
+                networkApprovalContext: {
+                  host: "example.com",
+                  protocol: "https",
+                },
                 proposedExecpolicyAmendment: ["allow"],
-                proposedNetworkPolicyAmendments: [{ host: "example.com" }],
+                proposedNetworkPolicyAmendments: [
+                  { action: "allow", host: "example.com" },
+                ],
                 reason: "network",
               });
               preserved += 1;
@@ -669,11 +720,23 @@ describe("Codex App Server connection", () => {
               params: {
                 ...base,
                 approvalId: "approval-1",
-                commandActions: [{ type: "read" }],
+                commandActions: [
+                  {
+                    command: "cat /tmp/file",
+                    name: "file",
+                    path: "/tmp/file",
+                    type: "read",
+                  },
+                ],
                 cwd: "/tmp",
-                networkApprovalContext: { host: "example.com" },
+                networkApprovalContext: {
+                  host: "example.com",
+                  protocol: "https",
+                },
                 proposedExecpolicyAmendment: ["allow"],
-                proposedNetworkPolicyAmendments: [{ host: "example.com" }],
+                proposedNetworkPolicyAmendments: [
+                  { action: "allow", host: "example.com" },
+                ],
                 reason: "network",
               },
             },
@@ -730,6 +793,7 @@ describe("Codex App Server connection", () => {
             for (const listener of fake.lines)
               listener(JSON.stringify(fixture));
           yield* Effect.yieldNow;
+          expect(routedMethods).toEqual(fixtures.map(({ method }) => method));
           expect(
             fake.writes.filter(({ result }) => result !== undefined)
           ).toHaveLength(5);
@@ -737,6 +801,45 @@ describe("Codex App Server connection", () => {
         })
       )
     );
+  });
+
+  it("terminates malformed known server-request categories before dispatch", async () => {
+    const fake = fakeProcess();
+    const observed = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const client = makeCodexAppServerClient(connection);
+          const failures: Array<string> = [];
+          const requests: Array<string> = [];
+          connection.onTermination((error) => failures.push(error._tag));
+          client.onServerRequest(({ method }) => requests.push(method));
+
+          for (const listener of fake.lines) {
+            listener(
+              JSON.stringify({
+                id: 1,
+                method: "mcpServer/elicitation/request",
+                params: {
+                  message: "Choose",
+                  mode: "form",
+                  requestedSchema: {},
+                  serverName: "github",
+                  threadId: "thread-1",
+                },
+              })
+            );
+          }
+
+          return { failures, requests };
+        })
+      )
+    );
+
+    expect(observed.failures).toEqual(["CodexAppServerProtocolError"]);
+    expect(observed.requests).toEqual([]);
   });
 
   it("preserves warning targets and accepts source-exact large file-change notifications", async () => {
@@ -856,6 +959,116 @@ describe("Codex App Server connection", () => {
         })
       )
     );
+  });
+
+  it("accepts source-valid nullable MCP and image-generation item fields", async () => {
+    const fake = fakeProcess();
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const notifications: Array<string> = [];
+          const terminations: Array<string> = [];
+          connection.onNotification(({ method }) => notifications.push(method));
+          connection.onTermination((error) => terminations.push(error._tag));
+
+          for (const listener of fake.lines) {
+            listener(
+              JSON.stringify({
+                method: "item/started",
+                params: {
+                  item: {
+                    arguments: {},
+                    id: "mcp-null-resource",
+                    mcpAppResourceUri: null,
+                    server: "github",
+                    status: "completed",
+                    tool: "get_issue",
+                    type: "mcpToolCall",
+                  },
+                  startedAtMs: 1,
+                  threadId: "thread-1",
+                  turnId: "turn-1",
+                },
+              })
+            );
+            listener(
+              JSON.stringify({
+                method: "item/completed",
+                params: {
+                  completedAtMs: 2,
+                  item: {
+                    id: "image-null-path",
+                    result: "generated",
+                    savedPath: null,
+                    status: "completed",
+                    type: "imageGeneration",
+                  },
+                  threadId: "thread-1",
+                  turnId: "turn-1",
+                },
+              })
+            );
+          }
+
+          expect(terminations).toEqual([]);
+          expect(notifications).toEqual(["item/started", "item/completed"]);
+        })
+      )
+    );
+  });
+
+  it("rejects fractional source integer fields before notification dispatch", async () => {
+    const fake = fakeProcess();
+    const observed = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const failures: Array<string> = [];
+          const notifications: Array<string> = [];
+          connection.onTermination((error) => failures.push(error._tag));
+          connection.onNotification(({ method }) => notifications.push(method));
+
+          for (const listener of fake.lines) {
+            listener(
+              JSON.stringify({
+                method: "thread/tokenUsage/updated",
+                params: {
+                  threadId: "thread-1",
+                  tokenUsage: {
+                    last: {
+                      cachedInputTokens: 0,
+                      inputTokens: 1.5,
+                      outputTokens: 1,
+                      reasoningOutputTokens: 0,
+                      totalTokens: 2,
+                    },
+                    modelContextWindow: 100,
+                    total: {
+                      cachedInputTokens: 0,
+                      inputTokens: 1,
+                      outputTokens: 1,
+                      reasoningOutputTokens: 0,
+                      totalTokens: 2,
+                    },
+                  },
+                  turnId: "turn-1",
+                },
+              })
+            );
+          }
+
+          return { failures, notifications };
+        })
+      )
+    );
+
+    expect(observed.failures).toEqual(["CodexAppServerProtocolError"]);
+    expect(observed.notifications).toEqual([]);
   });
 
   it("turns malformed known notifications into a typed connection termination", async () => {

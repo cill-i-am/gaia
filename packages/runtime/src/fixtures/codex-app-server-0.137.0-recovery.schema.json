@@ -2,12 +2,30 @@
   "facts": {
     "additionalFileSystemPermissionsRequired": [],
     "additionalNetworkPermissionsRequired": [],
+    "activePermissionProfileRequired": [
+      "id"
+    ],
+    "commandApprovalDecisionVariants": [
+      "accept",
+      "acceptForSession",
+      "acceptWithExecpolicyAmendment",
+      "applyNetworkPolicyAmendment",
+      "decline",
+      "cancel"
+    ],
     "elicitationRequestRequired": [
       "serverName",
       "threadId"
     ],
     "elicitationResponseRequired": [
       "action"
+    ],
+    "gitInfoRequired": [],
+    "granularApprovalPolicyAdditionalProperties": false,
+    "mcpElicitationSchemaAdditionalProperties": false,
+    "mcpElicitationSchemaRequired": [
+      "properties",
+      "type"
     ],
     "itemCompletedRequired": [
       "completedAtMs",
@@ -23,6 +41,19 @@
     ],
     "modelListRequired": [
       "data"
+    ],
+    "modelRequired": [
+      "defaultReasoningEffort",
+      "description",
+      "displayName",
+      "hidden",
+      "id",
+      "isDefault",
+      "model",
+      "supportedReasoningEfforts"
+    ],
+    "modelUpgradeInfoRequired": [
+      "model"
     ],
     "notificationMethods": [
       "error",
@@ -107,6 +138,101 @@
       "integer"
     ],
     "requestPermissionProfileRequired": [],
+    "requestPermissionProfileAdditionalProperties": false,
+    "threadItemRequired": {
+      "userMessage": [
+        "content",
+        "id",
+        "type"
+      ],
+      "hookPrompt": [
+        "fragments",
+        "id",
+        "type"
+      ],
+      "agentMessage": [
+        "id",
+        "text",
+        "type"
+      ],
+      "plan": [
+        "id",
+        "text",
+        "type"
+      ],
+      "reasoning": [
+        "id",
+        "type"
+      ],
+      "commandExecution": [
+        "command",
+        "commandActions",
+        "cwd",
+        "id",
+        "status",
+        "type"
+      ],
+      "fileChange": [
+        "changes",
+        "id",
+        "status",
+        "type"
+      ],
+      "mcpToolCall": [
+        "arguments",
+        "id",
+        "server",
+        "status",
+        "tool",
+        "type"
+      ],
+      "dynamicToolCall": [
+        "arguments",
+        "id",
+        "status",
+        "tool",
+        "type"
+      ],
+      "collabAgentToolCall": [
+        "agentsStates",
+        "id",
+        "receiverThreadIds",
+        "senderThreadId",
+        "status",
+        "tool",
+        "type"
+      ],
+      "webSearch": [
+        "id",
+        "query",
+        "type"
+      ],
+      "imageView": [
+        "id",
+        "path",
+        "type"
+      ],
+      "imageGeneration": [
+        "id",
+        "result",
+        "status",
+        "type"
+      ],
+      "enteredReviewMode": [
+        "id",
+        "review",
+        "type"
+      ],
+      "exitedReviewMode": [
+        "id",
+        "review",
+        "type"
+      ],
+      "contextCompaction": [
+        "id",
+        "type"
+      ]
+    },
     "threadItemTypes": [
       "userMessage",
       "hookPrompt",
@@ -126,6 +252,62 @@
       "contextCompaction"
     ],
     "threadListRequired": [
+      "data"
+    ],
+    "threadRequired": [
+      "cliVersion",
+      "createdAt",
+      "cwd",
+      "ephemeral",
+      "id",
+      "modelProvider",
+      "preview",
+      "sessionId",
+      "source",
+      "status",
+      "turns",
+      "updatedAt"
+    ],
+    "threadResumeRequired": [
+      "approvalPolicy",
+      "approvalsReviewer",
+      "cwd",
+      "model",
+      "modelProvider",
+      "sandbox",
+      "thread"
+    ],
+    "threadStartRequired": [
+      "approvalPolicy",
+      "approvalsReviewer",
+      "cwd",
+      "model",
+      "modelProvider",
+      "sandbox",
+      "thread"
+    ],
+    "threadTokenUsageRequired": [
+      "last",
+      "total"
+    ],
+    "tokenUsageBreakdownRequired": [
+      "cachedInputTokens",
+      "inputTokens",
+      "outputTokens",
+      "reasoningOutputTokens",
+      "totalTokens"
+    ],
+    "turnPlanRequired": [
+      "plan",
+      "threadId",
+      "turnId"
+    ],
+    "turnRequired": [
+      "id",
+      "items",
+      "status"
+    ],
+    "turnsPageRequired": [
       "data"
     ]
   },

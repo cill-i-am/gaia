@@ -4,10 +4,10 @@ import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
-  CodexNotificationSchema,
-  CodexServerRequestSchema,
-  ModelListResultSchema,
-  ThreadListResultSchema,
+  CodexNotificationBoundarySchema,
+  CodexServerRequestBoundarySchema,
+  ModelListBoundaryResultSchema,
+  ThreadListBoundaryResultSchema,
   supportedCodexCliVersion,
 } from "./codex-app-server-protocol.js";
 
@@ -67,21 +67,42 @@ class PinnedCodexSchemaSet extends Schema.Class<PinnedCodexSchemaSet>(
 )(
   {
     facts: Schema.Struct({
+      activePermissionProfileRequired: Schema.Array(Schema.String),
       additionalFileSystemPermissionsRequired: Schema.Array(Schema.String),
       additionalNetworkPermissionsRequired: Schema.Array(Schema.String),
+      commandApprovalDecisionVariants: Schema.Array(Schema.String),
       elicitationRequestRequired: Schema.Array(Schema.String),
       elicitationResponseRequired: Schema.Array(Schema.String),
+      gitInfoRequired: Schema.Array(Schema.String),
+      granularApprovalPolicyAdditionalProperties: Schema.Boolean,
       itemCompletedRequired: Schema.Array(Schema.String),
       itemStartedRequired: Schema.Array(Schema.String),
       modelListRequired: Schema.Array(Schema.String),
+      modelRequired: Schema.Array(Schema.String),
+      modelUpgradeInfoRequired: Schema.Array(Schema.String),
+      mcpElicitationSchemaAdditionalProperties: Schema.Boolean,
+      mcpElicitationSchemaRequired: Schema.Array(Schema.String),
       notificationMethods: Schema.Array(Schema.String),
       permissionApprovalResponseRequired: Schema.Array(Schema.String),
       permissionApprovalScopeDefault: Schema.String,
       permissionRequestRequired: Schema.Array(Schema.String),
       requestIdTypes: Schema.Array(Schema.String),
+      requestPermissionProfileAdditionalProperties: Schema.Boolean,
       requestPermissionProfileRequired: Schema.Array(Schema.String),
+      threadItemRequired: Schema.Record(
+        Schema.String,
+        Schema.Array(Schema.String)
+      ),
       threadItemTypes: Schema.Array(Schema.String),
       threadListRequired: Schema.Array(Schema.String),
+      threadRequired: Schema.Array(Schema.String),
+      threadResumeRequired: Schema.Array(Schema.String),
+      threadStartRequired: Schema.Array(Schema.String),
+      threadTokenUsageRequired: Schema.Array(Schema.String),
+      tokenUsageBreakdownRequired: Schema.Array(Schema.String),
+      turnPlanRequired: Schema.Array(Schema.String),
+      turnRequired: Schema.Array(Schema.String),
+      turnsPageRequired: Schema.Array(Schema.String),
     }),
     generatedBy: Schema.Literal("codex-cli 0.137.0"),
     schemas: Schema.Record(
@@ -115,11 +136,28 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
 
   it("pins the exact raw wire facts that Gaia refines or projects", () => {
     expect(pinned.facts.requestIdTypes).toEqual(["string", "integer"]);
+    expect(pinned.facts.activePermissionProfileRequired).toEqual(["id"]);
+    expect(pinned.facts.gitInfoRequired).toEqual([]);
+    expect(pinned.facts.granularApprovalPolicyAdditionalProperties).toBe(false);
     expect(pinned.facts.threadListRequired).toEqual(["data"]);
     expect(pinned.facts.modelListRequired).toEqual(["data"]);
+    expect(pinned.facts.modelRequired).toEqual([
+      "defaultReasoningEffort",
+      "description",
+      "displayName",
+      "hidden",
+      "id",
+      "isDefault",
+      "model",
+      "supportedReasoningEfforts",
+    ]);
+    expect(pinned.facts.modelUpgradeInfoRequired).toEqual(["model"]);
     expect(pinned.facts.additionalFileSystemPermissionsRequired).toEqual([]);
     expect(pinned.facts.additionalNetworkPermissionsRequired).toEqual([]);
     expect(pinned.facts.requestPermissionProfileRequired).toEqual([]);
+    expect(pinned.facts.requestPermissionProfileAdditionalProperties).toBe(
+      false
+    );
     expect(pinned.facts.permissionRequestRequired).toEqual([
       "cwd",
       "itemId",
@@ -131,6 +169,19 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
     expect(pinned.facts.elicitationRequestRequired).toEqual([
       "serverName",
       "threadId",
+    ]);
+    expect(pinned.facts.mcpElicitationSchemaRequired).toEqual([
+      "properties",
+      "type",
+    ]);
+    expect(pinned.facts.mcpElicitationSchemaAdditionalProperties).toBe(false);
+    expect(pinned.facts.commandApprovalDecisionVariants).toEqual([
+      "accept",
+      "acceptForSession",
+      "acceptWithExecpolicyAmendment",
+      "applyNetworkPolicyAmendment",
+      "decline",
+      "cancel",
     ]);
     expect(pinned.facts.permissionApprovalResponseRequired).toEqual([
       "permissions",
@@ -167,6 +218,57 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
       "exitedReviewMode",
       "contextCompaction",
     ]);
+    expect(pinned.facts.threadItemRequired["reasoning"]).toEqual([
+      "id",
+      "type",
+    ]);
+    expect(pinned.facts.threadItemRequired["mcpToolCall"]).toContain(
+      "arguments"
+    );
+    expect(pinned.facts.threadItemRequired["dynamicToolCall"]).toContain(
+      "arguments"
+    );
+    expect(pinned.facts.threadRequired).toEqual([
+      "cliVersion",
+      "createdAt",
+      "cwd",
+      "ephemeral",
+      "id",
+      "modelProvider",
+      "preview",
+      "sessionId",
+      "source",
+      "status",
+      "turns",
+      "updatedAt",
+    ]);
+    expect(pinned.facts.turnRequired).toEqual(["id", "items", "status"]);
+    expect(pinned.facts.threadStartRequired).toEqual([
+      "approvalPolicy",
+      "approvalsReviewer",
+      "cwd",
+      "model",
+      "modelProvider",
+      "sandbox",
+      "thread",
+    ]);
+    expect(pinned.facts.threadResumeRequired).toEqual(
+      pinned.facts.threadStartRequired
+    );
+    expect(pinned.facts.turnsPageRequired).toEqual(["data"]);
+    expect(pinned.facts.turnPlanRequired).toEqual([
+      "plan",
+      "threadId",
+      "turnId",
+    ]);
+    expect(pinned.facts.threadTokenUsageRequired).toEqual(["last", "total"]);
+    expect(pinned.facts.tokenUsageBreakdownRequired).toEqual([
+      "cachedInputTokens",
+      "inputTokens",
+      "outputTokens",
+      "reasoningOutputTokens",
+      "totalTokens",
+    ]);
     expect(pinned.facts.notificationMethods).toContain(
       "item/fileChange/patchUpdated"
     );
@@ -177,13 +279,13 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
 
   it("keeps the Effect decoders aligned with representative pinned wire facts", () => {
     expect(
-      Schema.decodeUnknownSync(ThreadListResultSchema)({ data: [] })
+      Schema.decodeUnknownSync(ThreadListBoundaryResultSchema)({ data: [] })
     ).toEqual({ data: [] });
     expect(
-      Schema.decodeUnknownSync(ModelListResultSchema)({ data: [] })
+      Schema.decodeUnknownSync(ModelListBoundaryResultSchema)({ data: [] })
     ).toEqual({ data: [] });
     expect(
-      Schema.decodeUnknownSync(CodexServerRequestSchema)({
+      Schema.decodeUnknownSync(CodexServerRequestBoundarySchema)({
         id: "permission-1",
         method: "item/permissions/requestApproval",
         params: {
@@ -199,7 +301,7 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
       }).method
     ).toBe("item/permissions/requestApproval");
     expect(
-      Schema.decodeUnknownSync(CodexNotificationSchema)({
+      Schema.decodeUnknownSync(CodexNotificationBoundarySchema)({
         method: "item/completed",
         params: {
           completedAtMs: 2,
