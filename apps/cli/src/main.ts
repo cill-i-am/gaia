@@ -1132,12 +1132,16 @@ function parseServerUrlInput(
   input: string,
 ): Effect.Effect<LocalGaiaServerUrl, GaiaRuntimeError> {
   return Effect.try({
-    try: () => parseLocalGaiaServerUrl(input),
+    try: () => {
+      const serverUrl = parseLocalGaiaServerUrl(input);
+      new URL(serverUrl);
+      return serverUrl;
+    },
     catch: (cause) =>
       makeRuntimeError({
         cause,
         code: "InvalidServerUrl",
-        message: `Invalid local Gaia server URL '${input}'.`,
+        message: "Invalid local Gaia server URL.",
         recoverable: false,
       }),
   });

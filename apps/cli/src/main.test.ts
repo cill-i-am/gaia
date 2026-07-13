@@ -395,11 +395,16 @@ describe("gaia CLI local server read parity", () => {
       }),
     );
 
-    it.effect("rejects malformed run IDs and server URLs at the CLI boundary", () =>
+    it.effect("rejects malformed run IDs and unusable server URLs at the CLI boundary without echoing them", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-domain-input-" });
-        const [runIdFailure, serverUrlFailure] = yield* Effect.all(
+        const [
+          runIdFailure,
+          schemeFailure,
+          relativeFailure,
+          sensitiveFailure,
+        ] = yield* Effect.all(
           [
             runGaia(cwd, ["status", "not-a-run", "--json"]),
             runGaia(cwd, [
@@ -407,6 +412,13 @@ describe("gaia CLI local server read parity", () => {
               "--json",
               "--server-url",
               "ftp://127.0.0.1:4321",
+            ]),
+            runGaia(cwd, ["list", "--json", "--server-url", "/gaia-api"]),
+            runGaia(cwd, [
+              "list",
+              "--json",
+              "--server-url",
+              "https://example.test/gaia?token=review-secret",
             ]),
           ],
           { concurrency: "unbounded" },
@@ -419,13 +431,22 @@ describe("gaia CLI local server read parity", () => {
           recoverable: false,
           status: "failed",
         });
-        expect(serverUrlFailure.exitCode).toBe(1);
-        expect(parseCliJson(serverUrlFailure.stdout)).toEqual({
-          code: "InvalidServerUrl",
-          message: "Invalid local Gaia server URL 'ftp://127.0.0.1:4321'.",
-          recoverable: false,
-          status: "failed",
-        });
+        for (const failure of [
+          schemeFailure,
+          relativeFailure,
+          sensitiveFailure,
+        ]) {
+          expect(failure.exitCode).toBe(1);
+          expect(parseCliJson(failure.stdout)).toEqual({
+            code: "InvalidServerUrl",
+            message: "Invalid local Gaia server URL.",
+            recoverable: false,
+            status: "failed",
+          });
+        }
+        const sensitiveOutput = `${sensitiveFailure.stdout}\n${sensitiveFailure.stderr}`;
+        expect(sensitiveOutput).not.toContain("review-secret");
+        expect(sensitiveOutput).not.toContain("token=");
       }),
     );
 
