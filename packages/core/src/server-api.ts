@@ -537,6 +537,7 @@ export class DeliveryProvenanceDto extends Schema.Class<DeliveryProvenanceDto>(
 export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   "DeliverySnapshotDto",
 )({
+  authoritativeHeadSha: Schema.optionalKey(PublicGitShaSchema),
   eventSequence: Schema.Number.pipe(Schema.check(Schema.isInt({ identifier: "EventSequence" }))),
   mode: DeliveryModeSchema,
   provenance: Schema.optionalKey(DeliveryProvenanceDto),

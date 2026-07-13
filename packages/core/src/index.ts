@@ -338,6 +338,7 @@ export {
   DeliveryTrustedCheckV1,
   encodeDeliveryPullRequestObservationJson,
   encodeDeliveryRemediationJson,
+  deriveAuthoritativeDeliveryHeadSha,
   parseDeliveryFeedbackId,
   parseDeliveryFeedbackTrustPolicy,
   parseDeliveryPullRequestObservation,

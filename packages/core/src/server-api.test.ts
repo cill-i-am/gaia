@@ -531,6 +531,22 @@ describe("LocalGaiaServerApi contract", () => {
     assert.isUndefined(snapshot.observation?.branchName);
   });
 
+  it("strictly bounds the projected authoritative delivery head", () => {
+    const decode = Schema.decodeUnknownSync(DeliverySnapshotDto);
+    const snapshot = {
+      authoritativeHeadSha: "a".repeat(40),
+      eventSequence: 12,
+      mode: "pullRequest",
+      recoveryActions: [],
+      runId: "run-1234567890",
+      stage: "waitingForPr",
+      status: "waitingForPr",
+    } as const;
+
+    assert.strictEqual(decode(snapshot).authoritativeHeadSha, snapshot.authoritativeHeadSha);
+    assert.throws(() => decode({ ...snapshot, authoritativeHeadSha: "not-a-git-sha" }));
+  });
+
   it("strictly parses one exact controlled remediation activation", () => {
     const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
     const request = {

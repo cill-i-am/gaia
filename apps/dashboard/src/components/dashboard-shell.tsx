@@ -4361,7 +4361,7 @@ export function deliveryRecoveryAction(snapshot: typeof DeliverySnapshotDto.Type
 
 function currentDeliveryHead(snapshot: typeof DeliverySnapshotDto.Type) {
   if (snapshot.publication?.state !== "confirmed") return undefined;
-  return snapshot.observation?.headSha ?? snapshot.publication.commitSha;
+  return snapshot.authoritativeHeadSha;
 }
 
 function hasCurrentReadyForReviewConfirmation(snapshot: typeof DeliverySnapshotDto.Type) {
@@ -4375,17 +4375,29 @@ function hasCurrentReadyForReviewConfirmation(snapshot: typeof DeliverySnapshotD
 }
 
 function authoritativeReadyForReviewAction(snapshot: typeof DeliverySnapshotDto.Type) {
-  return snapshot.activeReadyForReviewAction ??
+  const receipt = snapshot.activeReadyForReviewAction ??
     (snapshot.latestReadyForReviewAction?.state === "dispatchFailed" ? snapshot.latestReadyForReviewAction : undefined);
+  const headSha = currentDeliveryHead(snapshot);
+  if (receipt === undefined || headSha === undefined || snapshot.publication?.state !== "confirmed") return undefined;
+  const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(snapshot.publication.prUrl)?.[1];
+  return receipt.expectedHeadSha === headSha &&
+    receipt.branchName === snapshot.publication.branchName &&
+    receipt.prNumber === snapshot.publication.prNumber &&
+    receipt.prUrl === snapshot.publication.prUrl &&
+    receipt.repository === repository &&
+    receipt.runId === snapshot.runId
+    ? receipt
+    : undefined;
 }
 
 function hasExactDraftPullRequestObservation(snapshot: typeof DeliverySnapshotDto.Type) {
   if (snapshot.publication?.state !== "confirmed" || snapshot.observation === undefined) return false;
+  const headSha = currentDeliveryHead(snapshot);
   const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(snapshot.publication.prUrl)?.[1];
-  return repository !== undefined &&
+  return headSha !== undefined && repository !== undefined &&
     snapshot.observation.branchName === snapshot.publication.branchName &&
     snapshot.observation.draft &&
-    snapshot.observation.headSha === snapshot.publication.commitSha &&
+    snapshot.observation.headSha === headSha &&
     snapshot.observation.prNumber === snapshot.publication.prNumber &&
     snapshot.observation.prUrl === snapshot.publication.prUrl &&
     snapshot.observation.repository === repository;
@@ -4397,7 +4409,8 @@ export function readyForReviewAction(snapshot: typeof DeliverySnapshotDto.Type) 
   if (authoritative === undefined && !hasExactDraftPullRequestObservation(snapshot)) {
     throw new Error("Exact current draft pull-request observation is required.");
   }
-  const expectedHeadSha = authoritative?.expectedHeadSha ?? snapshot.publication.commitSha;
+  const expectedHeadSha = authoritative?.expectedHeadSha ?? currentDeliveryHead(snapshot);
+  if (expectedHeadSha === undefined) throw new Error("Authoritative current delivery head is required.");
   return {
     actionId: authoritative?.actionId ?? `ready-${crypto.randomUUID()}`,
     expectedBranchName: authoritative?.branchName ?? snapshot.publication.branchName,

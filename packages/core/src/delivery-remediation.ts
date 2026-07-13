@@ -1,4 +1,6 @@
 import { Schema } from "effect";
+import type { DeliveryPublication } from "./delivery-publication.js";
+import type { RunEvent } from "./events.js";
 
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
 const DigestSchema = Schema.String.pipe(
@@ -349,6 +351,29 @@ const DeliveryRemediationJson = Schema.toCodecJson(DeliveryRemediationSchema);
 export const encodeDeliveryRemediationJson = Schema.encodeSync(
   DeliveryRemediationJson,
 );
+
+/** Fold confirmed remediation receipts through an ordered event prefix. */
+export function deriveAuthoritativeDeliveryHeadSha(
+  publication: DeliveryPublication,
+  events: ReadonlyArray<RunEvent>,
+  throughSequence = Number.POSITIVE_INFINITY,
+) {
+  if (publication.state !== "confirmed") {
+    throw new Error("Authoritative delivery head requires confirmed publication.");
+  }
+  let headSha = publication.headSha;
+  for (const event of events) {
+    if (event.sequence > throughSequence) break;
+    if (event.type !== "DELIVERY_REMEDIATION_RECORDED") continue;
+    const remediation = parseDeliveryRemediation(event.payload["remediation"]);
+    if (remediation.state !== "confirmed") continue;
+    if (remediation.expectedHeadSha !== headSha) {
+      throw new Error("Confirmed remediation does not extend the authoritative delivery head.");
+    }
+    headSha = remediation.commitSha;
+  }
+  return headSha;
+}
 
 /** Enforce operation binding, legal progression, and the two-attempt budget. */
 export function validateDeliveryRemediationTransition(

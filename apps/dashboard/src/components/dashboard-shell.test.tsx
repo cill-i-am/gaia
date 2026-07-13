@@ -2306,6 +2306,7 @@ describe("DashboardShell Run Console", () => {
     renderDashboardWithQueries({
       deliverySnapshotsByRunId: {
         [runId]: {
+          authoritativeHeadSha: "a".repeat(40),
           eventSequence: 12,
           mergeDecision: {
             actionId: "readiness-retained-1",
@@ -2348,6 +2349,7 @@ describe("DashboardShell Run Console", () => {
     renderDashboardWithQueries({
       deliverySnapshotsByRunId: {
         [runId]: {
+          authoritativeHeadSha: "a".repeat(40),
           eventSequence: 12,
           mergeDecision: {
             actionId: "readiness-blocked-1",
