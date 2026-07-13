@@ -834,7 +834,13 @@ function startProjection(
 }
 
 function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
-  if (projection.terminal && event.kind !== "sessionStarted") return;
+  if (
+    projection.terminal &&
+    event.kind !== "sessionStarted" &&
+    !canRecoverTerminalProjection(projection, event)
+  ) {
+    return;
+  }
 
   switch (event.kind) {
     case "sessionStarted":
@@ -968,12 +974,23 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
     }
     case "sessionRecovered":
       requireEventCapability(projection.capabilities, event);
+      if (projection.terminal) {
+        delete projection.failure;
+        projection.state = "running";
+        projection.terminal = false;
+      }
       projection.recovered = true;
       return;
     case "sessionFailed":
       projection.failure = event.failure;
       projection.state = "failed";
       projection.terminal = true;
+      for (const turn of projection.turns.values()) {
+        if (turn.terminal) continue;
+        turn.status = "failed";
+        turn.terminal = true;
+        turn.failure = event.failure;
+      }
       projection.pendingInteractions.clear();
       return;
     case "operatorActionIntentRecorded":
@@ -982,6 +999,16 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
     case "operatorActionDispatchFailed":
       return;
   }
+}
+
+function canRecoverTerminalProjection(
+  projection: MutableProjection,
+  event: HarnessEvent,
+): event is Extract<HarnessEvent, { readonly kind: "sessionRecovered" }> {
+  return event.kind === "sessionRecovered" &&
+    projection.state === "failed" &&
+    projection.failure?.kind === "providerFailure" &&
+    projection.failure.recoverable === true;
 }
 
 function applyItemDelta(

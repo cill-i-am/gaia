@@ -204,21 +204,67 @@ function publicSnapshot(runId: RunId, agentId: string, events: ReadonlyArray<Run
 function updatesFromEvents(runId: RunId, agentId: string, history: ReadonlyArray<RunEvent>, candidates: ReadonlyArray<RunEvent>) {
   return candidates.flatMap((event) => {
     const prefix = history.slice(0, event.sequence);
-    const update = updateFromRunEvent(runId, agentId, prefix, event);
+    const update = updateFromRunEvent(runId, agentId, prefix, event, history);
     return update === undefined ? [] : [update];
   });
 }
 
-function updateFromRunEvent(runId: RunId, agentId: string, history: ReadonlyArray<RunEvent>, event: RunEvent) {
+function updateFromRunEvent(
+  runId: RunId,
+  agentId: string,
+  history: ReadonlyArray<RunEvent>,
+  event: RunEvent,
+  terminalHistory: ReadonlyArray<RunEvent> = history,
+) {
   if (event.type !== "HARNESS_SESSION_EVENT_RECORDED") return undefined;
   const harnessEvent = parseHarnessEvent(event.payload.event);
   if (harnessEvent.sessionId !== `session-${runId}`) return undefined;
   const snapshot = publicSnapshot(runId, agentId, history);
-  return AgentSessionUpdateDto.make({ agentId: snapshot.agentId, eventSequence: event.sequence, runId, sessionId: snapshot.sessionId, snapshot, terminal: isTerminal(harnessEvent) });
+  return AgentSessionUpdateDto.make({
+    agentId: snapshot.agentId,
+    eventSequence: event.sequence,
+    runId,
+    sessionId: snapshot.sessionId,
+    snapshot,
+    terminal: isTerminal(harnessEvent) &&
+      !hasLaterRecoveryForTerminalFailure(terminalHistory, event.sequence, harnessEvent),
+  });
 }
 
 function isTerminal(event: HarnessEvent) {
-  return event.kind === "sessionFailed" || event.kind === "turnCompleted";
+  return event.kind === "sessionFailed" ||
+    event.kind === "turnCompleted" ||
+    (event.kind === "sessionStateChanged" && isTerminalSessionState(event.state));
+}
+
+function hasLaterRecoveryForTerminalFailure(
+  history: ReadonlyArray<RunEvent>,
+  sequence: number,
+  event: HarnessEvent,
+) {
+  if (
+    event.kind !== "sessionFailed" ||
+    event.failure.kind !== "providerFailure" ||
+    event.failure.recoverable !== true
+  ) {
+    return false;
+  }
+  return history.some((candidate) => {
+    if (
+      candidate.sequence <= sequence ||
+      candidate.type !== "HARNESS_SESSION_EVENT_RECORDED"
+    ) {
+      return false;
+    }
+    const parsed = parseHarnessEvent(candidate.payload.event);
+    return parsed.sessionId === event.sessionId && parsed.kind === "sessionRecovered";
+  });
+}
+
+function isTerminalSessionState(
+  state: Extract<HarnessEvent, { readonly kind: "sessionStateChanged" }>["state"],
+) {
+  return state === "completed" || state === "interrupted" || state === "unavailable";
 }
 
 function requireWorkerAgent(agentId: string) {

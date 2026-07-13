@@ -23,8 +23,12 @@ import {
 const runId = parseRunId("run-Gaia840001");
 const sessionId = parseHarnessSessionId("session-gaia-84");
 const turnId = parseHarnessTurnId("turn-gaia-84");
+const recoveredTurnId = parseHarnessTurnId("turn-gaia-84-recovered");
 const itemId = parseHarnessItemId("item-gaia-84");
 const interactionId = parseHarnessInteractionId("interaction-gaia-84");
+const recoveredInteractionId = parseHarnessInteractionId(
+  "interaction-gaia-84-recovered",
+);
 
 const capabilities = HarnessCapabilities.make({
   approvals: ["command"],
@@ -379,6 +383,229 @@ describe("provider-neutral harness contracts", () => {
     );
     assert.strictEqual(failed.state, "failed");
     assert.strictEqual(failed.failure?.kind, "providerFailure");
+  });
+
+  it("reopens only an explicitly recoverable provider failure and projects the new active interaction", () => {
+    const projection = replayHarnessSession(
+      [
+        harnessRunEvent(1, {
+          capabilities,
+          kind: "sessionStarted",
+          provider,
+          sessionId,
+          state: "running",
+        }),
+        harnessRunEvent(2, {
+          kind: "turnStarted",
+          sessionId,
+          turnId,
+        }),
+        harnessRunEvent(3, {
+          interaction: commandApproval(interactionId, turnId),
+          kind: "interactionRequested",
+          sessionId,
+        }),
+        harnessRunEvent(4, {
+          failure: recoverableProviderFailure,
+          kind: "sessionFailed",
+          sessionId,
+        }),
+        harnessRunEvent(5, {
+          kind: "sessionRecovered",
+          sessionId,
+        }),
+        harnessRunEvent(6, {
+          kind: "turnStarted",
+          sessionId,
+          turnId: recoveredTurnId,
+        }),
+        harnessRunEvent(7, {
+          interaction: commandApproval(recoveredInteractionId, recoveredTurnId),
+          kind: "interactionRequested",
+          sessionId,
+        }),
+      ],
+      sessionId,
+    );
+
+    assert.strictEqual(projection.state, "running");
+    assert.strictEqual(projection.recovered, true);
+    assert.strictEqual(projection.failure, undefined);
+    assert.deepStrictEqual(
+      projection.turns.map(({ status, turnId }) => ({ status, turnId })),
+      [
+        { status: "failed", turnId },
+        { status: "running", turnId: recoveredTurnId },
+      ],
+    );
+    assert.deepStrictEqual(
+      projection.pendingInteractions.map(({ interactionId, kind, turnId }) => ({
+        interactionId,
+        kind,
+        turnId,
+      })),
+      [
+        {
+          interactionId: recoveredInteractionId,
+          kind: "commandApproval",
+          turnId: recoveredTurnId,
+        },
+      ],
+    );
+    assert.deepStrictEqual(projection.turns[0]?.failure, recoverableProviderFailure);
+  });
+
+  it("terminalizes nonterminal turns and clears pending interactions on session failure", () => {
+    const projection = replayHarnessSession(
+      [
+        harnessRunEvent(1, {
+          capabilities,
+          kind: "sessionStarted",
+          provider,
+          sessionId,
+          state: "running",
+        }),
+        harnessRunEvent(2, {
+          kind: "turnStarted",
+          sessionId,
+          turnId,
+        }),
+        harnessRunEvent(3, {
+          interaction: commandApproval(interactionId, turnId),
+          kind: "interactionRequested",
+          sessionId,
+        }),
+        harnessRunEvent(4, {
+          failure: recoverableProviderFailure,
+          kind: "sessionFailed",
+          sessionId,
+        }),
+      ],
+      sessionId,
+    );
+
+    assert.strictEqual(projection.state, "failed");
+    assert.deepStrictEqual(projection.pendingInteractions, []);
+    assert.deepStrictEqual(
+      projection.turns.map(({ failure, status, turnId }) => ({
+        failure,
+        status,
+        turnId,
+      })),
+      [
+        {
+          failure: recoverableProviderFailure,
+          status: "failed",
+          turnId,
+        },
+      ],
+    );
+  });
+
+  it("keeps completed, interrupted, unavailable, and nonrecoverable failures absorbing", () => {
+    const terminalCases: ReadonlyArray<{
+      readonly label: string;
+      readonly terminalEvent: HarnessEvent;
+      readonly expectedState: "completed" | "failed" | "interrupted" | "unavailable";
+    }> = [
+      {
+        expectedState: "completed",
+        label: "completed",
+        terminalEvent: {
+          kind: "sessionStateChanged",
+          sessionId,
+          state: "completed",
+        },
+      },
+      {
+        expectedState: "interrupted",
+        label: "interrupted",
+        terminalEvent: {
+          kind: "sessionStateChanged",
+          sessionId,
+          state: "interrupted",
+        },
+      },
+      {
+        expectedState: "unavailable",
+        label: "unavailable",
+        terminalEvent: {
+          kind: "sessionStateChanged",
+          sessionId,
+          state: "unavailable",
+        },
+      },
+      {
+        expectedState: "failed",
+        label: "nonrecoverable provider failure",
+        terminalEvent: {
+          failure: {
+            code: "ProviderDenied",
+            kind: "providerFailure",
+            message: "Provider refused the session.",
+            recoverable: false,
+          },
+          kind: "sessionFailed",
+          sessionId,
+        },
+      },
+      {
+        expectedState: "failed",
+        label: "nonrecoverable unavailable failure",
+        terminalEvent: {
+          failure: {
+            kind: "unavailable",
+            message: "Harness stopped safely.",
+            recoverable: false,
+          },
+          kind: "sessionFailed",
+          sessionId,
+        },
+      },
+    ];
+
+    for (const { expectedState, label, terminalEvent } of terminalCases) {
+      const projection = replayHarnessSession(
+        [
+          harnessRunEvent(1, {
+            capabilities,
+            kind: "sessionStarted",
+            provider,
+            sessionId,
+            state: "running",
+          }),
+          harnessRunEvent(2, {
+            kind: "turnStarted",
+            sessionId,
+            turnId,
+          }),
+          harnessRunEvent(3, terminalEvent),
+          harnessRunEvent(4, {
+            kind: "sessionRecovered",
+            sessionId,
+          }),
+          harnessRunEvent(5, {
+            kind: "turnStarted",
+            sessionId,
+            turnId: recoveredTurnId,
+          }),
+          harnessRunEvent(6, {
+            interaction: commandApproval(recoveredInteractionId, recoveredTurnId),
+            kind: "interactionRequested",
+            sessionId,
+          }),
+        ],
+        sessionId,
+      );
+
+      assert.strictEqual(
+        projection.state,
+        expectedState,
+        `${label} must remain terminal`,
+      );
+      assert.strictEqual(projection.turns.length, 1);
+      assert.strictEqual(projection.pendingInteractions.length, 0);
+    }
   });
 
   it("rejects lifecycle events without a start and globally out-of-order run events", () => {
@@ -887,3 +1114,39 @@ describe("provider-neutral harness contracts", () => {
     );
   });
 });
+
+const recoverableProviderFailure = {
+  code: "ProviderCrashed",
+  kind: "providerFailure" as const,
+  message: "Provider stopped unexpectedly.",
+  recoverable: true,
+};
+
+function harnessRunEvent(
+  sequence: number,
+  event: HarnessEvent,
+) {
+  return makeHarnessRunEvent({
+    event,
+    runId,
+    sequence,
+    timestamp: `2026-07-10T10:00:${String(sequence).padStart(2, "0")}.000Z`,
+  });
+}
+
+function commandApproval(
+  interactionId: typeof recoveredInteractionId,
+  turnId: typeof recoveredTurnId,
+) {
+  return {
+    allowedDecisions: ["decline", "cancel"] as const,
+    command: "pnpm gaia doctor --json",
+    interactionId,
+    itemId,
+    kind: "commandApproval" as const,
+    reason: "Run doctor smoke",
+    requestedAt: "2026-07-10T10:00:00.000Z",
+    turnId,
+    workspacePath: parseWorkspaceRelativePath("."),
+  };
+}

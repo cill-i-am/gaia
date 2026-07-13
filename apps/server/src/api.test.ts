@@ -15,11 +15,19 @@ import {
   encodeDeliveryPullRequestObservationJson,
   encodeDeliveryPublicationJson,
   encodeDeliveryRemediationJson,
+  HarnessCapabilities,
+  HarnessProviderDescriptor,
   parseDeliveryFeedbackId,
-  parseRunId,
-  WorkerRecoveryAction,
   parseHarnessProfileId,
+  parseHarnessInteractionId,
+  parseHarnessItemId,
+  parseHarnessProviderId,
   parseHarnessSessionId,
+  parseHarnessTurnId,
+  parseRunId,
+  parseWorkspaceRelativePath,
+  projectHarnessEvents,
+  WorkerRecoveryAction,
 } from "@gaia/core";
 import {
   makeHarnessProviderRegistry,
@@ -42,7 +50,7 @@ import {
   makeTestHarnessProviderRegistry,
   testHarnessProvider,
 } from "@gaia/runtime/test-support";
-import { Deferred, Effect, Fiber, FileSystem, Layer, Schema } from "effect";
+import { Deferred, Effect, Fiber, FileSystem, Layer, Option, Schema, Stream } from "effect";
 import {
   HttpClient,
   HttpClientRequest,
@@ -476,6 +484,102 @@ describe("local run api http boundary", () => {
           [...updates.map((update) => getNumber(update, "eventSequence"))].sort((left, right) => left - right),
         );
         assert.isTrue(getObjectFromArray(updates, updates.length - 1)["terminal"] === true);
+      }),
+      20_000,
+    );
+
+    it.effect("serves recovered pending interactions and resolves them through LocalGaiaServerApi", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-recovered-session-" });
+        const resolutions: unknown[] = [];
+        const layer = testServerLayer(cwd, {
+          harnessProviderRegistry: pendingApprovalRegistry(resolutions),
+        });
+        const createResponse = yield* postCreateRun(
+          layer,
+          "Create a recovered-session projection proof.\n",
+        );
+        const createBody = yield* responseJsonObject(createResponse);
+        const runId = getString(createBody, "runId");
+        const sessionId = `session-${runId}`;
+        const snapshot = yield* eventuallyAgentSession(layer, runId);
+
+        assert.strictEqual(createResponse.status, 202);
+        assert.strictEqual(getString(snapshot, "state"), "running");
+        assert.deepEqual(
+          getArray(snapshot, "pendingInteractions").map(asJsonObject).map((interaction) => getString(interaction, "interactionId")),
+          [serverRecoveredInteractionId],
+        );
+        assert.notInclude(JSON.stringify(snapshot), "native-thread");
+        assert.notInclude(JSON.stringify(snapshot), "raw-provider");
+
+        const staleResponse = yield* HttpClientRequest.post(
+          `/runs/${runId}/agents/agent-worker/session/actions`,
+        ).pipe(
+          HttpClientRequest.bodyJsonUnsafe({
+            actionId: "action-server-stale-interaction",
+            decision: "decline",
+            interactionId: "interaction-server-old",
+            kind: "approval",
+            sessionId,
+          }),
+          HttpClient.execute,
+          Effect.provide(layer),
+        );
+        const staleBody = yield* responseJsonObject(staleResponse);
+        assert.strictEqual(staleResponse.status, 409);
+        assertApiError(staleBody, "AgentActionConflict", 409);
+        assert.deepEqual(resolutions, []);
+
+        const action = {
+          actionId: "action-server-recovered-approval",
+          decision: "decline",
+          interactionId: serverRecoveredInteractionId,
+          kind: "approval",
+          sessionId,
+        } as const;
+        const firstResponse = yield* HttpClientRequest.post(
+          `/runs/${runId}/agents/agent-worker/session/actions`,
+        ).pipe(
+          HttpClientRequest.bodyJsonUnsafe(action),
+          HttpClient.execute,
+          Effect.provide(layer),
+        );
+        const replayResponse = yield* HttpClientRequest.post(
+          `/runs/${runId}/agents/agent-worker/session/actions`,
+        ).pipe(
+          HttpClientRequest.bodyJsonUnsafe(action),
+          HttpClient.execute,
+          Effect.provide(layer),
+        );
+        const conflictResponse = yield* HttpClientRequest.post(
+          `/runs/${runId}/agents/agent-worker/session/actions`,
+        ).pipe(
+          HttpClientRequest.bodyJsonUnsafe({
+            ...action,
+            actionId: "action-server-recovered-approval-other",
+          }),
+          HttpClient.execute,
+          Effect.provide(layer),
+        );
+        const firstBody = getObject(yield* responseJsonObject(firstResponse), "data");
+        const replayBody = getObject(yield* responseJsonObject(replayResponse), "data");
+        const conflictBody = yield* responseJsonObject(conflictResponse);
+
+        assert.strictEqual(firstResponse.status, 200);
+        assert.strictEqual(replayResponse.status, 200);
+        assert.deepEqual(replayBody, firstBody);
+        assert.strictEqual(conflictResponse.status, 409);
+        assertApiError(conflictBody, "AgentActionConflict", 409);
+        assert.deepEqual(resolutions, [
+          {
+            actionId: action.actionId,
+            decision: "decline",
+            interactionId: serverRecoveredInteractionId,
+            kind: "approval",
+          },
+        ]);
       }),
       20_000,
     );
@@ -1421,6 +1525,115 @@ function testIdentity(rootDirectory: string): LocalServerIdentity {
     serverId: "srv_test",
     startedAt: "2026-07-06T00:00:00.000Z",
   };
+}
+
+const serverRecoveredTurnId = parseHarnessTurnId("turn-server-recovered");
+const serverRecoveredInteractionId = "interaction-server-recovered";
+
+const pendingApprovalCapabilities = HarnessCapabilities.make({
+  approvals: ["command"],
+  fileChangeEvents: true,
+  interruption: true,
+  resumableSessions: true,
+  review: false,
+  steering: false,
+  streamingMessages: true,
+  structuredOutput: false,
+  subagents: false,
+  toolEvents: false,
+  usageReporting: false,
+  userQuestions: false,
+});
+
+const pendingApprovalProvider = HarnessProviderDescriptor.make({
+  displayName: "Pending Approval Harness",
+  executionModes: ["local"],
+  providerId: parseHarnessProviderId("pending-approval"),
+});
+
+function pendingApprovalRegistry(resolutions: unknown[]) {
+  return makeHarnessProviderRegistry([
+    {
+      profileId: codexAppServerExecutionSelection.harnessProfileId,
+      provider: {
+        createSession: (request) =>
+          Effect.succeed(pendingApprovalSession(request.sessionId, resolutions)),
+        descriptor: pendingApprovalProvider,
+        detect: Effect.succeed({
+          auth: { state: "notRequired" },
+          capabilities: pendingApprovalCapabilities,
+          state: "available",
+          version: "pending-approval-1",
+        }),
+        resumeSession: (request) =>
+          Effect.succeed(pendingApprovalSession(request.sessionId, resolutions)),
+      },
+    },
+  ]);
+}
+
+function pendingApprovalSession(
+  sessionId: ReturnType<typeof parseHarnessSessionId>,
+  resolutions: unknown[],
+) {
+  const events = [
+    {
+      capabilities: pendingApprovalCapabilities,
+      kind: "sessionStarted" as const,
+      provider: pendingApprovalProvider,
+      sessionId,
+      state: "running" as const,
+    },
+    {
+      kind: "turnStarted" as const,
+      sessionId,
+      turnId: serverRecoveredTurnId,
+    },
+    {
+      interaction: {
+        allowedDecisions: ["decline", "cancel"] as const,
+        command: "pnpm gaia doctor --json",
+        interactionId: parseHarnessInteractionId(serverRecoveredInteractionId),
+        itemId: parseHarnessItemId("item-server-recovered"),
+        kind: "commandApproval" as const,
+        reason: "Run doctor smoke",
+        requestedAt: "2026-07-13T02:00:00.000Z",
+        turnId: serverRecoveredTurnId,
+        workspacePath: parseWorkspaceRelativePath("."),
+      },
+      kind: "interactionRequested" as const,
+      sessionId,
+    },
+  ];
+  return {
+    events: Stream.fromIterable(events).pipe(Stream.concat(Stream.never)),
+    interrupt: Option.some(Effect.void),
+    resolveInteraction: (resolution: unknown) =>
+      Effect.sync(() => {
+        resolutions.push(resolution);
+      }),
+    send: () => Effect.void,
+    snapshot: Effect.succeed(projectHarnessEvents(events, sessionId)),
+    steer: Option.none(),
+  };
+}
+
+function eventuallyAgentSession(
+  layer: ReturnType<typeof testServerLayer>,
+  runId: string,
+) {
+  return Effect.gen(function* () {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const response = yield* HttpClient.get(
+        `/runs/${runId}/agents/agent-worker/session`,
+      ).pipe(Effect.provide(layer));
+      if (response.status === 200) {
+        return getObject(yield* responseJsonObject(response), "data");
+      }
+      yield* Effect.yieldNow;
+    }
+    assert.fail("Expected recovered agent session to become visible.");
+  });
 }
 
 function responseJsonObject(
