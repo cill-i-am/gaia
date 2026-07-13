@@ -18,6 +18,7 @@ import {
   parseDeliveryPublication,
   snapshotFromReplay,
   deriveDeliveryActionHistoriesFromEvents,
+  deriveAuthoritativeDeliveryHeadSha,
   type DeliveryMergeActionRequest,
   type DeliveryEvaluateMergeReadinessActionRequest,
   type DeliveryRetryCleanupActionRequest,
@@ -123,10 +124,16 @@ export function coordinateDeliveryMerge(
     );
     const publication = parseDeliveryPublication(delivery["publication"]);
     if (publication.state !== "confirmed") return yield* conflict("Owned pull request is not confirmed.");
+    const authoritativeHeadSha = deriveAuthoritativeDeliveryHeadSha(publication, events);
     const repository = repositoryFromPrUrl(publication.prUrl);
+    if (
+      action.expectedBranchName !== publication.branchName ||
+      action.expectedHeadSha !== authoritativeHeadSha ||
+      action.expectedPrUrl !== publication.prUrl
+    ) return yield* conflict("Merge action does not match the authoritative current pull-request head.");
     requireExactReadyForReviewConfirmation(events, {
       branchName: publication.branchName,
-      expectedHeadSha: action.expectedHeadSha,
+      expectedHeadSha: authoritativeHeadSha,
       prNumber: publication.prNumber,
       prUrl: publication.prUrl,
       publicationOperationId: publication.operationId,
@@ -142,7 +149,6 @@ export function coordinateDeliveryMerge(
     if (options.requiredCheckPolicy !== undefined && deliveryRequiredCheckPolicyCanonicalPayload(options.requiredCheckPolicy) !== deliveryRequiredCheckPolicyCanonicalPayload(policy)) return yield* conflict("Process required-check policy drifted from persisted run authority.");
     const policyDigest = hash(deliveryRequiredCheckPolicyCanonicalPayload(policy));
     if (action.expectedPolicyDigest !== policyDigest) return yield* conflict("Required-check policy changed.");
-    if (action.expectedBranchName !== publication.branchName) return yield* conflict("Owned branch changed from the confirmed action tuple.");
     const binding = {
       actionId: action.actionId,
       branchName: publication.branchName,
@@ -234,6 +240,7 @@ export function coordinateDeliveryMergeReadiness(runId: RunId, action: DeliveryE
     const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(replay.context["delivery"]);
     const publication = parseDeliveryPublication(delivery["publication"]);
     if (publication.state !== "confirmed") return yield* conflict("Merge readiness requires a confirmed owned pull request.");
+    const authoritativeHeadSha = deriveAuthoritativeDeliveryHeadSha(publication, events);
     const trust = Schema.decodeUnknownSync(DeliveryFeedbackTrustPolicyV1)(delivery["feedbackTrustPolicy"]);
     const policy = requiredCheckPolicyFromTrustPolicy(trust);
     const policyDigest = hash(deliveryRequiredCheckPolicyCanonicalPayload(policy));
@@ -245,9 +252,10 @@ export function coordinateDeliveryMergeReadiness(runId: RunId, action: DeliveryE
       .find((decision) => decision.actionId === action.actionId);
     if (prior !== undefined) {
       if (prior.payloadDigest !== readinessDigest) return yield* conflict("Readiness action ID conflicts with a changed immutable tuple.");
+      if (prior.headSha !== authoritativeHeadSha) return yield* conflict("The prior readiness decision does not target the authoritative current head.");
       requireExactReadyForReviewConfirmation(events, {
         branchName: publication.branchName,
-        expectedHeadSha: prior.headSha,
+        expectedHeadSha: authoritativeHeadSha,
         prNumber: publication.prNumber,
         prUrl: publication.prUrl,
         publicationOperationId: publication.operationId,
@@ -257,11 +265,9 @@ export function coordinateDeliveryMergeReadiness(runId: RunId, action: DeliveryE
       });
       return prior;
     }
-    const reader = options.freshStateReader ?? makeGitHubFreshMergeStateReader({ ...(options.commandRunner === undefined ? {} : { commandRunner: options.commandRunner }), rootDirectory: options.rootDirectory ?? ".", trustPolicy: trust });
-    const fresh = yield* reader({ prNumber: publication.prNumber, repository }).pipe(Effect.mapError(() => makeRuntimeError({ code: "DeliveryMergeReadFailed", message: "Fresh GitHub readiness evidence is unavailable.", recoverable: true })));
     requireExactReadyForReviewConfirmation(events, {
       branchName: publication.branchName,
-      expectedHeadSha: fresh.headSha,
+      expectedHeadSha: authoritativeHeadSha,
       prNumber: publication.prNumber,
       prUrl: publication.prUrl,
       publicationOperationId: publication.operationId,
@@ -269,6 +275,15 @@ export function coordinateDeliveryMergeReadiness(runId: RunId, action: DeliveryE
       repository,
       runId,
     });
+    const reader = options.freshStateReader ?? makeGitHubFreshMergeStateReader({ ...(options.commandRunner === undefined ? {} : { commandRunner: options.commandRunner }), rootDirectory: options.rootDirectory ?? ".", trustPolicy: trust });
+    const fresh = yield* reader({ prNumber: publication.prNumber, repository }).pipe(Effect.mapError(() => makeRuntimeError({ code: "DeliveryMergeReadFailed", message: "Fresh GitHub readiness evidence is unavailable.", recoverable: true })));
+    if (
+      fresh.branchName !== publication.branchName ||
+      fresh.headSha !== authoritativeHeadSha ||
+      fresh.prNumber !== publication.prNumber ||
+      fresh.prUrl !== publication.prUrl ||
+      fresh.repository !== repository
+    ) return yield* conflict("Fresh readiness evidence does not match the authoritative current pull-request head.");
     const blockers = freshBlockers(fresh, publication.branchName, action.mergeMethod, policy);
     const decision = DeliveryMergeReadinessDecision.make({ actionId: action.actionId, approved: blockers.length === 0, blockers, branchName: publication.branchName, headSha: fresh.headSha, mergeMethod: action.mergeMethod, payloadDigest: readinessDigest, policyDigest, policyVersion: 1, prNumber: publication.prNumber, prUrl: publication.prUrl });
     yield* appendEvent(runId, paths, { payload: { decision: encodeDeliveryMergeReadinessDecisionJson(decision) }, type: "DELIVERY_MERGE_READINESS_RECORDED" });

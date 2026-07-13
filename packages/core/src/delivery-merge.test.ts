@@ -9,13 +9,16 @@ import {
   DeliveryMergeIntent,
   DeliveryMergeReadinessDecision,
   DeliveryPullRequestReadyConfirmedWithoutDispatch,
+  DeliveryPullRequestReadyDispatchAttempted,
   DeliveryPullRequestReadyIntent,
+  DeliveryPullRequestReadyTerminalFailure,
   DeliveryRequiredCheckPolicy,
   deliveryPullRequestReadyCanonicalPayload,
   deliveryMergeMethodArguments,
   deliveryRequiredCheckPolicyCanonicalPayload,
   parseDeliveryCleanupReceipt,
   parseDeliveryMergeReceipt,
+  parseDeliveryPullRequestReadyReceipt,
   encodeDeliveryCleanupReceiptJson,
   encodeDeliveryMergeReadinessDecisionJson,
   encodeDeliveryMergeReceiptJson,
@@ -29,6 +32,19 @@ import { makeRunEvent } from "./events.js";
 import { snapshotFromReplay } from "./machine.js";
 import { parseRunId } from "./run-id.js";
 import { DeliveryPublicationConfirmed, encodeDeliveryPublicationJson } from "./delivery-publication.js";
+import {
+  DeliveryRemediationCommitAttempted,
+  DeliveryRemediationConfirmed,
+  DeliveryRemediationDispatchAttempted,
+  DeliveryRemediationFailed,
+  DeliveryRemediationIntent,
+  DeliveryRemediationPushAttempted,
+  DeliveryRemediationTurnCompleted,
+  DeliveryRemediationVerified,
+  deriveAuthoritativeDeliveryHeadSha,
+  encodeDeliveryRemediationJson,
+  parseDeliveryFeedbackId,
+} from "./delivery-remediation.js";
 
 const check = { appSlug: "github-actions", name: "test", repository: "cill-i-am/gaia", workflow: "CI" };
 
@@ -95,6 +111,29 @@ function readyReplayEvents(overrides: Partial<{
   };
 }
 
+function confirmedRemediation(
+  expectedHeadSha: string,
+  commitSha: string,
+) {
+  const base = {
+    attempt: 1 as const,
+    commitTimestamp: "2026-07-11T19:00:00.000Z",
+    expectedHeadSha,
+    feedbackDigest: "e".repeat(64),
+    feedbackIds: [parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`)],
+    inputId: "remediation-run-1234567890-1",
+    operationId: "remediation:run-1234567890:1",
+  };
+  const intent = DeliveryRemediationIntent.make({ ...base, state: "intentRecorded" });
+  const attempted = DeliveryRemediationDispatchAttempted.make({ ...base, state: "dispatchAttempted" });
+  const turnCompleted = DeliveryRemediationTurnCompleted.make({ ...base, state: "turnCompleted" });
+  const verified = DeliveryRemediationVerified.make({ ...base, state: "verified" });
+  const commitAttempted = DeliveryRemediationCommitAttempted.make({ ...base, commitSha, state: "commitAttempted" });
+  const pushAttempted = DeliveryRemediationPushAttempted.make({ ...base, commitSha, state: "pushAttempted" });
+  const confirmed = DeliveryRemediationConfirmed.make({ ...base, commitSha, state: "confirmed" });
+  return [intent, attempted, turnCompleted, verified, commitAttempted, pushAttempted, confirmed] as const;
+}
+
 describe("delivery merge contracts", () => {
   it("maps every supported method to exactly one provider flag", () => {
     expect(deliveryMergeMethodArguments).toEqual({ merge: ["--merge"], rebase: ["--rebase"], squash: ["--squash"] });
@@ -158,6 +197,182 @@ describe("delivery merge contracts", () => {
       readyForReviewAction: { draft: false, state: "confirmedWithoutDispatch" },
     });
   });
+
+  it("replays a publication-bound ready receipt on the confirmed remediation head", () => {
+    const runId = parseRunId("run-1234567890");
+    const { publication } = readyReplayEvents();
+    const remediatedHead = "b".repeat(40);
+    const remediations = confirmedRemediation(publication.headSha, remediatedHead);
+    const bindingBase = {
+      actionId: "ready-remediated-1",
+      branchName: publication.branchName,
+      expectedHeadSha: remediatedHead,
+      prNumber: publication.prNumber,
+      prUrl: publication.prUrl,
+      publicationOperationId: publication.operationId,
+      publicationPayloadDigest: publication.payloadDigest,
+      repository: "cill-i-am/gaia",
+      runId,
+      version: 1 as const,
+    };
+    const binding = {
+      ...bindingBase,
+      payloadDigest: createHash("sha256")
+        .update(deliveryPullRequestReadyCanonicalPayload(bindingBase))
+        .digest("hex"),
+    };
+    const event = (
+      sequence: number,
+      type: Parameters<typeof makeRunEvent>[0]["type"],
+      payload: Readonly<Record<string, Schema.Json>>,
+    ) => makeRunEvent({
+      payload,
+      runId,
+      sequence,
+      timestamp: `2026-07-11T19:00:${String(sequence).padStart(2, "0")}.000Z`,
+      type,
+    });
+    const events = [
+      event(1, "RUN_CREATED", { specPath: "spec.md" }),
+      event(2, "DELIVERY_STARTED", { delivery: { baseBranch: "main", baseRevision: "0".repeat(40), headBranch: publication.branchName, mode: "pullRequest", publication: encodeDeliveryPublicationJson(publication), remote: "origin", stage: "waitingForPr" } }),
+      ...remediations.map((remediation, index) => event(index + 3, "DELIVERY_REMEDIATION_RECORDED", { remediation: encodeDeliveryRemediationJson(remediation) })),
+      event(10, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(DeliveryPullRequestReadyIntent.make({ ...binding, state: "intentRecorded" })) }),
+      event(11, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(DeliveryPullRequestReadyConfirmedWithoutDispatch.make({ ...binding, draft: false, state: "confirmedWithoutDispatch" })) }),
+    ];
+
+    expect(snapshotFromReplay(events).context["delivery"]).toMatchObject({
+      publication: { headSha: publication.headSha },
+      readyForReviewAction: { expectedHeadSha: remediatedHead, state: "confirmedWithoutDispatch" },
+      remediation: { commitSha: remediatedHead, state: "confirmed" },
+    });
+  });
+
+  it("keeps a historical ready receipt valid after a later confirmed remediation", () => {
+    const { events, publication } = readyReplayEvents();
+    const remediatedHead = "b".repeat(40);
+    const remediations = confirmedRemediation(publication.headSha, remediatedHead);
+    const nextEvents = [
+      ...events,
+      ...remediations.map((remediation, index) => makeRunEvent({
+        payload: { remediation: encodeDeliveryRemediationJson(remediation) },
+        runId: events[0]!.runId,
+        sequence: events.length + index + 1,
+        timestamp: `2026-07-11T19:01:${String(index).padStart(2, "0")}.000Z`,
+        type: "DELIVERY_REMEDIATION_RECORDED",
+      })),
+    ];
+
+    expect(() => snapshotFromReplay(nextEvents)).not.toThrow();
+    expect(deriveAuthoritativeDeliveryHeadSha(publication, nextEvents)).toBe(remediatedHead);
+  });
+
+  it("does not advance beyond a confirmed head for a later in-flight or failed remediation", () => {
+    const { events, publication } = readyReplayEvents();
+    const remediatedHead = "b".repeat(40);
+    const first = confirmedRemediation(publication.headSha, remediatedHead);
+    const secondBase = {
+      attempt: 2 as const,
+      commitTimestamp: "2026-07-11T19:02:00.000Z",
+      expectedHeadSha: remediatedHead,
+      feedbackDigest: "a".repeat(64),
+      feedbackIds: [parseDeliveryFeedbackId(`feedback-comment-${"b".repeat(64)}`)],
+      inputId: "remediation-run-1234567890-2",
+      operationId: "remediation:run-1234567890:2",
+    };
+    const secondIntent = DeliveryRemediationIntent.make({ ...secondBase, state: "intentRecorded" });
+    const secondAttempted = DeliveryRemediationDispatchAttempted.make({ ...secondBase, state: "dispatchAttempted" });
+    const secondFailed = DeliveryRemediationFailed.make({
+      ...secondBase,
+      code: "ProviderRejected",
+      message: "The second attempt failed conclusively.",
+      recoverable: true,
+      state: "failed",
+    });
+    const event = (sequence: number, remediation: Schema.Json) => makeRunEvent({
+      payload: { remediation },
+      runId: events[0]!.runId,
+      sequence,
+      timestamp: `2026-07-11T19:02:${String(sequence).padStart(2, "0")}.000Z`,
+      type: "DELIVERY_REMEDIATION_RECORDED",
+    });
+    const base = [
+      ...events.slice(0, 2),
+      ...first.map((remediation, index) => event(index + 3, encodeDeliveryRemediationJson(remediation))),
+    ];
+    const inFlight = [
+      ...base,
+      event(10, encodeDeliveryRemediationJson(secondIntent)),
+      event(11, encodeDeliveryRemediationJson(secondAttempted)),
+    ];
+    const failed = [
+      ...inFlight,
+      event(12, encodeDeliveryRemediationJson(secondFailed)),
+    ];
+
+    expect(snapshotFromReplay(inFlight).context["delivery"]).toMatchObject({ remediation: { attempt: 2, state: "dispatchAttempted" } });
+    expect(deriveAuthoritativeDeliveryHeadSha(publication, inFlight)).toBe(remediatedHead);
+    expect(deriveAuthoritativeDeliveryHeadSha(publication, failed)).toBe(remediatedHead);
+  });
+
+  it("rejects a stale publication-head ready receipt recorded after confirmed remediation", () => {
+    const runId = parseRunId("run-1234567890");
+    const { publication } = readyReplayEvents();
+    const remediations = confirmedRemediation(publication.headSha, "b".repeat(40));
+    const stale = readyReplayEvents().events.slice(2);
+    const event = (
+      sequence: number,
+      type: Parameters<typeof makeRunEvent>[0]["type"],
+      payload: Readonly<Record<string, Schema.Json>>,
+    ) => makeRunEvent({ payload, runId, sequence, timestamp: `2026-07-11T19:03:${String(sequence).padStart(2, "0")}.000Z`, type });
+    const events = [
+      event(1, "RUN_CREATED", { specPath: "spec.md" }),
+      event(2, "DELIVERY_STARTED", { delivery: { baseBranch: "main", baseRevision: "0".repeat(40), headBranch: publication.branchName, mode: "pullRequest", publication: encodeDeliveryPublicationJson(publication), remote: "origin", stage: "waitingForPr" } }),
+      ...remediations.map((remediation, index) => event(index + 3, "DELIVERY_REMEDIATION_RECORDED", { remediation: encodeDeliveryRemediationJson(remediation) })),
+      ...stale.map((ready, index) => event(index + 10, ready.type, ready.payload)),
+    ];
+
+    expect(() => snapshotFromReplay(events)).toThrow("Ready-for-review action does not match the confirmed publication");
+  });
+
+  it.each(["intentRecorded", "dispatchAttempted", "outcomeUnknown"] as const)(
+    "rejects confirmed remediation after unresolved ready state %s",
+    (readyState) => {
+      const { events, publication } = readyReplayEvents();
+      const intent = parseDeliveryPullRequestReadyReceipt(events[2]!.payload["readyForReviewAction"]);
+      const attempted = DeliveryPullRequestReadyDispatchAttempted.make({ ...intent, state: "dispatchAttempted" });
+      const readyEvents = readyState === "intentRecorded"
+        ? events.slice(0, 3)
+        : readyState === "dispatchAttempted"
+          ? [
+              ...events.slice(0, 3),
+              makeRunEvent({
+                payload: { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(attempted) },
+                runId: events[0]!.runId,
+                sequence: 4,
+                timestamp: "2026-07-11T19:04:04.000Z",
+                type: "DELIVERY_PR_READY_RECORDED",
+              }),
+            ]
+          : [
+              ...events.slice(0, 3),
+              makeRunEvent({ payload: { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(attempted) }, runId: events[0]!.runId, sequence: 4, timestamp: "2026-07-11T19:04:04.000Z", type: "DELIVERY_PR_READY_RECORDED" }),
+              makeRunEvent({ payload: { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(DeliveryPullRequestReadyTerminalFailure.make({ ...attempted, code: "DeliveryReadyOutcomeUnknown", message: "Outcome is unknown.", state: "outcomeUnknown" })) }, runId: events[0]!.runId, sequence: 5, timestamp: "2026-07-11T19:04:05.000Z", type: "DELIVERY_PR_READY_RECORDED" }),
+            ];
+      const remediations = confirmedRemediation(publication.headSha, "b".repeat(40));
+      const next = [
+        ...readyEvents,
+        ...remediations.map((remediation, index) => makeRunEvent({
+          payload: { remediation: encodeDeliveryRemediationJson(remediation) },
+          runId: events[0]!.runId,
+          sequence: readyEvents.length + index + 1,
+          timestamp: `2026-07-11T19:05:${String(index).padStart(2, "0")}.000Z`,
+          type: "DELIVERY_REMEDIATION_RECORDED",
+        })),
+      ];
+
+      expect(() => snapshotFromReplay(next)).toThrow("Confirmed remediation cannot supersede an unresolved ready-for-review action");
+    },
+  );
 
   it("rejects a canonically hashed ready receipt from a different enclosing run", () => {
     const { events } = readyReplayEvents({ runId: parseRunId("run-wrong12345") });

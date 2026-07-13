@@ -4,6 +4,13 @@ import {
   DeliveryPublicationAttempted,
   DeliveryPublicationConfirmed,
   DeliveryPublicationIntent,
+  DeliveryRemediationCommitAttempted,
+  DeliveryRemediationConfirmed,
+  DeliveryRemediationDispatchAttempted,
+  DeliveryRemediationIntent,
+  DeliveryRemediationPushAttempted,
+  DeliveryRemediationTurnCompleted,
+  DeliveryRemediationVerified,
   DeliveryPullRequestReadyDispatchAttempted,
   DeliveryPullRequestReadyDispatchConfirmed,
   DeliveryPullRequestReadyIntent,
@@ -13,8 +20,10 @@ import {
   deliveryPullRequestReadyPayloadDigest,
   encodeDeliveryPublicationJson,
   encodeDeliveryPullRequestReadyReceiptJson,
+  encodeDeliveryRemediationJson,
   makeRunEvent,
   parseDeliveryPullRequestReadyReceipt,
+  parseDeliveryFeedbackId,
   parseRunId,
 } from "@gaia/core";
 import { createHash } from "node:crypto";
@@ -127,7 +136,111 @@ function receipts(f: ReturnType<typeof fixture>) {
     .map(({ payload }) => parseDeliveryPullRequestReadyReceipt(payload["readyForReviewAction"]));
 }
 
+function appendConfirmedRemediation(f: ReturnType<typeof fixture>, commitSha = "b".repeat(40)) {
+  const events = readFileSync(f.paths.events, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)));
+  const base = {
+    attempt: 1 as const,
+    commitTimestamp: "2026-07-13T07:02:00.000Z",
+    expectedHeadSha: f.publication.headSha,
+    feedbackDigest: "e".repeat(64),
+    feedbackIds: [parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`)],
+    inputId: "remediation-run-ready12345-1",
+    operationId: "remediation:run-ready12345:1",
+  };
+  const remediations = [
+    DeliveryRemediationIntent.make({ ...base, state: "intentRecorded" }),
+    DeliveryRemediationDispatchAttempted.make({ ...base, state: "dispatchAttempted" }),
+    DeliveryRemediationTurnCompleted.make({ ...base, state: "turnCompleted" }),
+    DeliveryRemediationVerified.make({ ...base, state: "verified" }),
+    DeliveryRemediationCommitAttempted.make({ ...base, commitSha, state: "commitAttempted" }),
+    DeliveryRemediationPushAttempted.make({ ...base, commitSha, state: "pushAttempted" }),
+    DeliveryRemediationConfirmed.make({ ...base, commitSha, state: "confirmed" }),
+  ];
+  const next = [
+    ...events,
+    ...remediations.map((remediation, index) => makeRunEvent({
+      payload: { remediation: encodeDeliveryRemediationJson(remediation) },
+      runId: f.runId,
+      sequence: events.length + index + 1,
+      timestamp: `2026-07-13T07:02:${String(index).padStart(2, "0")}.000Z`,
+      type: "DELIVERY_REMEDIATION_RECORDED",
+    })),
+  ];
+  writeFileSync(f.paths.events, `${next.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`);
+  return {
+    ...f.action,
+    actionId: "ready-remediated-1",
+    expectedHeadSha: commitSha,
+  };
+}
+
 describe("owned pull request ready-for-review coordinator", () => {
+  it("uses the confirmed remediation head while preserving publication generation binding", async () => {
+    const f = fixture();
+    const action = appendConfirmedRemediation(f);
+    let reads = 0;
+    let providerCalls = 0;
+    const current = { ...fresh(f, true), headSha: action.expectedHeadSha };
+
+    const result = await Effect.runPromise(coordinateDeliveryPullRequestReady(f.runId, action, {
+      freshStateReader: () => Effect.sync(() => ({ ...current, draft: reads++ === 0 })),
+      readyForReviewProvider: () => Effect.sync(() => { providerCalls += 1; }),
+      rootDirectory: f.root,
+    }).pipe(Effect.provide(NodeServices.layer)));
+
+    expect(result).toMatchObject({
+      expectedHeadSha: action.expectedHeadSha,
+      publicationOperationId: f.publication.operationId,
+      publicationPayloadDigest: f.publication.payloadDigest,
+      state: "dispatchConfirmed",
+    });
+    expect(reads).toBe(2);
+    expect(providerCalls).toBe(1);
+  });
+
+  it("rejects the stale publication head after remediation before reads, intent, or dispatch", async () => {
+    const f = fixture();
+    appendConfirmedRemediation(f);
+    const before = readFileSync(f.paths.events, "utf8");
+    let reads = 0;
+    let providerCalls = 0;
+
+    await expect(Effect.runPromise(coordinateDeliveryPullRequestReady(f.runId, f.action, {
+      freshStateReader: () => Effect.sync(() => { reads += 1; return fresh(f, true); }),
+      readyForReviewProvider: () => Effect.sync(() => { providerCalls += 1; }),
+      rootDirectory: f.root,
+    }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+
+    expect(reads).toBe(0);
+    expect(providerCalls).toBe(0);
+    expect(readFileSync(f.paths.events, "utf8")).toBe(before);
+  });
+
+  it("keeps a failed old-head action audit-only and allows an explicit current-head action", async () => {
+    const f = fixture("failed");
+    const action = appendConfirmedRemediation(f);
+    let providerCalls = 0;
+
+    const result = await Effect.runPromise(coordinateDeliveryPullRequestReady(f.runId, action, {
+      freshStateReader: () => Effect.succeed({ ...fresh(f, false), headSha: action.expectedHeadSha }),
+      readyForReviewProvider: () => Effect.sync(() => { providerCalls += 1; }),
+      rootDirectory: f.root,
+    }).pipe(Effect.provide(NodeServices.layer)));
+
+    expect(result).toMatchObject({ actionId: action.actionId, expectedHeadSha: action.expectedHeadSha, state: "confirmedWithoutDispatch" });
+    expect(providerCalls).toBe(0);
+    expect(receipts(f).map(({ actionId, state }) => ({ actionId, state }))).toEqual([
+      { actionId: f.action.actionId, state: "intentRecorded" },
+      { actionId: f.action.actionId, state: "dispatchAttempted" },
+      { actionId: f.action.actionId, state: "dispatchFailed" },
+      { actionId: action.actionId, state: "intentRecorded" },
+      { actionId: action.actionId, state: "confirmedWithoutDispatch" },
+    ]);
+  });
+
   it("binds the confirmed publication generation and confirms only after an exact post-read", async () => {
     const f = fixture();
     let providerCalls = 0;

@@ -8,6 +8,7 @@ import {
 import {
   encodeDeliveryPullRequestObservationJson,
   encodeDeliveryRemediationJson,
+  deriveAuthoritativeDeliveryHeadSha,
   parseDeliveryPullRequestObservation,
   parseDeliveryRemediation,
   validateDeliveryRemediationTransition,
@@ -928,6 +929,12 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
         throw new Error("Remediation requires accepted pull-request delivery state.");
       }
       validateDeliveryRemediationTransition(remediation, next);
+      if (
+        next.state === "confirmed" &&
+        deriveDeliveryPullRequestReadyActionHistories(readyForReviewActions).active !== undefined
+      ) {
+        throw new Error("Confirmed remediation cannot supersede an unresolved ready-for-review action.");
+      }
       remediation = next;
     }
     if (event.type === "DELIVERY_PR_READY_RECORDED") {
@@ -940,7 +947,11 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       if (repositoryMatch?.[1] === undefined) throw new Error("Confirmed publication has an invalid pull-request URL.");
       assertDeliveryPullRequestReadyAuthority(next, {
         branchName: confirmedPublication.branchName,
-        expectedHeadSha: confirmedPublication.headSha,
+        expectedHeadSha: deriveAuthoritativeDeliveryHeadSha(
+          confirmedPublication,
+          events,
+          event.sequence - 1,
+        ),
         prNumber: confirmedPublication.prNumber,
         prUrl: confirmedPublication.prUrl,
         publicationOperationId: confirmedPublication.operationId,

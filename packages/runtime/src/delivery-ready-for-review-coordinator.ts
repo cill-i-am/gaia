@@ -7,6 +7,7 @@ import {
   assertDeliveryPullRequestReadyAuthority,
   deliveryPullRequestReadyPayloadDigest,
   deriveDeliveryActionHistoriesFromEvents,
+  deriveAuthoritativeDeliveryHeadSha,
   encodeDeliveryPullRequestReadyReceiptJson,
   parseDeliveryPublication,
   snapshotFromReplay,
@@ -106,10 +107,11 @@ export function coordinateDeliveryPullRequestReady(
     const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(replay.context["delivery"]);
     const publication = parseDeliveryPublication(delivery["publication"]);
     if (publication.state !== "confirmed") return yield* conflict("Ready-for-review requires a confirmed owned pull request.");
+    const authoritativeHeadSha = deriveAuthoritativeDeliveryHeadSha(publication, events);
     const repository = repositoryFromPrUrl(publication.prUrl);
     if (
       action.expectedBranchName !== publication.branchName ||
-      action.expectedHeadSha !== publication.headSha ||
+      action.expectedHeadSha !== authoritativeHeadSha ||
       action.expectedPrNumber !== publication.prNumber ||
       action.expectedPrUrl !== publication.prUrl
     ) return yield* conflict("Ready-for-review action does not match the confirmed owned pull request.");
@@ -132,7 +134,7 @@ export function coordinateDeliveryPullRequestReady(
     };
     const authority = {
       branchName: publication.branchName,
-      expectedHeadSha: publication.headSha,
+      expectedHeadSha: authoritativeHeadSha,
       prNumber: publication.prNumber,
       prUrl: publication.prUrl,
       publicationOperationId: publication.operationId,
@@ -141,12 +143,19 @@ export function coordinateDeliveryPullRequestReady(
       runId,
     };
     const histories = validateReadyHistories(events, authority);
-    const previous = histories.latest?.latest;
+    const previous = histories.histories.find(({ actionId }) => actionId === action.actionId)?.latest;
     if (previous !== undefined && previous.actionId === action.actionId) assertSameReadyBinding(previous, binding);
-    if (histories.active !== undefined && histories.active.actionId !== action.actionId) {
+    if (
+      histories.active !== undefined &&
+      sameReadyTarget(histories.active.latest, authority) &&
+      histories.active.actionId !== action.actionId
+    ) {
       return yield* conflict("An unresolved ready-for-review action cannot be superseded.");
     }
-    if (previous !== undefined && previous.actionId !== action.actionId && isConfirmed(previous) && sameReadyTarget(previous, binding)) {
+    const currentConfirmation = histories.histories
+      .map(({ latest }) => latest)
+      .find((receipt) => isConfirmed(receipt) && sameReadyTarget(receipt, binding));
+    if (currentConfirmation !== undefined && currentConfirmation.actionId !== action.actionId) {
       return yield* conflict("The current publication and head already have an authoritative ready confirmation.");
     }
     if (previous?.actionId === action.actionId && isConfirmed(previous)) return previous;
@@ -218,11 +227,14 @@ export function requireExactReadyForReviewConfirmation(
   },
 ) {
   const histories = validateReadyHistories(events, input);
-  const latest = histories.latest?.latest;
-  if (histories.active !== undefined || latest === undefined || !isConfirmed(latest) || !sameReadyTarget(latest, input)) {
+  const currentActive = histories.active !== undefined && sameReadyTarget(histories.active.latest, input);
+  const confirmation = histories.histories
+    .map(({ latest }) => latest)
+    .find((receipt) => isConfirmed(receipt) && sameReadyTarget(receipt, input));
+  if (currentActive || confirmation === undefined) {
     throw makeRuntimeError({ code: "DeliveryActionConflict", message: "Exact current-head ready-for-review confirmation is required.", recoverable: true });
   }
-  return latest;
+  return confirmation;
 }
 
 function validateReadyHistories(
@@ -233,7 +245,10 @@ function validateReadyHistories(
   for (const history of histories.histories) {
     for (const { receipt } of history.receipts) {
       try {
-        assertDeliveryPullRequestReadyAuthority(receipt, expected);
+        assertDeliveryPullRequestReadyAuthority(receipt, {
+          ...expected,
+          expectedHeadSha: receipt.expectedHeadSha,
+        });
       } catch {
         throw makeRuntimeError({ code: "DeliveryActionConflict", message: "Ready-for-review action binding is invalid for the confirmed publication generation.", recoverable: true });
       }

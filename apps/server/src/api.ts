@@ -51,6 +51,7 @@ import {
   parseDeliveryCleanupReceipt,
   snapshotFromReplay,
   deriveDeliveryActionHistoriesFromEvents,
+  deriveAuthoritativeDeliveryHeadSha,
   deliveryActionAuditSummary,
   parseWorkerRecoveryReceipt,
   parseWorkerContinuationReceipt,
@@ -894,6 +895,9 @@ function deliveryUpdateFromEvents(
   const latestCleanupAction = actionHistories.cleanup.latest?.latest;
   const workerRecoveryActions = hasCurrentWorkerRecoveryAction(events) ? ["retryWorkerRecovery" as const] : [];
   return DeliverySnapshotDto.make({
+    ...(publication?.state === "confirmed"
+      ? { authoritativeHeadSha: deriveAuthoritativeDeliveryHeadSha(publication, events) }
+      : {}),
     eventSequence,
     mode: "pullRequest",
     ...(publication === undefined

@@ -31,6 +31,7 @@ const observation = DeliveryPullRequestObservation.make({
 describe("ready-for-review dashboard action", () => {
   it("rejects a deliberate first action without an exact public observation", () => {
     const snapshot = DeliverySnapshotDto.make({
+      authoritativeHeadSha: publication.commitSha,
       eventSequence: 10,
       mode: "pullRequest",
       publication,
@@ -45,6 +46,7 @@ describe("ready-for-review dashboard action", () => {
 
   it("creates the observed exact tuple for a deliberate first action", () => {
     const snapshot = DeliverySnapshotDto.make({
+      authoritativeHeadSha: publication.commitSha,
       eventSequence: 10,
       mode: "pullRequest",
       observation,
@@ -75,6 +77,7 @@ describe("ready-for-review dashboard action", () => {
   ] as const) {
     it(`rejects a first action when the latest observation has a different ${name}`, () => {
       const snapshot = DeliverySnapshotDto.make({
+        authoritativeHeadSha: publication.commitSha,
         eventSequence: 10,
         mode: "pullRequest",
         observation: DeliveryPullRequestObservation.make(changedObservation),
@@ -107,6 +110,7 @@ describe("ready-for-review dashboard action", () => {
       version: 1 as const,
     });
     const snapshot = DeliverySnapshotDto.make({
+      authoritativeHeadSha: failed.expectedHeadSha,
       eventSequence: 13,
       latestReadyForReviewAction: failed,
       mode: "pullRequest",
@@ -143,6 +147,7 @@ describe("ready-for-review dashboard action", () => {
     });
     const snapshot = DeliverySnapshotDto.make({
       activeReadyForReviewAction: active,
+      authoritativeHeadSha: active.expectedHeadSha,
       eventSequence: 12,
       latestReadyForReviewAction: active,
       mode: "pullRequest",
@@ -160,5 +165,54 @@ describe("ready-for-review dashboard action", () => {
       expectedPrNumber: active.prNumber,
       expectedPrUrl: active.prUrl,
     });
+  });
+
+  it("uses the remediated authoritative head while publication remains immutable", () => {
+    const authoritativeHeadSha = "b".repeat(40);
+    const snapshot = DeliverySnapshotDto.make({
+      authoritativeHeadSha,
+      eventSequence: 20,
+      mode: "pullRequest",
+      observation: DeliveryPullRequestObservation.make({ ...observation, headSha: authoritativeHeadSha }),
+      publication,
+      recoveryActions: [],
+      runId,
+      stage: "waitingForPr",
+      status: "waitingForPr",
+    });
+
+    expect(readyForReviewAction(snapshot)).toMatchObject({ expectedHeadSha: authoritativeHeadSha });
+  });
+
+  it("does not reuse a stale terminal action after the authoritative head advances", () => {
+    const stale = DeliveryPullRequestReadyTerminalFailure.make({
+      actionId: "ready-stale-1",
+      branchName: publication.branchName,
+      code: "DeliveryReadyRejected",
+      expectedHeadSha: publication.commitSha,
+      message: "GitHub conclusively rejected the ready-for-review action.",
+      payloadDigest: "c".repeat(64),
+      prNumber: publication.prNumber,
+      prUrl: publication.prUrl,
+      publicationOperationId: "delivery:run-7777777777:1",
+      publicationPayloadDigest: "d".repeat(64),
+      repository: "cill-i-am/gaia",
+      runId,
+      state: "dispatchFailed",
+      version: 1,
+    });
+    const snapshot = DeliverySnapshotDto.make({
+      authoritativeHeadSha: "b".repeat(40),
+      eventSequence: 20,
+      latestReadyForReviewAction: stale,
+      mode: "pullRequest",
+      publication,
+      recoveryActions: [],
+      runId,
+      stage: "waitingForPr",
+      status: "waitingForPr",
+    });
+
+    expect(() => readyForReviewAction(snapshot)).toThrow("Exact current draft pull-request observation is required");
   });
 });

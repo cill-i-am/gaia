@@ -12,6 +12,12 @@ import {
   DeliveryPullRequestObservation,
   DeliveryPullRequestReadyIntent,
   DeliveryRemediationIntent,
+  DeliveryRemediationDispatchAttempted,
+  DeliveryRemediationTurnCompleted,
+  DeliveryRemediationVerified,
+  DeliveryRemediationCommitAttempted,
+  DeliveryRemediationPushAttempted,
+  DeliveryRemediationConfirmed,
   DeliveryRemediationFailed,
   encodeDeliveryPullRequestObservationJson,
   encodeDeliveryPullRequestReadyReceiptJson,
@@ -1235,11 +1241,33 @@ describe("local run api http boundary", () => {
         const projected = getObject(yield* responseJsonObject(response), "data");
 
         assert.strictEqual(getString(projected, "stage"), "remediating");
+        assert.strictEqual(getString(projected, "authoritativeHeadSha"), observation.headSha);
         assert.strictEqual(getNumber(projected, "remediationRearmSequence"), intentEvent.event.sequence);
         assert.strictEqual(getString(getObject(projected, "observation"), "headSha"), observation.headSha);
         assert.strictEqual(getString(getObject(projected, "remediation"), "state"), "intentRecorded");
         assert.notInclude(JSON.stringify(projected), "Project delivery remediation");
         assert.notInclude(JSON.stringify(projected), "native-comment");
+
+        const remediatedHeadSha = "d".repeat(40);
+        for (const remediation of [
+          DeliveryRemediationDispatchAttempted.make({ ...intent, state: "dispatchAttempted" }),
+          DeliveryRemediationTurnCompleted.make({ ...intent, state: "turnCompleted" }),
+          DeliveryRemediationVerified.make({ ...intent, state: "verified" }),
+          DeliveryRemediationCommitAttempted.make({ ...intent, commitSha: remediatedHeadSha, state: "commitAttempted" }),
+          DeliveryRemediationPushAttempted.make({ ...intent, commitSha: remediatedHeadSha, state: "pushAttempted" }),
+          DeliveryRemediationConfirmed.make({ ...intent, commitSha: remediatedHeadSha, state: "confirmed" }),
+        ]) {
+          yield* appendEvent(accepted.runId, paths, {
+            payload: { remediation: encodeDeliveryRemediationJson(remediation) },
+            type: "DELIVERY_REMEDIATION_RECORDED",
+          });
+        }
+        const remediatedResponse = yield* HttpClient.get(`/runs/${accepted.runId}/delivery`).pipe(
+          Effect.provide(testServerLayer(cwd)),
+        );
+        const remediatedProjection = getObject(yield* responseJsonObject(remediatedResponse), "data");
+        assert.strictEqual(getString(remediatedProjection, "authoritativeHeadSha"), remediatedHeadSha);
+        assert.strictEqual(getString(getObject(remediatedProjection, "publication"), "commitSha"), observation.headSha);
       }),
       20_000,
     );

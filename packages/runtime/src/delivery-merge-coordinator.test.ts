@@ -14,7 +14,15 @@ import {
   DeliveryPublicationIntent,
   DeliveryPullRequestReadyDispatchConfirmed,
   DeliveryPullRequestReadyDispatchAttempted,
+  DeliveryPullRequestReadyConfirmedWithoutDispatch,
   DeliveryPullRequestReadyIntent,
+  DeliveryRemediationCommitAttempted,
+  DeliveryRemediationConfirmed,
+  DeliveryRemediationDispatchAttempted,
+  DeliveryRemediationIntent,
+  DeliveryRemediationPushAttempted,
+  DeliveryRemediationTurnCompleted,
+  DeliveryRemediationVerified,
   RunEvent,
   deliveryRequiredCheckPolicyCanonicalPayload,
   deliveryPullRequestReadyCanonicalPayload,
@@ -23,8 +31,10 @@ import {
   encodeDeliveryMergeReceiptJson,
   encodeDeliveryPublicationJson,
   encodeDeliveryPullRequestReadyReceiptJson,
+  encodeDeliveryRemediationJson,
   makeRunEvent,
   parseDeliveryPullRequestReadyReceipt,
+  parseDeliveryFeedbackId,
   parseRunId,
 } from "@gaia/core";
 import { Effect, Schema } from "effect";
@@ -145,6 +155,80 @@ function corruptReadyReceipts(
   writeFileSync(eventsPath, `${events.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`);
 }
 
+function appendConfirmedRemediation(result: ReturnType<typeof fixture>, commitSha = "b".repeat(40)) {
+  const eventsPath = path.join(result.root, ".gaia", "runs", result.runId, "events.jsonl");
+  const events = readFileSync(eventsPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)));
+  const base = {
+    attempt: 1 as const,
+    commitTimestamp: "2026-07-13T07:02:00.000Z",
+    expectedHeadSha: result.binding.expectedHeadSha,
+    feedbackDigest: "e".repeat(64),
+    feedbackIds: [parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`)],
+    inputId: "remediation-run-1234567890-1",
+    operationId: "remediation:run-1234567890:1",
+  };
+  const remediations = [
+    DeliveryRemediationIntent.make({ ...base, state: "intentRecorded" }),
+    DeliveryRemediationDispatchAttempted.make({ ...base, state: "dispatchAttempted" }),
+    DeliveryRemediationTurnCompleted.make({ ...base, state: "turnCompleted" }),
+    DeliveryRemediationVerified.make({ ...base, state: "verified" }),
+    DeliveryRemediationCommitAttempted.make({ ...base, commitSha, state: "commitAttempted" }),
+    DeliveryRemediationPushAttempted.make({ ...base, commitSha, state: "pushAttempted" }),
+    DeliveryRemediationConfirmed.make({ ...base, commitSha, state: "confirmed" }),
+  ];
+  const next = [
+    ...events,
+    ...remediations.map((remediation, index) => makeRunEvent({
+      payload: { remediation: encodeDeliveryRemediationJson(remediation) },
+      runId: result.runId,
+      sequence: events.length + index + 1,
+      timestamp: `2026-07-13T07:02:${String(index).padStart(2, "0")}.000Z`,
+      type: "DELIVERY_REMEDIATION_RECORDED",
+    })),
+  ];
+  writeFileSync(eventsPath, `${next.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`);
+  return commitSha;
+}
+
+function appendCurrentReadyConfirmation(result: ReturnType<typeof fixture>, expectedHeadSha: string) {
+  const eventsPath = path.join(result.root, ".gaia", "runs", result.runId, "events.jsonl");
+  const events = readFileSync(eventsPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)));
+  const base = {
+    actionId: "ready-remediated-1",
+    branchName: result.binding.branchName,
+    expectedHeadSha,
+    prNumber: result.binding.prNumber,
+    prUrl: result.binding.prUrl,
+    publicationOperationId: "delivery:run-1234567890:1",
+    publicationPayloadDigest: "1".repeat(64),
+    repository: result.binding.repository,
+    runId: result.runId,
+    version: 1 as const,
+  };
+  const binding = { ...base, payloadDigest: deliveryPullRequestReadyPayloadDigest(base) };
+  const receipts = [
+    DeliveryPullRequestReadyIntent.make({ ...binding, state: "intentRecorded" }),
+    DeliveryPullRequestReadyConfirmedWithoutDispatch.make({ ...binding, draft: false, state: "confirmedWithoutDispatch" }),
+  ];
+  const next = [
+    ...events,
+    ...receipts.map((receipt, index) => makeRunEvent({
+      payload: { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(receipt) },
+      runId: result.runId,
+      sequence: events.length + index + 1,
+      timestamp: `2026-07-13T07:03:0${index}.000Z`,
+      type: "DELIVERY_PR_READY_RECORDED",
+    })),
+  ];
+  writeFileSync(eventsPath, `${next.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`);
+}
+
 const merged = (binding: ReturnType<typeof fixture>["binding"]): FreshMergeState => ({ branchName: binding.branchName, checks: [], draft: false, feedbackBlockers: 0, headSha: binding.expectedHeadSha, mergeCommitSha: "d".repeat(40), mergeability: "mergeable", mergedAt: "2026-07-11T20:00:00.000Z", prNumber: binding.prNumber, prUrl: binding.prUrl, repository: binding.repository, reviewDecision: "APPROVED", state: "merged", supportedMethods: ["merge"], unresolvedActionableThreads: 0 });
 
 describe("delivery merge reconstructed coordinator", () => {
@@ -200,6 +284,61 @@ describe("delivery merge reconstructed coordinator", () => {
       rootDirectory: f.root,
     }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
     expect(providerCalls).toBe(0);
+  });
+
+  it("rejects a prior same-action readiness decision after confirmed remediation without rereading", async () => {
+    const f = fixture("ready");
+    appendConfirmedRemediation(f);
+    let reads = 0;
+
+    await expect(Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, {
+      actionId: "readiness-1",
+      kind: "evaluateMergeReadiness",
+      mergeMethod: "merge",
+    }, {
+      freshStateReader: () => Effect.sync(() => { reads += 1; return merged(f.binding); }),
+      rootDirectory: f.root,
+    }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    expect(reads).toBe(0);
+  });
+
+  it("rejects a stale-head merge after confirmed remediation before reads or provider dispatch", async () => {
+    const f = fixture("ready");
+    appendConfirmedRemediation(f);
+    let reads = 0;
+    let providerCalls = 0;
+
+    await expect(Effect.runPromise(coordinateDeliveryMerge(f.runId, f.action, {
+      commandRunner: () => Effect.sync(() => { providerCalls += 1; return { exitCode: 0, stderr: "", stdout: "" }; }),
+      freshStateReader: () => Effect.sync(() => { reads += 1; return merged(f.binding); }),
+      rootDirectory: f.root,
+    }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    expect(reads).toBe(0);
+    expect(providerCalls).toBe(0);
+  });
+
+  it("permits a new readiness decision only after exact remediated-head ready confirmation", async () => {
+    const f = fixture("ready", false);
+    const currentHeadSha = appendConfirmedRemediation(f);
+    appendCurrentReadyConfirmation(f, currentHeadSha);
+    const { mergeCommitSha: _mergeCommitSha, mergedAt: _mergedAt, ...base } = merged(f.binding);
+    const fresh = {
+      ...base,
+      checks: [{ appSlug: "github-actions", headSha: currentHeadSha, name: "gaia-pr-ci", repository: f.binding.repository, state: "passing" as const, workflow: "Gaia PR CI" }],
+      headSha: currentHeadSha,
+      state: "open" as const,
+    };
+
+    const decision = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, {
+      actionId: "readiness-remediated-1",
+      kind: "evaluateMergeReadiness",
+      mergeMethod: "merge",
+    }, {
+      freshStateReader: () => Effect.succeed(fresh),
+      rootDirectory: f.root,
+    }).pipe(Effect.provide(NodeServices.layer)));
+
+    expect(decision).toMatchObject({ approved: true, headSha: currentHeadSha });
   });
 
   for (const corruption of ["publication generation", "pull request tuple", "digest"] as const) {
