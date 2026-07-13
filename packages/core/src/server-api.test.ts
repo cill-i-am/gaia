@@ -392,6 +392,23 @@ describe("LocalGaiaServerApi contract", () => {
     assert.throws(() => decode({ ...action, expectedBranchName: "" }));
   });
 
+  it("strictly parses the public ready-for-review action tuple", () => {
+    const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
+    const action = {
+      actionId: "ready-1",
+      expectedBranchName: "gaia/run-1234567890",
+      expectedHeadSha: "a".repeat(40),
+      expectedPrNumber: 74,
+      expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/74",
+      kind: "markReadyForReview",
+    } as const;
+    assert.strictEqual(decode(action).kind, "markReadyForReview");
+    assert.throws(() => decode({ ...action, publicationOperationId: "private-generation" }));
+    assert.throws(() => decode({ ...action, expectedPrNumber: 0 }));
+    assert.throws(() => decode({ ...action, expectedHeadSha: "not-a-sha" }));
+    assert.throws(() => decode({ ...action, force: true }));
+  });
+
   it("accepts audited worker continuation actions without native checkpoint fields", () => {
     const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
     const request = {
@@ -469,7 +486,7 @@ describe("LocalGaiaServerApi contract", () => {
     const decode = Schema.decodeUnknownSync(DeliverySnapshotDto);
     const encode = Schema.encodeSync(Schema.toCodecJson(DeliverySnapshotDto));
     const snapshot = decode({
-      actionAudit: { cleanup: [], merge: [] },
+      actionAudit: { cleanup: [], merge: [], readyForReview: [] },
       eventSequence: 12,
       mode: "pullRequest",
       ownershipToken: hostile,

@@ -954,6 +954,7 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "DELIVERY_PUBLICATION_FAILED":
     case "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN":
     case "DELIVERY_REMEDIATION_RECORDED":
+    case "DELIVERY_PR_READY_RECORDED":
     case "DELIVERY_MERGE_READINESS_RECORDED":
     case "DELIVERY_MERGE_RECORDED":
     case "DELIVERY_CLEANUP_RECORDED":
@@ -1008,6 +1009,8 @@ function subStateForEvent(event: RunEvent): string | undefined {
       return "publicationOutcomeUnknown";
     case "DELIVERY_REMEDIATION_RECORDED":
       return "remediation";
+    case "DELIVERY_PR_READY_RECORDED":
+      return "readyForReview";
     case "DELIVERY_MERGE_READINESS_RECORDED":
       return "awaitingMerge";
     case "DELIVERY_MERGE_RECORDED":
@@ -1082,6 +1085,8 @@ function activityLabel(event: RunEvent): string {
       return "Publication outcome unknown";
     case "DELIVERY_REMEDIATION_RECORDED":
       return "Delivery remediation updated";
+    case "DELIVERY_PR_READY_RECORDED":
+      return "Pull request ready-for-review updated";
     case "DELIVERY_MERGE_READINESS_RECORDED":
       return "Delivery merge readiness recorded";
     case "DELIVERY_MERGE_RECORDED":

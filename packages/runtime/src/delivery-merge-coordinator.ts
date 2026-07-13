@@ -38,6 +38,7 @@ import { coordinateBranchCleanup, coordinateWorktreeCleanup, type CleanupResourc
 import { deliveryCleanupOwnershipPayloadDigest, DeliveryCleanupOwnershipProvenanceV1 } from "./delivery-cleanup-provenance.js";
 import { makeEventCleanupCheckpointStore, recordOrValidateCleanupProvenance } from "./delivery-cleanup-event-store.js";
 import { makeGitCleanupResourceAdapter } from "./git-cleanup-resource-adapter.js";
+import { requireExactReadyForReviewConfirmation } from "./delivery-ready-for-review-coordinator.js";
 
 export type FreshMergeState = {
   readonly branchName: string;
@@ -121,6 +122,15 @@ export function coordinateDeliveryMerge(
     const publication = parseDeliveryPublication(delivery["publication"]);
     if (publication.state !== "confirmed") return yield* conflict("Owned pull request is not confirmed.");
     const repository = repositoryFromPrUrl(publication.prUrl);
+    requireExactReadyForReviewConfirmation(loaded.events, {
+      branchName: publication.branchName,
+      expectedHeadSha: action.expectedHeadSha,
+      prNumber: publication.prNumber,
+      prUrl: publication.prUrl,
+      publicationOperationId: publication.operationId,
+      publicationPayloadDigest: publication.payloadDigest,
+      repository,
+    });
     const histories = deriveDeliveryActionHistoriesFromEvents(loaded.events);
     const previous = histories.merge.latest?.latest;
     const trust = Schema.decodeUnknownSync(DeliveryFeedbackTrustPolicyV1)(delivery["feedbackTrustPolicy"]);
@@ -234,6 +244,15 @@ export function coordinateDeliveryMergeReadiness(runId: RunId, action: DeliveryE
     }
     const reader = options.freshStateReader ?? makeGitHubFreshMergeStateReader({ ...(options.commandRunner === undefined ? {} : { commandRunner: options.commandRunner }), rootDirectory: options.rootDirectory ?? ".", trustPolicy: trust });
     const fresh = yield* reader({ prNumber: publication.prNumber, repository }).pipe(Effect.mapError(() => makeRuntimeError({ code: "DeliveryMergeReadFailed", message: "Fresh GitHub readiness evidence is unavailable.", recoverable: true })));
+    requireExactReadyForReviewConfirmation(loaded.events, {
+      branchName: publication.branchName,
+      expectedHeadSha: fresh.headSha,
+      prNumber: publication.prNumber,
+      prUrl: publication.prUrl,
+      publicationOperationId: publication.operationId,
+      publicationPayloadDigest: publication.payloadDigest,
+      repository,
+    });
     const blockers = freshBlockers(fresh, publication.branchName, action.mergeMethod, policy);
     const decision = DeliveryMergeReadinessDecision.make({ actionId: action.actionId, approved: blockers.length === 0, blockers, branchName: publication.branchName, headSha: fresh.headSha, mergeMethod: action.mergeMethod, payloadDigest: readinessDigest, policyDigest, policyVersion: 1, prNumber: publication.prNumber, prUrl: publication.prUrl });
     yield* appendEvent(runId, paths, { payload: { decision: encodeDeliveryMergeReadinessDecisionJson(decision) }, type: "DELIVERY_MERGE_READINESS_RECORDED" });

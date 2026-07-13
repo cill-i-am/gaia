@@ -996,16 +996,19 @@ describe("local run api http boundary", () => {
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-merge-matrix-" });
         const accepted = yield* acceptFactoryRun(factoryCreateInput(), { harnessProviderRegistry: makeTestHarnessProviderRegistry(), rootDirectory: cwd });
         const seen = new Set<string>(); let mutations = 0;
+        const activate = (action: { readonly actionId: string }) => Effect.gen(function* () {
+          const key = JSON.stringify(action);
+          if (action.actionId.includes("conflict")) return yield* Effect.fail({ code: "DeliveryActionConflict", message: "immutable tuple changed", recoverable: true });
+          if (!seen.has(key)) { seen.add(key); mutations += 1; }
+          return action;
+        });
         const layer = testServerLayer(cwd, {
-          deliveryMergeActivator: (_runId, action) => Effect.gen(function* () {
-            const key = JSON.stringify(action);
-            if (action.actionId.includes("conflict")) return yield* Effect.fail({ code: "DeliveryActionConflict", message: "immutable tuple changed", recoverable: true });
-            if (!seen.has(key)) { seen.add(key); mutations += 1; }
-            return action;
-          }),
+          deliveryMergeActivator: (_runId, action) => activate(action),
+          deliveryReadyForReviewActivator: (_runId, action) => activate(action),
         });
         const request = (body: Record<string, unknown>) => HttpClientRequest.post(`/runs/${accepted.runId}/delivery/actions`).pipe(HttpClientRequest.bodyJsonUnsafe(body), HttpClient.execute, Effect.provide(layer));
         const actions = [
+          { actionId: "ready-1", expectedBranchName: "gaia/run-1234567890", expectedHeadSha: "a".repeat(40), expectedPrNumber: 74, expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/74", kind: "markReadyForReview" },
           { actionId: "readiness-1", kind: "evaluateMergeReadiness", mergeMethod: "merge" },
           { actionId: "merge-1", expectedBranchName: "gaia/run-1234567890", expectedDecisionSequence: 9, expectedHeadSha: "a".repeat(40), expectedPolicyDigest: "b".repeat(64), expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/74", kind: "merge", mergeMethod: "squash" },
           { actionId: "cleanup-1", expectedMergeCommitSha: "c".repeat(40), kind: "retryCleanup" },
@@ -1016,11 +1019,12 @@ describe("local run api http boundary", () => {
         }
         assert.strictEqual(mutations, actions.length);
         const conflicts = [
-          { ...actions[0]!, actionId: "conflict-readiness", mergeMethod: "rebase" },
-          { ...actions[1]!, actionId: "conflict-merge", expectedDecisionSequence: 8 },
-          { ...actions[1]!, actionId: "conflict-head", expectedHeadSha: "d".repeat(40) },
-          { ...actions[1]!, actionId: "conflict-pr", expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/75" },
-          { ...actions[2]!, actionId: "conflict-cleanup", expectedMergeCommitSha: "e".repeat(40) },
+          { ...actions[0]!, actionId: "conflict-ready", expectedHeadSha: "d".repeat(40) },
+          { ...actions[1]!, actionId: "conflict-readiness", mergeMethod: "rebase" },
+          { ...actions[2]!, actionId: "conflict-merge", expectedDecisionSequence: 8 },
+          { ...actions[2]!, actionId: "conflict-head", expectedHeadSha: "d".repeat(40) },
+          { ...actions[2]!, actionId: "conflict-pr", expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/75" },
+          { ...actions[3]!, actionId: "conflict-cleanup", expectedMergeCommitSha: "e".repeat(40) },
         ];
         for (const action of conflicts) {
           const response = yield* request(action); const body = yield* responseJsonObject(response);

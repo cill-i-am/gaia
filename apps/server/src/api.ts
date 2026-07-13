@@ -95,6 +95,7 @@ import {
   actOnDeliveryPublication,
   actOnDeliveryRemediation,
   actOnDeliveryMerge,
+  actOnDeliveryReadyForReview,
   actOnWorkerDesktopOriginCorrelation,
   actOnWorkerCorrelationReconciliation,
   actOnWorkerContinuation,
@@ -401,6 +402,12 @@ export const RunsLive = HttpApiBuilder.group(
             payload.kind === "activateRemediation"
               ? (identity.workflowOptions.deliveryRemediationActivator ??
                   actOnDeliveryRemediation)(
+                    params.runId,
+                    payload,
+                    workflowOptions,
+                  )
+              : payload.kind === "markReadyForReview"
+                ? (identity.workflowOptions.deliveryReadyForReviewActivator ?? actOnDeliveryReadyForReview)(
                     params.runId,
                     payload,
                     workflowOptions,
@@ -878,6 +885,8 @@ function deliveryUpdateFromEvents(
   const actionHistories = deriveDeliveryActionHistoriesFromEvents(events);
   const activeMergeAction = actionHistories.merge.active?.latest;
   const latestMergeAction = actionHistories.merge.latest?.latest;
+  const activeReadyForReviewAction = actionHistories.readyForReview.active?.latest;
+  const latestReadyForReviewAction = actionHistories.readyForReview.latest?.latest;
   const mergeDecision = delivery.mergeDecision === undefined
     ? undefined
     : parseDeliveryMergeReadinessDecision(delivery.mergeDecision);
@@ -908,6 +917,8 @@ function deliveryUpdateFromEvents(
     ...(remediation === undefined ? {} : { remediation }),
     ...(activeMergeAction === undefined ? {} : { activeMergeAction }),
     ...(latestMergeAction === undefined ? {} : { latestMergeAction }),
+    ...(activeReadyForReviewAction === undefined ? {} : { activeReadyForReviewAction }),
+    ...(latestReadyForReviewAction === undefined ? {} : { latestReadyForReviewAction }),
     ...(mergeDecision === undefined ? {} : { mergeDecision }),
     ...(delivery.mergeDecisionSequence === undefined ? {} : { mergeDecisionSequence: delivery.mergeDecisionSequence }),
     ...(activeCleanupAction === undefined ? {} : { activeCleanupAction }),

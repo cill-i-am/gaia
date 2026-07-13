@@ -203,6 +203,8 @@ export function actOnDeliveryFromDashboardGaiaClient(
       switch (payload.kind) {
         case "activateRemediation":
           return yield* client.runs.actOnDelivery({ params: { runId }, payload });
+        case "markReadyForReview":
+          return yield* client.runs.actOnDelivery({ params: { runId }, payload });
         case "merge":
           return yield* client.runs.actOnDelivery({ params: { runId }, payload });
         case "evaluateMergeReadiness":

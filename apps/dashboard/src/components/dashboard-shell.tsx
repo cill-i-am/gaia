@@ -1936,6 +1936,9 @@ function CommandHeader({
           sequence: deliverySnapshot.mergeDecisionSequence,
         });
   const mergeActionId = mergeDecisionKey;
+  const readyForReviewConfirmed = deliverySnapshot === undefined
+    ? false
+    : hasCurrentReadyForReviewConfirmation(deliverySnapshot);
   const selectedConsoleRun = serverConnection.selectedRun;
   const selectedStatusLabel =
     selectedConsoleRun?.statusLabel ?? statusLabels[selectedRun.status];
@@ -1993,7 +1996,25 @@ function CommandHeader({
                   <ExternalLinkIcon className="size-3" />
                 </a>
               ) : null}
-              {deliverySnapshot.publication?.state === "confirmed" && deliverySnapshot.mergeDecision?.approved !== true ? (
+              {deliverySnapshot.publication?.state === "confirmed" && !readyForReviewConfirmed ? (
+                <Button
+                  disabled={deliveryActionPending || currentDeliveryHead(deliverySnapshot) === undefined}
+                  onClick={() => void onDeliveryAction(readyForReviewAction(deliverySnapshot))}
+                  size="xs"
+                  variant="outline"
+                >
+                  {deliverySnapshot.activeReadyForReviewAction !== undefined || deliverySnapshot.latestReadyForReviewAction?.state === "dispatchFailed" ? (
+                    <RefreshCwIcon className={cn(deliveryActionPending && "animate-spin")} data-icon="inline-start" />
+                  ) : null}
+                  {deliverySnapshot.activeReadyForReviewAction !== undefined || deliverySnapshot.latestReadyForReviewAction?.state === "dispatchFailed"
+                    ? "Reconcile ready state"
+                    : "Mark ready for review"}
+                </Button>
+              ) : null}
+              {deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed ? (
+                <span className="font-medium text-foreground" data-testid="selected-run-ready-status">Ready for review</span>
+              ) : null}
+              {deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && deliverySnapshot.mergeDecision?.approved !== true ? (
                 <div className="flex flex-wrap items-center gap-1" aria-label="Evaluate merge readiness">
                   {(["merge", "squash", "rebase"] as const).map((method) => (
                     <Button disabled={deliveryActionPending} key={method} onClick={() => void onDeliveryAction({ actionId: createReadinessActionId(), kind: "evaluateMergeReadiness", mergeMethod: method })} size="xs" variant="outline">
@@ -2102,6 +2123,7 @@ function deliveryStatusLabel(snapshot: typeof DeliverySnapshotDto.Type) {
     case "publishing":
       return `Delivery: publishing ${snapshot.provenance?.headBranch ?? "worktree"}`;
     case "waitingForPr":
+      if (hasCurrentReadyForReviewConfirmation(snapshot)) return `Delivery: PR #${snapshot.publication?.state === "confirmed" ? snapshot.publication.prNumber : ""} ready for review`;
       return snapshot.publication?.state === "confirmed"
         ? `Delivery: draft PR #${snapshot.publication.prNumber} waiting`
         : "Delivery: waiting for draft PR";
@@ -4329,6 +4351,37 @@ export function deliveryRecoveryAction(snapshot: typeof DeliverySnapshotDto.Type
   if (action === "retryCleanup" && snapshot.activeCleanupAction !== undefined) return { actionId: snapshot.activeCleanupAction.actionId, expectedMergeCommitSha: snapshot.activeCleanupAction.mergeCommitSha, kind: "retryCleanup" as const };
   if (action === "retryCleanup" && snapshot.latestMergeAction?.state === "dispatchConfirmed") return { actionId: `cleanup-${snapshot.latestMergeAction.actionId}`, expectedMergeCommitSha: snapshot.latestMergeAction.mergeCommitSha, kind: "retryCleanup" as const };
   return action;
+}
+
+function currentDeliveryHead(snapshot: typeof DeliverySnapshotDto.Type) {
+  if (snapshot.publication?.state !== "confirmed") return undefined;
+  return snapshot.observation?.headSha ?? snapshot.publication.commitSha;
+}
+
+function hasCurrentReadyForReviewConfirmation(snapshot: typeof DeliverySnapshotDto.Type) {
+  const receipt = snapshot.latestReadyForReviewAction;
+  const headSha = currentDeliveryHead(snapshot);
+  return headSha !== undefined && receipt !== undefined &&
+    (receipt.state === "confirmedWithoutDispatch" || receipt.state === "dispatchConfirmed") &&
+    receipt.expectedHeadSha === headSha && snapshot.publication?.state === "confirmed" &&
+    receipt.branchName === snapshot.publication.branchName && receipt.prNumber === snapshot.publication.prNumber &&
+    receipt.prUrl === snapshot.publication.prUrl;
+}
+
+export function readyForReviewAction(snapshot: typeof DeliverySnapshotDto.Type) {
+  if (snapshot.publication?.state !== "confirmed") throw new Error("Confirmed pull request is required.");
+  const authoritative = snapshot.activeReadyForReviewAction ??
+    (snapshot.latestReadyForReviewAction?.state === "dispatchFailed" ? snapshot.latestReadyForReviewAction : undefined);
+  const expectedHeadSha = authoritative?.expectedHeadSha ?? currentDeliveryHead(snapshot);
+  if (expectedHeadSha === undefined) throw new Error("Current pull request head is unavailable.");
+  return {
+    actionId: authoritative?.actionId ?? `ready-${crypto.randomUUID()}`,
+    expectedBranchName: authoritative?.branchName ?? snapshot.publication.branchName,
+    expectedHeadSha,
+    expectedPrNumber: authoritative?.prNumber ?? snapshot.publication.prNumber,
+    expectedPrUrl: authoritative?.prUrl ?? snapshot.publication.prUrl,
+    kind: "markReadyForReview" as const,
+  };
 }
 
 function isPresent<T>(value: T | undefined): value is T {
