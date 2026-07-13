@@ -801,9 +801,6 @@ function sameDeliveryLocalReviewAttestationGeneration(
     left.prUrl === right.prUrl &&
     left.branchName === right.branchName &&
     left.headSha === right.headSha &&
-    left.readyConfirmationActionId === right.readyConfirmationActionId &&
-    left.readyConfirmationPayloadDigest === right.readyConfirmationPayloadDigest &&
-    left.readyConfirmationSequence === right.readyConfirmationSequence &&
     left.decision === right.decision &&
     left.authority === right.authority &&
     left.version === right.version;

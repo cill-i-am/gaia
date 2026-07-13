@@ -281,10 +281,21 @@ describe("local operator paired-review attestation contracts", () => {
     ];
 
     expect(() => snapshotFromReplay(events)).not.toThrow();
+    const readyBBase = {
+      ...readyBase,
+      actionId: "ready-2",
+    };
+    const readyB = {
+      ...readyBBase,
+      payloadDigest: deliveryPullRequestReadyPayloadDigest(readyBBase),
+    };
     const duplicateBase = {
       ...attestationBase,
       actionId: "attest-duplicate",
       gaiaEvidenceId: "evidence-fedcba9876543210",
+      readyConfirmationActionId: readyB.actionId,
+      readyConfirmationPayloadDigest: readyB.payloadDigest,
+      readyConfirmationSequence: 11,
     };
     const duplicate = {
       ...duplicateBase,
@@ -292,8 +303,10 @@ describe("local operator paired-review attestation contracts", () => {
     };
     const duplicateEvents = [
       ...events,
-      event(10, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", { attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationIntent.make({ ...duplicate, state: "intentRecorded" })) }),
-      event(11, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", { attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationConfirmed.make({ ...duplicate, state: "confirmed" })) }),
+      event(10, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(DeliveryPullRequestReadyIntent.make({ ...readyB, state: "intentRecorded" })) }),
+      event(11, "DELIVERY_PR_READY_RECORDED", { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(DeliveryPullRequestReadyConfirmedWithoutDispatch.make({ ...readyB, draft: false, state: "confirmedWithoutDispatch" })) }),
+      event(12, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", { attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationIntent.make({ ...duplicate, state: "intentRecorded" })) }),
+      event(13, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", { attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationConfirmed.make({ ...duplicate, state: "confirmed" })) }),
     ];
     expect(() => deriveDeliveryLocalReviewAttestationHistories(duplicateEvents.flatMap((candidate) =>
       candidate.type === "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED"
