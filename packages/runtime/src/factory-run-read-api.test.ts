@@ -12,6 +12,7 @@ import {
   encodeDeliveryMergeReadinessDecisionJson,
   encodeDeliveryMergeReceiptJson,
   encodeWorkerRecoveryReceiptJson,
+  FactoryGraphDto,
   parseHarnessProfileId,
   parseHarnessSessionId,
   parseRunId,
@@ -39,6 +40,7 @@ import { makeTestHarnessProviderRegistry } from "./test-support.js";
 import { appendEvent } from "./event-store.js";
 
 const harnessProviderRegistry = makeTestHarnessProviderRegistry();
+const encodeFactoryGraph = Schema.encodeSync(FactoryGraphDto);
 
 describe("factory run read api", () => {
   layer(NodeServices.layer)((it) => {
@@ -266,43 +268,313 @@ describe("factory run read api", () => {
           harnessProviderRegistry,
           rootDirectory: cwd,
         });
-        const runId = parseRunId(accepted.runId);
-        const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
-        const branchName = `gaia/${runId}`;
-        const headSha = "a".repeat(40);
-        const mergeCommitSha = "d".repeat(40);
-        const provenance = { baseBranch: "main", baseRevision: "0".repeat(40), headBranch: branchName, mode: "pullRequest" as const, remote: "origin" };
+        yield* appendTerminalDeliveryHistory(accepted.runId, cwd);
 
-        yield* appendEvent(runId, paths, { payload: { delivery: { ...provenance, stage: "delivering" } }, type: "DELIVERY_STARTED" });
-        yield* appendEvent(runId, paths, { payload: { code: "HarnessSessionFailed", message: "Worker recovery required.", recoverable: true, stage: "runningWorker" }, type: "RUN_FAILED" });
-        yield* appendEvent(runId, paths, {
-          payload: { recovery: encodeWorkerRecoveryReceiptJson({ actionId: "recover-terminal-1", attempt: 1, expectedFailureSequence: 3, expectedSessionId: parseHarnessSessionId(`session-${runId}`), harnessProfileId: parseHarnessProfileId("codexAppServer"), maxAttempts: 1, model: "gpt-5.4", nativeTurnIdDigest: "7".repeat(64), payloadDigest: "8".repeat(64), state: "dispatchConfirmed" }) },
-          type: "WORKER_RECOVERY_RECORDED",
-        });
-        yield* appendEvent(runId, paths, { payload: { workerResultPath: "worker-result.json" }, type: "WORKER_COMPLETED" });
-        yield* appendEvent(runId, paths, { payload: { verificationResultPath: "verification.json" }, type: "VERIFICATION_COMPLETED" });
-        yield* appendEvent(runId, paths, { payload: { delivery: { ...provenance, stage: "readyToPublish" }, reportPath: "report.md" }, type: "DELIVERY_READY_TO_PUBLISH" });
-
-        const decision = DeliveryMergeReadinessDecision.make({ actionId: "readiness-terminal-1", approved: true, blockers: [], branchName, headSha, mergeMethod: "merge", payloadDigest: "5".repeat(64), policyDigest: "4".repeat(64), policyVersion: 1, prNumber: 94, prUrl: "https://github.com/cill-i-am/gaia/pull/94" });
-        yield* appendEvent(runId, paths, { payload: { decision: encodeDeliveryMergeReadinessDecisionJson(decision) }, type: "DELIVERY_MERGE_READINESS_RECORDED" });
-        const mergeBinding = { actionId: "merge-terminal-1", branchName, decisionSequence: 8, expectedHeadSha: headSha, mergeMethod: "merge" as const, payloadDigest: "3".repeat(64), policyDigest: decision.policyDigest, policyVersion: 1 as const, prNumber: 94, prUrl: decision.prUrl, repository: "cill-i-am/gaia" };
-        const mergeReceipts = [
-          DeliveryMergeIntent.make({ ...mergeBinding, state: "intentRecorded" }),
-          DeliveryMergeDispatchAttempted.make({ ...mergeBinding, state: "dispatchAttempted" }),
-          DeliveryMergeDispatchConfirmed.make({ ...mergeBinding, mergeCommitSha, mergedAt: "2026-07-13T12:01:00.000Z", state: "dispatchConfirmed" }),
-        ];
-        for (const mergeAction of mergeReceipts) {
-          yield* appendEvent(runId, paths, { payload: { mergeAction: encodeDeliveryMergeReceiptJson(mergeAction) }, type: "DELIVERY_MERGE_RECORDED" });
-        }
-        const cleanupRequired = DeliveryCleanupRequired.make({ actionId: "cleanup-terminal-1", branch: "present", branchName, mergeCommitSha, ownershipDigest: "6".repeat(64), state: "cleanupRequired", worktree: "absent" });
-        yield* appendEvent(runId, paths, { payload: { cleanup: encodeDeliveryCleanupReceiptJson(cleanupRequired) }, type: "DELIVERY_CLEANUP_RECORDED" });
-        yield* appendEvent(runId, paths, { payload: { cleanup: encodeDeliveryCleanupReceiptJson(DeliveryCleanupCompleted.make({ actionId: cleanupRequired.actionId, branch: "absent", branchName, mergeCommitSha, ownershipDigest: cleanupRequired.ownershipDigest, state: "completed", worktree: "absent" })) }, type: "DELIVERY_CLEANUP_RECORDED" });
-
-        const graph = yield* readFactoryGraph(runId, { rootDirectory: cwd });
+        const graph = yield* readFactoryGraph(accepted.runId, { rootDirectory: cwd });
+        const paths = yield* makeRunPaths(accepted.runId, { rootDirectory: cwd });
         const states = new Map(graph.agents.map(({ role, state }) => [role, state]));
         assert.strictEqual(states.get("orchestrator"), "succeeded");
         assert.strictEqual(states.get("ciWatcher"), "succeeded");
         assert.notInclude(graph.agents.map(({ state }) => state), "running");
+        const encodedGraph = encodeFactoryGraph(graph);
+        yield* fs.writeFileString(
+          paths.factoryGraph,
+          `${JSON.stringify({
+            ...encodedGraph,
+            diagnostics: encodedGraph.diagnostics.filter(
+              ({ code, sourceId }) =>
+                code !== "FactoryProjectionIndexStale" ||
+                sourceId !== "factory-graph.json",
+            ),
+          }, null, 2)}\n`,
+        );
+        const compatible = yield* readFactoryGraph(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        const graphBytes = yield* fs.readFileString(paths.factoryGraph);
+        const repeated = yield* readFactoryGraph(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        assert.isFalse(
+          compatible.diagnostics.some(
+            ({ code, sourceId }) =>
+              code === "FactoryProjectionIndexStale" &&
+              sourceId === "factory-graph.json",
+          ),
+        );
+        assert.deepEqual(repeated, compatible);
+        assert.strictEqual(
+          yield* fs.readFileString(paths.factoryGraph),
+          graphBytes,
+        );
+      }),
+    );
+
+    it.effect("rebuilds a schema-valid pre-settlement graph after terminal cleanup", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({
+          prefix: "gaia-factory-terminal-index-compatibility-",
+        });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry,
+          rootDirectory: cwd,
+        });
+        const { paths } = yield* appendTerminalDeliveryHistory(
+          accepted.runId,
+          cwd,
+        );
+        const currentGraph = yield* readFactoryGraph(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        const activityBefore = yield* readFactoryRunActivity(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        const artifactsBefore = yield* listFactoryRunArtifacts(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        const eventsBefore = yield* fs.readFileString(paths.events);
+        const encodedGraph = encodeFactoryGraph(currentGraph);
+        const oldGraph = {
+          ...encodedGraph,
+          agents: encodedGraph.agents.map((agent) =>
+            agent.role === "ciWatcher"
+              ? { ...agent, state: "running" as const }
+              : agent,
+          ),
+        };
+        yield* fs.writeFileString(
+          paths.factoryGraph,
+          `${JSON.stringify(oldGraph, null, 2)}\n`,
+        );
+
+        const repaired = yield* readFactoryGraph(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        const repairedBytes = yield* fs.readFileString(paths.factoryGraph);
+        const repeated = yield* readFactoryGraph(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        const repeatedBytes = yield* fs.readFileString(paths.factoryGraph);
+        const activityAfter = yield* readFactoryRunActivity(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        const artifactsAfter = yield* listFactoryRunArtifacts(accepted.runId, {
+          rootDirectory: cwd,
+        });
+
+        assert.strictEqual(repaired.version, 1);
+        assert.deepEqual(
+          repaired.agents
+            .filter(({ role }) => role === "orchestrator" || role === "ciWatcher")
+            .map(({ role, state }) => ({ role, state })),
+          [
+            { role: "orchestrator", state: "succeeded" },
+            { role: "ciWatcher", state: "succeeded" },
+          ],
+        );
+        assert.deepEqual(repaired.edges, currentGraph.edges);
+        assert.deepEqual(repaired.execution, currentGraph.execution);
+        assert.deepEqual(repaired.linkedArtifacts, currentGraph.linkedArtifacts);
+        assert.deepEqual(repaired.workItems, currentGraph.workItems);
+        assert.deepEqual(
+          repaired.agents.filter(
+            ({ role }) => role !== "orchestrator" && role !== "ciWatcher",
+          ),
+          currentGraph.agents.filter(
+            ({ role }) => role !== "orchestrator" && role !== "ciWatcher",
+          ),
+        );
+        assert.deepEqual(activityAfter, activityBefore);
+        assert.deepEqual(artifactsAfter, artifactsBefore);
+        assert.strictEqual(yield* fs.readFileString(paths.events), eventsBefore);
+        assert.deepEqual(
+          repaired.diagnostics.filter(
+            ({ code, sourceId }) =>
+              code === "FactoryProjectionIndexStale" &&
+              sourceId === "factory-graph.json",
+          ).map(({ code, message, recoverable, sourceId }) => ({
+            code,
+            message,
+            recoverable,
+            sourceId,
+          })),
+          [
+            {
+              code: "FactoryProjectionIndexStale",
+              message:
+                "factory-graph.json conflicted with terminal delivery cleanup and was rebuilt from events.jsonl.",
+              recoverable: true,
+              sourceId: "factory-graph.json",
+            },
+          ],
+        );
+        assert.deepEqual(repeated, repaired);
+        assert.strictEqual(repeatedBytes, repairedBytes);
+      }),
+    );
+
+    it.effect("rejects noncanonical terminal agent entries in a valid v1 graph", () =>
+      Effect.gen(function* () {
+        for (const defect of [
+          "orchestratorState",
+          "missingOrchestrator",
+          "duplicateOrchestrator",
+          "orchestratorId",
+          "missingCiWatcher",
+          "duplicateCiWatcher",
+          "ciWatcherId",
+        ] as const) {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: `gaia-factory-terminal-${defect}-`,
+          });
+          const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+            harnessProviderRegistry,
+            rootDirectory: cwd,
+          });
+          const { paths } = yield* appendTerminalDeliveryHistory(
+            accepted.runId,
+            cwd,
+          );
+          const currentGraph = yield* readFactoryGraph(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          const encodedGraph = encodeFactoryGraph(currentGraph);
+          let agents = [...encodedGraph.agents];
+
+          switch (defect) {
+            case "orchestratorState":
+              agents = agents.map((agent) =>
+                agent.role === "orchestrator"
+                  ? { ...agent, state: "blocked" as const }
+                  : agent,
+              );
+              break;
+            case "missingOrchestrator":
+              agents = agents.filter(({ role }) => role !== "orchestrator");
+              break;
+            case "duplicateOrchestrator":
+              agents = agents.flatMap((agent) =>
+                agent.role === "orchestrator"
+                  ? [
+                      agent,
+                      { ...agent, id: "agent-orchestrator-duplicate" },
+                    ]
+                  : [agent],
+              );
+              break;
+            case "orchestratorId":
+              agents = agents.map((agent) =>
+                agent.role === "orchestrator"
+                  ? { ...agent, id: "agent-orchestrator-old" }
+                  : agent,
+              );
+              break;
+            case "missingCiWatcher":
+              agents = agents.filter(({ role }) => role !== "ciWatcher");
+              break;
+            case "duplicateCiWatcher":
+              agents = agents.flatMap((agent) =>
+                agent.role === "ciWatcher"
+                  ? [agent, { ...agent, id: "agent-ci-watcher-duplicate" }]
+                  : [agent],
+              );
+              break;
+            case "ciWatcherId":
+              agents = agents.map((agent) =>
+                agent.role === "ciWatcher"
+                  ? { ...agent, id: "agent-ci-watcher-old" }
+                  : agent,
+              );
+              break;
+          }
+          yield* fs.writeFileString(
+            paths.factoryGraph,
+            `${JSON.stringify({ ...encodedGraph, agents }, null, 2)}\n`,
+          );
+
+          const repaired = yield* readFactoryGraph(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          const terminalAgents = repaired.agents.filter(
+            ({ role }) => role === "orchestrator" || role === "ciWatcher",
+          );
+          assert.deepEqual(
+            terminalAgents.map(({ id, role, state }) => ({ id, role, state })),
+            [
+              {
+                id: "agent-orchestrator",
+                role: "orchestrator",
+                state: "succeeded",
+              },
+              {
+                id: "agent-ci-watcher",
+                role: "ciWatcher",
+                state: "succeeded",
+              },
+            ],
+            defect,
+          );
+          assert.lengthOf(
+            repaired.diagnostics.filter(
+              ({ code, sourceId }) =>
+                code === "FactoryProjectionIndexStale" &&
+                sourceId === "factory-graph.json",
+            ),
+            1,
+            defect,
+          );
+        }
+      }),
+    );
+
+    it.effect("preserves valid nonterminal graph caches", () =>
+      Effect.gen(function* () {
+        for (const cleanupState of ["none", "cleanupRequired"] as const) {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: `gaia-factory-nonterminal-${cleanupState}-`,
+          });
+          const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+            harnessProviderRegistry,
+            rootDirectory: cwd,
+          });
+          const { paths } = yield* appendTerminalDeliveryHistory(
+            accepted.runId,
+            cwd,
+            cleanupState,
+          );
+          const graph = yield* readFactoryGraph(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          const graphBytes = yield* fs.readFileString(paths.factoryGraph);
+          const eventsBytes = yield* fs.readFileString(paths.events);
+
+          const repeated = yield* readFactoryGraph(accepted.runId, {
+            rootDirectory: cwd,
+          });
+
+          assert.deepEqual(repeated, graph, cleanupState);
+          assert.strictEqual(
+            yield* fs.readFileString(paths.factoryGraph),
+            graphBytes,
+            cleanupState,
+          );
+          assert.strictEqual(
+            yield* fs.readFileString(paths.events),
+            eventsBytes,
+            cleanupState,
+          );
+          assert.isFalse(
+            graph.diagnostics.some(
+              ({ code, sourceId }) =>
+                code === "FactoryProjectionIndexStale" &&
+                sourceId === "factory-graph.json",
+            ),
+            cleanupState,
+          );
+        }
       }),
     );
 
@@ -420,6 +692,164 @@ function factoryCreateInput() {
       title: "Implement issueDelivery runtime projection",
     },
   } as const;
+}
+
+function appendTerminalDeliveryHistory(
+  runIdInput: string,
+  rootDirectory: string,
+  cleanupState: "none" | "cleanupRequired" | "completed" = "completed",
+) {
+  return Effect.gen(function* () {
+    const runId = parseRunId(runIdInput);
+    const paths = yield* makeRunPaths(runId, { rootDirectory });
+    const branchName = `gaia/${runId}`;
+    const headSha = "a".repeat(40);
+    const mergeCommitSha = "d".repeat(40);
+    const provenance = {
+      baseBranch: "main",
+      baseRevision: "0".repeat(40),
+      headBranch: branchName,
+      mode: "pullRequest" as const,
+      remote: "origin",
+    };
+
+    yield* appendEvent(runId, paths, {
+      payload: { delivery: { ...provenance, stage: "delivering" } },
+      type: "DELIVERY_STARTED",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: {
+        code: "HarnessSessionFailed",
+        message: "Worker recovery required.",
+        recoverable: true,
+        stage: "runningWorker",
+      },
+      type: "RUN_FAILED",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: {
+        recovery: encodeWorkerRecoveryReceiptJson({
+          actionId: "recover-terminal-1",
+          attempt: 1,
+          expectedFailureSequence: 3,
+          expectedSessionId: parseHarnessSessionId(`session-${runId}`),
+          harnessProfileId: parseHarnessProfileId("codexAppServer"),
+          maxAttempts: 1,
+          model: "gpt-5.4",
+          nativeTurnIdDigest: "7".repeat(64),
+          payloadDigest: "8".repeat(64),
+          state: "dispatchConfirmed",
+        }),
+      },
+      type: "WORKER_RECOVERY_RECORDED",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: { workerResultPath: "worker-result.json" },
+      type: "WORKER_COMPLETED",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: { verificationResultPath: "verification.json" },
+      type: "VERIFICATION_COMPLETED",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: {
+        delivery: { ...provenance, stage: "readyToPublish" },
+        reportPath: "report.md",
+      },
+      type: "DELIVERY_READY_TO_PUBLISH",
+    });
+
+    const decision = DeliveryMergeReadinessDecision.make({
+      actionId: "readiness-terminal-1",
+      approved: true,
+      blockers: [],
+      branchName,
+      headSha,
+      mergeMethod: "merge",
+      payloadDigest: "5".repeat(64),
+      policyDigest: "4".repeat(64),
+      policyVersion: 1,
+      prNumber: 94,
+      prUrl: "https://github.com/cill-i-am/gaia/pull/94",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: {
+        decision: encodeDeliveryMergeReadinessDecisionJson(decision),
+      },
+      type: "DELIVERY_MERGE_READINESS_RECORDED",
+    });
+    const mergeBinding = {
+      actionId: "merge-terminal-1",
+      branchName,
+      decisionSequence: 8,
+      expectedHeadSha: headSha,
+      mergeMethod: "merge" as const,
+      payloadDigest: "3".repeat(64),
+      policyDigest: decision.policyDigest,
+      policyVersion: 1 as const,
+      prNumber: 94,
+      prUrl: decision.prUrl,
+      repository: "cill-i-am/gaia",
+    };
+    const mergeReceipts = [
+      DeliveryMergeIntent.make({ ...mergeBinding, state: "intentRecorded" }),
+      DeliveryMergeDispatchAttempted.make({
+        ...mergeBinding,
+        state: "dispatchAttempted",
+      }),
+      DeliveryMergeDispatchConfirmed.make({
+        ...mergeBinding,
+        mergeCommitSha,
+        mergedAt: "2026-07-13T12:01:00.000Z",
+        state: "dispatchConfirmed",
+      }),
+    ];
+    for (const mergeAction of mergeReceipts) {
+      yield* appendEvent(runId, paths, {
+        payload: { mergeAction: encodeDeliveryMergeReceiptJson(mergeAction) },
+        type: "DELIVERY_MERGE_RECORDED",
+      });
+    }
+    const cleanupRequired = DeliveryCleanupRequired.make({
+      actionId: "cleanup-terminal-1",
+      branch: "present",
+      branchName,
+      mergeCommitSha,
+      ownershipDigest: "6".repeat(64),
+      state: "cleanupRequired",
+      worktree: "absent",
+    });
+    if (cleanupState === "none") {
+      return { cleanupRequired, paths, runId };
+    }
+    yield* appendEvent(runId, paths, {
+      payload: {
+        cleanup: encodeDeliveryCleanupReceiptJson(cleanupRequired),
+      },
+      type: "DELIVERY_CLEANUP_RECORDED",
+    });
+    if (cleanupState === "cleanupRequired") {
+      return { cleanupRequired, paths, runId };
+    }
+    yield* appendEvent(runId, paths, {
+      payload: {
+        cleanup: encodeDeliveryCleanupReceiptJson(
+          DeliveryCleanupCompleted.make({
+            actionId: cleanupRequired.actionId,
+            branch: "absent",
+            branchName,
+            mergeCommitSha,
+            ownershipDigest: cleanupRequired.ownershipDigest,
+            state: "completed",
+            worktree: "absent",
+          }),
+        ),
+      },
+      type: "DELIVERY_CLEANUP_RECORDED",
+    });
+
+    return { cleanupRequired, paths, runId };
+  });
 }
 
 function diagnosticSummaries(
