@@ -7,7 +7,9 @@ const anchorFileName = "__gaia_schema_contract_anchor.ts";
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const anchorSource = `
   import { Schema } from "effect";
+  import { HttpApiEndpoint, HttpApiSchema } from "effect/unstable/httpapi";
   export type __GaiaSchemaTop = Schema.Top;
+  export type __GaiaSchemaConstraint = Schema.Constraint;
   export const __GaiaPlainSchema = Schema.String;
   export type __GaiaPlainType = typeof __GaiaPlainSchema.Type;
   export const __GaiaSuspendedSchema = Schema.suspend(
@@ -19,6 +21,11 @@ const anchorSource = `
   export const __GaiaStructFields = __GaiaStructSchema.fields;
   export const __GaiaUnionSchema = Schema.Union([__GaiaPlainSchema]);
   export const __GaiaUnionMembers = __GaiaUnionSchema.members;
+  export const __GaiaLiteralSchema = Schema.Literals(["one", "two"]);
+  export const __GaiaLiteralValues = __GaiaLiteralSchema.literals;
+  export const __GaiaHttpGet = HttpApiEndpoint.get;
+  export const __GaiaHttpPost = HttpApiEndpoint.post;
+  export const __GaiaHttpStreamSse = HttpApiSchema.StreamSse;
   export const __GaiaBrandedSchema = Schema.String.pipe(
     Schema.brand("__GaiaBrandAnchor")
   );
@@ -353,6 +360,33 @@ const getCanonicalSchemaContainerPropertySymbols = (checker, anchorFile) => {
   return symbols;
 };
 
+const getAnchorInitializerSymbol = (checker, anchorFile, name) => {
+  const statement = anchorFile.statements.find(
+    (candidate) =>
+      ts.isVariableStatement(candidate) &&
+      candidate.declarationList.declarations.some(
+        (declaration) => declaration.name.getText(anchorFile) === name
+      )
+  );
+  const declaration =
+    statement !== undefined && ts.isVariableStatement(statement)
+      ? statement.declarationList.declarations.find(
+          (candidate) => candidate.name.getText(anchorFile) === name
+        )
+      : undefined;
+  if (declaration?.initializer === undefined) {
+    throw new Error(`Gaia schema-contract checker could not resolve ${name}`);
+  }
+  const location = ts.isPropertyAccessExpression(declaration.initializer)
+    ? declaration.initializer.name
+    : declaration.initializer;
+  const symbol = checker.getSymbolAtLocation(location);
+  if (symbol === undefined) {
+    throw new Error(`Gaia schema-contract checker could not prove ${name}`);
+  }
+  return resolveAlias(checker, symbol);
+};
+
 const isCanonicalSchemaContainerProperty = (checker, proof, symbol) => {
   const resolved = resolveAlias(checker, symbol);
   const canonicalDeclarations =
@@ -366,6 +400,26 @@ const isCanonicalSchemaContainerProperty = (checker, proof, symbol) => {
     )
   );
 };
+
+const hasSameDeclaration = (checker, left, right) => {
+  const rightDeclarations = new Set(
+    (resolveAlias(checker, right).declarations ?? []).map(
+      (declaration) =>
+        `${declaration.getSourceFile().fileName}:${declaration.getStart()}:${declaration.getEnd()}`
+    )
+  );
+  return (
+    rightDeclarations.size > 0 &&
+    (resolveAlias(checker, left).declarations ?? []).some((declaration) =>
+      rightDeclarations.has(
+        `${declaration.getSourceFile().fileName}:${declaration.getStart()}:${declaration.getEnd()}`
+      )
+    )
+  );
+};
+
+const isCanonicalSchemaPipeProperty = (checker, proof, symbol) =>
+  hasSameDeclaration(checker, symbol, proof.canonicalSchemaPipeSymbol);
 
 const createSchemaProof = (checker, anchorFile) => ({
   canonicalDecodedTypeProperty: getCanonicalDecodedTypeProperty(
@@ -388,6 +442,51 @@ const createSchemaProof = (checker, anchorFile) => ({
     anchorFile
   ),
   canonicalSchemaTypeSymbol: getCanonicalSchemaTypeSymbol(checker, anchorFile),
+  effectSchemaConsumers: [
+    {
+      argumentIndex: 2,
+      roots: new Set([
+        "error",
+        "headers",
+        "params",
+        "payload",
+        "query",
+        "success",
+      ]),
+      symbol: getAnchorInitializerSymbol(checker, anchorFile, "__GaiaHttpGet"),
+    },
+    {
+      argumentIndex: 2,
+      roots: new Set([
+        "error",
+        "headers",
+        "params",
+        "payload",
+        "query",
+        "success",
+      ]),
+      symbol: getAnchorInitializerSymbol(checker, anchorFile, "__GaiaHttpPost"),
+    },
+    {
+      argumentIndex: 0,
+      roots: new Set(["data", "error"]),
+      symbol: getAnchorInitializerSymbol(
+        checker,
+        anchorFile,
+        "__GaiaHttpStreamSse"
+      ),
+    },
+  ],
+  literalMetadataSymbol: getAnchorInitializerSymbol(
+    checker,
+    anchorFile,
+    "__GaiaLiteralValues"
+  ),
+  schemaConstraintType: getAnchorType(
+    checker,
+    anchorFile,
+    "__GaiaSchemaConstraint"
+  ),
   schemaTopType: getSchemaTopType(checker, anchorFile),
 });
 
@@ -607,7 +706,8 @@ const isDeclarationName = (node) =>
     ts.isImportClause(node.parent) ||
     ts.isImportSpecifier(node.parent) ||
     ts.isParameter(node.parent) ||
-    ts.isPropertyDeclaration(node.parent)) &&
+    ts.isPropertyDeclaration(node.parent) ||
+    ts.isTypeAliasDeclaration(node.parent)) &&
   node.parent.name === node;
 
 const isTypeOnlyReference = (node) => {
@@ -678,8 +778,9 @@ const findInitializerDeclaration = (node) => {
   return undefined;
 };
 
-const getCanonicalCalleeSymbol = (checker, proof, expression) => {
+const getCanonicalCallee = (checker, proof, expression) => {
   let current = expression;
+  let receiver;
   const seen = new Set();
   for (let depth = 0; depth < defaultProvenanceLimits.maxDepth; depth += 1) {
     let symbol;
@@ -693,7 +794,7 @@ const getCanonicalCalleeSymbol = (checker, proof, expression) => {
     if (seen.has(resolved)) return undefined;
     seen.add(resolved);
     if (hasCanonicalSchemaDeclaration(checker, proof, resolved)) {
-      return resolved;
+      return { receiver, symbol: resolved };
     }
     const declarations = (resolved.declarations ?? []).filter(
       ts.isVariableDeclaration
@@ -708,9 +809,15 @@ const getCanonicalCalleeSymbol = (checker, proof, expression) => {
       return undefined;
     }
     current = declarations[0].initializer;
+    if (ts.isPropertyAccessExpression(current)) {
+      receiver = current.expression;
+    }
   }
   return undefined;
 };
+
+const getCanonicalCalleeSymbol = (checker, proof, expression) =>
+  getCanonicalCallee(checker, proof, expression)?.symbol;
 
 const isCanonicalCallShape = (checker, proof, node) => {
   if (getCanonicalCalleeSymbol(checker, proof, node.expression) !== undefined) {
@@ -775,6 +882,10 @@ const shallowTypeMayContainSchema = (checker, proof, rootType, limits) => {
     seen.add(type);
     try {
       if (isSchemaValueType(checker, proof, type)) return true;
+      const constraint = checker.getBaseConstraintOfType(type);
+      if (constraint !== undefined && constraint !== type) {
+        work.push({ depth: depth + 1, type: constraint });
+      }
       if (type.isUnionOrIntersection()) {
         for (const member of type.types)
           work.push({ depth: depth + 1, type: member });
@@ -807,6 +918,47 @@ const shallowTypeMayContainSchema = (checker, proof, rootType, limits) => {
             type: checker.getTypeOfSymbolAtLocation(property, declaration),
           });
         }
+      }
+    } catch {
+      return true;
+    }
+  }
+  return false;
+};
+
+const parameterTypeMayContainSchema = (checker, proof, rootType, limits) => {
+  const work = [{ depth: 0, type: rootType }];
+  const seen = new Set();
+  while (work.length > 0) {
+    const { depth, type } = work.pop();
+    if (seen.has(type)) continue;
+    if (
+      seen.size >= limits.maxShallowTypes ||
+      depth > limits.maxShallowTypeDepth
+    ) {
+      return true;
+    }
+    seen.add(type);
+    try {
+      if (checker.isTypeAssignableTo(type, proof.schemaConstraintType)) {
+        return true;
+      }
+      const constraint = checker.getBaseConstraintOfType(type);
+      if (constraint !== undefined && constraint !== type) {
+        work.push({ depth: depth + 1, type: constraint });
+      }
+      if (type.isUnionOrIntersection()) {
+        for (const member of type.types) {
+          work.push({ depth: depth + 1, type: member });
+        }
+      }
+      if (checker.isArrayType(type) || checker.isTupleType(type)) {
+        for (const argument of checker.getTypeArguments(type)) {
+          work.push({ depth: depth + 1, type: argument });
+        }
+      }
+      for (const indexInfo of checker.getIndexInfosOfType(type)) {
+        work.push({ depth: depth + 1, type: indexInfo.type });
       }
     } catch {
       return true;
@@ -909,6 +1061,260 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
     return work.length > 0;
   };
 
+  const getSchemaBearingArguments = (node) => {
+    let signature;
+    try {
+      signature = checker.getResolvedSignature(node);
+    } catch {
+      return undefined;
+    }
+    if (signature === undefined) return undefined;
+    const parameters = signature.getParameters();
+    const schemaArguments = [];
+    for (let index = 0; index < node.arguments.length; index += 1) {
+      let parameter = parameters[index];
+      if (parameter === undefined && parameters.length > 0) {
+        const last = parameters.at(-1);
+        const declaration = last?.valueDeclaration ?? last?.declarations?.[0];
+        if (declaration !== undefined && ts.isParameter(declaration)) {
+          if (declaration.dotDotDotToken !== undefined) parameter = last;
+        }
+      }
+      const declaration =
+        parameter?.valueDeclaration ?? parameter?.declarations?.[0];
+      if (parameter === undefined || declaration === undefined) {
+        return undefined;
+      }
+      try {
+        const parameterTypes = [
+          checker.getTypeOfSymbolAtLocation(parameter, declaration),
+        ];
+        if (ts.isParameter(declaration) && declaration.type !== undefined) {
+          parameterTypes.push(checker.getTypeAtLocation(declaration.type));
+        }
+        if (
+          parameterTypes.some((type) =>
+            parameterTypeMayContainSchema(checker, proof, type, limits)
+          )
+        ) {
+          schemaArguments.push(node.arguments[index]);
+        }
+      } catch {
+        return undefined;
+      }
+    }
+    return schemaArguments;
+  };
+
+  const getNestedArgumentPath = (reference, argument) => {
+    const path = [];
+    let current = reference;
+    while (current !== argument) {
+      const parent = current.parent;
+      if (parent === undefined || !isWithin(reference, parent))
+        return undefined;
+      if (
+        ts.isParenthesizedExpression(parent) ||
+        ts.isSatisfiesExpression(parent) ||
+        ts.isNonNullExpression(parent) ||
+        (ts.isAsExpression(parent) && ts.isConstTypeReference(parent.type)) ||
+        ts.isSpreadAssignment(parent) ||
+        ts.isSpreadElement(parent) ||
+        ts.isObjectLiteralExpression(parent)
+      ) {
+        current = parent;
+        continue;
+      }
+      if (ts.isPropertyAssignment(parent) && parent.initializer === current) {
+        const name = getPropertyName(parent.name);
+        if (name === undefined) return undefined;
+        path.unshift(name);
+        current = parent;
+        continue;
+      }
+      if (ts.isShorthandPropertyAssignment(parent) && parent.name === current) {
+        path.unshift(parent.name.text);
+        current = parent;
+        continue;
+      }
+      if (ts.isArrayLiteralExpression(parent)) {
+        path.unshift("*");
+        current = parent;
+        continue;
+      }
+      return undefined;
+    }
+    return path;
+  };
+
+  const isExactEffectConsumerReference = (reference) => {
+    let current = reference.parent;
+    while (current !== undefined && !ts.isStatement(current)) {
+      if (ts.isCallExpression(current)) {
+        let callee;
+        let signature;
+        try {
+          const symbol = checker.getSymbolAtLocation(current.expression);
+          callee =
+            symbol === undefined ? undefined : resolveAlias(checker, symbol);
+          signature = checker.getResolvedSignature(current);
+        } catch {
+          return false;
+        }
+        const consumer =
+          callee === undefined
+            ? undefined
+            : proof.effectSchemaConsumers.find((candidate) =>
+                hasSameDeclaration(checker, callee, candidate.symbol)
+              );
+        if (
+          callee !== undefined &&
+          consumer !== undefined &&
+          signature?.declaration !== undefined &&
+          (callee.declarations ?? []).some((declaration) =>
+            isWithin(signature.declaration, declaration)
+          )
+        ) {
+          const argumentIndex = current.arguments.findIndex((argument) =>
+            isWithin(reference, argument)
+          );
+          if (argumentIndex !== consumer.argumentIndex) return false;
+          const argument = current.arguments[argumentIndex];
+          const nestedPath = getNestedArgumentPath(reference, argument);
+          if (
+            nestedPath === undefined ||
+            nestedPath.length === 0 ||
+            !consumer.roots.has(nestedPath[0])
+          ) {
+            return false;
+          }
+          try {
+            const contextual = checker.getContextualType(reference);
+            return (
+              contextual !== undefined &&
+              parameterTypeMayContainSchema(checker, proof, contextual, limits)
+            );
+          } catch {
+            return false;
+          }
+        }
+      }
+      current = current.parent;
+    }
+    return false;
+  };
+
+  const localConsumerStates = new Map();
+  const getLocalConsumer = (call, argumentIndex) => {
+    let symbol;
+    try {
+      symbol = checker.getSymbolAtLocation(call.expression);
+    } catch {
+      return undefined;
+    }
+    if (symbol === undefined) return undefined;
+    const resolved = resolveAlias(checker, symbol);
+    if ((resolved.declarations ?? []).length !== 1) return undefined;
+    const declaration = resolved.declarations[0];
+    let implementation;
+    let parameters;
+    if (
+      ts.isFunctionDeclaration(declaration) &&
+      declaration.body !== undefined
+    ) {
+      if (
+        declaration.modifiers?.some(
+          (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
+        )
+      ) {
+        return undefined;
+      }
+      implementation = declaration;
+      parameters = declaration.parameters;
+    } else if (
+      ts.isVariableDeclaration(declaration) &&
+      isConstVariableDeclaration(declaration) &&
+      declaration.initializer !== undefined &&
+      (ts.isArrowFunction(declaration.initializer) ||
+        ts.isFunctionExpression(declaration.initializer)) &&
+      !isExportedVariableDeclaration(declaration)
+    ) {
+      implementation = declaration.initializer;
+      parameters = implementation.parameters;
+    } else {
+      return undefined;
+    }
+    if (
+      implementation.getSourceFile() !== call.getSourceFile() ||
+      parameters[argumentIndex] === undefined
+    ) {
+      return undefined;
+    }
+    const parameter = parameters[argumentIndex];
+    const parameterSymbol = getSymbol(parameter.name);
+    if (parameterSymbol === undefined || parameter.type === undefined) {
+      return undefined;
+    }
+    try {
+      if (
+        !parameterTypeMayContainSchema(
+          checker,
+          proof,
+          checker.getTypeAtLocation(parameter.type),
+          limits
+        )
+      ) {
+        return undefined;
+      }
+    } catch {
+      return undefined;
+    }
+    return { parameterSymbol, resolved };
+  };
+
+  const isLocalSafeConsumerReference = (reference) => {
+    let current = reference.parent;
+    while (current !== undefined && !ts.isStatement(current)) {
+      if (ts.isCallExpression(current)) {
+        const argumentIndex = current.arguments.findIndex(
+          (argument) =>
+            unwrapAliasExpression(argument) === getReferenceAccess(reference)
+        );
+        if (argumentIndex < 0) return false;
+        const consumer = getLocalConsumer(current, argumentIndex);
+        if (consumer === undefined) return false;
+        const state = localConsumerStates.get(consumer.parameterSymbol);
+        if (state === proofProven) return true;
+        if (state === proofVisiting || state === proofUnsafe) return false;
+        localConsumerStates.set(consumer.parameterSymbol, proofVisiting);
+        for (const use of proof.referenceIndex.references.get(
+          consumer.parameterSymbol
+        ) ?? []) {
+          if (
+            !consume() ||
+            isDeclarationName(use) ||
+            isTypeOnlyReference(use)
+          ) {
+            continue;
+          }
+          if (
+            isWriteReference(use) ||
+            (!isCanonicalFactoryReference(checker, proof, use) &&
+              !isExactEffectConsumerReference(use) &&
+              !isLocalSafeConsumerReference(use))
+          ) {
+            localConsumerStates.set(consumer.parameterSymbol, proofUnsafe);
+            return false;
+          }
+        }
+        localConsumerStates.set(consumer.parameterSymbol, proofProven);
+        return true;
+      }
+      current = current.parent;
+    }
+    return false;
+  };
+
   const addEdge = (from, symbol, lazy) => {
     const resolved = resolveAlias(checker, symbol);
     const current = edges.get(from) ?? [];
@@ -924,15 +1330,10 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
     }
   };
 
-  const hasUnsafeSchemaWrite = (symbol) =>
-    (proof.referenceIndex.references.get(symbol) ?? []).some(
-      (reference) =>
-        !isDeclarationName(reference) &&
-        !isTypeOnlyReference(reference) &&
-        isWriteReference(reference)
-    );
-
-  const getContainerClosure = (initialSymbol) => {
+  const getContainerClosure = (
+    initialSymbol,
+    { safeConsumptionFirst = false } = {}
+  ) => {
     if (!proof.referenceIndex.complete) {
       unsafe = true;
       return [];
@@ -971,6 +1372,14 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
         if (isWriteReference(reference)) {
           unsafe = true;
           break;
+        }
+        if (
+          safeConsumptionFirst &&
+          (isCanonicalFactoryReference(checker, proof, reference) ||
+            isExactEffectConsumerReference(reference) ||
+            isLocalSafeConsumerReference(reference))
+        ) {
+          continue;
         }
         const aliasDeclaration = findInitializerDeclaration(reference);
         if (aliasDeclaration !== undefined) {
@@ -1029,6 +1438,208 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
     return [...declarations.values()].map(
       (declaration) => declaration.initializer
     );
+  };
+
+  const unwrapAliasExpression = (node) => {
+    let current = node;
+    while (
+      ts.isNonNullExpression(current) ||
+      ts.isParenthesizedExpression(current) ||
+      ts.isSatisfiesExpression(current)
+    ) {
+      current = current.expression;
+    }
+    return current;
+  };
+
+  const isImmutableContainerInitializer = (node) => {
+    let current = node;
+    while (
+      ts.isNonNullExpression(current) ||
+      ts.isParenthesizedExpression(current) ||
+      ts.isSatisfiesExpression(current) ||
+      (ts.isAsExpression(current) && ts.isConstTypeReference(current.type))
+    ) {
+      current = current.expression;
+    }
+    if (
+      ts.isObjectLiteralExpression(current) ||
+      ts.isArrayLiteralExpression(current)
+    ) {
+      return true;
+    }
+    return (
+      ts.isConditionalExpression(current) &&
+      isImmutableContainerInitializer(current.whenTrue) &&
+      isImmutableContainerInitializer(current.whenFalse)
+    );
+  };
+
+  const isImportOrExportReference = (node) =>
+    ts.isImportSpecifier(node.parent) ||
+    ts.isExportSpecifier(node.parent) ||
+    ts.isImportClause(node.parent) ||
+    ts.isNamespaceImport(node.parent);
+
+  const getIdentityAlias = (reference) => {
+    const declaration = findInitializerDeclaration(reference);
+    if (
+      declaration === undefined ||
+      !isConstVariableDeclaration(declaration) ||
+      declaration.initializer === undefined ||
+      !ts.isIdentifier(declaration.name)
+    ) {
+      return undefined;
+    }
+    const initializer = unwrapAliasExpression(declaration.initializer);
+    const access = unwrapAliasExpression(getReferenceAccess(reference));
+    if (initializer !== access) return undefined;
+    if (ts.isPropertyAccessExpression(initializer)) {
+      const property = getSymbol(initializer.name);
+      if (
+        property === undefined ||
+        !isCanonicalSchemaContainerProperty(checker, proof, property) ||
+        isExportedVariableDeclaration(declaration)
+      ) {
+        return undefined;
+      }
+    }
+    const alias = getSymbol(declaration.name);
+    return alias;
+  };
+
+  const isSafeCanonicalReference = (reference) => {
+    if (
+      ts.isBinaryExpression(reference.parent) &&
+      reference.parent.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword &&
+      isWithin(reference, reference.parent.right)
+    ) {
+      return true;
+    }
+    let metadataAccess;
+    let metadataCurrent = reference.parent;
+    while (metadataCurrent !== undefined && !ts.isStatement(metadataCurrent)) {
+      if (ts.isPropertyAccessExpression(metadataCurrent)) {
+        const property = getSymbol(metadataCurrent.name);
+        if (
+          property !== undefined &&
+          hasSameDeclaration(checker, property, proof.literalMetadataSymbol) &&
+          isWithin(reference, metadataCurrent.expression)
+        ) {
+          metadataAccess = metadataCurrent;
+          break;
+        }
+      }
+      metadataCurrent = metadataCurrent.parent;
+    }
+    if (metadataAccess !== undefined) {
+      const property = getSymbol(metadataAccess.name);
+      if (
+        property !== undefined &&
+        hasSameDeclaration(checker, property, proof.literalMetadataSymbol)
+      ) {
+        try {
+          return !shallowTypeMayContainSchema(
+            checker,
+            proof,
+            checker.getTypeAtLocation(metadataAccess),
+            limits
+          );
+        } catch {
+          return false;
+        }
+      }
+    }
+    if (
+      isExactEffectConsumerReference(reference) ||
+      isLocalSafeConsumerReference(reference)
+    ) {
+      return true;
+    }
+    let current = reference.parent;
+    while (current !== undefined && !ts.isStatement(current)) {
+      if (ts.isCallExpression(current)) {
+        if (isCanonicalCallShape(checker, proof, current)) return true;
+        if (ts.isPropertyAccessExpression(current.expression)) {
+          const method = getSymbol(current.expression.name);
+          if (
+            method !== undefined &&
+            isCanonicalSchemaPipeProperty(checker, proof, method) &&
+            isWithin(reference, current.expression.expression)
+          ) {
+            return true;
+          }
+        }
+        return false;
+      }
+      current = current.parent;
+    }
+    const access = unwrapAliasExpression(getReferenceAccess(reference));
+    if (ts.isPropertyAccessExpression(access)) {
+      const property = getSymbol(access.name);
+      return (
+        getCanonicalCallee(checker, proof, access) !== undefined ||
+        (property !== undefined &&
+          isCanonicalSchemaPipeProperty(checker, proof, property)) ||
+        (property !== undefined &&
+          isCanonicalSchemaContainerProperty(checker, proof, property) &&
+          (ts.isSpreadAssignment(access.parent) ||
+            ts.isSpreadElement(access.parent)))
+      );
+    }
+    return false;
+  };
+
+  const hasUnsafeSchemaIdentity = (initialSymbol) => {
+    if (!proof.referenceIndex.complete) return true;
+    const queue = [resolveAlias(checker, initialSymbol)];
+    const seen = new Set();
+    while (queue.length > 0) {
+      const symbol = queue.pop();
+      if (!consume() || seen.has(symbol)) continue;
+      seen.add(symbol);
+      for (const reference of proof.referenceIndex.references.get(symbol) ??
+        []) {
+        if (
+          !consume() ||
+          isDeclarationName(reference) ||
+          isTypeOnlyReference(reference) ||
+          isImportOrExportReference(reference)
+        ) {
+          continue;
+        }
+        if (isWriteReference(reference)) return true;
+        const identityAlias = getIdentityAlias(reference);
+        if (identityAlias !== undefined) {
+          queue.push(identityAlias);
+          continue;
+        }
+        if (isSafeCanonicalReference(reference)) continue;
+        const containerDeclaration = findInitializerDeclaration(reference);
+        const containerInitializer =
+          containerDeclaration?.initializer === undefined
+            ? undefined
+            : unwrapAliasExpression(containerDeclaration.initializer);
+        if (
+          containerDeclaration !== undefined &&
+          ts.isIdentifier(containerDeclaration.name) &&
+          containerInitializer !== undefined &&
+          isImmutableContainerInitializer(containerInitializer)
+        ) {
+          const container = getSymbol(containerDeclaration.name);
+          if (
+            container !== undefined &&
+            getContainerClosure(container, {
+              safeConsumptionFirst: true,
+            }).length > 0
+          ) {
+            continue;
+          }
+        }
+        return true;
+      }
+    }
+    return unsafe;
   };
 
   const processExpressions = (initialItems) => {
@@ -1099,14 +1710,18 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
       }
 
       if (ts.isCallExpression(node)) {
-        const canonicalCallee = getCanonicalCalleeSymbol(
+        const canonicalCallee = getCanonicalCallee(
           checker,
           proof,
           node.expression
         );
         if (canonicalCallee !== undefined) {
-          if (ts.isPropertyAccessExpression(node.expression)) {
-            const receiver = node.expression.expression;
+          const receiver =
+            canonicalCallee.receiver ??
+            (ts.isPropertyAccessExpression(node.expression)
+              ? node.expression.expression
+              : undefined);
+          if (receiver !== undefined) {
             try {
               if (
                 isSchemaValueType(
@@ -1122,7 +1737,7 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
               break;
             }
           }
-          if (canonicalCallee === proof.canonicalSchemaSuspendSymbol) {
+          if (canonicalCallee.symbol === proof.canonicalSchemaSuspendSymbol) {
             const callback = node.arguments[0];
             if (
               callback === undefined ||
@@ -1146,10 +1761,13 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
               });
             }
           } else {
-            for (const argument of node.arguments) {
-              if (expressionMayContainSchema(argument)) {
-                work.push({ ...item, depth: item.depth + 1, node: argument });
-              }
+            const schemaArguments = getSchemaBearingArguments(node);
+            if (schemaArguments === undefined) {
+              unsafe = true;
+              break;
+            }
+            for (const argument of schemaArguments) {
+              work.push({ ...item, depth: item.depth + 1, node: argument });
             }
           }
           continue;
@@ -1164,17 +1782,23 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
           ) !== undefined
         ) {
           work.push({ ...item, depth: item.depth + 1, node: node.expression });
-          for (const argument of node.arguments) {
-            if (expressionMayContainSchema(argument)) {
-              work.push({ ...item, depth: item.depth + 1, node: argument });
-            }
+          const schemaArguments = getSchemaBearingArguments(node);
+          if (schemaArguments === undefined) {
+            unsafe = true;
+            break;
+          }
+          for (const argument of schemaArguments) {
+            work.push({ ...item, depth: item.depth + 1, node: argument });
           }
           continue;
         }
 
         if (ts.isPropertyAccessExpression(node.expression)) {
           const method = getSymbol(node.expression.name);
-          if (method === proof.canonicalSchemaPipeSymbol) {
+          if (
+            method !== undefined &&
+            isCanonicalSchemaPipeProperty(checker, proof, method)
+          ) {
             work.push({
               ...item,
               depth: item.depth + 1,
@@ -1288,7 +1912,7 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
         !isConstVariableDeclaration(declaration) ||
         declaration.initializer === undefined ||
         declaration.getSourceFile().isDeclarationFile ||
-        hasUnsafeSchemaWrite(symbol)
+        hasUnsafeSchemaIdentity(symbol)
       ) {
         states.set(symbol, proofUnsafe);
         unsafe = true;
@@ -1301,6 +1925,11 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
     }
     const classDeclaration = declarations.find(ts.isClassDeclaration);
     if (classDeclaration !== undefined) {
+      if (hasUnsafeSchemaIdentity(symbol)) {
+        states.set(symbol, proofUnsafe);
+        unsafe = true;
+        return;
+      }
       const heritage = classDeclaration.heritageClauses?.flatMap((clause) =>
         clause.types.map((type) => type.expression)
       );
