@@ -133,6 +133,7 @@
       "threadId",
       "turnId"
     ],
+    "requestIdIntegerFormat": "int64",
     "requestIdTypes": [
       "string",
       "integer"
@@ -251,6 +252,10 @@
       "exitedReviewMode",
       "contextCompaction"
     ],
+    "threadTimestampFormats": {
+      "createdAt": "int64",
+      "updatedAt": "int64"
+    },
     "threadListRequired": [
       "data"
     ],
@@ -297,11 +302,23 @@
       "reasoningOutputTokens",
       "totalTokens"
     ],
+    "tokenUsageIntegerFormats": {
+      "cachedInputTokens": "int64",
+      "inputTokens": "int64",
+      "outputTokens": "int64",
+      "reasoningOutputTokens": "int64",
+      "totalTokens": "int64"
+    },
     "turnPlanRequired": [
       "plan",
       "threadId",
       "turnId"
     ],
+    "turnTimingFormats": {
+      "completedAt": "int64",
+      "durationMs": "int64",
+      "startedAt": "int64"
+    },
     "turnRequired": [
       "id",
       "items",
@@ -309,7 +326,11 @@
     ],
     "turnsPageRequired": [
       "data"
-    ]
+    ],
+    "itemLifecycleTimestampFormats": {
+      "completedAtMs": "int64",
+      "startedAtMs": "int64"
+    }
   },
   "generatedBy": "codex-cli 0.137.0",
   "schemas": {

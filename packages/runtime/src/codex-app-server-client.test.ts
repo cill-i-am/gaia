@@ -249,7 +249,7 @@ describe("Codex App Server connection", () => {
     expect(result.healthy).toEqual({ ok: true });
   });
 
-  it("routes curated notifications and classifies unknown versus malformed known requests", async () => {
+  it("routes curated notifications and rejects unsupported or malformed known requests without terminating", async () => {
     const fake = fakeProcess();
     await Effect.runPromise(
       Effect.scoped(
@@ -282,6 +282,14 @@ describe("Codex App Server connection", () => {
           for (const listener of fake.lines)
             listener(
               JSON.stringify({
+                id: Number.MAX_SAFE_INTEGER + 1,
+                method: "fs/read",
+                params: {},
+              })
+            );
+          for (const listener of fake.lines)
+            listener(
+              JSON.stringify({
                 id: 41,
                 method: "item/tool/requestUserInput",
                 params: { questions: "not-an-array" },
@@ -289,11 +297,21 @@ describe("Codex App Server connection", () => {
             );
           expect(notifications).toEqual(["turn/started"]);
           expect(requests).toEqual([]);
-          expect(terminations).toEqual(["CodexAppServerProtocolError"]);
-          expect(fake.writes.at(-1)).toEqual({
-            id: 40,
-            error: { code: -32601, message: "Unsupported server request" },
-          });
+          expect(terminations).toEqual([]);
+          expect(fake.writes).toEqual([
+            {
+              id: 40,
+              error: { code: -32601, message: "Unsupported server request" },
+            },
+            {
+              id: Number.MAX_SAFE_INTEGER + 1,
+              error: { code: -32601, message: "Unsupported server request" },
+            },
+            {
+              id: 41,
+              error: { code: -32601, message: "Unsupported server request" },
+            },
+          ]);
         })
       )
     );
@@ -803,7 +821,7 @@ describe("Codex App Server connection", () => {
     );
   });
 
-  it("terminates malformed known server-request categories before dispatch", async () => {
+  it("rejects malformed known server requests without dispatch and keeps the connection live", async () => {
     const fake = fakeProcess();
     const observed = await Effect.runPromise(
       Effect.scoped(
@@ -813,33 +831,109 @@ describe("Codex App Server connection", () => {
           });
           const client = makeCodexAppServerClient(connection);
           const failures: Array<string> = [];
+          const notifications: Array<string> = [];
           const requests: Array<string> = [];
           connection.onTermination((error) => failures.push(error._tag));
+          client.onNotification(({ method }) => notifications.push(method));
           client.onServerRequest(({ method }) => requests.push(method));
 
-          for (const listener of fake.lines) {
+          const malformedRequests = [
+            {
+              id: 1,
+              method: "mcpServer/elicitation/request",
+              params: {
+                message: "Choose",
+                mode: "form",
+                requestedSchema: {},
+                serverName: "github",
+                threadId: "thread-1",
+              },
+            },
+            {
+              id: 2,
+              method: "mcpServer/elicitation/request",
+              params: {
+                message: "Choose",
+                mode: "form",
+                requestedSchema: { properties: {}, type: "object" },
+                serverName: "github",
+                threadId: "",
+              },
+            },
+            {
+              id: Number.MAX_SAFE_INTEGER + 1,
+              method: "mcpServer/elicitation/request",
+              params: {
+                message: "Choose",
+                mode: "form",
+                requestedSchema: { properties: {}, type: "object" },
+                serverName: "github",
+                threadId: "thread-1",
+              },
+            },
+          ] as const;
+          for (const request of malformedRequests)
+            for (const listener of fake.lines)
+              listener(JSON.stringify(request));
+          for (const listener of fake.lines)
             listener(
               JSON.stringify({
-                id: 1,
-                method: "mcpServer/elicitation/request",
-                params: {
-                  message: "Choose",
-                  mode: "form",
-                  requestedSchema: {},
-                  serverName: "github",
-                  threadId: "thread-1",
-                },
+                method: "warning",
+                params: { message: "still live" },
               })
             );
-          }
 
-          return { failures, requests };
+          return {
+            failures: [...failures],
+            notifications: [...notifications],
+            requests: [...requests],
+          };
         })
       )
     );
 
-    expect(observed.failures).toEqual(["CodexAppServerProtocolError"]);
+    expect(observed.failures).toEqual([]);
+    expect(observed.notifications).toEqual(["warning"]);
     expect(observed.requests).toEqual([]);
+    expect(fake.writes).toEqual([
+      {
+        id: 1,
+        error: { code: -32601, message: "Unsupported server request" },
+      },
+      {
+        id: 2,
+        error: { code: -32601, message: "Unsupported server request" },
+      },
+      {
+        id: Number.MAX_SAFE_INTEGER + 1,
+        error: { code: -32601, message: "Unsupported server request" },
+      },
+    ]);
+  });
+
+  it("terminates when a server-request rejection cannot be written", async () => {
+    const fake = fakeProcess();
+    Object.defineProperty(fake.process, "write", {
+      value: () => {
+        throw new Error("closed");
+      },
+    });
+    const failures = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const observed: Array<string> = [];
+          connection.onTermination((error) => observed.push(error._tag));
+          for (const listener of fake.lines)
+            listener(JSON.stringify({ id: 1, method: "fs/read", params: {} }));
+          return [...observed];
+        })
+      )
+    );
+
+    expect(failures).toEqual(["CodexAppServerTransportError"]);
   });
 
   it("preserves warning targets and accepts source-exact large file-change notifications", async () => {

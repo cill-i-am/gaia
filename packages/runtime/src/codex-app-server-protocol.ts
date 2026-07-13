@@ -6,6 +6,19 @@ export const supportedCodexCliVersion = "0.137.0" as const;
 const CodexRawIntegerSchema = Schema.Number.pipe(
   Schema.check(Schema.makeFilter(Number.isInteger))
 );
+const signedInt64Minimum = -(1n << 63n);
+const signedInt64Maximum = (1n << 63n) - 1n;
+const CodexRawSignedInt64Schema = Schema.Number.pipe(
+  Schema.check(
+    Schema.makeFilter((value) => {
+      if (!Number.isFinite(value) || !Number.isInteger(value)) return false;
+      const exactValue = BigInt(value);
+      return (
+        exactValue >= signedInt64Minimum && exactValue <= signedInt64Maximum
+      );
+    })
+  )
+);
 const CodexRawNonNegativeIntegerSchema = CodexRawIntegerSchema.pipe(
   Schema.check(Schema.isGreaterThanOrEqualTo(0))
 );
@@ -21,7 +34,7 @@ const strictRawStruct = <const Fields extends Schema.Struct.Fields>(
 /** Source-exact Codex App Server 0.137.0 RequestId wire encoding. */
 export const CodexRawRequestIdSchema = Schema.Union([
   Schema.String,
-  CodexRawIntegerSchema,
+  CodexRawSignedInt64Schema,
 ]);
 const CodexProviderIdentifierSchema = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isMaxLength(4_096))
@@ -355,7 +368,7 @@ export const CodexRawThreadItemSchema = Schema.Union([
     command: Schema.String,
     commandActions: Schema.Array(CodexRawCommandActionSchema),
     cwd: Schema.String,
-    durationMs: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
+    durationMs: Schema.optionalKey(Schema.NullOr(CodexRawSignedInt64Schema)),
     exitCode: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
     id: Schema.String,
     processId: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -388,7 +401,7 @@ export const CodexRawThreadItemSchema = Schema.Union([
   }),
   Schema.Struct({
     arguments: Schema.Json,
-    durationMs: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
+    durationMs: Schema.optionalKey(Schema.NullOr(CodexRawSignedInt64Schema)),
     error: Schema.optionalKey(
       Schema.NullOr(Schema.Struct({ message: Schema.String }))
     ),
@@ -427,7 +440,7 @@ export const CodexRawThreadItemSchema = Schema.Union([
         )
       )
     ),
-    durationMs: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
+    durationMs: Schema.optionalKey(Schema.NullOr(CodexRawSignedInt64Schema)),
     id: Schema.String,
     namespace: Schema.optionalKey(Schema.NullOr(Schema.String)),
     status: Schema.Literals(["inProgress", "completed", "failed"] as const),
@@ -520,15 +533,15 @@ const CodexRawTurnErrorSchema = Schema.Struct({
   message: Schema.String,
 });
 export const CodexRawTurnSchema = Schema.Struct({
-  completedAt: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
-  durationMs: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
+  completedAt: Schema.optionalKey(Schema.NullOr(CodexRawSignedInt64Schema)),
+  durationMs: Schema.optionalKey(Schema.NullOr(CodexRawSignedInt64Schema)),
   error: Schema.optionalKey(Schema.NullOr(CodexRawTurnErrorSchema)),
   id: Schema.String,
   items: Schema.Array(CodexRawThreadItemSchema),
   itemsView: Schema.optionalKey(
     Schema.Literals(["notLoaded", "summary", "full"] as const)
   ),
-  startedAt: Schema.optionalKey(Schema.NullOr(CodexRawIntegerSchema)),
+  startedAt: Schema.optionalKey(Schema.NullOr(CodexRawSignedInt64Schema)),
   status: Schema.Literals([
     "completed",
     "interrupted",
@@ -575,7 +588,7 @@ export const CodexRawThreadSchema = Schema.Struct({
   agentNickname: Schema.optionalKey(Schema.NullOr(Schema.String)),
   agentRole: Schema.optionalKey(Schema.NullOr(Schema.String)),
   cliVersion: Schema.String,
-  createdAt: CodexRawIntegerSchema,
+  createdAt: CodexRawSignedInt64Schema,
   cwd: Schema.String,
   ephemeral: Schema.Boolean,
   forkedFromId: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -603,7 +616,7 @@ export const CodexRawThreadSchema = Schema.Struct({
     )
   ),
   turns: Schema.Array(CodexRawTurnSchema),
-  updatedAt: CodexRawIntegerSchema,
+  updatedAt: CodexRawSignedInt64Schema,
 });
 const CodexFileChange = Schema.Struct({
   diff: Schema.String,
@@ -1399,7 +1412,7 @@ const CodexRawCommandRequest = Schema.Struct({
       )
     ),
     reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
-    startedAtMs: CodexRawIntegerSchema,
+    startedAtMs: CodexRawSignedInt64Schema,
   }),
 });
 const CodexRawFileRequest = Schema.Struct({
@@ -1409,7 +1422,7 @@ const CodexRawFileRequest = Schema.Struct({
     ...CodexRawBaseInteraction,
     grantRoot: Schema.optionalKey(Schema.NullOr(Schema.String)),
     reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
-    startedAtMs: CodexRawIntegerSchema,
+    startedAtMs: CodexRawSignedInt64Schema,
   }),
 });
 const CodexRawPermissionRequest = Schema.Struct({
@@ -1421,7 +1434,7 @@ const CodexRawPermissionRequest = Schema.Struct({
     environmentId: Schema.optionalKey(Schema.NullOr(Schema.String)),
     permissions: CodexRawRequestPermissionProfileSchema,
     reason: Schema.optionalKey(Schema.NullOr(Schema.String)),
-    startedAtMs: CodexRawIntegerSchema,
+    startedAtMs: CodexRawSignedInt64Schema,
   }),
 });
 const CodexRawUserInputRequest = Schema.Struct({
@@ -1658,11 +1671,11 @@ const notification = <M extends string, S extends Schema.Top>(
 ) => Schema.Struct({ method: Schema.Literal(method), params });
 const rawNotification = notification;
 const CodexRawTokenUsageBreakdownSchema = Schema.Struct({
-  cachedInputTokens: CodexRawIntegerSchema,
-  inputTokens: CodexRawIntegerSchema,
-  outputTokens: CodexRawIntegerSchema,
-  reasoningOutputTokens: CodexRawIntegerSchema,
-  totalTokens: CodexRawIntegerSchema,
+  cachedInputTokens: CodexRawSignedInt64Schema,
+  inputTokens: CodexRawSignedInt64Schema,
+  outputTokens: CodexRawSignedInt64Schema,
+  reasoningOutputTokens: CodexRawSignedInt64Schema,
+  totalTokens: CodexRawSignedInt64Schema,
 });
 /** Source-exact raw 0.137.0 curated notification family. */
 export const CodexRawNotificationSchema = Schema.Union([
@@ -1715,7 +1728,7 @@ export const CodexRawNotificationSchema = Schema.Union([
     "item/started",
     Schema.Struct({
       item: CodexRawThreadItemSchema,
-      startedAtMs: CodexRawIntegerSchema,
+      startedAtMs: CodexRawSignedInt64Schema,
       threadId: Schema.String,
       turnId: Schema.String,
     })
@@ -1723,7 +1736,7 @@ export const CodexRawNotificationSchema = Schema.Union([
   rawNotification(
     "item/completed",
     Schema.Struct({
-      completedAtMs: CodexRawIntegerSchema,
+      completedAtMs: CodexRawSignedInt64Schema,
       item: CodexRawThreadItemSchema,
       threadId: Schema.String,
       turnId: Schema.String,
@@ -1772,7 +1785,7 @@ export const CodexRawNotificationSchema = Schema.Union([
       tokenUsage: Schema.Struct({
         last: CodexRawTokenUsageBreakdownSchema,
         modelContextWindow: Schema.optionalKey(
-          Schema.NullOr(CodexRawIntegerSchema)
+          Schema.NullOr(CodexRawSignedInt64Schema)
         ),
         total: CodexRawTokenUsageBreakdownSchema,
       }),

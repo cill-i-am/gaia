@@ -93,6 +93,10 @@ try {
   const threadResume = readSchema("v2/ThreadResumeResponse.json");
   const turnPlan = readSchema("v2/TurnPlanUpdatedNotification.json");
   const tokenUsage = readSchema("v2/ThreadTokenUsageUpdatedNotification.json");
+  const requestId = readSchema("RequestId.json");
+  const rawThread = threadStart.definitions.Thread;
+  const rawTurn = threadStart.definitions.Turn;
+  const rawTokenUsageBreakdown = tokenUsage.definitions.TokenUsageBreakdown;
   const granularApprovalPolicy =
     threadStart.definitions.AskForApproval.oneOf.find(
       (entry) => entry.properties?.granular
@@ -131,9 +135,10 @@ try {
       permissionApprovalScopeDefault:
         permissionResponse.properties.scope.default,
       permissionRequestRequired: permissions.required,
-      requestIdTypes: readSchema("RequestId.json").anyOf.map(
-        (entry) => entry.type
-      ),
+      requestIdIntegerFormat: requestId.anyOf.find(
+        (entry) => entry.type === "integer"
+      ).format,
+      requestIdTypes: requestId.anyOf.map((entry) => entry.type),
       requestPermissionProfileRequired:
         permissions.definitions.RequestPermissionProfile.required ?? [],
       requestPermissionProfileAdditionalProperties:
@@ -147,6 +152,10 @@ try {
       threadItemTypes: itemStarted.definitions.ThreadItem.oneOf.map(
         (entry) => entry.properties.type.enum[0]
       ),
+      threadTimestampFormats: {
+        createdAt: rawThread.properties.createdAt.format,
+        updatedAt: rawThread.properties.updatedAt.format,
+      },
       threadListRequired: readSchema("v2/ThreadListResponse.json").required,
       threadRequired: threadStart.definitions.Thread.required,
       threadResumeRequired: threadResume.required,
@@ -155,9 +164,24 @@ try {
         tokenUsage.definitions.ThreadTokenUsage.required,
       tokenUsageBreakdownRequired:
         tokenUsage.definitions.TokenUsageBreakdown.required,
+      tokenUsageIntegerFormats: Object.fromEntries(
+        rawTokenUsageBreakdown.required.map((field) => [
+          field,
+          rawTokenUsageBreakdown.properties[field].format,
+        ])
+      ),
       turnPlanRequired: turnPlan.required,
+      turnTimingFormats: {
+        completedAt: rawTurn.properties.completedAt.format,
+        durationMs: rawTurn.properties.durationMs.format,
+        startedAt: rawTurn.properties.startedAt.format,
+      },
       turnRequired: threadStart.definitions.Turn.required,
       turnsPageRequired: threadResume.definitions.TurnsPage.required,
+      itemLifecycleTimestampFormats: {
+        completedAtMs: itemCompleted.properties.completedAtMs.format,
+        startedAtMs: itemStarted.properties.startedAtMs.format,
+      },
     },
     generatedBy: expectedVersion,
     schemas: Object.fromEntries(

@@ -39,6 +39,7 @@ import {
   TurnInterruptParamsSchema,
   isCuratedCodexNotificationMethod,
   isCodexServerRequestMethod,
+  CodexRawRequestIdSchema,
   parseCodexRequestId,
   supportedCodexCliVersion,
   type CodexAppServerError,
@@ -124,6 +125,7 @@ const decodeResponse = Schema.decodeUnknownOption(
 const decodeRequest = Schema.decodeUnknownOption(
   CodexAppServerInboundRequestBoundarySchema
 );
+const decodeRawRequestId = Schema.decodeUnknownOption(CodexRawRequestIdSchema);
 const decodeNotification = Schema.decodeUnknownOption(
   CodexAppServerNotificationSchema
 );
@@ -211,6 +213,21 @@ export function makeCodexAppServerConnection(
         pending.clear();
         for (const listener of terminationListeners) listener(error);
       };
+      const rejectUnsupportedServerRequest = (
+        id: typeof CodexRawRequestIdSchema.Type
+      ) => {
+        try {
+          process.write(
+            `${JSON.stringify({ id, error: { code: -32601, message: "Unsupported server request" } })}\n`
+          );
+        } catch {
+          failAll(
+            new CodexAppServerTransportError({
+              message: "Failed to write to Codex App Server",
+            })
+          );
+        }
+      };
       const removeLine = process.onLine((line) => {
         if (closed) return;
         let value: unknown;
@@ -229,16 +246,20 @@ export function makeCodexAppServerConnection(
         if (hasMethod && hasId) {
           const request = decodeRequest(frame);
           if (Option.isNone(request)) {
-            if (
-              typeof frame.method === "string" &&
-              isCodexServerRequestMethod(frame.method)
-            )
-              failAll(
-                new CodexAppServerProtocolError({
-                  message: `Invalid ${frame.method} server request`,
-                  method: frame.method,
-                })
-              );
+            if (typeof frame.method === "string") {
+              const rawRequestId = decodeRawRequestId(frame.id);
+              if (Option.isSome(rawRequestId)) {
+                rejectUnsupportedServerRequest(rawRequestId.value);
+                return;
+              }
+              if (isCodexServerRequestMethod(frame.method))
+                failAll(
+                  new CodexAppServerProtocolError({
+                    message: `Invalid ${frame.method} server request`,
+                    method: frame.method,
+                  })
+                );
+            }
             return;
           }
           const decoded = decodeServerRequest(request.value);
@@ -246,26 +267,7 @@ export function makeCodexAppServerConnection(
             for (const listener of requestListeners) listener(decoded.value);
             return;
           }
-          if (isCodexServerRequestMethod(request.value.method)) {
-            failAll(
-              new CodexAppServerProtocolError({
-                message: `Invalid ${request.value.method} server request`,
-                method: request.value.method,
-              })
-            );
-            return;
-          }
-          try {
-            process.write(
-              `${JSON.stringify({ id: request.value.id, error: { code: -32601, message: "Unsupported server request" } })}\n`
-            );
-          } catch {
-            failAll(
-              new CodexAppServerTransportError({
-                message: "Failed to write to Codex App Server",
-              })
-            );
-          }
+          rejectUnsupportedServerRequest(request.value.id);
           return;
         }
         if (hasMethod) {

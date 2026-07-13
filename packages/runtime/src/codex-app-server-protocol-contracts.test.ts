@@ -11,6 +11,7 @@ import {
   CodexPermissionAbsolutePathSchema,
   CodexRawNotificationSchema,
   CodexRawRequestIdSchema,
+  CodexRawThreadSchema,
   CodexRawThreadItemSchema,
   CodexRawThreadStartResultSchema,
   CodexRequestIdSchema,
@@ -59,6 +60,11 @@ const rawThreadRuntimeResult = {
 } as const;
 
 describe("Codex App Server provider identities", () => {
+  const signedInt64Minimum = Number(-9_223_372_036_854_775_808n);
+  const signedInt64MaximumRepresentable = Number(9_223_372_036_854_774_784n);
+  const signedInt64BelowMinimum = Number(-9_223_372_036_854_777_856n);
+  const signedInt64AboveMaximum = Number(9_223_372_036_854_775_808n);
+
   it("decodes the source-exact raw RequestId before applying Gaia refinements", () => {
     const decodeRaw = Schema.decodeUnknownSync(CodexRawRequestIdSchema);
 
@@ -66,7 +72,92 @@ describe("Codex App Server provider identities", () => {
     expect(decodeRaw(Number.MAX_SAFE_INTEGER + 1)).toBe(
       Number.MAX_SAFE_INTEGER + 1
     );
+    expect(decodeRaw(signedInt64Minimum)).toBe(signedInt64Minimum);
+    expect(decodeRaw(signedInt64MaximumRepresentable)).toBe(
+      signedInt64MaximumRepresentable
+    );
     expect(() => decodeRaw(1.5)).toThrow();
+    expect(() => decodeRaw(signedInt64BelowMinimum)).toThrow();
+    expect(() => decodeRaw(signedInt64AboveMaximum)).toThrow();
+  });
+
+  it("enforces signed-int64 bounds across representative touched raw families", () => {
+    const decodeThread = Schema.decodeUnknownSync(CodexRawThreadSchema);
+    const decodeNotification = Schema.decodeUnknownSync(
+      CodexRawNotificationSchema
+    );
+    const thread = decodeThread({
+      ...rawThread,
+      createdAt: signedInt64Minimum,
+      updatedAt: signedInt64MaximumRepresentable,
+    });
+    expect(thread.createdAt).toBe(signedInt64Minimum);
+    expect(thread.updatedAt).toBe(signedInt64MaximumRepresentable);
+    expect(() =>
+      decodeThread({ ...rawThread, createdAt: signedInt64AboveMaximum })
+    ).toThrow();
+
+    const itemStarted = {
+      method: "item/started",
+      params: {
+        item: { id: "item-1", type: "contextCompaction" },
+        startedAtMs: signedInt64MaximumRepresentable,
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+    } as const;
+    expect(decodeNotification(itemStarted)).toMatchObject(itemStarted);
+    expect(() =>
+      decodeNotification({
+        ...itemStarted,
+        params: {
+          ...itemStarted.params,
+          startedAtMs: signedInt64AboveMaximum,
+        },
+      })
+    ).toThrow();
+
+    const tokenUsageUpdated = {
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-1",
+        tokenUsage: {
+          last: {
+            cachedInputTokens: 0,
+            inputTokens: signedInt64MaximumRepresentable,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: signedInt64MaximumRepresentable,
+          },
+          total: {
+            cachedInputTokens: 0,
+            inputTokens: signedInt64MaximumRepresentable,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: signedInt64MaximumRepresentable,
+          },
+        },
+        turnId: "turn-1",
+      },
+    } as const;
+    expect(decodeNotification(tokenUsageUpdated)).toMatchObject(
+      tokenUsageUpdated
+    );
+    expect(() =>
+      decodeNotification({
+        ...tokenUsageUpdated,
+        params: {
+          ...tokenUsageUpdated.params,
+          tokenUsage: {
+            ...tokenUsageUpdated.params.tokenUsage,
+            total: {
+              ...tokenUsageUpdated.params.tokenUsage.total,
+              totalTokens: signedInt64AboveMaximum,
+            },
+          },
+        },
+      })
+    ).toThrow();
   });
 
   it("refines the request-id wire union to lossless JavaScript integers", () => {

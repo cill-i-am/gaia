@@ -86,6 +86,7 @@ class PinnedCodexSchemaSet extends Schema.Class<PinnedCodexSchemaSet>(
       permissionApprovalResponseRequired: Schema.Array(Schema.String),
       permissionApprovalScopeDefault: Schema.String,
       permissionRequestRequired: Schema.Array(Schema.String),
+      requestIdIntegerFormat: Schema.String,
       requestIdTypes: Schema.Array(Schema.String),
       requestPermissionProfileAdditionalProperties: Schema.Boolean,
       requestPermissionProfileRequired: Schema.Array(Schema.String),
@@ -94,15 +95,29 @@ class PinnedCodexSchemaSet extends Schema.Class<PinnedCodexSchemaSet>(
         Schema.Array(Schema.String)
       ),
       threadItemTypes: Schema.Array(Schema.String),
+      threadTimestampFormats: Schema.Struct({
+        createdAt: Schema.String,
+        updatedAt: Schema.String,
+      }),
       threadListRequired: Schema.Array(Schema.String),
       threadRequired: Schema.Array(Schema.String),
       threadResumeRequired: Schema.Array(Schema.String),
       threadStartRequired: Schema.Array(Schema.String),
       threadTokenUsageRequired: Schema.Array(Schema.String),
       tokenUsageBreakdownRequired: Schema.Array(Schema.String),
+      tokenUsageIntegerFormats: Schema.Record(Schema.String, Schema.String),
       turnPlanRequired: Schema.Array(Schema.String),
+      turnTimingFormats: Schema.Struct({
+        completedAt: Schema.String,
+        durationMs: Schema.String,
+        startedAt: Schema.String,
+      }),
       turnRequired: Schema.Array(Schema.String),
       turnsPageRequired: Schema.Array(Schema.String),
+      itemLifecycleTimestampFormats: Schema.Struct({
+        completedAtMs: Schema.String,
+        startedAtMs: Schema.String,
+      }),
     }),
     generatedBy: Schema.Literal("codex-cli 0.137.0"),
     schemas: Schema.Record(
@@ -136,6 +151,27 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
 
   it("pins the exact raw wire facts that Gaia refines or projects", () => {
     expect(pinned.facts.requestIdTypes).toEqual(["string", "integer"]);
+    expect(pinned.facts.requestIdIntegerFormat).toBe("int64");
+    expect(pinned.facts.threadTimestampFormats).toEqual({
+      createdAt: "int64",
+      updatedAt: "int64",
+    });
+    expect(pinned.facts.turnTimingFormats).toEqual({
+      completedAt: "int64",
+      durationMs: "int64",
+      startedAt: "int64",
+    });
+    expect(pinned.facts.itemLifecycleTimestampFormats).toEqual({
+      completedAtMs: "int64",
+      startedAtMs: "int64",
+    });
+    expect(pinned.facts.tokenUsageIntegerFormats).toEqual({
+      cachedInputTokens: "int64",
+      inputTokens: "int64",
+      outputTokens: "int64",
+      reasoningOutputTokens: "int64",
+      totalTokens: "int64",
+    });
     expect(pinned.facts.activePermissionProfileRequired).toEqual(["id"]);
     expect(pinned.facts.gitInfoRequired).toEqual([]);
     expect(pinned.facts.granularApprovalPolicyAdditionalProperties).toBe(false);
