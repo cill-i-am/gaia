@@ -6,9 +6,14 @@ import {
   DeliveryCleanupCompleted,
   DeliveryCleanupRequired,
   DeliveryMergeReadinessDecision,
+  DeliveryMergeReadinessDecisionV2,
+  DeliveryGitHubApprovedReviewSource,
+  DeliveryLocalOperatorReviewSource,
+  DeliveryReviewApprovalNotRequiredSource,
   DeliveryRequiredCheckPolicy,
   DeliveryFeedbackTrustPolicyV1,
   deliveryRequiredCheckPolicyCanonicalPayload,
+  deliveryMergeReadinessDecisionV2PayloadDigest,
   deliveryFeedbackRequiresApprovedReview,
   encodeDeliveryMergeReceiptJson,
   encodeDeliveryCleanupReceiptJson,
@@ -19,6 +24,9 @@ import {
   snapshotFromReplay,
   deriveDeliveryActionHistoriesFromEvents,
   deriveAuthoritativeDeliveryHeadSha,
+  deriveDeliveryAuthority,
+  currentDeliveryLocalReviewAttestation,
+  type DeliveryReviewApprovalSource,
   type DeliveryMergeActionRequest,
   type DeliveryEvaluateMergeReadinessActionRequest,
   type DeliveryRetryCleanupActionRequest,
@@ -171,10 +179,29 @@ export function coordinateDeliveryMerge(
       return yield* conflict("The authoritative readiness decision is missing or stale.");
     }
     const decision = parseDeliveryMergeReadinessDecision(decisionEvent.payload["decision"]);
+    const currentAuthority = deriveDeliveryAuthority(publication, events);
+    if (decision instanceof DeliveryMergeReadinessDecisionV2 && (
+      decision.runId !== runId ||
+      decision.publicationOperationId !== publication.operationId ||
+      decision.publicationPayloadDigest !== publication.payloadDigest ||
+      decision.publicationConfirmationSequence !== currentAuthority.publicationConfirmationSequence ||
+      decision.authoritySequence !== currentAuthority.authoritySequence ||
+      decision.repository !== repository ||
+      decision.headSha !== currentAuthority.headSha
+    )) return yield* conflict("The readiness decision is stale for the current delivery authority.");
+    if (decision instanceof DeliveryMergeReadinessDecisionV2 && decision.approvalSource?.kind === "localOperatorPairedReview") {
+      const currentAttestation = currentDeliveryLocalReviewAttestation(events, { publication, repository, runId });
+      if (
+        currentAttestation?.latest.state !== "confirmed" ||
+        currentAttestation.latest.actionId !== decision.approvalSource.attestationActionId ||
+        currentAttestation.latest.attestationPayloadDigest !== decision.approvalSource.attestationPayloadDigest ||
+        currentAttestation.latestSequence !== decision.approvalSource.attestationConfirmationSequence
+      ) return yield* conflict("The readiness decision local approval source is no longer current.");
+    }
     const decisionDigest = hash([decision.actionId, runId, decision.prUrl, decision.branchName, decision.mergeMethod, decision.policyDigest].join("\0"));
     if (
       !decision.approved ||
-      decision.payloadDigest !== decisionDigest ||
+      (decision instanceof DeliveryMergeReadinessDecision ? decision.payloadDigest !== decisionDigest : false) ||
       decision.branchName !== binding.branchName ||
       decision.headSha !== binding.expectedHeadSha ||
       decision.mergeMethod !== binding.mergeMethod ||
@@ -205,7 +232,7 @@ export function coordinateDeliveryMerge(
     const fresh = yield* stateReader({ prNumber: publication.prNumber, repository }).pipe(
       Effect.mapError(() => makeRuntimeError({ code: "DeliveryMergeReadFailed", message: "Fresh GitHub state could not be verified.", recoverable: true })),
     );
-    validateFresh(fresh, publication.branchName, action, policy);
+    validateFresh(fresh, publication.branchName, action, policy, decision instanceof DeliveryMergeReadinessDecisionV2 ? decision.approvalSource : undefined);
     const intent = previous?.state === "intentRecorded"
       ? previous
       : DeliveryMergeIntent.make({ ...binding, state: "intentRecorded" });
@@ -240,7 +267,8 @@ export function coordinateDeliveryMergeReadiness(runId: RunId, action: DeliveryE
     const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(replay.context["delivery"]);
     const publication = parseDeliveryPublication(delivery["publication"]);
     if (publication.state !== "confirmed") return yield* conflict("Merge readiness requires a confirmed owned pull request.");
-    const authoritativeHeadSha = deriveAuthoritativeDeliveryHeadSha(publication, events);
+    const authority = deriveDeliveryAuthority(publication, events);
+    const authoritativeHeadSha = authority.headSha;
     const trust = Schema.decodeUnknownSync(DeliveryFeedbackTrustPolicyV1)(delivery["feedbackTrustPolicy"]);
     const policy = requiredCheckPolicyFromTrustPolicy(trust);
     const policyDigest = hash(deliveryRequiredCheckPolicyCanonicalPayload(policy));
@@ -251,7 +279,21 @@ export function coordinateDeliveryMergeReadiness(runId: RunId, action: DeliveryE
       .map((event) => parseDeliveryMergeReadinessDecision(event.payload["decision"]))
       .find((decision) => decision.actionId === action.actionId);
     if (prior !== undefined) {
-      if (prior.payloadDigest !== readinessDigest) return yield* conflict("Readiness action ID conflicts with a changed immutable tuple.");
+      if (prior instanceof DeliveryMergeReadinessDecision) {
+        if (prior.payloadDigest !== readinessDigest) return yield* conflict("Readiness action ID conflicts with a changed immutable tuple.");
+      } else if (
+        prior.runId !== runId ||
+        prior.publicationOperationId !== publication.operationId ||
+        prior.publicationPayloadDigest !== publication.payloadDigest ||
+        prior.publicationConfirmationSequence !== authority.publicationConfirmationSequence ||
+        prior.authoritySequence !== authority.authoritySequence ||
+        prior.repository !== repository ||
+        prior.prNumber !== publication.prNumber ||
+        prior.prUrl !== publication.prUrl ||
+        prior.branchName !== publication.branchName ||
+        prior.mergeMethod !== action.mergeMethod ||
+        prior.policyDigest !== policyDigest
+      ) return yield* conflict("Readiness action ID conflicts with a changed immutable tuple.");
       if (prior.headSha !== authoritativeHeadSha) return yield* conflict("The prior readiness decision does not target the authoritative current head.");
       requireExactReadyForReviewConfirmation(events, {
         branchName: publication.branchName,
@@ -284,8 +326,29 @@ export function coordinateDeliveryMergeReadiness(runId: RunId, action: DeliveryE
       fresh.prUrl !== publication.prUrl ||
       fresh.repository !== repository
     ) return yield* conflict("Fresh readiness evidence does not match the authoritative current pull-request head.");
-    const blockers = freshBlockers(fresh, publication.branchName, action.mergeMethod, policy);
-    const decision = DeliveryMergeReadinessDecision.make({ actionId: action.actionId, approved: blockers.length === 0, blockers, branchName: publication.branchName, headSha: fresh.headSha, mergeMethod: action.mergeMethod, payloadDigest: readinessDigest, policyDigest, policyVersion: 1, prNumber: publication.prNumber, prUrl: publication.prUrl });
+    const approvalSource = resolveReviewApprovalSource(fresh, policy, events, { publication, repository, runId });
+    const blockers = freshBlockers(fresh, publication.branchName, action.mergeMethod, policy, approvalSource);
+    const decisionBase = {
+      actionId: action.actionId,
+      approved: blockers.length === 0,
+      ...(blockers.length === 0 && approvalSource !== undefined ? { approvalSource } : {}),
+      authoritySequence: authority.authoritySequence,
+      blockers,
+      branchName: publication.branchName,
+      headSha: fresh.headSha,
+      mergeMethod: action.mergeMethod,
+      policyDigest,
+      policyVersion: 1 as const,
+      prNumber: publication.prNumber,
+      prUrl: publication.prUrl,
+      publicationConfirmationSequence: authority.publicationConfirmationSequence,
+      publicationOperationId: publication.operationId,
+      publicationPayloadDigest: publication.payloadDigest,
+      repository,
+      runId,
+      version: 2 as const,
+    };
+    const decision = DeliveryMergeReadinessDecisionV2.make({ ...decisionBase, payloadDigest: deliveryMergeReadinessDecisionV2PayloadDigest(decisionBase) });
     yield* appendEvent(runId, paths, { payload: { decision: encodeDeliveryMergeReadinessDecisionJson(decision) }, type: "DELIVERY_MERGE_READINESS_RECORDED" });
     return decision;
   }), { operation: "Gaia merge readiness decision", nextSafeAction: "Refresh the latest readiness decision before any merge action." });
@@ -357,10 +420,10 @@ function reconcile(runId: RunId, paths: RunPaths, previous: DeliveryMergeReceipt
 function appendMerge(runId: RunId, paths: RunPaths, receipt: DeliveryMergeReceipt) {
   return appendEvent(runId, paths, { payload: { mergeAction: encodeDeliveryMergeReceiptJson(receipt) }, type: "DELIVERY_MERGE_RECORDED" });
 }
-function validateFresh(fresh: FreshMergeState, branch: string, action: DeliveryMergeActionRequest, policy: typeof DeliveryRequiredCheckPolicy.Type) {
-  if (fresh.prUrl !== action.expectedPrUrl || fresh.headSha !== action.expectedHeadSha || freshBlockers(fresh, branch, action.mergeMethod, policy).length > 0) throw makeRuntimeError({ code: "DeliveryMergePreconditionFailed", message: "Fresh GitHub state does not satisfy the approved exact-head decision.", recoverable: true });
+function validateFresh(fresh: FreshMergeState, branch: string, action: DeliveryMergeActionRequest, policy: typeof DeliveryRequiredCheckPolicy.Type, approvalSource?: DeliveryReviewApprovalSource) {
+  if (fresh.prUrl !== action.expectedPrUrl || fresh.headSha !== action.expectedHeadSha || freshBlockers(fresh, branch, action.mergeMethod, policy, approvalSource).length > 0) throw makeRuntimeError({ code: "DeliveryMergePreconditionFailed", message: "Fresh GitHub state does not satisfy the approved exact-head decision.", recoverable: true });
 }
-function freshBlockers(fresh: FreshMergeState, branch: string, method: "merge" | "rebase" | "squash", policy: typeof DeliveryRequiredCheckPolicy.Type) {
+function freshBlockers(fresh: FreshMergeState, branch: string, method: "merge" | "rebase" | "squash", policy: typeof DeliveryRequiredCheckPolicy.Type, approvalSource?: DeliveryReviewApprovalSource) {
   const blockers: string[] = [];
   if (fresh.branchName !== branch) blockers.push("Owned branch changed.");
   if (fresh.state !== "open" || fresh.mergedAt !== undefined || fresh.mergeCommitSha !== undefined) blockers.push("Pull request is not open and unmerged.");
@@ -370,10 +433,37 @@ function freshBlockers(fresh: FreshMergeState, branch: string, method: "merge" |
   if (fresh.unresolvedActionableThreads !== 0) blockers.push("Actionable review threads remain unresolved.");
   if (fresh.feedbackBlockers !== 0) blockers.push("Trusted feedback evaluation remains blocked or ambiguous.");
   if (fresh.reviewDecision === "CHANGES_REQUESTED") blockers.push("Review changes are requested.");
-  else if (policy.requireApprovedReview && fresh.reviewDecision !== "APPROVED") blockers.push("Required review approval is absent.");
-  else if (!policy.requireApprovedReview && fresh.reviewDecision !== undefined && fresh.reviewDecision !== "APPROVED" && fresh.reviewDecision !== "REVIEW_REQUIRED") blockers.push("Review state is ambiguous or unsupported.");
+  else if (fresh.reviewDecision !== undefined && fresh.reviewDecision !== "APPROVED" && fresh.reviewDecision !== "REVIEW_REQUIRED") blockers.push("Review state is ambiguous or unsupported.");
+  else if (policy.requireApprovedReview && fresh.reviewDecision !== "APPROVED" && approvalSource?.kind !== "localOperatorPairedReview") blockers.push("Required review approval is absent.");
   if (!validateRequiredChecks(policy.checks, fresh.checks, fresh.headSha)) blockers.push("Required checks are incomplete or unsuccessful.");
   return blockers;
+}
+
+function resolveReviewApprovalSource(
+  fresh: FreshMergeState,
+  policy: typeof DeliveryRequiredCheckPolicy.Type,
+  events: Parameters<typeof currentDeliveryLocalReviewAttestation>[0],
+  input: { readonly publication: Parameters<typeof currentDeliveryLocalReviewAttestation>[1]["publication"]; readonly repository: string; readonly runId: string },
+): DeliveryReviewApprovalSource | undefined {
+  if (fresh.reviewDecision === "CHANGES_REQUESTED") return undefined;
+  if (fresh.reviewDecision === "APPROVED") {
+    return DeliveryGitHubApprovedReviewSource.make({ kind: "githubApproved", reviewDecision: "APPROVED", version: 1 });
+  }
+  if (fresh.reviewDecision !== undefined && fresh.reviewDecision !== "REVIEW_REQUIRED") return undefined;
+  if (!policy.requireApprovedReview) return DeliveryReviewApprovalNotRequiredSource.make({ kind: "notRequired", version: 1 });
+  const attestation = currentDeliveryLocalReviewAttestation(events, input);
+  if (attestation?.latest.state !== "confirmed") return undefined;
+  return DeliveryLocalOperatorReviewSource.make({
+    attestationActionId: attestation.latest.actionId,
+    attestationConfirmationSequence: attestation.latestSequence,
+    attestationPayloadDigest: attestation.latest.attestationPayloadDigest,
+    authoritySequence: attestation.latest.authoritySequence,
+    ...(attestation.latest.gaiaEvidenceDigest === undefined ? {} : { gaiaEvidenceDigest: attestation.latest.gaiaEvidenceDigest }),
+    gaiaEvidenceId: attestation.latest.gaiaEvidenceId,
+    headSha: attestation.latest.headSha,
+    kind: "localOperatorPairedReview",
+    version: 1,
+  });
 }
 function assertSameBinding(previous: DeliveryMergeReceipt, binding: Omit<DeliveryMergeReceipt, "state">) {
   if (previous.actionId !== binding.actionId || previous.payloadDigest !== binding.payloadDigest) throw makeRuntimeError({ code: "DeliveryActionConflict", message: "Merge action ID conflicts with a different immutable tuple.", recoverable: true });

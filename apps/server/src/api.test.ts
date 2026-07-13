@@ -1014,12 +1014,14 @@ describe("local run api http boundary", () => {
           return action;
         });
         const layer = testServerLayer(cwd, {
+          deliveryLocalReviewAttestationActivator: (_runId, action) => activate(action),
           deliveryMergeActivator: (_runId, action) => activate(action),
           deliveryReadyForReviewActivator: (_runId, action) => activate(action),
         });
         const request = (body: Record<string, unknown>) => HttpClientRequest.post(`/runs/${accepted.runId}/delivery/actions`).pipe(HttpClientRequest.bodyJsonUnsafe(body), HttpClient.execute, Effect.provide(layer));
         const actions = [
           { actionId: "ready-1", expectedBranchName: "gaia/run-1234567890", expectedHeadSha: "a".repeat(40), expectedPrNumber: 74, expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/74", kind: "markReadyForReview" },
+          { actionId: "attestation-1", decision: "approved", expectedBranchName: "gaia/run-1234567890", expectedHeadSha: "a".repeat(40), expectedPrNumber: 74, expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/74", gaiaEvidenceDigest: "f".repeat(64), kind: "attestPairedReviewApproval" },
           { actionId: "readiness-1", kind: "evaluateMergeReadiness", mergeMethod: "merge" },
           { actionId: "merge-1", expectedBranchName: "gaia/run-1234567890", expectedDecisionSequence: 9, expectedHeadSha: "a".repeat(40), expectedPolicyDigest: "b".repeat(64), expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/74", kind: "merge", mergeMethod: "squash" },
           { actionId: "cleanup-1", expectedMergeCommitSha: "c".repeat(40), kind: "retryCleanup" },
@@ -1034,13 +1036,19 @@ describe("local run api http boundary", () => {
         assert.strictEqual(malformedActionId.status, 400);
         assertApiError(malformedActionIdBody, "InvalidRequest", 400);
         assert.strictEqual(mutations, actions.length);
+        const malformedEvidenceDigest = yield* request({ ...actions[1]!, gaiaEvidenceDigest: "not-a-digest" });
+        assert.strictEqual(malformedEvidenceDigest.status, 400);
+        const privateEvidenceField = yield* request({ ...actions[1]!, reviewerIdentity: "cill-i-am" });
+        assert.strictEqual(privateEvidenceField.status, 400);
+        assert.strictEqual(mutations, actions.length);
         const conflicts = [
           { ...actions[0]!, actionId: "conflict-ready", expectedHeadSha: "d".repeat(40) },
-          { ...actions[1]!, actionId: "conflict-readiness", mergeMethod: "rebase" },
-          { ...actions[2]!, actionId: "conflict-merge", expectedDecisionSequence: 8 },
-          { ...actions[2]!, actionId: "conflict-head", expectedHeadSha: "d".repeat(40) },
-          { ...actions[2]!, actionId: "conflict-pr", expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/75" },
-          { ...actions[3]!, actionId: "conflict-cleanup", expectedMergeCommitSha: "e".repeat(40) },
+          { ...actions[1]!, actionId: "conflict-attestation", expectedHeadSha: "d".repeat(40) },
+          { ...actions[2]!, actionId: "conflict-readiness", mergeMethod: "rebase" },
+          { ...actions[3]!, actionId: "conflict-merge", expectedDecisionSequence: 8 },
+          { ...actions[3]!, actionId: "conflict-head", expectedHeadSha: "d".repeat(40) },
+          { ...actions[3]!, actionId: "conflict-pr", expectedPrUrl: "https://github.com/cill-i-am/gaia/pull/75" },
+          { ...actions[4]!, actionId: "conflict-cleanup", expectedMergeCommitSha: "e".repeat(40) },
         ];
         for (const action of conflicts) {
           const response = yield* request(action); const body = yield* responseJsonObject(response);

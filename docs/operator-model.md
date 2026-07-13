@@ -37,6 +37,28 @@ surface the same levels.
 artifact records that Gaia's evidence gate is clear, but it does not perform
 the merge.
 
+## Local Paired-Review Attestation
+
+An explicit local-operator action may attest that a paired exact-head review
+was approved when repository constraints make a GitHub approval impossible.
+This is audited Gaia operator authority. It is not a GitHub approval, a live
+Linear synchronization, external evidence verification, or verification of a
+reviewer's identity.
+
+The event log stores only a bounded Gaia evidence ID, an optional correlation
+digest, and the exact run, immutable publication generation, current delivery
+authority, pull-request tuple, head, and ready-confirmation binding. It does
+not store provider URLs or IDs, review text, identities, local paths, or
+session identifiers. A later confirmed remediation leaves the old attestation
+as historical audit evidence but prevents its use for current readiness.
+
+Strict review policy continues to accept GitHub `APPROVED`. GitHub
+`CHANGES_REQUESTED` always blocks, and unknown review values fail closed. Only
+an absent or `REVIEW_REQUIRED` aggregate decision may use a confirmed current
+local attestation. Merge readiness records which source satisfied the policy,
+and merge revalidates that exact source with fresh pull-request state before
+recording merge intent.
+
 ## Demo Fixtures
 
 Portable examples live under `examples/*`.

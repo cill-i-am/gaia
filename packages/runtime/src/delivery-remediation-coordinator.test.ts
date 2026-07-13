@@ -7,6 +7,9 @@ import {
   DeliveryPublicationAttempted,
   DeliveryPublicationConfirmed,
   DeliveryPublicationIntent,
+  DeliveryLocalReviewAttestationIntent,
+  DeliveryPullRequestReadyConfirmedWithoutDispatch,
+  DeliveryPullRequestReadyIntent,
   DeliveryPullRequestObservation,
   DeliveryRemediationActivationActionRequest,
   DeliveryRemediationCommitAttempted,
@@ -24,8 +27,12 @@ import {
   RunEvent,
   codexAppServerHarnessProfileId,
   encodeDeliveryPullRequestObservationJson,
+  encodeDeliveryLocalReviewAttestationReceiptJson,
+  encodeDeliveryPullRequestReadyReceiptJson,
   encodeDeliveryPublicationJson,
   encodeDeliveryRemediationJson,
+  deliveryLocalReviewAttestationPayloadDigest,
+  deliveryPullRequestReadyPayloadDigest,
   parseDeliveryFeedbackId,
   parseDeliveryPullRequestObservation,
   parseDeliveryRemediation,
@@ -1279,6 +1286,72 @@ describe("delivery remediation coordinator", () => {
       20_000,
     );
 
+    it.effect("blocks remediation effects while a local review attestation intent is active", () =>
+      Effect.scoped(Effect.gen(function* () {
+        const seeded = yield* setupPublishedCoordinatorRun();
+        yield* appendActiveLocalReviewAttestation(seeded);
+        const provider = recordingProvider(seeded.paths.workspace);
+        const feedbackId = parseDeliveryFeedbackId(
+          `feedback-check-${"9".repeat(64)}`,
+        );
+        let readerCalls = 0;
+        let commitCalls = 0;
+        let pushCalls = 0;
+        const commandRunner: GitHubCommandRunner = (input) => {
+          if (input.command === "git" && input.args.includes("commit")) commitCalls += 1;
+          if (input.command === "git" && input.args[0] === "push") pushCalls += 1;
+          return nodeGitHubCommandRunner(input);
+        };
+        const error = yield* continueDeliveryRemediation(runId, {
+          commandRunner,
+          harnessProviderRegistry: makeHarnessProviderRegistry([{
+            profileId: codexAppServerHarnessProfileId,
+            provider,
+          }]),
+          pullRequestReader: () => Effect.sync(() => {
+            readerCalls += 1;
+            return {
+              observation: DeliveryPullRequestObservation.make({
+                blockers: [DeliveryBlocker.make({ feedbackIds: [], kind: "failedCheck", summary: "A trusted hosted check failed." })],
+                checks: [],
+                draft: false,
+                feedback: [],
+                headSha: seeded.oldHead,
+                mergeability: "mergeable",
+                observedAt: "2026-07-13T12:00:00.000Z",
+                prNumber: seeded.publication.prNumber,
+                prUrl: seeded.publication.prUrl,
+                repository: "cill-i-am/gaia",
+                snapshotDigest: "9".repeat(64),
+                status: "blocked",
+                version: 1,
+              }),
+              remediationInputs: [{ id: feedbackId, kind: "check" as const, text: "Hosted check failed." }],
+            };
+          }),
+          refreshWorkerResult: () => Effect.void,
+          reverify: () => Effect.void,
+          rootDirectory: seeded.root,
+          sessionCoordinator: makeLiveHarnessSessionCoordinator(),
+        }).pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          code: "DeliveryActionConflict",
+          message: "Remediation cannot proceed while a local review attestation intent is active.",
+        });
+        expect(readerCalls).toBe(0);
+        expect(provider.prompts).toHaveLength(0);
+        expect(commitCalls).toBe(0);
+        expect(pushCalls).toBe(0);
+        expect(git(seeded.paths.workspace, ["rev-parse", "HEAD"])).toBe(seeded.oldHead);
+        expect(git(seeded.root, ["ls-remote", "--heads", "origin", `refs/heads/${seeded.provenance.headBranch}`]).split(/\s/u)[0]).toBe(seeded.oldHead);
+        const events = yield* readEvents(seeded.paths);
+        expect(events.filter(({ type }) => type === "DELIVERY_REMEDIATION_RECORDED")).toHaveLength(0);
+        expect(events.some((event) => event.type === "DELIVERY_REMEDIATION_RECORDED" && parseDeliveryRemediation(event.payload["remediation"]).state === "pushAttempted")).toBe(false);
+      })),
+      20_000,
+    );
+
     it.effect("replays the accepted feedback trust policy and rejects restart drift", () =>
       Effect.scoped(Effect.gen(function* () {
         const seeded = yield* setupPublishedCoordinatorRun();
@@ -1472,6 +1545,70 @@ function setupPublishedCoordinatorRun() {
       turnId,
     });
     return { oldHead, paths, provenance, publication, root } as const;
+  });
+}
+
+function appendActiveLocalReviewAttestation(
+  seeded: Effect.Success<ReturnType<typeof setupPublishedCoordinatorRun>>,
+) {
+  return Effect.gen(function* () {
+    const publication = seeded.publication;
+    const readyBase = {
+      actionId: "ready-before-attestation",
+      branchName: publication.branchName,
+      expectedHeadSha: publication.headSha,
+      prNumber: publication.prNumber,
+      prUrl: publication.prUrl,
+      publicationOperationId: publication.operationId,
+      publicationPayloadDigest: publication.payloadDigest,
+      repository: "cill-i-am/gaia",
+      runId,
+      version: 1 as const,
+    };
+    const ready = {
+      ...readyBase,
+      payloadDigest: deliveryPullRequestReadyPayloadDigest(readyBase),
+    };
+    yield* appendEvent(runId, seeded.paths, {
+      payload: { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(DeliveryPullRequestReadyIntent.make({ ...ready, state: "intentRecorded" })) },
+      type: "DELIVERY_PR_READY_RECORDED",
+    });
+    yield* appendEvent(runId, seeded.paths, {
+      payload: { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(DeliveryPullRequestReadyConfirmedWithoutDispatch.make({ ...ready, draft: false, state: "confirmedWithoutDispatch" })) },
+      type: "DELIVERY_PR_READY_RECORDED",
+    });
+    const readyConfirmationSequence = (yield* readEvents(seeded.paths)).at(-1)?.sequence;
+    if (readyConfirmationSequence === undefined) return yield* Effect.die("ready confirmation sequence missing");
+    const attestationBase = {
+      actionId: "active-attestation",
+      authority: "localOperator" as const,
+      authoritySequence: 5,
+      branchName: publication.branchName,
+      decision: "approved" as const,
+      gaiaEvidenceId: "evidence-active1234567890",
+      headSha: publication.headSha,
+      prNumber: publication.prNumber,
+      prUrl: publication.prUrl,
+      publicationConfirmationSequence: 5,
+      publicationOperationId: publication.operationId,
+      publicationPayloadDigest: publication.payloadDigest,
+      readyConfirmationActionId: ready.actionId,
+      readyConfirmationPayloadDigest: ready.payloadDigest,
+      readyConfirmationSequence,
+      repository: ready.repository,
+      runId,
+      version: 1 as const,
+    };
+    yield* appendEvent(runId, seeded.paths, {
+      payload: {
+        attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationIntent.make({
+          ...attestationBase,
+          attestationPayloadDigest: deliveryLocalReviewAttestationPayloadDigest(attestationBase),
+          state: "intentRecorded",
+        })),
+      },
+      type: "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED",
+    });
   });
 }
 

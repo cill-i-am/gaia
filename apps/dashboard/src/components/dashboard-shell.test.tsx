@@ -2417,6 +2417,79 @@ describe("DashboardShell Run Console", () => {
     expect(second.actionId).toMatch(/^readiness-/u);
   });
 
+  it("offers paired-review attestation only from an exact non-draft supported observation and reuses an active action ID", async () => {
+    const runId = parseRunId("run-7777777777");
+    const headSha = "a".repeat(40);
+    const publicationOperationId = "delivery:run-7777777777:1";
+    const publicationPayloadDigest = "e".repeat(64);
+    renderDashboardWithQueries({
+      deliverySnapshotsByRunId: {
+        [runId]: {
+          activeLocalReviewAttestation: {
+            actionId: "attestation-active-1",
+            attestationPayloadDigest: "f".repeat(64),
+            authority: "localOperator",
+            authoritySequence: 10,
+            branchName: "gaia/run-7777777777",
+            decision: "approved",
+            gaiaEvidenceId: "evidence-0123456789abcdef",
+            headSha,
+            prNumber: 91,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+            publicationConfirmationSequence: 5,
+            publicationOperationId,
+            publicationPayloadDigest,
+            readyConfirmationActionId: "ready-1",
+            readyConfirmationPayloadDigest: "d".repeat(64),
+            readyConfirmationSequence: 9,
+            repository: "cill-i-am/gaia",
+            runId,
+            state: "intentRecorded",
+            version: 1,
+          },
+          authoritativeHeadSha: headSha,
+          eventSequence: 11,
+          latestReadyForReviewAction: {
+            actionId: "ready-1", branchName: "gaia/run-7777777777", draft: false, expectedHeadSha: headSha,
+            payloadDigest: "d".repeat(64), prNumber: 91, prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+            publicationOperationId, publicationPayloadDigest, repository: "cill-i-am/gaia", runId, state: "dispatchConfirmed", version: 1,
+          },
+          mode: "pullRequest",
+          observation: {
+            blockers: [], branchName: "gaia/run-7777777777", checks: [], draft: false, feedback: [], headSha,
+            mergeability: "mergeable", observedAt: "2026-07-13T11:00:00.000Z", prNumber: 91,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/91", repository: "cill-i-am/gaia",
+            reviewDecision: "REVIEW_REQUIRED", snapshotDigest: "b".repeat(64), status: "ready", version: 1,
+          },
+          publication: { branchName: "gaia/run-7777777777", commitSha: headSha, draft: true, prNumber: 91, prUrl: "https://github.com/cill-i-am/gaia/pull/91", state: "confirmed" },
+          recoveryActions: [], runId, stage: "waitingForPr", status: "waitingForPr",
+        },
+      },
+      runs: [localRunSummary({ runId, state: "delivering", status: "running" })],
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Resume paired review" }));
+    await waitFor(() => expect(queryFixture.deliveryActionInputs).toHaveLength(1));
+    expect(queryFixture.deliveryActionInputs[0]?.action).toMatchObject({ actionId: "attestation-active-1", decision: "approved", expectedHeadSha: headSha, kind: "attestPairedReviewApproval" });
+  });
+
+  it.each([undefined, "CHANGES_REQUESTED", "HOSTILE_UNKNOWN"] as const)("withholds paired-review attestation for observation review state %s", async (reviewDecision) => {
+    const runId = parseRunId("run-7777777777");
+    const headSha = "a".repeat(40);
+    const snapshot = {
+      authoritativeHeadSha: headSha,
+      eventSequence: 10,
+      latestReadyForReviewAction: { actionId: "ready-1", branchName: "gaia/run-7777777777", draft: false, expectedHeadSha: headSha, payloadDigest: "d".repeat(64), prNumber: 91, prUrl: "https://github.com/cill-i-am/gaia/pull/91", publicationOperationId: "delivery:run-7777777777:1", publicationPayloadDigest: "e".repeat(64), repository: "cill-i-am/gaia", runId, state: "dispatchConfirmed", version: 1 },
+      mode: "pullRequest",
+      ...(reviewDecision === undefined ? {} : { observation: { blockers: [], branchName: "gaia/run-7777777777", checks: [], draft: false, feedback: [], headSha, mergeability: "mergeable", observedAt: "2026-07-13T11:00:00.000Z", prNumber: 91, prUrl: "https://github.com/cill-i-am/gaia/pull/91", repository: "cill-i-am/gaia", reviewDecision, snapshotDigest: "b".repeat(64), status: "ready", version: 1 } }),
+      publication: { branchName: "gaia/run-7777777777", commitSha: headSha, draft: true, prNumber: 91, prUrl: "https://github.com/cill-i-am/gaia/pull/91", state: "confirmed" },
+      recoveryActions: [], runId, stage: "waitingForPr", status: "waitingForPr",
+    };
+    renderDashboardWithQueries({ deliverySnapshotsByRunId: { [runId]: snapshot }, runs: [localRunSummary({ runId, state: "delivering", status: "running" })] });
+    await screen.findByTestId("selected-run-ready-status");
+    expect(screen.queryByRole("button", { name: /paired review/iu })).toBeNull();
+  });
+
   it("renders CI, review, blocker, and remediation attempt state", async () => {
     const runId = parseRunId("run-7777777777");
     const feedbackId = parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`);

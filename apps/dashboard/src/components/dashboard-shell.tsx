@@ -23,6 +23,7 @@ import { Option, Schema } from "effect";
 import {
   ActivityIcon,
   AlertCircleIcon,
+  BadgeCheckIcon,
   BoxIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -1945,6 +1946,13 @@ function CommandHeader({
   const canStartReadyForReview = deliverySnapshot === undefined
     ? false
     : hasExactDraftPullRequestObservation(deliverySnapshot);
+  const localReviewAttestation = deliverySnapshot === undefined
+    ? undefined
+    : authoritativeLocalReviewAttestation(deliverySnapshot);
+  const localReviewAttestationConfirmed = localReviewAttestation?.state === "confirmed";
+  const canStartLocalReviewAttestation = deliverySnapshot === undefined
+    ? false
+    : hasExactLocalReviewAttestationObservation(deliverySnapshot);
   const selectedConsoleRun = serverConnection.selectedRun;
   const selectedStatusLabel =
     selectedConsoleRun?.statusLabel ?? statusLabels[selectedRun.status];
@@ -2019,6 +2027,20 @@ function CommandHeader({
               ) : null}
               {deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed ? (
                 <span className="font-medium text-foreground" data-testid="selected-run-ready-status">Ready for review</span>
+              ) : null}
+              {deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && !localReviewAttestationConfirmed && (localReviewAttestation?.state === "intentRecorded" || canStartLocalReviewAttestation) ? (
+                <Button
+                  disabled={deliveryActionPending}
+                  onClick={() => void onDeliveryAction(localReviewAttestationAction(deliverySnapshot))}
+                  size="xs"
+                  variant="outline"
+                >
+                  {localReviewAttestation?.state === "intentRecorded" ? <RefreshCwIcon className={cn(deliveryActionPending && "animate-spin")} data-icon="inline-start" /> : <BadgeCheckIcon data-icon="inline-start" />}
+                  {localReviewAttestation?.state === "intentRecorded" ? "Resume paired review" : "Record paired review"}
+                </Button>
+              ) : null}
+              {localReviewAttestationConfirmed ? (
+                <span className="font-medium text-foreground" data-testid="selected-run-local-review-status">Paired review attested</span>
               ) : null}
               {deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && deliverySnapshot.mergeDecision?.approved !== true ? (
                 <div className="flex flex-wrap items-center gap-1" aria-label="Evaluate merge readiness">
@@ -4401,6 +4423,56 @@ function hasExactDraftPullRequestObservation(snapshot: typeof DeliverySnapshotDt
     snapshot.observation.prNumber === snapshot.publication.prNumber &&
     snapshot.observation.prUrl === snapshot.publication.prUrl &&
     snapshot.observation.repository === repository;
+}
+
+function authoritativeLocalReviewAttestation(snapshot: typeof DeliverySnapshotDto.Type) {
+  const receipt = snapshot.activeLocalReviewAttestation ??
+    (snapshot.latestLocalReviewAttestation?.state === "confirmed" ? snapshot.latestLocalReviewAttestation : undefined);
+  const headSha = currentDeliveryHead(snapshot);
+  if (receipt === undefined || headSha === undefined || snapshot.publication?.state !== "confirmed") return undefined;
+  const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(snapshot.publication.prUrl)?.[1];
+  return receipt.runId === snapshot.runId &&
+    receipt.repository === repository &&
+    receipt.prNumber === snapshot.publication.prNumber &&
+    receipt.prUrl === snapshot.publication.prUrl &&
+    receipt.branchName === snapshot.publication.branchName &&
+    receipt.headSha === headSha
+    ? receipt
+    : undefined;
+}
+
+function hasExactLocalReviewAttestationObservation(snapshot: typeof DeliverySnapshotDto.Type) {
+  if (!hasCurrentReadyForReviewConfirmation(snapshot) || snapshot.publication?.state !== "confirmed" || snapshot.observation === undefined) return false;
+  const headSha = currentDeliveryHead(snapshot);
+  const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(snapshot.publication.prUrl)?.[1];
+  const reviewDecision = snapshot.observation.reviewDecision;
+  return headSha !== undefined && repository !== undefined &&
+    snapshot.observation.branchName === snapshot.publication.branchName &&
+    !snapshot.observation.draft &&
+    snapshot.observation.headSha === headSha &&
+    snapshot.observation.prNumber === snapshot.publication.prNumber &&
+    snapshot.observation.prUrl === snapshot.publication.prUrl &&
+    snapshot.observation.repository === repository &&
+    (reviewDecision === undefined || reviewDecision === "REVIEW_REQUIRED");
+}
+
+export function localReviewAttestationAction(snapshot: typeof DeliverySnapshotDto.Type) {
+  if (snapshot.publication?.state !== "confirmed") throw new Error("Confirmed pull request is required.");
+  const authoritative = authoritativeLocalReviewAttestation(snapshot);
+  if (authoritative === undefined && !hasExactLocalReviewAttestationObservation(snapshot)) {
+    throw new Error("Exact current non-draft pull-request observation is required.");
+  }
+  const expectedHeadSha = authoritative?.headSha ?? currentDeliveryHead(snapshot);
+  if (expectedHeadSha === undefined) throw new Error("Authoritative current delivery head is required.");
+  return {
+    actionId: authoritative?.actionId ?? `attestation-${crypto.randomUUID()}`,
+    decision: "approved" as const,
+    expectedBranchName: authoritative?.branchName ?? snapshot.publication.branchName,
+    expectedHeadSha,
+    expectedPrNumber: authoritative?.prNumber ?? snapshot.publication.prNumber,
+    expectedPrUrl: authoritative?.prUrl ?? snapshot.publication.prUrl,
+    kind: "attestPairedReviewApproval" as const,
+  };
 }
 
 export function readyForReviewAction(snapshot: typeof DeliverySnapshotDto.Type) {

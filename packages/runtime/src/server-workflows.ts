@@ -2,6 +2,7 @@ import {
   DeliveryFeedbackTrustPolicyV1,
   deliveryFeedbackRequiresApprovedReview,
   type DeliveryMergeActionRequest,
+  type DeliveryAttestPairedReviewActionRequest,
   type DeliveryMarkReadyForReviewActionRequest,
   type DeliveryEvaluateMergeReadinessActionRequest,
   type DeliveryRetryCleanupActionRequest,
@@ -108,6 +109,7 @@ import {
   requiredCheckPolicyFromTrustPolicy,
 } from "./delivery-merge-coordinator.js";
 import { coordinateDeliveryPullRequestReady } from "./delivery-ready-for-review-coordinator.js";
+import { coordinateDeliveryLocalReviewAttestation } from "./delivery-review-attestation-coordinator.js";
 
 const nanoid = customAlphabet(
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-",
@@ -118,6 +120,7 @@ export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly deliveryAcceptanceProvenancePolicy?: DeliveryAcceptanceProvenancePolicyV1;
   readonly deliveryMergeActivator?: DeliveryMergeActionHandler;
   readonly deliveryReadyForReviewActivator?: DeliveryReadyForReviewActionHandler;
+  readonly deliveryLocalReviewAttestationActivator?: DeliveryLocalReviewAttestationActionHandler;
   readonly deliveryRemediationActivator?: DeliveryRemediationActionHandler;
   readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
   readonly deliveryPublicationCommandRunner?: GitHubCommandRunner;
@@ -602,6 +605,12 @@ export type DeliveryReadyForReviewActionHandler = (
   options: ServerWorkflowOptions,
 ) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
 
+export type DeliveryLocalReviewAttestationActionHandler = (
+  runId: string,
+  action: DeliveryAttestPairedReviewActionRequest,
+  options: ServerWorkflowOptions,
+) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | Path.Path>;
+
 export function actOnDeliveryReadyForReview(
   runIdInput: string,
   action: DeliveryMarkReadyForReviewActionRequest,
@@ -610,6 +619,20 @@ export function actOnDeliveryReadyForReview(
   return Effect.gen(function* () {
     const runId = yield* parseRunIdEffect(runIdInput);
     return yield* coordinateDeliveryPullRequestReady(runId, action, {
+      ...(options.deliveryPublicationCommandRunner === undefined ? {} : { commandRunner: options.deliveryPublicationCommandRunner }),
+      rootDirectory: options.rootDirectory ?? ".",
+    });
+  });
+}
+
+export function actOnDeliveryLocalReviewAttestation(
+  runIdInput: string,
+  action: DeliveryAttestPairedReviewActionRequest,
+  options: ServerWorkflowOptions = {},
+) {
+  return Effect.gen(function* () {
+    const runId = yield* parseRunIdEffect(runIdInput);
+    return yield* coordinateDeliveryLocalReviewAttestation(runId, action, {
       ...(options.deliveryPublicationCommandRunner === undefined ? {} : { commandRunner: options.deliveryPublicationCommandRunner }),
       rootDirectory: options.rootDirectory ?? ".",
     });

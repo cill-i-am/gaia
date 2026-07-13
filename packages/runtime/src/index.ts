@@ -507,6 +507,10 @@ export {
   type FreshReadyForReviewState,
 } from "./delivery-ready-for-review-coordinator.js";
 export {
+  coordinateDeliveryLocalReviewAttestation,
+  type DeliveryLocalReviewAttestationCoordinatorOptions,
+} from "./delivery-review-attestation-coordinator.js";
+export {
   CleanupCrashInjected,
   coordinateWorktreeCleanup,
   coordinateBranchCleanup,

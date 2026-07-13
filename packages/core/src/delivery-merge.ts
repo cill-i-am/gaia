@@ -3,6 +3,8 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { utf8ToBytes } from "@noble/hashes/utils.js";
 import type { RunEvent } from "./events.js";
 import { RunIdSchema } from "./run-id.js";
+import { deriveDeliveryAuthority } from "./delivery-remediation.js";
+import type { DeliveryPublication } from "./delivery-publication.js";
 
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
 const Digest = Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u)));
@@ -19,6 +21,13 @@ const Repository = Schema.String.pipe(
 const StableCheckField = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isPattern(/^[A-Za-z0-9_.:/ -]+$/u)),
   Schema.check(Schema.isMaxLength(200)),
+);
+const GaiaEvidenceId = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^evidence-[A-Za-z0-9_-]{16,120}$/u)),
+  Schema.check(Schema.isMaxLength(129)),
+);
+const PositiveSequence = Schema.Int.pipe(
+  Schema.check(Schema.isGreaterThanOrEqualTo(1)),
 );
 
 export const DeliveryMergeMethodSchema = Schema.Literals([
@@ -72,9 +81,217 @@ export class DeliveryMergeReadinessDecision extends Schema.Class<DeliveryMergeRe
   prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
   prUrl: Schema.String.pipe(Schema.check(Schema.isPattern(/^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u))),
 }, strict) {}
-export const parseDeliveryMergeReadinessDecision = Schema.decodeUnknownSync(DeliveryMergeReadinessDecision);
-const DeliveryMergeReadinessDecisionJson = Schema.toCodecJson(DeliveryMergeReadinessDecision);
+
+export class DeliveryGitHubApprovedReviewSource extends Schema.Class<DeliveryGitHubApprovedReviewSource>(
+  "DeliveryGitHubApprovedReviewSource",
+)({
+  kind: Schema.Literal("githubApproved"),
+  reviewDecision: Schema.Literal("APPROVED"),
+  version: Schema.Literal(1),
+}, strict) {}
+
+export class DeliveryLocalOperatorReviewSource extends Schema.Class<DeliveryLocalOperatorReviewSource>(
+  "DeliveryLocalOperatorReviewSource",
+)({
+  attestationActionId: BoundedId,
+  attestationConfirmationSequence: PositiveSequence,
+  attestationPayloadDigest: Digest,
+  authoritySequence: PositiveSequence,
+  gaiaEvidenceDigest: Schema.optionalKey(Digest),
+  gaiaEvidenceId: GaiaEvidenceId,
+  headSha: GitSha,
+  kind: Schema.Literal("localOperatorPairedReview"),
+  version: Schema.Literal(1),
+}, strict) {}
+
+export class DeliveryReviewApprovalNotRequiredSource extends Schema.Class<DeliveryReviewApprovalNotRequiredSource>(
+  "DeliveryReviewApprovalNotRequiredSource",
+)({
+  kind: Schema.Literal("notRequired"),
+  version: Schema.Literal(1),
+}, strict) {}
+
+export const DeliveryReviewApprovalSourceSchema = Schema.Union([
+  DeliveryGitHubApprovedReviewSource,
+  DeliveryLocalOperatorReviewSource,
+  DeliveryReviewApprovalNotRequiredSource,
+]);
+export type DeliveryReviewApprovalSource = typeof DeliveryReviewApprovalSourceSchema.Type;
+
+const readinessDecisionV2Binding = {
+  actionId: BoundedId,
+  approved: Schema.Boolean,
+  approvalSource: Schema.optionalKey(DeliveryReviewApprovalSourceSchema),
+  authoritySequence: PositiveSequence,
+  blockers: Schema.Array(Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200)))).pipe(Schema.check(Schema.isMaxLength(20))),
+  branchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
+  headSha: GitSha,
+  mergeMethod: DeliveryMergeMethodSchema,
+  policyDigest: Digest,
+  policyVersion: Schema.Literal(1),
+  prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+  prUrl: Schema.String.pipe(Schema.check(Schema.isPattern(/^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u))),
+  publicationConfirmationSequence: PositiveSequence,
+  publicationOperationId: BoundedId,
+  publicationPayloadDigest: Digest,
+  repository: Repository,
+  runId: RunIdSchema,
+  version: Schema.Literal(2),
+} as const;
+
+export type DeliveryMergeReadinessDecisionV2Binding = {
+      readonly actionId: string;
+      readonly approved: boolean;
+      readonly approvalSource?: DeliveryReviewApprovalSource;
+      readonly authoritySequence: number;
+      readonly blockers: ReadonlyArray<string>;
+      readonly branchName: string;
+      readonly headSha: string;
+      readonly mergeMethod: DeliveryMergeMethod;
+      readonly policyDigest: string;
+      readonly policyVersion: 1;
+      readonly prNumber: number;
+      readonly prUrl: string;
+      readonly publicationConfirmationSequence: number;
+      readonly publicationOperationId: string;
+      readonly publicationPayloadDigest: string;
+      readonly repository: string;
+      readonly runId: string;
+      readonly version: 2;
+};
+
+function readinessApprovalSourceCanonicalPayload(source: DeliveryReviewApprovalSource | undefined) {
+  if (source === undefined) return "none";
+  if (source.kind === "githubApproved") return canonicalFields([source.kind, source.reviewDecision, String(source.version)]);
+  if (source.kind === "notRequired") return canonicalFields([source.kind, String(source.version)]);
+  return canonicalFields([
+    source.kind,
+    source.attestationActionId,
+    source.attestationPayloadDigest,
+    String(source.attestationConfirmationSequence),
+    String(source.authoritySequence),
+    source.headSha,
+    source.gaiaEvidenceId,
+    source.gaiaEvidenceDigest ?? "",
+    String(source.version),
+  ]);
+}
+
+export function deliveryMergeReadinessDecisionV2CanonicalPayload(binding: DeliveryMergeReadinessDecisionV2Binding) {
+  return canonicalFields([
+    "gaia.delivery.merge-readiness.v2",
+    binding.actionId,
+    binding.runId,
+    binding.publicationOperationId,
+    binding.publicationPayloadDigest,
+    String(binding.publicationConfirmationSequence),
+    String(binding.authoritySequence),
+    binding.repository,
+    String(binding.prNumber),
+    binding.prUrl,
+    binding.branchName,
+    binding.headSha,
+    binding.mergeMethod,
+    binding.policyDigest,
+    String(binding.policyVersion),
+    binding.approved ? "approved" : "denied",
+    ...binding.blockers,
+    readinessApprovalSourceCanonicalPayload(binding.approvalSource),
+    String(binding.version),
+  ]);
+}
+
+export function deliveryMergeReadinessDecisionV2PayloadDigest(binding: DeliveryMergeReadinessDecisionV2Binding) {
+  return sha256Hex(deliveryMergeReadinessDecisionV2CanonicalPayload(binding));
+}
+
+export class DeliveryMergeReadinessDecisionV2 extends Schema.Class<DeliveryMergeReadinessDecisionV2>(
+  "DeliveryMergeReadinessDecisionV2",
+)({
+  ...readinessDecisionV2Binding,
+  payloadDigest: Digest,
+}, strict) {}
+
+export const DeliveryMergeReadinessDecisionSchema = Schema.Union([
+  DeliveryMergeReadinessDecision,
+  DeliveryMergeReadinessDecisionV2,
+]);
+export type DeliveryMergeReadinessDecisionReceipt = typeof DeliveryMergeReadinessDecisionSchema.Type;
+export const parseDeliveryMergeReadinessDecision = Schema.decodeUnknownSync(DeliveryMergeReadinessDecisionSchema);
+const DeliveryMergeReadinessDecisionJson = Schema.toCodecJson(DeliveryMergeReadinessDecisionSchema);
 export const encodeDeliveryMergeReadinessDecisionJson = Schema.encodeSync(DeliveryMergeReadinessDecisionJson);
+
+function canonicalFields(fields: ReadonlyArray<string>) {
+  return fields.map((field) => `${field.length}:${field}`).join("|");
+}
+
+function sha256Hex(value: string) {
+  return Array.from(sha256(utf8ToBytes(value)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function assertDeliveryMergeReadinessDecisionAuthority(
+  decision: DeliveryMergeReadinessDecisionReceipt,
+  input: {
+    readonly enclosingRunId: string;
+    readonly eventSequence: number;
+    readonly events: ReadonlyArray<RunEvent>;
+    readonly publication: DeliveryPublication;
+    readonly repository: string;
+  },
+) {
+  // Version 1 is retained as a compatibility-only historical receipt.
+  if (!(decision instanceof DeliveryMergeReadinessDecisionV2)) return;
+  if (input.publication.state !== "confirmed") throw new Error("Merge readiness requires a confirmed publication.");
+  const authority = deriveDeliveryAuthority(input.publication, input.events, input.eventSequence - 1);
+  if (
+    decision.runId !== input.enclosingRunId ||
+    decision.publicationOperationId !== input.publication.operationId ||
+    decision.publicationPayloadDigest !== input.publication.payloadDigest ||
+    decision.publicationConfirmationSequence !== authority.publicationConfirmationSequence ||
+    decision.authoritySequence !== authority.authoritySequence ||
+    decision.repository !== input.repository ||
+    decision.prNumber !== input.publication.prNumber ||
+    decision.prUrl !== input.publication.prUrl ||
+    decision.branchName !== input.publication.branchName ||
+    decision.headSha !== authority.headSha
+  ) {
+    throw new Error("Merge readiness decision does not match the current delivery authority.");
+  }
+  if (decision.payloadDigest !== deliveryMergeReadinessDecisionV2PayloadDigest(decision)) {
+    throw new Error("Merge readiness decision payload digest is invalid.");
+  }
+  if (decision.approved !== (decision.blockers.length === 0)) {
+    throw new Error("Merge readiness approval and blockers are inconsistent.");
+  }
+  if (!decision.approved) {
+    if (decision.approvalSource !== undefined) throw new Error("Denied merge readiness cannot claim an approval source.");
+    return;
+  }
+  if (decision.approvalSource === undefined) throw new Error("Approved merge readiness requires an approval source.");
+  if (decision.approvalSource.kind !== "localOperatorPairedReview") return;
+  const source = decision.approvalSource;
+  const attestationEvent = input.events.find(({ sequence }) => sequence === source.attestationConfirmationSequence);
+  if (
+    attestationEvent?.type !== "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED" ||
+    attestationEvent.sequence >= input.eventSequence
+  ) {
+    throw new Error("Merge readiness local approval source is not a prior attestation confirmation.");
+  }
+  const attestation = parseDeliveryLocalReviewAttestationReceipt(attestationEvent.payload["attestation"]);
+  if (
+    attestation.state !== "confirmed" ||
+    attestation.actionId !== source.attestationActionId ||
+    attestation.attestationPayloadDigest !== source.attestationPayloadDigest ||
+    attestation.authoritySequence !== source.authoritySequence ||
+    attestation.headSha !== source.headSha ||
+    attestation.gaiaEvidenceId !== source.gaiaEvidenceId ||
+    attestation.gaiaEvidenceDigest !== source.gaiaEvidenceDigest ||
+    attestation.authoritySequence !== authority.authoritySequence ||
+    attestation.headSha !== authority.headSha
+  ) {
+    throw new Error("Merge readiness local approval source binding is invalid.");
+  }
+}
 
 export function requiredCheckKey(check: typeof DeliveryRequiredCheckIdentity.Type) {
   return [check.repository, check.workflow, check.name, check.appSlug]
@@ -272,6 +489,216 @@ export const parseDeliveryPullRequestReadyReceipt = Schema.decodeUnknownSync(Del
 const DeliveryPullRequestReadyReceiptJson = Schema.toCodecJson(DeliveryPullRequestReadyReceiptSchema);
 export const encodeDeliveryPullRequestReadyReceiptJson = Schema.encodeSync(DeliveryPullRequestReadyReceiptJson);
 
+const localReviewAttestationBinding = {
+  actionId: BoundedId,
+  attestationPayloadDigest: Digest,
+  authority: Schema.Literal("localOperator"),
+  authoritySequence: PositiveSequence,
+  branchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
+  decision: Schema.Literal("approved"),
+  gaiaEvidenceDigest: Schema.optionalKey(Digest),
+  gaiaEvidenceId: GaiaEvidenceId,
+  headSha: GitSha,
+  prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+  prUrl: Schema.String.pipe(Schema.check(Schema.isPattern(/^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u))),
+  publicationConfirmationSequence: PositiveSequence,
+  publicationOperationId: BoundedId,
+  publicationPayloadDigest: Digest,
+  readyConfirmationActionId: BoundedId,
+  readyConfirmationPayloadDigest: Digest,
+  readyConfirmationSequence: PositiveSequence,
+  repository: Repository,
+  runId: RunIdSchema,
+  version: Schema.Literal(1),
+} as const;
+
+export type DeliveryLocalReviewAttestationBinding = {
+  readonly actionId: string;
+  readonly authority: "localOperator";
+  readonly authoritySequence: number;
+  readonly branchName: string;
+  readonly decision: "approved";
+  readonly gaiaEvidenceDigest?: string;
+  readonly gaiaEvidenceId: string;
+  readonly headSha: string;
+  readonly prNumber: number;
+  readonly prUrl: string;
+  readonly publicationConfirmationSequence: number;
+  readonly publicationOperationId: string;
+  readonly publicationPayloadDigest: string;
+  readonly readyConfirmationActionId: string;
+  readonly readyConfirmationPayloadDigest: string;
+  readonly readyConfirmationSequence: number;
+  readonly repository: string;
+  readonly runId: string;
+  readonly version: 1;
+};
+
+/** Canonical Gaia action binding. This digest does not verify external evidence content. */
+export function deliveryLocalReviewAttestationCanonicalPayload(
+  binding: DeliveryLocalReviewAttestationBinding,
+) {
+  const fields = [
+    binding.actionId,
+    binding.runId,
+    binding.authority,
+    binding.decision,
+    binding.publicationOperationId,
+    binding.publicationPayloadDigest,
+    String(binding.publicationConfirmationSequence),
+    String(binding.authoritySequence),
+    binding.repository,
+    String(binding.prNumber),
+    binding.prUrl,
+    binding.branchName,
+    binding.headSha,
+    binding.readyConfirmationActionId,
+    binding.readyConfirmationPayloadDigest,
+    String(binding.readyConfirmationSequence),
+    binding.gaiaEvidenceId,
+    binding.gaiaEvidenceDigest ?? "",
+    String(binding.version),
+  ];
+  return ["gaia.delivery.local-paired-review-attestation.v1", ...fields]
+    .map((field) => `${field.length}:${field}`)
+    .join("|");
+}
+
+export function deliveryLocalReviewAttestationPayloadDigest(
+  binding: DeliveryLocalReviewAttestationBinding,
+) {
+  return Array.from(
+    sha256(utf8ToBytes(deliveryLocalReviewAttestationCanonicalPayload(binding))),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+export class DeliveryLocalReviewAttestationIntent extends Schema.Class<DeliveryLocalReviewAttestationIntent>(
+  "DeliveryLocalReviewAttestationIntent",
+)({
+  ...localReviewAttestationBinding,
+  state: Schema.Literal("intentRecorded"),
+}, strict) {}
+
+export class DeliveryLocalReviewAttestationConfirmed extends Schema.Class<DeliveryLocalReviewAttestationConfirmed>(
+  "DeliveryLocalReviewAttestationConfirmed",
+)({
+  ...localReviewAttestationBinding,
+  state: Schema.Literal("confirmed"),
+}, strict) {}
+
+export class DeliveryLocalReviewAttestationFailed extends Schema.Class<DeliveryLocalReviewAttestationFailed>(
+  "DeliveryLocalReviewAttestationFailed",
+)({
+  ...localReviewAttestationBinding,
+  code: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(160))),
+  message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1_024))),
+  state: Schema.Literal("failed"),
+}, strict) {}
+
+export const DeliveryLocalReviewAttestationReceiptSchema = Schema.Union([
+  DeliveryLocalReviewAttestationIntent,
+  DeliveryLocalReviewAttestationConfirmed,
+  DeliveryLocalReviewAttestationFailed,
+]);
+export type DeliveryLocalReviewAttestationReceipt = typeof DeliveryLocalReviewAttestationReceiptSchema.Type;
+export const parseDeliveryLocalReviewAttestationReceipt = Schema.decodeUnknownSync(DeliveryLocalReviewAttestationReceiptSchema);
+const DeliveryLocalReviewAttestationReceiptJson = Schema.toCodecJson(DeliveryLocalReviewAttestationReceiptSchema);
+export const encodeDeliveryLocalReviewAttestationReceiptJson = Schema.encodeSync(DeliveryLocalReviewAttestationReceiptJson);
+
+export function assertDeliveryLocalReviewAttestationAuthority(
+  receipt: DeliveryLocalReviewAttestationReceipt,
+  input: {
+    readonly enclosingRunId: string;
+    readonly eventSequence: number;
+    readonly events: ReadonlyArray<RunEvent>;
+    readonly publication: DeliveryPublication;
+    readonly repository: string;
+  },
+) {
+  if (input.publication.state !== "confirmed") throw new Error("Local review attestation requires a confirmed publication.");
+  if (receipt.runId !== input.enclosingRunId) {
+    throw new Error("Local review attestation does not match its enclosing run.");
+  }
+  const authority = deriveDeliveryAuthority(input.publication, input.events, input.eventSequence - 1);
+  if (
+    receipt.publicationOperationId !== input.publication.operationId ||
+    receipt.publicationPayloadDigest !== input.publication.payloadDigest ||
+    receipt.publicationConfirmationSequence !== authority.publicationConfirmationSequence ||
+    receipt.authoritySequence !== authority.authoritySequence ||
+    receipt.repository !== input.repository ||
+    receipt.prNumber !== input.publication.prNumber ||
+    receipt.prUrl !== input.publication.prUrl ||
+    receipt.branchName !== input.publication.branchName ||
+    receipt.headSha !== authority.headSha
+  ) {
+    throw new Error("Local review attestation does not match the confirmed delivery authority.");
+  }
+  const readyEvent = input.events.find(({ sequence }) => sequence === receipt.readyConfirmationSequence);
+  if (
+    readyEvent?.type !== "DELIVERY_PR_READY_RECORDED" ||
+    readyEvent.sequence >= input.eventSequence ||
+    readyEvent.sequence <= authority.authoritySequence
+  ) {
+    throw new Error("Local review attestation requires a post-authority ready confirmation.");
+  }
+  const ready = parseDeliveryPullRequestReadyReceipt(readyEvent.payload["readyForReviewAction"]);
+  if (
+    (ready.state !== "confirmedWithoutDispatch" && ready.state !== "dispatchConfirmed") ||
+    ready.actionId !== receipt.readyConfirmationActionId ||
+    ready.payloadDigest !== receipt.readyConfirmationPayloadDigest ||
+    ready.runId !== receipt.runId ||
+    ready.publicationOperationId !== receipt.publicationOperationId ||
+    ready.publicationPayloadDigest !== receipt.publicationPayloadDigest ||
+    ready.repository !== receipt.repository ||
+    ready.prNumber !== receipt.prNumber ||
+    ready.prUrl !== receipt.prUrl ||
+    ready.branchName !== receipt.branchName ||
+    ready.expectedHeadSha !== receipt.headSha
+  ) {
+    throw new Error("Local review attestation ready confirmation binding is invalid.");
+  }
+  if (receipt.attestationPayloadDigest !== deliveryLocalReviewAttestationPayloadDigest(receipt)) {
+    throw new Error("Local review attestation payload digest is invalid.");
+  }
+  return authority;
+}
+
+export function currentDeliveryLocalReviewAttestation(
+  events: ReadonlyArray<RunEvent>,
+  input: {
+    readonly publication: DeliveryPublication;
+    readonly repository: string;
+    readonly runId: string;
+  },
+) {
+  if (input.publication.state !== "confirmed") throw new Error("Current local review attestation requires a confirmed publication.");
+  const publication = input.publication;
+  const authority = deriveDeliveryAuthority(publication, events);
+  const histories = deriveDeliveryLocalReviewAttestationHistories(events.flatMap((event) =>
+    event.type === "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED"
+      ? [{ receipt: parseDeliveryLocalReviewAttestationReceipt(event.payload["attestation"]), sequence: event.sequence }]
+      : []
+  ));
+  const current = histories.histories.filter(({ latest, latestSequence }) =>
+    latest.state === "confirmed" &&
+    latest.runId === input.runId &&
+    latest.publicationOperationId === publication.operationId &&
+    latest.publicationPayloadDigest === publication.payloadDigest &&
+    latest.publicationConfirmationSequence === authority.publicationConfirmationSequence &&
+    latest.authoritySequence === authority.authoritySequence &&
+    latest.repository === input.repository &&
+    latest.prNumber === publication.prNumber &&
+    latest.prUrl === publication.prUrl &&
+    latest.branchName === publication.branchName &&
+    latest.headSha === authority.headSha &&
+    latest.readyConfirmationSequence > authority.authoritySequence &&
+    latestSequence >= latest.readyConfirmationSequence
+  );
+  if (current.length > 1) throw new Error("Only one current local review attestation may be confirmed.");
+  return current[0];
+}
+
 export const DeliveryCleanupResourceStateSchema = Schema.Literals(["present", "absent"] as const);
 const cleanupBase = {
   actionId: BoundedId,
@@ -315,6 +742,69 @@ export type DeliveryPullRequestReadyActionHistory = {
   readonly latestSequence: number;
   readonly receipts: ReadonlyArray<{ readonly receipt: DeliveryPullRequestReadyReceipt; readonly sequence: number }>;
 };
+export type DeliveryLocalReviewAttestationActionHistory = {
+  readonly actionId: string;
+  readonly latest: DeliveryLocalReviewAttestationReceipt;
+  readonly latestSequence: number;
+  readonly receipts: ReadonlyArray<{ readonly receipt: DeliveryLocalReviewAttestationReceipt; readonly sequence: number }>;
+};
+
+export function deriveDeliveryLocalReviewAttestationHistories(
+  events: ReadonlyArray<{ readonly receipt: DeliveryLocalReviewAttestationReceipt; readonly sequence: number }>,
+) {
+  const histories = new Map<string, DeliveryLocalReviewAttestationActionHistory>();
+  for (const event of events) {
+    const previous = histories.get(event.receipt.actionId);
+    if (previous === undefined) {
+      const active = [...histories.values()].find(({ latest }) => latest.state === "intentRecorded");
+      if (active !== undefined) {
+        throw new Error("An unresolved local review attestation cannot be superseded.");
+      }
+    }
+    validateDeliveryLocalReviewAttestationTransition(previous?.latest, event.receipt);
+    if (event.receipt.state === "confirmed") {
+      const confirmed = event.receipt;
+      if ([...histories.values()].some(({ actionId, latest }) =>
+        actionId !== confirmed.actionId &&
+        latest.state === "confirmed" &&
+        sameDeliveryLocalReviewAttestationGeneration(latest, confirmed)
+      )) {
+        throw new Error("Only one local review attestation may confirm the same delivery authority.");
+      }
+    }
+    histories.set(event.receipt.actionId, {
+      actionId: event.receipt.actionId,
+      latest: event.receipt,
+      latestSequence: event.sequence,
+      receipts: [...(previous?.receipts ?? []), event],
+    });
+  }
+  const ordered = [...histories.values()].sort(
+    (left, right) => left.latestSequence - right.latestSequence || left.actionId.localeCompare(right.actionId),
+  );
+  const active = ordered.filter(({ latest }) => latest.state === "intentRecorded");
+  if (active.length > 1) throw new Error("Only one local review attestation may be active.");
+  return { active: active[0], histories: ordered, latest: ordered.at(-1) };
+}
+
+function sameDeliveryLocalReviewAttestationGeneration(
+  left: DeliveryLocalReviewAttestationConfirmed,
+  right: DeliveryLocalReviewAttestationConfirmed,
+) {
+  return left.runId === right.runId &&
+    left.publicationOperationId === right.publicationOperationId &&
+    left.publicationPayloadDigest === right.publicationPayloadDigest &&
+    left.publicationConfirmationSequence === right.publicationConfirmationSequence &&
+    left.authoritySequence === right.authoritySequence &&
+    left.repository === right.repository &&
+    left.prNumber === right.prNumber &&
+    left.prUrl === right.prUrl &&
+    left.branchName === right.branchName &&
+    left.headSha === right.headSha &&
+    left.decision === right.decision &&
+    left.authority === right.authority &&
+    left.version === right.version;
+}
 
 export function deriveDeliveryPullRequestReadyActionHistories(
   events: ReadonlyArray<{ readonly receipt: DeliveryPullRequestReadyReceipt; readonly sequence: number }>,
@@ -385,13 +875,52 @@ export function deriveDeliveryCleanupActionHistories(events: ReadonlyArray<{ rea
   return { active: active[0], histories: ordered, latest: ordered.at(-1) };
 }
 
-export function deliveryActionAuditSummary(input: { readonly cleanup: ReturnType<typeof deriveDeliveryCleanupActionHistories>; readonly merge: ReturnType<typeof deriveDeliveryMergeActionHistories>; readonly readyForReview?: ReturnType<typeof deriveDeliveryPullRequestReadyActionHistories> }, limit = 20) {
+export function deliveryActionAuditSummary(input: { readonly cleanup: ReturnType<typeof deriveDeliveryCleanupActionHistories>; readonly localReviewAttestation?: ReturnType<typeof deriveDeliveryLocalReviewAttestationHistories>; readonly merge: ReturnType<typeof deriveDeliveryMergeActionHistories>; readonly readyForReview?: ReturnType<typeof deriveDeliveryPullRequestReadyActionHistories> }, limit = 20) {
   const safeLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
   return {
     cleanup: input.cleanup.histories.slice(-safeLimit).map(({ actionId, latest, latestSequence }) => ({ actionId, latestSequence, state: latest.state })),
+    localReviewAttestation: (input.localReviewAttestation?.histories ?? []).slice(-safeLimit).map(({ actionId, latest, latestSequence }) => ({ actionId, latestSequence, state: latest.state })),
     merge: input.merge.histories.slice(-safeLimit).map(({ actionId, latest, latestSequence }) => ({ actionId, latestSequence, state: latest.state })),
     readyForReview: (input.readyForReview?.histories ?? []).slice(-safeLimit).map(({ actionId, latest, latestSequence }) => ({ actionId, latestSequence, state: latest.state })),
   };
+}
+
+function validateDeliveryLocalReviewAttestationTransition(
+  previous: DeliveryLocalReviewAttestationReceipt | undefined,
+  next: DeliveryLocalReviewAttestationReceipt,
+) {
+  if (previous === undefined) {
+    if (next.state !== "intentRecorded") throw new Error("Local review attestation must begin with intent.");
+    return;
+  }
+  const binding = [
+    "actionId",
+    "attestationPayloadDigest",
+    "authority",
+    "authoritySequence",
+    "branchName",
+    "decision",
+    "gaiaEvidenceDigest",
+    "gaiaEvidenceId",
+    "headSha",
+    "prNumber",
+    "prUrl",
+    "publicationConfirmationSequence",
+    "publicationOperationId",
+    "publicationPayloadDigest",
+    "readyConfirmationActionId",
+    "readyConfirmationPayloadDigest",
+    "readyConfirmationSequence",
+    "repository",
+    "runId",
+    "version",
+  ] as const;
+  if (binding.some((key) => previous[key] !== next[key])) {
+    throw new Error("Local review attestation binding changed.");
+  }
+  if (previous.state === next.state) return;
+  if (previous.state === "intentRecorded" && (next.state === "confirmed" || next.state === "failed")) return;
+  throw new Error(`Illegal local review attestation transition ${previous.state} -> ${next.state}.`);
 }
 
 function validateDeliveryMergeActionTransition(previous: DeliveryMergeReceipt | undefined, next: DeliveryMergeReceipt) {
@@ -454,6 +983,7 @@ function isActiveReadyForReviewState(state: DeliveryPullRequestReadyReceipt["sta
 export function deriveDeliveryActionHistoriesFromEvents(events: ReadonlyArray<RunEvent>) {
   return {
     cleanup: deriveDeliveryCleanupActionHistories(events.flatMap((event) => event.type === "DELIVERY_CLEANUP_RECORDED" ? [{ receipt: parseDeliveryCleanupReceipt(event.payload["cleanup"]), sequence: event.sequence }] : [])),
+    localReviewAttestation: deriveDeliveryLocalReviewAttestationHistories(events.flatMap((event) => event.type === "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED" ? [{ receipt: parseDeliveryLocalReviewAttestationReceipt(event.payload["attestation"]), sequence: event.sequence }] : [])),
     merge: deriveDeliveryMergeActionHistories(events.flatMap((event) => event.type === "DELIVERY_MERGE_RECORDED" ? [{ receipt: parseDeliveryMergeReceipt(event.payload["mergeAction"]), sequence: event.sequence }] : [])),
     readyForReview: deriveDeliveryPullRequestReadyActionHistories(events.flatMap((event) => event.type === "DELIVERY_PR_READY_RECORDED" ? [{ receipt: parseDeliveryPullRequestReadyReceipt(event.payload["readyForReviewAction"]), sequence: event.sequence }] : [])),
   };
