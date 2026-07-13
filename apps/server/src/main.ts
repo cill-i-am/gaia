@@ -35,6 +35,7 @@ import {
 } from "@gaia/runtime";
 import {
   reconcileInterruptedServerRuns,
+  type WorkerDesktopOriginCorrelationInput,
   type WorkerCorrelationReconciliationInput,
 } from "@gaia/runtime/server-workflows";
 import { makeTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
@@ -96,6 +97,8 @@ export function runLocalGaiaServer(input: {
         harnessProviderRegistry,
         rootDirectory: identity.rootDirectory,
         ...(production === undefined ? {} : {
+          workerDesktopOriginCorrelationFollowUpDispatcher: production.dispatchDesktopOriginCorrelationFollowUp,
+          workerDesktopOriginCorrelationReconciler: production.reconcileDesktopOriginCorrelation,
           workerCorrelationFollowUpDispatcher: production.dispatchCorrelationFollowUp,
           workerCorrelationReconciler: production.reconcileCorrelation,
           workerRecoveryActivator: production.recover,
@@ -238,7 +241,50 @@ function makeProductionHarnessServices(rootDirectory: string) {
           encodeCodexHarnessCorrelation(match.threadId),
         );
       });
+    const reconcileDesktopOriginCorrelation = (input: WorkerDesktopOriginCorrelationInput) =>
+      Effect.gen(function* () {
+        const workspacePath = workerWorkspacePath(input.events);
+        const acceptedAt = input.events[0]?.timestamp;
+        if (workspacePath === undefined || acceptedAt === undefined) {
+          return yield* Effect.fail(makeRuntimeError({
+            code: "HarnessCorrelationUnavailable",
+            message: "Audited Desktop-origin correlation requires the accepted worker workspace.",
+            recoverable: false,
+          }));
+        }
+        const acceptedAtSeconds = Math.floor(Date.parse(acceptedAt) / 1000);
+        if (!Number.isFinite(acceptedAtSeconds)) {
+          return yield* Effect.fail(makeRuntimeError({
+            code: "HarnessCorrelationUnavailable",
+            message: "Audited Desktop-origin correlation requires a valid accepted creation timestamp.",
+            recoverable: false,
+          }));
+        }
+        const match = yield* findStableDesktopOriginCorrelationThread({
+          client,
+          expectedDigest: input.action.expectedNativeTurnIdDigest,
+          acceptedAtSeconds,
+          workspacePath,
+        });
+        yield* correlationStore.save(
+          input.action.expectedSessionId,
+          encodeCodexHarnessCorrelation(match.threadId),
+        );
+      });
     const dispatchCorrelationFollowUp = (input: WorkerCorrelationReconciliationInput) =>
+      dispatchCorrelationFollowUpFor(input);
+    const dispatchDesktopOriginCorrelationFollowUp = (input: WorkerDesktopOriginCorrelationInput) =>
+      dispatchCorrelationFollowUpFor(input);
+    const dispatchCorrelationFollowUpFor = (input: {
+      readonly action: {
+        readonly expectedNativeTurnIdDigest: string;
+        readonly expectedSessionId: WorkerCorrelationReconciliationInput["action"]["expectedSessionId"];
+      };
+      readonly clientInputId: string;
+      readonly events: ReadonlyArray<{ readonly payload: Record<string, unknown>; readonly type: string }>;
+      readonly followUpText: string;
+      readonly paths: { readonly root: string };
+    }) =>
       Effect.scoped(
         Effect.gen(function* () {
           const workspacePath = workerWorkspacePath(input.events);
@@ -287,7 +333,14 @@ function makeProductionHarnessServices(rootDirectory: string) {
           );
         }),
       );
-    return { dispatchCorrelationFollowUp, recover, reconcileCorrelation, registry };
+    return {
+      dispatchCorrelationFollowUp,
+      dispatchDesktopOriginCorrelationFollowUp,
+      recover,
+      reconcileCorrelation,
+      reconcileDesktopOriginCorrelation,
+      registry,
+    };
   });
 }
 
@@ -304,10 +357,41 @@ type ListedCodexThreadForReconciliation = {
   readonly createdAt: number;
   readonly cwd: string;
   readonly id: ReturnType<typeof parseCodexThreadId>;
+  readonly sessionId: string;
   readonly source: unknown;
+  readonly status?: { readonly type: string };
 };
 
-type StableCodexThreadListClient = Pick<ReturnType<typeof makeCodexAppServerClient>, "listThreads">;
+type StableCodexThreadListClient = {
+  readonly listThreads: (params: {
+    readonly archived: boolean;
+    readonly cursor: string | null;
+    readonly cwd: string;
+    readonly limit: number;
+    readonly sortDirection: "asc";
+    readonly sortKey: "created_at";
+    readonly sourceKinds: ReadonlyArray<"appServer" | "vscode">;
+    readonly useStateDbOnly: boolean;
+  }) => Effect.Effect<{
+    readonly data: ReadonlyArray<ListedCodexThreadForReconciliation>;
+    readonly nextCursor: string | null;
+  }, unknown>;
+};
+type StableCodexThreadReadClient = {
+  readonly readThread: (params: {
+    readonly includeTurns: true;
+    readonly threadId: ReturnType<typeof parseCodexThreadId>;
+  }) => Effect.Effect<{
+    readonly thread: {
+      readonly id: ReturnType<typeof parseCodexThreadId>;
+      readonly turns?: ReadonlyArray<{
+        readonly id: string;
+        readonly status?: string;
+      }>;
+    };
+  }, unknown>;
+};
+type StableCodexThreadClient = StableCodexThreadListClient & StableCodexThreadReadClient;
 
 export function listStableCodexThreadsForWorkspace(
   client: StableCodexThreadListClient,
@@ -351,6 +435,172 @@ export function listStableCodexThreadsForWorkspace(
     return [...byId.values()];
   });
 }
+
+export function findStableDesktopOriginCorrelationThread(input: {
+  readonly acceptedAtSeconds: number;
+  readonly client: StableCodexThreadClient;
+  readonly expectedDigest: string;
+  readonly workspacePath: string;
+}) {
+  return Effect.gen(function* () {
+    const stateDb = yield* listStableCodexThreadsForWorkspaceBySource(
+      input.client,
+      input.workspacePath,
+      true,
+      ["appServer", "vscode"],
+    );
+    const jsonl = yield* listStableCodexThreadsForWorkspaceBySource(
+      input.client,
+      input.workspacePath,
+      false,
+      ["appServer", "vscode"],
+    );
+    const earliestAcceptedCandidate = input.acceptedAtSeconds - desktopOriginCorrelationAcceptedWindowSeconds;
+    const latestAcceptedCandidate = input.acceptedAtSeconds + desktopOriginCorrelationAcceptedWindowSeconds;
+    const candidateFilter = (thread: ListedCodexThreadForReconciliation) =>
+      thread.cwd === input.workspacePath &&
+      (thread.source === "appServer" || thread.source === "vscode") &&
+      thread.createdAt >= earliestAcceptedCandidate &&
+      thread.createdAt <= latestAcceptedCandidate;
+    const stateDbMatches = stateDb.filter(candidateFilter);
+    const jsonlMatches = jsonl.filter(candidateFilter);
+    const [stateDbMatch] = stateDbMatches;
+    const [jsonlMatch] = jsonlMatches;
+    if (
+      stateDbMatches.length !== 1 ||
+      jsonlMatches.length !== 1 ||
+      stateDbMatch === undefined ||
+      jsonlMatch === undefined ||
+      stateDbMatch.id !== jsonlMatch.id ||
+      stateDbMatch.sessionId !== jsonlMatch.sessionId ||
+      stateDbMatch.source !== jsonlMatch.source ||
+      stateDbMatch.cwd !== jsonlMatch.cwd ||
+      stateDbMatch.createdAt !== jsonlMatch.createdAt ||
+      stateDbMatch.status?.type !== jsonlMatch.status?.type
+    ) {
+      return yield* Effect.fail(makeRuntimeError({
+        code: "HarnessCorrelationUnavailable",
+        message: "Audited Desktop-origin correlation could not prove one stable Codex thread identity.",
+        recoverable: false,
+      }));
+    }
+    if (
+      stateDbMatch.source === "vscode" &&
+      process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE !== "Codex Desktop"
+    ) {
+      return yield* Effect.fail(makeRuntimeError({
+        code: "HarnessCorrelationUnavailable",
+        message: "Audited Desktop-origin correlation requires a private Codex Desktop originator proof.",
+        recoverable: false,
+      }));
+    }
+    const read = yield* input.client.readThread({ includeTurns: true, threadId: stateDbMatch.id }).pipe(
+      Effect.mapError(() =>
+        makeRuntimeError({
+          code: "HarnessCorrelationUnavailable",
+          message: "Audited Desktop-origin correlation could not read the stable Codex thread.",
+          recoverable: false,
+        })
+      ),
+    );
+    const turns = read.thread.turns ?? [];
+    const latest = turns.at(-1);
+    if (
+      read.thread.id !== stateDbMatch.id ||
+      latest === undefined ||
+      latest.status !== "interrupted" ||
+      digestStableNativeId(latest.id) !== input.expectedDigest
+    ) {
+      return yield* Effect.fail(makeRuntimeError({
+        code: "HarnessCorrelationUnavailable",
+        message: "Audited Desktop-origin correlation could not prove the exact interrupted checkpoint.",
+        recoverable: false,
+      }));
+    }
+    const digestMatches = turns.filter(({ id }) => digestStableNativeId(id) === input.expectedDigest);
+    if (digestMatches.length !== 1) {
+      return yield* Effect.fail(makeRuntimeError({
+        code: "HarnessCorrelationUnavailable",
+        message: "Audited Desktop-origin correlation found an ambiguous checkpoint digest.",
+        recoverable: false,
+      }));
+    }
+    return { threadId: stateDbMatch.id };
+  });
+}
+
+function listStableCodexThreadsForWorkspaceBySource(
+  client: StableCodexThreadListClient,
+  workspacePath: string,
+  useStateDbOnly: boolean,
+  sourceKinds: ReadonlyArray<"appServer" | "vscode">,
+) {
+  return Effect.gen(function* () {
+    const observations: Array<ListedCodexThreadForReconciliation> = [];
+    for (const archived of [false, true] as const) {
+      const seenCursors = new Set<string>();
+      let observationCount = 0;
+      let pageCount = 0;
+      let cursor: string | null = null;
+      do {
+        if (pageCount >= stableThreadListMaxPagesPerTraversal) {
+          return yield* Effect.fail(makeRuntimeError({
+            code: "HarnessCorrelationUnavailable",
+            message: "Audited Desktop-origin correlation exceeded the stable App Server thread pagination budget.",
+            recoverable: false,
+          }));
+        }
+        const page: {
+          readonly data: ReadonlyArray<ListedCodexThreadForReconciliation>;
+          readonly nextCursor: string | null;
+        } = yield* client.listThreads({
+          archived,
+          cursor,
+          cwd: workspacePath,
+          limit: 100,
+          sortDirection: "asc",
+          sortKey: "created_at",
+          sourceKinds: [...sourceKinds],
+          useStateDbOnly,
+        }).pipe(
+          Effect.mapError(() =>
+            makeRuntimeError({
+              code: "HarnessCorrelationUnavailable",
+              message: "Audited Desktop-origin correlation could not list stable Codex threads.",
+              recoverable: false,
+            })
+          ),
+        );
+        pageCount += 1;
+        observationCount += page.data.length;
+        if (observationCount > stableThreadListMaxObservationsPerTraversal) {
+          return yield* Effect.fail(makeRuntimeError({
+            code: "HarnessCorrelationUnavailable",
+            message: "Audited Desktop-origin correlation exceeded the stable App Server thread observation budget.",
+            recoverable: false,
+          }));
+        }
+        observations.push(...page.data);
+        if (page.nextCursor !== null) {
+          if (seenCursors.has(page.nextCursor)) {
+            return yield* Effect.fail(makeRuntimeError({
+              code: "HarnessCorrelationUnavailable",
+              message: "Audited Desktop-origin correlation detected cyclic App Server thread pagination.",
+              recoverable: false,
+            }));
+          }
+          seenCursors.add(page.nextCursor);
+        }
+        cursor = page.nextCursor;
+      } while (cursor !== null);
+    }
+    return observations;
+  });
+}
+
+const desktopOriginCorrelationAcceptedWindowSeconds = 300;
+const stableThreadListMaxObservationsPerTraversal = 10_000;
+const stableThreadListMaxPagesPerTraversal = 100;
 
 /** Normalize stable App Server thread status into the finite recovery preflight vocabulary. */
 export function toWorkerRecoveryThreadStatus(status: string | undefined): WorkerRecoveryThreadStatus {

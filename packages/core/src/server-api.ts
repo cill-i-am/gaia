@@ -27,6 +27,8 @@ import {
   WorkerContinuationReceiptSchema,
   WorkerCorrelationReconciliationAction,
   WorkerCorrelationReconciliationReceiptSchema,
+  WorkerDesktopOriginCorrelationAction,
+  WorkerDesktopOriginCorrelationReceiptSchema,
   WorkerRecoveryAction,
   WorkerRecoveryReceiptSchema,
 } from "./worker-recovery.js";
@@ -432,6 +434,7 @@ export const DeliveryActionRequestSchema = Schema.Union([
   DeliveryRecoveryActionRequest,
   WorkerContinuationAction,
   WorkerCorrelationReconciliationAction,
+  WorkerDesktopOriginCorrelationAction,
   DeliveryRemediationActivationActionRequest,
   DeliveryEvaluateMergeReadinessActionRequest,
   DeliveryMergeActionRequest,
@@ -549,6 +552,7 @@ export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   status: DeliveryStatusSchema,
   workerContinuation: Schema.optionalKey(WorkerContinuationReceiptSchema),
   workerCorrelationReconciliation: Schema.optionalKey(WorkerCorrelationReconciliationReceiptSchema),
+  workerDesktopOriginCorrelation: Schema.optionalKey(WorkerDesktopOriginCorrelationReceiptSchema),
   workerRecovery: Schema.optionalKey(WorkerRecoveryReceiptSchema),
 }) {}
 

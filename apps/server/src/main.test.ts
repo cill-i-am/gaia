@@ -21,6 +21,7 @@ import {
 } from "@gaia/runtime/server-workflows";
 import {
   makeHarnessProviderRegistry,
+  parseCodexThreadId,
   recoverWorkerSession,
   type HarnessProvider,
   type HarnessProviderRegistry,
@@ -34,7 +35,9 @@ import {
 import { Deferred, Effect, Fiber, FileSystem, Option, Ref, Schema, Stream } from "effect";
 import { createServer } from "node:net";
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import {
+  findStableDesktopOriginCorrelationThread,
   listStableCodexThreadsForWorkspace,
   makeProductionWorkerRecoveryProvider,
   runLocalGaiaServer,
@@ -133,6 +136,467 @@ describe("local Gaia server process", () => {
         assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
         assert.isAtMost(calls, 3);
       }),
+    );
+
+    it.effect("accepts one Desktop-originated vscode candidate when state stores and checkpoint agree", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const threadId = parseCodexThreadId("desktop-origin-thread");
+          const turnId = "interrupted-turn";
+          const client = makeStableThreadClient({
+            readTurns: [
+              { id: "older-completed-turn", status: "completed" as const },
+              { id: turnId, status: "interrupted" as const },
+            ],
+            threads: [stableThread({ id: threadId, source: "vscode" })],
+          });
+
+          const result = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId(turnId),
+            workspacePath: "/tmp/gaia/owned-workspace",
+          });
+
+          assert.strictEqual(result.threadId, threadId);
+          assert.deepEqual(yield* Ref.get(client.calls), {
+            list: [
+              "state:open:appServer,vscode",
+              "state:archived:appServer,vscode",
+              "jsonl:open:appServer,vscode",
+              "jsonl:archived:appServer,vscode",
+            ],
+            read: [threadId],
+          });
+        }),
+      ),
+    );
+
+    it.effect("fails closed before reading when vscode lacks private Desktop originator proof", () =>
+      withCodexDesktopOriginator(
+        undefined,
+        Effect.gen(function* () {
+          const threadId = parseCodexThreadId("unproved-vscode-thread");
+          const client = makeStableThreadClient({
+            readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+            threads: [stableThread({ id: threadId, source: "vscode" })],
+          });
+
+          const exit = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId("interrupted-turn"),
+            workspacePath: "/tmp/gaia/owned-workspace",
+          }).pipe(Effect.exit);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+          assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+        }),
+      ),
+    );
+
+    it.effect("accepts one appServer candidate without Desktop originator proof", () =>
+      withCodexDesktopOriginator(
+        undefined,
+        Effect.gen(function* () {
+          const threadId = parseCodexThreadId("app-server-thread");
+          const client = makeStableThreadClient({
+            readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+            threads: [stableThread({ id: threadId, source: "appServer" })],
+          });
+
+          const result = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId("interrupted-turn"),
+            workspacePath: "/tmp/gaia/owned-workspace",
+          });
+
+          assert.strictEqual(result.threadId, threadId);
+          assert.deepEqual((yield* Ref.get(client.calls)).read, [threadId]);
+        }),
+      ),
+    );
+
+    it.effect("fails closed before reading when appServer and vscode candidates collide", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const appServerThread = stableThread({
+            id: parseCodexThreadId("app-server-thread"),
+            source: "appServer",
+          });
+          const vscodeThread = stableThread({
+            id: parseCodexThreadId("desktop-origin-thread"),
+            source: "vscode",
+          });
+          const client = makeStableThreadClient({
+            readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+            threads: [appServerThread, vscodeThread],
+          });
+
+          const exit = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId("interrupted-turn"),
+            workspacePath: "/tmp/gaia/owned-workspace",
+          }).pipe(Effect.exit);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+          assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+        }),
+      ),
+    );
+
+    it.effect("fails closed before reading when candidate cwd or creation time is outside the accepted window", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const cases = [
+            stableThread({
+              cwd: "/tmp/gaia/other-workspace",
+              id: parseCodexThreadId("wrong-cwd-thread"),
+              source: "vscode",
+            }),
+            stableThread({
+              createdAt: 100,
+              id: parseCodexThreadId("wrong-time-thread"),
+              source: "vscode",
+            }),
+            stableThread({
+              createdAt: 1_301,
+              id: parseCodexThreadId("late-time-thread"),
+              source: "vscode",
+            }),
+          ];
+
+          for (const thread of cases) {
+            const client = makeStableThreadClient({
+              readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+              threads: [thread],
+            });
+
+            const exit = yield* findStableDesktopOriginCorrelationThread({
+              acceptedAtSeconds: 1_000,
+              client,
+              expectedDigest: digestStableId("interrupted-turn"),
+              workspacePath: "/tmp/gaia/owned-workspace",
+            }).pipe(Effect.exit);
+
+            assert.strictEqual(exit._tag, "Failure");
+            assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+            assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+          }
+        }),
+      ),
+    );
+
+    it.effect("fails closed before reading when stable list returns an unsupported source", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const client = makeStableThreadClient({
+            readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+            threads: [stableThread({
+              id: parseCodexThreadId("unsupported-source-thread"),
+              source: "cli",
+            })],
+          });
+
+          const exit = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId("interrupted-turn"),
+            workspacePath: "/tmp/gaia/owned-workspace",
+          }).pipe(Effect.exit);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+          assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+        }),
+      ),
+    );
+
+    it.effect("fails closed without leaking raw App Server list or read errors", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const listed = makeStableThreadClient({
+            listError: new Error("private list failure"),
+            readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+            threads: [stableThread({ id: parseCodexThreadId("list-error-thread"), source: "vscode" })],
+          });
+          const read = makeStableThreadClient({
+            readError: new Error("private read failure"),
+            readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+            threads: [stableThread({ id: parseCodexThreadId("read-error-thread"), source: "vscode" })],
+          });
+
+          for (const client of [listed, read]) {
+            const exit = yield* findStableDesktopOriginCorrelationThread({
+              acceptedAtSeconds: 1_000,
+              client,
+              expectedDigest: digestStableId("interrupted-turn"),
+              workspacePath: "/tmp/gaia/owned-workspace",
+            }).pipe(Effect.exit);
+
+            const text = JSON.stringify(exit);
+            assert.strictEqual(exit._tag, "Failure");
+            assert.include(text, "HarnessCorrelationUnavailable");
+            assert.notInclude(text, "private list failure");
+            assert.notInclude(text, "private read failure");
+          }
+        }),
+      ),
+    );
+
+    it.effect("fails closed before reading when state-db and JSONL thread identities disagree", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const client = makeStableThreadClient({
+            jsonlThreads: [stableThread({ id: parseCodexThreadId("jsonl-thread"), source: "vscode" })],
+            readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+            stateThreads: [stableThread({ id: parseCodexThreadId("state-thread"), source: "vscode" })],
+          });
+
+          const exit = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId("interrupted-turn"),
+            workspacePath: "/tmp/gaia/owned-workspace",
+          }).pipe(Effect.exit);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+          assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+        }),
+      ),
+    );
+
+    it.effect("fails closed before reading when a single open index reports duplicate identities", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const thread = stableThread({
+            id: parseCodexThreadId("duplicated-open-thread"),
+            source: "vscode",
+          });
+          const client = makeStableThreadClient({
+            readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+            stateThreads: [thread, thread],
+            jsonlThreads: [thread],
+          });
+
+          const exit = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId("interrupted-turn"),
+            workspacePath: "/tmp/gaia/owned-workspace",
+          }).pipe(Effect.exit);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+          assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+        }),
+      ),
+    );
+
+    it.effect("fails closed before reading when state-db and JSONL listed statuses disagree", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const threadId = parseCodexThreadId("status-mismatch-thread");
+          const client = makeStableThreadClient({
+            jsonlThreads: [stableThread({ id: threadId, source: "vscode", statusType: "idle" })],
+            readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+            stateThreads: [stableThread({ id: threadId, source: "vscode", statusType: "notLoaded" })],
+          });
+
+          const exit = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId("interrupted-turn"),
+            workspacePath: "/tmp/gaia/owned-workspace",
+          }).pipe(Effect.exit);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+          assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+        }),
+      ),
+    );
+
+    it.effect("fails closed when matching checkpoint digest is not the latest turn", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const threadId = parseCodexThreadId("not-latest-digest-thread");
+          const client = makeStableThreadClient({
+            readTurns: [
+              { id: "interrupted-turn", status: "interrupted" as const },
+              { id: "latest-turn", status: "interrupted" as const },
+            ],
+            threads: [stableThread({ id: threadId, source: "vscode" })],
+          });
+
+          const exit = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId("interrupted-turn"),
+            workspacePath: "/tmp/gaia/owned-workspace",
+          }).pipe(Effect.exit);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+          assert.deepEqual((yield* Ref.get(client.calls)).read, [threadId]);
+        }),
+      ),
+    );
+
+    it.effect("fails closed when checkpoint digest has zero or multiple matching turns", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const cases = [
+            {
+              expectedDigest: digestStableId("missing-turn"),
+              readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+              threadId: parseCodexThreadId("zero-digest-thread"),
+            },
+            {
+              expectedDigest: digestStableId("interrupted-turn"),
+              readTurns: [
+                { id: "interrupted-turn", status: "interrupted" as const },
+                { id: "interrupted-turn", status: "interrupted" as const },
+              ],
+              threadId: parseCodexThreadId("multiple-digest-thread"),
+            },
+          ];
+
+          for (const item of cases) {
+            const client = makeStableThreadClient({
+              readTurns: item.readTurns,
+              threads: [stableThread({ id: item.threadId, source: "vscode" })],
+            });
+
+            const exit = yield* findStableDesktopOriginCorrelationThread({
+              acceptedAtSeconds: 1_000,
+              client,
+              expectedDigest: item.expectedDigest,
+              workspacePath: "/tmp/gaia/owned-workspace",
+            }).pipe(Effect.exit);
+
+            assert.strictEqual(exit._tag, "Failure");
+            assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+            assert.deepEqual((yield* Ref.get(client.calls)).read, [item.threadId]);
+          }
+        }),
+      ),
+    );
+
+    it.effect("fails closed before reading when every stable list page returns a fresh cursor", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const calls = yield* Ref.make({ list: 0, read: 0 });
+          const client = {
+            listThreads: () =>
+              Effect.gen(function* () {
+                yield* Effect.yieldNow;
+                const next = yield* Ref.modify(calls, (value) => [
+                  value.list + 1,
+                  { ...value, list: value.list + 1 },
+                ]);
+                return {
+                  backwardsCursor: null,
+                  data: [],
+                  nextCursor: `cursor-${next}`,
+                };
+              }),
+            readThread: () =>
+              Effect.gen(function* () {
+                yield* Ref.update(calls, (value) => ({ ...value, read: value.read + 1 }));
+                return {
+                  thread: {
+                    id: parseCodexThreadId("should-not-read"),
+                    turns: [],
+                  },
+                };
+              }),
+          };
+
+          const exit = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId("interrupted-turn"),
+            workspacePath: "/tmp/gaia/owned-workspace",
+          }).pipe(Effect.timeout("1 second"), Effect.exit);
+          const observed = yield* Ref.get(calls);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+          assert.strictEqual(observed.read, 0);
+        }),
+      ),
+    );
+
+    it.effect("fails closed before reading when open and archived indexes expose the same candidate", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const thread = stableThread({
+            id: parseCodexThreadId("duplicated-archived-thread"),
+            source: "vscode",
+          });
+          const client = makeStableThreadClient({
+            jsonlArchivedThreads: [thread],
+            readTurns: [{ id: "interrupted-turn", status: "interrupted" as const }],
+            threads: [thread],
+          });
+
+          const exit = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId("interrupted-turn"),
+            workspacePath: "/tmp/gaia/owned-workspace",
+          }).pipe(Effect.exit);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+          assert.deepEqual((yield* Ref.get(client.calls)).read, []);
+        }),
+      ),
+    );
+
+    it.effect("fails closed when the latest turn is not the exact interrupted checkpoint", () =>
+      withCodexDesktopOriginator(
+        "Codex Desktop",
+        Effect.gen(function* () {
+          const threadId = parseCodexThreadId("wrong-checkpoint-thread");
+          const client = makeStableThreadClient({
+            readTurns: [
+              { id: "older-turn", status: "completed" as const },
+              { id: "latest-turn", status: "completed" as const },
+            ],
+            threads: [stableThread({ id: threadId, source: "vscode" })],
+          });
+
+          const exit = yield* findStableDesktopOriginCorrelationThread({
+            acceptedAtSeconds: 1_000,
+            client,
+            expectedDigest: digestStableId("latest-turn"),
+            workspacePath: "/tmp/gaia/owned-workspace",
+          }).pipe(Effect.exit);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "HarnessCorrelationUnavailable");
+          assert.deepEqual((yield* Ref.get(client.calls)).read, [threadId]);
+        }),
+      ),
     );
 
     it.effect("fails before model catalog and recovery mutation when detection cannot become available", () =>
@@ -650,4 +1114,121 @@ function parseJsonObject(input: string) {
 
 function isJsonObject(input: unknown): input is Readonly<Record<string, unknown>> {
   return typeof input === "object" && input !== null && !Array.isArray(input);
+}
+
+function digestStableId(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function withCodexDesktopOriginator<A, E, R>(
+  value: string | undefined,
+  effect: Effect.Effect<A, E, R>,
+) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous = process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
+      if (value === undefined) {
+        delete process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
+      } else {
+        process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = value;
+      }
+      return previous;
+    }),
+    () => effect,
+    (previous) =>
+      Effect.sync(() => {
+        if (previous === undefined) {
+          delete process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
+        } else {
+          process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = previous;
+        }
+      }),
+  );
+}
+
+function stableThread(input: {
+  readonly createdAt?: number;
+  readonly cwd?: string;
+  readonly id: ReturnType<typeof parseCodexThreadId>;
+  readonly sessionId?: string;
+  readonly source: "appServer" | "cli" | "vscode";
+  readonly statusType?: "active" | "idle" | "notLoaded" | "systemError";
+}) {
+  return {
+    createdAt: input.createdAt ?? 1_010,
+    cwd: input.cwd ?? "/tmp/gaia/owned-workspace",
+    id: input.id,
+    sessionId: input.sessionId ?? "session-private-stable",
+    source: input.source,
+    status: { type: input.statusType ?? "notLoaded" },
+    updatedAt: input.createdAt ?? 1_010,
+  };
+}
+
+function makeStableThreadClient(input: {
+  readonly jsonlArchivedThreads?: ReadonlyArray<ReturnType<typeof stableThread>>;
+  readonly jsonlThreads?: ReadonlyArray<ReturnType<typeof stableThread>>;
+  readonly listError?: unknown;
+  readonly readError?: unknown;
+  readonly readTurns: ReadonlyArray<{
+    readonly id: string;
+    readonly status: "completed" | "failed" | "inProgress" | "interrupted";
+  }>;
+  readonly stateArchivedThreads?: ReadonlyArray<ReturnType<typeof stableThread>>;
+  readonly stateThreads?: ReadonlyArray<ReturnType<typeof stableThread>>;
+  readonly threads?: ReadonlyArray<ReturnType<typeof stableThread>>;
+}) {
+  return Effect.runSync(Effect.gen(function* () {
+    const calls = yield* Ref.make({
+      list: [] as string[],
+      read: [] as Array<ReturnType<typeof parseCodexThreadId>>,
+    });
+    const stateThreads = input.stateThreads ?? input.threads ?? [];
+    const jsonlThreads = input.jsonlThreads ?? input.threads ?? [];
+    const stateArchivedThreads = input.stateArchivedThreads ?? [];
+    const jsonlArchivedThreads = input.jsonlArchivedThreads ?? [];
+    const client = {
+      listThreads: (params: {
+        readonly archived?: boolean | null;
+        readonly sourceKinds?: ReadonlyArray<string> | null;
+        readonly useStateDbOnly?: boolean;
+      }) =>
+        Effect.gen(function* () {
+          const store = params.useStateDbOnly === true ? "state" : "jsonl";
+          const archived = params.archived === true ? "archived" : "open";
+          const sourceKinds = [...(params.sourceKinds ?? [])].join(",");
+          yield* Ref.update(calls, (value) => ({
+            ...value,
+            list: [...value.list, `${store}:${archived}:${sourceKinds}`],
+          }));
+          if (input.listError !== undefined) {
+            return yield* Effect.fail(input.listError);
+          }
+          return {
+            backwardsCursor: null,
+            data: params.archived === true
+              ? (params.useStateDbOnly === true ? stateArchivedThreads : jsonlArchivedThreads)
+              : (params.useStateDbOnly === true ? stateThreads : jsonlThreads),
+            nextCursor: null,
+          };
+        }),
+      readThread: (params: { readonly includeTurns?: boolean; readonly threadId: ReturnType<typeof parseCodexThreadId> }) =>
+        Effect.gen(function* () {
+          yield* Ref.update(calls, (value) => ({
+            ...value,
+            read: [...value.read, params.threadId],
+          }));
+          if (input.readError !== undefined) {
+            return yield* Effect.fail(input.readError);
+          }
+          return {
+            thread: {
+              id: params.threadId,
+              turns: [...input.readTurns],
+            },
+          };
+        }),
+    };
+    return { calls, ...client };
+  }));
 }
