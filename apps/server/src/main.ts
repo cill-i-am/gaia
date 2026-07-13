@@ -24,11 +24,13 @@ import {
   writePrivateWorkerCorrelationFollowUpTurn,
   makeHarnessProviderRegistry,
   issueDeliveryWorkerHarnessCapabilities,
+  inspectContinuableDeliveryWorktreeOwnership,
   inspectRecoverableDeliveryWorktreeOwnership,
   makeRunPaths,
   makeRuntimeError,
   loadRun,
   parseDeliveryProvenance,
+  type RunPaths,
   type HarnessProviderRegistry,
   type WorkerRecoveryProvider,
   type WorkerRecoveryThreadStatus,
@@ -39,7 +41,7 @@ import {
   type WorkerCorrelationReconciliationInput,
 } from "@gaia/runtime/server-workflows";
 import { makeTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
-import { Effect, Layer } from "effect";
+import { Effect, FileSystem, Layer } from "effect";
 import * as Console from "effect/Console";
 import { HttpServer } from "effect/unstable/http";
 import { createServer } from "node:http";
@@ -184,15 +186,19 @@ function makeProductionHarnessServices(rootDirectory: string) {
     });
     const reconcileCorrelation = (input: WorkerCorrelationReconciliationInput) =>
       Effect.gen(function* () {
-        const workspacePath = workerWorkspacePath(input.events);
         const acceptedAt = input.events[0]?.timestamp;
-        if (workspacePath === undefined || acceptedAt === undefined) {
+        if (acceptedAt === undefined) {
           return yield* Effect.fail(makeRuntimeError({
             code: "HarnessCorrelationUnavailable",
             message: "Audited correlation reconciliation requires the accepted worker workspace.",
             recoverable: false,
           }));
         }
+        const workspacePath = yield* resolveAuditedWorkerWorkspacePath({
+          events: input.events,
+          paths: input.paths,
+          rootDirectory,
+        });
         const candidates = yield* listStableCodexThreadsForWorkspace(client, workspacePath);
         const acceptedAtSeconds = Math.floor(Date.parse(acceptedAt) / 1000);
         if (!Number.isFinite(acceptedAtSeconds)) {
@@ -243,15 +249,19 @@ function makeProductionHarnessServices(rootDirectory: string) {
       });
     const reconcileDesktopOriginCorrelation = (input: WorkerDesktopOriginCorrelationInput) =>
       Effect.gen(function* () {
-        const workspacePath = workerWorkspacePath(input.events);
         const acceptedAt = input.events[0]?.timestamp;
-        if (workspacePath === undefined || acceptedAt === undefined) {
+        if (acceptedAt === undefined) {
           return yield* Effect.fail(makeRuntimeError({
             code: "HarnessCorrelationUnavailable",
             message: "Audited Desktop-origin correlation requires the accepted worker workspace.",
             recoverable: false,
           }));
         }
+        const workspacePath = yield* resolveAuditedWorkerWorkspacePath({
+          events: input.events,
+          paths: input.paths,
+          rootDirectory,
+        });
         const acceptedAtSeconds = Math.floor(Date.parse(acceptedAt) / 1000);
         if (!Number.isFinite(acceptedAtSeconds)) {
           return yield* Effect.fail(makeRuntimeError({
@@ -283,18 +293,15 @@ function makeProductionHarnessServices(rootDirectory: string) {
       readonly clientInputId: string;
       readonly events: ReadonlyArray<{ readonly payload: Record<string, unknown>; readonly type: string }>;
       readonly followUpText: string;
-      readonly paths: { readonly root: string };
+      readonly paths: RunPaths;
     }) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const workspacePath = workerWorkspacePath(input.events);
-          if (workspacePath === undefined) {
-            return yield* Effect.fail(makeRuntimeError({
-              code: "HarnessCorrelationUnavailable",
-              message: "Audited correlation follow-up requires the accepted worker workspace.",
-              recoverable: false,
-            }));
-          }
+          const workspacePath = yield* resolveAuditedWorkerWorkspacePath({
+            events: input.events,
+            paths: input.paths,
+            rootDirectory,
+          });
           const checkpointTurnId = yield* readPrivateWorkerRecoveryTurn(
             input.paths.root,
             input.action.expectedNativeTurnIdDigest,
@@ -347,6 +354,88 @@ function makeProductionHarnessServices(rootDirectory: string) {
 function workerWorkspacePath(events: ReadonlyArray<{ readonly payload: Readonly<Record<string, unknown>>; readonly type: string }>) {
   const workspacePath = events.find(({ type }) => type === "WORKSPACE_PREPARED")?.payload["workspacePath"];
   return typeof workspacePath === "string" ? workspacePath : undefined;
+}
+
+export function resolveAuditedWorkerWorkspacePath(input: {
+  readonly events: ReadonlyArray<{ readonly payload: Readonly<Record<string, unknown>>; readonly type: string }>;
+  readonly inspectOwnership?: (() => Effect.Effect<void, unknown, FileSystem.FileSystem>) | undefined;
+  readonly paths: RunPaths;
+  readonly rootDirectory: string;
+}) {
+  return Effect.gen(function* () {
+    const rawWorkspacePath = workerWorkspacePath(input.events);
+    if (rawWorkspacePath === undefined || /[\u0000-\u001f\u007f]/u.test(rawWorkspacePath)) {
+      return yield* failAuditedWorkerWorkspacePath();
+    }
+
+    let workspaceRelativePath: string;
+    let expectedWorkspaceRelativePath: string;
+    try {
+      workspaceRelativePath = parseWorkspaceRelativePath(rawWorkspacePath);
+      expectedWorkspaceRelativePath = parseWorkspaceRelativePath(
+        nodePath.relative(input.paths.root, input.paths.workspace),
+      );
+    } catch {
+      return yield* failAuditedWorkerWorkspacePath();
+    }
+
+    if (workspaceRelativePath !== expectedWorkspaceRelativePath) {
+      return yield* failAuditedWorkerWorkspacePath();
+    }
+
+    const fs = yield* FileSystem.FileSystem;
+    const canonicalRunRoot = yield* fs.realPath(input.paths.root).pipe(
+      Effect.mapError(() => auditedWorkerWorkspacePathError()),
+    );
+    const canonicalWorkspace = yield* fs.realPath(input.paths.workspace).pipe(
+      Effect.mapError(() => auditedWorkerWorkspacePathError()),
+    );
+    const canonicalCandidate = yield* fs.realPath(
+      nodePath.join(input.paths.root, workspaceRelativePath),
+    ).pipe(Effect.mapError(() => auditedWorkerWorkspacePathError()));
+    if (
+      canonicalCandidate !== canonicalWorkspace ||
+      nodePath.relative(canonicalRunRoot, canonicalWorkspace) !== expectedWorkspaceRelativePath
+    ) {
+      return yield* failAuditedWorkerWorkspacePath();
+    }
+
+    yield* (input.inspectOwnership ?? (() => inspectAuditedWorkerWorkspaceOwnership(input)))().pipe(
+      Effect.mapError(() => auditedWorkerWorkspacePathError()),
+    );
+    return canonicalWorkspace;
+  });
+}
+
+function inspectAuditedWorkerWorkspaceOwnership(input: {
+  readonly events: ReadonlyArray<{ readonly payload: Readonly<Record<string, unknown>>; readonly type: string }>;
+  readonly paths: RunPaths;
+  readonly rootDirectory: string;
+}) {
+  return Effect.gen(function* () {
+    const provenance = parseDeliveryProvenance(input.events[0]?.payload["delivery"]);
+    if (provenance._tag === "None") {
+      return yield* Effect.fail(auditedWorkerWorkspacePathError());
+    }
+    yield* inspectContinuableDeliveryWorktreeOwnership({
+      expectedHeads: [provenance.value.baseRevision],
+      options: { rootDirectory: input.rootDirectory },
+      paths: input.paths,
+      provenance: provenance.value,
+    });
+  });
+}
+
+function failAuditedWorkerWorkspacePath() {
+  return Effect.fail(auditedWorkerWorkspacePathError());
+}
+
+function auditedWorkerWorkspacePathError() {
+  return makeRuntimeError({
+    code: "HarnessCorrelationUnavailable",
+    message: "Audited worker correlation requires the owned worker workspace.",
+    recoverable: false,
+  });
 }
 
 function digestStableNativeId(value: string) {

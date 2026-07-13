@@ -408,6 +408,42 @@ export function inspectDeliveryWorktreeOwnership(input: {
   });
 }
 
+/** Continuation-grade inspection proves immutable ownership and registration without requiring a clean payload diff. */
+export function inspectContinuableDeliveryWorktreeOwnership(input: {
+  readonly expectedHeads: ReadonlyArray<string>;
+  readonly options: DeliveryWorkspaceOptions;
+  readonly paths: RunPaths;
+  readonly provenance: DeliveryProvenance;
+}) {
+  return Effect.gen(function* () {
+    yield* inspectDeliveryWorktreeOwnership(input);
+    const fs = yield* FileSystem.FileSystem;
+    const runner = input.options.commandRunner ?? nodeGitDeliveryCommandRunner;
+    const workspace = yield* fs.realPath(input.paths.workspace);
+    const repository = yield* fs.realPath(input.options.rootDirectory);
+    const inventory = (
+      yield* runGit(runner, repository, [
+        "worktree",
+        "list",
+        "--porcelain",
+      ])
+    ).stdout;
+    const registrations = inventory
+      .split(/\n\n/u)
+      .filter((record) => record.split("\n")[0] === `worktree ${workspace}`);
+    if (workspace === repository || registrations.length !== 1) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryWorktreeIdentityMismatch",
+          message:
+            "Persisted delivery worktree is not a registered, non-primary owned checkout.",
+          recoverable: false,
+        }),
+      );
+    }
+  });
+}
+
 /** Recovery-grade inspection adds mutable cleanliness and registration checks to immutable ownership. */
 export function inspectRecoverableDeliveryWorktreeOwnership(input: {
   readonly expectedHeads: ReadonlyArray<string>;

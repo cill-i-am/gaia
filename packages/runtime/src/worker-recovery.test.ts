@@ -8,7 +8,7 @@ import { Effect, FileSystem, Path, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { makeRunPaths } from "./paths.js";
 import { recoverWorkerSession, type WorkerRecoveryProvider, type WorkerRecoveryThreadStatus } from "./worker-recovery.js";
-import { inspectRecoverableDeliveryWorktreeOwnership, parseDeliveryProvenance, prepareDeliveryWorktree, type DeliveryProvenance } from "./git-delivery.js";
+import { inspectContinuableDeliveryWorktreeOwnership, inspectRecoverableDeliveryWorktreeOwnership, parseDeliveryProvenance, prepareDeliveryWorktree, type DeliveryProvenance } from "./git-delivery.js";
 import { actOnWorkerRecovery } from "./server-workflows.js";
 import { makeRuntimeError } from "./errors.js";
 
@@ -51,6 +51,41 @@ function rewriteStoredEvents(eventsPath: string, mutate: (events: Array<Record<s
 }
 
 describe("recoverWorkerSession", () => {
+  it("allows dirty registered owned worktrees for continuation ownership", async () => {
+    const f = await realOwnedFixture();
+    writeFileSync(path.join(f.paths.workspace, "payload-change.txt"), "dirty payload\n");
+
+    await expect(run(inspectContinuableDeliveryWorktreeOwnership({
+      expectedHeads: [f.head],
+      options: { rootDirectory: f.root },
+      paths: f.paths,
+      provenance: f.provenance,
+    }))).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["path", (f: Awaited<ReturnType<typeof realOwnedFixture>>, manifest: Record<string, unknown>) => { manifest.workspaceRoot = `${f.paths.workspace}-other`; }],
+    ["common-dir", (_f: Awaited<ReturnType<typeof realOwnedFixture>>, manifest: Record<string, unknown>) => { manifest.workspaceCommonDir = "/wrong/common"; }],
+    ["base", (_f: Awaited<ReturnType<typeof realOwnedFixture>>, manifest: Record<string, unknown>) => { manifest.baseRevision = "b".repeat(40); }],
+    ["head", (f: Awaited<ReturnType<typeof realOwnedFixture>>) => { writeFileSync(path.join(f.paths.workspace, "advanced.txt"), "advance\n"); git(f.paths.workspace, "add", "advanced.txt"); git(f.paths.workspace, "commit", "-m", "advance"); }],
+    ["primary-identity", (f: Awaited<ReturnType<typeof realOwnedFixture>>, manifest: Record<string, unknown>) => { manifest.workspaceRoot = f.root; }],
+    ["registration", (f: Awaited<ReturnType<typeof realOwnedFixture>>) => { git(f.root, "worktree", "remove", f.paths.workspace); mkdirSync(f.paths.workspace); }],
+  ] as const)("rejects real continuation %s identity drift without requiring cleanliness", async (_name, mutate) => {
+    const f = await realOwnedFixture();
+    const manifest = JSON.parse(readFileSync(f.paths.deliveryOwnershipManifest, "utf8"));
+    mutate(f, manifest);
+    if (_name !== "registration" && _name !== "head") {
+      writeFileSync(f.paths.deliveryOwnershipManifest, JSON.stringify(manifest));
+    }
+
+    await expect(run(inspectContinuableDeliveryWorktreeOwnership({
+      expectedHeads: [f.head],
+      options: { rootDirectory: f.root },
+      paths: f.paths,
+      provenance: f.provenance,
+    }))).rejects.toBeTruthy();
+  });
+
   it.each([
     ["path", (f: Awaited<ReturnType<typeof realOwnedFixture>>, manifest: Record<string, unknown>) => { manifest.workspaceRoot = `${f.paths.workspace}-other`; }],
     ["common-dir", (_f: Awaited<ReturnType<typeof realOwnedFixture>>, manifest: Record<string, unknown>) => { manifest.workspaceCommonDir = "/wrong/common"; }],
