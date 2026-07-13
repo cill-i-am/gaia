@@ -3,6 +3,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import {
   codexAppServerHarnessProfileId,
+  parseWorkerRecoveryReceipt,
   parseWorkspaceRelativePath,
   parseRunId,
   type HarnessDetection,
@@ -287,11 +288,13 @@ function makeProductionHarnessServices(rootDirectory: string) {
       dispatchCorrelationFollowUpFor(input);
     const dispatchCorrelationFollowUpFor = (input: {
       readonly action: {
+        readonly expectedFailedRecoverySequence: number;
         readonly expectedNativeTurnIdDigest: string;
+        readonly expectedRecoveryActionId: string;
         readonly expectedSessionId: WorkerCorrelationReconciliationInput["action"]["expectedSessionId"];
       };
       readonly clientInputId: string;
-      readonly events: ReadonlyArray<{ readonly payload: Record<string, unknown>; readonly type: string }>;
+      readonly events: ReadonlyArray<{ readonly payload: Record<string, unknown>; readonly sequence: number; readonly type: string }>;
       readonly followUpText: string;
       readonly paths: RunPaths;
     }) =>
@@ -302,9 +305,11 @@ function makeProductionHarnessServices(rootDirectory: string) {
             paths: input.paths,
             rootDirectory,
           });
+          const recoveryReceipt = yield* findBoundWorkerRecoveryReceipt(input.events, input.action);
           const checkpointTurnId = yield* readPrivateWorkerRecoveryTurn(
             input.paths.root,
             input.action.expectedNativeTurnIdDigest,
+            recoveryReceipt,
           );
           yield* resumeHarnessSession({
             provider,
@@ -724,6 +729,37 @@ export function makeProductionWorkerRecoveryProvider(
     resumeThread: input.resumeThread,
     startTurn: input.startTurn,
   };
+}
+
+function findBoundWorkerRecoveryReceipt(
+  events: ReadonlyArray<{ readonly payload: Record<string, unknown>; readonly sequence: number; readonly type: string }>,
+  action: {
+    readonly expectedFailedRecoverySequence: number;
+    readonly expectedRecoveryActionId: string;
+  },
+) {
+  return Effect.gen(function* () {
+    const receipt = [...events].reverse().flatMap((event) => {
+      if (event.type !== "WORKER_RECOVERY_RECORDED") return [];
+      const recovery = parseWorkerRecoveryReceipt(event.payload["recovery"]);
+      return event.sequence === action.expectedFailedRecoverySequence && recovery.actionId === action.expectedRecoveryActionId
+        ? [recovery]
+        : [];
+    })[0];
+    if (receipt === undefined) {
+      return yield* Effect.fail(makeRuntimeError({
+        code: "WorkerRecoveryTurnCheckpointInvalid",
+        message: "The exact recovered native turn checkpoint is missing or invalid.",
+        recoverable: false,
+      }));
+    }
+    return receipt;
+  }).pipe(Effect.mapError((cause) => makeRuntimeError({
+    cause,
+    code: "WorkerRecoveryTurnCheckpointInvalid",
+    message: "The exact recovered native turn checkpoint is missing or invalid.",
+    recoverable: false,
+  })));
 }
 
 export function parseServerArgs(args: ReadonlyArray<string>): ServerConfig {

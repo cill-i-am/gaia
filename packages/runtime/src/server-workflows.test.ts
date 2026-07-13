@@ -696,7 +696,7 @@ describe("server workflows", () => {
           });
           yield* fs.writeFileString(
             `${paths.root}/.worker-recovery-turn.json`,
-            `${JSON.stringify({ turnId: "turn-test-worker", version: 1 })}\n`,
+            `${workerRecoveryTurnCheckpoint("turn-test-worker", recoveryBase)}\n`,
           );
 
           const action = WorkerContinuationAction.make({
@@ -1856,6 +1856,20 @@ function recordingDeliveryPublisher(calls: Array<string>) {
 
 function digest(value: string) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function workerRecoveryTurnCheckpoint(
+  turnId: string,
+  recovery: {
+    readonly actionId: string;
+    readonly expectedFailureSequence: number;
+    readonly expectedSessionId: string;
+    readonly harnessProfileId: string;
+    readonly model: string;
+    readonly payloadDigest: string;
+  },
+) {
+  return JSON.stringify({ ...recovery, turnId, version: 2 });
 }
 
 function deliveryProvenanceDigest(input: {

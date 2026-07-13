@@ -2234,17 +2234,18 @@ function factoryContinuationOptions(
         }),
       );
     }
+    const latestRunFailureSequence = [...events].reverse().find(({ type }) => type === "RUN_FAILED")?.sequence;
     const recovery = [...events].reverse().flatMap((event) => {
       if (event.type !== "WORKER_RECOVERY_RECORDED") return [];
       const receipt = parseWorkerRecoveryReceipt(event.payload["recovery"]);
-      return receipt.state === "dispatchConfirmed" ? [receipt] : [];
+      return receipt.state === "dispatchConfirmed" && (latestRunFailureSequence === undefined || receipt.expectedFailureSequence === latestRunFailureSequence) ? [receipt] : [];
     })[0];
     const latestCorrelation = latestWorkerCorrelationReconciliationReceipt(events);
     const expectedNativeTurnId = latestCorrelation?.state === "followUpConfirmed" || latestCorrelation?.state === "workerCompleted"
       ? yield* readPrivateWorkerCorrelationFollowUpTurn(paths.root)
       : recovery === undefined
         ? undefined
-        : yield* readPrivateWorkerRecoveryTurn(paths.root, recovery.nativeTurnIdDigest);
+        : yield* readPrivateWorkerRecoveryTurn(paths.root, recovery.nativeTurnIdDigest, recovery);
     return {
       ...commonOptions,
       workerContinuationState: continuationState,

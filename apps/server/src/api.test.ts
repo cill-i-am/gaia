@@ -15,9 +15,11 @@ import {
   encodeDeliveryPullRequestObservationJson,
   encodeDeliveryPublicationJson,
   encodeDeliveryRemediationJson,
+  encodeWorkerRecoveryReceiptJson,
   HarnessCapabilities,
   HarnessProviderDescriptor,
   parseDeliveryFeedbackId,
+  parseHarnessEvent,
   parseHarnessProfileId,
   parseHarnessInteractionId,
   parseHarnessItemId,
@@ -32,6 +34,7 @@ import {
 import {
   makeHarnessProviderRegistry,
   appendEvent,
+  appendHarnessSessionEvent,
   ReviewResult,
   ReviewerNameSchema,
   subscribeRunEventFeed,
@@ -815,6 +818,101 @@ describe("local run api http boundary", () => {
         assert.strictEqual(recoveryResponse.status, 200);
         assert.strictEqual(getString(recovered, "stage"), "waitingForPr");
         assert.deepEqual(getArray(recovered, "recoveryActions"), []);
+      }),
+      20_000,
+    );
+
+    it.effect("exposes one worker recovery action for the latest eligible failure generation", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({
+          prefix: "gaia-server-worker-recovery-action-",
+        });
+        const accepted = yield* acceptFactoryRun(
+          {
+            delivery: { mode: "pullRequest" },
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery",
+            workItem: {
+              description: "Expose the current worker recovery generation.",
+              kind: "issue",
+              title: "Worker recovery action",
+            },
+          },
+          {
+            deliveryGitCommandRunner: recordingGitRunner(),
+            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            rootDirectory: cwd,
+          },
+        );
+        const runId = parseRunId(accepted.runId);
+        const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+        const sessionId = parseHarnessSessionId(`session-${accepted.runId}`);
+        yield* appendEvent(runId, paths, {
+          payload: {
+            delivery: {
+              baseBranch: "main",
+              baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
+              headBranch: `gaia/${accepted.runId}`,
+              mode: "pullRequest",
+              remote: "origin",
+              stage: "delivering",
+            },
+          },
+          type: "DELIVERY_STARTED",
+        });
+        yield* appendHarnessSessionEvent(runId, paths, parseHarnessEvent({
+          capabilities: { approvals: [], fileChangeEvents: true, interruption: true, resumableSessions: true, review: false, steering: true, streamingMessages: true, structuredOutput: false, subagents: false, toolEvents: true, usageReporting: false, userQuestions: false },
+          kind: "sessionStarted",
+          provider: { displayName: "Codex App Server", executionModes: ["local"], providerId: "codex-app-server" },
+          sessionId,
+          state: "running",
+        }));
+        yield* appendHarnessSessionEvent(runId, paths, parseHarnessEvent({
+          failure: { code: "CodexThreadSystemError", kind: "providerFailure", message: "first failure", recoverable: true },
+          kind: "sessionFailed",
+          sessionId,
+        }));
+        const firstFailure = yield* appendEvent(runId, paths, {
+          payload: { code: "HarnessSessionFailed", message: "first failed", recoverable: true, stage: "runningWorker" },
+          type: "RUN_FAILED",
+        });
+        yield* appendEvent(runId, paths, {
+          payload: {
+            recovery: encodeWorkerRecoveryReceiptJson({
+              actionId: "recover-old",
+              attempt: 1,
+              expectedFailureSequence: firstFailure.event.sequence,
+              expectedSessionId: sessionId,
+              harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
+              maxAttempts: 1,
+              model: "gpt-5.4",
+              nativeTurnIdDigest: "b".repeat(64),
+              payloadDigest: "a".repeat(64),
+              state: "dispatchConfirmed",
+            }),
+          },
+          type: "WORKER_RECOVERY_RECORDED",
+        });
+        yield* appendHarnessSessionEvent(runId, paths, parseHarnessEvent({
+          failure: { code: "CodexThreadSystemError", kind: "providerFailure", message: "second failure", recoverable: true },
+          kind: "sessionFailed",
+          sessionId,
+        }));
+        const secondFailure = yield* appendEvent(runId, paths, {
+          payload: { code: "HarnessSessionFailed", message: "second failed", recoverable: true, stage: "runningWorker" },
+          type: "RUN_FAILED",
+        });
+
+        const response = yield* HttpClient.get(`/runs/${accepted.runId}/delivery`).pipe(
+          Effect.provide(testServerLayer(cwd)),
+        );
+        const projected = getObject(yield* responseJsonObject(response), "data");
+
+        assert.strictEqual(response.status, 200);
+        assert.deepEqual(getArray(projected, "recoveryActions"), ["retryWorkerRecovery"]);
+        assert.strictEqual(getNumber(projected, "eventSequence"), secondFailure.event.sequence);
+        assert.strictEqual(getString(getObject(projected, "workerRecovery"), "actionId"), "recover-old");
       }),
       20_000,
     );
