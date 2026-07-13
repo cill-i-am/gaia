@@ -4,6 +4,7 @@ import type {
   FactoryArtifactDto,
   FactoryGraphDto,
   FactoryWorkItemDto,
+  RunId,
 } from "@gaia/core";
 
 import type { FactoryCanvasNode } from "@/factory-canvas-model";
@@ -67,7 +68,7 @@ export function buildSelectedNodeInspectorModel(input: {
   readonly graph: typeof FactoryGraphDto.Type | undefined;
   readonly graphIsLoading: boolean;
   readonly selectedNode: FactoryCanvasNode | undefined;
-  readonly selectedRunId: string | undefined;
+  readonly selectedRunId: RunId | undefined;
 }): SelectedNodeInspectorModel {
   if (input.selectedRunId === undefined) {
     return {

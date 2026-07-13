@@ -1,4 +1,4 @@
-import { parseRunId, type RunId } from "@gaia/core";
+import type { RunId } from "@gaia/core";
 import { Cause, Effect, FileSystem, Path, Ref } from "effect";
 import type { RunStorageOptions } from "./paths.js";
 import {
@@ -13,7 +13,7 @@ import {
 export type LocalRunReadIndex = {
   readonly list: Effect.Effect<LocalRunList>;
   readonly read: (
-    runIdInput: string,
+    runId: RunId,
   ) => Effect.Effect<LocalRunDetail, LocalRunReadDiagnostic>;
   readonly rebuild: Effect.Effect<
     void,
@@ -21,7 +21,7 @@ export type LocalRunReadIndex = {
     FileSystem.FileSystem | Path.Path
   >;
   readonly refreshRun: (
-    runIdInput: string,
+    runId: RunId,
   ) => Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>;
 };
 
@@ -44,11 +44,11 @@ export function makeLocalRunReadIndex(
 
     return {
       list: Ref.get(snapshot).pipe(Effect.map(listFromSnapshot)),
-      read: (runIdInput) => readIndexedRun(snapshot, runIdInput),
+      read: (runId) => readIndexedRun(snapshot, runId),
       rebuild: rebuildLocalRunIndexSnapshot(options).pipe(
         Effect.flatMap((next) => Ref.set(snapshot, next)),
       ),
-      refreshRun: (runIdInput) => refreshIndexedRun(snapshot, runIdInput, options),
+      refreshRun: (runId) => refreshIndexedRun(snapshot, runId, options),
     } satisfies LocalRunReadIndex;
   });
 }
@@ -99,10 +99,9 @@ function compareRunsDescending(left: LocalRunSummary, right: LocalRunSummary) {
 
 function readIndexedRun(
   snapshot: Ref.Ref<LocalRunIndexSnapshot>,
-  runIdInput: string,
+  runId: RunId,
 ) {
   return Effect.gen(function* () {
-    const runId = yield* parseRequestedRunId(runIdInput);
     const current = yield* Ref.get(snapshot);
     const run = current.runsById.get(runId);
     if (run === undefined) {
@@ -120,30 +119,25 @@ function readIndexedRun(
 
 function refreshIndexedRun(
   snapshot: Ref.Ref<LocalRunIndexSnapshot>,
-  runIdInput: string,
+  runId: RunId,
   options: RunStorageOptions,
 ) {
   return Effect.gen(function* () {
-    const parsed = parseRunIdSafely(runIdInput);
-    if (parsed === undefined) {
-      return;
-    }
-
-    const exit = yield* Effect.exit(readLocalRun(parsed, options));
+    const exit = yield* Effect.exit(readLocalRun(runId, options));
     if (exit._tag === "Success") {
       yield* Ref.update(snapshot, (current) =>
-        storeSuccessfulRun(current, parsed, exit.value),
+        storeSuccessfulRun(current, runId, exit.value),
       );
       return;
     }
 
-    const diagnostic = diagnosticFromCause(exit.cause, parsed);
+    const diagnostic = diagnosticFromCause(exit.cause, runId);
     yield* Ref.update(snapshot, (current) => {
       if (diagnostic.code === "RunNotFound") {
-        return removeRun(current, parsed);
+        return removeRun(current, runId);
       }
 
-      return storeRunDiagnostic(removeRun(current, parsed), diagnostic);
+      return storeRunDiagnostic(removeRun(current, runId), diagnostic);
     });
   });
 }
@@ -204,38 +198,12 @@ function removeRunDiagnostic(
   return diagnostics.filter((diagnostic) => diagnostic.runId !== runId);
 }
 
-function parseRequestedRunId(
-  runIdInput: string,
-): Effect.Effect<RunId, LocalRunReadDiagnostic> {
-  return Effect.try({
-    try: () => parseRunId(runIdInput),
-    catch: () => invalidRunIdDiagnostic(runIdInput),
-  });
-}
-
-function parseRunIdSafely(input: string): RunId | undefined {
-  try {
-    return parseRunId(input);
-  } catch {
-    return undefined;
-  }
-}
-
 function runNotFoundDiagnostic(runId: RunId): LocalRunReadDiagnostic {
   return {
     code: "RunNotFound",
     message: "Run directory does not exist.",
     recoverable: false,
     runId,
-  };
-}
-
-function invalidRunIdDiagnostic(pathSegment: string): LocalRunReadDiagnostic {
-  return {
-    code: "InvalidRunId",
-    message: "Requested run id is not a valid Gaia run id.",
-    pathSegment,
-    recoverable: false,
   };
 }
 

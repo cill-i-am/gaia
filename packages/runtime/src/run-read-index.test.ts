@@ -1,5 +1,6 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
+import { parseRunId } from "@gaia/core";
 import { Effect, FileSystem } from "effect";
 import { makeLocalRunReadIndex } from "./run-read-index.js";
 import { makeRunStorePaths } from "./paths.js";
@@ -97,7 +98,9 @@ describe("local run read index", () => {
         });
 
         const index = yield* makeLocalRunReadIndex({ rootDirectory: cwd });
-        const diagnostic = yield* Effect.flip(index.read("run-L84-kMhLY8"));
+        const diagnostic = yield* Effect.flip(
+          index.read(parseRunId("run-L84-kMhLY8")),
+        );
 
         assert.strictEqual(diagnostic.code, "RunHasNoEvents");
         assert.strictEqual(
@@ -119,8 +122,9 @@ describe("local run read index", () => {
         yield* fs.makeDirectory(`${store.runsRoot}/run-L84-kMhLY8`, {
           recursive: true,
         });
-        yield* index.refreshRun("run-L84-kMhLY8");
-        const diagnostic = yield* Effect.flip(index.read("run-L84-kMhLY8"));
+        const runId = parseRunId("run-L84-kMhLY8");
+        yield* index.refreshRun(runId);
+        const diagnostic = yield* Effect.flip(index.read(runId));
 
         assert.strictEqual(diagnostic.code, "RunHasNoEvents");
         assert.strictEqual(diagnostic.runId, "run-L84-kMhLY8");

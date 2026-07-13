@@ -8,6 +8,8 @@ import {
   LocalRunApiErrorEnvelope,
   LocalRunArtifactDto,
   LocalRunEventsDto,
+  type LocalGaiaServerUrl,
+  type RunId,
   RunIdSchema,
   ServerMetadata,
 } from "@gaia/core";
@@ -47,14 +49,14 @@ const decodeServerMetadata = Schema.decodeUnknownSync(ServerMetadata);
 
 export type ServerRunAcceptedSummary =
   typeof CreateRunAcceptedResponse.Type & {
-    readonly serverUrl: string;
+    readonly serverUrl: LocalGaiaServerUrl;
   };
 
 export function evaluateMergeReadinessFromServer(input: {
   readonly actionId: string;
   readonly mergeMethod: "merge" | "rebase" | "squash";
-  readonly runId: string;
-  readonly serverUrl: string;
+  readonly runId: RunId;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return requestServer({
     dataName: "merge readiness decision",
@@ -69,7 +71,7 @@ export function evaluateMergeReadinessFromServer(input: {
 
 export function listRunsFromServer(input: {
   readonly rootDirectory: string;
-  readonly serverUrl: string;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return Effect.gen(function* () {
     const response = yield* requestServer({
@@ -91,8 +93,8 @@ export function listRunsFromServer(input: {
 
 export function statusRunFromServer(input: {
   readonly rootDirectory: string;
-  readonly runId?: string;
-  readonly serverUrl: string;
+  readonly runId?: RunId;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return Effect.gen(function* () {
     const runId =
@@ -111,8 +113,8 @@ export function statusRunFromServer(input: {
 }
 
 export function readLocalRunEventsFromServer(input: {
-  readonly runId: string;
-  readonly serverUrl: string;
+  readonly runId: RunId;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return requestServer({
     dataName: "run events",
@@ -126,8 +128,8 @@ export function readLocalRunEventsFromServer(input: {
 
 export function readLocalRunArtifactFromServer(input: {
   readonly artifactName: string;
-  readonly runId: string;
-  readonly serverUrl: string;
+  readonly runId: RunId;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return requestServer({
     dataName: "run artifact",
@@ -142,7 +144,7 @@ export function readLocalRunArtifactFromServer(input: {
 
 export function createRunFromServer(input: {
   readonly rootDirectory: string;
-  readonly serverUrl: string;
+  readonly serverUrl: LocalGaiaServerUrl;
   readonly specPath: string;
 }) {
   return Effect.gen(function* () {
@@ -259,7 +261,7 @@ function requestServer<A>(input: {
     LocalGaiaServerProtocolError,
     HttpClient.HttpClient
   >;
-  readonly serverUrl: string;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   return input.effect.pipe(
     Effect.provide(LocalGaiaServerProtocolClientLive),
@@ -332,7 +334,7 @@ function tryAcquireAutostartLock(lockPath: string): AutostartLock | undefined {
 
 function runtimeErrorFromProtocolFailure(
   error: LocalGaiaServerProtocolError,
-  serverUrl: string,
+  serverUrl: LocalGaiaServerUrl,
   dataName: string,
 ) {
   const apiError = Schema.decodeUnknownOption(LocalRunApiErrorEnvelope)(error);
@@ -379,15 +381,6 @@ function runtimeErrorFromParameterFailure(
     { readonly _tag: "LocalGaiaServerProtocolParameterError" }
   >,
 ) {
-  if (error.parameter === "runId") {
-    return makeRuntimeError({
-      cause: error.cause,
-      code: "InvalidRunId",
-      message: "Requested run id is not a valid Gaia run id.",
-      recoverable: false,
-    });
-  }
-
   return makeRuntimeError({
     cause: error.cause,
     code: "ArtifactNotAllowed",
@@ -540,7 +533,7 @@ function readUsableMetadata(rootDirectory: string) {
     const currentRoot = yield* canonicalRoot(rootDirectory);
     const metadataRoot = yield* canonicalRoot(metadata.workspaceRoot);
     const expectedUrl = trustedMetadataUrl(metadata);
-    if (expectedUrl === undefined || metadata.url !== expectedUrl) {
+    if (expectedUrl === undefined) {
       return undefined;
     }
 
@@ -575,7 +568,7 @@ function rejectedServerMetadataDiagnostic(rootDirectory: string) {
     const summary = serverMetadataSummary(metadata);
     const timestamp = new Date().toISOString();
     const expectedUrl = trustedMetadataUrl(metadata);
-    if (expectedUrl === undefined || metadata.url !== expectedUrl) {
+    if (expectedUrl === undefined) {
       return `${timestamp} discarding untrusted local server metadata ${summary}; expected loopback url from host/port; starting replacement server`;
     }
 
@@ -802,12 +795,13 @@ function trustedMetadataUrl(metadata: ServerMetadata) {
       parsed.protocol !== "http:" ||
       parsed.hostname !== metadata.host ||
       Number(parsed.port) !== metadata.port ||
-      parsed.pathname !== "/"
+      parsed.pathname !== "/" ||
+      metadata.url !== expected
     ) {
       return undefined;
     }
 
-    return expected;
+    return metadata.url;
   } catch {
     return undefined;
   }

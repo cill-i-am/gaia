@@ -395,6 +395,40 @@ describe("gaia CLI local server read parity", () => {
       }),
     );
 
+    it.effect("rejects malformed run IDs and server URLs at the CLI boundary", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-domain-input-" });
+        const [runIdFailure, serverUrlFailure] = yield* Effect.all(
+          [
+            runGaia(cwd, ["status", "not-a-run", "--json"]),
+            runGaia(cwd, [
+              "list",
+              "--json",
+              "--server-url",
+              "ftp://127.0.0.1:4321",
+            ]),
+          ],
+          { concurrency: "unbounded" },
+        );
+
+        expect(runIdFailure.exitCode).toBe(1);
+        expect(parseCliJson(runIdFailure.stdout)).toEqual({
+          code: "InvalidRunId",
+          message: "Invalid Gaia run id 'not-a-run'.",
+          recoverable: false,
+          status: "failed",
+        });
+        expect(serverUrlFailure.exitCode).toBe(1);
+        expect(parseCliJson(serverUrlFailure.stdout)).toEqual({
+          code: "InvalidServerUrl",
+          message: "Invalid local Gaia server URL 'ftp://127.0.0.1:4321'.",
+          recoverable: false,
+          status: "failed",
+        });
+      }),
+    );
+
     it.effect("requires one explicit finite merge-readiness method and exact inputs", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

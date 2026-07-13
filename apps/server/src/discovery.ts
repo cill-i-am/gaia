@@ -1,4 +1,4 @@
-import { ServerMetadata } from "@gaia/core";
+import { ServerMetadata, parseLocalGaiaServerUrl } from "@gaia/core";
 import { makeRunStorePaths } from "@gaia/runtime/paths";
 import { Effect, FileSystem, Path } from "effect";
 import type * as HttpServer from "effect/unstable/http/HttpServer";
@@ -105,5 +105,5 @@ export function removeServerMetadata(metadata: ServerMetadata) {
 }
 
 function serverUrl(host: "127.0.0.1", port: number) {
-  return `http://${host}:${port}`;
+  return parseLocalGaiaServerUrl(`http://${host}:${port}`);
 }

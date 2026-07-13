@@ -348,7 +348,7 @@ describe("recoverWorkerSession", () => {
     const f = await realOwnedFixture(); const rootA = process.cwd(); const beforeHead = git(f.paths.workspace, "rev-parse", "HEAD"); const beforeStatus = git(f.paths.workspace, "status", "--porcelain"); const beforeCommon = git(f.paths.workspace, "rev-parse", "--path-format=absolute", "--git-common-dir"); const beforeInventory = git(f.root, "worktree", "list", "--porcelain"); let starts = 0;
     const provider: WorkerRecoveryProvider = { listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]), resumeThread: (threadId) => Effect.succeed({ status: "idle", threadId }), readThread: (threadId) => Effect.succeed({ status: "systemError", threadId }), startTurn: () => Effect.sync(() => { starts++; return { turnId: "turn-recovery" }; }) };
     expect(rootA).not.toBe(f.root);
-    const activate = (runId: string, request: typeof action) => recoverWorkerSession(runId, request, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace: f.validateWorkspace });
+    const activate = (runId: typeof f.runId, request: typeof action) => recoverWorkerSession(runId, request, { nativeThreadId: "thread-1", provider, rootDirectory: f.root, validateWorkspace: f.validateWorkspace });
     const confirmed = await run(actOnWorkerRecovery(f.runId, action, { rootDirectory: f.root, workerRecoveryActivator: activate }));
     expect(confirmed.state).toBe("dispatchConfirmed");
     if (confirmed.state !== "dispatchConfirmed") throw new Error("expected confirmed recovery");

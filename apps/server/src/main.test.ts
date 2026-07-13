@@ -1129,7 +1129,7 @@ describe("local Gaia server process", () => {
         yield* server.close;
 
         assert.isTrue(yield* Ref.get(released));
-        const events = yield* readLocalRunEvents(body.runId, {
+        const events = yield* readLocalRunEvents(parseRunId(body.runId), {
           rootDirectory: cwd,
         });
         assert.notInclude(

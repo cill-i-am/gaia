@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentSessionUpdateDto } from "@gaia/core";
 import {
   FactoryAgentIdSchema,
+  parseLocalGaiaServerUrl,
   parseHarnessSessionId,
   parseRunId,
 } from "@gaia/core";
@@ -11,6 +12,8 @@ import { createAgentSessionStreamController } from "@/agent-session-stream-contr
 import type { AgentSessionEventSource } from "@/lib/local-gaia-client";
 
 const parseAgentId = Schema.decodeUnknownSync(FactoryAgentIdSchema);
+const runId = parseRunId("run-1234567890");
+const serverUrl = parseLocalGaiaServerUrl("/gaia-api");
 
 describe("Agent session stream controller", () => {
   it("opens only while an agent Inspector is visible and closes on close, switch, terminal, and unmount", () => {
@@ -33,13 +36,13 @@ describe("Agent session stream controller", () => {
       onConnectionChange: () => undefined,
       onError: () => undefined,
       onUpdate: (update) => updates.push(update.eventSequence),
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
 
     controller.sync({
       agentId: "agent-worker",
       isOpen: true,
-      runId: "run-1234567890",
+      runId,
       sessionId: "session-run-1234567890",
     });
     expect(sources).toHaveLength(1);
@@ -47,7 +50,7 @@ describe("Agent session stream controller", () => {
     controller.sync({
       agentId: "agent-reviewer",
       isOpen: true,
-      runId: "run-1234567890",
+      runId,
       sessionId: "session-run-1234567890",
     });
     expect(sources).toHaveLength(2);
@@ -60,7 +63,7 @@ describe("Agent session stream controller", () => {
     controller.sync({
       agentId: "agent-reviewer",
       isOpen: false,
-      runId: "run-1234567890",
+      runId,
       sessionId: "session-run-1234567890",
     });
     controller.dispose();
@@ -82,13 +85,13 @@ describe("Agent session stream controller", () => {
       onConnectionChange: (state) => connections.push(state),
       onError: () => undefined,
       onUpdate: () => undefined,
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
 
     controller.sync({
       agentId: "agent-worker",
       isOpen: true,
-      runId: "run-1234567890",
+      runId,
       sessionId: "session-run-1234567890",
     });
     controller.handleUpdate(update({ sequence: 6 }));
@@ -109,12 +112,12 @@ describe("Agent session stream controller", () => {
       onConnectionChange: () => undefined,
       onError: () => undefined,
       onUpdate: () => undefined,
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
     const target = {
       agentId: "agent-worker",
       isOpen: true,
-      runId: "run-1234567890",
+      runId,
       sessionId: "session-run-1234567890",
     } as const;
 
@@ -144,12 +147,12 @@ describe("Agent session stream controller", () => {
       onConnectionChange: () => undefined,
       onError: (error) => errors.push(String(error)),
       onUpdate: (value) => updates.push(value.eventSequence),
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
     const target = {
       agentId: "agent-worker",
       isOpen: true,
-      runId: "run-1234567890",
+      runId,
       sessionId: "session-run-1234567890",
       snapshotSequence: 5,
     } as const;

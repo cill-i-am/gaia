@@ -2,6 +2,8 @@ import type {
   LocalRunApiErrorEnvelope,
   LocalRunReadDiagnosticDto,
   LocalRunSummaryDto,
+  LocalGaiaServerUrl,
+  RunId,
 } from "@gaia/core";
 
 import type { DashboardGaiaClientError } from "@/lib/local-gaia-client";
@@ -18,7 +20,7 @@ export type RunConsoleRun = {
   readonly createdAt: string;
   readonly eventCount: number;
   readonly hasError: boolean;
-  readonly id: string;
+  readonly id: RunId;
   readonly isTerminal: boolean;
   readonly latestEventLabel: string;
   readonly specHint: string | undefined;
@@ -39,7 +41,7 @@ export type RunConsoleState = {
   readonly isLoading: boolean;
   readonly message: string;
   readonly runs: ReadonlyArray<RunConsoleRun>;
-  readonly serverUrl: string;
+  readonly serverUrl: LocalGaiaServerUrl;
 };
 
 export function buildRunConsoleState(input: {
@@ -52,7 +54,7 @@ export function buildRunConsoleState(input: {
   readonly runsError: unknown;
   readonly runsFetching?: boolean;
   readonly runsPending: boolean;
-  readonly serverUrl: string;
+  readonly serverUrl: LocalGaiaServerUrl;
 }): RunConsoleState {
   const runs = input.runs.map(toRunConsoleRun);
   const failure = dashboardQueryFailure(input.healthError ?? input.runsError);
@@ -96,7 +98,7 @@ export function buildRunConsoleState(input: {
 }
 
 export function reconcileSelectedRunId(
-  selectedRunId: string | undefined,
+  selectedRunId: RunId | undefined,
   runs: ReadonlyArray<RunConsoleRun>,
 ) {
   if (selectedRunId !== undefined && runs.some((run) => run.id === selectedRunId)) {
@@ -107,7 +109,7 @@ export function reconcileSelectedRunId(
 }
 
 export function selectedRunFromConsoleState(
-  selectedRunId: string | undefined,
+  selectedRunId: RunId | undefined,
   runs: ReadonlyArray<RunConsoleRun>,
 ) {
   return runs.find((run) => run.id === selectedRunId);

@@ -1,4 +1,4 @@
-import type { LocalRunSummaryDto, RunEvent } from "@gaia/core";
+import type { LocalRunSummaryDto, RunEvent, RunId } from "@gaia/core";
 
 export type RunCompareSignal = {
   readonly label: string;
@@ -16,7 +16,7 @@ export type RunCompareSide = {
   readonly missingData: ReadonlyArray<string>;
   readonly reportSignal: RunCompareSignal;
   readonly reviewSignal: RunCompareSignal;
-  readonly runId: string;
+  readonly runId: RunId;
   readonly statusLabel: string;
   readonly updatedAtLabel: string;
 };

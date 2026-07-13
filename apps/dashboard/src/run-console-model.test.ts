@@ -3,7 +3,7 @@ import type {
   LocalRunReadDiagnosticDto,
   LocalRunSummaryDto,
 } from "@gaia/core";
-import { RunIdSchema } from "@gaia/core";
+import { parseLocalGaiaServerUrl, RunIdSchema } from "@gaia/core";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -12,6 +12,8 @@ import {
   reconcileSelectedRunId,
   selectedRunFromConsoleState,
 } from "@/run-console-model";
+
+const serverUrl = parseLocalGaiaServerUrl("/gaia-api");
 
 describe("run console model", () => {
   it("builds selectable local API run rows and preserves selection", () => {
@@ -38,7 +40,7 @@ describe("run console model", () => {
       runsDiagnostics: [],
       runsError: undefined,
       runsPending: false,
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
 
     expect(state.health).toBe("online");
@@ -59,14 +61,14 @@ describe("run console model", () => {
     expect(reconcileSelectedRunId(undefined, state.runs)).toBe(
       "run-1234567890",
     );
-    expect(reconcileSelectedRunId("run-abcdefghij", state.runs)).toBe(
+    expect(reconcileSelectedRunId(parseRunId("run-abcdefghij"), state.runs)).toBe(
       "run-abcdefghij",
     );
-    expect(reconcileSelectedRunId("run-missing000", state.runs)).toBe(
+    expect(reconcileSelectedRunId(parseRunId("run-missing000"), state.runs)).toBe(
       "run-1234567890",
     );
     expect(
-      selectedRunFromConsoleState("run-abcdefghij", state.runs)?.status,
+      selectedRunFromConsoleState(parseRunId("run-abcdefghij"), state.runs)?.status,
     ).toBe("completed");
   });
 
@@ -79,14 +81,16 @@ describe("run console model", () => {
       runsDiagnostics: [],
       runsError: undefined,
       runsPending: false,
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
 
     expect(state.health).toBe("online");
     expect(state.isEmpty).toBe(true);
     expect(state.isError).toBe(false);
     expect(state.message).toBe("0 runs loaded through LocalGaiaServerApi.");
-    expect(reconcileSelectedRunId("run-1234567890", state.runs)).toBeUndefined();
+    expect(
+      reconcileSelectedRunId(parseRunId("run-1234567890"), state.runs),
+    ).toBeUndefined();
   });
 
   it("labels failed runs by public status without terminality copy", () => {
@@ -106,7 +110,7 @@ describe("run console model", () => {
       runsDiagnostics: [],
       runsError: undefined,
       runsPending: false,
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
 
     expect(state.runs[0]).toMatchObject({
@@ -125,7 +129,7 @@ describe("run console model", () => {
       runsDiagnostics: [],
       runsError: undefined,
       runsPending: true,
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
 
     expect(state.health).toBe("checking");
@@ -153,7 +157,7 @@ describe("run console model", () => {
       runsError: undefined,
       runsFetching: true,
       runsPending: false,
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
 
     expect(state.health).toBe("reconnecting");
@@ -185,7 +189,7 @@ describe("run console model", () => {
       runsDiagnostics: [],
       runsError: undefined,
       runsPending: false,
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
 
     expect(state.health).toBe("stale");
@@ -224,7 +228,7 @@ describe("run console model", () => {
       ],
       runsError: undefined,
       runsPending: false,
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
 
     expect(state.health).toBe("online");
@@ -248,7 +252,7 @@ describe("run console model", () => {
       ],
       runsError: undefined,
       runsPending: false,
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
 
     expect(state.health).toBe("online");
@@ -275,7 +279,7 @@ describe("run console model", () => {
         },
       },
       runsPending: false,
-      serverUrl: "/gaia-api",
+      serverUrl,
     });
 
     expect(state.health).toBe("offline");

@@ -17,6 +17,9 @@ import {
   type FactoryArtifactDto,
   type FactoryGraphDto,
   type HarnessPendingInteraction,
+  parseRunId,
+  type LocalGaiaServerUrl,
+  type RunId,
   RunEvent,
 } from "@gaia/core";
 import { Option, Schema } from "effect";
@@ -212,8 +215,8 @@ function signalBadgeVariant(
 }
 
 function reconcileComparisonRunId(input: {
-  readonly primaryRunId: string | undefined;
-  readonly requestedComparisonRunId: string | undefined;
+  readonly primaryRunId: RunId | undefined;
+  readonly requestedComparisonRunId: RunId | undefined;
   readonly runs: ReadonlyArray<RunConsoleRun>;
 }) {
   if (
@@ -225,6 +228,15 @@ function reconcileComparisonRunId(input: {
   }
 
   return input.runs.find((run) => run.id !== input.primaryRunId)?.id;
+}
+
+function parseDashboardRunSelection(input: string): RunId | undefined {
+  if (input.length === 0) return undefined;
+  try {
+    return parseRunId(input);
+  } catch {
+    return undefined;
+  }
 }
 
 function buildSelectedRunArtifactEvidence(input: {
@@ -369,14 +381,14 @@ export function DashboardShell() {
     ],
   );
   const [requestedSelectedRunId, setRequestedSelectedRunId] = React.useState<
-    string | undefined
+    RunId | undefined
   >();
   const selectedRunId = reconcileSelectedRunId(
     requestedSelectedRunId,
     runConsole.runs,
   );
   const [requestedComparisonRunId, setRequestedComparisonRunId] =
-    React.useState<string | undefined>();
+    React.useState<RunId | undefined>();
   const [commandMode, setCommandMode] = React.useState<CommandMode>("inspect");
   const comparisonRunId = reconcileComparisonRunId({
     primaryRunId: selectedRunId,
@@ -398,25 +410,25 @@ export function DashboardShell() {
   );
   const selectedRunDetailQuery = useQuery(
     localGaiaRunQueryOptions({
-      runId: selectedRunId ?? "",
+      runId: selectedRunId,
       serverUrl,
     }),
   );
   const selectedFactoryGraphQuery = useQuery(
     localGaiaFactoryGraphQueryOptions({
-      runId: selectedRunId ?? "",
+      runId: selectedRunId,
       serverUrl,
     }),
   );
   const selectedFactoryRunActivityQuery = useQuery(
     localGaiaFactoryRunActivityQueryOptions({
-      runId: selectedRunId ?? "",
+      runId: selectedRunId,
       serverUrl,
     }),
   );
   const selectedDeliveryQuery = useQuery(
     localGaiaDeliveryQueryOptions({
-      runId: selectedRunId ?? "",
+      runId: selectedRunId,
       serverUrl,
     }),
   );
@@ -426,32 +438,29 @@ export function DashboardShell() {
     serverUrl,
   });
   const deliveryActionMutation = useMutation(
-    localGaiaDeliveryActionMutationOptions({
-      runId: selectedRunId ?? "",
-      serverUrl,
-    }),
+    localGaiaDeliveryActionMutationOptions({ serverUrl }),
   );
   const selectedFactoryArtifactsQuery = useQuery(
     localGaiaFactoryArtifactsQueryOptions({
-      runId: selectedRunId ?? "",
+      runId: selectedRunId,
       serverUrl,
     }),
   );
   const selectedRunEventsQuery = useQuery(
     localGaiaRunEventsQueryOptions({
-      runId: selectedRunId ?? "",
+      runId: selectedRunId,
       serverUrl,
     }),
   );
   const comparisonRunDetailQuery = useQuery(
     localGaiaRunQueryOptions({
-      runId: comparisonModeEnabled ? (comparisonRunId ?? "") : "",
+      runId: comparisonModeEnabled ? comparisonRunId : undefined,
       serverUrl,
     }),
   );
   const comparisonRunEventsQuery = useQuery(
     localGaiaRunEventsQueryOptions({
-      runId: comparisonModeEnabled ? (comparisonRunId ?? "") : "",
+      runId: comparisonModeEnabled ? comparisonRunId : undefined,
       serverUrl,
     }),
   );
@@ -529,7 +538,7 @@ export function DashboardShell() {
     localGaiaFactoryAgentActivityQueryOptions({
       agentId:
         selectedFactoryNode?.kind === "agent" ? selectedFactoryNode.rawId : "",
-      runId: selectedRunId ?? "",
+      runId: selectedRunId,
       serverUrl,
     }),
   );
@@ -746,7 +755,7 @@ export function DashboardShell() {
     void Promise.all(refreshes);
   }
 
-  function selectRun(runId: string) {
+  function selectRun(runId: RunId) {
     setRequestedSelectedRunId(runId);
     setSelectedNodeId(undefined);
     setRequestedReplayIndex(undefined);
@@ -764,10 +773,16 @@ export function DashboardShell() {
     selectRun(result.runId);
   }
 
-  async function actOnDelivery(action: Parameters<typeof deliveryActionMutation.mutateAsync>[0]) {
+  async function actOnDelivery(action: unknown) {
     const snapshot = selectedDeliveryQuery.data?.data;
-    if (snapshot === undefined) return;
-    await deliveryActionMutation.mutateAsync(typeof action === "string" ? { expectedEventSequence: snapshot.eventSequence, kind: action } : action);
+    if (snapshot === undefined || selectedRunId === undefined) return;
+    await deliveryActionMutation.mutateAsync({
+      action:
+        typeof action === "string"
+          ? { expectedEventSequence: snapshot.eventSequence, kind: action }
+          : action,
+      runId: selectedRunId,
+    });
     await Promise.all([
       selectedDeliveryQuery.refetch(),
       selectedRunEventsQuery.refetch(),
@@ -879,6 +894,7 @@ export function DashboardShell() {
               replayState={replayState}
               runCompare={runCompare}
               selectedRun={selectedRun}
+              selectedRunId={selectedRunId}
               serverUrl={serverUrl}
               onClose={() => setSelectedNodeId(undefined)}
             />
@@ -1067,14 +1083,14 @@ function RunComparePanel({
   onSelectComparisonRun,
   onSelectPrimaryRun,
 }: {
-  readonly comparisonRunId: string | undefined;
+  readonly comparisonRunId: RunId | undefined;
   readonly comparisonRunIsLoading: boolean;
-  readonly primaryRunId: string | undefined;
+  readonly primaryRunId: RunId | undefined;
   readonly runCompare: RunCompareModel;
   readonly runs: ReadonlyArray<RunConsoleRun>;
   readonly onClose: () => void;
-  readonly onSelectComparisonRun: (runId: string | undefined) => void;
-  readonly onSelectPrimaryRun: (runId: string) => void;
+  readonly onSelectComparisonRun: (runId: RunId | undefined) => void;
+  readonly onSelectPrimaryRun: (runId: RunId) => void;
 }) {
   const canCompare = runs.length >= 2;
   const comparisonOptions = runs.filter((run) => run.id !== primaryRunId);
@@ -1106,8 +1122,9 @@ function RunComparePanel({
                 runs={runs}
                 disabled={runs.length === 0}
                 onChange={(runId) => {
-                  if (runId.length > 0) {
-                    onSelectPrimaryRun(runId);
+                  const parsedRunId = parseDashboardRunSelection(runId);
+                  if (parsedRunId !== undefined) {
+                    onSelectPrimaryRun(parsedRunId);
                   }
                 }}
               />
@@ -1118,7 +1135,7 @@ function RunComparePanel({
                 runs={comparisonOptions}
                 disabled={!canCompare}
                 onChange={(runId) =>
-                  onSelectComparisonRun(runId.length === 0 ? undefined : runId)
+                  onSelectComparisonRun(parseDashboardRunSelection(runId))
                 }
               />
             </div>
@@ -1365,7 +1382,7 @@ function RunConsole({
 }: {
   readonly createRunError: ReturnType<typeof dashboardQueryFailure>;
   readonly createRunIsPending: boolean;
-  readonly selectedRunId: string | undefined;
+  readonly selectedRunId: RunId | undefined;
   readonly serverConnection: ServerConnectionState;
   readonly onCreateIssueDeliveryRun: (input: {
     readonly deliveryMode: "local" | "pullRequest";
@@ -1373,7 +1390,7 @@ function RunConsole({
     readonly title: string;
   }) => Promise<void>;
   readonly onRefresh: () => void;
-  readonly onSelectRun: (runId: string) => void;
+  readonly onSelectRun: (runId: RunId) => void;
 }) {
   const [filter, setFilter] = React.useState("");
   const [createRunDialogOpen, setCreateRunDialogOpen] = React.useState(false);
@@ -1726,9 +1743,9 @@ function RunConsoleRuns({
 }: {
   readonly runs: ReadonlyArray<RunConsoleRun>;
   readonly selectedRunArtifactEvidence: SelectedRunArtifactEvidence | undefined;
-  readonly selectedRunId: string | undefined;
+  readonly selectedRunId: RunId | undefined;
   readonly state: RunConsoleState;
-  readonly onSelectRun: (runId: string) => void;
+  readonly onSelectRun: (runId: RunId) => void;
 }) {
   if (state.isLoading) {
     return (
@@ -2293,10 +2310,10 @@ function SecondaryCommandPanel({
   onToggleReplayPlayback,
 }: {
   readonly commandMode: CommandMode;
-  readonly comparisonRunId: string | undefined;
+  readonly comparisonRunId: RunId | undefined;
   readonly comparisonRunIsLoading: boolean;
   readonly isReplayPlaying: boolean;
-  readonly primaryRunId: string | undefined;
+  readonly primaryRunId: RunId | undefined;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
   readonly runEventStream: RunEventStreamState;
@@ -2304,8 +2321,8 @@ function SecondaryCommandPanel({
   readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedRun: DashboardRun;
   readonly onSelectCommandMode: (mode: CommandMode) => void;
-  readonly onSelectComparisonRun: (runId: string | undefined) => void;
-  readonly onSelectPrimaryRun: (runId: string) => void;
+  readonly onSelectComparisonRun: (runId: RunId | undefined) => void;
+  readonly onSelectPrimaryRun: (runId: RunId) => void;
   readonly onSelectReplayIndex: (index: number) => void;
   readonly onToggleReplayPlayback: () => void;
 }) {
@@ -2433,6 +2450,7 @@ function AgentInspectorSheet({
   replayState,
   runCompare,
   selectedRun,
+  selectedRunId,
   serverUrl,
   onClose,
 }: {
@@ -2441,7 +2459,8 @@ function AgentInspectorSheet({
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
   readonly selectedRun: DashboardRun;
-  readonly serverUrl: string;
+  readonly selectedRunId: RunId | undefined;
+  readonly serverUrl: LocalGaiaServerUrl;
   readonly onClose: () => void;
 }) {
   const isOpen = inspector.kind !== "empty";
@@ -2468,6 +2487,7 @@ function AgentInspectorSheet({
             replayState={replayState}
             runCompare={runCompare}
             selectedRun={selectedRun}
+            selectedRunId={selectedRunId}
             serverUrl={serverUrl}
             onClose={onClose}
           />
@@ -2595,6 +2615,7 @@ function AgentInspector({
   replayState,
   runCompare,
   selectedRun,
+  selectedRunId,
   serverUrl,
   onClose,
 }: {
@@ -2603,7 +2624,8 @@ function AgentInspector({
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
   readonly selectedRun: DashboardRun;
-  readonly serverUrl: string;
+  readonly selectedRunId: RunId | undefined;
+  readonly serverUrl: LocalGaiaServerUrl;
   readonly onClose: () => void;
 }) {
   const [tab, setTab] = React.useState<AgentInspectorTab>("session");
@@ -2627,8 +2649,6 @@ function AgentInspector({
     artifactIdStrings.includes(requestedArtifact.artifactId)
       ? requestedArtifact.artifactId
       : undefined;
-  const selectedRunId =
-    selectedRun.id === "no-run-selected" ? "" : selectedRun.id;
   const selectedAgentId = inspector.kind === "agent" ? inspector.agent.id : "";
   const artifactQuery = useQuery(
     localGaiaFactoryArtifactQueryOptions({
@@ -2645,11 +2665,7 @@ function AgentInspector({
     }),
   );
   const sessionAction = useMutation(
-    localGaiaAgentSessionActionMutationOptions({
-      agentId: selectedAgentId,
-      runId: selectedRunId,
-      serverUrl,
-    }),
+    localGaiaAgentSessionActionMutationOptions({ serverUrl }),
   );
   const [streamSession, setStreamSession] = React.useState<
     typeof AgentSessionSnapshotDto.Type | undefined
@@ -2699,7 +2715,7 @@ function AgentInspector({
       ...(deliverySnapshot?.remediationRearmSequence === undefined
         ? {}
         : { rearmSequence: deliverySnapshot.remediationRearmSequence }),
-      runId: selectedRunId === "" ? undefined : selectedRunId,
+      runId: selectedRunId,
       ...(streamSession?.sessionId === undefined
         ? {}
         : { sessionId: streamSession.sessionId }),
@@ -2753,13 +2769,18 @@ function AgentInspector({
   }, [selectedAgentId, selectedRunId]);
   const submitSessionAction = React.useCallback(
     (action: unknown) => {
-      sessionAction.mutate(action, {
+      if (selectedRunId === undefined || selectedAgentId.length === 0) return;
+      sessionAction.mutate({
+        action,
+        agentId: selectedAgentId,
+        runId: selectedRunId,
+      }, {
         onSuccess: () => {
           void sessionQuery.refetch();
         },
       });
     },
-    [sessionAction, sessionQuery],
+    [selectedAgentId, selectedRunId, sessionAction, sessionQuery],
   );
 
   React.useEffect(() => {
@@ -3778,8 +3799,8 @@ function useDeliverySnapshotStream({
   serverUrl,
 }: {
   readonly initial: typeof DeliverySnapshotDto.Type | undefined;
-  readonly runId: string | undefined;
-  readonly serverUrl: string;
+  readonly runId: RunId | undefined;
+  readonly serverUrl: LocalGaiaServerUrl;
 }) {
   const [snapshot, setSnapshot] = React.useState(initial);
 
@@ -3862,8 +3883,8 @@ function useRunEventStream({
   serverUrl,
 }: {
   readonly enabled: boolean;
-  readonly runId: string | undefined;
-  readonly serverUrl: string;
+  readonly runId: RunId | undefined;
+  readonly serverUrl: LocalGaiaServerUrl;
 }): RunEventStreamState {
   const [state, setState] = React.useState<RunEventStreamState>({
     events: [],
@@ -3972,7 +3993,7 @@ function factoryActivityKey(activity: typeof FactoryActivityDto.Type) {
   ].join(":");
 }
 
-function runEventStreamUrl(serverUrl: string, runId: string) {
+function runEventStreamUrl(serverUrl: LocalGaiaServerUrl, runId: RunId) {
   const baseUrl = serverUrl.endsWith("/") ? serverUrl.slice(0, -1) : serverUrl;
   return `${baseUrl}/runs/${encodeURIComponent(runId)}/events/stream`;
 }

@@ -107,7 +107,7 @@ export const parseLinearIssueGraphJson =
 
 /** Attach one Linear issue graph snapshot to a completed Gaia run. */
 export function recordLinearIssueGraph(
-  runIdInput: string,
+  runIdInput: RunId,
   sourcePath: string,
   options: RunStorageOptions = {},
 ) {
@@ -118,7 +118,7 @@ export function recordLinearIssueGraph(
 }
 
 function recordLinearIssueGraphUnlocked(
-  runIdInput: string,
+  runIdInput: RunId,
   sourcePath: string,
   options: RunStorageOptions,
 ) {

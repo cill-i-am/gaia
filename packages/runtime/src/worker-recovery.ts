@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { parseHarnessEvent, parseRunId, parseWorkerRecoveryReceipt, encodeWorkerRecoveryReceiptJson, type WorkerRecoveryAction, type WorkerRecoveryReceipt } from "@gaia/core";
+import { parseHarnessEvent, parseWorkerRecoveryReceipt, encodeWorkerRecoveryReceiptJson, type RunId, type WorkerRecoveryAction, type WorkerRecoveryReceipt } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { appendEvent, loadRun } from "./event-store.js";
 import { makeRuntimeError } from "./errors.js";
@@ -40,7 +40,7 @@ const PrivateWorkerRecoveryTurn = Schema.Struct({
 const PrivateWorkerCorrelationFollowUpTurn = Schema.Struct({ turnId: Schema.NonEmptyString, version: Schema.Literal(1) });
 type WorkerRecoveryCheckpointBinding = Pick<WorkerRecoveryReceipt, "actionId" | "expectedFailureSequence" | "expectedSessionId" | "harnessProfileId" | "model" | "payloadDigest">;
 
-export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryAction, input: {
+export function recoverWorkerSession(runId: RunId, action: WorkerRecoveryAction, input: {
   readonly appendRecoveryEvent?: typeof appendEvent;
   readonly nativeThreadId: string;
   readonly provider: WorkerRecoveryProvider;
@@ -48,7 +48,6 @@ export function recoverWorkerSession(runIdInput: string, action: WorkerRecoveryA
   readonly validateWorkspace: (workspacePath: string, expectedHead: string) => Effect.Effect<WorkerRecoveryWorkspaceValidation, unknown, FileSystem.FileSystem | Path.Path>;
 }) {
   return withRunStoreLock(input, Effect.gen(function* () {
-    const runId = parseRunId(runIdInput);
     const paths = yield* makeRunPaths(runId, input);
     const recordReceipt = (receipt: WorkerRecoveryReceipt) => record(
       runId,
@@ -194,7 +193,7 @@ function sameTrackedPayloadBinding(left: TrackedPayloadBinding | undefined, righ
   return left.trackedPayloadDigest === right.trackedPayloadDigest &&
     left.trackedPayloadEntryCount === right.trackedPayloadEntryCount;
 }
-function record(runId: ReturnType<typeof parseRunId>, paths: RunPaths, receipt: WorkerRecoveryReceipt, appendRecoveryEvent: typeof appendEvent) {
+function record(runId: RunId, paths: RunPaths, receipt: WorkerRecoveryReceipt, appendRecoveryEvent: typeof appendEvent) {
   return appendRecoveryEvent(runId, paths, { payload: { recovery: encodeWorkerRecoveryReceiptJson(receipt) }, type: "WORKER_RECOVERY_RECORDED" }).pipe(Effect.as(receipt));
 }
 function writePrivateTurnCheckpoint(runRoot: string, turnId: string, binding: WorkerRecoveryCheckpointBinding) {

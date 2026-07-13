@@ -1,4 +1,4 @@
-import { RunIdSchema } from "@gaia/core";
+import { RunIdSchema, type RunId } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 import { parseBrowserEvidenceJson } from "./browser-evidence.js";
 import { appendEvent } from "./event-store.js";
@@ -101,7 +101,7 @@ export const parseMergeDecisionJson =
 
 /** Record Gaia's explicit merge decision for a completed run. */
 export function recordMergeDecision(
-  runIdInput: string,
+  runIdInput: RunId,
   options: RunStorageOptions = {},
 ) {
   return withRunStoreLock(
@@ -111,7 +111,7 @@ export function recordMergeDecision(
 }
 
 function recordMergeDecisionUnlocked(
-  runIdInput: string,
+  runIdInput: RunId,
   options: RunStorageOptions,
 ) {
   return Effect.gen(function* () {

@@ -1,3 +1,4 @@
+import type { RunId } from "@gaia/core";
 import { Effect } from "effect";
 import {
   readFactoryArtifactBodyFromIndex,
@@ -8,30 +9,30 @@ import type { RunStorageOptions } from "./paths.js";
 import type { LocalRunReadDiagnostic } from "./run-read-api.js";
 
 export function readFactoryGraph(
-  runIdInput: string,
+  runId: RunId,
   options: RunStorageOptions = {},
 ) {
-  return readFactoryRunIndexes(runIdInput, options).pipe(
+  return readFactoryRunIndexes(runId, options).pipe(
     Effect.map((indexes) => indexes.graph),
   );
 }
 
 export function readFactoryRunActivity(
-  runIdInput: string,
+  runId: RunId,
   options: RunStorageOptions = {},
 ) {
-  return readFactoryRunIndexes(runIdInput, options).pipe(
+  return readFactoryRunIndexes(runId, options).pipe(
     Effect.map((indexes) => indexes.activity),
   );
 }
 
 export function readFactoryAgentActivity(
-  runIdInput: string,
+  runId: RunId,
   agentIdInput: string,
   options: RunStorageOptions = {},
 ) {
   return Effect.gen(function* () {
-    const indexes = yield* readFactoryRunIndexes(runIdInput, options);
+    const indexes = yield* readFactoryRunIndexes(runId, options);
     const agent = indexes.graph.agents.find((candidate) => candidate.id === agentIdInput);
     if (agent === undefined) {
       return yield* Effect.fail({
@@ -53,18 +54,18 @@ export function readFactoryAgentActivity(
 }
 
 export function listFactoryRunArtifacts(
-  runIdInput: string,
+  runId: RunId,
   options: RunStorageOptions = {},
 ) {
-  return readFactoryRunIndexes(runIdInput, options).pipe(
+  return readFactoryRunIndexes(runId, options).pipe(
     Effect.map((indexes) => indexes.artifacts),
   );
 }
 
 export function readFactoryRunArtifact(
-  runIdInput: string,
+  runId: RunId,
   artifactIdInput: string,
   options: RunStorageOptions = {},
 ) {
-  return readFactoryArtifactBodyFromIndex(runIdInput, artifactIdInput, options);
+  return readFactoryArtifactBodyFromIndex(runId, artifactIdInput, options);
 }
