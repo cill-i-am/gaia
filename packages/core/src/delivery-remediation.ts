@@ -183,6 +183,9 @@ export class DeliveryPullRequestObservation extends Schema.Class<DeliveryPullReq
   blockers: Schema.Array(DeliveryBlocker).pipe(
     Schema.check(Schema.isMaxLength(100)),
   ),
+  branchName: Schema.optionalKey(
+    Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
+  ),
   checks: Schema.Array(DeliveryCheckObservation).pipe(
     Schema.check(Schema.isMaxLength(100)),
   ),

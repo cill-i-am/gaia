@@ -10,14 +10,18 @@ import {
   DeliveryBlocker,
   DeliveryFeedbackObservation,
   DeliveryPullRequestObservation,
+  DeliveryPullRequestReadyIntent,
   DeliveryRemediationIntent,
   DeliveryRemediationFailed,
   encodeDeliveryPullRequestObservationJson,
+  encodeDeliveryPullRequestReadyReceiptJson,
   encodeDeliveryPublicationJson,
   encodeDeliveryRemediationJson,
   encodeWorkerRecoveryReceiptJson,
   HarnessCapabilities,
   HarnessProviderDescriptor,
+  deliveryPullRequestReadyPayloadDigest,
+  makeRunEvent,
   parseDeliveryFeedbackId,
   parseHarnessEvent,
   parseHarnessProfileId,
@@ -29,6 +33,7 @@ import {
   parseRunId,
   parseWorkspaceRelativePath,
   projectHarnessEvents,
+  RunEvent,
   WorkerRecoveryAction,
 } from "@gaia/core";
 import {
@@ -1018,6 +1023,11 @@ describe("local run api http boundary", () => {
           assert.strictEqual(first.status, 200); assert.strictEqual(duplicate.status, 200);
         }
         assert.strictEqual(mutations, actions.length);
+        const malformedActionId = yield* request({ ...actions[0]!, actionId: "bad action id" });
+        const malformedActionIdBody = yield* responseJsonObject(malformedActionId);
+        assert.strictEqual(malformedActionId.status, 400);
+        assertApiError(malformedActionIdBody, "InvalidRequest", 400);
+        assert.strictEqual(mutations, actions.length);
         const conflicts = [
           { ...actions[0]!, actionId: "conflict-ready", expectedHeadSha: "d".repeat(40) },
           { ...actions[1]!, actionId: "conflict-readiness", mergeMethod: "rebase" },
@@ -1031,6 +1041,69 @@ describe("local run api http boundary", () => {
           assert.strictEqual(response.status, 409); assertApiError(body, "DeliveryActionConflict", 409);
         }
       }),
+    );
+
+    it.effect("rejects a canonically hashed wrong-run ready receipt from the public projection", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-ready-authority-" });
+        const accepted = yield* acceptFactoryRun({
+          delivery: { mode: "pullRequest" },
+          execution: codexAppServerExecutionSelection,
+          workflow: "issueDelivery",
+          workItem: { description: "Reject corrupt ready history.", kind: "issue", title: "Ready authority" },
+        }, {
+          deliveryGitCommandRunner: recordingGitRunner(),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        yield* continueServerRun(accepted.runId, {
+          deliveryGitCommandRunner: recordingGitRunner(),
+          deliveryPublisher: recordingDeliveryPublisher(),
+          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          rootDirectory: cwd,
+        });
+        const paths = yield* makeRunPaths(accepted.runId, { rootDirectory: cwd });
+        const publication = publicationTestFields(accepted.runId);
+        const bindingBase = {
+          actionId: "ready-wrong-run",
+          branchName: publication.branchName,
+          expectedHeadSha: "b".repeat(40),
+          prNumber: 91,
+          prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+          publicationOperationId: publication.operationId,
+          publicationPayloadDigest: publication.payloadDigest,
+          repository: "cill-i-am/gaia",
+          runId: parseRunId("run-wrong12345"),
+          version: 1 as const,
+        };
+        const ready = DeliveryPullRequestReadyIntent.make({
+          ...bindingBase,
+          payloadDigest: deliveryPullRequestReadyPayloadDigest(bindingBase),
+          state: "intentRecorded",
+        });
+        const existingEvents = yield* fs.readFileString(paths.events);
+        const event = makeRunEvent({
+          payload: { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(ready) },
+          runId: accepted.runId,
+          sequence: existingEvents.trim().split("\n").length + 1,
+          timestamp: "2026-07-13T08:00:00.000Z",
+          type: "DELIVERY_PR_READY_RECORDED",
+        });
+        yield* fs.writeFileString(paths.events, `${existingEvents}${JSON.stringify(Schema.encodeSync(RunEvent)(event))}\n`);
+
+        const response = yield* HttpClient.get(`/runs/${accepted.runId}/delivery`).pipe(
+          Effect.provide(testServerLayer(cwd)),
+        );
+        const text = yield* response.text;
+        const body = asJsonObject(JSON.parse(text));
+
+        assert.strictEqual(response.status, 422);
+        assertApiError(body, "RunUnreadable", 422);
+        assert.notInclude(text, ready.actionId);
+        assert.notInclude(text, "run-wrong12345");
+      }),
+      20_000,
     );
 
     it.effect("routes controlled remediation activation through the existing live coordinator", () =>

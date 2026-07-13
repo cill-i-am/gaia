@@ -4,7 +4,8 @@ import {
   DeliveryPullRequestReadyDispatchConfirmed,
   DeliveryPullRequestReadyIntent,
   DeliveryPullRequestReadyTerminalFailure,
-  deliveryPullRequestReadyCanonicalPayload,
+  assertDeliveryPullRequestReadyAuthority,
+  deliveryPullRequestReadyPayloadDigest,
   deriveDeliveryActionHistoriesFromEvents,
   encodeDeliveryPullRequestReadyReceiptJson,
   parseDeliveryPublication,
@@ -13,14 +14,13 @@ import {
   type DeliveryPullRequestReadyReceipt,
   type RunId,
 } from "@gaia/core";
-import { createHash } from "node:crypto";
 import { Cause, Effect, Option, Schema } from "effect";
 import {
   DeliveryReadyForReviewConclusivelyRejected,
   invokeGitHubReadyForReview,
   type DeliveryReadyForReviewProviderInput,
 } from "./delivery-merge-provider.js";
-import { appendEvent, loadRun } from "./event-store.js";
+import { appendEvent, readEvents } from "./event-store.js";
 import { makeRuntimeError } from "./errors.js";
 import { nodeGitHubCommandRunner, type GitHubCommandRunner } from "./github-publisher.js";
 import { makeRunPaths, type RunPaths, type RunStorageOptions } from "./paths.js";
@@ -98,8 +98,10 @@ export function coordinateDeliveryPullRequestReady(
 ) {
   return withRunStoreLock(options, Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options);
-    const loaded = yield* loadRun(paths);
-    const replay = snapshotFromReplay(loaded.events);
+    const events = yield* readEvents(paths).pipe(
+      Effect.catchCause(() => conflict("Ready-for-review history is invalid for the current run authority.")),
+    );
+    const replay = snapshotFromReplay(events);
     if (replay.state !== "delivering") return yield* conflict("Ready-for-review requires a delivering pull-request run.");
     const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(replay.context["delivery"]);
     const publication = parseDeliveryPublication(delivery["publication"]);
@@ -107,6 +109,7 @@ export function coordinateDeliveryPullRequestReady(
     const repository = repositoryFromPrUrl(publication.prUrl);
     if (
       action.expectedBranchName !== publication.branchName ||
+      action.expectedHeadSha !== publication.headSha ||
       action.expectedPrNumber !== publication.prNumber ||
       action.expectedPrUrl !== publication.prUrl
     ) return yield* conflict("Ready-for-review action does not match the confirmed owned pull request.");
@@ -125,9 +128,19 @@ export function coordinateDeliveryPullRequestReady(
     };
     const binding = {
       ...bindingBase,
-      payloadDigest: hash(deliveryPullRequestReadyCanonicalPayload(bindingBase)),
+      payloadDigest: deliveryPullRequestReadyPayloadDigest(bindingBase),
     };
-    const histories = validateReadyHistories(loaded.events, publication.operationId, publication.payloadDigest);
+    const authority = {
+      branchName: publication.branchName,
+      expectedHeadSha: publication.headSha,
+      prNumber: publication.prNumber,
+      prUrl: publication.prUrl,
+      publicationOperationId: publication.operationId,
+      publicationPayloadDigest: publication.payloadDigest,
+      repository,
+      runId,
+    };
+    const histories = validateReadyHistories(events, authority);
     const previous = histories.latest?.latest;
     if (previous !== undefined && previous.actionId === action.actionId) assertSameReadyBinding(previous, binding);
     if (histories.active !== undefined && histories.active.actionId !== action.actionId) {
@@ -201,9 +214,10 @@ export function requireExactReadyForReviewConfirmation(
     readonly publicationOperationId: string;
     readonly publicationPayloadDigest: string;
     readonly repository: string;
+    readonly runId: string;
   },
 ) {
-  const histories = validateReadyHistories(events, input.publicationOperationId, input.publicationPayloadDigest);
+  const histories = validateReadyHistories(events, input);
   const latest = histories.latest?.latest;
   if (histories.active !== undefined || latest === undefined || !isConfirmed(latest) || !sameReadyTarget(latest, input)) {
     throw makeRuntimeError({ code: "DeliveryActionConflict", message: "Exact current-head ready-for-review confirmation is required.", recoverable: true });
@@ -213,18 +227,16 @@ export function requireExactReadyForReviewConfirmation(
 
 function validateReadyHistories(
   events: Parameters<typeof deriveDeliveryActionHistoriesFromEvents>[0],
-  publicationOperationId: string,
-  publicationPayloadDigest: string,
+  expected: Parameters<typeof assertDeliveryPullRequestReadyAuthority>[1],
 ) {
   const histories = deriveDeliveryActionHistoriesFromEvents(events).readyForReview;
   for (const history of histories.histories) {
     for (const { receipt } of history.receipts) {
-      const expected = hash(deliveryPullRequestReadyCanonicalPayload(receipt));
-      if (
-        receipt.payloadDigest !== expected ||
-        receipt.publicationOperationId !== publicationOperationId ||
-        receipt.publicationPayloadDigest !== publicationPayloadDigest
-      ) throw makeRuntimeError({ code: "DeliveryActionConflict", message: "Ready-for-review action binding is invalid for the confirmed publication generation.", recoverable: true });
+      try {
+        assertDeliveryPullRequestReadyAuthority(receipt, expected);
+      } catch {
+        throw makeRuntimeError({ code: "DeliveryActionConflict", message: "Ready-for-review action binding is invalid for the confirmed publication generation.", recoverable: true });
+      }
     }
   }
   return histories;
@@ -295,6 +307,7 @@ function sameReadyTarget(left: {
   readonly publicationOperationId: string;
   readonly publicationPayloadDigest: string;
   readonly repository: string;
+  readonly runId: string;
 }, right: {
   readonly branchName: string;
   readonly expectedHeadSha: string;
@@ -303,11 +316,13 @@ function sameReadyTarget(left: {
   readonly publicationOperationId: string;
   readonly publicationPayloadDigest: string;
   readonly repository: string;
+  readonly runId: string;
 }) {
   return left.branchName === right.branchName && left.expectedHeadSha === right.expectedHeadSha &&
     left.prNumber === right.prNumber && left.prUrl === right.prUrl &&
     left.publicationOperationId === right.publicationOperationId &&
-    left.publicationPayloadDigest === right.publicationPayloadDigest && left.repository === right.repository;
+    left.publicationPayloadDigest === right.publicationPayloadDigest && left.repository === right.repository &&
+    left.runId === right.runId;
 }
 
 function assertSameReadyBinding(previous: DeliveryPullRequestReadyReceipt, binding: {
@@ -322,10 +337,6 @@ function repositoryFromPrUrl(url: string) {
   const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(url);
   if (match?.[1] === undefined) throw new Error("Invalid owned PR URL.");
   return match[1];
-}
-
-function hash(value: string) {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function conflict(message: string) {

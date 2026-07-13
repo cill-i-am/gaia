@@ -5,10 +5,12 @@ import {
   DeliveryPublicationConfirmed,
   DeliveryPublicationIntent,
   DeliveryPullRequestReadyDispatchAttempted,
+  DeliveryPullRequestReadyDispatchConfirmed,
   DeliveryPullRequestReadyIntent,
   DeliveryPullRequestReadyTerminalFailure,
   RunEvent,
   deliveryPullRequestReadyCanonicalPayload,
+  deliveryPullRequestReadyPayloadDigest,
   encodeDeliveryPublicationJson,
   encodeDeliveryPullRequestReadyReceiptJson,
   makeRunEvent,
@@ -25,6 +27,7 @@ import { defaultDeliveryFeedbackTrustPolicy } from "./delivery-remediation-coord
 import { DeliveryReadyForReviewConclusivelyRejected } from "./delivery-merge-provider.js";
 import {
   coordinateDeliveryPullRequestReady,
+  requireExactReadyForReviewConfirmation,
   type FreshReadyForReviewState,
 } from "./delivery-ready-for-review-coordinator.js";
 import { makeRunPaths } from "./paths.js";
@@ -225,6 +228,41 @@ describe("owned pull request ready-for-review coordinator", () => {
     expect(providerCalls).toBe(0);
   });
 
+  it("rejects a canonically hashed ready confirmation from a different run at the exact-target gate", () => {
+    const f = fixture();
+    const wrongBinding = {
+      ...f.binding,
+      runId: parseRunId("run-wrong12345"),
+    };
+    const binding = {
+      ...wrongBinding,
+      payloadDigest: deliveryPullRequestReadyPayloadDigest(wrongBinding),
+    };
+    const event = (sequence: number, receipt: DeliveryPullRequestReadyIntent | DeliveryPullRequestReadyDispatchAttempted | DeliveryPullRequestReadyDispatchConfirmed) => makeRunEvent({
+      payload: { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(receipt) },
+      runId: f.runId,
+      sequence,
+      timestamp: `2026-07-13T07:01:0${sequence}.000Z`,
+      type: "DELIVERY_PR_READY_RECORDED",
+    });
+    const events = [
+      event(1, DeliveryPullRequestReadyIntent.make({ ...binding, state: "intentRecorded" })),
+      event(2, DeliveryPullRequestReadyDispatchAttempted.make({ ...binding, state: "dispatchAttempted" })),
+      event(3, DeliveryPullRequestReadyDispatchConfirmed.make({ ...binding, draft: false, state: "dispatchConfirmed" })),
+    ];
+
+    expect(() => requireExactReadyForReviewConfirmation(events, {
+      branchName: f.publication.branchName,
+      expectedHeadSha: f.publication.headSha,
+      prNumber: f.publication.prNumber,
+      prUrl: f.publication.prUrl,
+      publicationOperationId: f.publication.operationId,
+      publicationPayloadDigest: f.publication.payloadDigest,
+      repository: "cill-i-am/gaia",
+      runId: f.runId,
+    })).toThrow("Ready-for-review action binding is invalid for the confirmed publication generation");
+  });
+
   it("rejects a changed visible tuple before intent or provider invocation", async () => {
     const f = fixture();
     let providerCalls = 0;
@@ -233,6 +271,26 @@ describe("owned pull request ready-for-review coordinator", () => {
       readyForReviewProvider: () => Effect.sync(() => { providerCalls += 1; }),
       rootDirectory: f.root,
     }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    expect(providerCalls).toBe(0);
+    expect(receipts(f)).toEqual([]);
+  });
+
+  it("rejects an action head outside the confirmed publication before any read or intent", async () => {
+    const f = fixture();
+    let reads = 0;
+    let providerCalls = 0;
+    await expect(Effect.runPromise(coordinateDeliveryPullRequestReady(f.runId, {
+      ...f.action,
+      expectedHeadSha: "b".repeat(40),
+    }, {
+      freshStateReader: () => Effect.sync(() => {
+        reads += 1;
+        return { ...fresh(f, true), headSha: "b".repeat(40) };
+      }),
+      readyForReviewProvider: () => Effect.sync(() => { providerCalls += 1; }),
+      rootDirectory: f.root,
+    }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    expect(reads).toBe(0);
     expect(providerCalls).toBe(0);
     expect(receipts(f)).toEqual([]);
   });

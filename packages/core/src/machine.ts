@@ -25,6 +25,7 @@ import {
   deriveDeliveryMergeActionHistories,
   deriveDeliveryCleanupActionHistories,
   deriveDeliveryPullRequestReadyActionHistories,
+  assertDeliveryPullRequestReadyAuthority,
   encodeDeliveryPullRequestReadyReceiptJson,
   parseDeliveryPullRequestReadyReceipt,
   type DeliveryPullRequestReadyReceipt,
@@ -931,6 +932,23 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
     }
     if (event.type === "DELIVERY_PR_READY_RECORDED") {
       const next = parseDeliveryPullRequestReadyReceipt(event.payload["readyForReviewAction"]);
+      const delivery = actor.getSnapshot().context.delivery;
+      if (delivery?.["mode"] !== "pullRequest") throw new Error("Ready-for-review action requires accepted pull-request delivery state.");
+      const confirmedPublication = parseDeliveryPublication(delivery["publication"]);
+      if (confirmedPublication.state !== "confirmed") throw new Error("Ready-for-review action requires a confirmed publication.");
+      const repositoryMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(confirmedPublication.prUrl);
+      if (repositoryMatch?.[1] === undefined) throw new Error("Confirmed publication has an invalid pull-request URL.");
+      assertDeliveryPullRequestReadyAuthority(next, {
+        branchName: confirmedPublication.branchName,
+        expectedHeadSha: confirmedPublication.headSha,
+        prNumber: confirmedPublication.prNumber,
+        prUrl: confirmedPublication.prUrl,
+        publicationOperationId: confirmedPublication.operationId,
+        publicationPayloadDigest: confirmedPublication.payloadDigest,
+        repository: repositoryMatch[1],
+        runId: event.runId,
+      });
+      if (next.runId !== events[0]?.runId) throw new Error("Ready-for-review action does not match its enclosing run.");
       readyForReviewActions.push({ receipt: next, sequence: event.sequence });
       deriveDeliveryPullRequestReadyActionHistories(readyForReviewActions);
     }

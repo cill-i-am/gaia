@@ -1939,6 +1939,12 @@ function CommandHeader({
   const readyForReviewConfirmed = deliverySnapshot === undefined
     ? false
     : hasCurrentReadyForReviewConfirmation(deliverySnapshot);
+  const readyForReviewReconciliation = deliverySnapshot === undefined
+    ? undefined
+    : authoritativeReadyForReviewAction(deliverySnapshot);
+  const canStartReadyForReview = deliverySnapshot === undefined
+    ? false
+    : hasExactDraftPullRequestObservation(deliverySnapshot);
   const selectedConsoleRun = serverConnection.selectedRun;
   const selectedStatusLabel =
     selectedConsoleRun?.statusLabel ?? statusLabels[selectedRun.status];
@@ -1996,17 +2002,17 @@ function CommandHeader({
                   <ExternalLinkIcon className="size-3" />
                 </a>
               ) : null}
-              {deliverySnapshot.publication?.state === "confirmed" && !readyForReviewConfirmed ? (
+              {deliverySnapshot.publication?.state === "confirmed" && !readyForReviewConfirmed && (readyForReviewReconciliation !== undefined || canStartReadyForReview) ? (
                 <Button
-                  disabled={deliveryActionPending || currentDeliveryHead(deliverySnapshot) === undefined}
+                  disabled={deliveryActionPending}
                   onClick={() => void onDeliveryAction(readyForReviewAction(deliverySnapshot))}
                   size="xs"
                   variant="outline"
                 >
-                  {deliverySnapshot.activeReadyForReviewAction !== undefined || deliverySnapshot.latestReadyForReviewAction?.state === "dispatchFailed" ? (
+                  {readyForReviewReconciliation !== undefined ? (
                     <RefreshCwIcon className={cn(deliveryActionPending && "animate-spin")} data-icon="inline-start" />
                   ) : null}
-                  {deliverySnapshot.activeReadyForReviewAction !== undefined || deliverySnapshot.latestReadyForReviewAction?.state === "dispatchFailed"
+                  {readyForReviewReconciliation !== undefined
                     ? "Reconcile ready state"
                     : "Mark ready for review"}
                 </Button>
@@ -2023,7 +2029,7 @@ function CommandHeader({
                   ))}
                 </div>
               ) : null}
-              {deliverySnapshot.publication?.state === "confirmed" && deliverySnapshot.mergeDecision?.approved === true && deliverySnapshot.mergeDecisionSequence !== undefined ? (
+              {deliverySnapshot.publication?.state === "confirmed" && readyForReviewConfirmed && deliverySnapshot.mergeDecision?.approved === true && deliverySnapshot.mergeDecisionSequence !== undefined ? (
                 <DeliveryMergeConfirmation
                   actionId={mergeActionId}
                   branch={deliverySnapshot.mergeDecision.branchName}
@@ -4368,12 +4374,30 @@ function hasCurrentReadyForReviewConfirmation(snapshot: typeof DeliverySnapshotD
     receipt.prUrl === snapshot.publication.prUrl;
 }
 
+function authoritativeReadyForReviewAction(snapshot: typeof DeliverySnapshotDto.Type) {
+  return snapshot.activeReadyForReviewAction ??
+    (snapshot.latestReadyForReviewAction?.state === "dispatchFailed" ? snapshot.latestReadyForReviewAction : undefined);
+}
+
+function hasExactDraftPullRequestObservation(snapshot: typeof DeliverySnapshotDto.Type) {
+  if (snapshot.publication?.state !== "confirmed" || snapshot.observation === undefined) return false;
+  const repository = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(snapshot.publication.prUrl)?.[1];
+  return repository !== undefined &&
+    snapshot.observation.branchName === snapshot.publication.branchName &&
+    snapshot.observation.draft &&
+    snapshot.observation.headSha === snapshot.publication.commitSha &&
+    snapshot.observation.prNumber === snapshot.publication.prNumber &&
+    snapshot.observation.prUrl === snapshot.publication.prUrl &&
+    snapshot.observation.repository === repository;
+}
+
 export function readyForReviewAction(snapshot: typeof DeliverySnapshotDto.Type) {
   if (snapshot.publication?.state !== "confirmed") throw new Error("Confirmed pull request is required.");
-  const authoritative = snapshot.activeReadyForReviewAction ??
-    (snapshot.latestReadyForReviewAction?.state === "dispatchFailed" ? snapshot.latestReadyForReviewAction : undefined);
-  const expectedHeadSha = authoritative?.expectedHeadSha ?? currentDeliveryHead(snapshot);
-  if (expectedHeadSha === undefined) throw new Error("Current pull request head is unavailable.");
+  const authoritative = authoritativeReadyForReviewAction(snapshot);
+  if (authoritative === undefined && !hasExactDraftPullRequestObservation(snapshot)) {
+    throw new Error("Exact current draft pull-request observation is required.");
+  }
+  const expectedHeadSha = authoritative?.expectedHeadSha ?? snapshot.publication.commitSha;
   return {
     actionId: authoritative?.actionId ?? `ready-${crypto.randomUUID()}`,
     expectedBranchName: authoritative?.branchName ?? snapshot.publication.branchName,

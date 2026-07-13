@@ -44,7 +44,7 @@ import {
   DeliveryPullRequestObservation,
   DeliveryRemediationSchema,
 } from "./delivery-remediation.js";
-import { DeliveryCleanupReceiptSchema, DeliveryMergeMethodSchema, DeliveryMergeReadinessDecision, DeliveryMergeReceiptSchema, DeliveryPullRequestReadyReceiptSchema } from "./delivery-merge.js";
+import { DeliveryActionIdSchema, DeliveryCleanupReceiptSchema, DeliveryMergeMethodSchema, DeliveryMergeReadinessDecision, DeliveryMergeReceiptSchema, DeliveryPullRequestReadyReceiptSchema } from "./delivery-merge.js";
 
 export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
   "ActiveRunConflict",
@@ -407,7 +407,7 @@ export class DeliveryRemediationActivationActionRequest extends Schema.Class<Del
 export class DeliveryMergeActionRequest extends Schema.Class<DeliveryMergeActionRequest>(
   "DeliveryMergeActionRequest",
 )({
-  actionId: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+  actionId: DeliveryActionIdSchema,
   expectedBranchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
   expectedDecisionSequence: EventSequenceSchema,
   expectedHeadSha: DeliveryActionGitShaSchema,
@@ -420,7 +420,7 @@ export class DeliveryMergeActionRequest extends Schema.Class<DeliveryMergeAction
 export class DeliveryMarkReadyForReviewActionRequest extends Schema.Class<DeliveryMarkReadyForReviewActionRequest>(
   "DeliveryMarkReadyForReviewActionRequest",
 )({
-  actionId: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+  actionId: DeliveryActionIdSchema,
   expectedBranchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
   expectedHeadSha: DeliveryActionGitShaSchema,
   expectedPrNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),

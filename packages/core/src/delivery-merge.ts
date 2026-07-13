@@ -1,14 +1,17 @@
 import { Schema } from "effect";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { utf8ToBytes } from "@noble/hashes/utils.js";
 import type { RunEvent } from "./events.js";
 import { RunIdSchema } from "./run-id.js";
 
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
 const Digest = Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u)));
 const GitSha = Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u)));
-const BoundedId = Schema.NonEmptyString.pipe(
+export const DeliveryActionIdSchema = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isPattern(/^[A-Za-z0-9:_-]+$/u)),
   Schema.check(Schema.isMaxLength(200)),
 );
+const BoundedId = DeliveryActionIdSchema;
 const Repository = Schema.String.pipe(
   Schema.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)),
   Schema.check(Schema.isMaxLength(200)),
@@ -175,6 +178,47 @@ export function deliveryPullRequestReadyCanonicalPayload(
   return ["gaia.delivery.mark-ready.v1", ...fields]
     .map((field) => `${field.length}:${field}`)
     .join("|");
+}
+
+export function deliveryPullRequestReadyPayloadDigest(
+  binding: DeliveryPullRequestReadyBinding,
+) {
+  return Array.from(
+    sha256(utf8ToBytes(deliveryPullRequestReadyCanonicalPayload(binding))),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+export function assertDeliveryPullRequestReadyAuthority(
+  receipt: DeliveryPullRequestReadyReceipt,
+  expected: {
+    readonly branchName: string;
+    readonly expectedHeadSha: string;
+    readonly prNumber: number;
+    readonly prUrl: string;
+    readonly publicationOperationId: string;
+    readonly publicationPayloadDigest: string;
+    readonly repository: string;
+    readonly runId: string;
+  },
+) {
+  if (receipt.runId !== expected.runId) {
+    throw new Error("Ready-for-review action does not match its enclosing run.");
+  }
+  if (
+    receipt.branchName !== expected.branchName ||
+    receipt.expectedHeadSha !== expected.expectedHeadSha ||
+    receipt.prNumber !== expected.prNumber ||
+    receipt.prUrl !== expected.prUrl ||
+    receipt.publicationOperationId !== expected.publicationOperationId ||
+    receipt.publicationPayloadDigest !== expected.publicationPayloadDigest ||
+    receipt.repository !== expected.repository
+  ) {
+    throw new Error("Ready-for-review action does not match the confirmed publication.");
+  }
+  if (receipt.payloadDigest !== deliveryPullRequestReadyPayloadDigest(receipt)) {
+    throw new Error("Ready-for-review action digest is invalid.");
+  }
 }
 
 export class DeliveryPullRequestReadyIntent extends Schema.Class<DeliveryPullRequestReadyIntent>(

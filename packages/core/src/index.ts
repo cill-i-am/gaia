@@ -34,6 +34,7 @@ export {
 } from "./worker-recovery.js";
 export {
   DeliveryCleanupCompleted,
+  DeliveryActionIdSchema,
   DeliveryCleanupReceiptSchema,
   DeliveryCleanupRequired,
   DeliveryCleanupResourceStateSchema,
@@ -52,9 +53,11 @@ export {
   DeliveryPullRequestReadyTerminalFailure,
   DeliveryRequiredCheckIdentity,
   DeliveryRequiredCheckPolicy,
+  assertDeliveryPullRequestReadyAuthority,
   deliveryMergeMethodArguments,
   deliveryRequiredCheckPolicyCanonicalPayload,
   deliveryPullRequestReadyCanonicalPayload,
+  deliveryPullRequestReadyPayloadDigest,
   deriveDeliveryActionHistoriesFromEvents,
   deriveDeliveryCleanupActionHistories,
   deriveDeliveryMergeActionHistories,

@@ -1,5 +1,5 @@
-import { DeliveryPublicationConfirmedDto, DeliveryPullRequestReadyTerminalFailure, DeliverySnapshotDto, parseRunId } from "@gaia/core";
-import { describe, expect, it, vi } from "vitest";
+import { DeliveryPublicationConfirmedDto, DeliveryPullRequestObservation, DeliveryPullRequestReadyDispatchAttempted, DeliveryPullRequestReadyTerminalFailure, DeliverySnapshotDto, parseRunId } from "@gaia/core";
+import { describe, expect, it } from "vitest";
 import { readyForReviewAction } from "./dashboard-shell";
 
 const runId = parseRunId("run-7777777777");
@@ -11,10 +11,25 @@ const publication = DeliveryPublicationConfirmedDto.make({
   prUrl: "https://github.com/cill-i-am/gaia/pull/91",
   state: "confirmed" as const,
 });
+const observation = DeliveryPullRequestObservation.make({
+  blockers: [],
+  branchName: publication.branchName,
+  checks: [],
+  draft: true,
+  feedback: [],
+  headSha: publication.commitSha,
+  mergeability: "mergeable",
+  observedAt: "2026-07-13T08:00:00.000Z",
+  prNumber: publication.prNumber,
+  prUrl: publication.prUrl,
+  repository: "cill-i-am/gaia",
+  snapshotDigest: "b".repeat(64),
+  status: "waiting",
+  version: 1,
+});
 
 describe("ready-for-review dashboard action", () => {
-  it("creates one exact visible tuple for a deliberate first action", () => {
-    vi.spyOn(crypto, "randomUUID").mockReturnValue("11111111-1111-4111-8111-111111111111");
+  it("rejects a deliberate first action without an exact public observation", () => {
     const snapshot = DeliverySnapshotDto.make({
       eventSequence: 10,
       mode: "pullRequest",
@@ -25,15 +40,54 @@ describe("ready-for-review dashboard action", () => {
       status: "waitingForPr",
     });
 
-    expect(readyForReviewAction(snapshot)).toEqual({
-      actionId: "ready-11111111-1111-4111-8111-111111111111",
+    expect(() => readyForReviewAction(snapshot)).toThrow("Exact current draft pull-request observation is required");
+  });
+
+  it("creates the observed exact tuple for a deliberate first action", () => {
+    const snapshot = DeliverySnapshotDto.make({
+      eventSequence: 10,
+      mode: "pullRequest",
+      observation,
+      publication,
+      recoveryActions: [],
+      runId,
+      stage: "waitingForPr",
+      status: "waitingForPr",
+    });
+
+    expect(readyForReviewAction(snapshot)).toMatchObject({
       expectedBranchName: publication.branchName,
       expectedHeadSha: publication.commitSha,
       expectedPrNumber: publication.prNumber,
       expectedPrUrl: publication.prUrl,
       kind: "markReadyForReview",
     });
+    expect(readyForReviewAction(snapshot).actionId).toMatch(/^ready-[0-9a-f-]{36}$/u);
   });
+
+  for (const [name, changedObservation] of [
+    ["branch", { ...observation, branchName: "gaia/unrelated" }],
+    ["draft state", { ...observation, draft: false }],
+    ["head", { ...observation, headSha: "b".repeat(40) }],
+    ["pull request number", { ...observation, prNumber: 92 }],
+    ["pull request URL", { ...observation, prUrl: "https://github.com/cill-i-am/gaia/pull/92" }],
+    ["repository", { ...observation, repository: "cill-i-am/unrelated" }],
+  ] as const) {
+    it(`rejects a first action when the latest observation has a different ${name}`, () => {
+      const snapshot = DeliverySnapshotDto.make({
+        eventSequence: 10,
+        mode: "pullRequest",
+        observation: DeliveryPullRequestObservation.make(changedObservation),
+        publication,
+        recoveryActions: [],
+        runId,
+        stage: "waitingForPr",
+        status: "waitingForPr",
+      });
+
+      expect(() => readyForReviewAction(snapshot)).toThrow("Exact current draft pull-request observation is required");
+    });
+  }
 
   it("reuses the authoritative failed action ID and tuple for reconciliation", () => {
     const failed = DeliveryPullRequestReadyTerminalFailure.make({
@@ -69,6 +123,42 @@ describe("ready-for-review dashboard action", () => {
       expectedHeadSha: failed.expectedHeadSha,
       expectedPrNumber: failed.prNumber,
       expectedPrUrl: failed.prUrl,
+    });
+  });
+
+  it("reuses the authoritative active action ID and tuple without an observation", () => {
+    const active = DeliveryPullRequestReadyDispatchAttempted.make({
+      actionId: "ready-authoritative-active",
+      branchName: publication.branchName,
+      expectedHeadSha: publication.commitSha,
+      payloadDigest: "c".repeat(64),
+      prNumber: publication.prNumber,
+      prUrl: publication.prUrl,
+      publicationOperationId: "delivery:run-7777777777:1",
+      publicationPayloadDigest: "d".repeat(64),
+      repository: "cill-i-am/gaia",
+      runId,
+      state: "dispatchAttempted",
+      version: 1,
+    });
+    const snapshot = DeliverySnapshotDto.make({
+      activeReadyForReviewAction: active,
+      eventSequence: 12,
+      latestReadyForReviewAction: active,
+      mode: "pullRequest",
+      publication,
+      recoveryActions: [],
+      runId,
+      stage: "waitingForPr",
+      status: "waitingForPr",
+    });
+
+    expect(readyForReviewAction(snapshot)).toMatchObject({
+      actionId: active.actionId,
+      expectedBranchName: active.branchName,
+      expectedHeadSha: active.expectedHeadSha,
+      expectedPrNumber: active.prNumber,
+      expectedPrUrl: active.prUrl,
     });
   });
 });

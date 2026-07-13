@@ -18,11 +18,13 @@ import {
   RunEvent,
   deliveryRequiredCheckPolicyCanonicalPayload,
   deliveryPullRequestReadyCanonicalPayload,
+  deliveryPullRequestReadyPayloadDigest,
   encodeDeliveryMergeReadinessDecisionJson,
   encodeDeliveryMergeReceiptJson,
   encodeDeliveryPublicationJson,
   encodeDeliveryPullRequestReadyReceiptJson,
   makeRunEvent,
+  parseDeliveryPullRequestReadyReceipt,
   parseRunId,
 } from "@gaia/core";
 import { Effect, Schema } from "effect";
@@ -84,6 +86,65 @@ function fixture(
   return { action, binding, root, runId };
 }
 
+function retainedPreReadyFixture() {
+  const result = fixture("attempted");
+  const eventsPath = path.join(result.root, ".gaia", "runs", result.runId, "events.jsonl");
+  const retained = readFileSync(eventsPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)))
+    .filter(({ type }) => type !== "DELIVERY_PR_READY_RECORDED")
+    .map((event, index) => makeRunEvent({
+      payload: event.payload,
+      runId: event.runId,
+      sequence: index + 1,
+      timestamp: event.timestamp,
+      type: event.type,
+    }));
+  writeFileSync(eventsPath, `${retained.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`);
+  return result;
+}
+
+function corruptReadyReceipts(
+  result: ReturnType<typeof fixture>,
+  corruption: "digest" | "publication generation" | "pull request tuple",
+) {
+  const eventsPath = path.join(result.root, ".gaia", "runs", result.runId, "events.jsonl");
+  const events = readFileSync(eventsPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)))
+    .map((event) => {
+      if (event.type !== "DELIVERY_PR_READY_RECORDED") return event;
+      const receipt = parseDeliveryPullRequestReadyReceipt(event.payload["readyForReviewAction"]);
+      const binding = {
+        actionId: receipt.actionId,
+        branchName: receipt.branchName,
+        expectedHeadSha: receipt.expectedHeadSha,
+        prNumber: corruption === "pull request tuple" ? receipt.prNumber + 1 : receipt.prNumber,
+        prUrl: corruption === "pull request tuple" ? "https://github.com/cill-i-am/gaia/pull/75" : receipt.prUrl,
+        publicationOperationId: corruption === "publication generation" ? `${receipt.publicationOperationId}:forged` : receipt.publicationOperationId,
+        publicationPayloadDigest: receipt.publicationPayloadDigest,
+        repository: receipt.repository,
+        runId: receipt.runId,
+        version: receipt.version,
+      };
+      const changed = parseDeliveryPullRequestReadyReceipt({
+        ...receipt,
+        ...binding,
+        payloadDigest: corruption === "digest" ? "f".repeat(64) : deliveryPullRequestReadyPayloadDigest(binding),
+      });
+      return makeRunEvent({
+        payload: { readyForReviewAction: encodeDeliveryPullRequestReadyReceiptJson(changed) },
+        runId: event.runId,
+        sequence: event.sequence,
+        timestamp: event.timestamp,
+        type: event.type,
+      });
+    });
+  writeFileSync(eventsPath, `${events.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`);
+}
+
 const merged = (binding: ReturnType<typeof fixture>["binding"]): FreshMergeState => ({ branchName: binding.branchName, checks: [], draft: false, feedbackBlockers: 0, headSha: binding.expectedHeadSha, mergeCommitSha: "d".repeat(40), mergeability: "mergeable", mergedAt: "2026-07-11T20:00:00.000Z", prNumber: binding.prNumber, prUrl: binding.prUrl, repository: binding.repository, reviewDecision: "APPROVED", state: "merged", supportedMethods: ["merge"], unresolvedActionableThreads: 0 });
 
 describe("delivery merge reconstructed coordinator", () => {
@@ -140,6 +201,32 @@ describe("delivery merge reconstructed coordinator", () => {
     }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
     expect(providerCalls).toBe(0);
   });
+
+  for (const corruption of ["publication generation", "pull request tuple", "digest"] as const) {
+    it(`rejects a ready receipt with a mismatched ${corruption} before readiness or merge side effects`, async () => {
+      const f = fixture("ready", false);
+      corruptReadyReceipts(f, corruption);
+      let reads = 0;
+      let providerCalls = 0;
+
+      await expect(Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, {
+        actionId: "readiness-corrupt-history",
+        kind: "evaluateMergeReadiness",
+        mergeMethod: "merge",
+      }, {
+        freshStateReader: () => Effect.sync(() => { reads += 1; return merged(f.binding); }),
+        rootDirectory: f.root,
+      }).pipe(Effect.provide(NodeServices.layer)))).rejects.toThrow();
+
+      await expect(Effect.runPromise(coordinateDeliveryMerge(f.runId, f.action, {
+        commandRunner: () => Effect.sync(() => { providerCalls += 1; return { exitCode: 0, stderr: "", stdout: "" }; }),
+        freshStateReader: () => Effect.sync(() => { reads += 1; return merged(f.binding); }),
+        rootDirectory: f.root,
+      }).pipe(Effect.provide(NodeServices.layer)))).rejects.toThrow();
+      expect(reads).toBe(0);
+      expect(providerCalls).toBe(0);
+    });
+  }
 
   for (const [required, reviewDecision, approved] of [
     [true, "APPROVED", true],
@@ -219,6 +306,20 @@ describe("delivery merge reconstructed coordinator", () => {
     const replay = await Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: "readiness-1", kind: "evaluateMergeReadiness", mergeMethod: "merge" }, options).pipe(Effect.provide(NodeServices.layer)));
     expect(replay.actionId).toBe("readiness-1"); expect(reads).toBe(0);
     await expect(Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, { actionId: "readiness-1", kind: "evaluateMergeReadiness", mergeMethod: "rebase" }, options).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+    expect(reads).toBe(0);
+  });
+
+  it("rejects a retained pre-slice readiness decision without exact ready confirmation", async () => {
+    const f = retainedPreReadyFixture();
+    let reads = 0;
+    await expect(Effect.runPromise(coordinateDeliveryMergeReadiness(f.runId, {
+      actionId: "readiness-1",
+      kind: "evaluateMergeReadiness",
+      mergeMethod: "merge",
+    }, {
+      freshStateReader: () => Effect.sync(() => { reads += 1; return merged(f.binding); }),
+      rootDirectory: f.root,
+    }).pipe(Effect.provide(NodeServices.layer)))).rejects.toMatchObject({ code: "DeliveryActionConflict" });
     expect(reads).toBe(0);
   });
   for (const state of ["attempted", "checkpoint", "unknown"] as const) {

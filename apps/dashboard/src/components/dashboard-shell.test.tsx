@@ -2297,7 +2297,50 @@ describe("DashboardShell Run Console", () => {
     expect(screen.getByRole("link", { name: "PR #91" }).getAttribute("href")).toBe(
       "https://github.com/cill-i-am/gaia/pull/91",
     );
+    expect(screen.queryByRole("button", { name: "Mark ready for review" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Merge/u })).toBeNull();
+  });
+
+  it("does not expose an approved merge decision without current ready confirmation", async () => {
+    const runId = parseRunId("run-7777777777");
+    renderDashboardWithQueries({
+      deliverySnapshotsByRunId: {
+        [runId]: {
+          eventSequence: 12,
+          mergeDecision: {
+            actionId: "readiness-retained-1",
+            approved: true,
+            blockers: [],
+            branchName: "gaia/run-7777777777",
+            headSha: "a".repeat(40),
+            mergeMethod: "merge",
+            payloadDigest: "b".repeat(64),
+            policyDigest: "c".repeat(64),
+            policyVersion: 1,
+            prNumber: 91,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+          },
+          mergeDecisionSequence: 12,
+          mode: "pullRequest",
+          publication: {
+            branchName: "gaia/run-7777777777",
+            commitSha: "a".repeat(40),
+            draft: true,
+            prNumber: 91,
+            prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+            state: "confirmed",
+          },
+          recoveryActions: [],
+          runId,
+          stage: "awaitingMerge",
+          status: "awaitingMerge",
+        },
+      },
+      runs: [localRunSummary({ runId, state: "delivering", status: "running" })],
+    });
+
+    await screen.findByTestId("selected-run-delivery-status");
+    expect(screen.queryByRole("button", { name: "Merge pull request" })).toBeNull();
   });
 
   it("uses a fresh action identity for each deliberate readiness reevaluation", async () => {

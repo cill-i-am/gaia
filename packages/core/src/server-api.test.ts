@@ -406,6 +406,7 @@ describe("LocalGaiaServerApi contract", () => {
     assert.throws(() => decode({ ...action, publicationOperationId: "private-generation" }));
     assert.throws(() => decode({ ...action, expectedPrNumber: 0 }));
     assert.throws(() => decode({ ...action, expectedHeadSha: "not-a-sha" }));
+    assert.throws(() => decode({ ...action, actionId: "bad action id" }));
     assert.throws(() => decode({ ...action, force: true }));
   });
 
@@ -500,6 +501,34 @@ describe("LocalGaiaServerApi contract", () => {
     assert.notInclude(serialized, hostile);
     assert.notInclude(serialized, "ownershipToken");
     assert.notInclude(serialized, "privateProvenance");
+  });
+
+  it("keeps retained pre-branch pull-request observations decodable", () => {
+    const snapshot = Schema.decodeUnknownSync(DeliverySnapshotDto)({
+      eventSequence: 12,
+      mode: "pullRequest",
+      observation: {
+        blockers: [],
+        checks: [],
+        draft: true,
+        feedback: [],
+        headSha: "a".repeat(40),
+        mergeability: "mergeable",
+        observedAt: "2026-07-12T12:00:00.000Z",
+        prNumber: 91,
+        prUrl: "https://github.com/cill-i-am/gaia/pull/91",
+        repository: "cill-i-am/gaia",
+        snapshotDigest: "b".repeat(64),
+        status: "waiting",
+        version: 1,
+      },
+      recoveryActions: [],
+      runId: "run-1234567890",
+      stage: "waitingForPr",
+      status: "waitingForPr",
+    });
+
+    assert.isUndefined(snapshot.observation?.branchName);
   });
 
   it("strictly parses one exact controlled remediation activation", () => {
