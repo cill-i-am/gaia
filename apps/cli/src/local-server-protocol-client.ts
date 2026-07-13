@@ -3,6 +3,7 @@ import {
   DeliveryEvaluateMergeReadinessActionRequest,
   FactoryArtifactIdSchema,
   LocalGaiaServerApi,
+  LocalRunReadArtifactIdSchema,
   type LocalGaiaServerUrl,
   type LocalRunApiError,
   type RunId,
@@ -84,17 +85,17 @@ export function getRunArtifactFromLocalServerProtocol(input: {
   readonly runId: RunId;
   readonly serverUrl: LocalGaiaServerUrl;
 }) {
-  return withLocalGaiaServerClient(input.serverUrl, (client) =>
-    Effect.gen(function* () {
-      const artifactId = yield* decodeArtifactIdParameter(input.artifactName);
-      return yield* client.runs.getRunArtifact({
+  return Effect.gen(function* () {
+    const artifactId = yield* decodeArtifactIdParameter(input.artifactName);
+    return yield* withLocalGaiaServerClient(input.serverUrl, (client) =>
+      client.runs.getRunArtifact({
         params: {
           artifactId,
           runId: input.runId,
         },
-      });
-    })
-  );
+      })
+    );
+  });
 }
 
 /**
@@ -152,7 +153,8 @@ function withLocalGaiaServerClient<A, E, R>(
 }
 
 function decodeArtifactIdParameter(input: string) {
-  return Schema.decodeUnknownEffect(FactoryArtifactIdSchema)(input).pipe(
+  return Schema.decodeUnknownEffect(LocalRunReadArtifactIdSchema)(input).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(FactoryArtifactIdSchema)),
     Effect.mapError((cause) => protocolParameterError("artifactId", cause))
   );
 }

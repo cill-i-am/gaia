@@ -193,24 +193,26 @@ describe("local server protocol client", () => {
     );
   }
 
-  it.effect(
-    "maps invalid artifact path parameters to runtime diagnostics",
-    () =>
-      Effect.gen(function* () {
-        const invalidArtifact = yield* readLocalRunArtifactFromServer({
-          artifactName: "",
-          runId,
-          serverUrl,
-        }).pipe(Effect.flip);
+  it.effect("rejects traversal artifact parameters before transport", () =>
+    Effect.gen(function* () {
+      const invalidArtifact = yield* readLocalRunArtifactFromServer({
+        artifactName: "../events.jsonl",
+        runId,
+        serverUrl,
+      }).pipe(Effect.flip);
 
-        assert.instanceOf(invalidArtifact, GaiaRuntimeError);
-        if (!(invalidArtifact instanceof GaiaRuntimeError)) {
-          assert.fail("Expected Gaia runtime errors.");
-        }
+      assert.instanceOf(invalidArtifact, GaiaRuntimeError);
+      if (!(invalidArtifact instanceof GaiaRuntimeError)) {
+        assert.fail("Expected Gaia runtime errors.");
+      }
 
-        assert.strictEqual(invalidArtifact.code, "ArtifactNotAllowed");
-        assert.strictEqual(invalidArtifact.recoverable, false);
-      }).pipe(Effect.provide(NodeServices.layer))
+      assert.strictEqual(invalidArtifact.code, "ArtifactNotAllowed");
+      assert.strictEqual(
+        invalidArtifact.message,
+        "Artifact is not allowlisted for local API reads."
+      );
+      assert.strictEqual(invalidArtifact.recoverable, false);
+    }).pipe(Effect.provide(NodeServices.layer))
   );
 });
 

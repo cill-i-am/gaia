@@ -154,6 +154,48 @@ describe("gaia CLI local server read parity", () => {
     );
 
     it.effect(
+      "rejects traversal artifacts before transport with direct and server parity",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-cli-artifact-input-",
+          });
+          const base = ["artifact", "run-L84-kMhLY8", "../events.jsonl"];
+          const [directJson, serverJson, directHuman, serverHuman] =
+            yield* Effect.all(
+              [
+                runGaia(cwd, [...base, "--json"]),
+                runGaia(cwd, [
+                  ...base,
+                  "--json",
+                  "--server-url",
+                  "http://127.0.0.1:1",
+                ]),
+                runGaia(cwd, base),
+                runGaia(cwd, [...base, "--server-url", "http://127.0.0.1:1"]),
+              ],
+              { concurrency: "unbounded" }
+            );
+          const expectedJson = {
+            code: "ArtifactNotAllowed",
+            message: "Artifact is not allowlisted for local API reads.",
+            recoverable: false,
+            status: "failed",
+          };
+
+          expect(directJson.exitCode).toBe(1);
+          expect(serverJson.exitCode).toBe(1);
+          expect(parseCliJson(directJson.stdout)).toEqual(expectedJson);
+          expect(parseCliJson(serverJson.stdout)).toEqual(expectedJson);
+          expect(directHuman.exitCode).toBe(1);
+          expect(serverHuman.exitCode).toBe(1);
+          expect(serverHuman.stdout).toBe(directHuman.stdout);
+        }),
+      20_000
+    );
+
+    it.effect(
       "autostarts and reuses a workspace server for opt-in run, status, list, and events",
       () =>
         Effect.gen(function* () {
