@@ -762,6 +762,16 @@ export function deriveDeliveryLocalReviewAttestationHistories(
       }
     }
     validateDeliveryLocalReviewAttestationTransition(previous?.latest, event.receipt);
+    if (event.receipt.state === "confirmed") {
+      const confirmed = event.receipt;
+      if ([...histories.values()].some(({ actionId, latest }) =>
+        actionId !== confirmed.actionId &&
+        latest.state === "confirmed" &&
+        sameDeliveryLocalReviewAttestationGeneration(latest, confirmed)
+      )) {
+        throw new Error("Only one local review attestation may confirm the same delivery authority.");
+      }
+    }
     histories.set(event.receipt.actionId, {
       actionId: event.receipt.actionId,
       latest: event.receipt,
@@ -775,6 +785,28 @@ export function deriveDeliveryLocalReviewAttestationHistories(
   const active = ordered.filter(({ latest }) => latest.state === "intentRecorded");
   if (active.length > 1) throw new Error("Only one local review attestation may be active.");
   return { active: active[0], histories: ordered, latest: ordered.at(-1) };
+}
+
+function sameDeliveryLocalReviewAttestationGeneration(
+  left: DeliveryLocalReviewAttestationConfirmed,
+  right: DeliveryLocalReviewAttestationConfirmed,
+) {
+  return left.runId === right.runId &&
+    left.publicationOperationId === right.publicationOperationId &&
+    left.publicationPayloadDigest === right.publicationPayloadDigest &&
+    left.publicationConfirmationSequence === right.publicationConfirmationSequence &&
+    left.authoritySequence === right.authoritySequence &&
+    left.repository === right.repository &&
+    left.prNumber === right.prNumber &&
+    left.prUrl === right.prUrl &&
+    left.branchName === right.branchName &&
+    left.headSha === right.headSha &&
+    left.readyConfirmationActionId === right.readyConfirmationActionId &&
+    left.readyConfirmationPayloadDigest === right.readyConfirmationPayloadDigest &&
+    left.readyConfirmationSequence === right.readyConfirmationSequence &&
+    left.decision === right.decision &&
+    left.authority === right.authority &&
+    left.version === right.version;
 }
 
 export function deriveDeliveryPullRequestReadyActionHistories(

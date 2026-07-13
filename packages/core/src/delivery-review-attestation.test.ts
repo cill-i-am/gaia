@@ -281,6 +281,26 @@ describe("local operator paired-review attestation contracts", () => {
     ];
 
     expect(() => snapshotFromReplay(events)).not.toThrow();
+    const duplicateBase = {
+      ...attestationBase,
+      actionId: "attest-duplicate",
+      gaiaEvidenceId: "evidence-fedcba9876543210",
+    };
+    const duplicate = {
+      ...duplicateBase,
+      attestationPayloadDigest: deliveryLocalReviewAttestationPayloadDigest(duplicateBase),
+    };
+    const duplicateEvents = [
+      ...events,
+      event(10, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", { attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationIntent.make({ ...duplicate, state: "intentRecorded" })) }),
+      event(11, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", { attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationConfirmed.make({ ...duplicate, state: "confirmed" })) }),
+    ];
+    expect(() => deriveDeliveryLocalReviewAttestationHistories(duplicateEvents.flatMap((candidate) =>
+      candidate.type === "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED"
+        ? [{ receipt: parseDeliveryLocalReviewAttestationReceipt(candidate.payload["attestation"]), sequence: candidate.sequence }]
+        : []
+    ))).toThrow("Only one local review attestation may confirm the same delivery authority");
+    expect(() => snapshotFromReplay(duplicateEvents)).toThrow("Only one local review attestation may confirm the same delivery authority");
     const wrongDigest = [...events.slice(0, 8), event(9, "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED", { attestation: encodeDeliveryLocalReviewAttestationReceiptJson(DeliveryLocalReviewAttestationConfirmed.make({ ...attestation, attestationPayloadDigest: "f".repeat(64), state: "confirmed" })) })];
     expect(() => snapshotFromReplay(wrongDigest)).toThrow();
 

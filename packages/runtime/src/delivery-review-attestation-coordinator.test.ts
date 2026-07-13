@@ -140,6 +140,7 @@ describe("local operator paired-review attestation coordinator", () => {
   });
 
   it.each([
+    ["draft", { draft: true }],
     ["closed", { state: "closed" as const }],
     ["merged", { state: "merged" as const, mergedAt: "2026-07-13T10:10:00.000Z", mergeCommitSha: "b".repeat(40) }],
   ])("records terminal failure when the exact pull request is %s", async (_name, override) => {
@@ -147,5 +148,6 @@ describe("local operator paired-review attestation coordinator", () => {
     await ready(f);
     const result = await Effect.runPromise(coordinateDeliveryLocalReviewAttestation(f.runId, { actionId: "attestation-action-1", decision: "approved", expectedBranchName: f.publication.branchName, expectedHeadSha: f.publication.headSha, expectedPrNumber: f.publication.prNumber, expectedPrUrl: f.publication.prUrl, kind: "attestPairedReviewApproval" }, { freshStateReader: () => Effect.succeed({ ...f.fresh, ...override }), rootDirectory: f.root }).pipe(Effect.provide(NodeServices.layer)));
     expect(result).toMatchObject({ code: "DeliveryReviewAttestationPullRequestUnavailable", state: "failed" });
+    expect(attestationReceipts(f).map(({ state }) => state)).toEqual(["intentRecorded", "failed"]);
   });
 });

@@ -125,7 +125,7 @@ export function coordinateDeliveryLocalReviewAttestation(
       Effect.mapError(() => makeRuntimeError({ code: "DeliveryReviewAttestationReadFailed", message: "Fresh pull-request lifecycle state is unavailable; the attestation intent remains active.", recoverable: true })),
     );
     if (!isExactOpenPullRequest(fresh, binding)) {
-      const failed = DeliveryLocalReviewAttestationFailed.make({ ...binding, code: "DeliveryReviewAttestationPullRequestUnavailable", message: "Fresh state does not prove the exact pull request is open and unmerged.", state: "failed" });
+      const failed = DeliveryLocalReviewAttestationFailed.make({ ...binding, code: "DeliveryReviewAttestationPullRequestUnavailable", message: "Fresh state does not prove the exact pull request is open, unmerged, and non-draft.", state: "failed" });
       yield* appendAttestation(runId, paths, failed);
       return failed;
     }
@@ -165,6 +165,7 @@ function isExactOpenPullRequest(fresh: FreshReadyForReviewState, binding: { read
     fresh.prUrl === binding.prUrl &&
     fresh.branchName === binding.branchName &&
     fresh.headSha === binding.headSha &&
+    fresh.draft === false &&
     fresh.state === "open" &&
     fresh.mergedAt === undefined &&
     fresh.mergeCommitSha === undefined;

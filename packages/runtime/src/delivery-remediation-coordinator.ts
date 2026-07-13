@@ -14,6 +14,7 @@ import {
   DeliveryRemediationTurnCompleted,
   DeliveryRemediationVerified,
   DeliveryTrustedCheckV1,
+  deriveDeliveryActionHistoriesFromEvents,
   HarnessEventSchema,
   HarnessExecutionSelection,
   ResolvedHarnessExecution,
@@ -133,6 +134,13 @@ export function continueDeliveryRemediation(
     );
     const initial = yield* withRunEventSerialization(paths, Effect.gen(function* () {
       const events = yield* readEvents(paths);
+      if (deriveDeliveryActionHistoriesFromEvents(events).localReviewAttestation.active !== undefined) {
+        return yield* Effect.fail(remediationError(
+          "DeliveryActionConflict",
+          "Remediation cannot proceed while a local review attestation intent is active.",
+          true,
+        ));
+      }
       const delivery = deliveryProjection(events);
       const remediation = optionalRemediation(delivery["remediation"]);
       const trustPolicy = yield* acceptedFeedbackTrustPolicy(
