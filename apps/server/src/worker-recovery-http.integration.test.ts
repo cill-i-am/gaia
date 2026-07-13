@@ -7,6 +7,7 @@ import {
   parseHarnessEvent,
   parseHarnessProfileId,
   parseHarnessSessionId,
+  encodeWorkerRecoveryReceiptJson,
   parseWorkerRecoveryReceipt,
   WorkerRecoveryAction,
   type WorkerRecoveryReceipt,
@@ -36,6 +37,7 @@ import {
 import { Effect, FileSystem, Layer, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { makeLocalGaiaServerLayer } from "./api.js";
+import { validateProductionWorkerRecoveryWorkspace } from "./main.js";
 
 type FailureMode =
   | "missing checkpoint"
@@ -92,7 +94,10 @@ function failureRegistry(mode: FailureMode) {
   return makeTestHarnessProviderRegistry();
 }
 
-function makeFixture(mode?: FailureMode) {
+function makeFixture(mode?: FailureMode, options: {
+  readonly retainedDirty?: boolean;
+  readonly productionWorkspaceValidation?: boolean;
+} = {}) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const rootB = yield* fs.makeTempDirectory({ prefix: "gaia-http-b-" });
@@ -101,7 +106,8 @@ function makeFixture(mode?: FailureMode) {
     git(rootB, "config", "user.email", "gaia@test.invalid");
     git(rootB, "config", "user.name", "Gaia Test");
     writeFileSync(`${rootB}/README.md`, "base\n");
-    git(rootB, "add", "README.md");
+    writeFileSync(`${rootB}/.gitignore`, [".gaia/", ".turbo/", "dist/", "**/.gaia/", "**/.turbo/", "**/dist/"].join("\n") + "\n");
+    git(rootB, "add", "README.md", ".gitignore");
     git(rootB, "commit", "-m", "base");
     git(remote, "init", "--bare");
     git(rootB, "remote", "add", "origin", remote);
@@ -120,7 +126,6 @@ function makeFixture(mode?: FailureMode) {
     if (provenance._tag === "None") throw new Error("missing provenance");
     yield* prepareDeliveryWorktree({ options: { rootDirectory: rootB }, paths, provenance: provenance.value });
     yield* writeWorkspaceSnapshot(paths.harnessWorkspaceBaseline, yield* snapshotWorkspace(paths.workspace));
-    const before = inventory(rootB);
     const sessionId = `session-${accepted.runId}`;
     yield* appendEvent(accepted.runId, paths, { payload: { delivery: { ...provenance.value, mode: "pullRequest", stage: "delivering" } }, type: "DELIVERY_STARTED" });
     yield* appendEvent(accepted.runId, paths, { payload: { workspacePath: "workspace" }, type: "WORKSPACE_PREPARED" });
@@ -131,12 +136,55 @@ function makeFixture(mode?: FailureMode) {
     yield* appendHarnessSessionEvent(accepted.runId, paths, parseHarnessEvent({ kind: "turnStarted", sessionId, turnId: "turn-initial" }));
     yield* appendHarnessSessionEvent(accepted.runId, paths, parseHarnessEvent({ failure: { code: "CodexThreadSystemError", kind: "providerFailure", message: "failed", recoverable: true }, kind: "sessionFailed", sessionId }));
     yield* appendEvent(accepted.runId, paths, { payload: { code: "HarnessSessionFailed", message: "failed", recoverable: true, stage: "runningWorker" }, type: "RUN_FAILED" });
-    const failureSequence = (yield* loadRun(paths)).events.at(-1)!.sequence;
+    const firstFailureSequence = (yield* loadRun(paths)).events.at(-1)!.sequence;
+    let failureSequence = firstFailureSequence;
+    if (options.retainedDirty === true) {
+      const priorReceipt = {
+        actionId: "recover-http-prior",
+        attempt: 1 as const,
+        expectedFailureSequence: firstFailureSequence,
+        expectedSessionId: parseHarnessSessionId(sessionId),
+        harnessProfileId: parseHarnessProfileId("codexAppServer"),
+        maxAttempts: 1 as const,
+        model: "gpt-5.4",
+        nativeTurnIdDigest: "b".repeat(64),
+        payloadDigest: "a".repeat(64),
+      };
+      yield* appendEvent(accepted.runId, paths, {
+        payload: {
+          recovery: encodeWorkerRecoveryReceiptJson({
+            ...priorReceipt,
+            state: "intentRecorded",
+          }),
+        },
+        type: "WORKER_RECOVERY_RECORDED",
+      });
+      yield* appendEvent(accepted.runId, paths, {
+        payload: {
+          recovery: encodeWorkerRecoveryReceiptJson({
+            ...priorReceipt,
+            state: "dispatchConfirmed",
+          }),
+        },
+        type: "WORKER_RECOVERY_RECORDED",
+      });
+      yield* appendHarnessSessionEvent(accepted.runId, paths, parseHarnessEvent({ failure: { code: "CodexThreadSystemError", kind: "providerFailure", message: "second failed", recoverable: true }, kind: "sessionFailed", sessionId }));
+      const secondFailure = yield* appendEvent(accepted.runId, paths, { payload: { code: "HarnessSessionFailed", message: "second failed", recoverable: true, stage: "runningWorker" }, type: "RUN_FAILED" });
+      failureSequence = secondFailure.event.sequence;
+      yield* fs.writeFileString(`${paths.workspace}/README.md`, "retained payload change\n");
+      yield* fs.makeDirectory(`${paths.workspace}/apps/server/.gaia`, { recursive: true });
+      yield* fs.makeDirectory(`${paths.workspace}/packages/runtime/dist`, { recursive: true });
+      yield* fs.makeDirectory(`${paths.workspace}/.turbo`, { recursive: true });
+      yield* fs.writeFileString(`${paths.workspace}/apps/server/.gaia/events.jsonl`, "generated\n");
+      yield* fs.writeFileString(`${paths.workspace}/packages/runtime/dist/index.js`, "generated\n");
+      yield* fs.writeFileString(`${paths.workspace}/.turbo/cache.bin`, "generated\n");
+    }
+    const before = inventory(rootB);
     let starts = 0;
     let mutated = false;
     const action = WorkerRecoveryAction.make({ actionId: "recover-http-1", expectedFailureSequence: failureSequence, expectedSessionId: parseHarnessSessionId(sessionId), harnessProfileId: parseHarnessProfileId("codexAppServer"), kind: "retryRecoverableWorkerFailure", model: "gpt-5.4" });
     const activator = (runId: string, request: WorkerRecoveryAction) => Effect.gen(function* () {
-      const receipt = yield* recoverWorkerSession(runId, request, { nativeThreadId: "thread-private", rootDirectory: rootB, provider: { listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]), readThread: (threadId) => Effect.succeed({ status: "systemError", threadId }), resumeThread: (threadId) => Effect.succeed({ status: "idle", threadId }), startTurn: () => Effect.sync(() => { starts += 1; return { turnId: "turn-recovery" }; }) }, validateWorkspace: () => inspectRecoverableDeliveryWorktreeOwnership({ expectedHeads: [provenance.value.baseRevision], options: { rootDirectory: rootB }, paths, provenance: provenance.value }) });
+      const receipt = yield* recoverWorkerSession(runId, request, { nativeThreadId: "thread-private", rootDirectory: rootB, provider: { listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]), readThread: (threadId) => Effect.succeed({ status: "systemError", threadId }), resumeThread: (threadId) => Effect.succeed({ status: "idle", threadId }), startTurn: () => Effect.sync(() => { starts += 1; return { turnId: "turn-recovery" }; }) }, validateWorkspace: () => options.productionWorkspaceValidation === true ? validateProductionWorkerRecoveryWorkspace({ action: request, expectedHead: provenance.value.baseRevision, rootDirectory: rootB, runId }) : inspectRecoverableDeliveryWorktreeOwnership({ expectedHeads: [provenance.value.baseRevision], options: { rootDirectory: rootB }, paths, provenance: provenance.value }) });
       if (mode !== undefined && receipt.state === "dispatchConfirmed" && !mutated) {
         mutated = true;
         const checkpoint = `${paths.root}/.worker-recovery-turn.json`;
@@ -168,6 +216,32 @@ describe("finite worker recovery HTTP lifecycle", () => {
       assert.strictEqual(fixture.starts(), 1);
       assert.deepEqual(inventory(fixture.rootB), fixture.before);
       yield* fixture.cleanup;
+    }), 20_000);
+
+    it.effect("allows later-generation retained dirty tracked payload through production recovery validation only", () => Effect.gen(function* () {
+      const strict = yield* makeFixture(undefined, { retainedDirty: true });
+      assert.strictEqual((yield* strict.post()).status, 409);
+      assert.strictEqual(strict.starts(), 0);
+      const strictEvents = yield* loadRun(strict.paths);
+      assert.isFalse(strictEvents.events.some((event) => event.type === "WORKER_RECOVERY_RECORDED" && parseWorkerRecoveryReceipt(event.payload["recovery"]).actionId === strict.action.actionId));
+      assert.deepEqual(inventory(strict.rootB), strict.before);
+      yield* strict.cleanup;
+
+      const production = yield* makeFixture(undefined, { productionWorkspaceValidation: true, retainedDirty: true });
+      assert.strictEqual((yield* production.post()).status, 200);
+      assert.strictEqual(production.starts(), 1);
+      const events = yield* loadRun(production.paths);
+      const receipts = events.events.flatMap((event) => event.type === "WORKER_RECOVERY_RECORDED" ? [parseWorkerRecoveryReceipt(event.payload["recovery"])] : []);
+      const confirmed = receipts.find((receipt) => receipt.actionId === production.action.actionId && receipt.state === "dispatchConfirmed");
+      assert.strictEqual(confirmed?.state, "dispatchConfirmed");
+      assert.match(confirmed?.trackedPayloadDigest ?? "", /^[a-f0-9]{64}$/u);
+      assert.strictEqual(confirmed?.trackedPayloadEntryCount, 1);
+      assert.notInclude(JSON.stringify(confirmed), production.rootB);
+      assert.isTrue(events.events.some((event) => event.type === "WORKER_COMPLETED"));
+      const continuationFailure = receipts.find((receipt) => receipt.actionId === production.action.actionId && receipt.state === "failed" && receipt.code === "WorkerRecoveryContinuationFailed");
+      assert.strictEqual(continuationFailure?.state, "failed");
+      assert.deepEqual(inventory(production.rootB), production.before);
+      yield* production.cleanup;
     }), 20_000);
 
     for (const mode of ["missing checkpoint", "corrupt checkpoint", "exact-turn mismatch", "provider resume rejection", "provider read rejection", "generic continuation failure"] as const) {

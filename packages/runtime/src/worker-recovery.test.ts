@@ -9,7 +9,7 @@ import { Effect, FileSystem, Path, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { makeRunPaths } from "./paths.js";
 import { readPrivateWorkerRecoveryTurn, recoverWorkerSession, type WorkerRecoveryProvider, type WorkerRecoveryThreadStatus } from "./worker-recovery.js";
-import { inspectContinuableDeliveryWorktreeOwnership, inspectRecoverableDeliveryWorktreeOwnership, parseDeliveryProvenance, prepareDeliveryWorktree, type DeliveryProvenance } from "./git-delivery.js";
+import { inspectContinuableDeliveryWorktreeOwnership, inspectRecoverableDeliveryWorktreeOwnership, inspectRetainedPayloadDeliveryWorktreeOwnership, parseDeliveryProvenance, prepareDeliveryWorktree, type DeliveryProvenance } from "./git-delivery.js";
 import { actOnWorkerRecovery } from "./server-workflows.js";
 import { makeRuntimeError } from "./errors.js";
 import { appendEvent, appendHarnessSessionEvent } from "./event-store.js";
@@ -35,7 +35,9 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 async function realOwnedFixture() {
   const f = fixture(); rmSync(f.paths.workspace, { recursive: true, force: true });
   git(f.root, "init", "-b", "main"); git(f.root, "config", "user.email", "gaia@test.invalid"); git(f.root, "config", "user.name", "Gaia Test");
-  writeFileSync(path.join(f.root, "README.md"), "base\n"); git(f.root, "add", "README.md"); git(f.root, "commit", "-m", "base");
+  writeFileSync(path.join(f.root, "README.md"), "base\n");
+  writeFileSync(path.join(f.root, ".gitignore"), [".gaia/", ".turbo/", "dist/", "**/.gaia/", "**/.turbo/", "**/dist/"].join("\n") + "\n");
+  git(f.root, "add", "README.md", ".gitignore"); git(f.root, "commit", "-m", "base");
   const remote = mkdtempSync(path.join(tmpdir(), "gaia-worker-recovery-remote-")); roots.push(remote); git(remote, "init", "--bare"); git(f.root, "remote", "add", "origin", remote); git(f.root, "push", "-u", "origin", "main");
   const head = git(f.root, "rev-parse", "HEAD");
   const provenance: DeliveryProvenance = { baseBranch: "main", baseRevision: head, headBranch: "gaia/run-1234567890", mode: "pullRequest", remote: "origin" };
@@ -245,6 +247,59 @@ describe("recoverWorkerSession", () => {
       paths: f.paths,
       provenance: f.provenance,
     }))).resolves.toBeUndefined();
+  });
+
+  it("fingerprints tracked payload while allowing ignored generated output churn", async () => {
+    const f = await realOwnedFixture();
+    writeFileSync(path.join(f.paths.workspace, "README.md"), "payload change\n");
+    mkdirSync(path.join(f.paths.workspace, "apps/server/.gaia"), { recursive: true });
+    mkdirSync(path.join(f.paths.workspace, "packages/runtime/dist"), { recursive: true });
+    mkdirSync(path.join(f.paths.workspace, ".turbo"), { recursive: true });
+    writeFileSync(path.join(f.paths.workspace, "apps/server/.gaia/events.jsonl"), "generated\n");
+    writeFileSync(path.join(f.paths.workspace, "packages/runtime/dist/index.js"), "generated\n");
+    writeFileSync(path.join(f.paths.workspace, ".turbo/cache.bin"), "generated\n");
+
+    const first = await run(inspectRetainedPayloadDeliveryWorktreeOwnership({
+      expectedHeads: [f.head],
+      options: { rootDirectory: f.root },
+      paths: f.paths,
+      provenance: f.provenance,
+    }));
+
+    writeFileSync(path.join(f.paths.workspace, "packages/runtime/dist/index.js"), "generated churn\n");
+    writeFileSync(path.join(f.paths.workspace, "apps/server/.gaia/events.jsonl"), "generated churn\n");
+    const second = await run(inspectRetainedPayloadDeliveryWorktreeOwnership({
+      expectedHeads: [f.head],
+      options: { rootDirectory: f.root },
+      paths: f.paths,
+      provenance: f.provenance,
+    }));
+
+    expect(first).toEqual(second);
+    expect(first.trackedPayloadEntryCount).toBe(1);
+  });
+
+  it.each([
+    ["unexpected unignored untracked file", (f: Awaited<ReturnType<typeof realOwnedFixture>>) => {
+      mkdirSync(path.join(f.paths.workspace, "src"), { recursive: true });
+      writeFileSync(path.join(f.paths.workspace, "src/new-file.ts"), "untracked\n");
+    }],
+    ["tracked generated output", (f: Awaited<ReturnType<typeof realOwnedFixture>>) => {
+      mkdirSync(path.join(f.paths.workspace, "dist"), { recursive: true });
+      writeFileSync(path.join(f.paths.workspace, "dist/tracked.js"), "generated\n");
+      git(f.paths.workspace, "add", "-f", "dist/tracked.js");
+    }],
+  ] as const)("rejects retained payload contamination: %s", async (_name, contaminate) => {
+    const f = await realOwnedFixture();
+    writeFileSync(path.join(f.paths.workspace, "README.md"), "payload change\n");
+    contaminate(f);
+
+    await expect(run(inspectRetainedPayloadDeliveryWorktreeOwnership({
+      expectedHeads: [f.head],
+      options: { rootDirectory: f.root },
+      paths: f.paths,
+      provenance: f.provenance,
+    }))).rejects.toBeTruthy();
   });
 
   it.each([
@@ -461,5 +516,110 @@ describe("recoverWorkerSession", () => {
     expect(JSON.stringify(exit)).not.toContain("private persistence path");
     expect(readFileSync(f.paths.events, "utf8")).toBe(before);
     expect(mutations).toBe(0);
+  });
+
+  it("rejects retained tracked payload drift between resume/read and dispatch", async () => {
+    const f = fixture();
+    let starts = 0;
+    let currentDigest = "1".repeat(64);
+    const validation = () => Effect.succeed({
+      trackedPayloadDigest: currentDigest,
+      trackedPayloadEntryCount: 1,
+    });
+    const provider: WorkerRecoveryProvider = {
+      listModels: () => Effect.succeed([{ hidden: false, id: "gpt-5.4" }]),
+      resumeThread: (threadId) => Effect.sync(() => {
+        currentDigest = "2".repeat(64);
+        return threadState("idle", threadId);
+      }),
+      readThread: (threadId) => Effect.succeed(threadState("systemError", threadId)),
+      startTurn: () => Effect.sync(() => {
+        starts++;
+        return { turnId: "turn-recovery" };
+      }),
+    };
+
+    const result = await run(recoverWorkerSession(f.runId, action, {
+      nativeThreadId: "thread-1",
+      provider,
+      rootDirectory: f.root,
+      validateWorkspace: validation,
+    }));
+
+    expect(result).toMatchObject({
+      code: "WorkerRecoveryPreflightFailed",
+      state: "failed",
+      trackedPayloadDigest: "1".repeat(64),
+      trackedPayloadEntryCount: 1,
+    });
+    expect(starts).toBe(0);
+    const events = readFileSync(f.paths.events, "utf8");
+    expect(events).toContain("WorkerRecoveryPreflightFailed");
+    expect(events).toContain(`"trackedPayloadDigest":"${"1".repeat(64)}"`);
+    expect(events).not.toContain("dispatchAttempted");
+    expect(events).not.toContain("dispatchConfirmed");
+  });
+
+  it("revalidates persisted tracked payload binding on intent restart before resume/read/start", async () => {
+    const f = fixture();
+    await run(appendEvent(f.runId, f.paths, {
+      payload: {
+        recovery: {
+          ...action,
+          attempt: 1,
+          maxAttempts: 1,
+          payloadDigest: sha256(JSON.stringify(action)),
+          state: "intentRecorded",
+          trackedPayloadDigest: "1".repeat(64),
+          trackedPayloadEntryCount: 1,
+        },
+      },
+      type: "WORKER_RECOVERY_RECORDED",
+    }));
+    let models = 0;
+    let resumeReads = 0;
+    let starts = 0;
+    const provider: WorkerRecoveryProvider = {
+      listModels: () => Effect.sync(() => {
+        models++;
+        return [{ hidden: false, id: "gpt-5.4" }];
+      }),
+      resumeThread: (threadId) => Effect.sync(() => {
+        resumeReads++;
+        return threadState("idle", threadId);
+      }),
+      readThread: (threadId) => Effect.sync(() => {
+        resumeReads++;
+        return threadState("systemError", threadId);
+      }),
+      startTurn: () => Effect.sync(() => {
+        starts++;
+        return { turnId: "turn-recovery" };
+      }),
+    };
+
+    const result = await run(recoverWorkerSession(f.runId, action, {
+      nativeThreadId: "thread-1",
+      provider,
+      rootDirectory: f.root,
+      validateWorkspace: () => Effect.succeed({
+        trackedPayloadDigest: "2".repeat(64),
+        trackedPayloadEntryCount: 1,
+      }),
+    }));
+
+    expect(result).toMatchObject({
+      code: "WorkerRecoveryPreflightFailed",
+      state: "failed",
+      trackedPayloadDigest: "1".repeat(64),
+      trackedPayloadEntryCount: 1,
+    });
+    expect(models).toBe(1);
+    expect(resumeReads).toBe(0);
+    expect(starts).toBe(0);
+    const events = readFileSync(f.paths.events, "utf8");
+    expect(events).toContain("WorkerRecoveryPreflightFailed");
+    expect(events).not.toContain("dispatchAttempted");
+    expect(events).not.toContain("dispatchConfirmed");
   });
 });

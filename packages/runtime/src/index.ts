@@ -4,6 +4,7 @@ export {
   readPrivateWorkerRecoveryTurn,
   writePrivateWorkerCorrelationFollowUpTurn,
   type WorkerRecoveryProvider,
+  type WorkerRecoveryWorkspaceValidation,
   type WorkerRecoveryThreadStatus,
 } from "./worker-recovery.js";
 export {
@@ -294,7 +295,7 @@ export {
   runRootDirectory,
   type RunPaths,
 } from "./paths.js";
-export { inspectContinuableDeliveryWorktreeOwnership, inspectRecoverableDeliveryWorktreeOwnership, parseDeliveryProvenance } from "./git-delivery.js";
+export { inspectContinuableDeliveryWorktreeOwnership, inspectRecoverableDeliveryWorktreeOwnership, inspectRetainedPayloadDeliveryWorktreeOwnership, parseDeliveryProvenance } from "./git-delivery.js";
 export {
   listLocalRuns,
   readLocalRun,

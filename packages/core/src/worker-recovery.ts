@@ -94,6 +94,8 @@ const Base = {
   maxAttempts: Schema.Literal(1),
   model: ModelId,
   payloadDigest: Digest,
+  trackedPayloadDigest: Schema.optionalKey(Digest),
+  trackedPayloadEntryCount: Schema.optionalKey(Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))),
 } as const;
 
 export const WorkerRecoveryReceiptSchema = Schema.Union([
