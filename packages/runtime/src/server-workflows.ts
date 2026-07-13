@@ -13,10 +13,13 @@ import {
   parseRunId,
   encodeWorkerContinuationReceiptJson,
   encodeWorkerCorrelationReconciliationReceiptJson,
+  encodeWorkerDesktopOriginCorrelationReceiptJson,
   parseWorkerContinuationAction,
   parseWorkerContinuationReceipt,
   parseWorkerCorrelationReconciliationAction,
   parseWorkerCorrelationReconciliationReceipt,
+  parseWorkerDesktopOriginCorrelationAction,
+  parseWorkerDesktopOriginCorrelationReceipt,
   parseWorkerRecoveryReceipt,
   ResolvedHarnessExecution,
   snapshotFromReplay,
@@ -24,6 +27,8 @@ import {
   type WorkerContinuationReceipt,
   type WorkerCorrelationReconciliationAction,
   type WorkerCorrelationReconciliationReceipt,
+  type WorkerDesktopOriginCorrelationAction,
+  type WorkerDesktopOriginCorrelationReceipt,
   type GaiaFailure,
   type WorkerRecoveryAction,
   type WorkerRecoveryReceipt,
@@ -129,6 +134,9 @@ export type ServerWorkflowOptions = RunStorageOptions & ReviewerRunOptions & {
   readonly workerCorrelationReconciler?: WorkerCorrelationReconciler;
   readonly workerCorrelationFollowUpDispatcher?: WorkerCorrelationFollowUpDispatcher;
   readonly workerCorrelationRunner?: (runId: string, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
+  readonly workerDesktopOriginCorrelationReconciler?: WorkerDesktopOriginCorrelationReconciler;
+  readonly workerDesktopOriginCorrelationFollowUpDispatcher?: WorkerDesktopOriginCorrelationFollowUpDispatcher;
+  readonly workerDesktopOriginCorrelationRunner?: (runId: string, options: ServerWorkflowOptions) => Effect.Effect<CommandSummary, unknown, FileSystem.FileSystem | Path.Path>;
 };
 
 export type WorkerCorrelationReconciliationInput = {
@@ -146,6 +154,23 @@ export type WorkerCorrelationReconciler = (
 
 export type WorkerCorrelationFollowUpDispatcher = (
   input: WorkerCorrelationReconciliationInput,
+) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
+
+export type WorkerDesktopOriginCorrelationInput = {
+  readonly action: WorkerDesktopOriginCorrelationAction;
+  readonly clientInputId: string;
+  readonly events: ReadonlyArray<RunEvent>;
+  readonly followUpText: string;
+  readonly paths: RunPaths;
+  readonly runId: RunId;
+};
+
+export type WorkerDesktopOriginCorrelationReconciler = (
+  input: WorkerDesktopOriginCorrelationInput,
+) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
+
+export type WorkerDesktopOriginCorrelationFollowUpDispatcher = (
+  input: WorkerDesktopOriginCorrelationInput,
 ) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
 
 export function actOnWorkerRecovery(runId: string, action: WorkerRecoveryAction, options: ServerWorkflowOptions) {
@@ -399,6 +424,163 @@ function actOnWorkerCorrelationReconciliationUnlocked(
       });
     }
     return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
+      ...base,
+      state: "workerCompleted",
+    });
+  });
+}
+
+export function actOnWorkerDesktopOriginCorrelation(
+  runIdInput: string,
+  actionInput: WorkerDesktopOriginCorrelationAction,
+  options: ServerWorkflowOptions = {},
+) {
+  return withRunStoreLock(
+    options,
+    actOnWorkerDesktopOriginCorrelationUnlocked(runIdInput, actionInput, options),
+    {
+      nextSafeAction:
+        "Refresh delivery state before retrying the audited Desktop-origin correlation action.",
+      operation: "Gaia audited Desktop-origin correlation action",
+    },
+  ).pipe(Effect.mapError(toServerWorkflowError("DeliveryActionFailed")));
+}
+
+function actOnWorkerDesktopOriginCorrelationUnlocked(
+  runIdInput: string,
+  actionInput: WorkerDesktopOriginCorrelationAction,
+  options: ServerWorkflowOptions,
+) {
+  return Effect.gen(function* () {
+    if (
+      options.workerDesktopOriginCorrelationReconciler === undefined ||
+      options.workerDesktopOriginCorrelationFollowUpDispatcher === undefined
+    ) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "DeliveryActionFailed",
+          message: "Worker Desktop-origin correlation reconciliation is unavailable.",
+          recoverable: false,
+        }),
+      );
+    }
+    const runId = yield* parseRunIdEffect(runIdInput);
+    const action = parseWorkerDesktopOriginCorrelationAction(actionInput);
+    const paths = yield* makeRunPaths(runId, options);
+    const loaded = yield* loadRun(paths);
+    const prior = latestWorkerDesktopOriginCorrelationReceipt(loaded.events);
+    const epochSequence = prior?.workerEvidenceEpochSequence ?? action.expectedCurrentSequence + 1;
+    const base = {
+      actionId: action.actionId,
+      expectedContaminatedReadySequence: action.expectedContaminatedReadySequence,
+      expectedContinuationActionId: action.expectedContinuationActionId,
+      expectedCorrelationActionId: action.expectedCorrelationActionId,
+      expectedCurrentSequence: action.expectedCurrentSequence,
+      expectedDeliveryProvenanceDigest: action.expectedDeliveryProvenanceDigest,
+      expectedFailedContinuationSequence: action.expectedFailedContinuationSequence,
+      expectedFailedCorrelationSequence: action.expectedFailedCorrelationSequence,
+      expectedFailedRecoverySequence: action.expectedFailedRecoverySequence,
+      expectedNativeTurnIdDigest: action.expectedNativeTurnIdDigest,
+      expectedRecoveryActionId: action.expectedRecoveryActionId,
+      expectedSessionId: action.expectedSessionId,
+      harnessProfileId: action.harnessProfileId,
+      maxAttempts: 1 as const,
+      workerEvidenceEpochSequence: epochSequence,
+    };
+    const input = {
+      action,
+      clientInputId: workerCorrelationFollowUpClientInputId(runId, action.actionId),
+      events: loaded.events,
+      followUpText: workerCorrelationFollowUpText,
+      paths,
+      runId,
+    } satisfies WorkerDesktopOriginCorrelationInput;
+
+    if (prior !== undefined) {
+      yield* assertWorkerDesktopOriginCorrelationReplay(prior, base);
+      if (prior.state === "sourceCorrelationAttempted" || prior.state === "followUpAttempted") {
+        return yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
+          ...prior,
+          code: "WorkerDesktopOriginCorrelationOutcomeUnknown",
+          message: "A prior audited Desktop-origin correlation attempt has no durable terminal receipt.",
+          state: "outcomeUnknown",
+        });
+      }
+      if (prior.state === "failed" || prior.state === "outcomeUnknown" || prior.state === "workerCompleted") {
+        return prior;
+      }
+    } else {
+      yield* assertWorkerDesktopOriginCorrelationEligibility(loaded.events, action);
+      yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
+        ...base,
+        state: "intentRecorded",
+      });
+    }
+
+    if (prior === undefined || prior.state === "intentRecorded") {
+      yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
+        ...base,
+        state: "sourceCorrelationAttempted",
+      });
+      const reconciled = yield* Effect.exit(options.workerDesktopOriginCorrelationReconciler(input));
+      if (reconciled._tag === "Failure") {
+        return yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
+          ...base,
+          code: "WorkerDesktopOriginCorrelationFailed",
+          message: "Audited Desktop-origin correlation failed before the private checkpoint was durably confirmed.",
+          state: "failed",
+        });
+      }
+      yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
+        ...base,
+        state: "sourceCorrelationConfirmed",
+      });
+    }
+
+    if (prior === undefined || prior.state === "intentRecorded" || prior.state === "sourceCorrelationConfirmed") {
+      yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
+        ...base,
+        state: "followUpAttempted",
+      });
+      const dispatched = yield* Effect.exit(options.workerDesktopOriginCorrelationFollowUpDispatcher(input));
+      if (dispatched._tag === "Failure") {
+        return yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
+          ...base,
+          code: "WorkerDesktopOriginCorrelationFollowUpOutcomeUnknown",
+          message: "Audited Desktop-origin correlation follow-up acceptance could not be confirmed.",
+          state: "outcomeUnknown",
+        });
+      }
+      yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
+        ...base,
+        state: "followUpConfirmed",
+      });
+    }
+
+    const continued = yield* Effect.exit(
+      (options.workerDesktopOriginCorrelationRunner ?? options.workerCorrelationRunner ?? options.workerContinuationRunner ?? continueServerRunWorkerOnly)(runId, options),
+    );
+    if (continued._tag === "Failure") {
+      return yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
+        ...base,
+        code: "WorkerDesktopOriginCorrelationContinuationFailed",
+        message: "Audited Desktop-origin correlation failed before fresh worker evidence completed.",
+        state: "failed",
+      });
+    }
+    const refreshed = yield* loadRun(paths);
+    const hasFreshWorkerCompletion = refreshed.events.some(
+      ({ sequence, type }) => type === "WORKER_COMPLETED" && sequence > epochSequence,
+    );
+    if (!hasFreshWorkerCompletion) {
+      return yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
+        ...base,
+        code: "WorkerDesktopOriginCorrelationNoFreshWorkerCompletion",
+        message: "Audited Desktop-origin correlation did not produce fresh worker evidence.",
+        state: "failed",
+      });
+    }
+    return yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
       ...base,
       state: "workerCompleted",
     });
@@ -1061,6 +1243,13 @@ function latestWorkerCorrelationReconciliationReceipt(events: ReadonlyArray<RunE
   })[0];
 }
 
+function latestWorkerDesktopOriginCorrelationReceipt(events: ReadonlyArray<RunEvent>) {
+  return [...events].reverse().flatMap((event) => {
+    if (event.type !== "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED") return [];
+    return [parseWorkerDesktopOriginCorrelationReceipt(event.payload["desktopOriginCorrelation"])];
+  })[0];
+}
+
 function recordWorkerContinuationReceipt(
   runId: RunId,
   paths: RunPaths,
@@ -1080,6 +1269,17 @@ function recordWorkerCorrelationReconciliationReceipt(
   return appendEvent(runId, paths, {
     payload: { reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(receipt) },
     type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+  }).pipe(Effect.as(receipt));
+}
+
+function recordWorkerDesktopOriginCorrelationReceipt(
+  runId: RunId,
+  paths: RunPaths,
+  receipt: WorkerDesktopOriginCorrelationReceipt,
+) {
+  return appendEvent(runId, paths, {
+    payload: { desktopOriginCorrelation: encodeWorkerDesktopOriginCorrelationReceiptJson(receipt) },
+    type: "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED",
   }).pipe(Effect.as(receipt));
 }
 
@@ -1105,6 +1305,20 @@ function assertWorkerCorrelationReconciliationReplay(
     return Effect.fail(makeRuntimeError({
       code: "DeliveryActionConflict",
       message: "Another audited worker correlation reconciliation action is already authoritative.",
+      recoverable: false,
+    }));
+  }
+  return Effect.void;
+}
+
+function assertWorkerDesktopOriginCorrelationReplay(
+  prior: WorkerDesktopOriginCorrelationReceipt,
+  expected: Omit<WorkerDesktopOriginCorrelationReceipt, "code" | "message" | "state">,
+) {
+  if (JSON.stringify(workerDesktopOriginCorrelationBinding(prior)) !== JSON.stringify(expected)) {
+    return Effect.fail(makeRuntimeError({
+      code: "DeliveryActionConflict",
+      message: "Another audited Desktop-origin correlation action is already authoritative.",
       recoverable: false,
     }));
   }
@@ -1138,6 +1352,28 @@ function workerCorrelationReconciliationBinding(
     expectedCurrentSequence: receipt.expectedCurrentSequence,
     expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
     expectedFailedContinuationSequence: receipt.expectedFailedContinuationSequence,
+    expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
+    expectedNativeTurnIdDigest: receipt.expectedNativeTurnIdDigest,
+    expectedRecoveryActionId: receipt.expectedRecoveryActionId,
+    expectedSessionId: receipt.expectedSessionId,
+    harnessProfileId: receipt.harnessProfileId,
+    maxAttempts: receipt.maxAttempts,
+    workerEvidenceEpochSequence: receipt.workerEvidenceEpochSequence,
+  };
+}
+
+function workerDesktopOriginCorrelationBinding(
+  receipt: Omit<WorkerDesktopOriginCorrelationReceipt, "code" | "message" | "state">,
+) {
+  return {
+    actionId: receipt.actionId,
+    expectedContaminatedReadySequence: receipt.expectedContaminatedReadySequence,
+    expectedContinuationActionId: receipt.expectedContinuationActionId,
+    expectedCorrelationActionId: receipt.expectedCorrelationActionId,
+    expectedCurrentSequence: receipt.expectedCurrentSequence,
+    expectedDeliveryProvenanceDigest: receipt.expectedDeliveryProvenanceDigest,
+    expectedFailedContinuationSequence: receipt.expectedFailedContinuationSequence,
+    expectedFailedCorrelationSequence: receipt.expectedFailedCorrelationSequence,
     expectedFailedRecoverySequence: receipt.expectedFailedRecoverySequence,
     expectedNativeTurnIdDigest: receipt.expectedNativeTurnIdDigest,
     expectedRecoveryActionId: receipt.expectedRecoveryActionId,
@@ -1316,6 +1552,131 @@ function assertWorkerCorrelationReconciliationEligibility(
     ) {
       return yield* Effect.fail(
         workerContinuationConflict("Audited correlation reconciliation is unavailable after publication or pull-request evidence exists."),
+      );
+    }
+  });
+}
+
+function assertWorkerDesktopOriginCorrelationEligibility(
+  events: ReadonlyArray<RunEvent>,
+  action: WorkerDesktopOriginCorrelationAction,
+) {
+  return Effect.gen(function* () {
+    const currentSequence = events.at(-1)?.sequence ?? 0;
+    if (currentSequence !== action.expectedCurrentSequence) {
+      return yield* Effect.fail(makeRuntimeError({
+        code: "DeliveryActionConflict",
+        message: "Delivery state changed before audited Desktop-origin correlation was accepted.",
+        recoverable: true,
+      }));
+    }
+    if (action.expectedFailedCorrelationSequence !== action.expectedCurrentSequence) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited Desktop-origin correlation requires the current failed source-classification receipt."),
+      );
+    }
+    const firstEvent = events[0];
+    const delivery = firstEvent === undefined
+      ? undefined
+      : yield* parseAcceptedDelivery(firstEvent.payload["delivery"]);
+    if (
+      delivery?.mode !== "pullRequest" ||
+      action.expectedDeliveryProvenanceDigest !==
+        deliveryProvenanceDigest(delivery.provenance)
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited Desktop-origin correlation requires the accepted delivery provenance."),
+      );
+    }
+    const failedRecoveryEvent = events.find(
+      (event) => event.sequence === action.expectedFailedRecoverySequence,
+    );
+    if (failedRecoveryEvent?.type !== "WORKER_RECOVERY_RECORDED") {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited Desktop-origin correlation requires the exact failed recovery receipt."),
+      );
+    }
+    const failedRecovery = parseWorkerRecoveryReceipt(failedRecoveryEvent.payload["recovery"]);
+    if (
+      failedRecovery.state !== "failed" ||
+      failedRecovery.code !== "WorkerRecoveryContinuationFailed" ||
+      failedRecovery.actionId !== action.expectedRecoveryActionId ||
+      failedRecovery.expectedSessionId !== action.expectedSessionId ||
+      failedRecovery.harnessProfileId !== action.harnessProfileId ||
+      failedRecovery.nativeTurnIdDigest !== action.expectedNativeTurnIdDigest
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited Desktop-origin correlation requires the exact failed interrupted recovery checkpoint."),
+      );
+    }
+    const failedContinuationEvent = events.find(
+      (event) => event.sequence === action.expectedFailedContinuationSequence,
+    );
+    if (failedContinuationEvent?.type !== "WORKER_CONTINUATION_RECORDED") {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited Desktop-origin correlation requires the exact failed audited continuation receipt."),
+      );
+    }
+    const failedContinuation = parseWorkerContinuationReceipt(failedContinuationEvent.payload["continuation"]);
+    if (
+      failedContinuation.state !== "failed" ||
+      failedContinuation.actionId !== action.expectedContinuationActionId ||
+      failedContinuation.expectedContaminatedReadySequence !== action.expectedContaminatedReadySequence ||
+      failedContinuation.expectedDeliveryProvenanceDigest !== action.expectedDeliveryProvenanceDigest ||
+      failedContinuation.expectedFailedRecoverySequence !== action.expectedFailedRecoverySequence ||
+      failedContinuation.expectedRecoveryActionId !== action.expectedRecoveryActionId ||
+      failedContinuation.expectedSessionId !== action.expectedSessionId ||
+      failedContinuation.harnessProfileId !== action.harnessProfileId
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited Desktop-origin correlation requires the exact failed continuation binding."),
+      );
+    }
+    const failedCorrelationEvent = events.find(
+      (event) => event.sequence === action.expectedFailedCorrelationSequence,
+    );
+    if (failedCorrelationEvent?.type !== "WORKER_CORRELATION_RECONCILIATION_RECORDED") {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited Desktop-origin correlation requires the exact failed source-classification receipt."),
+      );
+    }
+    const failedCorrelation = parseWorkerCorrelationReconciliationReceipt(failedCorrelationEvent.payload["reconciliation"]);
+    if (
+      failedCorrelation.state !== "failed" ||
+      failedCorrelation.code !== "WorkerCorrelationReconciliationFailed" ||
+      failedCorrelation.actionId !== action.expectedCorrelationActionId ||
+      failedCorrelation.expectedContaminatedReadySequence !== action.expectedContaminatedReadySequence ||
+      failedCorrelation.expectedContinuationActionId !== action.expectedContinuationActionId ||
+      failedCorrelation.expectedDeliveryProvenanceDigest !== action.expectedDeliveryProvenanceDigest ||
+      failedCorrelation.expectedFailedContinuationSequence !== action.expectedFailedContinuationSequence ||
+      failedCorrelation.expectedFailedRecoverySequence !== action.expectedFailedRecoverySequence ||
+      failedCorrelation.expectedNativeTurnIdDigest !== action.expectedNativeTurnIdDigest ||
+      failedCorrelation.expectedRecoveryActionId !== action.expectedRecoveryActionId ||
+      failedCorrelation.expectedSessionId !== action.expectedSessionId ||
+      failedCorrelation.harnessProfileId !== action.harnessProfileId
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited Desktop-origin correlation requires the exact failed source-classification binding."),
+      );
+    }
+    const readyEvent = events.find(
+      (event) => event.sequence === action.expectedContaminatedReadySequence,
+    );
+    if (readyEvent?.type !== "DELIVERY_READY_TO_PUBLISH") {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited Desktop-origin correlation requires the contaminated ready boundary."),
+      );
+    }
+    if (
+      events.some(isDeliveryPublicationEvent) ||
+      events.some(({ type }) =>
+        type === "GITHUB_PR_LOOP_RECORDED" ||
+        type === "GITHUB_CHECKS_RECORDED" ||
+        type === "GITHUB_FEEDBACK_RECORDED"
+      )
+    ) {
+      return yield* Effect.fail(
+        workerContinuationConflict("Audited Desktop-origin correlation is unavailable after publication or pull-request evidence exists."),
       );
     }
   });
@@ -2050,9 +2411,19 @@ function issueDeliveryWorkerContinuationState(
 
 function latestWorkerContinuationEpochSequence(events: ReadonlyArray<RunEvent>) {
   return [...events].reverse().flatMap((event) => {
-    if (event.type !== "WORKER_CONTINUATION_RECORDED") return [];
-    const continuation = parseWorkerContinuationReceipt(event.payload["continuation"]);
-    return [continuation.workerEvidenceEpochSequence];
+    if (event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED") {
+      const desktopOriginCorrelation = parseWorkerDesktopOriginCorrelationReceipt(event.payload["desktopOriginCorrelation"]);
+      return [desktopOriginCorrelation.workerEvidenceEpochSequence];
+    }
+    if (event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED") {
+      const reconciliation = parseWorkerCorrelationReconciliationReceipt(event.payload["reconciliation"]);
+      return [reconciliation.workerEvidenceEpochSequence];
+    }
+    if (event.type === "WORKER_CONTINUATION_RECORDED") {
+      const continuation = parseWorkerContinuationReceipt(event.payload["continuation"]);
+      return [continuation.workerEvidenceEpochSequence];
+    }
+    return [];
   })[0];
 }
 

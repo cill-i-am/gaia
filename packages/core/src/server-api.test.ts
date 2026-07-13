@@ -437,6 +437,33 @@ describe("LocalGaiaServerApi contract", () => {
     assert.throws(() => decode({ ...request, protocol: "codex-app-server" }));
   });
 
+  it("accepts audited Desktop-origin correlation actions without raw native identity fields", () => {
+    const decode = Schema.decodeUnknownSync(DeliveryActionRequestSchema);
+    const request = {
+      actionId: "reconcile-desktop-origin-1",
+      expectedContaminatedReadySequence: 6,
+      expectedContinuationActionId: "continue-recovery-1",
+      expectedCorrelationActionId: "reconcile-correlation-1",
+      expectedCurrentSequence: 38,
+      expectedDeliveryProvenanceDigest: "c".repeat(64),
+      expectedFailedContinuationSequence: 35,
+      expectedFailedCorrelationSequence: 38,
+      expectedFailedRecoverySequence: 31,
+      expectedNativeTurnIdDigest: "d".repeat(64),
+      expectedRecoveryActionId: "recover-1",
+      expectedSessionId: "session-run-1234567890",
+      harnessProfileId: "codexAppServer",
+      kind: "reconcileDesktopOriginatedWorkerCorrelation",
+    } as const;
+
+    const decoded = decode(request);
+    assert.strictEqual(decoded.kind, "reconcileDesktopOriginatedWorkerCorrelation");
+    assert.throws(() => decode({ ...request, nativeTurnId: "turn-private" }));
+    assert.throws(() => decode({ ...request, nativeThreadId: "thread-private" }));
+    assert.throws(() => decode({ ...request, source: "vscode" }));
+    assert.throws(() => decode({ ...request, protocol: "codex-app-server" }));
+  });
+
   it("drops private cleanup provenance from parsed and serialized delivery snapshots", () => {
     const hostile = "/HOSTILE/absolute/common-dir::PRIVATE_TOKEN_93";
     const decode = Schema.decodeUnknownSync(DeliverySnapshotDto);

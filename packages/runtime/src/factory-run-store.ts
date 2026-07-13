@@ -907,6 +907,7 @@ function updateStatesForEvent(
     case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
     case "WORKER_CONTINUATION_RECORDED":
     case "WORKER_CORRELATION_RECONCILIATION_RECORDED":
+    case "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED":
       states.set("orchestrator", "running");
       return;
     case "RUN_FAILED":
@@ -961,6 +962,7 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
     case "WORKER_CONTINUATION_RECORDED":
     case "WORKER_CORRELATION_RECONCILIATION_RECORDED":
+    case "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED":
       return "orchestrator";
     case "RUN_FAILED":
       return roleFromFailureStage(event.payload["stage"]);
@@ -1110,6 +1112,8 @@ function activityLabel(event: RunEvent): string {
       return "Audited worker continuation updated";
     case "WORKER_CORRELATION_RECONCILIATION_RECORDED":
       return "Audited worker correlation reconciliation updated";
+    case "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED":
+      return "Audited Desktop-origin worker correlation updated";
     case "VERIFICATION_STARTED":
       return "Verification started";
     case "VERIFICATION_COMPLETED":

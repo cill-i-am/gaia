@@ -54,8 +54,10 @@ import {
   parseWorkerRecoveryReceipt,
   parseWorkerContinuationReceipt,
   parseWorkerCorrelationReconciliationReceipt,
+  parseWorkerDesktopOriginCorrelationReceipt,
   workerContinuationProjection,
   workerCorrelationReconciliationProjection,
+  workerDesktopOriginCorrelationProjection,
   workerRecoveryProjection,
   encodeWorkerRecoveryReceiptJson,
   type WorkerRecoveryAction,
@@ -92,6 +94,7 @@ import {
   actOnDeliveryPublication,
   actOnDeliveryRemediation,
   actOnDeliveryMerge,
+  actOnWorkerDesktopOriginCorrelation,
   actOnWorkerCorrelationReconciliation,
   actOnWorkerContinuation,
   actOnWorkerRecovery,
@@ -415,6 +418,12 @@ export const RunsLive = HttpApiBuilder.group(
                   )
               : payload.kind === "reconcileInterruptedWorkerCorrelation"
                 ? actOnWorkerCorrelationReconciliation(
+                    params.runId,
+                    payload,
+                    workflowOptions,
+                  )
+              : payload.kind === "reconcileDesktopOriginatedWorkerCorrelation"
+                ? actOnWorkerDesktopOriginCorrelation(
                     params.runId,
                     payload,
                     workflowOptions,
@@ -835,6 +844,8 @@ function deliveryUpdateFromEvents(
   const workerContinuation = workerContinuationEvent === undefined ? undefined : parseWorkerContinuationReceipt(workerContinuationEvent.payload["continuation"]);
   const workerCorrelationEvent = [...events].reverse().find(({ type }) => type === "WORKER_CORRELATION_RECONCILIATION_RECORDED");
   const workerCorrelationReconciliation = workerCorrelationEvent === undefined ? undefined : parseWorkerCorrelationReconciliationReceipt(workerCorrelationEvent.payload["reconciliation"]);
+  const workerDesktopOriginCorrelationEvent = [...events].reverse().find(({ type }) => type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED");
+  const workerDesktopOriginCorrelation = workerDesktopOriginCorrelationEvent === undefined ? undefined : parseWorkerDesktopOriginCorrelationReceipt(workerDesktopOriginCorrelationEvent.payload["desktopOriginCorrelation"]);
 
   if (delivery === undefined || delivery.mode === "local") {
     const status = snapshot.state === "failed" ? "failed" : snapshot.state === "completed" ? "readyToPublish" : "unavailable";
@@ -849,9 +860,10 @@ function deliveryUpdateFromEvents(
   }
 
   const correlationStage = workerCorrelationReconciliationProjection(workerCorrelationReconciliation);
+  const desktopOriginCorrelationStage = workerDesktopOriginCorrelationProjection(workerDesktopOriginCorrelation);
   const continuationStage = workerContinuationProjection(workerContinuation);
   const recoveryStage = workerRecoveryProjection(workerRecovery);
-  const stage = correlationStage ?? continuationStage ?? recoveryStage ?? (snapshot.state === "failed" ? "failed" : delivery.stage);
+  const stage = desktopOriginCorrelationStage ?? correlationStage ?? continuationStage ?? recoveryStage ?? (snapshot.state === "failed" ? "failed" : delivery.stage);
   const publication =
     delivery.publication === undefined
       ? undefined
@@ -904,6 +916,7 @@ function deliveryUpdateFromEvents(
     status: stage,
     ...(workerContinuation === undefined ? {} : { workerContinuation }),
     ...(workerCorrelationReconciliation === undefined ? {} : { workerCorrelationReconciliation }),
+    ...(workerDesktopOriginCorrelation === undefined ? {} : { workerDesktopOriginCorrelation }),
     ...(workerRecovery === undefined ? {} : { workerRecovery }),
   });
 }

@@ -4,15 +4,18 @@ import { makeRunEvent, parseRunId, snapshotFromReplay } from "./index.js";
 import {
   encodeWorkerContinuationReceiptJson,
   encodeWorkerCorrelationReconciliationReceiptJson,
+  encodeWorkerDesktopOriginCorrelationReceiptJson,
   parseWorkerContinuationAction,
   parseWorkerContinuationReceipt,
   parseWorkerCorrelationReconciliationAction,
   parseWorkerCorrelationReconciliationReceipt,
+  parseWorkerDesktopOriginCorrelationReceipt,
   parseWorkerRecoveryAction,
   parseWorkerRecoveryReceipt,
   WorkerRecoveryFailureEvidence,
   workerContinuationProjection,
   workerCorrelationReconciliationProjection,
+  workerDesktopOriginCorrelationProjection,
   workerRecoveryProjection,
 } from "./worker-recovery.js";
 
@@ -395,7 +398,171 @@ describe("worker recovery contracts", () => {
       ])
     ).toThrow("Worker correlation reconciliation cannot transition from correlationConfirmed to outcomeUnknown.");
   });
+
+  it("records a distinct desktop-origin correlation epoch after terminal source-classification failure", () => {
+    const runId = parseRunId("run-xwcFbNNdfY");
+    const intentEvents = [
+      ...failedCorrelationEvents(runId),
+      desktopOriginCorrelationEvent(runId, 14, "intentRecorded"),
+    ];
+    const snapshot = snapshotFromReplay(intentEvents);
+    const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(snapshot.context.delivery);
+    const prior = parseWorkerCorrelationReconciliationReceipt(delivery["workerCorrelationReconciliation"]);
+    const desktop = parseWorkerDesktopOriginCorrelationReceipt(delivery["workerDesktopOriginCorrelation"]);
+
+    expect(snapshot.state).toBe("delivering");
+    expect(prior.state).toBe("failed");
+    expect(prior.actionId).toBe("reconcile-correlation-1");
+    expect(desktop.state).toBe("intentRecorded");
+    expect(delivery["stage"]).toBe("workerCorrelationPending");
+    expect(delivery["workerEvidenceEpochSequence"]).toBe(14);
+    expect(workerDesktopOriginCorrelationProjection(desktop)).toBe("workerCorrelationPending");
+
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        makeRunEvent({
+          payload: {
+            desktopOriginCorrelation: encodeWorkerDesktopOriginCorrelationReceiptJson(parseWorkerDesktopOriginCorrelationReceipt({
+              ...desktopOriginCorrelationBase,
+              expectedFailedCorrelationSequence: 12,
+              state: "sourceCorrelationAttempted",
+            })),
+          },
+          runId,
+          sequence: 15,
+          timestamp: "2026-07-11T08:00:15.000Z",
+          type: "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED",
+        }),
+      ])
+    ).toThrow("Worker desktop-origin correlation action is already bound to different immutable input.");
+  });
+
+  it("replays legal Desktop-origin correlation phases only in durable order", () => {
+    const runId = parseRunId("run-xwcFbNNdfY");
+    const intentEvents = [
+      ...failedCorrelationEvents(runId),
+      desktopOriginCorrelationEvent(runId, 14, "intentRecorded"),
+    ];
+    const legalEvents = [
+      ...intentEvents,
+      desktopOriginCorrelationEvent(runId, 15, "sourceCorrelationAttempted"),
+      desktopOriginCorrelationEvent(runId, 16, "sourceCorrelationConfirmed"),
+      desktopOriginCorrelationEvent(runId, 17, "followUpAttempted"),
+      desktopOriginCorrelationEvent(runId, 18, "followUpConfirmed"),
+      desktopOriginCorrelationEvent(runId, 19, "workerCompleted"),
+    ];
+
+    const snapshot = snapshotFromReplay(legalEvents);
+    const delivery = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json))(snapshot.context.delivery);
+    const desktop = parseWorkerDesktopOriginCorrelationReceipt(delivery["workerDesktopOriginCorrelation"]);
+
+    expect(desktop.state).toBe("workerCompleted");
+    expect(delivery["workerEvidenceEpochSequence"]).toBe(14);
+  });
+
+  it("rejects skipped or out-of-order Desktop-origin correlation phases", () => {
+    const runId = parseRunId("run-xwcFbNNdfY");
+    const intentEvents = [
+      ...failedCorrelationEvents(runId),
+      desktopOriginCorrelationEvent(runId, 14, "intentRecorded"),
+    ];
+
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        desktopOriginCorrelationEvent(runId, 15, "followUpConfirmed"),
+      ])
+    ).toThrow("Worker desktop-origin correlation cannot transition from intentRecorded to followUpConfirmed.");
+
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        desktopOriginCorrelationEvent(runId, 15, "sourceCorrelationAttempted"),
+        desktopOriginCorrelationEvent(runId, 16, "followUpAttempted"),
+      ])
+    ).toThrow("Worker desktop-origin correlation cannot transition from sourceCorrelationAttempted to followUpAttempted.");
+
+    expect(() =>
+      snapshotFromReplay([
+        ...intentEvents,
+        desktopOriginCorrelationEvent(runId, 15, "sourceCorrelationAttempted"),
+        desktopOriginCorrelationEvent(runId, 16, "sourceCorrelationConfirmed"),
+        terminalDesktopOriginCorrelationEvent(runId, 17, "outcomeUnknown"),
+      ])
+    ).toThrow("Worker desktop-origin correlation cannot transition from sourceCorrelationConfirmed to outcomeUnknown.");
+  });
 });
+
+function desktopOriginCorrelationEvent(
+  runId: ReturnType<typeof parseRunId>,
+  sequence: number,
+  state: "intentRecorded" | "sourceCorrelationAttempted" | "sourceCorrelationConfirmed" | "followUpAttempted" | "followUpConfirmed" | "workerCompleted",
+) {
+  return makeRunEvent({
+    payload: {
+      desktopOriginCorrelation: encodeWorkerDesktopOriginCorrelationReceiptJson(parseWorkerDesktopOriginCorrelationReceipt({
+        ...desktopOriginCorrelationBase,
+        state,
+      })),
+    },
+    runId,
+    sequence,
+    timestamp: `2026-07-11T08:00:${sequence}.000Z`,
+    type: "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED",
+  });
+}
+
+function terminalDesktopOriginCorrelationEvent(
+  runId: ReturnType<typeof parseRunId>,
+  sequence: number,
+  state: "failed" | "outcomeUnknown",
+) {
+  return makeRunEvent({
+    payload: {
+      desktopOriginCorrelation: encodeWorkerDesktopOriginCorrelationReceiptJson(parseWorkerDesktopOriginCorrelationReceipt({
+        ...desktopOriginCorrelationBase,
+        code: state === "failed"
+          ? "WorkerDesktopOriginCorrelationFailed"
+          : "WorkerDesktopOriginCorrelationOutcomeUnknown",
+        message: state === "failed"
+          ? "Audited Desktop-origin correlation failed."
+          : "Audited Desktop-origin correlation outcome is unknown.",
+        state,
+      })),
+    },
+    runId,
+    sequence,
+    timestamp: `2026-07-11T08:00:${sequence}.000Z`,
+    type: "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED",
+  });
+}
+
+const desktopOriginCorrelationBase = {
+  actionId: "reconcile-desktop-origin-1",
+  expectedContaminatedReadySequence: 6,
+  expectedContinuationActionId: "continue-recovery-1",
+  expectedCorrelationActionId: "reconcile-correlation-1",
+  expectedCurrentSequence: 13,
+  expectedDeliveryProvenanceDigest: "c".repeat(64),
+  expectedFailedContinuationSequence: 10,
+  expectedFailedCorrelationSequence: 13,
+  expectedFailedRecoverySequence: 8,
+  expectedNativeTurnIdDigest: "b".repeat(64),
+  expectedRecoveryActionId: "recover-1",
+  expectedSessionId: "session-run-OzzhMsXsBb",
+  harnessProfileId: "codexAppServer",
+  maxAttempts: 1 as const,
+  workerEvidenceEpochSequence: 14,
+} as const;
+
+function failedCorrelationEvents(runId: ReturnType<typeof parseRunId>) {
+  return [
+    ...eligibleCorrelationEvents(runId),
+    correlationReconciliationEvent(runId, 12, "correlationAttempted"),
+    terminalCorrelationReconciliationEvent(runId, 13, "failed"),
+  ];
+}
 
 function correlationReconciliationEvent(
   runId: ReturnType<typeof parseRunId>,
