@@ -7,6 +7,30 @@ import { runSchemaContractAudit } from "./audit-schema-contracts.mjs";
 import { analyzeSchemaContracts } from "./check-schema-contract-ownership.mjs";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
+const brandDiagnostic = (filePath, line, column) => ({
+  column,
+  filePath,
+  line,
+  message:
+    "Type assertion manufactures a compiler-proven Effect branded value.",
+  remedy:
+    "Decode with the owning Effect Schema or parser and carry its branded result inward.",
+  rule: "gaia/no-brand-cast",
+});
+const schemaDiagnostic = (
+  filePath,
+  line,
+  column,
+  message = "Serializable data contract has no compiler-proven Schema origin."
+) => ({
+  column,
+  filePath,
+  line,
+  message,
+  remedy:
+    "Define the owning Effect Schema and derive this contract from its decoded Type.",
+  rule: "gaia/schema-first-data-contract",
+});
 const projectRoot = await mkdtemp(
   path.join(repoRoot, "packages/runtime/.gaia-schema-contract-ownership-")
 );
@@ -56,16 +80,25 @@ try {
   await writeFile(
     path.join(projectRoot, "derived.ts"),
     `
-      import { RunSchema } from "./reexport.js";
+      import { Schema } from "effect";
+      import { RunIdSchema, RunSchema } from "./reexport.js";
       import type { Run, RunDto } from "./reexport.js";
       export type RunSummary = Pick<Run, "runId">;
       export type RunDtoSummary = Pick<RunDto, "runId">;
       export type RunIndexed = typeof RunSchema["Type"];
+      export type RunIdViaCanonicalUtility =
+        Schema.Schema.Type<typeof RunIdSchema>;
+      const AnnotatedRunSchema = RunSchema.annotate({ title: "Run" });
+      export type AnnotatedRun = typeof AnnotatedRunSchema.Type;
+      const CurriedAnnotatedRunSchema = Schema.annotate({ title: "Run" })(
+        RunSchema
+      );
+      export type CurriedAnnotatedRun = typeof CurriedAnnotatedRunSchema.Type;
     `
   );
   await writeFile(
     path.join(projectRoot, "reexport.ts"),
-    `export { RunSchema } from "./schema.js";
+    `export { RunIdSchema, RunSchema } from "./schema.js";
     export type {
       HarnessName,
       Run,
@@ -94,6 +127,25 @@ try {
       export type CounterfeitPick = Pick<Run, "runId">;
       export type SchemaWrapper = Wrapper<typeof RunSchema>;
       export type SchemaMetadata = typeof RunSchema["fields"];
+    `
+  );
+  await writeFile(
+    path.join(projectRoot, "counterfeit-schema-owner.ts"),
+    `
+      import { Schema } from "effect";
+
+      const FakeSchema = {} as Schema.Schema<Record<string, string>>;
+      export type FakeDto = typeof FakeSchema.Type;
+      export type FakeViaCanonicalUtility =
+        Schema.Schema.Type<typeof FakeSchema>;
+      declare const AnnotatedSchema: Schema.Schema<Record<string, string>>;
+      export type AnnotatedDto = typeof AnnotatedSchema.Type;
+      const LaunderedSchema = AnnotatedSchema.annotate({ title: "Fake" });
+      export type LaunderedDto = typeof LaunderedSchema.Type;
+      const CurriedLaunderedSchema = Schema.annotate({ title: "Fake" })(
+        AnnotatedSchema
+      );
+      export type CurriedLaunderedDto = typeof CurriedLaunderedSchema.Type;
     `
   );
   await writeFile(
@@ -202,6 +254,25 @@ try {
     `
   );
   await writeFile(
+    path.join(projectRoot, "callable-casts.ts"),
+    `
+      import type { RunId } from "./reexport.js";
+
+      type Handler<T> = (input: T) => void;
+      type Factory<T> = () => T;
+      type CallableWithData<T> = ((input: string) => void) & {
+        readonly stored: T;
+      };
+
+      declare const raw: unknown;
+      export const genericHandler = raw as Handler<RunId>;
+      export const genericFactory = raw as Factory<RunId>;
+      export const directHandler = raw as (input: RunId) => void;
+      export const directFactory = raw as () => RunId;
+      export const stored = raw as CallableWithData<RunId>;
+    `
+  );
+  await writeFile(
     path.join(projectRoot, "structural-spoof.ts"),
     `
       type StructuralSpoof = string & {
@@ -216,95 +287,45 @@ try {
     projectPath: path.join(projectRoot, "tsconfig.json"),
   });
 
-  assert.deepEqual(
-    diagnostics.map(({ filePath, rule }) => ({ filePath, rule })),
-    [
-      {
-        filePath: "brand-casts.ts",
-        rule: "gaia/no-brand-cast",
-      },
-      {
-        filePath: "brand-casts.ts",
-        rule: "gaia/no-brand-cast",
-      },
-      {
-        filePath: "brand-casts.ts",
-        rule: "gaia/no-brand-cast",
-      },
-      {
-        filePath: "brand-casts.ts",
-        rule: "gaia/no-brand-cast",
-      },
-      {
-        filePath: "brand-casts.ts",
-        rule: "gaia/no-brand-cast",
-      },
-      {
-        filePath: "brand-casts.ts",
-        rule: "gaia/no-brand-cast",
-      },
-      {
-        filePath: "brand-casts.ts",
-        rule: "gaia/no-brand-cast",
-      },
-      {
-        filePath: "brand-casts.ts",
-        rule: "gaia/no-brand-cast",
-      },
-      {
-        filePath: "brand-casts.ts",
-        rule: "gaia/no-brand-cast",
-      },
-      {
-        filePath: "brand-casts.ts",
-        rule: "gaia/no-brand-cast",
-      },
-      {
-        filePath: "brand-casts.ts",
-        rule: "gaia/no-brand-cast",
-      },
-      {
-        filePath: "capability.ts",
-        rule: "gaia/schema-first-data-contract",
-      },
-      {
-        filePath: "counterfeit.ts",
-        rule: "gaia/schema-first-data-contract",
-      },
-      {
-        filePath: "counterfeit.ts",
-        rule: "gaia/schema-first-data-contract",
-      },
-      {
-        filePath: "counterfeit.ts",
-        rule: "gaia/schema-first-data-contract",
-      },
-      {
-        filePath: "derived-manual.ts",
-        rule: "gaia/schema-first-data-contract",
-      },
-      {
-        filePath: "fake-type.ts",
-        rule: "gaia/schema-first-data-contract",
-      },
-      {
-        filePath: "fake-type.ts",
-        rule: "gaia/schema-first-data-contract",
-      },
-      {
-        filePath: "manual.ts",
-        rule: "gaia/schema-first-data-contract",
-      },
-      {
-        filePath: "mixed-framework.tsx",
-        rule: "gaia/schema-first-data-contract",
-      },
-      {
-        filePath: "structural-spoof.ts",
-        rule: "gaia/schema-first-data-contract",
-      },
-    ]
-  );
+  assert.deepEqual(diagnostics, [
+    brandDiagnostic("brand-casts.ts", 12, 31),
+    brandDiagnostic("brand-casts.ts", 13, 28),
+    brandDiagnostic("brand-casts.ts", 14, 30),
+    brandDiagnostic("brand-casts.ts", 15, 28),
+    brandDiagnostic("brand-casts.ts", 16, 31),
+    brandDiagnostic("brand-casts.ts", 17, 28),
+    brandDiagnostic("brand-casts.ts", 18, 28),
+    brandDiagnostic("brand-casts.ts", 19, 32),
+    brandDiagnostic("brand-casts.ts", 20, 28),
+    brandDiagnostic("brand-casts.ts", 21, 35),
+    brandDiagnostic("brand-casts.ts", 22, 29),
+    brandDiagnostic("callable-casts.ts", 15, 29),
+    schemaDiagnostic(
+      "capability.ts",
+      5,
+      18,
+      "Nested operation data contract has no compiler-proven Schema origin."
+    ),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 5, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 6, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 9, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 11, 19),
+    schemaDiagnostic("counterfeit-schema-owner.ts", 15, 19),
+    schemaDiagnostic("counterfeit.ts", 6, 19),
+    schemaDiagnostic("counterfeit.ts", 7, 19),
+    schemaDiagnostic("counterfeit.ts", 8, 19),
+    schemaDiagnostic("derived-manual.ts", 3, 19),
+    schemaDiagnostic("fake-type.ts", 3, 19),
+    schemaDiagnostic("fake-type.ts", 4, 19),
+    schemaDiagnostic("manual.ts", 1, 13),
+    schemaDiagnostic("mixed-framework.tsx", 2, 19),
+    schemaDiagnostic(
+      "structural-spoof.ts",
+      3,
+      37,
+      "Nested operation data contract has no compiler-proven Schema origin."
+    ),
+  ]);
   assert.equal(
     diagnostics.some(
       (diagnostic) =>

@@ -14,6 +14,11 @@ const anchorSource = `
     Schema.brand("__GaiaBrandAnchor")
   );
   export type __GaiaBrandedType = typeof __GaiaBrandedSchema.Type;
+  export const __GaiaPipedSchema = __GaiaPlainSchema.pipe(
+    Schema.brand("__GaiaPipeAnchor")
+  );
+  export type __GaiaCanonicalSchemaType =
+    Schema.Schema.Type<typeof __GaiaBrandedSchema>;
   export type __GaiaCanonicalPick = Pick<__GaiaBrandedType, never>;
   export type __GaiaCanonicalOmit = Omit<__GaiaBrandedType, never>;
   export type __GaiaCanonicalExtract = Extract<
@@ -59,6 +64,11 @@ const getValueTypeForEntityName = (checker, entityName) => {
   return declaration === undefined
     ? undefined
     : checker.getTypeOfSymbolAtLocation(resolved, declaration);
+};
+
+const getValueSymbolForEntityName = (checker, entityName) => {
+  const symbol = checker.getSymbolAtLocation(entityName);
+  return symbol === undefined ? undefined : resolveAlias(checker, symbol);
 };
 
 const isAllCallable = (members) =>
@@ -179,6 +189,81 @@ const getCanonicalProjectionSymbols = (checker, anchorFile) => {
   return symbols;
 };
 
+const getCanonicalSchemaDeclarationFiles = (checker, anchorFile) => {
+  const declaration = getAnchorTypeDeclaration(anchorFile, "__GaiaSchemaTop");
+  if (!ts.isTypeReferenceNode(declaration.type)) {
+    throw new Error(
+      "Gaia schema-contract checker could not resolve canonical Schema declarations"
+    );
+  }
+  const symbol = checker.getSymbolAtLocation(declaration.type.typeName);
+  if (symbol === undefined) {
+    throw new Error(
+      "Gaia schema-contract checker could not prove canonical Schema declarations"
+    );
+  }
+  return new Set(
+    (resolveAlias(checker, symbol).declarations ?? []).map((candidate) =>
+      candidate.getSourceFile()
+    )
+  );
+};
+
+const getCanonicalSchemaTypeSymbol = (checker, anchorFile) => {
+  const declaration = getAnchorTypeDeclaration(
+    anchorFile,
+    "__GaiaCanonicalSchemaType"
+  );
+  if (!ts.isTypeReferenceNode(declaration.type)) {
+    throw new Error(
+      "Gaia schema-contract checker could not resolve Schema.Schema.Type"
+    );
+  }
+  const symbol = checker.getSymbolAtLocation(declaration.type.typeName);
+  if (symbol === undefined) {
+    throw new Error(
+      "Gaia schema-contract checker could not prove Schema.Schema.Type provenance"
+    );
+  }
+  return resolveAlias(checker, symbol);
+};
+
+const getCanonicalSchemaPipeSymbol = (checker, anchorFile) => {
+  const declaration = anchorFile.statements.find(
+    (statement) =>
+      ts.isVariableStatement(statement) &&
+      statement.declarationList.declarations.some(
+        (candidate) =>
+          candidate.name.getText(anchorFile) === "__GaiaPipedSchema"
+      )
+  );
+  const variable =
+    declaration !== undefined && ts.isVariableStatement(declaration)
+      ? declaration.declarationList.declarations.find(
+          (candidate) =>
+            candidate.name.getText(anchorFile) === "__GaiaPipedSchema"
+        )
+      : undefined;
+  if (
+    variable?.initializer === undefined ||
+    !ts.isCallExpression(variable.initializer) ||
+    !ts.isPropertyAccessExpression(variable.initializer.expression)
+  ) {
+    throw new Error(
+      "Gaia schema-contract checker could not resolve Schema pipe composition"
+    );
+  }
+  const symbol = checker.getSymbolAtLocation(
+    variable.initializer.expression.name
+  );
+  if (symbol === undefined) {
+    throw new Error(
+      "Gaia schema-contract checker could not prove Schema pipe composition"
+    );
+  }
+  return resolveAlias(checker, symbol);
+};
+
 const createSchemaProof = (checker, anchorFile) => ({
   canonicalDecodedTypeProperty: getCanonicalDecodedTypeProperty(
     checker,
@@ -188,6 +273,12 @@ const createSchemaProof = (checker, anchorFile) => ({
     checker,
     anchorFile
   ),
+  canonicalSchemaDeclarationFiles: getCanonicalSchemaDeclarationFiles(
+    checker,
+    anchorFile
+  ),
+  canonicalSchemaPipeSymbol: getCanonicalSchemaPipeSymbol(checker, anchorFile),
+  canonicalSchemaTypeSymbol: getCanonicalSchemaTypeSymbol(checker, anchorFile),
   schemaTopType: getSchemaTopType(checker, anchorFile),
 });
 
@@ -245,19 +336,24 @@ const containsCanonicalBrandMarker = (
     );
   }
 
-  const typeArguments = [
-    ...(type.aliasTypeArguments ?? []),
-    ...((type.flags & ts.TypeFlags.Object) !== 0 &&
-    (type.objectFlags & ts.ObjectFlags.Reference) !== 0
-      ? checker.getTypeArguments(type)
-      : []),
-  ];
-  if (
-    typeArguments.some((argument) =>
-      containsCanonicalBrandMarker(checker, argument, marker, seenTypes)
-    )
-  ) {
-    return true;
+  const isCallableType =
+    type.getCallSignatures().length > 0 ||
+    type.getConstructSignatures().length > 0;
+  if (!isCallableType) {
+    const typeArguments = [
+      ...(type.aliasTypeArguments ?? []),
+      ...((type.flags & ts.TypeFlags.Object) !== 0 &&
+      (type.objectFlags & ts.ObjectFlags.Reference) !== 0
+        ? checker.getTypeArguments(type)
+        : []),
+    ];
+    if (
+      typeArguments.some((argument) =>
+        containsCanonicalBrandMarker(checker, argument, marker, seenTypes)
+      )
+    ) {
+      return true;
+    }
   }
 
   for (const indexInfo of checker.getIndexInfosOfType(type)) {
@@ -324,10 +420,144 @@ const isSchemaValueType = (checker, proof, valueType) => {
   );
 };
 
+const hasCanonicalSchemaDeclaration = (checker, proof, symbol) =>
+  (resolveAlias(checker, symbol).declarations ?? []).some((declaration) =>
+    proof.canonicalSchemaDeclarationFiles.has(declaration.getSourceFile())
+  );
+
+const isCanonicalSchemaApiCall = (
+  checker,
+  proof,
+  node,
+  seenSymbols = new Set()
+) => {
+  const calleeSymbol = checker.getSymbolAtLocation(node.expression);
+  if (
+    calleeSymbol !== undefined &&
+    hasCanonicalSchemaDeclaration(checker, proof, calleeSymbol)
+  ) {
+    if (ts.isPropertyAccessExpression(node.expression)) {
+      const receiver = node.expression.expression;
+      const receiverType = checker.getTypeAtLocation(receiver);
+      if (
+        isSchemaValueType(checker, proof, receiverType) &&
+        !isCanonicalSchemaValueExpression(checker, proof, receiver, seenSymbols)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (
+    !ts.isCallExpression(node.expression) ||
+    !isCanonicalSchemaApiCall(checker, proof, node.expression, seenSymbols)
+  ) {
+    return false;
+  }
+  return node.arguments.every((argument) => {
+    const argumentType = checker.getTypeAtLocation(argument);
+    return (
+      !isSchemaValueType(checker, proof, argumentType) ||
+      isCanonicalSchemaValueExpression(checker, proof, argument, seenSymbols)
+    );
+  });
+};
+
+const isCanonicalSchemaValueSymbol = (
+  checker,
+  proof,
+  symbol,
+  seenSymbols = new Set()
+) => {
+  const resolved = resolveAlias(checker, symbol);
+  if (seenSymbols.has(resolved)) return false;
+  seenSymbols.add(resolved);
+
+  if (hasCanonicalSchemaDeclaration(checker, proof, resolved)) return true;
+
+  for (const declaration of resolved.declarations ?? []) {
+    if (
+      ts.isVariableDeclaration(declaration) &&
+      declaration.initializer !== undefined &&
+      isCanonicalSchemaValueExpression(
+        checker,
+        proof,
+        declaration.initializer,
+        seenSymbols
+      )
+    ) {
+      return true;
+    }
+    if (
+      ts.isClassDeclaration(declaration) &&
+      declaration.heritageClauses?.some((clause) =>
+        clause.types.some(
+          (heritage) =>
+            ts.isCallExpression(heritage.expression) &&
+            isCanonicalSchemaApiCall(
+              checker,
+              proof,
+              heritage.expression,
+              seenSymbols
+            )
+        )
+      ) === true
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
+
+function isCanonicalSchemaValueExpression(
+  checker,
+  proof,
+  node,
+  seenSymbols = new Set()
+) {
+  const valueType = checker.getTypeAtLocation(node);
+  if (!isSchemaValueType(checker, proof, valueType)) return false;
+
+  if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) {
+    const symbol = checker.getSymbolAtLocation(node);
+    return (
+      symbol !== undefined &&
+      isCanonicalSchemaValueSymbol(checker, proof, symbol, seenSymbols)
+    );
+  }
+
+  if (!ts.isCallExpression(node)) return false;
+  if (isCanonicalSchemaApiCall(checker, proof, node, seenSymbols)) return true;
+  if (!ts.isPropertyAccessExpression(node.expression)) return false;
+
+  const methodSymbol = checker.getSymbolAtLocation(node.expression.name);
+  if (
+    methodSymbol === undefined ||
+    resolveAlias(checker, methodSymbol) !== proof.canonicalSchemaPipeSymbol ||
+    !isCanonicalSchemaValueExpression(
+      checker,
+      proof,
+      node.expression.expression,
+      seenSymbols
+    )
+  ) {
+    return false;
+  }
+  return node.arguments.every(
+    (argument) =>
+      ts.isCallExpression(argument) &&
+      isCanonicalSchemaApiCall(checker, proof, argument, seenSymbols)
+  );
+}
+
 const isSchemaValueEntity = (checker, proof, entityName) => {
+  const symbol = getValueSymbolForEntityName(checker, entityName);
   const valueType = getValueTypeForEntityName(checker, entityName);
   return (
-    valueType !== undefined && isSchemaValueType(checker, proof, valueType)
+    symbol !== undefined &&
+    valueType !== undefined &&
+    isSchemaValueType(checker, proof, valueType) &&
+    isCanonicalSchemaValueSymbol(checker, proof, symbol)
   );
 };
 
@@ -342,8 +572,29 @@ const isCanonicalProjectionTypeNode = (checker, proof, node) => {
   );
 };
 
+const isCanonicalSchemaTypeProjectionCandidate = (checker, proof, node) => {
+  if (!ts.isTypeReferenceNode(node)) return false;
+  const symbol = checker.getSymbolAtLocation(node.typeName);
+  return (
+    symbol !== undefined &&
+    resolveAlias(checker, symbol) === proof.canonicalSchemaTypeSymbol
+  );
+};
+
+const isCanonicalSchemaTypeProjection = (checker, proof, node) => {
+  if (
+    !isCanonicalSchemaTypeProjectionCandidate(checker, proof, node) ||
+    node.typeArguments?.length !== 1 ||
+    !ts.isTypeQueryNode(node.typeArguments[0])
+  ) {
+    return false;
+  }
+  return isSchemaValueEntity(checker, proof, node.typeArguments[0].exprName);
+};
+
 const isCanonicalDecodedTypeAccess = (checker, proof, node) => {
   if (ts.isTypeQueryNode(node) && ts.isQualifiedName(node.exprName)) {
+    if (!isSchemaValueEntity(checker, proof, node.exprName.left)) return false;
     const propertySymbol = checker.getSymbolAtLocation(node.exprName.right);
     const schemaValueType = getValueTypeForEntityName(
       checker,
@@ -382,6 +633,7 @@ const isCanonicalDecodedTypeAccess = (checker, proof, node) => {
     node.objectType.exprName
   );
   if (
+    !isSchemaValueEntity(checker, proof, node.objectType.exprName) ||
     schemaValueType === undefined ||
     !isSchemaValueType(checker, proof, schemaValueType)
   ) {
@@ -420,6 +672,8 @@ const isSchemaDerivedTypeNode = (
   }
 
   if (ts.isTypeReferenceNode(node)) {
+    if (isCanonicalSchemaTypeProjection(checker, proof, node)) return true;
+
     if (isCanonicalProjectionTypeNode(checker, proof, node)) {
       return isSchemaDerivedTypeNode(
         checker,
@@ -444,12 +698,11 @@ const isSchemaDerivedTypeNode = (
       }
       if (ts.isClassDeclaration(declaration)) {
         const classSymbol = checker.getSymbolAtLocation(declaration.name);
-        if (classSymbol !== undefined) {
-          const valueType = checker.getTypeOfSymbolAtLocation(
-            resolveAlias(checker, classSymbol),
-            declaration
-          );
-          if (isSchemaValueType(checker, proof, valueType)) return true;
+        if (
+          classSymbol !== undefined &&
+          isCanonicalSchemaValueSymbol(checker, proof, classSymbol)
+        ) {
+          return true;
         }
       }
     }
@@ -653,6 +906,12 @@ export function analyzeSchemaContracts({ cwd, projectPath }) {
         const unprovenProjection =
           isCanonicalProjectionTypeNode(checker, schemaProof, node.type) &&
           !isSchemaDerivedTypeNode(checker, schemaProof, node.type);
+        const unprovenSchemaTypeProjection =
+          isCanonicalSchemaTypeProjectionCandidate(
+            checker,
+            schemaProof,
+            node.type
+          ) && !isSchemaDerivedTypeNode(checker, schemaProof, node.type);
         const unprovenSchemaGeneric =
           hasSchemaOwnerTypeArgument(checker, schemaProof, node.type) &&
           !isSchemaDerivedTypeNode(checker, schemaProof, node.type);
@@ -666,6 +925,7 @@ export function analyzeSchemaContracts({ cwd, projectPath }) {
         if (
           manualTypeLiteral ||
           unprovenProjection ||
+          unprovenSchemaTypeProjection ||
           unprovenSchemaGeneric ||
           unprovenIndexedAccess ||
           fakeSchemaType

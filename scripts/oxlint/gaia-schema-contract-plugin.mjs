@@ -340,7 +340,12 @@ const noUnbrandedDomainString = {
 
     return {
       Identifier(node) {
-        if (!isStringTypeAnnotation(node)) return;
+        if (
+          !isStringTypeAnnotation(node) ||
+          findDirectEnclosingFunction(node) === undefined
+        ) {
+          return;
+        }
         const semanticName = getParameterSemanticName(node, node.name);
         if (
           !isRawParserParameter(node, node.name) &&

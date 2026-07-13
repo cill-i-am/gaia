@@ -175,7 +175,9 @@ tester.run(
           function render() {
             const input: string = "display input";
             const value: string = "display value";
-            return input + value;
+            const runId: string = "display run";
+            const workspacePath: string = "display workspace";
+            return input + value + runId + workspacePath;
           }
           function parseRunId(raw: unknown): RunId {
             const input: string = String(raw);
@@ -237,6 +239,14 @@ tester.run(
         code: `type Store = { load(authorizationDigest: string): Promise<void> };`,
         errors: [{ messageId: "unbrandedDomainString" }],
         filename: "callable-parameter.ts",
+      },
+      {
+        code: `function loadRun(runId: string, workspacePath: string): void {}`,
+        errors: [
+          { messageId: "unbrandedDomainString" },
+          { messageId: "unbrandedDomainString" },
+        ],
+        filename: "semantic-direct-parameters.ts",
       },
       {
         code: `function makeRunId(input: string): RunId { return input; }`,
