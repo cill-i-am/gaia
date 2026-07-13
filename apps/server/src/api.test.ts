@@ -496,90 +496,101 @@ describe("local run api http boundary", () => {
         const layer = testServerLayer(cwd, {
           harnessProviderRegistry: pendingApprovalRegistry(resolutions),
         });
-        const createResponse = yield* postCreateRun(
-          layer,
-          "Create a recovered-session projection proof.\n",
-        );
-        const createBody = yield* responseJsonObject(createResponse);
-        const runId = getString(createBody, "runId");
-        const sessionId = `session-${runId}`;
-        const snapshot = yield* eventuallyAgentSession(layer, runId);
+        yield* Effect.gen(function* () {
+          const createResponse = yield* createRunRequest(
+            "Create a recovered-session projection proof.\n",
+          );
+          const createBody = yield* responseJsonObject(createResponse);
+          const runId = getString(createBody, "runId");
+          const sessionId = `session-${runId}`;
+          const snapshot = yield* eventuallyAgentSession(runId);
 
-        assert.strictEqual(createResponse.status, 202);
-        assert.strictEqual(getString(snapshot, "state"), "running");
-        assert.deepEqual(
-          getArray(snapshot, "pendingInteractions").map(asJsonObject).map((interaction) => getString(interaction, "interactionId")),
-          [serverRecoveredInteractionId],
-        );
-        assert.notInclude(JSON.stringify(snapshot), "native-thread");
-        assert.notInclude(JSON.stringify(snapshot), "raw-provider");
+          assert.strictEqual(createResponse.status, 202);
+          assert.strictEqual(getString(snapshot, "state"), "running");
+          assert.deepEqual(
+            getArray(snapshot, "pendingInteractions").map(asJsonObject).map((interaction) => getString(interaction, "interactionId")),
+            [serverRecoveredInteractionId],
+          );
+          assert.deepEqual(
+            getArray(snapshot, "turns").map(asJsonObject).map((turn) => ({
+              status: getString(turn, "status"),
+              turnId: getString(turn, "turnId"),
+            })),
+            [
+              { status: "failed", turnId: serverOldTurnId },
+              { status: "running", turnId: serverRecoveredTurnId },
+            ],
+          );
+          assert.notInclude(
+            JSON.stringify(getArray(snapshot, "pendingInteractions")),
+            serverOldInteractionId,
+          );
+          assert.notInclude(JSON.stringify(snapshot), "native-thread");
+          assert.notInclude(JSON.stringify(snapshot), "raw-provider");
 
-        const staleResponse = yield* HttpClientRequest.post(
-          `/runs/${runId}/agents/agent-worker/session/actions`,
-        ).pipe(
-          HttpClientRequest.bodyJsonUnsafe({
-            actionId: "action-server-stale-interaction",
-            decision: "decline",
-            interactionId: "interaction-server-old",
-            kind: "approval",
-            sessionId,
-          }),
-          HttpClient.execute,
-          Effect.provide(layer),
-        );
-        const staleBody = yield* responseJsonObject(staleResponse);
-        assert.strictEqual(staleResponse.status, 409);
-        assertApiError(staleBody, "AgentActionConflict", 409);
-        assert.deepEqual(resolutions, []);
+          const staleResponse = yield* HttpClientRequest.post(
+            `/runs/${runId}/agents/agent-worker/session/actions`,
+          ).pipe(
+            HttpClientRequest.bodyJsonUnsafe({
+              actionId: "action-server-stale-interaction",
+              decision: "decline",
+              interactionId: serverOldInteractionId,
+              kind: "approval",
+              sessionId,
+            }),
+            HttpClient.execute,
+          );
+          const staleBody = yield* responseJsonObject(staleResponse);
+          assert.strictEqual(staleResponse.status, 409);
+          assertApiError(staleBody, "AgentActionConflict", 409);
+          assert.deepEqual(resolutions, []);
 
-        const action = {
-          actionId: "action-server-recovered-approval",
-          decision: "decline",
-          interactionId: serverRecoveredInteractionId,
-          kind: "approval",
-          sessionId,
-        } as const;
-        const firstResponse = yield* HttpClientRequest.post(
-          `/runs/${runId}/agents/agent-worker/session/actions`,
-        ).pipe(
-          HttpClientRequest.bodyJsonUnsafe(action),
-          HttpClient.execute,
-          Effect.provide(layer),
-        );
-        const replayResponse = yield* HttpClientRequest.post(
-          `/runs/${runId}/agents/agent-worker/session/actions`,
-        ).pipe(
-          HttpClientRequest.bodyJsonUnsafe(action),
-          HttpClient.execute,
-          Effect.provide(layer),
-        );
-        const conflictResponse = yield* HttpClientRequest.post(
-          `/runs/${runId}/agents/agent-worker/session/actions`,
-        ).pipe(
-          HttpClientRequest.bodyJsonUnsafe({
-            ...action,
-            actionId: "action-server-recovered-approval-other",
-          }),
-          HttpClient.execute,
-          Effect.provide(layer),
-        );
-        const firstBody = getObject(yield* responseJsonObject(firstResponse), "data");
-        const replayBody = getObject(yield* responseJsonObject(replayResponse), "data");
-        const conflictBody = yield* responseJsonObject(conflictResponse);
-
-        assert.strictEqual(firstResponse.status, 200);
-        assert.strictEqual(replayResponse.status, 200);
-        assert.deepEqual(replayBody, firstBody);
-        assert.strictEqual(conflictResponse.status, 409);
-        assertApiError(conflictBody, "AgentActionConflict", 409);
-        assert.deepEqual(resolutions, [
-          {
-            actionId: action.actionId,
+          const action = {
+            actionId: "action-server-recovered-approval",
             decision: "decline",
             interactionId: serverRecoveredInteractionId,
             kind: "approval",
-          },
-        ]);
+            sessionId,
+          } as const;
+          const firstResponse = yield* HttpClientRequest.post(
+            `/runs/${runId}/agents/agent-worker/session/actions`,
+          ).pipe(
+            HttpClientRequest.bodyJsonUnsafe(action),
+            HttpClient.execute,
+          );
+          const replayResponse = yield* HttpClientRequest.post(
+            `/runs/${runId}/agents/agent-worker/session/actions`,
+          ).pipe(
+            HttpClientRequest.bodyJsonUnsafe(action),
+            HttpClient.execute,
+          );
+          const conflictResponse = yield* HttpClientRequest.post(
+            `/runs/${runId}/agents/agent-worker/session/actions`,
+          ).pipe(
+            HttpClientRequest.bodyJsonUnsafe({
+              ...action,
+              actionId: "action-server-recovered-approval-other",
+            }),
+            HttpClient.execute,
+          );
+          const firstBody = getObject(yield* responseJsonObject(firstResponse), "data");
+          const replayBody = getObject(yield* responseJsonObject(replayResponse), "data");
+          const conflictBody = yield* responseJsonObject(conflictResponse);
+
+          assert.strictEqual(firstResponse.status, 200);
+          assert.strictEqual(replayResponse.status, 200);
+          assert.deepEqual(replayBody, firstBody);
+          assert.strictEqual(conflictResponse.status, 409);
+          assertApiError(conflictBody, "AgentActionConflict", 409);
+          assert.deepEqual(resolutions, [
+            {
+              actionId: action.actionId,
+              decision: "decline",
+              interactionId: serverRecoveredInteractionId,
+              kind: "approval",
+            },
+          ]);
+        }).pipe(Effect.provide(layer));
       }),
       20_000,
     );
@@ -1528,7 +1539,9 @@ function testIdentity(rootDirectory: string): LocalServerIdentity {
 }
 
 const serverRecoveredTurnId = parseHarnessTurnId("turn-server-recovered");
+const serverOldTurnId = parseHarnessTurnId("turn-server-old");
 const serverRecoveredInteractionId = "interaction-server-recovered";
+const serverOldInteractionId = "interaction-server-old";
 
 const pendingApprovalCapabilities = HarnessCapabilities.make({
   approvals: ["command"],
@@ -1587,6 +1600,40 @@ function pendingApprovalSession(
     {
       kind: "turnStarted" as const,
       sessionId,
+      turnId: serverOldTurnId,
+    },
+    {
+      interaction: {
+        allowedDecisions: ["decline", "cancel"] as const,
+        command: "pnpm gaia doctor --json",
+        interactionId: parseHarnessInteractionId(serverOldInteractionId),
+        itemId: parseHarnessItemId("item-server-old"),
+        kind: "commandApproval" as const,
+        reason: "Run stale doctor smoke",
+        requestedAt: "2026-07-13T02:00:00.000Z",
+        turnId: serverOldTurnId,
+        workspacePath: parseWorkspaceRelativePath("."),
+      },
+      kind: "interactionRequested" as const,
+      sessionId,
+    },
+    {
+      failure: {
+        code: "ProviderCrashed",
+        kind: "providerFailure" as const,
+        message: "Provider stopped unexpectedly.",
+        recoverable: true,
+      },
+      kind: "sessionFailed" as const,
+      sessionId,
+    },
+    {
+      kind: "sessionRecovered" as const,
+      sessionId,
+    },
+    {
+      kind: "turnStarted" as const,
+      sessionId,
       turnId: serverRecoveredTurnId,
     },
     {
@@ -1596,8 +1643,8 @@ function pendingApprovalSession(
         interactionId: parseHarnessInteractionId(serverRecoveredInteractionId),
         itemId: parseHarnessItemId("item-server-recovered"),
         kind: "commandApproval" as const,
-        reason: "Run doctor smoke",
-        requestedAt: "2026-07-13T02:00:00.000Z",
+        reason: "Run recovered doctor smoke",
+        requestedAt: "2026-07-13T02:00:01.000Z",
         turnId: serverRecoveredTurnId,
         workspacePath: parseWorkspaceRelativePath("."),
       },
@@ -1618,17 +1665,20 @@ function pendingApprovalSession(
   };
 }
 
-function eventuallyAgentSession(
-  layer: ReturnType<typeof testServerLayer>,
-  runId: string,
-) {
+function eventuallyAgentSession(runId: string) {
   return Effect.gen(function* () {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 1_000; attempt += 1) {
       const response = yield* HttpClient.get(
         `/runs/${runId}/agents/agent-worker/session`,
-      ).pipe(Effect.provide(layer));
+      );
       if (response.status === 200) {
-        return getObject(yield* responseJsonObject(response), "data");
+        const snapshot = getObject(yield* responseJsonObject(response), "data");
+        const pendingInteractionIds = getArray(snapshot, "pendingInteractions")
+          .map(asJsonObject)
+          .map((interaction) => getString(interaction, "interactionId"));
+        if (pendingInteractionIds.includes(serverRecoveredInteractionId)) {
+          return snapshot;
+        }
       }
       yield* Effect.yieldNow;
     }

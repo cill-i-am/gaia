@@ -130,7 +130,7 @@ export function interactiveSessionHarness(input: {
                 Stream.tap((event) =>
                   appendHarnessSessionEvent(request.runId, paths, event),
                 ),
-                Stream.takeUntil(isTerminalSessionEvent),
+                Stream.takeUntil(shouldStopLiveSessionStream),
                 Stream.runLast,
               );
               if (Option.isNone(last) || !isTerminalSessionEvent(last.value)) {
@@ -279,6 +279,12 @@ function harnessHistory(
 
 function terminalSessionEvent(events: ReadonlyArray<HarnessEvent>) {
   return events.find(isTerminalSessionEvent);
+}
+
+function shouldStopLiveSessionStream(event: HarnessEvent) {
+  if (event.kind === "turnCompleted") return true;
+  if (event.kind !== "sessionFailed") return false;
+  return event.failure.kind !== "providerFailure" || event.failure.recoverable !== true;
 }
 
 function isTerminalSessionEvent(
