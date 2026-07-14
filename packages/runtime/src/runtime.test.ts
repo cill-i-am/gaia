@@ -23,7 +23,8 @@ import {
   makeCodexHarnessConfig,
   nodeCodexCommandRunner,
   parseCodexHarnessProgressJson,
-  type CodexCommandInput,
+  CodexCommandRequest,
+  type CodexCommandInvocation,
   type CodexCommandRunner,
 } from "./codex-harness.js";
 import {
@@ -3080,11 +3081,13 @@ describe("runtime workflows", () => {
 
         const error = yield* Effect.flip(
           nodeCodexCommandRunner({
-            args: ["-e", "setTimeout(() => {}, 1000);"],
-            command: config.command,
-            cwd,
-            stdin: "",
-            timeoutMs: config.timeoutMs,
+            request: CodexCommandRequest.make({
+              args: ["-e", "setTimeout(() => {}, 1000);"],
+              command: config.command,
+              cwd,
+              stdin: "",
+              timeoutMs: config.timeoutMs,
+            }),
           })
         );
 
@@ -3112,19 +3115,21 @@ describe("runtime workflows", () => {
           }> = [];
 
           const result = yield* nodeCodexCommandRunner({
-            args: [
-              "-e",
-              "process.stdout.write('hello'); process.stderr.write('warn');",
-            ],
-            command: config.command,
-            cwd,
-            progressPath: `${cwd}/codex-harness-progress.json`,
             recordProgress: (observation) => {
               observations.push(observation);
               return Promise.resolve();
             },
-            stdin: "",
-            timeoutMs: config.timeoutMs,
+            request: CodexCommandRequest.make({
+              args: [
+                "-e",
+                "process.stdout.write('hello'); process.stderr.write('warn');",
+              ],
+              command: config.command,
+              cwd,
+              progressPath: `${cwd}/codex-harness-progress.json`,
+              stdin: "",
+              timeoutMs: config.timeoutMs,
+            }),
           });
 
           assert.strictEqual(result.exitCode, 0);
@@ -3154,13 +3159,6 @@ describe("runtime workflows", () => {
 
           const error = yield* Effect.flip(
             nodeCodexCommandRunner({
-              args: [
-                "-e",
-                "process.stdout.write('hello'); setTimeout(() => process.stdout.write('done'), 150);",
-              ],
-              command: config.command,
-              cwd,
-              progressPath: `${cwd}/codex-harness-progress.json`,
               recordProgress: () => {
                 observations += 1;
                 return observations === 1
@@ -3173,8 +3171,17 @@ describe("runtime workflows", () => {
                     )
                   : Promise.resolve();
               },
-              stdin: "",
-              timeoutMs: config.timeoutMs,
+              request: CodexCommandRequest.make({
+                args: [
+                  "-e",
+                  "process.stdout.write('hello'); setTimeout(() => process.stdout.write('done'), 150);",
+                ],
+                command: config.command,
+                cwd,
+                progressPath: `${cwd}/codex-harness-progress.json`,
+                stdin: "",
+                timeoutMs: config.timeoutMs,
+              }),
             })
           );
 
@@ -3194,15 +3201,15 @@ describe("runtime workflows", () => {
         const specPath = `${cwd}/spec.md`;
         const manifestPath = `${cwd}/skills.json`;
         const skillDirectory = `${cwd}/skills/coding-standards`;
-        const commands: Array<CodexCommandInput> = [];
+        const commands: Array<CodexCommandInvocation> = [];
         const commandRunner: CodexCommandRunner = (input) =>
           Effect.gen(function* () {
             commands.push(input);
-            const outputLastMessageIndex = input.args.indexOf(
+            const outputLastMessageIndex = input.request.args.indexOf(
               "--output-last-message"
             );
             const outputLastMessagePath =
-              input.args[outputLastMessageIndex + 1];
+              input.request.args[outputLastMessageIndex + 1];
 
             if (outputLastMessagePath === undefined) {
               return yield* Effect.fail(
@@ -3216,7 +3223,7 @@ describe("runtime workflows", () => {
             }
 
             if (
-              input.progressPath === undefined ||
+              input.request.progressPath === undefined ||
               input.recordProgress === undefined
             ) {
               return yield* Effect.fail(
@@ -3228,7 +3235,7 @@ describe("runtime workflows", () => {
                 })
               );
             }
-            const progressPath = input.progressPath;
+            const progressPath = input.request.progressPath;
             const recordProgress = input.recordProgress;
 
             const startedProgress = parseCodexHarnessProgressJson(
@@ -3237,7 +3244,7 @@ describe("runtime workflows", () => {
             assert.strictEqual(startedProgress.status, "running");
             assert.isFalse(startedProgress.terminal);
             assert.strictEqual(startedProgress.command, "codex-test");
-            assert.strictEqual(startedProgress.cwd, input.cwd);
+            assert.strictEqual(startedProgress.cwd, input.request.cwd);
             assert.strictEqual(startedProgress.timeoutMs, 12345);
             assert.strictEqual(
               startedProgress.lastMessagePath,
@@ -3257,11 +3264,11 @@ describe("runtime workflows", () => {
             assert.isDefined(observedProgress.lastObservedOutputAt);
 
             yield* fs.writeFileString(
-              `${input.cwd}/output.txt`,
-              `codex harness ${runIdFromCodexPrompt(input.stdin)} saw ${input.stdin.includes("Run through Codex")}\n`
+              `${input.request.cwd}/output.txt`,
+              `codex harness ${runIdFromCodexPrompt(input.request.stdin)} saw ${input.request.stdin.includes("Run through Codex")}\n`
             );
             yield* fs.writeFileString(
-              `${input.cwd}/changed.txt`,
+              `${input.request.cwd}/changed.txt`,
               "changed by codex harness\n"
             );
             yield* fs.writeFileString(
@@ -3352,10 +3359,13 @@ describe("runtime workflows", () => {
         assert.isDefined(command);
 
         if (command !== undefined) {
-          assert.strictEqual(command.command, "codex-test");
-          assert.strictEqual(command.cwd, `${summary.runDirectory}/workspace`);
-          assert.strictEqual(command.timeoutMs, 12345);
-          assert.deepEqual(command.args, [
+          assert.strictEqual(command.request.command, "codex-test");
+          assert.strictEqual(
+            command.request.cwd,
+            `${summary.runDirectory}/workspace`
+          );
+          assert.strictEqual(command.request.timeoutMs, 12345);
+          assert.deepEqual(command.request.args, [
             "exec",
             "--json",
             "--cd",
@@ -3369,10 +3379,13 @@ describe("runtime workflows", () => {
             `${summary.runDirectory}/codex-last-message.md`,
             "-",
           ]);
-          assert.include(command.stdin, "Run through Codex.");
-          assert.include(command.stdin, "that artifact is ./output.txt");
-          assert.include(command.stdin, "Skill bundle JSON:");
-          assert.include(command.stdin, skillDirectory);
+          assert.include(command.request.stdin, "Run through Codex.");
+          assert.include(
+            command.request.stdin,
+            "that artifact is ./output.txt"
+          );
+          assert.include(command.request.stdin, "Skill bundle JSON:");
+          assert.include(command.request.stdin, skillDirectory);
         }
       })
     );
@@ -3457,8 +3470,8 @@ describe("runtime workflows", () => {
                 recordProgress({ bytes: 17, stream: "stderr" })
               );
               yield* fs.writeFileString(
-                `${input.cwd}/output.txt`,
-                `codex harness ${runIdFromCodexPrompt(input.stdin)}\n`
+                `${input.request.cwd}/output.txt`,
+                `codex harness ${runIdFromCodexPrompt(input.request.stdin)}\n`
               );
 
               return {
@@ -3513,7 +3526,7 @@ describe("runtime workflows", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
         const specPath = `${cwd}/spec.md`;
-        const commands: Array<CodexCommandInput> = [];
+        const commands: Array<CodexCommandInvocation> = [];
         const commandRunner: CodexCommandRunner = (input) =>
           Effect.gen(function* () {
             commands.push(input);
@@ -3522,7 +3535,7 @@ describe("runtime workflows", () => {
               outputLastMessagePath,
               [
                 "Status: approved",
-                `Summary: Codex reviewer approved ${codexReviewPhaseFromPrompt(input.stdin)}.`,
+                `Summary: Codex reviewer approved ${codexReviewPhaseFromPrompt(input.request.stdin)}.`,
                 "",
                 "- The reviewed artifacts are coherent.",
               ].join("\n")
@@ -3566,10 +3579,10 @@ describe("runtime workflows", () => {
 
         assert.lengthOf(commands, 2);
         for (const command of commands) {
-          assert.strictEqual(command.command, "codex-review-test");
-          assert.strictEqual(command.cwd, summary.runDirectory);
-          assert.strictEqual(command.timeoutMs, 12345);
-          assert.deepEqual(command.args, [
+          assert.strictEqual(command.request.command, "codex-review-test");
+          assert.strictEqual(command.request.cwd, summary.runDirectory);
+          assert.strictEqual(command.request.timeoutMs, 12345);
+          assert.deepEqual(command.request.args, [
             "exec",
             "--json",
             "--cd",
@@ -3580,21 +3593,23 @@ describe("runtime workflows", () => {
             "--sandbox",
             "read-only",
             "--output-last-message",
-            `${summary.runDirectory}/${codexReviewPhaseFromPrompt(command.stdin)}-codex-reviewer-last-message.md`,
+            `${summary.runDirectory}/${codexReviewPhaseFromPrompt(command.request.stdin)}-codex-reviewer-last-message.md`,
             "-",
           ]);
           assert.include(
-            command.stdin,
+            command.request.stdin,
             "Do not write, edit, delete, move, or create files."
           );
           assert.include(
-            command.stdin,
+            command.request.stdin,
             "Inspect the worker plan acceptance criteria, non-goals, likely touched surfaces, verification checks, and stop conditions."
           );
-          assert.include(command.stdin, "Status: approved");
-          assert.include(command.stdin, "Summary: ");
-          if (codexReviewPhaseFromPrompt(command.stdin) === "evidence") {
-            assert.include(command.stdin, "Browser evidence JSON:");
+          assert.include(command.request.stdin, "Status: approved");
+          assert.include(command.request.stdin, "Summary: ");
+          if (
+            codexReviewPhaseFromPrompt(command.request.stdin) === "evidence"
+          ) {
+            assert.include(command.request.stdin, "Browser evidence JSON:");
           }
         }
         assert.include(planReview, "Reviewer: codex-reviewer");
@@ -3627,7 +3642,7 @@ describe("runtime workflows", () => {
           const fs = yield* FileSystem.FileSystem;
           const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
           const specPath = `${cwd}/spec.md`;
-          const commands: Array<CodexCommandInput> = [];
+          const commands: Array<CodexCommandInvocation> = [];
           const commandRunner: CodexCommandRunner = (input) =>
             Effect.gen(function* () {
               commands.push(input);
@@ -6803,9 +6818,11 @@ function codexReviewPhaseFromPrompt(prompt: string) {
   return prompt.match(/^Review phase: (plan|evidence)$/mu)?.[1] ?? "plan";
 }
 
-function codexLastMessagePath(input: CodexCommandInput) {
-  const outputLastMessageIndex = input.args.indexOf("--output-last-message");
-  const outputLastMessagePath = input.args[outputLastMessageIndex + 1];
+function codexLastMessagePath(input: CodexCommandInvocation) {
+  const outputLastMessageIndex = input.request.args.indexOf(
+    "--output-last-message"
+  );
+  const outputLastMessagePath = input.request.args[outputLastMessageIndex + 1];
 
   if (outputLastMessageIndex < 0 || outputLastMessagePath === undefined) {
     return Effect.fail(

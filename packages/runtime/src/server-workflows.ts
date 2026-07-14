@@ -107,8 +107,8 @@ import {
 import type { ReviewerRunOptions } from "./reviewer.js";
 import { withRunStoreLock } from "./run-store-lock.js";
 import {
-  readPrivateWorkerCorrelationFollowUpTurn,
-  readPrivateWorkerRecoveryTurn,
+  readPrivateWorkerCorrelationFollowUpCheckpoint,
+  readPrivateWorkerRecoveryCheckpoint,
 } from "./worker-recovery.js";
 import {
   continueAcceptedRun,
@@ -2639,13 +2639,13 @@ function factoryContinuationOptions(
     })[0];
     const latestCorrelation =
       latestWorkerCorrelationReconciliationReceipt(events);
-    const expectedNativeTurnId =
+    const expectedCheckpoint =
       latestCorrelation?.state === "followUpConfirmed" ||
       latestCorrelation?.state === "workerCompleted"
-        ? yield* readPrivateWorkerCorrelationFollowUpTurn(paths.root)
+        ? yield* readPrivateWorkerCorrelationFollowUpCheckpoint(paths.root)
         : recovery === undefined
           ? undefined
-          : yield* readPrivateWorkerRecoveryTurn(
+          : yield* readPrivateWorkerRecoveryCheckpoint(
               paths.root,
               recovery.nativeTurnIdDigest,
               recovery
@@ -2654,7 +2654,7 @@ function factoryContinuationOptions(
       ...commonOptions,
       workerContinuationState: continuationState,
       workerHarness: interactiveSessionHarness({
-        ...(expectedNativeTurnId === undefined ? {} : { expectedNativeTurnId }),
+        ...(expectedCheckpoint === undefined ? {} : { expectedCheckpoint }),
         provider: resolved.provider,
         rootDirectory,
         ...(options.sessionCoordinator === undefined

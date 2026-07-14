@@ -4,18 +4,37 @@ import { HarnessProfileIdSchema } from "./harness-execution.js";
 import { HarnessSessionIdSchema } from "./harness-session.js";
 import { RunIdSchema } from "./run-id.js";
 
-const ActionId = Schema.NonEmptyString.pipe(
+const WorkerRecoveryActionIdEncodedSchema = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isMaxLength(200))
 );
-const ModelId = Schema.NonEmptyString.pipe(
+export const WorkerRecoveryActionIdSchema =
+  WorkerRecoveryActionIdEncodedSchema.pipe(
+    Schema.brand("WorkerRecoveryActionId")
+  );
+export type WorkerRecoveryActionId = typeof WorkerRecoveryActionIdSchema.Type;
+export const parseWorkerRecoveryActionId = Schema.decodeUnknownSync(
+  WorkerRecoveryActionIdSchema
+);
+
+export const WorkerRecoveryModelIdSchema = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isPattern(/^[A-Za-z0-9._-]+$/u)),
-  Schema.check(Schema.isMaxLength(120))
+  Schema.check(Schema.isMaxLength(120)),
+  Schema.brand("WorkerRecoveryModelId")
+);
+export type WorkerRecoveryModelId = typeof WorkerRecoveryModelIdSchema.Type;
+export const parseWorkerRecoveryModelId = Schema.decodeUnknownSync(
+  WorkerRecoveryModelIdSchema
 );
 const Sequence = Schema.Int.pipe(
   Schema.check(Schema.isGreaterThanOrEqualTo(1))
 );
-const Digest = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
+export const WorkerRecoveryDigestSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+  Schema.brand("WorkerRecoveryDigest")
+);
+export type WorkerRecoveryDigest = typeof WorkerRecoveryDigestSchema.Type;
+export const parseWorkerRecoveryDigest = Schema.decodeUnknownSync(
+  WorkerRecoveryDigestSchema
 );
 
 export const WorkerRecoveryFailureCodeSchema = Schema.Literals([
@@ -37,7 +56,7 @@ export class WorkerRecoveryFailureEvidence extends Schema.Class<WorkerRecoveryFa
   "WorkerRecoveryFailureEvidence"
 )(
   {
-    actionId: ActionId,
+    actionId: WorkerRecoveryActionIdEncodedSchema,
     code: WorkerRecoveryFailureCodeSchema,
     runId: RunIdSchema,
     stage: WorkerRecoveryFailureStageSchema,
@@ -53,12 +72,12 @@ export class WorkerRecoveryAction extends Schema.Class<WorkerRecoveryAction>(
   "WorkerRecoveryAction"
 )(
   {
-    actionId: ActionId,
+    actionId: WorkerRecoveryActionIdSchema,
     expectedFailureSequence: Sequence,
     expectedSessionId: HarnessSessionIdSchema,
     harnessProfileId: HarnessProfileIdSchema,
     kind: Schema.Literal("retryRecoverableWorkerFailure"),
-    model: ModelId,
+    model: WorkerRecoveryModelIdSchema,
   },
   { parseOptions: { onExcessProperty: "error" } }
 ) {}
@@ -67,12 +86,12 @@ export class WorkerContinuationAction extends Schema.Class<WorkerContinuationAct
   "WorkerContinuationAction"
 )(
   {
-    actionId: ActionId,
+    actionId: WorkerRecoveryActionIdSchema,
     expectedContaminatedReadySequence: Sequence,
     expectedCurrentSequence: Sequence,
-    expectedDeliveryProvenanceDigest: Digest,
+    expectedDeliveryProvenanceDigest: WorkerRecoveryDigestSchema,
     expectedFailedRecoverySequence: Sequence,
-    expectedRecoveryActionId: ActionId,
+    expectedRecoveryActionId: WorkerRecoveryActionIdSchema,
     expectedSessionId: HarnessSessionIdSchema,
     harnessProfileId: HarnessProfileIdSchema,
     kind: Schema.Literal("continueInterruptedWorkerRecovery"),
@@ -84,15 +103,15 @@ export class WorkerCorrelationReconciliationAction extends Schema.Class<WorkerCo
   "WorkerCorrelationReconciliationAction"
 )(
   {
-    actionId: ActionId,
+    actionId: WorkerRecoveryActionIdSchema,
     expectedContaminatedReadySequence: Sequence,
-    expectedContinuationActionId: ActionId,
+    expectedContinuationActionId: WorkerRecoveryActionIdSchema,
     expectedCurrentSequence: Sequence,
-    expectedDeliveryProvenanceDigest: Digest,
+    expectedDeliveryProvenanceDigest: WorkerRecoveryDigestSchema,
     expectedFailedContinuationSequence: Sequence,
     expectedFailedRecoverySequence: Sequence,
-    expectedNativeTurnIdDigest: Digest,
-    expectedRecoveryActionId: ActionId,
+    expectedNativeTurnIdDigest: WorkerRecoveryDigestSchema,
+    expectedRecoveryActionId: WorkerRecoveryActionIdSchema,
     expectedSessionId: HarnessSessionIdSchema,
     harnessProfileId: HarnessProfileIdSchema,
     kind: Schema.Literal("reconcileInterruptedWorkerCorrelation"),
@@ -104,17 +123,17 @@ export class WorkerDesktopOriginCorrelationAction extends Schema.Class<WorkerDes
   "WorkerDesktopOriginCorrelationAction"
 )(
   {
-    actionId: ActionId,
+    actionId: WorkerRecoveryActionIdSchema,
     expectedContaminatedReadySequence: Sequence,
-    expectedContinuationActionId: ActionId,
-    expectedCorrelationActionId: ActionId,
+    expectedContinuationActionId: WorkerRecoveryActionIdSchema,
+    expectedCorrelationActionId: WorkerRecoveryActionIdSchema,
     expectedCurrentSequence: Sequence,
-    expectedDeliveryProvenanceDigest: Digest,
+    expectedDeliveryProvenanceDigest: WorkerRecoveryDigestSchema,
     expectedFailedContinuationSequence: Sequence,
     expectedFailedCorrelationSequence: Sequence,
     expectedFailedRecoverySequence: Sequence,
-    expectedNativeTurnIdDigest: Digest,
-    expectedRecoveryActionId: ActionId,
+    expectedNativeTurnIdDigest: WorkerRecoveryDigestSchema,
+    expectedRecoveryActionId: WorkerRecoveryActionIdSchema,
     expectedSessionId: HarnessSessionIdSchema,
     harnessProfileId: HarnessProfileIdSchema,
     kind: Schema.Literal("reconcileDesktopOriginatedWorkerCorrelation"),
@@ -123,15 +142,15 @@ export class WorkerDesktopOriginCorrelationAction extends Schema.Class<WorkerDes
 ) {}
 
 const Base = {
-  actionId: ActionId,
+  actionId: WorkerRecoveryActionIdSchema,
   attempt: Schema.Literal(1),
   expectedFailureSequence: Sequence,
   expectedSessionId: HarnessSessionIdSchema,
   harnessProfileId: HarnessProfileIdSchema,
   maxAttempts: Schema.Literal(1),
-  model: ModelId,
-  payloadDigest: Digest,
-  trackedPayloadDigest: Schema.optionalKey(Digest),
+  model: WorkerRecoveryModelIdSchema,
+  payloadDigest: WorkerRecoveryDigestSchema,
+  trackedPayloadDigest: Schema.optionalKey(WorkerRecoveryDigestSchema),
   trackedPayloadEntryCount: Schema.optionalKey(
     Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))
   ),
@@ -143,14 +162,14 @@ export const WorkerRecoveryReceiptSchema = Schema.Union([
   Schema.Struct({ ...Base, state: Schema.Literal("dispatchAttempted") }),
   Schema.Struct({
     ...Base,
-    nativeTurnIdDigest: Digest,
+    nativeTurnIdDigest: WorkerRecoveryDigestSchema,
     state: Schema.Literal("dispatchConfirmed"),
   }),
   Schema.Struct({
     ...Base,
     code: Schema.NonEmptyString,
     message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1024))),
-    nativeTurnIdDigest: Schema.optionalKey(Digest),
+    nativeTurnIdDigest: Schema.optionalKey(WorkerRecoveryDigestSchema),
     state: Schema.Literal("failed"),
   }),
   Schema.Struct({
@@ -163,12 +182,12 @@ export const WorkerRecoveryReceiptSchema = Schema.Union([
 export type WorkerRecoveryReceipt = typeof WorkerRecoveryReceiptSchema.Type;
 
 const ContinuationBase = {
-  actionId: ActionId,
+  actionId: WorkerRecoveryActionIdSchema,
   expectedContaminatedReadySequence: Sequence,
   expectedCurrentSequence: Sequence,
-  expectedDeliveryProvenanceDigest: Digest,
+  expectedDeliveryProvenanceDigest: WorkerRecoveryDigestSchema,
   expectedFailedRecoverySequence: Sequence,
-  expectedRecoveryActionId: ActionId,
+  expectedRecoveryActionId: WorkerRecoveryActionIdSchema,
   expectedSessionId: HarnessSessionIdSchema,
   harnessProfileId: HarnessProfileIdSchema,
   maxAttempts: Schema.Literal(1),
@@ -217,15 +236,15 @@ export type WorkerContinuationReceipt =
   typeof WorkerContinuationReceiptSchema.Type;
 
 const CorrelationBase = {
-  actionId: ActionId,
+  actionId: WorkerRecoveryActionIdSchema,
   expectedContaminatedReadySequence: Sequence,
-  expectedContinuationActionId: ActionId,
+  expectedContinuationActionId: WorkerRecoveryActionIdSchema,
   expectedCurrentSequence: Sequence,
-  expectedDeliveryProvenanceDigest: Digest,
+  expectedDeliveryProvenanceDigest: WorkerRecoveryDigestSchema,
   expectedFailedContinuationSequence: Sequence,
   expectedFailedRecoverySequence: Sequence,
-  expectedNativeTurnIdDigest: Digest,
-  expectedRecoveryActionId: ActionId,
+  expectedNativeTurnIdDigest: WorkerRecoveryDigestSchema,
+  expectedRecoveryActionId: WorkerRecoveryActionIdSchema,
   expectedSessionId: HarnessSessionIdSchema,
   harnessProfileId: HarnessProfileIdSchema,
   maxAttempts: Schema.Literal(1),
@@ -274,17 +293,17 @@ export type WorkerCorrelationReconciliationReceipt =
   typeof WorkerCorrelationReconciliationReceiptSchema.Type;
 
 const DesktopOriginCorrelationBase = {
-  actionId: ActionId,
+  actionId: WorkerRecoveryActionIdSchema,
   expectedContaminatedReadySequence: Sequence,
-  expectedContinuationActionId: ActionId,
-  expectedCorrelationActionId: ActionId,
+  expectedContinuationActionId: WorkerRecoveryActionIdSchema,
+  expectedCorrelationActionId: WorkerRecoveryActionIdSchema,
   expectedCurrentSequence: Sequence,
-  expectedDeliveryProvenanceDigest: Digest,
+  expectedDeliveryProvenanceDigest: WorkerRecoveryDigestSchema,
   expectedFailedContinuationSequence: Sequence,
   expectedFailedCorrelationSequence: Sequence,
   expectedFailedRecoverySequence: Sequence,
-  expectedNativeTurnIdDigest: Digest,
-  expectedRecoveryActionId: ActionId,
+  expectedNativeTurnIdDigest: WorkerRecoveryDigestSchema,
+  expectedRecoveryActionId: WorkerRecoveryActionIdSchema,
   expectedSessionId: HarnessSessionIdSchema,
   harnessProfileId: HarnessProfileIdSchema,
   maxAttempts: Schema.Literal(1),
@@ -351,19 +370,41 @@ export const parseWorkerDesktopOriginCorrelationAction =
   Schema.decodeUnknownSync(WorkerDesktopOriginCorrelationAction);
 export const parseWorkerDesktopOriginCorrelationReceipt =
   Schema.decodeUnknownSync(WorkerDesktopOriginCorrelationReceiptSchema);
-export const encodeWorkerRecoveryFailureEvidenceJson = Schema.encodeSync(
-  WorkerRecoveryFailureEvidence
-);
-export const encodeWorkerRecoveryReceiptJson = Schema.encodeSync(
-  WorkerRecoveryReceiptSchema
-);
-export const encodeWorkerContinuationReceiptJson = Schema.encodeSync(
-  WorkerContinuationReceiptSchema
-);
-export const encodeWorkerCorrelationReconciliationReceiptJson =
-  Schema.encodeSync(WorkerCorrelationReconciliationReceiptSchema);
-export const encodeWorkerDesktopOriginCorrelationReceiptJson =
-  Schema.encodeSync(WorkerDesktopOriginCorrelationReceiptSchema);
+export function encodeWorkerRecoveryFailureEvidenceJson(
+  input: typeof WorkerRecoveryFailureEvidence.Encoded
+) {
+  return Schema.encodeSync(WorkerRecoveryFailureEvidence)(
+    Schema.decodeUnknownSync(WorkerRecoveryFailureEvidence)(input)
+  );
+}
+export function encodeWorkerRecoveryReceiptJson(
+  input: typeof WorkerRecoveryReceiptSchema.Encoded
+) {
+  return Schema.encodeSync(WorkerRecoveryReceiptSchema)(
+    parseWorkerRecoveryReceipt(input)
+  );
+}
+export function encodeWorkerContinuationReceiptJson(
+  input: typeof WorkerContinuationReceiptSchema.Encoded
+) {
+  return Schema.encodeSync(WorkerContinuationReceiptSchema)(
+    parseWorkerContinuationReceipt(input)
+  );
+}
+export function encodeWorkerCorrelationReconciliationReceiptJson(
+  input: typeof WorkerCorrelationReconciliationReceiptSchema.Encoded
+) {
+  return Schema.encodeSync(WorkerCorrelationReconciliationReceiptSchema)(
+    parseWorkerCorrelationReconciliationReceipt(input)
+  );
+}
+export function encodeWorkerDesktopOriginCorrelationReceiptJson(
+  input: typeof WorkerDesktopOriginCorrelationReceiptSchema.Encoded
+) {
+  return Schema.encodeSync(WorkerDesktopOriginCorrelationReceiptSchema)(
+    parseWorkerDesktopOriginCorrelationReceipt(input)
+  );
+}
 
 export function workerRecoveryProjection(
   receipt: WorkerRecoveryReceipt | undefined

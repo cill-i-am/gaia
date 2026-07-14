@@ -6,9 +6,48 @@ import {
   parseHarnessSessionId,
   projectHarnessEvents,
 } from "@gaia/core";
+import { Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { createCodexSessionMapper } from "./codex-session-mapper.js";
+import {
+  CodexNotificationSchema,
+  CodexServerRequestSchema,
+  CodexThreadSchema,
+  parseCodexRequestId,
+} from "./codex-app-server-protocol.js";
+import {
+  createCodexSessionMapper as createDecodedCodexSessionMapper,
+  type CodexSessionMapperOptions,
+} from "./codex-session-mapper.js";
+
+function createCodexSessionMapper(options: CodexSessionMapperOptions) {
+  const mapper = createDecodedCodexSessionMapper(options);
+  return {
+    ...mapper,
+    mapNotification: (input: unknown) => {
+      const decoded = Schema.decodeUnknownOption(CodexNotificationSchema)(
+        input
+      );
+      return Option.isNone(decoded)
+        ? []
+        : mapper.mapNotification(decoded.value);
+    },
+    mapRecoveredThread: (input: unknown) => {
+      const decoded = Schema.decodeUnknownOption(CodexThreadSchema)(input);
+      return Option.isNone(decoded)
+        ? []
+        : mapper.mapRecoveredThread(decoded.value);
+    },
+    mapServerRequest: (input: unknown) => {
+      const decoded = Schema.decodeUnknownOption(CodexServerRequestSchema)(
+        input
+      );
+      return Option.isNone(decoded)
+        ? []
+        : mapper.mapServerRequest(decoded.value);
+    },
+  };
+}
 
 const sessionId = parseHarnessSessionId("session-codex-mapper");
 const capabilities = HarnessCapabilities.make({
@@ -75,6 +114,7 @@ describe("Codex App Server provider-neutral mapper", () => {
       subject.mapNotification({
         method: "item/started",
         params: {
+          startedAtMs: 1,
           item: {
             content: ["hidden chain of thought"],
             id: "vendor-reasoning",
@@ -187,6 +227,7 @@ describe("Codex App Server provider-neutral mapper", () => {
       {
         method: "item/started",
         params: {
+          startedAtMs: 1,
           item: {
             aggregatedOutput: "safe output",
             command: "pnpm test",
@@ -207,6 +248,7 @@ describe("Codex App Server provider-neutral mapper", () => {
       {
         method: "item/completed",
         params: {
+          completedAtMs: 1,
           item: {
             changes: [
               {
@@ -231,6 +273,7 @@ describe("Codex App Server provider-neutral mapper", () => {
       {
         method: "item/completed",
         params: {
+          completedAtMs: 1,
           item: {
             arguments: { raw: "must not cross" },
             durationMs: 1,
@@ -255,6 +298,7 @@ describe("Codex App Server provider-neutral mapper", () => {
       {
         method: "item/completed",
         params: {
+          completedAtMs: 1,
           item: {
             id: "review-native",
             review: "Looks safe",
@@ -365,12 +409,15 @@ describe("Codex App Server provider-neutral mapper", () => {
     expect(serialized).not.toContain("turn-secret");
     expect(serialized).not.toContain("super-secret-token");
 
-    const resolved = subject.resolveServerRequest("request-secret", {
-      actionId: parseHarnessActionId("action-mapper-resolve"),
-      decision: "decline",
-      resolvedAt: "2026-07-10T10:10:00.000Z",
-      responseKind: "approval",
-    });
+    const resolved = subject.resolveServerRequest(
+      parseCodexRequestId("request-secret"),
+      {
+        actionId: parseHarnessActionId("action-mapper-resolve"),
+        decision: "decline",
+        resolvedAt: "2026-07-10T10:10:00.000Z",
+        responseKind: "approval",
+      }
+    );
     expect(resolved.map(({ kind }) => kind)).toEqual([
       "interactionResolved",
       "sessionStateChanged",
@@ -411,12 +458,13 @@ describe("Codex App Server provider-neutral mapper", () => {
     const publicQuestionId = publicQuestion.questionId;
     expect(JSON.stringify(questions)).not.toContain("native-question-secret");
     expect(
-      subject.mapUserInputAnswers("question-request-secret", [
-        { answers: ["yes"], questionId: publicQuestionId },
-      ])
+      subject.mapUserInputAnswers(
+        parseCodexRequestId("question-request-secret"),
+        [{ answers: ["yes"], questionId: publicQuestionId }]
+      )
     ).toEqual({ "native-question-secret": { answers: ["yes"] } });
     const auditedQuestion = subject.resolveServerRequest(
-      "question-request-secret",
+      parseCodexRequestId("question-request-secret"),
       {
         actionId: parseHarnessActionId("action-question-resolve"),
         decision: "submit",
@@ -579,6 +627,7 @@ describe("Codex App Server provider-neutral mapper", () => {
     const itemBeforeTurn = subject.mapNotification({
       method: "item/completed",
       params: {
+        completedAtMs: 1,
         item: {
           id: "ordering-item",
           memoryCitation: null,
@@ -781,6 +830,7 @@ describe("Codex App Server provider-neutral mapper", () => {
       .mapNotification({
         method: "item/completed",
         params: {
+          completedAtMs: 1,
           item: {
             id: "stable-native-item",
             phase: "final_answer",
@@ -908,6 +958,7 @@ describe("Codex App Server provider-neutral mapper", () => {
     const itemEvents = subject.mapNotification({
       method: "item/completed",
       params: {
+        completedAtMs: 1,
         item: {
           id: "maximum-id-item",
           phase: "final_answer",
@@ -1082,6 +1133,7 @@ describe("Codex App Server provider-neutral mapper", () => {
     const events = subject.mapNotification({
       method: "item/completed",
       params: {
+        completedAtMs: 1,
         item: {
           id: "redaction-item",
           phase: "final_answer",
@@ -1125,6 +1177,7 @@ describe("Codex App Server provider-neutral mapper", () => {
     const events = subject.mapNotification({
       method: "item/completed",
       params: {
+        completedAtMs: 1,
         item: {
           id: "adversarial-path-item",
           phase: "final_answer",
