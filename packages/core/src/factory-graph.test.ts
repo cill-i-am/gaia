@@ -3,13 +3,29 @@ import { Schema } from "effect";
 
 import {
   FactoryActivityDto,
+  FactoryActivityIdSchema,
   FactoryAgentDto,
+  FactoryAgentIdSchema,
   FactoryArtifactDto,
+  FactoryArtifactIdSchema,
+  FactoryEdgeIdSchema,
+  FactoryExternalRefDto,
+  FactoryExternalRefUrlSchema,
   FactoryGraphDto,
   FactoryRelationshipTypeSchema,
+  FactoryWorkItemIdSchema,
   FactoryWorkflowDefinitionDto,
   IssueDeliveryWorkflowDefinition,
+  type FactoryGraphNodeId,
 } from "./factory-graph.js";
+import {
+  HarnessActionIdSchema,
+  HarnessInteractionIdSchema,
+  HarnessSessionIdSchema,
+} from "./harness-session.js";
+import { RunIdSchema } from "./run-id.js";
+
+const acceptGraphNodeId = (nodeId: FactoryGraphNodeId) => nodeId;
 
 describe("FactoryGraph core contracts", () => {
   it("parses a serializable issue delivery factory graph", () => {
@@ -96,6 +112,125 @@ describe("FactoryGraph core contracts", () => {
     assert.strictEqual(graph.linkedArtifacts[0]?.kind, "plan");
   });
 
+  it("compounds only legal FactoryGraph node identifiers into edge endpoints", () => {
+    const workItemId = Schema.decodeUnknownSync(FactoryWorkItemIdSchema)(
+      "work-item-root"
+    );
+    const agentId =
+      Schema.decodeUnknownSync(FactoryAgentIdSchema)("agent-worker");
+    const artifactId = Schema.decodeUnknownSync(FactoryArtifactIdSchema)(
+      "artifact-worker-plan"
+    );
+    const edgeId =
+      Schema.decodeUnknownSync(FactoryEdgeIdSchema)("edge-root-worker");
+    const activityId = Schema.decodeUnknownSync(FactoryActivityIdSchema)(
+      "activity-worker"
+    );
+    const runId = Schema.decodeUnknownSync(RunIdSchema)("run-1234567890");
+    const sessionId = Schema.decodeUnknownSync(HarnessSessionIdSchema)(
+      "session-run-1234567890"
+    );
+    const actionId = Schema.decodeUnknownSync(HarnessActionIdSchema)(
+      "action-steer"
+    );
+    const interactionId = Schema.decodeUnknownSync(HarnessInteractionIdSchema)(
+      "interaction-approval"
+    );
+    const rawString = "agent-worker";
+
+    assert.strictEqual(acceptGraphNodeId(workItemId), workItemId);
+    assert.strictEqual(acceptGraphNodeId(agentId), agentId);
+    assert.strictEqual(acceptGraphNodeId(artifactId), artifactId);
+    // @ts-expect-error raw strings are not parsed graph node identities.
+    acceptGraphNodeId(rawString);
+    // @ts-expect-error edge IDs are not graph node endpoints.
+    acceptGraphNodeId(edgeId);
+    // @ts-expect-error activity IDs are not graph node endpoints.
+    acceptGraphNodeId(activityId);
+    // @ts-expect-error run IDs are not graph node endpoints.
+    acceptGraphNodeId(runId);
+    // @ts-expect-error harness session IDs are not graph node endpoints.
+    acceptGraphNodeId(sessionId);
+    // @ts-expect-error harness action IDs are not graph node endpoints.
+    acceptGraphNodeId(actionId);
+    // @ts-expect-error harness interaction IDs are not graph node endpoints.
+    acceptGraphNodeId(interactionId);
+  });
+
+  it("rejects FactoryGraph edges whose endpoints are absent or ambiguous", () => {
+    const decodeFactoryGraph = Schema.decodeUnknownSync(FactoryGraphDto);
+    const validGraph = serializableFactoryGraph();
+
+    assert.doesNotThrow(() => decodeFactoryGraph(validGraph));
+    assert.throws(() =>
+      decodeFactoryGraph({
+        ...validGraph,
+        edges: [
+          {
+            id: "edge-missing",
+            sourceId: "work-item-root",
+            targetId: "agent-missing",
+            type: "owns",
+          },
+        ],
+      })
+    );
+    assert.throws(() =>
+      decodeFactoryGraph({
+        ...validGraph,
+        linkedArtifacts: [
+          {
+            artifactId: "agent-orchestrator",
+            contentType: "text/markdown",
+            createdAt: "2026-07-08T18:00:00.000Z",
+            kind: "plan",
+            label: "Duplicate node",
+            ownerAgentId: "agent-orchestrator",
+            visibility: "run",
+          },
+        ],
+      })
+    );
+    assert.throws(() =>
+      decodeFactoryGraph({
+        ...validGraph,
+        linkedArtifacts: [
+          {
+            ...validGraph.linkedArtifacts[0],
+            ownerAgentId: "agent-missing",
+          },
+        ],
+      })
+    );
+  });
+
+  it("brands external references with exact HTTP(S) URL semantics", () => {
+    const decodeExternalRef = Schema.decodeUnknownSync(FactoryExternalRefDto);
+    const decodeUrl = Schema.decodeUnknownSync(FactoryExternalRefUrlSchema);
+
+    const url = decodeUrl("https://linear.app/tskr/issue/GAIA-65");
+    assert.strictEqual(url, "https://linear.app/tskr/issue/GAIA-65");
+    assert.strictEqual(
+      decodeExternalRef({
+        id: "GAIA-65",
+        provider: "linear",
+        url,
+      }).url,
+      url
+    );
+    for (const rejected of [
+      "not-a-url",
+      "/relative",
+      "//linear.app/tskr/issue/GAIA-65",
+      "ftp://linear.app/tskr/issue/GAIA-65",
+      " https://linear.app/tskr/issue/GAIA-65",
+      "https://linear.app/tskr/issue/GAIA-65 ",
+      "https://linear.app\\tskr\\issue\\GAIA-65",
+    ]) {
+      assert.throws(() => decodeUrl(rejected));
+    }
+  });
+
   it("rejects unknown finite variant values", () => {
     assert.throws(() =>
       Schema.decodeUnknownSync(FactoryAgentDto)({
@@ -152,3 +287,85 @@ describe("FactoryGraph core contracts", () => {
     );
   });
 });
+
+function serializableFactoryGraph() {
+  return {
+    agents: [
+      {
+        artifactCount: 1,
+        id: "agent-orchestrator",
+        role: "orchestrator",
+        state: "running",
+        title: "Issue orchestrator",
+        workItemId: "work-item-root",
+      },
+    ],
+    diagnostics: [],
+    edges: [
+      {
+        id: "edge-root-owns-orchestrator",
+        sourceId: "work-item-root",
+        targetId: "agent-orchestrator",
+        type: "owns",
+      },
+      {
+        id: "edge-orchestrator-produced-plan",
+        sourceId: "agent-orchestrator",
+        targetId: "artifact-worker-plan",
+        type: "produced",
+      },
+    ],
+    execution: {
+      capabilities: {
+        approvals: [],
+        fileChangeEvents: true,
+        interruption: true,
+        resumableSessions: true,
+        review: false,
+        steering: false,
+        streamingMessages: true,
+        structuredOutput: false,
+        subagents: false,
+        toolEvents: false,
+        usageReporting: false,
+        userQuestions: false,
+      },
+      executionMode: "local",
+      harnessProfileId: "codexAppServer",
+      provider: {
+        displayName: "Codex App Server",
+        executionModes: ["local"],
+        providerId: "codex-app-server",
+      },
+      version: "0.137.0",
+    },
+    linkedArtifacts: [
+      {
+        artifactId: "artifact-worker-plan",
+        contentType: "text/markdown",
+        createdAt: "2026-07-08T18:00:00.000Z",
+        kind: "plan",
+        label: "Worker plan",
+        ownerAgentId: "agent-orchestrator",
+        visibility: "run",
+      },
+    ],
+    runId: "run-abcdefghij",
+    version: 1,
+    workflow: "issueDelivery",
+    workItems: [
+      {
+        externalRefs: [
+          {
+            id: "GAIA-65",
+            provider: "linear",
+            url: "https://linear.app/tskr/issue/GAIA-65",
+          },
+        ],
+        id: "work-item-root",
+        kind: "issue",
+        title: "Define FactoryGraph contracts",
+      },
+    ],
+  };
+}
