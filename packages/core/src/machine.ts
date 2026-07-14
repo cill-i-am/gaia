@@ -1,7 +1,8 @@
 import * as Schema from "effect/Schema";
-import { assign, createActor, createMachine } from "xstate";
+import { assign, createActor, setup } from "xstate";
 
 import {
+  DeliveryCleanupReceiptSchema,
   encodeDeliveryCleanupReceiptJson,
   encodeDeliveryMergeReceiptJson,
   parseDeliveryCleanupReceipt,
@@ -9,6 +10,8 @@ import {
   parseDeliveryMergeReadinessDecision,
   encodeDeliveryMergeReadinessDecisionJson,
   type DeliveryMergeReceipt,
+  DeliveryMergeReadinessDecisionSchema,
+  DeliveryMergeReceiptSchema,
   deriveDeliveryMergeActionHistories,
   deriveDeliveryCleanupActionHistories,
   deriveDeliveryPullRequestReadyActionHistories,
@@ -16,26 +19,30 @@ import {
   encodeDeliveryPullRequestReadyReceiptJson,
   parseDeliveryPullRequestReadyReceipt,
   type DeliveryPullRequestReadyReceipt,
+  DeliveryPullRequestReadyReceiptSchema,
   deriveDeliveryLocalReviewAttestationHistories,
   assertDeliveryLocalReviewAttestationAuthority,
   assertDeliveryMergeReadinessDecisionAuthority,
   DeliveryMergeReadinessDecisionV2,
+  DeliveryLocalReviewAttestationReceiptSchema,
   parseDeliveryLocalReviewAttestationReceipt,
   type DeliveryLocalReviewAttestationReceipt,
 } from "./delivery-merge.js";
 import {
+  DeliveryPublicationSchema,
   encodeDeliveryPublicationJson,
   parseDeliveryPublication,
   type DeliveryPublication,
 } from "./delivery-publication.js";
 import {
+  DeliveryPullRequestObservation,
+  DeliveryRemediationSchema,
   encodeDeliveryPullRequestObservationJson,
   encodeDeliveryRemediationJson,
   deriveAuthoritativeDeliveryHeadSha,
   parseDeliveryPullRequestObservation,
   parseDeliveryRemediation,
   validateDeliveryRemediationTransition,
-  type DeliveryPullRequestObservation,
   type DeliveryRemediation,
 } from "./delivery-remediation.js";
 import {
@@ -47,7 +54,7 @@ import {
   type RunState,
   RunStateSchema,
 } from "./events.js";
-import type { RunId } from "./run-id.js";
+import { RunIdSchema } from "./run-id.js";
 import {
   encodeWorkerContinuationReceiptJson,
   encodeWorkerCorrelationReconciliationReceiptJson,
@@ -60,221 +67,273 @@ import {
   workerCorrelationReconciliationProjection,
   workerDesktopOriginCorrelationProjection,
   type WorkerContinuationReceipt,
+  WorkerContinuationReceiptSchema,
   type WorkerCorrelationReconciliationReceipt,
+  WorkerCorrelationReconciliationReceiptSchema,
   type WorkerDesktopOriginCorrelationReceipt,
+  WorkerDesktopOriginCorrelationReceiptSchema,
   type WorkerRecoveryReceipt,
+  WorkerRecoveryReceiptSchema,
 } from "./worker-recovery.js";
 
-export type RunMachineContext = {
-  readonly browserEvidencePath: string | undefined;
-  readonly browserEvidenceStatus: string | undefined;
-  readonly browserEvidenceTargetUrl: string | undefined;
-  readonly delivery: Record<string, Schema.Json> | undefined;
-  readonly evidenceReviewPath: string | undefined;
-  readonly failure: GaiaFailure | undefined;
-  readonly githubChecksPath: string | undefined;
-  readonly githubChecksStatus: string | undefined;
-  readonly githubFeedbackCommentCount: number | undefined;
-  readonly githubFeedbackNextAction: string | undefined;
-  readonly githubFeedbackPath: string | undefined;
-  readonly githubFeedbackReviewCount: number | undefined;
-  readonly githubFeedbackReviewRequestCount: number | undefined;
-  readonly githubFeedbackStatus: string | undefined;
-  readonly githubPrCommentPath: string | undefined;
-  readonly githubPrCommentUrl: string | undefined;
-  readonly githubPrLoopBlockerCount: number | undefined;
-  readonly githubPrLoopNextAction: string | undefined;
-  readonly githubPrLoopPath: string | undefined;
-  readonly githubPrLoopStatus: string | undefined;
-  readonly githubPullRequest: string | undefined;
-  readonly githubRemediationBlockerCount: number | undefined;
-  readonly githubRemediationNextAction: string | undefined;
-  readonly githubRemediationSpecPath: string | undefined;
-  readonly githubWatchStatePath: string | undefined;
-  readonly lastEventSequence: number;
-  readonly evidenceReviewerSessionPath: string | undefined;
-  readonly linearBlockedByCount: number | undefined;
-  readonly linearBlocksCount: number | undefined;
-  readonly linearIssueGraphPath: string | undefined;
-  readonly linearIssueIdentifier: string | undefined;
-  readonly linearIssueUrl: string | undefined;
-  readonly mergeDecisionBlockerCount: number | undefined;
-  readonly mergeDecisionNextAction: string | undefined;
-  readonly mergeDecisionPath: string | undefined;
-  readonly mergeDecisionStatus: string | undefined;
-  readonly planReviewPath: string | undefined;
-  readonly planReviewerSessionPath: string | undefined;
-  readonly previewDeploymentPath: string | undefined;
-  readonly previewDeploymentStatus: string | undefined;
-  readonly previewDeploymentUrl: string | undefined;
-  readonly reportPath: string | undefined;
-  readonly runId: RunId | undefined;
-  readonly specPath: string | undefined;
-  readonly verificationResultPath: string | undefined;
-  readonly workerResultPath: string | undefined;
-  readonly workspacePath: string | undefined;
-};
+const RunMachinePathSchema = Schema.String.pipe(Schema.brand("RunMachinePath"));
+const RunMachineUrlSchema = Schema.String.pipe(Schema.brand("RunMachineUrl"));
+const RunMachineStatusSchema = Schema.String.pipe(
+  Schema.brand("RunMachineStatus")
+);
+const RunMachineIdentifierSchema = Schema.String.pipe(
+  Schema.brand("RunMachineIdentifier")
+);
+const RunMachineActionTextSchema = Schema.String.pipe(
+  Schema.brand("RunMachineActionText")
+);
+const RunMachineDeliverySchema = Schema.Record(Schema.String, Schema.Json);
 
-export type RunMachineEvent =
-  | {
-      readonly type: "RUN_CREATED";
-      readonly runId: RunId;
-      readonly specPath: string;
-    }
-  | {
-      readonly type: "DELIVERY_STARTED";
-      readonly delivery: Record<string, Schema.Json>;
-    }
-  | {
-      readonly type: "DELIVERY_READY_TO_PUBLISH";
-      readonly delivery: Record<string, Schema.Json>;
-      readonly reportPath: string | undefined;
-    }
-  | {
-      readonly type:
-        | "DELIVERY_PUBLICATION_INTENT_RECORDED"
-        | "DELIVERY_PUBLICATION_ATTEMPTED"
-        | "DELIVERY_PUBLICATION_CONFIRMED"
-        | "DELIVERY_PUBLICATION_FAILED"
-        | "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN";
-      readonly publication: DeliveryPublication;
-    }
-  | {
-      readonly eventSequence: number;
-      readonly remediation: DeliveryRemediation;
-      readonly type: "DELIVERY_REMEDIATION_RECORDED";
-    }
-  | {
-      readonly type: "DELIVERY_PR_READY_RECORDED";
-      readonly readyForReviewAction: DeliveryPullRequestReadyReceipt;
-    }
-  | {
-      readonly type: "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED";
-      readonly attestation: DeliveryLocalReviewAttestationReceipt;
-    }
-  | {
-      readonly type: "DELIVERY_MERGE_RECORDED";
-      readonly mergeAction: DeliveryMergeReceipt;
-    }
-  | {
-      readonly type: "DELIVERY_MERGE_READINESS_RECORDED";
-      readonly decision: ReturnType<typeof parseDeliveryMergeReadinessDecision>;
-      readonly eventSequence: number;
-    }
-  | {
-      readonly type: "DELIVERY_CLEANUP_RECORDED";
-      readonly cleanup: ReturnType<typeof parseDeliveryCleanupReceipt>;
-    }
-  | {
-      readonly type:
-        | "DELIVERY_CLEANUP_PROVENANCE_RECORDED"
-        | "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED"
-        | "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED";
-    }
-  | { readonly type: "WORKSPACE_PREPARED"; readonly workspacePath: string }
-  | { readonly type: "REVIEW_STARTED" }
-  | {
-      readonly type: "REVIEW_COMPLETED";
-      readonly phase: typeof ReviewPhaseSchema.Type;
-      readonly reviewPath: string;
-      readonly reviewerSessionEvidencePath?: string;
-    }
-  | { readonly type: "WORKER_STARTED" }
-  | { readonly type: "WORKER_COMPLETED"; readonly workerResultPath: string }
-  | {
-      readonly type: "PREVIEW_DEPLOYMENT_RECORDED";
-      readonly deploymentPath: string;
-      readonly status: string;
-      readonly url?: string;
-    }
-  | { readonly type: "VERIFICATION_STARTED" }
-  | {
-      readonly type: "VERIFICATION_COMPLETED";
-      readonly verificationResultPath: string;
-    }
-  | {
-      readonly type: "BROWSER_EVIDENCE_RECORDED";
-      readonly evidencePath: string;
-      readonly status: string;
-      readonly targetUrl: string;
-    }
-  | { readonly type: "REPORT_STARTED" }
-  | { readonly type: "REPORT_COMPLETED"; readonly reportPath: string }
-  | {
-      readonly type: "GITHUB_CHECKS_RECORDED";
-      readonly checksPath: string;
-      readonly pullRequest: string;
-      readonly status: string;
-      readonly watchStatePath?: string;
-    }
-  | {
-      readonly type: "GITHUB_FEEDBACK_RECORDED";
-      readonly commentCount: number;
-      readonly feedbackPath: string;
-      readonly nextAction: string;
-      readonly pullRequest: string;
-      readonly reviewCount: number;
-      readonly reviewRequestCount: number;
-      readonly status: string;
-    }
-  | {
-      readonly type: "GITHUB_PR_LOOP_RECORDED";
-      readonly blockerCount: number;
-      readonly nextAction: string;
-      readonly observation?: DeliveryPullRequestObservation;
-      readonly prLoopPath: string;
-      readonly pullRequest: string;
-      readonly status: string;
-    }
-  | {
-      readonly type: "GITHUB_PR_COMMENT_RECORDED";
-      readonly commentPath: string;
-      readonly commentUrl?: string;
-      readonly pullRequest: string;
-    }
-  | {
-      readonly type: "GITHUB_REMEDIATION_SPEC_RECORDED";
-      readonly blockerCount: number;
-      readonly nextAction: string;
-      readonly pullRequest: string;
-      readonly remediationSpecPath: string;
-    }
-  | {
-      readonly type: "LINEAR_ISSUE_GRAPH_RECORDED";
-      readonly blockedByCount: number;
-      readonly blocksCount: number;
-      readonly issueGraphPath: string;
-      readonly issueIdentifier: string;
-      readonly issueUrl?: string;
-    }
-  | {
-      readonly type: "MERGE_DECISION_RECORDED";
-      readonly blockerCount: number;
-      readonly mergeDecisionPath: string;
-      readonly nextAction: string;
-      readonly pullRequest?: string;
-      readonly status: string;
-    }
-  | { readonly type: "HARNESS_SESSION_EVENT_RECORDED" }
-  | {
-      readonly type: "WORKER_RECOVERY_RECORDED";
-      readonly recovery: WorkerRecoveryReceipt;
-    }
-  | {
-      readonly continuation: WorkerContinuationReceipt;
-      readonly type: "WORKER_CONTINUATION_RECORDED";
-    }
-  | {
-      readonly reconciliation: WorkerCorrelationReconciliationReceipt;
-      readonly type: "WORKER_CORRELATION_RECONCILIATION_RECORDED";
-    }
-  | {
-      readonly desktopOriginCorrelation: WorkerDesktopOriginCorrelationReceipt;
-      readonly type: "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED";
-    }
-  | { readonly type: "RUN_FAILED"; readonly failure: GaiaFailure };
+export const RunMachineContextSchema = Schema.Struct({
+  browserEvidencePath: Schema.UndefinedOr(RunMachinePathSchema),
+  browserEvidenceStatus: Schema.UndefinedOr(RunMachineStatusSchema),
+  browserEvidenceTargetUrl: Schema.UndefinedOr(RunMachineUrlSchema),
+  delivery: Schema.UndefinedOr(RunMachineDeliverySchema),
+  evidenceReviewPath: Schema.UndefinedOr(RunMachinePathSchema),
+  failure: Schema.UndefinedOr(GaiaFailure),
+  githubChecksPath: Schema.UndefinedOr(RunMachinePathSchema),
+  githubChecksStatus: Schema.UndefinedOr(RunMachineStatusSchema),
+  githubFeedbackCommentCount: Schema.UndefinedOr(Schema.Number),
+  githubFeedbackNextAction: Schema.UndefinedOr(RunMachineActionTextSchema),
+  githubFeedbackPath: Schema.UndefinedOr(RunMachinePathSchema),
+  githubFeedbackReviewCount: Schema.UndefinedOr(Schema.Number),
+  githubFeedbackReviewRequestCount: Schema.UndefinedOr(Schema.Number),
+  githubFeedbackStatus: Schema.UndefinedOr(RunMachineStatusSchema),
+  githubPrCommentPath: Schema.UndefinedOr(RunMachinePathSchema),
+  githubPrCommentUrl: Schema.UndefinedOr(RunMachineUrlSchema),
+  githubPrLoopBlockerCount: Schema.UndefinedOr(Schema.Number),
+  githubPrLoopNextAction: Schema.UndefinedOr(RunMachineActionTextSchema),
+  githubPrLoopPath: Schema.UndefinedOr(RunMachinePathSchema),
+  githubPrLoopStatus: Schema.UndefinedOr(RunMachineStatusSchema),
+  githubPullRequest: Schema.UndefinedOr(RunMachineIdentifierSchema),
+  githubRemediationBlockerCount: Schema.UndefinedOr(Schema.Number),
+  githubRemediationNextAction: Schema.UndefinedOr(RunMachineActionTextSchema),
+  githubRemediationSpecPath: Schema.UndefinedOr(RunMachinePathSchema),
+  githubWatchStatePath: Schema.UndefinedOr(RunMachinePathSchema),
+  lastEventSequence: Schema.Number,
+  evidenceReviewerSessionPath: Schema.UndefinedOr(RunMachinePathSchema),
+  linearBlockedByCount: Schema.UndefinedOr(Schema.Number),
+  linearBlocksCount: Schema.UndefinedOr(Schema.Number),
+  linearIssueGraphPath: Schema.UndefinedOr(RunMachinePathSchema),
+  linearIssueIdentifier: Schema.UndefinedOr(RunMachineIdentifierSchema),
+  linearIssueUrl: Schema.UndefinedOr(RunMachineUrlSchema),
+  mergeDecisionBlockerCount: Schema.UndefinedOr(Schema.Number),
+  mergeDecisionNextAction: Schema.UndefinedOr(RunMachineActionTextSchema),
+  mergeDecisionPath: Schema.UndefinedOr(RunMachinePathSchema),
+  mergeDecisionStatus: Schema.UndefinedOr(RunMachineStatusSchema),
+  planReviewPath: Schema.UndefinedOr(RunMachinePathSchema),
+  planReviewerSessionPath: Schema.UndefinedOr(RunMachinePathSchema),
+  previewDeploymentPath: Schema.UndefinedOr(RunMachinePathSchema),
+  previewDeploymentStatus: Schema.UndefinedOr(RunMachineStatusSchema),
+  previewDeploymentUrl: Schema.UndefinedOr(RunMachineUrlSchema),
+  reportPath: Schema.UndefinedOr(RunMachinePathSchema),
+  runId: Schema.UndefinedOr(RunIdSchema),
+  specPath: Schema.UndefinedOr(RunMachinePathSchema),
+  verificationResultPath: Schema.UndefinedOr(RunMachinePathSchema),
+  workerResultPath: Schema.UndefinedOr(RunMachinePathSchema),
+  workspacePath: Schema.UndefinedOr(RunMachinePathSchema),
+});
 
-const initialContext: RunMachineContext = {
+export type RunMachineContext = typeof RunMachineContextSchema.Type;
+
+export const parseRunMachineContext = Schema.decodeUnknownSync(
+  RunMachineContextSchema
+);
+
+const DeliveryPublicationMachineEventTypeSchema = Schema.Union([
+  Schema.Literal("DELIVERY_PUBLICATION_INTENT_RECORDED"),
+  Schema.Literal("DELIVERY_PUBLICATION_ATTEMPTED"),
+  Schema.Literal("DELIVERY_PUBLICATION_CONFIRMED"),
+  Schema.Literal("DELIVERY_PUBLICATION_FAILED"),
+  Schema.Literal("DELIVERY_PUBLICATION_OUTCOME_UNKNOWN"),
+]);
+
+const DeliveryCheckpointMachineEventSchema = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("DELIVERY_CLEANUP_PROVENANCE_RECORDED"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED"),
+  }),
+]);
+
+export const RunMachineEventSchema = Schema.Union([
+  Schema.Struct({
+    runId: RunIdSchema,
+    specPath: RunMachinePathSchema,
+    type: Schema.Literal("RUN_CREATED"),
+  }),
+  Schema.Struct({
+    delivery: RunMachineDeliverySchema,
+    type: Schema.Literal("DELIVERY_STARTED"),
+  }),
+  Schema.Struct({
+    delivery: RunMachineDeliverySchema,
+    reportPath: Schema.UndefinedOr(RunMachinePathSchema),
+    type: Schema.Literal("DELIVERY_READY_TO_PUBLISH"),
+  }),
+  Schema.Struct({
+    publication: DeliveryPublicationSchema,
+    type: DeliveryPublicationMachineEventTypeSchema,
+  }),
+  Schema.Struct({
+    eventSequence: Schema.Number,
+    remediation: DeliveryRemediationSchema,
+    type: Schema.Literal("DELIVERY_REMEDIATION_RECORDED"),
+  }),
+  Schema.Struct({
+    readyForReviewAction: DeliveryPullRequestReadyReceiptSchema,
+    type: Schema.Literal("DELIVERY_PR_READY_RECORDED"),
+  }),
+  Schema.Struct({
+    attestation: DeliveryLocalReviewAttestationReceiptSchema,
+    type: Schema.Literal("DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED"),
+  }),
+  Schema.Struct({
+    mergeAction: DeliveryMergeReceiptSchema,
+    type: Schema.Literal("DELIVERY_MERGE_RECORDED"),
+  }),
+  Schema.Struct({
+    decision: DeliveryMergeReadinessDecisionSchema,
+    eventSequence: Schema.Number,
+    type: Schema.Literal("DELIVERY_MERGE_READINESS_RECORDED"),
+  }),
+  Schema.Struct({
+    cleanup: DeliveryCleanupReceiptSchema,
+    type: Schema.Literal("DELIVERY_CLEANUP_RECORDED"),
+  }),
+  DeliveryCheckpointMachineEventSchema,
+  Schema.Struct({
+    type: Schema.Literal("WORKSPACE_PREPARED"),
+    workspacePath: RunMachinePathSchema,
+  }),
+  Schema.Struct({ type: Schema.Literal("REVIEW_STARTED") }),
+  Schema.Struct({
+    phase: ReviewPhaseSchema,
+    reviewPath: RunMachinePathSchema,
+    reviewerSessionEvidencePath: Schema.optionalKey(RunMachinePathSchema),
+    type: Schema.Literal("REVIEW_COMPLETED"),
+  }),
+  Schema.Struct({ type: Schema.Literal("WORKER_STARTED") }),
+  Schema.Struct({
+    type: Schema.Literal("WORKER_COMPLETED"),
+    workerResultPath: RunMachinePathSchema,
+  }),
+  Schema.Struct({
+    deploymentPath: RunMachinePathSchema,
+    status: RunMachineStatusSchema,
+    type: Schema.Literal("PREVIEW_DEPLOYMENT_RECORDED"),
+    url: Schema.optionalKey(RunMachineUrlSchema),
+  }),
+  Schema.Struct({ type: Schema.Literal("VERIFICATION_STARTED") }),
+  Schema.Struct({
+    type: Schema.Literal("VERIFICATION_COMPLETED"),
+    verificationResultPath: RunMachinePathSchema,
+  }),
+  Schema.Struct({
+    evidencePath: RunMachinePathSchema,
+    status: RunMachineStatusSchema,
+    targetUrl: RunMachineUrlSchema,
+    type: Schema.Literal("BROWSER_EVIDENCE_RECORDED"),
+  }),
+  Schema.Struct({ type: Schema.Literal("REPORT_STARTED") }),
+  Schema.Struct({
+    reportPath: RunMachinePathSchema,
+    type: Schema.Literal("REPORT_COMPLETED"),
+  }),
+  Schema.Struct({
+    checksPath: RunMachinePathSchema,
+    pullRequest: RunMachineIdentifierSchema,
+    status: RunMachineStatusSchema,
+    type: Schema.Literal("GITHUB_CHECKS_RECORDED"),
+    watchStatePath: Schema.optionalKey(RunMachinePathSchema),
+  }),
+  Schema.Struct({
+    commentCount: Schema.Number,
+    feedbackPath: RunMachinePathSchema,
+    nextAction: RunMachineActionTextSchema,
+    pullRequest: RunMachineIdentifierSchema,
+    reviewCount: Schema.Number,
+    reviewRequestCount: Schema.Number,
+    status: RunMachineStatusSchema,
+    type: Schema.Literal("GITHUB_FEEDBACK_RECORDED"),
+  }),
+  Schema.Struct({
+    blockerCount: Schema.Number,
+    nextAction: RunMachineActionTextSchema,
+    observation: Schema.optionalKey(DeliveryPullRequestObservation),
+    prLoopPath: RunMachinePathSchema,
+    pullRequest: RunMachineIdentifierSchema,
+    status: RunMachineStatusSchema,
+    type: Schema.Literal("GITHUB_PR_LOOP_RECORDED"),
+  }),
+  Schema.Struct({
+    commentPath: RunMachinePathSchema,
+    commentUrl: Schema.optionalKey(RunMachineUrlSchema),
+    pullRequest: RunMachineIdentifierSchema,
+    type: Schema.Literal("GITHUB_PR_COMMENT_RECORDED"),
+  }),
+  Schema.Struct({
+    blockerCount: Schema.Number,
+    nextAction: RunMachineActionTextSchema,
+    pullRequest: RunMachineIdentifierSchema,
+    remediationSpecPath: RunMachinePathSchema,
+    type: Schema.Literal("GITHUB_REMEDIATION_SPEC_RECORDED"),
+  }),
+  Schema.Struct({
+    blockedByCount: Schema.Number,
+    blocksCount: Schema.Number,
+    issueGraphPath: RunMachinePathSchema,
+    issueIdentifier: RunMachineIdentifierSchema,
+    issueUrl: Schema.optionalKey(RunMachineUrlSchema),
+    type: Schema.Literal("LINEAR_ISSUE_GRAPH_RECORDED"),
+  }),
+  Schema.Struct({
+    blockerCount: Schema.Number,
+    mergeDecisionPath: RunMachinePathSchema,
+    nextAction: RunMachineActionTextSchema,
+    pullRequest: Schema.optionalKey(RunMachineIdentifierSchema),
+    status: RunMachineStatusSchema,
+    type: Schema.Literal("MERGE_DECISION_RECORDED"),
+  }),
+  Schema.Struct({ type: Schema.Literal("HARNESS_SESSION_EVENT_RECORDED") }),
+  Schema.Struct({
+    recovery: WorkerRecoveryReceiptSchema,
+    type: Schema.Literal("WORKER_RECOVERY_RECORDED"),
+  }),
+  Schema.Struct({
+    continuation: WorkerContinuationReceiptSchema,
+    type: Schema.Literal("WORKER_CONTINUATION_RECORDED"),
+  }),
+  Schema.Struct({
+    reconciliation: WorkerCorrelationReconciliationReceiptSchema,
+    type: Schema.Literal("WORKER_CORRELATION_RECONCILIATION_RECORDED"),
+  }),
+  Schema.Struct({
+    desktopOriginCorrelation: WorkerDesktopOriginCorrelationReceiptSchema,
+    type: Schema.Literal("WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED"),
+  }),
+  Schema.Struct({
+    failure: GaiaFailure,
+    type: Schema.Literal("RUN_FAILED"),
+  }),
+]);
+
+export type RunMachineEvent = typeof RunMachineEventSchema.Type;
+
+export const parseRunMachineEvent = Schema.decodeUnknownSync(
+  RunMachineEventSchema
+);
+
+const initialContext = parseRunMachineContext({
   browserEvidencePath: undefined,
   browserEvidenceStatus: undefined,
   browserEvidenceTargetUrl: undefined,
@@ -322,808 +381,877 @@ const initialContext: RunMachineContext = {
   verificationResultPath: undefined,
   workerResultPath: undefined,
   workspacePath: undefined,
+});
+
+type RunMachineActionParams = {
+  readonly recordBrowserEvidence: undefined;
+  readonly recordDelivery: undefined;
+  readonly recordDeliveryCleanup: undefined;
+  readonly recordDeliveryMerge: undefined;
+  readonly recordDeliveryMergeReadiness: undefined;
+  readonly recordDeliveryPublication: undefined;
+  readonly recordDeliveryPullRequestReady: undefined;
+  readonly recordDeliveryReadyToPublish: undefined;
+  readonly recordDeliveryRemediation: undefined;
+  readonly recordFailure: undefined;
+  readonly recordGitHubChecks: undefined;
+  readonly recordGitHubFeedback: undefined;
+  readonly recordGitHubPrComment: undefined;
+  readonly recordGitHubPrLoop: undefined;
+  readonly recordGitHubRemediationSpec: undefined;
+  readonly recordLinearIssueGraph: undefined;
+  readonly recordMergeDecision: undefined;
+  readonly recordPreviewDeployment: undefined;
+  readonly recordReportCompleted: undefined;
+  readonly recordReviewCompleted: undefined;
+  readonly recordRunCreated: undefined;
+  readonly recordVerificationCompleted: undefined;
+  readonly recordWorkerCompleted: undefined;
+  readonly recordWorkerContinuation: undefined;
+  readonly recordWorkerCorrelationReconciliation: undefined;
+  readonly recordWorkerDesktopOriginCorrelation: undefined;
+  readonly recordWorkspacePrepared: undefined;
 };
 
-export const runMachine = createMachine({
-  types: {} as {
-    context: RunMachineContext;
-    events: RunMachineEvent;
-  },
-  context: initialContext,
-  id: "gaia-run",
-  initial: "created",
-  states: {
-    completed: {
-      on: {
-        WORKER_CONTINUATION_RECORDED: [
-          {
-            actions: "recordWorkerContinuation",
-            guard: "workerContinuationRunning",
-            target: "runningWorker",
+type RunMachineGuardParams = {
+  readonly cleanupCompleted: undefined;
+  readonly workerContinuationFailed: undefined;
+  readonly workerContinuationRunning: undefined;
+  readonly workerCorrelationFailed: undefined;
+  readonly workerCorrelationRunning: undefined;
+  readonly workerDesktopOriginCorrelationFailed: undefined;
+  readonly workerDesktopOriginCorrelationRunning: undefined;
+  readonly workerRecoveryConfirmed: undefined;
+};
+
+const runMachineSetup = setup<
+  RunMachineContext,
+  RunMachineEvent,
+  Record<never, never>,
+  Record<never, string>,
+  RunMachineActionParams,
+  RunMachineGuardParams
+>({});
+
+export const runMachine = runMachineSetup
+  .createMachine({
+    context: initialContext,
+    id: "gaia-run",
+    initial: "created",
+    states: {
+      completed: {
+        on: {
+          WORKER_CONTINUATION_RECORDED: [
+            {
+              actions: "recordWorkerContinuation",
+              guard: "workerContinuationRunning",
+              target: "runningWorker",
+            },
+            {
+              actions: "recordWorkerContinuation",
+              guard: "workerContinuationFailed",
+              target: "failed",
+            },
+            { actions: "recordWorkerContinuation", target: "delivering" },
+          ],
+          WORKER_CORRELATION_RECONCILIATION_RECORDED: [
+            {
+              actions: "recordWorkerCorrelationReconciliation",
+              guard: "workerCorrelationRunning",
+              target: "runningWorker",
+            },
+            {
+              actions: "recordWorkerCorrelationReconciliation",
+              guard: "workerCorrelationFailed",
+              target: "failed",
+            },
+            {
+              actions: "recordWorkerCorrelationReconciliation",
+              target: "delivering",
+            },
+          ],
+          WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
+            {
+              actions: "recordWorkerDesktopOriginCorrelation",
+              guard: "workerDesktopOriginCorrelationRunning",
+              target: "runningWorker",
+            },
+            {
+              actions: "recordWorkerDesktopOriginCorrelation",
+              guard: "workerDesktopOriginCorrelationFailed",
+              target: "failed",
+            },
+            {
+              actions: "recordWorkerDesktopOriginCorrelation",
+              target: "delivering",
+            },
+          ],
+          BROWSER_EVIDENCE_RECORDED: {
+            actions: "recordBrowserEvidence",
           },
-          {
-            actions: "recordWorkerContinuation",
-            guard: "workerContinuationFailed",
+          GITHUB_CHECKS_RECORDED: {
+            actions: "recordGitHubChecks",
+          },
+          GITHUB_FEEDBACK_RECORDED: {
+            actions: "recordGitHubFeedback",
+          },
+          GITHUB_PR_LOOP_RECORDED: {
+            actions: "recordGitHubPrLoop",
+          },
+          GITHUB_PR_COMMENT_RECORDED: {
+            actions: "recordGitHubPrComment",
+          },
+          GITHUB_REMEDIATION_SPEC_RECORDED: {
+            actions: "recordGitHubRemediationSpec",
+          },
+          LINEAR_ISSUE_GRAPH_RECORDED: {
+            actions: "recordLinearIssueGraph",
+          },
+          MERGE_DECISION_RECORDED: {
+            actions: "recordMergeDecision",
+          },
+          PREVIEW_DEPLOYMENT_RECORDED: {
+            actions: "recordPreviewDeployment",
+          },
+          RUN_FAILED: {
+            actions: "recordFailure",
             target: "failed",
           },
-          { actions: "recordWorkerContinuation", target: "delivering" },
-        ],
-        WORKER_CORRELATION_RECONCILIATION_RECORDED: [
-          {
-            actions: "recordWorkerCorrelationReconciliation",
-            guard: "workerCorrelationRunning",
-            target: "runningWorker",
-          },
-          {
-            actions: "recordWorkerCorrelationReconciliation",
-            guard: "workerCorrelationFailed",
-            target: "failed",
-          },
-          {
-            actions: "recordWorkerCorrelationReconciliation",
-            target: "delivering",
-          },
-        ],
-        WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
-          {
-            actions: "recordWorkerDesktopOriginCorrelation",
-            guard: "workerDesktopOriginCorrelationRunning",
-            target: "runningWorker",
-          },
-          {
-            actions: "recordWorkerDesktopOriginCorrelation",
-            guard: "workerDesktopOriginCorrelationFailed",
-            target: "failed",
-          },
-          {
-            actions: "recordWorkerDesktopOriginCorrelation",
-            target: "delivering",
-          },
-        ],
-        BROWSER_EVIDENCE_RECORDED: {
-          actions: "recordBrowserEvidence",
-        },
-        GITHUB_CHECKS_RECORDED: {
-          actions: "recordGitHubChecks",
-        },
-        GITHUB_FEEDBACK_RECORDED: {
-          actions: "recordGitHubFeedback",
-        },
-        GITHUB_PR_LOOP_RECORDED: {
-          actions: "recordGitHubPrLoop",
-        },
-        GITHUB_PR_COMMENT_RECORDED: {
-          actions: "recordGitHubPrComment",
-        },
-        GITHUB_REMEDIATION_SPEC_RECORDED: {
-          actions: "recordGitHubRemediationSpec",
-        },
-        LINEAR_ISSUE_GRAPH_RECORDED: {
-          actions: "recordLinearIssueGraph",
-        },
-        MERGE_DECISION_RECORDED: {
-          actions: "recordMergeDecision",
-        },
-        PREVIEW_DEPLOYMENT_RECORDED: {
-          actions: "recordPreviewDeployment",
-        },
-        RUN_FAILED: {
-          actions: "recordFailure",
-          target: "failed",
         },
       },
-    },
-    created: {
-      on: {
-        RUN_CREATED: {
-          actions: "recordRunCreated",
-          target: "preparingWorkspace",
-        },
-        RUN_FAILED: {
-          actions: "recordFailure",
-          target: "failed",
-        },
-        WORKER_CORRELATION_RECONCILIATION_RECORDED: [
-          {
-            actions: "recordWorkerCorrelationReconciliation",
-            guard: "workerCorrelationFailed",
+      created: {
+        on: {
+          RUN_CREATED: {
+            actions: "recordRunCreated",
+            target: "preparingWorkspace",
+          },
+          RUN_FAILED: {
+            actions: "recordFailure",
             target: "failed",
           },
-          { actions: "recordWorkerCorrelationReconciliation" },
-        ],
-        WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
-          {
-            actions: "recordWorkerDesktopOriginCorrelation",
-            guard: "workerDesktopOriginCorrelationFailed",
-            target: "failed",
-          },
-          { actions: "recordWorkerDesktopOriginCorrelation" },
-        ],
+          WORKER_CORRELATION_RECONCILIATION_RECORDED: [
+            {
+              actions: "recordWorkerCorrelationReconciliation",
+              guard: "workerCorrelationFailed",
+              target: "failed",
+            },
+            { actions: "recordWorkerCorrelationReconciliation" },
+          ],
+          WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
+            {
+              actions: "recordWorkerDesktopOriginCorrelation",
+              guard: "workerDesktopOriginCorrelationFailed",
+              target: "failed",
+            },
+            { actions: "recordWorkerDesktopOriginCorrelation" },
+          ],
+        },
       },
-    },
-    failed: {
-      on: {
-        WORKER_CONTINUATION_RECORDED: [
-          {
-            actions: "recordWorkerContinuation",
-            guard: "workerContinuationRunning",
+      failed: {
+        on: {
+          WORKER_CONTINUATION_RECORDED: [
+            {
+              actions: "recordWorkerContinuation",
+              guard: "workerContinuationRunning",
+              target: "runningWorker",
+            },
+            {
+              actions: "recordWorkerContinuation",
+              guard: "workerContinuationFailed",
+            },
+            { actions: "recordWorkerContinuation", target: "delivering" },
+          ],
+          WORKER_CORRELATION_RECONCILIATION_RECORDED: [
+            {
+              actions: "recordWorkerCorrelationReconciliation",
+              guard: "workerCorrelationRunning",
+              target: "runningWorker",
+            },
+            {
+              actions: "recordWorkerCorrelationReconciliation",
+              guard: "workerCorrelationFailed",
+            },
+            {
+              actions: "recordWorkerCorrelationReconciliation",
+              target: "delivering",
+            },
+          ],
+          WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
+            {
+              actions: "recordWorkerDesktopOriginCorrelation",
+              guard: "workerDesktopOriginCorrelationRunning",
+              target: "runningWorker",
+            },
+            {
+              actions: "recordWorkerDesktopOriginCorrelation",
+              guard: "workerDesktopOriginCorrelationFailed",
+            },
+            {
+              actions: "recordWorkerDesktopOriginCorrelation",
+              target: "delivering",
+            },
+          ],
+          WORKER_RECOVERY_RECORDED: [
+            { guard: "workerRecoveryConfirmed", target: "runningWorker" },
+            {},
+          ],
+        },
+      },
+      delivering: {
+        on: {
+          BROWSER_EVIDENCE_RECORDED: {
+            actions: "recordBrowserEvidence",
+          },
+          GITHUB_CHECKS_RECORDED: {
+            actions: "recordGitHubChecks",
+          },
+          GITHUB_FEEDBACK_RECORDED: {
+            actions: "recordGitHubFeedback",
+          },
+          GITHUB_PR_LOOP_RECORDED: {
+            actions: "recordGitHubPrLoop",
+          },
+          REVIEW_COMPLETED: {
+            actions: "recordReviewCompleted",
+          },
+          REVIEW_STARTED: {},
+          DELIVERY_PUBLICATION_ATTEMPTED: {
+            actions: "recordDeliveryPublication",
+          },
+          DELIVERY_PUBLICATION_CONFIRMED: {
+            actions: "recordDeliveryPublication",
+          },
+          DELIVERY_PUBLICATION_FAILED: {
+            actions: "recordDeliveryPublication",
+          },
+          DELIVERY_PUBLICATION_INTENT_RECORDED: {
+            actions: "recordDeliveryPublication",
+          },
+          DELIVERY_PUBLICATION_OUTCOME_UNKNOWN: {
+            actions: "recordDeliveryPublication",
+          },
+          DELIVERY_REMEDIATION_RECORDED: {
+            actions: "recordDeliveryRemediation",
+          },
+          DELIVERY_PR_READY_RECORDED: {
+            actions: "recordDeliveryPullRequestReady",
+          },
+          DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED: {},
+          WORKER_CONTINUATION_RECORDED: [
+            {
+              actions: "recordWorkerContinuation",
+              guard: "workerContinuationRunning",
+              target: "runningWorker",
+            },
+            {
+              actions: "recordWorkerContinuation",
+              guard: "workerContinuationFailed",
+              target: "failed",
+            },
+            { actions: "recordWorkerContinuation" },
+          ],
+          WORKER_CORRELATION_RECONCILIATION_RECORDED: [
+            {
+              actions: "recordWorkerCorrelationReconciliation",
+              guard: "workerCorrelationRunning",
+              target: "runningWorker",
+            },
+            {
+              actions: "recordWorkerCorrelationReconciliation",
+              guard: "workerCorrelationFailed",
+              target: "failed",
+            },
+            { actions: "recordWorkerCorrelationReconciliation" },
+          ],
+          WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
+            {
+              actions: "recordWorkerDesktopOriginCorrelation",
+              guard: "workerDesktopOriginCorrelationRunning",
+              target: "runningWorker",
+            },
+            {
+              actions: "recordWorkerDesktopOriginCorrelation",
+              guard: "workerDesktopOriginCorrelationFailed",
+              target: "failed",
+            },
+            { actions: "recordWorkerDesktopOriginCorrelation" },
+          ],
+          DELIVERY_MERGE_RECORDED: { actions: "recordDeliveryMerge" },
+          DELIVERY_MERGE_READINESS_RECORDED: {
+            actions: "recordDeliveryMergeReadiness",
+          },
+          DELIVERY_CLEANUP_RECORDED: [
+            {
+              actions: "recordDeliveryCleanup",
+              guard: "cleanupCompleted",
+              target: "completed",
+            },
+            { actions: "recordDeliveryCleanup" },
+          ],
+          RUN_FAILED: {
+            actions: "recordFailure",
+            target: "failed",
+          },
+          VERIFICATION_COMPLETED: {
+            actions: "recordVerificationCompleted",
+          },
+          VERIFICATION_STARTED: {},
+          WORKSPACE_PREPARED: {
+            actions: "recordWorkspacePrepared",
             target: "runningWorker",
           },
-          {
-            actions: "recordWorkerContinuation",
-            guard: "workerContinuationFailed",
-          },
-          { actions: "recordWorkerContinuation", target: "delivering" },
-        ],
-        WORKER_CORRELATION_RECONCILIATION_RECORDED: [
-          {
-            actions: "recordWorkerCorrelationReconciliation",
-            guard: "workerCorrelationRunning",
-            target: "runningWorker",
-          },
-          {
-            actions: "recordWorkerCorrelationReconciliation",
-            guard: "workerCorrelationFailed",
-          },
-          {
-            actions: "recordWorkerCorrelationReconciliation",
+        },
+      },
+      preparingWorkspace: {
+        on: {
+          DELIVERY_STARTED: {
+            actions: "recordDelivery",
             target: "delivering",
           },
-        ],
-        WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
-          {
-            actions: "recordWorkerDesktopOriginCorrelation",
-            guard: "workerDesktopOriginCorrelationRunning",
+          RUN_FAILED: {
+            actions: "recordFailure",
+            target: "failed",
+          },
+          WORKSPACE_PREPARED: {
+            actions: "recordWorkspacePrepared",
             target: "runningWorker",
           },
-          {
-            actions: "recordWorkerDesktopOriginCorrelation",
-            guard: "workerDesktopOriginCorrelationFailed",
+        },
+      },
+      reporting: {
+        on: {
+          BROWSER_EVIDENCE_RECORDED: {
+            actions: "recordBrowserEvidence",
           },
-          {
-            actions: "recordWorkerDesktopOriginCorrelation",
+          DELIVERY_READY_TO_PUBLISH: {
+            actions: "recordDeliveryReadyToPublish",
             target: "delivering",
           },
-        ],
-        WORKER_RECOVERY_RECORDED: [
-          { guard: "workerRecoveryConfirmed", target: "runningWorker" },
-          {},
-        ],
-      },
-    },
-    delivering: {
-      on: {
-        BROWSER_EVIDENCE_RECORDED: {
-          actions: "recordBrowserEvidence",
-        },
-        GITHUB_CHECKS_RECORDED: {
-          actions: "recordGitHubChecks",
-        },
-        GITHUB_FEEDBACK_RECORDED: {
-          actions: "recordGitHubFeedback",
-        },
-        GITHUB_PR_LOOP_RECORDED: {
-          actions: "recordGitHubPrLoop",
-        },
-        REVIEW_COMPLETED: {
-          actions: "recordReviewCompleted",
-        },
-        REVIEW_STARTED: {},
-        DELIVERY_PUBLICATION_ATTEMPTED: {
-          actions: "recordDeliveryPublication",
-        },
-        DELIVERY_PUBLICATION_CONFIRMED: {
-          actions: "recordDeliveryPublication",
-        },
-        DELIVERY_PUBLICATION_FAILED: {
-          actions: "recordDeliveryPublication",
-        },
-        DELIVERY_PUBLICATION_INTENT_RECORDED: {
-          actions: "recordDeliveryPublication",
-        },
-        DELIVERY_PUBLICATION_OUTCOME_UNKNOWN: {
-          actions: "recordDeliveryPublication",
-        },
-        DELIVERY_REMEDIATION_RECORDED: {
-          actions: "recordDeliveryRemediation",
-        },
-        DELIVERY_PR_READY_RECORDED: {
-          actions: "recordDeliveryPullRequestReady",
-        },
-        DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED: {},
-        WORKER_CONTINUATION_RECORDED: [
-          {
-            actions: "recordWorkerContinuation",
-            guard: "workerContinuationRunning",
-            target: "runningWorker",
+          PREVIEW_DEPLOYMENT_RECORDED: {
+            actions: "recordPreviewDeployment",
           },
-          {
-            actions: "recordWorkerContinuation",
-            guard: "workerContinuationFailed",
-            target: "failed",
-          },
-          { actions: "recordWorkerContinuation" },
-        ],
-        WORKER_CORRELATION_RECONCILIATION_RECORDED: [
-          {
-            actions: "recordWorkerCorrelationReconciliation",
-            guard: "workerCorrelationRunning",
-            target: "runningWorker",
-          },
-          {
-            actions: "recordWorkerCorrelationReconciliation",
-            guard: "workerCorrelationFailed",
-            target: "failed",
-          },
-          { actions: "recordWorkerCorrelationReconciliation" },
-        ],
-        WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
-          {
-            actions: "recordWorkerDesktopOriginCorrelation",
-            guard: "workerDesktopOriginCorrelationRunning",
-            target: "runningWorker",
-          },
-          {
-            actions: "recordWorkerDesktopOriginCorrelation",
-            guard: "workerDesktopOriginCorrelationFailed",
-            target: "failed",
-          },
-          { actions: "recordWorkerDesktopOriginCorrelation" },
-        ],
-        DELIVERY_MERGE_RECORDED: { actions: "recordDeliveryMerge" },
-        DELIVERY_MERGE_READINESS_RECORDED: {
-          actions: "recordDeliveryMergeReadiness",
-        },
-        DELIVERY_CLEANUP_RECORDED: [
-          {
-            actions: "recordDeliveryCleanup",
-            guard: "cleanupCompleted",
+          REPORT_STARTED: {},
+          REPORT_COMPLETED: {
+            actions: "recordReportCompleted",
             target: "completed",
           },
-          { actions: "recordDeliveryCleanup" },
-        ],
-        RUN_FAILED: {
-          actions: "recordFailure",
-          target: "failed",
+          REVIEW_COMPLETED: {
+            actions: "recordReviewCompleted",
+          },
+          REVIEW_STARTED: {},
+          RUN_FAILED: {
+            actions: "recordFailure",
+            target: "failed",
+          },
         },
-        VERIFICATION_COMPLETED: {
-          actions: "recordVerificationCompleted",
+      },
+      runningWorker: {
+        on: {
+          RUN_FAILED: {
+            actions: "recordFailure",
+            target: "failed",
+          },
+          REVIEW_COMPLETED: {
+            actions: "recordReviewCompleted",
+          },
+          REVIEW_STARTED: {},
+          PREVIEW_DEPLOYMENT_RECORDED: {
+            actions: "recordPreviewDeployment",
+          },
+          WORKER_COMPLETED: {
+            actions: "recordWorkerCompleted",
+            target: "verifying",
+          },
+          WORKER_STARTED: {},
+          WORKER_CONTINUATION_RECORDED: [
+            {
+              actions: "recordWorkerContinuation",
+              guard: "workerContinuationFailed",
+              target: "failed",
+            },
+            { actions: "recordWorkerContinuation" },
+          ],
+          WORKER_CORRELATION_RECONCILIATION_RECORDED: [
+            {
+              actions: "recordWorkerCorrelationReconciliation",
+              guard: "workerCorrelationFailed",
+              target: "failed",
+            },
+            { actions: "recordWorkerCorrelationReconciliation" },
+          ],
+          WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
+            {
+              actions: "recordWorkerDesktopOriginCorrelation",
+              guard: "workerDesktopOriginCorrelationFailed",
+              target: "failed",
+            },
+            { actions: "recordWorkerDesktopOriginCorrelation" },
+          ],
         },
-        VERIFICATION_STARTED: {},
-        WORKSPACE_PREPARED: {
-          actions: "recordWorkspacePrepared",
-          target: "runningWorker",
+      },
+      verifying: {
+        on: {
+          PREVIEW_DEPLOYMENT_RECORDED: {
+            actions: "recordPreviewDeployment",
+          },
+          RUN_FAILED: {
+            actions: "recordFailure",
+            target: "failed",
+          },
+          VERIFICATION_COMPLETED: {
+            actions: "recordVerificationCompleted",
+            target: "reporting",
+          },
+          VERIFICATION_STARTED: {},
+          WORKER_CORRELATION_RECONCILIATION_RECORDED: [
+            {
+              actions: "recordWorkerCorrelationReconciliation",
+              guard: "workerCorrelationFailed",
+              target: "failed",
+            },
+            { actions: "recordWorkerCorrelationReconciliation" },
+          ],
+          WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
+            {
+              actions: "recordWorkerDesktopOriginCorrelation",
+              guard: "workerDesktopOriginCorrelationFailed",
+              target: "failed",
+            },
+            { actions: "recordWorkerDesktopOriginCorrelation" },
+          ],
         },
       },
     },
-    preparingWorkspace: {
-      on: {
-        DELIVERY_STARTED: {
-          actions: "recordDelivery",
-          target: "delivering",
-        },
-        RUN_FAILED: {
-          actions: "recordFailure",
-          target: "failed",
-        },
-        WORKSPACE_PREPARED: {
-          actions: "recordWorkspacePrepared",
-          target: "runningWorker",
-        },
-      },
+  })
+  .provide({
+    actions: {
+      recordBrowserEvidence: assign({
+        browserEvidencePath: ({ event }) =>
+          event.type === "BROWSER_EVIDENCE_RECORDED"
+            ? event.evidencePath
+            : undefined,
+        browserEvidenceStatus: ({ event }) =>
+          event.type === "BROWSER_EVIDENCE_RECORDED" ? event.status : undefined,
+        browserEvidenceTargetUrl: ({ event }) =>
+          event.type === "BROWSER_EVIDENCE_RECORDED"
+            ? event.targetUrl
+            : undefined,
+      }),
+      recordFailure: assign({
+        failure: ({ event }) =>
+          event.type === "RUN_FAILED" ? event.failure : undefined,
+      }),
+      recordDelivery: assign({
+        delivery: ({ event }) =>
+          event.type === "DELIVERY_STARTED" ||
+          event.type === "DELIVERY_READY_TO_PUBLISH"
+            ? event.delivery
+            : undefined,
+      }),
+      recordGitHubChecks: assign({
+        githubChecksPath: ({ event }) =>
+          event.type === "GITHUB_CHECKS_RECORDED"
+            ? event.checksPath
+            : undefined,
+        githubChecksStatus: ({ event }) =>
+          event.type === "GITHUB_CHECKS_RECORDED" ? event.status : undefined,
+        githubPullRequest: ({ event }) =>
+          event.type === "GITHUB_CHECKS_RECORDED"
+            ? event.pullRequest
+            : undefined,
+        githubWatchStatePath: ({ context, event }) =>
+          event.type === "GITHUB_CHECKS_RECORDED" &&
+          event.watchStatePath !== undefined
+            ? event.watchStatePath
+            : context.githubWatchStatePath,
+      }),
+      recordDeliveryReadyToPublish: assign({
+        delivery: ({ context, event }) =>
+          event.type === "DELIVERY_READY_TO_PUBLISH"
+            ? deliveryReadyToPublish(context.delivery, event.delivery)
+            : context.delivery,
+        reportPath: ({ event }) =>
+          event.type === "DELIVERY_READY_TO_PUBLISH"
+            ? event.reportPath
+            : undefined,
+      }),
+      recordDeliveryPublication: assign({
+        delivery: ({ context, event }) =>
+          event.type === "DELIVERY_PUBLICATION_INTENT_RECORDED" ||
+          event.type === "DELIVERY_PUBLICATION_ATTEMPTED" ||
+          event.type === "DELIVERY_PUBLICATION_CONFIRMED" ||
+          event.type === "DELIVERY_PUBLICATION_FAILED" ||
+          event.type === "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN"
+            ? deliveryWithPublication(context.delivery, event.publication)
+            : context.delivery,
+      }),
+      recordDeliveryRemediation: assign({
+        delivery: ({ context, event }) =>
+          event.type === "DELIVERY_REMEDIATION_RECORDED"
+            ? deliveryWithRemediation(
+                context.delivery,
+                event.remediation,
+                event.eventSequence
+              )
+            : context.delivery,
+      }),
+      recordDeliveryMerge: assign({
+        delivery: ({ context, event }) =>
+          event.type === "DELIVERY_MERGE_RECORDED"
+            ? deliveryWithMerge(context.delivery, event.mergeAction)
+            : context.delivery,
+      }),
+      recordDeliveryPullRequestReady: assign({
+        delivery: ({ context, event }) =>
+          event.type === "DELIVERY_PR_READY_RECORDED"
+            ? deliveryWithPullRequestReady(
+                context.delivery,
+                event.readyForReviewAction
+              )
+            : context.delivery,
+      }),
+      recordWorkerContinuation: assign({
+        delivery: ({ context, event }) =>
+          event.type === "WORKER_CONTINUATION_RECORDED"
+            ? deliveryWithWorkerContinuation(
+                context.delivery,
+                event.continuation
+              )
+            : context.delivery,
+        evidenceReviewPath: ({ context, event }) =>
+          event.type === "WORKER_CONTINUATION_RECORDED" &&
+          event.continuation.state === "intentRecorded"
+            ? undefined
+            : context.evidenceReviewPath,
+        reportPath: ({ context, event }) =>
+          event.type === "WORKER_CONTINUATION_RECORDED" &&
+          event.continuation.state === "intentRecorded"
+            ? undefined
+            : context.reportPath,
+        verificationResultPath: ({ context, event }) =>
+          event.type === "WORKER_CONTINUATION_RECORDED" &&
+          event.continuation.state === "intentRecorded"
+            ? undefined
+            : context.verificationResultPath,
+        workerResultPath: ({ context, event }) =>
+          event.type === "WORKER_CONTINUATION_RECORDED" &&
+          event.continuation.state === "intentRecorded"
+            ? undefined
+            : context.workerResultPath,
+      }),
+      recordWorkerCorrelationReconciliation: assign({
+        delivery: ({ context, event }) =>
+          event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED"
+            ? deliveryWithWorkerCorrelationReconciliation(
+                context.delivery,
+                event.reconciliation
+              )
+            : context.delivery,
+        evidenceReviewPath: ({ context, event }) =>
+          event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
+          event.reconciliation.state === "intentRecorded"
+            ? undefined
+            : context.evidenceReviewPath,
+        reportPath: ({ context, event }) =>
+          event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
+          event.reconciliation.state === "intentRecorded"
+            ? undefined
+            : context.reportPath,
+        verificationResultPath: ({ context, event }) =>
+          event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
+          event.reconciliation.state === "intentRecorded"
+            ? undefined
+            : context.verificationResultPath,
+        workerResultPath: ({ context, event }) =>
+          event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
+          event.reconciliation.state === "intentRecorded"
+            ? undefined
+            : context.workerResultPath,
+      }),
+      recordWorkerDesktopOriginCorrelation: assign({
+        delivery: ({ context, event }) =>
+          event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED"
+            ? deliveryWithWorkerDesktopOriginCorrelation(
+                context.delivery,
+                event.desktopOriginCorrelation
+              )
+            : context.delivery,
+        evidenceReviewPath: ({ context, event }) =>
+          event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
+          event.desktopOriginCorrelation.state === "intentRecorded"
+            ? undefined
+            : context.evidenceReviewPath,
+        reportPath: ({ context, event }) =>
+          event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
+          event.desktopOriginCorrelation.state === "intentRecorded"
+            ? undefined
+            : context.reportPath,
+        verificationResultPath: ({ context, event }) =>
+          event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
+          event.desktopOriginCorrelation.state === "intentRecorded"
+            ? undefined
+            : context.verificationResultPath,
+        workerResultPath: ({ context, event }) =>
+          event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
+          event.desktopOriginCorrelation.state === "intentRecorded"
+            ? undefined
+            : context.workerResultPath,
+      }),
+      recordDeliveryMergeReadiness: assign({
+        delivery: ({ context, event }) =>
+          event.type === "DELIVERY_MERGE_READINESS_RECORDED" &&
+          context.delivery !== undefined
+            ? {
+                ...context.delivery,
+                mergeDecision: encodeDeliveryMergeReadinessDecisionJson(
+                  event.decision
+                ),
+                mergeDecisionSequence: event.eventSequence,
+                stage: event.decision.approved
+                  ? "awaitingMerge"
+                  : "waitingForPr",
+              }
+            : context.delivery,
+      }),
+      recordDeliveryCleanup: assign({
+        delivery: ({ context, event }) =>
+          event.type === "DELIVERY_CLEANUP_RECORDED"
+            ? deliveryWithCleanup(context.delivery, event.cleanup)
+            : context.delivery,
+      }),
+      recordGitHubFeedback: assign({
+        githubFeedbackCommentCount: ({ event }) =>
+          event.type === "GITHUB_FEEDBACK_RECORDED"
+            ? event.commentCount
+            : undefined,
+        githubFeedbackNextAction: ({ event }) =>
+          event.type === "GITHUB_FEEDBACK_RECORDED"
+            ? event.nextAction
+            : undefined,
+        githubFeedbackPath: ({ event }) =>
+          event.type === "GITHUB_FEEDBACK_RECORDED"
+            ? event.feedbackPath
+            : undefined,
+        githubFeedbackReviewCount: ({ event }) =>
+          event.type === "GITHUB_FEEDBACK_RECORDED"
+            ? event.reviewCount
+            : undefined,
+        githubFeedbackReviewRequestCount: ({ event }) =>
+          event.type === "GITHUB_FEEDBACK_RECORDED"
+            ? event.reviewRequestCount
+            : undefined,
+        githubFeedbackStatus: ({ event }) =>
+          event.type === "GITHUB_FEEDBACK_RECORDED" ? event.status : undefined,
+        githubPullRequest: ({ event }) =>
+          event.type === "GITHUB_FEEDBACK_RECORDED"
+            ? event.pullRequest
+            : undefined,
+      }),
+      recordGitHubPrLoop: assign({
+        delivery: ({ context, event }) =>
+          event.type === "GITHUB_PR_LOOP_RECORDED" &&
+          event.observation !== undefined
+            ? deliveryWithPullRequestObservation(
+                context.delivery,
+                event.observation
+              )
+            : context.delivery,
+        githubPrLoopBlockerCount: ({ event }) =>
+          event.type === "GITHUB_PR_LOOP_RECORDED"
+            ? event.blockerCount
+            : undefined,
+        githubPrLoopNextAction: ({ event }) =>
+          event.type === "GITHUB_PR_LOOP_RECORDED"
+            ? event.nextAction
+            : undefined,
+        githubPrLoopPath: ({ event }) =>
+          event.type === "GITHUB_PR_LOOP_RECORDED"
+            ? event.prLoopPath
+            : undefined,
+        githubPrLoopStatus: ({ event }) =>
+          event.type === "GITHUB_PR_LOOP_RECORDED" ? event.status : undefined,
+        githubPullRequest: ({ event }) =>
+          event.type === "GITHUB_PR_LOOP_RECORDED"
+            ? event.pullRequest
+            : undefined,
+      }),
+      recordGitHubPrComment: assign({
+        githubPrCommentPath: ({ event }) =>
+          event.type === "GITHUB_PR_COMMENT_RECORDED"
+            ? event.commentPath
+            : undefined,
+        githubPrCommentUrl: ({ event }) =>
+          event.type === "GITHUB_PR_COMMENT_RECORDED"
+            ? event.commentUrl
+            : undefined,
+        githubPullRequest: ({ event }) =>
+          event.type === "GITHUB_PR_COMMENT_RECORDED"
+            ? event.pullRequest
+            : undefined,
+      }),
+      recordGitHubRemediationSpec: assign({
+        githubRemediationBlockerCount: ({ event }) =>
+          event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
+            ? event.blockerCount
+            : undefined,
+        githubPullRequest: ({ event }) =>
+          event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
+            ? event.pullRequest
+            : undefined,
+        githubRemediationNextAction: ({ event }) =>
+          event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
+            ? event.nextAction
+            : undefined,
+        githubRemediationSpecPath: ({ event }) =>
+          event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
+            ? event.remediationSpecPath
+            : undefined,
+      }),
+      recordLinearIssueGraph: assign({
+        linearBlockedByCount: ({ event }) =>
+          event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
+            ? event.blockedByCount
+            : undefined,
+        linearBlocksCount: ({ event }) =>
+          event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
+            ? event.blocksCount
+            : undefined,
+        linearIssueGraphPath: ({ event }) =>
+          event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
+            ? event.issueGraphPath
+            : undefined,
+        linearIssueIdentifier: ({ event }) =>
+          event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
+            ? event.issueIdentifier
+            : undefined,
+        linearIssueUrl: ({ event }) =>
+          event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
+            ? event.issueUrl
+            : undefined,
+      }),
+      recordMergeDecision: assign({
+        githubPullRequest: ({ context, event }) =>
+          event.type === "MERGE_DECISION_RECORDED" &&
+          event.pullRequest !== undefined
+            ? event.pullRequest
+            : context.githubPullRequest,
+        mergeDecisionBlockerCount: ({ event }) =>
+          event.type === "MERGE_DECISION_RECORDED"
+            ? event.blockerCount
+            : undefined,
+        mergeDecisionNextAction: ({ event }) =>
+          event.type === "MERGE_DECISION_RECORDED"
+            ? event.nextAction
+            : undefined,
+        mergeDecisionPath: ({ event }) =>
+          event.type === "MERGE_DECISION_RECORDED"
+            ? event.mergeDecisionPath
+            : undefined,
+        mergeDecisionStatus: ({ event }) =>
+          event.type === "MERGE_DECISION_RECORDED" ? event.status : undefined,
+      }),
+      recordPreviewDeployment: assign({
+        previewDeploymentPath: ({ event }) =>
+          event.type === "PREVIEW_DEPLOYMENT_RECORDED"
+            ? event.deploymentPath
+            : undefined,
+        previewDeploymentStatus: ({ event }) =>
+          event.type === "PREVIEW_DEPLOYMENT_RECORDED"
+            ? event.status
+            : undefined,
+        previewDeploymentUrl: ({ event }) =>
+          event.type === "PREVIEW_DEPLOYMENT_RECORDED" ? event.url : undefined,
+      }),
+      recordReportCompleted: assign({
+        reportPath: ({ event }) =>
+          event.type === "REPORT_COMPLETED" ? event.reportPath : undefined,
+      }),
+      recordRunCreated: assign({
+        runId: ({ event }) =>
+          event.type === "RUN_CREATED" ? event.runId : undefined,
+        specPath: ({ event }) =>
+          event.type === "RUN_CREATED" ? event.specPath : undefined,
+      }),
+      recordReviewCompleted: assign({
+        evidenceReviewPath: ({ context, event }) =>
+          event.type === "REVIEW_COMPLETED" && event.phase === "evidence"
+            ? event.reviewPath
+            : context.evidenceReviewPath,
+        evidenceReviewerSessionPath: ({ context, event }) =>
+          event.type === "REVIEW_COMPLETED" &&
+          event.phase === "evidence" &&
+          event.reviewerSessionEvidencePath !== undefined
+            ? event.reviewerSessionEvidencePath
+            : context.evidenceReviewerSessionPath,
+        planReviewPath: ({ context, event }) =>
+          event.type === "REVIEW_COMPLETED" && event.phase === "plan"
+            ? event.reviewPath
+            : context.planReviewPath,
+        planReviewerSessionPath: ({ context, event }) =>
+          event.type === "REVIEW_COMPLETED" &&
+          event.phase === "plan" &&
+          event.reviewerSessionEvidencePath !== undefined
+            ? event.reviewerSessionEvidencePath
+            : context.planReviewerSessionPath,
+      }),
+      recordVerificationCompleted: assign({
+        verificationResultPath: ({ event }) =>
+          event.type === "VERIFICATION_COMPLETED"
+            ? event.verificationResultPath
+            : undefined,
+      }),
+      recordWorkerCompleted: assign({
+        workerResultPath: ({ event }) =>
+          event.type === "WORKER_COMPLETED"
+            ? event.workerResultPath
+            : undefined,
+      }),
+      recordWorkspacePrepared: assign({
+        workspacePath: ({ event }) =>
+          event.type === "WORKSPACE_PREPARED" ? event.workspacePath : undefined,
+      }),
     },
-    reporting: {
-      on: {
-        BROWSER_EVIDENCE_RECORDED: {
-          actions: "recordBrowserEvidence",
-        },
-        DELIVERY_READY_TO_PUBLISH: {
-          actions: "recordDeliveryReadyToPublish",
-          target: "delivering",
-        },
-        PREVIEW_DEPLOYMENT_RECORDED: {
-          actions: "recordPreviewDeployment",
-        },
-        REPORT_STARTED: {},
-        REPORT_COMPLETED: {
-          actions: "recordReportCompleted",
-          target: "completed",
-        },
-        REVIEW_COMPLETED: {
-          actions: "recordReviewCompleted",
-        },
-        REVIEW_STARTED: {},
-        RUN_FAILED: {
-          actions: "recordFailure",
-          target: "failed",
-        },
-      },
-    },
-    runningWorker: {
-      on: {
-        RUN_FAILED: {
-          actions: "recordFailure",
-          target: "failed",
-        },
-        REVIEW_COMPLETED: {
-          actions: "recordReviewCompleted",
-        },
-        REVIEW_STARTED: {},
-        PREVIEW_DEPLOYMENT_RECORDED: {
-          actions: "recordPreviewDeployment",
-        },
-        WORKER_COMPLETED: {
-          actions: "recordWorkerCompleted",
-          target: "verifying",
-        },
-        WORKER_STARTED: {},
-        WORKER_CONTINUATION_RECORDED: [
-          {
-            actions: "recordWorkerContinuation",
-            guard: "workerContinuationFailed",
-            target: "failed",
-          },
-          { actions: "recordWorkerContinuation" },
-        ],
-        WORKER_CORRELATION_RECONCILIATION_RECORDED: [
-          {
-            actions: "recordWorkerCorrelationReconciliation",
-            guard: "workerCorrelationFailed",
-            target: "failed",
-          },
-          { actions: "recordWorkerCorrelationReconciliation" },
-        ],
-        WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
-          {
-            actions: "recordWorkerDesktopOriginCorrelation",
-            guard: "workerDesktopOriginCorrelationFailed",
-            target: "failed",
-          },
-          { actions: "recordWorkerDesktopOriginCorrelation" },
-        ],
-      },
-    },
-    verifying: {
-      on: {
-        PREVIEW_DEPLOYMENT_RECORDED: {
-          actions: "recordPreviewDeployment",
-        },
-        RUN_FAILED: {
-          actions: "recordFailure",
-          target: "failed",
-        },
-        VERIFICATION_COMPLETED: {
-          actions: "recordVerificationCompleted",
-          target: "reporting",
-        },
-        VERIFICATION_STARTED: {},
-        WORKER_CORRELATION_RECONCILIATION_RECORDED: [
-          {
-            actions: "recordWorkerCorrelationReconciliation",
-            guard: "workerCorrelationFailed",
-            target: "failed",
-          },
-          { actions: "recordWorkerCorrelationReconciliation" },
-        ],
-        WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED: [
-          {
-            actions: "recordWorkerDesktopOriginCorrelation",
-            guard: "workerDesktopOriginCorrelationFailed",
-            target: "failed",
-          },
-          { actions: "recordWorkerDesktopOriginCorrelation" },
-        ],
-      },
-    },
-  },
-}).provide({
-  actions: {
-    recordBrowserEvidence: assign({
-      browserEvidencePath: ({ event }) =>
-        event.type === "BROWSER_EVIDENCE_RECORDED"
-          ? event.evidencePath
-          : undefined,
-      browserEvidenceStatus: ({ event }) =>
-        event.type === "BROWSER_EVIDENCE_RECORDED" ? event.status : undefined,
-      browserEvidenceTargetUrl: ({ event }) =>
-        event.type === "BROWSER_EVIDENCE_RECORDED"
-          ? event.targetUrl
-          : undefined,
-    }),
-    recordFailure: assign({
-      failure: ({ event }) =>
-        event.type === "RUN_FAILED" ? event.failure : undefined,
-    }),
-    recordDelivery: assign({
-      delivery: ({ event }) =>
-        event.type === "DELIVERY_STARTED" ||
-        event.type === "DELIVERY_READY_TO_PUBLISH"
-          ? event.delivery
-          : undefined,
-    }),
-    recordGitHubChecks: assign({
-      githubChecksPath: ({ event }) =>
-        event.type === "GITHUB_CHECKS_RECORDED" ? event.checksPath : undefined,
-      githubChecksStatus: ({ event }) =>
-        event.type === "GITHUB_CHECKS_RECORDED" ? event.status : undefined,
-      githubPullRequest: ({ event }) =>
-        event.type === "GITHUB_CHECKS_RECORDED" ? event.pullRequest : undefined,
-      githubWatchStatePath: ({ context, event }) =>
-        event.type === "GITHUB_CHECKS_RECORDED" &&
-        event.watchStatePath !== undefined
-          ? event.watchStatePath
-          : context.githubWatchStatePath,
-    }),
-    recordDeliveryReadyToPublish: assign({
-      delivery: ({ context, event }) =>
-        event.type === "DELIVERY_READY_TO_PUBLISH"
-          ? deliveryReadyToPublish(context.delivery, event.delivery)
-          : context.delivery,
-      reportPath: ({ event }) =>
-        event.type === "DELIVERY_READY_TO_PUBLISH"
-          ? event.reportPath
-          : undefined,
-    }),
-    recordDeliveryPublication: assign({
-      delivery: ({ context, event }) =>
-        event.type === "DELIVERY_PUBLICATION_INTENT_RECORDED" ||
-        event.type === "DELIVERY_PUBLICATION_ATTEMPTED" ||
-        event.type === "DELIVERY_PUBLICATION_CONFIRMED" ||
-        event.type === "DELIVERY_PUBLICATION_FAILED" ||
-        event.type === "DELIVERY_PUBLICATION_OUTCOME_UNKNOWN"
-          ? deliveryWithPublication(context.delivery, event.publication)
-          : context.delivery,
-    }),
-    recordDeliveryRemediation: assign({
-      delivery: ({ context, event }) =>
-        event.type === "DELIVERY_REMEDIATION_RECORDED"
-          ? deliveryWithRemediation(
-              context.delivery,
-              event.remediation,
-              event.eventSequence
-            )
-          : context.delivery,
-    }),
-    recordDeliveryMerge: assign({
-      delivery: ({ context, event }) =>
-        event.type === "DELIVERY_MERGE_RECORDED"
-          ? deliveryWithMerge(context.delivery, event.mergeAction)
-          : context.delivery,
-    }),
-    recordDeliveryPullRequestReady: assign({
-      delivery: ({ context, event }) =>
-        event.type === "DELIVERY_PR_READY_RECORDED"
-          ? deliveryWithPullRequestReady(
-              context.delivery,
-              event.readyForReviewAction
-            )
-          : context.delivery,
-    }),
-    recordWorkerContinuation: assign({
-      delivery: ({ context, event }) =>
-        event.type === "WORKER_CONTINUATION_RECORDED"
-          ? deliveryWithWorkerContinuation(context.delivery, event.continuation)
-          : context.delivery,
-      evidenceReviewPath: ({ context, event }) =>
+    guards: {
+      workerRecoveryConfirmed: ({ event }) =>
+        event.type === "WORKER_RECOVERY_RECORDED" &&
+        event.recovery.state === "dispatchConfirmed",
+      workerContinuationFailed: ({ event }) =>
         event.type === "WORKER_CONTINUATION_RECORDED" &&
-        event.continuation.state === "intentRecorded"
-          ? undefined
-          : context.evidenceReviewPath,
-      reportPath: ({ context, event }) =>
+        (event.continuation.state === "failed" ||
+          event.continuation.state === "outcomeUnknown"),
+      workerContinuationRunning: ({ event }) =>
         event.type === "WORKER_CONTINUATION_RECORDED" &&
-        event.continuation.state === "intentRecorded"
-          ? undefined
-          : context.reportPath,
-      verificationResultPath: ({ context, event }) =>
-        event.type === "WORKER_CONTINUATION_RECORDED" &&
-        event.continuation.state === "intentRecorded"
-          ? undefined
-          : context.verificationResultPath,
-      workerResultPath: ({ context, event }) =>
-        event.type === "WORKER_CONTINUATION_RECORDED" &&
-        event.continuation.state === "intentRecorded"
-          ? undefined
-          : context.workerResultPath,
-    }),
-    recordWorkerCorrelationReconciliation: assign({
-      delivery: ({ context, event }) =>
-        event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED"
-          ? deliveryWithWorkerCorrelationReconciliation(
-              context.delivery,
-              event.reconciliation
-            )
-          : context.delivery,
-      evidenceReviewPath: ({ context, event }) =>
+        (event.continuation.state === "resumeAttempted" ||
+          event.continuation.state === "resumeConfirmed" ||
+          event.continuation.state === "followUpAttempted" ||
+          event.continuation.state === "followUpConfirmed"),
+      workerCorrelationFailed: ({ event }) =>
         event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
-        event.reconciliation.state === "intentRecorded"
-          ? undefined
-          : context.evidenceReviewPath,
-      reportPath: ({ context, event }) =>
+        (event.reconciliation.state === "failed" ||
+          event.reconciliation.state === "outcomeUnknown"),
+      workerCorrelationRunning: ({ event }) =>
         event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
-        event.reconciliation.state === "intentRecorded"
-          ? undefined
-          : context.reportPath,
-      verificationResultPath: ({ context, event }) =>
-        event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
-        event.reconciliation.state === "intentRecorded"
-          ? undefined
-          : context.verificationResultPath,
-      workerResultPath: ({ context, event }) =>
-        event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
-        event.reconciliation.state === "intentRecorded"
-          ? undefined
-          : context.workerResultPath,
-    }),
-    recordWorkerDesktopOriginCorrelation: assign({
-      delivery: ({ context, event }) =>
-        event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED"
-          ? deliveryWithWorkerDesktopOriginCorrelation(
-              context.delivery,
-              event.desktopOriginCorrelation
-            )
-          : context.delivery,
-      evidenceReviewPath: ({ context, event }) =>
+        (event.reconciliation.state === "correlationAttempted" ||
+          event.reconciliation.state === "correlationConfirmed" ||
+          event.reconciliation.state === "followUpAttempted" ||
+          event.reconciliation.state === "followUpConfirmed"),
+      workerDesktopOriginCorrelationFailed: ({ event }) =>
         event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
-        event.desktopOriginCorrelation.state === "intentRecorded"
-          ? undefined
-          : context.evidenceReviewPath,
-      reportPath: ({ context, event }) =>
+        (event.desktopOriginCorrelation.state === "failed" ||
+          event.desktopOriginCorrelation.state === "outcomeUnknown"),
+      workerDesktopOriginCorrelationRunning: ({ event }) =>
         event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
-        event.desktopOriginCorrelation.state === "intentRecorded"
-          ? undefined
-          : context.reportPath,
-      verificationResultPath: ({ context, event }) =>
-        event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
-        event.desktopOriginCorrelation.state === "intentRecorded"
-          ? undefined
-          : context.verificationResultPath,
-      workerResultPath: ({ context, event }) =>
-        event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
-        event.desktopOriginCorrelation.state === "intentRecorded"
-          ? undefined
-          : context.workerResultPath,
-    }),
-    recordDeliveryMergeReadiness: assign({
-      delivery: ({ context, event }) =>
-        event.type === "DELIVERY_MERGE_READINESS_RECORDED" &&
-        context.delivery !== undefined
-          ? {
-              ...context.delivery,
-              mergeDecision: encodeDeliveryMergeReadinessDecisionJson(
-                event.decision
-              ),
-              mergeDecisionSequence: event.eventSequence,
-              stage: event.decision.approved ? "awaitingMerge" : "waitingForPr",
-            }
-          : context.delivery,
-    }),
-    recordDeliveryCleanup: assign({
-      delivery: ({ context, event }) =>
-        event.type === "DELIVERY_CLEANUP_RECORDED"
-          ? deliveryWithCleanup(context.delivery, event.cleanup)
-          : context.delivery,
-    }),
-    recordGitHubFeedback: assign({
-      githubFeedbackCommentCount: ({ event }) =>
-        event.type === "GITHUB_FEEDBACK_RECORDED"
-          ? event.commentCount
-          : undefined,
-      githubFeedbackNextAction: ({ event }) =>
-        event.type === "GITHUB_FEEDBACK_RECORDED"
-          ? event.nextAction
-          : undefined,
-      githubFeedbackPath: ({ event }) =>
-        event.type === "GITHUB_FEEDBACK_RECORDED"
-          ? event.feedbackPath
-          : undefined,
-      githubFeedbackReviewCount: ({ event }) =>
-        event.type === "GITHUB_FEEDBACK_RECORDED"
-          ? event.reviewCount
-          : undefined,
-      githubFeedbackReviewRequestCount: ({ event }) =>
-        event.type === "GITHUB_FEEDBACK_RECORDED"
-          ? event.reviewRequestCount
-          : undefined,
-      githubFeedbackStatus: ({ event }) =>
-        event.type === "GITHUB_FEEDBACK_RECORDED" ? event.status : undefined,
-      githubPullRequest: ({ event }) =>
-        event.type === "GITHUB_FEEDBACK_RECORDED"
-          ? event.pullRequest
-          : undefined,
-    }),
-    recordGitHubPrLoop: assign({
-      delivery: ({ context, event }) =>
-        event.type === "GITHUB_PR_LOOP_RECORDED" &&
-        event.observation !== undefined
-          ? deliveryWithPullRequestObservation(
-              context.delivery,
-              event.observation
-            )
-          : context.delivery,
-      githubPrLoopBlockerCount: ({ event }) =>
-        event.type === "GITHUB_PR_LOOP_RECORDED"
-          ? event.blockerCount
-          : undefined,
-      githubPrLoopNextAction: ({ event }) =>
-        event.type === "GITHUB_PR_LOOP_RECORDED" ? event.nextAction : undefined,
-      githubPrLoopPath: ({ event }) =>
-        event.type === "GITHUB_PR_LOOP_RECORDED" ? event.prLoopPath : undefined,
-      githubPrLoopStatus: ({ event }) =>
-        event.type === "GITHUB_PR_LOOP_RECORDED" ? event.status : undefined,
-      githubPullRequest: ({ event }) =>
-        event.type === "GITHUB_PR_LOOP_RECORDED"
-          ? event.pullRequest
-          : undefined,
-    }),
-    recordGitHubPrComment: assign({
-      githubPrCommentPath: ({ event }) =>
-        event.type === "GITHUB_PR_COMMENT_RECORDED"
-          ? event.commentPath
-          : undefined,
-      githubPrCommentUrl: ({ event }) =>
-        event.type === "GITHUB_PR_COMMENT_RECORDED"
-          ? event.commentUrl
-          : undefined,
-      githubPullRequest: ({ event }) =>
-        event.type === "GITHUB_PR_COMMENT_RECORDED"
-          ? event.pullRequest
-          : undefined,
-    }),
-    recordGitHubRemediationSpec: assign({
-      githubRemediationBlockerCount: ({ event }) =>
-        event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
-          ? event.blockerCount
-          : undefined,
-      githubPullRequest: ({ event }) =>
-        event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
-          ? event.pullRequest
-          : undefined,
-      githubRemediationNextAction: ({ event }) =>
-        event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
-          ? event.nextAction
-          : undefined,
-      githubRemediationSpecPath: ({ event }) =>
-        event.type === "GITHUB_REMEDIATION_SPEC_RECORDED"
-          ? event.remediationSpecPath
-          : undefined,
-    }),
-    recordLinearIssueGraph: assign({
-      linearBlockedByCount: ({ event }) =>
-        event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
-          ? event.blockedByCount
-          : undefined,
-      linearBlocksCount: ({ event }) =>
-        event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
-          ? event.blocksCount
-          : undefined,
-      linearIssueGraphPath: ({ event }) =>
-        event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
-          ? event.issueGraphPath
-          : undefined,
-      linearIssueIdentifier: ({ event }) =>
-        event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
-          ? event.issueIdentifier
-          : undefined,
-      linearIssueUrl: ({ event }) =>
-        event.type === "LINEAR_ISSUE_GRAPH_RECORDED"
-          ? event.issueUrl
-          : undefined,
-    }),
-    recordMergeDecision: assign({
-      githubPullRequest: ({ context, event }) =>
-        event.type === "MERGE_DECISION_RECORDED" &&
-        event.pullRequest !== undefined
-          ? event.pullRequest
-          : context.githubPullRequest,
-      mergeDecisionBlockerCount: ({ event }) =>
-        event.type === "MERGE_DECISION_RECORDED"
-          ? event.blockerCount
-          : undefined,
-      mergeDecisionNextAction: ({ event }) =>
-        event.type === "MERGE_DECISION_RECORDED" ? event.nextAction : undefined,
-      mergeDecisionPath: ({ event }) =>
-        event.type === "MERGE_DECISION_RECORDED"
-          ? event.mergeDecisionPath
-          : undefined,
-      mergeDecisionStatus: ({ event }) =>
-        event.type === "MERGE_DECISION_RECORDED" ? event.status : undefined,
-    }),
-    recordPreviewDeployment: assign({
-      previewDeploymentPath: ({ event }) =>
-        event.type === "PREVIEW_DEPLOYMENT_RECORDED"
-          ? event.deploymentPath
-          : undefined,
-      previewDeploymentStatus: ({ event }) =>
-        event.type === "PREVIEW_DEPLOYMENT_RECORDED" ? event.status : undefined,
-      previewDeploymentUrl: ({ event }) =>
-        event.type === "PREVIEW_DEPLOYMENT_RECORDED" ? event.url : undefined,
-    }),
-    recordReportCompleted: assign({
-      reportPath: ({ event }) =>
-        event.type === "REPORT_COMPLETED" ? event.reportPath : undefined,
-    }),
-    recordRunCreated: assign({
-      runId: ({ event }) =>
-        event.type === "RUN_CREATED" ? event.runId : undefined,
-      specPath: ({ event }) =>
-        event.type === "RUN_CREATED" ? event.specPath : undefined,
-    }),
-    recordReviewCompleted: assign({
-      evidenceReviewPath: ({ context, event }) =>
-        event.type === "REVIEW_COMPLETED" && event.phase === "evidence"
-          ? event.reviewPath
-          : context.evidenceReviewPath,
-      evidenceReviewerSessionPath: ({ context, event }) =>
-        event.type === "REVIEW_COMPLETED" &&
-        event.phase === "evidence" &&
-        event.reviewerSessionEvidencePath !== undefined
-          ? event.reviewerSessionEvidencePath
-          : context.evidenceReviewerSessionPath,
-      planReviewPath: ({ context, event }) =>
-        event.type === "REVIEW_COMPLETED" && event.phase === "plan"
-          ? event.reviewPath
-          : context.planReviewPath,
-      planReviewerSessionPath: ({ context, event }) =>
-        event.type === "REVIEW_COMPLETED" &&
-        event.phase === "plan" &&
-        event.reviewerSessionEvidencePath !== undefined
-          ? event.reviewerSessionEvidencePath
-          : context.planReviewerSessionPath,
-    }),
-    recordVerificationCompleted: assign({
-      verificationResultPath: ({ event }) =>
-        event.type === "VERIFICATION_COMPLETED"
-          ? event.verificationResultPath
-          : undefined,
-    }),
-    recordWorkerCompleted: assign({
-      workerResultPath: ({ event }) =>
-        event.type === "WORKER_COMPLETED" ? event.workerResultPath : undefined,
-    }),
-    recordWorkspacePrepared: assign({
-      workspacePath: ({ event }) =>
-        event.type === "WORKSPACE_PREPARED" ? event.workspacePath : undefined,
-    }),
-  },
-  guards: {
-    workerRecoveryConfirmed: ({ event }) =>
-      event.type === "WORKER_RECOVERY_RECORDED" &&
-      event.recovery.state === "dispatchConfirmed",
-    workerContinuationFailed: ({ event }) =>
-      event.type === "WORKER_CONTINUATION_RECORDED" &&
-      (event.continuation.state === "failed" ||
-        event.continuation.state === "outcomeUnknown"),
-    workerContinuationRunning: ({ event }) =>
-      event.type === "WORKER_CONTINUATION_RECORDED" &&
-      (event.continuation.state === "resumeAttempted" ||
-        event.continuation.state === "resumeConfirmed" ||
-        event.continuation.state === "followUpAttempted" ||
-        event.continuation.state === "followUpConfirmed"),
-    workerCorrelationFailed: ({ event }) =>
-      event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
-      (event.reconciliation.state === "failed" ||
-        event.reconciliation.state === "outcomeUnknown"),
-    workerCorrelationRunning: ({ event }) =>
-      event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" &&
-      (event.reconciliation.state === "correlationAttempted" ||
-        event.reconciliation.state === "correlationConfirmed" ||
-        event.reconciliation.state === "followUpAttempted" ||
-        event.reconciliation.state === "followUpConfirmed"),
-    workerDesktopOriginCorrelationFailed: ({ event }) =>
-      event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
-      (event.desktopOriginCorrelation.state === "failed" ||
-        event.desktopOriginCorrelation.state === "outcomeUnknown"),
-    workerDesktopOriginCorrelationRunning: ({ event }) =>
-      event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" &&
-      (event.desktopOriginCorrelation.state === "sourceCorrelationAttempted" ||
-        event.desktopOriginCorrelation.state === "sourceCorrelationConfirmed" ||
-        event.desktopOriginCorrelation.state === "followUpAttempted" ||
-        event.desktopOriginCorrelation.state === "followUpConfirmed"),
-    cleanupCompleted: ({ event }) =>
-      event.type === "DELIVERY_CLEANUP_RECORDED" &&
-      event.cleanup.state === "completed",
-  },
-});
+        (event.desktopOriginCorrelation.state ===
+          "sourceCorrelationAttempted" ||
+          event.desktopOriginCorrelation.state ===
+            "sourceCorrelationConfirmed" ||
+          event.desktopOriginCorrelation.state === "followUpAttempted" ||
+          event.desktopOriginCorrelation.state === "followUpConfirmed"),
+      cleanupCompleted: ({ event }) =>
+        event.type === "DELIVERY_CLEANUP_RECORDED" &&
+        event.cleanup.state === "completed",
+    },
+  });
 
 export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   const actor = createActor(runMachine).start();
@@ -1396,6 +1524,10 @@ export function snapshotFromReplay(
 }
 
 function toMachineEvent(event: RunEvent): RunMachineEvent {
+  return parseRunMachineEvent(toMachineEventInput(event));
+}
+
+function toMachineEventInput(event: RunEvent) {
   switch (event.type) {
     case "BROWSER_EVIDENCE_RECORDED":
       return {

@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Schema from "effect/Schema";
 
 import {
   EvidencePromotion,
@@ -31,8 +32,12 @@ import {
   parseFactoryLaneScorecard,
   parseDeliveryPublication,
   parseMarkdownSpec,
+  parseRunMachineContext,
+  parseRunMachineEvent,
   parseRunId,
   replayRunEvents,
+  RunMachineContextSchema,
+  RunMachineEventSchema,
   snapshotFromReplay,
   validateFactoryDelegationPrompt,
 } from "./index.js";
@@ -476,6 +481,85 @@ describe("core contracts", () => {
     const durableSnapshot = snapshotFromReplay(events);
     assert.strictEqual(durableSnapshot.state, "completed");
     assert.strictEqual(durableSnapshot.eventSequence, 5);
+  });
+
+  it("round-trips lifecycle machine context and events through schemas", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const events = [
+      makeRunEvent({
+        payload: { specPath: "input.md" },
+        runId,
+        sequence: 1,
+        timestamp: "2026-07-04T10:00:00.000Z",
+        type: "RUN_CREATED",
+      }),
+      makeRunEvent({
+        payload: { workspacePath: "workspace" },
+        runId,
+        sequence: 2,
+        timestamp: "2026-07-04T10:00:01.000Z",
+        type: "WORKSPACE_PREPARED",
+      }),
+    ];
+
+    const context = parseRunMachineContext(replayRunEvents(events).context);
+    const encodedContext = Schema.encodeSync(RunMachineContextSchema)(context);
+
+    assert.deepEqual(
+      Schema.decodeUnknownSync(RunMachineContextSchema)(encodedContext),
+      context
+    );
+
+    const event = parseRunMachineEvent({
+      runId,
+      specPath: "input.md",
+      type: "RUN_CREATED",
+    });
+    const encodedEvent = Schema.encodeSync(RunMachineEventSchema)(event);
+
+    assert.deepEqual(parseRunMachineEvent(encodedEvent), event);
+    assert.deepEqual(snapshotFromReplay(events).context, {
+      runId,
+      specPath: "input.md",
+      workspacePath: "workspace",
+    });
+  });
+
+  it("rejects invalid lifecycle machine inputs before transition logic", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+
+    assert.throws(() =>
+      parseRunMachineEvent({
+        type: "WORKSPACE_PREPARED",
+        workspacePath: 123,
+      })
+    );
+    assert.throws(() =>
+      parseRunMachineEvent({
+        phase: "planning",
+        reviewPath: "review.md",
+        type: "REVIEW_COMPLETED",
+      })
+    );
+
+    const events = [
+      makeRunEvent({
+        payload: { specPath: "input.md" },
+        runId,
+        sequence: 1,
+        timestamp: "2026-07-04T10:00:00.000Z",
+        type: "RUN_CREATED",
+      }),
+      makeRunEvent({
+        payload: { workspacePath: 123 },
+        runId,
+        sequence: 2,
+        timestamp: "2026-07-04T10:00:01.000Z",
+        type: "WORKSPACE_PREPARED",
+      }),
+    ];
+
+    assert.throws(() => replayRunEvents(events), /workspacePath/u);
   });
 
   it("replays pull-request delivery lifecycle from safe provenance events", () => {
