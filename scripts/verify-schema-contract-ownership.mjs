@@ -209,6 +209,10 @@ try {
         runId: Schema.decodeUnknownSync(RunIdSchema)("run"),
       });
       export const isRunDto = madeRunDto instanceof RunDtoSchemaClass;
+      const RunDtoReadSchema = Schema.Struct({
+        ...RunDtoSchemaClass.fields,
+      });
+      export type RunDtoRead = typeof RunDtoReadSchema.Type;
       const MergedOwner = Schema.Struct({ value: Schema.String });
       type MergedOwner = typeof MergedOwner.Type;
       export type MergedProjection = Pick<MergedOwner, "value">;
@@ -230,6 +234,14 @@ try {
       });
       export type ClassMethodAliasAnnotated =
         typeof ClassMethodAliasAnnotatedSchema.Type;
+    `
+  );
+  await writeFile(
+    path.join(projectRoot, "imported-schema-class.ts"),
+    `
+      import type { RunDto as ImportedRunDto } from "./schema.js";
+
+      export type ImportedRunDtoType = typeof ImportedRunDto.Type;
     `
   );
   await writeFile(
@@ -654,6 +666,48 @@ try {
     `
   );
   await writeFile(
+    path.join(projectRoot, "opaque-canonical-ancestor.ts"),
+    `
+      import { Schema } from "effect";
+
+      declare const opaqueDescription: (value: unknown) => string;
+
+      const unsafeConsumer = <S extends Schema.Top>(schema: S) =>
+        Schema.String.annotate({ description: opaqueDescription(schema) });
+
+      const LocalOwner = Schema.Struct({ value: Schema.String });
+      unsafeConsumer(LocalOwner);
+      export type LocalDto = typeof LocalOwner.Type;
+
+      const Fields = { value: Schema.String } as const;
+      Schema.String.annotate({
+        description: opaqueDescription(Fields),
+      });
+      const ContainerOwner = Schema.Struct(Fields);
+      export type ContainerDto = typeof ContainerOwner.Type;
+
+      const TransparentFields = { value: Schema.String } as const;
+      const TransparentOwner = Schema.Struct({ ...TransparentFields });
+      export type TransparentDto = typeof TransparentOwner.Type;
+
+      let captured: unknown;
+      const DirectIdentityOwner = Schema.Struct({ value: Schema.String });
+      Schema.String.annotate({
+        description: ((captured = DirectIdentityOwner), "captured"),
+      });
+      export type DirectIdentityDto = typeof DirectIdentityOwner.Type;
+      void captured;
+
+      let receiverCaptured: unknown;
+      const ReceiverOwner = Schema.Struct({ value: Schema.String });
+      ((receiverCaptured = ReceiverOwner), Schema.String).annotate({
+        title: "unsafe receiver",
+      });
+      export type ReceiverDto = typeof ReceiverOwner.Type;
+      void receiverCaptured;
+    `
+  );
+  await writeFile(
     path.join(projectRoot, "structural-spoof.ts"),
     `
       type StructuralSpoof = string & {
@@ -679,6 +733,8 @@ try {
     "counterfeit-schema-owner.ts",
     "derived.ts",
     "external-schema-containers.d.ts",
+    "imported-schema-class.ts",
+    "opaque-canonical-ancestor.ts",
     "provenance-adversarial.ts",
     "reexport.ts",
     "schema.ts",
@@ -756,6 +812,10 @@ try {
     schemaDiagnostic("fake-type.ts", 4, 19),
     schemaDiagnostic("manual.ts", 1, 13),
     schemaDiagnostic("mixed-framework.tsx", 2, 19),
+    schemaDiagnostic("opaque-canonical-ancestor.ts", 11, 19),
+    schemaDiagnostic("opaque-canonical-ancestor.ts", 18, 19),
+    schemaDiagnostic("opaque-canonical-ancestor.ts", 29, 19),
+    schemaDiagnostic("opaque-canonical-ancestor.ts", 37, 19),
     schemaDiagnostic("provenance-adversarial.ts", 7, 19),
     schemaDiagnostic("provenance-adversarial.ts", 10, 19),
     schemaDiagnostic("provenance-adversarial.ts", 15, 19),

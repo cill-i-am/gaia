@@ -19,6 +19,10 @@ const anchorSource = `
     value: __GaiaPlainSchema
   });
   export const __GaiaStructFields = __GaiaStructSchema.fields;
+  export class __GaiaClassSchema extends Schema.Class<__GaiaClassSchema>(
+    "__GaiaClassSchema"
+  )({ value: __GaiaPlainSchema }) {}
+  export const __GaiaClassFields = __GaiaClassSchema.fields;
   export const __GaiaUnionSchema = Schema.Union([__GaiaPlainSchema]);
   export const __GaiaUnionMembers = __GaiaUnionSchema.members;
   export const __GaiaLiteralSchema = Schema.Literals(["one", "two"]);
@@ -315,7 +319,11 @@ const getCanonicalSchemaSuspendSymbol = (checker, anchorFile) => {
 
 const getCanonicalSchemaContainerPropertySymbols = (checker, anchorFile) => {
   const symbols = new Map();
-  for (const name of ["__GaiaStructFields", "__GaiaUnionMembers"]) {
+  for (const name of [
+    "__GaiaStructFields",
+    "__GaiaClassFields",
+    "__GaiaUnionMembers",
+  ]) {
     const statement = anchorFile.statements.find(
       (candidate) =>
         ts.isVariableStatement(candidate) &&
@@ -355,7 +363,11 @@ const getCanonicalSchemaContainerPropertySymbols = (checker, anchorFile) => {
         `Gaia schema-contract checker could not anchor canonical container property ${name}`
       );
     }
-    symbols.set(resolved.escapedName, declarations);
+    const existing = symbols.get(resolved.escapedName);
+    symbols.set(
+      resolved.escapedName,
+      new Set([...(existing ?? []), ...declarations])
+    );
   }
   return symbols;
 };
@@ -830,21 +842,6 @@ const isCanonicalCallShape = (checker, proof, node) => {
   );
 };
 
-const isCanonicalFactoryReference = (checker, proof, node) => {
-  let current = node.parent;
-  while (current !== undefined && !ts.isStatement(current)) {
-    if (
-      ts.isCallExpression(current) &&
-      current.arguments.some((argument) => isWithin(node, argument)) &&
-      isCanonicalCallShape(checker, proof, current)
-    ) {
-      return true;
-    }
-    current = current.parent;
-  }
-  return false;
-};
-
 const getFunctionReturnExpressions = (node) => {
   if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) return [node.body];
   const expressions = [];
@@ -1125,6 +1122,20 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
         current = parent;
         continue;
       }
+      if (
+        ts.isPropertyAccessExpression(parent) &&
+        parent.expression === current
+      ) {
+        const property = getSymbol(parent.name);
+        if (
+          property === undefined ||
+          !isCanonicalSchemaContainerProperty(checker, proof, property)
+        ) {
+          return undefined;
+        }
+        current = parent;
+        continue;
+      }
       if (ts.isPropertyAssignment(parent) && parent.initializer === current) {
         const name = getPropertyName(parent.name);
         if (name === undefined) return undefined;
@@ -1145,6 +1156,44 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
       return undefined;
     }
     return path;
+  };
+
+  const isCanonicalFactoryReference = (checker, proof, reference) => {
+    let current = reference.parent;
+    while (current !== undefined && !ts.isStatement(current)) {
+      if (ts.isCallExpression(current)) {
+        if (!isCanonicalCallShape(checker, proof, current)) {
+          current = current.parent;
+          continue;
+        }
+        const schemaArguments = getSchemaBearingArguments(current);
+        if (schemaArguments === undefined) return false;
+        const argument = schemaArguments.find((candidate) =>
+          isWithin(reference, candidate)
+        );
+        if (argument === undefined) return false;
+        return getNestedArgumentPath(reference, argument) !== undefined;
+      }
+      current = current.parent;
+    }
+    return false;
+  };
+
+  const isCanonicalSuspendReturnReference = (reference, call) => {
+    const canonicalCallee = getCanonicalCallee(checker, proof, call.expression);
+    if (canonicalCallee?.symbol !== proof.canonicalSchemaSuspendSymbol) {
+      return false;
+    }
+    const callback = call.arguments[0];
+    if (
+      callback === undefined ||
+      (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback))
+    ) {
+      return false;
+    }
+    return getFunctionReturnExpressions(callback).some(
+      (returned) => getNestedArgumentPath(reference, returned) !== undefined
+    );
   };
 
   const isExactEffectConsumerReference = (reference) => {
@@ -1559,13 +1608,32 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
     let current = reference.parent;
     while (current !== undefined && !ts.isStatement(current)) {
       if (ts.isCallExpression(current)) {
-        if (isCanonicalCallShape(checker, proof, current)) return true;
+        if (isCanonicalFactoryReference(checker, proof, reference)) return true;
+        if (isCanonicalSuspendReturnReference(reference, current)) return true;
+        const canonicalCallee = getCanonicalCallee(
+          checker,
+          proof,
+          current.expression
+        );
+        const receiver =
+          canonicalCallee?.receiver ??
+          (ts.isPropertyAccessExpression(current.expression)
+            ? current.expression.expression
+            : undefined);
+        if (
+          canonicalCallee !== undefined &&
+          receiver !== undefined &&
+          getNestedArgumentPath(reference, receiver) !== undefined
+        ) {
+          return true;
+        }
         if (ts.isPropertyAccessExpression(current.expression)) {
           const method = getSymbol(current.expression.name);
           if (
             method !== undefined &&
             isCanonicalSchemaPipeProperty(checker, proof, method) &&
-            isWithin(reference, current.expression.expression)
+            getNestedArgumentPath(reference, current.expression.expression) !==
+              undefined
           ) {
             return true;
           }
