@@ -202,8 +202,12 @@ export {
   type RunState,
 } from "./events.js";
 export {
+  parseRunMachineContext,
+  parseRunMachineEvent,
   replayRunEvents,
   runMachine,
+  RunMachineContextSchema,
+  RunMachineEventSchema,
   snapshotFromReplay,
   type RunMachineContext,
   type RunMachineEvent,
