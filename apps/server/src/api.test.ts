@@ -829,6 +829,21 @@ describe("local run api http boundary", () => {
           assert.isTrue(
             getObjectFromArray(updates, updates.length - 1)["terminal"] === true
           );
+
+          const canonicalCursorResponse = yield* HttpClient.get(
+            `/runs/${accepted.runId}/agents/agent-worker/session/stream?afterSequence=1`
+          ).pipe(Effect.provide(layer));
+          yield* canonicalCursorResponse.text;
+          assert.strictEqual(canonicalCursorResponse.status, 200);
+
+          for (const rejectedCursor of ["0", "-1", "1.5", "01", "abc"]) {
+            const rejectedResponse = yield* HttpClient.get(
+              `/runs/${accepted.runId}/agents/agent-worker/session/stream?afterSequence=${encodeURIComponent(rejectedCursor)}`
+            ).pipe(Effect.provide(layer));
+            const rejectedBody = yield* responseJsonObject(rejectedResponse);
+            assert.strictEqual(rejectedResponse.status, 400);
+            assert.strictEqual(getNumber(rejectedBody, "status"), 400);
+          }
         }),
       20_000
     );

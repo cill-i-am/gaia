@@ -10,6 +10,7 @@ import {
 import {
   AgentActionSuccessEnvelope,
   AgentOperatorActionRequestSchema,
+  AgentSessionCursorSchema,
   AgentSessionSnapshotSuccessEnvelope,
   AgentSessionSseEventSchema,
   AgentSessionUpdateDto,
@@ -1278,7 +1279,7 @@ export const RunsGroup = HttpApiGroup.make("runs")
       {
         error: [...LocalRunStreamErrorResponse, LocalRunApiConflictResponse],
         params: { agentId: FactoryAgentIdSchema, runId: RunIdSchema },
-        query: { afterSequence: Schema.optionalKey(Schema.NumberFromString) },
+        query: { afterSequence: AgentSessionCursorSchema },
         success: AgentSessionStreamResponse,
       }
     )

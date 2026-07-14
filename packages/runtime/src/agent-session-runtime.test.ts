@@ -16,7 +16,16 @@ import {
   parseRunId,
   parseWorkspaceRelativePath,
 } from "@gaia/core";
-import { Effect, Exit, Fiber, FileSystem, Option, Scope, Stream } from "effect";
+import {
+  Effect,
+  Exit,
+  Fiber,
+  FileSystem,
+  Option,
+  Schema,
+  Scope,
+  Stream,
+} from "effect";
 import { describe, expect } from "vitest";
 
 import {
@@ -139,6 +148,36 @@ describe("agent session runtime", () => {
             expect(updates.map(({ eventSequence }) => eventSequence)).toEqual([
               2, 3,
             ]);
+          })
+        )
+    );
+
+    it.effect(
+      "rejects invalid stream cursors before reading the event feed",
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const rootDirectory = yield* fs.makeTempDirectory({
+              prefix: "gaia-agent-session-invalid-cursor-",
+            });
+            const paths = yield* makeRunPaths(runId, { rootDirectory });
+            yield* fs.makeDirectory(paths.root, { recursive: true });
+            yield* fs.makeDirectory(paths.events);
+
+            for (const afterSequence of [0, -1, 1.5]) {
+              const error = yield* streamAgentSessionUpdates(
+                runId,
+                workerAgentId,
+                afterSequence,
+                { rootDirectory }
+              ).pipe(Effect.flip);
+              const diagnostic = Schema.decodeUnknownSync(
+                Schema.Struct({ code: Schema.String })
+              )(error);
+
+              expect(diagnostic.code).toBe("InvalidRequest");
+            }
           })
         )
     );

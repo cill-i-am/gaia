@@ -2,12 +2,15 @@ import { createHash } from "node:crypto";
 
 import {
   AgentActionReceiptDto,
+  AgentSessionEventSequenceSchema,
   AgentSessionSnapshotDto,
   AgentSessionUpdateDto,
   HarnessInteractionResolutionSchema,
   parseHarnessSessionId,
   parseHarnessEvent,
   replayHarnessSession,
+  type AgentSessionCursor,
+  type AgentSessionEventSequence,
   type AgentOperatorActionRequest,
   type FactoryAgentId,
   type HarnessEvent,
@@ -17,7 +20,7 @@ import {
 } from "@gaia/core";
 import { Effect, Option, Schema, Stream } from "effect";
 
-import { makeRuntimeError } from "./errors.js";
+import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import {
   appendHarnessSessionEventWithinSerialization,
   readEvents,
@@ -27,6 +30,10 @@ import {
 import { issueDeliveryAgentIds } from "./factory-workflows.js";
 import { HarnessInput, type HarnessSession } from "./harness-session.js";
 import { makeRunPaths, type RunStorageOptions } from "./paths.js";
+
+const decodeAgentSessionEventSequence = Schema.decodeUnknownSync(
+  AgentSessionEventSequenceSchema
+);
 
 type LiveSessionIdentity = {
   readonly agentId: FactoryAgentId;
@@ -99,26 +106,15 @@ export function readAgentSessionSnapshot(
 export function streamAgentSessionUpdates(
   runId: RunId,
   agentId: FactoryAgentId,
-  afterSequence: number | undefined,
+  afterSequence: AgentSessionCursor,
   options: RunStorageOptions = {}
 ) {
   return Effect.gen(function* () {
+    const cursor = yield* decodeAgentSessionCursor(afterSequence);
     yield* expectRuntime(() => requireWorkerAgent(agentId));
     const paths = yield* makeRunPaths(runId, options);
     const subscription = yield* subscribeRunEventFeed(paths);
-    if (
-      afterSequence !== undefined &&
-      (!Number.isInteger(afterSequence) || afterSequence < 1)
-    ) {
-      return yield* Effect.fail(
-        makeRuntimeError({
-          code: "InvalidRequest",
-          message: "Agent stream cursor must be a positive Gaia sequence.",
-          recoverable: false,
-        })
-      );
-    }
-    if (afterSequence !== undefined && afterSequence > subscription.highWater) {
+    if (cursor !== undefined && cursor > subscription.highWater) {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "AgentStreamCursorConflict",
@@ -127,10 +123,11 @@ export function streamAgentSessionUpdates(
         })
       );
     }
-    const cursor = afterSequence ?? 0;
+    const lastSeenSequence = cursor ?? 0;
     const backlogEvents = subscription.backlog.filter(
       (event) =>
-        event.sequence > cursor && event.sequence <= subscription.highWater
+        event.sequence > lastSeenSequence &&
+        event.sequence <= subscription.highWater
     );
     const backlog = updatesFromEvents(
       runId,
@@ -153,6 +150,23 @@ export function streamAgentSessionUpdates(
       Stream.concat(live),
       Stream.takeUntil((update) => update.terminal)
     );
+  });
+}
+
+function decodeAgentSessionCursor(
+  afterSequence: AgentSessionCursor
+): Effect.Effect<AgentSessionEventSequence | undefined, GaiaRuntimeError> {
+  if (afterSequence === undefined) return Effect.succeed(undefined);
+
+  return Effect.try({
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "InvalidRequest",
+        message: "Agent stream cursor must be a positive Gaia sequence.",
+        recoverable: false,
+      }),
+    try: () => decodeAgentSessionEventSequence(afterSequence),
   });
 }
 

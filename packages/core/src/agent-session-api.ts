@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Schema, SchemaGetter } from "effect";
 
 import { FactoryAgentIdSchema } from "./factory-graph.js";
 import {
@@ -111,8 +111,22 @@ export const AgentSessionSseEventSchema = Schema.Struct({
   id: AgentSessionSseEventIdSchema,
 });
 
+const AgentSessionCursorValueSchema = Schema.NonEmptyString.pipe(
+  Schema.check(
+    Schema.isPattern(/^[1-9]\d*$/u, {
+      expected: "a canonical positive decimal agent session cursor",
+    })
+  ),
+  Schema.decodeTo(AgentSessionEventSequenceSchema, {
+    decode: SchemaGetter.transform((value) => Number(value)),
+    encode: SchemaGetter.transform((value) => String(value)),
+  })
+).annotate({ identifier: "AgentSessionCursor" });
+export type AgentSessionCursor =
+  | typeof AgentSessionCursorValueSchema.Type
+  | undefined;
 export const AgentSessionCursorSchema = Schema.optionalKey(
-  AgentSessionEventSequenceSchema
+  AgentSessionCursorValueSchema
 );
 
 const actionBase = {

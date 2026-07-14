@@ -3,6 +3,7 @@ import { Schema } from "effect";
 
 import {
   AgentOperatorActionRequestSchema,
+  AgentSessionCursorSchema,
   AgentSessionSnapshotDto,
   AgentSessionSseEventIdSchema,
   AgentSessionSseEventSchema,
@@ -109,6 +110,30 @@ describe("public agent session contracts", () => {
       "1 ",
     ]) {
       assert.throws(() => decodeEventId(rejected));
+    }
+  });
+
+  it("owns canonical positive-decimal agent-session stream cursors", () => {
+    const decode = Schema.decodeUnknownSync(
+      Schema.Struct({ afterSequence: AgentSessionCursorSchema })
+    );
+
+    assert.deepEqual(decode({}), {});
+    assert.strictEqual(decode({ afterSequence: "1" }).afterSequence, 1);
+    assert.strictEqual(decode({ afterSequence: "42" }).afterSequence, 42);
+
+    for (const rejected of [
+      "",
+      "abc",
+      "0",
+      "-1",
+      "01",
+      "+1",
+      "1.5",
+      " 1",
+      "1 ",
+    ]) {
+      assert.throws(() => decode({ afterSequence: rejected }));
     }
   });
 
