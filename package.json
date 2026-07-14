@@ -5,7 +5,7 @@
   "packageManager": "pnpm@11.7.0",
   "scripts": {
     "build": "turbo run build",
-    "check": "turbo run check && pnpm lint && pnpm format:check && pnpm test:tooling",
+    "check": "turbo run check && pnpm lint && pnpm format:check && pnpm test:tooling && pnpm test:schema-contracts",
     "dev": "turbo run dev",
     "format": "oxfmt --config oxfmt.config.ts --write \"apps/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"packages/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"examples/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"scripts/**/*.{js,jsx,ts,tsx,mjs,cjs}\" oxlint.config.ts oxlint.audit.config.ts oxfmt.config.ts",
     "format:check": "oxfmt --config oxfmt.config.ts --check \"apps/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"packages/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"examples/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"scripts/**/*.{js,jsx,ts,tsx,mjs,cjs}\" oxlint.config.ts oxlint.audit.config.ts oxfmt.config.ts",
@@ -14,7 +14,9 @@
     "lint:audit": "oxlint --config oxlint.audit.config.ts apps packages examples scripts",
     "opensrc:effect": "opensrc path --cwd . effect",
     "postinstall": "./scripts/ensure-effect-source.sh",
+    "schema-contracts:audit": "node scripts/audit-schema-contracts.mjs",
     "test": "turbo run test",
+    "test:schema-contracts": "node scripts/verify-schema-contract-rules.mjs && node scripts/verify-schema-contract-ownership.mjs",
     "test:tooling": "node scripts/verify-tooling-sorting.mjs",
     "tooling:doctor": "ultracite doctor"
   },
@@ -23,6 +25,7 @@
     "oxfmt": "0.58.0",
     "oxlint": "1.73.0",
     "turbo": "^2.10.3",
+    "typescript": "6.0.3",
     "ultracite": "7.9.3"
   }
 }

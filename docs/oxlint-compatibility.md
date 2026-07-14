@@ -182,3 +182,55 @@ Vitest declares the second argument as `message?: string`.
 | Vitest override | `vitest/prefer-called-once` | 1 | Existing prefer called once test structure or matcher usage is behavior-facing; re-enable after a focused test-quality migration. |
 | Vitest override | `vitest/prefer-import-in-mock` | 1 | Existing prefer import in mock test structure or matcher usage is behavior-facing; re-enable after a focused test-quality migration. |
 | Vitest override | `vitest/valid-expect` | 1 | Oxlint 1.73.0 false-positive against installed Vitest 4.1.9: `expect(actual, message)` is valid and Vitest declares `message?: string`. Preserve the valid assertion and re-enable when tool compatibility is fixed. |
+
+## Gaia schema-contract audit
+
+The root compatibility config registers Gaia's local Oxlint plugin without
+enabling its rules in the green profile. `pnpm test:schema-contracts` runs the
+fixture gate for the syntax rules and the compiler-backed ownership checker, so
+new rule behavior cannot land without passing examples. The following rules are
+covered:
+
+- `gaia/schema-first-data-contract` rejects serializable type literals that do
+  not originate in Effect Schema. An all-callable capability surface is the
+  manual-TypeScript exception, but nested operation input objects and mixed
+  data-plus-callback contracts still require schemas. In TSX, framework Props
+  may additionally contain callable members, referenced types, and the exact
+  display/prose string vocabulary. Cross-file aliases, re-exports, decoded
+  indexed access, schema classes, and `Pick`/`Omit`/`Extract` pass only when the
+  checker reaches the canonical Program symbols and Effect Schema declaration
+  chain. Counterfeit utilities, arbitrary schema-containing generics, metadata
+  indexed access, textual `.Type` and `["Type"]` lookalikes, and structural
+  schema lookalikes do not establish ownership.
+- `gaia/no-unbranded-domain-string` applies the reviewed terminal-token,
+  lifecycle-time, exact domain-name, and display/prose vocabularies. Direct
+  callable parameters are always inspected across declarations, call and
+  construct signatures, assigned or wrapped functions, object members, and
+  class members. Only `input`, `raw`, or `value` parameters on directly named
+  `parseX` and `decodeX` boundaries may remain raw strings; a factory such as
+  `makeRunId(input: string)` is not exempt.
+- `gaia/no-brand-cast` uses Oxlint only to surface direct schema-type assertion
+  candidates. The TypeScript checker is authoritative: it resolves the actual
+  `Schema.brand` return type and accepts the brand property only when its
+  declaration is the canonical Effect `Brand` declaration. Names, suffixes,
+  `.Type` text, import paths, package paths, and structural assignability are
+  not provenance. The checker follows data through properties, index
+  signatures, tuples, arrays, generic containers, unions, intersections, and
+  referenced types with cycle-safe traversal. A local structural
+  `readonly ["~effect/Brand"]` spoof is a negative fixture and never enters the
+  no-brand-cast finding set.
+
+`pnpm schema-contracts:audit` aggregates the Oxlint candidate stream and the
+compiler-proven ownership stream with normalized
+`path:line:column rule message Remedy: ...` diagnostics. It uses a disposable
+audit-only config to enable exactly these rules, deletes that config after every
+run, has no snapshot or diagnostic-count baseline, and exits non-zero when
+either engine reports findings or fails. The command is deliberately not part
+of `pnpm check`; its passing aggregation and cleanup proof uses only isolated
+fixtures and does not assert that the live backlog is nonzero. GAIA-104 owns the
+migration backlog and may reduce the explicit audit to zero without breaking
+the normal gate.
+
+This audit is additive to the GAIA-106 compatibility policy. It does not change
+`oxlint.audit.config.ts`, `oxfmt.config.ts`, the 93 root compatibility
+severities, the 17 Vitest override severities, or the rule-removal policy above.
