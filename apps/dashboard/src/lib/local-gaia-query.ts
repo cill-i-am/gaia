@@ -1,12 +1,16 @@
 import {
+  AgentOperatorActionRequestSchema,
+  DeliveryActionRequestSchema,
+  DeliveryModeSchema,
   FactoryAgentIdSchema,
   FactoryArtifactIdSchema,
+  RunIdSchema,
   type FactoryAgentId,
   type FactoryArtifactId,
   type RunId,
 } from "@gaia/core";
 import { skipToken } from "@tanstack/react-query";
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { createEffectQuery } from "effect-query";
 
 import {
@@ -27,11 +31,15 @@ import {
   listFactoryArtifactsFromDashboardGaiaClient,
   listRunsFromDashboardGaiaClient,
   type DashboardGaiaClientConfig,
+  type DashboardGaiaClientError,
 } from "@/lib/local-gaia-client";
 
 export const localGaiaQueryKeys = {
   all: ["local-gaia"] as const,
-  artifact: (input: { readonly artifactId: string; readonly runId: RunId }) =>
+  artifact: (input: {
+    readonly artifactId: FactoryArtifactId;
+    readonly runId: RunId;
+  }) =>
     [
       ...localGaiaQueryKeys.run(input.runId),
       "artifact",
@@ -88,6 +96,56 @@ export const localGaiaQueryKeys = {
   unselected: (resource: string) =>
     [...localGaiaQueryKeys.runs(), "unselected", resource] as const,
 };
+
+export const DashboardCreateRunInputSchema = Schema.Struct({
+  deliveryMode: DeliveryModeSchema,
+  description: Schema.String,
+  title: Schema.String,
+});
+
+export type DashboardCreateRunInput = typeof DashboardCreateRunInputSchema.Type;
+
+export const DashboardDeliveryActionMutationInputSchema = Schema.Struct({
+  action: DeliveryActionRequestSchema,
+  runId: RunIdSchema,
+});
+
+export type DashboardDeliveryActionMutationInput =
+  typeof DashboardDeliveryActionMutationInputSchema.Type;
+
+export const DashboardAgentSessionActionMutationInputSchema = Schema.Struct({
+  action: AgentOperatorActionRequestSchema,
+  agentId: FactoryAgentIdSchema,
+  runId: RunIdSchema,
+});
+
+export type DashboardAgentSessionActionMutationInput =
+  typeof DashboardAgentSessionActionMutationInputSchema.Type;
+
+type DashboardGaiaParameter = Extract<
+  DashboardGaiaClientError,
+  { readonly _tag: "DashboardGaiaParameterError" }
+>["parameter"];
+
+const decodeDashboardCreateRunInput = Schema.decodeUnknownEffect(
+  DashboardCreateRunInputSchema
+);
+const decodeDashboardDeliveryActionMutationInput = Schema.decodeUnknownEffect(
+  DashboardDeliveryActionMutationInputSchema
+);
+const decodeDashboardAgentSessionActionMutationInput =
+  Schema.decodeUnknownEffect(DashboardAgentSessionActionMutationInputSchema);
+
+function dashboardMutationInputError(
+  parameter: DashboardGaiaParameter,
+  cause: Schema.SchemaError
+): DashboardGaiaClientError {
+  return {
+    _tag: "DashboardGaiaParameterError",
+    cause,
+    parameter,
+  };
+}
 
 const localGaiaEffectQuery = createEffectQuery(DashboardGaiaFetchClientLive);
 type LocalGaiaEffectQuery = typeof localGaiaEffectQuery;
@@ -340,11 +398,18 @@ export function localGaiaCreateRunMutationOptions(
 ) {
   return effectQuery.mutationOptions({
     mutationKey: [...localGaiaQueryKeys.all, "create-run"] as const,
-    mutationFn: (input: {
-      readonly deliveryMode: "local" | "pullRequest";
-      readonly description: string;
-      readonly title: string;
-    }) => createRunFromDashboardGaiaClient({ ...config, ...input }),
+    mutationFn: (input: unknown) =>
+      Effect.gen(function* () {
+        const parsedInput = yield* decodeDashboardCreateRunInput(input).pipe(
+          Effect.mapError((cause) =>
+            dashboardMutationInputError("createRun", cause)
+          )
+        );
+        return yield* createRunFromDashboardGaiaClient({
+          ...config,
+          ...parsedInput,
+        });
+      }),
   });
 }
 
@@ -354,8 +419,20 @@ export function localGaiaDeliveryActionMutationOptions(
 ) {
   return effectQuery.mutationOptions({
     mutationKey: [...localGaiaQueryKeys.all, "delivery", "action"] as const,
-    mutationFn: (input: { readonly action: unknown; readonly runId: RunId }) =>
-      actOnDeliveryFromDashboardGaiaClient({ ...config, ...input }),
+    mutationFn: (input: unknown) =>
+      Effect.gen(function* () {
+        const parsedInput = yield* decodeDashboardDeliveryActionMutationInput(
+          input
+        ).pipe(
+          Effect.mapError((cause) =>
+            dashboardMutationInputError("deliveryAction", cause)
+          )
+        );
+        return yield* actOnDeliveryFromDashboardGaiaClient({
+          ...config,
+          ...parsedInput,
+        });
+      }),
   });
 }
 
@@ -369,11 +446,19 @@ export function localGaiaAgentSessionActionMutationOptions(
       "agent-session",
       "action",
     ] as const,
-    mutationFn: (input: {
-      readonly action: unknown;
-      readonly agentId: FactoryAgentId;
-      readonly runId: RunId;
-    }) => actOnAgentSessionFromDashboardGaiaClient({ ...config, ...input }),
+    mutationFn: (input: unknown) =>
+      Effect.gen(function* () {
+        const parsedInput =
+          yield* decodeDashboardAgentSessionActionMutationInput(input).pipe(
+            Effect.mapError((cause) =>
+              dashboardMutationInputError("action", cause)
+            )
+          );
+        return yield* actOnAgentSessionFromDashboardGaiaClient({
+          ...config,
+          ...parsedInput,
+        });
+      }),
   });
 }
 

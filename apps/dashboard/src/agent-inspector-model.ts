@@ -1,65 +1,104 @@
-import type {
+import {
   AgentSessionSnapshotDto,
-  HarnessItem,
-  HarnessPendingInteraction,
-  HarnessSessionState,
+  AgentSessionEventSequenceSchema,
+  HarnessInteractionIdSchema,
+  HarnessItemIdSchema,
+  HarnessItemSchema,
+  HarnessPendingInteractionSchema,
+  HarnessSessionStateSchema,
   HarnessTurnSnapshot,
+  HarnessTurnIdSchema,
+  type HarnessItem,
+  type HarnessPendingInteraction,
+  type HarnessSessionState,
 } from "@gaia/core";
+import { Schema } from "effect";
+
+export const AgentInspectorConnectionSchema = Schema.Literals([
+  "connecting",
+  "connected",
+  "reconnecting",
+  "unavailable",
+] as const);
 
 export type AgentInspectorConnection =
-  | "connecting"
-  | "connected"
-  | "reconnecting"
-  | "unavailable";
+  typeof AgentInspectorConnectionSchema.Type;
 
-export type AgentInspectorTimelineItem = {
-  readonly details: string | undefined;
-  readonly key: string;
-  readonly status: string;
-  readonly title: string;
-};
+export const AgentInspectorTimelineItemSchema = Schema.Struct({
+  details: Schema.optional(Schema.String),
+  key: HarnessItemIdSchema,
+  status: Schema.String,
+  title: Schema.String,
+});
 
-export type AgentInspectorComposer =
-  | {
-      readonly disabledReason: undefined;
-      readonly mode: "followUp";
-      readonly placeholder: string;
-      readonly turnId: undefined;
-    }
-  | {
-      readonly disabledReason: undefined;
-      readonly mode: "steer";
-      readonly placeholder: string;
-      readonly turnId: string;
-    }
-  | {
-      readonly disabledReason: string;
-      readonly mode: "disabled";
-      readonly placeholder: string;
-      readonly turnId: undefined;
-    };
+export type AgentInspectorTimelineItem =
+  typeof AgentInspectorTimelineItemSchema.Type;
 
-export type AgentInspectorPendingInteraction = {
-  readonly actions: ReadonlyArray<string>;
-  readonly body: string;
-  readonly interactionId: string;
-  readonly kind: "approval" | "mcpElicitation" | "userInput";
-  readonly title: string;
-};
+export const AgentInspectorComposerSchema = Schema.Union([
+  Schema.Struct({
+    disabledReason: Schema.optional(Schema.String),
+    mode: Schema.Literal("followUp"),
+    placeholder: Schema.String,
+    turnId: Schema.optional(HarnessTurnIdSchema),
+  }),
+  Schema.Struct({
+    disabledReason: Schema.optional(Schema.String),
+    mode: Schema.Literal("steer"),
+    placeholder: Schema.String,
+    turnId: HarnessTurnIdSchema,
+  }),
+  Schema.Struct({
+    disabledReason: Schema.String,
+    mode: Schema.Literal("disabled"),
+    placeholder: Schema.String,
+    turnId: Schema.optional(HarnessTurnIdSchema),
+  }),
+]);
 
-export type AgentInspectorSessionModel = {
-  readonly composer: AgentInspectorComposer;
-  readonly eventSequence: number | undefined;
-  readonly interrupt: {
-    readonly disabledReason: string | undefined;
-    readonly enabled: boolean;
-    readonly turnId: string | undefined;
-  };
-  readonly notice: string | undefined;
-  readonly pendingInteractions: ReadonlyArray<AgentInspectorPendingInteraction>;
-  readonly status: HarnessSessionState | "connecting" | "reconnecting";
-  readonly timeline: ReadonlyArray<AgentInspectorTimelineItem>;
-};
+export type AgentInspectorComposer = typeof AgentInspectorComposerSchema.Type;
+
+export const AgentInspectorPendingActionSchema = Schema.Literals([
+  "approve",
+  "approveForSession",
+  "decline",
+  "cancel",
+  "submit",
+] as const);
+
+export const AgentInspectorPendingInteractionSchema = Schema.Struct({
+  actions: Schema.Array(AgentInspectorPendingActionSchema),
+  body: Schema.String,
+  interactionId: HarnessInteractionIdSchema,
+  kind: Schema.Literals(["approval", "mcpElicitation", "userInput"] as const),
+  title: Schema.String,
+});
+
+export type AgentInspectorPendingInteraction =
+  typeof AgentInspectorPendingInteractionSchema.Type;
+
+export const AgentInspectorSessionStatusSchema = Schema.Union([
+  HarnessSessionStateSchema,
+  Schema.Literals(["connecting", "reconnecting"] as const),
+]);
+
+export const AgentInspectorInterruptSchema = Schema.Struct({
+  disabledReason: Schema.optional(Schema.String),
+  enabled: Schema.Boolean,
+  turnId: Schema.optional(HarnessTurnIdSchema),
+});
+
+export const AgentInspectorSessionModelSchema = Schema.Struct({
+  composer: AgentInspectorComposerSchema,
+  eventSequence: Schema.optional(AgentSessionEventSequenceSchema),
+  interrupt: AgentInspectorInterruptSchema,
+  notice: Schema.optional(Schema.String),
+  pendingInteractions: Schema.Array(AgentInspectorPendingInteractionSchema),
+  status: AgentInspectorSessionStatusSchema,
+  timeline: Schema.Array(AgentInspectorTimelineItemSchema),
+});
+
+export type AgentInspectorSessionModel =
+  typeof AgentInspectorSessionModelSchema.Type;
 
 export function buildAgentInspectorSessionModel(input: {
   readonly connection: AgentInspectorConnection;

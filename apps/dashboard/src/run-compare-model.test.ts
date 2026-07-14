@@ -3,7 +3,10 @@ import { RunIdSchema, makeRunEvent } from "@gaia/core";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { buildRunCompareModel } from "@/run-compare-model";
+import {
+  RunCompareModelSchema,
+  buildRunCompareModel,
+} from "@/run-compare-model";
 
 describe("run compare model", () => {
   it("compares public run dimensions and artifact availability", () => {
@@ -106,6 +109,9 @@ describe("run compare model", () => {
       shared: ["input"],
     });
     expect(model.summary).toContain("key differences");
+    expect(Schema.decodeUnknownSync(RunCompareModelSchema)(model)).toEqual(
+      model
+    );
   });
 
   it("keeps missing comparison data explicit", () => {

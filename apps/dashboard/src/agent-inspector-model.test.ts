@@ -12,7 +12,10 @@ import {
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { buildAgentInspectorSessionModel } from "@/agent-inspector-model";
+import {
+  AgentInspectorSessionModelSchema,
+  buildAgentInspectorSessionModel,
+} from "@/agent-inspector-model";
 
 const parseAgentId = Schema.decodeUnknownSync(FactoryAgentIdSchema);
 
@@ -79,6 +82,9 @@ describe("Agent Inspector session model", () => {
     expect(model.timeline[2]?.details).toContain(
       "apps/dashboard/src/components/dashboard-shell.tsx"
     );
+    expect(
+      Schema.decodeUnknownSync(AgentInspectorSessionModelSchema)(model)
+    ).toEqual(model);
   });
 
   it("maps an idle resumable public session to follow-up and disables unsupported steering", () => {

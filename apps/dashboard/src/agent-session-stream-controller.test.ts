@@ -1,5 +1,6 @@
 import type { AgentSessionUpdateDto } from "@gaia/core";
 import {
+  AgentSessionEventSequenceSchema,
   FactoryAgentIdSchema,
   parseLocalGaiaServerUrl,
   parseHarnessSessionId,
@@ -8,7 +9,10 @@ import {
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { createAgentSessionStreamController } from "@/agent-session-stream-controller";
+import {
+  AgentSessionStreamTargetSchema,
+  createAgentSessionStreamController,
+} from "@/agent-session-stream-controller";
 import type { AgentSessionEventSource } from "@/lib/local-gaia-client";
 
 const parseAgentId = Schema.decodeUnknownSync(FactoryAgentIdSchema);
@@ -130,6 +134,9 @@ describe("Agent session stream controller", () => {
       runId,
       sessionId,
     } as const;
+    expect(
+      Schema.decodeUnknownSync(AgentSessionStreamTargetSchema)(target)
+    ).toEqual(target);
 
     controller.sync(target);
     controller.sync(target);
@@ -190,6 +197,9 @@ function update(input: {
   const agentId = parseAgentId(input.agentId ?? "agent-worker");
   const runId = parseRunId("run-1234567890");
   const sessionId = parseHarnessSessionId("session-run-1234567890");
+  const eventSequence = Schema.decodeUnknownSync(
+    AgentSessionEventSequenceSchema
+  )(input.sequence);
   const snapshot = {
     agentId,
     capabilities: {
@@ -206,7 +216,7 @@ function update(input: {
       usageReporting: false,
       userQuestions: false,
     },
-    eventSequence: input.sequence,
+    eventSequence,
     items: [],
     pendingInteractions: [],
     recovered: false,
@@ -219,7 +229,7 @@ function update(input: {
 
   return {
     agentId,
-    eventSequence: input.sequence,
+    eventSequence,
     runId,
     sessionId,
     snapshot,

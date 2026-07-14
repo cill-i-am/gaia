@@ -19,8 +19,10 @@ import {
   LocalRunApiErrorEnvelope,
   LocalRunArtifactSuccessEnvelope,
   LocalRunDetailSuccessEnvelope,
-  LocalRunListSuccessEnvelope,
+  LocalRunReadListSchema,
+  LocalGaiaServerUrlSchema,
   parseLocalGaiaServerUrl,
+  AgentSessionEventSequenceSchema,
   type FactoryAgentId,
   type FactoryArtifactId,
   type LocalGaiaServerUrl,
@@ -66,14 +68,25 @@ export type DashboardGaiaClientError =
       readonly cause: unknown;
     };
 
-export type DashboardGaiaClientConfig = {
-  readonly serverUrl: LocalGaiaServerUrl;
-};
+export const DashboardGaiaClientConfigSchema = Schema.Struct({
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+
+export type DashboardGaiaClientConfig =
+  typeof DashboardGaiaClientConfigSchema.Type;
+
+export const DashboardLocalRunListSuccessSchema = Schema.Struct({
+  data: LocalRunReadListSchema,
+  status: Schema.Literal("success"),
+});
+
+export type DashboardLocalRunListSuccess =
+  typeof DashboardLocalRunListSuccessSchema.Type;
 
 export const DashboardGaiaFetchClientLive = FetchHttpClient.layer;
 
 const decodeLocalRunListSuccess = Schema.decodeUnknownEffect(
-  LocalRunListSuccessEnvelope
+  DashboardLocalRunListSuccessSchema
 );
 const decodeLocalRunDetailSuccess = Schema.decodeUnknownEffect(
   LocalRunDetailSuccessEnvelope
@@ -346,6 +359,90 @@ export type DeliverySnapshotEventSource = {
   ): void;
 };
 
+type DashboardSseMessage = {
+  readonly data: string;
+  readonly lastEventId: string;
+};
+
+type DashboardSseListener = (event: DashboardSseMessage) => void;
+
+function createBrowserAgentSessionEventSource(
+  url: string
+): AgentSessionEventSource {
+  return createBrowserDashboardEventSource(url);
+}
+
+function createBrowserDeliverySnapshotEventSource(
+  url: string
+): DeliverySnapshotEventSource {
+  return createBrowserDashboardEventSource(url);
+}
+
+function createBrowserDashboardEventSource(url: string) {
+  const source = new EventSource(url);
+  const wrappedListeners = new Map<
+    string,
+    Map<DashboardSseListener, EventListener>
+  >();
+  let onerror: ((event: unknown) => void) | null = null;
+  let onmessage: ((event: DashboardSseMessage) => void) | null = null;
+
+  return {
+    addEventListener(event: string, listener: DashboardSseListener) {
+      const eventListeners = wrappedListeners.get(event) ?? new Map();
+      const wrapped = (browserEvent: Event) =>
+        listener(toDashboardSseMessage(browserEvent));
+      eventListeners.set(listener, wrapped);
+      wrappedListeners.set(event, eventListeners);
+      source.addEventListener(event, wrapped);
+    },
+    close() {
+      source.close();
+    },
+    get onerror() {
+      return onerror;
+    },
+    set onerror(listener: ((event: unknown) => void) | null) {
+      onerror = listener;
+      source.onerror = listener === null ? null : (event) => listener(event);
+    },
+    get onmessage() {
+      return onmessage;
+    },
+    set onmessage(listener: ((event: DashboardSseMessage) => void) | null) {
+      onmessage = listener;
+      source.onmessage =
+        listener === null
+          ? null
+          : (event) => listener(toDashboardSseMessage(event));
+    },
+    removeEventListener(event: string, listener: DashboardSseListener) {
+      const eventListeners = wrappedListeners.get(event);
+      const wrapped = eventListeners?.get(listener);
+      if (wrapped === undefined) return;
+      source.removeEventListener(event, wrapped);
+      eventListeners?.delete(listener);
+    },
+  };
+}
+
+function toDashboardSseMessage(event: Event): DashboardSseMessage {
+  if (event instanceof MessageEvent) {
+    return {
+      data:
+        typeof event.data === "string"
+          ? event.data
+          : JSON.stringify(event.data),
+      lastEventId: event.lastEventId,
+    };
+  }
+
+  return {
+    data: "",
+    lastEventId: "",
+  };
+}
+
 /** Browser-owned delivery SSE lifecycle for one selected run. */
 export function openDeliverySnapshotEventSource(
   config: DashboardGaiaClientConfig & {
@@ -356,8 +453,9 @@ export function openDeliverySnapshotEventSource(
     readonly onError: (error: unknown) => void;
     readonly onUpdate: (update: typeof DeliverySnapshotDto.Type) => void;
   },
-  create: (url: string) => DeliverySnapshotEventSource = (url) =>
-    new EventSource(url) as DeliverySnapshotEventSource
+  create: (
+    url: string
+  ) => DeliverySnapshotEventSource = createBrowserDeliverySnapshotEventSource
 ) {
   const query =
     config.afterSequence === undefined
@@ -398,7 +496,7 @@ export function openDeliverySnapshotEventSource(
 /** Browser-owned SSE lifecycle. The caller closes on run/agent change or unmount. */
 export function openAgentSessionEventSource(
   config: DashboardGaiaClientConfig & {
-    readonly afterSequence?: number;
+    readonly afterSequence?: typeof AgentSessionEventSequenceSchema.Type;
     readonly agentId: FactoryAgentId;
     readonly runId: RunId;
   },
@@ -406,8 +504,9 @@ export function openAgentSessionEventSource(
     readonly onError: (error: unknown) => void;
     readonly onUpdate: (update: typeof AgentSessionUpdateDto.Type) => void;
   },
-  create: (url: string) => AgentSessionEventSource = (url) =>
-    new EventSource(url) as AgentSessionEventSource
+  create: (
+    url: string
+  ) => AgentSessionEventSource = createBrowserAgentSessionEventSource
 ) {
   const query =
     config.afterSequence === undefined
@@ -671,7 +770,7 @@ function toDashboardGaiaClientError(error: unknown): DashboardGaiaClientError {
   };
 }
 
-function isDashboardGaiaClientError(
+export function isDashboardGaiaClientError(
   error: unknown
 ): error is DashboardGaiaClientError {
   return (

@@ -1,31 +1,44 @@
-import type {
-  AgentSessionEventSequence,
+import {
   AgentSessionUpdateDto,
-  FactoryAgentId,
-  HarnessSessionId,
-  LocalGaiaServerUrl,
-  RunId,
+  AgentSessionEventSequenceSchema,
+  FactoryAgentIdSchema,
+  HarnessSessionIdSchema,
+  RunIdSchema,
+  type FactoryAgentId,
+  type HarnessSessionId,
+  type LocalGaiaServerUrl,
+  type RunId,
 } from "@gaia/core";
+import { Schema } from "effect";
 
 import {
   openAgentSessionEventSource,
   type DashboardGaiaClientConfig,
 } from "@/lib/local-gaia-client";
 
-export type AgentSessionStreamConnection =
-  | "connected"
-  | "connecting"
-  | "reconnecting"
-  | "unavailable";
+export const AgentSessionStreamConnectionSchema = Schema.Literals([
+  "connected",
+  "connecting",
+  "reconnecting",
+  "unavailable",
+] as const);
 
-type StreamTarget = {
-  readonly agentId: FactoryAgentId | undefined;
-  readonly isOpen: boolean;
-  readonly rearmSequence?: AgentSessionEventSequence;
-  readonly runId: RunId | undefined;
-  readonly sessionId?: HarnessSessionId;
-  readonly snapshotSequence?: AgentSessionEventSequence;
-};
+export type AgentSessionStreamConnection =
+  typeof AgentSessionStreamConnectionSchema.Type;
+
+export const AgentSessionStreamTargetSchema = Schema.Struct({
+  agentId: Schema.optional(FactoryAgentIdSchema),
+  isOpen: Schema.Boolean,
+  rearmSequence: Schema.optional(AgentSessionEventSequenceSchema),
+  runId: Schema.optional(RunIdSchema),
+  sessionId: Schema.optional(HarnessSessionIdSchema),
+  snapshotSequence: Schema.optional(AgentSessionEventSequenceSchema),
+});
+
+export type AgentSessionStreamTarget =
+  typeof AgentSessionStreamTargetSchema.Type;
+
+type StreamTarget = AgentSessionStreamTarget;
 
 type OpenStreamTarget = {
   readonly agentId: FactoryAgentId;
@@ -44,7 +57,7 @@ export function createAgentSessionStreamController(input: {
   readonly onUpdate: (update: typeof AgentSessionUpdateDto.Type) => void;
   readonly openSource?: (
     config: DashboardGaiaClientConfig & {
-      readonly afterSequence?: number;
+      readonly afterSequence?: typeof AgentSessionEventSequenceSchema.Type;
       readonly agentId: FactoryAgentId;
       readonly runId: RunId;
     },
@@ -59,7 +72,7 @@ export function createAgentSessionStreamController(input: {
     input.openSource ??
     ((config, handlers) => openAgentSessionEventSource(config, handlers));
   let current: StreamHandle | undefined;
-  let lastSequence: number | undefined;
+  let lastSequence: typeof AgentSessionEventSequenceSchema.Type | undefined;
   let target: StreamTarget | undefined;
   let terminal = false;
   let generation = 0;
@@ -203,10 +216,7 @@ export function createAgentSessionStreamController(input: {
 
       if (rearmed) {
         terminal = false;
-        lastSequence = Math.max(
-          lastSequence ?? 0,
-          nextTarget.rearmSequence ?? 0
-        );
+        lastSequence = maximumDefined(lastSequence, nextTarget.rearmSequence);
         closeCurrent();
       }
 
@@ -217,8 +227,11 @@ export function createAgentSessionStreamController(input: {
   };
 }
 
-function maximumDefined(left: number | undefined, right: number | undefined) {
+function maximumDefined(
+  left: typeof AgentSessionEventSequenceSchema.Type | undefined,
+  right: typeof AgentSessionEventSequenceSchema.Type | undefined
+) {
   if (left === undefined) return right;
   if (right === undefined) return left;
-  return Math.max(left, right);
+  return left >= right ? left : right;
 }

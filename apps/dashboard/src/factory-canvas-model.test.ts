@@ -11,7 +11,10 @@ import {
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { buildFactoryCanvasModel } from "@/factory-canvas-model";
+import {
+  FactoryCanvasModelSchema,
+  buildFactoryCanvasModel,
+} from "@/factory-canvas-model";
 import { testFactoryExecution } from "@/test-factory-execution";
 
 describe("factory canvas model", () => {
@@ -84,6 +87,9 @@ describe("factory canvas model", () => {
         target: "agent:agent-ci-watcher",
       },
     ]);
+    expect(Schema.decodeUnknownSync(FactoryCanvasModelSchema)(model)).toEqual(
+      model
+    );
   });
 
   it("keeps artifacts and activity as references on agent nodes", () => {
@@ -340,27 +346,30 @@ describe("factory canvas model", () => {
     const positionByRawId = positionsByRawId(model.nodes);
 
     expectNoNodeOverlap(model.nodes);
-    expect(positionByRawId.get("agent-worker-a")?.y).toBe(
-      positionByRawId.get("agent-worker-b")?.y
+    expect(positionById(positionByRawId, "agent-worker-a")?.y).toBe(
+      positionById(positionByRawId, "agent-worker-b")?.y
     );
-    expect(positionByRawId.get("agent-worker-b")?.y).toBe(
-      positionByRawId.get("agent-worker-c")?.y
+    expect(positionById(positionByRawId, "agent-worker-b")?.y).toBe(
+      positionById(positionByRawId, "agent-worker-c")?.y
     );
     expectHorizontalGap(positionByRawId, "agent-worker-a", "agent-worker-b");
     expectHorizontalGap(positionByRawId, "agent-worker-b", "agent-worker-c");
-    expect(positionByRawId.get("agent-reviewer-a")?.y).toBeGreaterThan(
-      positionByRawId.get("agent-worker-a")?.y ?? Number.POSITIVE_INFINITY
+    expect(
+      positionById(positionByRawId, "agent-reviewer-a")?.y
+    ).toBeGreaterThan(
+      positionById(positionByRawId, "agent-worker-a")?.y ??
+        Number.POSITIVE_INFINITY
     );
-    expect(positionByRawId.get("agent-tester")?.x).toBeGreaterThan(
+    expect(positionById(positionByRawId, "agent-tester")?.x).toBeGreaterThan(
       Math.min(
-        positionByRawId.get("agent-reviewer-a")?.x ?? 0,
-        positionByRawId.get("agent-reviewer-b")?.x ?? 0
+        positionById(positionByRawId, "agent-reviewer-a")?.x ?? 0,
+        positionById(positionByRawId, "agent-reviewer-b")?.x ?? 0
       )
     );
-    expect(positionByRawId.get("agent-tester")?.x).toBeLessThan(
+    expect(positionById(positionByRawId, "agent-tester")?.x).toBeLessThan(
       Math.max(
-        positionByRawId.get("agent-reviewer-a")?.x ?? 0,
-        positionByRawId.get("agent-reviewer-b")?.x ?? 0
+        positionById(positionByRawId, "agent-reviewer-a")?.x ?? 0,
+        positionById(positionByRawId, "agent-reviewer-b")?.x ?? 0
       )
     );
     for (const edge of model.edges) {
@@ -412,13 +421,16 @@ describe("factory canvas model", () => {
 
     expect(model.edges).toEqual([]);
     expectNoNodeOverlap(model.nodes);
-    expect(positionByRawId.get("agent-worker")?.y).toBeGreaterThan(
-      positionByRawId.get("agent-orchestrator")?.y ?? Number.POSITIVE_INFINITY
+    expect(positionById(positionByRawId, "agent-worker")?.y).toBeGreaterThan(
+      positionById(positionByRawId, "agent-orchestrator")?.y ??
+        Number.POSITIVE_INFINITY
     );
-    expect(positionByRawId.get("agent-unknown-a")?.y).toBe(
-      positionByRawId.get("agent-unknown-b")?.y
+    expect(positionById(positionByRawId, "agent-unknown-a")?.y).toBe(
+      positionById(positionByRawId, "agent-unknown-b")?.y
     );
-    expect(positionByRawId.get("agent-unknown-a")?.y).toBeLessThan(700);
+    expect(positionById(positionByRawId, "agent-unknown-a")?.y).toBeLessThan(
+      700
+    );
     expectHorizontalGap(positionByRawId, "agent-unknown-a", "agent-unknown-b");
   });
 });
@@ -616,16 +628,20 @@ function positionsByRawId(
   return new Map(nodes.map((node) => [node.rawId, node.position]));
 }
 
+function positionById(
+  positions: ReturnType<typeof positionsByRawId>,
+  rawId: string
+) {
+  return positions.get(graphNodeId(rawId));
+}
+
 function expectHorizontalGap(
-  positions: ReadonlyMap<
-    string,
-    ReturnType<typeof buildFactoryCanvasModel>["nodes"][number]["position"]
-  >,
+  positions: ReturnType<typeof positionsByRawId>,
   leftId: string,
   rightId: string
 ) {
-  const left = positions.get(leftId);
-  const right = positions.get(rightId);
+  const left = positionById(positions, leftId);
+  const right = positionById(positions, rightId);
 
   expect(left).toBeDefined();
   expect(right).toBeDefined();

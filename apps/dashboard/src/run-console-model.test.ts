@@ -3,11 +3,17 @@ import type {
   LocalRunReadDiagnosticDto,
   LocalRunSummaryDto,
 } from "@gaia/core";
-import { parseLocalGaiaServerUrl, RunIdSchema } from "@gaia/core";
+import {
+  LocalRunReadDiagnosticSchema,
+  LocalRunReadSummarySchema,
+  parseLocalGaiaServerUrl,
+  RunIdSchema,
+} from "@gaia/core";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  RunConsoleStateSchema,
   buildRunConsoleState,
   reconcileSelectedRunId,
   selectedRunFromConsoleState,
@@ -71,6 +77,9 @@ describe("run console model", () => {
       selectedRunFromConsoleState(parseRunId("run-abcdefghij"), state.runs)
         ?.status
     ).toBe("completed");
+    expect(Schema.decodeUnknownSync(RunConsoleStateSchema)(state)).toEqual(
+      state
+    );
   });
 
   it("reports an online empty state when the typed API has no runs", () => {
@@ -293,8 +302,8 @@ function localRunSummary(
   input: Partial<typeof LocalRunSummaryDto.Type> & {
     readonly runId: typeof LocalRunSummaryDto.Type.runId;
   }
-): typeof LocalRunSummaryDto.Type {
-  return {
+): typeof LocalRunReadSummarySchema.Type {
+  return Schema.decodeUnknownSync(LocalRunReadSummarySchema)({
     artifacts: ["input", "worker-plan"],
     createdAt: "2026-07-07T12:00:00.000Z",
     eventCount: 4,
@@ -303,7 +312,7 @@ function localRunSummary(
     status: "running",
     updatedAt: "2026-07-07T12:00:00.000Z",
     ...input,
-  };
+  });
 }
 
 function localRunApiError(
@@ -320,13 +329,13 @@ function localRunApiError(
 
 function localRunDiagnostic(
   input: Partial<typeof LocalRunReadDiagnosticDto.Type>
-): typeof LocalRunReadDiagnosticDto.Type {
-  return {
+): typeof LocalRunReadDiagnosticSchema.Type {
+  return Schema.decodeUnknownSync(LocalRunReadDiagnosticSchema)({
     code: "RunUnreadable",
     message: "Run could not be read.",
     recoverable: true,
     ...input,
-  };
+  });
 }
 
 function parseRunId(value: string): typeof RunIdSchema.Type {

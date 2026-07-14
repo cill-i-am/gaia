@@ -1,62 +1,111 @@
-import type {
+import {
   FactoryActivityDto,
-  FactoryAgentRole,
-  FactoryAgentState,
+  FactoryActivityIdSchema,
+  FactoryAgentIdSchema,
+  FactoryAgentRoleSchema,
+  type FactoryAgentRole,
+  FactoryAgentStateSchema,
   FactoryGraphDiagnosticDto,
   FactoryGraphDto,
-  FactoryRelationshipType,
-  FactoryWorkItemKind,
+  FactoryGraphNodeIdSchema,
+  FactoryRelationshipTypeSchema,
+  type FactoryRelationshipType,
+  FactoryArtifactIdSchema,
+  FactoryWorkItemKindSchema,
+  FactoryWorkflowIdSchema,
+  IssueDeliveryWorkflowDefinition,
+  RunIdSchema,
+  type FactoryAgentState,
+  type FactoryGraphNodeId,
 } from "@gaia/core";
-import { IssueDeliveryWorkflowDefinition } from "@gaia/core";
+import { Schema } from "effect";
 
-export type FactoryCanvasNodeKind = "agent" | "workItem";
-export type FactoryCanvasLane =
-  | "ci"
-  | "implementation"
-  | "orchestration"
-  | "research"
-  | "review"
-  | "unknown"
-  | "verification"
-  | "work";
+export const FactoryCanvasNodeKindSchema = Schema.Literals([
+  "agent",
+  "workItem",
+] as const);
 
-export type FactoryCanvasNode = {
-  readonly activityCount: number;
-  readonly id: string;
-  readonly artifactCount: number;
-  readonly artifactIds: ReadonlyArray<string>;
-  readonly kind: FactoryCanvasNodeKind;
-  readonly lane: FactoryCanvasLane;
-  readonly label: string;
-  readonly latestActivityId: string | undefined;
-  readonly rawId: string;
-  readonly role: FactoryAgentRole | undefined;
-  readonly state: FactoryAgentState | undefined;
-  readonly summary: string;
-  readonly type: FactoryWorkItemKind | FactoryAgentRole;
-  readonly position: {
-    readonly x: number;
-    readonly y: number;
-  };
-};
+export type FactoryCanvasNodeKind = typeof FactoryCanvasNodeKindSchema.Type;
 
-export type FactoryCanvasEdge = {
-  readonly id: string;
-  readonly label: FactoryRelationshipType;
-  readonly source: string;
-  readonly target: string;
-};
+export const FactoryCanvasLaneSchema = Schema.Literals([
+  "ci",
+  "implementation",
+  "orchestration",
+  "research",
+  "review",
+  "unknown",
+  "verification",
+  "work",
+] as const);
 
-export type FactoryCanvasModel = {
-  readonly diagnostics: ReadonlyArray<typeof FactoryGraphDiagnosticDto.Type>;
-  readonly edges: ReadonlyArray<FactoryCanvasEdge>;
-  readonly id: string;
-  readonly nodes: ReadonlyArray<FactoryCanvasNode>;
-  readonly title: string;
-  readonly workflow: typeof FactoryGraphDto.Type.workflow;
-};
+export type FactoryCanvasLane = typeof FactoryCanvasLaneSchema.Type;
+
+export const FactoryCanvasNodeIdSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("FactoryCanvasNodeId")
+);
+
+export type FactoryCanvasNodeId = typeof FactoryCanvasNodeIdSchema.Type;
+
+export const FactoryCanvasEdgeIdSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("FactoryCanvasEdgeId")
+);
+
+export type FactoryCanvasEdgeId = typeof FactoryCanvasEdgeIdSchema.Type;
+
+const FactoryCanvasPositionSchema = Schema.Struct({
+  x: Schema.Number,
+  y: Schema.Number,
+});
+
+export const FactoryCanvasNodeSchema = Schema.Struct({
+  activityCount: Schema.Number,
+  artifactCount: Schema.Number,
+  artifactIds: Schema.Array(FactoryArtifactIdSchema),
+  id: FactoryCanvasNodeIdSchema,
+  kind: FactoryCanvasNodeKindSchema,
+  label: Schema.String,
+  lane: FactoryCanvasLaneSchema,
+  latestActivityId: Schema.optional(FactoryActivityIdSchema),
+  position: FactoryCanvasPositionSchema,
+  rawId: FactoryGraphNodeIdSchema,
+  role: Schema.optional(FactoryAgentRoleSchema),
+  state: Schema.optional(FactoryAgentStateSchema),
+  summary: Schema.String,
+  type: Schema.Union([FactoryWorkItemKindSchema, FactoryAgentRoleSchema]),
+});
+
+export type FactoryCanvasNode = typeof FactoryCanvasNodeSchema.Type;
+
+export const FactoryCanvasEdgeSchema = Schema.Struct({
+  id: FactoryCanvasEdgeIdSchema,
+  label: FactoryRelationshipTypeSchema,
+  source: FactoryCanvasNodeIdSchema,
+  target: FactoryCanvasNodeIdSchema,
+});
+
+export type FactoryCanvasEdge = typeof FactoryCanvasEdgeSchema.Type;
+
+export const FactoryCanvasModelSchema = Schema.Struct({
+  diagnostics: Schema.Array(FactoryGraphDiagnosticDto),
+  edges: Schema.Array(FactoryCanvasEdgeSchema),
+  id: RunIdSchema,
+  nodes: Schema.Array(FactoryCanvasNodeSchema),
+  title: Schema.String,
+  workflow: FactoryWorkflowIdSchema,
+});
+
+export type FactoryCanvasModel = typeof FactoryCanvasModelSchema.Type;
 
 type FactoryGraphAgent = (typeof FactoryGraphDto.Type)["agents"][number];
+type FactoryArtifactId = typeof FactoryArtifactIdSchema.Type;
+type FactoryAgentId = typeof FactoryAgentIdSchema.Type;
+
+const decodeFactoryCanvasNodeId = Schema.decodeUnknownSync(
+  FactoryCanvasNodeIdSchema
+);
+const decodeFactoryCanvasEdgeId = Schema.decodeUnknownSync(
+  FactoryCanvasEdgeIdSchema
+);
 
 const factoryCanvasRowGap = 224;
 const factoryCanvasColumnGap = 80;
@@ -151,8 +200,8 @@ export function buildFactoryCanvasModel(
     );
     const linkedArtifactIds = graph.linkedArtifacts
       .filter((artifact) => artifact.ownerAgentId === agent.id)
-      .map((artifact) => String(artifact.artifactId));
-    const artifactIds = uniqueStrings([
+      .map((artifact) => artifact.artifactId);
+    const artifactIds = uniqueFactoryArtifactIds([
       ...linkedArtifactIds,
       ...activityArtifactIds(scopedActivities),
     ]);
@@ -180,18 +229,26 @@ export function buildFactoryCanvasModel(
       position,
     };
   }) satisfies ReadonlyArray<FactoryCanvasNode>;
-  const canvasNodeIds = new Set<string>(nodes.map((node) => node.rawId));
-  const edges = graph.edges
-    .filter(
-      (edge) =>
-        canvasNodeIds.has(edge.sourceId) && canvasNodeIds.has(edge.targetId)
-    )
-    .map((edge) => ({
-      id: `edge:${edge.id}`,
-      label: edge.type,
-      source: agentNodeId(edge.sourceId),
-      target: agentNodeId(edge.targetId),
-    }));
+  const nodeIdByRawId = new Map<FactoryGraphNodeId, FactoryCanvasNodeId>(
+    nodes.map((node) => [node.rawId, node.id])
+  );
+  const edges = graph.edges.flatMap((edge) => {
+    const source = nodeIdByRawId.get(edge.sourceId);
+    const target = nodeIdByRawId.get(edge.targetId);
+
+    if (source === undefined || target === undefined) {
+      return [];
+    }
+
+    return [
+      {
+        id: decodeFactoryCanvasEdgeId(`edge:${edge.id}`),
+        label: edge.type,
+        source,
+        target,
+      },
+    ];
+  });
 
   return {
     diagnostics: diagnosticsForGraph(graph, nodes),
@@ -307,10 +364,8 @@ function issueDeliveryDiagnostics(
 function activityArtifactIds(
   activities: ReadonlyArray<typeof FactoryActivityDto.Type>
 ) {
-  return uniqueStrings(
-    activities.flatMap((activity) =>
-      activity.artifactIds.map((artifactId) => String(artifactId))
-    )
+  return uniqueFactoryArtifactIds(
+    activities.flatMap((activity) => activity.artifactIds)
   );
 }
 
@@ -322,18 +377,18 @@ function latestActivityId(
   )[0]?.activityId;
 }
 
-function uniqueStrings(values: ReadonlyArray<string>) {
+function uniqueFactoryArtifactIds(values: ReadonlyArray<FactoryArtifactId>) {
   return [...new Set(values)];
 }
 
-function agentNodeId(id: string) {
-  return `agent:${id}`;
+function agentNodeId(id: FactoryAgentId) {
+  return decodeFactoryCanvasNodeId(`agent:${id}`);
 }
 
 function layoutFactoryAgents(input: {
   readonly agents: ReadonlyArray<FactoryGraphAgent>;
   readonly edges: typeof FactoryGraphDto.Type.edges;
-}): ReadonlyMap<string, FactoryCanvasNode["position"]> {
+}): ReadonlyMap<FactoryAgentId, FactoryCanvasNode["position"]> {
   const agentIds = new Set(input.agents.map((agent) => agent.id));
   const links = layoutLinks({
     agentIds,
@@ -344,7 +399,7 @@ function layoutFactoryAgents(input: {
     layoutDepths({ agents: input.agents, links })
   );
   const maxDepth = Math.max(0, ...depthByAgentId.values());
-  const positions = new Map<string, FactoryCanvasNode["position"]>();
+  const positions = new Map<FactoryAgentId, FactoryCanvasNode["position"]>();
 
   for (let depth = 0; depth <= maxDepth; depth += 1) {
     const layerAgents = input.agents.filter(
@@ -372,29 +427,35 @@ function layoutFactoryAgents(input: {
 }
 
 type LayoutLink = {
-  readonly sourceId: string;
-  readonly targetId: string;
+  readonly sourceId: FactoryAgentId;
+  readonly targetId: FactoryAgentId;
 };
 
 function layoutLinks(input: {
-  readonly agentIds: ReadonlySet<string>;
+  readonly agentIds: ReadonlySet<FactoryAgentId>;
   readonly agents: ReadonlyArray<FactoryGraphAgent>;
   readonly edges: typeof FactoryGraphDto.Type.edges;
 }): ReadonlyArray<LayoutLink> {
   const linksById = new Map<string, LayoutLink>();
+  const agentByGraphId = new Map<FactoryGraphNodeId, FactoryGraphAgent>(
+    input.agents.map((agent) => [agent.id, agent])
+  );
 
   for (const edge of input.edges) {
+    const source = agentByGraphId.get(edge.sourceId);
+    const target = agentByGraphId.get(edge.targetId);
+
     if (
-      edge.sourceId === edge.targetId ||
-      !input.agentIds.has(edge.sourceId) ||
-      !input.agentIds.has(edge.targetId)
+      source === undefined ||
+      target === undefined ||
+      source.id === target.id
     ) {
       continue;
     }
 
-    linksById.set(`${edge.sourceId}->${edge.targetId}`, {
-      sourceId: edge.sourceId,
-      targetId: edge.targetId,
+    linksById.set(`${source.id}->${target.id}`, {
+      sourceId: source.id,
+      targetId: target.id,
     });
   }
 
@@ -424,15 +485,15 @@ function layoutLinks(input: {
 function layoutDepths(input: {
   readonly agents: ReadonlyArray<FactoryGraphAgent>;
   readonly links: ReadonlyArray<LayoutLink>;
-}): ReadonlyMap<string, number> {
-  const agentById = new Map<string, FactoryGraphAgent>(
+}): ReadonlyMap<FactoryAgentId, number> {
+  const agentById = new Map<FactoryAgentId, FactoryGraphAgent>(
     input.agents.map((agent) => [agent.id, agent])
   );
-  const incomingCount = new Map<string, number>(
+  const incomingCount = new Map<FactoryAgentId, number>(
     input.agents.map((agent) => [agent.id, 0])
   );
-  const childrenByAgentId = new Map<string, Array<string>>();
-  const depthByAgentId = new Map<string, number>();
+  const childrenByAgentId = new Map<FactoryAgentId, Array<FactoryAgentId>>();
+  const depthByAgentId = new Map<FactoryAgentId, number>();
 
   for (const agent of input.agents) {
     const hasIncoming = input.links.some((link) => link.targetId === agent.id);
@@ -502,8 +563,8 @@ function layoutDepths(input: {
 }
 
 function compactDepths(
-  depthByAgentId: ReadonlyMap<string, number>
-): ReadonlyMap<string, number> {
+  depthByAgentId: ReadonlyMap<FactoryAgentId, number>
+): ReadonlyMap<FactoryAgentId, number> {
   const compactDepthByRawDepth = new Map(
     [...new Set(depthByAgentId.values())]
       .sort((left, right) => left - right)
@@ -526,9 +587,12 @@ type LayerDesiredPosition = {
 function layerDesiredPositions(input: {
   readonly agents: ReadonlyArray<FactoryGraphAgent>;
   readonly links: ReadonlyArray<LayoutLink>;
-  readonly positions: ReadonlyMap<string, FactoryCanvasNode["position"]>;
+  readonly positions: ReadonlyMap<
+    FactoryAgentId,
+    FactoryCanvasNode["position"]
+  >;
 }): ReadonlyArray<LayerDesiredPosition> {
-  const parentIdsByAgentId = new Map<string, Array<string>>();
+  const parentIdsByAgentId = new Map<FactoryAgentId, Array<FactoryAgentId>>();
 
   for (const link of input.links) {
     const parentIds = parentIdsByAgentId.get(link.targetId) ?? [];
@@ -611,15 +675,13 @@ function compareAgents(left: FactoryGraphAgent, right: FactoryGraphAgent) {
     issueDeliveryRoleLayout[left.role].order -
     issueDeliveryRoleLayout[right.role].order;
 
-  return orderDelta === 0
-    ? String(left.id).localeCompare(String(right.id))
-    : orderDelta;
+  return orderDelta === 0 ? left.id.localeCompare(right.id) : orderDelta;
 }
 
 function compareAgentsById(
-  agentById: ReadonlyMap<string, FactoryGraphAgent>,
-  leftId: string,
-  rightId: string
+  agentById: ReadonlyMap<FactoryAgentId, FactoryGraphAgent>,
+  leftId: FactoryAgentId,
+  rightId: FactoryAgentId
 ) {
   const left = agentById.get(leftId);
   const right = agentById.get(rightId);

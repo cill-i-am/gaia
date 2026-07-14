@@ -1,13 +1,25 @@
-import type {
+import {
   FactoryActivityDto,
   FactoryAgentDto,
   FactoryArtifactDto,
   FactoryGraphDto,
   FactoryWorkItemDto,
   RunId,
+  RunIdSchema,
 } from "@gaia/core";
+import { Schema } from "effect";
 
-import type { FactoryCanvasNode } from "@/factory-canvas-model";
+import {
+  FactoryCanvasNodeSchema,
+  type FactoryCanvasNode,
+} from "@/factory-canvas-model";
+
+export const InspectorResourceStatusSchema = Schema.Literals([
+  "loading",
+  "ready",
+  "unavailable",
+  "error",
+] as const);
 
 export type InspectorResource<T> =
   | { readonly status: "loading"; readonly message: string }
@@ -17,50 +29,86 @@ export type InspectorResource<T> =
       readonly message: string;
     };
 
-export type InspectorNotice = {
-  readonly message: string;
-  readonly status: "loading" | "unavailable" | "error";
-  readonly title: string;
-};
+export const InspectorNoticeStatusSchema = Schema.Literals([
+  "loading",
+  "unavailable",
+  "error",
+] as const);
+
+export const InspectorNoticeSchema = Schema.Struct({
+  message: Schema.String,
+  status: InspectorNoticeStatusSchema,
+  title: Schema.String,
+});
+
+export type InspectorNotice = typeof InspectorNoticeSchema.Type;
+
+const makeInspectorResourceSchema = <A>(dataSchema: Schema.Schema<A>) =>
+  Schema.Union([
+    Schema.Struct({
+      message: Schema.String,
+      status: Schema.Literal("loading"),
+    }),
+    Schema.Struct({
+      data: Schema.Array(dataSchema),
+      status: Schema.Literal("ready"),
+    }),
+    Schema.Struct({
+      message: Schema.String,
+      status: Schema.Literals(["unavailable", "error"] as const),
+    }),
+  ]);
+
+export const FactoryActivityInspectorResourceSchema =
+  makeInspectorResourceSchema(FactoryActivityDto);
+export const FactoryArtifactInspectorResourceSchema =
+  makeInspectorResourceSchema(FactoryArtifactDto);
+
+export type FactoryActivityInspectorResource =
+  typeof FactoryActivityInspectorResourceSchema.Type;
+export type FactoryArtifactInspectorResource =
+  typeof FactoryArtifactInspectorResourceSchema.Type;
+
+export const SelectedNodeEmptyInspectorModelSchema = Schema.Struct({
+  kind: Schema.Literal("empty"),
+  message: Schema.String,
+  reason: Schema.Literals(["loading", "no-run", "no-selection"] as const),
+  title: Schema.String,
+});
+
+export const SelectedNodeAgentInspectorModelSchema = Schema.Struct({
+  activity: Schema.Array(FactoryActivityDto),
+  activityStatus: InspectorResourceStatusSchema,
+  agent: FactoryAgentDto,
+  artifactStatus: InspectorResourceStatusSchema,
+  artifacts: Schema.Array(FactoryArtifactDto),
+  kind: Schema.Literal("agent"),
+  node: FactoryCanvasNodeSchema,
+  notices: Schema.Array(InspectorNoticeSchema),
+  queryAvailable: Schema.Literal(false),
+});
+
+export const SelectedNodeWorkItemInspectorModelSchema = Schema.Struct({
+  activity: Schema.Array(FactoryActivityDto),
+  activityStatus: InspectorResourceStatusSchema,
+  agents: Schema.Array(FactoryAgentDto),
+  artifactStatus: InspectorResourceStatusSchema,
+  artifacts: Schema.Array(FactoryArtifactDto),
+  kind: Schema.Literal("workItem"),
+  node: FactoryCanvasNodeSchema,
+  notices: Schema.Array(InspectorNoticeSchema),
+  queryAvailable: Schema.Literal(false),
+  workItem: FactoryWorkItemDto,
+});
+
+export const SelectedNodeInspectorModelSchema = Schema.Union([
+  SelectedNodeEmptyInspectorModelSchema,
+  SelectedNodeAgentInspectorModelSchema,
+  SelectedNodeWorkItemInspectorModelSchema,
+]);
 
 export type SelectedNodeInspectorModel =
-  | {
-      readonly kind: "empty";
-      readonly reason: "loading" | "no-run" | "no-selection";
-      readonly message: string;
-      readonly title: string;
-    }
-  | {
-      readonly kind: "agent";
-      readonly agent: typeof FactoryAgentDto.Type;
-      readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
-      readonly activity: ReadonlyArray<typeof FactoryActivityDto.Type>;
-      readonly activityStatus: InspectorResource<
-        typeof FactoryActivityDto.Type
-      >["status"];
-      readonly artifactStatus: InspectorResource<
-        typeof FactoryArtifactDto.Type
-      >["status"];
-      readonly node: FactoryCanvasNode;
-      readonly notices: ReadonlyArray<InspectorNotice>;
-      readonly queryAvailable: false;
-    }
-  | {
-      readonly kind: "workItem";
-      readonly agents: ReadonlyArray<typeof FactoryAgentDto.Type>;
-      readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
-      readonly activity: ReadonlyArray<typeof FactoryActivityDto.Type>;
-      readonly activityStatus: InspectorResource<
-        typeof FactoryActivityDto.Type
-      >["status"];
-      readonly artifactStatus: InspectorResource<
-        typeof FactoryArtifactDto.Type
-      >["status"];
-      readonly node: FactoryCanvasNode;
-      readonly notices: ReadonlyArray<InspectorNotice>;
-      readonly queryAvailable: false;
-      readonly workItem: typeof FactoryWorkItemDto.Type;
-    };
+  typeof SelectedNodeInspectorModelSchema.Type;
 
 export function buildSelectedNodeInspectorModel(input: {
   readonly activity: InspectorResource<typeof FactoryActivityDto.Type>;
@@ -68,7 +116,7 @@ export function buildSelectedNodeInspectorModel(input: {
   readonly graph: typeof FactoryGraphDto.Type | undefined;
   readonly graphIsLoading: boolean;
   readonly selectedNode: FactoryCanvasNode | undefined;
-  readonly selectedRunId: RunId | undefined;
+  readonly selectedRunId: typeof RunIdSchema.Type | undefined;
 }): SelectedNodeInspectorModel {
   if (input.selectedRunId === undefined) {
     return {
@@ -249,16 +297,14 @@ function workItemArtifacts(input: {
   readonly artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>;
 }) {
   const linkedArtifactIds = new Set(
-    input.activities.flatMap((activity) =>
-      activity.artifactIds.map((artifactId) => String(artifactId))
-    )
+    input.activities.flatMap((activity) => activity.artifactIds)
   );
-  const agentIds = new Set(input.agents.map((agent) => String(agent.id)));
+  const agentIds = new Set(input.agents.map((agent) => agent.id));
 
   return input.artifacts.filter(
     (artifact) =>
-      agentIds.has(String(artifact.ownerAgentId)) ||
-      linkedArtifactIds.has(String(artifact.artifactId))
+      agentIds.has(artifact.ownerAgentId) ||
+      linkedArtifactIds.has(artifact.artifactId)
   );
 }
 

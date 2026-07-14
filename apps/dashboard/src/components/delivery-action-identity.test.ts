@@ -1,3 +1,5 @@
+import { DeliveryActionIdSchema } from "@gaia/core";
+import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -13,6 +15,7 @@ describe("delivery action identity", () => {
     expect(first).not.toBe(second);
     expect(first).toMatch(/^readiness-/u);
     expect(second).toMatch(/^readiness-/u);
+    expect(Schema.decodeUnknownSync(DeliveryActionIdSchema)(first)).toBe(first);
   });
 
   it("keys merge identity to the authoritative readiness decision", () => {
@@ -32,5 +35,6 @@ describe("delivery action identity", () => {
     expect(replay).toBe(first);
     expect(newer).not.toBe(first);
     expect(first).toBe(`merge-${"a".repeat(64)}-6`);
+    expect(Schema.decodeUnknownSync(DeliveryActionIdSchema)(first)).toBe(first);
   });
 });

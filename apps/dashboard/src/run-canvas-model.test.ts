@@ -1,9 +1,18 @@
 import type { LocalRunSummaryDto } from "@gaia/core";
-import { RunIdSchema, makeRunEvent } from "@gaia/core";
+import {
+  LocalRunReadSummarySchema,
+  RunIdSchema,
+  makeRunEvent,
+} from "@gaia/core";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { buildRunCanvasModel, buildRunReplayState } from "@/run-canvas-model";
+import {
+  DashboardRunSchema,
+  RunReplayStateSchema,
+  buildRunCanvasModel,
+  buildRunReplayState,
+} from "@/run-canvas-model";
 
 describe("run canvas model", () => {
   it("derives a run graph from ordered events and exposed artifacts", () => {
@@ -98,6 +107,7 @@ describe("run canvas model", () => {
       model.nodes.find((node) => node.id === "relationship:thread-identity")
         ?.summary
     ).toContain("not Codex thread IDs");
+    expect(Schema.decodeUnknownSync(DashboardRunSchema)(model)).toEqual(model);
   });
 
   it("keeps sparse run data honest instead of inventing worker or reviewer relationships", () => {
@@ -184,6 +194,9 @@ describe("run canvas model", () => {
     ]);
     expect(replayState.visibleArtifactIds).toEqual(["input", "worker-plan"]);
     expect(Math.round(replayState.progressPercent)).toBe(50);
+    expect(Schema.decodeUnknownSync(RunReplayStateSchema)(replayState)).toEqual(
+      replayState
+    );
   });
 
   it("defaults replay to the latest event and clamps requested positions", () => {
@@ -226,8 +239,8 @@ function localRunSummary(
   input: Partial<typeof LocalRunSummaryDto.Type> & {
     readonly runId: typeof LocalRunSummaryDto.Type.runId;
   }
-): typeof LocalRunSummaryDto.Type {
-  return {
+): typeof LocalRunReadSummarySchema.Type {
+  return Schema.decodeUnknownSync(LocalRunReadSummarySchema)({
     artifacts: ["input"],
     createdAt: "2026-07-07T12:00:00.000Z",
     eventCount: 1,
@@ -236,7 +249,7 @@ function localRunSummary(
     status: "running",
     updatedAt: "2026-07-07T12:00:00.000Z",
     ...input,
-  };
+  });
 }
 
 function parseRunId(value: string): typeof RunIdSchema.Type {
