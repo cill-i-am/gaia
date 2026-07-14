@@ -1,60 +1,109 @@
-import type {
-  DashboardArtifactId,
-  DashboardEvent,
-  DashboardRun,
-  RunNode,
-  RunReplayState,
+import { Schema } from "effect";
+
+import {
+  DashboardArtifactIdSchema,
+  DashboardEventSchema,
+  RunCanvasNodeIdSchema,
+  type DashboardArtifactId,
+  type DashboardEvent,
+  type DashboardRun,
+  type RunNode,
+  type RunReplayState,
 } from "@/run-canvas-model";
 import type { RunCompareModel } from "@/run-compare-model";
 
-export type ProvenanceAvailability =
-  | "supported"
-  | "unavailable"
-  | "unsupported";
+export const ProvenanceAvailabilitySchema = Schema.Literals([
+  "supported",
+  "unavailable",
+  "unsupported",
+] as const);
 
-export type ProvenanceSourceKind =
-  | "api-field"
-  | "artifact"
-  | "derived"
-  | "event"
-  | "unavailable"
-  | "unsupported";
+export type ProvenanceAvailability = typeof ProvenanceAvailabilitySchema.Type;
 
-export type ProvenanceSourceTarget =
-  | {
-      readonly type: "artifact";
-      readonly artifactId: DashboardArtifactId;
-    }
-  | {
-      readonly type: "event";
-      readonly eventId: string;
-    }
-  | {
-      readonly type: "raw";
-      readonly path: string;
-    };
+export const ProvenanceSourceKindSchema = Schema.Literals([
+  "api-field",
+  "artifact",
+  "derived",
+  "event",
+  "unavailable",
+  "unsupported",
+] as const);
 
-export type ProvenanceSource = {
-  readonly detail: string;
-  readonly kind: ProvenanceSourceKind;
-  readonly label: string;
-  readonly target: ProvenanceSourceTarget | undefined;
-};
+export type ProvenanceSourceKind = typeof ProvenanceSourceKindSchema.Type;
 
-export type ProvenanceClaim = {
-  readonly availability: ProvenanceAvailability;
-  readonly id: string;
-  readonly label: string;
-  readonly sources: ReadonlyArray<ProvenanceSource>;
-  readonly value: string;
-};
+export const ProvenancePathSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("ProvenancePath")
+);
 
-export type EvidenceProvenanceModel = {
-  readonly claims: ReadonlyArray<ProvenanceClaim>;
-  readonly supportedCount: number;
-  readonly unavailableCount: number;
-  readonly unsupportedCount: number;
-};
+export type ProvenancePath = typeof ProvenancePathSchema.Type;
+
+export const ProvenanceClaimIdSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("ProvenanceClaimId")
+);
+
+export type ProvenanceClaimId = typeof ProvenanceClaimIdSchema.Type;
+
+export const ProvenanceSourceTargetSchema = Schema.Union([
+  Schema.Struct({
+    artifactId: DashboardArtifactIdSchema,
+    type: Schema.Literal("artifact"),
+  }),
+  Schema.Struct({
+    eventId: RunCanvasNodeIdSchema,
+    type: Schema.Literal("event"),
+  }),
+  Schema.Struct({
+    path: ProvenancePathSchema,
+    type: Schema.Literal("raw"),
+  }),
+]);
+
+export type ProvenanceSourceTarget = typeof ProvenanceSourceTargetSchema.Type;
+
+export const ProvenanceSourceSchema = Schema.Struct({
+  detail: Schema.String,
+  kind: ProvenanceSourceKindSchema,
+  label: Schema.String,
+  target: Schema.optional(ProvenanceSourceTargetSchema),
+});
+
+export type ProvenanceSource = typeof ProvenanceSourceSchema.Type;
+
+export const ProvenanceClaimSchema = Schema.Struct({
+  availability: ProvenanceAvailabilitySchema,
+  id: ProvenanceClaimIdSchema,
+  label: Schema.String,
+  sources: Schema.Array(ProvenanceSourceSchema),
+  value: Schema.String,
+});
+
+export type ProvenanceClaim = typeof ProvenanceClaimSchema.Type;
+
+export const EvidenceProvenanceModelSchema = Schema.Struct({
+  claims: Schema.Array(ProvenanceClaimSchema),
+  supportedCount: Schema.Number,
+  unavailableCount: Schema.Number,
+  unsupportedCount: Schema.Number,
+});
+
+export type EvidenceProvenanceModel = typeof EvidenceProvenanceModelSchema.Type;
+
+const decodeDashboardArtifactId = Schema.decodeUnknownSync(
+  DashboardArtifactIdSchema
+);
+const decodeProvenanceClaimId = Schema.decodeUnknownSync(
+  ProvenanceClaimIdSchema
+);
+const decodeProvenancePath = Schema.decodeUnknownSync(ProvenancePathSchema);
+
+const provenanceArtifactIds = Object.freeze({
+  evidenceReview: decodeDashboardArtifactId("evidence-review"),
+  planReview: decodeDashboardArtifactId("plan-review"),
+  report: decodeDashboardArtifactId("report"),
+  reportJson: decodeDashboardArtifactId("report-json"),
+  reviewerFindings: decodeDashboardArtifactId("reviewer-findings"),
+  verificationResult: decodeDashboardArtifactId("verification-result"),
+});
 
 export function buildEvidenceProvenanceModel(input: {
   readonly relatedEvents: ReadonlyArray<DashboardEvent>;
@@ -107,7 +156,7 @@ function nodeStatusClaim(
 
   return {
     availability: "supported",
-    id: `node-status:${node.id}`,
+    id: decodeProvenanceClaimId(`node-status:${node.id}`),
     label: node.role === "orchestrator" ? "Run status" : "Node status",
     sources,
     value: node.status,
@@ -130,7 +179,7 @@ function eventCountClaim(
 
   return {
     availability: relatedEvents.length > 0 ? "supported" : "unavailable",
-    id: `event-count:${node.id}`,
+    id: decodeProvenanceClaimId(`event-count:${node.id}`),
     label: "Event count",
     sources: [
       apiSource({
@@ -157,7 +206,7 @@ function artifactCountClaim(node: RunNode): ProvenanceClaim {
 
   return {
     availability: node.artifacts.length > 0 ? "supported" : "unavailable",
-    id: `artifact-count:${node.id}`,
+    id: decodeProvenanceClaimId(`artifact-count:${node.id}`),
     label: "Artifact count",
     sources,
     value: `${node.artifacts.length} exposed`,
@@ -182,7 +231,7 @@ function replayReachabilityClaim(
   return {
     availability:
       replayState.currentStep === undefined ? "unavailable" : "supported",
-    id: `replay:${node.id}`,
+    id: decodeProvenanceClaimId(`replay:${node.id}`),
     label: "Replay reachability",
     sources: [currentEventSource],
     value: isReached ? "Reached" : "Ahead",
@@ -193,7 +242,7 @@ function evidenceSnippetClaim(node: RunNode): ProvenanceClaim {
   if (node.evidence.length === 0) {
     return {
       availability: "unavailable",
-      id: `evidence-snippets:${node.id}`,
+      id: decodeProvenanceClaimId(`evidence-snippets:${node.id}`),
       label: "Evidence snippets",
       sources: [
         unavailableSource(
@@ -206,7 +255,7 @@ function evidenceSnippetClaim(node: RunNode): ProvenanceClaim {
 
   return {
     availability: "supported",
-    id: `evidence-snippets:${node.id}`,
+    id: decodeProvenanceClaimId(`evidence-snippets:${node.id}`),
     label: "Evidence snippets",
     sources: node.evidence.slice(0, 3).map((item) =>
       derivedSource({
@@ -222,27 +271,34 @@ function evidenceSnippetClaim(node: RunNode): ProvenanceClaim {
 function runSignalClaims(run: DashboardRun): ReadonlyArray<ProvenanceClaim> {
   return [
     signalClaim({
-      artifactIds: ["report", "report-json"],
+      artifactIds: [
+        provenanceArtifactIds.report,
+        provenanceArtifactIds.reportJson,
+      ],
       eventTypes: ["REPORT_COMPLETED"],
-      id: "report-signal",
+      id: decodeProvenanceClaimId("report-signal"),
       label: "Report signal",
       run,
       unavailableDetail:
         "No report artifact or report completion event is exposed for this run.",
     }),
     signalClaim({
-      artifactIds: ["verification-result"],
+      artifactIds: [provenanceArtifactIds.verificationResult],
       eventTypes: ["VERIFICATION_COMPLETED"],
-      id: "check-signal",
+      id: decodeProvenanceClaimId("check-signal"),
       label: "Check signal",
       run,
       unavailableDetail:
         "No verification artifact or verification completion event is exposed for this run.",
     }),
     signalClaim({
-      artifactIds: ["plan-review", "evidence-review", "reviewer-findings"],
+      artifactIds: [
+        provenanceArtifactIds.planReview,
+        provenanceArtifactIds.evidenceReview,
+        provenanceArtifactIds.reviewerFindings,
+      ],
       eventTypes: ["REVIEW_COMPLETED"],
-      id: "review-signal",
+      id: decodeProvenanceClaimId("review-signal"),
       label: "Review signal",
       run,
       unavailableDetail:
@@ -253,8 +309,8 @@ function runSignalClaims(run: DashboardRun): ReadonlyArray<ProvenanceClaim> {
 
 function signalClaim(input: {
   readonly artifactIds: ReadonlyArray<DashboardArtifactId>;
-  readonly eventTypes: ReadonlyArray<string>;
-  readonly id: string;
+  readonly eventTypes: ReadonlyArray<typeof DashboardEventSchema.Type.type>;
+  readonly id: ProvenanceClaimId;
   readonly label: string;
   readonly run: DashboardRun;
   readonly unavailableDetail: string;
@@ -297,7 +353,7 @@ function runCompareClaim(runCompare: RunCompareModel): ProvenanceClaim {
   if (runCompare.primary === undefined || runCompare.comparison === undefined) {
     return {
       availability: "unavailable",
-      id: "run-compare",
+      id: decodeProvenanceClaimId("run-compare"),
       label: "Run compare summary",
       sources: [
         unavailableSource(
@@ -311,7 +367,7 @@ function runCompareClaim(runCompare: RunCompareModel): ProvenanceClaim {
   return {
     availability:
       runCompare.missingData.length === 0 ? "supported" : "unavailable",
-    id: "run-compare",
+    id: decodeProvenanceClaimId("run-compare"),
     label: "Run compare summary",
     sources: [
       derivedSource({
@@ -335,7 +391,7 @@ function threadIdentityClaim(node: RunNode): ProvenanceClaim | undefined {
 
   return {
     availability: "unsupported",
-    id: "thread-identity",
+    id: decodeProvenanceClaimId("thread-identity"),
     label: "Thread identity",
     sources: [
       unsupportedSource(
@@ -380,7 +436,7 @@ function apiSource(input: {
     kind: "api-field",
     label: input.label,
     target: {
-      path: input.path,
+      path: decodeProvenancePath(input.path),
       type: "raw",
     },
   };
@@ -396,7 +452,7 @@ function derivedSource(input: {
     kind: "derived",
     label: input.label,
     target: {
-      path: input.path,
+      path: decodeProvenancePath(input.path),
       type: "raw",
     },
   };

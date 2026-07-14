@@ -1,3 +1,9 @@
+import {
+  DeliveryMergeActionRequest,
+  DeliveryMergeReadinessDecisionSchema,
+  DeliverySnapshotDto,
+} from "@gaia/core";
+import { Schema } from "effect";
 import { GitMergeIcon, LoaderCircleIcon } from "lucide-react";
 import * as React from "react";
 
@@ -12,17 +18,36 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 
-export type DeliveryMergeConfirmationProps = {
-  readonly actionId: string;
-  readonly branch: string;
-  readonly decisionSequence: number;
+type DeliveryMergeReadinessDecision =
+  typeof DeliveryMergeReadinessDecisionSchema.Type;
+type DeliveryMergeDecisionSequence = NonNullable<
+  typeof DeliverySnapshotDto.Type.mergeDecisionSequence
+>;
+
+export const DeliveryMergeConfirmationDataSchema = Schema.Struct({
+  actionId: DeliveryMergeActionRequest.fields.actionId,
+  branch: DeliveryMergeActionRequest.fields.expectedBranchName,
+  decisionSequence: DeliveryMergeActionRequest.fields.expectedDecisionSequence,
+  disabled: Schema.Boolean,
+  error: Schema.optional(Schema.String),
+  headSha: DeliveryMergeActionRequest.fields.expectedHeadSha,
+  method: DeliveryMergeActionRequest.fields.mergeMethod,
+  pending: Schema.Boolean,
+  prUrl: DeliveryMergeActionRequest.fields.expectedPrUrl,
+});
+
+export type DeliveryMergeConfirmationData =
+  typeof DeliveryMergeConfirmationDataSchema.Type & {
+    readonly branch: DeliveryMergeReadinessDecision["branchName"];
+    readonly decisionSequence: DeliveryMergeDecisionSequence;
+    readonly headSha: DeliveryMergeReadinessDecision["headSha"];
+    readonly prUrl: DeliveryMergeReadinessDecision["prUrl"];
+  };
+
+export type DeliveryMergeConfirmationProps = DeliveryMergeConfirmationData & {
   readonly disabled: boolean;
-  readonly headSha: string;
-  readonly method: "merge" | "rebase" | "squash";
   readonly onConfirm: () => Promise<void>;
   readonly pending: boolean;
-  readonly prUrl: string;
-  readonly error?: string;
 };
 
 export function DeliveryMergeConfirmation(

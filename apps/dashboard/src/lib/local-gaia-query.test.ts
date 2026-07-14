@@ -582,6 +582,45 @@ describe("local Gaia query options", () => {
     expect(result).toEqual(createRunResponse);
   });
 
+  it("returns schema rejected mutation input through the dashboard parameter error channel", async () => {
+    const requests: Array<string> = [];
+    const effectQuery = createEffectQuery(
+      recordingFetchLayer(requests, () =>
+        jsonResponse({ data: factoryGraphEnvelope.data, status: "success" })
+      )
+    );
+    const mutation = localGaiaCreateRunMutationOptions(
+      {
+        serverUrl,
+      },
+      effectQuery
+    );
+    if (mutation.mutationFn === undefined) {
+      throw new Error("Expected create-run mutationFn to be defined.");
+    }
+
+    await mutation
+      .mutationFn(
+        {
+          deliveryMode: "remote",
+          description: "# Invalid mode",
+          title: "Invalid mode",
+        },
+        { client: new QueryClient(), meta: undefined }
+      )
+      .then(
+        () => {
+          throw new Error("Expected mutation to fail.");
+        },
+        (error: unknown) => {
+          expect(effectQueryFailure(error)?._tag).toBe(
+            "DashboardGaiaParameterError"
+          );
+        }
+      );
+    expect(requests).toEqual([]);
+  });
+
   it("sends strict delivery recovery actions through the typed API client", async () => {
     const requests: Array<string> = [];
     const bodies: Array<unknown> = [];

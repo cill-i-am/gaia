@@ -1,57 +1,77 @@
-import type {
+import {
+  LocalGaiaServerUrlSchema,
   LocalRunApiErrorEnvelope,
-  LocalRunReadDiagnosticDto,
-  LocalRunSummaryDto,
-  LocalGaiaServerUrl,
-  RunId,
+  LocalRunReadArtifactIdSchema,
+  LocalRunReadDiagnosticSchema,
+  LocalRunReadSummarySchema,
+  LocalRunTimestampSchema,
+  RunIdSchema,
+  type LocalGaiaServerUrl,
+  type RunId,
 } from "@gaia/core";
+import { Schema } from "effect";
 
-import type { DashboardGaiaClientError } from "@/lib/local-gaia-client";
+import {
+  type DashboardGaiaClientError,
+  isDashboardGaiaClientError,
+} from "@/lib/local-gaia-client";
 
-export type RunConsoleHealth =
-  | "checking"
-  | "offline"
-  | "online"
-  | "reconnecting"
-  | "stale";
+export const RunConsoleHealthSchema = Schema.Literals([
+  "checking",
+  "offline",
+  "online",
+  "reconnecting",
+  "stale",
+] as const);
 
-export type RunConsoleRun = {
-  readonly artifactCount: number;
-  readonly createdAt: string;
-  readonly eventCount: number;
-  readonly hasError: boolean;
-  readonly id: RunId;
-  readonly isTerminal: boolean;
-  readonly latestEventLabel: string;
-  readonly specHint: string | undefined;
-  readonly stateLabel: string;
-  readonly status: typeof LocalRunSummaryDto.Type.status;
-  readonly statusLabel: string;
-  readonly title: string;
-  readonly updatedAt: string;
-  readonly updatedAtLabel: string;
-};
+export type RunConsoleHealth = typeof RunConsoleHealthSchema.Type;
 
-export type RunConsoleState = {
-  readonly diagnostics: ReadonlyArray<typeof LocalRunReadDiagnosticDto.Type>;
-  readonly hasStaleData: boolean;
-  readonly health: RunConsoleHealth;
-  readonly isEmpty: boolean;
-  readonly isError: boolean;
-  readonly isLoading: boolean;
-  readonly message: string;
-  readonly runs: ReadonlyArray<RunConsoleRun>;
-  readonly serverUrl: LocalGaiaServerUrl;
-};
+export const RunConsoleRunSchema = Schema.Struct({
+  artifactCount: Schema.Number,
+  createdAt: LocalRunTimestampSchema,
+  eventCount: Schema.Number,
+  hasError: Schema.Boolean,
+  id: RunIdSchema,
+  isTerminal: Schema.Boolean,
+  latestEventLabel: Schema.String,
+  specHint: Schema.optional(Schema.String),
+  stateLabel: Schema.String,
+  status: LocalRunReadSummarySchema.fields.status,
+  statusLabel: Schema.String,
+  title: Schema.String,
+  updatedAt: LocalRunTimestampSchema,
+  updatedAtLabel: Schema.String,
+});
+
+export type RunConsoleRun = typeof RunConsoleRunSchema.Type;
+
+export const RunConsoleStateSchema = Schema.Struct({
+  diagnostics: Schema.Array(LocalRunReadDiagnosticSchema),
+  hasStaleData: Schema.Boolean,
+  health: RunConsoleHealthSchema,
+  isEmpty: Schema.Boolean,
+  isError: Schema.Boolean,
+  isLoading: Schema.Boolean,
+  message: Schema.String,
+  runs: Schema.Array(RunConsoleRunSchema),
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+
+export type RunConsoleState = typeof RunConsoleStateSchema.Type;
+
+type LocalRunSummary = typeof LocalRunReadSummarySchema.Type;
+const inputArtifactId = Schema.decodeUnknownSync(LocalRunReadArtifactIdSchema)(
+  "input"
+);
 
 export function buildRunConsoleState(input: {
   readonly healthError: unknown;
   readonly healthFetching?: boolean;
   readonly healthPending: boolean;
   readonly healthStatus: string | undefined;
-  readonly runs: ReadonlyArray<typeof LocalRunSummaryDto.Type>;
+  readonly runs: ReadonlyArray<LocalRunSummary>;
   readonly runsDiagnostics: ReadonlyArray<
-    typeof LocalRunReadDiagnosticDto.Type
+    typeof LocalRunReadDiagnosticSchema.Type
   >;
   readonly runsError: unknown;
   readonly runsFetching?: boolean;
@@ -128,20 +148,14 @@ export function dashboardQueryFailure(
   }
 
   const failure = error.failure;
-  if (
-    typeof failure === "object" &&
-    failure !== null &&
-    "_tag" in failure &&
-    typeof failure._tag === "string" &&
-    failure._tag.startsWith("DashboardGaia")
-  ) {
-    return failure as DashboardGaiaClientError;
+  if (isDashboardGaiaClientError(failure)) {
+    return failure;
   }
 
   return undefined;
 }
 
-function toRunConsoleRun(run: typeof LocalRunSummaryDto.Type): RunConsoleRun {
+function toRunConsoleRun(run: LocalRunSummary): RunConsoleRun {
   const hasError =
     run.status === "failed" || run.latestEventType === "RUN_FAILED";
 
@@ -153,7 +167,7 @@ function toRunConsoleRun(run: typeof LocalRunSummaryDto.Type): RunConsoleRun {
     id: run.runId,
     isTerminal: run.status !== "running",
     latestEventLabel: eventTypeLabel(run.latestEventType),
-    specHint: run.artifacts.includes("input")
+    specHint: run.artifacts.includes(inputArtifactId)
       ? "Input artifact available"
       : undefined,
     stateLabel: stateLabel(run.state),

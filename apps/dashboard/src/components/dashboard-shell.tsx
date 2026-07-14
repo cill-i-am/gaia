@@ -128,6 +128,7 @@ import {
   buildFactoryCanvasModel,
   type FactoryCanvasModel,
   type FactoryCanvasNode,
+  FactoryCanvasNodeIdSchema,
 } from "@/factory-canvas-model";
 import {
   defaultLocalGaiaServerUrl,
@@ -171,6 +172,8 @@ import {
   dashboardQueryFailure,
   reconcileSelectedRunId,
   selectedRunFromConsoleState,
+  RunConsoleRunSchema,
+  RunConsoleStateSchema,
   type RunConsoleRun,
   type RunConsoleState,
 } from "@/run-console-model";
@@ -249,10 +252,10 @@ function buildSelectedRunArtifactEvidence(input: {
     return { status: "loading" };
   }
 
-  const graphArtifactIds = new Set<string>();
+  const graphArtifactIds = new Set<typeof FactoryArtifactDto.Type.artifactId>();
 
   for (const artifact of input.graph?.linkedArtifacts ?? []) {
-    graphArtifactIds.add(String(artifact.artifactId));
+    graphArtifactIds.add(artifact.artifactId);
   }
 
   for (const node of input.canvas?.nodes ?? []) {
@@ -325,26 +328,48 @@ function artifactNoun(count: number) {
 function uniqueArtifactCount(
   artifacts: ReadonlyArray<typeof FactoryArtifactDto.Type>
 ) {
-  return new Set(artifacts.map((artifact) => String(artifact.artifactId))).size;
+  return new Set(artifacts.map((artifact) => artifact.artifactId)).size;
 }
 
-type ServerConnectionState = {
-  readonly runConsole: RunConsoleState;
-  readonly selectedRunArtifactEvidence: SelectedRunArtifactEvidence | undefined;
-  readonly selectedRun: RunConsoleRun | undefined;
-};
-
-type CommandMode = "activity" | "compare" | "inspect" | "replay";
-type AgentInspectorTab = "activity" | "artifacts" | "session";
+export const SelectedRunArtifactEvidenceSchema = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("loading") }),
+  Schema.Struct({
+    count: Schema.Number,
+    source: Schema.Literals(["artifactCatalog", "factoryGraph"] as const),
+    status: Schema.Literal("ready"),
+  }),
+  Schema.Struct({ status: Schema.Literal("unavailable") }),
+]);
 
 type SelectedRunArtifactEvidence =
-  | { readonly status: "loading" }
-  | {
-      readonly count: number;
-      readonly source: "artifactCatalog" | "factoryGraph";
-      readonly status: "ready";
-    }
-  | { readonly status: "unavailable" };
+  typeof SelectedRunArtifactEvidenceSchema.Type;
+
+export const ServerConnectionStateSchema = Schema.Struct({
+  runConsole: RunConsoleStateSchema,
+  selectedRun: Schema.optional(RunConsoleRunSchema),
+  selectedRunArtifactEvidence: Schema.optional(
+    SelectedRunArtifactEvidenceSchema
+  ),
+});
+
+type ServerConnectionState = typeof ServerConnectionStateSchema.Type;
+
+export const CommandModeSchema = Schema.Literals([
+  "activity",
+  "compare",
+  "inspect",
+  "replay",
+] as const);
+
+type CommandMode = typeof CommandModeSchema.Type;
+
+export const AgentInspectorTabSchema = Schema.Literals([
+  "activity",
+  "artifacts",
+  "session",
+] as const);
+
+type AgentInspectorTab = typeof AgentInspectorTabSchema.Type;
 
 export function DashboardShell() {
   const serverUrl = defaultLocalGaiaServerUrl;
@@ -2739,19 +2764,18 @@ function AgentInspector({
       ? inspector.artifacts
       : [];
   const artifactIds = nodeArtifacts.map((artifact) => artifact.artifactId);
-  const artifactIdStrings = artifactIds.map((artifactId) => String(artifactId));
-  const artifactKey = artifactIdStrings.join("|");
+  const artifactKey = artifactIds.join("|");
   const [requestedArtifact, setRequestedArtifact] = React.useState<
     | {
-        readonly artifactId: string;
-        readonly nodeId: string;
+        readonly artifactId: (typeof FactoryArtifactDto.Type)["artifactId"];
+        readonly nodeId: typeof FactoryCanvasNodeIdSchema.Type;
       }
     | undefined
   >();
   const selectedArtifactId =
     requestedArtifact !== undefined &&
     requestedArtifact.nodeId === selectedInspectorNodeId(inspector) &&
-    artifactIdStrings.includes(requestedArtifact.artifactId)
+    artifactIds.includes(requestedArtifact.artifactId)
       ? requestedArtifact.artifactId
       : undefined;
   const selectedAgentId =
@@ -2896,7 +2920,7 @@ function AgentInspector({
     setRequestedArtifact((current) =>
       current !== undefined &&
       current.nodeId === selectedInspectorNodeId(inspector) &&
-      artifactIdStrings.includes(current.artifactId)
+      artifactIds.includes(current.artifactId)
         ? current
         : undefined
     );
@@ -3635,8 +3659,12 @@ function FactoryEvidenceArtifacts({
     typeof FactoryArtifactDto.Type
   >["status"];
   readonly isLoading: boolean;
-  readonly selectedArtifactId: string | undefined;
-  readonly onSelectArtifact: (artifactId: string) => void;
+  readonly selectedArtifactId:
+    | (typeof FactoryArtifactDto.Type)["artifactId"]
+    | undefined;
+  readonly onSelectArtifact: (
+    artifactId: (typeof FactoryArtifactDto.Type)["artifactId"]
+  ) => void;
 }) {
   if (catalogStatus === "loading") {
     return (

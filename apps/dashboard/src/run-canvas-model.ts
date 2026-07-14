@@ -1,92 +1,178 @@
-import type {
-  LocalRunArtifactIdSchema,
-  LocalRunSummaryDto,
+import {
+  LocalRunReadArtifactIdSchema,
+  LocalRunReadSummarySchema,
   RunEvent,
 } from "@gaia/core";
+import { Schema } from "effect";
 
-export type RunStatus = "running" | "reviewing" | "blocked" | "complete";
+export const RunStatusSchema = Schema.Literals([
+  "running",
+  "reviewing",
+  "blocked",
+  "complete",
+] as const);
 
-export type EvidenceTab = "summary" | "events" | "artifacts" | "raw";
+export type RunStatus = typeof RunStatusSchema.Type;
 
-export type DashboardArtifactId = typeof LocalRunArtifactIdSchema.Type;
+export const EvidenceTabSchema = Schema.Literals([
+  "summary",
+  "events",
+  "artifacts",
+  "raw",
+] as const);
 
-export type RunNodeRole =
-  | "orchestrator"
-  | "worker"
-  | "reviewer"
-  | "spec"
-  | "event"
-  | "artifact"
-  | "unknown";
+export type EvidenceTab = typeof EvidenceTabSchema.Type;
 
-export type DashboardEvent = {
-  readonly id: string;
-  readonly artifactHints: ReadonlyArray<DashboardArtifactId>;
-  readonly payload: typeof RunEvent.Type.payload;
-  readonly sequence: number;
-  readonly time: string;
-  readonly timestamp: string;
-  readonly label: string;
-  readonly tone: RunStatus;
-  readonly type: typeof RunEvent.Type.type;
-};
+export const DashboardArtifactIdSchema = LocalRunReadArtifactIdSchema;
 
-export type RunNode = {
-  readonly id: string;
-  readonly label: string;
-  readonly role: RunNodeRole;
-  readonly status: RunStatus;
-  readonly summary: string;
-  readonly evidence: ReadonlyArray<string>;
-  readonly eventIds: ReadonlyArray<string>;
-  readonly artifacts: ReadonlyArray<DashboardArtifactId>;
-  readonly raw: unknown;
-  readonly position: {
-    readonly x: number;
-    readonly y: number;
-  };
-};
+export type DashboardArtifactId = typeof DashboardArtifactIdSchema.Type;
 
-export type RunEdge = {
-  readonly id: string;
-  readonly source: string;
-  readonly target: string;
-  readonly label: string;
-};
+export const RunCanvasNodeIdSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("RunCanvasNodeId")
+);
 
-export type DashboardRun = {
-  readonly id: string;
-  readonly title: string;
-  readonly status: RunStatus;
-  readonly branch: string;
-  readonly updatedAt: string;
-  readonly nodes: ReadonlyArray<RunNode>;
-  readonly edges: ReadonlyArray<RunEdge>;
-  readonly events: ReadonlyArray<DashboardEvent>;
-};
+export type RunCanvasNodeId = typeof RunCanvasNodeIdSchema.Type;
 
-export type RunReplayStep = {
-  readonly event: DashboardEvent;
-  readonly index: number;
-  readonly label: string;
-  readonly progressLabel: string;
-};
+export const RunCanvasEdgeIdSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("RunCanvasEdgeId")
+);
 
-export type RunReplayState = {
-  readonly activeEventId: string | undefined;
-  readonly activeSequence: number | undefined;
-  readonly currentIndex: number;
-  readonly currentStep: RunReplayStep | undefined;
-  readonly futureEventIds: ReadonlyArray<string>;
-  readonly progressPercent: number;
-  readonly steps: ReadonlyArray<RunReplayStep>;
-  readonly visibleArtifactIds: ReadonlyArray<DashboardArtifactId>;
-  readonly visibleEventIds: ReadonlyArray<string>;
-};
+export type RunCanvasEdgeId = typeof RunCanvasEdgeIdSchema.Type;
+
+export const DashboardRunIdSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("DashboardRunId")
+);
+
+export type DashboardRunId = typeof DashboardRunIdSchema.Type;
+
+export const RunNodeRoleSchema = Schema.Literals([
+  "orchestrator",
+  "worker",
+  "reviewer",
+  "spec",
+  "event",
+  "artifact",
+  "unknown",
+] as const);
+
+export type RunNodeRole = typeof RunNodeRoleSchema.Type;
+
+const RunNodePositionSchema = Schema.Struct({
+  x: Schema.Number,
+  y: Schema.Number,
+});
+
+export const DashboardEventSchema = Schema.Struct({
+  artifactHints: Schema.Array(DashboardArtifactIdSchema),
+  id: RunCanvasNodeIdSchema,
+  label: Schema.String,
+  payload: RunEvent.fields.payload,
+  sequence: RunEvent.fields.sequence,
+  time: Schema.String,
+  timestamp: RunEvent.fields.timestamp,
+  tone: RunStatusSchema,
+  type: RunEvent.fields.type,
+});
+
+export type DashboardEvent = typeof DashboardEventSchema.Type;
+
+export const RunNodeSchema = Schema.Struct({
+  artifacts: Schema.Array(DashboardArtifactIdSchema),
+  eventIds: Schema.Array(RunCanvasNodeIdSchema),
+  evidence: Schema.Array(Schema.String),
+  id: RunCanvasNodeIdSchema,
+  label: Schema.String,
+  position: RunNodePositionSchema,
+  raw: Schema.Unknown,
+  role: RunNodeRoleSchema,
+  status: RunStatusSchema,
+  summary: Schema.String,
+});
+
+export type RunNode = typeof RunNodeSchema.Type;
+
+export const RunEdgeSchema = Schema.Struct({
+  id: RunCanvasEdgeIdSchema,
+  label: Schema.String,
+  source: RunCanvasNodeIdSchema,
+  target: RunCanvasNodeIdSchema,
+});
+
+export type RunEdge = typeof RunEdgeSchema.Type;
+
+export const DashboardRunSchema = Schema.Struct({
+  branch: Schema.String,
+  edges: Schema.Array(RunEdgeSchema),
+  events: Schema.Array(DashboardEventSchema),
+  id: DashboardRunIdSchema,
+  nodes: Schema.Array(RunNodeSchema),
+  status: RunStatusSchema,
+  title: Schema.String,
+  updatedAt: Schema.String,
+});
+
+export type DashboardRun = typeof DashboardRunSchema.Type;
+
+export const RunReplayStepSchema = Schema.Struct({
+  event: DashboardEventSchema,
+  index: Schema.Number,
+  label: Schema.String,
+  progressLabel: Schema.String,
+});
+
+export type RunReplayStep = typeof RunReplayStepSchema.Type;
+
+export const RunReplayStateSchema = Schema.Struct({
+  activeEventId: Schema.optional(RunCanvasNodeIdSchema),
+  activeSequence: Schema.optional(RunEvent.fields.sequence),
+  currentIndex: Schema.Number,
+  currentStep: Schema.optional(RunReplayStepSchema),
+  futureEventIds: Schema.Array(RunCanvasNodeIdSchema),
+  progressPercent: Schema.Number,
+  steps: Schema.Array(RunReplayStepSchema),
+  visibleArtifactIds: Schema.Array(DashboardArtifactIdSchema),
+  visibleEventIds: Schema.Array(RunCanvasNodeIdSchema),
+});
+
+export type RunReplayState = typeof RunReplayStateSchema.Type;
+
+type LocalRunSummary = typeof LocalRunReadSummarySchema.Type;
+
+const decodeDashboardArtifactId = Schema.decodeUnknownSync(
+  DashboardArtifactIdSchema
+);
+const decodeRunCanvasNodeId = Schema.decodeUnknownSync(RunCanvasNodeIdSchema);
+const decodeRunCanvasEdgeId = Schema.decodeUnknownSync(RunCanvasEdgeIdSchema);
+const decodeDashboardRunId = Schema.decodeUnknownSync(DashboardRunIdSchema);
+
+const artifactIds = Object.freeze({
+  evidencePromotion: decodeDashboardArtifactId("evidence-promotion"),
+  evidencePromotionMarkdown: decodeDashboardArtifactId(
+    "evidence-promotion-markdown"
+  ),
+  evidenceReview: decodeDashboardArtifactId("evidence-review"),
+  events: decodeDashboardArtifactId("events"),
+  factoryRetro: decodeDashboardArtifactId("factory-retro"),
+  factoryRetroMarkdown: decodeDashboardArtifactId("factory-retro-markdown"),
+  factoryScorecard: decodeDashboardArtifactId("factory-scorecard"),
+  factoryScorecardMarkdown: decodeDashboardArtifactId(
+    "factory-scorecard-markdown"
+  ),
+  input: decodeDashboardArtifactId("input"),
+  planReview: decodeDashboardArtifactId("plan-review"),
+  report: decodeDashboardArtifactId("report"),
+  reportJson: decodeDashboardArtifactId("report-json"),
+  reviewerFindings: decodeDashboardArtifactId("reviewer-findings"),
+  snapshots: decodeDashboardArtifactId("snapshots"),
+  verificationResult: decodeDashboardArtifactId("verification-result"),
+  workerLog: decodeDashboardArtifactId("worker-log"),
+  workerPlan: decodeDashboardArtifactId("worker-plan"),
+  workerResult: decodeDashboardArtifactId("worker-result"),
+});
 
 export function buildRunCanvasModel(input: {
   readonly events: ReadonlyArray<RunEvent>;
-  readonly run: typeof LocalRunSummaryDto.Type | undefined;
+  readonly run: LocalRunSummary | undefined;
 }): DashboardRun {
   if (input.run === undefined) {
     return emptyRunCanvasModel();
@@ -94,7 +180,7 @@ export function buildRunCanvasModel(input: {
 
   const nodes: Array<RunNode> = [];
   const edges: Array<RunEdge> = [];
-  const rootId = `run:${input.run.runId}`;
+  const rootId = decodeRunCanvasNodeId(`run:${input.run.runId}`);
   const status = runStatus(input.run.status);
 
   nodes.push({
@@ -122,7 +208,7 @@ export function buildRunCanvasModel(input: {
   for (const node of laneNodes) {
     nodes.push(node);
     edges.push({
-      id: `${rootId}->${node.id}`,
+      id: decodeRunCanvasEdgeId(`${rootId}->${node.id}`),
       source: rootId,
       target: node.id,
       label: node.role === "unknown" ? "unavailable" : "supports",
@@ -135,7 +221,7 @@ export function buildRunCanvasModel(input: {
   nodes.push(...eventNodes);
   if (eventNodes[0] !== undefined) {
     edges.push({
-      id: `${rootId}->${eventNodes[0].id}`,
+      id: decodeRunCanvasEdgeId(`${rootId}->${eventNodes[0].id}`),
       source: rootId,
       target: eventNodes[0].id,
       label: "starts",
@@ -146,7 +232,7 @@ export function buildRunCanvasModel(input: {
     const next = eventNodes[index];
     if (previous !== undefined && next !== undefined) {
       edges.push({
-        id: `${previous.id}->${next.id}`,
+        id: decodeRunCanvasEdgeId(`${previous.id}->${next.id}`),
         source: previous.id,
         target: next.id,
         label: "then",
@@ -161,7 +247,7 @@ export function buildRunCanvasModel(input: {
   for (const node of artifactNodes) {
     const source = artifactSource(node.artifacts[0], input.events, rootId);
     edges.push({
-      id: `${source}->${node.id}`,
+      id: decodeRunCanvasEdgeId(`${source}->${node.id}`),
       source,
       target: node.id,
       label: "evidence",
@@ -169,7 +255,7 @@ export function buildRunCanvasModel(input: {
   }
 
   return {
-    id: input.run.runId,
+    id: decodeDashboardRunId(input.run.runId),
     title: input.run.runId,
     status,
     branch: "Local run",
@@ -298,7 +384,7 @@ function clampIndex(index: number, maxIndex: number) {
 
 function emptyRunCanvasModel(): DashboardRun {
   return {
-    id: "no-run-selected",
+    id: decodeDashboardRunId("no-run-selected"),
     title: "No local run selected",
     status: "blocked",
     branch: "Local run",
@@ -310,16 +396,16 @@ function emptyRunCanvasModel(): DashboardRun {
 }
 
 function supportedLaneNodes(
-  run: typeof LocalRunSummaryDto.Type,
+  run: LocalRunSummary,
   events: ReadonlyArray<RunEvent>
 ): ReadonlyArray<RunNode> {
   const nodes: Array<RunNode> = [];
   const artifactSet = new Set(run.artifacts);
   const eventTypes = new Set(events.map((event) => event.type));
 
-  if (artifactSet.has("input")) {
+  if (artifactSet.has(artifactIds.input)) {
     nodes.push({
-      id: "lane:spec",
+      id: decodeRunCanvasNodeId("lane:spec"),
       label: "Input spec",
       role: "spec",
       status: "complete",
@@ -330,11 +416,13 @@ function supportedLaneNodes(
         "Relationship source: public artifact list",
       ],
       eventIds: events
-        .filter((event) => eventArtifactHints(event).includes("input"))
+        .filter((event) =>
+          eventArtifactHints(event).includes(artifactIds.input)
+        )
         .map(eventNodeId),
-      artifacts: ["input"],
+      artifacts: [artifactIds.input],
       raw: {
-        artifactId: "input",
+        artifactId: artifactIds.input,
         relationshipSource: "public artifact list",
       },
       position: { x: 320, y: 30 },
@@ -344,11 +432,11 @@ function supportedLaneNodes(
   if (
     eventTypes.has("WORKER_STARTED") ||
     eventTypes.has("WORKER_COMPLETED") ||
-    artifactSet.has("worker-plan") ||
-    artifactSet.has("worker-result")
+    artifactSet.has(artifactIds.workerPlan) ||
+    artifactSet.has(artifactIds.workerResult)
   ) {
     nodes.push({
-      id: "lane:worker",
+      id: decodeRunCanvasNodeId("lane:worker"),
       label: "Worker lane",
       role: "worker",
       status: eventTypes.has("WORKER_COMPLETED") ? "complete" : "running",
@@ -369,12 +457,12 @@ function supportedLaneNodes(
   if (
     eventTypes.has("REVIEW_STARTED") ||
     eventTypes.has("REVIEW_COMPLETED") ||
-    artifactSet.has("plan-review") ||
-    artifactSet.has("evidence-review") ||
-    artifactSet.has("reviewer-findings")
+    artifactSet.has(artifactIds.planReview) ||
+    artifactSet.has(artifactIds.evidenceReview) ||
+    artifactSet.has(artifactIds.reviewerFindings)
   ) {
     nodes.push({
-      id: "lane:reviewer",
+      id: decodeRunCanvasNodeId("lane:reviewer"),
       label: "Reviewer lane",
       role: "reviewer",
       status: eventTypes.has("REVIEW_COMPLETED") ? "complete" : "reviewing",
@@ -393,7 +481,7 @@ function supportedLaneNodes(
   }
 
   nodes.push({
-    id: "relationship:thread-identity",
+    id: decodeRunCanvasNodeId("relationship:thread-identity"),
     label: "Thread identities unavailable",
     role: "unknown",
     status: "blocked",
@@ -425,7 +513,7 @@ function matchingEventLabels(
 function matchingEventIds(
   events: ReadonlyArray<RunEvent>,
   prefix: string
-): ReadonlyArray<string> {
+): ReadonlyArray<RunCanvasNodeId> {
   return events
     .filter((event) => event.type.startsWith(prefix))
     .map(eventNodeId);
@@ -462,7 +550,7 @@ function artifactNode(
     .map(eventNodeId);
 
   return {
-    id: `artifact:${artifact}`,
+    id: decodeRunCanvasNodeId(`artifact:${artifact}`),
     label: artifactLabel(artifact),
     role: "artifact",
     status,
@@ -481,7 +569,7 @@ function artifactNode(
 function artifactSource(
   artifact: DashboardArtifactId | undefined,
   events: ReadonlyArray<RunEvent>,
-  fallback: string
+  fallback: RunCanvasNodeId
 ) {
   if (artifact === undefined) {
     return fallback;
@@ -499,19 +587,19 @@ function eventArtifactHints(
 ): ReadonlyArray<DashboardArtifactId> {
   switch (event.type) {
     case "RUN_CREATED":
-      return ["input"];
+      return [artifactIds.input];
     case "WORKER_STARTED":
-      return ["worker-plan"];
+      return [artifactIds.workerPlan];
     case "WORKER_COMPLETED":
-      return ["worker-log", "worker-result"];
+      return [artifactIds.workerLog, artifactIds.workerResult];
     case "REVIEW_COMPLETED":
       return event.payload["phase"] === "plan"
-        ? ["plan-review"]
-        : ["evidence-review", "reviewer-findings"];
+        ? [artifactIds.planReview]
+        : [artifactIds.evidenceReview, artifactIds.reviewerFindings];
     case "VERIFICATION_COMPLETED":
-      return ["verification-result"];
+      return [artifactIds.verificationResult];
     case "REPORT_COMPLETED":
-      return ["report", "report-json"];
+      return [artifactIds.report, artifactIds.reportJson];
     default:
       return [];
   }
@@ -527,8 +615,10 @@ function eventEvidence(event: RunEvent): ReadonlyArray<string> {
   ];
 }
 
-function eventNodeId(event: RunEvent) {
-  return `event:${event.sequence}:${event.type}:${event.timestamp}`;
+function eventNodeId(event: RunEvent): RunCanvasNodeId {
+  return decodeRunCanvasNodeId(
+    `event:${event.sequence}:${event.type}:${event.timestamp}`
+  );
 }
 
 function eventIdentity(event: RunEvent) {
@@ -565,7 +655,7 @@ function eventStatus(event: RunEvent): RunStatus {
   return "complete";
 }
 
-function runStatus(status: typeof LocalRunSummaryDto.Type.status): RunStatus {
+function runStatus(status: LocalRunSummary["status"]): RunStatus {
   if (status === "failed") {
     return "blocked";
   }

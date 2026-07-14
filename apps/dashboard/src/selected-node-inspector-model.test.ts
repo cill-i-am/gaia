@@ -10,8 +10,12 @@ import {
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import type { FactoryCanvasNode } from "@/factory-canvas-model";
 import {
+  FactoryCanvasNodeIdSchema,
+  type FactoryCanvasNode,
+} from "@/factory-canvas-model";
+import {
+  SelectedNodeInspectorModelSchema,
   buildSelectedNodeInspectorModel,
   type InspectorResource,
 } from "@/selected-node-inspector-model";
@@ -114,6 +118,9 @@ describe("selected node inspector model", () => {
       "Worker summary",
     ]);
     expect(model.queryAvailable).toBe(false);
+    expect(
+      Schema.decodeUnknownSync(SelectedNodeInspectorModelSchema)(model)
+    ).toEqual(model);
   });
 
   it("uses run activity, linked agents, and public artifact ownership for work items", () => {
@@ -301,14 +308,14 @@ function agentNode(): FactoryCanvasNode {
   return {
     activityCount: 1,
     artifactCount: 1,
-    artifactIds: ["artifact-worker-summary"],
-    id: "agent:agent-worker",
+    artifactIds: [artifactId("artifact-worker-summary")],
+    id: canvasNodeId("agent:agent-worker"),
     kind: "agent",
     label: "Worker",
     lane: "implementation",
-    latestActivityId: "activity-worker",
+    latestActivityId: activityId("activity-worker"),
     position: { x: 520, y: 0 },
-    rawId: "agent-worker",
+    rawId: agentId("agent-worker"),
     role: "worker",
     state: "succeeded",
     summary: "summary ready",
@@ -320,14 +327,14 @@ function workItemNode(): FactoryCanvasNode {
   return {
     activityCount: 1,
     artifactCount: 1,
-    artifactIds: ["artifact-root-plan"],
-    id: "work-item:work-root",
+    artifactIds: [artifactId("artifact-root-plan")],
+    id: canvasNodeId("work-item:work-root"),
     kind: "workItem",
     label: "Root issue",
     lane: "work",
-    latestActivityId: "activity-root",
+    latestActivityId: activityId("activity-root"),
     position: { x: 0, y: 0 },
-    rawId: "work-root",
+    rawId: workItemId("work-root"),
     role: undefined,
     state: undefined,
     summary: "issue work item",
@@ -385,6 +392,10 @@ function agentId(value: string) {
 
 function artifactId(value: string) {
   return Schema.decodeUnknownSync(FactoryArtifactIdSchema)(value);
+}
+
+function canvasNodeId(value: string) {
+  return Schema.decodeUnknownSync(FactoryCanvasNodeIdSchema)(value);
 }
 
 function runId(value: string) {

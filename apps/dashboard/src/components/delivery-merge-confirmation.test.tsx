@@ -4,28 +4,33 @@ import {
   parseRunId,
 } from "@gaia/core";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { Schema } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deliveryRecoveryAction } from "./dashboard-shell";
-import { DeliveryMergeConfirmation } from "./delivery-merge-confirmation";
+import {
+  DeliveryMergeConfirmation,
+  DeliveryMergeConfirmationDataSchema,
+} from "./delivery-merge-confirmation";
 
 describe("DeliveryMergeConfirmation", () => {
   afterEach(cleanup);
   it("shows the exact destructive tuple before dispatch", async () => {
     const onConfirm = vi.fn(async () => undefined);
-    render(
-      <DeliveryMergeConfirmation
-        actionId="merge-action-1"
-        branch="gaia/run-1234567890"
-        decisionSequence={42}
-        disabled={false}
-        headSha={"a".repeat(40)}
-        method="squash"
-        onConfirm={onConfirm}
-        pending={false}
-        prUrl="https://github.com/cill-i-am/gaia/pull/74"
-      />
-    );
+    const data = {
+      actionId: "merge-action-1",
+      branch: "gaia/run-1234567890",
+      decisionSequence: 42,
+      disabled: false,
+      headSha: "a".repeat(40),
+      method: "squash",
+      pending: false,
+      prUrl: "https://github.com/cill-i-am/gaia/pull/74",
+    } as const;
+    expect(
+      Schema.decodeUnknownSync(DeliveryMergeConfirmationDataSchema)(data)
+    ).toEqual(data);
+    render(<DeliveryMergeConfirmation {...data} onConfirm={onConfirm} />);
     fireEvent.click(screen.getByRole("button", { name: "Merge pull request" }));
     expect(await screen.findByText("Confirm exact-head merge")).toBeTruthy();
     expect(screen.getByText("gaia/run-1234567890")).toBeTruthy();
@@ -36,6 +41,28 @@ describe("DeliveryMergeConfirmation", () => {
       screen.getByRole("button", { name: "Confirm squash merge" })
     );
     expect(onConfirm).toHaveBeenCalledOnce();
+  });
+
+  it("uses public merge action constraints for destructive tuple data", () => {
+    const data = {
+      actionId: "merge-action-1",
+      branch: "gaia/run-1234567890",
+      decisionSequence: 42,
+      disabled: false,
+      headSha: "a".repeat(40),
+      method: "squash",
+      pending: false,
+      prUrl: "https://github.com/cill-i-am/gaia/pull/74",
+    } as const;
+    const decode = Schema.decodeUnknownSync(
+      DeliveryMergeConfirmationDataSchema
+    );
+
+    expect(() => decode({ ...data, decisionSequence: 0 })).toThrow();
+    expect(() => decode({ ...data, headSha: "not-a-git-sha" })).toThrow();
+    expect(() =>
+      decode({ ...data, prUrl: "https://example.com/cill-i-am/gaia/pull/74" })
+    ).toThrow();
   });
 
   it("cannot open when readiness is server-disabled", () => {

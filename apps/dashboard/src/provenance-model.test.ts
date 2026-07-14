@@ -1,9 +1,16 @@
 import type { LocalRunSummaryDto } from "@gaia/core";
-import { RunIdSchema, makeRunEvent } from "@gaia/core";
+import {
+  LocalRunReadSummarySchema,
+  RunIdSchema,
+  makeRunEvent,
+} from "@gaia/core";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { buildEvidenceProvenanceModel } from "@/provenance-model";
+import {
+  EvidenceProvenanceModelSchema,
+  buildEvidenceProvenanceModel,
+} from "@/provenance-model";
 import {
   buildRunCanvasModel,
   buildRunReplayState,
@@ -109,6 +116,9 @@ describe("evidence provenance model", () => {
         .find((claim) => claim.id === "report-signal")
         ?.sources.some((source) => source.kind === "event")
     ).toBe(true);
+    expect(
+      Schema.decodeUnknownSync(EvidenceProvenanceModelSchema)(provenance)
+    ).toEqual(provenance);
   });
 
   it("labels unavailable and unsupported claims honestly", () => {
@@ -164,8 +174,8 @@ function localRunSummary(
   input: Partial<typeof LocalRunSummaryDto.Type> & {
     readonly runId: typeof LocalRunSummaryDto.Type.runId;
   }
-): typeof LocalRunSummaryDto.Type {
-  return {
+): typeof LocalRunReadSummarySchema.Type {
+  return Schema.decodeUnknownSync(LocalRunReadSummarySchema)({
     artifacts: ["input"],
     createdAt: "2026-07-07T12:00:00.000Z",
     eventCount: 1,
@@ -174,7 +184,7 @@ function localRunSummary(
     status: "running",
     updatedAt: "2026-07-07T12:00:00.000Z",
     ...input,
-  };
+  });
 }
 
 function parseRunId(value: string): typeof RunIdSchema.Type {

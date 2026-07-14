@@ -1,48 +1,82 @@
-import type { LocalRunSummaryDto, RunEvent, RunId } from "@gaia/core";
+import {
+  LocalRunReadArtifactIdSchema,
+  RunEvent,
+  RunIdSchema,
+  type LocalRunSummaryDto,
+} from "@gaia/core";
+import { Schema } from "effect";
 
-export type RunCompareSignal = {
-  readonly label: string;
-  readonly state: "available" | "failed" | "missing";
-};
+export const RunCompareSignalStateSchema = Schema.Literals([
+  "available",
+  "failed",
+  "missing",
+] as const);
 
-export type RunCompareSide = {
-  readonly artifactCountLabel: string;
-  readonly artifactNames: ReadonlyArray<string>;
-  readonly checkSignal: RunCompareSignal;
-  readonly createdAtLabel: string;
-  readonly durationLabel: string;
-  readonly eventCountLabel: string;
-  readonly lifecycleLabel: string;
-  readonly missingData: ReadonlyArray<string>;
-  readonly reportSignal: RunCompareSignal;
-  readonly reviewSignal: RunCompareSignal;
-  readonly runId: RunId;
-  readonly statusLabel: string;
-  readonly updatedAtLabel: string;
-};
+export const RunCompareSignalSchema = Schema.Struct({
+  label: Schema.String,
+  state: RunCompareSignalStateSchema,
+});
 
-export type RunCompareMetric = {
-  readonly comparisonValue: string;
-  readonly isDifferent: boolean;
-  readonly label: string;
-  readonly primaryValue: string;
-};
+export type RunCompareSignal = typeof RunCompareSignalSchema.Type;
 
-export type RunCompareModel = {
-  readonly artifactDelta: {
-    readonly comparisonOnly: ReadonlyArray<string>;
-    readonly primaryOnly: ReadonlyArray<string>;
-    readonly shared: ReadonlyArray<string>;
-  };
-  readonly comparison: RunCompareSide | undefined;
-  readonly differenceCount: number;
-  readonly metrics: ReadonlyArray<RunCompareMetric>;
-  readonly missingData: ReadonlyArray<string>;
-  readonly primary: RunCompareSide | undefined;
-  readonly summary: string;
-};
+export const RunCompareSideSchema = Schema.Struct({
+  artifactCountLabel: Schema.String,
+  artifactNames: Schema.Array(LocalRunReadArtifactIdSchema),
+  checkSignal: RunCompareSignalSchema,
+  createdAtLabel: Schema.String,
+  durationLabel: Schema.String,
+  eventCountLabel: Schema.String,
+  lifecycleLabel: Schema.String,
+  missingData: Schema.Array(Schema.String),
+  reportSignal: RunCompareSignalSchema,
+  reviewSignal: RunCompareSignalSchema,
+  runId: RunIdSchema,
+  statusLabel: Schema.String,
+  updatedAtLabel: Schema.String,
+});
+
+export type RunCompareSide = typeof RunCompareSideSchema.Type;
+
+export const RunCompareMetricSchema = Schema.Struct({
+  comparisonValue: Schema.String,
+  isDifferent: Schema.Boolean,
+  label: Schema.String,
+  primaryValue: Schema.String,
+});
+
+export type RunCompareMetric = typeof RunCompareMetricSchema.Type;
+
+export const RunCompareArtifactDeltaSchema = Schema.Struct({
+  comparisonOnly: Schema.Array(LocalRunReadArtifactIdSchema),
+  primaryOnly: Schema.Array(LocalRunReadArtifactIdSchema),
+  shared: Schema.Array(LocalRunReadArtifactIdSchema),
+});
+
+export const RunCompareModelSchema = Schema.Struct({
+  artifactDelta: RunCompareArtifactDeltaSchema,
+  comparison: Schema.optional(RunCompareSideSchema),
+  differenceCount: Schema.Number,
+  metrics: Schema.Array(RunCompareMetricSchema),
+  missingData: Schema.Array(Schema.String),
+  primary: Schema.optional(RunCompareSideSchema),
+  summary: Schema.String,
+});
+
+export type RunCompareModel = typeof RunCompareModelSchema.Type;
 
 type LocalRunSummary = typeof LocalRunSummaryDto.Type;
+
+const decodeRunCompareArtifactId = Schema.decodeUnknownSync(
+  LocalRunReadArtifactIdSchema
+);
+const compareArtifactIds = Object.freeze({
+  evidenceReview: decodeRunCompareArtifactId("evidence-review"),
+  planReview: decodeRunCompareArtifactId("plan-review"),
+  report: decodeRunCompareArtifactId("report"),
+  reportJson: decodeRunCompareArtifactId("report-json"),
+  reviewerFindings: decodeRunCompareArtifactId("reviewer-findings"),
+  verificationResult: decodeRunCompareArtifactId("verification-result"),
+});
 
 export function buildRunCompareModel(input: {
   readonly comparisonEvents: ReadonlyArray<RunEvent>;
@@ -141,7 +175,9 @@ function toCompareSide(
 
   return {
     artifactCountLabel: `${run.artifacts.length} exposed`,
-    artifactNames: run.artifacts,
+    artifactNames: run.artifacts.map((artifact) =>
+      decodeRunCompareArtifactId(artifact)
+    ),
     checkSignal,
     createdAtLabel: timestampLabel(run.createdAt),
     durationLabel,
@@ -192,8 +228,8 @@ function metric(
 }
 
 function compareArtifacts(
-  primaryArtifacts: ReadonlyArray<string>,
-  comparisonArtifacts: ReadonlyArray<string>
+  primaryArtifacts: ReadonlyArray<typeof LocalRunReadArtifactIdSchema.Type>,
+  comparisonArtifacts: ReadonlyArray<typeof LocalRunReadArtifactIdSchema.Type>
 ) {
   const primary = new Set(primaryArtifacts);
   const comparison = new Set(comparisonArtifacts);
@@ -224,8 +260,8 @@ function reportSignalFor(
   }
 
   if (
-    run.artifacts.includes("report") ||
-    run.artifacts.includes("report-json") ||
+    run.artifacts.includes(compareArtifactIds.report) ||
+    run.artifacts.includes(compareArtifactIds.reportJson) ||
     events.some((event) => event.type === "REPORT_COMPLETED")
   ) {
     return {
@@ -245,7 +281,7 @@ function checkSignalFor(
   events: ReadonlyArray<RunEvent>
 ): RunCompareSignal {
   if (
-    run.artifacts.includes("verification-result") ||
+    run.artifacts.includes(compareArtifactIds.verificationResult) ||
     events.some((event) => event.type === "VERIFICATION_COMPLETED")
   ) {
     return {
