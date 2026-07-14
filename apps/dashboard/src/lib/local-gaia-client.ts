@@ -1,6 +1,7 @@
 import {
   AgentOperatorActionRequestSchema,
   AgentSessionSnapshotSuccessEnvelope,
+  AgentSessionSseEventIdSchema,
   AgentSessionUpdateDto,
   CreateRunRequest,
   DeliverySnapshotSuccessEnvelope,
@@ -8,11 +9,10 @@ import {
   DeliveryActionRequestSchema,
   codexAppServerExecutionSelection,
   FactoryActivitySuccessEnvelope,
-  FactoryAgentIdSchema,
   FactoryArtifactListSuccessEnvelope,
-  FactoryArtifactIdSchema,
   FactoryArtifactSuccessEnvelope,
   FactoryGraphSuccessEnvelope,
+  makeAgentSessionSseEventId,
   FactoryRunDetailDto,
   FactoryRunSummaryDto,
   LocalGaiaServerApi,
@@ -21,6 +21,8 @@ import {
   LocalRunDetailSuccessEnvelope,
   LocalRunListSuccessEnvelope,
   parseLocalGaiaServerUrl,
+  type FactoryAgentId,
+  type FactoryArtifactId,
   type LocalGaiaServerUrl,
   type RunId,
 } from "@gaia/core";
@@ -99,6 +101,9 @@ const decodeAgentSessionSnapshotSuccess = Schema.decodeUnknownEffect(
 );
 const decodeAgentSessionUpdate = Schema.decodeUnknownSync(
   AgentSessionUpdateDto
+);
+const decodeAgentSessionSseEventId = Schema.decodeUnknownSync(
+  AgentSessionSseEventIdSchema
 );
 const decodeDeliverySnapshot = Schema.decodeUnknownSync(DeliverySnapshotDto);
 
@@ -233,15 +238,14 @@ export function actOnDeliveryFromDashboardGaiaClient(
 
 export function getFactoryAgentActivityFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig & {
-    readonly agentId: string;
+    readonly agentId: FactoryAgentId;
     readonly runId: RunId;
   }
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const agentId = yield* decodeAgentIdParameter(config.agentId);
       const response = yield* client.runs.getAgentActivity({
-        params: { agentId, runId: config.runId },
+        params: { agentId: config.agentId, runId: config.runId },
       });
       return yield* decodeFactoryActivitySuccess(response);
     })
@@ -250,15 +254,16 @@ export function getFactoryAgentActivityFromDashboardGaiaClient(
 
 export function getAgentSessionFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig & {
-    readonly agentId: string;
+    readonly agentId: FactoryAgentId;
     readonly runId: RunId;
   }
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const agentId = yield* decodeAgentIdParameter(config.agentId);
       return yield* client.runs
-        .getAgentSession({ params: { agentId, runId: config.runId } })
+        .getAgentSession({
+          params: { agentId: config.agentId, runId: config.runId },
+        })
         .pipe(Effect.flatMap(decodeAgentSessionSnapshotSuccess));
     })
   );
@@ -267,19 +272,18 @@ export function getAgentSessionFromDashboardGaiaClient(
 export function actOnAgentSessionFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig & {
     readonly action: unknown;
-    readonly agentId: string;
+    readonly agentId: FactoryAgentId;
     readonly runId: RunId;
   }
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const agentId = yield* decodeAgentIdParameter(config.agentId);
       const payload = yield* Schema.decodeUnknownEffect(
         AgentOperatorActionRequestSchema
       )(config.action).pipe(
         Effect.mapError((cause) => parameterError("action", cause))
       );
-      const params = { agentId, runId: config.runId };
+      const params = { agentId: config.agentId, runId: config.runId };
       switch (payload.kind) {
         case "followUp":
           return yield* client.runs.actOnAgentSession({ params, payload });
@@ -395,7 +399,7 @@ export function openDeliverySnapshotEventSource(
 export function openAgentSessionEventSource(
   config: DashboardGaiaClientConfig & {
     readonly afterSequence?: number;
-    readonly agentId: string;
+    readonly agentId: FactoryAgentId;
     readonly runId: RunId;
   },
   handlers: {
@@ -421,7 +425,8 @@ export function openAgentSessionEventSource(
       const update = decodeAgentSessionUpdate(JSON.parse(event.data));
       if (
         event.lastEventId !== "" &&
-        String(update.eventSequence) !== event.lastEventId
+        makeAgentSessionSseEventId(update.eventSequence) !==
+          decodeAgentSessionSseEventId(event.lastEventId)
       )
         throw new Error(
           "Gaia SSE event ID does not match its normalized sequence."
@@ -456,16 +461,15 @@ export function listFactoryArtifactsFromDashboardGaiaClient(
 
 export function getFactoryArtifactFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig & {
-    readonly artifactId: string;
+    readonly artifactId: FactoryArtifactId;
     readonly runId: RunId;
   }
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const artifactId = yield* decodeArtifactIdParameter(config.artifactId);
       const response = yield* client.runs.getRunArtifact({
         params: {
-          artifactId,
+          artifactId: config.artifactId,
           runId: config.runId,
         },
       });
@@ -476,17 +480,16 @@ export function getFactoryArtifactFromDashboardGaiaClient(
 
 export function getRunArtifactFromDashboardGaiaClient(
   config: DashboardGaiaClientConfig & {
-    readonly artifactId: string;
+    readonly artifactId: FactoryArtifactId;
     readonly runId: RunId;
   }
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
-      const artifactId = yield* decodeArtifactIdParameter(config.artifactId);
       return yield* client.runs
         .getRunArtifact({
           params: {
-            artifactId,
+            artifactId: config.artifactId,
             runId: config.runId,
           },
         })
@@ -548,18 +551,6 @@ function withDashboardGaiaClient<A, E, R>(
   }).pipe(
     Effect.timeout(`${fetchTimeoutMs} millis`),
     Effect.mapError(toDashboardGaiaClientError)
-  );
-}
-
-function decodeAgentIdParameter(input: string) {
-  return Schema.decodeUnknownEffect(FactoryAgentIdSchema)(input).pipe(
-    Effect.mapError((cause) => parameterError("agentId", cause))
-  );
-}
-
-function decodeArtifactIdParameter(input: string) {
-  return Schema.decodeUnknownEffect(FactoryArtifactIdSchema)(input).pipe(
-    Effect.mapError((cause) => parameterError("artifactId", cause))
   );
 }
 

@@ -62,6 +62,7 @@ type StoredIndexRead<A> =
   | {
       readonly _tag: "unreadable";
       readonly diagnostic: FactoryProjectionDiagnostic;
+      readonly failureKind: "decode" | "parse" | "read";
     }
   | { readonly _tag: "valid"; readonly value: A };
 
@@ -76,13 +77,6 @@ type FactoryArtifactDefinition = {
     "ciWatcher" | "orchestrator" | "reviewer" | "tester" | "worker"
   >;
   readonly path: (paths: RunPaths) => string;
-};
-
-type FactoryArtifactDefinitionInput = Omit<
-  FactoryArtifactDefinition,
-  "artifactId"
-> & {
-  readonly artifactId: string;
 };
 
 const decodeCreateRunRequest = Schema.decodeUnknownSync(CreateRunRequest);
@@ -102,156 +96,143 @@ const decodeFactoryArtifactBody = Schema.decodeUnknownSync(
   FactoryArtifactBodyDto
 );
 
-const factoryArtifactDefinitionInputs: ReadonlyArray<FactoryArtifactDefinitionInput> =
-  [
-    {
-      artifactId: "worker-plan",
-      contentType: "application/json",
-      eventType: "WORKER_STARTED",
-      kind: "plan",
-      label: "Worker plan",
-      ownerRole: "worker",
-      path: (paths) => paths.workerPlanResult,
-    },
-    {
-      artifactId: "worker-plan-markdown",
-      contentType: "text/markdown",
-      eventType: "WORKER_STARTED",
-      kind: "plan",
-      label: "Worker plan markdown",
-      ownerRole: "worker",
-      path: (paths) => paths.workerPlanMarkdown,
-    },
-    {
-      artifactId: "worker-log",
-      contentType: "text/plain",
-      eventType: "WORKER_COMPLETED",
-      kind: "log",
-      label: "Worker log",
-      ownerRole: "worker",
-      path: (paths) => paths.workerLog,
-    },
-    {
-      artifactId: "worker-result",
-      contentType: "application/json",
-      eventType: "WORKER_COMPLETED",
-      kind: "codeSummary",
-      label: "Worker result",
-      ownerRole: "worker",
-      path: (paths) => paths.workerResult,
-    },
-    {
-      artifactId: "plan-review",
-      contentType: "application/json",
-      eventType: "REVIEW_COMPLETED",
-      kind: "review",
-      label: "Plan review",
-      ownerRole: "reviewer",
-      path: (paths) => paths.planReviewResult,
-    },
-    {
-      artifactId: "reviewer-findings",
-      contentType: "application/json",
-      eventType: "REVIEW_COMPLETED",
-      kind: "review",
-      label: "Reviewer findings",
-      ownerRole: "reviewer",
-      path: (paths) => paths.reviewerFindings,
-    },
-    {
-      artifactId: "evidence-review",
-      contentType: "application/json",
-      eventType: "REVIEW_COMPLETED",
-      kind: "review",
-      label: "Evidence review",
-      ownerRole: "reviewer",
-      path: (paths) => paths.evidenceReviewResult,
-    },
-    {
-      artifactId: "verification-result",
-      contentType: "application/json",
-      eventType: "VERIFICATION_COMPLETED",
-      kind: "testReport",
-      label: "Verification result",
-      ownerRole: "tester",
-      path: (paths) => paths.verificationResult,
-    },
-    {
-      artifactId: "browser-evidence",
-      contentType: "application/json",
-      eventType: "BROWSER_EVIDENCE_RECORDED",
-      kind: "browserEvidence",
-      label: "Browser evidence",
-      ownerRole: "tester",
-      path: (paths) => paths.browserEvidence,
-    },
-    {
-      artifactId: "report",
-      contentType: "text/markdown",
-      eventType: "REPORT_COMPLETED",
-      kind: "runReport",
-      label: "Run report",
-      ownerRole: "orchestrator",
-      path: (paths) => paths.reportMarkdown,
-    },
-    {
-      artifactId: "report-json",
-      contentType: "application/json",
-      eventType: "REPORT_COMPLETED",
-      kind: "runReport",
-      label: "Run report JSON",
-      ownerRole: "orchestrator",
-      path: (paths) => paths.reportJson,
-    },
-    {
-      artifactId: "factory-retro",
-      contentType: "application/json",
-      eventType: "REPORT_COMPLETED",
-      kind: "runReport",
-      label: "Factory retrospective",
-      ownerRole: "orchestrator",
-      path: (paths) => paths.factoryRetroJson,
-    },
-    {
-      artifactId: "factory-retro-markdown",
-      contentType: "text/markdown",
-      eventType: "REPORT_COMPLETED",
-      kind: "runReport",
-      label: "Factory retrospective markdown",
-      ownerRole: "orchestrator",
-      path: (paths) => paths.factoryRetroMarkdown,
-    },
-    {
-      artifactId: "factory-scorecard",
-      contentType: "application/json",
-      eventType: "REPORT_COMPLETED",
-      kind: "runReport",
-      label: "Factory scorecard",
-      ownerRole: "orchestrator",
-      path: (paths) => paths.factoryScorecardJson,
-    },
-    {
-      artifactId: "factory-scorecard-markdown",
-      contentType: "text/markdown",
-      eventType: "REPORT_COMPLETED",
-      kind: "runReport",
-      label: "Factory scorecard markdown",
-      ownerRole: "orchestrator",
-      path: (paths) => paths.factoryScorecardMarkdown,
-    },
-  ];
-
-const factoryArtifactDefinitions: ReadonlyArray<FactoryArtifactDefinition> =
-  factoryArtifactDefinitionInputs.map(makeFactoryArtifactDefinition);
-
-function makeFactoryArtifactDefinition(
-  definition: FactoryArtifactDefinitionInput
-): FactoryArtifactDefinition {
-  return {
-    ...definition,
-    artifactId: decodeFactoryArtifactId(definition.artifactId),
-  };
-}
+const factoryArtifactDefinitions: ReadonlyArray<FactoryArtifactDefinition> = [
+  {
+    artifactId: decodeFactoryArtifactId("worker-plan"),
+    contentType: "application/json",
+    eventType: "WORKER_STARTED",
+    kind: "plan",
+    label: "Worker plan",
+    ownerRole: "worker",
+    path: (paths) => paths.workerPlanResult,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("worker-plan-markdown"),
+    contentType: "text/markdown",
+    eventType: "WORKER_STARTED",
+    kind: "plan",
+    label: "Worker plan markdown",
+    ownerRole: "worker",
+    path: (paths) => paths.workerPlanMarkdown,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("worker-log"),
+    contentType: "text/plain",
+    eventType: "WORKER_COMPLETED",
+    kind: "log",
+    label: "Worker log",
+    ownerRole: "worker",
+    path: (paths) => paths.workerLog,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("worker-result"),
+    contentType: "application/json",
+    eventType: "WORKER_COMPLETED",
+    kind: "codeSummary",
+    label: "Worker result",
+    ownerRole: "worker",
+    path: (paths) => paths.workerResult,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("plan-review"),
+    contentType: "application/json",
+    eventType: "REVIEW_COMPLETED",
+    kind: "review",
+    label: "Plan review",
+    ownerRole: "reviewer",
+    path: (paths) => paths.planReviewResult,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("reviewer-findings"),
+    contentType: "application/json",
+    eventType: "REVIEW_COMPLETED",
+    kind: "review",
+    label: "Reviewer findings",
+    ownerRole: "reviewer",
+    path: (paths) => paths.reviewerFindings,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("evidence-review"),
+    contentType: "application/json",
+    eventType: "REVIEW_COMPLETED",
+    kind: "review",
+    label: "Evidence review",
+    ownerRole: "reviewer",
+    path: (paths) => paths.evidenceReviewResult,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("verification-result"),
+    contentType: "application/json",
+    eventType: "VERIFICATION_COMPLETED",
+    kind: "testReport",
+    label: "Verification result",
+    ownerRole: "tester",
+    path: (paths) => paths.verificationResult,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("browser-evidence"),
+    contentType: "application/json",
+    eventType: "BROWSER_EVIDENCE_RECORDED",
+    kind: "browserEvidence",
+    label: "Browser evidence",
+    ownerRole: "tester",
+    path: (paths) => paths.browserEvidence,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("report"),
+    contentType: "text/markdown",
+    eventType: "REPORT_COMPLETED",
+    kind: "runReport",
+    label: "Run report",
+    ownerRole: "orchestrator",
+    path: (paths) => paths.reportMarkdown,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("report-json"),
+    contentType: "application/json",
+    eventType: "REPORT_COMPLETED",
+    kind: "runReport",
+    label: "Run report JSON",
+    ownerRole: "orchestrator",
+    path: (paths) => paths.reportJson,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("factory-retro"),
+    contentType: "application/json",
+    eventType: "REPORT_COMPLETED",
+    kind: "runReport",
+    label: "Factory retrospective",
+    ownerRole: "orchestrator",
+    path: (paths) => paths.factoryRetroJson,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("factory-retro-markdown"),
+    contentType: "text/markdown",
+    eventType: "REPORT_COMPLETED",
+    kind: "runReport",
+    label: "Factory retrospective markdown",
+    ownerRole: "orchestrator",
+    path: (paths) => paths.factoryRetroMarkdown,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("factory-scorecard"),
+    contentType: "application/json",
+    eventType: "REPORT_COMPLETED",
+    kind: "runReport",
+    label: "Factory scorecard",
+    ownerRole: "orchestrator",
+    path: (paths) => paths.factoryScorecardJson,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("factory-scorecard-markdown"),
+    contentType: "text/markdown",
+    eventType: "REPORT_COMPLETED",
+    kind: "runReport",
+    label: "Factory scorecard markdown",
+    ownerRole: "orchestrator",
+    path: (paths) => paths.factoryScorecardMarkdown,
+  },
+];
 
 export function writeInitialFactoryRunIndexes(input: {
   readonly paths: RunPaths;
@@ -339,7 +320,7 @@ export function rebuildFactoryRunIndexes(
 
 export function readFactoryArtifactBodyFromIndex(
   runId: RunId,
-  artifactIdInput: string,
+  artifactIdInput: FactoryArtifactId,
   options: RunStorageOptions = {}
 ) {
   return Effect.gen(function* () {
@@ -513,7 +494,8 @@ function readStoredJson<A>(
     if (existsExit._tag === "Failure") {
       return unreadableIndexDiagnostic(
         sourceId,
-        "FactoryProjectionIndexUnreadable"
+        "FactoryProjectionIndexUnreadable",
+        "read"
       );
     }
     const exists = existsExit.value;
@@ -533,14 +515,20 @@ function readStoredJson<A>(
     if (textExit._tag === "Failure") {
       return unreadableIndexDiagnostic(
         sourceId,
-        "FactoryProjectionIndexUnreadable"
+        "FactoryProjectionIndexUnreadable",
+        "read"
       );
     }
 
     try {
-      return { _tag: "valid", value: decode(JSON.parse(textExit.value)) };
+      const parsed = JSON.parse(textExit.value);
+      try {
+        return { _tag: "valid", value: decode(parsed) };
+      } catch {
+        return unreadableIndexDiagnostic(sourceId, invalidCode, "decode");
+      }
     } catch {
-      return unreadableIndexDiagnostic(sourceId, invalidCode);
+      return unreadableIndexDiagnostic(sourceId, invalidCode, "parse");
     }
   });
 }
@@ -569,7 +557,15 @@ function markTerminalDeliveryGraphStale(
   read: StoredIndexRead<FactoryGraphProjection>,
   terminalDeliveryCleanupCompleted: boolean
 ): StoredIndexRead<FactoryGraphProjection> {
-  if (read._tag !== "valid" || !terminalDeliveryCleanupCompleted) {
+  if (!terminalDeliveryCleanupCompleted) {
+    return read;
+  }
+
+  if (read._tag === "unreadable" && read.failureKind === "decode") {
+    return terminalDeliveryGraphStaleDiagnostic();
+  }
+
+  if (read._tag !== "valid") {
     return read;
   }
 
@@ -588,6 +584,10 @@ function markTerminalDeliveryGraphStale(
     ciWatchers[0].state === "succeeded";
   if (settled) return read;
 
+  return terminalDeliveryGraphStaleDiagnostic();
+}
+
+function terminalDeliveryGraphStaleDiagnostic(): StoredIndexRead<FactoryGraphProjection> {
   return {
     _tag: "stale",
     diagnostic: {
@@ -626,7 +626,8 @@ function markRunIdMismatch<A extends { readonly runId: RunId }>(
 
 function unreadableIndexDiagnostic(
   sourceId: string,
-  code: string
+  code: string,
+  failureKind: "decode" | "parse" | "read"
 ): StoredIndexRead<never> {
   return {
     _tag: "unreadable",
@@ -636,6 +637,7 @@ function unreadableIndexDiagnostic(
       recoverable: true,
       sourceId,
     },
+    failureKind,
   };
 }
 

@@ -1,4 +1,9 @@
-import { parseLocalGaiaServerUrl, parseRunId } from "@gaia/core";
+import {
+  FactoryAgentIdSchema,
+  parseLocalGaiaServerUrl,
+  parseRunId,
+} from "@gaia/core";
+import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -9,6 +14,8 @@ import {
 
 const runId = parseRunId("run-1234567890");
 const serverUrl = parseLocalGaiaServerUrl("/gaia-api");
+const agentWorkerId =
+  Schema.decodeUnknownSync(FactoryAgentIdSchema)("agent-worker");
 
 describe("local Gaia agent session SSE client", () => {
   it("subscribes to Gaia's named session event, cleans up, and pins sequence IDs", () => {
@@ -17,7 +24,7 @@ describe("local Gaia agent session SSE client", () => {
     const updates: Array<number> = [];
     const errors: Array<unknown> = [];
     const handle = openAgentSessionEventSource(
-      { afterSequence: 4, agentId: "agent-worker", runId, serverUrl },
+      { afterSequence: 4, agentId: agentWorkerId, runId, serverUrl },
       {
         onError: (error) => errors.push(error),
         onUpdate: (update) => updates.push(update.eventSequence),
@@ -50,6 +57,57 @@ describe("local Gaia agent session SSE client", () => {
     expect(source.closed).toBe(2);
     expect(source.listenerCount("agent-session-update")).toBe(0);
   });
+
+  it("accepts an empty session SSE ID as absence", () => {
+    const source = new TestAgentSessionEventSource();
+    const updates: Array<number> = [];
+    const errors: Array<unknown> = [];
+    const handle = openAgentSessionEventSource(
+      { agentId: agentWorkerId, runId, serverUrl },
+      {
+        onError: (error) => errors.push(error),
+        onUpdate: (value) => updates.push(value.eventSequence),
+      },
+      () => source
+    );
+
+    source.dispatch("agent-session-update", {
+      data: JSON.stringify(update(6)),
+      lastEventId: "",
+    });
+
+    expect(updates).toEqual([6]);
+    expect(errors).toEqual([]);
+    expect(source.closed).toBe(0);
+    handle.close();
+  });
+
+  it.each(["abc", "0", "-1", "01", "+1", "1.5", " 6", "6 "])(
+    "rejects malformed session SSE ID %s",
+    (lastEventId) => {
+      const source = new TestAgentSessionEventSource();
+      const updates: Array<number> = [];
+      const errors: Array<unknown> = [];
+      const handle = openAgentSessionEventSource(
+        { agentId: agentWorkerId, runId, serverUrl },
+        {
+          onError: (error) => errors.push(error),
+          onUpdate: (value) => updates.push(value.eventSequence),
+        },
+        () => source
+      );
+
+      source.dispatch("agent-session-update", {
+        data: JSON.stringify(update(6)),
+        lastEventId,
+      });
+
+      expect(updates).toEqual([]);
+      expect(errors).toHaveLength(1);
+      expect(source.closed).toBe(1);
+      handle.close();
+    }
+  );
 
   it("streams delivery remediation updates without closing at waiting", () => {
     let url = "";

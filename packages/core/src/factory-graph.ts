@@ -102,7 +102,15 @@ export type FactoryArtifactContentType =
   typeof FactoryArtifactContentTypeSchema.Type;
 
 /** A parsed factory work item identifier. */
-export const FactoryWorkItemIdSchema = Schema.NonEmptyString.pipe(
+export const FactoryGraphNodeIdSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("FactoryGraphNodeId")
+).annotate({ identifier: "FactoryGraphNodeId" });
+
+/** A parsed factory graph node identifier. */
+export type FactoryGraphNodeId = typeof FactoryGraphNodeIdSchema.Type;
+
+/** A parsed factory work item identifier. */
+export const FactoryWorkItemIdSchema = FactoryGraphNodeIdSchema.pipe(
   Schema.brand("FactoryWorkItemId")
 ).annotate({ identifier: "FactoryWorkItemId" });
 
@@ -110,7 +118,7 @@ export const FactoryWorkItemIdSchema = Schema.NonEmptyString.pipe(
 export type FactoryWorkItemId = typeof FactoryWorkItemIdSchema.Type;
 
 /** A parsed factory agent identifier. */
-export const FactoryAgentIdSchema = Schema.NonEmptyString.pipe(
+export const FactoryAgentIdSchema = FactoryGraphNodeIdSchema.pipe(
   Schema.brand("FactoryAgentId")
 ).annotate({ identifier: "FactoryAgentId" });
 
@@ -118,7 +126,7 @@ export const FactoryAgentIdSchema = Schema.NonEmptyString.pipe(
 export type FactoryAgentId = typeof FactoryAgentIdSchema.Type;
 
 /** A parsed factory artifact identifier. */
-export const FactoryArtifactIdSchema = Schema.NonEmptyString.pipe(
+export const FactoryArtifactIdSchema = FactoryGraphNodeIdSchema.pipe(
   Schema.brand("FactoryArtifactId")
 ).annotate({ identifier: "FactoryArtifactId" });
 
@@ -133,13 +141,51 @@ export const FactoryActivityIdSchema = Schema.NonEmptyString.pipe(
 /** A parsed factory activity identifier. */
 export type FactoryActivityId = typeof FactoryActivityIdSchema.Type;
 
+/** A parsed factory edge identifier. */
+export const FactoryEdgeIdSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("FactoryEdgeId")
+).annotate({ identifier: "FactoryEdgeId" });
+
+/** A parsed factory edge identifier. */
+export type FactoryEdgeId = typeof FactoryEdgeIdSchema.Type;
+
+/** A parsed external reference identifier. */
+export const FactoryExternalRefIdSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("FactoryExternalRefId")
+).annotate({ identifier: "FactoryExternalRefId" });
+
+/** A parsed external reference identifier. */
+export type FactoryExternalRefId = typeof FactoryExternalRefIdSchema.Type;
+
+/** A parsed external reference provider identifier. */
+export const FactoryExternalRefProviderSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("FactoryExternalRefProvider")
+).annotate({ identifier: "FactoryExternalRefProvider" });
+
+/** A parsed external reference provider identifier. */
+export type FactoryExternalRefProvider =
+  typeof FactoryExternalRefProviderSchema.Type;
+
+/** A source-exact absolute HTTP(S) external reference URL. */
+export const FactoryExternalRefUrlSchema = Schema.NonEmptyString.pipe(
+  Schema.check(
+    Schema.makeFilter(isExactHttpUrl, {
+      expected: "an absolute http(s) URL without whitespace or backslashes",
+    })
+  ),
+  Schema.brand("FactoryExternalRefUrl")
+).annotate({ identifier: "FactoryExternalRefUrl" });
+
+/** A source-exact absolute HTTP(S) external reference URL. */
+export type FactoryExternalRefUrl = typeof FactoryExternalRefUrlSchema.Type;
+
 /** External system reference attached to a Gaia-owned work item. */
 export class FactoryExternalRefDto extends Schema.Class<FactoryExternalRefDto>(
   "FactoryExternalRefDto"
 )({
-  id: Schema.NonEmptyString,
-  provider: Schema.NonEmptyString,
-  url: Schema.optionalKey(Schema.NonEmptyString),
+  id: FactoryExternalRefIdSchema,
+  provider: FactoryExternalRefProviderSchema,
+  url: Schema.optionalKey(FactoryExternalRefUrlSchema),
 }) {}
 
 /** Gaia-owned work item shown in the public factory graph. */
@@ -173,9 +219,9 @@ export class FactoryAgentDto extends Schema.Class<FactoryAgentDto>(
 export class FactoryEdgeDto extends Schema.Class<FactoryEdgeDto>(
   "FactoryEdgeDto"
 )({
-  id: Schema.NonEmptyString,
-  sourceId: Schema.NonEmptyString,
-  targetId: Schema.NonEmptyString,
+  id: FactoryEdgeIdSchema,
+  sourceId: FactoryGraphNodeIdSchema,
+  targetId: FactoryGraphNodeIdSchema,
   type: FactoryRelationshipTypeSchema,
 }) {}
 
@@ -231,7 +277,7 @@ export class FactoryGraphDiagnosticDto extends Schema.Class<FactoryGraphDiagnost
 }) {}
 
 /** Public topology projection for a Gaia factory run. */
-export class FactoryGraphDto extends Schema.Class<FactoryGraphDto>(
+class FactoryGraphDtoBase extends Schema.Class<FactoryGraphDtoBase>(
   "FactoryGraphDto"
 )({
   agents: Schema.Array(FactoryAgentDto),
@@ -245,6 +291,10 @@ export class FactoryGraphDto extends Schema.Class<FactoryGraphDto>(
   workItems: Schema.Array(FactoryWorkItemDto),
 }) {}
 
+export const FactoryGraphDto = FactoryGraphDtoBase.pipe(
+  Schema.check(Schema.makeFilter(validateFactoryGraph))
+);
+
 /** Compact work item shape used in run list/detail responses. */
 export class FactoryRootWorkItemSummaryDto extends Schema.Class<FactoryRootWorkItemSummaryDto>(
   "FactoryRootWorkItemSummaryDto"
@@ -253,6 +303,71 @@ export class FactoryRootWorkItemSummaryDto extends Schema.Class<FactoryRootWorkI
   kind: FactoryWorkItemKindSchema,
   title: Schema.NonEmptyString,
 }) {}
+
+function isExactHttpUrl(value: string): boolean {
+  if (value.trim() !== value || /[\s\\]/u.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.hostname.length > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validateFactoryGraph(
+  graph: typeof FactoryGraphDtoBase.Type
+): undefined | ReadonlyArray<Schema.FilterIssue> {
+  const issues: Array<Schema.FilterIssue> = [];
+  const nodeCounts = new Map<FactoryGraphNodeId, number>();
+  const agentIds = new Set<FactoryAgentId>();
+  const addNode = (nodeId: FactoryGraphNodeId) => {
+    nodeCounts.set(nodeId, (nodeCounts.get(nodeId) ?? 0) + 1);
+  };
+
+  for (const item of graph.workItems) {
+    addNode(item.id);
+  }
+  for (const agent of graph.agents) {
+    agentIds.add(agent.id);
+    addNode(agent.id);
+  }
+  for (const artifact of graph.linkedArtifacts) {
+    addNode(artifact.artifactId);
+  }
+
+  for (const [nodeId, count] of nodeCounts) {
+    if (count > 1) {
+      issues.push(`FactoryGraph node id is ambiguous: ${nodeId}.`);
+    }
+  }
+  graph.edges.forEach((edge, index) => {
+    if ((nodeCounts.get(edge.sourceId) ?? 0) !== 1) {
+      issues.push({
+        issue: "FactoryGraph edge sourceId must name exactly one graph node.",
+        path: ["edges", index, "sourceId"],
+      });
+    }
+    if ((nodeCounts.get(edge.targetId) ?? 0) !== 1) {
+      issues.push({
+        issue: "FactoryGraph edge targetId must name exactly one graph node.",
+        path: ["edges", index, "targetId"],
+      });
+    }
+  });
+  graph.linkedArtifacts.forEach((artifact, index) => {
+    if (!agentIds.has(artifact.ownerAgentId)) {
+      issues.push({
+        issue: "FactoryGraph artifact ownerAgentId must name an agent node.",
+        path: ["linkedArtifacts", index, "ownerAgentId"],
+      });
+    }
+  });
+
+  return issues.length === 0 ? undefined : issues;
+}
 
 /** Compact active or terminal agent shape used in run list/detail responses. */
 export class FactoryRunAgentSummaryDto extends Schema.Class<FactoryRunAgentSummaryDto>(

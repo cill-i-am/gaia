@@ -1,6 +1,7 @@
 import {
   AgentActionSuccessEnvelope,
   AgentSessionSnapshotSuccessEnvelope,
+  makeAgentSessionSseEventId,
   DeliveryModeSchema,
   DeliveryPublicationDto,
   DeliveryPublicationAttemptedDto,
@@ -571,7 +572,7 @@ export const RunsLive = HttpApiBuilder.group(
             Stream.map((update) => ({
               data: update,
               event: "agent-session-update" as const,
-              id: String(update.eventSequence),
+              id: makeAgentSessionSseEventId(update.eventSequence),
             })),
             Stream.mapError(streamApiError)
           );

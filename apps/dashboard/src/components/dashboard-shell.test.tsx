@@ -17,6 +17,8 @@ import {
   FactoryActivityIdSchema,
   FactoryAgentIdSchema,
   FactoryArtifactIdSchema,
+  FactoryEdgeIdSchema,
+  FactoryGraphNodeIdSchema,
   FactoryWorkItemIdSchema,
   RunIdSchema,
   makeRunEvent,
@@ -3679,42 +3681,37 @@ function factoryGraph(input: {
     execution: testFactoryExecution,
     diagnostics: [],
     edges: input.edges ?? [
-      {
-        id: "edge-owns",
-        sourceId: "work-root",
-        targetId: "agent-orchestrator",
-        type: "owns",
-      },
-      {
-        id: "edge-spawned",
-        sourceId: "agent-orchestrator",
-        targetId: "agent-worker",
-        type: "spawned",
-      },
-      {
-        id: "edge-reviewed",
-        sourceId: "agent-worker",
-        targetId: "agent-reviewer",
-        type: "reviewed",
-      },
-      {
-        id: "edge-tested",
-        sourceId: "agent-reviewer",
-        targetId: "agent-tester",
-        type: "tested",
-      },
-      {
-        id: "edge-watched",
-        sourceId: "agent-tester",
-        targetId: "agent-ci-watcher",
-        type: "watched",
-      },
-      {
-        id: "edge-produced",
-        sourceId: "agent-worker",
-        targetId: input.workerArtifactId,
-        type: "produced",
-      },
+      factoryGraphEdge("edge-owns", "work-root", "agent-orchestrator", "owns"),
+      factoryGraphEdge(
+        "edge-spawned",
+        "agent-orchestrator",
+        "agent-worker",
+        "spawned"
+      ),
+      factoryGraphEdge(
+        "edge-reviewed",
+        "agent-worker",
+        "agent-reviewer",
+        "reviewed"
+      ),
+      factoryGraphEdge(
+        "edge-tested",
+        "agent-reviewer",
+        "agent-tester",
+        "tested"
+      ),
+      factoryGraphEdge(
+        "edge-watched",
+        "agent-tester",
+        "agent-ci-watcher",
+        "watched"
+      ),
+      factoryGraphEdge(
+        "edge-produced",
+        "agent-worker",
+        input.workerArtifactId,
+        "produced"
+      ),
     ],
     linkedArtifacts: [
       ...(input.linkedArtifacts ?? [
@@ -3748,9 +3745,9 @@ function factoryGraphEdge(
   type: FactoryGraphEdge["type"]
 ): FactoryGraphEdge {
   return {
-    id,
-    sourceId,
-    targetId,
+    id: Schema.decodeUnknownSync(FactoryEdgeIdSchema)(id),
+    sourceId: Schema.decodeUnknownSync(FactoryGraphNodeIdSchema)(sourceId),
+    targetId: Schema.decodeUnknownSync(FactoryGraphNodeIdSchema)(targetId),
     type,
   };
 }

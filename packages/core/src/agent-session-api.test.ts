@@ -3,7 +3,11 @@ import { Schema } from "effect";
 
 import {
   AgentOperatorActionRequestSchema,
+  AgentSessionCursorSchema,
   AgentSessionSnapshotDto,
+  AgentSessionSseEventIdSchema,
+  AgentSessionSseEventSchema,
+  makeAgentSessionSseEventId,
 } from "./agent-session-api.js";
 
 describe("public agent session contracts", () => {
@@ -69,37 +73,105 @@ describe("public agent session contracts", () => {
     );
   });
 
+  it("owns canonical positive-decimal agent-session SSE event IDs", () => {
+    const decodeEventId = Schema.decodeUnknownSync(
+      AgentSessionSseEventIdSchema
+    );
+    const decodeSseEvent = Schema.decodeUnknownSync(AgentSessionSseEventSchema);
+    const update = {
+      agentId: "agent-worker",
+      eventSequence: 3,
+      runId: "run-1234567890",
+      sessionId: "session-run-1234567890",
+      snapshot: snapshotInput(3),
+      terminal: false,
+    };
+
+    assert.strictEqual(makeAgentSessionSseEventId(3), "3");
+    assert.strictEqual(decodeEventId("42"), "42");
+    assert.strictEqual(
+      decodeSseEvent({
+        data: JSON.stringify(update),
+        event: "agent-session-update",
+        id: "3",
+      }).id,
+      "3"
+    );
+
+    for (const rejected of [
+      "",
+      "abc",
+      "0",
+      "-1",
+      "01",
+      "+1",
+      "1.5",
+      " 1",
+      "1 ",
+    ]) {
+      assert.throws(() => decodeEventId(rejected));
+    }
+  });
+
+  it("owns canonical positive-decimal agent-session stream cursors", () => {
+    const decode = Schema.decodeUnknownSync(
+      Schema.Struct({ afterSequence: AgentSessionCursorSchema })
+    );
+
+    assert.deepEqual(decode({}), {});
+    assert.strictEqual(decode({ afterSequence: "1" }).afterSequence, 1);
+    assert.strictEqual(decode({ afterSequence: "42" }).afterSequence, 42);
+
+    for (const rejected of [
+      "",
+      "abc",
+      "0",
+      "-1",
+      "01",
+      "+1",
+      "1.5",
+      " 1",
+      "1 ",
+    ]) {
+      assert.throws(() => decode({ afterSequence: rejected }));
+    }
+  });
+
   it("does not admit provider identity in the public snapshot", () => {
     const decode = Schema.decodeUnknownSync(AgentSessionSnapshotDto);
-    const input = {
-      agentId: "agent-worker",
-      capabilities: {
-        approvals: [],
-        fileChangeEvents: false,
-        interruption: true,
-        resumableSessions: true,
-        review: false,
-        steering: true,
-        streamingMessages: true,
-        structuredOutput: false,
-        subagents: false,
-        toolEvents: true,
-        usageReporting: false,
-        userQuestions: true,
-      },
-      eventSequence: 3,
-      items: [],
-      pendingInteractions: [],
-      recovered: false,
-      resolvedInteractions: [],
-      runId: "run-1234567890",
-      sessionId: "session-1",
-      state: "running",
-      turns: [],
-    };
+    const input = snapshotInput(3);
     assert.doesNotThrow(() => decode(input));
     assert.throws(() =>
       decode({ ...input, provider: { providerId: "codex" } })
     );
   });
 });
+
+function snapshotInput(eventSequence: number) {
+  return {
+    agentId: "agent-worker",
+    capabilities: {
+      approvals: [],
+      fileChangeEvents: false,
+      interruption: true,
+      resumableSessions: true,
+      review: false,
+      steering: true,
+      streamingMessages: true,
+      structuredOutput: false,
+      subagents: false,
+      toolEvents: true,
+      usageReporting: false,
+      userQuestions: true,
+    },
+    eventSequence,
+    items: [],
+    pendingInteractions: [],
+    recovered: false,
+    resolvedInteractions: [],
+    runId: "run-1234567890",
+    sessionId: "session-1",
+    state: "running",
+    turns: [],
+  };
+}

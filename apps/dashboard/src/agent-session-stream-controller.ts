@@ -1,5 +1,8 @@
 import type {
+  AgentSessionEventSequence,
   AgentSessionUpdateDto,
+  FactoryAgentId,
+  HarnessSessionId,
   LocalGaiaServerUrl,
   RunId,
 } from "@gaia/core";
@@ -16,19 +19,19 @@ export type AgentSessionStreamConnection =
   | "unavailable";
 
 type StreamTarget = {
-  readonly agentId: string | undefined;
+  readonly agentId: FactoryAgentId | undefined;
   readonly isOpen: boolean;
-  readonly rearmSequence?: number;
+  readonly rearmSequence?: AgentSessionEventSequence;
   readonly runId: RunId | undefined;
-  readonly sessionId?: string;
-  readonly snapshotSequence?: number;
+  readonly sessionId?: HarnessSessionId;
+  readonly snapshotSequence?: AgentSessionEventSequence;
 };
 
 type OpenStreamTarget = {
-  readonly agentId: string;
+  readonly agentId: FactoryAgentId;
   readonly isOpen: true;
   readonly runId: RunId;
-  readonly sessionId: string;
+  readonly sessionId: HarnessSessionId;
 };
 
 type StreamHandle = {
@@ -42,7 +45,7 @@ export function createAgentSessionStreamController(input: {
   readonly openSource?: (
     config: DashboardGaiaClientConfig & {
       readonly afterSequence?: number;
-      readonly agentId: string;
+      readonly agentId: FactoryAgentId;
       readonly runId: RunId;
     },
     handlers: {

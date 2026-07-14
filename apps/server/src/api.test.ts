@@ -4,6 +4,7 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
+  CreateRunRequest,
   DeliveryPublicationAttempted,
   DeliveryPublicationConfirmed,
   DeliveryPublicationIntent,
@@ -98,6 +99,8 @@ import {
 
 import { deliveryUpdateFromEvents, makeLocalGaiaServerLayer } from "./api.js";
 import type { LocalServerIdentity } from "./discovery.js";
+
+const decodeCreateRunRequest = Schema.decodeUnknownSync(CreateRunRequest);
 
 function recoveredCompletedDeliveryEvents(
   runId = parseRunId("run-1234567890")
@@ -826,6 +829,21 @@ describe("local run api http boundary", () => {
           assert.isTrue(
             getObjectFromArray(updates, updates.length - 1)["terminal"] === true
           );
+
+          const canonicalCursorResponse = yield* HttpClient.get(
+            `/runs/${accepted.runId}/agents/agent-worker/session/stream?afterSequence=1`
+          ).pipe(Effect.provide(layer));
+          yield* canonicalCursorResponse.text;
+          assert.strictEqual(canonicalCursorResponse.status, 200);
+
+          for (const rejectedCursor of ["0", "-1", "1.5", "01", "abc"]) {
+            const rejectedResponse = yield* HttpClient.get(
+              `/runs/${accepted.runId}/agents/agent-worker/session/stream?afterSequence=${encodeURIComponent(rejectedCursor)}`
+            ).pipe(Effect.provide(layer));
+            const rejectedBody = yield* responseJsonObject(rejectedResponse);
+            assert.strictEqual(rejectedResponse.status, 400);
+            assert.strictEqual(getNumber(rejectedBody, "status"), 400);
+          }
         }),
       20_000
     );
@@ -3009,7 +3027,7 @@ function deliveryActivationRequest(expectedEventSequence: number) {
 }
 
 function factoryCreateInput() {
-  return {
+  return decodeCreateRunRequest({
     delivery: { mode: "local" },
     execution: codexAppServerExecutionSelection,
     workflow: "issueDelivery",
@@ -3025,7 +3043,7 @@ function factoryCreateInput() {
       kind: "issue",
       title: "Wire LocalGaiaServerApi factory endpoints",
     },
-  } as const;
+  });
 }
 
 function pausingFirstDetectionRegistry(

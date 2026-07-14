@@ -16,7 +16,16 @@ import {
   parseRunId,
   parseWorkspaceRelativePath,
 } from "@gaia/core";
-import { Effect, Exit, Fiber, FileSystem, Option, Scope, Stream } from "effect";
+import {
+  Effect,
+  Exit,
+  Fiber,
+  FileSystem,
+  Option,
+  Schema,
+  Scope,
+  Stream,
+} from "effect";
 import { describe, expect } from "vitest";
 
 import {
@@ -33,10 +42,12 @@ import {
   subscribeRunEventFeed,
   withRunEventSerialization,
 } from "./event-store.js";
+import { issueDeliveryAgentIds } from "./factory-workflows.js";
 import type { HarnessSession } from "./harness-session.js";
 import { makeRunPaths } from "./paths.js";
 
 const runId = parseRunId("run-Gaia86rt01");
+const workerAgentId = issueDeliveryAgentIds.worker;
 const sessionId = parseHarnessSessionId(`session-${runId}`);
 const turnId = parseHarnessTurnId("turn-runtime");
 const recoveredTurnId = parseHarnessTurnId("turn-runtime-recovered");
@@ -89,13 +100,13 @@ describe("agent session runtime", () => {
             });
             const snapshot = yield* readAgentSessionSnapshot(
               runId,
-              "agent-worker",
+              workerAgentId,
               { rootDirectory }
             );
             expect(snapshot).not.toHaveProperty("provider");
             const stream = yield* streamAgentSessionUpdates(
               runId,
-              "agent-worker",
+              workerAgentId,
               undefined,
               { rootDirectory }
             );
@@ -119,7 +130,7 @@ describe("agent session runtime", () => {
             const paths = yield* makeRunPaths(runId, { rootDirectory });
             const stream = yield* streamAgentSessionUpdates(
               runId,
-              "agent-worker",
+              workerAgentId,
               undefined,
               { rootDirectory }
             );
@@ -137,6 +148,36 @@ describe("agent session runtime", () => {
             expect(updates.map(({ eventSequence }) => eventSequence)).toEqual([
               2, 3,
             ]);
+          })
+        )
+    );
+
+    it.effect(
+      "rejects invalid stream cursors before reading the event feed",
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const rootDirectory = yield* fs.makeTempDirectory({
+              prefix: "gaia-agent-session-invalid-cursor-",
+            });
+            const paths = yield* makeRunPaths(runId, { rootDirectory });
+            yield* fs.makeDirectory(paths.root, { recursive: true });
+            yield* fs.makeDirectory(paths.events);
+
+            for (const afterSequence of [0, -1, 1.5]) {
+              const error = yield* streamAgentSessionUpdates(
+                runId,
+                workerAgentId,
+                afterSequence,
+                { rootDirectory }
+              ).pipe(Effect.flip);
+              const diagnostic = Schema.decodeUnknownSync(
+                Schema.Struct({ code: Schema.String })
+              )(error);
+
+              expect(diagnostic.code).toBe("InvalidRequest");
+            }
           })
         )
     );
@@ -161,7 +202,7 @@ describe("agent session runtime", () => {
             });
             const stream = yield* streamAgentSessionUpdates(
               runId,
-              "agent-worker",
+              workerAgentId,
               undefined,
               { rootDirectory }
             );
@@ -182,7 +223,7 @@ describe("agent session runtime", () => {
             const rootDirectory = yield* setupRecoveredRun();
             const stream = yield* streamAgentSessionUpdates(
               runId,
-              "agent-worker",
+              workerAgentId,
               2,
               { rootDirectory }
             );
@@ -235,7 +276,7 @@ describe("agent session runtime", () => {
           });
           const stream = yield* streamAgentSessionUpdates(
             runId,
-            "agent-worker",
+            workerAgentId,
             2,
             { rootDirectory }
           );
@@ -267,7 +308,7 @@ describe("agent session runtime", () => {
             });
             const stream = yield* streamAgentSessionUpdates(
               runId,
-              "agent-worker",
+              workerAgentId,
               2,
               { rootDirectory }
             );
@@ -298,7 +339,7 @@ describe("agent session runtime", () => {
             const calls: string[] = [];
             const coordinator = makeLiveHarnessSessionCoordinator();
             yield* coordinator.register({
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               runId,
               session: fakeSession(calls),
               sessionId,
@@ -312,7 +353,7 @@ describe("agent session runtime", () => {
             };
             const first = yield* dispatchAgentSessionAction({
               action,
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -322,7 +363,7 @@ describe("agent session runtime", () => {
                 ...action,
                 text: "different low-entropy operator text",
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -350,7 +391,7 @@ describe("agent session runtime", () => {
             const coordinator = makeLiveHarnessSessionCoordinator();
             const calls: string[] = [];
             yield* coordinator.register({
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               runId,
               session: fakeSession(calls),
               sessionId,
@@ -363,7 +404,7 @@ describe("agent session runtime", () => {
                 sessionId,
                 text: "resume",
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -378,7 +419,7 @@ describe("agent session runtime", () => {
                 kind: "approval",
                 sessionId,
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -392,7 +433,7 @@ describe("agent session runtime", () => {
                 sessionId: parseHarnessSessionId("session-other"),
                 turnId,
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -478,7 +519,7 @@ describe("agent session runtime", () => {
             const resolutions: unknown[] = [];
             const coordinator = makeLiveHarnessSessionCoordinator();
             yield* coordinator.register({
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               runId,
               session: fakeSession([], resolutions),
               sessionId,
@@ -492,7 +533,7 @@ describe("agent session runtime", () => {
                 kind: "approval",
                 sessionId,
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -510,7 +551,7 @@ describe("agent session runtime", () => {
                 kind: "userInput",
                 sessionId,
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -524,7 +565,7 @@ describe("agent session runtime", () => {
                 kind: "mcpElicitation",
                 sessionId,
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -544,7 +585,7 @@ describe("agent session runtime", () => {
                 kind: "approval",
                 sessionId,
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -562,7 +603,7 @@ describe("agent session runtime", () => {
             const rootDirectory = yield* setupRecoveredRun();
             const snapshot = yield* readAgentSessionSnapshot(
               runId,
-              "agent-worker",
+              workerAgentId,
               { rootDirectory }
             );
 
@@ -580,7 +621,7 @@ describe("agent session runtime", () => {
             const resolutions: unknown[] = [];
             const coordinator = makeLiveHarnessSessionCoordinator();
             yield* coordinator.register({
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               runId,
               session: fakeSession([], resolutions),
               sessionId,
@@ -594,7 +635,7 @@ describe("agent session runtime", () => {
                 kind: "approval",
                 sessionId,
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -611,14 +652,14 @@ describe("agent session runtime", () => {
             };
             const first = yield* dispatchAgentSessionAction({
               action,
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
             });
             const replay = yield* dispatchAgentSessionAction({
               action,
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -630,7 +671,7 @@ describe("agent session runtime", () => {
                   "action-recovered-approval-other"
                 ),
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -706,7 +747,7 @@ describe("agent session runtime", () => {
             const resolutions: unknown[] = [];
             const coordinator = makeLiveHarnessSessionCoordinator();
             yield* coordinator.register({
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               runId,
               session: fakeSession([], resolutions),
               sessionId,
@@ -721,7 +762,7 @@ describe("agent session runtime", () => {
             };
             const first = yield* dispatchAgentSessionAction({
               action: userAction,
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -731,7 +772,7 @@ describe("agent session runtime", () => {
                 ...userAction,
                 answers: [{ answers: ["DIFFERENT_PASSWORD"], questionId }],
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -750,7 +791,7 @@ describe("agent session runtime", () => {
                   },
                 ],
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -767,14 +808,14 @@ describe("agent session runtime", () => {
             };
             const mcp = yield* dispatchAgentSessionAction({
               action: mcpAction,
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
             });
             const mcpRetry = yield* dispatchAgentSessionAction({
               action: { ...mcpAction, content: "DIFFERENT_MCP_SECRET_CONTENT" },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -807,7 +848,7 @@ describe("agent session runtime", () => {
             const binding = {
               actionId,
               actionKind: "interrupt" as const,
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               payloadDigest: actionDigestForInterrupt(actionId),
               sessionId,
               targetId: turnId,
@@ -819,7 +860,7 @@ describe("agent session runtime", () => {
             const coordinator = makeLiveHarnessSessionCoordinator();
             const intentReceipt = yield* dispatchAgentSessionAction({
               action: { actionId, kind: "interrupt", sessionId, turnId },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -854,7 +895,7 @@ describe("agent session runtime", () => {
                 sessionId,
                 turnId,
               },
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
@@ -889,14 +930,14 @@ describe("agent session runtime", () => {
             const coordinator = makeLiveHarnessSessionCoordinator();
             const calls: string[] = [];
             yield* coordinator.register({
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               runId,
               session: fakeSession(calls),
               sessionId,
             });
             const duplicate = yield* coordinator
               .register({
-                agentId: "agent-worker",
+                agentId: workerAgentId,
                 runId,
                 session: fakeSession(calls),
                 sessionId,
@@ -905,7 +946,7 @@ describe("agent session runtime", () => {
             expect(duplicate._tag).toBe("Failure");
             yield* coordinator.shutdown;
             const live = yield* coordinator.get({
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               runId,
               sessionId,
             });
@@ -925,7 +966,7 @@ describe("agent session runtime", () => {
             const first = fakeSession(["first"]);
             const second = fakeSession(["second"]);
             const identity = {
-              agentId: "agent-worker",
+              agentId: workerAgentId,
               runId,
               sessionId,
             } as const;

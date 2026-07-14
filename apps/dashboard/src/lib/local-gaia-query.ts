@@ -1,6 +1,8 @@
 import {
   FactoryAgentIdSchema,
   FactoryArtifactIdSchema,
+  type FactoryAgentId,
+  type FactoryArtifactId,
   type RunId,
 } from "@gaia/core";
 import { skipToken } from "@tanstack/react-query";
@@ -36,7 +38,7 @@ export const localGaiaQueryKeys = {
       input.artifactId,
     ] as const,
   factoryAgentActivity: (input: {
-    readonly agentId: string;
+    readonly agentId: FactoryAgentId;
     readonly runId: RunId;
   }) =>
     [
@@ -45,7 +47,10 @@ export const localGaiaQueryKeys = {
       input.agentId,
       "activity",
     ] as const,
-  agentSession: (input: { readonly agentId: string; readonly runId: RunId }) =>
+  agentSession: (input: {
+    readonly agentId: FactoryAgentId;
+    readonly runId: RunId;
+  }) =>
     [
       ...localGaiaQueryKeys.run(input.runId),
       "agents",
@@ -53,11 +58,11 @@ export const localGaiaQueryKeys = {
       "session",
     ] as const,
   agentSessionAction: (input: {
-    readonly agentId: string;
+    readonly agentId: FactoryAgentId;
     readonly runId: RunId;
   }) => [...localGaiaQueryKeys.agentSession(input), "action"] as const,
   factoryArtifact: (input: {
-    readonly artifactId: string;
+    readonly artifactId: FactoryArtifactId;
     readonly runId: RunId;
   }) =>
     [
@@ -144,16 +149,26 @@ export function localGaiaRunArtifactQueryOptions(
   }
 ) {
   const runId = config.runId;
-  const enabled = runId !== undefined && config.artifactId.length > 0;
+  const parsedArtifactId = Option.getOrUndefined(
+    parseArtifactId(config.artifactId)
+  );
   return localGaiaEffectQuery.queryOptions({
     queryKey:
-      runId === undefined
+      runId === undefined || parsedArtifactId === undefined
         ? localGaiaQueryKeys.unselected("run-artifact")
-        : localGaiaQueryKeys.artifact({ artifactId: config.artifactId, runId }),
+        : localGaiaQueryKeys.artifact({
+            artifactId: parsedArtifactId,
+            runId,
+          }),
     queryFn:
-      !enabled || runId === undefined
+      runId === undefined || parsedArtifactId === undefined
         ? skipToken
-        : () => getRunArtifactFromDashboardGaiaClient({ ...config, runId }),
+        : () =>
+            getRunArtifactFromDashboardGaiaClient({
+              ...config,
+              artifactId: parsedArtifactId,
+              runId,
+            }),
     retry: false,
   });
 }
@@ -218,23 +233,23 @@ export function localGaiaFactoryAgentActivityQueryOptions(
     readonly runId: RunId | undefined;
   }
 ) {
-  const agentId = parseAgentId(config.agentId);
+  const parsedAgentId = Option.getOrUndefined(parseAgentId(config.agentId));
   const runId = config.runId;
-  const enabled = runId !== undefined && Option.isSome(agentId);
   return localGaiaEffectQuery.queryOptions({
     queryKey:
-      runId === undefined
+      runId === undefined || parsedAgentId === undefined
         ? localGaiaQueryKeys.unselected("factory-agent-activity")
         : localGaiaQueryKeys.factoryAgentActivity({
-            agentId: Option.getOrElse(agentId, () => "invalid-agent-id"),
+            agentId: parsedAgentId,
             runId,
           }),
     queryFn:
-      !enabled || runId === undefined
+      runId === undefined || parsedAgentId === undefined
         ? skipToken
         : () =>
             getFactoryAgentActivityFromDashboardGaiaClient({
               ...config,
+              agentId: parsedAgentId,
               runId,
             }),
     retry: false,
@@ -247,21 +262,25 @@ export function localGaiaAgentSessionQueryOptions(
     readonly runId: RunId | undefined;
   }
 ) {
-  const agentId = parseAgentId(config.agentId);
+  const parsedAgentId = Option.getOrUndefined(parseAgentId(config.agentId));
   const runId = config.runId;
-  const enabled = runId !== undefined && Option.isSome(agentId);
   return localGaiaEffectQuery.queryOptions({
     queryKey:
-      runId === undefined
+      runId === undefined || parsedAgentId === undefined
         ? localGaiaQueryKeys.unselected("agent-session")
         : localGaiaQueryKeys.agentSession({
-            agentId: Option.getOrElse(agentId, () => "invalid-agent-id"),
+            agentId: parsedAgentId,
             runId,
           }),
     queryFn:
-      !enabled || runId === undefined
+      runId === undefined || parsedAgentId === undefined
         ? skipToken
-        : () => getAgentSessionFromDashboardGaiaClient({ ...config, runId }),
+        : () =>
+            getAgentSessionFromDashboardGaiaClient({
+              ...config,
+              agentId: parsedAgentId,
+              runId,
+            }),
     retry: false,
   });
 }
@@ -290,24 +309,27 @@ export function localGaiaFactoryArtifactQueryOptions(
     readonly runId: RunId | undefined;
   }
 ) {
-  const artifactId = parseArtifactId(config.artifactId);
+  const parsedArtifactId = Option.getOrUndefined(
+    parseArtifactId(config.artifactId)
+  );
   const runId = config.runId;
-  const enabled = runId !== undefined && Option.isSome(artifactId);
   return localGaiaEffectQuery.queryOptions({
     queryKey:
-      runId === undefined
+      runId === undefined || parsedArtifactId === undefined
         ? localGaiaQueryKeys.unselected("factory-artifact")
         : localGaiaQueryKeys.factoryArtifact({
-            artifactId: Option.getOrElse(
-              artifactId,
-              () => "invalid-artifact-id"
-            ),
+            artifactId: parsedArtifactId,
             runId,
           }),
     queryFn:
-      !enabled || runId === undefined
+      runId === undefined || parsedArtifactId === undefined
         ? skipToken
-        : () => getFactoryArtifactFromDashboardGaiaClient({ ...config, runId }),
+        : () =>
+            getFactoryArtifactFromDashboardGaiaClient({
+              ...config,
+              artifactId: parsedArtifactId,
+              runId,
+            }),
     retry: false,
   });
 }
@@ -349,7 +371,7 @@ export function localGaiaAgentSessionActionMutationOptions(
     ] as const,
     mutationFn: (input: {
       readonly action: unknown;
-      readonly agentId: string;
+      readonly agentId: FactoryAgentId;
       readonly runId: RunId;
     }) => actOnAgentSessionFromDashboardGaiaClient({ ...config, ...input }),
   });

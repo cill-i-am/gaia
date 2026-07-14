@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Schema, SchemaGetter } from "effect";
 
 import { FactoryAgentIdSchema } from "./factory-graph.js";
 import {
@@ -16,10 +16,37 @@ import {
 } from "./harness-session.js";
 import { RunIdSchema } from "./run-id.js";
 
-const SequenceSchema = Schema.Number.pipe(
+export const AgentSessionEventSequenceSchema = Schema.Number.pipe(
   Schema.check(Schema.isInt({ identifier: "GaiaEventSequence" })),
   Schema.check(Schema.isGreaterThanOrEqualTo(1))
 );
+export type AgentSessionEventSequence =
+  typeof AgentSessionEventSequenceSchema.Type;
+export const AgentSessionSseEventIdSchema = Schema.NonEmptyString.pipe(
+  Schema.check(
+    Schema.isPattern(/^[1-9]\d*$/u, {
+      expected: "a canonical positive decimal SSE event id",
+    })
+  ),
+  Schema.brand("AgentSessionSseEventId")
+).annotate({ identifier: "AgentSessionSseEventId" });
+export type AgentSessionSseEventId = typeof AgentSessionSseEventIdSchema.Type;
+
+const decodeAgentSessionEventSequence = Schema.decodeUnknownSync(
+  AgentSessionEventSequenceSchema
+);
+const decodeAgentSessionSseEventId = Schema.decodeUnknownSync(
+  AgentSessionSseEventIdSchema
+);
+
+export function makeAgentSessionSseEventId(
+  eventSequence: AgentSessionEventSequence
+): AgentSessionSseEventId {
+  return decodeAgentSessionSseEventId(
+    String(decodeAgentSessionEventSequence(eventSequence))
+  );
+}
+
 const BoundedTextSchema = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isMaxLength(16_384))
 );
@@ -35,7 +62,7 @@ export class AgentSessionSnapshotDto extends Schema.Class<AgentSessionSnapshotDt
   {
     agentId: FactoryAgentIdSchema,
     capabilities: HarnessCapabilities,
-    eventSequence: SequenceSchema,
+    eventSequence: AgentSessionEventSequenceSchema,
     items: Schema.Array(HarnessItemSchema).pipe(
       Schema.check(Schema.isMaxLength(2_000))
     ),
@@ -69,7 +96,7 @@ export class AgentSessionUpdateDto extends Schema.Class<AgentSessionUpdateDto>(
 )(
   {
     agentId: FactoryAgentIdSchema,
-    eventSequence: SequenceSchema,
+    eventSequence: AgentSessionEventSequenceSchema,
     runId: RunIdSchema,
     sessionId: HarnessSessionIdSchema,
     snapshot: AgentSessionSnapshotDto,
@@ -81,10 +108,26 @@ export class AgentSessionUpdateDto extends Schema.Class<AgentSessionUpdateDto>(
 export const AgentSessionSseEventSchema = Schema.Struct({
   data: Schema.fromJsonString(AgentSessionUpdateDto),
   event: Schema.Literal("agent-session-update"),
-  id: Schema.String,
+  id: AgentSessionSseEventIdSchema,
 });
 
-export const AgentSessionCursorSchema = Schema.optionalKey(SequenceSchema);
+const AgentSessionCursorValueSchema = Schema.NonEmptyString.pipe(
+  Schema.check(
+    Schema.isPattern(/^[1-9]\d*$/u, {
+      expected: "a canonical positive decimal agent session cursor",
+    })
+  ),
+  Schema.decodeTo(AgentSessionEventSequenceSchema, {
+    decode: SchemaGetter.transform((value) => Number(value)),
+    encode: SchemaGetter.transform((value) => String(value)),
+  })
+).annotate({ identifier: "AgentSessionCursor" });
+export type AgentSessionCursor =
+  | typeof AgentSessionCursorValueSchema.Type
+  | undefined;
+export const AgentSessionCursorSchema = Schema.optionalKey(
+  AgentSessionCursorValueSchema
+);
 
 const actionBase = {
   actionId: HarnessActionIdSchema,
@@ -190,7 +233,7 @@ export class AgentActionReceiptDto extends Schema.Class<AgentActionReceiptDto>(
   {
     actionId: HarnessActionIdSchema,
     agentId: FactoryAgentIdSchema,
-    eventSequence: SequenceSchema,
+    eventSequence: AgentSessionEventSequenceSchema,
     payloadDigest: DigestSchema,
     runId: RunIdSchema,
     sessionId: HarnessSessionIdSchema,
