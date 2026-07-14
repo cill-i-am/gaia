@@ -2,6 +2,8 @@ import {
   FactoryActivityIdSchema,
   FactoryAgentIdSchema,
   FactoryArtifactIdSchema,
+  FactoryEdgeIdSchema,
+  FactoryGraphNodeIdSchema,
   FactoryGraphDto,
   FactoryWorkItemIdSchema,
   RunIdSchema,
@@ -175,12 +177,7 @@ describe("factory canvas model", () => {
       execution: testFactoryExecution,
       diagnostics: [],
       edges: [
-        {
-          id: "edge-owns",
-          sourceId: "work-root",
-          targetId: "agent-orchestrator",
-          type: "owns",
-        },
+        factoryEdge("edge-owns", "work-root", "agent-orchestrator", "owns"),
       ],
       linkedArtifacts: [],
       runId: runId("run-sparse0000"),
@@ -337,6 +334,7 @@ describe("factory canvas model", () => {
           "watched"
         ),
       ],
+      linkedArtifacts: [],
     });
     const model = buildFactoryCanvasModel(graph);
     const positionByRawId = positionsByRawId(model.nodes);
@@ -405,13 +403,9 @@ describe("factory canvas model", () => {
         }),
       ],
       edges: [
-        {
-          id: "edge-owns",
-          sourceId: "work-root",
-          targetId: "agent-orchestrator",
-          type: "owns",
-        },
+        factoryEdge("edge-owns", "work-root", "agent-orchestrator", "owns"),
       ],
+      linkedArtifacts: [],
     });
     const model = buildFactoryCanvasModel(graph);
     const positionByRawId = positionsByRawId(model.nodes);
@@ -489,9 +483,9 @@ function factoryEdge(
   type: (typeof FactoryGraphDto.Type.edges)[number]["type"]
 ) {
   return {
-    id,
-    sourceId,
-    targetId,
+    id: edgeId(id),
+    sourceId: graphNodeId(sourceId),
+    targetId: graphNodeId(targetId),
     type,
   };
 }
@@ -550,42 +544,27 @@ function factoryGraphFixture(
     ],
     diagnostics: [],
     edges: [
-      {
-        id: "edge-owns",
-        sourceId: "work-root",
-        targetId: "agent-orchestrator",
-        type: "owns",
-      },
-      {
-        id: "edge-spawned",
-        sourceId: "agent-orchestrator",
-        targetId: "agent-worker",
-        type: "spawned",
-      },
-      {
-        id: "edge-reviewed",
-        sourceId: "agent-worker",
-        targetId: "agent-reviewer",
-        type: "reviewed",
-      },
-      {
-        id: "edge-tested",
-        sourceId: "agent-reviewer",
-        targetId: "agent-tester",
-        type: "tested",
-      },
-      {
-        id: "edge-watched",
-        sourceId: "agent-tester",
-        targetId: "agent-ci-watcher",
-        type: "watched",
-      },
-      {
-        id: "edge-produced",
-        sourceId: "agent-worker",
-        targetId: "artifact-plan",
-        type: "produced",
-      },
+      factoryEdge("edge-owns", "work-root", "agent-orchestrator", "owns"),
+      factoryEdge(
+        "edge-spawned",
+        "agent-orchestrator",
+        "agent-worker",
+        "spawned"
+      ),
+      factoryEdge(
+        "edge-reviewed",
+        "agent-worker",
+        "agent-reviewer",
+        "reviewed"
+      ),
+      factoryEdge("edge-tested", "agent-reviewer", "agent-tester", "tested"),
+      factoryEdge(
+        "edge-watched",
+        "agent-tester",
+        "agent-ci-watcher",
+        "watched"
+      ),
+      factoryEdge("edge-produced", "agent-worker", "artifact-plan", "produced"),
     ],
     linkedArtifacts: [
       {
@@ -699,6 +678,14 @@ function agentId(value: string) {
 
 function artifactId(value: string) {
   return Schema.decodeUnknownSync(FactoryArtifactIdSchema)(value);
+}
+
+function edgeId(value: string) {
+  return Schema.decodeUnknownSync(FactoryEdgeIdSchema)(value);
+}
+
+function graphNodeId(value: string) {
+  return Schema.decodeUnknownSync(FactoryGraphNodeIdSchema)(value);
 }
 
 function runId(value: string) {

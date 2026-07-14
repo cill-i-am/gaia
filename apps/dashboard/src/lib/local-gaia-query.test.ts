@@ -1,6 +1,11 @@
-import { parseLocalGaiaServerUrl, parseRunId } from "@gaia/core";
+import {
+  FactoryAgentIdSchema,
+  FactoryArtifactIdSchema,
+  parseLocalGaiaServerUrl,
+  parseRunId,
+} from "@gaia/core";
 import { QueryClient } from "@tanstack/react-query";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { createEffectQuery } from "effect-query";
 import { FetchHttpClient } from "effect/unstable/http";
 import { expect, it, describe } from "vitest";
@@ -38,6 +43,16 @@ import { testFactoryExecution } from "@/test-factory-execution";
 
 const runId = parseRunId("run-1234567890");
 const serverUrl = parseLocalGaiaServerUrl("http://127.0.0.1:4321");
+const agentWorkerId =
+  Schema.decodeUnknownSync(FactoryAgentIdSchema)("agent-worker");
+const missingAgentId =
+  Schema.decodeUnknownSync(FactoryAgentIdSchema)("missing-agent");
+const artifactPlanId = Schema.decodeUnknownSync(FactoryArtifactIdSchema)(
+  "artifact-plan"
+);
+const reportArtifactId = Schema.decodeUnknownSync(FactoryArtifactIdSchema)(
+  "report"
+);
 
 describe("local Gaia query options", () => {
   it("keeps browser dashboard requests on the same-origin proxy path", () => {
@@ -197,21 +212,15 @@ describe("local Gaia query options", () => {
     expect(agentActivity.queryKey).toEqual([
       "local-gaia",
       "runs",
-      "detail",
-      "run-1234567890",
-      "agents",
-      "invalid-agent-id",
-      "activity",
+      "unselected",
+      "factory-agent-activity",
     ]);
     expect(agentSession.enabled).toBe(false);
     expect(agentSession.queryKey).toEqual([
       "local-gaia",
       "runs",
-      "detail",
-      "run-1234567890",
-      "agents",
-      "invalid-agent-id",
-      "session",
+      "unselected",
+      "agent-session",
     ]);
   });
 
@@ -277,12 +286,12 @@ describe("local Gaia query options", () => {
           serverUrl,
         }),
         agentActivity: getFactoryAgentActivityFromDashboardGaiaClient({
-          agentId: "agent-worker",
+          agentId: agentWorkerId,
           runId,
           serverUrl,
         }),
         artifact: getFactoryArtifactFromDashboardGaiaClient({
-          artifactId: "artifact-plan",
+          artifactId: artifactPlanId,
           runId,
           serverUrl,
         }),
@@ -356,12 +365,12 @@ describe("local Gaia query options", () => {
             text: "Focus on the failing dashboard test.",
             turnId: "turn-1",
           },
-          agentId: "agent-worker",
+          agentId: agentWorkerId,
           runId,
           serverUrl,
         }),
         session: getAgentSessionFromDashboardGaiaClient({
-          agentId: "agent-worker",
+          agentId: agentWorkerId,
           runId,
           serverUrl,
         }),
@@ -398,7 +407,7 @@ describe("local Gaia query options", () => {
   it("maps factory client API failures into a tagged dashboard query error", async () => {
     const error = await Effect.runPromise(
       getFactoryAgentActivityFromDashboardGaiaClient({
-        agentId: "missing-agent",
+        agentId: missingAgentId,
         runId,
         serverUrl,
       }).pipe(
@@ -432,7 +441,7 @@ describe("local Gaia query options", () => {
     const requests: Array<string> = [];
     const result = await Effect.runPromise(
       getRunArtifactFromDashboardGaiaClient({
-        artifactId: "report",
+        artifactId: reportArtifactId,
         runId,
         serverUrl,
       }).pipe(
@@ -459,36 +468,20 @@ describe("local Gaia query options", () => {
     expect(result.data.body).toContain("All checks passed.");
   });
 
-  it("rejects empty artifact identifiers before issuing a request", async () => {
-    const requests: Array<string> = [];
-    const error = await Effect.runPromise(
-      getRunArtifactFromDashboardGaiaClient({
-        artifactId: "",
-        runId,
-        serverUrl,
-      }).pipe(
-        Effect.provide(
-          recordingFetchLayer(requests, () =>
-            jsonResponse({
-              data: {
-                artifactName: "report",
-                body: "",
-                contentType: "text/plain",
-                runId,
-              },
-              status: "success",
-            })
-          )
-        ),
-        Effect.flip
-      )
-    );
+  it("keeps empty artifact identifiers non-executable at the query boundary", () => {
+    const query = localGaiaRunArtifactQueryOptions({
+      artifactId: "",
+      runId,
+      serverUrl,
+    });
 
-    expect(requests).toEqual([]);
-    expect(error._tag).toBe("DashboardGaiaParameterError");
-    if (error._tag === "DashboardGaiaParameterError") {
-      expect(error.parameter).toBe("artifactId");
-    }
+    expect(query.enabled).toBe(false);
+    expect(query.queryKey).toEqual([
+      "local-gaia",
+      "runs",
+      "unselected",
+      "run-artifact",
+    ]);
   });
 
   it("surfaces typed client failures through effect-query and TanStack Query", async () => {
@@ -667,7 +660,7 @@ describe("local Gaia query options", () => {
           sessionId: "session-run-1234567890",
           turnId: "turn-1",
         },
-        agentId: "agent-worker",
+        agentId: agentWorkerId,
         runId,
       },
       { client: new QueryClient(), meta: undefined }

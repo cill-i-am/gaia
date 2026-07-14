@@ -1,23 +1,34 @@
 import {
+  FactoryAgentIdSchema,
+  FactoryWorkItemIdSchema,
   IssueDeliveryWorkflowDefinition,
   type FactoryAgentRole,
+  type FactoryAgentId,
+  type FactoryWorkItemId,
 } from "@gaia/core";
+import { Schema } from "effect";
+
+const decodeFactoryAgentId = Schema.decodeUnknownSync(FactoryAgentIdSchema);
+const decodeFactoryWorkItemId = Schema.decodeUnknownSync(
+  FactoryWorkItemIdSchema
+);
 
 export const issueDeliveryAgentIds = {
-  ciWatcher: "agent-ci-watcher",
-  orchestrator: "agent-orchestrator",
-  reviewer: "agent-reviewer",
-  tester: "agent-tester",
-  worker: "agent-worker",
+  ciWatcher: decodeFactoryAgentId("agent-ci-watcher"),
+  orchestrator: decodeFactoryAgentId("agent-orchestrator"),
+  reviewer: decodeFactoryAgentId("agent-reviewer"),
+  tester: decodeFactoryAgentId("agent-tester"),
+  worker: decodeFactoryAgentId("agent-worker"),
 } as const satisfies Record<
   Extract<
     FactoryAgentRole,
     "ciWatcher" | "orchestrator" | "reviewer" | "tester" | "worker"
   >,
-  string
+  FactoryAgentId
 >;
 
-export const issueDeliveryRootWorkItemId = "work-item-root";
+export const issueDeliveryRootWorkItemId: FactoryWorkItemId =
+  decodeFactoryWorkItemId("work-item-root");
 
 export const issueDeliveryAgentParentIds = {
   ciWatcher: issueDeliveryAgentIds.tester,

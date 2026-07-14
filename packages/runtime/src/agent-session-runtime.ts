@@ -4,12 +4,14 @@ import {
   AgentActionReceiptDto,
   AgentSessionSnapshotDto,
   AgentSessionUpdateDto,
-  FactoryAgentIdSchema,
   HarnessInteractionResolutionSchema,
+  parseHarnessSessionId,
   parseHarnessEvent,
   replayHarnessSession,
   type AgentOperatorActionRequest,
+  type FactoryAgentId,
   type HarnessEvent,
+  type HarnessSessionId,
   type RunEvent,
   type RunId,
 } from "@gaia/core";
@@ -27,9 +29,9 @@ import { HarnessInput, type HarnessSession } from "./harness-session.js";
 import { makeRunPaths, type RunStorageOptions } from "./paths.js";
 
 type LiveSessionIdentity = {
-  readonly agentId: string;
+  readonly agentId: FactoryAgentId;
   readonly runId: RunId;
-  readonly sessionId: string;
+  readonly sessionId: HarnessSessionId;
 };
 type LiveEntry = LiveSessionIdentity & { readonly session: HarnessSession };
 type RegisteredLiveEntry = LiveEntry & { readonly generation: number };
@@ -83,7 +85,7 @@ export function makeLiveHarnessSessionCoordinator() {
 
 export function readAgentSessionSnapshot(
   runId: RunId,
-  agentId: string,
+  agentId: FactoryAgentId,
   options: RunStorageOptions = {}
 ) {
   return Effect.gen(function* () {
@@ -96,7 +98,7 @@ export function readAgentSessionSnapshot(
 
 export function streamAgentSessionUpdates(
   runId: RunId,
-  agentId: string,
+  agentId: FactoryAgentId,
   afterSequence: number | undefined,
   options: RunStorageOptions = {}
 ) {
@@ -156,7 +158,7 @@ export function streamAgentSessionUpdates(
 
 export function dispatchAgentSessionAction(input: {
   readonly action: AgentOperatorActionRequest;
-  readonly agentId: string;
+  readonly agentId: FactoryAgentId;
   readonly coordinator: LiveHarnessSessionCoordinator;
   readonly options?: RunStorageOptions;
   readonly runId: RunId;
@@ -244,9 +246,7 @@ export function dispatchAgentSessionAction(input: {
         }
         return AgentActionReceiptDto.make({
           actionId: input.action.actionId,
-          agentId: Schema.decodeUnknownSync(FactoryAgentIdSchema)(
-            input.agentId
-          ),
+          agentId: input.agentId,
           eventSequence: confirmed.event.sequence,
           payloadDigest: digest,
           runId: input.runId,
@@ -267,10 +267,10 @@ function expectRuntime<A>(evaluate: () => A) {
 
 function publicSnapshot(
   runId: RunId,
-  agentId: string,
+  agentId: FactoryAgentId,
   events: ReadonlyArray<RunEvent>
 ) {
-  const sessionId = `session-${runId}`;
+  const sessionId = sessionIdForRun(runId);
   const sessionEvents = events.filter(
     (event) =>
       event.type === "HARNESS_SESSION_EVENT_RECORDED" &&
@@ -282,14 +282,9 @@ function publicSnapshot(
       message: "The selected agent has no session projection.",
       recoverable: true,
     });
-  const snapshot = replayHarnessSession(
-    events,
-    Schema.decodeUnknownSync(
-      Schema.NonEmptyString.pipe(Schema.brand("HarnessSessionId"))
-    )(sessionId)
-  );
+  const snapshot = replayHarnessSession(events, sessionId);
   return AgentSessionSnapshotDto.make({
-    agentId: Schema.decodeUnknownSync(FactoryAgentIdSchema)(agentId),
+    agentId,
     capabilities: snapshot.capabilities,
     eventSequence: events.at(-1)?.sequence ?? 1,
     items: snapshot.items,
@@ -305,7 +300,7 @@ function publicSnapshot(
 
 function updatesFromEvents(
   runId: RunId,
-  agentId: string,
+  agentId: FactoryAgentId,
   history: ReadonlyArray<RunEvent>,
   candidates: ReadonlyArray<RunEvent>
 ) {
@@ -318,14 +313,14 @@ function updatesFromEvents(
 
 function updateFromRunEvent(
   runId: RunId,
-  agentId: string,
+  agentId: FactoryAgentId,
   history: ReadonlyArray<RunEvent>,
   event: RunEvent,
   terminalHistory: ReadonlyArray<RunEvent> = history
 ) {
   if (event.type !== "HARNESS_SESSION_EVENT_RECORDED") return undefined;
   const harnessEvent = parseHarnessEvent(event.payload.event);
-  if (harnessEvent.sessionId !== `session-${runId}`) return undefined;
+  if (harnessEvent.sessionId !== sessionIdForRun(runId)) return undefined;
   const snapshot = publicSnapshot(runId, agentId, history);
   return AgentSessionUpdateDto.make({
     agentId: snapshot.agentId,
@@ -389,7 +384,7 @@ function isTerminalSessionState(
   );
 }
 
-function requireWorkerAgent(agentId: string) {
+function requireWorkerAgent(agentId: FactoryAgentId) {
   if (agentId !== issueDeliveryAgentIds.worker)
     throw makeRuntimeError({
       code: "FactoryAgentNotFound",
@@ -399,7 +394,7 @@ function requireWorkerAgent(agentId: string) {
 }
 
 function actionBinding(
-  agentId: string,
+  agentId: FactoryAgentId,
   action: AgentOperatorActionRequest,
   payloadDigest: string
 ) {
@@ -422,7 +417,7 @@ function actionBinding(
 
 function actionDigest(
   runId: RunId,
-  agentId: string,
+  agentId: FactoryAgentId,
   action: AgentOperatorActionRequest
 ) {
   return createHash("sha256")
@@ -432,7 +427,7 @@ function actionDigest(
 
 function actionDigestBinding(
   runId: RunId,
-  agentId: string,
+  agentId: FactoryAgentId,
   action: AgentOperatorActionRequest
 ) {
   const base = {
@@ -523,7 +518,7 @@ function existingReceipt(
         : "outcomeUnknown";
   return AgentActionReceiptDto.make({
     actionId: binding.actionId,
-    agentId: Schema.decodeUnknownSync(FactoryAgentIdSchema)(binding.agentId),
+    agentId: binding.agentId,
     eventSequence: last.event.sequence,
     payloadDigest: binding.payloadDigest,
     runId,
@@ -703,6 +698,10 @@ function dispatchToSession(
         kind: "mcpElicitation",
       });
   }
+}
+
+function sessionIdForRun(runId: RunId): HarnessSessionId {
+  return parseHarnessSessionId(`session-${runId}`);
 }
 
 function isInteractionAction(

@@ -14,6 +14,9 @@ import type { AgentSessionEventSource } from "@/lib/local-gaia-client";
 const parseAgentId = Schema.decodeUnknownSync(FactoryAgentIdSchema);
 const runId = parseRunId("run-1234567890");
 const serverUrl = parseLocalGaiaServerUrl("/gaia-api");
+const agentWorkerId = parseAgentId("agent-worker");
+const agentReviewerId = parseAgentId("agent-reviewer");
+const sessionId = parseHarnessSessionId("session-run-1234567890");
 
 describe("Agent session stream controller", () => {
   it("opens only while an agent Inspector is visible and closes on close, switch, terminal, and unmount", () => {
@@ -40,18 +43,18 @@ describe("Agent session stream controller", () => {
     });
 
     controller.sync({
-      agentId: "agent-worker",
+      agentId: agentWorkerId,
       isOpen: true,
       runId,
-      sessionId: "session-run-1234567890",
+      sessionId,
     });
     expect(sources).toHaveLength(1);
 
     controller.sync({
-      agentId: "agent-reviewer",
+      agentId: agentReviewerId,
       isOpen: true,
       runId,
-      sessionId: "session-run-1234567890",
+      sessionId,
     });
     expect(sources).toHaveLength(2);
     expect(closed).toEqual([0]);
@@ -63,10 +66,10 @@ describe("Agent session stream controller", () => {
     expect(closed).toEqual([0, 1]);
 
     controller.sync({
-      agentId: "agent-reviewer",
+      agentId: agentReviewerId,
       isOpen: false,
       runId,
-      sessionId: "session-run-1234567890",
+      sessionId,
     });
     controller.dispose();
     expect(closed).toEqual([0, 1]);
@@ -91,10 +94,10 @@ describe("Agent session stream controller", () => {
     });
 
     controller.sync({
-      agentId: "agent-worker",
+      agentId: agentWorkerId,
       isOpen: true,
       runId,
-      sessionId: "session-run-1234567890",
+      sessionId,
     });
     controller.handleUpdate(update({ sequence: 6 }));
     controller.handleUpdate(update({ sequence: 9 }));
@@ -122,10 +125,10 @@ describe("Agent session stream controller", () => {
       serverUrl,
     });
     const target = {
-      agentId: "agent-worker",
+      agentId: agentWorkerId,
       isOpen: true,
       runId,
-      sessionId: "session-run-1234567890",
+      sessionId,
     } as const;
 
     controller.sync(target);
@@ -157,10 +160,10 @@ describe("Agent session stream controller", () => {
       serverUrl,
     });
     const target = {
-      agentId: "agent-worker",
+      agentId: agentWorkerId,
       isOpen: true,
       runId,
-      sessionId: "session-run-1234567890",
+      sessionId,
       snapshotSequence: 5,
     } as const;
 

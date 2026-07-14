@@ -1,6 +1,8 @@
 import {
   LocalRunPathSegmentSchema,
   parseLocalRunReadDiagnostic,
+  type FactoryAgentId,
+  type FactoryArtifactId,
   type LocalRunReadDiagnostic,
   type RunId,
 } from "@gaia/core";
@@ -37,7 +39,7 @@ export function readFactoryRunActivity(
 
 export function readFactoryAgentActivity(
   runId: RunId,
-  agentIdInput: string,
+  agentIdInput: FactoryAgentId,
   options: RunStorageOptions = {}
 ) {
   return Effect.gen(function* () {
@@ -80,7 +82,7 @@ export function listFactoryRunArtifacts(
 
 export function readFactoryRunArtifact(
   runId: RunId,
-  artifactIdInput: string,
+  artifactIdInput: FactoryArtifactId,
   options: RunStorageOptions = {}
 ) {
   return readFactoryArtifactBodyFromIndex(runId, artifactIdInput, options);

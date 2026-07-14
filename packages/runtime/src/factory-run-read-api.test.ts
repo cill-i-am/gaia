@@ -2,6 +2,7 @@ import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
+  CreateRunRequest,
   DeliveryCleanupCompleted,
   DeliveryCleanupRequired,
   DeliveryMergeDispatchAttempted,
@@ -12,6 +13,7 @@ import {
   encodeDeliveryMergeReadinessDecisionJson,
   encodeDeliveryMergeReceiptJson,
   encodeWorkerRecoveryReceiptJson,
+  FactoryArtifactIdSchema,
   FactoryGraphDto,
   parseHarnessProfileId,
   parseHarnessSessionId,
@@ -27,6 +29,7 @@ import {
   readFactoryRunActivity,
   readFactoryRunArtifact,
 } from "./factory-run-read-api.js";
+import { issueDeliveryAgentIds } from "./factory-workflows.js";
 import { makeRunPaths } from "./paths.js";
 import {
   ReviewFinding,
@@ -38,7 +41,12 @@ import { acceptFactoryRun, continueServerRun } from "./server-workflows.js";
 import { makeTestHarnessProviderRegistry } from "./test-support.js";
 
 const harnessProviderRegistry = makeTestHarnessProviderRegistry();
+const decodeCreateRunRequest = Schema.decodeUnknownSync(CreateRunRequest);
+const decodeFactoryArtifactId = Schema.decodeUnknownSync(
+  FactoryArtifactIdSchema
+);
 const encodeFactoryGraph = Schema.encodeSync(FactoryGraphDto);
+const workerPlanArtifactId = decodeFactoryArtifactId("worker-plan");
 
 describe("factory run read api", () => {
   layer(NodeServices.layer)((it) => {
@@ -50,30 +58,23 @@ describe("factory run read api", () => {
           const cwd = yield* fs.makeTempDirectory({
             prefix: "gaia-factory-run-",
           });
+          const createInput = factoryCreateInput();
 
-          const accepted = yield* acceptFactoryRun(
-            {
-              execution: codexAppServerExecutionSelection,
-              workflow: "issueDelivery",
-              workItem: {
-                description: "Deliver GAIA-66 runtime projection.",
-                externalRefs: [
-                  {
-                    id: "GAIA-66",
-                    provider: "linear",
-                    url: "https://linear.app/tskr/issue/GAIA-66",
-                  },
-                ],
-                kind: "issue",
-                title: "Implement issueDelivery runtime projection",
-              },
-            },
-            { harnessProviderRegistry, rootDirectory: cwd }
-          );
+          const accepted = yield* acceptFactoryRun(createInput, {
+            harnessProviderRegistry,
+            rootDirectory: cwd,
+          });
 
           const graph = yield* readFactoryGraph(accepted.runId, {
             rootDirectory: cwd,
           });
+          const expectedExternalRefs = (
+            createInput.workItem.externalRefs ?? []
+          ).map((ref) => ({
+            id: ref.id,
+            provider: ref.provider,
+            url: ref.url,
+          }));
 
           assert.strictEqual(graph.runId, accepted.runId);
           assert.strictEqual(graph.workflow, "issueDelivery");
@@ -89,13 +90,7 @@ describe("factory run read api", () => {
             })),
             [
               {
-                externalRefs: [
-                  {
-                    id: "GAIA-66",
-                    provider: "linear",
-                    url: "https://linear.app/tskr/issue/GAIA-66",
-                  },
-                ],
+                externalRefs: expectedExternalRefs,
                 kind: "issue",
                 title: "Implement issueDelivery runtime projection",
               },
@@ -186,7 +181,7 @@ describe("factory run read api", () => {
           });
           const workerActivity = yield* readFactoryAgentActivity(
             accepted.runId,
-            "agent-worker",
+            issueDeliveryAgentIds.worker,
             { rootDirectory: cwd }
           );
           const artifacts = yield* listFactoryRunArtifacts(accepted.runId, {
@@ -194,7 +189,7 @@ describe("factory run read api", () => {
           });
           const workerPlan = yield* readFactoryRunArtifact(
             accepted.runId,
-            "worker-plan",
+            workerPlanArtifactId,
             { rootDirectory: cwd }
           );
 
@@ -674,7 +669,7 @@ describe("factory run read api", () => {
           });
           const reviewerActivity = yield* readFactoryAgentActivity(
             accepted.runId,
-            "agent-reviewer",
+            issueDeliveryAgentIds.reviewer,
             { rootDirectory: cwd }
           );
 
@@ -748,7 +743,7 @@ describe("factory run read api", () => {
 });
 
 function factoryCreateInput() {
-  return {
+  return decodeCreateRunRequest({
     execution: codexAppServerExecutionSelection,
     workflow: "issueDelivery",
     workItem: {
@@ -763,7 +758,7 @@ function factoryCreateInput() {
       kind: "issue",
       title: "Implement issueDelivery runtime projection",
     },
-  } as const;
+  });
 }
 
 function appendTerminalDeliveryHistory(

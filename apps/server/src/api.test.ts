@@ -4,6 +4,7 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
+  CreateRunRequest,
   DeliveryPublicationAttempted,
   DeliveryPublicationConfirmed,
   DeliveryPublicationIntent,
@@ -98,6 +99,8 @@ import {
 
 import { deliveryUpdateFromEvents, makeLocalGaiaServerLayer } from "./api.js";
 import type { LocalServerIdentity } from "./discovery.js";
+
+const decodeCreateRunRequest = Schema.decodeUnknownSync(CreateRunRequest);
 
 function recoveredCompletedDeliveryEvents(
   runId = parseRunId("run-1234567890")
@@ -3009,7 +3012,7 @@ function deliveryActivationRequest(expectedEventSequence: number) {
 }
 
 function factoryCreateInput() {
-  return {
+  return decodeCreateRunRequest({
     delivery: { mode: "local" },
     execution: codexAppServerExecutionSelection,
     workflow: "issueDelivery",
@@ -3025,7 +3028,7 @@ function factoryCreateInput() {
       kind: "issue",
       title: "Wire LocalGaiaServerApi factory endpoints",
     },
-  } as const;
+  });
 }
 
 function pausingFirstDetectionRegistry(

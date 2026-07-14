@@ -2754,7 +2754,8 @@ function AgentInspector({
     artifactIdStrings.includes(requestedArtifact.artifactId)
       ? requestedArtifact.artifactId
       : undefined;
-  const selectedAgentId = inspector.kind === "agent" ? inspector.agent.id : "";
+  const selectedAgentId =
+    inspector.kind === "agent" ? inspector.agent.id : undefined;
   const artifactQuery = useQuery(
     localGaiaFactoryArtifactQueryOptions({
       artifactId: selectedArtifactId ?? "",
@@ -2764,7 +2765,7 @@ function AgentInspector({
   );
   const sessionQuery = useQuery(
     localGaiaAgentSessionQueryOptions({
-      agentId: selectedAgentId,
+      agentId: selectedAgentId ?? "",
       runId: selectedRunId,
       serverUrl,
     })
@@ -2815,7 +2816,7 @@ function AgentInspector({
   React.useEffect(() => {
     const controller = getStreamController();
     controller.sync({
-      agentId: selectedAgentId === "" ? undefined : selectedAgentId,
+      agentId: selectedAgentId,
       isOpen: inspector.kind === "agent",
       ...(deliverySnapshot?.remediationRearmSequence === undefined
         ? {}
@@ -2874,7 +2875,7 @@ function AgentInspector({
   }, [selectedAgentId, selectedRunId]);
   const submitSessionAction = React.useCallback(
     (action: unknown) => {
-      if (selectedRunId === undefined || selectedAgentId.length === 0) return;
+      if (selectedRunId === undefined || selectedAgentId === undefined) return;
       sessionAction.mutate(
         {
           action,
