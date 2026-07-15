@@ -109,9 +109,10 @@ describe("interactive issue-delivery harness", () => {
             workspacePath: paths.workspace,
           });
 
-          assert.deepEqual(result.workspaceDiff?.productChangedPaths, [
-            "src/feature.ts",
-          ]);
+          assert.deepEqual(
+            result.workspaceDiff?.productChangedPaths.map(String),
+            ["src/feature.ts"]
+          );
           assert.deepEqual(result.outputArtifacts, []);
         })
     );

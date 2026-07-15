@@ -243,8 +243,10 @@ export function readEvents(paths: RunPaths) {
     let expectedSequence = 1;
 
     for (const [index, line] of lines.entries()) {
-      const parsed = parseRunEvent(
-        parseJsonLine(line, paths.events, index + 1)
+      const lineNumber = index + 1;
+      const parsed = yield* parseEventLine(
+        yield* parseJsonLine(line, lineNumber),
+        lineNumber
       );
 
       if (parsed.sequence !== expectedSequence) {
@@ -307,17 +309,29 @@ function readOptionalFile(path: string) {
 
 function parseJsonLine(
   line: string,
-  path: string,
   lineNumber: number
-): unknown {
-  try {
-    return JSON.parse(line);
-  } catch (cause) {
-    throw makeRuntimeError({
-      cause,
-      code: "InvalidJsonLine",
-      message: `Invalid JSON in ${path} at line ${lineNumber}.`,
-      recoverable: false,
-    });
-  }
+): Effect.Effect<unknown, ReturnType<typeof makeRuntimeError>> {
+  return Effect.try({
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "InvalidJsonLine",
+        message: `Invalid JSON in events.jsonl at line ${lineNumber}.`,
+        recoverable: false,
+      }),
+    try: () => JSON.parse(line),
+  });
+}
+
+function parseEventLine(input: unknown, lineNumber: number) {
+  return Effect.try({
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "InvalidEventLine",
+        message: `Invalid event record in events.jsonl at line ${lineNumber}.`,
+        recoverable: false,
+      }),
+    try: () => parseRunEvent(input),
+  });
 }

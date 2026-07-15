@@ -5,6 +5,11 @@ import { parseBrowserEvidenceJson } from "./browser-evidence.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { HarnessRunResult } from "./harness.js";
 import {
+  RunRelativeArtifactPathSchema,
+  RuntimePathSchema,
+  type RuntimePath,
+} from "./paths.js";
+import {
   ReviewerSessionEvidence,
   writeReviewerSessionEvidence,
   type ReviewerSessionAdapterKind,
@@ -40,30 +45,34 @@ export class ReviewFinding extends Schema.Class<ReviewFinding>("ReviewFinding")(
 export class ReviewResult extends Schema.Class<ReviewResult>("ReviewResult")({
   findings: Schema.Array(ReviewFinding),
   phase: ReviewPhaseSchema,
-  resultPath: Schema.NonEmptyString,
+  resultPath: RunRelativeArtifactPathSchema,
   reviewerName: ReviewerNameSchema,
   runId: RunIdSchema,
   sessionEvidence: Schema.optionalKey(ReviewerSessionEvidence),
   status: Schema.Literals(["approved", "blocked"] as const),
   summary: Schema.NonEmptyString,
-}) {}
+}) {
+  static override make(input: unknown): ReviewResult {
+    return decodeReviewResult(input);
+  }
+}
 
 export class ReviewRunRequest extends Schema.Class<ReviewRunRequest>(
   "ReviewRunRequest"
 )({
-  browserEvidencePath: Schema.NonEmptyString,
-  markdownPath: Schema.NonEmptyString,
+  browserEvidencePath: RuntimePathSchema,
+  markdownPath: RuntimePathSchema,
   phase: ReviewPhaseSchema,
-  resultPath: Schema.NonEmptyString,
+  resultPath: RuntimePathSchema,
   runId: RunIdSchema,
-  sessionEvidencePath: Schema.NonEmptyString,
+  sessionEvidencePath: RuntimePathSchema,
   specBody: Schema.NonEmptyString,
   specTitle: Schema.NonEmptyString,
-  verificationResultPath: Schema.NonEmptyString,
-  workerPlanPath: Schema.NonEmptyString,
-  workerResultPath: Schema.NonEmptyString,
-  workspaceManifestPath: Schema.NonEmptyString,
-  workspacePath: Schema.NonEmptyString,
+  verificationResultPath: RuntimePathSchema,
+  workerPlanPath: RuntimePathSchema,
+  workerResultPath: RuntimePathSchema,
+  workspaceManifestPath: RuntimePathSchema,
+  workspacePath: RuntimePathSchema,
 }) {}
 
 export type GaiaReviewer = {
@@ -84,6 +93,7 @@ export type ReviewerRunOptions = {
 };
 
 const ReviewResultJson = Schema.toCodecJson(ReviewResult);
+const decodeReviewResult = Schema.decodeUnknownSync(ReviewResult);
 const encodeReviewResult = Schema.encodeSync(ReviewResultJson);
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const parseHarnessRunResultJson =
@@ -327,7 +337,7 @@ function formatGeneratedPathSummaries(workspaceDiff: WorkspaceDiffSummary) {
 }
 
 function decodeJsonArtifact<T>(
-  path: string,
+  path: RuntimePath,
   parse: (input: unknown) => T,
   artifactName: string
 ): Effect.Effect<T, GaiaRuntimeError, FileSystem.FileSystem> {

@@ -1,76 +1,165 @@
 import type { RunId } from "@gaia/core";
-import { Effect, Path } from "effect";
+import { Effect, Path, Schema } from "effect";
 
-export type RunStorageOptions = {
-  readonly rootDirectory?: string;
-};
+const noControlCharacters = Schema.makeFilter(
+  (input: string) => !/[\u0000-\u001f\u007f]/u.test(input),
+  {
+    identifier: "RuntimePathText",
+    message: "Runtime paths must not contain control characters.",
+  }
+);
 
-export type RunStorePaths = {
-  readonly gaiaRoot: string;
-  readonly latest: string;
-  readonly lock: string;
-  readonly runsRoot: string;
-};
+const safeRunRelativeArtifactPath = Schema.makeFilter(
+  (input: string) => {
+    if (
+      input.length === 0 ||
+      input.startsWith("/") ||
+      /^[A-Za-z]:[\\/]/u.test(input) ||
+      input.includes("\\") ||
+      /[\u0000-\u001f\u007f]/u.test(input)
+    ) {
+      return false;
+    }
 
-export type RunPaths = {
-  readonly browserEvidence: string;
-  readonly browserScreenshots: string;
-  readonly ciWatchState: string;
-  readonly codexHarnessProgress: string;
-  readonly dogfoodRetrospective: string;
-  readonly evidenceReviewMarkdown: string;
-  readonly evidenceReviewResult: string;
-  readonly evidenceReviewerSession: string;
-  readonly events: string;
-  readonly factoryActivityIndex: string;
-  readonly factoryArtifactsDirectory: string;
-  readonly factoryArtifactsIndex: string;
-  readonly factoryGraph: string;
-  readonly factoryRetroJson: string;
-  readonly factoryRetroMarkdown: string;
-  readonly factoryScorecardJson: string;
-  readonly factoryScorecardMarkdown: string;
-  readonly gaiaRoot: string;
-  readonly githubChecks: string;
-  readonly githubFeedback: string;
-  readonly githubPrComment: string;
-  readonly githubRemediationSpec: string;
-  readonly harnessWorkspaceBaseline: string;
-  readonly input: string;
-  readonly latest: string;
-  readonly linearIssueGraph: string;
-  readonly mergeDecision: string;
-  readonly planReviewMarkdown: string;
-  readonly planReviewResult: string;
-  readonly planReviewerSession: string;
-  readonly previewDeployment: string;
-  readonly promotedEvidenceDirectory: string;
-  readonly evidencePromotionJson: string;
-  readonly evidencePromotionMarkdown: string;
-  readonly prLoopState: string;
-  readonly reportJson: string;
-  readonly reportMarkdown: string;
-  readonly reviewerFindings: string;
-  readonly root: string;
-  readonly runProfile: string;
-  readonly runsRoot: string;
-  readonly snapshots: string;
-  readonly skillBundle: string;
-  readonly skillInstallRoot: string;
-  readonly skillManifest: string;
-  readonly verificationLog: string;
-  readonly verificationResult: string;
-  readonly workerLog: string;
-  readonly workerPlanMarkdown: string;
-  readonly workerPlanResult: string;
-  readonly workerResult: string;
-  readonly workspacePrGate: string;
-  readonly workspace: string;
-  readonly deliveryOwnershipManifest: string;
-  readonly deliveryPullRequestBody: string;
-  readonly workspaceManifest: string;
-  readonly workspaceOutput: string;
-};
+    return input.split("/").every((segment) => {
+      return segment.length > 0 && segment !== "." && segment !== "..";
+    });
+  },
+  {
+    identifier: "RunRelativeArtifactPath",
+    message:
+      "Run-relative artifact paths must not be absolute, empty, or traversal paths.",
+  }
+);
+
+/** Runtime-owned filesystem path accepted by Gaia filesystem adapters. */
+export const RuntimePathTextSchema = Schema.NonEmptyString.pipe(
+  Schema.check(noControlCharacters)
+);
+
+/** Branded runtime filesystem path carried inward after boundary parsing. */
+export const RuntimePathSchema = RuntimePathTextSchema.pipe(
+  Schema.brand("RuntimePath")
+);
+
+export type RuntimePath = typeof RuntimePathSchema.Type;
+
+/** Boundary input for the configured Gaia run storage root. */
+export const RunStorageRootInputSchema = Schema.NonEmptyString.pipe(
+  Schema.check(noControlCharacters),
+  Schema.brand("RunStorageRootInput")
+);
+
+export type RunStorageRootInput = typeof RunStorageRootInputSchema.Type;
+
+/** Encoded artifact path relative to one Gaia run root. */
+export const RunRelativeArtifactPathTextSchema = Schema.NonEmptyString.pipe(
+  Schema.check(safeRunRelativeArtifactPath)
+);
+
+/** Branded artifact path relative to one Gaia run root. */
+export const RunRelativeArtifactPathSchema =
+  RunRelativeArtifactPathTextSchema.pipe(
+    Schema.brand("RunRelativeArtifactPath")
+  );
+
+export type RunRelativeArtifactPath = typeof RunRelativeArtifactPathSchema.Type;
+
+/** Decode untrusted or newly joined filesystem paths before runtime use. */
+export const parseRuntimePath = Schema.decodeUnknownSync(RuntimePathSchema);
+/** Decode user-provided run-store roots before deriving Gaia storage paths. */
+export const parseRunStorageRootInput = Schema.decodeUnknownSync(
+  RunStorageRootInputSchema
+);
+/** Decode persisted or report-facing run-relative artifact paths. */
+export const parseRunRelativeArtifactPath = Schema.decodeUnknownSync(
+  RunRelativeArtifactPathSchema
+);
+
+export const RunStorageOptionsSchema = Schema.Struct({
+  rootDirectory: Schema.optionalKey(RunStorageRootInputSchema),
+});
+
+export type RunStorageOptions = typeof RunStorageOptionsSchema.Encoded;
+
+export type RunRelativePath = RunRelativeArtifactPath | RuntimePath;
+
+export const RunStorePathsSchema = Schema.Struct({
+  gaiaRoot: RuntimePathSchema,
+  latest: RuntimePathSchema,
+  lock: RuntimePathSchema,
+  runsRoot: RuntimePathSchema,
+});
+
+export type RunStorePaths = typeof RunStorePathsSchema.Type;
+
+export const RunPathsSchema = Schema.Struct({
+  browserEvidence: RuntimePathSchema,
+  browserScreenshots: RuntimePathSchema,
+  ciWatchState: RuntimePathSchema,
+  codexHarnessProgress: RuntimePathSchema,
+  deliveryOwnershipManifest: RuntimePathSchema,
+  deliveryPullRequestBody: RuntimePathSchema,
+  dogfoodRetrospective: RuntimePathSchema,
+  evidencePromotionJson: RuntimePathSchema,
+  evidencePromotionMarkdown: RuntimePathSchema,
+  evidenceReviewMarkdown: RuntimePathSchema,
+  evidenceReviewResult: RuntimePathSchema,
+  evidenceReviewerSession: RuntimePathSchema,
+  events: RuntimePathSchema,
+  factoryActivityIndex: RuntimePathSchema,
+  factoryArtifactsDirectory: RuntimePathSchema,
+  factoryArtifactsIndex: RuntimePathSchema,
+  factoryGraph: RuntimePathSchema,
+  factoryRetroJson: RuntimePathSchema,
+  factoryRetroMarkdown: RuntimePathSchema,
+  factoryScorecardJson: RuntimePathSchema,
+  factoryScorecardMarkdown: RuntimePathSchema,
+  gaiaRoot: RuntimePathSchema,
+  githubChecks: RuntimePathSchema,
+  githubFeedback: RuntimePathSchema,
+  githubPrComment: RuntimePathSchema,
+  githubRemediationSpec: RuntimePathSchema,
+  harnessWorkspaceBaseline: RuntimePathSchema,
+  input: RuntimePathSchema,
+  latest: RuntimePathSchema,
+  linearIssueGraph: RuntimePathSchema,
+  mergeDecision: RuntimePathSchema,
+  planReviewMarkdown: RuntimePathSchema,
+  planReviewResult: RuntimePathSchema,
+  planReviewerSession: RuntimePathSchema,
+  previewDeployment: RuntimePathSchema,
+  promotedEvidenceDirectory: RuntimePathSchema,
+  prLoopState: RuntimePathSchema,
+  reportJson: RuntimePathSchema,
+  reportMarkdown: RuntimePathSchema,
+  reviewerFindings: RuntimePathSchema,
+  root: RuntimePathSchema,
+  runProfile: RuntimePathSchema,
+  runsRoot: RuntimePathSchema,
+  skillBundle: RuntimePathSchema,
+  skillInstallRoot: RuntimePathSchema,
+  skillManifest: RuntimePathSchema,
+  snapshots: RuntimePathSchema,
+  verificationLog: RuntimePathSchema,
+  verificationResult: RuntimePathSchema,
+  workerLog: RuntimePathSchema,
+  workerPlanMarkdown: RuntimePathSchema,
+  workerPlanResult: RuntimePathSchema,
+  workerResult: RuntimePathSchema,
+  workspace: RuntimePathSchema,
+  workspaceManifest: RuntimePathSchema,
+  workspaceOutput: RuntimePathSchema,
+  workspacePrGate: RuntimePathSchema,
+});
+
+export type RunPaths = typeof RunPathsSchema.Type;
+
+const parseRunStorageOptions = Schema.decodeUnknownSync(
+  RunStorageOptionsSchema
+);
+const parseRunStorePaths = Schema.decodeUnknownSync(RunStorePathsSchema);
+const parseRunPaths = Schema.decodeUnknownSync(RunPathsSchema);
 
 export const runRootDirectory = ".gaia/runs";
 export const latestRunFile = ".gaia/latest";
@@ -78,15 +167,16 @@ export const latestRunFile = ".gaia/latest";
 export function makeRunStorePaths(options: RunStorageOptions = {}) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
-    const rootDirectory = options.rootDirectory ?? ".";
+    const { rootDirectory = parseRunStorageRootInput(".") } =
+      parseRunStorageOptions(options);
     const gaiaRoot = path.join(rootDirectory, ".gaia");
 
-    return {
+    return parseRunStorePaths({
       gaiaRoot,
       latest: path.join(gaiaRoot, "latest"),
       lock: path.join(gaiaRoot, "lock"),
       runsRoot: path.join(gaiaRoot, "runs"),
-    } satisfies RunStorePaths;
+    });
   });
 }
 
@@ -102,7 +192,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
     );
     const workspace = path.join(root, "workspace");
 
-    return {
+    return parseRunPaths({
       browserEvidence: path.join(root, "browser-evidence.json"),
       browserScreenshots: path.join(root, "browser"),
       ciWatchState: path.join(root, "ci-watch-state.json"),
@@ -184,14 +274,21 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       workspace,
       workspaceManifest: path.join(root, "workspace-manifest.json"),
       workspaceOutput: path.join(workspace, "output.txt"),
-    } satisfies RunPaths;
+    });
   });
 }
 
-export function runRelative(path: RunPaths, absolutePath: string): string {
-  if (absolutePath.startsWith(`${path.root}/`)) {
-    return absolutePath.slice(path.root.length + 1);
+/** Convert a runtime filesystem path to a run-relative artifact path when it is inside the run root. */
+export function runRelative(
+  path: RunPaths,
+  absolutePath: string
+): RunRelativePath {
+  const runtimePath = parseRuntimePath(absolutePath);
+  if (runtimePath.startsWith(`${path.root}/`)) {
+    return parseRunRelativeArtifactPath(
+      runtimePath.slice(path.root.length + 1)
+    );
   }
 
-  return absolutePath;
+  return runtimePath;
 }

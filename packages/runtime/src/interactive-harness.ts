@@ -31,7 +31,7 @@ import {
   HarnessRunResult,
   type GaiaHarness,
 } from "./harness.js";
-import { makeRunPaths, type RunPaths } from "./paths.js";
+import { makeRunPaths, type RunPaths, type RuntimePath } from "./paths.js";
 import {
   diffWorkspaceSnapshots,
   readWorkspaceSnapshot,
@@ -224,9 +224,9 @@ export function interactiveSessionHarness(input: {
 export function refreshInteractiveHarnessResult(input: {
   readonly paths: RunPaths;
   readonly runId: RunId;
-  readonly workerLogPath: string;
-  readonly workerResultPath: string;
-  readonly workspacePath: string;
+  readonly workerLogPath: RuntimePath;
+  readonly workerResultPath: RuntimePath;
+  readonly workspacePath: RuntimePath;
 }) {
   return Effect.gen(function* () {
     const baseline = yield* readWorkspaceSnapshot(
