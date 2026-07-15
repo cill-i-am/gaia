@@ -7,6 +7,8 @@ import {
   parseFactoryLaneScorecard,
   parseFactoryRetro,
   parseDogfoodRetrospective,
+  parseRunReport,
+  parseRunReportArtifactPath,
   parseRunEvent,
   parseRunId,
 } from "@gaia/core";
@@ -33,6 +35,8 @@ import {
 } from "./codex-reviewer.js";
 import {
   doctor,
+  parseDoctorCommandInput,
+  parseDoctorCommandResult,
   type DoctorCommandInput,
   type DoctorCommandRunner,
 } from "./doctor.js";
@@ -73,8 +77,14 @@ import {
 import { makeRunPaths, makeRunStorePaths } from "./paths.js";
 import { parsePreviewDeploymentJson } from "./preview-deployment.js";
 import { parseReviewerFindingsJson } from "./reviewer-findings.js";
-import { parseReviewerSessionEvidenceJson } from "./reviewer-session-evidence.js";
 import {
+  encodeReviewerSessionEvidenceJson,
+  parseReviewerSessionEvidenceJson,
+  ReviewerSessionEvidence,
+} from "./reviewer-session-evidence.js";
+import {
+  encodeReviewResultJson,
+  parseReviewResultJson,
   ReviewFinding,
   ReviewResult,
   ReviewerNameSchema,
@@ -88,11 +98,17 @@ import {
   type SkillInstallCommandRunner,
 } from "./skill-bundle.js";
 import { localSkillManifestSource } from "./skill-manifest.js";
-import { verifyHarnessOutput } from "./verifier.js";
+import {
+  encodeVerificationResultJson,
+  parseVerificationResultJson,
+  VerificationResult,
+  verifyHarnessOutput,
+} from "./verifier.js";
 import { parseWorkerPlanJson } from "./worker-plan.js";
 import {
   collectBrowserEvidence,
   listRuns,
+  parseCommandSummary,
   resumeRun,
   runSpecFile,
   statusRun,
@@ -118,12 +134,20 @@ describe("runtime workflows", () => {
 
         const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
         assert.strictEqual(summary.status, "completed");
+        const reportPath = commandReportPath(summary);
+        assert.deepEqual(
+          parseCommandSummary(JSON.parse(JSON.stringify(summary))),
+          summary
+        );
+        assert.throws(() =>
+          parseCommandSummary({ ...summary, status: "done" })
+        );
 
         const eventsExists = yield* fs.exists(
           `${summary.runDirectory}/events.jsonl`
         );
         assert.isDefined(summary.reportPath);
-        const reportExists = yield* fs.exists(summary.reportPath);
+        const reportExists = yield* fs.exists(reportPath);
         const workerPlanExists = yield* fs.exists(
           `${summary.runDirectory}/worker-plan.md`
         );
@@ -145,7 +169,12 @@ describe("runtime workflows", () => {
         const events = yield* fs.readFileString(
           `${summary.runDirectory}/events.jsonl`
         );
-        const report = yield* fs.readFileString(summary.reportPath);
+        const report = yield* fs.readFileString(reportPath);
+        const reportJson = parseRunReport(
+          JSON.parse(
+            yield* fs.readFileString(`${summary.runDirectory}/report.json`)
+          )
+        );
 
         assert.isTrue(eventsExists);
         assert.isTrue(reportExists);
@@ -162,6 +191,7 @@ describe("runtime workflows", () => {
         assert.include(report, "evidence-review.md");
         assert.include(report, "evidence-reviewer-session.json");
         assert.include(output, summary.runId);
+        assert.deepEqual(reportJson.artifacts, expectedReportArtifacts());
 
         const planReviewerSession = parseReviewerSessionEvidenceJson(
           JSON.parse(
@@ -179,6 +209,177 @@ describe("runtime workflows", () => {
         assert.strictEqual(resumed.status, "completed");
       })
     );
+
+    it("round-trips review, reviewer-session, and verification artifact JSON through public schemas", () => {
+      const runId = parseRunId("run-GAIA102010");
+      const reviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
+        "schema-contract-reviewer"
+      );
+      const sessionEvidence = ReviewerSessionEvidence.make({
+        adapterKind: "deterministic",
+        command: "codex review",
+        cwd: "/tmp/gaia",
+        decisionStatus: "approved",
+        evidencePath: "plan-reviewer-session.json",
+        logPath: "reviewer.log",
+        phase: "plan",
+        resultPath: "plan-review.json",
+        reviewPath: "plan-review.md",
+        reviewerName,
+        runId,
+        sessionId: "session-gaia102",
+        sessionKind: "local",
+        transcriptPath: "reviewer-transcript.jsonl",
+        version: 1,
+      });
+      const reviewResult = ReviewResult.make({
+        findings: [
+          ReviewFinding.make({
+            message: "Schema-owned review result stayed JSON-compatible.",
+            severity: "info",
+          }),
+        ],
+        phase: "plan",
+        resultPath: "plan-review.json",
+        reviewerName,
+        runId,
+        sessionEvidence,
+        status: "approved",
+        summary: "Plan review approved.",
+      });
+      const verificationResult = VerificationResult.make({
+        checkedArtifacts: ["workspace/output.txt", "worker-result.json"],
+        runId,
+        status: "passed",
+      });
+
+      assert.deepEqual(
+        parseReviewerSessionEvidenceJson(
+          JSON.parse(
+            JSON.stringify(encodeReviewerSessionEvidenceJson(sessionEvidence))
+          )
+        ),
+        sessionEvidence
+      );
+      assert.deepEqual(
+        parseReviewResultJson(
+          JSON.parse(JSON.stringify(encodeReviewResultJson(reviewResult)))
+        ),
+        reviewResult
+      );
+      assert.deepEqual(
+        parseVerificationResultJson(
+          JSON.parse(
+            JSON.stringify(encodeVerificationResultJson(verificationResult))
+          )
+        ),
+        verificationResult
+      );
+    });
+
+    it("rejects invalid review, reviewer-session, and verification artifact boundaries", () => {
+      const runId = "run-GAIA102020";
+      const sessionJson = {
+        adapterKind: "deterministic",
+        decisionStatus: "approved",
+        evidencePath: "plan-reviewer-session.json",
+        phase: "plan",
+        resultPath: "plan-review.json",
+        reviewPath: "plan-review.md",
+        reviewerName: "schema-contract-reviewer",
+        runId,
+        sessionKind: "local",
+        version: 1,
+      };
+      const reviewJson = {
+        findings: [{ message: "Valid finding.", severity: "info" }],
+        phase: "plan",
+        resultPath: "plan-review.json",
+        reviewerName: "schema-contract-reviewer",
+        runId,
+        sessionEvidence: sessionJson,
+        status: "approved",
+        summary: "Plan review approved.",
+      };
+      const verificationJson = {
+        checkedArtifacts: ["workspace/output.txt", "worker-result.json"],
+        runId,
+        status: "passed",
+      };
+
+      assert.throws(() =>
+        parseReviewerSessionEvidenceJson({
+          ...sessionJson,
+          adapterKind: "playwright",
+        })
+      );
+      assert.throws(() =>
+        parseReviewerSessionEvidenceJson({
+          ...sessionJson,
+          decisionStatus: "waiting",
+        })
+      );
+      assert.throws(() =>
+        parseReviewerSessionEvidenceJson({
+          ...sessionJson,
+          evidencePath: "",
+        })
+      );
+      assert.throws(() =>
+        parseReviewerSessionEvidenceJson({ ...sessionJson, phase: "after" })
+      );
+      assert.throws(() =>
+        parseReviewerSessionEvidenceJson({
+          ...sessionJson,
+          runId: "not-a-run",
+        })
+      );
+      assert.throws(() =>
+        parseReviewerSessionEvidenceJson({
+          ...sessionJson,
+          sessionKind: "remote",
+        })
+      );
+      assert.throws(() =>
+        parseReviewResultJson({ ...reviewJson, phase: "after" })
+      );
+      assert.throws(() =>
+        parseReviewResultJson({ ...reviewJson, resultPath: "../review.json" })
+      );
+      assert.throws(() =>
+        parseReviewResultJson({ ...reviewJson, reviewerName: "" })
+      );
+      assert.throws(() =>
+        parseReviewResultJson({ ...reviewJson, runId: "not-a-run" })
+      );
+      assert.throws(() =>
+        parseReviewResultJson({ ...reviewJson, summary: "" })
+      );
+      assert.throws(() =>
+        parseReviewResultJson({ ...reviewJson, status: "needs-work" })
+      );
+      assert.throws(() =>
+        parseReviewResultJson({
+          ...reviewJson,
+          findings: [{ message: "Missing severity." }],
+        })
+      );
+      assert.throws(() =>
+        parseVerificationResultJson({
+          ...verificationJson,
+          checkedArtifacts: ["workspace/output.txt", ""],
+        })
+      );
+      assert.throws(() =>
+        parseVerificationResultJson({
+          ...verificationJson,
+          runId: "not-a-run",
+        })
+      );
+      assert.throws(() =>
+        parseVerificationResultJson({ ...verificationJson, status: "failed" })
+      );
+    });
 
     it.effect("writes a spec-derived worker plan for review", () =>
       Effect.gen(function* () {
@@ -326,7 +527,9 @@ describe("runtime workflows", () => {
           const workerPlanMarkdown = yield* fs.readFileString(
             `${summary.runDirectory}/worker-plan.md`
           );
-          const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+          const reportMarkdown = yield* fs.readFileString(
+            commandReportPath(summary)
+          );
 
           assert.deepEqual(
             workerPlan.verificationChecks.map((check) => check.command),
@@ -423,7 +626,9 @@ describe("runtime workflows", () => {
           const workerPlanMarkdown = yield* fs.readFileString(
             `${summary.runDirectory}/worker-plan.md`
           );
-          const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+          const reportMarkdown = yield* fs.readFileString(
+            commandReportPath(summary)
+          );
           const likelyFiles = workerPlan.planningContext.likelyFiles.map(
             (file) => file.path
           );
@@ -604,7 +809,9 @@ describe("runtime workflows", () => {
           const workerPlanMarkdown = yield* fs.readFileString(
             `${summary.runDirectory}/worker-plan.md`
           );
-          const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+          const reportMarkdown = yield* fs.readFileString(
+            commandReportPath(summary)
+          );
           const readArtifact = yield* readLocalRunArtifact(
             summary.runId,
             "reviewer-findings",
@@ -1067,6 +1274,39 @@ describe("runtime workflows", () => {
       })
     );
 
+    it("parses doctor command boundary values through public schemas", () => {
+      assert.deepEqual(
+        parseDoctorCommandInput({
+          args: ["auth", "status"],
+          command: "gh",
+          cwd: ".",
+        }),
+        {
+          args: ["auth", "status"],
+          command: "gh",
+          cwd: ".",
+        }
+      );
+      assert.deepEqual(
+        parseDoctorCommandResult({
+          exitCode: 0,
+          stderr: "",
+          stdout: "ok\n",
+        }),
+        {
+          exitCode: 0,
+          stderr: "",
+          stdout: "ok\n",
+        }
+      );
+      assert.throws(() =>
+        parseDoctorCommandInput({ args: [], command: "", cwd: "." })
+      );
+      assert.throws(() =>
+        parseDoctorCommandResult({ exitCode: "0", stderr: "", stdout: "" })
+      );
+    });
+
     it.effect(
       "reports supported git worktree readiness through the doctor command seam",
       () =>
@@ -1324,7 +1564,9 @@ describe("runtime workflows", () => {
             )
           )
         );
-        const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+        const reportMarkdown = yield* fs.readFileString(
+          commandReportPath(summary)
+        );
         const reportJson = yield* fs.readFileString(
           `${summary.runDirectory}/report.json`
         );
@@ -1383,7 +1625,9 @@ describe("runtime workflows", () => {
             JSON.parse(yield* fs.readFileString(factoryRetroPath))
           );
           const markdown = yield* fs.readFileString(factoryRetroMarkdownPath);
-          const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+          const reportMarkdown = yield* fs.readFileString(
+            commandReportPath(summary)
+          );
 
           assert.strictEqual(retro.runId, summary.runId);
           assert.strictEqual(retro.status, "findings");
@@ -1495,7 +1739,9 @@ describe("runtime workflows", () => {
             JSON.parse(yield* fs.readFileString(scorecardPath))
           );
           const markdown = yield* fs.readFileString(scorecardMarkdownPath);
-          const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+          const reportMarkdown = yield* fs.readFileString(
+            commandReportPath(summary)
+          );
           const readable = yield* readLocalRunArtifact(
             summary.runId,
             "factory-scorecard",
@@ -1569,7 +1815,9 @@ describe("runtime workflows", () => {
         );
         const promotionMarkdown =
           yield* fs.readFileString(promotedMarkdownPath);
-        const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+        const reportMarkdown = yield* fs.readFileString(
+          commandReportPath(summary)
+        );
         const run = yield* readLocalRunArtifact(
           summary.runId,
           "evidence-promotion",
@@ -2076,7 +2324,9 @@ describe("runtime workflows", () => {
         const reportJson = yield* fs.readFileString(
           `${summary.runDirectory}/report.json`
         );
-        const reportMarkdown = yield* fs.readFileString(summary.reportPath);
+        const reportMarkdown = yield* fs.readFileString(
+          commandReportPath(summary)
+        );
         const workerPlan = parseWorkerPlanJson(
           JSON.parse(
             yield* fs.readFileString(`${summary.runDirectory}/worker-plan.json`)
@@ -7044,6 +7294,46 @@ function workspacePrPreflightCommandSummary() {
     ["git", "rev-parse"],
     ["gh", "auth"],
   ];
+}
+
+function commandReportPath(summary: {
+  readonly reportPath: string | undefined;
+}) {
+  if (summary.reportPath === undefined) {
+    throw new Error("Expected completed command summary to expose reportPath.");
+  }
+
+  return summary.reportPath;
+}
+
+function expectedReportArtifacts() {
+  return [
+    "workspace-manifest.json",
+    "run-profile.json",
+    "skill-manifest.json",
+    "skill-bundle.json",
+    "browser-evidence.json",
+    "preview-deployment.json",
+    "worker-plan.md",
+    "worker-plan.json",
+    "reviewer-findings.json",
+    "plan-review.md",
+    "plan-review.json",
+    "plan-reviewer-session.json",
+    "dogfood-retrospective.json",
+    "evidence-promotion.json",
+    "evidence-promotion.md",
+    "factory-retro.json",
+    "factory-retro.md",
+    "worker.log",
+    "verification.log",
+    "workspace/output.txt",
+    "worker-result.json",
+    "verification-result.json",
+    "evidence-review.md",
+    "evidence-review.json",
+    "evidence-reviewer-session.json",
+  ].map((artifactPath) => parseRunReportArtifactPath(artifactPath));
 }
 
 function githubPublishingRunner(

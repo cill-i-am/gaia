@@ -46,17 +46,29 @@ export class DoctorSummary extends Schema.Class<DoctorSummary>("DoctorSummary")(
   }
 ) {}
 
-export type DoctorCommandInput = {
-  readonly args: ReadonlyArray<string>;
-  readonly command: string;
-  readonly cwd: string;
-};
+export const DoctorCommandInputSchema = Schema.Struct({
+  args: Schema.Array(Schema.String),
+  command: Schema.NonEmptyString,
+  cwd: Schema.NonEmptyString,
+});
 
-export type DoctorCommandResult = {
-  readonly exitCode: number;
-  readonly stderr: string;
-  readonly stdout: string;
-};
+export type DoctorCommandInput = typeof DoctorCommandInputSchema.Type;
+
+export const parseDoctorCommandInput = Schema.decodeUnknownSync(
+  DoctorCommandInputSchema
+);
+
+export const DoctorCommandResultSchema = Schema.Struct({
+  exitCode: Schema.Number,
+  stderr: Schema.String,
+  stdout: Schema.String,
+});
+
+export type DoctorCommandResult = typeof DoctorCommandResultSchema.Type;
+
+export const parseDoctorCommandResult = Schema.decodeUnknownSync(
+  DoctorCommandResultSchema
+);
 
 export type DoctorCommandRunner = (
   input: DoctorCommandInput
@@ -118,21 +130,25 @@ export const nodeDoctorCommandRunner: DoctorCommandRunner = (input) =>
                 : typeof error.code === "number"
                   ? error.code
                   : 1;
-            resolve({
-              exitCode,
-              stderr,
-              stdout,
-            });
+            resolve(
+              parseDoctorCommandResult({
+                exitCode,
+                stderr,
+                stdout,
+              })
+            );
           }
         );
       }),
   }).pipe(
     Effect.catchTag("GaiaRuntimeError", () =>
-      Effect.succeed({
-        exitCode: 1,
-        stderr: "",
-        stdout: "",
-      })
+      Effect.succeed(
+        parseDoctorCommandResult({
+          exitCode: 1,
+          stderr: "",
+          stdout: "",
+        })
+      )
     )
   );
 
@@ -153,6 +169,15 @@ export const nodePlaywrightBrowserInspector: DoctorBrowserInspector = () =>
       )
     )
   );
+
+function runDoctorCommand(
+  runner: DoctorCommandRunner,
+  input: DoctorCommandInput
+) {
+  return runner(parseDoctorCommandInput(input)).pipe(
+    Effect.map(parseDoctorCommandResult)
+  );
+}
 
 function checkRunStoreWritable(rootDirectory: string) {
   return Effect.gen(function* () {
@@ -188,7 +213,7 @@ function checkGitRepository(
   rootDirectory: string,
   runner: DoctorCommandRunner
 ) {
-  return runner({
+  return runDoctorCommand(runner, {
     args: ["rev-parse", "--is-inside-work-tree"],
     command: "git",
     cwd: rootDirectory,
@@ -211,7 +236,7 @@ function checkGitRepository(
 }
 
 function checkGitHubAuth(rootDirectory: string, runner: DoctorCommandRunner) {
-  return runner({
+  return runDoctorCommand(runner, {
     args: ["auth", "status"],
     command: "gh",
     cwd: rootDirectory,
@@ -234,7 +259,7 @@ function checkGitHubAuth(rootDirectory: string, runner: DoctorCommandRunner) {
 }
 
 function checkGitWorktree(rootDirectory: string, runner: DoctorCommandRunner) {
-  return runner({
+  return runDoctorCommand(runner, {
     args: ["worktree", "list", "--porcelain"],
     command: "git",
     cwd: rootDirectory,
@@ -256,7 +281,7 @@ function checkGitWorktree(rootDirectory: string, runner: DoctorCommandRunner) {
 }
 
 function checkCodexCli(rootDirectory: string, runner: DoctorCommandRunner) {
-  return runner({
+  return runDoctorCommand(runner, {
     args: ["--version"],
     command: "codex",
     cwd: rootDirectory,

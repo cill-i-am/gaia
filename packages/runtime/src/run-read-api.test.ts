@@ -146,6 +146,21 @@ describe("local run read api", () => {
           "factory-retro-markdown",
           { rootDirectory: cwd }
         );
+        const planReview = yield* readLocalRunArtifact(
+          summary.runId,
+          "plan-review",
+          { rootDirectory: cwd }
+        );
+        const evidenceReview = yield* readLocalRunArtifact(
+          summary.runId,
+          "evidence-review",
+          { rootDirectory: cwd }
+        );
+        const verificationResult = yield* readLocalRunArtifact(
+          summary.runId,
+          "verification-result",
+          { rootDirectory: cwd }
+        );
         const rejected = yield* Effect.flip(
           readLocalRunArtifact(summary.runId, "../events.jsonl", {
             rootDirectory: cwd,
@@ -170,6 +185,18 @@ describe("local run read api", () => {
         assert.strictEqual(factoryRetro.artifactName, "factory-retro-markdown");
         assert.strictEqual(factoryRetro.contentType, "text/markdown");
         assert.include(factoryRetro.body, `# Factory Retro ${summary.runId}`);
+        assert.strictEqual(planReview.artifactName, "plan-review");
+        assert.strictEqual(planReview.contentType, "application/json");
+        assert.include(planReview.body, '"phase": "plan"');
+        assert.strictEqual(evidenceReview.artifactName, "evidence-review");
+        assert.strictEqual(evidenceReview.contentType, "application/json");
+        assert.include(evidenceReview.body, '"phase": "evidence"');
+        assert.strictEqual(
+          verificationResult.artifactName,
+          "verification-result"
+        );
+        assert.strictEqual(verificationResult.contentType, "application/json");
+        assert.include(verificationResult.body, '"status": "passed"');
         const rejectedDiagnostic = Schema.decodeUnknownSync(
           LocalRunReadDiagnosticSchema
         )(rejected);

@@ -32,10 +32,13 @@ import {
   parseFactoryLaneScorecard,
   parseDeliveryPublication,
   parseMarkdownSpec,
+  parseRunReport,
+  parseRunReportArtifactPath,
   parseRunMachineContext,
   parseRunMachineEvent,
   parseRunId,
   replayRunEvents,
+  RunReport,
   RunMachineContextSchema,
   RunMachineEventSchema,
   snapshotFromReplay,
@@ -56,6 +59,27 @@ describe("core contracts", () => {
 
     assert.strictEqual(spec.title, "Smoke test");
     assert.strictEqual(spec.body, "Do the smallest thing.");
+  });
+
+  it("parses run report artifact paths through the owning schema", () => {
+    const runId = parseRunId("run-V7kP9sQ2xY");
+    const artifact = parseRunReportArtifactPath("worker-plan.md");
+    const report = RunReport.make({
+      artifacts: [artifact],
+      reportPath: "report.md",
+      runId,
+      selectedSkills: ["production-ready"],
+      status: "completed",
+      summary: "Gaia completed the run.",
+    });
+    const serialized: unknown = JSON.parse(JSON.stringify(report));
+
+    assert.strictEqual(
+      parseRunReportArtifactPath("report.json"),
+      "report.json"
+    );
+    assert.throws(() => parseRunReportArtifactPath(""));
+    assert.deepEqual(parseRunReport(serialized).artifacts, [artifact]);
   });
 
   it("parses JSON-safe evidence promotion summaries", () => {

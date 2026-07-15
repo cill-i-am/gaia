@@ -558,11 +558,38 @@ describe("local run api http boundary", () => {
           const catalogResponse = yield* HttpClient.get(
             `/runs/${accepted.runId}/artifacts`
           ).pipe(Effect.provide(testServerLayer(cwd)));
-          const bodyResponse = yield* HttpClient.get(
-            `/runs/${accepted.runId}/artifacts/report-json`
+          const [
+            bodyResponse,
+            planReviewResponse,
+            evidenceReviewResponse,
+            verificationResultResponse,
+          ] = yield* Effect.all(
+            [
+              HttpClient.get(`/runs/${accepted.runId}/artifacts/report-json`),
+              HttpClient.get(`/runs/${accepted.runId}/artifacts/plan-review`),
+              HttpClient.get(
+                `/runs/${accepted.runId}/artifacts/evidence-review`
+              ),
+              HttpClient.get(
+                `/runs/${accepted.runId}/artifacts/verification-result`
+              ),
+            ],
+            { concurrency: "unbounded" }
           ).pipe(Effect.provide(testServerLayer(cwd)));
           const catalogBody = yield* responseJsonObject(catalogResponse);
           const body = yield* responseJsonObject(bodyResponse);
+          const planReview = getObject(
+            yield* responseJsonObject(planReviewResponse),
+            "data"
+          );
+          const evidenceReview = getObject(
+            yield* responseJsonObject(evidenceReviewResponse),
+            "data"
+          );
+          const verificationResult = getObject(
+            yield* responseJsonObject(verificationResultResponse),
+            "data"
+          );
           const artifacts = getArray(
             getObject(catalogBody, "data"),
             "artifacts"
@@ -581,13 +608,58 @@ describe("local run api http boundary", () => {
 
           assert.strictEqual(catalogResponse.status, 200);
           assert.strictEqual(bodyResponse.status, 200);
+          assert.strictEqual(planReviewResponse.status, 200);
+          assert.strictEqual(evidenceReviewResponse.status, 200);
+          assert.strictEqual(verificationResultResponse.status, 200);
           assert.isDefined(reportMetadata);
+          for (const expectedArtifactId of [
+            "plan-review",
+            "evidence-review",
+            "verification-result",
+          ]) {
+            assert.isDefined(
+              artifacts
+                .map((artifact) => {
+                  if (!isJsonObject(artifact)) {
+                    throw new Error(
+                      "Expected artifact metadata to be an object."
+                    );
+                  }
+                  return artifact;
+                })
+                .find(
+                  (artifact) =>
+                    getString(artifact, "artifactId") === expectedArtifactId
+                )
+            );
+          }
           assert.strictEqual(getString(data, "artifactId"), "report-json");
           assert.strictEqual(
             getString(data, "contentType"),
             "application/json"
           );
           assert.include(getString(data, "body"), accepted.runId);
+          assert.strictEqual(
+            getString(planReview, "artifactId"),
+            "plan-review"
+          );
+          assert.include(getString(planReview, "body"), '"phase": "plan"');
+          assert.strictEqual(
+            getString(evidenceReview, "artifactId"),
+            "evidence-review"
+          );
+          assert.include(
+            getString(evidenceReview, "body"),
+            '"phase": "evidence"'
+          );
+          assert.strictEqual(
+            getString(verificationResult, "artifactId"),
+            "verification-result"
+          );
+          assert.include(
+            getString(verificationResult, "body"),
+            '"status": "passed"'
+          );
         })
     );
 

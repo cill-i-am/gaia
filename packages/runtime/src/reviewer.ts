@@ -15,7 +15,7 @@ import {
   type ReviewerSessionAdapterKind,
   type ReviewerSessionKind,
 } from "./reviewer-session-evidence.js";
-import { VerificationResult } from "./verifier.js";
+import { parseVerificationResultJson } from "./verifier.js";
 import { parseWorkerPlanJson } from "./worker-plan.js";
 import {
   changedPaths,
@@ -94,14 +94,11 @@ export type ReviewerRunOptions = {
 
 const ReviewResultJson = Schema.toCodecJson(ReviewResult);
 const decodeReviewResult = Schema.decodeUnknownSync(ReviewResult);
-const encodeReviewResult = Schema.encodeSync(ReviewResultJson);
+export const encodeReviewResultJson = Schema.encodeSync(ReviewResultJson);
+export const parseReviewResultJson = Schema.decodeUnknownSync(ReviewResultJson);
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const parseHarnessRunResultJson =
   Schema.decodeUnknownSync(HarnessRunResultJson);
-const VerificationResultJson = Schema.toCodecJson(VerificationResult);
-const parseVerificationResultJson = Schema.decodeUnknownSync(
-  VerificationResultJson
-);
 const WorkspacePreparationResultJson = Schema.toCodecJson(
   WorkspacePreparationResult
 );
@@ -385,7 +382,7 @@ function writeReviewArtifacts(request: ReviewRunRequest, result: ReviewResult) {
     yield* fs.writeFileString(request.markdownPath, markdownReview(result));
     yield* fs.writeFileString(
       request.resultPath,
-      `${JSON.stringify(encodeReviewResult(result), null, 2)}\n`
+      `${JSON.stringify(encodeReviewResultJson(result), null, 2)}\n`
     );
   }).pipe(
     Effect.catchTag("PlatformError", (cause) =>

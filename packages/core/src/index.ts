@@ -342,7 +342,14 @@ export {
   type HarnessTurnStatus,
   type WorkspaceRelativePath,
 } from "./harness-session.js";
-export { RunReport, ReportStatusSchema, parseRunReport } from "./report.js";
+export {
+  RunReport,
+  RunReportArtifactPathSchema,
+  ReportStatusSchema,
+  parseRunReport,
+  parseRunReportArtifactPath,
+  type RunReportArtifactPath,
+} from "./report.js";
 export {
   AgentActionReceiptDto,
   AgentActionStateSchema,
