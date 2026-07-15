@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 
 import {
+  DeliveryBranchNamePublicSchema,
   DeliveryMergeDispatchAttempted,
   DeliveryMergeDispatchConfirmed,
   DeliveryMergeIntent,
   DeliveryMergeTerminalFailure,
   DeliveryCleanupCompleted,
   DeliveryCleanupRequired,
+  DeliveryGitShaPublicSchema,
   DeliveryMergeReadinessDecision,
   DeliveryMergeReadinessDecisionV2,
   DeliveryGitHubApprovedReviewSource,
@@ -14,12 +16,16 @@ import {
   DeliveryReviewApprovalNotRequiredSource,
   DeliveryRequiredCheckPolicy,
   DeliveryFeedbackTrustPolicyV1,
+  DeliverySha256DigestPublicSchema,
+  DeliveryTimestampPublicSchema,
   deliveryRequiredCheckPolicyCanonicalPayload,
   deliveryMergeReadinessDecisionV2PayloadDigest,
   deliveryFeedbackRequiresApprovedReview,
   encodeDeliveryMergeReceiptJson,
   encodeDeliveryCleanupReceiptJson,
   encodeDeliveryMergeReadinessDecisionJson,
+  GitHubPullRequestUrlPublicSchema,
+  GitHubRepositoryPublicSchema,
   parseDeliveryMergeReceipt,
   parseDeliveryMergeReadinessDecision,
   parseDeliveryPublication,
@@ -28,6 +34,7 @@ import {
   deriveAuthoritativeDeliveryHeadSha,
   deriveDeliveryAuthority,
   currentDeliveryLocalReviewAttestation,
+  RunIdSchema,
   type DeliveryReviewApprovalSource,
   type DeliveryMergeActionRequest,
   type DeliveryEvaluateMergeReadinessActionRequest,
@@ -48,11 +55,13 @@ import {
 import {
   coordinateBranchCleanup,
   coordinateWorktreeCleanup,
+  CleanupResourceAdapterSchema,
   type CleanupResourceAdapter,
 } from "./delivery-cleanup-resource-coordinator.js";
 import {
   DeliveryMergeConclusivelyRejected,
   invokeGitHubDeliveryMerge,
+  RequiredCheckFactSchema,
   validateRequiredChecks,
   type RequiredCheckFact,
 } from "./delivery-merge-provider.js";
@@ -67,36 +76,77 @@ import {
   makeRunPaths,
   type RunPaths,
   type RunStorageOptions,
+  RuntimePathTextSchema,
 } from "./paths.js";
 import { withRunStoreLock } from "./run-store-lock.js";
 
-export type FreshMergeState = {
-  readonly branchName: string;
-  readonly checks: ReadonlyArray<RequiredCheckFact>;
-  readonly draft: boolean;
-  readonly feedbackBlockers: number;
-  readonly headSha: string;
-  readonly mergeCommitSha?: string;
-  readonly mergeability: "conflicting" | "mergeable" | "unknown";
-  readonly mergedAt?: string;
-  readonly state: "closed" | "merged" | "open";
-  readonly supportedMethods: ReadonlyArray<"merge" | "rebase" | "squash">;
-  readonly prNumber: number;
-  readonly prUrl: string;
-  readonly repository: string;
-  readonly reviewDecision?: string;
-  readonly unresolvedActionableThreads: number;
-};
+const DeliveryMergeMethodSchema = Schema.Literals([
+  "merge",
+  "rebase",
+  "squash",
+] as const);
+const FreshMergeReviewDecisionSchema = Schema.String.pipe(
+  Schema.check(Schema.isMaxLength(120))
+);
+const FreshMergeNonNegativeIntegerSchema = Schema.Int.pipe(
+  Schema.check(Schema.isGreaterThanOrEqualTo(0))
+);
 
-export type DeliveryMergeCoordinatorOptions = RunStorageOptions & {
-  readonly cleanupResourceAdapter?: CleanupResourceAdapter;
-  readonly commandRunner?: GitHubCommandRunner;
-  readonly freshStateReader?: (input: {
-    readonly prNumber: number;
-    readonly repository: string;
-  }) => Effect.Effect<FreshMergeState, unknown>;
-  readonly requiredCheckPolicy?: typeof DeliveryRequiredCheckPolicy.Type;
-};
+export class FreshMergeState extends Schema.Class<FreshMergeState>(
+  "FreshMergeState"
+)({
+  branchName: DeliveryBranchNamePublicSchema,
+  checks: Schema.Array(RequiredCheckFactSchema),
+  draft: Schema.Boolean,
+  feedbackBlockers: FreshMergeNonNegativeIntegerSchema,
+  headSha: DeliveryGitShaPublicSchema,
+  mergeCommitSha: Schema.optionalKey(DeliveryGitShaPublicSchema),
+  mergeability: Schema.Literals([
+    "conflicting",
+    "mergeable",
+    "unknown",
+  ] as const),
+  mergedAt: Schema.optionalKey(DeliveryTimestampPublicSchema),
+  prNumber: Schema.Int,
+  prUrl: GitHubPullRequestUrlPublicSchema,
+  repository: GitHubRepositoryPublicSchema,
+  reviewDecision: Schema.optionalKey(FreshMergeReviewDecisionSchema),
+  state: Schema.Literals(["closed", "merged", "open"] as const),
+  supportedMethods: Schema.Array(DeliveryMergeMethodSchema),
+  unresolvedActionableThreads: FreshMergeNonNegativeIntegerSchema,
+}) {}
+
+const FreshMergeTargetSchema = Schema.Struct({
+  prNumber: Schema.Int,
+  repository: GitHubRepositoryPublicSchema,
+});
+
+type FreshMergeTarget = typeof FreshMergeTargetSchema.Type;
+
+type FreshMergeStateReader = (
+  input: FreshMergeTarget
+) => Effect.Effect<FreshMergeState, unknown>;
+
+const FreshMergeStateReaderSchema = Schema.declare<FreshMergeStateReader>(
+  (input): input is FreshMergeStateReader => typeof input === "function"
+);
+
+const GitHubCommandRunnerSchema = Schema.declare<GitHubCommandRunner>(
+  (input): input is GitHubCommandRunner => typeof input === "function"
+);
+
+const DeliveryMergeCoordinatorOptionFieldsSchema = Schema.Struct({
+  cleanupResourceAdapter: Schema.optionalKey(CleanupResourceAdapterSchema),
+  commandRunner: Schema.optionalKey(GitHubCommandRunnerSchema),
+  freshStateReader: Schema.optionalKey(FreshMergeStateReaderSchema),
+  requiredCheckPolicy: Schema.optionalKey(DeliveryRequiredCheckPolicy),
+});
+
+type DeliveryMergeCoordinatorOptionFields =
+  typeof DeliveryMergeCoordinatorOptionFieldsSchema.Type;
+
+export type DeliveryMergeCoordinatorOptions = RunStorageOptions &
+  DeliveryMergeCoordinatorOptionFields;
 
 export function requiredCheckPolicyFromTrustPolicy(
   trust: DeliveryFeedbackTrustPolicyV1
@@ -119,12 +169,38 @@ export function requiredCheckPolicyFromTrustPolicy(
   });
 }
 
-export function makeGitHubFreshMergeStateReader(input: {
-  readonly commandRunner?: GitHubCommandRunner;
-  readonly rootDirectory: string;
-  readonly trustPolicy: DeliveryFeedbackTrustPolicyV1;
-}) {
-  return (target: { readonly prNumber: number; readonly repository: string }) =>
+const GitHubMergeViewSchema = Schema.Struct({
+  headRefName: DeliveryBranchNamePublicSchema,
+  headRefOid: DeliveryGitShaPublicSchema,
+  isDraft: Schema.Boolean,
+  mergeable: Schema.Literals(["CONFLICTING", "MERGEABLE", "UNKNOWN"] as const),
+  mergeCommit: Schema.NullOr(
+    Schema.Struct({ oid: Schema.optionalKey(DeliveryGitShaPublicSchema) })
+  ),
+  mergedAt: Schema.NullOr(DeliveryTimestampPublicSchema),
+  reviewDecision: Schema.optionalKey(
+    Schema.NullOr(FreshMergeReviewDecisionSchema)
+  ),
+  state: Schema.Literals(["CLOSED", "MERGED", "OPEN"] as const),
+  url: GitHubPullRequestUrlPublicSchema,
+});
+
+const GitHubMergeCapabilitySchema = Schema.Struct({
+  mergeCommitAllowed: Schema.Boolean,
+  rebaseMergeAllowed: Schema.Boolean,
+  squashMergeAllowed: Schema.Boolean,
+});
+
+const GitHubFreshMergeStateReaderInputSchema = Schema.Struct({
+  commandRunner: Schema.optionalKey(GitHubCommandRunnerSchema),
+  rootDirectory: RuntimePathTextSchema,
+  trustPolicy: DeliveryFeedbackTrustPolicyV1,
+});
+
+export function makeGitHubFreshMergeStateReader(
+  input: typeof GitHubFreshMergeStateReaderInputSchema.Type
+) {
+  return (target: FreshMergeTarget) =>
     Effect.gen(function* () {
       const commandRunner = input.commandRunner ?? nodeGitHubCommandRunner;
       const read = yield* readGitHubPullRequest({
@@ -166,22 +242,33 @@ export function makeGitHubFreshMergeStateReader(input: {
             recoverable: true,
           })
         );
-      const detail = JSON.parse(view.stdout) as {
-        headRefName: string;
-        headRefOid: string;
-        isDraft: boolean;
-        mergeable: string;
-        reviewDecision?: string | null;
-        state: string;
-        mergedAt?: string | null;
-        mergeCommit?: { oid?: string } | null;
-        url: string;
-      };
-      const capability = JSON.parse(repo.stdout) as {
-        mergeCommitAllowed: boolean;
-        rebaseMergeAllowed: boolean;
-        squashMergeAllowed: boolean;
-      };
+      const detail = yield* Effect.try({
+        try: () =>
+          Schema.decodeUnknownSync(GitHubMergeViewSchema)(
+            JSON.parse(view.stdout)
+          ),
+        catch: (cause) =>
+          makeRuntimeError({
+            cause,
+            code: "DeliveryMergeReadInvalid",
+            message: "GitHub merge state did not match Gaia's schema.",
+            recoverable: true,
+          }),
+      });
+      const capability = yield* Effect.try({
+        try: () =>
+          Schema.decodeUnknownSync(GitHubMergeCapabilitySchema)(
+            JSON.parse(repo.stdout)
+          ),
+        catch: (cause) =>
+          makeRuntimeError({
+            cause,
+            code: "DeliveryMergeCapabilityInvalid",
+            message:
+              "GitHub repository merge capability output did not match Gaia's schema.",
+            recoverable: true,
+          }),
+      });
       const methods = [
         ...(capability.mergeCommitAllowed ? ["merge" as const] : []),
         ...(capability.rebaseMergeAllowed ? ["rebase" as const] : []),
@@ -190,7 +277,7 @@ export function makeGitHubFreshMergeStateReader(input: {
       const reviewDecision = normalizeGitHubReviewDecision(
         detail.reviewDecision
       );
-      return {
+      return FreshMergeState.make({
         branchName: detail.headRefName,
         checks: read.observation.checks.map((check) => ({
           appSlug: check.appSlug,
@@ -199,10 +286,10 @@ export function makeGitHubFreshMergeStateReader(input: {
           repository: target.repository,
           state:
             check.state === "passing"
-              ? ("passing" as const)
+              ? "passing"
               : check.state === "pending"
-                ? ("pending" as const)
-                : ("failed" as const),
+                ? "pending"
+                : "failed",
           workflow: check.workflow,
         })),
         draft: detail.isDraft,
@@ -213,10 +300,10 @@ export function makeGitHubFreshMergeStateReader(input: {
           : { mergeCommitSha: detail.mergeCommit.oid }),
         mergeability:
           detail.mergeable === "MERGEABLE"
-            ? ("mergeable" as const)
+            ? "mergeable"
             : detail.mergeable === "CONFLICTING"
-              ? ("conflicting" as const)
-              : ("unknown" as const),
+              ? "conflicting"
+              : "unknown",
         ...(detail.mergedAt == null ? {} : { mergedAt: detail.mergedAt }),
         prNumber: target.prNumber,
         prUrl: detail.url,
@@ -224,25 +311,51 @@ export function makeGitHubFreshMergeStateReader(input: {
         ...(reviewDecision === undefined ? {} : { reviewDecision }),
         state:
           detail.state === "OPEN"
-            ? ("open" as const)
+            ? "open"
             : detail.state === "MERGED"
-              ? ("merged" as const)
-              : ("closed" as const),
+              ? "merged"
+              : "closed",
         supportedMethods: methods,
         unresolvedActionableThreads: read.observation.feedback.filter(
           (item) =>
             item.kind === "thread" && item.classification === "actionable"
         ).length,
-      } satisfies FreshMergeState;
+      });
     });
 }
 
 /** GitHub represents an absent aggregate review decision as either null or an empty string. */
+const GitHubReviewDecisionInputSchema = Schema.UndefinedOr(
+  Schema.NullOr(FreshMergeReviewDecisionSchema)
+);
+
 export function normalizeGitHubReviewDecision(
-  value: string | null | undefined
+  value: typeof GitHubReviewDecisionInputSchema.Type
 ) {
   return value == null || value === "" ? undefined : value;
 }
+
+const MergeRunIdPublicSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^run-[A-Za-z0-9_-]{10}$/u))
+);
+
+const MergeReviewApprovalPublicationSchema = Schema.declare<
+  Parameters<typeof currentDeliveryLocalReviewAttestation>[1]["publication"]
+>(
+  (
+    input
+  ): input is Parameters<
+    typeof currentDeliveryLocalReviewAttestation
+  >[1]["publication"] => typeof input === "object" && input !== null
+);
+
+const ReviewApprovalSourceInputSchema = Schema.Struct({
+  publication: MergeReviewApprovalPublicationSchema,
+  repository: GitHubRepositoryPublicSchema,
+  runId: MergeRunIdPublicSchema,
+});
+
+const MergeHashInputSchema = Schema.String;
 
 export function coordinateDeliveryMerge(
   runId: RunId,
@@ -915,7 +1028,7 @@ function appendMerge(
 }
 function validateFresh(
   fresh: FreshMergeState,
-  branch: string,
+  branch: typeof DeliveryBranchNamePublicSchema.Type,
   action: DeliveryMergeActionRequest,
   policy: typeof DeliveryRequiredCheckPolicy.Type,
   approvalSource?: DeliveryReviewApprovalSource
@@ -935,8 +1048,8 @@ function validateFresh(
 }
 function freshBlockers(
   fresh: FreshMergeState,
-  branch: string,
-  method: "merge" | "rebase" | "squash",
+  branch: typeof DeliveryBranchNamePublicSchema.Type,
+  method: typeof DeliveryMergeMethodSchema.Type,
   policy: typeof DeliveryRequiredCheckPolicy.Type,
   approvalSource?: DeliveryReviewApprovalSource
 ) {
@@ -980,13 +1093,7 @@ function resolveReviewApprovalSource(
   fresh: FreshMergeState,
   policy: typeof DeliveryRequiredCheckPolicy.Type,
   events: Parameters<typeof currentDeliveryLocalReviewAttestation>[0],
-  input: {
-    readonly publication: Parameters<
-      typeof currentDeliveryLocalReviewAttestation
-    >[1]["publication"];
-    readonly repository: string;
-    readonly runId: string;
-  }
+  input: typeof ReviewApprovalSourceInputSchema.Type
 ): DeliveryReviewApprovalSource | undefined {
   if (fresh.reviewDecision === "CHANGES_REQUESTED") return undefined;
   if (fresh.reviewDecision === "APPROVED") {
@@ -1036,12 +1143,14 @@ function assertSameBinding(
       recoverable: true,
     });
 }
-function repositoryFromPrUrl(url: string) {
+function repositoryFromPrUrl(
+  url: typeof GitHubPullRequestUrlPublicSchema.Type
+) {
   const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(url);
   if (match?.[1] === undefined) throw new Error("Invalid owned PR URL.");
-  return match[1];
+  return Schema.decodeUnknownSync(GitHubRepositoryPublicSchema)(match[1]);
 }
-function hash(value: string) {
+function hash(value: typeof MergeHashInputSchema.Type) {
   return createHash("sha256").update(value).digest("hex");
 }
 function conflict(message: string) {

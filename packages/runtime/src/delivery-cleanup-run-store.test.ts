@@ -22,12 +22,13 @@ import {
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { parseDeliveryCleanupResourceCheckpoint } from "./delivery-cleanup-provenance.js";
 import {
   makeRecordingCleanupResourceAdapter,
   type CleanupResourceAdapter,
 } from "./delivery-cleanup-resource-coordinator.js";
 import { coordinateDeliveryCleanup } from "./delivery-merge-coordinator.js";
-import { makeRunPaths } from "./paths.js";
+import { makeRunPaths, RuntimePathTextSchema } from "./paths.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -121,14 +122,13 @@ function fixture() {
   return { binding, paths, root, runId };
 }
 
-function eventTypes(file: string) {
+const parseCleanupRunStoreEvent = Schema.decodeUnknownSync(RunEvent);
+
+function eventTypes(file: typeof RuntimePathTextSchema.Type) {
   return readFileSync(file, "utf8")
     .trim()
     .split("\n")
-    .map(
-      (line) =>
-        JSON.parse(line) as { type: string; payload: Record<string, unknown> }
-    );
+    .map((line) => parseCleanupRunStoreEvent(JSON.parse(line)));
 }
 function run<A, E>(
   effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>
@@ -187,16 +187,15 @@ describe("delivery cleanup authoritative run-store integration", () => {
         ({ type }) => type === "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED"
       )
     );
+    const afterFailureCheckpoints = afterFailure.flatMap(({ payload }) =>
+      payload["checkpoint"] === undefined
+        ? []
+        : [parseDeliveryCleanupResourceCheckpoint(payload["checkpoint"])]
+    );
     expect(
-      afterFailure.some(
-        ({ payload }) =>
-          (
-            payload["checkpoint"] as
-              | { resource?: string; state?: string }
-              | undefined
-          )?.resource === "worktree" &&
-          (payload["checkpoint"] as { state?: string }).state ===
-            "absenceProven"
+      afterFailureCheckpoints.some(
+        ({ resource, state }) =>
+          resource === "worktree" && state === "absenceProven"
       )
     ).toBe(true);
 

@@ -11,7 +11,10 @@ import {
 import path from "node:path";
 
 import {
+  DeliveryActionIdPublicSchema,
+  DeliveryOperationIdPublicSchema,
   DeliveryRemediationActivationActionRequest,
+  DeliverySha256DigestPublicSchema,
   RunIdSchema,
   type RunId,
 } from "@gaia/core";
@@ -22,77 +25,111 @@ import {
   DeliveryFeedbackSmokeAuthorization,
   deliveryFeedbackSmokeAuthorizationDigest,
 } from "./github-pull-request-provider.js";
+import { RuntimePathTextSchema } from "./paths.js";
 
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
-const DigestSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
-);
-const BoundedIdSchema = Schema.NonEmptyString.pipe(
-  Schema.check(Schema.isPattern(/^[A-Za-z0-9:_-]+$/u)),
-  Schema.check(Schema.isMaxLength(200))
-);
 const PromptSchema = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isMaxLength(16_384))
 );
+const ActivationStableHashInputSchema = Schema.String;
 const maximumEnvelopeBytes = 32_768;
+type ActivationDigest = typeof DeliverySha256DigestPublicSchema.Type;
+type ActivationPrivatePath = typeof RuntimePathTextSchema.Type;
+type ActivationStableHashInput = typeof ActivationStableHashInputSchema.Type;
 
 /** Adapter-private restart material for one already-authorized attempt. */
 export class DeliveryRemediationActivationEnvelope extends Schema.Class<DeliveryRemediationActivationEnvelope>(
   "DeliveryRemediationActivationEnvelope"
 )(
   {
-    actionIdempotencyKey: BoundedIdSchema,
-    activationReceiptDigest: DigestSchema,
+    actionIdempotencyKey: DeliveryActionIdPublicSchema,
+    activationReceiptDigest: DeliverySha256DigestPublicSchema,
     attempt: Schema.Int.pipe(
       Schema.check(Schema.isGreaterThanOrEqualTo(1)),
       Schema.check(Schema.isLessThanOrEqualTo(2))
     ),
     authorization: DeliveryFeedbackSmokeAuthorization,
-    clientInputId: BoundedIdSchema,
+    clientInputId: DeliveryActionIdPublicSchema,
     expectedEventSequence: Schema.Int.pipe(
       Schema.check(Schema.isGreaterThanOrEqualTo(1))
     ),
-    expectedPredecessorDigest: DigestSchema,
-    operationId: BoundedIdSchema,
+    expectedPredecessorDigest: DeliverySha256DigestPublicSchema,
+    operationId: DeliveryOperationIdPublicSchema,
     prompt: PromptSchema,
-    promptDigest: DigestSchema,
+    promptDigest: DeliverySha256DigestPublicSchema,
     runId: RunIdSchema,
-    trustPolicyDigest: DigestSchema,
+    trustPolicyDigest: DeliverySha256DigestPublicSchema,
     version: Schema.Literal(1),
   },
   strict
 ) {}
 
-export type DeliveryRemediationActivationStore = {
-  readonly load: (
-    runId: RunId,
-    authorizationDigest: string
-  ) => Effect.Effect<
-    DeliveryRemediationActivationEnvelope | undefined,
-    ReturnType<typeof activationError>
-  >;
-  readonly removeVerified: (input: {
-    readonly authorizationDigest: string;
-    readonly receiptDigest: string;
-    readonly runId: RunId;
-  }) => Effect.Effect<boolean, ReturnType<typeof activationError>>;
-  readonly save: (
-    envelope: DeliveryRemediationActivationEnvelope
-  ) => Effect.Effect<void, ReturnType<typeof activationError>>;
-};
+const DeliveryRemediationActivationRemoveVerifiedInputSchema = Schema.Struct({
+  authorizationDigest: DeliverySha256DigestPublicSchema,
+  receiptDigest: DeliverySha256DigestPublicSchema,
+  runId: RunIdSchema,
+});
+
+type DeliveryRemediationActivationRemoveVerifiedInput =
+  typeof DeliveryRemediationActivationRemoveVerifiedInputSchema.Type;
+
+type DeliveryRemediationActivationLoad = (
+  runId: RunId,
+  authorizationDigest: ActivationDigest
+) => Effect.Effect<
+  DeliveryRemediationActivationEnvelope | undefined,
+  ReturnType<typeof activationError>
+>;
+
+type DeliveryRemediationActivationRemoveVerified = (
+  input: DeliveryRemediationActivationRemoveVerifiedInput
+) => Effect.Effect<boolean, ReturnType<typeof activationError>>;
+
+type DeliveryRemediationActivationSave = (
+  envelope: DeliveryRemediationActivationEnvelope
+) => Effect.Effect<void, ReturnType<typeof activationError>>;
+
+const DeliveryRemediationActivationLoadSchema =
+  Schema.declare<DeliveryRemediationActivationLoad>(
+    (input): input is DeliveryRemediationActivationLoad =>
+      typeof input === "function"
+  );
+const DeliveryRemediationActivationRemoveVerifiedSchema =
+  Schema.declare<DeliveryRemediationActivationRemoveVerified>(
+    (input): input is DeliveryRemediationActivationRemoveVerified =>
+      typeof input === "function"
+  );
+const DeliveryRemediationActivationSaveSchema =
+  Schema.declare<DeliveryRemediationActivationSave>(
+    (input): input is DeliveryRemediationActivationSave =>
+      typeof input === "function"
+  );
+
+export const DeliveryRemediationActivationStoreSchema = Schema.Struct({
+  load: DeliveryRemediationActivationLoadSchema,
+  removeVerified: DeliveryRemediationActivationRemoveVerifiedSchema,
+  save: DeliveryRemediationActivationSaveSchema,
+});
+
+export type DeliveryRemediationActivationStore =
+  typeof DeliveryRemediationActivationStoreSchema.Type;
+
+const MakeDeliveryRemediationActivationEnvelopeInputSchema = Schema.Struct({
+  attempt: Schema.Number,
+  authorization: DeliveryFeedbackSmokeAuthorization,
+  clientInputId: DeliveryActionIdPublicSchema,
+  expectedPredecessorDigest: DeliverySha256DigestPublicSchema,
+  operationId: DeliveryOperationIdPublicSchema,
+  prompt: PromptSchema,
+  request: DeliveryRemediationActivationActionRequest,
+  runId: RunIdSchema,
+  trustPolicyDigest: DeliverySha256DigestPublicSchema,
+});
 
 /** Build the immutable private envelope and bind the operator action key. */
-export function makeDeliveryRemediationActivationEnvelope(input: {
-  readonly attempt: number;
-  readonly authorization: DeliveryFeedbackSmokeAuthorization;
-  readonly clientInputId: string;
-  readonly expectedPredecessorDigest: string;
-  readonly operationId: string;
-  readonly prompt: string;
-  readonly request: DeliveryRemediationActivationActionRequest;
-  readonly runId: RunId;
-  readonly trustPolicyDigest: string;
-}) {
+export function makeDeliveryRemediationActivationEnvelope(
+  input: typeof MakeDeliveryRemediationActivationEnvelopeInputSchema.Type
+) {
   const prompt = input.prompt.trim();
   if (prompt.length === 0 || Buffer.byteLength(prompt) > 16_384) {
     throw activationError(
@@ -146,7 +183,7 @@ export function makeDeliveryRemediationActivationEnvelope(input: {
 
 /** Privacy-safe public binding for one immutable operator action key. */
 export function deliveryRemediationActivationActionDigest(
-  actionIdempotencyKey: string
+  actionIdempotencyKey: typeof DeliveryActionIdPublicSchema.Type
 ) {
   return stableHash(
     `gaia-remediation-activation-action-v1\0${actionIdempotencyKey}`
@@ -155,7 +192,7 @@ export function deliveryRemediationActivationActionDigest(
 
 /** Durable private store with exact-file cleanup only. */
 export function makeFileDeliveryRemediationActivationStore(
-  rootDirectory: string
+  rootDirectory: ActivationPrivatePath
 ): DeliveryRemediationActivationStore {
   const directory = activationDirectory(rootDirectory);
   return {
@@ -252,10 +289,10 @@ export function makeFileDeliveryRemediationActivationStore(
 }
 
 async function readEnvelope(
-  rootDirectory: string,
-  directory: string,
+  rootDirectory: ActivationPrivatePath,
+  directory: ActivationPrivatePath,
   runId: RunId,
-  authorizationDigest: string
+  authorizationDigest: ActivationDigest
 ) {
   if (!(await hasNoSymlinkedPath(rootDirectory, directory))) return undefined;
   let directoryMetadata;
@@ -305,8 +342,8 @@ async function readEnvelope(
 }
 
 async function ensurePrivateDirectory(
-  rootDirectory: string,
-  directory: string
+  rootDirectory: ActivationPrivatePath,
+  directory: ActivationPrivatePath
 ) {
   const root = path.resolve(rootDirectory);
   const relative = path.relative(root, directory);
@@ -335,7 +372,10 @@ async function ensurePrivateDirectory(
   }
 }
 
-async function hasNoSymlinkedPath(rootDirectory: string, directory: string) {
+async function hasNoSymlinkedPath(
+  rootDirectory: ActivationPrivatePath,
+  directory: ActivationPrivatePath
+) {
   const root = path.resolve(rootDirectory);
   const relative = path.relative(root, directory);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -350,14 +390,14 @@ async function hasNoSymlinkedPath(rootDirectory: string, directory: string) {
   return true;
 }
 
-async function assertDirectoryIsNotSymlink(directory: string) {
+async function assertDirectoryIsNotSymlink(directory: ActivationPrivatePath) {
   const metadata = await lstat(directory);
   if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
     throw new Error("Activation envelope path contains a symlink.");
   }
 }
 
-async function isDirectoryNotSymlink(directory: string) {
+async function isDirectoryNotSymlink(directory: ActivationPrivatePath) {
   try {
     await assertDirectoryIsNotSymlink(directory);
     return true;
@@ -417,7 +457,7 @@ export function deliveryRemediationActivationMatchesRequest(
   );
 }
 
-function activationDirectory(rootDirectory: string) {
+function activationDirectory(rootDirectory: ActivationPrivatePath) {
   return path.join(
     rootDirectory,
     ".gaia",
@@ -427,9 +467,9 @@ function activationDirectory(rootDirectory: string) {
 }
 
 function activationPath(
-  directory: string,
+  directory: ActivationPrivatePath,
   runId: RunId,
-  authorizationDigest: string
+  authorizationDigest: ActivationDigest
 ) {
   return path.join(
     directory,
@@ -437,7 +477,7 @@ function activationPath(
   );
 }
 
-async function syncDirectory(directory: string) {
+async function syncDirectory(directory: ActivationPrivatePath) {
   const handle = await open(directory, "r");
   try {
     await handle.sync();
@@ -446,7 +486,7 @@ async function syncDirectory(directory: string) {
   }
 }
 
-function stableHash(value: string) {
+function stableHash(value: ActivationStableHashInput) {
   return createHash("sha256").update(value).digest("hex");
 }
 
@@ -473,9 +513,9 @@ function activationError(code: string, message: string, cause?: unknown) {
 }
 
 export function deliveryRemediationActivationPathForTest(
-  rootDirectory: string,
+  rootDirectory: ActivationPrivatePath,
   runId: RunId,
-  authorizationDigest: string
+  authorizationDigest: ActivationDigest
 ) {
   return activationPath(
     activationDirectory(rootDirectory),

@@ -12,6 +12,7 @@ import path from "node:path";
 import { NodePath, NodeServices } from "@effect/platform-node";
 import {
   DeliveryFeedbackTrustPolicyV1,
+  DeliveryGitShaPublicSchema,
   DeliveryMergeDispatchAttempted,
   DeliveryMergeIntent,
   DeliveryMergeReadinessDecision,
@@ -480,7 +481,7 @@ function appendConfirmedRemediation(
 
 function appendCurrentReadyConfirmation(
   result: ReturnType<typeof fixture>,
-  expectedHeadSha: string
+  expectedHeadSha: typeof DeliveryGitShaPublicSchema.Type
 ) {
   const eventsPath = path.join(
     result.root,

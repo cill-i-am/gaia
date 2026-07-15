@@ -6,8 +6,19 @@ import {
   DeliveryFeedbackIdSchema,
   DeliveryFeedbackObservation,
   DeliveryPullRequestObservation,
+  DeliveryBranchNamePublicSchema,
   parseDeliveryFeedbackId,
-  type DeliveryFeedbackTrustPolicyV1,
+  DeliveryGitShaPublicSchema,
+  DeliveryPositiveIntegerSchema,
+  DeliverySha256DigestPublicSchema,
+  DeliverySourcePathPublicSchema,
+  GitHubCheckFieldPublicSchema,
+  GitHubDatabaseIdPublicSchema,
+  GitHubLoginPublicSchema,
+  GitHubProviderUrlPublicSchema,
+  GitHubPullRequestUrlPublicSchema,
+  GitHubRepositoryPublicSchema,
+  DeliveryFeedbackTrustPolicyV1,
 } from "@gaia/core";
 import { Effect, Schema } from "effect";
 
@@ -17,25 +28,45 @@ import {
   type GitHubCommandRunner,
 } from "./github-publisher.js";
 
+const GitHubCommandRunnerSchema = Schema.declare<GitHubCommandRunner>(
+  (input): input is GitHubCommandRunner => typeof input === "function"
+);
+const GitHubNowSchema = Schema.declare<() => string>(
+  (input): input is () => string => typeof input === "function"
+);
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
 const remediationMarker = "<!-- gaia-remediation-request:v1 -->";
 const evidenceMarker = "<!-- gaia:evidence-comment ";
 const maximumBodyCharacters = 16_384;
 const trustedAssociations = new Set(["COLLABORATOR", "MEMBER", "OWNER"]);
 const passingConclusions = new Set(["NEUTRAL", "SKIPPED", "SUCCESS"]);
-const DigestSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
+const DigestSchema = DeliverySha256DigestPublicSchema;
+const GitShaSchema = DeliveryGitShaPublicSchema;
+const LoginSchema = GitHubLoginPublicSchema;
+const RepositorySchema = GitHubRepositoryPublicSchema;
+const GitHubRawNodeIdSchema = Schema.String.pipe(
+  Schema.check(Schema.isMinLength(1)),
+  Schema.check(Schema.isMaxLength(256))
 );
-const GitShaSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))
+const GitHubRawTimestampSchema = Schema.String.pipe(
+  Schema.check(Schema.isMinLength(1)),
+  Schema.check(Schema.isMaxLength(64))
 );
-const LoginSchema = Schema.String.pipe(
+const GitHubRawStateSchema = Schema.String.pipe(
+  Schema.check(Schema.isMinLength(1)),
+  Schema.check(Schema.isMaxLength(80))
+);
+const GitHubProviderPathSchema = Schema.String.pipe(
+  Schema.check(Schema.isMaxLength(1_024))
+);
+const GitHubProviderRootDirectorySchema = Schema.String.pipe(
+  Schema.check(Schema.isMinLength(1)),
+  Schema.check(Schema.isMaxLength(4_096))
+);
+const DeliveryFeedbackIdPublicSchema = Schema.String.pipe(
   Schema.check(
-    Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u)
+    Schema.isPattern(/^feedback-(?:check|comment|review|thread)-[a-f0-9]{64}$/u)
   )
-);
-const RepositorySchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u))
 );
 const TrustedAssociationSchema = Schema.Literals([
   "COLLABORATOR",
@@ -46,15 +77,19 @@ const DeliveryFeedbackSmokeAuthorizationInputSchema = Schema.Struct({
   actorLogin: LoginSchema,
   actorType: Schema.Literal("User"),
   authorAssociation: TrustedAssociationSchema,
-  commentDatabaseId: Schema.Union([Schema.String, Schema.Number]),
+  commentDatabaseId: Schema.Union([
+    GitHubDatabaseIdPublicSchema,
+    Schema.Number,
+  ]),
   contentDigest: DigestSchema,
   feedbackId: DeliveryFeedbackIdSchema,
   headSha: GitShaSchema,
-  prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+  prNumber: DeliveryPositiveIntegerSchema,
   repository: RepositorySchema,
 });
-type DeliveryFeedbackSmokeAuthorizationInput =
-  typeof DeliveryFeedbackSmokeAuthorizationInputSchema.Type;
+type DeliveryFeedbackSmokeAuthorizationInput = Schema.Schema.Type<
+  typeof DeliveryFeedbackSmokeAuthorizationInputSchema
+>;
 
 class RawActor extends Schema.Class<RawActor>("RawActor")(
   {
@@ -139,9 +174,9 @@ class RawComment extends Schema.Class<RawComment>("RawComment")(
     author: RawActorOrNull,
     authorAssociation: RawAssociation,
     body: RawBody,
-    databaseId: Schema.Union([Schema.String, Schema.Number]),
-    updatedAt: Schema.String,
-    url: Schema.String,
+    databaseId: Schema.Union([GitHubDatabaseIdPublicSchema, Schema.Number]),
+    updatedAt: GitHubRawTimestampSchema,
+    url: GitHubProviderUrlPublicSchema,
   },
   strict
 ) {}
@@ -151,10 +186,10 @@ class RawReview extends Schema.Class<RawReview>("RawReview")(
     author: RawActorOrNull,
     authorAssociation: RawAssociation,
     body: RawBody,
-    databaseId: Schema.Union([Schema.String, Schema.Number]),
-    state: Schema.NonEmptyString,
-    updatedAt: Schema.String,
-    url: Schema.String,
+    databaseId: Schema.Union([GitHubDatabaseIdPublicSchema, Schema.Number]),
+    state: GitHubRawStateSchema,
+    updatedAt: GitHubRawTimestampSchema,
+    url: GitHubProviderUrlPublicSchema,
   },
   strict
 ) {}
@@ -166,14 +201,14 @@ class RawThreadComment extends Schema.Class<RawThreadComment>(
     author: RawActorOrNull,
     authorAssociation: RawAssociation,
     body: RawBody,
-    databaseId: Schema.Union([Schema.String, Schema.Number]),
+    databaseId: Schema.Union([GitHubDatabaseIdPublicSchema, Schema.Number]),
     outdated: Schema.Boolean,
-    path: Schema.NullOr(Schema.String),
+    path: Schema.NullOr(GitHubProviderPathSchema),
     pullRequestReview: Schema.NullOr(
-      Schema.Struct({ state: Schema.NonEmptyString })
+      Schema.Struct({ state: GitHubRawStateSchema })
     ),
-    updatedAt: Schema.String,
-    url: Schema.String,
+    updatedAt: GitHubRawTimestampSchema,
+    url: GitHubProviderUrlPublicSchema,
   },
   strict
 ) {}
@@ -186,7 +221,7 @@ class RawReviewThread extends Schema.Class<RawReviewThread>("RawReviewThread")(
       ),
       pageInfo: RawPageInfo,
     }),
-    id: Schema.String,
+    id: GitHubRawNodeIdSchema,
     isResolved: Schema.Boolean,
   },
   strict
@@ -194,17 +229,17 @@ class RawReviewThread extends Schema.Class<RawReviewThread>("RawReviewThread")(
 
 class RawCheckRun extends Schema.Class<RawCheckRun>("RawCheckRun")(
   {
-    conclusion: Schema.NullOr(Schema.String),
-    detailsUrl: Schema.NullOr(Schema.String),
-    name: Schema.NonEmptyString,
-    status: Schema.NonEmptyString,
+    conclusion: Schema.NullOr(GitHubRawStateSchema),
+    detailsUrl: Schema.NullOr(GitHubProviderUrlPublicSchema),
+    name: GitHubCheckFieldPublicSchema,
+    status: GitHubRawStateSchema,
   },
   strict
 ) {}
 
 class RawCheckSuite extends Schema.Class<RawCheckSuite>("RawCheckSuite")(
   {
-    app: Schema.NullOr(Schema.Struct({ slug: Schema.NonEmptyString })),
+    app: Schema.NullOr(Schema.Struct({ slug: GitHubCheckFieldPublicSchema })),
     checkRuns: Schema.Struct({
       nodes: Schema.Array(RawCheckRun).pipe(
         Schema.check(Schema.isMaxLength(100))
@@ -213,7 +248,9 @@ class RawCheckSuite extends Schema.Class<RawCheckSuite>("RawCheckSuite")(
     }),
     workflowRun: Schema.NullOr(
       Schema.Struct({
-        workflow: Schema.NullOr(Schema.Struct({ name: Schema.NonEmptyString })),
+        workflow: Schema.NullOr(
+          Schema.Struct({ name: GitHubCheckFieldPublicSchema })
+        ),
       })
     ),
   },
@@ -239,18 +276,16 @@ class RawPullRequest extends Schema.Class<RawPullRequest>("RawPullRequest")(
               ),
               pageInfo: RawPageInfo,
             }),
-            oid: Schema.String,
+            oid: DeliveryGitShaPublicSchema,
           }),
         })
       ).pipe(Schema.check(Schema.isMaxLength(1))),
     }),
-    headRefName: Schema.NonEmptyString.pipe(
-      Schema.check(Schema.isMaxLength(240))
-    ),
-    headRefOid: Schema.String,
+    headRefName: DeliveryBranchNamePublicSchema,
+    headRefOid: DeliveryGitShaPublicSchema,
     isDraft: Schema.Boolean,
-    mergeable: Schema.NonEmptyString,
-    reviewDecision: Schema.NullOr(Schema.String),
+    mergeable: GitHubRawStateSchema,
+    reviewDecision: Schema.NullOr(GitHubRawStateSchema),
     reviewThreads: Schema.Struct({
       nodes: Schema.Array(RawReviewThread).pipe(
         Schema.check(Schema.isMaxLength(100))
@@ -263,7 +298,7 @@ class RawPullRequest extends Schema.Class<RawPullRequest>("RawPullRequest")(
       ),
       pageInfo: RawPageInfo,
     }),
-    url: Schema.String,
+    url: GitHubPullRequestUrlPublicSchema,
   },
   strict
 ) {}
@@ -274,29 +309,41 @@ const RawResponse = Schema.Struct({
   }),
 });
 
+const DeliveryRemediationInputSchema = Schema.Struct({
+  id: DeliveryFeedbackIdPublicSchema,
+  kind: Schema.Literals(["check", "comment", "review", "thread"] as const),
+  text: Schema.String.pipe(Schema.check(Schema.isMaxLength(4_096))),
+});
+
 /** Prompt-bearing normalized input retained only inside the remediation workflow. */
-export type DeliveryRemediationInput = {
-  readonly id: string;
-  readonly kind: "check" | "comment" | "review" | "thread";
-  readonly text: string;
-};
+export type DeliveryRemediationInput = Schema.Schema.Type<
+  typeof DeliveryRemediationInputSchema
+>;
+
+const GitHubPullRequestReadSchema = Schema.Struct({
+  observation: DeliveryPullRequestObservation,
+  remediationInputs: Schema.Array(DeliveryRemediationInputSchema),
+});
 
 /** Result of one atomic, bounded GitHub pull-request observation. */
-export type GitHubPullRequestRead = {
-  readonly observation: DeliveryPullRequestObservation;
-  readonly remediationInputs: ReadonlyArray<DeliveryRemediationInput>;
-};
+export type GitHubPullRequestRead = Schema.Schema.Type<
+  typeof GitHubPullRequestReadSchema
+>;
+
+const ReadGitHubPullRequestInputSchema = Schema.Struct({
+  authorization: Schema.optionalKey(DeliveryFeedbackSmokeAuthorization),
+  commandRunner: Schema.optionalKey(GitHubCommandRunnerSchema),
+  now: Schema.optionalKey(GitHubNowSchema),
+  prNumber: DeliveryPositiveIntegerSchema,
+  repository: RepositorySchema,
+  rootDirectory: GitHubProviderRootDirectorySchema,
+  trustPolicy: DeliveryFeedbackTrustPolicyV1,
+});
 
 /** Read and normalize one owned pull request without mutating GitHub. */
-export function readGitHubPullRequest(input: {
-  readonly authorization?: DeliveryFeedbackSmokeAuthorization;
-  readonly commandRunner?: GitHubCommandRunner;
-  readonly now?: () => string;
-  readonly prNumber: number;
-  readonly repository: string;
-  readonly rootDirectory: string;
-  readonly trustPolicy: DeliveryFeedbackTrustPolicyV1;
-}) {
+export function readGitHubPullRequest(
+  input: Schema.Schema.Type<typeof ReadGitHubPullRequestInputSchema>
+) {
   return Effect.gen(function* () {
     const authorization =
       input.authorization === undefined
@@ -391,14 +438,18 @@ function decodeResponse(stdout: string) {
   });
 }
 
-function normalizePullRequest(input: {
-  readonly authorization?: DeliveryFeedbackSmokeAuthorization;
-  readonly now: string;
-  readonly pr: RawPullRequest;
-  readonly prNumber: number;
-  readonly repository: string;
-  readonly trustPolicy: DeliveryFeedbackTrustPolicyV1;
-}): GitHubPullRequestRead {
+const NormalizePullRequestInputSchema = Schema.Struct({
+  authorization: Schema.optionalKey(DeliveryFeedbackSmokeAuthorization),
+  now: GitHubRawTimestampSchema,
+  pr: RawPullRequest,
+  prNumber: DeliveryPositiveIntegerSchema,
+  repository: RepositorySchema,
+  trustPolicy: DeliveryFeedbackTrustPolicyV1,
+});
+
+function normalizePullRequest(
+  input: Schema.Schema.Type<typeof NormalizePullRequestInputSchema>
+): GitHubPullRequestRead {
   const headCommit = input.pr.commits.nodes[0]?.commit;
   if (headCommit === undefined || headCommit.oid !== input.pr.headRefOid) {
     throw makeRuntimeError({
@@ -574,22 +625,26 @@ function normalizePullRequest(input: {
   };
 }
 
-function normalizeFeedback(input: {
-  readonly actor: RawActor | null;
-  readonly association: typeof RawAssociation.Type;
-  readonly body: string;
-  readonly controlledAuthorization?: boolean;
-  readonly explicitAction: boolean;
-  readonly forcedInformational: boolean;
-  readonly kind: "comment" | "review" | "thread";
-  readonly nativeId: string;
-  readonly path: string | undefined;
-  readonly prNumber: number;
-  readonly pullRequestAuthor: string | undefined;
-  readonly repository: string;
-  readonly trustPolicy: DeliveryFeedbackTrustPolicyV1;
-  readonly url: string;
-}) {
+const NormalizeFeedbackInputSchema = Schema.Struct({
+  actor: RawActorOrNull,
+  association: RawAssociation,
+  body: RawBody,
+  controlledAuthorization: Schema.optionalKey(Schema.Boolean),
+  explicitAction: Schema.Boolean,
+  forcedInformational: Schema.Boolean,
+  kind: Schema.Literals(["comment", "review", "thread"] as const),
+  nativeId: GitHubRawNodeIdSchema,
+  path: Schema.UndefinedOr(DeliverySourcePathPublicSchema),
+  prNumber: DeliveryPositiveIntegerSchema,
+  pullRequestAuthor: Schema.UndefinedOr(LoginSchema),
+  repository: RepositorySchema,
+  trustPolicy: DeliveryFeedbackTrustPolicyV1,
+  url: GitHubProviderUrlPublicSchema,
+});
+
+function normalizeFeedback(
+  input: Schema.Schema.Type<typeof NormalizeFeedbackInputSchema>
+) {
   const contentDigest = stableHash(input.body);
   const id = feedbackId(input);
   const actorLogin = input.actor?.login;
@@ -637,14 +692,16 @@ function normalizeFeedback(input: {
   };
 }
 
-function blockersFor(input: {
-  readonly checks: ReadonlyArray<DeliveryCheckObservation>;
-  readonly draft: boolean;
-  readonly feedback: ReadonlyArray<DeliveryFeedbackObservation>;
-  readonly mergeability: string;
-  readonly reviewDecision: string | null;
-  readonly truncated: boolean;
-}) {
+const BlockersForInputSchema = Schema.Struct({
+  checks: Schema.Array(DeliveryCheckObservation),
+  draft: Schema.Boolean,
+  feedback: Schema.Array(DeliveryFeedbackObservation),
+  mergeability: GitHubRawStateSchema,
+  reviewDecision: Schema.NullOr(GitHubRawStateSchema),
+  truncated: Schema.Boolean,
+});
+
+function blockersFor(input: Schema.Schema.Type<typeof BlockersForInputSchema>) {
   const blockers: Array<DeliveryBlocker> = [];
   const actionable = input.feedback.filter(
     ({ classification }) => classification === "actionable"
@@ -777,24 +834,21 @@ function remediationText(body: string) {
     .slice(0, 4_096);
 }
 
-function feedbackId(input: {
-  readonly kind: "comment" | "review" | "thread";
-  readonly nativeId: string;
-  readonly prNumber: number;
-  readonly repository: string;
-}) {
+const FeedbackIdInputSchema = Schema.Struct({
+  kind: Schema.Literals(["comment", "review", "thread"] as const),
+  nativeId: GitHubRawNodeIdSchema,
+  prNumber: DeliveryPositiveIntegerSchema,
+  repository: RepositorySchema,
+});
+
+function feedbackId(input: Schema.Schema.Type<typeof FeedbackIdInputSchema>) {
   return parseDeliveryFeedbackId(
     `feedback-${input.kind}-${stableHash(`github-feedback-v1\0${input.repository}\0${input.prNumber}\0${input.kind}\0${input.nativeId}`)}`
   );
 }
 
 function controlledCommentAuthorization(
-  input: {
-    readonly authorization?: DeliveryFeedbackSmokeAuthorization;
-    readonly pr: RawPullRequest;
-    readonly prNumber: number;
-    readonly repository: string;
-  },
+  input: Schema.Schema.Type<typeof ControlledCommentAuthorizationInputSchema>,
   comment: RawComment
 ) {
   const authorization = input.authorization;
@@ -834,8 +888,17 @@ function checkState(check: RawCheckRun): "failing" | "passing" | "pending" {
     : "failing";
 }
 
-function normalizeMergeability(value: string) {
-  switch (value) {
+const ControlledCommentAuthorizationInputSchema = Schema.Struct({
+  authorization: Schema.optionalKey(DeliveryFeedbackSmokeAuthorization),
+  pr: RawPullRequest,
+  prNumber: DeliveryPositiveIntegerSchema,
+  repository: RepositorySchema,
+});
+
+function normalizeMergeability(
+  mergeability: Schema.Schema.Type<typeof GitHubRawStateSchema>
+) {
+  switch (mergeability) {
     case "MERGEABLE":
       return "mergeable" as const;
     case "CONFLICTING":
@@ -845,11 +908,13 @@ function normalizeMergeability(value: string) {
   }
 }
 
-function stableHash(value: string) {
-  return createHash("sha256").update(value).digest("hex");
+function stableHash(payload: string) {
+  return createHash("sha256").update(payload).digest("hex");
 }
 
-function parseRepository(repository: string) {
+function parseRepository(
+  repository: Schema.Schema.Type<typeof RepositorySchema>
+) {
   const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/u.exec(repository);
   if (match?.[1] === undefined || match[2] === undefined) {
     throw makeRuntimeError({

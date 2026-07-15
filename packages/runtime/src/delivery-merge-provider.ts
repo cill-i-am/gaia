@@ -1,46 +1,64 @@
 import {
+  DeliveryGitShaPublicSchema,
   deliveryMergeMethodArguments,
+  GitHubCheckFieldPublicSchema,
+  GitHubPullRequestUrlPublicSchema,
+  GitHubRepositoryPublicSchema,
   type DeliveryMergeMethod,
   type DeliveryRequiredCheckIdentity,
 } from "@gaia/core";
-import { Data, Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import { makeRuntimeError } from "./errors.js";
 import {
   nodeGitHubCommandRunner,
   type GitHubCommandRunner,
 } from "./github-publisher.js";
+import { RuntimePathTextSchema } from "./paths.js";
 
-export type DeliveryMergeProviderInput = {
-  readonly cwd: string;
-  readonly expectedHeadSha: string;
-  readonly method: DeliveryMergeMethod;
-  readonly prUrl: string;
-  readonly repository: string;
-};
-export class DeliveryMergeConclusivelyRejected extends Data.TaggedError(
-  "DeliveryMergeConclusivelyRejected"
-)<{
-  readonly message: string;
-}> {}
+export const DeliveryMergeProviderInputSchema = Schema.Struct({
+  cwd: RuntimePathTextSchema,
+  expectedHeadSha: DeliveryGitShaPublicSchema,
+  method: Schema.declare<DeliveryMergeMethod>(
+    (input): input is DeliveryMergeMethod =>
+      typeof input === "string" && input in deliveryMergeMethodArguments
+  ),
+  prUrl: GitHubPullRequestUrlPublicSchema,
+  repository: GitHubRepositoryPublicSchema,
+});
 
-export class DeliveryReadyForReviewOutcomeUncertain extends Data.TaggedError(
-  "DeliveryReadyForReviewOutcomeUncertain"
-)<{
-  readonly message: string;
-}> {}
+export type DeliveryMergeProviderInput =
+  typeof DeliveryMergeProviderInputSchema.Type;
 
-export class DeliveryReadyForReviewConclusivelyRejected extends Data.TaggedError(
-  "DeliveryReadyForReviewConclusivelyRejected"
-)<{
-  readonly message: string;
-}> {}
+export class DeliveryMergeConclusivelyRejected extends Schema.TaggedErrorClass<DeliveryMergeConclusivelyRejected>()(
+  "DeliveryMergeConclusivelyRejected",
+  {
+    message: Schema.String,
+  }
+) {}
 
-export type DeliveryReadyForReviewProviderInput = {
-  readonly cwd: string;
-  readonly prUrl: string;
-  readonly repository: string;
-};
+export class DeliveryReadyForReviewOutcomeUncertain extends Schema.TaggedErrorClass<DeliveryReadyForReviewOutcomeUncertain>()(
+  "DeliveryReadyForReviewOutcomeUncertain",
+  {
+    message: Schema.String,
+  }
+) {}
+
+export class DeliveryReadyForReviewConclusivelyRejected extends Schema.TaggedErrorClass<DeliveryReadyForReviewConclusivelyRejected>()(
+  "DeliveryReadyForReviewConclusivelyRejected",
+  {
+    message: Schema.String,
+  }
+) {}
+
+export const DeliveryReadyForReviewProviderInputSchema = Schema.Struct({
+  cwd: RuntimePathTextSchema,
+  prUrl: GitHubPullRequestUrlPublicSchema,
+  repository: GitHubRepositoryPublicSchema,
+});
+
+export type DeliveryReadyForReviewProviderInput =
+  typeof DeliveryReadyForReviewProviderInputSchema.Type;
 
 /** Invoke one exact ready-for-review mutation without branch inference. */
 export function invokeGitHubReadyForReview(
@@ -56,7 +74,7 @@ export function invokeGitHubReadyForReview(
       result.exitCode === 0
         ? Effect.void
         : Effect.fail(
-            new DeliveryReadyForReviewOutcomeUncertain({
+            DeliveryReadyForReviewOutcomeUncertain.make({
               message:
                 "GitHub did not return a confirmable ready-for-review result.",
             })
@@ -89,7 +107,7 @@ export function invokeGitHubDeliveryMerge(
       result.exitCode === 0
         ? Effect.succeed(result)
         : Effect.fail(
-            new DeliveryMergeConclusivelyRejected({
+            DeliveryMergeConclusivelyRejected.make({
               message:
                 "GitHub conclusively rejected the exact-head merge request.",
             })
@@ -98,20 +116,27 @@ export function invokeGitHubDeliveryMerge(
   );
 }
 
-export type RequiredCheckFact = {
-  readonly appSlug: string;
-  readonly headSha: string;
-  readonly name: string;
-  readonly state: "failed" | "passing" | "pending" | "unparseable";
-  readonly repository: string;
-  readonly workflow: string;
-};
+export const RequiredCheckFactSchema = Schema.Struct({
+  appSlug: GitHubCheckFieldPublicSchema,
+  headSha: DeliveryGitShaPublicSchema,
+  name: GitHubCheckFieldPublicSchema,
+  repository: GitHubRepositoryPublicSchema,
+  state: Schema.Literals([
+    "failed",
+    "passing",
+    "pending",
+    "unparseable",
+  ] as const),
+  workflow: GitHubCheckFieldPublicSchema,
+});
+
+export type RequiredCheckFact = typeof RequiredCheckFactSchema.Type;
 
 /** Exact stable-field join; extras are ignored and duplicates fail closed. */
 export function validateRequiredChecks(
   policy: ReadonlyArray<typeof DeliveryRequiredCheckIdentity.Type>,
   observations: ReadonlyArray<RequiredCheckFact>,
-  expectedHeadSha: string
+  expectedHeadSha: typeof DeliveryGitShaPublicSchema.Type
 ) {
   for (const required of policy) {
     const matches = observations.filter(

@@ -4,6 +4,15 @@ import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  DeliveryActionIdPublicSchema,
+  DeliveryBranchNamePublicSchema,
+  DeliveryGitShaPublicSchema,
+  DeliveryOperationIdPublicSchema,
+  DeliverySha256DigestPublicSchema,
+  GitHubPullRequestUrlPublicSchema,
+  GitHubRepositoryPublicSchema,
+} from "./delivery-identity.js";
+import {
   DeliveryCleanupCompleted,
   DeliveryCleanupRequired,
   DeliveryMergeDispatchAttempted,
@@ -49,7 +58,7 @@ import {
 } from "./delivery-remediation.js";
 import { makeRunEvent } from "./events.js";
 import { snapshotFromReplay } from "./machine.js";
-import { parseRunId } from "./run-id.js";
+import { parseRunId, RunIdSchema } from "./run-id.js";
 
 const check = {
   appSlug: "github-actions",
@@ -58,19 +67,23 @@ const check = {
   workflow: "CI",
 };
 
+const ReadyReplayOverridesSchema = Schema.Struct({
+  actionId: Schema.optionalKey(DeliveryActionIdPublicSchema),
+  branchName: Schema.optionalKey(DeliveryBranchNamePublicSchema),
+  expectedHeadSha: Schema.optionalKey(DeliveryGitShaPublicSchema),
+  payloadDigest: Schema.optionalKey(DeliverySha256DigestPublicSchema),
+  prNumber: Schema.optionalKey(Schema.Int),
+  prUrl: Schema.optionalKey(GitHubPullRequestUrlPublicSchema),
+  publicationOperationId: Schema.optionalKey(DeliveryOperationIdPublicSchema),
+  publicationPayloadDigest: Schema.optionalKey(
+    DeliverySha256DigestPublicSchema
+  ),
+  repository: Schema.optionalKey(GitHubRepositoryPublicSchema),
+  runId: Schema.optionalKey(RunIdSchema),
+});
+
 function readyReplayEvents(
-  overrides: Partial<{
-    readonly actionId: string;
-    readonly branchName: string;
-    readonly expectedHeadSha: string;
-    readonly payloadDigest: string;
-    readonly prNumber: number;
-    readonly prUrl: string;
-    readonly publicationOperationId: string;
-    readonly publicationPayloadDigest: string;
-    readonly repository: string;
-    readonly runId: ReturnType<typeof parseRunId>;
-  }> = {}
+  overrides: typeof ReadyReplayOverridesSchema.Type = {}
 ) {
   const enclosingRunId = parseRunId("run-1234567890");
   const publication = DeliveryPublicationConfirmed.make({
@@ -160,7 +173,10 @@ function readyReplayEvents(
   };
 }
 
-function confirmedRemediation(expectedHeadSha: string, commitSha: string) {
+function confirmedRemediation(
+  expectedHeadSha: typeof DeliveryGitShaPublicSchema.Type,
+  commitSha: typeof DeliveryGitShaPublicSchema.Type
+) {
   const base = {
     attempt: 1 as const,
     commitTimestamp: "2026-07-11T19:00:00.000Z",

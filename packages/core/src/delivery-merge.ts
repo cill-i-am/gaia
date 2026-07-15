@@ -2,37 +2,43 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { utf8ToBytes } from "@noble/hashes/utils.js";
 import { Schema } from "effect";
 
-import type { DeliveryPublication } from "./delivery-publication.js";
+import {
+  DeliveryActionIdPublicSchema,
+  DeliveryBranchNamePublicSchema,
+  DeliveryEvidenceIdPublicSchema,
+  DeliveryGitShaPublicSchema,
+  DeliveryPositiveIntegerSchema,
+  DeliverySha256DigestPublicSchema,
+  DeliveryTimestampPublicSchema,
+  GitHubCheckFieldPublicSchema,
+  GitHubPullRequestUrlPublicSchema,
+  GitHubRepositoryPublicSchema,
+} from "./delivery-identity.js";
+import {
+  type DeliveryPublication,
+  DeliveryPublicationSchema,
+} from "./delivery-publication.js";
 import { deriveDeliveryAuthority } from "./delivery-remediation.js";
-import type { RunEvent } from "./events.js";
-import { RunIdSchema } from "./run-id.js";
+import { RunEvent } from "./events.js";
+
+export { DeliveryActionIdSchema } from "./delivery-identity.js";
 
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
-const Digest = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
-);
-const GitSha = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))
-);
-export const DeliveryActionIdSchema = Schema.NonEmptyString.pipe(
-  Schema.check(Schema.isPattern(/^[A-Za-z0-9:_-]+$/u)),
-  Schema.check(Schema.isMaxLength(200))
-);
-const BoundedId = DeliveryActionIdSchema;
-const Repository = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)),
-  Schema.check(Schema.isMaxLength(200))
-);
-const StableCheckField = Schema.NonEmptyString.pipe(
-  Schema.check(Schema.isPattern(/^[A-Za-z0-9_.:/ -]+$/u)),
-  Schema.check(Schema.isMaxLength(200))
-);
-const GaiaEvidenceId = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^evidence-[A-Za-z0-9_-]{16,120}$/u)),
-  Schema.check(Schema.isMaxLength(129))
-);
+const Digest = DeliverySha256DigestPublicSchema;
+const GitSha = DeliveryGitShaPublicSchema;
+const BoundedId = DeliveryActionIdPublicSchema;
+const Repository = GitHubRepositoryPublicSchema;
+const StableCheckField = GitHubCheckFieldPublicSchema;
+const GaiaEvidenceId = DeliveryEvidenceIdPublicSchema;
+const BranchName = DeliveryBranchNamePublicSchema;
+const PullRequestUrl = GitHubPullRequestUrlPublicSchema;
+const Timestamp = DeliveryTimestampPublicSchema;
 const PositiveSequence = Schema.Int.pipe(
   Schema.check(Schema.isGreaterThanOrEqualTo(1))
+);
+const PositiveGitHubNumber = DeliveryPositiveIntegerSchema;
+const DeliveryRunIdPublicSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^run-[A-Za-z0-9_-]{10}$/u))
 );
 
 export const DeliveryMergeMethodSchema = Schema.Literals([
@@ -40,7 +46,9 @@ export const DeliveryMergeMethodSchema = Schema.Literals([
   "squash",
   "rebase",
 ] as const);
-export type DeliveryMergeMethod = typeof DeliveryMergeMethodSchema.Type;
+export type DeliveryMergeMethod = Schema.Schema.Type<
+  typeof DeliveryMergeMethodSchema
+>;
 
 export const deliveryMergeMethodArguments = {
   merge: ["--merge"],
@@ -94,22 +102,14 @@ export class DeliveryMergeReadinessDecision extends Schema.Class<DeliveryMergeRe
     blockers: Schema.Array(
       Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200)))
     ).pipe(Schema.check(Schema.isMaxLength(20))),
-    branchName: Schema.NonEmptyString.pipe(
-      Schema.check(Schema.isMaxLength(240))
-    ),
+    branchName: BranchName,
     headSha: GitSha,
     mergeMethod: DeliveryMergeMethodSchema,
     payloadDigest: Digest,
     policyDigest: Digest,
     policyVersion: Schema.Literal(1),
-    prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-    prUrl: Schema.String.pipe(
-      Schema.check(
-        Schema.isPattern(
-          /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
-        )
-      )
-    ),
+    prNumber: PositiveGitHubNumber,
+    prUrl: PullRequestUrl,
   },
   strict
 ) {}
@@ -157,8 +157,9 @@ export const DeliveryReviewApprovalSourceSchema = Schema.Union([
   DeliveryLocalOperatorReviewSource,
   DeliveryReviewApprovalNotRequiredSource,
 ]);
-export type DeliveryReviewApprovalSource =
-  typeof DeliveryReviewApprovalSourceSchema.Type;
+export type DeliveryReviewApprovalSource = Schema.Schema.Type<
+  typeof DeliveryReviewApprovalSourceSchema
+>;
 
 const readinessDecisionV2Binding = {
   actionId: BoundedId,
@@ -168,47 +169,27 @@ const readinessDecisionV2Binding = {
   blockers: Schema.Array(
     Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200)))
   ).pipe(Schema.check(Schema.isMaxLength(20))),
-  branchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
+  branchName: BranchName,
   headSha: GitSha,
   mergeMethod: DeliveryMergeMethodSchema,
   policyDigest: Digest,
   policyVersion: Schema.Literal(1),
-  prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-  prUrl: Schema.String.pipe(
-    Schema.check(
-      Schema.isPattern(
-        /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
-      )
-    )
-  ),
+  prNumber: PositiveGitHubNumber,
+  prUrl: PullRequestUrl,
   publicationConfirmationSequence: PositiveSequence,
   publicationOperationId: BoundedId,
   publicationPayloadDigest: Digest,
   repository: Repository,
-  runId: RunIdSchema,
+  runId: DeliveryRunIdPublicSchema,
   version: Schema.Literal(2),
 } as const;
 
-export type DeliveryMergeReadinessDecisionV2Binding = {
-  readonly actionId: string;
-  readonly approved: boolean;
-  readonly approvalSource?: DeliveryReviewApprovalSource;
-  readonly authoritySequence: number;
-  readonly blockers: ReadonlyArray<string>;
-  readonly branchName: string;
-  readonly headSha: string;
-  readonly mergeMethod: DeliveryMergeMethod;
-  readonly policyDigest: string;
-  readonly policyVersion: 1;
-  readonly prNumber: number;
-  readonly prUrl: string;
-  readonly publicationConfirmationSequence: number;
-  readonly publicationOperationId: string;
-  readonly publicationPayloadDigest: string;
-  readonly repository: string;
-  readonly runId: string;
-  readonly version: 2;
-};
+const DeliveryMergeReadinessDecisionV2BindingSchema = Schema.Struct(
+  readinessDecisionV2Binding
+);
+export type DeliveryMergeReadinessDecisionV2Binding = Schema.Schema.Type<
+  typeof DeliveryMergeReadinessDecisionV2BindingSchema
+>;
 
 function readinessApprovalSourceCanonicalPayload(
   source: DeliveryReviewApprovalSource | undefined
@@ -281,8 +262,9 @@ export const DeliveryMergeReadinessDecisionSchema = Schema.Union([
   DeliveryMergeReadinessDecision,
   DeliveryMergeReadinessDecisionV2,
 ]);
-export type DeliveryMergeReadinessDecisionReceipt =
-  typeof DeliveryMergeReadinessDecisionSchema.Type;
+export type DeliveryMergeReadinessDecisionReceipt = Schema.Schema.Type<
+  typeof DeliveryMergeReadinessDecisionSchema
+>;
 export const parseDeliveryMergeReadinessDecision = Schema.decodeUnknownSync(
   DeliveryMergeReadinessDecisionSchema
 );
@@ -297,21 +279,23 @@ function canonicalFields(fields: ReadonlyArray<string>) {
   return fields.map((field) => `${field.length}:${field}`).join("|");
 }
 
-function sha256Hex(value: string) {
-  return Array.from(sha256(utf8ToBytes(value)), (byte) =>
+function sha256Hex(payload: string) {
+  return Array.from(sha256(utf8ToBytes(payload)), (byte) =>
     byte.toString(16).padStart(2, "0")
   ).join("");
 }
 
+const DeliveryAuthorityAssertionInputSchema = Schema.Struct({
+  enclosingRunId: DeliveryRunIdPublicSchema,
+  eventSequence: PositiveSequence,
+  events: Schema.Array(RunEvent),
+  publication: DeliveryPublicationSchema,
+  repository: Repository,
+});
+
 export function assertDeliveryMergeReadinessDecisionAuthority(
   decision: DeliveryMergeReadinessDecisionReceipt,
-  input: {
-    readonly enclosingRunId: string;
-    readonly eventSequence: number;
-    readonly events: ReadonlyArray<RunEvent>;
-    readonly publication: DeliveryPublication;
-    readonly repository: string;
-  }
+  input: Schema.Schema.Type<typeof DeliveryAuthorityAssertionInputSchema>
 ) {
   // Version 1 is retained as a compatibility-only historical receipt.
   if (!(decision instanceof DeliveryMergeReadinessDecisionV2)) return;
@@ -391,7 +375,7 @@ export function assertDeliveryMergeReadinessDecisionAuthority(
 }
 
 export function requiredCheckKey(
-  check: typeof DeliveryRequiredCheckIdentity.Type
+  check: Schema.Schema.Type<typeof DeliveryRequiredCheckIdentity>
 ) {
   return [check.repository, check.workflow, check.name, check.appSlug]
     .map((field) => `${field.length}:${field}`)
@@ -399,7 +383,7 @@ export function requiredCheckKey(
 }
 
 export function deliveryRequiredCheckPolicyCanonicalPayload(
-  policy: typeof DeliveryRequiredCheckPolicy.Type
+  policy: Schema.Schema.Type<typeof DeliveryRequiredCheckPolicy>
 ) {
   const entries = policy.checks.map(requiredCheckKey);
   return `v${policy.version}|review:${policy.requireApprovedReview ? "1" : "0"}|${entries.map((entry) => `${entry.length}:${entry}`).join("|")}`;
@@ -407,7 +391,7 @@ export function deliveryRequiredCheckPolicyCanonicalPayload(
 
 const mergeBinding = {
   actionId: BoundedId,
-  branchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
+  branchName: BranchName,
   decisionSequence: Schema.Int.pipe(
     Schema.check(Schema.isGreaterThanOrEqualTo(1))
   ),
@@ -416,14 +400,8 @@ const mergeBinding = {
   payloadDigest: Digest,
   policyDigest: Digest,
   policyVersion: Schema.Literal(1),
-  prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-  prUrl: Schema.String.pipe(
-    Schema.check(
-      Schema.isPattern(
-        /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
-      )
-    )
-  ),
+  prNumber: PositiveGitHubNumber,
+  prUrl: PullRequestUrl,
   repository: Repository,
 } as const;
 
@@ -451,7 +429,7 @@ export class DeliveryMergeDispatchConfirmed extends Schema.Class<DeliveryMergeDi
   {
     ...mergeBinding,
     mergeCommitSha: GitSha,
-    mergedAt: Schema.NonEmptyString,
+    mergedAt: Timestamp,
     state: Schema.Literal("dispatchConfirmed"),
   },
   strict
@@ -474,7 +452,9 @@ export const DeliveryMergeReceiptSchema = Schema.Union([
   DeliveryMergeDispatchConfirmed,
   DeliveryMergeTerminalFailure,
 ]);
-export type DeliveryMergeReceipt = typeof DeliveryMergeReceiptSchema.Type;
+export type DeliveryMergeReceipt = Schema.Schema.Type<
+  typeof DeliveryMergeReceiptSchema
+>;
 export const parseDeliveryMergeReceipt = Schema.decodeUnknownSync(
   DeliveryMergeReceiptSchema
 );
@@ -483,38 +463,43 @@ export const encodeDeliveryMergeReceiptJson = Schema.encodeSync(
   DeliveryMergeReceiptJson
 );
 
-const readyForReviewBinding = {
+const readyForReviewCanonicalBinding = {
   actionId: BoundedId,
-  branchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
+  branchName: BranchName,
   expectedHeadSha: GitSha,
-  payloadDigest: Digest,
-  prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-  prUrl: Schema.String.pipe(
-    Schema.check(
-      Schema.isPattern(
-        /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
-      )
-    )
-  ),
+  prNumber: PositiveGitHubNumber,
+  prUrl: PullRequestUrl,
   publicationOperationId: BoundedId,
   publicationPayloadDigest: Digest,
   repository: Repository,
-  runId: RunIdSchema,
+  runId: DeliveryRunIdPublicSchema,
   version: Schema.Literal(1),
 } as const;
 
-export type DeliveryPullRequestReadyBinding = {
-  readonly actionId: string;
-  readonly branchName: string;
-  readonly expectedHeadSha: string;
-  readonly prNumber: number;
-  readonly prUrl: string;
-  readonly publicationOperationId: string;
-  readonly publicationPayloadDigest: string;
-  readonly repository: string;
-  readonly runId: string;
-  readonly version: 1;
-};
+const readyForReviewBinding = {
+  ...readyForReviewCanonicalBinding,
+  payloadDigest: Digest,
+} as const;
+
+const DeliveryPullRequestReadyBindingSchema = Schema.Struct(
+  readyForReviewCanonicalBinding
+);
+export type DeliveryPullRequestReadyBinding = Schema.Schema.Type<
+  typeof DeliveryPullRequestReadyBindingSchema
+>;
+const DeliveryPullRequestReadyAuthorityInputSchema = Schema.Struct({
+  branchName: BranchName,
+  expectedHeadSha: GitSha,
+  prNumber: PositiveGitHubNumber,
+  prUrl: PullRequestUrl,
+  publicationOperationId: BoundedId,
+  publicationPayloadDigest: Digest,
+  repository: Repository,
+  runId: DeliveryRunIdPublicSchema,
+});
+type DeliveryPullRequestReadyAuthorityInput = Schema.Schema.Type<
+  typeof DeliveryPullRequestReadyAuthorityInputSchema
+>;
 
 /** Canonical, domain-separated binding for one owned ready-for-review action. */
 export function deliveryPullRequestReadyCanonicalPayload(
@@ -547,16 +532,7 @@ export function deliveryPullRequestReadyPayloadDigest(
 
 export function assertDeliveryPullRequestReadyAuthority(
   receipt: DeliveryPullRequestReadyReceipt,
-  expected: {
-    readonly branchName: string;
-    readonly expectedHeadSha: string;
-    readonly prNumber: number;
-    readonly prUrl: string;
-    readonly publicationOperationId: string;
-    readonly publicationPayloadDigest: string;
-    readonly repository: string;
-    readonly runId: string;
-  }
+  expected: DeliveryPullRequestReadyAuthorityInput
 ) {
   if (receipt.runId !== expected.runId) {
     throw new Error(
@@ -646,8 +622,9 @@ export const DeliveryPullRequestReadyReceiptSchema = Schema.Union([
   DeliveryPullRequestReadyDispatchConfirmed,
   DeliveryPullRequestReadyTerminalFailure,
 ]);
-export type DeliveryPullRequestReadyReceipt =
-  typeof DeliveryPullRequestReadyReceiptSchema.Type;
+export type DeliveryPullRequestReadyReceipt = Schema.Schema.Type<
+  typeof DeliveryPullRequestReadyReceiptSchema
+>;
 export const parseDeliveryPullRequestReadyReceipt = Schema.decodeUnknownSync(
   DeliveryPullRequestReadyReceiptSchema
 );
@@ -658,24 +635,17 @@ export const encodeDeliveryPullRequestReadyReceiptJson = Schema.encodeSync(
   DeliveryPullRequestReadyReceiptJson
 );
 
-const localReviewAttestationBinding = {
+const localReviewAttestationCanonicalBinding = {
   actionId: BoundedId,
-  attestationPayloadDigest: Digest,
   authority: Schema.Literal("localOperator"),
   authoritySequence: PositiveSequence,
-  branchName: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240))),
+  branchName: BranchName,
   decision: Schema.Literal("approved"),
   gaiaEvidenceDigest: Schema.optionalKey(Digest),
   gaiaEvidenceId: GaiaEvidenceId,
   headSha: GitSha,
-  prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-  prUrl: Schema.String.pipe(
-    Schema.check(
-      Schema.isPattern(
-        /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
-      )
-    )
-  ),
+  prNumber: PositiveGitHubNumber,
+  prUrl: PullRequestUrl,
   publicationConfirmationSequence: PositiveSequence,
   publicationOperationId: BoundedId,
   publicationPayloadDigest: Digest,
@@ -683,31 +653,21 @@ const localReviewAttestationBinding = {
   readyConfirmationPayloadDigest: Digest,
   readyConfirmationSequence: PositiveSequence,
   repository: Repository,
-  runId: RunIdSchema,
+  runId: DeliveryRunIdPublicSchema,
   version: Schema.Literal(1),
 } as const;
 
-export type DeliveryLocalReviewAttestationBinding = {
-  readonly actionId: string;
-  readonly authority: "localOperator";
-  readonly authoritySequence: number;
-  readonly branchName: string;
-  readonly decision: "approved";
-  readonly gaiaEvidenceDigest?: string;
-  readonly gaiaEvidenceId: string;
-  readonly headSha: string;
-  readonly prNumber: number;
-  readonly prUrl: string;
-  readonly publicationConfirmationSequence: number;
-  readonly publicationOperationId: string;
-  readonly publicationPayloadDigest: string;
-  readonly readyConfirmationActionId: string;
-  readonly readyConfirmationPayloadDigest: string;
-  readonly readyConfirmationSequence: number;
-  readonly repository: string;
-  readonly runId: string;
-  readonly version: 1;
-};
+const localReviewAttestationBinding = {
+  ...localReviewAttestationCanonicalBinding,
+  attestationPayloadDigest: Digest,
+} as const;
+
+const DeliveryLocalReviewAttestationBindingSchema = Schema.Struct(
+  localReviewAttestationCanonicalBinding
+);
+export type DeliveryLocalReviewAttestationBinding = Schema.Schema.Type<
+  typeof DeliveryLocalReviewAttestationBindingSchema
+>;
 
 /** Canonical Gaia action binding. This digest does not verify external evidence content. */
 export function deliveryLocalReviewAttestationCanonicalPayload(
@@ -789,8 +749,9 @@ export const DeliveryLocalReviewAttestationReceiptSchema = Schema.Union([
   DeliveryLocalReviewAttestationConfirmed,
   DeliveryLocalReviewAttestationFailed,
 ]);
-export type DeliveryLocalReviewAttestationReceipt =
-  typeof DeliveryLocalReviewAttestationReceiptSchema.Type;
+export type DeliveryLocalReviewAttestationReceipt = Schema.Schema.Type<
+  typeof DeliveryLocalReviewAttestationReceiptSchema
+>;
 export const parseDeliveryLocalReviewAttestationReceipt =
   Schema.decodeUnknownSync(DeliveryLocalReviewAttestationReceiptSchema);
 const DeliveryLocalReviewAttestationReceiptJson = Schema.toCodecJson(
@@ -801,13 +762,7 @@ export const encodeDeliveryLocalReviewAttestationReceiptJson =
 
 export function assertDeliveryLocalReviewAttestationAuthority(
   receipt: DeliveryLocalReviewAttestationReceipt,
-  input: {
-    readonly enclosingRunId: string;
-    readonly eventSequence: number;
-    readonly events: ReadonlyArray<RunEvent>;
-    readonly publication: DeliveryPublication;
-    readonly repository: string;
-  }
+  input: Schema.Schema.Type<typeof DeliveryAuthorityAssertionInputSchema>
 ) {
   if (input.publication.state !== "confirmed")
     throw new Error(
@@ -881,13 +836,15 @@ export function assertDeliveryLocalReviewAttestationAuthority(
   return authority;
 }
 
+const CurrentDeliveryLocalReviewAttestationInputSchema = Schema.Struct({
+  publication: DeliveryPublicationSchema,
+  repository: Repository,
+  runId: DeliveryRunIdPublicSchema,
+});
+
 export function currentDeliveryLocalReviewAttestation(
   events: ReadonlyArray<RunEvent>,
-  input: {
-    readonly publication: DeliveryPublication;
-    readonly repository: string;
-    readonly runId: string;
-  }
+  input: typeof CurrentDeliveryLocalReviewAttestationInputSchema.Type
 ) {
   if (input.publication.state !== "confirmed")
     throw new Error(
@@ -939,7 +896,7 @@ export const DeliveryCleanupResourceStateSchema = Schema.Literals([
 ] as const);
 const cleanupBase = {
   actionId: BoundedId,
-  branchName: Schema.NonEmptyString,
+  branchName: BranchName,
   mergeCommitSha: GitSha,
   ownershipDigest: Digest,
 } as const;
@@ -979,51 +936,78 @@ export const encodeDeliveryCleanupReceiptJson = Schema.encodeSync(
   DeliveryCleanupReceiptJson
 );
 
-export type DeliveryMergeActionHistory = {
-  readonly actionId: string;
-  readonly latest: DeliveryMergeReceipt;
-  readonly latestSequence: number;
-  readonly receipts: ReadonlyArray<{
-    readonly receipt: DeliveryMergeReceipt;
-    readonly sequence: number;
-  }>;
-};
-export type DeliveryCleanupActionReceipt = ReturnType<
-  typeof parseDeliveryCleanupReceipt
+export type DeliveryCleanupActionReceipt = Schema.Schema.Type<
+  typeof DeliveryCleanupReceiptSchema
 >;
-export type DeliveryCleanupActionHistory = {
-  readonly actionId: string;
-  readonly latest: DeliveryCleanupActionReceipt;
-  readonly latestSequence: number;
-  readonly receipts: ReadonlyArray<{
-    readonly receipt: DeliveryCleanupActionReceipt;
-    readonly sequence: number;
-  }>;
-};
-export type DeliveryPullRequestReadyActionHistory = {
-  readonly actionId: string;
-  readonly latest: DeliveryPullRequestReadyReceipt;
-  readonly latestSequence: number;
-  readonly receipts: ReadonlyArray<{
-    readonly receipt: DeliveryPullRequestReadyReceipt;
-    readonly sequence: number;
-  }>;
-};
-export type DeliveryLocalReviewAttestationActionHistory = {
-  readonly actionId: string;
-  readonly latest: DeliveryLocalReviewAttestationReceipt;
-  readonly latestSequence: number;
-  readonly receipts: ReadonlyArray<{
-    readonly receipt: DeliveryLocalReviewAttestationReceipt;
-    readonly sequence: number;
-  }>;
-};
+
+const DeliveryMergeReceiptEventSchema = Schema.Struct({
+  receipt: DeliveryMergeReceiptSchema,
+  sequence: PositiveSequence,
+});
+type DeliveryMergeReceiptEvent = Schema.Schema.Type<
+  typeof DeliveryMergeReceiptEventSchema
+>;
+const DeliveryCleanupReceiptEventSchema = Schema.Struct({
+  receipt: DeliveryCleanupReceiptSchema,
+  sequence: PositiveSequence,
+});
+type DeliveryCleanupReceiptEvent = Schema.Schema.Type<
+  typeof DeliveryCleanupReceiptEventSchema
+>;
+const DeliveryPullRequestReadyReceiptEventSchema = Schema.Struct({
+  receipt: DeliveryPullRequestReadyReceiptSchema,
+  sequence: PositiveSequence,
+});
+type DeliveryPullRequestReadyReceiptEvent = Schema.Schema.Type<
+  typeof DeliveryPullRequestReadyReceiptEventSchema
+>;
+const DeliveryLocalReviewAttestationReceiptEventSchema = Schema.Struct({
+  receipt: DeliveryLocalReviewAttestationReceiptSchema,
+  sequence: PositiveSequence,
+});
+type DeliveryLocalReviewAttestationReceiptEvent = Schema.Schema.Type<
+  typeof DeliveryLocalReviewAttestationReceiptEventSchema
+>;
+
+const DeliveryMergeActionHistorySchema = Schema.Struct({
+  actionId: BoundedId,
+  latest: DeliveryMergeReceiptSchema,
+  latestSequence: PositiveSequence,
+  receipts: Schema.Array(DeliveryMergeReceiptEventSchema),
+});
+export type DeliveryMergeActionHistory = Schema.Schema.Type<
+  typeof DeliveryMergeActionHistorySchema
+>;
+const DeliveryCleanupActionHistorySchema = Schema.Struct({
+  actionId: BoundedId,
+  latest: DeliveryCleanupReceiptSchema,
+  latestSequence: PositiveSequence,
+  receipts: Schema.Array(DeliveryCleanupReceiptEventSchema),
+});
+export type DeliveryCleanupActionHistory = Schema.Schema.Type<
+  typeof DeliveryCleanupActionHistorySchema
+>;
+const DeliveryPullRequestReadyActionHistorySchema = Schema.Struct({
+  actionId: BoundedId,
+  latest: DeliveryPullRequestReadyReceiptSchema,
+  latestSequence: PositiveSequence,
+  receipts: Schema.Array(DeliveryPullRequestReadyReceiptEventSchema),
+});
+export type DeliveryPullRequestReadyActionHistory = Schema.Schema.Type<
+  typeof DeliveryPullRequestReadyActionHistorySchema
+>;
+const DeliveryLocalReviewAttestationActionHistorySchema = Schema.Struct({
+  actionId: BoundedId,
+  latest: DeliveryLocalReviewAttestationReceiptSchema,
+  latestSequence: PositiveSequence,
+  receipts: Schema.Array(DeliveryLocalReviewAttestationReceiptEventSchema),
+});
+export type DeliveryLocalReviewAttestationActionHistory = Schema.Schema.Type<
+  typeof DeliveryLocalReviewAttestationActionHistorySchema
+>;
 
 export function deriveDeliveryLocalReviewAttestationHistories(
-  events: ReadonlyArray<{
-    readonly receipt: DeliveryLocalReviewAttestationReceipt;
-    readonly sequence: number;
-  }>
+  events: ReadonlyArray<DeliveryLocalReviewAttestationReceiptEvent>
 ) {
   const histories = new Map<
     string,
@@ -1103,10 +1087,7 @@ function sameDeliveryLocalReviewAttestationGeneration(
 }
 
 export function deriveDeliveryPullRequestReadyActionHistories(
-  events: ReadonlyArray<{
-    readonly receipt: DeliveryPullRequestReadyReceipt;
-    readonly sequence: number;
-  }>
+  events: ReadonlyArray<DeliveryPullRequestReadyReceiptEvent>
 ) {
   const histories = new Map<string, DeliveryPullRequestReadyActionHistory>();
   for (const event of events) {
@@ -1143,10 +1124,7 @@ export function deriveDeliveryPullRequestReadyActionHistories(
 }
 
 export function deriveDeliveryMergeActionHistories(
-  events: ReadonlyArray<{
-    readonly receipt: DeliveryMergeReceipt;
-    readonly sequence: number;
-  }>
+  events: ReadonlyArray<DeliveryMergeReceiptEvent>
 ) {
   const histories = new Map<string, DeliveryMergeActionHistory>();
   for (const event of events) {
@@ -1187,10 +1165,7 @@ export function deriveDeliveryMergeActionHistories(
 }
 
 export function deriveDeliveryCleanupActionHistories(
-  events: ReadonlyArray<{
-    readonly receipt: DeliveryCleanupActionReceipt;
-    readonly sequence: number;
-  }>
+  events: ReadonlyArray<DeliveryCleanupReceiptEvent>
 ) {
   const histories = new Map<string, DeliveryCleanupActionHistory>();
   for (const event of events) {
@@ -1236,17 +1211,42 @@ export function deriveDeliveryCleanupActionHistories(
   return { active: active[0], histories: ordered, latest: ordered.at(-1) };
 }
 
+const DeliveryMergeActionHistoriesSchema = Schema.Struct({
+  active: Schema.UndefinedOr(DeliveryMergeActionHistorySchema),
+  histories: Schema.Array(DeliveryMergeActionHistorySchema),
+  latest: Schema.UndefinedOr(DeliveryMergeActionHistorySchema),
+});
+const DeliveryCleanupActionHistoriesSchema = Schema.Struct({
+  active: Schema.UndefinedOr(DeliveryCleanupActionHistorySchema),
+  histories: Schema.Array(DeliveryCleanupActionHistorySchema),
+  latest: Schema.UndefinedOr(DeliveryCleanupActionHistorySchema),
+});
+const DeliveryPullRequestReadyActionHistoriesSchema = Schema.Struct({
+  active: Schema.UndefinedOr(DeliveryPullRequestReadyActionHistorySchema),
+  histories: Schema.Array(DeliveryPullRequestReadyActionHistorySchema),
+  latest: Schema.UndefinedOr(DeliveryPullRequestReadyActionHistorySchema),
+});
+const DeliveryLocalReviewAttestationActionHistoriesSchema = Schema.Struct({
+  active: Schema.UndefinedOr(DeliveryLocalReviewAttestationActionHistorySchema),
+  histories: Schema.Array(DeliveryLocalReviewAttestationActionHistorySchema),
+  latest: Schema.UndefinedOr(DeliveryLocalReviewAttestationActionHistorySchema),
+});
+const DeliveryActionAuditSummaryInputSchema = Schema.Struct({
+  cleanup: DeliveryCleanupActionHistoriesSchema,
+  localReviewAttestation: Schema.optionalKey(
+    DeliveryLocalReviewAttestationActionHistoriesSchema
+  ),
+  merge: DeliveryMergeActionHistoriesSchema,
+  readyForReview: Schema.optionalKey(
+    DeliveryPullRequestReadyActionHistoriesSchema
+  ),
+});
+type DeliveryActionAuditSummaryInput = Schema.Schema.Type<
+  typeof DeliveryActionAuditSummaryInputSchema
+>;
+
 export function deliveryActionAuditSummary(
-  input: {
-    readonly cleanup: ReturnType<typeof deriveDeliveryCleanupActionHistories>;
-    readonly localReviewAttestation?: ReturnType<
-      typeof deriveDeliveryLocalReviewAttestationHistories
-    >;
-    readonly merge: ReturnType<typeof deriveDeliveryMergeActionHistories>;
-    readonly readyForReview?: ReturnType<
-      typeof deriveDeliveryPullRequestReadyActionHistories
-    >;
-  },
+  input: DeliveryActionAuditSummaryInput,
   limit = 20
 ) {
   const safeLimit = Math.max(1, Math.min(50, Math.trunc(limit)));

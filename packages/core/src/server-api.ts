@@ -16,7 +16,20 @@ import {
   AgentSessionUpdateDto,
 } from "./agent-session-api.js";
 import {
-  DeliveryActionIdSchema,
+  DeliveryActionIdPublicSchema,
+  DeliveryBranchNamePublicSchema,
+  DeliveryGitShaPublicSchema,
+  DeliveryOwnedBranchNamePublicSchema,
+  DeliveryPositiveIntegerSchema,
+  DeliveryRemoteNamePublicSchema,
+  DeliverySha256DigestPublicSchema,
+  DeliveryTimestampPublicSchema,
+  GitHubDatabaseIdPublicSchema,
+  GitHubLoginPublicSchema,
+  GitHubPullRequestUrlPublicSchema,
+  GitHubRepositoryPublicSchema,
+} from "./delivery-identity.js";
+import {
   DeliveryCleanupReceiptSchema,
   DeliveryLocalReviewAttestationReceiptSchema,
   DeliveryMergeMethodSchema,
@@ -332,7 +345,7 @@ export class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
   "LocalRunSummaryDto"
 )({
   artifacts: Schema.Array(LocalRunArtifactIdSchema),
-  createdAt: Schema.NonEmptyString,
+  createdAt: LocalRunTimestampSchema,
   eventCount: Schema.Number.pipe(
     Schema.check(Schema.isInt({ identifier: "EventCount" }))
   ),
@@ -340,18 +353,22 @@ export class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
   runId: RunIdSchema,
   state: RunStateSchema,
   status: LocalRunStatusSchema,
-  updatedAt: Schema.NonEmptyString,
+  updatedAt: LocalRunTimestampSchema,
 }) {}
 
-export const LocalRunReadSummarySchema = Schema.Struct({
+export class LocalRunReadSummary extends Schema.Class<LocalRunReadSummary>(
+  "LocalRunReadSummary"
+)({
   ...LocalRunSummaryDto.fields,
   artifacts: Schema.Array(LocalRunReadArtifactIdSchema),
   createdAt: LocalRunTimestampSchema,
   status: LocalRunReadStatusSchema,
   updatedAt: LocalRunTimestampSchema,
-}).annotate({ identifier: "LocalRunReadSummary" });
+}) {}
 
-export type LocalRunSummary = typeof LocalRunReadSummarySchema.Type;
+export const LocalRunReadSummarySchema = LocalRunReadSummary;
+
+export type LocalRunSummary = LocalRunReadSummary;
 export type LocalRunDetail = LocalRunSummary;
 
 export const parseLocalRunSummary = Schema.decodeUnknownSync(
@@ -366,13 +383,17 @@ export class LocalRunListDto extends Schema.Class<LocalRunListDto>(
   runs: Schema.Array(LocalRunSummaryDto),
 }) {}
 
-export const LocalRunReadListSchema = Schema.Struct({
+export class LocalRunReadList extends Schema.Class<LocalRunReadList>(
+  "LocalRunReadList"
+)({
   ...LocalRunListDto.fields,
   diagnostics: Schema.Array(LocalRunReadDiagnosticSchema),
   runs: Schema.Array(LocalRunReadSummarySchema),
-}).annotate({ identifier: "LocalRunReadList" });
+}) {}
 
-export type LocalRunList = typeof LocalRunReadListSchema.Type;
+export const LocalRunReadListSchema = LocalRunReadList;
+
+export type LocalRunList = LocalRunReadList;
 
 export const parseLocalRunList = Schema.decodeUnknownSync(
   LocalRunReadListSchema
@@ -386,7 +407,7 @@ export class LocalRunEventsDto extends Schema.Class<LocalRunEventsDto>(
   runId: RunIdSchema,
 }) {}
 
-export type LocalRunEvents = typeof LocalRunEventsDto.Type;
+export type LocalRunEvents = LocalRunEventsDto;
 
 export const parseLocalRunEvents = Schema.decodeUnknownSync(LocalRunEventsDto);
 
@@ -537,21 +558,10 @@ const EventSequenceSchema = Schema.Number.pipe(
   Schema.check(Schema.isInt({ identifier: "EventSequence" })),
   Schema.check(Schema.isGreaterThanOrEqualTo(1))
 );
-const DeliveryActionDigestSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
-);
-const DeliveryActionGitShaSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))
-);
-const DeliveryActionLoginSchema = Schema.String.pipe(
-  Schema.check(
-    Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u)
-  )
-);
-const DeliveryActionRepositorySchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)),
-  Schema.check(Schema.isMaxLength(200))
-);
+const DeliveryActionDigestSchema = DeliverySha256DigestPublicSchema;
+const DeliveryActionGitShaSchema = DeliveryGitShaPublicSchema;
+const DeliveryActionLoginSchema = GitHubLoginPublicSchema;
+const DeliveryActionRepositorySchema = GitHubRepositoryPublicSchema;
 
 export class DeliveryRecoveryActionRequest extends Schema.Class<DeliveryRecoveryActionRequest>(
   "DeliveryRecoveryActionRequest"
@@ -571,10 +581,7 @@ export class DeliveryRemediationActivationActionRequest extends Schema.Class<Del
   "DeliveryRemediationActivationActionRequest"
 )(
   {
-    actionIdempotencyKey: Schema.NonEmptyString.pipe(
-      Schema.check(Schema.isPattern(/^[A-Za-z0-9:_-]+$/u)),
-      Schema.check(Schema.isMaxLength(200))
-    ),
+    actionIdempotencyKey: DeliveryActionIdPublicSchema,
     actorLogin: DeliveryActionLoginSchema,
     actorType: Schema.Literal("User"),
     authorAssociation: Schema.Literals([
@@ -583,17 +590,14 @@ export class DeliveryRemediationActivationActionRequest extends Schema.Class<Del
       "OWNER",
     ] as const),
     authorizationDigest: DeliveryActionDigestSchema,
-    commentDatabaseId: Schema.String.pipe(
-      Schema.check(Schema.isPattern(/^[1-9]\d*$/u)),
-      Schema.check(Schema.isMaxLength(30))
-    ),
+    commentDatabaseId: GitHubDatabaseIdPublicSchema,
     contentDigest: DeliveryActionDigestSchema,
     expectedEventSequence: EventSequenceSchema,
     feedbackId: DeliveryFeedbackIdSchema,
     headSha: DeliveryActionGitShaSchema,
     kind: Schema.Literal("activateRemediation"),
     marker: Schema.Literal("<!-- gaia-remediation-request:v1 -->"),
-    prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+    prNumber: DeliveryPositiveIntegerSchema,
     repository: DeliveryActionRepositorySchema,
   },
   { parseOptions: { onExcessProperty: "error" } }
@@ -603,20 +607,12 @@ export class DeliveryMergeActionRequest extends Schema.Class<DeliveryMergeAction
   "DeliveryMergeActionRequest"
 )(
   {
-    actionId: DeliveryActionIdSchema,
-    expectedBranchName: Schema.NonEmptyString.pipe(
-      Schema.check(Schema.isMaxLength(240))
-    ),
+    actionId: DeliveryActionIdPublicSchema,
+    expectedBranchName: DeliveryBranchNamePublicSchema,
     expectedDecisionSequence: EventSequenceSchema,
     expectedHeadSha: DeliveryActionGitShaSchema,
     expectedPolicyDigest: DeliveryActionDigestSchema,
-    expectedPrUrl: Schema.String.pipe(
-      Schema.check(
-        Schema.isPattern(
-          /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
-        )
-      )
-    ),
+    expectedPrUrl: GitHubPullRequestUrlPublicSchema,
     kind: Schema.Literal("merge"),
     mergeMethod: DeliveryMergeMethodSchema,
   },
@@ -627,21 +623,11 @@ export class DeliveryMarkReadyForReviewActionRequest extends Schema.Class<Delive
   "DeliveryMarkReadyForReviewActionRequest"
 )(
   {
-    actionId: DeliveryActionIdSchema,
-    expectedBranchName: Schema.NonEmptyString.pipe(
-      Schema.check(Schema.isMaxLength(240))
-    ),
+    actionId: DeliveryActionIdPublicSchema,
+    expectedBranchName: DeliveryBranchNamePublicSchema,
     expectedHeadSha: DeliveryActionGitShaSchema,
-    expectedPrNumber: Schema.Int.pipe(
-      Schema.check(Schema.isGreaterThanOrEqualTo(1))
-    ),
-    expectedPrUrl: Schema.String.pipe(
-      Schema.check(
-        Schema.isPattern(
-          /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
-        )
-      )
-    ),
+    expectedPrNumber: DeliveryPositiveIntegerSchema,
+    expectedPrUrl: GitHubPullRequestUrlPublicSchema,
     kind: Schema.Literal("markReadyForReview"),
   },
   { parseOptions: { onExcessProperty: "error" } }
@@ -651,7 +637,7 @@ export class DeliveryEvaluateMergeReadinessActionRequest extends Schema.Class<De
   "DeliveryEvaluateMergeReadinessActionRequest"
 )(
   {
-    actionId: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+    actionId: DeliveryActionIdPublicSchema,
     kind: Schema.Literal("evaluateMergeReadiness"),
     mergeMethod: DeliveryMergeMethodSchema,
   },
@@ -662,25 +648,13 @@ export class DeliveryAttestPairedReviewActionRequest extends Schema.Class<Delive
   "DeliveryAttestPairedReviewActionRequest"
 )(
   {
-    actionId: DeliveryActionIdSchema,
+    actionId: DeliveryActionIdPublicSchema,
     decision: Schema.Literal("approved"),
-    expectedBranchName: Schema.NonEmptyString.pipe(
-      Schema.check(Schema.isMaxLength(240))
-    ),
+    expectedBranchName: DeliveryBranchNamePublicSchema,
     expectedHeadSha: DeliveryActionGitShaSchema,
-    expectedPrNumber: Schema.Int.pipe(
-      Schema.check(Schema.isGreaterThanOrEqualTo(1))
-    ),
-    expectedPrUrl: Schema.String.pipe(
-      Schema.check(
-        Schema.isPattern(
-          /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
-        )
-      )
-    ),
-    gaiaEvidenceDigest: Schema.optionalKey(
-      Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u)))
-    ),
+    expectedPrNumber: DeliveryPositiveIntegerSchema,
+    expectedPrUrl: GitHubPullRequestUrlPublicSchema,
+    gaiaEvidenceDigest: Schema.optionalKey(DeliverySha256DigestPublicSchema),
     kind: Schema.Literal("attestPairedReviewApproval"),
   },
   { parseOptions: { onExcessProperty: "error" } }
@@ -690,7 +664,7 @@ export class DeliveryRetryCleanupActionRequest extends Schema.Class<DeliveryRetr
   "DeliveryRetryCleanupActionRequest"
 )(
   {
-    actionId: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+    actionId: DeliveryActionIdPublicSchema,
     expectedMergeCommitSha: DeliveryActionGitShaSchema,
     kind: Schema.Literal("retryCleanup"),
   },
@@ -709,24 +683,23 @@ export const DeliveryActionRequestSchema = Schema.Union([
   DeliveryMergeActionRequest,
   DeliveryRetryCleanupActionRequest,
 ]);
-export type DeliveryActionRequest = typeof DeliveryActionRequestSchema.Type;
+export type DeliveryActionRequest =
+  | DeliveryRecoveryActionRequest
+  | WorkerContinuationAction
+  | WorkerCorrelationReconciliationAction
+  | WorkerDesktopOriginCorrelationAction
+  | DeliveryRemediationActivationActionRequest
+  | DeliveryMarkReadyForReviewActionRequest
+  | DeliveryAttestPairedReviewActionRequest
+  | DeliveryEvaluateMergeReadinessActionRequest
+  | DeliveryMergeActionRequest
+  | DeliveryRetryCleanupActionRequest;
 
 const publicPublicationBase = {
-  branchName: Schema.NonEmptyString.pipe(
-    Schema.check(Schema.isMaxLength(240)),
-    Schema.check(Schema.isPattern(/^gaia\/run-[A-Za-z0-9_-]{10}$/u))
-  ),
+  branchName: DeliveryOwnedBranchNamePublicSchema,
 } as const;
-const PublicGitShaSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))
-);
-const PublicPullRequestUrlSchema = Schema.String.pipe(
-  Schema.check(
-    Schema.isPattern(
-      /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
-    )
-  )
-);
+const PublicGitShaSchema = DeliveryGitShaPublicSchema;
+const PublicPullRequestUrlSchema = GitHubPullRequestUrlPublicSchema;
 
 export class DeliveryPublicationIntentDto extends Schema.Class<DeliveryPublicationIntentDto>(
   "DeliveryPublicationIntentDto"
@@ -798,11 +771,20 @@ export type DeliveryPublicationDto = typeof DeliveryPublicationDto.Type;
 export class DeliveryProvenanceDto extends Schema.Class<DeliveryProvenanceDto>(
   "DeliveryProvenanceDto"
 )({
-  baseBranch: Schema.NonEmptyString,
-  baseRevision: Schema.NonEmptyString,
-  headBranch: Schema.NonEmptyString,
-  remote: Schema.NonEmptyString,
+  baseBranch: DeliveryBranchNamePublicSchema,
+  baseRevision: DeliveryGitShaPublicSchema,
+  headBranch: DeliveryBranchNamePublicSchema,
+  remote: DeliveryRemoteNamePublicSchema,
 }) {}
+
+const DeliveryActionAuditEntrySchema = Schema.Struct({
+  actionId: DeliveryActionIdPublicSchema,
+  latestSequence: EventSequenceSchema,
+  state: Schema.NonEmptyString,
+});
+const DeliverySnapshotSseEventIdSchema = Schema.String.pipe(
+  Schema.check(Schema.isMaxLength(200))
+);
 
 export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   "DeliverySnapshotDto"
@@ -836,36 +818,20 @@ export class DeliverySnapshotDto extends Schema.Class<DeliverySnapshotDto>(
   latestCleanupAction: Schema.optionalKey(DeliveryCleanupReceiptSchema),
   actionAudit: Schema.optionalKey(
     Schema.Struct({
-      cleanup: Schema.Array(
-        Schema.Struct({
-          actionId: Schema.NonEmptyString,
-          latestSequence: EventSequenceSchema,
-          state: Schema.NonEmptyString,
-        })
-      ).pipe(Schema.check(Schema.isMaxLength(20))),
-      localReviewAttestation: Schema.optionalKey(
-        Schema.Array(
-          Schema.Struct({
-            actionId: Schema.NonEmptyString,
-            latestSequence: EventSequenceSchema,
-            state: Schema.NonEmptyString,
-          })
-        ).pipe(Schema.check(Schema.isMaxLength(20)))
+      cleanup: Schema.Array(DeliveryActionAuditEntrySchema).pipe(
+        Schema.check(Schema.isMaxLength(20))
       ),
-      merge: Schema.Array(
-        Schema.Struct({
-          actionId: Schema.NonEmptyString,
-          latestSequence: EventSequenceSchema,
-          state: Schema.NonEmptyString,
-        })
-      ).pipe(Schema.check(Schema.isMaxLength(20))),
-      readyForReview: Schema.Array(
-        Schema.Struct({
-          actionId: Schema.NonEmptyString,
-          latestSequence: EventSequenceSchema,
-          state: Schema.NonEmptyString,
-        })
-      ).pipe(Schema.check(Schema.isMaxLength(20))),
+      localReviewAttestation: Schema.optionalKey(
+        Schema.Array(DeliveryActionAuditEntrySchema).pipe(
+          Schema.check(Schema.isMaxLength(20))
+        )
+      ),
+      merge: Schema.Array(DeliveryActionAuditEntrySchema).pipe(
+        Schema.check(Schema.isMaxLength(20))
+      ),
+      readyForReview: Schema.Array(DeliveryActionAuditEntrySchema).pipe(
+        Schema.check(Schema.isMaxLength(20))
+      ),
     })
   ),
   remediationRearmSequence: Schema.optionalKey(
@@ -905,7 +871,7 @@ export class WorkerRecoverySuccessEnvelope extends Schema.Class<WorkerRecoverySu
 export const DeliverySnapshotSseEventSchema = Schema.Struct({
   data: Schema.fromJsonString(DeliverySnapshotDto),
   event: Schema.Literal("delivery-update"),
-  id: Schema.String,
+  id: DeliverySnapshotSseEventIdSchema,
 });
 
 export class LocalRunEventsSuccessEnvelope extends Schema.Class<LocalRunEventsSuccessEnvelope>(
@@ -1019,6 +985,11 @@ export const LocalRunInternalErrorResponse = [
   LocalRunApiInternalServerErrorResponse,
 ] as const;
 
+const ServerIdSchema = Schema.NonEmptyString.pipe(
+  Schema.check(Schema.isMaxLength(200))
+);
+const ServerMetadataTimestampSchema = DeliveryTimestampPublicSchema;
+
 export class ServerMetadata extends Schema.Class<ServerMetadata>(
   "ServerMetadata"
 )({
@@ -1026,9 +997,9 @@ export class ServerMetadata extends Schema.Class<ServerMetadata>(
   host: ServerHostSchema,
   pid: Schema.Number.pipe(Schema.check(Schema.isInt({ identifier: "Pid" }))),
   port: Schema.Number.pipe(Schema.check(Schema.isInt({ identifier: "Port" }))),
-  serverId: Schema.NonEmptyString,
-  startedAt: Schema.NonEmptyString,
-  updatedAt: Schema.NonEmptyString,
+  serverId: ServerIdSchema,
+  startedAt: ServerMetadataTimestampSchema,
+  updatedAt: ServerMetadataTimestampSchema,
   url: LocalGaiaServerUrlSchema,
   version: Schema.Literal(1),
   workspaceRoot: Schema.NonEmptyString,
@@ -1041,10 +1012,10 @@ export class HealthResponse extends Schema.Class<HealthResponse>(
   host: ServerHostSchema,
   pid: Schema.Number.pipe(Schema.check(Schema.isInt({ identifier: "Pid" }))),
   port: Schema.Number.pipe(Schema.check(Schema.isInt({ identifier: "Port" }))),
-  serverId: Schema.NonEmptyString,
-  startedAt: Schema.NonEmptyString,
+  serverId: ServerIdSchema,
+  startedAt: ServerMetadataTimestampSchema,
   status: Schema.Literal("ok"),
-  updatedAt: Schema.NonEmptyString,
+  updatedAt: ServerMetadataTimestampSchema,
   url: LocalGaiaServerUrlSchema,
   version: Schema.Literal(1),
   workspaceRoot: Schema.NonEmptyString,
@@ -1088,9 +1059,7 @@ export const CreateRunDeliveryRequest = Schema.Union([
   CreateRunPullRequestDeliveryRequest,
 ]);
 
-function strictDeliveryRequestKeys<
-  T extends { readonly mode: "local" | "pullRequest" },
->(value: T) {
+function strictDeliveryRequestKeys<T extends object>(value: T) {
   const keys = Object.keys(value);
   if (keys.length !== 1 || keys[0] !== "mode") {
     throw new Error("Delivery request only accepts a mode field.");

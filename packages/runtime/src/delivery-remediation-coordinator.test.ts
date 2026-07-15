@@ -7,6 +7,7 @@ import { layer } from "@effect/vitest";
 import {
   DeliveryBlocker,
   DeliveryCheckObservation,
+  DeliveryGitShaPublicSchema,
   DeliveryFeedbackTrustPolicyV1,
   DeliveryPublicationAttempted,
   DeliveryPublicationConfirmed,
@@ -81,8 +82,33 @@ import {
 import { makeDeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import type { HarnessProvider, HarnessSession } from "./harness-session.js";
-import { makeRunPaths, makeRunStorePaths } from "./paths.js";
+import {
+  makeRunPaths,
+  makeRunStorePaths,
+  RuntimePathTextSchema,
+} from "./paths.js";
 import { actOnDeliveryRemediation } from "./server-workflows.js";
+
+const ControlledReaderInputSchema = Schema.Struct({
+  authorization: Schema.declare<
+    ReturnType<typeof makeDeliveryFeedbackSmokeAuthorization>
+  >(
+    (
+      input
+    ): input is ReturnType<typeof makeDeliveryFeedbackSmokeAuthorization> =>
+      typeof input === "object" && input !== null
+  ),
+  feedbackId: Schema.declare<ReturnType<typeof parseDeliveryFeedbackId>>(
+    (input): input is ReturnType<typeof parseDeliveryFeedbackId> =>
+      typeof input === "string"
+  ),
+  oldHead: DeliveryGitShaPublicSchema,
+  publication: Schema.declare<DeliveryPublicationConfirmed>(
+    (input): input is DeliveryPublicationConfirmed =>
+      input instanceof DeliveryPublicationConfirmed
+  ),
+  text: Schema.NonEmptyString,
+});
 
 const runId = parseRunId("run-Gaia92rt01");
 const capabilities = HarnessCapabilities.make({
@@ -2046,15 +2072,9 @@ function activationAction(
   });
 }
 
-function controlledReader(input: {
-  readonly authorization: ReturnType<
-    typeof makeDeliveryFeedbackSmokeAuthorization
-  >;
-  readonly feedbackId: ReturnType<typeof parseDeliveryFeedbackId>;
-  readonly oldHead: string;
-  readonly publication: DeliveryPublicationConfirmed;
-  readonly text: string;
-}): DeliveryPullRequestReader {
+function controlledReader(
+  input: typeof ControlledReaderInputSchema.Type
+): DeliveryPullRequestReader {
   return (request) =>
     Effect.sync(() => {
       const authorized =
@@ -2103,7 +2123,7 @@ function jsonDigest(value: unknown) {
 }
 
 function recordingProvider(
-  workspace: string
+  workspace: typeof RuntimePathTextSchema.Type
 ): HarnessProvider & { readonly prompts: string[] } {
   const prompts: string[] = [];
   return {
@@ -2123,7 +2143,7 @@ function recordingProvider(
 
 function recordingSession(
   sessionId: HarnessSessionId,
-  workspace: string,
+  workspace: typeof RuntimePathTextSchema.Type,
   prompts: string[]
 ): HarnessSession {
   const oldTurnId = parseHarnessTurnId("turn-initial");

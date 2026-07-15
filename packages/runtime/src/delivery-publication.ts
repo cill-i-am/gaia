@@ -1,11 +1,18 @@
 import { createHash } from "node:crypto";
 
 import {
+  DeliveryBranchNamePublicSchema,
+  DeliveryGitShaPublicSchema,
+  DeliveryOperationIdPublicSchema,
   DeliveryPublicationAttempted,
   DeliveryPublicationConfirmed,
   DeliveryPublicationFailed,
   DeliveryPublicationIntent,
   DeliveryPublicationOutcomeUnknown,
+  DeliveryRemoteNamePublicSchema,
+  DeliverySha256DigestPublicSchema,
+  DeliverySourcePathPublicSchema,
+  DeliveryTimestampPublicSchema,
   encodeDeliveryPublicationJson,
   parseDeliveryPublication,
   snapshotFromReplay,
@@ -35,6 +42,7 @@ import {
   makeRunPaths,
   type RunPaths,
   type RunStorageOptions,
+  RuntimePathTextSchema,
 } from "./paths.js";
 import { evaluateWorkspacePrQualityGate } from "./workspace-pr-gate.js";
 
@@ -52,11 +60,86 @@ const generatedRoots = new Set([
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const parseHarnessRunResultJson =
   Schema.decodeUnknownSync(HarnessRunResultJson);
+const GitHubCommandRunnerSchema = Schema.declare<GitHubCommandRunner>(
+  (input): input is GitHubCommandRunner => typeof input === "function"
+);
+const GitDeliveryCommandRunnerSchema = Schema.declare<GitDeliveryCommandRunner>(
+  (input): input is GitDeliveryCommandRunner => typeof input === "function"
+);
+const DeliveryPublicationOptionFieldsSchema = Schema.Struct({
+  commandRunner: Schema.optionalKey(GitHubCommandRunnerSchema),
+  deliveryGitCommandRunner: Schema.optionalKey(GitDeliveryCommandRunnerSchema),
+});
+type DeliveryPublicationOptionFields =
+  typeof DeliveryPublicationOptionFieldsSchema.Type;
 
-export type DeliveryPublicationOptions = RunStorageOptions & {
-  readonly commandRunner?: GitHubCommandRunner;
-  readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
-};
+export type DeliveryPublicationOptions = RunStorageOptions &
+  DeliveryPublicationOptionFields;
+
+const GitHubRepositorySelectorSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(/^github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)
+  ),
+  Schema.check(Schema.isMaxLength(220))
+);
+type GitHubRepositorySelector = typeof GitHubRepositorySelectorSchema.Type;
+
+const DeliveryCommandNameSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^(git|gh)$/u))
+);
+type DeliveryCommandName = typeof DeliveryCommandNameSchema.Type;
+
+const DeliveryCommandEnvironmentSchema = Schema.Record(
+  Schema.String,
+  Schema.String
+);
+const DeliveryGitCommandOutputSchema = Schema.String;
+type DeliveryGitCommandOutput = typeof DeliveryGitCommandOutputSchema.Type;
+
+const GitRemoteUrlSchema = Schema.String.pipe(
+  Schema.check(Schema.isMaxLength(2_048))
+);
+type GitRemoteUrl = typeof GitRemoteUrlSchema.Type;
+
+const MarkdownCodeSpanInputSchema = Schema.String;
+type MarkdownCodeSpanInput = typeof MarkdownCodeSpanInputSchema.Type;
+
+const PublicationGateEventSchema = Schema.Struct({
+  payload: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+  type: Schema.String,
+});
+
+const PublicationFailureInputSchema = Schema.Struct({
+  code: Schema.String,
+  message: Schema.String,
+  recoverable: Schema.Boolean,
+  step: DeliveryPublicationFailed.fields.step,
+});
+
+const PublicationMarkerInputSchema = Schema.Struct({
+  branchName: DeliveryBranchNamePublicSchema,
+  operationId: DeliveryOperationIdPublicSchema,
+  payloadDigest: DeliverySha256DigestPublicSchema,
+});
+
+type PublicationMarkerInput = typeof PublicationMarkerInputSchema.Type;
+
+const PublicationCommitIdentitySchema = Schema.Struct({
+  ...PublicationMarkerInputSchema.fields,
+  baseBranch: DeliveryBranchNamePublicSchema,
+  baseRevision: DeliveryGitShaPublicSchema,
+  commitMessage: Schema.NonEmptyString,
+  commitTimestamp: DeliveryTimestampPublicSchema,
+  sourcePaths: Schema.Array(DeliverySourcePathPublicSchema),
+  treeSha: Schema.optionalKey(DeliveryGitShaPublicSchema),
+});
+
+type PublicationCommitIdentity = typeof PublicationCommitIdentitySchema.Type;
+
+const PublicationParseErrorInputSchema = Schema.Struct({
+  code: Schema.String,
+  message: Schema.String,
+});
 
 /** Commit, push, and reconcile one verified run-owned delivery draft PR. */
 export function publishReadyDeliveryRun(
@@ -423,7 +506,7 @@ function createIntent(
   runId: RunId,
   paths: RunPaths,
   provenance: DeliveryProvenance,
-  repository: string,
+  repository: GitHubRepositorySelector,
   runner: GitHubCommandRunner,
   events: ReadonlyArray<RunEvent>
 ) {
@@ -479,7 +562,7 @@ function preflightPublicationTarget(
   runId: RunId,
   paths: RunPaths,
   provenance: DeliveryProvenance,
-  repository: string,
+  repository: GitHubRepositorySelector,
   intent: DeliveryPublicationIntent,
   runner: GitHubCommandRunner
 ) {
@@ -803,7 +886,7 @@ function verifyCommit(
   paths: RunPaths,
   provenance: DeliveryProvenance,
   intent: PublicationCommitIdentity,
-  commitSha: string,
+  commitSha: typeof DeliveryGitShaPublicSchema.Type,
   runner: GitHubCommandRunner
 ) {
   return Effect.gen(function* () {
@@ -871,18 +954,9 @@ function verifyCommit(
   });
 }
 
-type PublicationCommitIdentity = PublicationMarkerInput & {
-  readonly baseBranch: string;
-  readonly baseRevision: string;
-  readonly commitMessage: string;
-  readonly commitTimestamp: string;
-  readonly sourcePaths: ReadonlyArray<string>;
-  readonly treeSha?: string;
-};
-
 function optionalLocalBranchHead(
   paths: RunPaths,
-  branchName: string,
+  branchName: typeof DeliveryBranchNamePublicSchema.Type,
   runner: GitHubCommandRunner
 ) {
   return Effect.gen(function* () {
@@ -905,10 +979,7 @@ function optionalLocalBranchHead(
 }
 
 function requireAuthoritativePublicationGates(
-  events: ReadonlyArray<{
-    readonly payload?: Readonly<Record<string, unknown>>;
-    readonly type: string;
-  }>
+  events: ReadonlyArray<typeof PublicationGateEventSchema.Type>
 ) {
   const historical = historicalPublicationGates(events);
   const ready = events.at(-1)?.type === "DELIVERY_READY_TO_PUBLISH";
@@ -926,10 +997,7 @@ function requireAuthoritativePublicationGates(
 }
 
 function requireHistoricalPublicationGates(
-  events: ReadonlyArray<{
-    readonly payload?: Readonly<Record<string, unknown>>;
-    readonly type: string;
-  }>
+  events: ReadonlyArray<typeof PublicationGateEventSchema.Type>
 ) {
   return historicalPublicationGates(events)
     ? Effect.void
@@ -944,10 +1012,7 @@ function requireHistoricalPublicationGates(
 }
 
 function historicalPublicationGates(
-  events: ReadonlyArray<{
-    readonly payload?: Readonly<Record<string, unknown>>;
-    readonly type: string;
-  }>
+  events: ReadonlyArray<typeof PublicationGateEventSchema.Type>
 ) {
   return (
     events.some(({ type }) => type === "VERIFICATION_COMPLETED") &&
@@ -963,7 +1028,7 @@ function publishRemoteAndPullRequest(
   runId: RunId,
   paths: RunPaths,
   provenance: DeliveryProvenance,
-  repository: string,
+  repository: GitHubRepositorySelector,
   attempted: DeliveryPublicationAttempted,
   runner: GitHubCommandRunner
 ) {
@@ -1086,7 +1151,7 @@ function reconcileUnknownPublication(
   runId: RunId,
   paths: RunPaths,
   provenance: DeliveryProvenance,
-  repository: string,
+  repository: GitHubRepositorySelector,
   unknown: DeliveryPublicationOutcomeUnknown,
   runner: GitHubCommandRunner
 ) {
@@ -1162,7 +1227,7 @@ function reconcileUnknownPublication(
 
 function readPullRequests(
   paths: RunPaths,
-  repository: string,
+  repository: GitHubRepositorySelector,
   publication: PublicationMarkerInput,
   runner: GitHubCommandRunner
 ) {
@@ -1256,7 +1321,7 @@ function writePullRequestBody(
   });
 }
 
-function markdownCodeSpan(value: string) {
+function markdownCodeSpan(value: MarkdownCodeSpanInput) {
   let longestBacktickRun = 0;
   for (const match of value.matchAll(/`+/gu)) {
     longestBacktickRun = Math.max(longestBacktickRun, match[0].length);
@@ -1268,12 +1333,6 @@ function markdownCodeSpan(value: string) {
 function publicationMarker(publication: PublicationMarkerInput) {
   return `<!-- gaia-delivery:v1 run-branch=${publication.branchName} operation=${publication.operationId} digest=${publication.payloadDigest} -->`;
 }
-
-type PublicationMarkerInput = {
-  readonly branchName: string;
-  readonly operationId: string;
-  readonly payloadDigest: string;
-};
 
 function githubRepositorySelector(
   paths: RunPaths,
@@ -1297,7 +1356,7 @@ function githubRepositorySelector(
   });
 }
 
-function parseGitHubRepositorySelector(remote: string) {
+function parseGitHubRepositorySelector(remote: GitRemoteUrl) {
   const scp = remote.includes("://")
     ? null
     : /^(?:[^@\s/:]+@)?([^\s/:]+):([^\s?#]+)$/u.exec(remote);
@@ -1332,7 +1391,9 @@ function parseGitHubRepositorySelector(remote: string) {
   ) {
     throw new Error("Unsupported GitHub repository identity.");
   }
-  return `github.com/${owner}/${repository}`;
+  return Schema.decodeUnknownSync(GitHubRepositorySelectorSchema)(
+    `github.com/${owner}/${repository}`
+  );
 }
 
 function observeRemoteHead(
@@ -1395,12 +1456,7 @@ function recordFailed(
   runId: RunId,
   paths: RunPaths,
   attempted: DeliveryPublicationAttempted,
-  failure: {
-    readonly code: string;
-    readonly message: string;
-    readonly recoverable: boolean;
-    readonly step: DeliveryPublicationFailed["step"];
-  }
+  failure: typeof PublicationFailureInputSchema.Type
 ) {
   return Effect.gen(function* () {
     const failed = DeliveryPublicationFailed.make({
@@ -1417,12 +1473,7 @@ function recordFailedFromIntent(
   runId: RunId,
   paths: RunPaths,
   intent: DeliveryPublicationIntent,
-  failure: {
-    readonly code: string;
-    readonly message: string;
-    readonly recoverable: boolean;
-    readonly step: DeliveryPublicationFailed["step"];
-  }
+  failure: typeof PublicationFailureInputSchema.Type
 ) {
   return Effect.gen(function* () {
     const failed = DeliveryPublicationFailed.make({
@@ -1460,12 +1511,7 @@ function recordFailedFromUnknown(
   runId: RunId,
   paths: RunPaths,
   unknown: DeliveryPublicationOutcomeUnknown,
-  failure: {
-    readonly code: string;
-    readonly message: string;
-    readonly recoverable: boolean;
-    readonly step: DeliveryPublicationFailed["step"];
-  }
+  failure: typeof PublicationFailureInputSchema.Type
 ) {
   return Effect.gen(function* () {
     const failed = DeliveryPublicationFailed.make({
@@ -1552,7 +1598,10 @@ function parseDelivery(value: unknown) {
   );
 }
 
-function parseJsonFile(fs: FileSystem.FileSystem, path: string) {
+function parseJsonFile(
+  fs: FileSystem.FileSystem,
+  path: typeof RuntimePathTextSchema.Type
+) {
   return fs.readFileString(path).pipe(
     Effect.flatMap((text) =>
       parseEffect(() => JSON.parse(text), {
@@ -1575,7 +1624,7 @@ function parseJsonFile(fs: FileSystem.FileSystem, path: string) {
 
 function parseEffect<A>(
   parse: () => A,
-  error: { readonly code: string; readonly message: string }
+  error: typeof PublicationParseErrorInputSchema.Type
 ) {
   return Effect.try({
     try: parse,
@@ -1606,20 +1655,20 @@ function parseDeliveryGitPaths<A>(parse: () => A) {
 
 function runCommand(
   runner: GitHubCommandRunner,
-  cwd: string,
-  command: string,
+  cwd: typeof RuntimePathTextSchema.Type,
+  command: DeliveryCommandName,
   args: ReadonlyArray<string>,
-  env?: Readonly<Record<string, string>>
+  env?: typeof DeliveryCommandEnvironmentSchema.Type
 ) {
   return runner({ args, command, cwd, ...(env === undefined ? {} : { env }) });
 }
 
 function runRequired(
   runner: GitHubCommandRunner,
-  cwd: string,
-  command: string,
+  cwd: typeof RuntimePathTextSchema.Type,
+  command: DeliveryCommandName,
   args: ReadonlyArray<string>,
-  env?: Readonly<Record<string, string>>
+  env?: typeof DeliveryCommandEnvironmentSchema.Type
 ) {
   return Effect.gen(function* () {
     const result = yield* runCommand(runner, cwd, command, args, env);
@@ -1638,7 +1687,7 @@ function commandFailed(operation: string) {
   });
 }
 
-function parseNameStatusZ(input: string) {
+function parseNameStatusZ(input: DeliveryGitCommandOutput) {
   const fields = nulFields(input);
   const paths: Array<string> = [];
   let index = 0;
@@ -1669,11 +1718,11 @@ function parseNameStatusZ(input: string) {
   return paths;
 }
 
-function parsePathListZ(input: string) {
+function parsePathListZ(input: DeliveryGitCommandOutput) {
   return nulFields(input);
 }
 
-function nulFields(input: string) {
+function nulFields(input: DeliveryGitCommandOutput) {
   if (input.length === 0) return [];
   if (!input.endsWith("\0")) {
     throw makeRuntimeError({
@@ -1685,7 +1734,7 @@ function nulFields(input: string) {
   return input.slice(0, -1).split("\0");
 }
 
-function requireSafeGitPath(path: string) {
+function requireSafeGitPath(path: typeof DeliverySourcePathPublicSchema.Type) {
   if (
     path.length === 0 ||
     path.length > 1_024 ||
@@ -1706,7 +1755,10 @@ function requireSafeGitPath(path: string) {
   }
 }
 
-function isExcluded(path: string, harnessPaths: ReadonlySet<string>) {
+function isExcluded(
+  path: typeof DeliverySourcePathPublicSchema.Type,
+  harnessPaths: ReadonlySet<string>
+) {
   return (
     harnessPaths.has(path) ||
     path.split("/").some((segment) => generatedRoots.has(segment))

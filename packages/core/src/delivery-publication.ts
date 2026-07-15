@@ -1,63 +1,20 @@
 import { Schema } from "effect";
 
+import {
+  DeliveryBranchNamePublicSchema,
+  DeliveryCommitMessagePublicSchema,
+  DeliveryGitObjectIdPublicSchema,
+  DeliveryGitShaPublicSchema,
+  DeliveryOperationIdPublicSchema,
+  DeliveryPositiveIntegerSchema,
+  DeliveryOwnedBranchNamePublicSchema,
+  DeliverySha256DigestPublicSchema,
+  DeliverySourcePathPublicSchema,
+  DeliveryTimestampPublicSchema,
+  GitHubPullRequestUrlPublicSchema,
+} from "./delivery-identity.js";
+
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
-const DigestSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
-);
-const GitShaSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))
-);
-const generatedPathSegments = new Set([
-  ".gaia",
-  ".turbo",
-  "coverage",
-  "dist",
-  "gaia-runs",
-  "node_modules",
-]);
-const OperationIdSchema = Schema.NonEmptyString.pipe(
-  Schema.check(Schema.isPattern(/^[A-Za-z0-9:_-]+$/u)),
-  Schema.check(Schema.isMaxLength(160))
-);
-const SafePathSchema = Schema.NonEmptyString.pipe(
-  Schema.check(Schema.isMaxLength(1_024)),
-  Schema.check(
-    Schema.makeFilter(
-      (path) =>
-        !path.startsWith("/") &&
-        !path.includes("\\") &&
-        !/[\u0000-\u001f\u007f]/u.test(path) &&
-        path
-          .split("/")
-          .every(
-            (segment) =>
-              segment.length > 0 &&
-              segment !== "." &&
-              segment !== ".." &&
-              !generatedPathSegments.has(segment)
-          )
-    )
-  )
-);
-const CommitMessageSchema = Schema.NonEmptyString.pipe(
-  Schema.check(Schema.isMaxLength(240)),
-  Schema.check(Schema.isPattern(/^[^\r\n]+$/u))
-);
-const TimestampSchema = Schema.String.pipe(
-  Schema.check(
-    Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u)
-  )
-);
-const PullRequestUrlSchema = Schema.String.pipe(
-  Schema.check(
-    Schema.isPattern(
-      /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
-    )
-  )
-);
-const PositiveIntegerSchema = Schema.Int.pipe(
-  Schema.check(Schema.isGreaterThanOrEqualTo(1))
-);
 
 export const DeliveryPublicationStateSchema = Schema.Literals([
   "intentRecorded",
@@ -76,24 +33,24 @@ export const DeliveryPublicationFailureStepSchema = Schema.Literals([
 ] as const);
 
 const publicationIntentFields = {
-  baseBranch: Schema.NonEmptyString,
-  baseRevision: GitShaSchema,
-  branchName: Schema.NonEmptyString,
-  commitMessage: CommitMessageSchema,
-  commitTimestamp: TimestampSchema,
+  baseBranch: DeliveryBranchNamePublicSchema,
+  baseRevision: DeliveryGitShaPublicSchema,
+  branchName: DeliveryOwnedBranchNamePublicSchema,
+  commitMessage: DeliveryCommitMessagePublicSchema,
+  commitTimestamp: DeliveryTimestampPublicSchema,
   digestVersion: Schema.Literal(1),
-  operationId: OperationIdSchema,
-  payloadDigest: DigestSchema,
-  sourcePaths: Schema.Array(SafePathSchema).pipe(
+  operationId: DeliveryOperationIdPublicSchema,
+  payloadDigest: DeliverySha256DigestPublicSchema,
+  sourcePaths: Schema.Array(DeliverySourcePathPublicSchema).pipe(
     Schema.check(Schema.isMaxLength(2_000))
   ),
-  treeSha: Schema.optionalKey(GitShaSchema),
+  treeSha: Schema.optionalKey(DeliveryGitObjectIdPublicSchema),
 } as const;
 
 const publicationAttemptFields = {
   ...publicationIntentFields,
-  commitSha: GitShaSchema,
-  treeSha: GitShaSchema,
+  commitSha: DeliveryGitShaPublicSchema,
+  treeSha: DeliveryGitObjectIdPublicSchema,
 } as const;
 
 /** Durable publication intent recorded before local git mutation. */
@@ -125,9 +82,9 @@ export class DeliveryPublicationConfirmed extends Schema.Class<DeliveryPublicati
   {
     ...publicationAttemptFields,
     draft: Schema.Literal(true),
-    headSha: GitShaSchema,
-    prNumber: PositiveIntegerSchema,
-    prUrl: PullRequestUrlSchema,
+    headSha: DeliveryGitShaPublicSchema,
+    prNumber: DeliveryPositiveIntegerSchema,
+    prUrl: GitHubPullRequestUrlPublicSchema,
     state: Schema.Literal("confirmed"),
   },
   strict
@@ -136,11 +93,11 @@ export class DeliveryPublicationConfirmed extends Schema.Class<DeliveryPublicati
 const publicationFailureFields = {
   ...publicationIntentFields,
   code: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(160))),
-  commitSha: Schema.optionalKey(GitShaSchema),
+  commitSha: Schema.optionalKey(DeliveryGitShaPublicSchema),
   message: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1_024))),
   recoverable: Schema.Boolean,
   step: DeliveryPublicationFailureStepSchema,
-  treeSha: Schema.optionalKey(GitShaSchema),
+  treeSha: Schema.optionalKey(DeliveryGitObjectIdPublicSchema),
 } as const;
 
 /** Definitive publication failure with no ambiguous external outcome. */
@@ -171,10 +128,15 @@ export const DeliveryPublicationSchema = Schema.Union([
   DeliveryPublicationConfirmed,
   DeliveryPublicationFailed,
   DeliveryPublicationOutcomeUnknown,
-]);
+] as const);
 
 /** Durable finite publication state reconstructed from Gaia events. */
-export type DeliveryPublication = typeof DeliveryPublicationSchema.Type;
+export type DeliveryPublication =
+  | typeof DeliveryPublicationIntent.Type
+  | typeof DeliveryPublicationAttempted.Type
+  | typeof DeliveryPublicationConfirmed.Type
+  | typeof DeliveryPublicationFailed.Type
+  | typeof DeliveryPublicationOutcomeUnknown.Type;
 
 /** Parse an untrusted persisted publication payload. */
 export const parseDeliveryPublication = Schema.decodeUnknownSync(

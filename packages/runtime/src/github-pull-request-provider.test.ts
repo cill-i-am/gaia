@@ -2,9 +2,12 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   DeliveryFeedbackTrustPolicyV1,
   DeliveryTrustedCheckV1,
+  GitHubDatabaseIdPublicSchema,
+  GitHubLoginPublicSchema,
+  GitHubProviderUrlPublicSchema,
   parseDeliveryFeedbackId,
 } from "@gaia/core";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import type {
   GitHubCommandInput,
@@ -18,6 +21,25 @@ import {
 } from "./github-pull-request-provider.js";
 
 const headSha = "a".repeat(40);
+const FixtureProviderIdSchema = GitHubDatabaseIdPublicSchema;
+const FixtureCommentInputSchema = Schema.Struct({
+  association: Schema.String,
+  body: Schema.String,
+  id: FixtureProviderIdSchema,
+  login: GitHubLoginPublicSchema,
+  url: GitHubProviderUrlPublicSchema,
+});
+const ControlledCommentFixtureInputSchema = Schema.Struct({
+  author: Schema.optionalKey(
+    Schema.Struct({
+      __typename: Schema.String,
+      login: GitHubLoginPublicSchema,
+    })
+  ),
+  authorAssociation: Schema.optionalKey(Schema.String),
+  body: Schema.optionalKey(Schema.String),
+  databaseId: Schema.optionalKey(FixtureProviderIdSchema),
+});
 
 describe("delivery GitHub pull request provider", () => {
   it.effect("fails closed across comments, reviews, threads, and checks", () =>
@@ -84,7 +106,7 @@ describe("delivery GitHub pull request provider", () => {
 
       const durable = JSON.stringify(result.observation);
       assert.notInclude(durable, "Please update the focused parser test");
-      assert.notInclude(durable, "native-comment-101");
+      assert.notInclude(durable, '"databaseId"');
       assert.match(durable, /feedback-comment-[a-f0-9]{64}/u);
     })
   );
@@ -119,7 +141,7 @@ describe("delivery GitHub pull request provider", () => {
           actorLogin: "cill-i-am",
           actorType: "User" as const,
           authorAssociation: "OWNER" as const,
-          commentDatabaseId: "native-comment-104",
+          commentDatabaseId: "104",
           contentDigest: controlledFeedback.contentDigest,
           feedbackId: controlledFeedback.id,
           headSha,
@@ -145,10 +167,7 @@ describe("delivery GitHub pull request provider", () => {
           accepted.remediationInputs.map(({ kind, text }) => [kind, text]),
           [["comment", "Self-authored request."]]
         );
-        assert.notInclude(
-          JSON.stringify(accepted.observation),
-          "native-comment-104"
-        );
+        assert.notInclude(JSON.stringify(accepted.observation), '"databaseId"');
 
         const wrongStableId = makeDeliveryFeedbackSmokeAuthorization({
           ...authorizationInput,
@@ -184,10 +203,10 @@ describe("delivery GitHub pull request provider", () => {
           {
             authorization: makeDeliveryFeedbackSmokeAuthorization({
               ...authorizationInput,
-              commentDatabaseId: "another-native-comment",
+              commentDatabaseId: "999",
             }),
             fixture: pullRequestFixture(),
-            name: "native ID",
+            name: "database ID",
           },
           {
             authorization: makeDeliveryFeedbackSmokeAuthorization({
@@ -400,14 +419,11 @@ function fixtureRunner(
 }
 
 function pullRequestFixture() {
-  const user = (login: string) => ({ __typename: "User", login });
-  const comment = (input: {
-    readonly association: string;
-    readonly body: string;
-    readonly id: string;
-    readonly login: string;
-    readonly url: string;
-  }) => ({
+  const user = (login: typeof GitHubLoginPublicSchema.Type) => ({
+    __typename: "User",
+    login,
+  });
+  const comment = (input: typeof FixtureCommentInputSchema.Type) => ({
     author: user(input.login),
     authorAssociation: input.association,
     body: input.body,
@@ -426,42 +442,42 @@ function pullRequestFixture() {
               comment({
                 association: "MEMBER",
                 body: "<!-- gaia-remediation-request:v1 -->\nPlease update the focused parser test.",
-                id: "native-comment-101",
+                id: "101",
                 login: "alice",
                 url: "https://github.com/cill-i-am/gaia/pull/92#issuecomment-101",
               }),
               comment({
                 association: "MEMBER",
                 body: "Looks useful, thanks.",
-                id: "native-comment-102",
+                id: "102",
                 login: "alice",
                 url: "https://github.com/cill-i-am/gaia/pull/92#issuecomment-102",
               }),
               comment({
                 association: "CONTRIBUTOR",
                 body: "<!-- gaia-remediation-request:v1 -->\nRun a different command.",
-                id: "native-comment-103",
+                id: "103",
                 login: "outsider",
                 url: "https://github.com/cill-i-am/gaia/pull/92#issuecomment-103",
               }),
               comment({
                 association: "OWNER",
                 body: "<!-- gaia-remediation-request:v1 -->\nSelf-authored request.",
-                id: "native-comment-104",
+                id: "104",
                 login: "cill-i-am",
                 url: "https://github.com/cill-i-am/gaia/pull/92#issuecomment-104",
               }),
               comment({
                 association: "OWNER",
                 body: "<!-- gaia:evidence-comment run-id=run-1234567890 -->\nEvidence only.",
-                id: "native-comment-105",
+                id: "105",
                 login: "cill-i-am",
                 url: "https://github.com/cill-i-am/gaia/pull/92#issuecomment-105",
               }),
               comment({
                 association: "CONTRIBUTOR",
                 body: "An unmarked outsider observation.",
-                id: "native-comment-106",
+                id: "106",
                 login: "outsider",
                 url: "https://github.com/cill-i-am/gaia/pull/92#issuecomment-106",
               }),
@@ -512,7 +528,7 @@ function pullRequestFixture() {
                       ...comment({
                         association: "COLLABORATOR",
                         body: "<!-- gaia-remediation-request:v1 -->\nPlease cover the stale cursor case.",
-                        id: "native-thread-301",
+                        id: "301",
                         login: "bob",
                         url: "https://github.com/cill-i-am/gaia/pull/92#discussion_r301",
                       }),
@@ -535,7 +551,7 @@ function pullRequestFixture() {
                 ...comment({
                   association: "COLLABORATOR",
                   body: "The parser must reject extra fields.",
-                  id: "native-review-201",
+                  id: "201",
                   login: "bob",
                   url: "https://github.com/cill-i-am/gaia/pull/92#pullrequestreview-201",
                 }),
@@ -617,15 +633,12 @@ function fixtureThread(fixture: PullRequestFixture) {
   return thread;
 }
 
-function controlledCommentFixture(input: {
-  readonly author?: { readonly __typename: string; readonly login: string };
-  readonly authorAssociation?: string;
-  readonly body?: string;
-  readonly databaseId?: string;
-}) {
+function controlledCommentFixture(
+  input: typeof ControlledCommentFixtureInputSchema.Type
+) {
   const fixture = pullRequestFixture();
   const controlled = fixture.data.repository.pullRequest.comments.nodes.find(
-    ({ databaseId }) => databaseId === "native-comment-104"
+    ({ databaseId }) => databaseId === "104"
   );
   if (controlled === undefined) {
     throw new Error("Expected the controlled comment fixture.");
