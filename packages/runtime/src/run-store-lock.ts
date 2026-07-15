@@ -1,7 +1,12 @@
 import { Effect, FileSystem, Path, Schema } from "effect";
 
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
-import { makeRunStorePaths, type RunStorageOptions } from "./paths.js";
+import {
+  makeRunStorePaths,
+  parseRuntimePath,
+  type RunStorageOptions,
+  type RuntimePath,
+} from "./paths.js";
 
 const lockMetadataFileName = "metadata.json";
 
@@ -49,7 +54,11 @@ export function withRunStoreLock<A, E, R>(
 function acquireRunStoreLock(
   options: RunStorageOptions,
   context: RunStoreLockContext
-): Effect.Effect<string, GaiaRuntimeError, FileSystem.FileSystem | Path.Path> {
+): Effect.Effect<
+  RuntimePath,
+  GaiaRuntimeError,
+  FileSystem.FileSystem | Path.Path
+> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const store = yield* makeRunStorePaths(options);
@@ -82,7 +91,7 @@ function acquireRunStoreLock(
 }
 
 function writeRunStoreLockMetadata(
-  lockPath: string,
+  lockPath: RuntimePath,
   context: RunStoreLockContext
 ) {
   return Effect.gen(function* () {
@@ -98,7 +107,7 @@ function writeRunStoreLockMetadata(
     });
 
     yield* fs.writeFileString(
-      path.join(lockPath, lockMetadataFileName),
+      parseRuntimePath(path.join(lockPath, lockMetadataFileName)),
       `${JSON.stringify(encodeRunStoreLockMetadataJson(metadata), null, 2)}\n`
     );
   }).pipe(
@@ -116,7 +125,7 @@ function writeRunStoreLockMetadata(
 }
 
 function runStoreLocked(
-  lockPath: string,
+  lockPath: RuntimePath,
   cause: unknown
 ): Effect.Effect<never, GaiaRuntimeError, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
@@ -134,7 +143,7 @@ function runStoreLocked(
 }
 
 function readOptionalRunStoreLockMetadata(
-  lockPath: string
+  lockPath: RuntimePath
 ): Effect.Effect<
   RunStoreLockMetadata | undefined,
   never,
@@ -143,7 +152,9 @@ function readOptionalRunStoreLockMetadata(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const metadataPath = path.join(lockPath, lockMetadataFileName);
+    const metadataPath = parseRuntimePath(
+      path.join(lockPath, lockMetadataFileName)
+    );
     const exists = yield* fs.exists(metadataPath);
 
     if (!exists) {
@@ -192,7 +203,7 @@ function runStoreLockedMessage(metadata: RunStoreLockMetadata | undefined) {
   ].join(" ");
 }
 
-function releaseRunStoreLock(lockPath: string) {
+function releaseRunStoreLock(lockPath: RuntimePath) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.remove(lockPath, { recursive: true });

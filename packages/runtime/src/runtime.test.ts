@@ -3794,12 +3794,12 @@ describe("runtime workflows", () => {
             "Expected process harness to write workspace diff evidence."
           );
         }
-        assert.deepEqual(harnessResult.changedWorkspacePaths, [
+        assert.deepEqual(harnessResult.changedWorkspacePaths.map(String), [
           "README.md",
           "output.txt",
           "src/feature.ts",
         ]);
-        assert.deepEqual(workspaceDiff.productChangedPaths, [
+        assert.deepEqual(workspaceDiff.productChangedPaths.map(String), [
           "README.md",
           "output.txt",
           "src/feature.ts",

@@ -1,8 +1,19 @@
+import {
+  parseWorkspaceRelativePath,
+  type WorkspaceRelativePath,
+  WorkspaceRelativePathSchema,
+} from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 
-import { makeRuntimeError } from "./errors.js";
-import type { RunPaths } from "./paths.js";
+import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import {
+  parseRuntimePath,
+  RunRelativeArtifactPathSchema,
+  RuntimePathSchema,
+  type RunPaths,
+  type RuntimePath,
+} from "./paths.js";
 
 const ignoredWorkspaceEntries = new Set([
   ".gaia",
@@ -14,15 +25,11 @@ const ignoredWorkspaceEntries = new Set([
   "node_modules",
 ]);
 
-export const WorkspaceSourcePathSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("WorkspaceSourcePath")
-);
+export const WorkspaceSourcePathSchema = RuntimePathSchema;
 
-export type WorkspaceSourcePath = typeof WorkspaceSourcePathSchema.Type;
+export type WorkspaceSourcePath = RuntimePath;
 
-export const parseWorkspaceSourcePath = Schema.decodeUnknownSync(
-  WorkspaceSourcePathSchema
-);
+export const parseWorkspaceSourcePath = parseRuntimePath;
 
 export type WorkspaceSource =
   | { readonly _tag: "Empty" }
@@ -37,14 +44,21 @@ export class WorkspacePreparationResult extends Schema.Class<WorkspacePreparatio
   copiedFiles: Schema.Number.pipe(
     Schema.check(Schema.isInt({ identifier: "CopiedFiles" }))
   ),
-  manifestPath: Schema.NonEmptyString,
-  skippedEntries: Schema.Array(Schema.NonEmptyString),
+  manifestPath: RunRelativeArtifactPathSchema,
+  skippedEntries: Schema.Array(WorkspaceRelativePathSchema),
   source: Schema.Literals(["empty", "local-directory"] as const),
-  sourcePath: Schema.optionalKey(Schema.NonEmptyString),
-  workspacePath: Schema.NonEmptyString,
-}) {}
+  sourcePath: Schema.optionalKey(RuntimePathSchema),
+  workspacePath: RunRelativeArtifactPathSchema,
+}) {
+  static override make(input: unknown): WorkspacePreparationResult {
+    return decodeWorkspacePreparationResult(input);
+  }
+}
 
 const WorkspacePreparationResultJson = Schema.toCodecJson(
+  WorkspacePreparationResult
+);
+const decodeWorkspacePreparationResult = Schema.decodeUnknownSync(
   WorkspacePreparationResult
 );
 const encodeWorkspacePreparationResult = Schema.encodeSync(
@@ -138,7 +152,7 @@ function prepareLocalDirectoryWorkspace(
 
 type CopyDirectoryResult = {
   readonly copiedFiles: number;
-  readonly skippedEntries: ReadonlyArray<string>;
+  readonly skippedEntries: ReadonlyArray<WorkspaceRelativePath>;
 };
 
 export type WorkspaceCopyOptions = {
@@ -153,19 +167,25 @@ export function copyWorkspaceDirectoryContents(
   options: WorkspaceCopyOptions = {}
 ): Effect.Effect<
   CopyDirectoryResult,
-  PlatformError,
+  GaiaRuntimeError | PlatformError,
   FileSystem.FileSystem | Path.Path
 > {
-  return copyDirectoryContents(sourceDirectory, destinationDirectory, {
-    deleteExtraneous: options.deleteExtraneous ?? false,
-    relativePrefix: "",
-    skippedRelativePaths: options.skippedRelativePaths ?? new Set<string>(),
+  return Effect.gen(function* () {
+    const sourcePath = yield* parseWorkspaceRuntimePath(sourceDirectory);
+    const destinationPath =
+      yield* parseWorkspaceRuntimePath(destinationDirectory);
+
+    return yield* copyDirectoryContents(sourcePath, destinationPath, {
+      deleteExtraneous: options.deleteExtraneous ?? false,
+      relativePrefix: "",
+      skippedRelativePaths: options.skippedRelativePaths ?? new Set<string>(),
+    });
   });
 }
 
 function copyDirectoryContents(
-  sourceDirectory: string,
-  destinationDirectory: string,
+  sourceDirectory: RuntimePath,
+  destinationDirectory: RuntimePath,
   input: Readonly<{
     deleteExtraneous: boolean;
     relativePrefix: string;
@@ -173,7 +193,7 @@ function copyDirectoryContents(
   }>
 ): Effect.Effect<
   CopyDirectoryResult,
-  PlatformError,
+  GaiaRuntimeError | PlatformError,
   FileSystem.FileSystem | Path.Path
 > {
   return Effect.gen(function* () {
@@ -181,7 +201,7 @@ function copyDirectoryContents(
     const path = yield* Path.Path;
     const entries = (yield* fs.readDirectory(sourceDirectory)).toSorted();
     const entrySet = new Set(entries);
-    const skippedEntries: Array<string> = [];
+    const skippedEntries: Array<WorkspaceRelativePath> = [];
     let copiedFiles = 0;
 
     if (input.deleteExtraneous && (yield* fs.exists(destinationDirectory))) {
@@ -190,10 +210,11 @@ function copyDirectoryContents(
       )).toSorted();
 
       for (const entry of destinationEntries) {
-        const relativePath =
+        const relativePath = yield* parseWorkspaceCopyRelativePath(
           input.relativePrefix.length === 0
             ? entry
-            : `${input.relativePrefix}/${entry}`;
+            : `${input.relativePrefix}/${entry}`
+        );
 
         if (
           ignoredWorkspaceEntries.has(entry) ||
@@ -203,17 +224,19 @@ function copyDirectoryContents(
           continue;
         }
 
-        yield* fs.remove(path.join(destinationDirectory, entry), {
-          recursive: true,
-        });
+        const staleDestinationPath = yield* parseWorkspaceRuntimePath(
+          path.join(destinationDirectory, entry)
+        );
+        yield* fs.remove(staleDestinationPath, { recursive: true });
       }
     }
 
     for (const entry of entries) {
-      const relativePath =
+      const relativePath = yield* parseWorkspaceCopyRelativePath(
         input.relativePrefix.length === 0
           ? entry
-          : `${input.relativePrefix}/${entry}`;
+          : `${input.relativePrefix}/${entry}`
+      );
 
       if (
         ignoredWorkspaceEntries.has(entry) ||
@@ -223,8 +246,12 @@ function copyDirectoryContents(
         continue;
       }
 
-      const sourcePath = path.join(sourceDirectory, entry);
-      const destinationPath = path.join(destinationDirectory, entry);
+      const sourcePath = yield* parseWorkspaceRuntimePath(
+        path.join(sourceDirectory, entry)
+      );
+      const destinationPath = yield* parseWorkspaceRuntimePath(
+        path.join(destinationDirectory, entry)
+      );
       const info = yield* fs.stat(sourcePath);
 
       switch (info.type) {
@@ -258,5 +285,31 @@ function copyDirectoryContents(
     }
 
     return { copiedFiles, skippedEntries } satisfies CopyDirectoryResult;
+  });
+}
+
+function parseWorkspaceRuntimePath(input: string) {
+  return Effect.try({
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "WorkspacePathInvalid",
+        message: "Workspace filesystem path is invalid.",
+        recoverable: false,
+      }),
+    try: () => parseRuntimePath(input),
+  });
+}
+
+function parseWorkspaceCopyRelativePath(input: string) {
+  return Effect.try({
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "WorkspacePathInvalid",
+        message: "Workspace relative path is invalid.",
+        recoverable: false,
+      }),
+    try: () => parseWorkspaceRelativePath(input),
   });
 }

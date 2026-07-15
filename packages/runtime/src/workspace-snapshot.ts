@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 
+import {
+  parseWorkspaceRelativePath,
+  type WorkspaceRelativePath,
+  WorkspaceRelativePathSchema,
+} from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import type { PlatformError } from "effect/PlatformError";
+
+import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import { parseRuntimePath, type RuntimePath } from "./paths.js";
 
 const generatedWorkspaceEntryReasons = new Map([
   [
@@ -43,9 +51,13 @@ export class WorkspaceDiffOmittedGeneratedPath extends Schema.Class<WorkspaceDif
   "WorkspaceDiffOmittedGeneratedPath"
 )({
   changedFileCount: NonNegativeIntegerSchema,
-  path: Schema.NonEmptyString,
+  path: WorkspaceRelativePathSchema,
   reason: Schema.NonEmptyString,
-}) {}
+}) {
+  static override make(input: unknown): WorkspaceDiffOmittedGeneratedPath {
+    return decodeWorkspaceDiffOmittedGeneratedPath(input);
+  }
+}
 
 /** Bounded review evidence for product/source changes and omitted generated churn. */
 export class WorkspaceDiffSummary extends Schema.Class<WorkspaceDiffSummary>(
@@ -56,31 +68,38 @@ export class WorkspaceDiffSummary extends Schema.Class<WorkspaceDiffSummary>(
   omittedGeneratedPathCount: NonNegativeIntegerSchema,
   omittedGeneratedPaths: Schema.Array(WorkspaceDiffOmittedGeneratedPath),
   productChangedPathCount: NonNegativeIntegerSchema,
-  productChangedPaths: Schema.Array(Schema.NonEmptyString),
+  productChangedPaths: Schema.Array(WorkspaceRelativePathSchema),
   version: Schema.Literal(1),
-}) {}
+}) {
+  static override make(input: unknown): WorkspaceDiffSummary {
+    return decodeWorkspaceDiffSummary(input);
+  }
+}
 
+const decodeWorkspaceDiffOmittedGeneratedPath = Schema.decodeUnknownSync(
+  WorkspaceDiffOmittedGeneratedPath
+);
+const decodeWorkspaceDiffSummary =
+  Schema.decodeUnknownSync(WorkspaceDiffSummary);
 const WorkspaceDiffSummaryJson = Schema.toCodecJson(WorkspaceDiffSummary);
 export const encodeWorkspaceDiffSummaryJson = Schema.encodeSync(
   WorkspaceDiffSummaryJson
 );
 
-export type WorkspaceSnapshot = {
-  readonly generatedPathSummaries: ReadonlyMap<string, GeneratedPathSnapshot>;
-  readonly productFileDigests: ReadonlyMap<string, string>;
-};
-
 const PersistedWorkspaceSnapshot = Schema.Struct({
   generatedPaths: Schema.Array(
     Schema.Struct({
-      digest: Schema.String,
-      fileCount: Schema.Int,
-      path: Schema.String,
-      reason: Schema.String,
+      digest: Schema.NonEmptyString,
+      fileCount: NonNegativeIntegerSchema,
+      path: WorkspaceRelativePathSchema,
+      reason: Schema.NonEmptyString,
     })
   ),
   productFiles: Schema.Array(
-    Schema.Struct({ digest: Schema.String, path: Schema.String })
+    Schema.Struct({
+      digest: Schema.NonEmptyString,
+      path: WorkspaceRelativePathSchema,
+    })
   ),
   version: Schema.Literal(1),
 });
@@ -88,11 +107,16 @@ const decodePersistedWorkspaceSnapshot = Schema.decodeUnknownSync(
   PersistedWorkspaceSnapshot
 );
 
-type GeneratedPathSnapshot = {
-  readonly digest: string;
-  readonly fileCount: number;
-  readonly path: string;
-  readonly reason: string;
+type PersistedWorkspaceSnapshotValue = typeof PersistedWorkspaceSnapshot.Type;
+type GeneratedPathSnapshot =
+  PersistedWorkspaceSnapshotValue["generatedPaths"][number];
+
+export type WorkspaceSnapshot = {
+  readonly generatedPathSummaries: ReadonlyMap<
+    WorkspaceRelativePath,
+    GeneratedPathSnapshot
+  >;
+  readonly productFileDigests: ReadonlyMap<WorkspaceRelativePath, string>;
 };
 
 type GeneratedPathDigest = {
@@ -101,7 +125,27 @@ type GeneratedPathDigest = {
 };
 
 export function snapshotWorkspace(workspacePath: string) {
-  return snapshotDirectory(workspacePath, "");
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const rootPath = yield* parseWorkspaceSnapshotRuntimePath(
+      workspacePath,
+      "Gaia workspace snapshot root path is invalid."
+    );
+    const rootRealPath = yield* realContainedPath(rootPath, rootPath);
+
+    return yield* snapshotDirectory(rootRealPath, "", rootRealPath, new Set());
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "WorkspaceSnapshotReadFailed",
+          message: "Gaia could not read workspace snapshot input.",
+          recoverable: true,
+        })
+      )
+    )
+  );
 }
 
 /** Persist a private restart baseline without exposing absolute workspace paths. */
@@ -111,29 +155,58 @@ export function writeWorkspaceSnapshot(
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    yield* fs.writeFileString(
+    const parsedSnapshotPath = yield* parseWorkspaceSnapshotRuntimePath(
       snapshotPath,
-      `${JSON.stringify({
-        generatedPaths: [...snapshot.generatedPathSummaries.values()],
-        productFiles: [...snapshot.productFileDigests].map(
-          ([path, digest]) => ({
-            digest,
-            path,
-          })
-        ),
-        version: 1,
-      })}\n`
+      "Gaia workspace snapshot output path is invalid.",
+      "WorkspaceSnapshotWriteFailed"
     );
-  });
+    const persisted = yield* parsePersistedWorkspaceSnapshotForWrite({
+      generatedPaths: [...snapshot.generatedPathSummaries.values()],
+      productFiles: [...snapshot.productFileDigests].map(([path, digest]) => ({
+        digest,
+        path,
+      })),
+      version: 1,
+    });
+    yield* fs.writeFileString(
+      parsedSnapshotPath,
+      `${JSON.stringify(persisted)}\n`
+    );
+  }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(
+        makeRuntimeError({
+          cause,
+          code: "WorkspaceSnapshotWriteFailed",
+          message: "Gaia could not write workspace snapshot baseline.",
+          recoverable: true,
+        })
+      )
+    )
+  );
 }
 
 /** Read and validate the private workspace baseline used for crash recovery. */
 export function readWorkspaceSnapshot(snapshotPath: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const parsed = decodePersistedWorkspaceSnapshot(
-      JSON.parse(yield* fs.readFileString(snapshotPath))
+    const parsedSnapshotPath = yield* parseWorkspaceSnapshotRuntimePath(
+      snapshotPath,
+      "Gaia workspace snapshot input path is invalid."
     );
+    const text = yield* fs.readFileString(parsedSnapshotPath).pipe(
+      Effect.catchTag("PlatformError", (cause) =>
+        Effect.fail(
+          makeRuntimeError({
+            cause,
+            code: "WorkspaceSnapshotReadFailed",
+            message: "Gaia could not read workspace snapshot baseline.",
+            recoverable: true,
+          })
+        )
+      )
+    );
+    const parsed = yield* parsePersistedWorkspaceSnapshotText(text);
     return {
       generatedPathSummaries: new Map(
         parsed.generatedPaths.map((entry) => [entry.path, entry])
@@ -187,7 +260,9 @@ export function diffWorkspaceSnapshots(
 export function productOnlyWorkspaceDiff(
   productChangedPaths: ReadonlyArray<string>
 ) {
-  const sortedProductChangedPaths = [...productChangedPaths].toSorted();
+  const sortedProductChangedPaths = productChangedPaths
+    .map((path) => parseWorkspaceRelativePath(path))
+    .toSorted();
 
   return WorkspaceDiffSummary.make({
     notes: [],
@@ -201,11 +276,11 @@ export function productOnlyWorkspaceDiff(
 }
 
 function changedProductPaths(
-  before: ReadonlyMap<string, string>,
-  after: ReadonlyMap<string, string>
+  before: ReadonlyMap<WorkspaceRelativePath, string>,
+  after: ReadonlyMap<WorkspaceRelativePath, string>
 ) {
   const paths = new Set([...before.keys(), ...after.keys()]);
-  const changed: Array<string> = [];
+  const changed: Array<WorkspaceRelativePath> = [];
 
   for (const path of paths) {
     if (before.get(path) !== after.get(path)) {
@@ -217,8 +292,8 @@ function changedProductPaths(
 }
 
 function changedGeneratedPaths(
-  before: ReadonlyMap<string, GeneratedPathSnapshot>,
-  after: ReadonlyMap<string, GeneratedPathSnapshot>
+  before: ReadonlyMap<WorkspaceRelativePath, GeneratedPathSnapshot>,
+  after: ReadonlyMap<WorkspaceRelativePath, GeneratedPathSnapshot>
 ) {
   const paths = new Set([...before.keys(), ...after.keys()]);
   const changed: Array<WorkspaceDiffOmittedGeneratedPath> = [];
@@ -283,43 +358,72 @@ function workspaceDiffNotes(
 }
 
 function snapshotDirectory(
-  directoryPath: string,
-  relativePrefix: string
+  directoryPath: RuntimePath,
+  relativePrefix: string,
+  workspaceRootPath: RuntimePath,
+  visitedDirectoryPaths: ReadonlySet<RuntimePath>
 ): Effect.Effect<
   WorkspaceSnapshot,
-  PlatformError,
+  GaiaRuntimeError | PlatformError,
   FileSystem.FileSystem | Path.Path
 > {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const entries = (yield* fs.readDirectory(directoryPath)).toSorted();
-    const productFileDigests = new Map<string, string>();
-    const generatedPathSummaries = new Map<string, GeneratedPathSnapshot>();
+    const canonicalDirectoryPath = yield* realContainedPath(
+      directoryPath,
+      workspaceRootPath
+    );
+    if (visitedDirectoryPaths.has(canonicalDirectoryPath)) {
+      return emptyWorkspaceSnapshot();
+    }
+
+    const nextVisitedDirectoryPaths = new Set(visitedDirectoryPaths);
+    nextVisitedDirectoryPaths.add(canonicalDirectoryPath);
+    const entries = (yield* fs.readDirectory(
+      canonicalDirectoryPath
+    )).toSorted();
+    const productFileDigests = new Map<WorkspaceRelativePath, string>();
+    const generatedPathSummaries = new Map<
+      WorkspaceRelativePath,
+      GeneratedPathSnapshot
+    >();
 
     for (const entry of entries) {
-      const absolutePath = path.join(directoryPath, entry);
-      const relativePath =
-        relativePrefix.length === 0 ? entry : `${relativePrefix}/${entry}`;
+      const absolutePath = yield* parseWorkspaceSnapshotRuntimePath(
+        path.join(canonicalDirectoryPath, entry),
+        "Gaia workspace snapshot entry path is invalid."
+      );
+      const canonicalPath = yield* realContainedPath(
+        absolutePath,
+        workspaceRootPath
+      );
+      const relativePath = yield* parseSnapshotWorkspaceRelativePath(
+        relativePrefix.length === 0 ? entry : `${relativePrefix}/${entry}`
+      );
       const generatedReason = generatedWorkspaceEntryReasons.get(entry);
 
       if (generatedReason !== undefined) {
         const summary = yield* summarizeGeneratedPath(
-          absolutePath,
+          canonicalPath,
           relativePath,
-          generatedReason
+          generatedReason,
+          workspaceRootPath,
+          nextVisitedDirectoryPaths
         );
         generatedPathSummaries.set(relativePath, summary);
         continue;
       }
 
-      const info = yield* fs.stat(absolutePath);
+      const info = yield* fs.stat(canonicalPath);
 
       switch (info.type) {
         case "Directory": {
           const childSnapshot = yield* snapshotDirectory(
-            absolutePath,
-            relativePath
+            canonicalPath,
+            relativePath,
+            workspaceRootPath,
+            nextVisitedDirectoryPaths
           );
           for (const [childPath, digest] of childSnapshot.productFileDigests) {
             productFileDigests.set(childPath, digest);
@@ -333,7 +437,7 @@ function snapshotDirectory(
           break;
         }
         case "File": {
-          const bytes = yield* fs.readFile(absolutePath);
+          const bytes = yield* fs.readFile(canonicalPath);
           productFileDigests.set(relativePath, hashBytes(bytes));
           break;
         }
@@ -348,16 +452,22 @@ function snapshotDirectory(
 }
 
 function summarizeGeneratedPath(
-  absolutePath: string,
-  relativePath: string,
-  reason: string
+  absolutePath: RuntimePath,
+  relativePath: WorkspaceRelativePath,
+  reason: string,
+  workspaceRootPath: RuntimePath,
+  visitedDirectoryPaths: ReadonlySet<RuntimePath>
 ): Effect.Effect<
   GeneratedPathSnapshot,
-  PlatformError,
+  GaiaRuntimeError | PlatformError,
   FileSystem.FileSystem | Path.Path
 > {
   return Effect.gen(function* () {
-    const digest = yield* digestGeneratedPath(absolutePath);
+    const digest = yield* digestGeneratedPath(
+      absolutePath,
+      workspaceRootPath,
+      visitedDirectoryPaths
+    );
 
     return {
       digest: digest.digest,
@@ -369,27 +479,49 @@ function summarizeGeneratedPath(
 }
 
 function digestGeneratedPath(
-  absolutePath: string
+  absolutePath: RuntimePath,
+  workspaceRootPath: RuntimePath,
+  visitedDirectoryPaths: ReadonlySet<RuntimePath>
 ): Effect.Effect<
   GeneratedPathDigest,
-  PlatformError,
+  GaiaRuntimeError | PlatformError,
   FileSystem.FileSystem | Path.Path
 > {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const info = yield* fs.stat(absolutePath);
+    const canonicalPath = yield* realContainedPath(
+      absolutePath,
+      workspaceRootPath
+    );
+    const info = yield* fs.stat(canonicalPath);
 
     switch (info.type) {
       case "Directory": {
-        const entries = (yield* fs.readDirectory(absolutePath)).toSorted();
+        if (visitedDirectoryPaths.has(canonicalPath)) {
+          return {
+            digest: hashString("omitted:directory-cycle"),
+            fileCount: 0,
+          };
+        }
+
+        const nextVisitedDirectoryPaths = new Set(visitedDirectoryPaths);
+        nextVisitedDirectoryPaths.add(canonicalPath);
+        const entries = (yield* fs.readDirectory(canonicalPath)).toSorted();
         const hash = createHash("sha256");
         let fileCount = 0;
 
         hash.update("directory");
         for (const entry of entries) {
-          const childPath = path.join(absolutePath, entry);
-          const childDigest = yield* digestGeneratedPath(childPath);
+          const childPath = yield* parseWorkspaceSnapshotRuntimePath(
+            path.join(canonicalPath, entry),
+            "Gaia workspace snapshot generated entry path is invalid."
+          );
+          const childDigest = yield* digestGeneratedPath(
+            childPath,
+            workspaceRootPath,
+            nextVisitedDirectoryPaths
+          );
           hash.update("\0entry\0");
           hash.update(entry);
           hash.update("\0digest\0");
@@ -402,7 +534,7 @@ function digestGeneratedPath(
         return { digest: hash.digest("hex"), fileCount };
       }
       case "File": {
-        const bytes = yield* fs.readFile(absolutePath);
+        const bytes = yield* fs.readFile(canonicalPath);
         return { digest: hashBytes(bytes), fileCount: 1 };
       }
       default: {
@@ -417,6 +549,106 @@ function digestGeneratedPath(
 
 function hashBytes(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function emptyWorkspaceSnapshot(): WorkspaceSnapshot {
+  return {
+    generatedPathSummaries: new Map<
+      WorkspaceRelativePath,
+      GeneratedPathSnapshot
+    >(),
+    productFileDigests: new Map<WorkspaceRelativePath, string>(),
+  };
+}
+
+function parseWorkspaceSnapshotRuntimePath(
+  input: string,
+  message: string,
+  code:
+    | "WorkspaceSnapshotReadFailed"
+    | "WorkspaceSnapshotWriteFailed" = "WorkspaceSnapshotReadFailed"
+) {
+  return Effect.try({
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code,
+        message,
+        recoverable: false,
+      }),
+    try: () => parseRuntimePath(input),
+  });
+}
+
+function realContainedPath(path: RuntimePath, workspaceRootPath: RuntimePath) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const realPath = yield* parseWorkspaceSnapshotRuntimePath(
+      yield* fs.realPath(path),
+      "Gaia workspace snapshot canonical path is invalid."
+    );
+    const realWorkspaceRootPath = yield* parseWorkspaceSnapshotRuntimePath(
+      yield* fs.realPath(workspaceRootPath),
+      "Gaia workspace snapshot canonical root path is invalid."
+    );
+
+    if (!isSameOrChildPath(realWorkspaceRootPath, realPath)) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "WorkspaceSnapshotReadFailed",
+          message:
+            "Gaia workspace snapshot contains an entry outside the workspace root.",
+          recoverable: false,
+        })
+      );
+    }
+
+    return realPath;
+  });
+}
+
+function isSameOrChildPath(rootPath: RuntimePath, path: RuntimePath) {
+  return path === rootPath || path.startsWith(`${rootPath}/`);
+}
+
+function parsePersistedWorkspaceSnapshotForWrite(input: unknown) {
+  return Effect.try({
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "WorkspaceSnapshotWriteFailed",
+        message: "Gaia workspace snapshot contains invalid persisted paths.",
+        recoverable: false,
+      }),
+    try: () => decodePersistedWorkspaceSnapshot(input),
+  });
+}
+
+function parseSnapshotWorkspaceRelativePath(input: string) {
+  return Effect.try({
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "WorkspaceSnapshotReadFailed",
+        message:
+          "Gaia workspace snapshot contains a path that is not a valid workspace-relative path.",
+        recoverable: false,
+      }),
+    try: () => parseWorkspaceRelativePath(input),
+  });
+}
+
+function parsePersistedWorkspaceSnapshotText(text: string) {
+  return Effect.try({
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "WorkspaceSnapshotReadFailed",
+        message: "Gaia workspace snapshot contains invalid persisted paths.",
+        recoverable: false,
+      }),
+    try: () => decodePersistedWorkspaceSnapshot(JSON.parse(text)),
+  });
 }
 
 function hashString(input: string) {

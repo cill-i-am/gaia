@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import process from "node:process";
 import { promisify } from "node:util";
 
-import { RunIdSchema } from "@gaia/core";
+import { RunIdSchema, WorkspaceRelativePathSchema } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
 import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
@@ -19,6 +19,7 @@ import {
   type CodexCommandOutputObservation,
 } from "./codex-harness.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
+import { RunRelativeArtifactPathSchema, RuntimePathSchema } from "./paths.js";
 import {
   diffWorkspaceSnapshots,
   productOnlyWorkspaceDiff,
@@ -68,36 +69,44 @@ export function makeProcessHarnessConfig(
 export class HarnessRunRequest extends Schema.Class<HarnessRunRequest>(
   "HarnessRunRequest"
 )({
-  codexHarnessProgressPath: Schema.NonEmptyString,
+  codexHarnessProgressPath: RuntimePathSchema,
   harnessName: HarnessNameSchema,
   runId: RunIdSchema,
-  resolvedSkillPaths: Schema.Array(Schema.NonEmptyString),
-  skillBundlePath: Schema.NonEmptyString,
+  resolvedSkillPaths: Schema.Array(RuntimePathSchema),
+  skillBundlePath: RuntimePathSchema,
   specBody: Schema.NonEmptyString,
   specTitle: Schema.NonEmptyString,
-  workerLogPath: Schema.NonEmptyString,
-  workerResultPath: Schema.NonEmptyString,
-  workspaceOutputPath: Schema.NonEmptyString,
-  workspacePath: Schema.NonEmptyString,
-}) {}
+  workerLogPath: RuntimePathSchema,
+  workerResultPath: RuntimePathSchema,
+  workspaceOutputPath: RuntimePathSchema,
+  workspacePath: RuntimePathSchema,
+}) {
+  static override make(input: unknown): HarnessRunRequest {
+    return decodeHarnessRunRequest(input);
+  }
+}
 
 export class HarnessRunResult extends Schema.Class<HarnessRunResult>(
   "HarnessRunResult"
 )({
   browserTargetUrl: Schema.optionalKey(BrowserEvidenceTargetUrlSchema),
-  changedWorkspacePaths: Schema.Array(Schema.NonEmptyString),
+  changedWorkspacePaths: Schema.Array(WorkspaceRelativePathSchema),
   exitCode: Schema.Number.pipe(
     Schema.check(Schema.isInt({ identifier: "ProcessExitCode" }))
   ),
   harnessName: HarnessNameSchema,
-  outputArtifacts: Schema.Array(Schema.NonEmptyString),
+  outputArtifacts: Schema.Array(RunRelativeArtifactPathSchema),
   previewDeploymentUrl: Schema.optionalKey(BrowserEvidenceTargetUrlSchema),
-  resultPath: Schema.NonEmptyString,
+  resultPath: RunRelativeArtifactPathSchema,
   runId: RunIdSchema,
   status: Schema.Literal("completed"),
   summary: Schema.NonEmptyString,
   workspaceDiff: Schema.optionalKey(WorkspaceDiffSummary),
-}) {}
+}) {
+  static override make(input: unknown): HarnessRunResult {
+    return decodeHarnessRunResult(input);
+  }
+}
 
 class ProcessHarnessDeclaration extends Schema.Class<ProcessHarnessDeclaration>(
   "ProcessHarnessDeclaration"
@@ -117,7 +126,11 @@ export type GaiaHarness = {
   >;
 };
 
+const decodeHarnessRunRequest = Schema.decodeUnknownSync(HarnessRunRequest);
+const decodeHarnessRunResult = Schema.decodeUnknownSync(HarnessRunResult);
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
+export const parseHarnessRunResultJson =
+  Schema.decodeUnknownSync(HarnessRunResultJson);
 const encodeHarnessRunResult = Schema.encodeSync(HarnessRunResultJson);
 const ProcessHarnessDeclarationJson = Schema.toCodecJson(
   ProcessHarnessDeclaration

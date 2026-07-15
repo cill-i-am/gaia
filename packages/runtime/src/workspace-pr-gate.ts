@@ -1,9 +1,17 @@
-import { RunIdSchema, type RunId } from "@gaia/core";
+import {
+  parseWorkspaceRelativePath,
+  RunIdSchema,
+  type RunId,
+} from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
-import { HarnessRunResult } from "./harness.js";
-import { runRelative, type RunPaths } from "./paths.js";
+import { parseHarnessRunResultJson, type HarnessRunResult } from "./harness.js";
+import {
+  parseRunRelativeArtifactPath,
+  runRelative,
+  type RunPaths,
+} from "./paths.js";
 
 const maxReviewableWorkerResultBytes = 64 * 1024;
 const runIdAsExpressionPattern = /\bas\s+RunId\b/u;
@@ -54,9 +62,6 @@ export class WorkspacePrQualityGate extends Schema.Class<WorkspacePrQualityGate>
   warnItemCount: NonNegativeIntegerSchema,
 }) {}
 
-const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
-const parseHarnessRunResultJson =
-  Schema.decodeUnknownSync(HarnessRunResultJson);
 const WorkspacePrQualityGateJson = Schema.toCodecJson(WorkspacePrQualityGate);
 const encodeWorkspacePrQualityGateJson = Schema.encodeSync(
   WorkspacePrQualityGateJson
@@ -167,8 +172,14 @@ export function evaluateWorkspacePrQualityGate(
       return yield* writeWorkspacePrQualityGate(runId, paths, items);
     }
 
+    const rawPathFailureItems = rawHarnessPathFailureItems(parsedJson.value);
     const harnessResult = decodeHarnessResult(parsedJson.value);
     if (harnessResult._tag === "Invalid") {
+      if (rawPathFailureItems.length > 0) {
+        items.push(...rawPathFailureItems);
+        return yield* writeWorkspacePrQualityGate(runId, paths, items);
+      }
+
       items.push(
         gateItem({
           changedFiles: ["worker-result.json"],
@@ -409,13 +420,155 @@ function parseJson(input: string): JsonDecodeResult {
 
 function decodeHarnessResult(input: unknown): HarnessDecodeResult {
   try {
-    return { _tag: "Valid", value: parseHarnessRunResultJson(input) };
+    return {
+      _tag: "Valid",
+      value: parseHarnessRunResultJson(input),
+    };
   } catch (cause) {
     return {
       _tag: "Invalid",
       message: errorMessage(cause),
     };
   }
+}
+
+function rawHarnessPathFailureItems(input: unknown) {
+  const record = objectRecord(input);
+  if (record === undefined) {
+    return [];
+  }
+
+  const items: Array<WorkspacePrQualityGateItem> = [];
+  const workspaceDiff = objectRecord(property(record, "workspaceDiff"));
+  const unsafeProductChangedPaths =
+    workspaceDiff === undefined
+      ? []
+      : unsafeRelativePaths(
+          stringArrayProperty(workspaceDiff, "productChangedPaths")
+        );
+  if (unsafeProductChangedPaths.length > 0) {
+    items.push(
+      gateItem({
+        changedFiles: unsafeProductChangedPaths,
+        check: "workspace-diff-product-safe-paths",
+        reason:
+          "workspaceDiff productChangedPaths contains paths that are not safe relative workspace paths.",
+        remediation:
+          "Emit workspaceDiff paths relative to the workspace root without absolute paths or parent-directory segments.",
+        severity: "fail",
+      })
+    );
+  }
+
+  const unsafeGeneratedPaths =
+    workspaceDiff === undefined
+      ? []
+      : unsafeRelativePaths(omittedGeneratedPathValues(workspaceDiff));
+  if (unsafeGeneratedPaths.length > 0) {
+    items.push(
+      gateItem({
+        changedFiles: unsafeGeneratedPaths,
+        check: "workspace-diff-generated-safe-paths",
+        reason:
+          "workspaceDiff omittedGeneratedPaths contains paths that are not safe relative workspace paths.",
+        remediation:
+          "Emit generated path summaries relative to the workspace root without absolute paths or parent-directory segments.",
+        severity: "fail",
+      })
+    );
+  }
+
+  const unsafeChangedWorkspacePaths = unsafeRelativePaths(
+    stringArrayProperty(record, "changedWorkspacePaths")
+  );
+  if (unsafeChangedWorkspacePaths.length > 0) {
+    items.push(
+      gateItem({
+        changedFiles: unsafeChangedWorkspacePaths,
+        check: "changed-workspace-safe-paths",
+        reason:
+          "changedWorkspacePaths contains paths that are not safe relative workspace paths.",
+        remediation:
+          "Emit changedWorkspacePaths relative to the workspace root without absolute paths or parent-directory segments.",
+        severity: "fail",
+      })
+    );
+  }
+
+  const resultPath = stringProperty(record, "resultPath");
+  const unsafeWorkerResultPaths =
+    resultPath === undefined ? [] : unsafeRelativePaths([resultPath]);
+  if (unsafeWorkerResultPaths.length > 0) {
+    items.push(
+      gateItem({
+        changedFiles: unsafeWorkerResultPaths,
+        check: "worker-result-safe-paths",
+        reason: "worker-result.json resultPath is not a safe relative path.",
+        remediation:
+          "Emit resultPath relative to the run artifact root without absolute paths or parent-directory segments.",
+        severity: "fail",
+      })
+    );
+  }
+
+  const unsafeOutputArtifactPaths = unsafeOutputArtifacts(
+    stringArrayProperty(record, "outputArtifacts")
+  );
+  if (unsafeOutputArtifactPaths.length > 0) {
+    items.push(
+      gateItem({
+        changedFiles: unsafeOutputArtifactPaths,
+        check: "output-artifact-safe-paths",
+        reason:
+          "outputArtifacts contains workspace artifact paths that are not safe relative paths.",
+        remediation:
+          "Emit outputArtifacts as safe run-relative paths such as workspace/output.txt.",
+        severity: "fail",
+      })
+    );
+  }
+
+  return items;
+}
+
+function objectRecord(input: unknown): object | undefined {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return undefined;
+  }
+
+  return input;
+}
+
+function property(record: object, key: string) {
+  return Reflect.get(record, key);
+}
+
+function stringProperty(record: object, key: string) {
+  const value = property(record, key);
+  return typeof value === "string" ? value : undefined;
+}
+
+function stringArrayProperty(record: object, key: string) {
+  const value = property(record, key);
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+function omittedGeneratedPathValues(record: object) {
+  const omittedGeneratedPaths = property(record, "omittedGeneratedPaths");
+  if (!Array.isArray(omittedGeneratedPaths)) {
+    return [];
+  }
+
+  return omittedGeneratedPaths.flatMap((entry) => {
+    const entryRecord = objectRecord(entry);
+    const path =
+      entryRecord === undefined ? undefined : property(entryRecord, "path");
+    return typeof path === "string" ? [path] : [];
+  });
 }
 
 function changedSourceFilesContainingRunIdCast(
@@ -426,7 +579,7 @@ function changedSourceFilesContainingRunIdCast(
     const matches: Array<string> = [];
 
     for (const changedPath of changedPaths) {
-      if (!isSafeRelativePath(changedPath) || !isSourceFile(changedPath)) {
+      if (!isWorkspaceRelativePath(changedPath) || !isSourceFile(changedPath)) {
         continue;
       }
 
@@ -481,29 +634,41 @@ function readWorkspaceSourceFile(
   );
 }
 
-function isSafeRelativePath(input: string) {
-  if (
-    input.length === 0 ||
-    input.startsWith("/") ||
-    input.includes("\0") ||
-    input.includes("\\")
-  ) {
+function isWorkspaceRelativePath(input: string) {
+  try {
+    parseWorkspaceRelativePath(input);
+    return isStrictWorkspacePrGatePath(input);
+  } catch {
+    return false;
+  }
+}
+
+function isStrictWorkspacePrGatePath(input: string) {
+  if (input.includes("\0")) {
     return false;
   }
 
-  const segments = input.split("/");
-  return segments.every(
-    (segment) => segment.length > 0 && segment !== "." && segment !== ".."
-  );
+  return input.split("/").every((segment) => {
+    return segment.length > 0 && segment !== "." && segment !== "..";
+  });
+}
+
+function isRunRelativeArtifactPath(input: string) {
+  try {
+    parseRunRelativeArtifactPath(input);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function unsafeRelativePaths(paths: ReadonlyArray<string>) {
-  return paths.filter((path) => !isSafeRelativePath(path));
+  return paths.filter((path) => !isWorkspaceRelativePath(path));
 }
 
 function unsafeOutputArtifacts(paths: ReadonlyArray<string>) {
   return paths.filter((artifactPath) => {
-    if (!isSafeRelativePath(artifactPath)) {
+    if (!isRunRelativeArtifactPath(artifactPath)) {
       return true;
     }
 
@@ -511,7 +676,7 @@ function unsafeOutputArtifacts(paths: ReadonlyArray<string>) {
       return false;
     }
 
-    return !isSafeRelativePath(
+    return !isWorkspaceRelativePath(
       artifactPath.slice(workspaceArtifactPrefix.length)
     );
   });

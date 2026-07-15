@@ -410,8 +410,31 @@ describe("delivery publication", () => {
 
     it.effect("rejects newline filenames before any publication mutation", () =>
       Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
         const unsafePath = "docs/line\nbreak.md";
-        const fixture = yield* readyFixture(["output.txt", unsafePath]);
+        const fixture = yield* readyFixture();
+        yield* fs.writeFileString(
+          fixture.paths.workerResult,
+          `${JSON.stringify({
+            changedWorkspacePaths: ["output.txt", unsafePath],
+            exitCode: 0,
+            harnessName: codexAppServerHarnessName,
+            outputArtifacts: ["workspace/output.txt"],
+            resultPath: "worker-result.json",
+            runId: fixture.runId,
+            status: "completed",
+            summary: "Delivered one source change.",
+            workspaceDiff: {
+              notes: [],
+              omittedGeneratedFileCount: 0,
+              omittedGeneratedPathCount: 0,
+              omittedGeneratedPaths: [],
+              productChangedPathCount: 2,
+              productChangedPaths: ["output.txt", unsafePath],
+              version: 1,
+            },
+          })}\n`
+        );
         const commands: Array<GitHubCommandInput> = [];
         const failure = yield* Effect.flip(
           publishReadyDeliveryRun(fixture.runId, {
@@ -427,7 +450,7 @@ describe("delivery publication", () => {
         );
 
         assert.instanceOf(failure, GaiaRuntimeError);
-        assert.strictEqual(failure.code, "DeliveryGitPathUnsafe");
+        assert.strictEqual(failure.code, "DeliveryWorkerResultInvalid");
         assert.isFalse(commands.some(({ args }) => args[0] === "push"));
         assert.isFalse(
           commands.some(
