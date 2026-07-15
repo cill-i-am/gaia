@@ -1,31 +1,27 @@
 import { Schema } from "effect";
 
 import {
+  DeliveryActionIdPublicSchema,
+  DeliveryBranchNamePublicSchema,
+  DeliveryGitShaPublicSchema,
+  DeliveryOperationIdPublicSchema,
+  DeliveryPositiveIntegerSchema,
+  DeliverySha256DigestPublicSchema,
+  DeliverySourcePathPublicSchema,
+  DeliveryTimestampPublicSchema,
+  GitHubCheckFieldPublicSchema,
+  GitHubLoginPublicSchema,
+  GitHubPullRequestUrlPublicSchema,
+  GitHubProviderUrlPublicSchema,
+  GitHubRepositoryPublicSchema,
+} from "./delivery-identity.js";
+import {
   parseDeliveryPublication,
   type DeliveryPublication,
 } from "./delivery-publication.js";
 import type { RunEvent } from "./events.js";
 
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
-const DigestSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
-);
-const GitShaSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))
-);
-const RepositorySchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)),
-  Schema.check(Schema.isMaxLength(200))
-);
-const LoginSchema = Schema.String.pipe(
-  Schema.check(
-    Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u)
-  )
-);
-const BoundedIdSchema = Schema.NonEmptyString.pipe(
-  Schema.check(Schema.isPattern(/^[A-Za-z0-9:_-]+$/u)),
-  Schema.check(Schema.isMaxLength(200))
-);
 const AttemptSchema = Schema.Int.pipe(
   Schema.check(Schema.isGreaterThanOrEqualTo(1)),
   Schema.check(Schema.isLessThanOrEqualTo(2))
@@ -67,9 +63,9 @@ export class DeliveryTrustedCheckV1 extends Schema.Class<DeliveryTrustedCheckV1>
 )(
   {
     appSlug: Schema.Literal("github-actions"),
-    name: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
-    repository: RepositorySchema,
-    workflow: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+    name: GitHubCheckFieldPublicSchema,
+    repository: GitHubRepositoryPublicSchema,
+    workflow: GitHubCheckFieldPublicSchema,
   },
   strict
 ) {}
@@ -84,7 +80,7 @@ export class DeliveryFeedbackTrustPolicyV1 extends Schema.Class<DeliveryFeedback
     trustedChecks: Schema.Array(DeliveryTrustedCheckV1).pipe(
       Schema.check(Schema.isMaxLength(20))
     ),
-    trustedHumanLogins: Schema.Array(LoginSchema).pipe(
+    trustedHumanLogins: Schema.Array(GitHubLoginPublicSchema).pipe(
       Schema.check(Schema.isMaxLength(20))
     ),
     version: Schema.Literal(1),
@@ -116,14 +112,14 @@ export class DeliveryCheckObservation extends Schema.Class<DeliveryCheckObservat
   "DeliveryCheckObservation"
 )(
   {
-    appSlug: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(100))),
+    appSlug: GitHubCheckFieldPublicSchema,
     classification: DeliveryFeedbackClassificationSchema,
     link: Schema.optionalKey(
       Schema.String.pipe(Schema.check(Schema.isMaxLength(2_048)))
     ),
-    name: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+    name: GitHubCheckFieldPublicSchema,
     state: DeliveryCheckStateSchema,
-    workflow: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(200))),
+    workflow: GitHubCheckFieldPublicSchema,
   },
   strict
 ) {}
@@ -145,18 +141,14 @@ export class DeliveryFeedbackObservation extends Schema.Class<DeliveryFeedbackOb
   "DeliveryFeedbackObservation"
 )(
   {
-    actorLogin: Schema.optionalKey(LoginSchema),
+    actorLogin: Schema.optionalKey(GitHubLoginPublicSchema),
     authorAssociation: Schema.optionalKey(DeliveryAuthorAssociationSchema),
     classification: DeliveryFeedbackClassificationSchema,
-    contentDigest: DigestSchema,
+    contentDigest: DeliverySha256DigestPublicSchema,
     id: DeliveryFeedbackIdSchema,
     kind: DeliveryFeedbackKindSchema,
-    path: Schema.optionalKey(
-      Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1_024)))
-    ),
-    url: Schema.optionalKey(
-      Schema.String.pipe(Schema.check(Schema.isMaxLength(2_048)))
-    ),
+    path: Schema.optionalKey(DeliverySourcePathPublicSchema),
+    url: Schema.optionalKey(GitHubProviderUrlPublicSchema),
   },
   strict
 ) {}
@@ -209,9 +201,7 @@ export class DeliveryPullRequestObservation extends Schema.Class<DeliveryPullReq
     blockers: Schema.Array(DeliveryBlocker).pipe(
       Schema.check(Schema.isMaxLength(100))
     ),
-    branchName: Schema.optionalKey(
-      Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(240)))
-    ),
+    branchName: Schema.optionalKey(DeliveryBranchNamePublicSchema),
     checks: Schema.Array(DeliveryCheckObservation).pipe(
       Schema.check(Schema.isMaxLength(100))
     ),
@@ -219,20 +209,20 @@ export class DeliveryPullRequestObservation extends Schema.Class<DeliveryPullReq
     feedback: Schema.Array(DeliveryFeedbackObservation).pipe(
       Schema.check(Schema.isMaxLength(100))
     ),
-    headSha: GitShaSchema,
+    headSha: DeliveryGitShaPublicSchema,
     mergeability: Schema.Literals([
       "conflicting",
       "mergeable",
       "unknown",
     ] as const),
-    observedAt: Schema.String.pipe(Schema.check(Schema.isMaxLength(100))),
-    prNumber: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-    prUrl: Schema.String.pipe(Schema.check(Schema.isMaxLength(2_048))),
-    repository: RepositorySchema,
+    observedAt: DeliveryTimestampPublicSchema,
+    prNumber: DeliveryPositiveIntegerSchema,
+    prUrl: GitHubPullRequestUrlPublicSchema,
+    repository: GitHubRepositoryPublicSchema,
     reviewDecision: Schema.optionalKey(
       Schema.String.pipe(Schema.check(Schema.isMaxLength(100)))
     ),
-    snapshotDigest: DigestSchema,
+    snapshotDigest: DeliverySha256DigestPublicSchema,
     status: DeliveryPullRequestStatusSchema,
     version: Schema.Literal(1),
   },
@@ -254,24 +244,22 @@ export const encodeDeliveryPullRequestObservationJson = Schema.encodeSync(
 );
 
 const remediationBindingFields = {
-  activationActionDigest: Schema.optionalKey(DigestSchema),
-  activationPredecessorDigest: Schema.optionalKey(DigestSchema),
-  activationReceiptDigest: Schema.optionalKey(DigestSchema),
-  attempt: AttemptSchema,
-  authorizationDigest: Schema.optionalKey(DigestSchema),
-  commitTimestamp: Schema.String.pipe(
-    Schema.check(
-      Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/u)
-    )
+  activationActionDigest: Schema.optionalKey(DeliverySha256DigestPublicSchema),
+  activationPredecessorDigest: Schema.optionalKey(
+    DeliverySha256DigestPublicSchema
   ),
-  expectedHeadSha: GitShaSchema,
-  feedbackDigest: DigestSchema,
+  activationReceiptDigest: Schema.optionalKey(DeliverySha256DigestPublicSchema),
+  attempt: AttemptSchema,
+  authorizationDigest: Schema.optionalKey(DeliverySha256DigestPublicSchema),
+  commitTimestamp: DeliveryTimestampPublicSchema,
+  expectedHeadSha: DeliveryGitShaPublicSchema,
+  feedbackDigest: DeliverySha256DigestPublicSchema,
   feedbackIds: Schema.Array(DeliveryFeedbackIdSchema).pipe(
     Schema.check(Schema.isMinLength(1)),
     Schema.check(Schema.isMaxLength(20))
   ),
-  inputId: BoundedIdSchema,
-  operationId: BoundedIdSchema,
+  inputId: DeliveryActionIdPublicSchema,
+  operationId: DeliveryOperationIdPublicSchema,
 } as const;
 
 /** Durable reservation before a remediation may resume or mutate a session. */
@@ -324,7 +312,7 @@ export class DeliveryRemediationCommitAttempted extends Schema.Class<DeliveryRem
 )(
   {
     ...remediationBindingFields,
-    commitSha: GitShaSchema,
+    commitSha: DeliveryGitShaPublicSchema,
     state: Schema.Literal("commitAttempted"),
   },
   strict
@@ -336,7 +324,7 @@ export class DeliveryRemediationPushAttempted extends Schema.Class<DeliveryRemed
 )(
   {
     ...remediationBindingFields,
-    commitSha: GitShaSchema,
+    commitSha: DeliveryGitShaPublicSchema,
     state: Schema.Literal("pushAttempted"),
   },
   strict
@@ -348,7 +336,7 @@ export class DeliveryRemediationConfirmed extends Schema.Class<DeliveryRemediati
 )(
   {
     ...remediationBindingFields,
-    commitSha: GitShaSchema,
+    commitSha: DeliveryGitShaPublicSchema,
     state: Schema.Literal("confirmed"),
   },
   strict

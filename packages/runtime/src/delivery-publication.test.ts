@@ -10,11 +10,14 @@ import {
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
+  DeliveryGitShaPublicSchema,
   DeliveryPublicationIntent,
+  DeliverySourcePathPublicSchema,
+  DeliveryTimestampPublicSchema,
   encodeDeliveryPublicationJson,
   parseRunId,
 } from "@gaia/core";
-import { Effect, FileSystem } from "effect";
+import { Effect, FileSystem, Schema } from "effect";
 
 import {
   publishReadyDeliveryRun,
@@ -35,12 +38,28 @@ import {
   type GitHubCommandRunner,
 } from "./github-publisher.js";
 import { codexAppServerHarnessName, HarnessRunResult } from "./harness.js";
-import { makeRunPaths, type RunPaths } from "./paths.js";
+import { makeRunPaths, RuntimePathTextSchema, type RunPaths } from "./paths.js";
 import { productOnlyWorkspaceDiff } from "./workspace-snapshot.js";
 
 const baseRevision = "a".repeat(40);
 const commitSha = "c".repeat(40);
 const treeSha = "d".repeat(40);
+const PublicationRunnerOptionsSchema = Schema.Struct({
+  confirmPrOnCreateAttempt: Schema.optionalKey(Schema.Int),
+  diffOutput: Schema.optionalKey(Schema.String),
+  initialRemoteHead: Schema.optionalKey(DeliveryGitShaPublicSchema),
+  localBranchHead: Schema.optionalKey(DeliveryGitShaPublicSchema),
+  persistedCommitTimestamp: Schema.optionalKey(DeliveryTimestampPublicSchema),
+  prCreateUnconfirmed: Schema.optionalKey(Schema.Boolean),
+  pushedRemoteHead: Schema.optionalKey(DeliveryGitShaPublicSchema),
+  remoteReadFailuresBeforeMutation: Schema.optionalKey(Schema.Int),
+  remoteUnreadableAfterPush: Schema.optionalKey(Schema.Boolean),
+  sourcePaths: Schema.optionalKey(Schema.Array(DeliverySourcePathPublicSchema)),
+  verifyDurableMutationIntents: Schema.optionalKey(Schema.Boolean),
+});
+const PublicationEventTypeSchema = Schema.Struct({
+  type: Schema.optionalKey(Schema.String),
+});
 
 describe("delivery publication", () => {
   layer(NodeServices.layer)((it) => {
@@ -165,7 +184,7 @@ describe("delivery publication", () => {
             ["output.txt", "src/feature.ts"],
             {
               baseBranch: "gaia-93-smoke-base-abc123",
-              headBranch: "gaia/gaia-93-smoke-head-abc123",
+              headBranch: "gaia/run-1234567890",
             }
           );
           const commands: Array<GitHubCommandInput> = [];
@@ -1001,7 +1020,9 @@ describe("delivery publication", () => {
   });
 });
 
-function worktreeRunner(rootDirectory: string): GitDeliveryCommandRunner {
+function worktreeRunner(
+  rootDirectory: typeof RuntimePathTextSchema.Type
+): GitDeliveryCommandRunner {
   return ({ args, cwd }) =>
     Effect.sync(() => {
       const command = args.join(" ");
@@ -1034,21 +1055,9 @@ function worktreeRunner(rootDirectory: string): GitDeliveryCommandRunner {
 
 function publicationRunner(
   commands: Array<GitHubCommandInput>,
-  runRoot: string,
+  runRoot: typeof RuntimePathTextSchema.Type,
   provenance: DeliveryProvenance,
-  options: {
-    readonly confirmPrOnCreateAttempt?: number;
-    readonly diffOutput?: string;
-    readonly initialRemoteHead?: string;
-    readonly localBranchHead?: string;
-    readonly persistedCommitTimestamp?: string;
-    readonly prCreateUnconfirmed?: boolean;
-    readonly pushedRemoteHead?: string;
-    readonly remoteUnreadableAfterPush?: boolean;
-    readonly remoteReadFailuresBeforeMutation?: number;
-    readonly sourcePaths?: ReadonlyArray<string>;
-    readonly verifyDurableMutationIntents?: boolean;
-  } = {}
+  options: typeof PublicationRunnerOptionsSchema.Type = {}
 ): GitHubCommandRunner {
   let remoteHead: string | undefined = options.initialRemoteHead;
   let prCreated = false;
@@ -1329,7 +1338,9 @@ function success(stdout: string): CommandExecutionResult {
   return { exitCode: 0, stderr: "", stdout };
 }
 
-function nameStatus(paths: ReadonlyArray<string>) {
+function nameStatus(
+  paths: ReadonlyArray<typeof DeliverySourcePathPublicSchema.Type>
+) {
   return paths.flatMap((path) => ["M", path]).join("\0") + "\0";
 }
 
@@ -1340,7 +1351,8 @@ function lastEventType(runRoot: string) {
   const last = lines.at(-1);
   return last === undefined
     ? undefined
-    : (JSON.parse(last) as { readonly type?: string }).type;
+    : Schema.decodeUnknownSync(PublicationEventTypeSchema)(JSON.parse(last))
+        .type;
 }
 
 function writeReadyRun(

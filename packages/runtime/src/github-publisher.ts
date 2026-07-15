@@ -1,6 +1,18 @@
 import { execFile } from "node:child_process";
 
-import { RunIdSchema, type RunId } from "@gaia/core";
+import {
+  DeliveryBranchNamePublicSchema,
+  DeliveryGitShaPublicSchema,
+  DeliveryRemoteNamePublicSchema,
+  DeliverySourcePathPublicSchema,
+  DeliveryTimestampPublicSchema,
+  GitHubCheckFieldPublicSchema,
+  GitHubLoginPublicSchema,
+  GitHubProviderUrlPublicSchema,
+  GitHubPullRequestUrlPublicSchema,
+  RunIdSchema,
+  type RunId,
+} from "@gaia/core";
 import { Duration, Effect, FileSystem, Path, Schedule, Schema } from "effect";
 
 import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
@@ -10,6 +22,7 @@ import { HarnessRunResult } from "./harness.js";
 import {
   makeRunPaths,
   runRelative,
+  RunPathsSchema,
   type RunPaths,
   type RunStorageOptions,
 } from "./paths.js";
@@ -28,6 +41,54 @@ const defaultBaseBranch = "main";
 const defaultGitHubCheckPollAttempts = 30;
 const defaultGitHubCheckPollInterval = "5 seconds";
 const workspaceArtifactPrefix = "workspace/";
+const GitHubArtifactPathSchema = Schema.String.pipe(
+  Schema.check(Schema.isMinLength(1)),
+  Schema.check(Schema.isMaxLength(4_096))
+);
+const GitHubCommandNameSchema = Schema.String.pipe(
+  Schema.check(Schema.isMinLength(1)),
+  Schema.check(Schema.isMaxLength(120))
+);
+const GitHubCommandArgumentSchema = Schema.String.pipe(
+  Schema.check(Schema.isMaxLength(4_096))
+);
+const GitHubCommandOutputSchema = Schema.String;
+const GitHubRootDirectorySchema = GitHubArtifactPathSchema;
+const GitHubProviderTextSchema = Schema.String.pipe(
+  Schema.check(Schema.isMaxLength(16_384))
+);
+const GitHubProviderStateSchema = Schema.String.pipe(
+  Schema.check(Schema.isMinLength(1)),
+  Schema.check(Schema.isMaxLength(120))
+);
+const GitHubProviderTimestampSchema = DeliveryTimestampPublicSchema;
+const GitHubRawProviderTimestampSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u)
+  )
+);
+const parseGitHubProviderTimestamp = Schema.decodeUnknownSync(
+  GitHubProviderTimestampSchema
+);
+const GitHubCommandEnvironmentSchema = Schema.Record(
+  Schema.String,
+  Schema.String
+);
+const GitHubDurationInputSchema = Schema.declare<Duration.Input>(
+  (input): input is Duration.Input =>
+    typeof input === "number" ||
+    typeof input === "bigint" ||
+    typeof input === "string"
+);
+const GitHubCommandRunnerSchema = Schema.declare<GitHubCommandRunner>(
+  (input): input is GitHubCommandRunner => typeof input === "function"
+);
+type GitHubArtifactPath = typeof GitHubArtifactPathSchema.Type;
+type GitHubBranchName = typeof DeliveryBranchNamePublicSchema.Type;
+type GitHubCommandName = typeof GitHubCommandNameSchema.Type;
+type GitHubCommandOutput = typeof GitHubCommandOutputSchema.Type;
+type GitHubRemoteName = typeof DeliveryRemoteNamePublicSchema.Type;
+type GitHubRootDirectory = typeof GitHubRootDirectorySchema.Type;
 
 export const GitHubPreflightCheckNameSchema = Schema.Literals([
   "run-completed",
@@ -76,9 +137,12 @@ const parseGitHubCheckPollAttemptCount = Schema.decodeUnknownSync(
   GitHubCheckPollAttemptCountSchema
 );
 
-export const GitHubPullRequestSelectorSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("GitHubPullRequestSelector")
-);
+const GitHubPullRequestSelectorPublicSchema = Schema.NonEmptyString;
+
+export const GitHubPullRequestSelectorSchema =
+  GitHubPullRequestSelectorPublicSchema.pipe(
+    Schema.brand("GitHubPullRequestSelector")
+  );
 
 export type GitHubPullRequestSelector =
   typeof GitHubPullRequestSelectorSchema.Type;
@@ -87,9 +151,7 @@ export const parseGitHubPullRequestSelector = Schema.decodeUnknownSync(
   GitHubPullRequestSelectorSchema
 );
 
-const GitHubPrHeadShaSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("GitHubPrHeadSha")
-);
+const GitHubPrHeadShaSchema = DeliveryGitShaPublicSchema;
 
 type GitHubPrHeadSha = typeof GitHubPrHeadShaSchema.Type;
 
@@ -133,29 +195,29 @@ export type GitHubPrFeedbackNextAction =
 export class GitHubCheckRun extends Schema.Class<GitHubCheckRun>(
   "GitHubCheckRun"
 )({
-  link: Schema.optionalKey(Schema.String),
-  name: Schema.NonEmptyString,
-  state: Schema.NonEmptyString,
-  workflow: Schema.optionalKey(Schema.String),
+  link: Schema.optionalKey(GitHubProviderUrlPublicSchema),
+  name: GitHubCheckFieldPublicSchema,
+  state: GitHubProviderStateSchema,
+  workflow: Schema.optionalKey(GitHubCheckFieldPublicSchema),
 }) {}
 
 export class GitHubPrFeedbackComment extends Schema.Class<GitHubPrFeedbackComment>(
   "GitHubPrFeedbackComment"
 )({
-  authorLogin: Schema.optionalKey(Schema.String),
-  body: Schema.String,
-  createdAt: Schema.optionalKey(Schema.String),
-  url: Schema.optionalKey(Schema.String),
+  authorLogin: Schema.optionalKey(GitHubLoginPublicSchema),
+  body: GitHubProviderTextSchema,
+  createdAt: Schema.optionalKey(GitHubProviderTimestampSchema),
+  url: Schema.optionalKey(GitHubProviderUrlPublicSchema),
 }) {}
 
 export class GitHubPrFeedbackReview extends Schema.Class<GitHubPrFeedbackReview>(
   "GitHubPrFeedbackReview"
 )({
-  authorLogin: Schema.optionalKey(Schema.String),
-  body: Schema.optionalKey(Schema.String),
-  state: Schema.NonEmptyString,
-  submittedAt: Schema.optionalKey(Schema.String),
-  url: Schema.optionalKey(Schema.String),
+  authorLogin: Schema.optionalKey(GitHubLoginPublicSchema),
+  body: Schema.optionalKey(GitHubProviderTextSchema),
+  state: GitHubProviderStateSchema,
+  submittedAt: Schema.optionalKey(GitHubProviderTimestampSchema),
+  url: Schema.optionalKey(GitHubProviderUrlPublicSchema),
 }) {}
 
 export class GitHubPrFeedback extends Schema.Class<GitHubPrFeedback>(
@@ -169,11 +231,11 @@ export class GitHubPrFeedback extends Schema.Class<GitHubPrFeedback>(
   notes: Schema.Array(Schema.String),
   pr: GitHubPullRequestSelectorSchema,
   reviewCount: GitHubFeedbackCountSchema,
-  reviewDecision: Schema.optionalKey(Schema.String),
+  reviewDecision: Schema.optionalKey(GitHubProviderStateSchema),
   reviewRequestCount: GitHubFeedbackCountSchema,
   status: GitHubPrFeedbackStatusSchema,
-  title: Schema.optionalKey(Schema.String),
-  url: Schema.optionalKey(Schema.String),
+  title: Schema.optionalKey(GitHubProviderTextSchema),
+  url: Schema.optionalKey(GitHubPullRequestUrlPublicSchema),
   version: Schema.Literal(1),
 }) {}
 
@@ -182,19 +244,19 @@ export class GitHubPrFeedbackSummary extends Schema.Class<GitHubPrFeedbackSummar
 )({
   commentCount: GitHubFeedbackCountSchema,
   comments: Schema.Array(GitHubPrFeedbackComment),
-  feedbackPath: Schema.NonEmptyString,
+  feedbackPath: GitHubArtifactPathSchema,
   headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
   latestReviews: Schema.Array(GitHubPrFeedbackReview),
   nextAction: GitHubPrFeedbackNextActionSchema,
-  notes: Schema.Array(Schema.String),
+  notes: Schema.Array(GitHubProviderTextSchema),
   pr: GitHubPullRequestSelectorSchema,
   reviewCount: GitHubFeedbackCountSchema,
-  reviewDecision: Schema.optionalKey(Schema.String),
+  reviewDecision: Schema.optionalKey(GitHubProviderStateSchema),
   reviewRequestCount: GitHubFeedbackCountSchema,
   runId: RunIdSchema,
   status: GitHubPrFeedbackStatusSchema,
-  title: Schema.optionalKey(Schema.String),
-  url: Schema.optionalKey(Schema.String),
+  title: Schema.optionalKey(GitHubProviderTextSchema),
+  url: Schema.optionalKey(GitHubPullRequestUrlPublicSchema),
 }) {}
 
 export class GitHubChecksSummary extends Schema.Class<GitHubChecksSummary>(
@@ -211,7 +273,7 @@ export class GitHubChecksSnapshot extends Schema.Class<GitHubChecksSnapshot>(
   attempts: GitHubCheckPollAttemptCountSchema,
   checks: Schema.Array(GitHubCheckRun),
   headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
-  observedAt: Schema.NonEmptyString,
+  observedAt: GitHubProviderTimestampSchema,
   pr: GitHubPullRequestSelectorSchema,
   runId: RunIdSchema,
   status: GitHubChecksStatusSchema,
@@ -227,10 +289,10 @@ export class GitHubChecksRecord extends Schema.Class<GitHubChecksRecord>(
   observedAt: Schema.NonEmptyString,
   pr: GitHubPullRequestSelectorSchema,
   runId: RunIdSchema,
-  snapshotPath: Schema.NonEmptyString,
+  snapshotPath: GitHubArtifactPathSchema,
   status: GitHubChecksStatusSchema,
   terminal: Schema.Boolean,
-  watchStatePath: Schema.NonEmptyString,
+  watchStatePath: GitHubArtifactPathSchema,
 }) {}
 
 export const GitHubCiWatchNextActionSchema = Schema.Literals([
@@ -248,13 +310,13 @@ export class GitHubCiWatchState extends Schema.Class<GitHubCiWatchState>(
 )({
   attempts: GitHubCheckPollAttemptCountSchema,
   headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
-  lastSnapshotPath: Schema.NonEmptyString,
+  lastSnapshotPath: GitHubArtifactPathSchema,
   lastStatus: GitHubChecksStatusSchema,
   nextAction: GitHubCiWatchNextActionSchema,
   pr: GitHubPullRequestSelectorSchema,
   runId: RunIdSchema,
   terminal: Schema.Boolean,
-  updatedAt: Schema.NonEmptyString,
+  updatedAt: GitHubProviderTimestampSchema,
   version: Schema.Literal(1),
 }) {}
 
@@ -279,11 +341,11 @@ export class GitHubCiWatchSummary extends Schema.Class<GitHubCiWatchSummary>(
   pendingChecks: Schema.Array(GitHubCheckRun),
   pr: GitHubPullRequestSelectorSchema,
   runId: RunIdSchema,
-  snapshotPath: Schema.NonEmptyString,
+  snapshotPath: GitHubArtifactPathSchema,
   source: GitHubCiWatchResultSourceSchema,
   status: GitHubChecksStatusSchema,
   terminal: Schema.Boolean,
-  watchStatePath: Schema.NonEmptyString,
+  watchStatePath: GitHubArtifactPathSchema,
 }) {}
 
 export const GitHubPrLoopStatusSchema = Schema.Literals([
@@ -333,13 +395,13 @@ export class GitHubPrLoopState extends Schema.Class<GitHubPrLoopState>(
 )({
   blockerCount: GitHubFeedbackCountSchema,
   blockers: Schema.Array(GitHubPrLoopBlocker),
-  checksPath: Schema.NonEmptyString,
+  checksPath: GitHubArtifactPathSchema,
   checksStatus: GitHubChecksStatusSchema,
-  feedbackPath: Schema.NonEmptyString,
+  feedbackPath: GitHubArtifactPathSchema,
   feedbackStatus: GitHubPrFeedbackStatusSchema,
   headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
   nextAction: GitHubPrLoopNextActionSchema,
-  observedAt: Schema.NonEmptyString,
+  observedAt: GitHubProviderTimestampSchema,
   pr: GitHubPullRequestSelectorSchema,
   runId: RunIdSchema,
   status: GitHubPrLoopStatusSchema,
@@ -351,23 +413,23 @@ export class GitHubPrLoopSummary extends Schema.Class<GitHubPrLoopSummary>(
 )({
   blockerCount: GitHubFeedbackCountSchema,
   blockers: Schema.Array(GitHubPrLoopBlocker),
-  checksPath: Schema.NonEmptyString,
+  checksPath: GitHubArtifactPathSchema,
   checksStatus: GitHubChecksStatusSchema,
-  feedbackPath: Schema.NonEmptyString,
+  feedbackPath: GitHubArtifactPathSchema,
   feedbackStatus: GitHubPrFeedbackStatusSchema,
   headSha: Schema.optionalKey(GitHubPrHeadShaSchema),
   nextAction: GitHubPrLoopNextActionSchema,
   pr: GitHubPullRequestSelectorSchema,
   runId: RunIdSchema,
-  statePath: Schema.NonEmptyString,
+  statePath: GitHubArtifactPathSchema,
   status: GitHubPrLoopStatusSchema,
 }) {}
 
 export class GitHubPrCommentSummary extends Schema.Class<GitHubPrCommentSummary>(
   "GitHubPrCommentSummary"
 )({
-  commentPath: Schema.NonEmptyString,
-  commentUrl: Schema.optionalKey(Schema.String),
+  commentPath: GitHubArtifactPathSchema,
+  commentUrl: Schema.optionalKey(GitHubProviderUrlPublicSchema),
   pr: GitHubPullRequestSelectorSchema,
   runId: RunIdSchema,
   status: Schema.Literal("posted"),
@@ -380,9 +442,9 @@ export class GitHubRemediationSpecSummary extends Schema.Class<GitHubRemediation
   blockers: Schema.Array(GitHubPrLoopBlocker),
   nextAction: GitHubPrLoopNextActionSchema,
   pr: GitHubPullRequestSelectorSchema,
-  prLoopPath: Schema.NonEmptyString,
+  prLoopPath: GitHubArtifactPathSchema,
   runId: RunIdSchema,
-  specPath: Schema.NonEmptyString,
+  specPath: GitHubArtifactPathSchema,
   status: Schema.Literal("created"),
   title: Schema.NonEmptyString,
 }) {}
@@ -390,10 +452,10 @@ export class GitHubRemediationSpecSummary extends Schema.Class<GitHubRemediation
 export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
   "GitHubPrSummary"
 )({
-  baseBranch: Schema.NonEmptyString,
-  branchName: Schema.NonEmptyString,
-  evidencePath: Schema.NonEmptyString,
-  prUrl: Schema.NonEmptyString,
+  baseBranch: DeliveryBranchNamePublicSchema,
+  branchName: DeliveryBranchNamePublicSchema,
+  evidencePath: GitHubArtifactPathSchema,
+  prUrl: GitHubPullRequestUrlPublicSchema,
   runId: RunIdSchema,
   status: Schema.Literal("opened"),
   workspaceGate: Schema.optionalKey(WorkspacePrQualityGate),
@@ -403,22 +465,14 @@ export class GitHubPrSummary extends Schema.Class<GitHubPrSummary>(
 export class GitHubDraftPullRequestView extends Schema.Class<GitHubDraftPullRequestView>(
   "GitHubDraftPullRequestView"
 )({
-  baseRefName: Schema.NonEmptyString,
-  body: Schema.String,
-  headRefName: Schema.NonEmptyString,
-  headRefOid: Schema.String.pipe(
-    Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))
-  ),
+  baseRefName: DeliveryBranchNamePublicSchema,
+  body: GitHubProviderTextSchema,
+  headRefName: DeliveryBranchNamePublicSchema,
+  headRefOid: GitHubPrHeadShaSchema,
   isDraft: Schema.Boolean,
   number: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-  state: Schema.NonEmptyString,
-  url: Schema.String.pipe(
-    Schema.check(
-      Schema.isPattern(
-        /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*$/u
-      )
-    )
-  ),
+  state: GitHubProviderStateSchema,
+  url: GitHubPullRequestUrlPublicSchema,
 }) {}
 
 const GitHubDraftPullRequestViews = Schema.Array(
@@ -442,10 +496,10 @@ export class GitHubPreflightCheck extends Schema.Class<GitHubPreflightCheck>(
 export class GitHubPublishPreflightSummary extends Schema.Class<GitHubPublishPreflightSummary>(
   "GitHubPublishPreflightSummary"
 )({
-  baseBranch: Schema.NonEmptyString,
+  baseBranch: DeliveryBranchNamePublicSchema,
   checks: Schema.Array(GitHubPreflightCheck),
-  currentBranch: Schema.NonEmptyString,
-  remoteName: Schema.NonEmptyString,
+  currentBranch: DeliveryBranchNamePublicSchema,
+  remoteName: DeliveryRemoteNamePublicSchema,
   runId: RunIdSchema,
   status: Schema.Literal("passed"),
 }) {}
@@ -453,20 +507,20 @@ export class GitHubPublishPreflightSummary extends Schema.Class<GitHubPublishPre
 export class GitHubPublishPreviewCommand extends Schema.Class<GitHubPublishPreviewCommand>(
   "GitHubPublishPreviewCommand"
 )({
-  args: Schema.Array(Schema.String),
-  command: Schema.NonEmptyString,
+  args: Schema.Array(GitHubCommandArgumentSchema),
+  command: GitHubCommandNameSchema,
 }) {}
 
 export class GitHubPublishPreview extends Schema.Class<GitHubPublishPreview>(
   "GitHubPublishPreview"
 )({
-  baseBranch: Schema.NonEmptyString,
-  branchName: Schema.NonEmptyString,
+  baseBranch: DeliveryBranchNamePublicSchema,
+  branchName: DeliveryBranchNamePublicSchema,
   commands: Schema.Array(GitHubPublishPreviewCommand),
-  currentBranch: Schema.NonEmptyString,
-  evidencePath: Schema.NonEmptyString,
+  currentBranch: DeliveryBranchNamePublicSchema,
+  evidencePath: GitHubArtifactPathSchema,
   mode: GitHubPublishModeSchema,
-  remoteName: Schema.NonEmptyString,
+  remoteName: DeliveryRemoteNamePublicSchema,
   runId: RunIdSchema,
   sourceChanges: GitHubPublishSourceChangeClaimSchema,
   status: Schema.Literal("preview"),
@@ -476,26 +530,26 @@ export class GitHubPublishPreview extends Schema.Class<GitHubPublishPreview>(
 class GitHubPrViewAuthor extends Schema.Class<GitHubPrViewAuthor>(
   "GitHubPrViewAuthor"
 )({
-  login: Schema.optionalKey(Schema.String),
+  login: Schema.optionalKey(GitHubLoginPublicSchema),
 }) {}
 
 class GitHubPrViewComment extends Schema.Class<GitHubPrViewComment>(
   "GitHubPrViewComment"
 )({
   author: Schema.optionalKey(Schema.NullOr(GitHubPrViewAuthor)),
-  body: Schema.String,
-  createdAt: Schema.optionalKey(Schema.String),
-  url: Schema.optionalKey(Schema.String),
+  body: GitHubProviderTextSchema,
+  createdAt: Schema.optionalKey(GitHubRawProviderTimestampSchema),
+  url: Schema.optionalKey(GitHubProviderUrlPublicSchema),
 }) {}
 
 class GitHubPrViewReview extends Schema.Class<GitHubPrViewReview>(
   "GitHubPrViewReview"
 )({
   author: Schema.optionalKey(Schema.NullOr(GitHubPrViewAuthor)),
-  body: Schema.optionalKey(Schema.String),
-  state: Schema.NonEmptyString,
-  submittedAt: Schema.optionalKey(Schema.String),
-  url: Schema.optionalKey(Schema.String),
+  body: Schema.optionalKey(GitHubProviderTextSchema),
+  state: GitHubProviderStateSchema,
+  submittedAt: Schema.optionalKey(GitHubRawProviderTimestampSchema),
+  url: Schema.optionalKey(GitHubProviderUrlPublicSchema),
 }) {}
 
 class GitHubPrFeedbackView extends Schema.Class<GitHubPrFeedbackView>(
@@ -505,10 +559,10 @@ class GitHubPrFeedbackView extends Schema.Class<GitHubPrFeedbackView>(
   headRefOid: Schema.optionalKey(GitHubPrHeadShaSchema),
   isDraft: Schema.Boolean,
   latestReviews: Schema.Array(GitHubPrViewReview),
-  reviewDecision: Schema.NullOr(Schema.String),
+  reviewDecision: Schema.NullOr(GitHubProviderStateSchema),
   reviewRequests: Schema.Array(Schema.Unknown),
-  title: Schema.String,
-  url: Schema.String,
+  title: GitHubProviderTextSchema,
+  url: GitHubPullRequestUrlPublicSchema,
 }) {}
 
 class GitHubPrHeadView extends Schema.Class<GitHubPrHeadView>(
@@ -579,59 +633,214 @@ function normalizeGitHubChecksStatusValue(input: unknown): unknown {
   return legacyGitHubChecksStatusMap.get(input) ?? input;
 }
 
-export type CommandExecutionResult = {
-  readonly exitCode: number;
-  readonly stderr: string;
-  readonly stdout: string;
-};
+const CommandExecutionResultSchema = Schema.Struct({
+  exitCode: Schema.Number,
+  stderr: GitHubCommandOutputSchema,
+  stdout: GitHubCommandOutputSchema,
+});
 
-export type GitHubCommandInput = {
-  readonly args: ReadonlyArray<string>;
-  readonly command: string;
-  readonly cwd: string;
-  readonly env?: Readonly<Record<string, string>>;
-};
+export type CommandExecutionResult = typeof CommandExecutionResultSchema.Type;
+
+const GitHubCommandInputSchema = Schema.Struct({
+  args: Schema.Array(GitHubCommandArgumentSchema),
+  command: GitHubCommandNameSchema,
+  cwd: GitHubRootDirectorySchema,
+  env: Schema.optionalKey(GitHubCommandEnvironmentSchema),
+});
+
+export type GitHubCommandInput = typeof GitHubCommandInputSchema.Type;
 
 export type GitHubCommandRunner = (
   input: GitHubCommandInput
 ) => Effect.Effect<CommandExecutionResult, GaiaRuntimeError>;
 
-export type GitHubPublishOptions = RunStorageOptions & {
-  readonly baseBranch?: string;
-  readonly commandRunner?: GitHubCommandRunner;
-  readonly remoteName?: string;
-};
+const GitHubPublishOptionFieldsSchema = Schema.Struct({
+  baseBranch: Schema.optionalKey(DeliveryBranchNamePublicSchema),
+  commandRunner: Schema.optionalKey(GitHubCommandRunnerSchema),
+  remoteName: Schema.optionalKey(DeliveryRemoteNamePublicSchema),
+});
 
-export type GitHubPublishPreviewOptions = GitHubPublishOptions & {
-  readonly mode?: GitHubPublishMode;
-};
+type GitHubPublishOptionFields = typeof GitHubPublishOptionFieldsSchema.Type;
 
-export type GitHubCheckRecordOptions = RunStorageOptions & {
-  readonly commandRunner?: GitHubCommandRunner;
-  readonly maxAttempts?: number;
-  readonly pollInterval?: Duration.Input;
-  readonly waitForTerminal?: boolean;
-};
+export type GitHubPublishOptions = RunStorageOptions &
+  GitHubPublishOptionFields;
+
+const GitHubPublishPreviewOptionFieldsSchema = Schema.Struct({
+  ...GitHubPublishOptionFieldsSchema.fields,
+  mode: Schema.optionalKey(GitHubPublishModeSchema),
+});
+
+type GitHubPublishPreviewOptionFields =
+  typeof GitHubPublishPreviewOptionFieldsSchema.Type;
+
+export type GitHubPublishPreviewOptions = RunStorageOptions &
+  GitHubPublishPreviewOptionFields;
+
+const GitHubCheckRecordOptionFieldsSchema = Schema.Struct({
+  commandRunner: Schema.optionalKey(GitHubCommandRunnerSchema),
+  maxAttempts: Schema.optionalKey(Schema.Number),
+  pollInterval: Schema.optionalKey(GitHubDurationInputSchema),
+  waitForTerminal: Schema.optionalKey(Schema.Boolean),
+});
+
+type GitHubCheckRecordOptionFields =
+  typeof GitHubCheckRecordOptionFieldsSchema.Type;
+
+export type GitHubCheckRecordOptions = RunStorageOptions &
+  GitHubCheckRecordOptionFields;
 
 /** Options for starting or resuming a bounded GitHub CI watch. */
-export type GitHubCiWatchOptions = GitHubCheckRecordOptions & {
-  readonly pullRequest?: string;
-};
+const GitHubCiWatchOptionsSchema = Schema.Struct({
+  ...GitHubCheckRecordOptionFieldsSchema.fields,
+  pullRequest: Schema.optionalKey(GitHubPullRequestSelectorPublicSchema),
+});
+
+type GitHubCiWatchOptionFields = typeof GitHubCiWatchOptionsSchema.Type;
+
+export type GitHubCiWatchOptions = RunStorageOptions &
+  GitHubCiWatchOptionFields;
 
 /** Options for recording human GitHub PR feedback for a completed run. */
-export type GitHubPrFeedbackOptions = RunStorageOptions & {
-  readonly commandRunner?: GitHubCommandRunner;
-};
+const GitHubPrFeedbackOptionsSchema = Schema.Struct({
+  commandRunner: Schema.optionalKey(GitHubCommandRunnerSchema),
+});
+
+type GitHubPrFeedbackOptionFields = typeof GitHubPrFeedbackOptionsSchema.Type;
+
+export type GitHubPrFeedbackOptions = RunStorageOptions &
+  GitHubPrFeedbackOptionFields;
 
 /** Options for recording combined CI and human PR feedback. */
-export type GitHubPrLoopOptions = RunStorageOptions & {
-  readonly commandRunner?: GitHubCommandRunner;
-};
+const GitHubPrLoopOptionsSchema = Schema.Struct({
+  commandRunner: Schema.optionalKey(GitHubCommandRunnerSchema),
+});
+
+type GitHubPrLoopOptionFields = typeof GitHubPrLoopOptionsSchema.Type;
+
+export type GitHubPrLoopOptions = RunStorageOptions & GitHubPrLoopOptionFields;
 
 /** Options for publishing a Gaia evidence comment to a GitHub PR. */
-export type GitHubPrCommentOptions = RunStorageOptions & {
-  readonly commandRunner?: GitHubCommandRunner;
-};
+const GitHubPrCommentOptionsSchema = Schema.Struct({
+  commandRunner: Schema.optionalKey(GitHubCommandRunnerSchema),
+});
+
+type GitHubPrCommentOptionFields = typeof GitHubPrCommentOptionsSchema.Type;
+
+export type GitHubPrCommentOptions = RunStorageOptions &
+  GitHubPrCommentOptionFields;
+
+const PublishPreviewCommandsInputSchema = Schema.Struct({
+  branchName: DeliveryBranchNamePublicSchema,
+  evidencePath: GitHubArtifactPathSchema,
+  mode: GitHubPublishModeSchema,
+  preflight: GitHubPublishPreflightSummary,
+});
+
+type PublishPreviewCommandsInput =
+  typeof PublishPreviewCommandsInputSchema.Type;
+
+const InspectGitHubFeedbackOptionsSchema = Schema.Struct({
+  commandRunner: GitHubCommandRunnerSchema,
+  rootDirectory: GitHubRootDirectorySchema,
+});
+
+type InspectGitHubFeedbackOptions =
+  typeof InspectGitHubFeedbackOptionsSchema.Type;
+
+const MakeGitHubPrLoopStateInputSchema = Schema.Struct({
+  checks: GitHubChecksRecord,
+  feedback: GitHubPrFeedbackSummary,
+  paths: RunPathsSchema,
+});
+
+type MakeGitHubPrLoopStateInput = typeof MakeGitHubPrLoopStateInputSchema.Type;
+
+const GitHubMarkdownBodyInputSchema = Schema.Struct({
+  body: Schema.String,
+});
+
+type GitHubMarkdownBodyInput = typeof GitHubMarkdownBodyInputSchema.Type;
+
+const GitHubPrCommentMarkdownInputSchema = Schema.Struct({
+  paths: RunPathsSchema,
+  pr: GitHubPullRequestSelectorSchema,
+  runId: RunIdSchema,
+});
+
+type GitHubPrCommentMarkdownInput =
+  typeof GitHubPrCommentMarkdownInputSchema.Type;
+
+const GitHubRemediationSpecMarkdownInputSchema = Schema.Struct({
+  prLoop: GitHubPrLoopState,
+  title: GitHubProviderTextSchema,
+});
+
+type GitHubRemediationSpecMarkdownInput =
+  typeof GitHubRemediationSpecMarkdownInputSchema.Type;
+
+const RunRequiredPreflightCommandErrorSchema = Schema.Struct({
+  code: Schema.NonEmptyString,
+  message: Schema.NonEmptyString,
+});
+
+type RunRequiredPreflightCommandError =
+  typeof RunRequiredPreflightCommandErrorSchema.Type;
+
+const RequireLocalHeadMatchesRemoteBaseInputSchema = Schema.Struct({
+  baseBranch: DeliveryBranchNamePublicSchema,
+  localHead: DeliveryGitShaPublicSchema,
+  remoteBaseHead: DeliveryGitShaPublicSchema,
+  remoteName: DeliveryRemoteNamePublicSchema,
+});
+
+type RequireLocalHeadMatchesRemoteBaseInput =
+  typeof RequireLocalHeadMatchesRemoteBaseInputSchema.Type;
+
+const ReadOptionalGitHubPullRequestHeadShaOptionsSchema = Schema.Struct({
+  rootDirectory: GitHubRootDirectorySchema,
+  runner: GitHubCommandRunnerSchema,
+});
+
+type ReadOptionalGitHubPullRequestHeadShaOptions =
+  typeof ReadOptionalGitHubPullRequestHeadShaOptionsSchema.Type;
+
+const WaitForTerminalGitHubChecksInputSchema = Schema.Struct({
+  attempts: GitHubCheckPollAttemptCountSchema,
+  pollInterval: GitHubDurationInputSchema,
+  rootDirectory: GitHubRootDirectorySchema,
+  runner: GitHubCommandRunnerSchema,
+});
+
+type WaitForTerminalGitHubChecksInput =
+  typeof WaitForTerminalGitHubChecksInputSchema.Type;
+
+const WriteGitHubChecksSnapshotInputSchema = Schema.Struct({
+  attempts: GitHubCheckPollAttemptCountSchema,
+  headSha: Schema.UndefinedOr(GitHubPrHeadShaSchema),
+  runId: RunIdSchema,
+  summary: GitHubChecksSummary,
+});
+
+type WriteGitHubChecksSnapshotInput =
+  typeof WriteGitHubChecksSnapshotInputSchema.Type;
+
+const FindReusableGitHubChecksRecordInputSchema = Schema.Struct({
+  headSha: Schema.UndefinedOr(GitHubPrHeadShaSchema),
+  summary: GitHubChecksSummary,
+});
+
+type FindReusableGitHubChecksRecordInput =
+  typeof FindReusableGitHubChecksRecordInputSchema.Type;
+
+const CiWatchSummaryFromSnapshotInputSchema = Schema.Struct({
+  paths: RunPathsSchema,
+  snapshot: GitHubChecksSnapshot,
+  source: GitHubCiWatchResultSourceSchema,
+  state: GitHubCiWatchState,
+});
+
+type CiWatchSummaryFromSnapshotInput =
+  typeof CiWatchSummaryFromSnapshotInputSchema.Type;
 
 class GitHubChecksPending extends Schema.TaggedErrorClass<GitHubChecksPending>()(
   "GitHubChecksPending",
@@ -860,12 +1069,7 @@ export function publishRunToGitHub(
 }
 
 function publishPreviewCommands(
-  input: Readonly<{
-    branchName: string;
-    evidencePath: string;
-    mode: GitHubPublishMode;
-    preflight: GitHubPublishPreflightSummary;
-  }>
+  input: PublishPreviewCommandsInput
 ): ReadonlyArray<GitHubPublishPreviewCommand> {
   const commitMessage =
     input.mode === "workspace"
@@ -921,7 +1125,7 @@ function publishPreviewCommands(
 }
 
 function previewCommand(
-  command: string,
+  command: GitHubCommandName,
   args: ReadonlyArray<string>
 ): GitHubPublishPreviewCommand {
   return GitHubPublishPreviewCommand.make({ args, command });
@@ -1507,10 +1711,7 @@ function commentGitHubPullRequestUnlocked(
 
 function inspectGitHubFeedback(
   pr: GitHubPullRequestSelector,
-  options: Readonly<{
-    commandRunner: GitHubCommandRunner;
-    rootDirectory: string;
-  }>
+  options: InspectGitHubFeedbackOptions
 ) {
   return Effect.gen(function* () {
     const result = yield* runRequiredCommand(
@@ -1643,7 +1844,7 @@ function watchGitHubChecksUnlocked(
 }
 
 function gitHubCheckRecordOptionsForWatch(
-  rootDirectory: string,
+  rootDirectory: GitHubRootDirectory,
   options: GitHubCiWatchOptions
 ): GitHubCheckRecordOptions {
   return {
@@ -1702,7 +1903,7 @@ function normalizeGitHubComment(
     body: comment.body,
     ...(comment.createdAt === undefined
       ? {}
-      : { createdAt: comment.createdAt }),
+      : { createdAt: normalizeGitHubProviderTimestamp(comment.createdAt) }),
     ...(comment.url === undefined ? {} : { url: comment.url }),
   });
 }
@@ -1718,9 +1919,17 @@ function normalizeGitHubReview(
     state: review.state,
     ...(review.submittedAt === undefined
       ? {}
-      : { submittedAt: review.submittedAt }),
+      : { submittedAt: normalizeGitHubProviderTimestamp(review.submittedAt) }),
     ...(review.url === undefined ? {} : { url: review.url }),
   });
+}
+
+function normalizeGitHubProviderTimestamp(
+  timestamp: typeof GitHubRawProviderTimestampSchema.Type
+) {
+  return parseGitHubProviderTimestamp(
+    timestamp.includes(".") ? timestamp : timestamp.replace(/Z$/u, ".000Z")
+  );
 }
 
 function writeGitHubPrFeedback(paths: RunPaths, feedback: GitHubPrFeedback) {
@@ -1853,13 +2062,7 @@ function sameGitHubPrFeedback(left: GitHubPrFeedback, right: GitHubPrFeedback) {
   );
 }
 
-function makeGitHubPrLoopState(
-  input: Readonly<{
-    checks: GitHubChecksRecord;
-    feedback: GitHubPrFeedbackSummary;
-    paths: RunPaths;
-  }>
-) {
+function makeGitHubPrLoopState(input: MakeGitHubPrLoopStateInput) {
   const blockers = gitHubPrLoopBlockers(input.checks, input.feedback);
   const firstBlocker = blockers.at(0);
   const nextAction =
@@ -2153,7 +2356,7 @@ function readOptionalGitHubPrLoopState(paths: RunPaths) {
 
 function writeGitHubRemediationSpec(
   paths: RunPaths,
-  input: Readonly<{ body: string }>
+  input: GitHubMarkdownBodyInput
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -2172,13 +2375,7 @@ function writeGitHubRemediationSpec(
   );
 }
 
-function gitHubPrCommentMarkdown(
-  input: Readonly<{
-    paths: RunPaths;
-    pr: GitHubPullRequestSelector;
-    runId: RunId;
-  }>
-) {
+function gitHubPrCommentMarkdown(input: GitHubPrCommentMarkdownInput) {
   return Effect.gen(function* () {
     const artifacts = yield* gitHubPrCommentArtifacts(input.paths, input.runId);
     const prLoop = yield* readOptionalGitHubPrLoopState(input.paths);
@@ -2287,10 +2484,7 @@ function gitHubPrCommentArtifacts(paths: RunPaths, runId: RunId) {
   );
 }
 
-function writeGitHubPrComment(
-  paths: RunPaths,
-  input: Readonly<{ body: string }>
-) {
+function writeGitHubPrComment(paths: RunPaths, input: GitHubMarkdownBodyInput) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(paths.githubPrComment, input.body);
@@ -2308,16 +2502,13 @@ function writeGitHubPrComment(
   );
 }
 
-function optionalTrimmedString(input: string) {
+function optionalTrimmedString(input: GitHubCommandOutput) {
   const trimmed = input.trim();
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
 function gitHubRemediationSpecMarkdown(
-  input: Readonly<{
-    prLoop: GitHubPrLoopState;
-    title: string;
-  }>
+  input: GitHubRemediationSpecMarkdownInput
 ) {
   const blockerLines = input.prLoop.blockers
     .map(formatGitHubRemediationBlocker)
@@ -2419,7 +2610,10 @@ function normalizeGitHubReviewState(state: string) {
   return state.trim().toLowerCase().replaceAll("_", "-");
 }
 
-function applyRunWorkspace(paths: RunPaths, rootDirectory: string) {
+function applyRunWorkspace(
+  paths: RunPaths,
+  rootDirectory: GitHubRootDirectory
+) {
   return Effect.gen(function* () {
     const skippedRelativePaths =
       yield* readWorkspaceArtifactRelativePaths(paths);
@@ -2538,7 +2732,7 @@ function readWorkspaceArtifactRelativePaths(paths: RunPaths) {
 
 function stageWorkspaceChanges(
   runner: GitHubCommandRunner,
-  rootDirectory: string
+  rootDirectory: GitHubRootDirectory
 ) {
   return Effect.gen(function* () {
     yield* runRequiredCommand(runner, rootDirectory, "git", [
@@ -2580,8 +2774,8 @@ function stageWorkspaceChanges(
 
 function runCommand(
   runner: GitHubCommandRunner,
-  cwd: string,
-  command: string,
+  cwd: GitHubRootDirectory,
+  command: GitHubCommandName,
   args: ReadonlyArray<string>
 ) {
   return runner({ args, command, cwd });
@@ -2589,8 +2783,8 @@ function runCommand(
 
 function runRequiredCommand(
   runner: GitHubCommandRunner,
-  cwd: string,
-  command: string,
+  cwd: GitHubRootDirectory,
+  command: GitHubCommandName,
   args: ReadonlyArray<string>
 ) {
   return Effect.gen(function* () {
@@ -2612,13 +2806,10 @@ function runRequiredCommand(
 
 function runRequiredPreflightCommand(
   runner: GitHubCommandRunner,
-  cwd: string,
-  command: string,
+  cwd: GitHubRootDirectory,
+  command: GitHubCommandName,
   args: ReadonlyArray<string>,
-  error: Readonly<{
-    code: string;
-    message: string;
-  }>
+  error: RunRequiredPreflightCommandError
 ) {
   return Effect.gen(function* () {
     const result = yield* runCommand(runner, cwd, command, args);
@@ -2643,7 +2834,7 @@ function preflightCheck(name: GitHubPreflightCheckName): GitHubPreflightCheck {
 
 function requireGitRepository(
   runner: GitHubCommandRunner,
-  rootDirectory: string
+  rootDirectory: GitHubRootDirectory
 ) {
   return Effect.gen(function* () {
     const result = yield* runRequiredPreflightCommand(
@@ -2671,7 +2862,7 @@ function requireGitRepository(
 
 function requireCleanWorktree(
   runner: GitHubCommandRunner,
-  rootDirectory: string
+  rootDirectory: GitHubRootDirectory
 ) {
   return Effect.gen(function* () {
     const result = yield* runRequiredCommand(runner, rootDirectory, "git", [
@@ -2693,8 +2884,8 @@ function requireCleanWorktree(
 
 function requireRemote(
   runner: GitHubCommandRunner,
-  rootDirectory: string,
-  remoteName: string
+  rootDirectory: GitHubRootDirectory,
+  remoteName: GitHubRemoteName
 ) {
   return runRequiredPreflightCommand(
     runner,
@@ -2710,9 +2901,9 @@ function requireRemote(
 
 function remoteBaseBranchHead(
   runner: GitHubCommandRunner,
-  rootDirectory: string,
-  remoteName: string,
-  baseBranch: string
+  rootDirectory: GitHubRootDirectory,
+  remoteName: GitHubRemoteName,
+  baseBranch: GitHubBranchName
 ) {
   return Effect.gen(function* () {
     const result = yield* runRequiredPreflightCommand(
@@ -2741,7 +2932,10 @@ function remoteBaseBranchHead(
   });
 }
 
-function requireGitHubAuth(runner: GitHubCommandRunner, rootDirectory: string) {
+function requireGitHubAuth(
+  runner: GitHubCommandRunner,
+  rootDirectory: GitHubRootDirectory
+) {
   return runRequiredPreflightCommand(
     runner,
     rootDirectory,
@@ -2754,7 +2948,10 @@ function requireGitHubAuth(runner: GitHubCommandRunner, rootDirectory: string) {
   );
 }
 
-function currentGitBranch(runner: GitHubCommandRunner, rootDirectory: string) {
+function currentGitBranch(
+  runner: GitHubCommandRunner,
+  rootDirectory: GitHubRootDirectory
+) {
   return Effect.gen(function* () {
     const result = yield* runRequiredCommand(runner, rootDirectory, "git", [
       "rev-parse",
@@ -2777,7 +2974,10 @@ function currentGitBranch(runner: GitHubCommandRunner, rootDirectory: string) {
   });
 }
 
-function currentGitHead(runner: GitHubCommandRunner, rootDirectory: string) {
+function currentGitHead(
+  runner: GitHubCommandRunner,
+  rootDirectory: GitHubRootDirectory
+) {
   return Effect.gen(function* () {
     const result = yield* runRequiredCommand(runner, rootDirectory, "git", [
       "rev-parse",
@@ -2799,12 +2999,9 @@ function currentGitHead(runner: GitHubCommandRunner, rootDirectory: string) {
   });
 }
 
-function requireLocalHeadMatchesRemoteBase(input: {
-  readonly baseBranch: string;
-  readonly localHead: string;
-  readonly remoteBaseHead: string;
-  readonly remoteName: string;
-}) {
+function requireLocalHeadMatchesRemoteBase(
+  input: RequireLocalHeadMatchesRemoteBaseInput
+) {
   if (input.localHead === input.remoteBaseHead) {
     return Effect.void;
   }
@@ -2818,7 +3015,10 @@ function requireLocalHeadMatchesRemoteBase(input: {
   );
 }
 
-function writePullRequestEvidence(runId: RunId, rootDirectory: string) {
+function writePullRequestEvidence(
+  runId: RunId,
+  rootDirectory: GitHubRootDirectory
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -2844,7 +3044,7 @@ function writePullRequestEvidence(runId: RunId, rootDirectory: string) {
   );
 }
 
-function copyRunArtifacts(paths: RunPaths, evidencePath: string) {
+function copyRunArtifacts(paths: RunPaths, evidencePath: GitHubArtifactPath) {
   const artifacts = [
     ["input.md", "input.md"],
     ["report.md", "README.md"],
@@ -2959,10 +3159,7 @@ function parseGitHubPullRequestSelectorEffect(input: string) {
 
 function readOptionalGitHubPullRequestHeadSha(
   pr: GitHubPullRequestSelector,
-  options: Readonly<{
-    rootDirectory: string;
-    runner: GitHubCommandRunner;
-  }>
+  options: ReadOptionalGitHubPullRequestHeadShaOptions
 ): Effect.Effect<GitHubPrHeadSha | undefined, never> {
   return Effect.gen(function* () {
     const result = yield* runCommand(
@@ -3021,12 +3218,7 @@ function parseGitHubCheckPollAttemptCountEffect(input: number) {
 
 function waitForTerminalGitHubChecks(
   prInput: string,
-  input: Readonly<{
-    attempts: GitHubCheckPollAttemptCount;
-    pollInterval: Duration.Input;
-    rootDirectory: string;
-    runner: GitHubCommandRunner;
-  }>
+  input: WaitForTerminalGitHubChecksInput
 ) {
   let attempt = 0;
   const inspectTerminal = Effect.gen(function* () {
@@ -3060,12 +3252,7 @@ function waitForTerminalGitHubChecks(
 
 function writeGitHubChecksSnapshot(
   paths: RunPaths,
-  input: Readonly<{
-    attempts: GitHubCheckPollAttemptCount;
-    headSha: GitHubPrHeadSha | undefined;
-    runId: RunId;
-    summary: GitHubChecksSummary;
-  }>
+  input: WriteGitHubChecksSnapshotInput
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -3122,7 +3309,7 @@ function writeGitHubChecksSnapshot(
 
 function readGitHubChecksSnapshot(
   paths: RunPaths,
-  snapshotPath: string
+  snapshotPath: GitHubArtifactPath
 ): Effect.Effect<
   GitHubChecksSnapshot,
   GaiaRuntimeError,
@@ -3261,10 +3448,7 @@ function readOptionalGitHubCiWatchState(
 
 function findReusableGitHubChecksRecord(
   paths: RunPaths,
-  input: Readonly<{
-    headSha: GitHubPrHeadSha | undefined;
-    summary: GitHubChecksSummary;
-  }>
+  input: FindReusableGitHubChecksRecordInput
 ) {
   return Effect.gen(function* () {
     if (input.headSha === undefined) {
@@ -3323,7 +3507,10 @@ function sameGitHubChecksSnapshot(
   );
 }
 
-function resolveRunArtifactPath(paths: RunPaths, artifactPath: string) {
+function resolveRunArtifactPath(
+  paths: RunPaths,
+  artifactPath: GitHubArtifactPath
+) {
   return Effect.gen(function* () {
     if (artifactPath.startsWith(`${paths.root}/`)) {
       return artifactPath;
@@ -3355,14 +3542,7 @@ function ciWatchSummaryFromRecord(
   });
 }
 
-function ciWatchSummaryFromSnapshot(
-  input: Readonly<{
-    paths: RunPaths;
-    snapshot: GitHubChecksSnapshot;
-    source: GitHubCiWatchResultSource;
-    state: GitHubCiWatchState;
-  }>
-) {
+function ciWatchSummaryFromSnapshot(input: CiWatchSummaryFromSnapshotInput) {
   return GitHubCiWatchSummary.make({
     attempts: input.snapshot.attempts,
     checks: input.snapshot.checks,

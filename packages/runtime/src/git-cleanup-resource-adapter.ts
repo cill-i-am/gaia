@@ -12,6 +12,7 @@ import type {
   CleanupResourceInspection,
 } from "./delivery-cleanup-resource-coordinator.js";
 import { makeRuntimeError } from "./errors.js";
+import { RuntimePathTextSchema } from "./paths.js";
 import { repositoryCommandEnvironment } from "./repository-command-environment.js";
 
 const execFileAsync = promisify(execFile);
@@ -26,6 +27,7 @@ const OwnershipManifest = Schema.Struct({
   workspaceRoot: Schema.NonEmptyString,
 });
 const parseManifest = Schema.decodeUnknownSync(OwnershipManifest);
+type GitCleanupPath = typeof RuntimePathTextSchema.Type;
 
 export function makeGitCleanupResourceAdapter(
   options: { readonly beforeWorktreeRemove?: () => void } = {}
@@ -303,15 +305,30 @@ function runGitExit(cwd: string, args: ReadonlyArray<string>) {
         });
         return { exitCode: 0, stderr: result.stderr, stdout: result.stdout };
       } catch (cause) {
-        const error = cause as {
-          code?: number;
-          stderr?: string;
-          stdout?: string;
-        };
+        const error =
+          typeof cause === "object" && cause !== null ? cause : undefined;
+        const code =
+          error !== undefined &&
+          "code" in error &&
+          typeof error.code === "number"
+            ? error.code
+            : 1;
+        const stderr =
+          error !== undefined &&
+          "stderr" in error &&
+          typeof error.stderr === "string"
+            ? error.stderr
+            : "";
+        const stdout =
+          error !== undefined &&
+          "stdout" in error &&
+          typeof error.stdout === "string"
+            ? error.stdout
+            : "";
         return {
-          exitCode: typeof error.code === "number" ? error.code : 1,
-          stderr: String(error.stderr ?? ""),
-          stdout: String(error.stdout ?? ""),
+          exitCode: code,
+          stderr,
+          stdout,
         };
       }
     },
@@ -332,7 +349,7 @@ function unsafe(message: string) {
     })
   );
 }
-function canonical(value: string) {
+function canonical(value: GitCleanupPath) {
   try {
     return realpathSync(value);
   } catch {

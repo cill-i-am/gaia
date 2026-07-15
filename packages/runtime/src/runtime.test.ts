@@ -5153,7 +5153,9 @@ describe("runtime workflows", () => {
               return {
                 exitCode: 0,
                 stderr: "",
-                stdout: JSON.stringify({ headRefOid: "abc123" }),
+                stdout: JSON.stringify({
+                  headRefOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                }),
               };
             }
 
@@ -5585,7 +5587,7 @@ describe("runtime workflows", () => {
             stderr: "",
             stdout: JSON.stringify(
               prFeedbackView({
-                headRefOid: "abc123",
+                headRefOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 reviewDecision: "APPROVED",
               })
             ),
@@ -5829,7 +5831,9 @@ describe("runtime workflows", () => {
             return {
               exitCode: 0,
               stderr: "",
-              stdout: JSON.stringify({ headRefOid: "abc123" }),
+              stdout: JSON.stringify({
+                headRefOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              }),
             };
           }
 
@@ -5853,7 +5857,7 @@ describe("runtime workflows", () => {
             stderr: "",
             stdout: JSON.stringify(
               prFeedbackView({
-                headRefOid: "abc123",
+                headRefOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 reviewDecision: "APPROVED",
               })
             ),
@@ -5907,7 +5911,9 @@ describe("runtime workflows", () => {
                 return {
                   exitCode: 0,
                   stderr: "",
-                  stdout: JSON.stringify({ headRefOid: "checks-head" }),
+                  stdout: JSON.stringify({
+                    headRefOid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  }),
                 };
               }
 
@@ -5931,7 +5937,7 @@ describe("runtime workflows", () => {
                 stderr: "",
                 stdout: JSON.stringify(
                   prFeedbackView({
-                    headRefOid: "feedback-head",
+                    headRefOid: "cccccccccccccccccccccccccccccccccccccccc",
                     reviewDecision: "APPROVED",
                   })
                 ),

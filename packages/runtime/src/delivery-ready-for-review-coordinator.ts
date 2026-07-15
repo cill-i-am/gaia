@@ -1,15 +1,23 @@
 import {
+  DeliveryBranchNamePublicSchema,
+  DeliveryGitShaPublicSchema,
   DeliveryPullRequestReadyConfirmedWithoutDispatch,
   DeliveryPullRequestReadyDispatchAttempted,
   DeliveryPullRequestReadyDispatchConfirmed,
   DeliveryPullRequestReadyIntent,
   DeliveryPullRequestReadyTerminalFailure,
   assertDeliveryPullRequestReadyAuthority,
+  DeliveryOperationIdPublicSchema,
+  DeliverySha256DigestPublicSchema,
+  DeliveryTimestampPublicSchema,
   deliveryPullRequestReadyPayloadDigest,
   deriveDeliveryActionHistoriesFromEvents,
   deriveAuthoritativeDeliveryHeadSha,
   encodeDeliveryPullRequestReadyReceiptJson,
+  GitHubPullRequestUrlPublicSchema,
+  GitHubRepositoryPublicSchema,
   parseDeliveryPublication,
+  RunIdSchema,
   snapshotFromReplay,
   type DeliveryMarkReadyForReviewActionRequest,
   type DeliveryPullRequestReadyReceipt,
@@ -19,6 +27,7 @@ import { Cause, Effect, Option, Schema } from "effect";
 
 import {
   DeliveryReadyForReviewConclusivelyRejected,
+  DeliveryReadyForReviewProviderInputSchema,
   invokeGitHubReadyForReview,
   type DeliveryReadyForReviewProviderInput,
 } from "./delivery-merge-provider.js";
@@ -32,51 +41,86 @@ import {
   makeRunPaths,
   type RunPaths,
   type RunStorageOptions,
+  RuntimePathTextSchema,
 } from "./paths.js";
 import { withRunStoreLock } from "./run-store-lock.js";
 
-export type FreshReadyForReviewState = {
-  readonly branchName: string;
-  readonly draft: boolean;
-  readonly headSha: string;
-  readonly mergeCommitSha?: string;
-  readonly mergedAt?: string;
-  readonly prNumber: number;
-  readonly prUrl: string;
-  readonly repository: string;
-  readonly state: "closed" | "merged" | "open";
-};
+export class FreshReadyForReviewState extends Schema.Class<FreshReadyForReviewState>(
+  "FreshReadyForReviewState"
+)({
+  branchName: DeliveryBranchNamePublicSchema,
+  draft: Schema.Boolean,
+  headSha: DeliveryGitShaPublicSchema,
+  mergeCommitSha: Schema.optionalKey(DeliveryGitShaPublicSchema),
+  mergedAt: Schema.optionalKey(DeliveryTimestampPublicSchema),
+  prNumber: Schema.Int,
+  prUrl: GitHubPullRequestUrlPublicSchema,
+  repository: GitHubRepositoryPublicSchema,
+  state: Schema.Literals(["closed", "merged", "open"] as const),
+}) {}
 
-export type DeliveryReadyForReviewCoordinatorOptions = RunStorageOptions & {
-  readonly commandRunner?: GitHubCommandRunner;
-  readonly freshStateReader?: (input: {
-    readonly prNumber: number;
-    readonly repository: string;
-  }) => Effect.Effect<FreshReadyForReviewState, unknown>;
-  readonly readyForReviewProvider?: (
-    input: DeliveryReadyForReviewProviderInput
-  ) => Effect.Effect<void, unknown>;
-};
-
-const GitHubReadyView = Schema.Struct({
-  headRefName: Schema.NonEmptyString,
-  headRefOid: Schema.String.pipe(
-    Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))
-  ),
-  isDraft: Schema.Boolean,
-  mergeCommit: Schema.NullOr(
-    Schema.Struct({ oid: Schema.optional(Schema.String) })
-  ),
-  mergedAt: Schema.NullOr(Schema.String),
-  state: Schema.String,
-  url: Schema.String,
+const FreshReadyForReviewTargetSchema = Schema.Struct({
+  prNumber: Schema.Int,
+  repository: GitHubRepositoryPublicSchema,
 });
 
-export function makeGitHubFreshReadyForReviewStateReader(input: {
-  readonly commandRunner?: GitHubCommandRunner;
-  readonly rootDirectory: string;
-}) {
-  return (target: { readonly prNumber: number; readonly repository: string }) =>
+type FreshReadyForReviewTarget = typeof FreshReadyForReviewTargetSchema.Type;
+
+type FreshReadyForReviewStateReader = (
+  input: FreshReadyForReviewTarget
+) => Effect.Effect<FreshReadyForReviewState, unknown>;
+
+const FreshReadyForReviewStateReaderSchema =
+  Schema.declare<FreshReadyForReviewStateReader>(
+    (input): input is FreshReadyForReviewStateReader =>
+      typeof input === "function"
+  );
+
+type ReadyForReviewProvider = (
+  input: DeliveryReadyForReviewProviderInput
+) => Effect.Effect<void, unknown>;
+
+const ReadyForReviewProviderSchema = Schema.declare<ReadyForReviewProvider>(
+  (input): input is ReadyForReviewProvider => typeof input === "function"
+);
+
+const GitHubCommandRunnerSchema = Schema.declare<GitHubCommandRunner>(
+  (input): input is GitHubCommandRunner => typeof input === "function"
+);
+
+const DeliveryReadyForReviewCoordinatorOptionFieldsSchema = Schema.Struct({
+  commandRunner: Schema.optionalKey(GitHubCommandRunnerSchema),
+  freshStateReader: Schema.optionalKey(FreshReadyForReviewStateReaderSchema),
+  readyForReviewProvider: Schema.optionalKey(ReadyForReviewProviderSchema),
+});
+
+type DeliveryReadyForReviewCoordinatorOptionFields =
+  typeof DeliveryReadyForReviewCoordinatorOptionFieldsSchema.Type;
+
+export type DeliveryReadyForReviewCoordinatorOptions = RunStorageOptions &
+  DeliveryReadyForReviewCoordinatorOptionFields;
+
+const GitHubReadyView = Schema.Struct({
+  headRefName: DeliveryBranchNamePublicSchema,
+  headRefOid: DeliveryGitShaPublicSchema,
+  isDraft: Schema.Boolean,
+  mergeCommit: Schema.NullOr(
+    Schema.Struct({ oid: Schema.optionalKey(DeliveryGitShaPublicSchema) })
+  ),
+  mergedAt: Schema.NullOr(DeliveryTimestampPublicSchema),
+  state: Schema.Literals(["CLOSED", "MERGED", "OPEN"] as const),
+  url: GitHubPullRequestUrlPublicSchema,
+});
+
+const GitHubFreshReadyForReviewStateReaderInputSchema = Schema.Struct({
+  commandRunner: Schema.optionalKey(GitHubCommandRunnerSchema),
+  rootDirectory: RuntimePathTextSchema,
+});
+
+export function makeGitHubFreshReadyForReviewStateReader(
+  input: typeof GitHubFreshReadyForReviewStateReaderInputSchema.Type
+) {
+  return (target: FreshReadyForReviewTarget) =>
     Effect.gen(function* () {
       const commandRunner = input.commandRunner ?? nodeGitHubCommandRunner;
       const result = yield* commandRunner({
@@ -100,7 +144,7 @@ export function makeGitHubFreshReadyForReviewStateReader(input: {
           Schema.decodeUnknownSync(GitHubReadyView)(JSON.parse(result.stdout)),
         catch: () => readyReadError(),
       });
-      return {
+      return FreshReadyForReviewState.make({
         branchName: detail.headRefName,
         draft: detail.isDraft,
         headSha: detail.headRefOid,
@@ -113,13 +157,36 @@ export function makeGitHubFreshReadyForReviewStateReader(input: {
         repository: target.repository,
         state:
           detail.state === "OPEN"
-            ? ("open" as const)
+            ? "open"
             : detail.state === "MERGED"
-              ? ("merged" as const)
-              : ("closed" as const),
-      } satisfies FreshReadyForReviewState;
+              ? "merged"
+              : "closed",
+      });
     });
 }
+
+const ReadyAuthorityInputSchema = Schema.Struct({
+  branchName: DeliveryBranchNamePublicSchema,
+  expectedHeadSha: DeliveryGitShaPublicSchema,
+  prNumber: Schema.Int,
+  prUrl: GitHubPullRequestUrlPublicSchema,
+  publicationOperationId: DeliveryOperationIdPublicSchema,
+  publicationPayloadDigest: DeliverySha256DigestPublicSchema,
+  repository: GitHubRepositoryPublicSchema,
+  runId: RunIdSchema,
+});
+
+const ExactReadyStateBindingSchema = Schema.Struct({
+  branchName: DeliveryBranchNamePublicSchema,
+  expectedHeadSha: DeliveryGitShaPublicSchema,
+  prNumber: Schema.Int,
+  prUrl: GitHubPullRequestUrlPublicSchema,
+  repository: GitHubRepositoryPublicSchema,
+});
+
+const ReadyPayloadDigestBindingSchema = Schema.Struct({
+  payloadDigest: DeliverySha256DigestPublicSchema,
+});
 
 export function coordinateDeliveryPullRequestReady(
   runId: RunId,
@@ -326,16 +393,7 @@ export function coordinateDeliveryPullRequestReady(
 
 export function requireExactReadyForReviewConfirmation(
   events: Parameters<typeof deriveDeliveryActionHistoriesFromEvents>[0],
-  input: {
-    readonly branchName: string;
-    readonly expectedHeadSha: string;
-    readonly prNumber: number;
-    readonly prUrl: string;
-    readonly publicationOperationId: string;
-    readonly publicationPayloadDigest: string;
-    readonly repository: string;
-    readonly runId: string;
-  }
+  input: typeof ReadyAuthorityInputSchema.Type
 ) {
   const histories = validateReadyHistories(events, input);
   const currentActive =
@@ -438,13 +496,7 @@ function readyUnknown(binding: Omit<DeliveryPullRequestReadyReceipt, "state">) {
 
 function isExactReadyState(
   fresh: FreshReadyForReviewState,
-  binding: {
-    readonly branchName: string;
-    readonly expectedHeadSha: string;
-    readonly prNumber: number;
-    readonly prUrl: string;
-    readonly repository: string;
-  }
+  binding: typeof ExactReadyStateBindingSchema.Type
 ) {
   return (
     fresh.repository === binding.repository &&
@@ -466,26 +518,8 @@ function isConfirmed(receipt: DeliveryPullRequestReadyReceipt) {
 }
 
 function sameReadyTarget(
-  left: {
-    readonly branchName: string;
-    readonly expectedHeadSha: string;
-    readonly prNumber: number;
-    readonly prUrl: string;
-    readonly publicationOperationId: string;
-    readonly publicationPayloadDigest: string;
-    readonly repository: string;
-    readonly runId: string;
-  },
-  right: {
-    readonly branchName: string;
-    readonly expectedHeadSha: string;
-    readonly prNumber: number;
-    readonly prUrl: string;
-    readonly publicationOperationId: string;
-    readonly publicationPayloadDigest: string;
-    readonly repository: string;
-    readonly runId: string;
-  }
+  left: typeof ReadyAuthorityInputSchema.Type,
+  right: typeof ReadyAuthorityInputSchema.Type
 ) {
   return (
     left.branchName === right.branchName &&
@@ -501,9 +535,7 @@ function sameReadyTarget(
 
 function assertSameReadyBinding(
   previous: DeliveryPullRequestReadyReceipt,
-  binding: {
-    readonly payloadDigest: string;
-  }
+  binding: typeof ReadyPayloadDigestBindingSchema.Type
 ) {
   if (previous.payloadDigest !== binding.payloadDigest) {
     throw makeRuntimeError({
@@ -515,10 +547,12 @@ function assertSameReadyBinding(
   }
 }
 
-function repositoryFromPrUrl(url: string) {
+function repositoryFromPrUrl(
+  url: typeof GitHubPullRequestUrlPublicSchema.Type
+) {
   const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(url);
   if (match?.[1] === undefined) throw new Error("Invalid owned PR URL.");
-  return match[1];
+  return Schema.decodeUnknownSync(GitHubRepositoryPublicSchema)(match[1]);
 }
 
 function conflict(message: string) {

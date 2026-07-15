@@ -2,10 +2,13 @@ import { createHash } from "node:crypto";
 import nodePath from "node:path";
 
 import {
+  DeliveryBranchNamePublicSchema,
   DeliveryFeedbackTrustPolicyV1,
   deliveryFeedbackRequiresApprovedReview,
   DeliveryRemediationActivationActionRequest,
   DeliveryBlocker,
+  DeliveryGitShaPublicSchema,
+  DeliveryOperationIdPublicSchema,
   DeliveryPullRequestObservation,
   DeliveryRemediationCommitAttempted,
   DeliveryRemediationConfirmed,
@@ -14,8 +17,13 @@ import {
   DeliveryRemediationIntent,
   DeliveryRemediationOutcomeUnknown,
   DeliveryRemediationPushAttempted,
+  DeliveryRemediationSchema,
   DeliveryRemediationTurnCompleted,
   DeliveryRemediationVerified,
+  DeliveryRemoteNamePublicSchema,
+  DeliverySha256DigestPublicSchema,
+  DeliverySourcePathPublicSchema,
+  DeliveryTimestampPublicSchema,
   DeliveryTrustedCheckV1,
   deriveDeliveryActionHistoriesFromEvents,
   HarnessEventSchema,
@@ -33,6 +41,9 @@ import {
   parseHarnessSessionId,
   parseMarkdownSpec,
   parseWorkspaceRelativePath,
+  GitHubPullRequestUrlPublicSchema,
+  GitHubRepositoryPublicSchema,
+  RunIdSchema,
   snapshotFromReplay,
   type DeliveryRemediation,
   type HarnessEvent,
@@ -81,8 +92,10 @@ import { refreshInteractiveHarnessResult } from "./interactive-harness.js";
 import {
   makeRunPaths,
   runRelative,
+  RunPathsSchema,
   type RunPaths,
   type RunStorageOptions,
+  RuntimePathTextSchema,
 } from "./paths.js";
 import type { WorkflowOptions } from "./workflows.js";
 import { reverifyRemediatedRun } from "./workflows.js";
@@ -102,30 +115,194 @@ const remediationConfirmationAttempts = 3;
 
 export type DeliveryPullRequestReader = typeof readGitHubPullRequest;
 
-export type DeliveryRemediationCoordinatorOptions = RunStorageOptions & {
-  readonly activationRequest?: DeliveryRemediationActivationActionRequest;
-  readonly activationStore?: DeliveryRemediationActivationStore;
-  readonly authorization?: DeliveryFeedbackSmokeAuthorization;
-  readonly commandRunner?: GitHubCommandRunner;
-  readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
-  readonly harnessProviderRegistry?: HarnessProviderRegistry;
-  readonly now?: () => Date;
-  readonly pullRequestReader?: DeliveryPullRequestReader;
-  readonly refreshWorkerResult?: (
-    input: Parameters<typeof refreshInteractiveHarnessResult>[0]
-  ) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | EffectPath.Path>;
-  readonly reverify?: (
-    input: Parameters<typeof reverifyRemediatedRun>[0]
-  ) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | EffectPath.Path>;
-  readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
-  readonly trustPolicy?: DeliveryFeedbackTrustPolicyV1;
-  readonly verificationOptions?: WorkflowOptions;
-};
+const GitHubCommandRunnerSchema = Schema.declare<GitHubCommandRunner>(
+  (input): input is GitHubCommandRunner => typeof input === "function"
+);
+const GitDeliveryCommandRunnerSchema = Schema.declare<GitDeliveryCommandRunner>(
+  (input): input is GitDeliveryCommandRunner => typeof input === "function"
+);
+const HarnessProviderRegistrySchema = Schema.declare<HarnessProviderRegistry>(
+  (input): input is HarnessProviderRegistry =>
+    typeof input === "object" && input !== null
+);
+const LiveHarnessSessionCoordinatorSchema =
+  Schema.declare<LiveHarnessSessionCoordinator>(
+    (input): input is LiveHarnessSessionCoordinator =>
+      typeof input === "object" && input !== null
+  );
+const DeliveryPullRequestReaderSchema =
+  Schema.declare<DeliveryPullRequestReader>(
+    (input): input is DeliveryPullRequestReader => typeof input === "function"
+  );
+const NowSchema = Schema.declare<() => Date>(
+  (input): input is () => Date => typeof input === "function"
+);
+type RefreshWorkerResult = (
+  input: Parameters<typeof refreshInteractiveHarnessResult>[0]
+) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | EffectPath.Path>;
+type ReverifyRemediatedRun = (
+  input: Parameters<typeof reverifyRemediatedRun>[0]
+) => Effect.Effect<unknown, unknown, FileSystem.FileSystem | EffectPath.Path>;
+const RefreshWorkerResultSchema = Schema.declare<RefreshWorkerResult>(
+  (input): input is RefreshWorkerResult => typeof input === "function"
+);
+const ReverifyRemediatedRunSchema = Schema.declare<ReverifyRemediatedRun>(
+  (input): input is ReverifyRemediatedRun => typeof input === "function"
+);
+const WorkflowOptionsSchema = Schema.declare<WorkflowOptions>(
+  (input): input is WorkflowOptions =>
+    typeof input === "object" && input !== null
+);
 
-export type DeliveryRemediationCoordinatorResult = {
-  readonly observation: DeliveryPullRequestObservation;
-  readonly remediation?: DeliveryRemediation;
-};
+const DeliveryRemediationCoordinatorOptionFieldsSchema = Schema.Struct({
+  activationRequest: Schema.optionalKey(
+    DeliveryRemediationActivationActionRequest
+  ),
+  activationStore: Schema.optionalKey(
+    Schema.declare<DeliveryRemediationActivationStore>(
+      (input): input is DeliveryRemediationActivationStore =>
+        typeof input === "object" && input !== null
+    )
+  ),
+  authorization: Schema.optionalKey(DeliveryFeedbackSmokeAuthorization),
+  commandRunner: Schema.optionalKey(GitHubCommandRunnerSchema),
+  deliveryGitCommandRunner: Schema.optionalKey(GitDeliveryCommandRunnerSchema),
+  harnessProviderRegistry: Schema.optionalKey(HarnessProviderRegistrySchema),
+  now: Schema.optionalKey(NowSchema),
+  pullRequestReader: Schema.optionalKey(DeliveryPullRequestReaderSchema),
+  refreshWorkerResult: Schema.optionalKey(RefreshWorkerResultSchema),
+  reverify: Schema.optionalKey(ReverifyRemediatedRunSchema),
+  sessionCoordinator: Schema.optionalKey(LiveHarnessSessionCoordinatorSchema),
+  trustPolicy: Schema.optionalKey(DeliveryFeedbackTrustPolicyV1),
+  verificationOptions: Schema.optionalKey(WorkflowOptionsSchema),
+});
+
+export type DeliveryRemediationCoordinatorOptions = RunStorageOptions &
+  typeof DeliveryRemediationCoordinatorOptionFieldsSchema.Type;
+
+export const DeliveryRemediationCoordinatorResultSchema = Schema.Struct({
+  observation: DeliveryPullRequestObservation,
+  remediation: Schema.optionalKey(DeliveryRemediationSchema),
+});
+
+export type DeliveryRemediationCoordinatorResult =
+  typeof DeliveryRemediationCoordinatorResultSchema.Type;
+
+const RemediationCommandNameSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^git$/u))
+);
+type RemediationCommandName = typeof RemediationCommandNameSchema.Type;
+const RemediationCommandEnvironmentSchema = Schema.Record(
+  Schema.String,
+  Schema.String
+);
+const RemediationGitOutputSchema = Schema.String;
+type RemediationGitOutput = typeof RemediationGitOutputSchema.Type;
+const RemediationStableHashInputSchema = Schema.String;
+const RemediationDateSchema = Schema.declare<Date>(
+  (input): input is Date => input instanceof Date
+);
+const RemediationInputsSchema = Schema.declare<
+  GitHubPullRequestRead["remediationInputs"]
+>((input): input is GitHubPullRequestRead["remediationInputs"] =>
+  Array.isArray(input)
+);
+const DeliveryRemediationCoordinatorOptionsSchema =
+  Schema.declare<DeliveryRemediationCoordinatorOptions>(
+    (input): input is DeliveryRemediationCoordinatorOptions =>
+      typeof input === "object" && input !== null
+  );
+const RemediationFeedbackIdsSchema = Schema.declare<
+  DeliveryRemediationIntent["feedbackIds"]
+>((input): input is DeliveryRemediationIntent["feedbackIds"] =>
+  Array.isArray(input)
+);
+const RemediationFailureInputSchema = Schema.Struct({
+  code: Schema.String,
+  message: Schema.String,
+  recoverable: Schema.Boolean,
+});
+type RemediationConfirmationRead = () => ReturnType<DeliveryPullRequestReader>;
+const RemediationConfirmationReadSchema =
+  Schema.declare<RemediationConfirmationRead>(
+    (input): input is RemediationConfirmationRead => typeof input === "function"
+  );
+const RemediationPushConfirmationInputSchema = Schema.Struct({
+  oldHead: DeliveryGitShaPublicSchema,
+  read: RemediationConfirmationReadSchema,
+});
+const RunRemediationTurnInputSchema = Schema.Struct({
+  actionableInputs: RemediationInputsSchema,
+  events: Schema.Array(RunEvent),
+  firstEvent: Schema.UndefinedOr(RunEvent),
+  intentSequence: Schema.Int,
+  options: DeliveryRemediationCoordinatorOptionsSchema,
+  paths: RunPathsSchema,
+  prompt: Schema.UndefinedOr(Schema.String),
+  remediation: Schema.Union([
+    DeliveryRemediationIntent,
+    DeliveryRemediationDispatchAttempted,
+  ]),
+  runId: RunIdSchema,
+});
+const EnsureRemediationCommitInputSchema = Schema.Struct({
+  commandRunner: GitHubCommandRunnerSchema,
+  deliveryGitCommandRunner: Schema.optionalKey(GitDeliveryCommandRunnerSchema),
+  paths: RunPathsSchema,
+  publicationBranch: DeliveryBranchNamePublicSchema,
+  remediation: DeliveryRemediationVerified,
+  rootDirectory: RuntimePathTextSchema,
+});
+const RemediationPushCommitInputSchema = Schema.Struct({
+  branchName: DeliveryBranchNamePublicSchema,
+  commandRunner: GitHubCommandRunnerSchema,
+  newHead: DeliveryGitShaPublicSchema,
+  oldHead: DeliveryGitShaPublicSchema,
+  paths: RunPathsSchema,
+  remote: DeliveryRemoteNamePublicSchema,
+});
+const RemediationRemoteHeadInputSchema = Schema.Struct({
+  branchName: DeliveryBranchNamePublicSchema,
+  commandRunner: GitHubCommandRunnerSchema,
+  paths: RunPathsSchema,
+  remote: DeliveryRemoteNamePublicSchema,
+});
+const RemediationActivationReservationSchema = Schema.Struct({
+  activationStore: Schema.declare<DeliveryRemediationActivationStore>(
+    (input): input is DeliveryRemediationActivationStore =>
+      typeof input === "object" && input !== null
+  ),
+  expectedPredecessorDigest: DeliverySha256DigestPublicSchema,
+  prompt: Schema.String,
+  request: DeliveryRemediationActivationActionRequest,
+  trustPolicyDigest: DeliverySha256DigestPublicSchema,
+});
+const ReserveRemediationIntentInputSchema = Schema.Struct({
+  activation: Schema.optionalKey(RemediationActivationReservationSchema),
+  authorization: Schema.optionalKey(DeliveryFeedbackSmokeAuthorization),
+  commitTimestamp: DeliveryTimestampPublicSchema,
+  expectedHeadSha: DeliveryGitShaPublicSchema,
+  feedbackDigest: DeliverySha256DigestPublicSchema,
+  feedbackIds: RemediationFeedbackIdsSchema,
+  paths: RunPathsSchema,
+  predecessor: Schema.UndefinedOr(DeliveryRemediationSchema),
+  runId: RunIdSchema,
+});
+const ExpectedHeadChangedReadInputSchema = Schema.Struct({
+  draft: Schema.Boolean,
+  expectedHead: DeliveryGitShaPublicSchema,
+  now: RemediationDateSchema,
+  prNumber: Schema.Int,
+  prUrl: GitHubPullRequestUrlPublicSchema,
+  repository: GitHubRepositoryPublicSchema,
+});
+const ProviderUnavailableReadInputSchema = Schema.Struct({
+  headSha: DeliveryGitShaPublicSchema,
+  now: RemediationDateSchema,
+  prNumber: Schema.Int,
+  prUrl: GitHubPullRequestUrlPublicSchema,
+  repository: GitHubRepositoryPublicSchema,
+});
 
 /** Observe one PR and safely advance at most one bounded remediation attempt. */
 export function continueDeliveryRemediation(
@@ -821,10 +998,9 @@ export function continueDeliveryRemediation(
   );
 }
 
-function readRemediationPushConfirmation(input: {
-  readonly oldHead: string;
-  readonly read: () => ReturnType<DeliveryPullRequestReader>;
-}) {
+function readRemediationPushConfirmation(
+  input: typeof RemediationPushConfirmationInputSchema.Type
+) {
   return Effect.gen(function* () {
     let attempt = 0;
     while (true) {
@@ -840,19 +1016,7 @@ function readRemediationPushConfirmation(input: {
   });
 }
 
-function runRemediationTurn(input: {
-  readonly actionableInputs: GitHubPullRequestRead["remediationInputs"];
-  readonly events: ReadonlyArray<RunEvent>;
-  readonly firstEvent: RunEvent | undefined;
-  readonly intentSequence: number;
-  readonly options: DeliveryRemediationCoordinatorOptions;
-  readonly paths: RunPaths;
-  readonly prompt: string | undefined;
-  readonly remediation:
-    | DeliveryRemediationIntent
-    | DeliveryRemediationDispatchAttempted;
-  readonly runId: RunId;
-}) {
+function runRemediationTurn(input: typeof RunRemediationTurnInputSchema.Type) {
   return Effect.scoped(
     Effect.gen(function* () {
       const coordinator = input.options.sessionCoordinator;
@@ -1117,14 +1281,9 @@ function remediationPrompt(inputs: GitHubPullRequestRead["remediationInputs"]) {
   return prompt.trim();
 }
 
-function ensureRemediationCommit(input: {
-  readonly commandRunner: GitHubCommandRunner;
-  readonly deliveryGitCommandRunner?: GitDeliveryCommandRunner;
-  readonly paths: RunPaths;
-  readonly publicationBranch: string;
-  readonly remediation: DeliveryRemediationVerified;
-  readonly rootDirectory: string;
-}) {
+function ensureRemediationCommit(
+  input: typeof EnsureRemediationCommitInputSchema.Type
+) {
   return Effect.gen(function* () {
     const delivery = deliveryProjection(yield* readEvents(input.paths));
     const provenance = {
@@ -1241,7 +1400,7 @@ function verifyRemediationCommit(
   runner: GitHubCommandRunner,
   paths: RunPaths,
   remediation: DeliveryRemediationVerified,
-  commitSha: string
+  commitSha: typeof DeliveryGitShaPublicSchema.Type
 ) {
   return Effect.gen(function* () {
     const fields = (yield* runRequired(runner, paths.workspace, "git", [
@@ -1303,14 +1462,9 @@ function verifyRemediationCommit(
   });
 }
 
-function pushRemediationCommit(input: {
-  readonly branchName: string;
-  readonly commandRunner: GitHubCommandRunner;
-  readonly newHead: string;
-  readonly oldHead: string;
-  readonly paths: RunPaths;
-  readonly remote: string;
-}) {
+function pushRemediationCommit(
+  input: typeof RemediationPushCommitInputSchema.Type
+) {
   return Effect.gen(function* () {
     let remoteHead = yield* readRemoteHead(input);
     if (remoteHead === input.newHead) return remoteHead;
@@ -1334,12 +1488,7 @@ function pushRemediationCommit(input: {
   });
 }
 
-function readRemoteHead(input: {
-  readonly branchName: string;
-  readonly commandRunner: GitHubCommandRunner;
-  readonly paths: RunPaths;
-  readonly remote: string;
-}) {
+function readRemoteHead(input: typeof RemediationRemoteHeadInputSchema.Type) {
   return Effect.gen(function* () {
     const result = yield* input.commandRunner({
       args: [
@@ -1379,7 +1528,7 @@ function readRemoteHead(input: {
 function changedSourcePaths(
   runner: GitHubCommandRunner,
   paths: RunPaths,
-  oldHead: string
+  oldHead: typeof DeliveryGitShaPublicSchema.Type
 ) {
   return Effect.gen(function* () {
     const tracked = parseNulPaths(
@@ -1405,7 +1554,7 @@ function changedSourcePaths(
   });
 }
 
-function parseNulPaths(stdout: string) {
+function parseNulPaths(stdout: RemediationGitOutput) {
   return stdout
     .split("\0")
     .filter((path) => path !== "")
@@ -1430,16 +1579,16 @@ function parseNulPaths(stdout: string) {
     .sort();
 }
 
-function isExcludedPath(path: string) {
+function isExcludedPath(path: typeof DeliverySourcePathPublicSchema.Type) {
   return path.split("/").some((segment) => generatedRoots.has(segment));
 }
 
 function runRequired(
   runner: GitHubCommandRunner,
-  cwd: string,
-  command: string,
+  cwd: typeof RuntimePathTextSchema.Type,
+  command: RemediationCommandName,
   args: ReadonlyArray<string>,
-  env?: Readonly<Record<string, string>>
+  env?: typeof RemediationCommandEnvironmentSchema.Type
 ) {
   return runner({
     args,
@@ -1543,23 +1692,9 @@ function recordObservation(
   });
 }
 
-function reserveRemediationIntent(input: {
-  readonly activation?: {
-    readonly activationStore: DeliveryRemediationActivationStore;
-    readonly expectedPredecessorDigest: string;
-    readonly prompt: string;
-    readonly request: DeliveryRemediationActivationActionRequest;
-    readonly trustPolicyDigest: string;
-  };
-  readonly authorization?: DeliveryFeedbackSmokeAuthorization;
-  readonly commitTimestamp: string;
-  readonly expectedHeadSha: string;
-  readonly feedbackDigest: string;
-  readonly feedbackIds: DeliveryRemediationIntent["feedbackIds"];
-  readonly paths: RunPaths;
-  readonly predecessor: DeliveryRemediation | undefined;
-  readonly runId: RunId;
-}) {
+function reserveRemediationIntent(
+  input: typeof ReserveRemediationIntentInputSchema.Type
+) {
   return withRunEventSerialization(
     input.paths,
     Effect.gen(function* () {
@@ -1650,11 +1785,7 @@ function recordFailed(
   runId: RunId,
   paths: RunPaths,
   remediation: DeliveryRemediation,
-  failure: {
-    readonly code: string;
-    readonly message: string;
-    readonly recoverable: boolean;
-  }
+  failure: typeof RemediationFailureInputSchema.Type
 ) {
   return appendRemediation(
     runId,
@@ -1671,11 +1802,7 @@ function recordOutcomeUnknown(
   runId: RunId,
   paths: RunPaths,
   remediation: DeliveryRemediation,
-  failure: {
-    readonly code: string;
-    readonly message: string;
-    readonly recoverable: boolean;
-  }
+  failure: typeof RemediationFailureInputSchema.Type
 ) {
   return appendRemediation(
     runId,
@@ -1769,7 +1896,7 @@ function availableFeedbackAuthorization(
 
 function authorizationDigestConsumed(
   events: ReadonlyArray<RunEvent>,
-  authorizationDigest: string
+  authorizationDigest: typeof DeliverySha256DigestPublicSchema.Type
 ) {
   return events.some((event) => {
     if (event.type !== "DELIVERY_REMEDIATION_RECORDED") return false;
@@ -1796,7 +1923,7 @@ function sameReservationPredecessor(
 
 function remediationIntentSequence(
   events: ReadonlyArray<RunEvent>,
-  operationId: string
+  operationId: typeof DeliveryOperationIdPublicSchema.Type
 ) {
   return events.findLast(
     (event) =>
@@ -1876,7 +2003,10 @@ function provenanceField(
   return value;
 }
 
-function pullRequestTarget(url: string, expectedNumber: number) {
+function pullRequestTarget(
+  url: typeof GitHubPullRequestUrlPublicSchema.Type,
+  expectedNumber: number
+) {
   const match =
     /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/([1-9]\d*)$/u.exec(url);
   const number = Number(match?.[3]);
@@ -1891,10 +2021,17 @@ function pullRequestTarget(url: string, expectedNumber: number) {
       false
     );
   }
-  return { prNumber: number, repository: `${match[1]}/${match[2]}` };
+  return {
+    prNumber: number,
+    repository: Schema.decodeUnknownSync(GitHubRepositoryPublicSchema)(
+      `${match[1]}/${match[2]}`
+    ),
+  };
 }
 
-export function defaultDeliveryFeedbackTrustPolicy(repository: string) {
+export function defaultDeliveryFeedbackTrustPolicy(
+  repository: typeof GitHubRepositoryPublicSchema.Type
+) {
   return DeliveryFeedbackTrustPolicyV1.make({
     allowPullRequestAuthor: false,
     trustedChecks: [
@@ -1953,14 +2090,9 @@ function canonicalTrustPolicy(policy: DeliveryFeedbackTrustPolicyV1) {
   });
 }
 
-function expectedHeadChangedRead(input: {
-  readonly draft: boolean;
-  readonly expectedHead: string;
-  readonly now: Date;
-  readonly prNumber: number;
-  readonly prUrl: string;
-  readonly repository: string;
-}): GitHubPullRequestRead {
+function expectedHeadChangedRead(
+  input: typeof ExpectedHeadChangedReadInputSchema.Type
+): GitHubPullRequestRead {
   const blocker = DeliveryBlocker.make({
     feedbackIds: [],
     kind: "expectedHeadChanged",
@@ -1991,13 +2123,9 @@ function expectedHeadChangedRead(input: {
   };
 }
 
-function providerUnavailableRead(input: {
-  readonly headSha: string;
-  readonly now: Date;
-  readonly prNumber: number;
-  readonly prUrl: string;
-  readonly repository: string;
-}): GitHubPullRequestRead {
+function providerUnavailableRead(
+  input: typeof ProviderUnavailableReadInputSchema.Type
+): GitHubPullRequestRead {
   const blocker = DeliveryBlocker.make({
     feedbackIds: [],
     kind: "providerUnavailable",
@@ -2124,7 +2252,7 @@ function activationMatchesRemediation(
   envelope: DeliveryRemediationActivationEnvelope,
   remediation: DeliveryRemediation,
   runId: RunId,
-  trustPolicyDigest: string
+  trustPolicyDigest: typeof DeliverySha256DigestPublicSchema.Type
 ) {
   return (
     envelope.runId === runId &&
@@ -2181,7 +2309,7 @@ function stableJsonDigest(value: unknown) {
   return stableHash(JSON.stringify(value));
 }
 
-function stableHash(value: string) {
+function stableHash(value: typeof RemediationStableHashInputSchema.Type) {
   return createHash("sha256").update(value).digest("hex");
 }
 

@@ -7,6 +7,7 @@ import {
   LocalRunReadDiagnosticSchema,
   LocalRunReadSummarySchema,
   parseLocalGaiaServerUrl,
+  parseLocalRunTimestamp,
   RunIdSchema,
 } from "@gaia/core";
 import { Schema } from "effect";
@@ -28,7 +29,7 @@ describe("run console model", () => {
       status: "running",
       state: "runningWorker",
       latestEventType: "WORKER_STARTED",
-      updatedAt: "2026-07-07T12:30:00.000Z",
+      updatedAt: parseLocalRunTimestamp("2026-07-07T12:30:00.000Z"),
     });
     const secondRun = localRunSummary({
       artifacts: [],
@@ -36,7 +37,7 @@ describe("run console model", () => {
       status: "completed",
       state: "completed",
       latestEventType: "REPORT_COMPLETED",
-      updatedAt: "2026-07-07T12:35:00.000Z",
+      updatedAt: parseLocalRunTimestamp("2026-07-07T12:35:00.000Z"),
     });
     const state = buildRunConsoleState({
       healthError: undefined,
@@ -305,12 +306,12 @@ function localRunSummary(
 ): typeof LocalRunReadSummarySchema.Type {
   return Schema.decodeUnknownSync(LocalRunReadSummarySchema)({
     artifacts: ["input", "worker-plan"],
-    createdAt: "2026-07-07T12:00:00.000Z",
+    createdAt: parseLocalRunTimestamp("2026-07-07T12:00:00.000Z"),
     eventCount: 4,
     latestEventType: "RUN_CREATED",
     state: "created",
     status: "running",
-    updatedAt: "2026-07-07T12:00:00.000Z",
+    updatedAt: parseLocalRunTimestamp("2026-07-07T12:00:00.000Z"),
     ...input,
   });
 }

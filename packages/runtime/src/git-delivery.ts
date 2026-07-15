@@ -2,6 +2,13 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 
+import {
+  DeliveryBranchNamePublicSchema,
+  DeliveryGitShaPublicSchema,
+  DeliveryOwnedBranchNamePublicSchema,
+  DeliveryRemoteNamePublicSchema,
+  DeliverySha256DigestPublicSchema,
+} from "@gaia/core";
 import { Data, Effect, FileSystem, Schema } from "effect";
 
 import { makeRuntimeError } from "./errors.js";
@@ -10,47 +17,69 @@ import { repositoryCommandEnvironment } from "./repository-command-environment.j
 
 const execFileAsync = promisify(execFile);
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
-const LiteralBranchName = Schema.String.pipe(
-  Schema.check(Schema.isMaxLength(240)),
-  Schema.check(
-    Schema.isPattern(
-      /^(?!-)(?!refs\/)(?!.*(?:\.\.|@\{|\/\/))(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9])$/u
-    )
-  )
+const LiteralBranchName = DeliveryBranchNamePublicSchema;
+const GaiaOwnedBranchName = DeliveryOwnedBranchNamePublicSchema;
+const DeliveryRemoteName = DeliveryRemoteNamePublicSchema;
+const GitDeliveryPathSchema = Schema.String.pipe(
+  Schema.check(Schema.isMinLength(1)),
+  Schema.check(Schema.isMaxLength(4_096))
 );
-const GaiaOwnedBranchName = Schema.String.pipe(
-  Schema.check(Schema.isMaxLength(240)),
-  Schema.check(
-    Schema.isPattern(
-      /^gaia\/(?!-)(?!.*(?:\.\.|@\{|\/\/))(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9_-])$/u
-    )
-  )
+const GitDeliveryCommandArgumentSchema = Schema.String.pipe(
+  Schema.check(Schema.isMaxLength(4_096))
 );
-const DeliveryRemoteName = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u))
+const GitDeliveryCommandOutputSchema = Schema.String;
+const GitDeliveryRemoteIdentitySchema = Schema.String.pipe(
+  Schema.check(Schema.isMinLength(1)),
+  Schema.check(Schema.isMaxLength(2_048))
+);
+const GitDeliveryRunIdSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^run-[A-Za-z0-9_-]{10}$/u))
 );
 
-export type GitDeliveryCommandInput = {
-  readonly args: ReadonlyArray<string>;
-  readonly cwd: string;
-};
+const GitDeliveryCommandInputSchema = Schema.Struct({
+  args: Schema.Array(GitDeliveryCommandArgumentSchema),
+  cwd: GitDeliveryPathSchema,
+});
+export type GitDeliveryCommandInput = Schema.Schema.Type<
+  typeof GitDeliveryCommandInputSchema
+>;
 
-export type GitDeliveryCommandResult = {
-  readonly stderr: string;
-  readonly stdout: string;
-};
+const GitDeliveryCommandResultSchema = Schema.Struct({
+  stderr: GitDeliveryCommandOutputSchema,
+  stdout: GitDeliveryCommandOutputSchema,
+});
+export type GitDeliveryCommandResult = Schema.Schema.Type<
+  typeof GitDeliveryCommandResultSchema
+>;
 
 export type GitDeliveryCommandRunner = (
   input: GitDeliveryCommandInput
 ) => Effect.Effect<GitDeliveryCommandResult, unknown>;
 
-export type DeliveryProvenance = {
-  readonly baseBranch: string;
-  readonly baseRevision: string;
-  readonly headBranch: string;
-  readonly mode: "pullRequest";
-  readonly remote: string;
-};
+const GitDeliveryCommandRunnerSchema = Schema.declare<GitDeliveryCommandRunner>(
+  (input): input is GitDeliveryCommandRunner => typeof input === "function"
+);
+const RunPathsSchema = Schema.declare<RunPaths>(
+  (input): input is RunPaths => typeof input === "object" && input !== null
+);
+
+export const DeliveryProvenanceSchema = Schema.Struct({
+  baseBranch: LiteralBranchName,
+  baseRevision: DeliveryGitShaPublicSchema,
+  headBranch: GaiaOwnedBranchName,
+  mode: Schema.Literal("pullRequest"),
+  remote: DeliveryRemoteName,
+}).pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (provenance) => provenance.baseBranch !== provenance.headBranch
+    )
+  )
+);
+
+export type DeliveryProvenance = Schema.Schema.Type<
+  typeof DeliveryProvenanceSchema
+>;
 
 export class DeliveryAcceptanceProvenancePolicyV1 extends Schema.Class<DeliveryAcceptanceProvenancePolicyV1>(
   "DeliveryAcceptanceProvenancePolicyV1"
@@ -68,35 +97,19 @@ export const parseDeliveryAcceptanceProvenancePolicy = Schema.decodeUnknownSync(
   DeliveryAcceptanceProvenancePolicyV1
 );
 
-export const DeliveryProvenanceSchema = Schema.Struct({
-  baseBranch: LiteralBranchName,
-  baseRevision: Schema.String.pipe(
-    Schema.check(Schema.isPattern(/^[a-f0-9]{40}$/u))
-  ),
-  headBranch: GaiaOwnedBranchName,
-  mode: Schema.Literal("pullRequest"),
-  remote: DeliveryRemoteName,
-}).pipe(
-  Schema.check(
-    Schema.makeFilter(
-      (provenance) => provenance.baseBranch !== provenance.headBranch
-    )
-  )
-);
-
 export const parseDeliveryProvenance = Schema.decodeUnknownOption(
   DeliveryProvenanceSchema
 );
 
 const DeliveryOwnershipManifest = Schema.Struct({
-  baseRevision: Schema.NonEmptyString,
-  repositoryCommonDir: Schema.NonEmptyString,
+  baseRevision: DeliveryGitShaPublicSchema,
+  repositoryCommonDir: GitDeliveryPathSchema,
   remoteIdentity: Schema.NonEmptyString,
-  repositoryRoot: Schema.NonEmptyString,
-  token: Schema.NonEmptyString,
+  repositoryRoot: GitDeliveryPathSchema,
+  token: DeliverySha256DigestPublicSchema,
   version: Schema.Literal(1),
-  workspaceCommonDir: Schema.NonEmptyString,
-  workspaceRoot: Schema.NonEmptyString,
+  workspaceCommonDir: GitDeliveryPathSchema,
+  workspaceRoot: GitDeliveryPathSchema,
 });
 
 const parseDeliveryOwnershipManifest = Schema.decodeUnknownSync(
@@ -112,30 +125,61 @@ const generatedRoots = new Set([
   "node_modules",
 ]);
 
-export type TrackedDeliveryPayloadFingerprint = {
-  readonly trackedPayloadDigest: string;
-  readonly trackedPayloadEntryCount: number;
-};
+const TrackedDeliveryPayloadFingerprintSchema = Schema.Struct({
+  trackedPayloadDigest: DeliverySha256DigestPublicSchema,
+  trackedPayloadEntryCount: Schema.Int.pipe(
+    Schema.check(Schema.isGreaterThanOrEqualTo(0))
+  ),
+});
+export type TrackedDeliveryPayloadFingerprint = Schema.Schema.Type<
+  typeof TrackedDeliveryPayloadFingerprintSchema
+>;
 
-export type DeliveryOwnedCleanupResult = {
-  readonly branch: "absent" | "present";
-  readonly worktree: "absent" | "present";
-};
+const DeliveryCleanupPresenceSchema = Schema.Literals([
+  "absent",
+  "present",
+] as const);
+const DeliveryOwnedCleanupResultSchema = Schema.Struct({
+  branch: DeliveryCleanupPresenceSchema,
+  worktree: DeliveryCleanupPresenceSchema,
+});
+export type DeliveryOwnedCleanupResult = Schema.Schema.Type<
+  typeof DeliveryOwnedCleanupResultSchema
+>;
+const DeliveryOwnedCleanupPartialFieldsSchema = Schema.Struct({
+  ...DeliveryOwnedCleanupResultSchema.fields,
+  message: Schema.String,
+});
+type DeliveryOwnedCleanupPartialFields = Schema.Schema.Type<
+  typeof DeliveryOwnedCleanupPartialFieldsSchema
+>;
 export class DeliveryOwnedCleanupPartial extends Data.TaggedError(
   "DeliveryOwnedCleanupPartial"
-)<{
-  readonly branch: "absent" | "present";
-  readonly message: string;
-  readonly worktree: "absent" | "present";
-}> {}
+)<DeliveryOwnedCleanupPartialFields> {}
+
+const DeliveryWorkspaceOptionsSchema = Schema.Struct({
+  commandRunner: Schema.optionalKey(GitDeliveryCommandRunnerSchema),
+  rootDirectory: GitDeliveryPathSchema,
+});
+
+export type DeliveryWorkspaceOptions = Schema.Schema.Type<
+  typeof DeliveryWorkspaceOptionsSchema
+>;
+
+const DeliveryOwnedCleanupInputSchema = Schema.Struct({
+  branchName: GaiaOwnedBranchName,
+  expectedBranchOid: DeliveryGitShaPublicSchema,
+  options: DeliveryWorkspaceOptionsSchema,
+  paths: RunPathsSchema,
+});
+type DeliveryOwnedCleanupInput = Schema.Schema.Type<
+  typeof DeliveryOwnedCleanupInputSchema
+>;
 
 /** Remove only freshly re-proven run-owned resources, one resource at a time. */
-export function cleanupOwnedDeliveryResources(input: {
-  readonly branchName: string;
-  readonly expectedBranchOid: string;
-  readonly options: DeliveryWorkspaceOptions;
-  readonly paths: RunPaths;
-}) {
+export function cleanupOwnedDeliveryResources(
+  input: DeliveryOwnedCleanupInput
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const runner = input.options.commandRunner ?? nodeGitDeliveryCommandRunner;
@@ -247,8 +291,10 @@ export function cleanupOwnedDeliveryResources(input: {
 
 function runGitExit(
   runner: GitDeliveryCommandRunner,
-  cwd: string,
-  args: ReadonlyArray<string>
+  cwd: Schema.Schema.Type<typeof GitDeliveryPathSchema>,
+  args: ReadonlyArray<
+    Schema.Schema.Type<typeof GitDeliveryCommandArgumentSchema>
+  >
 ) {
   return Effect.exit(runner({ args, cwd })).pipe(
     Effect.map((exit) => exit._tag === "Success")
@@ -258,11 +304,6 @@ function runGitExit(
 function cleanupFailure(code: string, message: string) {
   return Effect.fail(makeRuntimeError({ code, message, recoverable: true }));
 }
-
-export type DeliveryWorkspaceOptions = {
-  readonly commandRunner?: GitDeliveryCommandRunner;
-  readonly rootDirectory: string;
-};
 
 const defaultRemote = "origin";
 const defaultBaseBranch = "main";
@@ -281,7 +322,7 @@ export const nodeGitDeliveryCommandRunner: GitDeliveryCommandRunner = (input) =>
   });
 
 export function resolveDeliveryProvenance(
-  runId: string,
+  runId: Schema.Schema.Type<typeof GitDeliveryRunIdSchema>,
   options: DeliveryWorkspaceOptions,
   acceptancePolicy?: unknown
 ) {
@@ -356,8 +397,8 @@ export function resolveDeliveryProvenance(
 
 function validateLiteralBranch(
   runner: GitDeliveryCommandRunner,
-  cwd: string,
-  branch: string
+  cwd: Schema.Schema.Type<typeof GitDeliveryPathSchema>,
+  branch: Schema.Schema.Type<typeof LiteralBranchName>
 ) {
   if (
     /\.\.|@\{|[~^:?*\[\\\s\u0000-\u001f\u007f]/u.test(branch) ||
@@ -415,11 +456,16 @@ export function resolveDeliveryGitHubRepository(
   );
 }
 
-export function prepareDeliveryWorktree(input: {
-  readonly options: DeliveryWorkspaceOptions;
-  readonly paths: RunPaths;
-  readonly provenance: DeliveryProvenance;
-}) {
+const DeliveryWorktreeInputSchema = Schema.Struct({
+  options: DeliveryWorkspaceOptionsSchema,
+  paths: RunPathsSchema,
+  provenance: DeliveryProvenanceSchema,
+});
+type DeliveryWorktreeInput = Schema.Schema.Type<
+  typeof DeliveryWorktreeInputSchema
+>;
+
+export function prepareDeliveryWorktree(input: DeliveryWorktreeInput) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const runner = input.options.commandRunner ?? nodeGitDeliveryCommandRunner;
@@ -487,12 +533,19 @@ export function prepareDeliveryWorktree(input: {
 }
 
 /** Verify persisted worktree ownership while allowing only canonical lifecycle heads. */
-export function inspectDeliveryWorktreeOwnership(input: {
-  readonly expectedHeads: ReadonlyArray<string>;
-  readonly options: DeliveryWorkspaceOptions;
-  readonly paths: RunPaths;
-  readonly provenance: DeliveryProvenance;
-}) {
+const DeliveryWorktreeInspectionInputSchema = Schema.Struct({
+  expectedHeads: Schema.Array(DeliveryGitShaPublicSchema),
+  options: DeliveryWorkspaceOptionsSchema,
+  paths: RunPathsSchema,
+  provenance: DeliveryProvenanceSchema,
+});
+type DeliveryWorktreeInspectionInput = Schema.Schema.Type<
+  typeof DeliveryWorktreeInspectionInputSchema
+>;
+
+export function inspectDeliveryWorktreeOwnership(
+  input: DeliveryWorktreeInspectionInput
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const runner = input.options.commandRunner ?? nodeGitDeliveryCommandRunner;
@@ -580,12 +633,9 @@ export function inspectDeliveryWorktreeOwnership(input: {
 }
 
 /** Continuation-grade inspection proves immutable ownership and registration without requiring a clean payload diff. */
-export function inspectContinuableDeliveryWorktreeOwnership(input: {
-  readonly expectedHeads: ReadonlyArray<string>;
-  readonly options: DeliveryWorkspaceOptions;
-  readonly paths: RunPaths;
-  readonly provenance: DeliveryProvenance;
-}) {
+export function inspectContinuableDeliveryWorktreeOwnership(
+  input: DeliveryWorktreeInspectionInput
+) {
   return Effect.gen(function* () {
     yield* inspectDeliveryWorktreeOwnership(input);
     const fs = yield* FileSystem.FileSystem;
@@ -614,12 +664,9 @@ export function inspectContinuableDeliveryWorktreeOwnership(input: {
 }
 
 /** Retained-recovery inspection proves ownership and returns a privacy-safe stable tracked-payload fingerprint. */
-export function inspectRetainedPayloadDeliveryWorktreeOwnership(input: {
-  readonly expectedHeads: ReadonlyArray<string>;
-  readonly options: DeliveryWorkspaceOptions;
-  readonly paths: RunPaths;
-  readonly provenance: DeliveryProvenance;
-}): Effect.Effect<
+export function inspectRetainedPayloadDeliveryWorktreeOwnership(
+  input: DeliveryWorktreeInspectionInput
+): Effect.Effect<
   TrackedDeliveryPayloadFingerprint,
   unknown,
   FileSystem.FileSystem
@@ -687,12 +734,9 @@ export function inspectRetainedPayloadDeliveryWorktreeOwnership(input: {
 }
 
 /** Recovery-grade inspection adds mutable cleanliness and registration checks to immutable ownership. */
-export function inspectRecoverableDeliveryWorktreeOwnership(input: {
-  readonly expectedHeads: ReadonlyArray<string>;
-  readonly options: DeliveryWorkspaceOptions;
-  readonly paths: RunPaths;
-  readonly provenance: DeliveryProvenance;
-}) {
+export function inspectRecoverableDeliveryWorktreeOwnership(
+  input: DeliveryWorktreeInspectionInput
+) {
   return Effect.gen(function* () {
     yield* inspectDeliveryWorktreeOwnership(input);
     const fs = yield* FileSystem.FileSystem;
@@ -741,17 +785,27 @@ function isUntrackedStatus(xy: string) {
   return xy === "??";
 }
 
-function pathHasGeneratedSegment(path: string) {
+function pathHasGeneratedSegment(
+  path: Schema.Schema.Type<typeof GitDeliveryPathSchema>
+) {
   return path.split("/").some((segment) => generatedRoots.has(segment));
 }
 
+const GitPorcelainStatusCodeSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[ MADRCU?!]{2}$/u))
+);
+const GitPorcelainStatusEntrySchema = Schema.Struct({
+  originalPath: Schema.optionalKey(GitDeliveryPathSchema),
+  path: GitDeliveryPathSchema,
+  xy: GitPorcelainStatusCodeSchema,
+});
+type GitPorcelainStatusEntry = Schema.Schema.Type<
+  typeof GitPorcelainStatusEntrySchema
+>;
+
 function parsePorcelainStatus(raw: string) {
   const fields = raw.split("\0").filter((field) => field.length > 0);
-  const entries: Array<{
-    readonly originalPath?: string;
-    readonly path: string;
-    readonly xy: string;
-  }> = [];
+  const entries: Array<GitPorcelainStatusEntry> = [];
   for (let index = 0; index < fields.length; index++) {
     const field = fields[index] ?? "";
     const xy = field.slice(0, 2);
@@ -787,8 +841,10 @@ export function isGitRepository(
 
 function runGit(
   runner: GitDeliveryCommandRunner,
-  cwd: string,
-  args: ReadonlyArray<string>
+  cwd: Schema.Schema.Type<typeof GitDeliveryPathSchema>,
+  args: ReadonlyArray<
+    Schema.Schema.Type<typeof GitDeliveryCommandArgumentSchema>
+  >
 ) {
   return runner({ args, cwd }).pipe(
     Effect.mapError((cause) =>
@@ -802,7 +858,10 @@ function runGit(
   );
 }
 
-function repositoryIdentity(runner: GitDeliveryCommandRunner, cwd: string) {
+function repositoryIdentity(
+  runner: GitDeliveryCommandRunner,
+  cwd: Schema.Schema.Type<typeof GitDeliveryPathSchema>
+) {
   return Effect.gen(function* () {
     const repositoryRoot = (yield* runGit(runner, cwd, [
       "rev-parse",
@@ -819,8 +878,8 @@ function repositoryIdentity(runner: GitDeliveryCommandRunner, cwd: string) {
 
 function repositoryRemoteIdentity(
   runner: GitDeliveryCommandRunner,
-  cwd: string,
-  remote: string
+  cwd: Schema.Schema.Type<typeof GitDeliveryPathSchema>,
+  remote: Schema.Schema.Type<typeof DeliveryRemoteName>
 ) {
   return Effect.gen(function* () {
     const raw = (yield* runGit(runner, cwd, [
@@ -850,11 +909,13 @@ function repositoryRemoteIdentity(
   });
 }
 
-function stripGitSuffix(value: string) {
-  return value.replace(/\/?\.git\/?$/u, "").replace(/\/$/u, "");
+function stripGitSuffix(remoteValue: string) {
+  return remoteValue.replace(/\/?\.git\/?$/u, "").replace(/\/$/u, "");
 }
 
-function readOwnershipManifest(path: string) {
+function readOwnershipManifest(
+  path: Schema.Schema.Type<typeof GitDeliveryPathSchema>
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const text = yield* fs.readFileString(path).pipe(
@@ -882,7 +943,7 @@ function readOwnershipManifest(path: string) {
 
 function ownershipToken(
   provenance: DeliveryProvenance,
-  remoteIdentity: string
+  remoteIdentity: Schema.Schema.Type<typeof GitDeliveryRemoteIdentitySchema>
 ) {
   return createHash("sha256")
     .update(

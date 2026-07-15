@@ -1,5 +1,5 @@
 import type { LocalRunSummaryDto } from "@gaia/core";
-import { RunIdSchema, makeRunEvent } from "@gaia/core";
+import { RunIdSchema, makeRunEvent, parseLocalRunTimestamp } from "@gaia/core";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -35,7 +35,7 @@ describe("run compare model", () => {
         runId: comparisonRunId,
         state: "failed",
         status: "failed",
-        updatedAt: "2026-07-07T12:04:00.000Z",
+        updatedAt: parseLocalRunTimestamp("2026-07-07T12:04:00.000Z"),
       }),
       primaryEvents: [
         makeRunEvent({
@@ -84,7 +84,7 @@ describe("run compare model", () => {
         runId: primaryRunId,
         state: "completed",
         status: "completed",
-        updatedAt: "2026-07-07T12:05:00.000Z",
+        updatedAt: parseLocalRunTimestamp("2026-07-07T12:05:00.000Z"),
       }),
     });
 
@@ -122,7 +122,7 @@ describe("run compare model", () => {
         artifacts: [],
         eventCount: 3,
         runId,
-        updatedAt: "not-a-date",
+        updatedAt: parseLocalRunTimestamp("2026-07-07T11:59:00.000Z"),
       }),
       primaryEvents: [],
       primaryRun: undefined,
@@ -149,12 +149,12 @@ function localRunSummary(
 ): typeof LocalRunSummaryDto.Type {
   return {
     artifacts: ["input"],
-    createdAt: "2026-07-07T12:00:00.000Z",
+    createdAt: parseLocalRunTimestamp("2026-07-07T12:00:00.000Z"),
     eventCount: 1,
     latestEventType: "RUN_CREATED",
     state: "created",
     status: "running",
-    updatedAt: "2026-07-07T12:00:00.000Z",
+    updatedAt: parseLocalRunTimestamp("2026-07-07T12:00:00.000Z"),
     ...input,
   };
 }

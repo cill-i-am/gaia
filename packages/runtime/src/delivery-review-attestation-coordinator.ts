@@ -1,15 +1,22 @@
 import { createHash } from "node:crypto";
 
 import {
+  DeliveryActionIdPublicSchema,
+  DeliveryBranchNamePublicSchema,
+  DeliveryGitShaPublicSchema,
   DeliveryLocalReviewAttestationConfirmed,
   DeliveryLocalReviewAttestationFailed,
   DeliveryLocalReviewAttestationIntent,
+  DeliverySha256DigestPublicSchema,
   deliveryLocalReviewAttestationPayloadDigest,
   deriveDeliveryActionHistoriesFromEvents,
   deriveDeliveryAuthority,
   encodeDeliveryLocalReviewAttestationReceiptJson,
+  GitHubPullRequestUrlPublicSchema,
+  GitHubRepositoryPublicSchema,
   parseDeliveryPublication,
   parseDeliveryPullRequestReadyReceipt,
+  RunIdSchema,
   snapshotFromReplay,
   type DeliveryAttestPairedReviewActionRequest,
   type DeliveryLocalReviewAttestationReceipt,
@@ -38,6 +45,23 @@ export type DeliveryLocalReviewAttestationCoordinatorOptions =
       DeliveryReadyForReviewCoordinatorOptions,
       "commandRunner" | "freshStateReader"
     >;
+
+const DeterministicEvidenceIdInputSchema = Schema.Struct({
+  actionId: DeliveryActionIdPublicSchema,
+  authoritySequence: Schema.Int,
+  headSha: DeliveryGitShaPublicSchema,
+  publicationPayloadDigest: DeliverySha256DigestPublicSchema,
+  readyPayloadDigest: DeliverySha256DigestPublicSchema,
+  runId: RunIdSchema,
+});
+
+const ExactOpenPullRequestBindingSchema = Schema.Struct({
+  branchName: DeliveryBranchNamePublicSchema,
+  headSha: DeliveryGitShaPublicSchema,
+  prNumber: Schema.Int,
+  prUrl: GitHubPullRequestUrlPublicSchema,
+  repository: GitHubRepositoryPublicSchema,
+});
 
 export function coordinateDeliveryLocalReviewAttestation(
   runId: RunId,
@@ -278,14 +302,9 @@ function appendAttestation(
   });
 }
 
-function deterministicEvidenceId(input: {
-  readonly actionId: string;
-  readonly authoritySequence: number;
-  readonly headSha: string;
-  readonly publicationPayloadDigest: string;
-  readonly readyPayloadDigest: string;
-  readonly runId: string;
-}) {
+function deterministicEvidenceId(
+  input: typeof DeterministicEvidenceIdInputSchema.Type
+) {
   const digest = createHash("sha256")
     .update(
       [
@@ -304,13 +323,7 @@ function deterministicEvidenceId(input: {
 
 function isExactOpenPullRequest(
   fresh: FreshReadyForReviewState,
-  binding: {
-    readonly branchName: string;
-    readonly headSha: string;
-    readonly prNumber: number;
-    readonly prUrl: string;
-    readonly repository: string;
-  }
+  binding: typeof ExactOpenPullRequestBindingSchema.Type
 ) {
   return (
     fresh.repository === binding.repository &&
@@ -325,10 +338,12 @@ function isExactOpenPullRequest(
   );
 }
 
-function repositoryFromPrUrl(url: string) {
+function repositoryFromPrUrl(
+  url: typeof GitHubPullRequestUrlPublicSchema.Type
+) {
   const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(url);
   if (match?.[1] === undefined) throw new Error("Invalid owned PR URL.");
-  return match[1];
+  return Schema.decodeUnknownSync(GitHubRepositoryPublicSchema)(match[1]);
 }
 
 function conflict(message: string) {

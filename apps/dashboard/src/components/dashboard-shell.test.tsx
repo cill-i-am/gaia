@@ -29,6 +29,7 @@ import {
   parseHarnessSessionId,
   parseHarnessTurnId,
   parseDeliveryFeedbackId,
+  parseLocalRunTimestamp,
   parseWorkspaceRelativePath,
 } from "@gaia/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -630,7 +631,7 @@ function renderTypedRunsDashboard() {
         state: "runningWorker",
         latestEventType: "WORKER_STARTED",
         eventCount: 5,
-        updatedAt: "2026-07-07T12:30:00.000Z",
+        updatedAt: parseLocalRunTimestamp("2026-07-07T12:30:00.000Z"),
       }),
       localRunSummary({
         runId: secondRunId,
@@ -638,7 +639,7 @@ function renderTypedRunsDashboard() {
         state: "completed",
         latestEventType: "REPORT_COMPLETED",
         eventCount: 12,
-        updatedAt: "2026-07-07T12:35:00.000Z",
+        updatedAt: parseLocalRunTimestamp("2026-07-07T12:35:00.000Z"),
       }),
     ],
   });
@@ -1931,7 +1932,7 @@ describe("DashboardShell Run Console", () => {
           runId,
           state: "completed",
           status: "completed",
-          updatedAt: "2026-07-07T12:01:00.000Z",
+          updatedAt: parseLocalRunTimestamp("2026-07-07T12:01:00.000Z"),
         }),
       ];
       source.onmessage?.({
@@ -2055,7 +2056,7 @@ describe("DashboardShell Run Console", () => {
           runId: firstRunId,
           state: "completed",
           status: "completed",
-          updatedAt: "2026-07-07T12:05:00.000Z",
+          updatedAt: parseLocalRunTimestamp("2026-07-07T12:05:00.000Z"),
         }),
         localRunSummary({
           artifacts: ["input", "worker-log"],
@@ -2064,7 +2065,7 @@ describe("DashboardShell Run Console", () => {
           runId: secondRunId,
           state: "failed",
           status: "failed",
-          updatedAt: "2026-07-07T12:04:00.000Z",
+          updatedAt: parseLocalRunTimestamp("2026-07-07T12:04:00.000Z"),
         }),
         localRunSummary({
           artifacts: [],
@@ -2073,7 +2074,7 @@ describe("DashboardShell Run Console", () => {
           runId: thirdRunId,
           state: "created",
           status: "running",
-          updatedAt: "2026-07-07T12:10:30.000Z",
+          updatedAt: parseLocalRunTimestamp("2026-07-07T12:10:30.000Z"),
         }),
       ],
     });
@@ -3311,12 +3312,12 @@ function localRunSummary(
 ): typeof LocalRunSummaryDto.Type {
   return {
     artifacts: ["input", "worker-plan"],
-    createdAt: "2026-07-07T12:00:00.000Z",
+    createdAt: parseLocalRunTimestamp("2026-07-07T12:00:00.000Z"),
     eventCount: 4,
     latestEventType: "RUN_CREATED",
     state: "created",
     status: "running",
-    updatedAt: "2026-07-07T12:00:00.000Z",
+    updatedAt: parseLocalRunTimestamp("2026-07-07T12:00:00.000Z"),
     ...input,
   };
 }

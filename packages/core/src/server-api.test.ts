@@ -834,6 +834,9 @@ describe("LocalGaiaServerApi contract", () => {
 type OpenApiResponses = NonNullable<
   (typeof LocalGaiaServerOpenApi.paths)["/health"]["get"]
 >["responses"];
+const OpenApiSchemaRefSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^#\/components\/schemas\/[A-Za-z0-9_-]+$/u))
+);
 
 function responseStatuses(responses: OpenApiResponses | undefined) {
   if (responses === undefined) {
@@ -843,7 +846,10 @@ function responseStatuses(responses: OpenApiResponses | undefined) {
   return Object.keys(responses);
 }
 
-function assertJsonSchemaRef(response: unknown, ref: string) {
+function assertJsonSchemaRef(
+  response: unknown,
+  ref: typeof OpenApiSchemaRefSchema.Type
+) {
   const schema =
     typeof response === "object" &&
     response !== null &&
