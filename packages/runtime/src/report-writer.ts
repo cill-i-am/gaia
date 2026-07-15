@@ -1,9 +1,11 @@
 import {
   RunReport,
+  parseRunReportArtifactPath,
   type DogfoodRetrospective,
   type EvidencePromotion,
   type FactoryRetro,
   type FactoryLaneScorecard,
+  type RunReportArtifactPath,
   type RunId,
   type RunSpec,
 } from "@gaia/core";
@@ -45,37 +47,10 @@ export function writeReport(input: {
       input.paths.codexHarnessProgress
     );
     const report = RunReport.make({
-      artifacts: [
-        "workspace-manifest.json",
-        "run-profile.json",
-        "skill-manifest.json",
-        "skill-bundle.json",
-        "browser-evidence.json",
-        "preview-deployment.json",
-        "worker-plan.md",
-        "worker-plan.json",
-        "reviewer-findings.json",
-        "plan-review.md",
-        "plan-review.json",
-        "plan-reviewer-session.json",
-        ...(codexHarnessProgressExists ? ["codex-harness-progress.json"] : []),
-        "dogfood-retrospective.json",
-        "evidence-promotion.json",
-        "evidence-promotion.md",
-        "factory-retro.json",
-        "factory-retro.md",
-        ...(input.factoryScorecard === undefined
-          ? []
-          : ["factory-scorecard.json", "factory-scorecard.md"]),
-        "worker.log",
-        "verification.log",
-        "workspace/output.txt",
-        "worker-result.json",
-        "verification-result.json",
-        "evidence-review.md",
-        "evidence-review.json",
-        "evidence-reviewer-session.json",
-      ],
+      artifacts: reportArtifactPaths({
+        codexHarnessProgressExists,
+        factoryScorecardExists: input.factoryScorecard !== undefined,
+      }),
       reportPath: "report.md",
       runId: input.runId,
       selectedSkills: [...selectedSkillNames(input.skillManifest)],
@@ -103,6 +78,45 @@ export function writeReport(input: {
 
     return report;
   });
+}
+
+function reportArtifactPaths(input: {
+  readonly codexHarnessProgressExists: boolean;
+  readonly factoryScorecardExists: boolean;
+}): ReadonlyArray<RunReportArtifactPath> {
+  return [
+    "workspace-manifest.json",
+    "run-profile.json",
+    "skill-manifest.json",
+    "skill-bundle.json",
+    "browser-evidence.json",
+    "preview-deployment.json",
+    "worker-plan.md",
+    "worker-plan.json",
+    "reviewer-findings.json",
+    "plan-review.md",
+    "plan-review.json",
+    "plan-reviewer-session.json",
+    ...(input.codexHarnessProgressExists
+      ? ["codex-harness-progress.json"]
+      : []),
+    "dogfood-retrospective.json",
+    "evidence-promotion.json",
+    "evidence-promotion.md",
+    "factory-retro.json",
+    "factory-retro.md",
+    ...(input.factoryScorecardExists
+      ? ["factory-scorecard.json", "factory-scorecard.md"]
+      : []),
+    "worker.log",
+    "verification.log",
+    "workspace/output.txt",
+    "worker-result.json",
+    "verification-result.json",
+    "evidence-review.md",
+    "evidence-review.json",
+    "evidence-reviewer-session.json",
+  ].map((artifactPath) => parseRunReportArtifactPath(artifactPath));
 }
 
 function markdownReport(

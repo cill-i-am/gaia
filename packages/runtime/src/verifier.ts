@@ -13,7 +13,12 @@ export class VerificationResult extends Schema.Class<VerificationResult>(
 }) {}
 
 const VerificationResultJson = Schema.toCodecJson(VerificationResult);
-const encodeVerificationResult = Schema.encodeSync(VerificationResultJson);
+export const encodeVerificationResultJson = Schema.encodeSync(
+  VerificationResultJson
+);
+export const parseVerificationResultJson = Schema.decodeUnknownSync(
+  VerificationResultJson
+);
 
 export function verifyHarnessOutput(
   runId: typeof RunIdSchema.Type,
@@ -64,7 +69,7 @@ export function verifyHarnessOutput(
 
     yield* fs.writeFileString(
       paths.verificationResult,
-      `${JSON.stringify(encodeVerificationResult(result), null, 2)}\n`
+      `${JSON.stringify(encodeVerificationResultJson(result), null, 2)}\n`
     );
     yield* fs.writeFileString(paths.verificationLog, "Verification passed.\n", {
       flag: "a",

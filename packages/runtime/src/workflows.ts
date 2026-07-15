@@ -3,6 +3,8 @@ import {
   parseMarkdownSpec,
   parseRunId,
   snapshotFromReplay,
+  RunIdSchema,
+  RunStateSchema,
   type ReviewPhase,
   type RunId,
   type RunState,
@@ -45,6 +47,7 @@ import {
   makeRunPaths,
   makeRunStorePaths,
   runRelative,
+  RuntimePathSchema,
   type RunPaths,
   type RunStorageOptions,
 } from "./paths.js";
@@ -95,20 +98,34 @@ const nanoid = customAlphabet(
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const decodeHarnessRunResult = Schema.decodeUnknownSync(HarnessRunResultJson);
 
-export type CommandSummary = {
-  readonly harnessProgressPath?: string | undefined;
-  readonly reportPath: string | undefined;
-  readonly runDirectory: string;
-  readonly runId: RunId;
-  readonly state: RunState;
-  readonly status: "completed" | "failed" | "running";
-};
+export const CommandStatusSchema = Schema.Literals([
+  "completed",
+  "failed",
+  "running",
+] as const);
 
-export type WorkerContinuationState =
-  | "start"
-  | "resume"
-  | "terminal"
-  | "completed";
+export const CommandSummarySchema = Schema.Struct({
+  harnessProgressPath: Schema.optionalKey(RuntimePathSchema),
+  reportPath: Schema.UndefinedOr(RuntimePathSchema),
+  runDirectory: RuntimePathSchema,
+  runId: RunIdSchema,
+  state: RunStateSchema,
+  status: CommandStatusSchema,
+});
+
+export type CommandSummary = typeof CommandSummarySchema.Type;
+
+export const parseCommandSummary =
+  Schema.decodeUnknownSync(CommandSummarySchema);
+
+export const WorkerContinuationStateSchema = Schema.Literals([
+  "start",
+  "resume",
+  "terminal",
+  "completed",
+] as const);
+
+export type WorkerContinuationState = typeof WorkerContinuationStateSchema.Type;
 
 export type WorkflowOptions = RunStorageOptions &
   ReviewerRunOptions & {
@@ -498,7 +515,7 @@ function executeAcceptedRun(input: {
             type: "DELIVERY_READY_TO_PUBLISH",
           })).snapshot;
 
-    return {
+    return parseCommandSummary({
       ...(harnessName === codexHarnessName
         ? { harnessProgressPath: paths.codexHarnessProgress }
         : {}),
@@ -507,7 +524,7 @@ function executeAcceptedRun(input: {
       runId,
       state: finalSnapshot.state,
       status: finalSnapshot.state === "delivering" ? "running" : "completed",
-    } satisfies CommandSummary;
+    });
   });
 }
 
@@ -583,14 +600,14 @@ export function resumeRun(runId: RunId, options: WorkflowOptions = {}) {
 
     const snapshot = snapshotFromReplay(loaded.events);
     if (snapshot.state === "completed") {
-      return {
+      return parseCommandSummary({
         ...(yield* existingHarnessProgressPath(paths)),
         reportPath: paths.reportMarkdown,
         runDirectory: paths.root,
         runId,
         state: snapshot.state,
         status: "completed",
-      } satisfies CommandSummary;
+      });
     }
 
     return yield* Effect.fail(
@@ -784,7 +801,7 @@ export function statusRun(
     }
 
     const snapshot = snapshotFromReplay(loaded.events);
-    return {
+    return parseCommandSummary({
       ...(yield* existingHarnessProgressPath(paths)),
       reportPath:
         snapshot.state === "completed" ? paths.reportMarkdown : undefined,
@@ -792,7 +809,7 @@ export function statusRun(
       runId,
       state: snapshot.state,
       status: statusFromState(snapshot.state),
-    } satisfies CommandSummary;
+    });
   });
 }
 

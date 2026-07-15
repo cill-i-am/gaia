@@ -202,11 +202,15 @@ export {
   DoctorCheck,
   DoctorCheckNameSchema,
   DoctorCheckStatusSchema,
+  DoctorCommandInputSchema,
+  DoctorCommandResultSchema,
   DoctorStatusSchema,
   DoctorSummary,
   doctor,
   nodeDoctorCommandRunner,
   nodePlaywrightBrowserInspector,
+  parseDoctorCommandInput,
+  parseDoctorCommandResult,
   type DoctorBrowserInspector,
   type DoctorCheckName,
   type DoctorCheckStatus,
@@ -409,6 +413,8 @@ export {
   ReviewRunRequest,
   ReviewerNameSchema,
   defaultReviewerName,
+  encodeReviewResultJson,
+  parseReviewResultJson,
   runReviewer,
   type GaiaReviewer,
   type ReviewerName,
@@ -419,6 +425,7 @@ export {
   ReviewerSessionDecisionStatusSchema,
   ReviewerSessionEvidence,
   ReviewerSessionKindSchema,
+  encodeReviewerSessionEvidenceJson,
   parseReviewerSessionEvidenceJson,
   writeReviewerSessionEvidence,
   type ReviewerSessionAdapterKind,
@@ -506,7 +513,12 @@ export {
   type SkillManifestSource,
   type SkillName,
 } from "./skill-manifest.js";
-export { VerificationResult, verifyHarnessOutput } from "./verifier.js";
+export {
+  VerificationResult,
+  encodeVerificationResultJson,
+  parseVerificationResultJson,
+  verifyHarnessOutput,
+} from "./verifier.js";
 export {
   WorkerPlan,
   WorkerPlanAgentInstruction,
@@ -533,8 +545,12 @@ export {
   WorkspaceDiffSummary,
 } from "./workspace-snapshot.js";
 export {
+  CommandStatusSchema,
+  CommandSummarySchema,
+  WorkerContinuationStateSchema,
   listRuns,
   collectBrowserEvidence,
+  parseCommandSummary,
   resumeRun,
   runSpecFile,
   statusRun,

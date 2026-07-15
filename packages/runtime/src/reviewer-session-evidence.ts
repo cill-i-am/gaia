@@ -49,7 +49,7 @@ export class ReviewerSessionEvidence extends Schema.Class<ReviewerSessionEvidenc
 }) {}
 
 const ReviewerSessionEvidenceJson = Schema.toCodecJson(ReviewerSessionEvidence);
-const encodeReviewerSessionEvidenceJson = Schema.encodeSync(
+export const encodeReviewerSessionEvidenceJson = Schema.encodeSync(
   ReviewerSessionEvidenceJson
 );
 

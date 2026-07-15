@@ -74,10 +74,18 @@ describe("gaia CLI local server read parity", () => {
               serverEvents,
               directArtifact,
               serverArtifact,
+              directPlanReview,
+              serverPlanReview,
+              directEvidenceReview,
+              serverEvidenceReview,
+              directVerificationResult,
+              serverVerificationResult,
               directEventsHuman,
               serverEventsHuman,
               directArtifactHuman,
               serverArtifactHuman,
+              directPlanReviewHuman,
+              serverPlanReviewHuman,
             ] = yield* Effect.all(
               [
                 runGaiaJson(cwd, ["events", runId, "--json"]),
@@ -97,6 +105,43 @@ describe("gaia CLI local server read parity", () => {
                   "--server-url",
                   server.url,
                 ]),
+                runGaiaJson(cwd, ["artifact", runId, "plan-review", "--json"]),
+                runGaiaJson(cwd, [
+                  "artifact",
+                  runId,
+                  "plan-review",
+                  "--json",
+                  "--server-url",
+                  server.url,
+                ]),
+                runGaiaJson(cwd, [
+                  "artifact",
+                  runId,
+                  "evidence-review",
+                  "--json",
+                ]),
+                runGaiaJson(cwd, [
+                  "artifact",
+                  runId,
+                  "evidence-review",
+                  "--json",
+                  "--server-url",
+                  server.url,
+                ]),
+                runGaiaJson(cwd, [
+                  "artifact",
+                  runId,
+                  "verification-result",
+                  "--json",
+                ]),
+                runGaiaJson(cwd, [
+                  "artifact",
+                  runId,
+                  "verification-result",
+                  "--json",
+                  "--server-url",
+                  server.url,
+                ]),
                 runGaia(cwd, ["events", runId]),
                 runGaia(cwd, ["events", runId, "--server-url", server.url]),
                 runGaia(cwd, ["artifact", runId, "report-json"]),
@@ -107,14 +152,32 @@ describe("gaia CLI local server read parity", () => {
                   "--server-url",
                   server.url,
                 ]),
+                runGaia(cwd, ["artifact", runId, "plan-review"]),
+                runGaia(cwd, [
+                  "artifact",
+                  runId,
+                  "plan-review",
+                  "--server-url",
+                  server.url,
+                ]),
               ],
               { concurrency: "unbounded" }
             );
 
             expect(serverEvents).toEqual(directEvents);
             expect(serverArtifact).toEqual(directArtifact);
+            expect(serverPlanReview).toEqual(directPlanReview);
+            expect(serverEvidenceReview).toEqual(directEvidenceReview);
+            expect(serverVerificationResult).toEqual(directVerificationResult);
             expect(serverEventsHuman.stdout).toBe(directEventsHuman.stdout);
             expect(serverArtifactHuman.stdout).toBe(directArtifactHuman.stdout);
+            expect(serverPlanReviewHuman.stdout).toBe(
+              directPlanReviewHuman.stdout
+            );
+            expect(directPlanReviewHuman.stdout).toContain('"phase": "plan"');
+            expect(
+              getObjectString(directVerificationResult, "artifactName")
+            ).toBe("verification-result");
           } finally {
             yield* stopServer(server);
           }

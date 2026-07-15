@@ -7,9 +7,19 @@ export const ReportStatusSchema = Schema.Literals([
   "failed",
 ] as const);
 
+export const RunReportArtifactPathSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("RunReportArtifactPath")
+);
+
+export type RunReportArtifactPath = typeof RunReportArtifactPathSchema.Type;
+
+export const parseRunReportArtifactPath = Schema.decodeUnknownSync(
+  RunReportArtifactPathSchema
+);
+
 /** Machine-readable Gaia run report. */
 export class RunReport extends Schema.Class<RunReport>("RunReport")({
-  artifacts: Schema.Array(Schema.NonEmptyString),
+  artifacts: Schema.Array(RunReportArtifactPathSchema),
   reportPath: Schema.NonEmptyString,
   runId: RunIdSchema,
   selectedSkills: Schema.Array(Schema.NonEmptyString),
