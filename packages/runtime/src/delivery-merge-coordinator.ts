@@ -335,10 +335,6 @@ export function normalizeGitHubReviewDecision(
   return value == null || value === "" ? undefined : value;
 }
 
-const MergeRunIdPublicSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^run-[A-Za-z0-9_-]{10}$/u))
-);
-
 const MergeReviewApprovalPublicationSchema = Schema.declare<
   Parameters<typeof currentDeliveryLocalReviewAttestation>[1]["publication"]
 >(
@@ -352,7 +348,7 @@ const MergeReviewApprovalPublicationSchema = Schema.declare<
 const ReviewApprovalSourceInputSchema = Schema.Struct({
   publication: MergeReviewApprovalPublicationSchema,
   repository: GitHubRepositoryPublicSchema,
-  runId: MergeRunIdPublicSchema,
+  runId: RunIdSchema,
 });
 
 const MergeHashInputSchema = Schema.String;

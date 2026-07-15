@@ -17,6 +17,7 @@ import {
   GitHubPullRequestUrlPublicSchema,
   GitHubRepositoryPublicSchema,
   parseDeliveryPublication,
+  RunIdSchema,
   snapshotFromReplay,
   type DeliveryMarkReadyForReviewActionRequest,
   type DeliveryPullRequestReadyReceipt,
@@ -85,9 +86,6 @@ const ReadyForReviewProviderSchema = Schema.declare<ReadyForReviewProvider>(
 
 const GitHubCommandRunnerSchema = Schema.declare<GitHubCommandRunner>(
   (input): input is GitHubCommandRunner => typeof input === "function"
-);
-const ReadyRunIdPublicSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^run-[A-Za-z0-9_-]{10}$/u))
 );
 
 const DeliveryReadyForReviewCoordinatorOptionFieldsSchema = Schema.Struct({
@@ -175,7 +173,7 @@ const ReadyAuthorityInputSchema = Schema.Struct({
   publicationOperationId: DeliveryOperationIdPublicSchema,
   publicationPayloadDigest: DeliverySha256DigestPublicSchema,
   repository: GitHubRepositoryPublicSchema,
-  runId: ReadyRunIdPublicSchema,
+  runId: RunIdSchema,
 });
 
 const ExactReadyStateBindingSchema = Schema.Struct({

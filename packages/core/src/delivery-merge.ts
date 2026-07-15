@@ -20,6 +20,7 @@ import {
 } from "./delivery-publication.js";
 import { deriveDeliveryAuthority } from "./delivery-remediation.js";
 import { RunEvent } from "./events.js";
+import { RunIdSchema } from "./run-id.js";
 
 export { DeliveryActionIdSchema } from "./delivery-identity.js";
 
@@ -37,9 +38,6 @@ const PositiveSequence = Schema.Int.pipe(
   Schema.check(Schema.isGreaterThanOrEqualTo(1))
 );
 const PositiveGitHubNumber = DeliveryPositiveIntegerSchema;
-const DeliveryRunIdPublicSchema = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^run-[A-Za-z0-9_-]{10}$/u))
-);
 
 export const DeliveryMergeMethodSchema = Schema.Literals([
   "merge",
@@ -180,7 +178,7 @@ const readinessDecisionV2Binding = {
   publicationOperationId: BoundedId,
   publicationPayloadDigest: Digest,
   repository: Repository,
-  runId: DeliveryRunIdPublicSchema,
+  runId: RunIdSchema,
   version: Schema.Literal(2),
 } as const;
 
@@ -286,7 +284,7 @@ function sha256Hex(payload: string) {
 }
 
 const DeliveryAuthorityAssertionInputSchema = Schema.Struct({
-  enclosingRunId: DeliveryRunIdPublicSchema,
+  enclosingRunId: RunIdSchema,
   eventSequence: PositiveSequence,
   events: Schema.Array(RunEvent),
   publication: DeliveryPublicationSchema,
@@ -472,7 +470,7 @@ const readyForReviewCanonicalBinding = {
   publicationOperationId: BoundedId,
   publicationPayloadDigest: Digest,
   repository: Repository,
-  runId: DeliveryRunIdPublicSchema,
+  runId: RunIdSchema,
   version: Schema.Literal(1),
 } as const;
 
@@ -495,7 +493,7 @@ const DeliveryPullRequestReadyAuthorityInputSchema = Schema.Struct({
   publicationOperationId: BoundedId,
   publicationPayloadDigest: Digest,
   repository: Repository,
-  runId: DeliveryRunIdPublicSchema,
+  runId: RunIdSchema,
 });
 type DeliveryPullRequestReadyAuthorityInput = Schema.Schema.Type<
   typeof DeliveryPullRequestReadyAuthorityInputSchema
@@ -653,7 +651,7 @@ const localReviewAttestationCanonicalBinding = {
   readyConfirmationPayloadDigest: Digest,
   readyConfirmationSequence: PositiveSequence,
   repository: Repository,
-  runId: DeliveryRunIdPublicSchema,
+  runId: RunIdSchema,
   version: Schema.Literal(1),
 } as const;
 
@@ -839,7 +837,7 @@ export function assertDeliveryLocalReviewAttestationAuthority(
 const CurrentDeliveryLocalReviewAttestationInputSchema = Schema.Struct({
   publication: DeliveryPublicationSchema,
   repository: Repository,
-  runId: DeliveryRunIdPublicSchema,
+  runId: RunIdSchema,
 });
 
 export function currentDeliveryLocalReviewAttestation(
