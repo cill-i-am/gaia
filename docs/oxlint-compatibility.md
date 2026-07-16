@@ -195,20 +195,28 @@ covered:
   not originate in Effect Schema. An all-callable capability surface is the
   manual-TypeScript exception, but nested operation input objects and mixed
   data-plus-callback contracts still require schemas. In TSX, framework Props
-  may additionally contain callable members, referenced types, and the exact
-  display/prose string vocabulary. Cross-file aliases, re-exports, decoded
-  indexed access, schema classes, and `Pick`/`Omit`/`Extract` pass only when the
-  checker reaches the canonical Program symbols and Effect Schema declaration
-  chain. Counterfeit utilities, arbitrary schema-containing generics, metadata
-  indexed access, textual `.Type` and `["Type"]` lookalikes, and structural
-  schema lookalikes do not establish ownership.
+  may additionally contain callable members, external framework component
+  prop references, safe literal UI state, and the exact display/prose string
+  vocabulary. Generic wrappers such as `Readonly` and `ReturnType` are not
+  blanket framework exceptions; they pass only in the narrow framework shapes
+  covered by fixtures. Cross-file aliases, re-exports, decoded indexed access,
+  schema classes, and `Pick`/`Omit`/`Extract` pass only when the checker reaches
+  the canonical Program symbols and Effect Schema declaration chain. Extract
+  selector literals are accepted only when the checker has proven the canonical
+  utility and a schema-derived first argument at an approved projection seam.
+  Counterfeit utilities, arbitrary schema-containing generics, metadata indexed
+  access, textual `.Type` and `["Type"]` lookalikes, manual DTO projections,
+  and structural schema lookalikes do not establish ownership.
 - `gaia/no-unbranded-domain-string` applies the reviewed terminal-token,
   lifecycle-time, exact domain-name, and display/prose vocabularies. Direct
   callable parameters are always inspected across declarations, call and
   construct signatures, assigned or wrapped functions, object members, and
   class members. Only `input`, `raw`, or `value` parameters on directly named
   `parseX` and `decodeX` boundaries may remain raw strings; a factory such as
-  `makeRunId(input: string)` is not exempt.
+  `makeRunId(input: string)` is not exempt. Provider wire schemas are limited
+  to exact Codex App Server protocol declarations and pinned schema-parity
+  metadata. Provider-shaped lookalikes, Gaia-owned DTOs, and manual semantic
+  strings still report.
 - `gaia/no-brand-cast` uses Oxlint only to surface direct schema-type assertion
   candidates. The TypeScript checker is authoritative: it resolves the actual
   `Schema.brand` return type and accepts the brand property only when its
@@ -225,11 +233,12 @@ compiler-proven ownership stream with normalized
 `path:line:column rule message Remedy: ...` diagnostics. It uses a disposable
 audit-only config to enable exactly these rules, deletes that config after every
 run, has no snapshot or diagnostic-count baseline, and exits non-zero when
-either engine reports findings or fails. The command is deliberately not part
-of `pnpm check`; its passing aggregation and cleanup proof uses only isolated
-fixtures and does not assert that the live backlog is nonzero. GAIA-104 owns the
-migration backlog and may reduce the explicit audit to zero without breaking
-the normal gate.
+either engine reports findings or fails. The syntax stream and compiler stream
+both exclude generated files matching the existing `**/*.gen.*` policy. The
+command is deliberately not part of `pnpm check`; its passing aggregation and
+cleanup proof uses only isolated fixtures and does not assert that the live
+backlog is nonzero. GAIA-104 owns the migration backlog and may reduce the
+explicit audit to zero without breaking the normal gate.
 
 This audit is additive to the GAIA-106 compatibility policy. It does not change
 `oxlint.audit.config.ts`, `oxfmt.config.ts`, the 93 root compatibility

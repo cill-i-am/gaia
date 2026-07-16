@@ -41,6 +41,61 @@ tester.run(
         `,
         filename: "confirmation.tsx",
       },
+      {
+        code: `
+          type SidebarContextProps = {
+            readonly state: "expanded" | "collapsed";
+            readonly open: boolean;
+            readonly setOpen: (open: boolean) => void;
+            readonly openMobile: boolean;
+            readonly setOpenMobile: (open: boolean) => void;
+            readonly isMobile: boolean;
+            readonly toggleSidebar: () => void;
+          };
+        `,
+        filename: "sidebar.tsx",
+      },
+      {
+        code: `
+          type CommandApprovalRequest = Extract<
+            CodexServerRequest,
+            { readonly method: "item/commandExecution/requestApproval" }
+          >;
+        `,
+        filename: "packages/runtime/src/codex-app-server-protocol.ts",
+      },
+      {
+        code: `
+          function Card({
+            className,
+            size = "default",
+            ...props
+          }: React.ComponentProps<"div"> & { size?: "default" | "sm" }) {
+            return <div className={className} {...props} />;
+          }
+        `,
+        filename: "card.tsx",
+      },
+      {
+        code: `
+          function RootDocument({
+            children,
+          }: Readonly<{ children: ReactNode }>) {
+            return <html>{children}</html>;
+          }
+        `,
+        filename: "__root.tsx",
+      },
+      {
+        code: `
+          declare module "@tanstack/react-router" {
+            interface Register {
+              router: ReturnType<typeof getRouter>;
+            }
+          }
+        `,
+        filename: "apps/dashboard/src/router.tsx",
+      },
     ],
     invalid: [
       {
@@ -66,12 +121,82 @@ tester.run(
       },
       {
         code: `
+          type CounterfeitProviderProps = {
+            readonly runId: string;
+            readonly onConfirm: () => void;
+          };
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "packages/runtime/src/codex-app-server-protocol.tsx",
+      },
+      {
+        code: `
+          type WrappedReadonlyProps = {
+            readonly data: Readonly<{ readonly runId: string }>;
+            readonly onConfirm: () => void;
+          };
+        `,
+        errors: 2,
+        filename: "wrapped-readonly-props.tsx",
+      },
+      {
+        code: `
+          type WrappedReturnProps = {
+            readonly data: ReturnType<typeof makeRunDto>;
+            readonly onConfirm: () => void;
+          };
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "wrapped-return-props.tsx",
+      },
+      {
+        code: `
+          type CodexRawManualDto = {
+            readonly runId: string;
+          };
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "packages/runtime/src/codex-app-server-protocol.ts",
+      },
+      {
+        code: `
+          const makeManualDto = () => ({ runId: "run-1" });
+          interface Register {
+            router: ReturnType<typeof makeManualDto>;
+          }
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "manual-register.tsx",
+      },
+      {
+        code: `
+          declare module "@tanstack/react-router" {
+            interface Register {
+              router: ReturnType<typeof getRouter>;
+            }
+          }
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "router.tsx",
+      },
+      {
+        code: `
           type RunStore = {
             readonly load: (input: { readonly runId: string }) => Promise<Run>;
           };
         `,
         errors: [{ messageId: "schemaFirst" }],
         filename: "nested-operation-input.ts",
+      },
+      {
+        code: `
+          type DeliveryMergeConfirmationData = {
+            readonly sequence: DeliveryMergeDecisionSequence;
+          };
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename:
+          "apps/dashboard/src/components/not-delivery-merge-confirmation.tsx",
       },
     ],
   }
@@ -200,6 +325,36 @@ tester.run(
         `,
         filename: "capability-parser-properties.ts",
       },
+      {
+        code: `
+          const CodexRawFileChangeSchema = Schema.Struct({
+            kind: Schema.String,
+            path: Schema.String,
+          });
+        `,
+        filename: "packages/runtime/src/codex-app-server-protocol.ts",
+      },
+      {
+        code: `
+          class PinnedCodexSchemaSet extends Schema.Class<PinnedCodexSchemaSet>(
+            "PinnedCodexSchemaSet"
+          )({
+            facts: Schema.Struct({
+              threadTimestampFormats: Schema.Struct({
+                createdAt: Schema.String,
+                updatedAt: Schema.String,
+              }),
+              turnTimingFormats: Schema.Struct({
+                completedAt: Schema.String,
+                durationMs: Schema.String,
+                startedAt: Schema.String,
+              }),
+            }),
+          }) {}
+        `,
+        filename:
+          "packages/runtime/src/codex-app-server-0.137.0-schema-parity.test.ts",
+      },
     ],
     invalid: [
       {
@@ -292,6 +447,59 @@ tester.run(
         code: `const Run = Schema.Struct({ runId: Schema.String });`,
         errors: [{ messageId: "unbrandedDomainString" }],
         filename: "schema-string.ts",
+      },
+      {
+        code: `
+          const CodexRawGaiaOwnedSchema = Schema.Struct({
+            runId: Schema.String,
+          });
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "packages/runtime/src/codex-app-server-protocol.ts",
+      },
+      {
+        code: `
+          const CodexRawFileChangeSchema = Schema.Struct({
+            runId: Schema.String,
+          });
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "packages/runtime/src/codex-app-server-protocol.ts",
+      },
+      {
+        code: `
+          const CodexRawFileChangeSchema = Schema.Struct({
+            kind: Schema.String,
+            path: Schema.String,
+          });
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "apps/dashboard/src/codex-app-server-protocol.ts",
+      },
+      {
+        code: `
+          class PinnedCodexSchemaSet extends Schema.Class<PinnedCodexSchemaSet>(
+            "PinnedCodexSchemaSet"
+          )({
+            facts: Schema.Struct({
+              threadTimestampFormats: Schema.Struct({
+                createdAt: Schema.String,
+              }),
+            }),
+          }) {}
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename:
+          "packages/runtime/src/codex-app-server-0.137.0-schema-parity-copy.test.ts",
+      },
+      {
+        code: `
+          const CodexRawProviderLookalikeSchema = Schema.Struct({
+            path: Schema.String,
+          });
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "packages/runtime/src/codex-app-server-protocol.ts",
       },
     ],
   }
