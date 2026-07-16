@@ -1,6 +1,8 @@
 import * as Schema from "effect/Schema";
 
-function isLocalGaiaServerUrl(input: string) {
+const LocalGaiaServerUrlBaseSchema = Schema.NonEmptyString;
+
+function isLocalGaiaServerUrl(input: typeof LocalGaiaServerUrlBaseSchema.Type) {
   if (/\s|\\|\?|#/u.test(input)) {
     return false;
   }
@@ -25,7 +27,7 @@ function isLocalGaiaServerUrl(input: string) {
  * A Gaia server base URL that preserves its exact HTTP(S) or same-origin path
  * representation for JSON and protocol use.
  */
-export const LocalGaiaServerUrlSchema = Schema.NonEmptyString.pipe(
+export const LocalGaiaServerUrlSchema = LocalGaiaServerUrlBaseSchema.pipe(
   Schema.check(
     Schema.makeFilter(isLocalGaiaServerUrl, {
       identifier: "LocalGaiaServerUrl",

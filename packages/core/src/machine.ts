@@ -26,7 +26,6 @@ import {
   DeliveryMergeReadinessDecisionV2,
   DeliveryLocalReviewAttestationReceiptSchema,
   parseDeliveryLocalReviewAttestationReceipt,
-  type DeliveryLocalReviewAttestationReceipt,
 } from "./delivery-merge.js";
 import {
   DeliveryPublicationSchema,
@@ -88,6 +87,30 @@ const RunMachineActionTextSchema = Schema.String.pipe(
   Schema.brand("RunMachineActionText")
 );
 const RunMachineDeliverySchema = Schema.Record(Schema.String, Schema.Json);
+const DeliveryPullRequestReadyReplayActionsSchema = Schema.Array(
+  Schema.Struct({
+    receipt: DeliveryPullRequestReadyReceiptSchema,
+    sequence: Schema.Number,
+  })
+).pipe(Schema.mutable);
+const DeliveryLocalReviewAttestationReplayActionsSchema = Schema.Array(
+  Schema.Struct({
+    receipt: DeliveryLocalReviewAttestationReceiptSchema,
+    sequence: Schema.Number,
+  })
+).pipe(Schema.mutable);
+const DeliveryMergeReplayActionsSchema = Schema.Array(
+  Schema.Struct({
+    receipt: DeliveryMergeReceiptSchema,
+    sequence: Schema.Number,
+  })
+).pipe(Schema.mutable);
+const DeliveryCleanupReplayActionsSchema = Schema.Array(
+  Schema.Struct({
+    receipt: DeliveryCleanupReceiptSchema,
+    sequence: Schema.Number,
+  })
+).pipe(Schema.mutable);
 
 export const RunMachineContextSchema = Schema.Struct({
   browserEvidencePath: Schema.UndefinedOr(RunMachinePathSchema),
@@ -1258,22 +1281,12 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   let expectedSequence = 1;
   let publication: DeliveryPublication | undefined;
   let remediation: DeliveryRemediation | undefined;
-  const readyForReviewActions: Array<{
-    receipt: DeliveryPullRequestReadyReceipt;
-    sequence: number;
-  }> = [];
-  const localReviewAttestations: Array<{
-    receipt: DeliveryLocalReviewAttestationReceipt;
-    sequence: number;
-  }> = [];
-  const mergeActions: Array<{
-    receipt: DeliveryMergeReceipt;
-    sequence: number;
-  }> = [];
-  const cleanupActions: Array<{
-    receipt: ReturnType<typeof parseDeliveryCleanupReceipt>;
-    sequence: number;
-  }> = [];
+  const readyForReviewActions: typeof DeliveryPullRequestReadyReplayActionsSchema.Type =
+    [];
+  const localReviewAttestations: typeof DeliveryLocalReviewAttestationReplayActionsSchema.Type =
+    [];
+  const mergeActions: typeof DeliveryMergeReplayActionsSchema.Type = [];
+  const cleanupActions: typeof DeliveryCleanupReplayActionsSchema.Type = [];
 
   for (const event of events) {
     if (event.sequence !== expectedSequence) {
