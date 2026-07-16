@@ -17,6 +17,27 @@ tester.run(
     valid: [
       {
         code: `
+          import { setup } from "xstate";
+
+          type ActionParams = {
+            readonly recordRun: undefined;
+          };
+          type GuardParams = {
+            readonly canRun: undefined;
+          };
+          setup<
+            Context,
+            Event,
+            Record<never, never>,
+            Record<never, string>,
+            ActionParams,
+            GuardParams
+          >({});
+        `,
+        filename: "machine.ts",
+      },
+      {
+        code: `
           const RunSchema = Schema.Struct({ runId: Schema.String });
           type Run = typeof RunSchema.Type;
         `,
@@ -98,6 +119,148 @@ tester.run(
       },
     ],
     invalid: [
+      {
+        code: `
+          import { setup } from "xstate";
+          type ExactMetadata = { readonly exact: undefined };
+          type RecordMetadata = Record<string, undefined>;
+          setup<Context, Event, Record<never, never>, Record<never, string>, RecordMetadata, ExactMetadata>({});
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "xstate-record-metadata.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
+          type ExactMetadata = { readonly exact: undefined };
+          type MappedMetadata = {
+            readonly [Key in "recordRun"]: undefined;
+          };
+          setup<Context, Event, Record<never, never>, Record<never, string>, MappedMetadata, ExactMetadata>({});
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "xstate-mapped-metadata.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
+          type ExactMetadata = { readonly exact: undefined };
+          type GenericMetadata<Key extends string> = {
+            readonly [Name in Key]: undefined;
+          };
+          setup<Context, Event, Record<never, never>, Record<never, string>, GenericMetadata<"recordRun">, ExactMetadata>({});
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "xstate-generic-metadata.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
+          type ExactMetadata = { readonly exact: undefined };
+          type ArbitraryMetadata = { readonly recordRun: string };
+          setup<Context, Event, Record<never, never>, Record<never, string>, ArbitraryMetadata, ExactMetadata>({});
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "xstate-arbitrary-metadata.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
+          type ExactMetadata = { readonly exact: undefined };
+          type MixedMetadata = {
+            readonly recordRun: undefined;
+            readonly onRun: () => void;
+          };
+          setup<Context, Event, Record<never, never>, Record<never, string>, MixedMetadata, ExactMetadata>({});
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "xstate-mixed-metadata.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
+          type ExactMetadata = { readonly exact: undefined };
+          type CallbackMetadata = {
+            readonly onRun: () => void;
+          };
+          setup<Context, Event, Record<never, never>, Record<never, string>, CallbackMetadata, ExactMetadata>({});
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "xstate-callback-metadata.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
+          type ExactMetadata = { readonly exact: undefined };
+          type HiddenMetadata = {
+            readonly recordRun: { readonly runId: string };
+          };
+          setup<Context, Event, Record<never, never>, Record<never, string>, HiddenMetadata, ExactMetadata>({});
+        `,
+        errors: 2,
+        filename: "xstate-hidden-metadata.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
+          type MutableMetadata = { recordRun: undefined };
+          type OptionalMetadata = { readonly recordRun?: undefined };
+          type DataMetadata = { readonly recordRun: unknown };
+          setup<Context, Event, Record<never, never>, Record<never, string>, MutableMetadata, OptionalMetadata>({});
+          setup<Context, Event, Record<never, never>, Record<never, string>, DataMetadata, MutableMetadata>({});
+        `,
+        errors: 3,
+        filename: "xstate-inexact-metadata.ts",
+      },
+      {
+        code: `
+          import { setup } from "./counterfeit-xstate";
+          type CounterfeitMetadata = { readonly recordRun: undefined };
+          setup<Context, Event, Record<never, never>, Record<never, string>, CounterfeitMetadata, CounterfeitMetadata>({});
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "counterfeit-xstate.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
+          type ShadowedMetadata = { readonly recordRun: undefined };
+          function build(setup: GenericSetup) {
+            setup<Context, Event, Record<never, never>, Record<never, string>, ShadowedMetadata, ShadowedMetadata>({});
+          }
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "shadowed-xstate.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
+          type WrongPositionMetadata = { readonly recordRun: undefined };
+          type ExactMetadata = { readonly exact: undefined };
+          setup<Context, Event, WrongPositionMetadata, Record<never, string>, ExactMetadata, ExactMetadata>({});
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "xstate-wrong-position.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
+          export type ExportedMetadata = { readonly recordRun: undefined };
+          setup<Context, Event, Record<never, never>, Record<never, string>, ExportedMetadata, ExportedMetadata>({});
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "xstate-exported-metadata.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
+          type ReusedMetadata = { readonly recordRun: undefined };
+          type HiddenReuse = ReusedMetadata;
+          setup<Context, Event, Record<never, never>, Record<never, string>, ReusedMetadata, ReusedMetadata>({});
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "xstate-reused-metadata.ts",
+      },
       {
         code: `type ManualRun = { readonly runId: string };`,
         errors: [

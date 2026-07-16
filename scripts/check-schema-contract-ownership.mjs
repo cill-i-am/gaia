@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const anchorFileName = "__gaia_schema_contract_anchor.ts";
+const xstateAnchorFileName = "__gaia_xstate_contract_anchor.ts";
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const anchorSource = `
   import { Schema } from "effect";
@@ -24,6 +25,7 @@ const anchorSource = `
   )({ value: __GaiaPlainSchema }) {}
   export const __GaiaClassFields = __GaiaClassSchema.fields;
   export const __GaiaUnionSchema = Schema.Union([__GaiaPlainSchema]);
+  export const __GaiaUnionFactory = Schema.Union;
   export const __GaiaUnionMembers = __GaiaUnionSchema.members;
   export const __GaiaLiteralSchema = Schema.Literals(["one", "two"]);
   export const __GaiaLiteralValues = __GaiaLiteralSchema.literals;
@@ -45,6 +47,10 @@ const anchorSource = `
     __GaiaBrandedType,
     __GaiaBrandedType
   >;
+`;
+const xstateAnchorSource = `
+  import { setup } from "xstate";
+  export const __GaiaXStateSetup = setup;
 `;
 
 const schemaFirstRemedy =
@@ -577,7 +583,7 @@ const hasSameDeclaration = (checker, left, right) => {
 const isCanonicalSchemaPipeProperty = (checker, proof, symbol) =>
   hasSameDeclaration(checker, symbol, proof.canonicalSchemaPipeSymbol);
 
-const createSchemaProof = (checker, anchorFile) => ({
+const createSchemaProof = (checker, anchorFile, xstateAnchorFile) => ({
   canonicalDecodedTypeProperty: getCanonicalDecodedTypeProperty(
     checker,
     anchorFile
@@ -596,6 +602,11 @@ const createSchemaProof = (checker, anchorFile) => ({
   canonicalSchemaSuspendSymbol: getCanonicalSchemaSuspendSymbol(
     checker,
     anchorFile
+  ),
+  canonicalSchemaUnionSymbol: getAnchorInitializerSymbol(
+    checker,
+    anchorFile,
+    "__GaiaUnionFactory"
   ),
   canonicalSchemaTypeSymbol: getCanonicalSchemaTypeSymbol(checker, anchorFile),
   effectSchemaConsumers: [
@@ -644,6 +655,11 @@ const createSchemaProof = (checker, anchorFile) => ({
     "__GaiaSchemaConstraint"
   ),
   schemaTopType: getSchemaTopType(checker, anchorFile),
+  xstateSetupSymbol: getAnchorInitializerSymbol(
+    checker,
+    xstateAnchorFile,
+    "__GaiaXStateSetup"
+  ),
 });
 
 const getCanonicalBrandMarker = (checker, anchorFile) => {
@@ -819,7 +835,7 @@ const isExportedVariableDeclaration = (declaration) => {
 const createProgramReferenceIndex = (
   checker,
   program,
-  anchorFile,
+  anchorFiles,
   includeIgnoredPathsForTesting
 ) => {
   const references = new Map();
@@ -842,7 +858,7 @@ const createProgramReferenceIndex = (
   };
   for (const sourceFile of program.getSourceFiles()) {
     if (
-      sourceFile === anchorFile ||
+      anchorFiles.has(sourceFile) ||
       sourceFile.isDeclarationFile ||
       (!includeIgnoredPathsForTesting &&
         isGeneratedFilePath(sourceFile.fileName)) ||
@@ -876,6 +892,12 @@ const isTypeOnlyReference = (node) => {
   }
   return false;
 };
+
+const isImportOrExportReference = (node) =>
+  ts.isImportSpecifier(node.parent) ||
+  ts.isExportSpecifier(node.parent) ||
+  ts.isImportClause(node.parent) ||
+  ts.isNamespaceImport(node.parent);
 
 const isWithin = (node, container) =>
   node.getStart() >= container.getStart() &&
@@ -1110,7 +1132,15 @@ const parameterTypeMayContainSchema = (checker, proof, rootType, limits) => {
   return false;
 };
 
-const createSchemaProvenanceSession = (checker, proof, limits) => {
+const createSchemaProvenanceSession = (
+  checker,
+  proof,
+  limits,
+  {
+    allowCanonicalContainerMemberReferences = false,
+    allowCanonicalFactoryContainerReferences = false,
+  } = {}
+) => {
   const states = new Map();
   const edges = new Map();
   const symbolWork = [];
@@ -1273,9 +1303,17 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
         parent.expression === current
       ) {
         const property = getSymbol(parent.name);
+        const currentProperty = ts.isPropertyAccessExpression(current)
+          ? getSymbol(current.name)
+          : undefined;
+        const containerMember =
+          allowCanonicalContainerMemberReferences &&
+          currentProperty !== undefined &&
+          isCanonicalSchemaContainerProperty(checker, proof, currentProperty);
         if (
-          property === undefined ||
-          !isCanonicalSchemaContainerProperty(checker, proof, property)
+          !containerMember &&
+          (property === undefined ||
+            !isCanonicalSchemaContainerProperty(checker, proof, property))
         ) {
           return undefined;
         }
@@ -1569,6 +1607,12 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
           break;
         }
         if (
+          allowCanonicalFactoryContainerReferences &&
+          isCanonicalFactoryReference(checker, proof, reference)
+        ) {
+          continue;
+        }
+        if (
           safeConsumptionFirst &&
           (isCanonicalFactoryReference(checker, proof, reference) ||
             isExactEffectConsumerReference(reference) ||
@@ -1669,12 +1713,6 @@ const createSchemaProvenanceSession = (checker, proof, limits) => {
       isImmutableContainerInitializer(current.whenFalse)
     );
   };
-
-  const isImportOrExportReference = (node) =>
-    ts.isImportSpecifier(node.parent) ||
-    ts.isExportSpecifier(node.parent) ||
-    ts.isImportClause(node.parent) ||
-    ts.isNamespaceImport(node.parent);
 
   const getIdentityAlias = (reference) => {
     const declaration = findInitializerDeclaration(reference);
@@ -2285,9 +2323,8 @@ const isCanonicalSchemaTypeProjection = (checker, proof, node) => {
   return isSchemaValueEntity(checker, proof, node.typeArguments[0].exprName);
 };
 
-const isCanonicalDecodedTypeAccess = (checker, proof, node) => {
+const hasCanonicalDecodedTypeProperty = (checker, proof, node) => {
   if (ts.isTypeQueryNode(node) && ts.isQualifiedName(node.exprName)) {
-    if (!isSchemaValueEntity(checker, proof, node.exprName.left)) return false;
     const propertySymbol = checker.getSymbolAtLocation(node.exprName.right);
     const schemaValueType = getValueTypeForEntityName(
       checker,
@@ -2326,7 +2363,6 @@ const isCanonicalDecodedTypeAccess = (checker, proof, node) => {
     node.objectType.exprName
   );
   if (
-    !isSchemaValueEntity(checker, proof, node.objectType.exprName) ||
     schemaValueType === undefined ||
     !isSchemaValueType(checker, proof, schemaValueType)
   ) {
@@ -2358,6 +2394,138 @@ const getDecodedAccessEntityName = (node) => {
     return node.objectType.exprName;
   }
   return undefined;
+};
+
+const isCanonicalDecodedTypeAccess = (checker, proof, node) => {
+  const entityName = getDecodedAccessEntityName(node);
+  return (
+    entityName !== undefined &&
+    hasCanonicalDecodedTypeProperty(checker, proof, node) &&
+    isSchemaValueEntity(checker, proof, entityName)
+  );
+};
+
+const unwrapConstContainerInitializer = (node) => {
+  let current = node;
+  while (
+    ts.isNonNullExpression(current) ||
+    ts.isParenthesizedExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    (ts.isAsExpression(current) && ts.isConstTypeReference(current.type))
+  ) {
+    current = current.expression;
+  }
+  return current;
+};
+
+const getLocalConstObjectInitializer = (checker, sourceFile, expression) => {
+  if (!ts.isIdentifier(expression)) return undefined;
+  const symbol = checker.getSymbolAtLocation(expression);
+  const declarations =
+    symbol === undefined
+      ? []
+      : (resolveAlias(checker, symbol).declarations ?? []).filter(
+          ts.isVariableDeclaration
+        );
+  if (
+    declarations.length !== 1 ||
+    declarations[0].getSourceFile() !== sourceFile ||
+    !isConstVariableDeclaration(declarations[0]) ||
+    declarations[0].initializer === undefined
+  ) {
+    return undefined;
+  }
+  const initializer = unwrapConstContainerInitializer(
+    declarations[0].initializer
+  );
+  return ts.isObjectLiteralExpression(initializer) ? initializer : undefined;
+};
+
+const hasNestedLocalContainerSpread = (checker, ownerDeclaration) => {
+  let nested = false;
+  const sourceFile = ownerDeclaration.getSourceFile();
+  const visit = (node) => {
+    if (nested) return;
+    if (ts.isSpreadAssignment(node)) {
+      const initializer = getLocalConstObjectInitializer(
+        checker,
+        sourceFile,
+        node.expression
+      );
+      if (initializer?.properties.some(ts.isSpreadAssignment) === true) {
+        nested = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ownerDeclaration.initializer);
+  return nested;
+};
+
+const hasCrossFileValueReference = (proof, symbol, sourceFile) =>
+  proof.referenceIndex.complete &&
+  (proof.referenceIndex.references.get(symbol) ?? []).some(
+    (reference) =>
+      reference.getSourceFile() !== sourceFile &&
+      !isDeclarationName(reference) &&
+      !isTypeOnlyReference(reference) &&
+      !isImportOrExportReference(reference)
+  );
+
+const isCanonicalCrossFileUnionDecodedTypeAccess = (checker, proof, node) => {
+  if (
+    !ts.isTypeQueryNode(node) ||
+    !ts.isQualifiedName(node.exprName) ||
+    !hasCanonicalDecodedTypeProperty(checker, proof, node)
+  ) {
+    return false;
+  }
+  const symbol = getValueSymbolForEntityName(checker, node.exprName.left);
+  if (symbol === undefined) return false;
+  const declarations = (symbol.declarations ?? []).filter(
+    ts.isVariableDeclaration
+  );
+  if (
+    declarations.length !== 1 ||
+    !isConstVariableDeclaration(declarations[0]) ||
+    !isExportedVariableDeclaration(declarations[0]) ||
+    declarations[0].initializer === undefined ||
+    !ts.isCallExpression(declarations[0].initializer) ||
+    hasNestedLocalContainerSpread(checker, declarations[0])
+  ) {
+    return false;
+  }
+  const unionSymbol = getCanonicalCalleeSymbol(
+    checker,
+    proof,
+    declarations[0].initializer.expression
+  );
+  const canonicalUnion =
+    unionSymbol !== undefined &&
+    hasSameDeclaration(checker, unionSymbol, proof.canonicalSchemaUnionSymbol);
+  const crossFileValueReference = hasCrossFileValueReference(
+    proof,
+    symbol,
+    declarations[0].getSourceFile()
+  );
+  const provenanceLimits = getProvenanceLimits(proof);
+  const canonicalProvenance =
+    canonicalUnion &&
+    crossFileValueReference &&
+    createSchemaProvenanceSession(
+      checker,
+      proof,
+      {
+        ...provenanceLimits,
+        maxWorkItems: provenanceLimits.maxWorkItems * 2,
+      },
+      {
+        allowCanonicalContainerMemberReferences: true,
+        allowCanonicalFactoryContainerReferences: true,
+      }
+    ).proveSymbol(symbol);
+  return canonicalProvenance;
 };
 
 const isCanonicalProviderSchemaInitializer = (
@@ -2571,6 +2739,61 @@ const getContractMembers = (declaration) => {
   return undefined;
 };
 
+const isCanonicalXStateSetupMetadataReference = (checker, proof, reference) => {
+  const typeReference = reference.parent;
+  if (
+    !ts.isTypeReferenceNode(typeReference) ||
+    typeReference.typeName !== reference
+  ) {
+    return false;
+  }
+  const call = typeReference.parent;
+  if (!ts.isCallExpression(call)) return false;
+  const argumentIndex = call.typeArguments?.indexOf(typeReference);
+  if (argumentIndex !== 4 && argumentIndex !== 5) return false;
+  const setupSymbol = checker.getSymbolAtLocation(call.expression);
+  return (
+    setupSymbol !== undefined &&
+    hasSameDeclaration(checker, setupSymbol, proof.xstateSetupSymbol)
+  );
+};
+
+const isXStateSetupMetadataAlias = (checker, proof, declaration) => {
+  if (!proof.referenceIndex.complete) return false;
+  const symbol = checker.getSymbolAtLocation(declaration.name);
+  if (symbol === undefined) return false;
+  const references = proof.referenceIndex.references.get(
+    resolveAlias(checker, symbol)
+  );
+  const uses = (references ?? []).filter(
+    (reference) => !isDeclarationName(reference)
+  );
+  return (
+    uses.length > 0 &&
+    uses.every((reference) =>
+      isCanonicalXStateSetupMetadataReference(checker, proof, reference)
+    )
+  );
+};
+
+const hasExactXStateSetupMetadataShape = (declaration) =>
+  declaration.typeParameters === undefined &&
+  declaration.modifiers?.some(
+    (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
+  ) !== true &&
+  ts.isTypeLiteralNode(declaration.type) &&
+  declaration.type.members.length > 0 &&
+  declaration.type.members.every(
+    (member) =>
+      ts.isPropertySignature(member) &&
+      member.questionToken === undefined &&
+      member.type?.kind === ts.SyntaxKind.UndefinedKeyword &&
+      (ts.isIdentifier(member.name) || ts.isStringLiteral(member.name)) &&
+      member.modifiers?.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword
+      ) === true
+  );
+
 const isFrameworkDeclarationName = (name) =>
   name.endsWith("Props") || name === "Register";
 
@@ -2692,38 +2915,51 @@ const createProgram = (cwd, projectPath) => {
     "packages/runtime/src",
     anchorFileName
   );
+  const virtualXStateAnchorPath = path.join(
+    repoRoot,
+    "packages/core/src",
+    xstateAnchorFileName
+  );
+  const virtualSources = new Map([
+    [path.resolve(virtualAnchorPath), anchorSource],
+    [path.resolve(virtualXStateAnchorPath), xstateAnchorSource],
+  ]);
   const host = ts.createCompilerHost(parsed.options, true);
   const originalFileExists = host.fileExists.bind(host);
   const originalGetSourceFile = host.getSourceFile.bind(host);
   const originalReadFile = host.readFile.bind(host);
   host.fileExists = (fileName) =>
-    path.resolve(fileName) === path.resolve(virtualAnchorPath) ||
-    originalFileExists(fileName);
+    virtualSources.has(path.resolve(fileName)) || originalFileExists(fileName);
   host.readFile = (fileName) =>
-    path.resolve(fileName) === path.resolve(virtualAnchorPath)
-      ? anchorSource
-      : originalReadFile(fileName);
-  host.getSourceFile = (fileName, languageVersion, onError, shouldCreate) =>
-    path.resolve(fileName) === path.resolve(virtualAnchorPath)
-      ? ts.createSourceFile(
+    virtualSources.get(path.resolve(fileName)) ?? originalReadFile(fileName);
+  host.getSourceFile = (fileName, languageVersion, onError, shouldCreate) => {
+    const virtualSource = virtualSources.get(path.resolve(fileName));
+    return virtualSource === undefined
+      ? originalGetSourceFile(fileName, languageVersion, onError, shouldCreate)
+      : ts.createSourceFile(
           fileName,
-          anchorSource,
+          virtualSource,
           languageVersion,
           true,
           ts.ScriptKind.TS
-        )
-      : originalGetSourceFile(fileName, languageVersion, onError, shouldCreate);
+        );
+  };
 
   const program = ts.createProgram({
     host,
     options: parsed.options,
-    rootNames: [...parsed.fileNames, virtualAnchorPath],
+    rootNames: [
+      ...parsed.fileNames,
+      virtualAnchorPath,
+      virtualXStateAnchorPath,
+    ],
   });
   const anchorFile = program.getSourceFile(virtualAnchorPath);
-  if (anchorFile === undefined) {
+  const xstateAnchorFile = program.getSourceFile(virtualXStateAnchorPath);
+  if (anchorFile === undefined || xstateAnchorFile === undefined) {
     throw new Error("Gaia schema-contract checker could not create its anchor");
   }
-  return { anchorFile, program };
+  return { anchorFile, program, xstateAnchorFile };
 };
 
 /**
@@ -2738,14 +2974,17 @@ export function analyzeSchemaContracts({
   projectPath,
   provenanceLimits,
 }) {
-  const { anchorFile, program } = createProgram(cwd, projectPath);
+  const { anchorFile, program, xstateAnchorFile } = createProgram(
+    cwd,
+    projectPath
+  );
   const checker = program.getTypeChecker();
-  const schemaProof = createSchemaProof(checker, anchorFile);
+  const schemaProof = createSchemaProof(checker, anchorFile, xstateAnchorFile);
   schemaProof.provenanceLimits = provenanceLimits;
   schemaProof.referenceIndex = createProgramReferenceIndex(
     checker,
     program,
-    anchorFile,
+    new Set([anchorFile, xstateAnchorFile]),
     includeIgnoredPathsForTesting
   );
   const canonicalBrandMarker = getCanonicalBrandMarker(checker, anchorFile);
@@ -2754,6 +2993,7 @@ export function analyzeSchemaContracts({
   for (const sourceFile of program.getSourceFiles()) {
     if (
       sourceFile === anchorFile ||
+      sourceFile === xstateAnchorFile ||
       sourceFile.isDeclarationFile ||
       (!includeIgnoredPathsForTesting &&
         isGeneratedFilePath(sourceFile.fileName)) ||
@@ -2790,10 +3030,20 @@ export function analyzeSchemaContracts({
       }
 
       if (ts.isTypeAliasDeclaration(node)) {
+        const xstateSetupMetadataAlias = isXStateSetupMetadataAlias(
+          checker,
+          schemaProof,
+          node
+        );
+        const exactXStateSetupMetadataAlias =
+          xstateSetupMetadataAlias && hasExactXStateSetupMetadataShape(node);
         const manualTypeLiteral =
           ts.isTypeLiteralNode(node.type) &&
           !isAllCallable(node.type.members) &&
-          !isFrameworkProps(checker, schemaProof, sourceFile, node);
+          !isFrameworkProps(checker, schemaProof, sourceFile, node) &&
+          !exactXStateSetupMetadataAlias;
+        const invalidXStateSetupMetadataAlias =
+          xstateSetupMetadataAlias && !exactXStateSetupMetadataAlias;
         const unprovenProjection =
           isCanonicalProjectionTypeNode(checker, schemaProof, node.type) &&
           !isSchemaDerivedTypeNode(checker, schemaProof, node.type);
@@ -2809,9 +3059,16 @@ export function analyzeSchemaContracts({
         const unprovenIndexedAccess =
           isSchemaIndexedAccess(checker, schemaProof, node.type) &&
           !isSchemaDerivedTypeNode(checker, schemaProof, node.type);
+        const canonicalCrossFileUnionProjection =
+          isCanonicalCrossFileUnionDecodedTypeAccess(
+            checker,
+            schemaProof,
+            node.type
+          );
         const fakeSchemaType =
           isDecodedTypeAccessCandidate(checker, schemaProof, node.type) &&
-          !isSchemaDerivedTypeNode(checker, schemaProof, node.type);
+          !isSchemaDerivedTypeNode(checker, schemaProof, node.type) &&
+          !canonicalCrossFileUnionProjection;
 
         if (
           manualTypeLiteral ||
@@ -2819,7 +3076,8 @@ export function analyzeSchemaContracts({
           unprovenSchemaTypeProjection ||
           unprovenSchemaGeneric ||
           unprovenIndexedAccess ||
-          fakeSchemaType
+          fakeSchemaType ||
+          invalidXStateSetupMetadataAlias
         ) {
           diagnostics.push(
             createDiagnostic(
