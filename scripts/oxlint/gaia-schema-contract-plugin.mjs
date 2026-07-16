@@ -655,10 +655,15 @@ const statementBindsName = (statement, name) => {
   );
 };
 
+const expressionBindsName = (expression, name) =>
+  (expression.type === "ClassExpression" ||
+    expression.type === "FunctionExpression") &&
+  expression.id?.name === name;
+
 const hasShadowingBinding = (call, name) => {
   let current = call.parent;
   while (current !== undefined && current !== null) {
-    if (current.type === "FunctionExpression" && current.id?.name === name) {
+    if (expressionBindsName(current, name)) {
       return true;
     }
     if (

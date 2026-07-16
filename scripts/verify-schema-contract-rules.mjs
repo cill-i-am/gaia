@@ -255,6 +255,28 @@ tester.run(
       {
         code: `
           import { setup } from "xstate";
+          type ShadowedMetadata = { readonly recordRun: undefined };
+          const Machine = class setup<A, B, C, D, E, F> {
+            static build(input: unknown) {
+              void input;
+              return setup<
+                unknown,
+                unknown,
+                unknown,
+                unknown,
+                ShadowedMetadata,
+                ShadowedMetadata
+              >({});
+            }
+          };
+          void Machine;
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "named-class-expression-shadowed-xstate.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
           type WrongPositionMetadata = { readonly recordRun: undefined };
           type ExactMetadata = { readonly exact: undefined };
           setup<Context, Event, WrongPositionMetadata, Record<never, string>, ExactMetadata, ExactMetadata>({});
