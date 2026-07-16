@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 
+import { RunReportArtifactPathSchema } from "./report.js";
 import { RunIdSchema } from "./run-id.js";
 
 const NonNegativeIntegerSchema = Schema.Int.check(
@@ -72,16 +73,13 @@ export class EvidencePromotionDogfoodSummary extends Schema.Class<EvidencePromot
   summary: Schema.NonEmptyString,
 }) {}
 
-/** JSON-safe selected evidence summary intended for Linear or PR text. */
-export class EvidencePromotion extends Schema.Class<EvidencePromotion>(
-  "EvidencePromotion"
-)({
-  artifactPath: Schema.NonEmptyString,
+const EvidencePromotionFields = {
+  artifactPath: RunReportArtifactPathSchema,
   cleanupStatus: EvidencePromotionCleanupStatusSchema,
   dogfood: EvidencePromotionDogfoodSummary,
   generatedAt: Schema.NonEmptyString,
   markdown: Schema.NonEmptyString,
-  markdownPath: Schema.NonEmptyString,
+  markdownPath: RunReportArtifactPathSchema,
   promotionStatus: EvidencePromotionStatusSchema,
   pullRequest: EvidencePromotionPullRequestSummary,
   reportPaths: EvidencePromotionReportPaths,
@@ -89,7 +87,42 @@ export class EvidencePromotion extends Schema.Class<EvidencePromotion>(
   selectedEvidence: Schema.Array(PromotedEvidenceItem),
   verification: EvidencePromotionVerificationSummary,
   version: Schema.Literal(1),
-}) {}
+};
+
+const MakeEvidencePromotionInputSchema = Schema.Struct({
+  ...EvidencePromotionFields,
+  artifactPath: Schema.toEncoded(RunReportArtifactPathSchema),
+  markdownPath: Schema.toEncoded(RunReportArtifactPathSchema),
+});
+
+/** JSON-safe selected evidence summary intended for Linear or PR text. */
+export class EvidencePromotion extends Schema.Class<EvidencePromotion>(
+  "EvidencePromotion"
+)(EvidencePromotionFields) {
+  /** Decode raw promotion fields into a schema-owned evidence value. */
+  static override make(
+    input: Schema.Schema.Type<typeof MakeEvidencePromotionInputSchema>,
+    options?: Schema.MakeOptions
+  ): EvidencePromotion {
+    if (options?.disableChecks === true) {
+      return new EvidencePromotion(
+        {
+          ...input,
+          artifactPath: RunReportArtifactPathSchema.make(
+            input.artifactPath,
+            options
+          ),
+          markdownPath: RunReportArtifactPathSchema.make(
+            input.markdownPath,
+            options
+          ),
+        },
+        options
+      );
+    }
+    return parseEvidencePromotion(input, options?.parseOptions);
+  }
+}
 
 export const parseEvidencePromotion =
   Schema.decodeUnknownSync(EvidencePromotion);

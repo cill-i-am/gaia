@@ -2,6 +2,16 @@ import * as Schema from "effect/Schema";
 
 import { RunIdSchema } from "./run-id.js";
 
+const RunEventSequenceSchema = Schema.Number.pipe(
+  Schema.check(Schema.isInt({ identifier: "Sequence" }))
+);
+const RunEventTimestampSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("RunEventTimestamp")
+);
+const RunSnapshotEventSequenceSchema = Schema.Number.pipe(
+  Schema.check(Schema.isInt({ identifier: "EventSequence" }))
+);
+
 export const RunStateSchema = Schema.Literals([
   "created",
   "preparingWorkspace",
@@ -91,24 +101,32 @@ export class GaiaFailure extends Schema.Class<GaiaFailure>("GaiaFailure")({
 export class RunEvent extends Schema.Class<RunEvent>("RunEvent")({
   payload: Schema.Record(Schema.String, Schema.Json),
   runId: RunIdSchema,
-  sequence: Schema.Number.pipe(
-    Schema.check(Schema.isInt({ identifier: "Sequence" }))
-  ),
-  timestamp: Schema.NonEmptyString,
+  sequence: RunEventSequenceSchema,
+  timestamp: RunEventTimestampSchema,
   type: EventTypeSchema,
   version: Schema.Literal(1),
 }) {}
 
 export class RunSnapshot extends Schema.Class<RunSnapshot>("RunSnapshot")({
   context: Schema.Record(Schema.String, Schema.Json),
-  eventSequence: Schema.Number.pipe(
-    Schema.check(Schema.isInt({ identifier: "EventSequence" }))
-  ),
+  eventSequence: RunSnapshotEventSequenceSchema,
   runId: RunIdSchema,
   state: RunStateSchema,
-  timestamp: Schema.NonEmptyString,
+  timestamp: RunEventTimestampSchema,
   version: Schema.Literal(1),
 }) {}
+
+const MakeRunEventInputSchema = Schema.Struct({
+  payload: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+  runId: RunIdSchema,
+  sequence: RunEventSequenceSchema,
+  timestamp: Schema.toEncoded(RunEventTimestampSchema),
+  type: EventTypeSchema,
+});
+
+const parseMakeRunEventInput = Schema.decodeUnknownSync(
+  MakeRunEventInputSchema
+);
 
 /** Parse an event read from the append-only event log. */
 export const parseRunEvent = Schema.decodeUnknownSync(RunEvent);
@@ -117,19 +135,16 @@ export const parseRunEvent = Schema.decodeUnknownSync(RunEvent);
 export const parseRunSnapshot = Schema.decodeUnknownSync(RunSnapshot);
 
 /** Create a durable event record. */
-export function makeRunEvent(input: {
-  readonly payload?: Readonly<Record<string, Schema.Json>>;
-  readonly runId: typeof RunIdSchema.Type;
-  readonly sequence: number;
-  readonly timestamp: string;
-  readonly type: EventType;
-}): RunEvent {
-  return RunEvent.make({
-    payload: input.payload ?? {},
-    runId: input.runId,
-    sequence: input.sequence,
-    timestamp: input.timestamp,
-    type: input.type,
+export function makeRunEvent(
+  input: Schema.Schema.Type<typeof MakeRunEventInputSchema>
+): RunEvent {
+  const parsed = parseMakeRunEventInput(input);
+  return parseRunEvent({
+    payload: parsed.payload ?? {},
+    runId: parsed.runId,
+    sequence: parsed.sequence,
+    timestamp: parsed.timestamp,
+    type: parsed.type,
     version: 1,
   });
 }

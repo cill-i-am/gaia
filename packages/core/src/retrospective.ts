@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 
+import { RunReportArtifactPathSchema } from "./report.js";
 import { RunIdSchema } from "./run-id.js";
 
 const PositiveIntegerSchema = Schema.Int.check(
@@ -65,10 +66,8 @@ export class DogfoodFinding extends Schema.Class<DogfoodFinding>(
   summary: Schema.NonEmptyString,
 }) {}
 
-export class DogfoodRetrospective extends Schema.Class<DogfoodRetrospective>(
-  "DogfoodRetrospective"
-)({
-  artifactPath: Schema.NonEmptyString,
+const DogfoodRetrospectiveFields = {
+  artifactPath: RunReportArtifactPathSchema,
   candidateIssueCount: NonNegativeIntegerSchema,
   generatedAt: Schema.NonEmptyString,
   highSignalFindingCount: NonNegativeIntegerSchema,
@@ -80,7 +79,36 @@ export class DogfoodRetrospective extends Schema.Class<DogfoodRetrospective>(
   status: Schema.Literals(["clean", "findings"] as const),
   summary: Schema.NonEmptyString,
   version: Schema.Literal(1),
-}) {}
+};
+
+const MakeDogfoodRetrospectiveInputSchema = Schema.Struct({
+  ...DogfoodRetrospectiveFields,
+  artifactPath: Schema.toEncoded(RunReportArtifactPathSchema),
+});
+
+export class DogfoodRetrospective extends Schema.Class<DogfoodRetrospective>(
+  "DogfoodRetrospective"
+)(DogfoodRetrospectiveFields) {
+  /** Decode raw retrospective fields into a schema-owned dogfood artifact. */
+  static override make(
+    input: Schema.Schema.Type<typeof MakeDogfoodRetrospectiveInputSchema>,
+    options?: Schema.MakeOptions
+  ): DogfoodRetrospective {
+    if (options?.disableChecks === true) {
+      return new DogfoodRetrospective(
+        {
+          ...input,
+          artifactPath: RunReportArtifactPathSchema.make(
+            input.artifactPath,
+            options
+          ),
+        },
+        options
+      );
+    }
+    return parseDogfoodRetrospective(input, options?.parseOptions);
+  }
+}
 
 export const parseDogfoodRetrospective =
   Schema.decodeUnknownSync(DogfoodRetrospective);

@@ -1,7 +1,15 @@
 import * as Schema from "effect/Schema";
 
 import { FactoryLaneRoleSchema } from "./factory-delegation.js";
+import { RunReportArtifactPathSchema } from "./report.js";
 import { RunIdSchema } from "./run-id.js";
+
+const FactoryLaneScorecardCommandSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("FactoryLaneScorecardCommand")
+);
+const FactoryLaneScorecardLaneIdSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("FactoryLaneScorecardLaneId")
+);
 
 export const FactoryLaneScorecardCheckStatusSchema = Schema.Literals([
   "green",
@@ -78,13 +86,49 @@ export class FactoryLaneScorecardSourceLink extends Schema.Class<FactoryLaneScor
   url: Schema.optionalKey(Schema.String),
 }) {}
 
-export class FactoryLaneScorecardVerificationEvidence extends Schema.Class<FactoryLaneScorecardVerificationEvidence>(
-  "FactoryLaneScorecardVerificationEvidence"
-)({
-  command: Schema.NonEmptyString,
+const FactoryLaneScorecardVerificationEvidenceFields = {
+  command: FactoryLaneScorecardCommandSchema,
   path: Schema.optionalKey(Schema.NonEmptyString),
   result: Schema.NonEmptyString,
-}) {}
+};
+
+const MakeFactoryLaneScorecardVerificationEvidenceInputSchema = Schema.Struct({
+  ...FactoryLaneScorecardVerificationEvidenceFields,
+  command: Schema.toEncoded(FactoryLaneScorecardCommandSchema),
+});
+
+export class FactoryLaneScorecardVerificationEvidence extends Schema.Class<FactoryLaneScorecardVerificationEvidence>(
+  "FactoryLaneScorecardVerificationEvidence"
+)(FactoryLaneScorecardVerificationEvidenceFields) {
+  /** Decode raw verification fields into schema-owned scorecard evidence. */
+  static override make(
+    input: Schema.Schema.Type<
+      typeof MakeFactoryLaneScorecardVerificationEvidenceInputSchema
+    >,
+    options?: Schema.MakeOptions
+  ): FactoryLaneScorecardVerificationEvidence {
+    if (options?.disableChecks === true) {
+      return new FactoryLaneScorecardVerificationEvidence(
+        {
+          ...input,
+          command: FactoryLaneScorecardCommandSchema.make(
+            input.command,
+            options
+          ),
+        },
+        options
+      );
+    }
+    return parseFactoryLaneScorecardVerificationEvidence(
+      input,
+      options?.parseOptions
+    );
+  }
+}
+
+const parseFactoryLaneScorecardVerificationEvidence = Schema.decodeUnknownSync(
+  FactoryLaneScorecardVerificationEvidence
+);
 
 export class FactoryLaneScorecardCriterionAssessment extends Schema.Class<FactoryLaneScorecardCriterionAssessment>(
   "FactoryLaneScorecardCriterionAssessment"
@@ -110,9 +154,7 @@ export class FactoryLaneScorecardFactoryLearningSignal extends Schema.Class<Fact
   summary: Schema.NonEmptyString,
 }) {}
 
-export class FactoryLaneScorecardLane extends Schema.Class<FactoryLaneScorecardLane>(
-  "FactoryLaneScorecardLane"
-)({
+const FactoryLaneScorecardLaneFields = {
   checkStatus: FactoryLaneScorecardCheckStatusSchema,
   comparisonWaitStatus: FactoryLaneScorecardComparisonWaitStatusSchema,
   criteria: Schema.Array(FactoryLaneScorecardCriterionAssessment),
@@ -120,38 +162,126 @@ export class FactoryLaneScorecardLane extends Schema.Class<FactoryLaneScorecardL
   headSha: Schema.optionalKey(Schema.NonEmptyString),
   implementationAcceptance: FactoryLaneScorecardImplementationAcceptance,
   label: Schema.NonEmptyString,
-  laneId: Schema.NonEmptyString,
+  laneId: FactoryLaneScorecardLaneIdSchema,
   localVerification: Schema.Array(FactoryLaneScorecardVerificationEvidence),
   pullRequest: Schema.optionalKey(Schema.NonEmptyString),
   role: FactoryLaneRoleSchema,
   sourceLinks: Schema.Array(FactoryLaneScorecardSourceLink),
   tradeoffs: Schema.Array(Schema.NonEmptyString),
-}) {}
+};
+
+const MakeFactoryLaneScorecardLaneInputSchema = Schema.Struct({
+  ...FactoryLaneScorecardLaneFields,
+  laneId: Schema.toEncoded(FactoryLaneScorecardLaneIdSchema),
+});
+
+export class FactoryLaneScorecardLane extends Schema.Class<FactoryLaneScorecardLane>(
+  "FactoryLaneScorecardLane"
+)(FactoryLaneScorecardLaneFields) {
+  /** Decode raw lane fields into a schema-owned scorecard lane. */
+  static override make(
+    input: Schema.Schema.Type<typeof MakeFactoryLaneScorecardLaneInputSchema>,
+    options?: Schema.MakeOptions
+  ): FactoryLaneScorecardLane {
+    if (options?.disableChecks === true) {
+      return new FactoryLaneScorecardLane(
+        {
+          ...input,
+          laneId: FactoryLaneScorecardLaneIdSchema.make(input.laneId, options),
+        },
+        options
+      );
+    }
+    return parseFactoryLaneScorecardLane(input, options?.parseOptions);
+  }
+}
+
+const FactoryLaneScorecardPreferredLaneFields = {
+  laneId: FactoryLaneScorecardLaneIdSchema,
+  rationale: Schema.NonEmptyString,
+  tradeoffsPreserved: Schema.Array(Schema.NonEmptyString),
+};
+
+const MakeFactoryLaneScorecardPreferredLaneInputSchema = Schema.Struct({
+  ...FactoryLaneScorecardPreferredLaneFields,
+  laneId: Schema.toEncoded(FactoryLaneScorecardLaneIdSchema),
+});
 
 export class FactoryLaneScorecardPreferredLane extends Schema.Class<FactoryLaneScorecardPreferredLane>(
   "FactoryLaneScorecardPreferredLane"
-)({
-  laneId: Schema.NonEmptyString,
-  rationale: Schema.NonEmptyString,
-  tradeoffsPreserved: Schema.Array(Schema.NonEmptyString),
-}) {}
+)(FactoryLaneScorecardPreferredLaneFields) {
+  /** Decode raw recommendation fields into a schema-owned preferred lane. */
+  static override make(
+    input: Schema.Schema.Type<
+      typeof MakeFactoryLaneScorecardPreferredLaneInputSchema
+    >,
+    options?: Schema.MakeOptions
+  ): FactoryLaneScorecardPreferredLane {
+    if (options?.disableChecks === true) {
+      return new FactoryLaneScorecardPreferredLane(
+        {
+          ...input,
+          laneId: FactoryLaneScorecardLaneIdSchema.make(input.laneId, options),
+        },
+        options
+      );
+    }
+    return parseFactoryLaneScorecardPreferredLane(input, options?.parseOptions);
+  }
+}
 
-/** Inspectable A/B lane comparison artifact for orchestrator decisions. */
-export class FactoryLaneScorecard extends Schema.Class<FactoryLaneScorecard>(
-  "FactoryLaneScorecard"
-)({
-  artifactPath: Schema.NonEmptyString,
+const parseFactoryLaneScorecardPreferredLane = Schema.decodeUnknownSync(
+  FactoryLaneScorecardPreferredLane
+);
+
+const FactoryLaneScorecardFields = {
+  artifactPath: RunReportArtifactPathSchema,
   comparisonSummary: Schema.NonEmptyString,
   generatedAt: Schema.NonEmptyString,
   lanes: Schema.Array(FactoryLaneScorecardLane),
   markdown: Schema.NonEmptyString,
-  markdownPath: Schema.NonEmptyString,
+  markdownPath: RunReportArtifactPathSchema,
   notes: Schema.Array(Schema.NonEmptyString),
   preferredLane: Schema.optionalKey(FactoryLaneScorecardPreferredLane),
   recommendationSummary: Schema.NonEmptyString,
   runId: RunIdSchema,
   version: Schema.Literal(1),
-}) {}
+};
+
+const MakeFactoryLaneScorecardInputSchema = Schema.Struct({
+  ...FactoryLaneScorecardFields,
+  artifactPath: Schema.toEncoded(RunReportArtifactPathSchema),
+  markdownPath: Schema.toEncoded(RunReportArtifactPathSchema),
+});
+
+/** Inspectable A/B lane comparison artifact for orchestrator decisions. */
+export class FactoryLaneScorecard extends Schema.Class<FactoryLaneScorecard>(
+  "FactoryLaneScorecard"
+)(FactoryLaneScorecardFields) {
+  /** Decode raw scorecard fields into a schema-owned comparison artifact. */
+  static override make(
+    input: Schema.Schema.Type<typeof MakeFactoryLaneScorecardInputSchema>,
+    options?: Schema.MakeOptions
+  ): FactoryLaneScorecard {
+    if (options?.disableChecks === true) {
+      return new FactoryLaneScorecard(
+        {
+          ...input,
+          artifactPath: RunReportArtifactPathSchema.make(
+            input.artifactPath,
+            options
+          ),
+          markdownPath: RunReportArtifactPathSchema.make(
+            input.markdownPath,
+            options
+          ),
+        },
+        options
+      );
+    }
+    return parseFactoryLaneScorecard(input, options?.parseOptions);
+  }
+}
 
 export const parseFactoryLaneScorecard =
   Schema.decodeUnknownSync(FactoryLaneScorecard);
