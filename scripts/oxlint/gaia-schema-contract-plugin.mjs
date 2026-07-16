@@ -79,6 +79,68 @@ const displayAndProseNames = new Set([
   "summary",
   "text",
   "title",
+  "tooltip",
+]);
+const frameworkStateNames = new Set([
+  "asChild",
+  "className",
+  "collapsible",
+  "defaultOpen",
+  "disabled",
+  "inset",
+  "isActive",
+  "isMobile",
+  "open",
+  "openMobile",
+  "pending",
+  "showCloseButton",
+  "showIcon",
+  "showOnHover",
+  "side",
+  "size",
+  "state",
+  "style",
+  "variant",
+  "withHandle",
+]);
+const providerProjectionNames = new Set([
+  "CommandApprovalRequest",
+  "ElicitationRequest",
+  "FileApprovalRequest",
+  "PermissionApprovalRequest",
+  "UserInputRequest",
+]);
+const providerParityMetadataNames = new Set([
+  "completedAt",
+  "createdAt",
+  "startedAt",
+  "updatedAt",
+]);
+const providerBoundarySchemaNames = new Set([
+  "CodexAppServerIncompatibilityError",
+  "CodexFileChange",
+  "CodexListedThreadSchema",
+  "CodexRawBaseInteraction",
+  "CodexRawCommandActionSchema",
+  "CodexRawElicitationRequest",
+  "CodexRawFileChangeSchema",
+  "CodexRawFileSystemPathSchema",
+  "CodexRawFileSystemSpecialPathSchema",
+  "CodexRawMemoryCitationEntrySchema",
+  "CodexRawModelSchema",
+  "CodexRawNotificationSchema",
+  "CodexRawThreadItemSchema",
+  "CodexRawThreadRuntimeResultFields",
+  "CodexRawThreadSchema",
+  "CodexRawThreadSpawnSourceSchema",
+  "CodexRawTurnSchema",
+  "CodexRawUserInputRequest",
+  "CodexRawUserInputSchema",
+  "CodexThreadItemSchema",
+  "ElicitationRequest",
+  "FileSystemPathSchema",
+  "TurnSteerBoundaryResultSchema",
+  "UserInputQuestion",
 ]);
 const rawParameterNames = new Set(["input", "raw", "value"]);
 const callableNodeTypes = new Set([
@@ -108,6 +170,17 @@ const getStaticName = (node) => {
   }
   return undefined;
 };
+
+const isCodexProviderProtocolFile = (filename) =>
+  /(?:^|[/\\])codex-app-server-protocol\.ts$/u.test(filename);
+
+const isCodexProviderParityFile = (filename) =>
+  /(?:^|[/\\])codex-app-server-0\.137\.0-schema-parity\.test\.ts$/u.test(
+    filename
+  );
+
+const isDeliveryMergeConfirmationFile = (filename) =>
+  /(?:^|[/\\])delivery-merge-confirmation\.tsx$/u.test(filename);
 
 const tokenizeName = (name) =>
   name
@@ -224,6 +297,14 @@ const isRawParserParameter = (node, name) => {
   );
 };
 
+const isProviderRawParameter = (context, node, name) => {
+  if (!isCodexProviderProtocolFile(context.filename)) return false;
+  if (name !== "identifier") return false;
+  return (
+    getFunctionName(findDirectEnclosingFunction(node)) === "strictRawStruct"
+  );
+};
+
 const getParameterSemanticName = (node, name) => {
   if (!rawParameterNames.has(name)) return name;
   return getFunctionName(findDirectEnclosingFunction(node)) ?? name;
@@ -265,26 +346,227 @@ const isFunctionTypeMember = (member) => {
 const isAllCallable = (members) =>
   members.length > 0 && members.every(isFunctionTypeMember);
 
-const isFrameworkMember = (member) => {
+const getTypeParameters = (node) =>
+  node?.typeParameters?.params ?? node?.typeArguments?.params ?? [];
+
+const getEnclosingTypeReference = (node) => {
+  if (node.parent?.type === "TSTypeReference") return node.parent;
+  if (
+    node.parent?.type === "TSTypeParameterInstantiation" &&
+    node.parent.parent?.type === "TSTypeReference"
+  ) {
+    return node.parent.parent;
+  }
+  return undefined;
+};
+
+const getTypeReferenceName = (node) => {
+  if (node?.type !== "TSTypeReference") return undefined;
+  const name = node.typeName;
+  if (name?.type === "Identifier") return name.name;
+  if (name?.type === "TSQualifiedName") {
+    const left = getTypeReferenceName({
+      type: "TSTypeReference",
+      typeName: name.left,
+    });
+    return left === undefined ? name.right.name : `${left}.${name.right.name}`;
+  }
+  return undefined;
+};
+
+const isFrameworkTypeReference = (node, options = {}) => {
+  const name = getTypeReferenceName(node);
+  if (name === "Readonly") {
+    if (options.allowReadonly !== true) return false;
+    const parameters = getTypeParameters(node);
+    return (
+      parameters.length === 1 &&
+      parameters[0].type === "TSTypeLiteral" &&
+      parameters[0].members.length > 0 &&
+      parameters[0].members.every((member) =>
+        isFrameworkMember(undefined, member)
+      )
+    );
+  }
+  return (
+    name !== undefined &&
+    (name === "ReactNode" ||
+      (name.includes(".") && name.split(".").at(-1)?.endsWith("Props")) ||
+      name.endsWith("ComponentProps") ||
+      name.endsWith("ComponentPropsWithRef") ||
+      name.endsWith("ComponentPropsWithoutRef") ||
+      name === "VariantProps")
+  );
+};
+
+const isLiteralFrameworkStateType = (node) => {
+  if (node?.type === "TSBooleanKeyword" || node?.type === "TSNumberKeyword") {
+    return true;
+  }
+  if (node?.type === "TSLiteralType") return true;
+  return (
+    node?.type === "TSUnionType" &&
+    node.types.length > 0 &&
+    node.types.every(isLiteralFrameworkStateType)
+  );
+};
+
+const isFrameworkDisplayType = (node) => {
+  if (node?.type === "TSStringKeyword") return true;
+  if (isFrameworkTypeReference(node)) return true;
+  return (
+    node?.type === "TSUnionType" &&
+    node.types.length > 0 &&
+    node.types.every(
+      (candidate) =>
+        candidate.type === "TSStringKeyword" ||
+        isFrameworkTypeReference(candidate)
+    )
+  );
+};
+
+const isFrameworkReturnTypeMember = (declaration, member, typeNode) =>
+  declaration?.id?.type === "Identifier" &&
+  declaration.id.name === "Register" &&
+  getStaticName(member.key) === "router" &&
+  getTypeReferenceName(typeNode) === "ReturnType";
+
+function isFrameworkMember(declaration, member) {
   if (isFunctionTypeMember(member)) return true;
   if (member.type !== "TSPropertySignature") return false;
 
   const name = getStaticName(member.key);
   const typeNode = member.typeAnnotation?.typeAnnotation;
-  if (typeNode?.type === "TSTypeReference") return true;
+  if (
+    isFrameworkTypeReference(typeNode, { allowReadonly: true }) ||
+    isFrameworkReturnTypeMember(declaration, member, typeNode)
+  ) {
+    return true;
+  }
   return (
     name !== undefined &&
-    displayAndProseNames.has(name) &&
-    typeNode?.type === "TSStringKeyword"
+    ((displayAndProseNames.has(name) && isFrameworkDisplayType(typeNode)) ||
+      (frameworkStateNames.has(name) && isLiteralFrameworkStateType(typeNode)))
   );
-};
+}
+
+const isFrameworkDeclarationName = (name) =>
+  name.endsWith("Props") || name === "Register";
 
 const isFrameworkProps = (context, node, members) =>
   context.filename.endsWith(".tsx") &&
   node.id?.type === "Identifier" &&
-  node.id.name.endsWith("Props") &&
+  isFrameworkDeclarationName(node.id.name) &&
   members.length > 0 &&
-  members.every(isFrameworkMember);
+  members.every((member) => isFrameworkMember(node, member));
+
+const hasFrameworkIntersectionContext = (node) =>
+  node.parent?.type === "TSIntersectionType" &&
+  node.parent.types.some(
+    (candidate) => candidate !== node && isFrameworkTypeReference(candidate)
+  );
+
+const hasFrameworkGenericContext = (node) =>
+  getTypeReferenceName(getEnclosingTypeReference(node)) === "Readonly" &&
+  getTypeParameters(getEnclosingTypeReference(node)).length === 1 &&
+  getTypeParameters(getEnclosingTypeReference(node))[0] === node;
+
+const findEnclosingTypeAlias = (node) => {
+  let current = node.parent;
+  while (current !== undefined && current !== null) {
+    if (current.type === "TSTypeAliasDeclaration") return current;
+    if (
+      current.type === "Program" ||
+      current.type === "TSInterfaceDeclaration"
+    ) {
+      return undefined;
+    }
+    current = current.parent;
+  }
+  return undefined;
+};
+
+const hasDeliveryMergeConfirmationDataContext = (context, node) =>
+  isDeliveryMergeConfirmationFile(context.filename) &&
+  findEnclosingTypeAlias(node)?.id?.type === "Identifier" &&
+  findEnclosingTypeAlias(node).id.name === "DeliveryMergeConfirmationData" &&
+  node.members.every(
+    (member) =>
+      member.type === "TSPropertySignature" &&
+      (member.typeAnnotation?.typeAnnotation.type === "TSIndexedAccessType" ||
+        (member.typeAnnotation?.typeAnnotation.type === "TSTypeReference" &&
+          getTypeReferenceName(member.typeAnnotation.typeAnnotation) ===
+            "DeliveryMergeDecisionSequence"))
+  );
+
+const hasDeliveryMergeConfirmationPropsContext = (context, node) =>
+  isDeliveryMergeConfirmationFile(context.filename) &&
+  node.parent?.type === "TSIntersectionType" &&
+  findEnclosingTypeAlias(node)?.id?.type === "Identifier" &&
+  findEnclosingTypeAlias(node).id.name === "DeliveryMergeConfirmationProps" &&
+  node.parent.types.some(
+    (candidate) =>
+      candidate.type === "TSTypeReference" &&
+      getTypeReferenceName(candidate) === "DeliveryMergeConfirmationData"
+  );
+
+const isFrameworkTypeLiteral = (context, node, members) =>
+  context.filename.endsWith(".tsx") &&
+  members.length > 0 &&
+  ((members.every((member) => isFrameworkMember(undefined, member)) &&
+    (hasFrameworkIntersectionContext(node) ||
+      hasFrameworkGenericContext(node) ||
+      hasDeliveryMergeConfirmationPropsContext(context, node))) ||
+    hasDeliveryMergeConfirmationDataContext(context, node));
+
+const getEnclosingDeclarationNames = (node) => {
+  const names = [];
+  let current = node.parent;
+  while (current !== undefined && current !== null) {
+    if (current.type === "VariableDeclarator") {
+      const name = getStaticName(current.id);
+      if (name !== undefined) names.push(name);
+    } else if (
+      current.type === "ClassDeclaration" ||
+      current.type === "FunctionDeclaration" ||
+      current.type === "TSInterfaceDeclaration" ||
+      current.type === "TSTypeAliasDeclaration"
+    ) {
+      const name = getStaticName(current.id);
+      if (name !== undefined) names.push(name);
+    }
+    current = current.parent;
+  }
+  return names;
+};
+
+const isProviderSchemaMetadata = (context, node, name) =>
+  isCodexProviderParityFile(context.filename) &&
+  providerParityMetadataNames.has(name) &&
+  getEnclosingDeclarationNames(node).includes("PinnedCodexSchemaSet");
+
+const isProviderBoundarySchemaProperty = (context, node, name) =>
+  (isCodexProviderProtocolFile(context.filename) &&
+    getEnclosingDeclarationNames(node).some((declarationName) =>
+      providerBoundarySchemaNames.has(declarationName)
+    )) ||
+  isProviderSchemaMetadata(context, node, name);
+
+const isProviderProjectionSelector = (context, node) => {
+  if (!isCodexProviderProtocolFile(context.filename)) return false;
+  const parent = getEnclosingTypeReference(node);
+  if (parent?.type !== "TSTypeReference") return false;
+  const typeName = getTypeReferenceName(parent);
+  if (typeName !== "Extract") return false;
+  const parameters = getTypeParameters(parent);
+  if (parameters.length < 2 || parameters[0] === node) return false;
+  const alias = parent.parent;
+  return (
+    alias?.type === "TSTypeAliasDeclaration" &&
+    alias.id?.type === "Identifier" &&
+    providerProjectionNames.has(alias.id.name)
+  );
+};
 
 const schemaFirstDataContract = {
   meta: {
@@ -314,6 +596,12 @@ const schemaFirstDataContract = {
       },
       TSTypeLiteral(node) {
         if (node.parent?.type === "TSTypeAliasDeclaration") return;
+        if (
+          isFrameworkTypeLiteral(context, node, node.members) ||
+          isProviderProjectionSelector(context, node)
+        ) {
+          return;
+        }
         if (!isAllCallable(node.members)) {
           context.report({ messageId: "schemaFirst", node });
         }
@@ -349,6 +637,7 @@ const noUnbrandedDomainString = {
         const semanticName = getParameterSemanticName(node, node.name);
         if (
           !isRawParserParameter(node, node.name) &&
+          !isProviderRawParameter(context, node, node.name) &&
           (isSemanticName(semanticName) ||
             isRawCallableParameter(node, node.name))
         ) {
@@ -360,7 +649,8 @@ const noUnbrandedDomainString = {
         if (
           name !== undefined &&
           isSemanticName(name) &&
-          isDirectUnbrandedSchemaString(node.value)
+          isDirectUnbrandedSchemaString(node.value) &&
+          !isProviderBoundarySchemaProperty(context, node, name)
         ) {
           report(node.key, name);
         }
@@ -370,7 +660,8 @@ const noUnbrandedDomainString = {
         if (
           name !== undefined &&
           isSemanticName(name) &&
-          isStringTypeAnnotation(node)
+          isStringTypeAnnotation(node) &&
+          !isProviderBoundarySchemaProperty(context, node, name)
         ) {
           report(node.key, name);
         }

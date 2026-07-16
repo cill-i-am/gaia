@@ -63,8 +63,61 @@ const displayAndProseNames = new Set([
   "summary",
   "text",
   "title",
+  "tooltip",
 ]);
-const frameworkTypeNames = new Set(["Element", "ReactElement", "ReactNode"]);
+const frameworkStateNames = new Set([
+  "asChild",
+  "className",
+  "collapsible",
+  "defaultOpen",
+  "disabled",
+  "inset",
+  "isActive",
+  "isMobile",
+  "open",
+  "openMobile",
+  "pending",
+  "showCloseButton",
+  "showIcon",
+  "showOnHover",
+  "side",
+  "size",
+  "state",
+  "style",
+  "variant",
+  "withHandle",
+]);
+const frameworkTypeNames = new Set([
+  "ComponentProps",
+  "ComponentPropsWithRef",
+  "ComponentPropsWithoutRef",
+  "Element",
+  "Props",
+  "ReactElement",
+  "ReactNode",
+  "VariantProps",
+]);
+const providerDecodedSchemaNames = new Set([
+  "CodexNotificationSchema",
+  "CodexServerRequestSchema",
+]);
+const providerProjectionNames = new Set([
+  "CommandApprovalRequest",
+  "ElicitationRequest",
+  "FileApprovalRequest",
+  "PermissionApprovalRequest",
+  "UserInputRequest",
+]);
+const providerProjectionSchemaNames = new Set([
+  "CodexNotificationProjectionSchema",
+  "CodexServerRequestProjectionSchema",
+]);
+
+const isGeneratedFilePath = (fileName) =>
+  path.basename(fileName).includes(".gen.");
+
+const isCodexProviderProtocolSourceFile = (sourceFile) =>
+  path.basename(sourceFile.fileName) === "codex-app-server-protocol.ts";
 
 const resolveAlias = (checker, symbol) => {
   let current = symbol;
@@ -114,16 +167,96 @@ const getPropertyName = (name) => {
   return undefined;
 };
 
-const isFrameworkTypeNode = (node) => {
-  if (!ts.isTypeReferenceNode(node)) return false;
-  if (ts.isIdentifier(node.typeName)) {
-    return frameworkTypeNames.has(node.typeName.text);
-  }
+const getTypeReferenceName = (node) => {
+  if (!ts.isTypeReferenceNode(node)) return undefined;
+  if (ts.isIdentifier(node.typeName)) return node.typeName.text;
   return (
     ts.isQualifiedName(node.typeName) &&
-    frameworkTypeNames.has(node.typeName.right.text)
+    `${getEntityNameText(node.typeName.left)}.${node.typeName.right.text}`
   );
 };
+
+const getEntityNameText = (node) => {
+  if (ts.isIdentifier(node)) return node.text;
+  return `${getEntityNameText(node.left)}.${node.right.text}`;
+};
+
+function isLiteralFrameworkStateType(node) {
+  if (
+    node.kind === ts.SyntaxKind.BooleanKeyword ||
+    node.kind === ts.SyntaxKind.NumberKeyword
+  ) {
+    return true;
+  }
+  if (ts.isLiteralTypeNode(node)) return true;
+  return (
+    ts.isUnionTypeNode(node) &&
+    node.types.length > 0 &&
+    node.types.every(isLiteralFrameworkStateType)
+  );
+}
+
+function isFrameworkDisplayType(node) {
+  if (node.kind === ts.SyntaxKind.StringKeyword) return true;
+  if (isFrameworkTypeNode(node)) return true;
+  return (
+    ts.isUnionTypeNode(node) &&
+    node.types.length > 0 &&
+    node.types.every(
+      (candidate) =>
+        candidate.kind === ts.SyntaxKind.StringKeyword ||
+        isFrameworkTypeNode(candidate)
+    )
+  );
+}
+
+function isFrameworkStructuralMember(member) {
+  if (
+    ts.isCallSignatureDeclaration(member) ||
+    ts.isConstructSignatureDeclaration(member) ||
+    ts.isMethodSignature(member) ||
+    (ts.isPropertySignature(member) &&
+      member.type !== undefined &&
+      ts.isFunctionTypeNode(member.type))
+  ) {
+    return true;
+  }
+  if (!ts.isPropertySignature(member) || member.type === undefined) {
+    return false;
+  }
+  const name = getPropertyName(member.name);
+  return (
+    isFrameworkTypeNode(member.type, { allowReadonly: true }) ||
+    (name !== undefined &&
+      ((displayAndProseNames.has(name) &&
+        isFrameworkDisplayType(member.type)) ||
+        (frameworkStateNames.has(name) &&
+          isLiteralFrameworkStateType(member.type))))
+  );
+}
+
+function isFrameworkTypeNode(node, { allowReadonly = false } = {}) {
+  if (!ts.isTypeReferenceNode(node)) return false;
+  const typeName = getTypeReferenceName(node);
+  if (typeName === "Readonly") {
+    const argument = node.typeArguments?.[0];
+    return (
+      allowReadonly &&
+      node.typeArguments?.length === 1 &&
+      argument !== undefined &&
+      ts.isTypeLiteralNode(argument) &&
+      argument.members.length > 0 &&
+      argument.members.every(isFrameworkStructuralMember)
+    );
+  }
+  if (typeName === undefined) return false;
+  const rightName = typeName.split(".").at(-1);
+  return (
+    rightName !== undefined &&
+    (frameworkTypeNames.has(rightName) ||
+      (typeName.includes(".") && rightName.endsWith("Props")))
+  );
+}
 
 const getSchemaTopType = (checker, anchorFile) => {
   const declaration = anchorFile.statements.find(
@@ -700,6 +833,8 @@ const createProgramReferenceIndex = (
     if (
       sourceFile === anchorFile ||
       sourceFile.isDeclarationFile ||
+      (!includeIgnoredPathsForTesting &&
+        isGeneratedFilePath(sourceFile.fileName)) ||
       (!includeIgnoredPathsForTesting &&
         sourceFile.fileName.includes(`${path.sep}node_modules${path.sep}`))
     ) {
@@ -2204,6 +2339,101 @@ const isCanonicalDecodedTypeAccess = (checker, proof, node) => {
   );
 };
 
+const getDecodedAccessEntityName = (node) => {
+  if (ts.isTypeQueryNode(node) && ts.isQualifiedName(node.exprName)) {
+    return node.exprName.left;
+  }
+  if (ts.isIndexedAccessTypeNode(node) && ts.isTypeQueryNode(node.objectType)) {
+    return node.objectType.exprName;
+  }
+  return undefined;
+};
+
+const isCanonicalProviderSchemaInitializer = (
+  checker,
+  proof,
+  initializer,
+  sourceFile,
+  seenSymbols = new Set()
+) => {
+  if (
+    ts.isIdentifier(initializer) ||
+    ts.isPropertyAccessExpression(initializer)
+  ) {
+    const symbol = checker.getSymbolAtLocation(initializer);
+    if (symbol === undefined) return false;
+    const resolved = resolveAlias(checker, symbol);
+    if (seenSymbols.has(resolved)) return false;
+    seenSymbols.add(resolved);
+    return (resolved.declarations ?? []).some((declaration) => {
+      if (
+        !ts.isVariableDeclaration(declaration) ||
+        !ts.isIdentifier(declaration.name) ||
+        declaration.getSourceFile() !== sourceFile ||
+        declaration.initializer === undefined
+      ) {
+        return false;
+      }
+      if (
+        providerProjectionSchemaNames.has(declaration.name.text) &&
+        ts.isCallExpression(declaration.initializer)
+      ) {
+        try {
+          return (
+            isCanonicalCallShape(checker, proof, declaration.initializer) &&
+            isSchemaValueType(
+              checker,
+              proof,
+              checker.getTypeAtLocation(declaration.initializer)
+            )
+          );
+        } catch {
+          return false;
+        }
+      }
+      return isCanonicalProviderSchemaInitializer(
+        checker,
+        proof,
+        declaration.initializer,
+        sourceFile,
+        seenSymbols
+      );
+    });
+  }
+  return isCanonicalSchemaValueExpression(checker, proof, initializer);
+};
+
+const isProviderDecodedSchemaEntity = (checker, proof, entityName) => {
+  const symbol = getValueSymbolForEntityName(checker, entityName);
+  if (symbol === undefined) return false;
+  const resolved = resolveAlias(checker, symbol);
+  return (resolved.declarations ?? []).some((declaration) => {
+    if (
+      !ts.isVariableDeclaration(declaration) ||
+      !ts.isIdentifier(declaration.name) ||
+      !providerDecodedSchemaNames.has(declaration.name.text) ||
+      !isCodexProviderProtocolSourceFile(declaration.getSourceFile()) ||
+      declaration.initializer === undefined
+    ) {
+      return false;
+    }
+    return isCanonicalProviderSchemaInitializer(
+      checker,
+      proof,
+      declaration.initializer,
+      declaration.getSourceFile()
+    );
+  });
+};
+
+const isProviderDecodedTypeAccess = (checker, proof, node) => {
+  const entityName = getDecodedAccessEntityName(node);
+  return (
+    entityName !== undefined &&
+    isProviderDecodedSchemaEntity(checker, proof, entityName)
+  );
+};
+
 const isSchemaDerivedTypeNode = (
   checker,
   proof,
@@ -2215,7 +2445,10 @@ const isSchemaDerivedTypeNode = (
   }
 
   if (ts.isTypeQueryNode(node) || ts.isIndexedAccessTypeNode(node)) {
-    return isCanonicalDecodedTypeAccess(checker, proof, node);
+    return (
+      isCanonicalDecodedTypeAccess(checker, proof, node) ||
+      isProviderDecodedTypeAccess(checker, proof, node)
+    );
   }
 
   if (ts.isTypeReferenceNode(node)) {
@@ -2269,6 +2502,31 @@ const hasSchemaOwnerTypeArgument = (checker, proof, node) =>
     isSchemaOwnerTypeArgument(checker, proof, argument)
   ) === true;
 
+const isCanonicalProjectionSelectorTypeLiteral = (
+  checker,
+  proof,
+  sourceFile,
+  node
+) => {
+  if (!isCodexProviderProtocolSourceFile(sourceFile)) return false;
+  const parent = node.parent;
+  if (
+    !ts.isTypeReferenceNode(parent) ||
+    !isCanonicalProjectionTypeNode(checker, proof, parent)
+  ) {
+    return false;
+  }
+  const typeArguments = parent.typeArguments ?? [];
+  if (typeArguments[0] === undefined || typeArguments[0] === node) {
+    return false;
+  }
+  return (
+    ts.isTypeAliasDeclaration(parent.parent) &&
+    providerProjectionNames.has(parent.parent.name.text) &&
+    isSchemaDerivedTypeNode(checker, proof, typeArguments[0])
+  );
+};
+
 const isSchemaIndexedAccess = (checker, proof, node) =>
   ts.isIndexedAccessTypeNode(node) &&
   ts.isTypeQueryNode(node.objectType) &&
@@ -2302,38 +2560,80 @@ const getContractMembers = (declaration) => {
   return undefined;
 };
 
+const isFrameworkDeclarationName = (name) =>
+  name.endsWith("Props") || name === "Register";
+
+const isFrameworkReturnTypeMember = (declaration, member) =>
+  declaration !== undefined &&
+  ts.isInterfaceDeclaration(declaration) &&
+  declaration.name.text === "Register" &&
+  ts.isPropertySignature(member) &&
+  getPropertyName(member.name) === "router" &&
+  member.type !== undefined &&
+  ts.isTypeReferenceNode(member.type) &&
+  getTypeReferenceName(member.type) === "ReturnType";
+
+const isFrameworkMember = (checker, proof, declaration, member) => {
+  if (
+    ts.isCallSignatureDeclaration(member) ||
+    ts.isConstructSignatureDeclaration(member) ||
+    ts.isMethodSignature(member) ||
+    (ts.isPropertySignature(member) &&
+      member.type !== undefined &&
+      ts.isFunctionTypeNode(member.type))
+  ) {
+    return true;
+  }
+  if (!ts.isPropertySignature(member) || member.type === undefined) {
+    return false;
+  }
+  const name = getPropertyName(member.name);
+  return (
+    isFrameworkTypeNode(member.type, { allowReadonly: true }) ||
+    isFrameworkReturnTypeMember(declaration, member) ||
+    isSchemaDerivedTypeNode(checker, proof, member.type) ||
+    (name !== undefined &&
+      ((displayAndProseNames.has(name) &&
+        isFrameworkDisplayType(member.type)) ||
+        (frameworkStateNames.has(name) &&
+          isLiteralFrameworkStateType(member.type))))
+  );
+};
+
 const isFrameworkProps = (checker, proof, sourceFile, declaration) => {
   const members = getContractMembers(declaration);
   return (
     members !== undefined &&
     sourceFile.fileName.endsWith(".tsx") &&
-    declaration.name.text.endsWith("Props") &&
+    isFrameworkDeclarationName(declaration.name.text) &&
     members.length > 0 &&
-    members.every((member) => {
-      if (
-        ts.isCallSignatureDeclaration(member) ||
-        ts.isConstructSignatureDeclaration(member) ||
-        ts.isMethodSignature(member) ||
-        (ts.isPropertySignature(member) &&
-          member.type !== undefined &&
-          ts.isFunctionTypeNode(member.type))
-      ) {
-        return true;
-      }
-      if (!ts.isPropertySignature(member) || member.type === undefined) {
-        return false;
-      }
-      const name = getPropertyName(member.name);
-      return (
-        (name !== undefined &&
-          displayAndProseNames.has(name) &&
-          member.type.kind === ts.SyntaxKind.StringKeyword) ||
-        isFrameworkTypeNode(member.type) ||
-        isSchemaDerivedTypeNode(checker, proof, member.type)
-      );
-    })
+    members.every((member) =>
+      isFrameworkMember(checker, proof, declaration, member)
+    )
   );
 };
+
+const hasFrameworkIntersectionContext = (node) =>
+  ts.isIntersectionTypeNode(node.parent) &&
+  node.parent.types.some(
+    (candidate) => candidate !== node && isFrameworkTypeNode(candidate)
+  );
+
+const hasFrameworkReadonlyContext = (node) =>
+  ts.isTypeReferenceNode(node.parent) &&
+  getTypeReferenceName(node.parent) === "Readonly" &&
+  node.parent.typeArguments?.length === 1 &&
+  node.parent.typeArguments[0] === node;
+
+const isFrameworkTypeLiteral = (checker, proof, sourceFile, node) =>
+  sourceFile.fileName.endsWith(".tsx") &&
+  node.members.length > 0 &&
+  node.members.every((member) =>
+    isFrameworkMember(checker, proof, undefined, member)
+  ) &&
+  (isAllCallable(node.members) ||
+    hasFrameworkIntersectionContext(node) ||
+    hasFrameworkReadonlyContext(node));
 
 const createDiagnostic = (cwd, sourceFile, node, rule, message, remedy) => {
   const position = sourceFile.getLineAndCharacterOfPosition(
@@ -2429,6 +2729,8 @@ export function analyzeSchemaContracts({
     if (
       sourceFile === anchorFile ||
       sourceFile.isDeclarationFile ||
+      (!includeIgnoredPathsForTesting &&
+        isGeneratedFilePath(sourceFile.fileName)) ||
       (!includeIgnoredPathsForTesting &&
         sourceFile.fileName.includes(`${path.sep}node_modules${path.sep}`))
     ) {
@@ -2527,6 +2829,13 @@ export function analyzeSchemaContracts({
         ts.isTypeLiteralNode(node) &&
         !ts.isTypeAliasDeclaration(node.parent) &&
         !ts.isIntersectionTypeNode(node.parent) &&
+        !isCanonicalProjectionSelectorTypeLiteral(
+          checker,
+          schemaProof,
+          sourceFile,
+          node
+        ) &&
+        !isFrameworkTypeLiteral(checker, schemaProof, sourceFile, node) &&
         !isAllCallable(node.members)
       ) {
         diagnostics.push(

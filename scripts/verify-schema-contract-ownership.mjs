@@ -91,6 +91,8 @@ try {
       import { RunIdSchema, RunSchema } from "./reexport.js";
       import type { Run, RunDto } from "./reexport.js";
       export type RunSummary = Pick<Run, "runId">;
+      export type RunRemainder = Omit<Run, never>;
+      export type RunById = Extract<Run, Run>;
       export type RunDtoSummary = Pick<RunDto, "runId">;
       export type RunIndexed = typeof RunSchema["Type"];
       export type RunIdViaCanonicalUtility =
@@ -259,6 +261,9 @@ try {
   await writeFile(
     path.join(projectRoot, "counterfeit-types.d.ts"),
     `
+      export type Extract<T, U> = {
+        readonly manuallyExtracted: string;
+      };
       export type Pick<T, K extends keyof T> = {
         readonly manuallyAuthored: string;
       };
@@ -287,8 +292,9 @@ try {
     `
       import { RunSchema } from "./reexport.js";
       import type { Run } from "./reexport.js";
-      import type { Pick, Wrapper } from "./counterfeit-types.js";
+      import type { Extract, Pick, Wrapper } from "./counterfeit-types.js";
 
+      export type CounterfeitExtract = Extract<Run, Run>;
       export type CounterfeitPick = Pick<Run, "runId">;
       export type SchemaWrapper = Wrapper<typeof RunSchema>;
       export type SchemaMetadata = typeof RunSchema["fields"];
@@ -542,6 +548,14 @@ try {
     `
       import type { ManualRun } from "./manual.js";
       export type ManualRunSummary = Pick<ManualRun, "runId">;
+      export type ManualRunExtract = Extract<
+        ManualRun,
+        { readonly runId: string }
+      >;
+      export type CommandApprovalRequest = Extract<
+        ManualRun,
+        { readonly runId: string }
+      >;
     `
   );
   await writeFile(
@@ -585,6 +599,31 @@ try {
         readonly runId: RunId;
         readonly onSelect: (runId: RunId) => void;
       };
+    `
+  );
+  await writeFile(
+    path.join(projectRoot, "framework-shell.tsx"),
+    `
+      import type { ReactNode } from "react";
+      export type SidebarContextProps = {
+        readonly state: "expanded" | "collapsed";
+        readonly open: boolean;
+        readonly setOpen: (open: boolean) => void;
+        readonly openMobile: boolean;
+        readonly setOpenMobile: (open: boolean) => void;
+        readonly isMobile: boolean;
+        readonly toggleSidebar: () => void;
+      };
+      export function RootDocument({
+        children,
+      }: Readonly<{ children: ReactNode }>) {
+        return children;
+      }
+      export function Card(
+        props: React.ComponentProps<"div"> & { size?: "default" | "sm" }
+      ) {
+        return props.children;
+      }
     `
   );
   await writeFile(
@@ -807,7 +846,22 @@ try {
     schemaDiagnostic("counterfeit.ts", 6, 19),
     schemaDiagnostic("counterfeit.ts", 7, 19),
     schemaDiagnostic("counterfeit.ts", 8, 19),
+    schemaDiagnostic("counterfeit.ts", 9, 19),
     schemaDiagnostic("derived-manual.ts", 3, 19),
+    schemaDiagnostic("derived-manual.ts", 4, 19),
+    schemaDiagnostic(
+      "derived-manual.ts",
+      6,
+      9,
+      "Nested operation data contract has no compiler-proven Schema origin."
+    ),
+    schemaDiagnostic("derived-manual.ts", 8, 19),
+    schemaDiagnostic(
+      "derived-manual.ts",
+      10,
+      9,
+      "Nested operation data contract has no compiler-proven Schema origin."
+    ),
     schemaDiagnostic("fake-type.ts", 3, 19),
     schemaDiagnostic("fake-type.ts", 4, 19),
     schemaDiagnostic("manual.ts", 1, 13),
@@ -910,6 +964,45 @@ try {
     "a local structural marker must not acquire Effect Brand provenance"
   );
   assert.match(diagnostics.at(-1).remedy, /owning Effect Schema/u);
+
+  const generatedProjectRoot = await mkdtemp(
+    path.join(repoRoot, ".gaia-schema-contract-generated-")
+  );
+  try {
+    await writeFile(
+      path.join(generatedProjectRoot, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          exactOptionalPropertyTypes: true,
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          noEmit: true,
+          skipLibCheck: true,
+          strict: true,
+          target: "ES2024",
+        },
+        include: ["*.ts"],
+      })
+    );
+    await writeFile(
+      path.join(generatedProjectRoot, "routeTree.gen.ts"),
+      `export type GeneratedRoute = { readonly routeId: string };`
+    );
+    await writeFile(
+      path.join(generatedProjectRoot, "manual.ts"),
+      `export type ManualRun = { readonly runId: string };`
+    );
+    assert.deepEqual(
+      analyzeSchemaContracts({
+        cwd: generatedProjectRoot,
+        projectPath: path.join(generatedProjectRoot, "tsconfig.json"),
+      }),
+      [schemaDiagnostic("manual.ts", 1, 13)],
+      "generated files matching **/*.gen.* must be excluded from the compiler stream"
+    );
+  } finally {
+    await rm(generatedProjectRoot, { force: true, recursive: true });
+  }
 
   const syntaxFailurePath = path.join(projectRoot, "syntax-failure.mjs");
   const ownershipFailurePath = path.join(projectRoot, "ownership-failure.mjs");
