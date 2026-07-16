@@ -5,7 +5,7 @@ import { RunIdSchema } from "./run-id.js";
 const RunEventSequenceSchema = Schema.Number.pipe(
   Schema.check(Schema.isInt({ identifier: "Sequence" }))
 );
-const RunEventTimestampSchema = Schema.NonEmptyString.pipe(
+export const RunEventTimestampSchema = Schema.NonEmptyString.pipe(
   Schema.brand("RunEventTimestamp")
 );
 const RunSnapshotEventSequenceSchema = Schema.Number.pipe(

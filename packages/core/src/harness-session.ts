@@ -1,7 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { makeRunEvent, type RunEvent } from "./events.js";
-import type { RunId } from "./run-id.js";
+import { makeRunEvent, RunEvent } from "./events.js";
 
 const IdTextSchema = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isMaxLength(200))
@@ -560,9 +559,11 @@ export const HarnessFailureSchema = Schema.Union([
 /** A typed provider-neutral session failure. */
 export type HarnessFailure = typeof HarnessFailureSchema.Type;
 
-const SessionEventBase = { sessionId: HarnessSessionIdSchema } as const;
-const OperatorActionBase = {
-  ...SessionEventBase,
+const HarnessSessionEventBaseSchema = Schema.Struct({
+  sessionId: HarnessSessionIdSchema,
+});
+const HarnessOperatorActionEventBaseSchema = Schema.Struct({
+  ...HarnessSessionEventBaseSchema.fields,
   actionId: HarnessActionIdSchema,
   actionKind: Schema.Literals([
     "followUp",
@@ -577,94 +578,119 @@ const OperatorActionBase = {
     Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
   ),
   targetId: Schema.optionalKey(IdTextSchema),
-} as const;
+});
+
+const HarnessSessionStartedEventSchema = Schema.Struct({
+  ...HarnessSessionEventBaseSchema.fields,
+  capabilities: HarnessCapabilities,
+  kind: Schema.Literal("sessionStarted"),
+  provider: HarnessProviderDescriptor,
+  state: HarnessNonFailureSessionStateSchema,
+});
+const HarnessSessionStateChangedEventSchema = Schema.Struct({
+  ...HarnessSessionEventBaseSchema.fields,
+  kind: Schema.Literal("sessionStateChanged"),
+  state: HarnessNonFailureSessionStateSchema,
+});
+const HarnessTurnStartedEventSchema = Schema.Struct({
+  ...HarnessSessionEventBaseSchema.fields,
+  kind: Schema.Literal("turnStarted"),
+  turnId: HarnessTurnIdSchema,
+});
+const HarnessItemDeltaRecordedEventSchema = Schema.Struct({
+  ...HarnessSessionEventBaseSchema.fields,
+  chunk: BoundedOutputSchema,
+  deltaKind: Schema.Literals(["message", "commandOutput"] as const),
+  itemId: HarnessItemIdSchema,
+  kind: Schema.Literal("itemDeltaRecorded"),
+  turnId: HarnessTurnIdSchema,
+});
+const HarnessItemUpsertedEventSchema = Schema.Struct({
+  ...HarnessSessionEventBaseSchema.fields,
+  final: Schema.Boolean,
+  item: HarnessItemSchema,
+  kind: Schema.Literal("itemUpserted"),
+  turnId: Schema.optionalKey(HarnessTurnIdSchema),
+});
+const HarnessInteractionRequestedEventSchema = Schema.Struct({
+  ...HarnessSessionEventBaseSchema.fields,
+  interaction: HarnessPendingInteractionSchema,
+  kind: Schema.Literal("interactionRequested"),
+});
+const HarnessInteractionResolvedEventSchema = Schema.Struct({
+  ...HarnessSessionEventBaseSchema.fields,
+  kind: Schema.Literal("interactionResolved"),
+  resolution: HarnessInteractionResolutionSchema,
+});
+const HarnessInteractionCancelledEventSchema = Schema.Struct({
+  ...HarnessSessionEventBaseSchema.fields,
+  interactionId: HarnessInteractionIdSchema,
+  kind: Schema.Literal("interactionCancelled"),
+  reason: Schema.Literals(["providerResolved", "turnTerminal"] as const),
+});
+const HarnessTurnCompletedEventSchema = Schema.Struct({
+  ...HarnessSessionEventBaseSchema.fields,
+  failure: Schema.optionalKey(HarnessFailureSchema),
+  kind: Schema.Literal("turnCompleted"),
+  status: HarnessTerminalTurnStatusSchema,
+  turnId: HarnessTurnIdSchema,
+});
+const HarnessSessionRecoveredEventSchema = Schema.Struct({
+  ...HarnessSessionEventBaseSchema.fields,
+  kind: Schema.Literal("sessionRecovered"),
+});
+const HarnessSessionFailedEventSchema = Schema.Struct({
+  ...HarnessSessionEventBaseSchema.fields,
+  failure: HarnessFailureSchema,
+  kind: Schema.Literal("sessionFailed"),
+});
+const HarnessOperatorActionIntentRecordedEventSchema = Schema.Struct({
+  ...HarnessOperatorActionEventBaseSchema.fields,
+  kind: Schema.Literal("operatorActionIntentRecorded"),
+});
+const HarnessOperatorActionDispatchAttemptedEventSchema = Schema.Struct({
+  ...HarnessOperatorActionEventBaseSchema.fields,
+  kind: Schema.Literal("operatorActionDispatchAttempted"),
+});
+const HarnessOperatorActionDispatchConfirmedEventSchema = Schema.Struct({
+  ...HarnessOperatorActionEventBaseSchema.fields,
+  kind: Schema.Literal("operatorActionDispatchConfirmed"),
+});
+const HarnessOperatorActionDispatchFailedEventSchema = Schema.Struct({
+  ...HarnessOperatorActionEventBaseSchema.fields,
+  kind: Schema.Literal("operatorActionDispatchFailed"),
+  message: BoundedTextSchema,
+});
 
 /** Finite authoritative event vocabulary used inside Gaia run events. */
 export const HarnessEventSchema = Schema.Union([
-  Schema.Struct({
-    ...SessionEventBase,
-    capabilities: HarnessCapabilities,
-    kind: Schema.Literal("sessionStarted"),
-    provider: HarnessProviderDescriptor,
-    state: HarnessNonFailureSessionStateSchema,
-  }),
-  Schema.Struct({
-    ...SessionEventBase,
-    kind: Schema.Literal("sessionStateChanged"),
-    state: HarnessNonFailureSessionStateSchema,
-  }),
-  Schema.Struct({
-    ...SessionEventBase,
-    kind: Schema.Literal("turnStarted"),
-    turnId: HarnessTurnIdSchema,
-  }),
-  Schema.Struct({
-    ...SessionEventBase,
-    chunk: BoundedOutputSchema,
-    deltaKind: Schema.Literals(["message", "commandOutput"] as const),
-    itemId: HarnessItemIdSchema,
-    kind: Schema.Literal("itemDeltaRecorded"),
-    turnId: HarnessTurnIdSchema,
-  }),
-  Schema.Struct({
-    ...SessionEventBase,
-    final: Schema.Boolean,
-    item: HarnessItemSchema,
-    kind: Schema.Literal("itemUpserted"),
-    turnId: Schema.optionalKey(HarnessTurnIdSchema),
-  }),
-  Schema.Struct({
-    ...SessionEventBase,
-    interaction: HarnessPendingInteractionSchema,
-    kind: Schema.Literal("interactionRequested"),
-  }),
-  Schema.Struct({
-    ...SessionEventBase,
-    kind: Schema.Literal("interactionResolved"),
-    resolution: HarnessInteractionResolutionSchema,
-  }),
-  Schema.Struct({
-    ...SessionEventBase,
-    interactionId: HarnessInteractionIdSchema,
-    kind: Schema.Literal("interactionCancelled"),
-    reason: Schema.Literals(["providerResolved", "turnTerminal"] as const),
-  }),
-  Schema.Struct({
-    ...SessionEventBase,
-    failure: Schema.optionalKey(HarnessFailureSchema),
-    kind: Schema.Literal("turnCompleted"),
-    status: HarnessTerminalTurnStatusSchema,
-    turnId: HarnessTurnIdSchema,
-  }),
-  Schema.Struct({
-    ...SessionEventBase,
-    kind: Schema.Literal("sessionRecovered"),
-  }),
-  Schema.Struct({
-    ...SessionEventBase,
-    failure: HarnessFailureSchema,
-    kind: Schema.Literal("sessionFailed"),
-  }),
-  Schema.Struct({
-    ...OperatorActionBase,
-    kind: Schema.Literal("operatorActionIntentRecorded"),
-  }),
-  Schema.Struct({
-    ...OperatorActionBase,
-    kind: Schema.Literal("operatorActionDispatchAttempted"),
-  }),
-  Schema.Struct({
-    ...OperatorActionBase,
-    kind: Schema.Literal("operatorActionDispatchConfirmed"),
-  }),
-  Schema.Struct({
-    ...OperatorActionBase,
-    kind: Schema.Literal("operatorActionDispatchFailed"),
-    message: BoundedTextSchema,
-  }),
+  HarnessSessionStartedEventSchema,
+  HarnessSessionStateChangedEventSchema,
+  HarnessTurnStartedEventSchema,
+  HarnessItemDeltaRecordedEventSchema,
+  HarnessItemUpsertedEventSchema,
+  HarnessInteractionRequestedEventSchema,
+  HarnessInteractionResolvedEventSchema,
+  HarnessInteractionCancelledEventSchema,
+  HarnessTurnCompletedEventSchema,
+  HarnessSessionRecoveredEventSchema,
+  HarnessSessionFailedEventSchema,
+  HarnessOperatorActionIntentRecordedEventSchema,
+  HarnessOperatorActionDispatchAttemptedEventSchema,
+  HarnessOperatorActionDispatchConfirmedEventSchema,
+  HarnessOperatorActionDispatchFailedEventSchema,
 ]);
 /** A decoded authoritative provider-neutral session event. */
 export type HarnessEvent = typeof HarnessEventSchema.Type;
+
+type HarnessSessionStartedEvent = typeof HarnessSessionStartedEventSchema.Type;
+type HarnessSessionRecoveredEvent =
+  typeof HarnessSessionRecoveredEventSchema.Type;
+type HarnessItemDeltaRecordedEvent =
+  typeof HarnessItemDeltaRecordedEventSchema.Type;
+type HarnessItemUpsertedEvent = typeof HarnessItemUpsertedEventSchema.Type;
+type HarnessInteractionRequestedEvent =
+  typeof HarnessInteractionRequestedEventSchema.Type;
 
 /** Maximum cumulative canonical event bytes retained for one session projection. */
 export const HarnessSessionEventBudgetBytes = 16_777_216;
@@ -730,21 +756,28 @@ export function missingHarnessCapabilities(
   );
 }
 
+const MakeHarnessRunEventInputSchema = Schema.Struct({
+  event: HarnessEventSchema,
+  runId: RunEvent.fields.runId,
+  sequence: RunEvent.fields.sequence,
+  timestamp: Schema.toEncoded(RunEvent.fields.timestamp),
+});
+const parseMakeHarnessRunEventInput = Schema.decodeUnknownSync(
+  MakeHarnessRunEventInputSchema
+);
+
 /** Wrap one finite harness event in the authoritative Gaia run-event envelope. */
-export function makeHarnessRunEvent(input: {
-  readonly event: HarnessEvent;
-  readonly runId: RunId;
-  readonly sequence: number;
-  readonly timestamp: string;
-}): RunEvent {
-  const encoded = Schema.encodeSync(HarnessEventSchema)(
-    parseHarnessEvent(input.event)
-  );
+export function makeHarnessRunEvent(
+  input: typeof MakeHarnessRunEventInputSchema.Type
+): RunEvent {
+  const parsed = parseMakeHarnessRunEventInput(input);
+  const event = parseHarnessEvent(parsed.event);
+  const encoded = Schema.encodeSync(HarnessEventSchema)(event);
   return makeRunEvent({
     payload: { event: encoded },
-    runId: input.runId,
-    sequence: input.sequence,
-    timestamp: input.timestamp,
+    runId: parsed.runId,
+    sequence: parsed.sequence,
+    timestamp: parsed.timestamp,
     type: "HARNESS_SESSION_EVENT_RECORDED",
   });
 }
@@ -835,43 +868,57 @@ export function projectHarnessEvents(
   });
 }
 
-type MutableTurn = {
-  failure?: HarnessFailure;
-  status: HarnessTurnStatus;
-  terminal: boolean;
-  turnId: HarnessTurnId;
-};
+const HarnessMutableTurnSchema = Schema.Struct({
+  failure: Schema.mutableKey(Schema.optionalKey(HarnessFailureSchema)),
+  status: Schema.mutableKey(HarnessTurnStatusSchema),
+  terminal: Schema.mutableKey(Schema.Boolean),
+  turnId: HarnessTurnIdSchema,
+});
+type HarnessMutableTurn = typeof HarnessMutableTurnSchema.Type;
 
-type MutableProjection = {
-  capabilities: HarnessCapabilities;
-  failure?: HarnessFailure;
-  items: Map<HarnessItemId, { final: boolean; item: HarnessItem }>;
-  pendingInteractions: Map<HarnessInteractionId, HarnessPendingInteraction>;
-  provider: HarnessProviderDescriptor;
-  recovered: boolean;
-  resolvedInteractions: Array<HarnessResolvedInteraction>;
-  sessionId: HarnessSessionId;
-  state: HarnessSessionState;
-  terminal: boolean;
-  turns: Map<HarnessTurnId, MutableTurn>;
-};
+const HarnessProjectedItemSchema = Schema.Struct({
+  final: Schema.Boolean,
+  item: HarnessItemSchema,
+});
 
-function startProjection(
-  event: Extract<HarnessEvent, { readonly kind: "sessionStarted" }>
-): MutableProjection {
-  return {
+const HarnessProjectionStateSchema = Schema.Struct({
+  capabilities: HarnessCapabilities,
+  failure: Schema.mutableKey(Schema.optionalKey(HarnessFailureSchema)),
+  provider: HarnessProviderDescriptor,
+  recovered: Schema.mutableKey(Schema.Boolean),
+  resolvedInteractions: Schema.mutable(
+    Schema.Array(HarnessResolvedInteraction)
+  ),
+  sessionId: HarnessSessionIdSchema,
+  state: Schema.mutableKey(HarnessSessionStateSchema),
+  terminal: Schema.mutableKey(Schema.Boolean),
+});
+const parseHarnessProjectionState = Schema.decodeUnknownSync(
+  HarnessProjectionStateSchema
+);
+
+function startProjection(event: HarnessSessionStartedEvent) {
+  const state = parseHarnessProjectionState({
     capabilities: event.capabilities,
-    items: new Map(),
-    pendingInteractions: new Map(),
     provider: event.provider,
     recovered: false,
     resolvedInteractions: [],
     sessionId: event.sessionId,
     state: event.state,
     terminal: isTerminalSessionState(event.state),
-    turns: new Map(),
+  });
+  return {
+    ...state,
+    items: new Map<HarnessItemId, typeof HarnessProjectedItemSchema.Type>(),
+    pendingInteractions: new Map<
+      HarnessInteractionId,
+      HarnessPendingInteraction
+    >(),
+    turns: new Map<HarnessTurnId, HarnessMutableTurn>(),
   };
 }
+
+type MutableProjection = ReturnType<typeof startProjection>;
 
 function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
   if (
@@ -1054,7 +1101,7 @@ function applyEvent(projection: MutableProjection, event: HarnessEvent): void {
 function canRecoverTerminalProjection(
   projection: MutableProjection,
   event: HarnessEvent
-): event is Extract<HarnessEvent, { readonly kind: "sessionRecovered" }> {
+): event is HarnessSessionRecoveredEvent {
   return (
     event.kind === "sessionRecovered" &&
     projection.state === "failed" &&
@@ -1065,7 +1112,7 @@ function canRecoverTerminalProjection(
 
 function applyItemDelta(
   projection: MutableProjection,
-  event: Extract<HarnessEvent, { readonly kind: "itemDeltaRecorded" }>
+  event: HarnessItemDeltaRecordedEvent
 ): void {
   const existing = projection.items.get(event.itemId);
   const turn = projection.turns.get(event.turnId);
@@ -1086,7 +1133,7 @@ function applyItemDelta(
         kind: "message",
         phase: "unknown",
         status: "streaming",
-        text: truncatePreview(`${priorText}${event.chunk}`),
+        text: truncateText(`${priorText}${event.chunk}`),
         turnId: event.turnId,
       }),
     });
@@ -1098,14 +1145,14 @@ function applyItemDelta(
     final: false,
     item: Schema.decodeUnknownSync(HarnessItemSchema)({
       ...existing.item,
-      output: truncatePreview(`${existing.item.output ?? ""}${event.chunk}`),
+      output: truncateText(`${existing.item.output ?? ""}${event.chunk}`),
     }),
   });
 }
 
 function applyItemUpsert(
   projection: MutableProjection,
-  event: Extract<HarnessEvent, { readonly kind: "itemUpserted" }>
+  event: HarnessItemUpsertedEvent
 ): void {
   const existing = projection.items.get(event.item.itemId);
   const eventTurnId = event.turnId;
@@ -1137,7 +1184,9 @@ function applyItemUpsert(
   }
 }
 
-function truncatePreview(value: string): string {
+function truncateText(
+  value: typeof Schema.String.Type
+): typeof BoundedOutputSchema.Type {
   const marker = "\n[preview truncated]";
   return value.length <= 65_536
     ? value
@@ -1182,10 +1231,10 @@ function requireCompatibleResolution(
 function requireEventCapability(
   capabilities: HarnessCapabilities,
   event:
-    | Extract<HarnessEvent, { readonly kind: "itemDeltaRecorded" }>
-    | Extract<HarnessEvent, { readonly kind: "itemUpserted" }>
-    | Extract<HarnessEvent, { readonly kind: "interactionRequested" }>
-    | Extract<HarnessEvent, { readonly kind: "sessionRecovered" }>
+    | HarnessItemDeltaRecordedEvent
+    | HarnessItemUpsertedEvent
+    | HarnessInteractionRequestedEvent
+    | HarnessSessionRecoveredEvent
 ): void {
   let required: HarnessCapability | undefined;
   switch (event.kind) {

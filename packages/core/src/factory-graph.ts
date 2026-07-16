@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 
+import { RunEventTimestampSchema } from "./events.js";
 import { ResolvedHarnessExecution } from "./harness-execution.js";
 import { RunIdSchema } from "./run-id.js";
 
@@ -169,7 +170,7 @@ export type FactoryExternalRefProvider =
 /** A source-exact absolute HTTP(S) external reference URL. */
 export const FactoryExternalRefUrlSchema = Schema.NonEmptyString.pipe(
   Schema.check(
-    Schema.makeFilter(isExactHttpUrl, {
+    Schema.makeFilter(matchesExternalReference, {
       expected: "an absolute http(s) URL without whitespace or backslashes",
     })
   ),
@@ -231,7 +232,7 @@ export class FactoryArtifactDto extends Schema.Class<FactoryArtifactDto>(
 )({
   artifactId: FactoryArtifactIdSchema,
   contentType: FactoryArtifactContentTypeSchema,
-  createdAt: Schema.NonEmptyString,
+  createdAt: RunEventTimestampSchema,
   customKind: Schema.optionalKey(Schema.NonEmptyString),
   kind: FactoryArtifactKindSchema,
   label: Schema.NonEmptyString,
@@ -262,7 +263,7 @@ export class FactoryActivityDto extends Schema.Class<FactoryActivityDto>(
   sequence: NonNegativeInteger,
   state: FactoryAgentStateSchema,
   subState: Schema.optionalKey(Schema.NonEmptyString),
-  timestamp: Schema.NonEmptyString,
+  timestamp: RunEventTimestampSchema,
   workItemId: Schema.optionalKey(FactoryWorkItemIdSchema),
 }) {}
 
@@ -304,7 +305,9 @@ export class FactoryRootWorkItemSummaryDto extends Schema.Class<FactoryRootWorkI
   title: Schema.NonEmptyString,
 }) {}
 
-function isExactHttpUrl(value: string): boolean {
+function matchesExternalReference(
+  value: typeof Schema.NonEmptyString.Type
+): boolean {
   if (value.trim() !== value || /[\s\\]/u.test(value)) return false;
   try {
     const url = new URL(value);
@@ -396,11 +399,11 @@ export class FactoryRunSummaryDto extends Schema.Class<FactoryRunSummaryDto>(
 )({
   activeAgent: Schema.optionalKey(FactoryRunAgentSummaryDto),
   counts: FactoryRunCountsDto,
-  createdAt: Schema.NonEmptyString,
+  createdAt: RunEventTimestampSchema,
   rootWorkItem: FactoryRootWorkItemSummaryDto,
   runId: RunIdSchema,
   state: FactoryAgentStateSchema,
-  updatedAt: Schema.NonEmptyString,
+  updatedAt: RunEventTimestampSchema,
   workflow: FactoryWorkflowIdSchema,
 }) {}
 
@@ -410,12 +413,12 @@ export class FactoryRunDetailDto extends Schema.Class<FactoryRunDetailDto>(
 )({
   activeAgent: Schema.optionalKey(FactoryRunAgentSummaryDto),
   counts: FactoryRunCountsDto,
-  createdAt: Schema.NonEmptyString,
+  createdAt: RunEventTimestampSchema,
   execution: ResolvedHarnessExecution,
   rootWorkItem: FactoryRootWorkItemSummaryDto,
   runId: RunIdSchema,
   state: FactoryAgentStateSchema,
-  updatedAt: Schema.NonEmptyString,
+  updatedAt: RunEventTimestampSchema,
   urls: Schema.Struct({
     activity: Schema.NonEmptyString,
     artifacts: Schema.NonEmptyString,
