@@ -5,6 +5,7 @@ import {
   FactoryArtifactIdSchema,
   FactoryGraphDto,
   FactoryWorkItemIdSchema,
+  RunEvent,
   RunIdSchema,
 } from "@gaia/core";
 import { Schema } from "effect";
@@ -20,6 +21,10 @@ import {
   type InspectorResource,
 } from "@/selected-node-inspector-model";
 import { testFactoryExecution } from "@/test-factory-execution";
+
+const decodeRunEventTimestamp = Schema.decodeUnknownSync(
+  RunEvent.fields.timestamp
+);
 
 describe("selected node inspector model", () => {
   it("represents no-run, loading, and no-selection states honestly", () => {
@@ -358,7 +363,7 @@ function activityFixture(input: {
     runId: runId("run-1234567890"),
     sequence: input.sequence ?? 1,
     state: "running",
-    timestamp: "2026-07-08T12:00:00.000Z",
+    timestamp: decodeRunEventTimestamp("2026-07-08T12:00:00.000Z"),
     ...(input.agentId === undefined ? {} : { agentId: agentId(input.agentId) }),
     ...(input.workItemId === undefined
       ? {}
@@ -374,7 +379,7 @@ function artifactFixture(input: {
   return {
     artifactId: artifactId(input.artifactId),
     contentType: "text/markdown" as const,
-    createdAt: "2026-07-08T12:00:00.000Z",
+    createdAt: decodeRunEventTimestamp("2026-07-08T12:00:00.000Z"),
     kind: "codeSummary" as const,
     label: input.label,
     ownerAgentId: agentId(input.ownerAgentId),

@@ -20,6 +20,7 @@ import {
   FactoryEdgeIdSchema,
   FactoryGraphNodeIdSchema,
   FactoryWorkItemIdSchema,
+  RunEvent,
   RunIdSchema,
   makeRunEvent,
   parseHarnessActionId,
@@ -52,6 +53,10 @@ import {
 } from "@/components/dashboard-shell";
 import type { DashboardGaiaClientError } from "@/lib/local-gaia-client";
 import { testFactoryExecution } from "@/test-factory-execution";
+
+const decodeRunEventTimestamp = Schema.decodeUnknownSync(
+  RunEvent.fields.timestamp
+);
 
 type CreateRunAcceptedFixture = {
   readonly acceptedAt: string;
@@ -1566,7 +1571,7 @@ describe("DashboardShell Run Console", () => {
         sequence: 3,
         state: "running",
         subState: "plan",
-        timestamp: "2026-07-08T12:02:00.000Z",
+        timestamp: decodeRunEventTimestamp("2026-07-08T12:02:00.000Z"),
       }),
       factoryActivity({
         activityId: activityId("activity-review-plan-completed"),
@@ -1577,7 +1582,7 @@ describe("DashboardShell Run Console", () => {
         sequence: 4,
         state: "succeeded",
         subState: "plan",
-        timestamp: "2026-07-08T12:03:00.000Z",
+        timestamp: decodeRunEventTimestamp("2026-07-08T12:03:00.000Z"),
       }),
       factoryActivity({
         activityId: activityId("activity-review-evidence-started"),
@@ -1588,7 +1593,7 @@ describe("DashboardShell Run Console", () => {
         sequence: 9,
         state: "running",
         subState: "evidence",
-        timestamp: "2026-07-08T12:08:00.000Z",
+        timestamp: decodeRunEventTimestamp("2026-07-08T12:08:00.000Z"),
       }),
       factoryActivity({
         activityId: activityId("activity-review-evidence-completed"),
@@ -1599,7 +1604,7 @@ describe("DashboardShell Run Console", () => {
         sequence: 10,
         state: "succeeded",
         subState: "evidence",
-        timestamp: "2026-07-08T12:09:00.000Z",
+        timestamp: decodeRunEventTimestamp("2026-07-08T12:09:00.000Z"),
       }),
     ];
     try {
@@ -3474,7 +3479,7 @@ function factoryActivity(
     kind: "factory.activity",
     sequence: 1,
     state: "running",
-    timestamp: "2026-07-08T12:00:00.000Z",
+    timestamp: decodeRunEventTimestamp("2026-07-08T12:00:00.000Z"),
     ...input,
     activityId: input.activityId,
     label: input.label,
@@ -3491,7 +3496,7 @@ function factoryArtifact(
 ): typeof FactoryArtifactDto.Type {
   return {
     contentType: "text/markdown",
-    createdAt: "2026-07-08T12:01:00.000Z",
+    createdAt: decodeRunEventTimestamp("2026-07-08T12:01:00.000Z"),
     kind: "codeSummary",
     visibility: "run",
     ...input,

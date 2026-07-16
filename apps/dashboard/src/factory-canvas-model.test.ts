@@ -6,6 +6,7 @@ import {
   FactoryGraphNodeIdSchema,
   FactoryGraphDto,
   FactoryWorkItemIdSchema,
+  RunEvent,
   RunIdSchema,
 } from "@gaia/core";
 import { Schema } from "effect";
@@ -16,6 +17,10 @@ import {
   buildFactoryCanvasModel,
 } from "@/factory-canvas-model";
 import { testFactoryExecution } from "@/test-factory-execution";
+
+const decodeRunEventTimestamp = Schema.decodeUnknownSync(
+  RunEvent.fields.timestamp
+);
 
 describe("factory canvas model", () => {
   it("projects FactoryGraph topology into agent nodes only", () => {
@@ -446,7 +451,7 @@ function factoryActivitiesFixture() {
       runId: runId("run-1234567890"),
       sequence: 1,
       state: "running" as const,
-      timestamp: "2026-07-08T12:00:00.000Z",
+      timestamp: decodeRunEventTimestamp("2026-07-08T12:00:00.000Z"),
       workItemId: workItemId("work-root"),
     },
     {
@@ -458,7 +463,7 @@ function factoryActivitiesFixture() {
       runId: runId("run-1234567890"),
       sequence: 2,
       state: "succeeded" as const,
-      timestamp: "2026-07-08T12:01:00.000Z",
+      timestamp: decodeRunEventTimestamp("2026-07-08T12:01:00.000Z"),
     },
   ];
 }
@@ -582,7 +587,7 @@ function factoryGraphFixture(
       {
         artifactId: artifactId("artifact-plan"),
         contentType: "text/markdown",
-        createdAt: "2026-07-08T12:00:00.000Z",
+        createdAt: decodeRunEventTimestamp("2026-07-08T12:00:00.000Z"),
         kind: "plan",
         label: "Worker plan",
         ownerAgentId: agentId("agent-worker"),
@@ -591,7 +596,7 @@ function factoryGraphFixture(
       {
         artifactId: artifactId("artifact-summary"),
         contentType: "text/markdown",
-        createdAt: "2026-07-08T12:01:00.000Z",
+        createdAt: decodeRunEventTimestamp("2026-07-08T12:01:00.000Z"),
         kind: "codeSummary",
         label: "Code summary",
         ownerAgentId: agentId("agent-worker"),
@@ -600,7 +605,7 @@ function factoryGraphFixture(
       {
         artifactId: artifactId("artifact-review"),
         contentType: "text/markdown",
-        createdAt: "2026-07-08T12:02:00.000Z",
+        createdAt: decodeRunEventTimestamp("2026-07-08T12:02:00.000Z"),
         kind: "review",
         label: "Review",
         ownerAgentId: agentId("agent-reviewer"),
