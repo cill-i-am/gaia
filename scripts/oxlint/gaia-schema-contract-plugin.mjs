@@ -116,32 +116,45 @@ const providerParityMetadataNames = new Set([
   "startedAt",
   "updatedAt",
 ]);
-const providerBoundarySchemaNames = new Set([
-  "CodexAppServerIncompatibilityError",
-  "CodexFileChange",
-  "CodexListedThreadSchema",
-  "CodexRawBaseInteraction",
-  "CodexRawCommandActionSchema",
-  "CodexRawElicitationRequest",
-  "CodexRawFileChangeSchema",
-  "CodexRawFileSystemPathSchema",
-  "CodexRawFileSystemSpecialPathSchema",
-  "CodexRawMemoryCitationEntrySchema",
-  "CodexRawModelSchema",
-  "CodexRawNotificationSchema",
-  "CodexRawThreadItemSchema",
-  "CodexRawThreadRuntimeResultFields",
-  "CodexRawThreadSchema",
-  "CodexRawThreadSpawnSourceSchema",
-  "CodexRawTurnSchema",
-  "CodexRawUserInputRequest",
-  "CodexRawUserInputSchema",
-  "CodexThreadItemSchema",
-  "ElicitationRequest",
-  "FileSystemPathSchema",
-  "TurnSteerBoundaryResultSchema",
-  "UserInputQuestion",
-]);
+const providerBoundarySchemaFields = new Map(
+  Object.entries({
+    CodexAppServerIncompatibilityError: ["actualUserAgent", "supportedVersion"],
+    CodexFileChange: ["path"],
+    CodexListedThreadSchema: ["sessionId"],
+    CodexRawBaseInteraction: ["itemId", "threadId", "turnId"],
+    CodexRawCommandActionSchema: ["command", "path", "type"],
+    CodexRawElicitationRequest: ["elicitationId", "threadId", "url"],
+    CodexRawFileChangeSchema: ["path"],
+    CodexRawFileSystemPathSchema: ["path", "type"],
+    CodexRawFileSystemSpecialPathSchema: ["path"],
+    CodexRawMemoryCitationEntrySchema: ["path"],
+    CodexRawModelSchema: ["id", "model"],
+    CodexRawNotificationSchema: ["itemId", "threadId", "turn", "turnId"],
+    CodexRawThreadItemSchema: [
+      "command",
+      "hookRunId",
+      "id",
+      "imageUrl",
+      "path",
+      "senderThreadId",
+      "text",
+    ],
+    CodexRawThreadRuntimeResultFields: ["id", "model"],
+    CodexRawThreadSchema: ["cliVersion", "id", "sessionId"],
+    CodexRawThreadSpawnSourceSchema: ["parent_thread_id"],
+    CodexRawTurnSchema: ["id"],
+    CodexRawUserInputRequest: ["id"],
+    CodexRawUserInputSchema: ["path", "url"],
+    CodexThreadItemSchema: ["command"],
+    ElicitationRequest: ["elicitationId"],
+    FileSystemPathSchema: ["path"],
+    TurnSteerBoundaryResultSchema: ["turnId"],
+    UserInputQuestion: ["id"],
+  }).map(([declarationName, fieldNames]) => [
+    declarationName,
+    new Set(fieldNames),
+  ])
+);
 const rawParameterNames = new Set(["input", "raw", "value"]);
 const callableNodeTypes = new Set([
   "ArrowFunctionExpression",
@@ -171,16 +184,31 @@ const getStaticName = (node) => {
   return undefined;
 };
 
+const hasRepoRelativePath = (filename, expectedPath) => {
+  const normalized = filename.replaceAll("\\", "/");
+  return normalized === expectedPath || normalized.endsWith(`/${expectedPath}`);
+};
+
 const isCodexProviderProtocolFile = (filename) =>
-  /(?:^|[/\\])codex-app-server-protocol\.ts$/u.test(filename);
+  hasRepoRelativePath(
+    filename,
+    "packages/runtime/src/codex-app-server-protocol.ts"
+  );
 
 const isCodexProviderParityFile = (filename) =>
-  /(?:^|[/\\])codex-app-server-0\.137\.0-schema-parity\.test\.ts$/u.test(
-    filename
+  hasRepoRelativePath(
+    filename,
+    "packages/runtime/src/codex-app-server-0.137.0-schema-parity.test.ts"
   );
 
 const isDeliveryMergeConfirmationFile = (filename) =>
-  /(?:^|[/\\])delivery-merge-confirmation\.tsx$/u.test(filename);
+  hasRepoRelativePath(
+    filename,
+    "apps/dashboard/src/components/delivery-merge-confirmation.tsx"
+  );
+
+const isDashboardRouterFile = (filename) =>
+  hasRepoRelativePath(filename, "apps/dashboard/src/router.tsx");
 
 const tokenizeName = (name) =>
   name
@@ -384,7 +412,7 @@ const isFrameworkTypeReference = (node, options = {}) => {
       parameters[0].type === "TSTypeLiteral" &&
       parameters[0].members.length > 0 &&
       parameters[0].members.every((member) =>
-        isFrameworkMember(undefined, member)
+        isFrameworkMember({ filename: "" }, undefined, member)
       )
     );
   }
@@ -425,13 +453,37 @@ const isFrameworkDisplayType = (node) => {
   );
 };
 
-const isFrameworkReturnTypeMember = (declaration, member, typeNode) =>
+const isTanStackRouterRegisterAugmentation = (declaration) => {
+  const moduleBlock = declaration?.parent;
+  const moduleDeclaration = moduleBlock?.parent;
+  return (
+    moduleBlock?.type === "TSModuleBlock" &&
+    moduleDeclaration?.type === "TSModuleDeclaration" &&
+    moduleDeclaration.id?.type === "Literal" &&
+    moduleDeclaration.id.value === "@tanstack/react-router"
+  );
+};
+
+const isReturnTypeOfGetRouter = (typeNode) => {
+  const parameters = getTypeParameters(typeNode);
+  return (
+    getTypeReferenceName(typeNode) === "ReturnType" &&
+    parameters.length === 1 &&
+    parameters[0]?.type === "TSTypeQuery" &&
+    parameters[0].exprName.type === "Identifier" &&
+    parameters[0].exprName.name === "getRouter"
+  );
+};
+
+const isFrameworkReturnTypeMember = (context, declaration, member, typeNode) =>
+  isDashboardRouterFile(context.filename) &&
   declaration?.id?.type === "Identifier" &&
   declaration.id.name === "Register" &&
+  isTanStackRouterRegisterAugmentation(declaration) &&
   getStaticName(member.key) === "router" &&
-  getTypeReferenceName(typeNode) === "ReturnType";
+  isReturnTypeOfGetRouter(typeNode);
 
-function isFrameworkMember(declaration, member) {
+function isFrameworkMember(context, declaration, member) {
   if (isFunctionTypeMember(member)) return true;
   if (member.type !== "TSPropertySignature") return false;
 
@@ -439,7 +491,7 @@ function isFrameworkMember(declaration, member) {
   const typeNode = member.typeAnnotation?.typeAnnotation;
   if (
     isFrameworkTypeReference(typeNode, { allowReadonly: true }) ||
-    isFrameworkReturnTypeMember(declaration, member, typeNode)
+    isFrameworkReturnTypeMember(context, declaration, member, typeNode)
   ) {
     return true;
   }
@@ -458,7 +510,7 @@ const isFrameworkProps = (context, node, members) =>
   node.id?.type === "Identifier" &&
   isFrameworkDeclarationName(node.id.name) &&
   members.length > 0 &&
-  members.every((member) => isFrameworkMember(node, member));
+  members.every((member) => isFrameworkMember(context, node, member));
 
 const hasFrameworkIntersectionContext = (node) =>
   node.parent?.type === "TSIntersectionType" &&
@@ -513,7 +565,7 @@ const hasDeliveryMergeConfirmationPropsContext = (context, node) =>
 const isFrameworkTypeLiteral = (context, node, members) =>
   context.filename.endsWith(".tsx") &&
   members.length > 0 &&
-  ((members.every((member) => isFrameworkMember(undefined, member)) &&
+  ((members.every((member) => isFrameworkMember(context, undefined, member)) &&
     (hasFrameworkIntersectionContext(node) ||
       hasFrameworkGenericContext(node) ||
       hasDeliveryMergeConfirmationPropsContext(context, node))) ||
@@ -546,11 +598,11 @@ const isProviderSchemaMetadata = (context, node, name) =>
   getEnclosingDeclarationNames(node).includes("PinnedCodexSchemaSet");
 
 const isProviderBoundarySchemaProperty = (context, node, name) =>
+  isProviderSchemaMetadata(context, node, name) ||
   (isCodexProviderProtocolFile(context.filename) &&
     getEnclosingDeclarationNames(node).some((declarationName) =>
-      providerBoundarySchemaNames.has(declarationName)
-    )) ||
-  isProviderSchemaMetadata(context, node, name);
+      providerBoundarySchemaFields.get(declarationName)?.has(name)
+    ));
 
 const isProviderProjectionSelector = (context, node) => {
   if (!isCodexProviderProtocolFile(context.filename)) return false;

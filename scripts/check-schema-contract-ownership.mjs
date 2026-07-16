@@ -116,8 +116,19 @@ const providerProjectionSchemaNames = new Set([
 const isGeneratedFilePath = (fileName) =>
   path.basename(fileName).includes(".gen.");
 
+const hasRepoRelativePath = (fileName, expectedPath) => {
+  const normalized = fileName.split(path.sep).join("/");
+  return normalized === expectedPath || normalized.endsWith(`/${expectedPath}`);
+};
+
 const isCodexProviderProtocolSourceFile = (sourceFile) =>
-  path.basename(sourceFile.fileName) === "codex-app-server-protocol.ts";
+  hasRepoRelativePath(
+    sourceFile.fileName,
+    "packages/runtime/src/codex-app-server-protocol.ts"
+  );
+
+const isDashboardRouterSourceFile = (sourceFile) =>
+  hasRepoRelativePath(sourceFile.fileName, "apps/dashboard/src/router.tsx");
 
 const resolveAlias = (checker, symbol) => {
   let current = symbol;
@@ -2563,17 +2574,32 @@ const getContractMembers = (declaration) => {
 const isFrameworkDeclarationName = (name) =>
   name.endsWith("Props") || name === "Register";
 
-const isFrameworkReturnTypeMember = (declaration, member) =>
+const isTanStackRouterRegisterAugmentation = (declaration) =>
   declaration !== undefined &&
   ts.isInterfaceDeclaration(declaration) &&
   declaration.name.text === "Register" &&
+  ts.isModuleBlock(declaration.parent) &&
+  ts.isModuleDeclaration(declaration.parent.parent) &&
+  ts.isStringLiteral(declaration.parent.parent.name) &&
+  declaration.parent.parent.name.text === "@tanstack/react-router";
+
+const isReturnTypeOfGetRouter = (node) =>
+  ts.isTypeReferenceNode(node) &&
+  getTypeReferenceName(node) === "ReturnType" &&
+  node.typeArguments?.length === 1 &&
+  ts.isTypeQueryNode(node.typeArguments[0]) &&
+  ts.isIdentifier(node.typeArguments[0].exprName) &&
+  node.typeArguments[0].exprName.text === "getRouter";
+
+const isFrameworkReturnTypeMember = (sourceFile, declaration, member) =>
+  isDashboardRouterSourceFile(sourceFile) &&
+  isTanStackRouterRegisterAugmentation(declaration) &&
   ts.isPropertySignature(member) &&
   getPropertyName(member.name) === "router" &&
   member.type !== undefined &&
-  ts.isTypeReferenceNode(member.type) &&
-  getTypeReferenceName(member.type) === "ReturnType";
+  isReturnTypeOfGetRouter(member.type);
 
-const isFrameworkMember = (checker, proof, declaration, member) => {
+const isFrameworkMember = (checker, proof, sourceFile, declaration, member) => {
   if (
     ts.isCallSignatureDeclaration(member) ||
     ts.isConstructSignatureDeclaration(member) ||
@@ -2590,7 +2616,7 @@ const isFrameworkMember = (checker, proof, declaration, member) => {
   const name = getPropertyName(member.name);
   return (
     isFrameworkTypeNode(member.type, { allowReadonly: true }) ||
-    isFrameworkReturnTypeMember(declaration, member) ||
+    isFrameworkReturnTypeMember(sourceFile, declaration, member) ||
     isSchemaDerivedTypeNode(checker, proof, member.type) ||
     (name !== undefined &&
       ((displayAndProseNames.has(name) &&
@@ -2608,7 +2634,7 @@ const isFrameworkProps = (checker, proof, sourceFile, declaration) => {
     isFrameworkDeclarationName(declaration.name.text) &&
     members.length > 0 &&
     members.every((member) =>
-      isFrameworkMember(checker, proof, declaration, member)
+      isFrameworkMember(checker, proof, sourceFile, declaration, member)
     )
   );
 };
@@ -2629,7 +2655,7 @@ const isFrameworkTypeLiteral = (checker, proof, sourceFile, node) =>
   sourceFile.fileName.endsWith(".tsx") &&
   node.members.length > 0 &&
   node.members.every((member) =>
-    isFrameworkMember(checker, proof, undefined, member)
+    isFrameworkMember(checker, proof, sourceFile, undefined, member)
   ) &&
   (isAllCallable(node.members) ||
     hasFrameworkIntersectionContext(node) ||

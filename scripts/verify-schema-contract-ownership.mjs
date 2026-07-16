@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -964,6 +964,118 @@ try {
     "a local structural marker must not acquire Effect Brand provenance"
   );
   assert.match(diagnostics.at(-1).remedy, /owning Effect Schema/u);
+
+  const analyzeIsolatedProject = async (prefix, files) => {
+    const isolatedRoot = await mkdtemp(path.join(repoRoot, prefix));
+    try {
+      await writeFile(
+        path.join(isolatedRoot, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            exactOptionalPropertyTypes: true,
+            jsx: "react-jsx",
+            module: "NodeNext",
+            moduleResolution: "NodeNext",
+            noEmit: true,
+            skipLibCheck: true,
+            strict: true,
+            target: "ES2024",
+          },
+          include: ["**/*.ts", "**/*.tsx"],
+        })
+      );
+      for (const [filePath, source] of files) {
+        const absolutePath = path.join(isolatedRoot, filePath);
+        await mkdir(path.dirname(absolutePath), { recursive: true });
+        await writeFile(absolutePath, source);
+      }
+      return analyzeSchemaContracts({
+        cwd: isolatedRoot,
+        includeIgnoredPathsForTesting: true,
+        projectPath: path.join(isolatedRoot, "tsconfig.json"),
+      });
+    } finally {
+      await rm(isolatedRoot, { force: true, recursive: true });
+    }
+  };
+
+  const registerDiagnostics = await analyzeIsolatedProject(
+    ".gaia-schema-contract-register-",
+    [
+      [
+        "manual-register.tsx",
+        `
+          const makeManualDto = () => ({ runId: "run-1" });
+          interface Register {
+            router: ReturnType<typeof makeManualDto>;
+          }
+        `,
+      ],
+      [
+        "apps/dashboard/src/router.tsx",
+        `
+          export {};
+          declare function getRouter(): unknown;
+          declare module "@tanstack/react-router" {
+            interface Register {
+              router: ReturnType<typeof getRouter>;
+            }
+          }
+        `,
+      ],
+    ]
+  );
+  assert.ok(
+    registerDiagnostics.some(
+      (diagnostic) =>
+        diagnostic.filePath === "manual-register.tsx" &&
+        diagnostic.rule === "gaia/schema-first-data-contract"
+    ),
+    "local Register.router ReturnType wrappers must not hide inferred manual DTOs"
+  );
+  assert.equal(
+    registerDiagnostics.some(
+      (diagnostic) => diagnostic.filePath === "apps/dashboard/src/router.tsx"
+    ),
+    false,
+    "only the exact dashboard TanStack router Register augmentation remains accepted"
+  );
+
+  const providerPathDiagnostics = await analyzeIsolatedProject(
+    ".gaia-schema-contract-provider-path-",
+    [
+      [
+        "apps/dashboard/src/codex-app-server-protocol.ts",
+        `
+          import { Schema } from "effect";
+          const FileRequest = Schema.Struct({
+            method: Schema.Literal("item/commandExecution/requestApproval"),
+          });
+          const CodexServerRequestProjectionSchema = Schema.Union([
+            FileRequest,
+          ]);
+          export const CodexServerRequestSchema =
+            CodexServerRequestProjectionSchema;
+          export type CodexServerRequest = typeof CodexServerRequestSchema.Type;
+          export type FileApprovalRequest = Extract<
+            CodexServerRequest,
+            { readonly method: "item/commandExecution/requestApproval" }
+          >;
+        `,
+      ],
+    ]
+  );
+  assert.ok(
+    providerPathDiagnostics.some(
+      (diagnostic) =>
+        diagnostic.filePath ===
+          "apps/dashboard/src/codex-app-server-protocol.ts" &&
+        diagnostic.rule === "gaia/schema-first-data-contract" &&
+        diagnostic.message ===
+          "Nested operation data contract has no compiler-proven Schema origin."
+    ),
+    "provider projection selector literals must be accepted only at the exact runtime protocol path"
+  );
 
   const generatedProjectRoot = await mkdtemp(
     path.join(repoRoot, ".gaia-schema-contract-generated-")

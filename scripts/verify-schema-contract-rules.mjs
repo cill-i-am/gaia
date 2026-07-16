@@ -94,7 +94,7 @@ tester.run(
             }
           }
         `,
-        filename: "router.tsx",
+        filename: "apps/dashboard/src/router.tsx",
       },
     ],
     invalid: [
@@ -160,12 +160,43 @@ tester.run(
       },
       {
         code: `
+          const makeManualDto = () => ({ runId: "run-1" });
+          interface Register {
+            router: ReturnType<typeof makeManualDto>;
+          }
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "manual-register.tsx",
+      },
+      {
+        code: `
+          declare module "@tanstack/react-router" {
+            interface Register {
+              router: ReturnType<typeof getRouter>;
+            }
+          }
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "router.tsx",
+      },
+      {
+        code: `
           type RunStore = {
             readonly load: (input: { readonly runId: string }) => Promise<Run>;
           };
         `,
         errors: [{ messageId: "schemaFirst" }],
         filename: "nested-operation-input.ts",
+      },
+      {
+        code: `
+          type DeliveryMergeConfirmationData = {
+            readonly sequence: DeliveryMergeDecisionSequence;
+          };
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename:
+          "apps/dashboard/src/components/not-delivery-merge-confirmation.tsx",
       },
     ],
   }
@@ -425,6 +456,41 @@ tester.run(
         `,
         errors: [{ messageId: "unbrandedDomainString" }],
         filename: "packages/runtime/src/codex-app-server-protocol.ts",
+      },
+      {
+        code: `
+          const CodexRawFileChangeSchema = Schema.Struct({
+            runId: Schema.String,
+          });
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "packages/runtime/src/codex-app-server-protocol.ts",
+      },
+      {
+        code: `
+          const CodexRawFileChangeSchema = Schema.Struct({
+            kind: Schema.String,
+            path: Schema.String,
+          });
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "apps/dashboard/src/codex-app-server-protocol.ts",
+      },
+      {
+        code: `
+          class PinnedCodexSchemaSet extends Schema.Class<PinnedCodexSchemaSet>(
+            "PinnedCodexSchemaSet"
+          )({
+            facts: Schema.Struct({
+              threadTimestampFormats: Schema.Struct({
+                createdAt: Schema.String,
+              }),
+            }),
+          }) {}
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename:
+          "packages/runtime/src/codex-app-server-0.137.0-schema-parity-copy.test.ts",
       },
       {
         code: `
