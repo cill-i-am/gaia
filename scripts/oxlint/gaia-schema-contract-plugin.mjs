@@ -658,6 +658,9 @@ const statementBindsName = (statement, name) => {
 const hasShadowingBinding = (call, name) => {
   let current = call.parent;
   while (current !== undefined && current !== null) {
+    if (current.type === "FunctionExpression" && current.id?.name === name) {
+      return true;
+    }
     if (
       (current.type === "ArrowFunctionExpression" ||
         current.type === "FunctionDeclaration" ||
