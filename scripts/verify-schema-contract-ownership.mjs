@@ -755,6 +755,70 @@ try {
       export const spoof = "spoof" as StructuralSpoof;
     `
   );
+  await writeFile(
+    path.join(projectRoot, "cross-file-union-owner.ts"),
+    `
+      import { Schema } from "effect";
+      import { HarnessNameSchema, RunIdSchema } from "./schema.js";
+
+      const ReceiptBase = {
+        harnessName: HarnessNameSchema,
+        runId: RunIdSchema,
+      } as const;
+      export const RecoveryReceiptSchema = Schema.Union([
+        Schema.Struct({ ...ReceiptBase, state: Schema.Literal("pending") }),
+        Schema.Struct({ ...ReceiptBase, state: Schema.Literal("done") }),
+      ]);
+      export type RecoveryReceipt = typeof RecoveryReceiptSchema.Type;
+      export const ContinuationReceiptSchema = Schema.Union([
+        Schema.Struct({ ...ReceiptBase, state: Schema.Literal("pending") }),
+        Schema.Struct({ ...ReceiptBase, state: Schema.Literal("done") }),
+      ]);
+      export type ContinuationReceipt = typeof ContinuationReceiptSchema.Type;
+      export const CorrelationReceiptSchema = Schema.Union([
+        Schema.Struct({ ...ReceiptBase, state: Schema.Literal("pending") }),
+        Schema.Struct({ ...ReceiptBase, state: Schema.Literal("done") }),
+      ]);
+      export type CorrelationReceipt = typeof CorrelationReceiptSchema.Type;
+      export const DesktopOriginReceiptSchema = Schema.Union([
+        Schema.Struct({ ...ReceiptBase, state: Schema.Literal("pending") }),
+        Schema.Struct({ ...ReceiptBase, state: Schema.Literal("done") }),
+      ]);
+      export type DesktopOriginReceipt =
+        typeof DesktopOriginReceiptSchema.Type;
+    `
+  );
+  await writeFile(
+    path.join(projectRoot, "cross-file-union-consumer.ts"),
+    `
+      import { Schema } from "effect";
+      import {
+        ContinuationReceiptSchema,
+        CorrelationReceiptSchema,
+        DesktopOriginReceiptSchema,
+        RecoveryReceiptSchema,
+      } from "./cross-file-union-owner.js";
+
+      export const MachineEventSchema = Schema.Union([
+        Schema.Struct({ receipt: RecoveryReceiptSchema }),
+        Schema.Struct({ receipt: ContinuationReceiptSchema }),
+        Schema.Struct({ receipt: CorrelationReceiptSchema }),
+        Schema.Struct({ receipt: DesktopOriginReceiptSchema }),
+      ]);
+      export type MachineEvent = typeof MachineEventSchema.Type;
+      export const parseMachineEvent =
+        Schema.decodeUnknownSync(MachineEventSchema);
+    `
+  );
+  await writeFile(
+    path.join(projectRoot, "cross-file-union-use.ts"),
+    `
+      import { Schema } from "effect";
+      import { MachineEventSchema } from "./cross-file-union-consumer.js";
+
+      export const encodeMachineEvent = Schema.encodeSync(MachineEventSchema);
+    `
+  );
 
   const configPath = path.join(projectRoot, "tsconfig.json");
   const config = ts.readConfigFile(configPath, ts.sys.readFile);
@@ -770,6 +834,9 @@ try {
   });
   const semanticCleanFiles = new Set([
     "counterfeit-schema-owner.ts",
+    "cross-file-union-consumer.ts",
+    "cross-file-union-owner.ts",
+    "cross-file-union-use.ts",
     "derived.ts",
     "external-schema-containers.d.ts",
     "imported-schema-class.ts",
@@ -998,6 +1065,282 @@ try {
       await rm(isolatedRoot, { force: true, recursive: true });
     }
   };
+
+  const analyzeCoreProject = async (prefix, files) => {
+    const isolatedRoot = await mkdtemp(
+      path.join(repoRoot, "packages/core/node_modules", prefix)
+    );
+    try {
+      const configPath = path.join(isolatedRoot, "tsconfig.json");
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          compilerOptions: {
+            exactOptionalPropertyTypes: true,
+            module: "NodeNext",
+            moduleResolution: "NodeNext",
+            noEmit: true,
+            skipLibCheck: true,
+            strict: true,
+            target: "ES2024",
+          },
+          include: ["*.ts"],
+        })
+      );
+      for (const [filePath, source] of files) {
+        await writeFile(path.join(isolatedRoot, filePath), source);
+      }
+      const config = ts.readConfigFile(configPath, ts.sys.readFile);
+      assert.equal(config.error, undefined);
+      const parsed = ts.parseJsonConfigFileContent(
+        config.config,
+        ts.sys,
+        isolatedRoot
+      );
+      const program = ts.createProgram({
+        options: parsed.options,
+        rootNames: parsed.fileNames,
+      });
+      assert.deepEqual(
+        [
+          ...program.getSyntacticDiagnostics(),
+          ...program.getSemanticDiagnostics(),
+        ].map((diagnostic) =>
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")
+        ),
+        [],
+        "core-owned fixtures must type-check against installed dependencies"
+      );
+      return analyzeSchemaContracts({
+        cwd: isolatedRoot,
+        includeIgnoredPathsForTesting: true,
+        projectPath: configPath,
+      });
+    } finally {
+      await rm(isolatedRoot, { force: true, recursive: true });
+    }
+  };
+
+  const xstateMetadataDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-xstate-metadata-",
+    [
+      [
+        "machine.ts",
+        `
+          import { Schema } from "effect";
+          import { setup } from "xstate";
+
+          const ContextSchema = Schema.Struct({ runId: Schema.String });
+          type Context = typeof ContextSchema.Type;
+          const EventSchema = Schema.Struct({ type: Schema.Literal("RUN") });
+          type Event = typeof EventSchema.Type;
+          type ActionParams = {
+            readonly recordRun: undefined;
+          };
+          type GuardParams = {
+            readonly canRun: undefined;
+          };
+
+          setup<
+            Context,
+            Event,
+            Record<never, never>,
+            Record<never, string>,
+            ActionParams,
+            GuardParams
+          >({});
+        `,
+      ],
+    ]
+  );
+  assert.deepEqual(
+    xstateMetadataDiagnostics,
+    [],
+    "only exact XState setup action and guard metadata maps are manual types"
+  );
+
+  const rejectedXStateMetadataDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-rejected-xstate-metadata-",
+    [
+      [
+        "fake-xstate.ts",
+        `
+          export const setup = <A, B, C, D, E, F>(input: unknown): unknown =>
+            input;
+        `,
+      ],
+      [
+        "rejected-xstate-metadata.ts",
+        `
+          import { Schema } from "effect";
+          import { setup } from "xstate";
+
+          const ContextSchema = Schema.Struct({ runId: Schema.String });
+          type Context = typeof ContextSchema.Type;
+          const EventSchema = Schema.Struct({ type: Schema.Literal("RUN") });
+          type Event = typeof EventSchema.Type;
+          type ExactMetadata = { readonly exact: undefined };
+          type RecordMetadata = Record<string, undefined>;
+          type MappedMetadata = {
+            readonly [Key in "recordRun"]: undefined;
+          };
+          type GenericMetadata<Key extends string> = {
+            readonly [Name in Key]: undefined;
+          };
+          type ArbitraryMetadata = { readonly recordRun: string };
+          type MixedMetadata = {
+            readonly recordRun: undefined;
+            readonly onRun: () => void;
+          };
+          type CallbackMetadata = {
+            readonly onRun: () => void;
+          };
+          type HiddenMetadata = {
+            readonly recordRun: { readonly runId: string };
+          };
+          type MutableMetadata = { recordRun: undefined };
+          type OptionalMetadata = { readonly recordRun?: undefined };
+          type DataMetadata = { readonly recordRun: unknown };
+          export type ExportedMetadata = { readonly recordRun: undefined };
+          type ReusedMetadata = { readonly recordRun: undefined };
+          type HiddenReuse = ReusedMetadata;
+          type WrongPositionMetadata = {};
+
+          setup<Context, Event, Record<never, never>, Record<never, string>, RecordMetadata, ExactMetadata>({});
+          setup<Context, Event, Record<never, never>, Record<never, string>, MappedMetadata, ExactMetadata>({});
+          setup<Context, Event, Record<never, never>, Record<never, string>, GenericMetadata<"recordRun">, ExactMetadata>({});
+          setup<Context, Event, Record<never, never>, Record<never, string>, ArbitraryMetadata, ExactMetadata>({});
+          setup<Context, Event, Record<never, never>, Record<never, string>, MixedMetadata, ExactMetadata>({});
+          setup<Context, Event, Record<never, never>, Record<never, string>, CallbackMetadata, ExactMetadata>({});
+          setup<Context, Event, Record<never, never>, Record<never, string>, HiddenMetadata, ExactMetadata>({});
+          setup<Context, Event, Record<never, never>, Record<never, string>, MutableMetadata, OptionalMetadata>({});
+          setup<Context, Event, Record<never, never>, Record<never, string>, DataMetadata, ExactMetadata>({});
+          setup<Context, Event, Record<never, never>, Record<never, string>, ExportedMetadata, ExactMetadata>({});
+          setup<Context, Event, Record<never, never>, Record<never, string>, ReusedMetadata, ExactMetadata>({});
+          setup<Context, Event, WrongPositionMetadata, Record<never, string>, ExactMetadata, ExactMetadata>({});
+          void (0 as unknown as HiddenReuse);
+        `,
+      ],
+      [
+        "counterfeit-xstate.ts",
+        `
+          import { setup } from "./fake-xstate.js";
+          type CounterfeitMetadata = { readonly recordRun: undefined };
+          setup<unknown, unknown, unknown, unknown, CounterfeitMetadata, CounterfeitMetadata>({});
+        `,
+      ],
+      [
+        "shadowed-xstate.ts",
+        `
+          import { setup } from "xstate";
+          import { setup as counterfeitSetup } from "./fake-xstate.js";
+          type ShadowedMetadata = { readonly recordRun: undefined };
+          function build(setup: typeof counterfeitSetup): unknown {
+            return setup<unknown, unknown, unknown, unknown, ShadowedMetadata, ShadowedMetadata>({});
+          }
+          void setup;
+          void build;
+        `,
+      ],
+    ]
+  );
+  assert.deepEqual(
+    rejectedXStateMetadataDiagnostics.reduce((counts, diagnostic) => {
+      counts[diagnostic.filePath] = (counts[diagnostic.filePath] ?? 0) + 1;
+      return counts;
+    }, {}),
+    {
+      "counterfeit-xstate.ts": 1,
+      "rejected-xstate-metadata.ts": 14,
+      "shadowed-xstate.ts": 1,
+    },
+    "generic, counterfeit, shadowed, reused, and data-bearing XState metadata must report"
+  );
+
+  const rejectedCrossFileUnionDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-rejected-cross-file-unions-",
+    [
+      [
+        "unsafe-unions.ts",
+        `
+          import { Schema } from "effect";
+
+          const CounterfeitLeaf =
+            {} as unknown as typeof Schema.String;
+          export const CounterfeitUnionSchema = Schema.Union([
+            CounterfeitLeaf,
+            Schema.String,
+          ]);
+          export type CounterfeitUnion =
+            typeof CounterfeitUnionSchema.Type;
+
+          const MutableBase = { value: Schema.String };
+          MutableBase.value = CounterfeitLeaf;
+          export const MutableUnionSchema = Schema.Union([
+            Schema.Struct({ ...MutableBase, state: Schema.Literal("ready") }),
+          ]);
+          export type MutableUnion = typeof MutableUnionSchema.Type;
+
+          let escaped: unknown;
+          export const EscapedUnionSchema = Schema.Union([
+            Schema.String,
+            Schema.Number,
+          ]);
+          escaped = EscapedUnionSchema;
+          export type EscapedUnion = typeof EscapedUnionSchema.Type;
+
+          const InnerBase = { value: Schema.String } as const;
+          const NestedBase = { ...InnerBase, count: Schema.Number } as const;
+          export const NestedUnionSchema = Schema.Union([
+            Schema.Struct({ ...NestedBase, state: Schema.Literal("ready") }),
+          ]);
+          export type NestedUnion = typeof NestedUnionSchema.Type;
+          void escaped;
+        `,
+      ],
+      [
+        "unsafe-union-use.ts",
+        `
+          import { Schema } from "effect";
+          import {
+            CounterfeitUnionSchema,
+            EscapedUnionSchema,
+            MutableUnionSchema,
+            NestedUnionSchema,
+          } from "./unsafe-unions.js";
+
+          export const CombinedUnsafeUnionSchema = Schema.Union([
+            CounterfeitUnionSchema,
+            EscapedUnionSchema,
+            MutableUnionSchema,
+            NestedUnionSchema,
+          ]);
+        `,
+      ],
+      [
+        "local-only-union.ts",
+        `
+          import { Schema } from "effect";
+          const LocalBase = { value: Schema.String } as const;
+          export const LocalOnlyUnionSchema = Schema.Union([
+            Schema.Struct({ ...LocalBase, state: Schema.Literal("ready") }),
+          ]);
+          export type LocalOnlyUnion = typeof LocalOnlyUnionSchema.Type;
+        `,
+      ],
+    ]
+  );
+  assert.deepEqual(
+    rejectedCrossFileUnionDiagnostics.reduce((counts, diagnostic) => {
+      counts[diagnostic.filePath] = (counts[diagnostic.filePath] ?? 0) + 1;
+      return counts;
+    }, {}),
+    {
+      "local-only-union.ts": 1,
+      "unsafe-unions.ts": 4,
+    },
+    "counterfeit, mutable, escaped, nested, and local-only union provenance must report"
+  );
 
   const registerDiagnostics = await analyzeIsolatedProject(
     ".gaia-schema-contract-register-",

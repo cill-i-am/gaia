@@ -620,6 +620,127 @@ const isProviderProjectionSelector = (context, node) => {
   );
 };
 
+const patternBindsName = (pattern, name) => {
+  if (pattern?.type === "TSParameterProperty") {
+    return patternBindsName(pattern.parameter, name);
+  }
+  if (pattern?.type === "Identifier") return pattern.name === name;
+  if (pattern?.type === "AssignmentPattern") {
+    return patternBindsName(pattern.left, name);
+  }
+  if (pattern?.type === "RestElement") {
+    return patternBindsName(pattern.argument, name);
+  }
+  if (pattern?.type === "ArrayPattern") {
+    return pattern.elements.some((element) => patternBindsName(element, name));
+  }
+  if (pattern?.type === "ObjectPattern") {
+    return pattern.properties.some((property) =>
+      patternBindsName(
+        property.type === "RestElement" ? property.argument : property.value,
+        name
+      )
+    );
+  }
+  return false;
+};
+
+const statementBindsName = (statement, name) => {
+  if (statement?.type === "VariableDeclaration") {
+    return statement.declarations.some((declaration) =>
+      patternBindsName(declaration.id, name)
+    );
+  }
+  return (
+    (statement?.type === "ClassDeclaration" ||
+      statement?.type === "FunctionDeclaration") &&
+    statement.id?.name === name
+  );
+};
+
+const expressionBindsName = (expression, name) =>
+  (expression.type === "ClassExpression" ||
+    expression.type === "FunctionExpression") &&
+  expression.id?.name === name;
+
+const hasShadowingBinding = (call, name) => {
+  let current = call.parent;
+  while (current !== undefined && current !== null) {
+    if (expressionBindsName(current, name)) {
+      return true;
+    }
+    if (
+      (current.type === "ArrowFunctionExpression" ||
+        current.type === "FunctionDeclaration" ||
+        current.type === "FunctionExpression") &&
+      current.params.some((parameter) => patternBindsName(parameter, name))
+    ) {
+      return true;
+    }
+    if (
+      (current.type === "BlockStatement" || current.type === "Program") &&
+      current.body.some((statement) => statementBindsName(statement, name))
+    ) {
+      return true;
+    }
+    if (
+      current.type === "CatchClause" &&
+      patternBindsName(current.param, name)
+    ) {
+      return true;
+    }
+    if (
+      current.type === "ForStatement" &&
+      statementBindsName(current.init, name)
+    ) {
+      return true;
+    }
+    if (
+      (current.type === "ForInStatement" ||
+        current.type === "ForOfStatement") &&
+      statementBindsName(current.left, name)
+    ) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+};
+
+const isXStateSetupMetadataReference = (typeReference, setupBindings) => {
+  const typeArguments = typeReference.parent;
+  const call = typeArguments?.parent;
+  if (
+    typeArguments?.type !== "TSTypeParameterInstantiation" ||
+    call?.type !== "CallExpression" ||
+    call.callee.type !== "Identifier" ||
+    !setupBindings.has(call.callee.name) ||
+    hasShadowingBinding(call, call.callee.name)
+  ) {
+    return false;
+  }
+  const position = getTypeParameters(call).indexOf(typeReference);
+  return position === 4 || position === 5;
+};
+
+const hasExactUndefinedMetadataShape = (node) =>
+  node.typeAnnotation.type === "TSTypeLiteral" &&
+  node.typeAnnotation.members.length > 0 &&
+  node.typeAnnotation.members.every(
+    (member) =>
+      member.type === "TSPropertySignature" &&
+      member.readonly === true &&
+      member.optional !== true &&
+      getStaticName(member.key) !== undefined &&
+      member.typeAnnotation?.typeAnnotation.type === "TSUndefinedKeyword"
+  );
+
+const isPrivateExactUndefinedMetadataAlias = (node) =>
+  node.parent?.type !== "ExportNamedDeclaration" &&
+  node.parent?.type !== "ExportDefaultDeclaration" &&
+  getTypeParameters(node).length === 0 &&
+  hasExactUndefinedMetadataShape(node);
+
 const schemaFirstDataContract = {
   meta: {
     messages: {
@@ -628,6 +749,9 @@ const schemaFirstDataContract = {
     type: "problem",
   },
   create(context) {
+    const setupBindings = new Set();
+    const typeAliases = [];
+    const typeReferences = [];
     const reportDeclaration = (node, members) => {
       if (
         !isAllCallable(members) &&
@@ -638,13 +762,73 @@ const schemaFirstDataContract = {
     };
 
     return {
+      ImportDeclaration(node) {
+        if (node.source.value !== "xstate" || node.importKind === "type")
+          return;
+        for (const specifier of node.specifiers) {
+          if (
+            specifier.type === "ImportSpecifier" &&
+            specifier.importKind !== "type" &&
+            getStaticName(specifier.imported) === "setup" &&
+            specifier.local.type === "Identifier"
+          ) {
+            setupBindings.add(specifier.local.name);
+          }
+        }
+      },
+      "Program:exit"() {
+        for (const node of typeAliases) {
+          const name = getStaticName(node.id);
+          const references =
+            name === undefined
+              ? []
+              : typeReferences.filter(
+                  (reference) => getTypeReferenceName(reference) === name
+                );
+          const metadataReferences = references.filter((reference) =>
+            isXStateSetupMetadataReference(reference, setupBindings)
+          );
+          const confinedToMetadataPositions =
+            references.length > 0 &&
+            metadataReferences.length === references.length;
+          const exactMetadataAlias =
+            confinedToMetadataPositions &&
+            references.every(
+              (reference) => getTypeParameters(reference).length === 0
+            ) &&
+            isPrivateExactUndefinedMetadataAlias(node);
+          const invalidMetadataAlias =
+            metadataReferences.length > 0 && !exactMetadataAlias;
+          if (node.typeAnnotation.type === "TSTypeLiteral") {
+            if (
+              invalidMetadataAlias ||
+              (!exactMetadataAlias &&
+                !isAllCallable(node.typeAnnotation.members) &&
+                !isFrameworkProps(context, node, node.typeAnnotation.members))
+            ) {
+              context.report({ messageId: "schemaFirst", node: node.id });
+            }
+          } else if (invalidMetadataAlias) {
+            context.report({ messageId: "schemaFirst", node: node.id });
+          }
+        }
+      },
       TSInterfaceDeclaration(node) {
         reportDeclaration(node, node.body.body);
       },
       TSTypeAliasDeclaration(node) {
-        if (node.typeAnnotation.type === "TSTypeLiteral") {
-          reportDeclaration(node, node.typeAnnotation.members);
+        if (
+          node.typeAnnotation.type !== "TSTypeLiteral" ||
+          isAllCallable(node.typeAnnotation.members) ||
+          hasExactUndefinedMetadataShape(node)
+        ) {
+          typeAliases.push(node);
+          return;
         }
+        reportDeclaration(node, node.typeAnnotation.members);
+      },
+      TSTypeReference(node) {
+        typeReferences.push(node);
       },
       TSTypeLiteral(node) {
         if (node.parent?.type === "TSTypeAliasDeclaration") return;

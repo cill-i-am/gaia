@@ -204,9 +204,25 @@ covered:
   the canonical Program symbols and Effect Schema declaration chain. Extract
   selector literals are accepted only when the checker has proven the canonical
   utility and a schema-derived first argument at an approved projection seam.
+  A direct exported `typeof UnionSchema.Type` projection is also accepted when
+  `UnionSchema` is created by the canonical `Schema.Union` symbol, has bounded
+  compiler-proven schema provenance, and is consumed as a value from another
+  source file. The proof admits flat immutable local schema-field containers
+  and canonical schema container members, but rejects counterfeit leaves,
+  mutable or escaped containers, nested-container laundering, and unions that
+  have no cross-file value consumer. XState action and guard metadata are the
+  other precise exception: only private, non-generic, non-empty type literals
+  whose static properties are required, `readonly`, and exactly `undefined`
+  may occupy generic positions five and six of the canonical `xstate` `setup`
+  symbol, and every reference to each alias must stay in those positions. The
+  syntax rule mirrors the import binding and lexical-shadow boundary; the
+  compiler checker remains authoritative for framework symbol identity.
   Counterfeit utilities, arbitrary schema-containing generics, metadata indexed
   access, textual `.Type` and `["Type"]` lookalikes, manual DTO projections,
-  and structural schema lookalikes do not establish ownership.
+  structural schema lookalikes, generic/`Record`/mapped XState maps, callable
+  loopholes, data-bearing metadata, exported or reused aliases, wrong generic
+  positions, and counterfeit or shadowed `setup` bindings do not establish
+  ownership.
 - `gaia/no-unbranded-domain-string` applies the reviewed terminal-token,
   lifecycle-time, exact domain-name, and display/prose vocabularies. Direct
   callable parameters are always inspected across declarations, call and
