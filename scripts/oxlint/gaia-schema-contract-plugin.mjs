@@ -621,6 +621,9 @@ const isProviderProjectionSelector = (context, node) => {
 };
 
 const patternBindsName = (pattern, name) => {
+  if (pattern?.type === "TSParameterProperty") {
+    return patternBindsName(pattern.parameter, name);
+  }
   if (pattern?.type === "Identifier") return pattern.name === name;
   if (pattern?.type === "AssignmentPattern") {
     return patternBindsName(pattern.left, name);

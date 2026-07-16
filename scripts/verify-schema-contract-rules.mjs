@@ -277,6 +277,28 @@ tester.run(
       {
         code: `
           import { setup } from "xstate";
+          type GenericSetup = <A, B, C, D, E, F>(input: unknown) => unknown;
+          type ShadowedMetadata = { readonly recordRun: undefined };
+          class Machine {
+            constructor(private readonly setup: GenericSetup) {
+              setup<
+                unknown,
+                unknown,
+                unknown,
+                unknown,
+                ShadowedMetadata,
+                ShadowedMetadata
+              >({});
+            }
+          }
+          void Machine;
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "parameter-property-shadowed-xstate.ts",
+      },
+      {
+        code: `
+          import { setup } from "xstate";
           type WrongPositionMetadata = { readonly recordRun: undefined };
           type ExactMetadata = { readonly exact: undefined };
           setup<Context, Event, WrongPositionMetadata, Record<never, string>, ExactMetadata, ExactMetadata>({});
