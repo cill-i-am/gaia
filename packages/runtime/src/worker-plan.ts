@@ -1,9 +1,9 @@
-import { RunIdSchema, type RunSpec } from "@gaia/core";
+import { RunIdSchema, RunSpec } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
-import { HarnessNameSchema, type HarnessName } from "./harness.js";
-import type { RunPaths } from "./paths.js";
+import { HarnessNameSchema } from "./harness.js";
+import { RunPathsSchema } from "./paths.js";
 import {
   WorkerPlanHistoricalRiskNote,
   markdownHistoricalRiskNotes,
@@ -81,12 +81,25 @@ const WorkerPlanJson = Schema.toCodecJson(WorkerPlan);
 const encodeWorkerPlan = Schema.encodeSync(WorkerPlanJson);
 export const parseWorkerPlanJson = Schema.decodeUnknownSync(WorkerPlanJson);
 
-export function writeWorkerPlan(input: {
-  readonly harnessName: HarnessName;
-  readonly paths: RunPaths;
-  readonly runId: typeof RunIdSchema.Type;
-  readonly spec: RunSpec;
-}): Effect.Effect<WorkerPlan, GaiaRuntimeError, FileSystem.FileSystem> {
+const WriteWorkerPlanInputSchema = Schema.Struct({
+  harnessName: HarnessNameSchema,
+  paths: RunPathsSchema,
+  runId: RunIdSchema,
+  spec: RunSpec,
+});
+
+type WriteWorkerPlanInput = Schema.Schema.Type<
+  typeof WriteWorkerPlanInputSchema
+>;
+const WorkerPlanTextSchema = Schema.NonEmptyString;
+type WorkerPlanText = Schema.Schema.Type<typeof WorkerPlanTextSchema>;
+type WorkerPlanCommand = NonNullable<
+  typeof WorkerPlanVerificationCheck.fields.command.Type
+>;
+
+export function writeWorkerPlan(
+  input: WriteWorkerPlanInput
+): Effect.Effect<WorkerPlan, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const derived = derivePlanFromSpec(input.spec);
@@ -159,14 +172,15 @@ export function writeWorkerPlan(input: {
   );
 }
 
-type DerivedWorkerPlan = {
-  readonly acceptanceCriteria: ReadonlyArray<string>;
-  readonly domainReferences: ReadonlyArray<WorkerPlanDomainReference>;
-  readonly likelyTouchedSurfaces: ReadonlyArray<string>;
-  readonly nonGoals: ReadonlyArray<string>;
-  readonly stopConditions: ReadonlyArray<string>;
-  readonly verificationChecks: ReadonlyArray<WorkerPlanVerificationCheck>;
-};
+type DerivedWorkerPlan = Pick<
+  typeof WorkerPlan.Type,
+  | "acceptanceCriteria"
+  | "domainReferences"
+  | "likelyTouchedSurfaces"
+  | "nonGoals"
+  | "stopConditions"
+  | "verificationChecks"
+>;
 
 function derivePlanFromSpec(spec: RunSpec): DerivedWorkerPlan {
   const summary = firstMeaningfulLine(spec.body);
@@ -361,7 +375,7 @@ function markdownPlanningContext(context: WorkerPlanPlanningContext) {
 }
 
 function extractSectionItems(
-  input: string,
+  input: WorkerPlanText,
   labels: ReadonlyArray<string>
 ): ReadonlyArray<string> {
   const normalizedLabels = labels.map(normalizeSectionLabel);
@@ -392,7 +406,7 @@ function extractSectionItems(
 }
 
 function extractVerificationChecks(
-  input: string,
+  input: WorkerPlanText,
   labels: ReadonlyArray<string>
 ): ReadonlyArray<WorkerPlanVerificationCheck> {
   const normalizedLabels = labels.map(normalizeSectionLabel);
@@ -510,7 +524,7 @@ function itemFromLine(line: string) {
   return withoutCheckbox.length === 0 ? undefined : withoutCheckbox;
 }
 
-function normalizeSectionLabel(input: string) {
+function normalizeSectionLabel(input: WorkerPlanText) {
   return input
     .toLowerCase()
     .replace(/[`*_]/gu, "")
@@ -570,7 +584,7 @@ function makeVerificationCheck(item: string) {
   });
 }
 
-function executableCommandFromText(input: string) {
+function executableCommandFromText(input: WorkerPlanText) {
   const directCommand = executableCommandFromShellLine(input);
   if (directCommand !== undefined) {
     return directCommand;
@@ -586,7 +600,7 @@ function executableCommandFromText(input: string) {
   return undefined;
 }
 
-function executableCommandFromShellLine(input: string) {
+function executableCommandFromShellLine(input: WorkerPlanText) {
   const command = normalizeShellCommandLine(input);
 
   if (command.length === 0 || command.startsWith("#")) {
@@ -596,13 +610,13 @@ function executableCommandFromShellLine(input: string) {
   return isKnownWorkspaceCommand(command) ? command : undefined;
 }
 
-function executableCommandFromShellFenceLine(input: string) {
+function executableCommandFromShellFenceLine(input: WorkerPlanText) {
   const command = normalizeShellCommandLine(input);
 
   return command.length === 0 || command.startsWith("#") ? undefined : command;
 }
 
-function normalizeShellCommandLine(input: string) {
+function normalizeShellCommandLine(input: WorkerPlanText) {
   return input
     .trim()
     .replace(/^\$\s+/u, "")
@@ -610,12 +624,12 @@ function normalizeShellCommandLine(input: string) {
     .trim();
 }
 
-function isKnownWorkspaceCommand(command: string) {
+function isKnownWorkspaceCommand(command: WorkerPlanCommand) {
   return /^pnpm(?:\s|$)/u.test(command);
 }
 
 export function classifyDomainReferences(
-  input: string
+  input: WorkerPlanText
 ): ReadonlyArray<WorkerPlanDomainReference> {
   const references: Array<WorkerPlanDomainReference> = [];
   const seen = new Set<string>();
@@ -685,14 +699,15 @@ export function classifyDomainReferences(
   return references;
 }
 
-type DomainReferenceMatch = {
-  readonly index: number;
-  readonly kind: typeof WorkerPlanDomainReferenceKindSchema.Type;
-  readonly value: string;
-};
+const DomainReferenceMatchSchema = Schema.Struct({
+  index: Schema.Number,
+  ...WorkerPlanDomainReference.fields,
+});
+
+type DomainReferenceMatch = typeof DomainReferenceMatchSchema.Type;
 
 function referenceMatches(
-  input: string,
+  input: WorkerPlanText,
   kind: typeof WorkerPlanDomainReferenceKindSchema.Type,
   pattern: RegExp
 ): ReadonlyArray<DomainReferenceMatch> {
@@ -711,7 +726,7 @@ function referenceMatches(
 }
 
 function quotedSymbolReferences(
-  input: string
+  input: WorkerPlanText
 ): ReadonlyArray<DomainReferenceMatch> {
   return inlineCodeSnippetsWithIndex(input).flatMap((snippet) => {
     if (!/^[A-Za-z_$][\w$]*$/u.test(snippet.value)) {
@@ -730,7 +745,7 @@ function quotedSymbolReferences(
   });
 }
 
-function removeExecutableInlineCode(input: string) {
+function removeExecutableInlineCode(input: WorkerPlanText) {
   let output = input;
   for (const snippet of inlineCodeSnippets(input)) {
     if (executableCommandFromShellLine(snippet) !== undefined) {
@@ -741,11 +756,11 @@ function removeExecutableInlineCode(input: string) {
   return output;
 }
 
-function inlineCodeSnippets(input: string) {
+function inlineCodeSnippets(input: WorkerPlanText) {
   return inlineCodeSnippetsWithIndex(input).map((snippet) => snippet.value);
 }
 
-function inlineCodeSnippetsWithIndex(input: string) {
+function inlineCodeSnippetsWithIndex(input: WorkerPlanText) {
   return [...input.matchAll(/`(?<snippet>[^`]+)`/gu)].flatMap((match) => {
     const snippet = match.groups?.["snippet"]?.trim();
     if (
@@ -760,7 +775,7 @@ function inlineCodeSnippetsWithIndex(input: string) {
   });
 }
 
-function codeFenceKind(input: string) {
+function codeFenceKind(input: WorkerPlanText) {
   const match = /^```\s*(?<kind>[A-Za-z0-9_-]*)\s*$/u.exec(input.trim());
   return match?.groups?.["kind"];
 }
@@ -769,7 +784,7 @@ function isShellFence(kind: string) {
   return /^(?:sh|shell|bash|zsh|console|terminal)$/iu.test(kind);
 }
 
-function firstMeaningfulLine(input: string) {
+function firstMeaningfulLine(input: WorkerPlanText) {
   for (const line of input.split(/\r?\n/u)) {
     const item = itemFromLine(line);
     if (item !== undefined && !isLikelySectionLabel(item)) {
@@ -780,7 +795,7 @@ function firstMeaningfulLine(input: string) {
   return "No spec body was provided.";
 }
 
-function isLikelySectionLabel(input: string) {
+function isLikelySectionLabel(input: WorkerPlanText) {
   return (
     labeledLine(input) !== undefined ||
     markdownHeadingLabel(input) !== undefined

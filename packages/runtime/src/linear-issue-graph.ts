@@ -13,6 +13,26 @@ import { withRunStoreLock } from "./run-store-lock.js";
 import { statusRun } from "./workflows.js";
 
 const linearIssueIdentifierPattern = /^[A-Z][A-Z0-9]*-\d+$/u;
+const LinearIssueIdentifierTextSchema = Schema.String;
+const LinearIssueUrlTextSchema = Schema.String;
+const LinearIssueGraphSourceInputPathSchema = Schema.String.pipe(
+  Schema.brand("LinearIssueGraphSourceInputPath")
+);
+const LinearIssueGraphSourcePathSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("LinearIssueGraphSourcePath")
+);
+const LinearIssueGraphSourcePathProjectionSchema = Schema.toEncoded(
+  LinearIssueGraphSourcePathSchema
+);
+const LinearIssueGraphArtifactPathSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("LinearIssueGraphArtifactPath")
+);
+const LinearIssueGraphArtifactPathProjectionSchema = Schema.toEncoded(
+  LinearIssueGraphArtifactPathSchema
+);
+const parseLinearIssueGraphSourceInputPath = Schema.decodeUnknownSync(
+  LinearIssueGraphSourceInputPathSchema
+);
 
 export const LinearIssueIdentifierSchema = Schema.NonEmptyString.pipe(
   Schema.refine(isLinearIssueIdentifier, {
@@ -80,7 +100,7 @@ export class LinearIssueGraph extends Schema.Class<LinearIssueGraph>(
   capturedAt: Schema.NonEmptyString,
   issue: LinearIssue,
   source: Schema.Literal("linear-json"),
-  sourcePath: Schema.NonEmptyString,
+  sourcePath: LinearIssueGraphSourcePathProjectionSchema,
   version: Schema.Literal(1),
 }) {}
 
@@ -89,12 +109,12 @@ export class LinearIssueGraphSummary extends Schema.Class<LinearIssueGraphSummar
 )({
   blockedByCount: LinearIssueRelationCountSchema,
   blocksCount: LinearIssueRelationCountSchema,
-  graphPath: Schema.NonEmptyString,
+  graphPath: LinearIssueGraphArtifactPathProjectionSchema,
   issueIdentifier: LinearIssueIdentifierSchema,
   issueTitle: Schema.NonEmptyString,
   issueUrl: Schema.optionalKey(LinearIssueUrlSchema),
   runId: RunIdSchema,
-  sourcePath: Schema.NonEmptyString,
+  sourcePath: LinearIssueGraphSourcePathProjectionSchema,
 }) {}
 
 const LinearIssueGraphJson = Schema.toCodecJson(LinearIssueGraph);
@@ -107,18 +127,19 @@ export const parseLinearIssueGraphJson =
 /** Attach one Linear issue graph snapshot to a completed Gaia run. */
 export function recordLinearIssueGraph(
   runIdInput: RunId,
-  sourcePath: string,
+  sourcePath: typeof LinearIssueGraphSourceInputPathSchema.Encoded,
   options: RunStorageOptions = {}
 ) {
+  const parsedSourcePath = parseLinearIssueGraphSourceInputPath(sourcePath);
   return withRunStoreLock(
     options,
-    recordLinearIssueGraphUnlocked(runIdInput, sourcePath, options)
+    recordLinearIssueGraphUnlocked(runIdInput, parsedSourcePath, options)
   );
 }
 
 function recordLinearIssueGraphUnlocked(
   runIdInput: RunId,
-  sourcePath: string,
+  sourcePath: typeof LinearIssueGraphSourceInputPathSchema.Type,
   options: RunStorageOptions
 ) {
   return Effect.gen(function* () {
@@ -175,7 +196,9 @@ function recordLinearIssueGraphUnlocked(
   });
 }
 
-function readLinearIssueGraphInput(sourcePath: string) {
+function readLinearIssueGraphInput(
+  sourcePath: typeof LinearIssueGraphSourceInputPathSchema.Type
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const text = yield* fs.readFileString(sourcePath).pipe(
@@ -236,7 +259,10 @@ function parseLinearIssueGraphInput(input: unknown) {
   });
 }
 
-function parseJson(text: string, sourcePath: string) {
+function parseJson(
+  text: string,
+  sourcePath: typeof LinearIssueGraphSourceInputPathSchema.Type
+) {
   return Effect.try({
     catch: (cause) =>
       makeRuntimeError({
@@ -255,11 +281,15 @@ function parseLinearIssueRelationCount(
   return Schema.decodeUnknownSync(LinearIssueRelationCountSchema)(count);
 }
 
-function isLinearIssueIdentifier(value: string): value is string {
+function isLinearIssueIdentifier(
+  value: typeof LinearIssueIdentifierTextSchema.Type
+): value is typeof LinearIssueIdentifierTextSchema.Type {
   return linearIssueIdentifierPattern.test(value);
 }
 
-function isHttpUrl(value: string): value is string {
+function isHttpUrl(
+  value: typeof LinearIssueUrlTextSchema.Type
+): value is typeof LinearIssueUrlTextSchema.Type {
   try {
     const url = new URL(value);
     return url.protocol === "http:" || url.protocol === "https:";

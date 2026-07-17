@@ -1,12 +1,32 @@
 import path from "node:path";
 
-import type { RunSpec } from "@gaia/core";
+import { RunSpec } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
+
+import {
+  parseRuntimePath,
+  RuntimePathSchema,
+  type RuntimePath,
+} from "./paths.js";
+import type {
+  WorkerPlan,
+  WorkerPlanDomainReference,
+  WorkerPlanVerificationCheck,
+} from "./worker-plan.js";
+
+const WorkerPlanSourcePathSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("WorkerPlanSourcePath")
+);
+const WorkerPlanSourcePathProjectionSchema = Schema.toEncoded(
+  WorkerPlanSourcePathSchema
+);
+type WorkerPlanSourcePath = typeof WorkerPlanSourcePathProjectionSchema.Type;
+type PlanningText = Schema.Schema.Type<typeof RunSpec>["body"];
 
 export class WorkerPlanAgentInstruction extends Schema.Class<WorkerPlanAgentInstruction>(
   "WorkerPlanAgentInstruction"
 )({
-  path: Schema.NonEmptyString,
+  path: WorkerPlanSourcePathProjectionSchema,
   scope: Schema.NonEmptyString,
   summary: Schema.NonEmptyString,
 }) {}
@@ -15,7 +35,7 @@ export class WorkerPlanLikelyFile extends Schema.Class<WorkerPlanLikelyFile>(
   "WorkerPlanLikelyFile"
 )({
   owner: Schema.NonEmptyString,
-  path: Schema.NonEmptyString,
+  path: WorkerPlanSourcePathProjectionSchema,
   reason: Schema.NonEmptyString,
 }) {}
 
@@ -23,7 +43,7 @@ export class WorkerPlanWorkspacePackage extends Schema.Class<WorkerPlanWorkspace
   "WorkerPlanWorkspacePackage"
 )({
   name: Schema.NonEmptyString,
-  path: Schema.NonEmptyString,
+  path: WorkerPlanSourcePathProjectionSchema,
   reason: Schema.NonEmptyString,
   scripts: Schema.Array(Schema.NonEmptyString),
 }) {}
@@ -31,14 +51,14 @@ export class WorkerPlanWorkspacePackage extends Schema.Class<WorkerPlanWorkspace
 export class WorkerPlanSourceDoc extends Schema.Class<WorkerPlanSourceDoc>(
   "WorkerPlanSourceDoc"
 )({
-  path: Schema.NonEmptyString,
+  path: WorkerPlanSourcePathProjectionSchema,
   reason: Schema.NonEmptyString,
 }) {}
 
 export class WorkerPlanSimilarTest extends Schema.Class<WorkerPlanSimilarTest>(
   "WorkerPlanSimilarTest"
 )({
-  path: Schema.NonEmptyString,
+  path: WorkerPlanSourcePathProjectionSchema,
   reason: Schema.NonEmptyString,
 }) {}
 
@@ -54,43 +74,55 @@ export class WorkerPlanPlanningContext extends Schema.Class<WorkerPlanPlanningCo
   verificationSeams: Schema.Array(Schema.NonEmptyString),
 }) {}
 
-type PlanningDomainReference = {
-  readonly kind: string;
-  readonly value: string;
-};
+type PlanningDomainReference = Pick<
+  typeof WorkerPlanDomainReference.Type,
+  "kind" | "value"
+>;
+type PlanningVerificationCheck = Pick<
+  typeof WorkerPlanVerificationCheck.Type,
+  "command" | "expectation"
+>;
+type PlanningReferenceValue = PlanningDomainReference["value"];
 
-type PlanningVerificationCheck = {
-  readonly command?: string | undefined;
-  readonly expectation: string;
-};
+const SourcePlanningContextLocalInputSchema = Schema.Struct({
+  spec: RunSpec,
+  workspaceRoot: RuntimePathSchema,
+});
 
-type SourcePlanningContextInput = {
-  readonly domainReferences: ReadonlyArray<PlanningDomainReference>;
-  readonly nonGoals: ReadonlyArray<string>;
-  readonly spec: RunSpec;
-  readonly verificationChecks: ReadonlyArray<PlanningVerificationCheck>;
-  readonly workspaceRoot: string;
-};
+type SourcePlanningContextInput =
+  typeof SourcePlanningContextLocalInputSchema.Type &
+    Pick<
+      typeof WorkerPlan.Type,
+      "domainReferences" | "nonGoals" | "verificationChecks"
+    >;
 
-type RankedPath = {
-  readonly matchedTokens: ReadonlyArray<string>;
-  readonly path: string;
-  readonly score: number;
-};
+const RankedPathSchema = Schema.Struct({
+  matchedTokens: Schema.Array(Schema.NonEmptyString),
+  path: WorkerPlanSourcePathProjectionSchema,
+  score: Schema.Number,
+});
 
-type PackageManifest = {
-  readonly directory: string;
-  readonly name: string;
-  readonly path: string;
-  readonly scripts: ReadonlyArray<string>;
-};
+type RankedPath = typeof RankedPathSchema.Type;
+
+const PackageManifestSchema = Schema.Struct({
+  directory: WorkerPlanSourcePathProjectionSchema,
+  name: Schema.NonEmptyString,
+  path: WorkerPlanSourcePathProjectionSchema,
+  scripts: Schema.Array(Schema.NonEmptyString),
+});
+
+type PackageManifest = typeof PackageManifestSchema.Type;
 
 const PackageJson = Schema.Struct({
   name: Schema.optionalKey(Schema.NonEmptyString),
   scripts: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
 });
 const decodePackageJson = Schema.decodeUnknownSync(PackageJson);
-const sourceRoots = ["apps", "packages", "docs"] as const;
+const sourceRoots: ReadonlyArray<WorkerPlanSourcePath> = [
+  "apps",
+  "packages",
+  "docs",
+];
 const ignoredPathSegments = new Set([
   ".git",
   ".gaia",
@@ -268,7 +300,7 @@ function sourceProfile(input: SourcePlanningContextInput) {
 }
 
 function rankImplementationFiles(
-  files: ReadonlyArray<string>,
+  files: ReadonlyArray<WorkerPlanSourcePath>,
   profile: ReturnType<typeof sourceProfile>
 ): ReadonlyArray<RankedPath> {
   return files
@@ -287,8 +319,8 @@ function rankImplementationFiles(
 
 function rankTextFiles(
   fs: FileSystem.FileSystem,
-  workspaceRoot: string,
-  candidates: ReadonlyArray<string>,
+  workspaceRoot: RuntimePath,
+  candidates: ReadonlyArray<WorkerPlanSourcePath>,
   profile: ReturnType<typeof sourceProfile>
 ): Effect.Effect<ReadonlyArray<RankedPath>, never> {
   return Effect.gen(function* () {
@@ -308,7 +340,7 @@ function rankTextFiles(
 }
 
 function rankedPath(
-  candidate: string,
+  candidate: WorkerPlanSourcePath,
   profile: ReturnType<typeof sourceProfile>,
   candidateTokens: ReadonlySet<string>,
   baseScore: number
@@ -343,7 +375,7 @@ function compareRankedPaths(left: RankedPath, right: RankedPath) {
   return left.path.localeCompare(right.path);
 }
 
-function pathBaseScore(candidate: string) {
+function pathBaseScore(candidate: WorkerPlanSourcePath) {
   const tokens = tokenSet(candidate);
   let score = 0;
 
@@ -373,7 +405,7 @@ function reasonFromRankedPath(ranked: RankedPath) {
 
 function packageReason(
   manifest: PackageManifest,
-  selectedPaths: ReadonlyArray<string>,
+  selectedPaths: ReadonlyArray<WorkerPlanSourcePath>,
   profile: ReturnType<typeof sourceProfile>
 ) {
   if (packageOwnsSelectedPath(manifest, selectedPaths)) {
@@ -393,7 +425,7 @@ function packageReason(
 
 function packageIsRelevant(
   manifest: PackageManifest,
-  selectedPaths: ReadonlyArray<string>,
+  selectedPaths: ReadonlyArray<WorkerPlanSourcePath>,
   profile: ReturnType<typeof sourceProfile>
 ) {
   if (packageOwnsSelectedPath(manifest, selectedPaths)) {
@@ -414,19 +446,22 @@ function packageIsRelevant(
 
 function packageOwnsSelectedPath(
   manifest: PackageManifest,
-  selectedPaths: ReadonlyArray<string>
+  selectedPaths: ReadonlyArray<WorkerPlanSourcePath>
 ) {
   return selectedPaths.some((selectedPath) =>
     pathIsUnderDirectory(selectedPath, manifest.directory)
   );
 }
 
-function pathIsUnderDirectory(relativePath: string, directory: string) {
+function pathIsUnderDirectory(
+  relativePath: WorkerPlanSourcePath,
+  directory: WorkerPlanSourcePath
+) {
   return directory !== "." && relativePath.startsWith(`${directory}/`);
 }
 
 function ownerForPath(
-  relativePath: string,
+  relativePath: WorkerPlanSourcePath,
   manifests: ReadonlyArray<PackageManifest>
 ) {
   const owner = manifests.find((manifest) =>
@@ -457,7 +492,9 @@ function verificationSeams(
   ]);
 }
 
-function verificationSeamForTest(testPath: string) {
+function verificationSeamForTest(
+  testPath: typeof WorkerPlanSimilarTest.fields.path.Type
+) {
   if (testPath === "apps/server/src/api.test.ts") {
     return "apps/server/src/api.test.ts exercises server API behavior.";
   }
@@ -491,9 +528,9 @@ function outOfScopeTraps(
 
 function readRelevantAgentInstructions(
   fs: FileSystem.FileSystem,
-  workspaceRoot: string,
-  files: ReadonlyArray<string>,
-  selectedPaths: ReadonlyArray<string>,
+  workspaceRoot: RuntimePath,
+  files: ReadonlyArray<WorkerPlanSourcePath>,
+  selectedPaths: ReadonlyArray<WorkerPlanSourcePath>,
   profile: ReturnType<typeof sourceProfile>
 ): Effect.Effect<ReadonlyArray<WorkerPlanAgentInstruction>, never> {
   return Effect.gen(function* () {
@@ -539,10 +576,10 @@ function readRelevantAgentInstructions(
 }
 
 function instructionPathsFor(
-  relativePath: string,
-  available: ReadonlySet<string>
+  relativePath: WorkerPlanSourcePath,
+  available: ReadonlySet<WorkerPlanSourcePath>
 ) {
-  const paths: Array<string> = [];
+  const paths: Array<WorkerPlanSourcePath> = [];
   const segments = relativePath
     .split("/")
     .filter((segment) => segment.length > 0);
@@ -557,7 +594,10 @@ function instructionPathsFor(
   return paths;
 }
 
-function compareInstructionPaths(left: string, right: string) {
+function compareInstructionPaths(
+  left: WorkerPlanSourcePath,
+  right: WorkerPlanSourcePath
+) {
   if (left === "AGENTS.md") {
     return -1;
   }
@@ -568,7 +608,9 @@ function compareInstructionPaths(left: string, right: string) {
   return left.localeCompare(right);
 }
 
-function instructionScope(instructionPath: string) {
+function instructionScope(
+  instructionPath: typeof WorkerPlanAgentInstruction.fields.path.Type
+) {
   if (instructionPath === "AGENTS.md") {
     return "repo root";
   }
@@ -577,7 +619,7 @@ function instructionScope(instructionPath: string) {
 }
 
 function summarizeInstruction(
-  body: string,
+  body: PlanningText,
   profile: ReturnType<typeof sourceProfile>
 ) {
   const heading =
@@ -610,8 +652,8 @@ function summarizeInstruction(
 
 function readPackageManifests(
   fs: FileSystem.FileSystem,
-  workspaceRoot: string,
-  files: ReadonlyArray<string>,
+  workspaceRoot: RuntimePath,
+  files: ReadonlyArray<WorkerPlanSourcePath>,
   profile: ReturnType<typeof sourceProfile>
 ): Effect.Effect<ReadonlyArray<PackageManifest>, never> {
   return Effect.gen(function* () {
@@ -645,7 +687,7 @@ function readPackageManifests(
   });
 }
 
-function parsePackageJson(body: string) {
+function parsePackageJson(body: PlanningText) {
   try {
     const parsed: unknown = JSON.parse(body);
     return decodePackageJson(parsed);
@@ -656,13 +698,13 @@ function parsePackageJson(body: string) {
 
 function listWorkspaceFiles(
   fs: FileSystem.FileSystem,
-  workspaceRoot: string
-): Effect.Effect<ReadonlyArray<string>, never> {
+  workspaceRoot: RuntimePath
+): Effect.Effect<ReadonlyArray<WorkerPlanSourcePath>, never> {
   return Effect.gen(function* () {
-    const files: Array<string> = [];
+    const files: Array<WorkerPlanSourcePath> = [];
     const rootAgents = yield* pathExists(
       fs,
-      path.join(workspaceRoot, "AGENTS.md")
+      parseRuntimePath(path.join(workspaceRoot, "AGENTS.md"))
     );
     if (rootAgents) {
       files.push("AGENTS.md");
@@ -678,11 +720,13 @@ function listWorkspaceFiles(
 
 function listFilesBelow(
   fs: FileSystem.FileSystem,
-  workspaceRoot: string,
-  relativeDirectory: string
-): Effect.Effect<ReadonlyArray<string>, never> {
+  workspaceRoot: RuntimePath,
+  relativeDirectory: WorkerPlanSourcePath
+): Effect.Effect<ReadonlyArray<WorkerPlanSourcePath>, never> {
   return Effect.gen(function* () {
-    const absoluteDirectory = path.join(workspaceRoot, relativeDirectory);
+    const absoluteDirectory = parseRuntimePath(
+      path.join(workspaceRoot, relativeDirectory)
+    );
     const info = yield* optionalStat(fs, absoluteDirectory);
     if (info?.type !== "Directory") {
       return [];
@@ -691,14 +735,16 @@ function listFilesBelow(
     const entries = yield* fs
       .readDirectory(absoluteDirectory)
       .pipe(Effect.catchTag("PlatformError", () => Effect.succeed([])));
-    const files: Array<string> = [];
+    const files: Array<WorkerPlanSourcePath> = [];
     for (const entry of entries.toSorted()) {
       if (ignoredPathSegments.has(entry)) {
         continue;
       }
 
-      const relativePath = `${relativeDirectory}/${entry}`;
-      const absolutePath = path.join(workspaceRoot, relativePath);
+      const relativePath: WorkerPlanSourcePath = `${relativeDirectory}/${entry}`;
+      const absolutePath = parseRuntimePath(
+        path.join(workspaceRoot, relativePath)
+      );
       const entryInfo = yield* optionalStat(fs, absolutePath);
       if (entryInfo?.type === "Directory") {
         files.push(...(yield* listFilesBelow(fs, workspaceRoot, relativePath)));
@@ -713,14 +759,14 @@ function listFilesBelow(
   });
 }
 
-function optionalStat(fs: FileSystem.FileSystem, absolutePath: string) {
+function optionalStat(fs: FileSystem.FileSystem, absolutePath: RuntimePath) {
   return fs.stat(absolutePath).pipe(
     Effect.map((stat) => stat),
     Effect.catchTag("PlatformError", () => Effect.succeed(undefined))
   );
 }
 
-function pathExists(fs: FileSystem.FileSystem, absolutePath: string) {
+function pathExists(fs: FileSystem.FileSystem, absolutePath: RuntimePath) {
   return fs
     .exists(absolutePath)
     .pipe(Effect.catchTag("PlatformError", () => Effect.succeed(false)));
@@ -728,21 +774,21 @@ function pathExists(fs: FileSystem.FileSystem, absolutePath: string) {
 
 function readOptionalFileString(
   fs: FileSystem.FileSystem,
-  workspaceRoot: string,
-  relativePath: string
+  workspaceRoot: RuntimePath,
+  relativePath: WorkerPlanSourcePath
 ) {
   return fs
-    .readFileString(path.join(workspaceRoot, relativePath))
+    .readFileString(parseRuntimePath(path.join(workspaceRoot, relativePath)))
     .pipe(Effect.catchTag("PlatformError", () => Effect.succeed(undefined)));
 }
 
-function isPackageManifest(relativePath: string) {
+function isPackageManifest(relativePath: WorkerPlanSourcePath) {
   return (
     relativePath === "package.json" || relativePath.endsWith("/package.json")
   );
 }
 
-function isImplementationFile(relativePath: string) {
+function isImplementationFile(relativePath: WorkerPlanSourcePath) {
   return (
     /\.(?:ts|tsx|mjs|js)$/u.test(relativePath) &&
     !relativePath.endsWith(".test.ts") &&
@@ -751,11 +797,11 @@ function isImplementationFile(relativePath: string) {
   );
 }
 
-function isTestFile(relativePath: string) {
+function isTestFile(relativePath: WorkerPlanSourcePath) {
   return /\.(?:test|spec)\.(?:ts|tsx|js)$/u.test(relativePath);
 }
 
-function isSourceDoc(relativePath: string) {
+function isSourceDoc(relativePath: WorkerPlanSourcePath) {
   return (
     relativePath.startsWith("docs/") &&
     relativePath.endsWith(".md") &&
@@ -763,12 +809,12 @@ function isSourceDoc(relativePath: string) {
   );
 }
 
-function parentDirectory(relativePath: string) {
+function parentDirectory(relativePath: WorkerPlanSourcePath) {
   const directory = path.posix.dirname(relativePath);
   return directory === "." ? "." : directory;
 }
 
-function nearestInstructionPath(relativePath: string) {
+function nearestInstructionPath(relativePath: WorkerPlanSourcePath) {
   const segments = relativePath.split("/");
   for (let index = segments.length - 1; index > 0; index -= 1) {
     const instructionPath = `${segments.slice(0, index).join("/")}/AGENTS.md`;
@@ -780,15 +826,15 @@ function nearestInstructionPath(relativePath: string) {
   return undefined;
 }
 
-function normalizeRelativePath(input: string) {
+function normalizeRelativePath(input: PlanningReferenceValue) {
   return input.replace(/\\/gu, "/").replace(/^\.\//u, "");
 }
 
-function tokenSet(input: string) {
+function tokenSet(input: PlanningText) {
   return new Set(tokensFrom(input));
 }
 
-function tokensFrom(input: string) {
+function tokensFrom(input: PlanningText) {
   const rawTokens = input
     .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
     .toLowerCase()

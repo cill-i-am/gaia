@@ -1,5 +1,7 @@
 import {
   DogfoodFinding,
+  DogfoodFindingCategorySchema,
+  DogfoodFindingSeveritySchema,
   DogfoodFindingSource,
   DogfoodRetrospective,
   LinearCandidateIssue,
@@ -13,7 +15,12 @@ import { Effect, FileSystem, Path, Schema } from "effect";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { loadRun } from "./event-store.js";
 import { HarnessRunResult } from "./harness.js";
-import { runRelative, type RunPaths } from "./paths.js";
+import {
+  runRelative,
+  RuntimePathSchema,
+  type RunPaths,
+  type RuntimePath,
+} from "./paths.js";
 import { ReviewResult } from "./reviewer.js";
 import {
   parseWorkspacePrQualityGateJson,
@@ -37,37 +44,51 @@ const encodeDogfoodRetrospectiveJson = Schema.encodeSync(
   DogfoodRetrospectiveJson
 );
 
-type DraftFinding = {
-  readonly category: DogfoodFindingCategory;
-  readonly lesson: string;
-  readonly severity: DogfoodFindingSeverity;
-  readonly sources: ReadonlyArray<DogfoodFindingSource>;
-  readonly summary: string;
-};
+const DraftFindingSchema = Schema.Struct({
+  category: DogfoodFindingCategorySchema,
+  lesson: Schema.NonEmptyString,
+  severity: DogfoodFindingSeveritySchema,
+  sources: Schema.Array(DogfoodFindingSource),
+  summary: Schema.NonEmptyString,
+});
 
-type OptionalJson =
-  | {
-      readonly _tag: "Invalid";
-      readonly message: string;
-      readonly path: string;
-    }
-  | {
-      readonly _tag: "Missing";
-    }
-  | {
-      readonly _tag: "Valid";
-      readonly value: unknown;
-    };
+type DraftFinding = Schema.Schema.Type<typeof DraftFindingSchema>;
 
-type HarnessResultParse =
-  | {
-      readonly _tag: "Invalid";
-      readonly message: string;
-    }
-  | {
-      readonly _tag: "Valid";
-      readonly value: HarnessRunResult;
-    };
+const OptionalJsonSchema = Schema.Union([
+  Schema.Struct({
+    _tag: Schema.Literal("Invalid"),
+    message: Schema.String,
+    path: RuntimePathSchema,
+  }),
+  Schema.Struct({ _tag: Schema.Literal("Missing") }),
+  Schema.Struct({
+    _tag: Schema.Literal("Valid"),
+    value: Schema.Unknown,
+  }),
+]);
+
+type OptionalJson = Schema.Schema.Type<typeof OptionalJsonSchema>;
+
+class HarnessResultParseFailure extends Schema.Class<HarnessResultParseFailure>(
+  "HarnessResultParseFailure"
+)({
+  message: Schema.String,
+}) {}
+
+const DogfoodArtifactReferenceSchema = Schema.NonEmptyString;
+const SourceForRunInputSchema = Schema.Struct({
+  ...DogfoodFindingSource.fields,
+  artifactPath: Schema.optionalKey(
+    Schema.Union([Schema.NonEmptyString, Schema.Undefined])
+  ),
+  eventType: Schema.optionalKey(
+    Schema.Union([Schema.NonEmptyString, Schema.Undefined])
+  ),
+  pullRequest: Schema.optionalKey(
+    Schema.Union([Schema.String, Schema.Undefined])
+  ),
+  url: Schema.optionalKey(Schema.Union([Schema.String, Schema.Undefined])),
+});
 
 /** Derive and persist the Gaia dogfood retrospective artifact for a run. */
 export function writeDogfoodRetrospective(
@@ -181,7 +202,7 @@ function reviewFindings(runId: RunId, paths: RunPaths) {
   });
 }
 
-function readReviewArtifact(artifactPath: string) {
+function readReviewArtifact(artifactPath: RuntimePath) {
   return Effect.gen(function* () {
     const json = yield* readOptionalJson(artifactPath);
     if (json._tag === "Missing") {
@@ -203,7 +224,7 @@ function readReviewArtifact(artifactPath: string) {
 function reviewResultFindings(
   runId: RunId,
   review: ReviewResult,
-  artifactPath: string
+  artifactPath: Schema.Schema.Type<typeof DogfoodArtifactReferenceSchema>
 ): ReadonlyArray<DraftFinding> {
   const source = sourceForRun({
     artifactPath,
@@ -278,7 +299,7 @@ function workerResultFindings(runId: RunId, paths: RunPaths) {
     }
 
     const parsed = parseHarnessResult(json.value);
-    if (parsed._tag === "Invalid") {
+    if (parsed instanceof HarnessResultParseFailure) {
       return [
         {
           category: "boundary-contract",
@@ -297,7 +318,7 @@ function workerResultFindings(runId: RunId, paths: RunPaths) {
       ] satisfies ReadonlyArray<DraftFinding>;
     }
 
-    const result = parsed.value;
+    const result = parsed;
     const noisyPaths = result.changedWorkspacePaths.filter((path) =>
       noisePathPattern.test(path)
     );
@@ -904,7 +925,7 @@ function existingSourceArtifactPaths(paths: RunPaths) {
 }
 
 function readOptionalJson(
-  artifactPath: string
+  artifactPath: RuntimePath
 ): Effect.Effect<OptionalJson, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -939,22 +960,17 @@ function readOptionalJson(
   );
 }
 
-function parseHarnessResult(input: unknown): HarnessResultParse {
+function parseHarnessResult(input: unknown) {
   try {
-    return { _tag: "Valid", value: parseHarnessRunResultJson(input) };
+    return parseHarnessRunResultJson(input);
   } catch (cause) {
-    return { _tag: "Invalid", message: errorMessage(cause) };
+    return HarnessResultParseFailure.make({ message: errorMessage(cause) });
   }
 }
 
-function sourceForRun(input: {
-  readonly artifactPath?: string | undefined;
-  readonly eventType?: string | undefined;
-  readonly label: string;
-  readonly pullRequest?: string | undefined;
-  readonly runId: RunId;
-  readonly url?: string | undefined;
-}) {
+function sourceForRun(
+  input: Schema.Schema.Type<typeof SourceForRunInputSchema>
+) {
   return DogfoodFindingSource.make({
     label: input.label,
     runId: input.runId,
@@ -1031,7 +1047,7 @@ function normalizeSummary(summary: string) {
   return summary.toLowerCase().replace(/\s+/gu, " ").trim();
 }
 
-function safeSummary(input: string) {
+function safeSummary(input: typeof DogfoodFinding.fields.summary.Type) {
   const firstMeaningfulLine =
     input
       .split(/\r?\n/u)

@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import type { WorkerPlanPlanningContext } from "./source-planning-context.js";
+import type { WorkerPlan } from "./worker-plan.js";
 
 export const InferenceConfidenceSchema = Schema.Literals([
   "high",
@@ -56,43 +56,43 @@ export class WorkerPlanInferredRecommendations extends Schema.Class<WorkerPlanIn
 type Confidence = typeof InferenceConfidenceSchema.Type;
 type SourceKind = typeof InferenceSourceKindSchema.Type;
 
-type DomainReferenceInput = {
-  readonly kind: string;
-  readonly value: string;
-};
+type InferenceInput = Pick<
+  typeof WorkerPlan.Type,
+  | "domainReferences"
+  | "likelyTouchedSurfaces"
+  | "planningContext"
+  | "verificationChecks"
+>;
 
-type VerificationCheckInput = {
-  readonly command?: string | undefined;
-  readonly expectation: string;
-};
+const SurfaceProfileSchema = Schema.Struct({
+  browserVisible: Schema.Array(InferenceSource),
+  cli: Schema.Array(InferenceSource),
+  core: Schema.Array(InferenceSource),
+  docsTemplates: Schema.Array(InferenceSource),
+  effect: Schema.Array(InferenceSource),
+  githubPr: Schema.Array(InferenceSource),
+  runtime: Schema.Array(InferenceSource),
+  server: Schema.Array(InferenceSource),
+});
 
-type InferenceInput = {
-  readonly domainReferences: ReadonlyArray<DomainReferenceInput>;
-  readonly likelyTouchedSurfaces: ReadonlyArray<string>;
-  readonly planningContext: WorkerPlanPlanningContext;
-  readonly verificationChecks: ReadonlyArray<VerificationCheckInput>;
-};
+type SurfaceProfile = typeof SurfaceProfileSchema.Type;
 
-type SurfaceProfile = {
-  readonly cli: ReadonlyArray<InferenceSource>;
-  readonly core: ReadonlyArray<InferenceSource>;
-  readonly docsTemplates: ReadonlyArray<InferenceSource>;
-  readonly effect: ReadonlyArray<InferenceSource>;
-  readonly githubPr: ReadonlyArray<InferenceSource>;
-  readonly browserVisible: ReadonlyArray<InferenceSource>;
-  readonly runtime: ReadonlyArray<InferenceSource>;
-  readonly server: ReadonlyArray<InferenceSource>;
-};
+const SkillAccumulatorSchema = Schema.Struct({
+  confidence: InferenceConfidenceSchema,
+  reasons: Schema.Array(Schema.NonEmptyString),
+  sources: Schema.Array(InferenceSource),
+});
 
-type SkillAccumulator = {
-  readonly confidence: Confidence;
-  readonly reasons: ReadonlyArray<string>;
-  readonly sources: ReadonlyArray<InferenceSource>;
-};
+type SkillAccumulator = Schema.Schema.Type<typeof SkillAccumulatorSchema>;
 
-type VerificationAccumulator = SkillAccumulator & {
-  readonly command?: string | undefined;
-};
+const VerificationAccumulatorSchema = Schema.Struct({
+  ...SkillAccumulatorSchema.fields,
+  command: Schema.optionalKey(Schema.NonEmptyString),
+});
+
+type VerificationAccumulator = Schema.Schema.Type<
+  typeof VerificationAccumulatorSchema
+>;
 
 const baseReviewSource = InferenceSource.make({
   kind: "planned-surface",
@@ -558,18 +558,12 @@ function addRecommendation(
 function addVerification(
   target: Map<string, VerificationAccumulator>,
   check: string,
-  input: {
-    readonly command?: string | undefined;
-    readonly confidence: Confidence;
-    readonly reasons: ReadonlyArray<string>;
-    readonly sources: ReadonlyArray<InferenceSource>;
-  }
+  input: VerificationAccumulator
 ) {
   const existing = target.get(check);
+  const command = input.command ?? existing?.command;
   target.set(check, {
-    ...(input.command === undefined && existing?.command === undefined
-      ? {}
-      : { command: input.command ?? existing?.command }),
+    ...(command === undefined ? {} : { command }),
     confidence:
       existing === undefined
         ? input.confidence
@@ -619,7 +613,11 @@ function highestConfidence(left: Confidence, right: Confidence): Confidence {
   return "low";
 }
 
-function source(kind: SourceKind, value: string, reason: string) {
+function source(
+  kind: SourceKind,
+  value: typeof InferenceSource.fields.value.Type,
+  reason: typeof InferenceSource.fields.reason.Type
+) {
   return InferenceSource.make({
     kind,
     reason: fallbackText(reason, "Source contributed to inference."),
@@ -659,7 +657,10 @@ function uniqueStrings(values: ReadonlyArray<string>) {
   return unique;
 }
 
-function fallbackText(value: string, fallback: string) {
+function fallbackText(
+  value: typeof InferenceSource.fields.value.Type,
+  fallback: typeof InferenceSource.fields.value.Type
+) {
   const normalized = value.trim();
   return normalized.length === 0 ? fallback : normalized;
 }

@@ -2,39 +2,75 @@ import {
   FactoryRetro,
   FactoryRetroEntry,
   FactoryRetroSourceLink,
+  DogfoodFinding,
+  EvidencePromotion,
+  EvidencePromotionCleanupStatusSchema,
+  EvidencePromotionStatusSchema,
   PromotedEvidenceItem,
+  RunIdSchema,
+  RunSpec,
   parseDogfoodRetrospective,
   parseEvidencePromotion,
-  type DogfoodFinding,
-  type EvidencePromotion,
   type FactoryRetroEntrySource,
-  type RunId,
-  type RunSpec,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
 import { makeRuntimeError } from "./errors.js";
-import { runRelative, type RunPaths } from "./paths.js";
+import {
+  runRelative,
+  RunPathsSchema,
+  type RunPaths,
+  type RuntimePath,
+} from "./paths.js";
 
 const FactoryRetroJson = Schema.toCodecJson(FactoryRetro);
 const encodeFactoryRetro = Schema.encodeSync(FactoryRetroJson);
 
-type WriteFactoryRetroInput = {
-  readonly evidencePromotion?: EvidencePromotion | undefined;
-  readonly paths: RunPaths;
-  readonly runId: RunId;
-  readonly spec: RunSpec;
-};
+const WriteFactoryRetroInputSchema = Schema.Struct({
+  evidencePromotion: Schema.optionalKey(EvidencePromotion),
+  paths: RunPathsSchema,
+  runId: RunIdSchema,
+  spec: RunSpec,
+});
 
-type OperatorNotes = {
-  readonly helped: ReadonlyArray<string>;
-  readonly missed: ReadonlyArray<string>;
-  readonly misled: ReadonlyArray<string>;
-  readonly nextImprovement?: string | undefined;
-  readonly sourceLinks: ReadonlyArray<FactoryRetroSourceLink>;
-};
+const OperatorNotesSchema = Schema.Struct({
+  helped: Schema.Array(Schema.NonEmptyString),
+  missed: Schema.Array(Schema.NonEmptyString),
+  misled: Schema.Array(Schema.NonEmptyString),
+  nextImprovement: Schema.optionalKey(Schema.NonEmptyString),
+  sourceLinks: Schema.Array(FactoryRetroSourceLink),
+});
 
-export function writeFactoryRetro(input: WriteFactoryRetroInput) {
+type OperatorNotes = Schema.Schema.Type<typeof OperatorNotesSchema>;
+
+const RecommendedImprovementInputSchema = Schema.Struct({
+  findings: Schema.Array(DogfoodFinding),
+  missed: Schema.Array(FactoryRetroEntry),
+  misled: Schema.Array(FactoryRetroEntry),
+});
+
+const FactoryRetroRenderInputSchema = Schema.Struct({
+  cleanupStatus: EvidencePromotionCleanupStatusSchema,
+  generatedAt: Schema.NonEmptyString,
+  helped: Schema.Array(FactoryRetroEntry),
+  missed: Schema.Array(FactoryRetroEntry),
+  misled: Schema.Array(FactoryRetroEntry),
+  promotedEvidence: Schema.Array(PromotedEvidenceItem),
+  promotionStatus: EvidencePromotionStatusSchema,
+  recommendedNextFactoryImprovement: Schema.NonEmptyString,
+  runId: RunIdSchema,
+  sourceLinks: Schema.Array(FactoryRetroSourceLink),
+});
+
+type FactoryRetroRenderInput = Schema.Schema.Type<
+  typeof FactoryRetroRenderInputSchema
+>;
+
+const FactoryRetroHeadingSchema = Schema.String;
+
+export function writeFactoryRetro(
+  input: Schema.Schema.Type<typeof WriteFactoryRetroInputSchema>
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const generatedAt = new Date().toISOString();
@@ -161,9 +197,14 @@ function observedHelpedEntries(
   ) {
     entries.push(
       factoryRetroEntry({
-        artifactPath:
-          evidencePromotion.reportPaths.reportMarkdownPath ??
-          evidencePromotion.reportPaths.reportJsonPath,
+        ...(evidencePromotion.reportPaths.reportMarkdownPath === undefined &&
+        evidencePromotion.reportPaths.reportJsonPath === undefined
+          ? {}
+          : {
+              artifactPath:
+                evidencePromotion.reportPaths.reportMarkdownPath ??
+                evidencePromotion.reportPaths.reportJsonPath,
+            }),
         source: "observed",
         summary:
           "Human run reports were available as durable handoff evidence.",
@@ -208,7 +249,9 @@ function missedEntries(findings: ReadonlyArray<DogfoodFinding>) {
     .filter((finding) => finding.severity !== "info")
     .map((finding) =>
       factoryRetroEntry({
-        artifactPath: finding.sources[0]?.artifactPath,
+        ...(finding.sources[0]?.artifactPath === undefined
+          ? {}
+          : { artifactPath: finding.sources[0].artifactPath }),
         source: "observed",
         summary: finding.summary,
       })
@@ -220,7 +263,9 @@ function misledEntries(findings: ReadonlyArray<DogfoodFinding>) {
     .filter((finding) => finding.severity === "blocker")
     .map((finding) =>
       factoryRetroEntry({
-        artifactPath: finding.sources[0]?.artifactPath,
+        ...(finding.sources[0]?.artifactPath === undefined
+          ? {}
+          : { artifactPath: finding.sources[0].artifactPath }),
         source: "inferred",
         summary: finding.summary,
       })
@@ -267,11 +312,9 @@ function sourceLinksFromRetrospective(findings: ReadonlyArray<DogfoodFinding>) {
   );
 }
 
-function recommendedImprovement(input: {
-  readonly findings: ReadonlyArray<DogfoodFinding>;
-  readonly missed: ReadonlyArray<FactoryRetroEntry>;
-  readonly misled: ReadonlyArray<FactoryRetroEntry>;
-}) {
+function recommendedImprovement(
+  input: Schema.Schema.Type<typeof RecommendedImprovementInputSchema>
+) {
   const firstCandidate = input.findings.find(
     (finding) => finding.candidateIssue !== undefined
   )?.candidateIssue;
@@ -291,19 +334,24 @@ function recommendedImprovement(input: {
 }
 
 function parseOperatorNotes(body: string): OperatorNotes {
+  const helped = extractSectionItems(body, ["factory retro helped", "helped"]);
+  const missed = extractSectionItems(body, ["factory retro missed", "missed"]);
+  const misled = extractSectionItems(body, ["factory retro misled", "misled"]);
+  const nextImprovement = extractSectionItems(body, [
+    "factory retro next improvement",
+    "recommended next factory improvement",
+    "next factory improvement",
+  ])[0];
+  const sourceLinks = extractSectionItems(body, [
+    "factory retro source links",
+    "source links",
+  ]).map(parseSourceLink);
   return {
-    helped: extractSectionItems(body, ["factory retro helped", "helped"]),
-    missed: extractSectionItems(body, ["factory retro missed", "missed"]),
-    misled: extractSectionItems(body, ["factory retro misled", "misled"]),
-    nextImprovement: extractSectionItems(body, [
-      "factory retro next improvement",
-      "recommended next factory improvement",
-      "next factory improvement",
-    ])[0],
-    sourceLinks: extractSectionItems(body, [
-      "factory retro source links",
-      "source links",
-    ]).map(parseSourceLink),
+    helped,
+    missed,
+    misled,
+    ...(nextImprovement === undefined ? {} : { nextImprovement }),
+    sourceLinks,
   };
 }
 
@@ -319,11 +367,7 @@ function entriesFromNotes(
   );
 }
 
-function factoryRetroEntry(input: {
-  readonly artifactPath?: string | undefined;
-  readonly source: FactoryRetroEntrySource;
-  readonly summary: string;
-}) {
+function factoryRetroEntry(input: typeof FactoryRetroEntry.Type) {
   return FactoryRetroEntry.make({
     ...(input.artifactPath === undefined
       ? {}
@@ -380,18 +424,7 @@ function parseSourceLink(item: string) {
   });
 }
 
-function renderFactoryRetroMarkdown(input: {
-  readonly cleanupStatus: string;
-  readonly generatedAt: string;
-  readonly helped: ReadonlyArray<FactoryRetroEntry>;
-  readonly missed: ReadonlyArray<FactoryRetroEntry>;
-  readonly misled: ReadonlyArray<FactoryRetroEntry>;
-  readonly promotedEvidence: ReadonlyArray<PromotedEvidenceItem>;
-  readonly promotionStatus: string;
-  readonly recommendedNextFactoryImprovement: string;
-  readonly runId: RunId;
-  readonly sourceLinks: ReadonlyArray<FactoryRetroSourceLink>;
-}) {
+function renderFactoryRetroMarkdown(input: FactoryRetroRenderInput) {
   return `# Factory Retro ${input.runId}
 
 Promotion status: ${input.promotionStatus}
@@ -476,7 +509,9 @@ function dedupeSourceLinks(links: ReadonlyArray<FactoryRetroSourceLink>) {
   return output;
 }
 
-function normalizeHeading(input: string) {
+function normalizeHeading(
+  input: Schema.Schema.Type<typeof FactoryRetroHeadingSchema>
+) {
   return input
     .replace(/^#+\s*/u, "")
     .replace(/:$/u, "")
@@ -496,7 +531,7 @@ function readEvidencePromotion(paths: RunPaths) {
 }
 
 function readJsonIfExists<A>(
-  artifactPath: string,
+  artifactPath: RuntimePath,
   parse: (input: unknown) => A
 ) {
   return Effect.gen(function* () {
@@ -532,7 +567,10 @@ function readJsonIfExists<A>(
   });
 }
 
-function gaiaRelative(paths: RunPaths, absolutePath: string): string {
+function gaiaRelative(
+  paths: RunPaths,
+  absolutePath: RuntimePath
+): typeof FactoryRetro.fields.artifactPath.Encoded {
   if (absolutePath.startsWith(`${paths.gaiaRoot}/`)) {
     return `.gaia/${absolutePath.slice(paths.gaiaRoot.length + 1)}`;
   }
