@@ -2,7 +2,7 @@ import { Effect, FileSystem, Schema } from "effect";
 
 import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
-import type { RunPaths } from "./paths.js";
+import { RunPathsSchema } from "./paths.js";
 
 export const BrowserEvidenceRequirementSchema = Schema.Literals([
   "optional",
@@ -40,14 +40,22 @@ export class RunProfile extends Schema.Class<RunProfile>("RunProfile")({
   version: Schema.Literal(1),
 }) {}
 
-export type RunProfileSource = {
-  readonly path: string;
-};
+const RunProfileSourcePathSchema = Schema.String.pipe(
+  Schema.brand("RunProfileSourcePath")
+);
+const RunProfileSourceSchema = Schema.Struct({
+  path: RunProfileSourcePathSchema,
+});
+
+export type RunProfileSource = Schema.Schema.Type<
+  typeof RunProfileSourceSchema
+>;
 
 const RunProfileJson = Schema.toCodecJson(RunProfile);
 const decodeRunProfileJson = Schema.decodeUnknownSync(RunProfileJson);
 const encodeRunProfileJson = Schema.encodeSync(RunProfileJson);
 const parseRunProfileName = Schema.decodeUnknownSync(RunProfileNameSchema);
+const parseRunProfileSource = Schema.decodeUnknownSync(RunProfileSourceSchema);
 
 /** Default run profile used when no explicit profile is selected. */
 export const defaultRunProfile = RunProfile.make({
@@ -60,8 +68,10 @@ export const defaultRunProfile = RunProfile.make({
 export const parseRunProfileJson = Schema.decodeUnknownSync(RunProfileJson);
 
 /** Create a local file-backed run profile source. */
-export function localRunProfileSource(path: string): RunProfileSource {
-  return { path };
+export function localRunProfileSource(
+  path: typeof RunProfileSourcePathSchema.Encoded
+): RunProfileSource {
+  return parseRunProfileSource({ path });
 }
 
 /** Resolve the run profile that should govern a run. */
@@ -76,10 +86,14 @@ export function resolveRunProfile(
 }
 
 /** Persist the resolved run profile as run evidence. */
-export function writeRunProfile(input: {
-  readonly paths: RunPaths;
-  readonly profile: RunProfile;
-}): Effect.Effect<RunProfile, GaiaRuntimeError, FileSystem.FileSystem> {
+const WriteRunProfileInputSchema = Schema.Struct({
+  paths: RunPathsSchema,
+  profile: RunProfile,
+});
+
+export function writeRunProfile(
+  input: Schema.Schema.Type<typeof WriteRunProfileInputSchema>
+): Effect.Effect<RunProfile, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
 
@@ -104,7 +118,7 @@ export function writeRunProfile(input: {
 }
 
 function readRunProfile(
-  profilePath: string
+  profilePath: typeof RunProfileSourcePathSchema.Type
 ): Effect.Effect<RunProfile, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -125,7 +139,10 @@ function readRunProfile(
   );
 }
 
-function parseRunProfile(contents: string, profilePath: string) {
+function parseRunProfile(
+  contents: string,
+  profilePath: typeof RunProfileSourcePathSchema.Type
+) {
   return Effect.try({
     try: () => decodeRunProfileJson(JSON.parse(contents)),
     catch: (cause) =>

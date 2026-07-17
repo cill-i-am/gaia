@@ -7,6 +7,11 @@ import {
   FactoryLaneScorecardPreferredLane,
   FactoryLaneScorecardSourceLink,
   FactoryLaneScorecardVerificationEvidence,
+  FactoryLaneRoleSchema,
+  FactoryLaneScorecardCheckStatusSchema,
+  FactoryLaneScorecardComparisonWaitStatusSchema,
+  RunIdSchema,
+  RunSpec,
   parseFactoryLaneScorecardLane,
   type FactoryLaneRole,
   type FactoryLaneScorecardCheckStatus,
@@ -15,47 +20,74 @@ import {
   type FactoryLaneScorecardCriterionClassification,
   type FactoryLaneScorecardFactoryLearningSignalStatus,
   type FactoryLaneScorecardImplementationAcceptanceStatus,
-  type RunId,
-  type RunSpec,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
 import { makeRuntimeError } from "./errors.js";
-import type { RunPaths } from "./paths.js";
+import { RunPathsSchema, type RunPaths, type RuntimePath } from "./paths.js";
 
 const FactoryLaneScorecardJson = Schema.toCodecJson(FactoryLaneScorecard);
 const encodeFactoryLaneScorecard = Schema.encodeSync(FactoryLaneScorecardJson);
 
-type WriteFactoryScorecardInput = {
-  readonly paths: RunPaths;
-  readonly runId: RunId;
-  readonly spec: RunSpec;
-};
+const WriteFactoryScorecardInputSchema = Schema.Struct({
+  paths: RunPathsSchema,
+  runId: RunIdSchema,
+  spec: RunSpec,
+});
 
-type LaneDraft = {
-  checkStatus: FactoryLaneScorecardCheckStatus | undefined;
-  comparisonWaitStatus: FactoryLaneScorecardComparisonWaitStatus | undefined;
-  criteria: Array<FactoryLaneScorecardCriterionAssessment>;
-  factoryLearningSignal: FactoryLaneScorecardFactoryLearningSignal | undefined;
-  headSha: string | undefined;
-  implementationAcceptance:
-    | FactoryLaneScorecardImplementationAcceptance
-    | undefined;
-  label: string | undefined;
-  laneId: string | undefined;
-  localVerification: Array<FactoryLaneScorecardVerificationEvidence>;
-  pullRequest: string | undefined;
-  role: FactoryLaneRole | undefined;
-  sourceLinks: Array<FactoryLaneScorecardSourceLink>;
-  tradeoffs: Array<string>;
-};
+class LaneDraft extends Schema.Class<LaneDraft>("FactoryScorecardLaneDraft")({
+  checkStatus: Schema.mutableKey(
+    Schema.optionalKey(FactoryLaneScorecardCheckStatusSchema)
+  ),
+  comparisonWaitStatus: Schema.mutableKey(
+    Schema.optionalKey(FactoryLaneScorecardComparisonWaitStatusSchema)
+  ),
+  criteria: Schema.mutable(
+    Schema.Array(FactoryLaneScorecardCriterionAssessment)
+  ),
+  factoryLearningSignal: Schema.mutableKey(
+    Schema.optionalKey(FactoryLaneScorecardFactoryLearningSignal)
+  ),
+  headSha: Schema.mutableKey(Schema.optionalKey(Schema.String)),
+  implementationAcceptance: Schema.mutableKey(
+    Schema.optionalKey(FactoryLaneScorecardImplementationAcceptance)
+  ),
+  label: Schema.mutableKey(Schema.optionalKey(Schema.String)),
+  laneId: Schema.mutableKey(Schema.optionalKey(Schema.String)),
+  localVerification: Schema.mutable(
+    Schema.Array(FactoryLaneScorecardVerificationEvidence)
+  ),
+  pullRequest: Schema.mutableKey(Schema.optionalKey(Schema.String)),
+  role: Schema.mutableKey(Schema.optionalKey(FactoryLaneRoleSchema)),
+  sourceLinks: Schema.mutable(Schema.Array(FactoryLaneScorecardSourceLink)),
+  tradeoffs: Schema.mutable(Schema.Array(Schema.String)),
+}) {}
 
-type RecommendationDraft = {
-  readonly notes: ReadonlyArray<string>;
-  readonly preferredLaneId?: string | undefined;
-  readonly rationale?: string | undefined;
-  readonly tradeoffsPreserved: ReadonlyArray<string>;
-};
+const parseLaneDraft = Schema.decodeUnknownSync(LaneDraft);
+
+const RecommendationDraftSchema = Schema.Struct({
+  notes: Schema.Array(Schema.NonEmptyString),
+  preferredLaneId: Schema.Union([Schema.String, Schema.Undefined]),
+  rationale: Schema.Union([Schema.String, Schema.Undefined]),
+  tradeoffsPreserved: Schema.Array(Schema.NonEmptyString),
+});
+
+type RecommendationDraft = Schema.Schema.Type<typeof RecommendationDraftSchema>;
+
+const FactoryScorecardRenderInputSchema = Schema.Struct({
+  comparisonSummary: Schema.NonEmptyString,
+  generatedAt: Schema.NonEmptyString,
+  lanes: Schema.Array(FactoryLaneScorecardLane),
+  notes: Schema.Array(Schema.NonEmptyString),
+  preferredLane: Schema.Union([
+    FactoryLaneScorecardPreferredLane,
+    Schema.Undefined,
+  ]),
+  recommendationSummary: Schema.NonEmptyString,
+  runId: RunIdSchema,
+});
+
+const FactoryScorecardTextSchema = Schema.String;
 
 const requiredCriteria: ReadonlyArray<FactoryLaneScorecardCriterion> = [
   "correctness",
@@ -67,7 +99,9 @@ const requiredCriteria: ReadonlyArray<FactoryLaneScorecardCriterion> = [
   "dogfood-signal",
 ];
 
-export function writeFactoryScorecard(input: WriteFactoryScorecardInput) {
+export function writeFactoryScorecard(
+  input: Schema.Schema.Type<typeof WriteFactoryScorecardInputSchema>
+) {
   return Effect.gen(function* () {
     const parsed = parseScorecardSections(input.spec.body);
     if (parsed.lanes.length < 2) {
@@ -215,21 +249,13 @@ function parseScorecardSections(body: string) {
 }
 
 function emptyLaneDraft(label: string | undefined): LaneDraft {
-  return {
-    checkStatus: undefined,
-    comparisonWaitStatus: undefined,
+  return parseLaneDraft({
     criteria: [],
-    factoryLearningSignal: undefined,
-    headSha: undefined,
-    implementationAcceptance: undefined,
-    label,
-    laneId: label === undefined ? undefined : normalizeLaneId(label),
+    ...(label === undefined ? {} : { label, laneId: normalizeLaneId(label) }),
     localVerification: [],
-    pullRequest: undefined,
-    role: undefined,
     sourceLinks: [],
     tradeoffs: [],
-  };
+  });
 }
 
 function applyLaneItem(lane: LaneDraft, item: string) {
@@ -381,15 +407,9 @@ function summarizeComparison(
   return `${laneLabels} comparison recorded; preferred lane is ${preferredLane.laneId}.`;
 }
 
-function renderFactoryScorecardMarkdown(input: {
-  readonly comparisonSummary: string;
-  readonly generatedAt: string;
-  readonly lanes: ReadonlyArray<FactoryLaneScorecardLane>;
-  readonly notes: ReadonlyArray<string>;
-  readonly preferredLane?: FactoryLaneScorecardPreferredLane | undefined;
-  readonly recommendationSummary: string;
-  readonly runId: RunId;
-}) {
+function renderFactoryScorecardMarkdown(
+  input: Schema.Schema.Type<typeof FactoryScorecardRenderInputSchema>
+) {
   return `# Factory Lane Scorecard ${input.runId}
 
 Generated at: ${input.generatedAt}
@@ -529,11 +549,15 @@ function parseKeyValue(item: string) {
   return { key, value };
 }
 
-function normalizeKey(input: string) {
+function normalizeKey(
+  input: Schema.Schema.Type<typeof FactoryScorecardTextSchema>
+) {
   return input.trim().toLowerCase().replace(/\s+/gu, "-");
 }
 
-function normalizeLaneId(input: string) {
+function normalizeLaneId(
+  input: Schema.Schema.Type<typeof FactoryScorecardTextSchema>
+) {
   return input
     .trim()
     .toLowerCase()
@@ -718,7 +742,10 @@ function parseSourceLink(input: string) {
   });
 }
 
-function gaiaRelative(paths: RunPaths, absolutePath: string): string {
+function gaiaRelative(
+  paths: RunPaths,
+  absolutePath: RuntimePath
+): typeof FactoryLaneScorecard.fields.artifactPath.Encoded {
   if (absolutePath.startsWith(`${paths.gaiaRoot}/`)) {
     return `.gaia/${absolutePath.slice(paths.gaiaRoot.length + 1)}`;
   }
