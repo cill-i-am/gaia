@@ -1121,6 +1121,131 @@ try {
     }
   };
 
+  const capabilityWrapperDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-capability-wrapper-",
+    [
+      [
+        "capability-wrapper.ts",
+        `
+          import { Schema } from "effect";
+
+          const ReviewerNameSchema = Schema.String.pipe(
+            Schema.brand("ReviewerName")
+          );
+          type ReviewerName = typeof ReviewerNameSchema.Type;
+          type MixedReviewerCapability = {
+            readonly name: ReviewerName;
+            readonly run: () => Promise<void>;
+          };
+          type ReviewerInjectionOptions = {
+            readonly reviewer?: MixedReviewerCapability;
+          };
+        `,
+      ],
+    ]
+  );
+  assert.deepEqual(
+    capabilityWrapperDiagnostics.map(({ filePath, line }) => ({
+      filePath,
+      line,
+    })),
+    [{ filePath: "capability-wrapper.ts", line: 8 }],
+    "a precise optional readonly capability wrapper is not a data contract, while its mixed owner still reports"
+  );
+
+  const rejectedCapabilityWrapperDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-rejected-capability-wrappers-",
+    [
+      [
+        "rejected-capability-wrappers.ts",
+        `
+          import { Schema } from "effect";
+
+          const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+          type RunId = typeof RunIdSchema.Type;
+          type CallableCapability = {
+            readonly run: () => Promise<void>;
+          };
+          type RequiredCapabilityOptions = {
+            readonly capability: CallableCapability;
+          };
+          type MutableCapabilityOptions = {
+            capability?: CallableCapability;
+          };
+          type DataCapabilityOptions = {
+            readonly capability?: CallableCapability;
+            readonly runId?: RunId;
+          };
+          type NoCallCapability = {
+            readonly runId: RunId;
+          };
+          type NoCallCapabilityOptions = {
+            readonly capability?: NoCallCapability;
+          };
+          type CircularCapability = {
+            readonly next?: CircularCapability;
+          };
+          type CircularCapabilityOptions = {
+            readonly capability?: CircularCapability;
+          };
+          type GenericCapability<Value> = {
+            readonly run: (value: Value) => void;
+          };
+          type GenericCapabilityOptions = {
+            readonly capability?: GenericCapability<RunId>;
+          };
+          type GenericWrapper<Capability> = {
+            readonly capability?: Capability;
+          };
+          type RecordCapabilityOptions = {
+            readonly capability?: Record<string, CallableCapability>;
+          };
+          type MappedCapabilityOptions = {
+            readonly capability?: {
+              readonly [Name in "primary"]: CallableCapability;
+            };
+          };
+          type MixedCapability = {
+            readonly runId: RunId;
+            readonly run: () => void;
+          };
+          type CapabilityAlias = MixedCapability;
+          type AliasedCapabilityOptions = {
+            readonly capability?: CapabilityAlias;
+          };
+        `,
+      ],
+      [
+        "opaque-capability.d.ts",
+        `
+          export interface OpaqueCapability {
+            readonly run(): void;
+          }
+        `,
+      ],
+      [
+        "opaque-capability-wrapper.ts",
+        `
+          import type { OpaqueCapability } from "./opaque-capability.js";
+          type OpaqueCapabilityOptions = {
+            readonly capability?: OpaqueCapability;
+          };
+        `,
+      ],
+    ]
+  );
+  assert.deepEqual(
+    rejectedCapabilityWrapperDiagnostics.reduce((counts, diagnostic) => {
+      counts[diagnostic.filePath] = (counts[diagnostic.filePath] ?? 0) + 1;
+      return counts;
+    }, {}),
+    {
+      "opaque-capability-wrapper.ts": 1,
+      "rejected-capability-wrappers.ts": 13,
+    },
+    "required, mutable, data-bearing, generic, aliased, circular, opaque, and non-callable capability wrappers must report"
+  );
+
   const xstateMetadataDiagnostics = await analyzeCoreProject(
     ".gaia-schema-contract-xstate-metadata-",
     [

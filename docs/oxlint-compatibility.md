@@ -217,6 +217,15 @@ covered:
   symbol, and every reference to each alias must stay in those positions. The
   syntax rule mirrors the import binding and lexical-shadow boundary; the
   compiler checker remains authoritative for framework symbol identity.
+  A separate injected-capability wrapper exception is equally narrow: a
+  non-generic type literal may contain only `readonly` optional direct type
+  references to unique, non-generic declarations in the same source file,
+  and every referenced declaration must contain a callable member. The syntax
+  rule follows that local declaration graph; the compiler checker resolves the
+  real TypeScript symbol. The mixed data-plus-callable capability owner still
+  reports. Required or mutable properties, direct data, generic/`Record`/mapped
+  wrappers, aliases, imports, unresolved declarations, inheritance, cycles,
+  and declarations with no callable member remain diagnostics.
   Counterfeit utilities, arbitrary schema-containing generics, metadata indexed
   access, textual `.Type` and `["Type"]` lookalikes, manual DTO projections,
   structural schema lookalikes, generic/`Record`/mapped XState maps, callable
@@ -233,6 +242,45 @@ covered:
   to exact Codex App Server protocol declarations and pinned schema-parity
   metadata. Provider-shaped lookalikes, Gaia-owned DTOs, and manual semantic
   strings still report.
+  A raw string type predicate is accepted only when its sole value reference is
+  the first predicate argument of the actual unshadowed `Schema.refine` binding
+  imported as `Schema` from `effect`, the refinement is composed from
+  `Schema.String` or `Schema.NonEmptyString`, a later pipe argument applies the
+  owning non-empty `Schema.brand`, and every use of the predicate value remains
+  inside the closed validation body. Assignment or member writes, captures,
+  object or array construction, forwarding, and any other non-validation escape
+  still report, as do aliased, counterfeit, or shadowed bindings, boolean
+  validators, callbacks such as `Array.filter`, extra references, and missing
+  brands.
+  Built-in validation and scanner operations require the actual unshadowed
+  runtime binding: value imports named `URL`, `Math`, `String`, `Set`, or
+  `RegExp` are counterfeit bindings, while type-only imports do not shadow the
+  runtime global. Closed prose receivers must come from an explicit primitive
+  or unshadowed built-in collection annotation, a closed local initializer, an
+  exact built-in collection field on a readonly parameter shape, a
+  declaration-linked ordinary text field on a local `Schema.Class`, or
+  callback provenance from an already closed receiver whose declared element
+  shape is itself closed. Schema-class callback values remain closed only
+  through their declared text and collection fields. Local arrays, objects,
+  constructed collections, and helper returns prove their contained values;
+  an unrelated safe-looking transform does not close a counterfeit receiver.
+  Being a parameter or exposing a familiar method such as `map` is not proof.
+  Ordinary reviewer prose and source scanning use a separate closed-graph
+  proof. It follows unique top-level functions, aliases and assignments,
+  callbacks, returns, helper calls, object and array construction, property
+  writes, local collection operations, and recursive scanner components. Every
+  use is accounted for: intermediate text predicates and indexes remain inside
+  the closed graph, while values leaving it must terminate in either the
+  scanner's regex test or an exact field of the locally resolved Effect
+  `Schema.Class.make` declaration. That field must itself be declared with an
+  ordinary unbranded text schema; branded, refined, aliased, unresolved, or
+  semantic fields reject regardless of their key. Once that declaration-linked
+  schema construction consumes the value, subsequent encoding and persistence
+  of the parsed projection are not treated as raw string uses. Imported or
+  unresolved calls, escaped callbacks, identity wrappers, operational sinks,
+  semantic escapes, and multi-string forwarding through a fallback helper fail
+  closed. A method name, property name, declaration name, or file path alone
+  never establishes this exception.
 - `gaia/no-brand-cast` uses Oxlint only to surface direct schema-type assertion
   candidates. The TypeScript checker is authoritative: it resolves the actual
   `Schema.brand` return type and accepts the brand property only when its
