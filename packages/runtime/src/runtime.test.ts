@@ -2505,6 +2505,960 @@ describe("runtime workflows", () => {
       })
     );
 
+    it.effect("round-trips exact empty skill artifacts without discovery", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const firstSpecPath = `${cwd}/first-spec.md`;
+        const secondSpecPath = `${cwd}/second-spec.md`;
+        const installCommands: Array<SkillInstallCommandInput> = [];
+        const skillInstaller = {
+          commandRunner: installingSkillRunner(
+            fs,
+            installCommands,
+            "skills/unused"
+          ),
+        };
+        yield* fs.writeFileString(firstSpecPath, "Run without skills.\n");
+        yield* fs.writeFileString(
+          secondSpecPath,
+          "Run with the emitted empty manifest.\n"
+        );
+
+        const firstSummary = yield* runSpecFile(firstSpecPath, {
+          rootDirectory: cwd,
+          skillInstaller,
+        });
+        const firstManifestPath = `${firstSummary.runDirectory}/skill-manifest.json`;
+        const firstManifest = JSON.parse(
+          yield* fs.readFileString(firstManifestPath)
+        );
+        const firstBundleJson = JSON.parse(
+          yield* fs.readFileString(
+            `${firstSummary.runDirectory}/skill-bundle.json`
+          )
+        );
+        const firstBundle = parseSkillBundleJson(firstBundleJson);
+        const firstReport = parseRunReport(
+          JSON.parse(
+            yield* fs.readFileString(`${firstSummary.runDirectory}/report.json`)
+          )
+        );
+
+        assert.deepEqual(firstManifest, { skills: [] });
+        assert.deepEqual(firstBundleJson, {
+          skills: [],
+          status: "empty",
+          version: 1,
+        });
+        assert.deepEqual(firstBundle.skills, []);
+        assert.strictEqual(firstBundle.status, "empty");
+        assert.strictEqual(firstBundle.version, 1);
+        assert.deepEqual(firstReport.selectedSkills, []);
+
+        const secondSummary = yield* runSpecFile(secondSpecPath, {
+          rootDirectory: cwd,
+          skillInstaller,
+          skillManifestSource: localSkillManifestSource(firstManifestPath),
+        });
+        const secondManifest = JSON.parse(
+          yield* fs.readFileString(
+            `${secondSummary.runDirectory}/skill-manifest.json`
+          )
+        );
+        const secondBundleJson = JSON.parse(
+          yield* fs.readFileString(
+            `${secondSummary.runDirectory}/skill-bundle.json`
+          )
+        );
+        const secondBundle = parseSkillBundleJson(secondBundleJson);
+        const secondReport = parseRunReport(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${secondSummary.runDirectory}/report.json`
+            )
+          )
+        );
+
+        assert.deepEqual(secondManifest, { skills: [] });
+        assert.deepEqual(secondBundleJson, {
+          skills: [],
+          status: "empty",
+          version: 1,
+        });
+        assert.deepEqual(secondBundle.skills, []);
+        assert.strictEqual(secondBundle.status, "empty");
+        assert.strictEqual(secondBundle.version, 1);
+        assert.deepEqual(secondReport.selectedSkills, []);
+        assert.deepEqual(installCommands, []);
+      })
+    );
+
+    it.effect("preserves skill pin optionality and checkout precedence", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const versionManifestPath = `${cwd}/version-skills.json`;
+        const commitManifestPath = `${cwd}/commit-skills.json`;
+        const bothManifestPath = `${cwd}/both-skills.json`;
+        const installCommands: Array<SkillInstallCommandInput> = [];
+        const skillInstaller = {
+          commandRunner: installingSkillRunner(
+            fs,
+            installCommands,
+            "skills/coding-standards"
+          ),
+        };
+        yield* fs.writeFileString(
+          versionManifestPath,
+          `${JSON.stringify({
+            skills: [
+              {
+                name: "coding-standards",
+                sourcePath: "skills/coding-standards",
+                sourceRepository: "github.com/cillianbarron/skills",
+                version: "v1.2.3",
+              },
+            ],
+          })}\n`
+        );
+        yield* fs.writeFileString(
+          commitManifestPath,
+          `${JSON.stringify({
+            skills: [
+              {
+                commit: "abc123",
+                name: "coding-standards",
+                sourcePath: "skills/coding-standards",
+                sourceRepository: "github.com/cillianbarron/skills",
+              },
+            ],
+          })}\n`
+        );
+        yield* fs.writeFileString(
+          bothManifestPath,
+          `${JSON.stringify({
+            skills: [
+              {
+                commit: "abc123",
+                name: "coding-standards",
+                sourcePath: "skills/coding-standards",
+                sourceRepository: "github.com/cillianbarron/skills",
+                version: "v1.2.3",
+              },
+            ],
+          })}\n`
+        );
+
+        const versionSpecPath = `${cwd}/version-spec.md`;
+        yield* fs.writeFileString(versionSpecPath, "Use a version pin.\n");
+        const versionSummary = yield* runSpecFile(versionSpecPath, {
+          rootDirectory: cwd,
+          skillInstaller,
+          skillManifestSource: localSkillManifestSource(versionManifestPath),
+        });
+        const versionResolvedPath = `${versionSummary.runDirectory}/skill-sources/0-coding-standards/repository/skills/coding-standards`;
+        const versionManifest = JSON.parse(
+          yield* fs.readFileString(
+            `${versionSummary.runDirectory}/skill-manifest.json`
+          )
+        );
+        const versionBundleJson = JSON.parse(
+          yield* fs.readFileString(
+            `${versionSummary.runDirectory}/skill-bundle.json`
+          )
+        );
+        const versionBundle = parseSkillBundleJson(versionBundleJson);
+        assert.deepEqual(versionManifest, {
+          skills: [
+            {
+              name: "coding-standards",
+              sourcePath: "skills/coding-standards",
+              sourceRepository: "github.com/cillianbarron/skills",
+              version: "v1.2.3",
+            },
+          ],
+        });
+        assert.deepEqual(versionBundleJson, {
+          skills: [
+            {
+              name: "coding-standards",
+              resolution: "installed",
+              resolvedPath: versionResolvedPath,
+              sourcePath: "skills/coding-standards",
+              sourceRepository: "github.com/cillianbarron/skills",
+              version: "v1.2.3",
+            },
+          ],
+          status: "ready",
+          version: 1,
+        });
+        assert.isUndefined(versionBundle.skills[0]?.commit);
+        assert.strictEqual(versionBundle.skills[0]?.version, "v1.2.3");
+
+        const commitSpecPath = `${cwd}/commit-spec.md`;
+        yield* fs.writeFileString(commitSpecPath, "Use a commit pin.\n");
+        const commitSummary = yield* runSpecFile(commitSpecPath, {
+          rootDirectory: cwd,
+          skillInstaller,
+          skillManifestSource: localSkillManifestSource(commitManifestPath),
+        });
+        const commitResolvedPath = `${commitSummary.runDirectory}/skill-sources/0-coding-standards/repository/skills/coding-standards`;
+        const commitManifest = JSON.parse(
+          yield* fs.readFileString(
+            `${commitSummary.runDirectory}/skill-manifest.json`
+          )
+        );
+        const commitBundleJson = JSON.parse(
+          yield* fs.readFileString(
+            `${commitSummary.runDirectory}/skill-bundle.json`
+          )
+        );
+        const commitBundle = parseSkillBundleJson(commitBundleJson);
+        assert.deepEqual(commitManifest, {
+          skills: [
+            {
+              commit: "abc123",
+              name: "coding-standards",
+              sourcePath: "skills/coding-standards",
+              sourceRepository: "github.com/cillianbarron/skills",
+            },
+          ],
+        });
+        assert.deepEqual(commitBundleJson, {
+          skills: [
+            {
+              commit: "abc123",
+              name: "coding-standards",
+              resolution: "installed",
+              resolvedPath: commitResolvedPath,
+              sourcePath: "skills/coding-standards",
+              sourceRepository: "github.com/cillianbarron/skills",
+            },
+          ],
+          status: "ready",
+          version: 1,
+        });
+        assert.strictEqual(commitBundle.skills[0]?.commit, "abc123");
+        assert.isUndefined(commitBundle.skills[0]?.version);
+
+        const bothSpecPath = `${cwd}/both-spec.md`;
+        yield* fs.writeFileString(bothSpecPath, "Use both pins.\n");
+        const bothSummary = yield* runSpecFile(bothSpecPath, {
+          rootDirectory: cwd,
+          skillInstaller,
+          skillManifestSource: localSkillManifestSource(bothManifestPath),
+        });
+        const bothResolvedPath = `${bothSummary.runDirectory}/skill-sources/0-coding-standards/repository/skills/coding-standards`;
+        const bothManifest = JSON.parse(
+          yield* fs.readFileString(
+            `${bothSummary.runDirectory}/skill-manifest.json`
+          )
+        );
+        const bothBundleJson = JSON.parse(
+          yield* fs.readFileString(
+            `${bothSummary.runDirectory}/skill-bundle.json`
+          )
+        );
+        const bothBundle = parseSkillBundleJson(bothBundleJson);
+        assert.deepEqual(bothManifest, {
+          skills: [
+            {
+              commit: "abc123",
+              name: "coding-standards",
+              sourcePath: "skills/coding-standards",
+              sourceRepository: "github.com/cillianbarron/skills",
+              version: "v1.2.3",
+            },
+          ],
+        });
+        assert.deepEqual(bothBundleJson, {
+          skills: [
+            {
+              commit: "abc123",
+              name: "coding-standards",
+              resolution: "installed",
+              resolvedPath: bothResolvedPath,
+              sourcePath: "skills/coding-standards",
+              sourceRepository: "github.com/cillianbarron/skills",
+              version: "v1.2.3",
+            },
+          ],
+          status: "ready",
+          version: 1,
+        });
+        assert.strictEqual(bothBundle.skills[0]?.commit, "abc123");
+        assert.strictEqual(bothBundle.skills[0]?.version, "v1.2.3");
+
+        const roundTripSpecPath = `${cwd}/round-trip-spec.md`;
+        yield* fs.writeFileString(
+          roundTripSpecPath,
+          "Reuse the emitted version manifest.\n"
+        );
+        const roundTripSummary = yield* runSpecFile(roundTripSpecPath, {
+          rootDirectory: cwd,
+          skillInstaller,
+          skillManifestSource: localSkillManifestSource(
+            `${versionSummary.runDirectory}/skill-manifest.json`
+          ),
+        });
+        const roundTripBundle = parseSkillBundleJson(
+          JSON.parse(
+            yield* fs.readFileString(
+              `${roundTripSummary.runDirectory}/skill-bundle.json`
+            )
+          )
+        );
+        assert.isUndefined(roundTripBundle.skills[0]?.commit);
+        assert.strictEqual(roundTripBundle.skills[0]?.version, "v1.2.3");
+
+        assert.deepEqual(
+          installCommands.map((command) => command.args),
+          [
+            [
+              "clone",
+              "https://github.com/cillianbarron/skills.git",
+              `${versionSummary.runDirectory}/skill-sources/0-coding-standards/repository`,
+            ],
+            [
+              "-C",
+              `${versionSummary.runDirectory}/skill-sources/0-coding-standards/repository`,
+              "checkout",
+              "v1.2.3",
+            ],
+            [
+              "clone",
+              "https://github.com/cillianbarron/skills.git",
+              `${commitSummary.runDirectory}/skill-sources/0-coding-standards/repository`,
+            ],
+            [
+              "-C",
+              `${commitSummary.runDirectory}/skill-sources/0-coding-standards/repository`,
+              "checkout",
+              "abc123",
+            ],
+            [
+              "clone",
+              "https://github.com/cillianbarron/skills.git",
+              `${bothSummary.runDirectory}/skill-sources/0-coding-standards/repository`,
+            ],
+            [
+              "-C",
+              `${bothSummary.runDirectory}/skill-sources/0-coding-standards/repository`,
+              "checkout",
+              "abc123",
+            ],
+            [
+              "clone",
+              "https://github.com/cillianbarron/skills.git",
+              `${roundTripSummary.runDirectory}/skill-sources/0-coding-standards/repository`,
+            ],
+            [
+              "-C",
+              `${roundTripSummary.runDirectory}/skill-sources/0-coding-standards/repository`,
+              "checkout",
+              "v1.2.3",
+            ],
+          ]
+        );
+      })
+    );
+
+    it.effect(
+      "normalizes supported skill repositories before external path validation",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+          const repositories = new Map([
+            [
+              "github.com/cillianbarron/skills",
+              "https://github.com/cillianbarron/skills.git",
+            ],
+            [
+              "github.com/cillianbarron/skills.git",
+              "https://github.com/cillianbarron/skills.git",
+            ],
+            [
+              "https://example.com/cillianbarron/skills.git",
+              "https://example.com/cillianbarron/skills.git",
+            ],
+            [
+              "http://example.com/cillianbarron/skills.git",
+              "http://example.com/cillianbarron/skills.git",
+            ],
+            [
+              "git@example.com:cillianbarron/skills.git",
+              "git@example.com:cillianbarron/skills.git",
+            ],
+          ]);
+          let repositoryIndex = 0;
+
+          for (const [sourceRepository, cloneUrl] of repositories) {
+            const specPath = `${cwd}/repository-${repositoryIndex}.md`;
+            const manifestPath = `${cwd}/repository-${repositoryIndex}.json`;
+            const installCommands: Array<SkillInstallCommandInput> = [];
+            yield* fs.writeFileString(
+              specPath,
+              `Use repository form ${repositoryIndex}.\n`
+            );
+            yield* fs.writeFileString(
+              manifestPath,
+              `${JSON.stringify({
+                skills: [
+                  {
+                    commit: "abc123",
+                    name: "coding-standards",
+                    sourcePath: "skills/coding-standards",
+                    sourceRepository,
+                  },
+                ],
+              })}\n`
+            );
+
+            const summary = yield* runSpecFile(specPath, {
+              rootDirectory: cwd,
+              skillInstaller: {
+                commandRunner: installingSkillRunner(
+                  fs,
+                  installCommands,
+                  "skills/coding-standards"
+                ),
+              },
+              skillManifestSource: localSkillManifestSource(manifestPath),
+            });
+            const bundle = parseSkillBundleJson(
+              JSON.parse(
+                yield* fs.readFileString(
+                  `${summary.runDirectory}/skill-bundle.json`
+                )
+              )
+            );
+
+            assert.deepEqual(
+              installCommands.map((command) => command.args),
+              [
+                [
+                  "clone",
+                  cloneUrl,
+                  `${summary.runDirectory}/skill-sources/0-coding-standards/repository`,
+                ],
+                [
+                  "-C",
+                  `${summary.runDirectory}/skill-sources/0-coding-standards/repository`,
+                  "checkout",
+                  "abc123",
+                ],
+              ]
+            );
+            assert.strictEqual(
+              bundle.skills[0]?.sourceRepository,
+              sourceRepository
+            );
+            assert.strictEqual(bundle.skills[0]?.resolution, "installed");
+            repositoryIndex += 1;
+          }
+
+          const unsupportedSpecPath = `${cwd}/unsupported-repository.md`;
+          const unsupportedManifestPath = `${cwd}/unsupported-repository.json`;
+          const unsupportedCommands: Array<SkillInstallCommandInput> = [];
+          yield* fs.writeFileString(
+            unsupportedSpecPath,
+            "Reject an unsupported absolute repository source.\n"
+          );
+          yield* fs.writeFileString(
+            unsupportedManifestPath,
+            `${JSON.stringify({
+              skills: [
+                {
+                  commit: "abc123",
+                  name: "coding-standards",
+                  sourcePath: "/absolute/skills/coding-standards",
+                  sourceRepository: "example.com/cillianbarron/skills",
+                },
+              ],
+            })}\n`
+          );
+
+          const unsupportedError = yield* Effect.flip(
+            runSpecFile(unsupportedSpecPath, {
+              rootDirectory: cwd,
+              skillInstaller: {
+                commandRunner: installingSkillRunner(
+                  fs,
+                  unsupportedCommands,
+                  "skills/coding-standards"
+                ),
+              },
+              skillManifestSource: localSkillManifestSource(
+                unsupportedManifestPath
+              ),
+            })
+          );
+          const unsupportedStatus = yield* statusRun(undefined, {
+            rootDirectory: cwd,
+          });
+          assert.isTrue(unsupportedError instanceof GaiaRuntimeError);
+          if (unsupportedError instanceof GaiaRuntimeError) {
+            assert.strictEqual(
+              unsupportedError.code,
+              "SkillBundleRepositoryUnsupported"
+            );
+            assert.isFalse(unsupportedError.recoverable);
+            assert.include(
+              unsupportedError.message,
+              "is not a supported git repository reference"
+            );
+          }
+          assert.deepEqual(unsupportedCommands, []);
+          assert.isFalse(
+            yield* fs.exists(`${unsupportedStatus.runDirectory}/skill-sources`)
+          );
+
+          const absoluteSpecPath = `${cwd}/absolute-external-path.md`;
+          const absoluteManifestPath = `${cwd}/absolute-external-path.json`;
+          const absoluteCommands: Array<SkillInstallCommandInput> = [];
+          yield* fs.writeFileString(
+            absoluteSpecPath,
+            "Reject an absolute external skill path.\n"
+          );
+          yield* fs.writeFileString(
+            absoluteManifestPath,
+            `${JSON.stringify({
+              skills: [
+                {
+                  commit: "abc123",
+                  name: "coding-standards",
+                  sourcePath: "/absolute/skills/coding-standards",
+                  sourceRepository: "github.com/cillianbarron/skills",
+                },
+              ],
+            })}\n`
+          );
+
+          const absoluteError = yield* Effect.flip(
+            runSpecFile(absoluteSpecPath, {
+              rootDirectory: cwd,
+              skillInstaller: {
+                commandRunner: installingSkillRunner(
+                  fs,
+                  absoluteCommands,
+                  "skills/coding-standards"
+                ),
+              },
+              skillManifestSource:
+                localSkillManifestSource(absoluteManifestPath),
+            })
+          );
+          const absoluteStatus = yield* statusRun(undefined, {
+            rootDirectory: cwd,
+          });
+          assert.isTrue(absoluteError instanceof GaiaRuntimeError);
+          if (absoluteError instanceof GaiaRuntimeError) {
+            assert.strictEqual(
+              absoluteError.code,
+              "SkillBundleExternalSourcePathAbsolute"
+            );
+            assert.isFalse(absoluteError.recoverable);
+            assert.include(
+              absoluteError.message,
+              "external sourcePath must be relative"
+            );
+          }
+          assert.deepEqual(absoluteCommands, []);
+          assert.isFalse(
+            yield* fs.exists(`${absoluteStatus.runDirectory}/skill-sources`)
+          );
+        })
+    );
+
+    it.effect(
+      "preserves local skill aliases and directory validation failures",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+          const fileSkillDirectory = `${cwd}/skills/file-alias`;
+          const absoluteSkillDirectory = `${cwd}/absolute-local`;
+          yield* fs.makeDirectory(fileSkillDirectory, { recursive: true });
+          yield* fs.writeFileString(
+            `${fileSkillDirectory}/SKILL.md`,
+            "# File alias\n"
+          );
+          yield* fs.makeDirectory(absoluteSkillDirectory, { recursive: true });
+          yield* fs.writeFileString(
+            `${absoluteSkillDirectory}/SKILL.md`,
+            "# Absolute local\n"
+          );
+
+          const fileSpecPath = `${cwd}/file-alias.md`;
+          const fileManifestPath = `${cwd}/file-alias.json`;
+          yield* fs.writeFileString(fileSpecPath, "Use a file alias.\n");
+          yield* fs.writeFileString(
+            fileManifestPath,
+            `${JSON.stringify({
+              skills: [
+                {
+                  commit: "abc123",
+                  name: "file-alias",
+                  sourcePath: "skills/file-alias",
+                  sourceRepository: "file",
+                },
+              ],
+            })}\n`
+          );
+          const fileSummary = yield* runSpecFile(fileSpecPath, {
+            rootDirectory: cwd,
+            skillManifestSource: localSkillManifestSource(fileManifestPath),
+          });
+          const fileBundle = parseSkillBundleJson(
+            JSON.parse(
+              yield* fs.readFileString(
+                `${fileSummary.runDirectory}/skill-bundle.json`
+              )
+            )
+          );
+          assert.strictEqual(fileBundle.skills[0]?.resolution, "local");
+          assert.strictEqual(
+            fileBundle.skills[0]?.resolvedPath,
+            fileSkillDirectory
+          );
+          assert.strictEqual(fileBundle.skills[0]?.sourceRepository, "file");
+
+          const absoluteSpecPath = `${cwd}/absolute-local.md`;
+          const absoluteManifestPath = `${cwd}/absolute-local.json`;
+          yield* fs.writeFileString(
+            absoluteSpecPath,
+            "Use an absolute local path.\n"
+          );
+          yield* fs.writeFileString(
+            absoluteManifestPath,
+            `${JSON.stringify({
+              skills: [
+                {
+                  version: "v1.2.3",
+                  name: "absolute-local",
+                  sourcePath: absoluteSkillDirectory,
+                  sourceRepository: "local",
+                },
+              ],
+            })}\n`
+          );
+          const absoluteSummary = yield* runSpecFile(absoluteSpecPath, {
+            rootDirectory: cwd,
+            skillManifestSource: localSkillManifestSource(absoluteManifestPath),
+          });
+          const absoluteBundle = parseSkillBundleJson(
+            JSON.parse(
+              yield* fs.readFileString(
+                `${absoluteSummary.runDirectory}/skill-bundle.json`
+              )
+            )
+          );
+          assert.strictEqual(absoluteBundle.skills[0]?.resolution, "local");
+          assert.strictEqual(
+            absoluteBundle.skills[0]?.resolvedPath,
+            absoluteSkillDirectory
+          );
+          assert.strictEqual(
+            absoluteBundle.skills[0]?.sourcePath,
+            absoluteSkillDirectory
+          );
+
+          const missingSpecPath = `${cwd}/missing-local.md`;
+          const missingManifestPath = `${cwd}/missing-local.json`;
+          yield* fs.writeFileString(
+            missingSpecPath,
+            "Reject a missing local source.\n"
+          );
+          yield* fs.writeFileString(
+            missingManifestPath,
+            `${JSON.stringify({
+              skills: [
+                {
+                  commit: "abc123",
+                  name: "missing-local",
+                  sourcePath: "skills/missing-local",
+                  sourceRepository: "local",
+                },
+              ],
+            })}\n`
+          );
+          const missingError = yield* Effect.flip(
+            runSpecFile(missingSpecPath, {
+              rootDirectory: cwd,
+              skillManifestSource:
+                localSkillManifestSource(missingManifestPath),
+            })
+          );
+          assert.isTrue(missingError instanceof GaiaRuntimeError);
+          if (missingError instanceof GaiaRuntimeError) {
+            assert.strictEqual(
+              missingError.code,
+              "SkillBundleSourceUnavailable"
+            );
+            assert.isFalse(missingError.recoverable);
+            assert.include(missingError.message, "source");
+            assert.include(missingError.message, "is not available");
+          }
+
+          const fileSourcePath = `${cwd}/skills/not-a-directory`;
+          const fileSourceSpecPath = `${cwd}/not-a-directory.md`;
+          const fileSourceManifestPath = `${cwd}/not-a-directory.json`;
+          yield* fs.writeFileString(fileSourcePath, "not a directory\n");
+          yield* fs.writeFileString(
+            fileSourceSpecPath,
+            "Reject a file as a skill directory.\n"
+          );
+          yield* fs.writeFileString(
+            fileSourceManifestPath,
+            `${JSON.stringify({
+              skills: [
+                {
+                  commit: "abc123",
+                  name: "not-a-directory",
+                  sourcePath: "skills/not-a-directory",
+                  sourceRepository: "local",
+                },
+              ],
+            })}\n`
+          );
+          const fileSourceError = yield* Effect.flip(
+            runSpecFile(fileSourceSpecPath, {
+              rootDirectory: cwd,
+              skillManifestSource: localSkillManifestSource(
+                fileSourceManifestPath
+              ),
+            })
+          );
+          assert.isTrue(fileSourceError instanceof GaiaRuntimeError);
+          if (fileSourceError instanceof GaiaRuntimeError) {
+            assert.strictEqual(
+              fileSourceError.code,
+              "SkillBundleSourceNotDirectory"
+            );
+            assert.isFalse(fileSourceError.recoverable);
+            assert.include(fileSourceError.message, "must be a directory");
+          }
+
+          const missingMarkdownDirectory = `${cwd}/skills/missing-markdown`;
+          const missingMarkdownSpecPath = `${cwd}/missing-markdown.md`;
+          const missingMarkdownManifestPath = `${cwd}/missing-markdown.json`;
+          yield* fs.makeDirectory(missingMarkdownDirectory, {
+            recursive: true,
+          });
+          yield* fs.writeFileString(
+            missingMarkdownSpecPath,
+            "Reject a skill without SKILL.md.\n"
+          );
+          yield* fs.writeFileString(
+            missingMarkdownManifestPath,
+            `${JSON.stringify({
+              skills: [
+                {
+                  commit: "abc123",
+                  name: "missing-markdown",
+                  sourcePath: "skills/missing-markdown",
+                  sourceRepository: "file",
+                },
+              ],
+            })}\n`
+          );
+          const missingMarkdownError = yield* Effect.flip(
+            runSpecFile(missingMarkdownSpecPath, {
+              rootDirectory: cwd,
+              skillManifestSource: localSkillManifestSource(
+                missingMarkdownManifestPath
+              ),
+            })
+          );
+          assert.isTrue(missingMarkdownError instanceof GaiaRuntimeError);
+          if (missingMarkdownError instanceof GaiaRuntimeError) {
+            assert.strictEqual(
+              missingMarkdownError.code,
+              "SkillBundleSkillMarkdownMissing"
+            );
+            assert.isFalse(missingMarkdownError.recoverable);
+            assert.include(
+              missingMarkdownError.message,
+              "must contain SKILL.md"
+            );
+          }
+        })
+    );
+
+    it.effect("preserves manifest and install failure classifications", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+        const malformedSpecPath = `${cwd}/malformed-manifest.md`;
+        const malformedManifestPath = `${cwd}/malformed-manifest.json`;
+        yield* fs.writeFileString(
+          malformedSpecPath,
+          "Reject malformed manifest JSON.\n"
+        );
+        yield* fs.writeFileString(malformedManifestPath, "{\n");
+        const malformedError = yield* Effect.flip(
+          runSpecFile(malformedSpecPath, {
+            rootDirectory: cwd,
+            skillManifestSource: localSkillManifestSource(
+              malformedManifestPath
+            ),
+          })
+        );
+        assert.isTrue(malformedError instanceof GaiaRuntimeError);
+        if (malformedError instanceof GaiaRuntimeError) {
+          assert.strictEqual(malformedError.code, "SkillManifestInvalid");
+          assert.isFalse(malformedError.recoverable);
+          assert.strictEqual(
+            malformedError.message,
+            `Skill manifest '${malformedManifestPath}' is not valid.`
+          );
+        }
+
+        const invalidSpecPath = `${cwd}/invalid-manifest.md`;
+        const invalidManifestPath = `${cwd}/invalid-manifest.json`;
+        yield* fs.writeFileString(
+          invalidSpecPath,
+          "Reject schema-invalid manifest JSON.\n"
+        );
+        yield* fs.writeFileString(
+          invalidManifestPath,
+          `${JSON.stringify({ skills: "invalid" })}\n`
+        );
+        const invalidError = yield* Effect.flip(
+          runSpecFile(invalidSpecPath, {
+            rootDirectory: cwd,
+            skillManifestSource: localSkillManifestSource(invalidManifestPath),
+          })
+        );
+        assert.isTrue(invalidError instanceof GaiaRuntimeError);
+        if (invalidError instanceof GaiaRuntimeError) {
+          assert.strictEqual(invalidError.code, "SkillManifestInvalid");
+          assert.isFalse(invalidError.recoverable);
+          assert.strictEqual(
+            invalidError.message,
+            `Skill manifest '${invalidManifestPath}' is not valid.`
+          );
+        }
+
+        const unpinnedSpecPath = `${cwd}/unpinned-precedence.md`;
+        const unpinnedManifestPath = `${cwd}/unpinned-precedence.json`;
+        const unpinnedCommands: Array<SkillInstallCommandInput> = [];
+        yield* fs.writeFileString(
+          unpinnedSpecPath,
+          "Reject an unpinned entry before bundle resolution.\n"
+        );
+        yield* fs.writeFileString(
+          unpinnedManifestPath,
+          `${JSON.stringify({
+            skills: [
+              {
+                name: "coding-standards",
+                sourcePath: "/absolute/skills/coding-standards",
+                sourceRepository: "example.com/cillianbarron/skills",
+              },
+            ],
+          })}\n`
+        );
+        const unpinnedError = yield* Effect.flip(
+          runSpecFile(unpinnedSpecPath, {
+            rootDirectory: cwd,
+            skillInstaller: {
+              commandRunner: installingSkillRunner(
+                fs,
+                unpinnedCommands,
+                "skills/coding-standards"
+              ),
+            },
+            skillManifestSource: localSkillManifestSource(unpinnedManifestPath),
+          })
+        );
+        assert.isTrue(unpinnedError instanceof GaiaRuntimeError);
+        if (unpinnedError instanceof GaiaRuntimeError) {
+          assert.strictEqual(unpinnedError.code, "SkillManifestEntryUnpinned");
+          assert.isFalse(unpinnedError.recoverable);
+          assert.strictEqual(
+            unpinnedError.message,
+            "Skill manifest entry 'coding-standards' must include a version or commit."
+          );
+        }
+        assert.deepEqual(unpinnedCommands, []);
+
+        const checkoutSpecPath = `${cwd}/checkout-failure.md`;
+        const checkoutManifestPath = `${cwd}/checkout-failure.json`;
+        const installCommands: Array<SkillInstallCommandInput> = [];
+        yield* fs.writeFileString(
+          checkoutSpecPath,
+          "Fail checkout before source validation.\n"
+        );
+        yield* fs.writeFileString(
+          checkoutManifestPath,
+          `${JSON.stringify({
+            skills: [
+              {
+                commit: "abc123",
+                name: "coding-standards",
+                sourcePath: "skills/coding-standards",
+                sourceRepository: "github.com/cillianbarron/skills",
+              },
+            ],
+          })}\n`
+        );
+        const checkoutError = yield* Effect.flip(
+          runSpecFile(checkoutSpecPath, {
+            rootDirectory: cwd,
+            skillInstaller: {
+              commandRunner: (input) =>
+                Effect.sync(() => {
+                  installCommands.push(input);
+                  return {
+                    exitCode: input.args[0] === "clone" ? 0 : 128,
+                    stderr:
+                      input.args[0] === "clone" ? "" : "checkout failed\n",
+                    stdout: "",
+                  };
+                }),
+            },
+            skillManifestSource: localSkillManifestSource(checkoutManifestPath),
+          })
+        );
+        const checkoutStatus = yield* statusRun(undefined, {
+          rootDirectory: cwd,
+        });
+        const repositoryDirectory = `${checkoutStatus.runDirectory}/skill-sources/0-coding-standards/repository`;
+        assert.isTrue(checkoutError instanceof GaiaRuntimeError);
+        if (checkoutError instanceof GaiaRuntimeError) {
+          assert.strictEqual(
+            checkoutError.code,
+            "SkillBundleInstallCommandFailed"
+          );
+          assert.isTrue(checkoutError.recoverable);
+          assert.strictEqual(
+            checkoutError.message,
+            `Skill 'coding-standards' install command 'git -C ${repositoryDirectory} checkout abc123' exited with code 128.`
+          );
+        }
+        assert.deepEqual(
+          installCommands.map((command) => command.args),
+          [
+            [
+              "clone",
+              "https://github.com/cillianbarron/skills.git",
+              repositoryDirectory,
+            ],
+            ["-C", repositoryDirectory, "checkout", "abc123"],
+          ]
+        );
+        assert.isTrue(
+          yield* fs.exists(
+            `${checkoutStatus.runDirectory}/skill-sources/0-coding-standards`
+          )
+        );
+        assert.isFalse(yield* fs.exists(repositoryDirectory));
+      })
+    );
+
     it.effect("writes a typed empty browser evidence contract", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
