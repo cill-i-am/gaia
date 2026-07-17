@@ -3,12 +3,23 @@ import { execFile } from "node:child_process";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
-import type { RunPaths } from "./paths.js";
 import {
+  RunPathsSchema,
+  RuntimePathSchema,
+  parseRuntimePath,
+  type RuntimePath,
+} from "./paths.js";
+import {
+  SkillCommitSchema,
   SkillManifest,
+  SkillManifestEntry,
+  SkillManifestSourceSchema,
   SkillNameSchema,
-  type SkillManifestEntry,
+  SkillSourcePathSchema,
+  SkillSourceRepositorySchema,
+  SkillVersionSchema,
   type SkillManifestSource,
+  type SkillName,
 } from "./skill-manifest.js";
 
 export const SkillBundleResolutionSchema = Schema.Literals([
@@ -30,13 +41,13 @@ export type SkillBundleStatus = typeof SkillBundleStatusSchema.Type;
 export class SkillBundleEntry extends Schema.Class<SkillBundleEntry>(
   "SkillBundleEntry"
 )({
-  commit: Schema.optionalKey(Schema.NonEmptyString),
+  commit: Schema.optionalKey(SkillCommitSchema),
   name: SkillNameSchema,
   resolution: SkillBundleResolutionSchema,
-  resolvedPath: Schema.optionalKey(Schema.NonEmptyString),
-  sourcePath: Schema.NonEmptyString,
-  sourceRepository: Schema.NonEmptyString,
-  version: Schema.optionalKey(Schema.NonEmptyString),
+  resolvedPath: Schema.optionalKey(RuntimePathSchema),
+  sourcePath: SkillSourcePathSchema,
+  sourceRepository: SkillSourceRepositorySchema,
+  version: Schema.optionalKey(SkillVersionSchema),
 }) {}
 
 export class SkillBundle extends Schema.Class<SkillBundle>("SkillBundle")({
@@ -49,14 +60,20 @@ const SkillBundleJson = Schema.toCodecJson(SkillBundle);
 const encodeSkillBundleJson = Schema.encodeSync(SkillBundleJson);
 export const parseSkillBundleJson = Schema.decodeUnknownSync(SkillBundleJson);
 
-const defaultSkillInstallCommand = "git";
 const skillInstallCommandMaxBufferBytes = 10 * 1024 * 1024;
 
-export type SkillInstallCommandInput = {
-  readonly args: ReadonlyArray<string>;
-  readonly command: string;
-  readonly cwd: string;
-};
+const SkillInstallCommandSchema = Schema.String.pipe(
+  Schema.brand("SkillInstallCommand")
+);
+
+const SkillInstallCommandInputSchema = Schema.Struct({
+  args: Schema.Array(Schema.String),
+  command: SkillInstallCommandSchema,
+  cwd: RuntimePathSchema,
+});
+
+export type SkillInstallCommandInput =
+  typeof SkillInstallCommandInputSchema.Type;
 
 export type SkillInstallCommandResult = {
   readonly exitCode: number;
@@ -68,10 +85,40 @@ export type SkillInstallCommandRunner = (
   input: SkillInstallCommandInput
 ) => Effect.Effect<SkillInstallCommandResult, GaiaRuntimeError>;
 
-export type SkillInstallerOptions = {
-  readonly command?: string;
-  readonly commandRunner?: SkillInstallCommandRunner;
-};
+const SkillInstallCommandRunnerSchema =
+  Schema.declare<SkillInstallCommandRunner>(
+    (input): input is SkillInstallCommandRunner => typeof input === "function"
+  );
+
+const SkillInstallerOptionsSchema = Schema.Struct({
+  command: Schema.optionalKey(SkillInstallCommandSchema),
+  commandRunner: Schema.optionalKey(SkillInstallCommandRunnerSchema),
+});
+
+export type SkillInstallerOptions = typeof SkillInstallerOptionsSchema.Encoded;
+
+const WriteSkillBundleInputSchema = Schema.Struct({
+  installer: Schema.optionalKey(Schema.toEncoded(SkillInstallerOptionsSchema)),
+  manifest: SkillManifest,
+  paths: RunPathsSchema,
+  source: Schema.optionalKey(SkillManifestSourceSchema),
+});
+
+const ResolveSkillBundleEntryInputSchema = Schema.Struct({
+  index: Schema.Number,
+  installer: Schema.optionalKey(SkillInstallerOptionsSchema),
+  paths: RunPathsSchema,
+  skill: SkillManifestEntry,
+  source: Schema.optionalKey(SkillManifestSourceSchema),
+});
+
+const parseSkillInstallCommand = Schema.decodeUnknownSync(
+  SkillInstallCommandSchema
+);
+const parseSkillInstallerOptions = Schema.decodeUnknownSync(
+  SkillInstallerOptionsSchema
+);
+const defaultSkillInstallCommand = parseSkillInstallCommand("git");
 
 export const nodeSkillInstallCommandRunner: SkillInstallCommandRunner = (
   input
@@ -109,12 +156,9 @@ export const nodeSkillInstallCommandRunner: SkillInstallCommandRunner = (
       }),
   });
 
-export function writeSkillBundle(input: {
-  readonly installer?: SkillInstallerOptions;
-  readonly manifest: SkillManifest;
-  readonly paths: RunPaths;
-  readonly source?: SkillManifestSource;
-}): Effect.Effect<
+export function writeSkillBundle(
+  input: typeof WriteSkillBundleInputSchema.Type
+): Effect.Effect<
   SkillBundle,
   GaiaRuntimeError,
   FileSystem.FileSystem | Path.Path
@@ -122,15 +166,19 @@ export function writeSkillBundle(input: {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const entries: Array<SkillBundleEntry> = [];
+    const installer =
+      input.installer === undefined
+        ? undefined
+        : parseSkillInstallerOptions(input.installer);
 
     for (const [index, skill] of input.manifest.skills.entries()) {
       entries.push(
         yield* resolveSkillBundleEntry({
           index,
-          installer: input.installer,
+          ...(installer === undefined ? {} : { installer }),
           paths: input.paths,
           skill,
-          source: input.source,
+          ...(input.source === undefined ? {} : { source: input.source }),
         })
       );
     }
@@ -161,19 +209,17 @@ export function writeSkillBundle(input: {
   );
 }
 
-export function resolvedSkillPaths(bundle: SkillBundle): ReadonlyArray<string> {
+export function resolvedSkillPaths(
+  bundle: SkillBundle
+): ReadonlyArray<RuntimePath> {
   return bundle.skills.flatMap((skill) =>
     skill.resolvedPath === undefined ? [] : [skill.resolvedPath]
   );
 }
 
-function resolveSkillBundleEntry(input: {
-  readonly index: number;
-  readonly installer: SkillInstallerOptions | undefined;
-  readonly paths: RunPaths;
-  readonly skill: SkillManifestEntry;
-  readonly source: SkillManifestSource | undefined;
-}) {
+function resolveSkillBundleEntry(
+  input: typeof ResolveSkillBundleEntryInputSchema.Type
+) {
   const { skill } = input;
 
   return isLocalSkillSource(skill.sourceRepository)
@@ -181,12 +227,9 @@ function resolveSkillBundleEntry(input: {
     : resolveExternalSkillBundleEntry(input);
 }
 
-function resolveExternalSkillBundleEntry(input: {
-  readonly index: number;
-  readonly installer: SkillInstallerOptions | undefined;
-  readonly paths: RunPaths;
-  readonly skill: SkillManifestEntry;
-}) {
+function resolveExternalSkillBundleEntry(
+  input: typeof ResolveSkillBundleEntryInputSchema.Type
+) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     const fs = yield* FileSystem.FileSystem;
@@ -194,11 +237,15 @@ function resolveExternalSkillBundleEntry(input: {
       input.installer?.commandRunner ?? nodeSkillInstallCommandRunner;
     const command = input.installer?.command ?? defaultSkillInstallCommand;
     const repositoryUrl = yield* resolveRepositoryCloneUrl(input.skill);
-    const installDirectory = path.join(
-      input.paths.skillInstallRoot,
-      `${input.index}-${safeSkillDirectoryName(input.skill.name)}`
+    const installDirectory = parseRuntimePath(
+      path.join(
+        input.paths.skillInstallRoot,
+        `${input.index}-${safeSkillDirectoryName(input.skill.name)}`
+      )
     );
-    const repositoryDirectory = path.join(installDirectory, "repository");
+    const repositoryDirectory = parseRuntimePath(
+      path.join(installDirectory, "repository")
+    );
     const checkoutRef = input.skill.commit ?? input.skill.version;
 
     if (checkoutRef === undefined) {
@@ -252,7 +299,9 @@ function resolveExternalSkillBundleEntry(input: {
       runner
     );
 
-    const resolvedPath = path.join(repositoryDirectory, input.skill.sourcePath);
+    const resolvedPath = parseRuntimePath(
+      path.join(repositoryDirectory, input.skill.sourcePath)
+    );
     yield* validateSkillDirectory(input.skill, resolvedPath);
 
     return SkillBundleEntry.make({
@@ -324,9 +373,11 @@ function resolveLocalSkillBundleEntry(
     const path = yield* Path.Path;
     const manifestDirectory =
       source === undefined ? "." : path.dirname(source.path);
-    const resolvedPath = path.isAbsolute(skill.sourcePath)
-      ? skill.sourcePath
-      : path.resolve(manifestDirectory, skill.sourcePath);
+    const resolvedPath = parseRuntimePath(
+      path.isAbsolute(skill.sourcePath)
+        ? skill.sourcePath
+        : path.resolve(manifestDirectory, skill.sourcePath)
+    );
     yield* validateSkillDirectory(skill, resolvedPath);
 
     return SkillBundleEntry.make({
@@ -343,7 +394,7 @@ function resolveLocalSkillBundleEntry(
 
 function validateSkillDirectory(
   skill: SkillManifestEntry,
-  resolvedPath: string
+  resolvedPath: RuntimePath
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -397,11 +448,13 @@ function skillBundleStatus(
     : "ready";
 }
 
-function isLocalSkillSource(sourceRepository: string) {
+function isLocalSkillSource(
+  sourceRepository: typeof SkillSourceRepositorySchema.Type
+) {
   return sourceRepository === "local" || sourceRepository === "file";
 }
 
-function safeSkillDirectoryName(name: string) {
+function safeSkillDirectoryName(name: SkillName) {
   return name.replace(/[^A-Za-z0-9._-]+/gu, "_");
 }
 

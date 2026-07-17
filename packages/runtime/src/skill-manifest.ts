@@ -1,7 +1,11 @@
 import { Effect, FileSystem, Schema } from "effect";
 
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
-import type { RunPaths } from "./paths.js";
+import {
+  RunPathsSchema,
+  RuntimePathSchema,
+  type RuntimePath,
+} from "./paths.js";
 
 export const SkillNameSchema = Schema.NonEmptyString.pipe(
   Schema.brand("SkillName")
@@ -9,14 +13,30 @@ export const SkillNameSchema = Schema.NonEmptyString.pipe(
 
 export type SkillName = typeof SkillNameSchema.Type;
 
+export const SkillCommitSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("SkillCommit")
+);
+
+export const SkillSourcePathSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("SkillSourcePath")
+);
+
+export const SkillSourceRepositorySchema = Schema.NonEmptyString.pipe(
+  Schema.brand("SkillSourceRepository")
+);
+
+export const SkillVersionSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("SkillVersion")
+);
+
 export class SkillManifestEntry extends Schema.Class<SkillManifestEntry>(
   "SkillManifestEntry"
 )({
-  commit: Schema.optionalKey(Schema.NonEmptyString),
+  commit: Schema.optionalKey(SkillCommitSchema),
   name: SkillNameSchema,
-  sourcePath: Schema.NonEmptyString,
-  sourceRepository: Schema.NonEmptyString,
-  version: Schema.optionalKey(Schema.NonEmptyString),
+  sourcePath: SkillSourcePathSchema,
+  sourceRepository: SkillSourceRepositorySchema,
+  version: Schema.optionalKey(SkillVersionSchema),
 }) {}
 
 export class SkillManifest extends Schema.Class<SkillManifest>("SkillManifest")(
@@ -25,22 +45,31 @@ export class SkillManifest extends Schema.Class<SkillManifest>("SkillManifest")(
   }
 ) {}
 
-export type SkillManifestSource = {
-  readonly path: string;
-};
+export const SkillManifestSourceSchema = Schema.Struct({
+  path: RuntimePathSchema,
+});
+
+export type SkillManifestSource = typeof SkillManifestSourceSchema.Type;
+
+const WriteSkillManifestInputSchema = Schema.Struct({
+  paths: RunPathsSchema,
+  source: Schema.optionalKey(SkillManifestSourceSchema),
+});
 
 const SkillManifestJson = Schema.toCodecJson(SkillManifest);
 const decodeSkillManifestJson = Schema.decodeUnknownSync(SkillManifestJson);
 const encodeSkillManifestJson = Schema.encodeSync(SkillManifestJson);
+const parseSkillManifestSource = Schema.decodeUnknownSync(
+  SkillManifestSourceSchema
+);
 
-export function localSkillManifestSource(path: string): SkillManifestSource {
-  return { path };
+export function localSkillManifestSource(path: unknown): SkillManifestSource {
+  return parseSkillManifestSource({ path });
 }
 
-export function writeSkillManifest(input: {
-  readonly paths: RunPaths;
-  readonly source?: SkillManifestSource;
-}): Effect.Effect<SkillManifest, GaiaRuntimeError, FileSystem.FileSystem> {
+export function writeSkillManifest(
+  input: typeof WriteSkillManifestInputSchema.Type
+): Effect.Effect<SkillManifest, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const manifest =
@@ -75,7 +104,7 @@ export function selectedSkillNames(
 }
 
 function readSkillManifest(
-  manifestPath: string
+  manifestPath: RuntimePath
 ): Effect.Effect<SkillManifest, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -109,7 +138,7 @@ function readSkillManifest(
   );
 }
 
-function parseSkillManifest(contents: string, manifestPath: string) {
+function parseSkillManifest(contents: string, manifestPath: RuntimePath) {
   return Effect.try({
     try: () => decodeSkillManifestJson(JSON.parse(contents)),
     catch: (cause) =>
