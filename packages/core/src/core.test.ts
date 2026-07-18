@@ -24,6 +24,9 @@ import {
   FactoryLaneScorecardPreferredLane,
   FactoryLaneScorecardSourceLink,
   FactoryLaneScorecardVerificationEvidence,
+  type GitHubChecksStatus,
+  type GitHubPrFeedbackStatus,
+  type GitHubPullRequestSelector,
   PromotedEvidenceItem,
   parseFactoryDelegationPromptValidationInput,
   makeRunEvent,
@@ -32,6 +35,7 @@ import {
   parseFactoryLaneScorecard,
   parseDeliveryPublication,
   parseMarkdownSpec,
+  parseGitHubPullRequestSelector,
   parseRunReport,
   parseRunReportArtifactPath,
   parseRunMachineContext,
@@ -1964,7 +1968,7 @@ describe("EvidencePromotion nested owner compatibility", () => {
       dogfood: {
         artifactPath: "dogfood-retrospective.json",
         findingCount: 1,
-        status: "c8-dogfood-sentinel",
+        status: "findings",
         summary: "One retained finding.",
       },
       generatedAt: "2026-07-17T05:30:00.000Z",
@@ -1974,10 +1978,10 @@ describe("EvidencePromotion nested owner compatibility", () => {
       promotionStatus: "pending-promotion",
       pullRequest: {
         artifactPaths: ["pr-checks.json", "pr-feedback.json"],
-        checksStatus: "c8-checks-sentinel",
-        feedbackStatus: "c8-feedback-sentinel",
+        checksStatus: "green",
+        feedbackStatus: "comments",
         headSha: canonicalHeadSha,
-        pr: "c8-selector-sentinel",
+        pr: "#123",
         status: "promoted",
         summary: "Canonical R5 PR evidence.",
         url: canonicalPullRequestUrl,
@@ -2005,7 +2009,7 @@ describe("EvidencePromotion nested owner compatibility", () => {
       verification: {
         checkedArtifacts: ["workspace/output.txt", "../retained/check.json"],
         path: "verification-result.json",
-        status: "c8-verification-sentinel",
+        status: "passed",
       },
       version: 1,
     };
@@ -2014,7 +2018,7 @@ describe("EvidencePromotion nested owner compatibility", () => {
       cleanupStatus: "not-completed",
       dogfood: {
         findingCount: 0,
-        status: "c8-dogfood-sentinel",
+        status: "skipped",
         summary: "No dogfood artifact.",
       },
       generatedAt: "2026-07-17T05:31:00.000Z",
@@ -2031,7 +2035,7 @@ describe("EvidencePromotion nested owner compatibility", () => {
       selectedEvidence: [],
       verification: {
         checkedArtifacts: [],
-        status: "c8-verification-sentinel",
+        status: "skipped",
       },
       version: 1,
     };
@@ -2057,6 +2061,12 @@ describe("EvidencePromotion nested owner compatibility", () => {
     const parsedSparse = parseEvidencePromotion(sparseRaw);
     const encodedFull = encode(madeFull);
     const encodedSparse = encode(madeSparse);
+    const checksStatus: GitHubChecksStatus | undefined =
+      madeFull.pullRequest.checksStatus;
+    const feedbackStatus: GitHubPrFeedbackStatus | undefined =
+      madeFull.pullRequest.feedbackStatus;
+    const pullRequestSelector: GitHubPullRequestSelector | undefined =
+      madeFull.pullRequest.pr;
 
     assert.deepEqual(encodedFull, fullRaw);
     assert.deepEqual(encode(parsedFull), fullRaw);
@@ -2146,20 +2156,18 @@ describe("EvidencePromotion nested owner compatibility", () => {
       ].every((value) => typeof value === "string")
     );
     assert.strictEqual(encodedFull.markdown, fullRaw.markdown);
-    assert.strictEqual(encodedFull.dogfood.status, "c8-dogfood-sentinel");
+    assert.strictEqual(encodedFull.dogfood.status, "findings");
+    assert.strictEqual(encodedFull.pullRequest.checksStatus, "green");
+    assert.strictEqual(encodedFull.pullRequest.feedbackStatus, "comments");
+    assert.strictEqual(encodedFull.pullRequest.pr, "#123");
+    assert.strictEqual(encodedFull.verification.status, "passed");
+    assert.strictEqual(checksStatus, "green");
+    assert.strictEqual(feedbackStatus, "comments");
     assert.strictEqual(
-      encodedFull.pullRequest.checksStatus,
-      "c8-checks-sentinel"
+      pullRequestSelector,
+      parseGitHubPullRequestSelector("#123")
     );
-    assert.strictEqual(
-      encodedFull.pullRequest.feedbackStatus,
-      "c8-feedback-sentinel"
-    );
-    assert.strictEqual(encodedFull.pullRequest.pr, "c8-selector-sentinel");
-    assert.strictEqual(
-      encodedFull.verification.status,
-      "c8-verification-sentinel"
-    );
+    assert.throws(() => parseGitHubPullRequestSelector(""));
 
     for (const path of [
       "report.md",
@@ -2183,7 +2191,7 @@ describe("EvidencePromotion nested owner compatibility", () => {
       const verification = EvidencePromotionVerificationSummary.make({
         checkedArtifacts: [path],
         path,
-        status: "c8-verification-sentinel",
+        status: "passed",
       });
       const pullRequest = EvidencePromotionPullRequestSummary.make({
         artifactPaths: [path],
@@ -2193,7 +2201,7 @@ describe("EvidencePromotion nested owner compatibility", () => {
       const dogfood = EvidencePromotionDogfoodSummary.make({
         artifactPath: path,
         findingCount: 0,
-        status: "c8-dogfood-sentinel",
+        status: "clean",
         summary: "Path remains unchanged.",
       });
 
@@ -2231,13 +2239,13 @@ describe("EvidencePromotion nested owner compatibility", () => {
       () =>
         EvidencePromotionVerificationSummary.make({
           checkedArtifacts: [""],
-          status: "c8-verification-sentinel",
+          status: "passed",
         }),
       () =>
         EvidencePromotionVerificationSummary.make({
           checkedArtifacts: [],
           path: "",
-          status: "c8-verification-sentinel",
+          status: "passed",
         }),
       () =>
         EvidencePromotionPullRequestSummary.make({
@@ -2249,7 +2257,7 @@ describe("EvidencePromotion nested owner compatibility", () => {
         EvidencePromotionDogfoodSummary.make({
           artifactPath: "",
           findingCount: 0,
-          status: "c8-dogfood-sentinel",
+          status: "clean",
           summary: "Invalid path.",
         }),
     ];
@@ -2301,5 +2309,74 @@ describe("EvidencePromotion nested owner compatibility", () => {
         })
       );
     }
+
+    for (const status of ["verified", "failed"]) {
+      assert.throws(() =>
+        Schema.decodeUnknownSync(EvidencePromotionVerificationSummary)({
+          ...fullRaw.verification,
+          status,
+        })
+      );
+      assert.throws(() =>
+        parseEvidencePromotion({
+          ...fullRaw,
+          verification: { ...fullRaw.verification, status },
+        })
+      );
+    }
+    for (const status of ["passed", "failed"]) {
+      assert.throws(() =>
+        Schema.decodeUnknownSync(EvidencePromotionDogfoodSummary)({
+          ...fullRaw.dogfood,
+          status,
+        })
+      );
+      assert.throws(() =>
+        parseEvidencePromotion({
+          ...fullRaw,
+          dogfood: { ...fullRaw.dogfood, status },
+        })
+      );
+    }
+    for (const checksStatus of ["passed", "failed", "unknown"]) {
+      assert.throws(() =>
+        Schema.decodeUnknownSync(EvidencePromotionPullRequestSummary)({
+          ...fullRaw.pullRequest,
+          checksStatus,
+        })
+      );
+      assert.throws(() =>
+        parseEvidencePromotion({
+          ...fullRaw,
+          pullRequest: { ...fullRaw.pullRequest, checksStatus },
+        })
+      );
+    }
+    for (const feedbackStatus of ["approved", "pending", "unknown"]) {
+      assert.throws(() =>
+        Schema.decodeUnknownSync(EvidencePromotionPullRequestSummary)({
+          ...fullRaw.pullRequest,
+          feedbackStatus,
+        })
+      );
+      assert.throws(() =>
+        parseEvidencePromotion({
+          ...fullRaw,
+          pullRequest: { ...fullRaw.pullRequest, feedbackStatus },
+        })
+      );
+    }
+    assert.throws(() =>
+      EvidencePromotionPullRequestSummary.make({
+        ...fullRaw.pullRequest,
+        pr: "",
+      })
+    );
+    assert.throws(() =>
+      parseEvidencePromotion({
+        ...fullRaw,
+        pullRequest: { ...fullRaw.pullRequest, pr: "" },
+      })
+    );
   });
 });

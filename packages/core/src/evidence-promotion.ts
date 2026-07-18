@@ -3,10 +3,15 @@ import * as Schema from "effect/Schema";
 import {
   DeliveryGitShaPublicSchema,
   DeliveryGitShaSchema,
+  GitHubChecksStatusSchema,
+  GitHubPrFeedbackStatusSchema,
+  GitHubPullRequestSelectorPublicSchema,
+  GitHubPullRequestSelectorSchema,
   GitHubPullRequestUrlPublicSchema,
   GitHubPullRequestUrlSchema,
 } from "./delivery-identity.js";
 import { RunReportArtifactPathSchema } from "./report.js";
+import { DogfoodRetrospective } from "./retrospective.js";
 import { RunIdSchema } from "./run-id.js";
 
 const NonNegativeIntegerSchema = Schema.Int.check(
@@ -30,6 +35,28 @@ export const EvidencePromotionCleanupStatusSchema = Schema.Literals([
 /** Whether raw generated Gaia run state has already been cleaned up. */
 export type EvidencePromotionCleanupStatus =
   typeof EvidencePromotionCleanupStatusSchema.Type;
+
+const EvidencePromotionVerificationStatusSchema = Schema.Literals([
+  "passed",
+  "skipped",
+] as const);
+const parseEvidencePromotionVerificationStatus = Schema.decodeUnknownSync(
+  EvidencePromotionVerificationStatusSchema
+);
+
+const EvidencePromotionDogfoodStatusSchema = Schema.Union([
+  DogfoodRetrospective.fields.status,
+  Schema.Literal("skipped"),
+]);
+const parseEvidencePromotionDogfoodStatus = Schema.decodeUnknownSync(
+  EvidencePromotionDogfoodStatusSchema
+);
+const parseEvidencePromotionChecksStatus = Schema.decodeUnknownSync(
+  GitHubChecksStatusSchema
+);
+const parseEvidencePromotionFeedbackStatus = Schema.decodeUnknownSync(
+  GitHubPrFeedbackStatusSchema
+);
 
 const PromotedEvidenceItemFields = {
   label: Schema.NonEmptyString,
@@ -147,6 +174,7 @@ export class EvidencePromotionVerificationSummary extends Schema.Class<EvidenceP
     typeof RunReportArtifactPathSchema.Type
   >;
   declare readonly path?: typeof RunReportArtifactPathSchema.Type;
+  declare readonly status: typeof EvidencePromotionVerificationStatusSchema.Type;
 
   constructor(
     input: Schema.Schema.Type<
@@ -164,7 +192,7 @@ export class EvidencePromotionVerificationSummary extends Schema.Class<EvidenceP
           : {
               path: RunReportArtifactPathSchema.make(input.path, options),
             }),
-        status: input.status,
+        status: parseEvidencePromotionVerificationStatus(input.status),
       },
       options
     );
@@ -176,7 +204,7 @@ const EvidencePromotionPullRequestSummaryFields = {
   checksStatus: Schema.optionalKey(Schema.NonEmptyString),
   feedbackStatus: Schema.optionalKey(Schema.NonEmptyString),
   headSha: Schema.optionalKey(DeliveryGitShaPublicSchema),
-  pr: Schema.optionalKey(Schema.NonEmptyString),
+  pr: Schema.optionalKey(GitHubPullRequestSelectorPublicSchema),
   status: EvidencePromotionStatusSchema,
   summary: Schema.NonEmptyString,
   url: Schema.optionalKey(GitHubPullRequestUrlPublicSchema),
@@ -192,7 +220,10 @@ export class EvidencePromotionPullRequestSummary extends Schema.Class<EvidencePr
   declare readonly artifactPaths: ReadonlyArray<
     typeof RunReportArtifactPathSchema.Type
   >;
+  declare readonly checksStatus?: typeof GitHubChecksStatusSchema.Type;
+  declare readonly feedbackStatus?: typeof GitHubPrFeedbackStatusSchema.Type;
   declare readonly headSha?: typeof DeliveryGitShaSchema.Type;
+  declare readonly pr?: typeof GitHubPullRequestSelectorSchema.Type;
   declare readonly url?: typeof GitHubPullRequestUrlSchema.Type;
 
   constructor(
@@ -208,16 +239,28 @@ export class EvidencePromotionPullRequestSummary extends Schema.Class<EvidencePr
         ),
         ...(input.checksStatus === undefined
           ? {}
-          : { checksStatus: input.checksStatus }),
+          : {
+              checksStatus: parseEvidencePromotionChecksStatus(
+                input.checksStatus
+              ),
+            }),
         ...(input.feedbackStatus === undefined
           ? {}
-          : { feedbackStatus: input.feedbackStatus }),
+          : {
+              feedbackStatus: parseEvidencePromotionFeedbackStatus(
+                input.feedbackStatus
+              ),
+            }),
         ...(input.headSha === undefined
           ? {}
           : {
               headSha: DeliveryGitShaSchema.make(input.headSha, options),
             }),
-        ...(input.pr === undefined ? {} : { pr: input.pr }),
+        ...(input.pr === undefined
+          ? {}
+          : {
+              pr: GitHubPullRequestSelectorSchema.make(input.pr, options),
+            }),
         status: input.status,
         summary: input.summary,
         ...(input.url === undefined
@@ -246,6 +289,7 @@ export class EvidencePromotionDogfoodSummary extends Schema.Class<EvidencePromot
   "EvidencePromotionDogfoodSummary"
 )(EvidencePromotionDogfoodSummaryFields) {
   declare readonly artifactPath?: typeof RunReportArtifactPathSchema.Type;
+  declare readonly status: typeof EvidencePromotionDogfoodStatusSchema.Type;
 
   constructor(
     input: Schema.Schema.Type<
@@ -264,7 +308,7 @@ export class EvidencePromotionDogfoodSummary extends Schema.Class<EvidencePromot
               ),
             }),
         findingCount: input.findingCount,
-        status: input.status,
+        status: parseEvidencePromotionDogfoodStatus(input.status),
         summary: input.summary,
       },
       options
