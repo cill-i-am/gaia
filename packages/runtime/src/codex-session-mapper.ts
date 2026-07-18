@@ -21,12 +21,14 @@ import {
   type HarnessQuestionId,
   type HarnessSessionId,
   type HarnessTurnId,
+  type UserInputAgentActionRequest,
   type WorkspaceRelativePath,
 } from "@gaia/core";
 import { Schema } from "effect";
 
 import {
   PermissionApprovalResponseSchema,
+  UserInputResponseSchema,
   parseCodexPermissionAbsolutePath,
   type CodexNotification,
   type CodexServerRequest,
@@ -37,6 +39,18 @@ import {
   type CodexThreadId,
   type CodexTurnId,
 } from "./codex-app-server-protocol.js";
+
+type CodexServerRequestResolution = Pick<
+  HarnessInteractionResolution,
+  "actionId" | "decision" | "resolvedAt"
+> & {
+  readonly [Key in "kind" as "responseKind"]: HarnessInteractionResolution[Key];
+};
+
+type HarnessUserInputAnswers = UserInputAgentActionRequest["answers"];
+
+type WithProperty<Union, Key extends PropertyKey> =
+  Union extends Record<Key, unknown> ? Union : never;
 
 /** Schema-owned configuration for one adapter-local Codex session mapper. */
 export class CodexSessionMapperConfig extends Schema.Class<CodexSessionMapperConfig>(
@@ -71,27 +85,14 @@ export interface CodexSessionMapper {
   ) => ReadonlyArray<HarnessEvent>;
   readonly mapUserInputAnswers: (
     requestId: CodexRequestId,
-    answers: ReadonlyArray<{
-      readonly answers: ReadonlyArray<string>;
-      readonly questionId: HarnessQuestionId;
-    }>
-  ) => Record<string, { readonly answers: ReadonlyArray<string> }> | undefined;
+    answers: HarnessUserInputAnswers
+  ) => typeof UserInputResponseSchema.Type.answers | undefined;
   readonly permissionApproval: (
     requestId: CodexRequestId
   ) => typeof PermissionApprovalResponseSchema.Type.permissions | undefined;
   readonly resolveServerRequest: (
     requestId: CodexRequestId,
-    resolution: {
-      readonly actionId: HarnessInteractionResolution["actionId"];
-      readonly decision:
-        | "approve"
-        | "approveForSession"
-        | "decline"
-        | "cancel"
-        | "submit";
-      readonly resolvedAt: string;
-      readonly responseKind: "approval" | "userInput" | "mcpElicitation";
-    }
+    resolution: CodexServerRequestResolution
   ) => ReadonlyArray<HarnessEvent>;
 }
 
@@ -416,11 +417,8 @@ class MapperState {
 
   mapUserInputAnswers(
     requestId: CodexRequestId,
-    answers: ReadonlyArray<{
-      readonly answers: ReadonlyArray<string>;
-      readonly questionId: HarnessQuestionId;
-    }>
-  ): Record<string, { readonly answers: ReadonlyArray<string> }> | undefined {
+    answers: HarnessUserInputAnswers
+  ): typeof UserInputResponseSchema.Type.answers | undefined {
     const questionIds = this.#requestIds.get(requestId)?.questionIds;
     if (questionIds === undefined || answers.length !== questionIds.size) {
       return undefined;
@@ -458,17 +456,7 @@ class MapperState {
 
   resolveServerRequest(
     requestId: CodexRequestId,
-    resolution: {
-      readonly actionId: HarnessInteractionResolution["actionId"];
-      readonly decision:
-        | "approve"
-        | "approveForSession"
-        | "decline"
-        | "cancel"
-        | "submit";
-      readonly resolvedAt: string;
-      readonly responseKind: "approval" | "userInput" | "mcpElicitation";
-    }
+    resolution: CodexServerRequestResolution
   ): ReadonlyArray<HarnessEvent> {
     const pending = this.#requestIds.get(requestId);
     if (pending === undefined) return [];
@@ -516,17 +504,7 @@ class MapperState {
   #resolution(
     request: HarnessPendingInteraction,
     interactionId: HarnessInteractionId,
-    resolution: {
-      readonly actionId: HarnessInteractionResolution["actionId"];
-      readonly decision:
-        | "approve"
-        | "approveForSession"
-        | "decline"
-        | "cancel"
-        | "submit";
-      readonly resolvedAt: string;
-      readonly responseKind: "approval" | "userInput" | "mcpElicitation";
-    }
+    resolution: CodexServerRequestResolution
   ): HarnessInteractionResolution {
     switch (request.kind) {
       case "commandApproval":
@@ -1198,10 +1176,7 @@ class MapperState {
         readonly scope: HarnessPermissionScope;
       }
     | undefined {
-    const fileSystem: Array<{
-      readonly access: "read" | "write" | "deny";
-      readonly path: WorkspaceRelativePath;
-    }> = [];
+    const fileSystem: Array<HarnessPermissionScope["fileSystem"][number]> = [];
     const addPath = (
       absolutePath: string,
       access: "read" | "write" | "deny"
@@ -1470,12 +1445,7 @@ function timestampFromMilliseconds(value: number): string {
   return new Date(value).toISOString();
 }
 
-function mapThreadStatus(status: {
-  readonly activeFlags?: ReadonlyArray<
-    "waitingOnApproval" | "waitingOnUserInput"
-  >;
-  readonly type: string;
-}) {
+function mapThreadStatus(status: NonNullable<CodexThread["status"]>) {
   switch (status.type) {
     case "idle":
     case "notLoaded":
@@ -1514,7 +1484,9 @@ function mapToolStatus(status: "inProgress" | "completed" | "failed") {
   return status === "inProgress" ? "running" : status;
 }
 
-function mapFileChangeKind(kind: { readonly type: string }) {
+function mapFileChangeKind(
+  kind: WithProperty<CodexThreadItem, "changes">["changes"][number]["kind"]
+) {
   switch (kind.type) {
     case "add":
     case "delete":

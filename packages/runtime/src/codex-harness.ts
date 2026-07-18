@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
 
-import { RunIdSchema } from "@gaia/core";
+import { RunEvent, RunIdSchema } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
+import { RuntimePathSchema } from "./paths.js";
 
 const codexCommandMaxBufferBytes = 10 * 1024 * 1024;
 const defaultCodexCommand = "codex";
@@ -69,7 +70,7 @@ export class CodexHarnessProgress extends Schema.Class<CodexHarnessProgress>(
 )({
   command: CodexCommandSchema,
   cwd: Schema.NonEmptyString,
-  lastMessagePath: Schema.NonEmptyString,
+  lastMessagePath: RuntimePathSchema,
   lastObservedOutputAt: Schema.optionalKey(Schema.NonEmptyString),
   lastObservedOutputStream: Schema.optionalKey(CodexCommandOutputStreamSchema),
   observedOutputBytes: Schema.Number.check(
@@ -78,16 +79,16 @@ export class CodexHarnessProgress extends Schema.Class<CodexHarnessProgress>(
       identifier: "ObservedOutputBytesNonNegative",
     })
   ),
-  progressPath: Schema.NonEmptyString,
+  progressPath: RuntimePathSchema,
   runId: RunIdSchema,
   stallClassification: Schema.optionalKey(
     CodexHarnessStallClassificationSchema
   ),
-  startedAt: Schema.NonEmptyString,
+  startedAt: RunEvent.fields.timestamp,
   status: CodexHarnessProgressStatusSchema,
   terminal: Schema.Boolean,
   timeoutMs: CodexCommandTimeoutMsSchema,
-  updatedAt: Schema.NonEmptyString,
+  updatedAt: RunEvent.fields.timestamp,
   version: Schema.Literal(1),
 }) {}
 
@@ -198,11 +199,11 @@ export class CodexHarnessPromptInput extends Schema.Class<CodexHarnessPromptInpu
   {
     resolvedSkillPaths: Schema.Array(Schema.NonEmptyString),
     runId: RunIdSchema,
-    skillBundlePath: Schema.NonEmptyString,
+    skillBundlePath: RuntimePathSchema,
     specBody: Schema.NonEmptyString,
     specTitle: Schema.NonEmptyString,
-    workspaceOutputPath: Schema.NonEmptyString,
-    workspacePath: Schema.NonEmptyString,
+    workspaceOutputPath: RuntimePathSchema,
+    workspacePath: RuntimePathSchema,
   },
   { parseOptions: { onExcessProperty: "error" } }
 ) {}
@@ -212,8 +213,8 @@ export class CodexCommandArgsInput extends Schema.Class<CodexCommandArgsInput>(
 )(
   {
     config: CodexHarnessConfig,
-    lastMessagePath: Schema.NonEmptyString,
-    workspacePath: Schema.NonEmptyString,
+    lastMessagePath: RuntimePathSchema,
+    workspacePath: RuntimePathSchema,
   },
   { parseOptions: { onExcessProperty: "error" } }
 ) {}

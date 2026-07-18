@@ -5,7 +5,10 @@ import {
   AgentSessionEventSequenceSchema,
   AgentSessionSnapshotDto,
   AgentSessionUpdateDto,
+  FactoryAgentIdSchema,
   HarnessInteractionResolutionSchema,
+  HarnessSessionIdSchema,
+  RunIdSchema,
   parseHarnessSessionId,
   parseHarnessEvent,
   replayHarnessSession,
@@ -35,11 +38,12 @@ const decodeAgentSessionEventSequence = Schema.decodeUnknownSync(
   AgentSessionEventSequenceSchema
 );
 
-type LiveSessionIdentity = {
-  readonly agentId: FactoryAgentId;
-  readonly runId: RunId;
-  readonly sessionId: HarnessSessionId;
-};
+const LiveSessionIdentitySchema = Schema.Struct({
+  agentId: FactoryAgentIdSchema,
+  runId: RunIdSchema,
+  sessionId: HarnessSessionIdSchema,
+});
+type LiveSessionIdentity = typeof LiveSessionIdentitySchema.Type;
 type LiveEntry = LiveSessionIdentity & { readonly session: HarnessSession };
 type RegisteredLiveEntry = LiveEntry & { readonly generation: number };
 type StoredLiveEntry = RegisteredLiveEntry & { readonly lease: symbol };
@@ -410,7 +414,7 @@ function requireWorkerAgent(agentId: FactoryAgentId) {
 function actionBinding(
   agentId: FactoryAgentId,
   action: AgentOperatorActionRequest,
-  payloadDigest: string
+  payloadDigest: AgentActionReceiptDto["payloadDigest"]
 ) {
   return {
     actionId: action.actionId,
