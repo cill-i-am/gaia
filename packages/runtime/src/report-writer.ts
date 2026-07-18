@@ -1,46 +1,57 @@
 import {
+  DogfoodRetrospective,
+  EvidencePromotion,
+  FactoryLaneScorecard,
+  FactoryRetro,
   RunReport,
+  RunIdSchema,
+  RunSpec,
   parseRunReportArtifactPath,
-  type DogfoodRetrospective,
-  type EvidencePromotion,
-  type FactoryRetro,
-  type FactoryLaneScorecard,
   type RunReportArtifactPath,
-  type RunId,
-  type RunSpec,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
-import type { RunPaths } from "./paths.js";
+import { RunPathsSchema, type RunPaths } from "./paths.js";
 import {
   markdownHistoricalRiskNotes,
-  type WorkerPlanHistoricalRiskNote,
+  WorkerPlanHistoricalRiskNote,
 } from "./reviewer-findings.js";
-import { selectedSkillNames, type SkillManifest } from "./skill-manifest.js";
+import { selectedSkillNames, SkillManifest } from "./skill-manifest.js";
 import {
   markdownInferredRecommendations,
-  type WorkerPlanInferredRecommendations,
+  WorkerPlanInferredRecommendations,
 } from "./skill-review-inference.js";
 import {
   classifyDomainReferences,
-  type WorkerPlanDomainReference,
+  WorkerPlanDomainReference,
 } from "./worker-plan.js";
 
 const RunReportJson = Schema.toCodecJson(RunReport);
 const encodeRunReport = Schema.encodeSync(RunReportJson);
 
-export function writeReport(input: {
-  readonly inferredRecommendations: WorkerPlanInferredRecommendations;
-  readonly historicalRiskNotes: ReadonlyArray<WorkerPlanHistoricalRiskNote>;
-  readonly paths: RunPaths;
-  readonly evidencePromotion?: EvidencePromotion | undefined;
-  readonly factoryRetro?: FactoryRetro | undefined;
-  readonly factoryScorecard?: FactoryLaneScorecard | undefined;
-  readonly runId: RunId;
-  readonly skillManifest: SkillManifest;
-  readonly spec: RunSpec;
-  readonly retrospective?: DogfoodRetrospective | undefined;
-}) {
+class WriteReportInputSchema extends Schema.Class<WriteReportInputSchema>(
+  "WriteReportInput"
+)({
+  inferredRecommendations: WorkerPlanInferredRecommendations,
+  historicalRiskNotes: Schema.Array(WorkerPlanHistoricalRiskNote),
+  paths: RunPathsSchema,
+  evidencePromotion: Schema.optionalKey(Schema.UndefinedOr(EvidencePromotion)),
+  factoryRetro: Schema.optionalKey(Schema.UndefinedOr(FactoryRetro)),
+  factoryScorecard: Schema.optionalKey(
+    Schema.UndefinedOr(FactoryLaneScorecard)
+  ),
+  runId: RunIdSchema,
+  skillManifest: SkillManifest,
+  spec: RunSpec,
+  retrospective: Schema.optionalKey(Schema.UndefinedOr(DogfoodRetrospective)),
+}) {}
+
+const ReportArtifactPathsInputSchema = Schema.Struct({
+  codexHarnessProgressExists: Schema.Boolean,
+  factoryScorecardExists: Schema.Boolean,
+});
+
+export function writeReport(input: WriteReportInputSchema) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const codexHarnessProgressExists = yield* fs.exists(
@@ -80,10 +91,9 @@ export function writeReport(input: {
   });
 }
 
-function reportArtifactPaths(input: {
-  readonly codexHarnessProgressExists: boolean;
-  readonly factoryScorecardExists: boolean;
-}): ReadonlyArray<RunReportArtifactPath> {
+function reportArtifactPaths(
+  input: Schema.Schema.Type<typeof ReportArtifactPathsInputSchema>
+): ReadonlyArray<RunReportArtifactPath> {
   return [
     "workspace-manifest.json",
     "run-profile.json",
