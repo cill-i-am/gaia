@@ -1,4 +1,4 @@
-import { RunIdSchema, type RunId } from "@gaia/core";
+import { RunIdSchema } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import {
   chromium,
@@ -6,7 +6,12 @@ import {
 } from "playwright";
 
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
-import { runRelative, type RunPaths } from "./paths.js";
+import {
+  runRelative,
+  parseRunRelativeArtifactPath,
+  RunPathsSchema,
+  RunRelativeArtifactPathSchema,
+} from "./paths.js";
 
 export const BrowserEvidenceStatusSchema = Schema.Literals([
   "not-collected",
@@ -23,38 +28,6 @@ export const BrowserConsoleLevelSchema = Schema.Literals([
   "warn",
 ] as const);
 
-export class BrowserConsoleMessage extends Schema.Class<BrowserConsoleMessage>(
-  "BrowserConsoleMessage"
-)({
-  level: BrowserConsoleLevelSchema,
-  message: Schema.NonEmptyString,
-  sourceUrl: Schema.optionalKey(Schema.NonEmptyString),
-}) {}
-
-export class BrowserScreenshotEvidence extends Schema.Class<BrowserScreenshotEvidence>(
-  "BrowserScreenshotEvidence"
-)({
-  description: Schema.NonEmptyString,
-  path: Schema.NonEmptyString,
-}) {}
-
-export class BrowserPageEvidence extends Schema.Class<BrowserPageEvidence>(
-  "BrowserPageEvidence"
-)({
-  consoleMessages: Schema.Array(BrowserConsoleMessage),
-  screenshots: Schema.Array(BrowserScreenshotEvidence),
-  url: Schema.NonEmptyString,
-}) {}
-
-export class BrowserEvidence extends Schema.Class<BrowserEvidence>(
-  "BrowserEvidence"
-)({
-  notes: Schema.Array(Schema.NonEmptyString),
-  pages: Schema.Array(BrowserPageEvidence),
-  status: BrowserEvidenceStatusSchema,
-  version: Schema.Literal(1),
-}) {}
-
 export const BrowserEvidenceTargetUrlSchema = Schema.NonEmptyString.pipe(
   Schema.refine(isBrowserEvidenceTargetUrl, {
     identifier: "BrowserEvidenceTargetUrl",
@@ -70,20 +43,69 @@ export const parseBrowserEvidenceTargetUrl = Schema.decodeUnknownSync(
   BrowserEvidenceTargetUrlSchema
 );
 
+export class BrowserConsoleMessage extends Schema.Class<BrowserConsoleMessage>(
+  "BrowserConsoleMessage"
+)({
+  level: BrowserConsoleLevelSchema,
+  message: Schema.NonEmptyString,
+  sourceUrl: Schema.optionalKey(Schema.NonEmptyString),
+}) {}
+
+export class BrowserScreenshotEvidence extends Schema.Class<BrowserScreenshotEvidence>(
+  "BrowserScreenshotEvidence"
+)({
+  description: Schema.NonEmptyString,
+  path: RunRelativeArtifactPathSchema,
+}) {
+  static override make(input: unknown): BrowserScreenshotEvidence {
+    return decodeBrowserScreenshotEvidence(input);
+  }
+}
+
+const decodeBrowserScreenshotEvidence = Schema.decodeUnknownSync(
+  BrowserScreenshotEvidence
+);
+
+export class BrowserPageEvidence extends Schema.Class<BrowserPageEvidence>(
+  "BrowserPageEvidence"
+)({
+  consoleMessages: Schema.Array(BrowserConsoleMessage),
+  screenshots: Schema.Array(BrowserScreenshotEvidence),
+  url: BrowserEvidenceTargetUrlSchema,
+}) {
+  static override make(input: unknown): BrowserPageEvidence {
+    return decodeBrowserPageEvidence(input);
+  }
+}
+
+const decodeBrowserPageEvidence = Schema.decodeUnknownSync(BrowserPageEvidence);
+
+export class BrowserEvidence extends Schema.Class<BrowserEvidence>(
+  "BrowserEvidence"
+)({
+  notes: Schema.Array(Schema.NonEmptyString),
+  pages: Schema.Array(BrowserPageEvidence),
+  status: BrowserEvidenceStatusSchema,
+  version: Schema.Literal(1),
+}) {}
+
 export class BrowserEvidenceRecord extends Schema.Class<BrowserEvidenceRecord>(
   "BrowserEvidenceRecord"
 )({
-  evidencePath: Schema.NonEmptyString,
+  evidencePath: RunRelativeArtifactPathSchema,
   pages: Schema.Array(BrowserPageEvidence),
   runId: RunIdSchema,
   status: BrowserEvidenceStatusSchema,
   targetUrl: BrowserEvidenceTargetUrlSchema,
 }) {}
 
-export type BrowserEvidenceCollectorInput = {
-  readonly paths: RunPaths;
-  readonly targetUrl: BrowserEvidenceTargetUrl;
-};
+const BrowserEvidenceCollectorInputSchema = Schema.Struct({
+  paths: RunPathsSchema,
+  targetUrl: BrowserEvidenceTargetUrlSchema,
+});
+
+export type BrowserEvidenceCollectorInput =
+  typeof BrowserEvidenceCollectorInputSchema.Type;
 
 export type BrowserEvidenceCollector = (
   input: BrowserEvidenceCollectorInput
@@ -101,9 +123,30 @@ export const parseBrowserEvidenceJson =
 const browserNavigationTimeoutMs = 30_000;
 const browserNetworkIdleTimeoutMs = 2_000;
 
-export function writeEmptyBrowserEvidence(input: {
-  readonly paths: RunPaths;
-}): Effect.Effect<BrowserEvidence, GaiaRuntimeError, FileSystem.FileSystem> {
+const WriteEmptyBrowserEvidenceInputSchema = Schema.Struct({
+  paths: RunPathsSchema,
+});
+
+const WriteBrowserEvidenceInputSchema = Schema.Struct({
+  evidence: BrowserEvidence,
+  paths: RunPathsSchema,
+});
+
+const FailedBrowserEvidenceInputSchema = Schema.Struct({
+  message: Schema.String,
+  targetUrl: BrowserEvidenceTargetUrlSchema,
+});
+
+const BrowserEvidenceRecordInputSchema = Schema.Struct({
+  evidence: BrowserEvidence,
+  paths: RunPathsSchema,
+  runId: RunIdSchema,
+  targetUrl: BrowserEvidenceTargetUrlSchema,
+});
+
+export function writeEmptyBrowserEvidence(
+  input: typeof WriteEmptyBrowserEvidenceInputSchema.Type
+): Effect.Effect<BrowserEvidence, GaiaRuntimeError, FileSystem.FileSystem> {
   return writeBrowserEvidence({
     evidence: BrowserEvidence.make({
       notes: ["Browser automation is not collected for this run yet."],
@@ -115,10 +158,9 @@ export function writeEmptyBrowserEvidence(input: {
   });
 }
 
-export function writeBrowserEvidence(input: {
-  readonly evidence: BrowserEvidence;
-  readonly paths: RunPaths;
-}): Effect.Effect<BrowserEvidence, GaiaRuntimeError, FileSystem.FileSystem> {
+export function writeBrowserEvidence(
+  input: typeof WriteBrowserEvidenceInputSchema.Type
+): Effect.Effect<BrowserEvidence, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(
@@ -141,10 +183,9 @@ export function writeBrowserEvidence(input: {
   );
 }
 
-export function failedBrowserEvidence(input: {
-  readonly message: string;
-  readonly targetUrl: BrowserEvidenceTargetUrl;
-}) {
+export function failedBrowserEvidence(
+  input: typeof FailedBrowserEvidenceInputSchema.Type
+) {
   return BrowserEvidence.make({
     notes: [
       `Browser evidence capture failed for ${input.targetUrl}.`,
@@ -156,14 +197,13 @@ export function failedBrowserEvidence(input: {
   });
 }
 
-export function browserEvidenceRecord(input: {
-  readonly evidence: BrowserEvidence;
-  readonly paths: RunPaths;
-  readonly runId: RunId;
-  readonly targetUrl: BrowserEvidenceTargetUrl;
-}) {
+export function browserEvidenceRecord(
+  input: typeof BrowserEvidenceRecordInputSchema.Type
+) {
   return BrowserEvidenceRecord.make({
-    evidencePath: runRelative(input.paths, input.paths.browserEvidence),
+    evidencePath: parseRunRelativeArtifactPath(
+      runRelative(input.paths, input.paths.browserEvidence)
+    ),
     pages: input.evidence.pages,
     runId: input.runId,
     status: input.evidence.status,
@@ -223,7 +263,7 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
             .catch(() => undefined);
           await page.screenshot({ fullPage: true, path: screenshotPath });
 
-          return page.url();
+          return parseBrowserEvidenceTargetUrl(page.url());
         } finally {
           await browser.close();
         }

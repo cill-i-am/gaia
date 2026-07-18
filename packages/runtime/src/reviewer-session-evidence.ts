@@ -2,6 +2,13 @@ import { ReviewPhaseSchema, RunIdSchema } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import { RunRelativeArtifactPathSchema, RuntimePathSchema } from "./paths.js";
+
+export const ReviewerNameSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("ReviewerName")
+);
+
+export type ReviewerName = typeof ReviewerNameSchema.Type;
 
 export const ReviewerSessionAdapterKindSchema = Schema.Literals([
   "codex-cli",
@@ -33,20 +40,28 @@ export class ReviewerSessionEvidence extends Schema.Class<ReviewerSessionEvidenc
 )({
   adapterKind: ReviewerSessionAdapterKindSchema,
   command: Schema.optionalKey(Schema.NonEmptyString),
-  cwd: Schema.optionalKey(Schema.NonEmptyString),
+  cwd: Schema.optionalKey(RuntimePathSchema),
   decisionStatus: ReviewerSessionDecisionStatusSchema,
-  evidencePath: Schema.NonEmptyString,
-  logPath: Schema.optionalKey(Schema.NonEmptyString),
+  evidencePath: RunRelativeArtifactPathSchema,
+  logPath: Schema.optionalKey(RunRelativeArtifactPathSchema),
   phase: ReviewPhaseSchema,
-  resultPath: Schema.NonEmptyString,
-  reviewPath: Schema.NonEmptyString,
-  reviewerName: Schema.NonEmptyString,
+  resultPath: RunRelativeArtifactPathSchema,
+  reviewPath: RunRelativeArtifactPathSchema,
+  reviewerName: ReviewerNameSchema,
   runId: RunIdSchema,
   sessionId: Schema.optionalKey(Schema.NonEmptyString),
   sessionKind: ReviewerSessionKindSchema,
-  transcriptPath: Schema.optionalKey(Schema.NonEmptyString),
+  transcriptPath: Schema.optionalKey(RunRelativeArtifactPathSchema),
   version: Schema.Literal(1),
-}) {}
+}) {
+  static override make(input: unknown): ReviewerSessionEvidence {
+    return decodeReviewerSessionEvidence(input);
+  }
+}
+
+const decodeReviewerSessionEvidence = Schema.decodeUnknownSync(
+  ReviewerSessionEvidence
+);
 
 const ReviewerSessionEvidenceJson = Schema.toCodecJson(ReviewerSessionEvidence);
 export const encodeReviewerSessionEvidenceJson = Schema.encodeSync(
@@ -57,10 +72,14 @@ export const parseReviewerSessionEvidenceJson = Schema.decodeUnknownSync(
   ReviewerSessionEvidenceJson
 );
 
-export function writeReviewerSessionEvidence(input: {
-  readonly evidence: ReviewerSessionEvidence;
-  readonly path: string;
-}): Effect.Effect<
+const WriteReviewerSessionEvidenceInputSchema = Schema.Struct({
+  evidence: ReviewerSessionEvidence,
+  path: RuntimePathSchema,
+});
+
+export function writeReviewerSessionEvidence(
+  input: typeof WriteReviewerSessionEvidenceInputSchema.Type
+): Effect.Effect<
   ReviewerSessionEvidence,
   GaiaRuntimeError,
   FileSystem.FileSystem

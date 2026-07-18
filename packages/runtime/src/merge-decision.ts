@@ -1,4 +1,10 @@
-import { RunIdSchema, type RunId } from "@gaia/core";
+import {
+  DeliveryTimestampSchema,
+  GitHubPullRequestSelectorSchema,
+  parseDeliveryTimestamp,
+  RunIdSchema,
+  type RunId,
+} from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
 import { parseBrowserEvidenceJson } from "./browser-evidence.js";
@@ -10,7 +16,10 @@ import {
 } from "./github-publisher.js";
 import {
   makeRunPaths,
+  parseRunRelativeArtifactPath,
   runRelative,
+  RunRelativeArtifactPathSchema,
+  RuntimePathSchema,
   type RunPaths,
   type RunStorageOptions,
 } from "./paths.js";
@@ -49,7 +58,7 @@ export class MergeDecisionBlocker extends Schema.Class<MergeDecisionBlocker>(
   "MergeDecisionBlocker"
 )({
   action: Schema.NonEmptyString,
-  artifactPath: Schema.optionalKey(Schema.NonEmptyString),
+  artifactPath: Schema.optionalKey(RunRelativeArtifactPathSchema),
   kind: MergeDecisionBlockerKindSchema,
   summary: Schema.NonEmptyString,
 }) {}
@@ -64,16 +73,16 @@ export class MergeDecision extends Schema.Class<MergeDecision>("MergeDecision")(
   {
     blockerCount: MergeDecisionBlockerCountSchema,
     blockers: Schema.Array(MergeDecisionBlocker),
-    decidedAt: Schema.NonEmptyString,
-    evidenceReviewPath: Schema.NonEmptyString,
-    evidenceReviewerSessionPath: Schema.NonEmptyString,
+    decidedAt: DeliveryTimestampSchema,
+    evidenceReviewPath: RunRelativeArtifactPathSchema,
+    evidenceReviewerSessionPath: RunRelativeArtifactPathSchema,
     nextAction: MergeDecisionNextActionSchema,
-    planReviewPath: Schema.NonEmptyString,
-    planReviewerSessionPath: Schema.NonEmptyString,
-    pr: Schema.optionalKey(Schema.NonEmptyString),
-    prLoopPath: Schema.NonEmptyString,
+    planReviewPath: RunRelativeArtifactPathSchema,
+    planReviewerSessionPath: RunRelativeArtifactPathSchema,
+    pr: Schema.optionalKey(GitHubPullRequestSelectorSchema),
+    prLoopPath: RunRelativeArtifactPathSchema,
     runId: RunIdSchema,
-    runProfilePath: Schema.NonEmptyString,
+    runProfilePath: RunRelativeArtifactPathSchema,
     status: MergeDecisionStatusSchema,
     version: Schema.Literal(1),
   }
@@ -84,9 +93,9 @@ export class MergeDecisionSummary extends Schema.Class<MergeDecisionSummary>(
 )({
   blockerCount: MergeDecisionBlockerCountSchema,
   blockers: Schema.Array(MergeDecisionBlocker),
-  decisionPath: Schema.NonEmptyString,
+  decisionPath: RuntimePathSchema,
   nextAction: MergeDecisionNextActionSchema,
-  pr: Schema.optionalKey(Schema.NonEmptyString),
+  pr: Schema.optionalKey(GitHubPullRequestSelectorSchema),
   runId: RunIdSchema,
   status: MergeDecisionStatusSchema,
 }) {}
@@ -141,26 +150,29 @@ function recordMergeDecisionUnlocked(
     const decision = MergeDecision.make({
       blockerCount: parseMergeDecisionBlockerCount(blockers.length),
       blockers,
-      decidedAt: new Date().toISOString(),
-      evidenceReviewPath: runRelative(paths, paths.evidenceReviewMarkdown),
-      evidenceReviewerSessionPath: runRelative(
+      decidedAt: parseDeliveryTimestamp(new Date().toISOString()),
+      evidenceReviewPath: runArtifactPath(paths, paths.evidenceReviewMarkdown),
+      evidenceReviewerSessionPath: runArtifactPath(
         paths,
         paths.evidenceReviewerSession
       ),
       nextAction,
-      planReviewPath: runRelative(paths, paths.planReviewMarkdown),
-      planReviewerSessionPath: runRelative(paths, paths.planReviewerSession),
+      planReviewPath: runArtifactPath(paths, paths.planReviewMarkdown),
+      planReviewerSessionPath: runArtifactPath(
+        paths,
+        paths.planReviewerSession
+      ),
       ...(prLoop === undefined ? {} : { pr: prLoop.pr }),
-      prLoopPath: runRelative(paths, paths.prLoopState),
+      prLoopPath: runArtifactPath(paths, paths.prLoopState),
       runId: run.runId,
-      runProfilePath: runRelative(paths, paths.runProfile),
+      runProfilePath: runArtifactPath(paths, paths.runProfile),
       status,
       version: 1,
     });
 
     yield* writeMergeDecision(paths, decision);
 
-    const mergeDecisionPath = runRelative(paths, paths.mergeDecision);
+    const mergeDecisionPath = runArtifactPath(paths, paths.mergeDecision);
 
     yield* appendEvent(run.runId, paths, {
       payload: {
@@ -193,7 +205,7 @@ function prLoopBlockers(
     return [
       MergeDecisionBlocker.make({
         action: "Run `gaia pr-loop <run-id> <pull-request>` before deciding.",
-        artifactPath: runRelative(paths, paths.prLoopState),
+        artifactPath: runArtifactPath(paths, paths.prLoopState),
         kind: "missing-pr-loop",
         summary: "Gaia has no PR-loop state for this run.",
       }),
@@ -211,7 +223,7 @@ function prLoopBlockers(
   return [
     MergeDecisionBlocker.make({
       action: prLoop.nextAction,
-      artifactPath: runRelative(paths, paths.prLoopState),
+      artifactPath: runArtifactPath(paths, paths.prLoopState),
       kind: "pr-loop-not-ready",
       summary: `PR-loop status is '${prLoop.status}' with checks '${prLoop.checksStatus}' and next action '${prLoop.nextAction}'.`,
     }),
@@ -236,7 +248,7 @@ function reviewerEvidenceBlockers(paths: RunPaths) {
       blockers.push(
         MergeDecisionBlocker.make({
           action: "Rerun the Gaia run with plan reviewer evidence enabled.",
-          artifactPath: runRelative(paths, paths.planReviewerSession),
+          artifactPath: runArtifactPath(paths, paths.planReviewerSession),
           kind: "reviewer-evidence-missing",
           summary: "Plan reviewer session evidence is missing.",
         })
@@ -245,7 +257,7 @@ function reviewerEvidenceBlockers(paths: RunPaths) {
       blockers.push(
         MergeDecisionBlocker.make({
           action: "Resolve the plan reviewer finding before deciding merge.",
-          artifactPath: runRelative(paths, paths.planReviewerSession),
+          artifactPath: runArtifactPath(paths, paths.planReviewerSession),
           kind: "reviewer-blocked",
           summary: "Plan reviewer did not approve the run.",
         })
@@ -256,7 +268,7 @@ function reviewerEvidenceBlockers(paths: RunPaths) {
       blockers.push(
         MergeDecisionBlocker.make({
           action: "Rerun the Gaia run with evidence reviewer evidence enabled.",
-          artifactPath: runRelative(paths, paths.evidenceReviewerSession),
+          artifactPath: runArtifactPath(paths, paths.evidenceReviewerSession),
           kind: "reviewer-evidence-missing",
           summary: "Evidence reviewer session evidence is missing.",
         })
@@ -266,7 +278,7 @@ function reviewerEvidenceBlockers(paths: RunPaths) {
         MergeDecisionBlocker.make({
           action:
             "Resolve the evidence reviewer finding before deciding merge.",
-          artifactPath: runRelative(paths, paths.evidenceReviewerSession),
+          artifactPath: runArtifactPath(paths, paths.evidenceReviewerSession),
           kind: "reviewer-blocked",
           summary: "Evidence reviewer did not approve the run.",
         })
@@ -292,7 +304,7 @@ function browserEvidenceBlockers(paths: RunPaths) {
         MergeDecisionBlocker.make({
           action:
             "Collect browser evidence for this run before deciding merge.",
-          artifactPath: runRelative(paths, paths.browserEvidence),
+          artifactPath: runArtifactPath(paths, paths.browserEvidence),
           kind: "browser-evidence-missing",
           summary:
             "Run profile requires browser evidence, but none is recorded.",
@@ -304,7 +316,7 @@ function browserEvidenceBlockers(paths: RunPaths) {
       return [
         MergeDecisionBlocker.make({
           action: "Fix and recollect browser evidence before deciding merge.",
-          artifactPath: runRelative(paths, paths.browserEvidence),
+          artifactPath: runArtifactPath(paths, paths.browserEvidence),
           kind: "browser-evidence-failed",
           summary: `Run profile requires browser evidence, but status is '${evidence.status}'.`,
         }),
@@ -350,7 +362,7 @@ function readOptionalGitHubPrLoopState(paths: RunPaths) {
   );
 }
 
-function readOptionalReviewerSession(path: string) {
+function readOptionalReviewerSession(path: typeof RuntimePathSchema.Type) {
   return readOptionalJsonFile(
     path,
     parseReviewerSessionEvidenceJson,
@@ -388,7 +400,7 @@ function readRunProfile(paths: RunPaths) {
 }
 
 function readOptionalJsonFile<A>(
-  path: string,
+  path: typeof RuntimePathSchema.Type,
   parse: (input: unknown) => A,
   label: string
 ) {
@@ -418,7 +430,7 @@ function readOptionalJsonFile<A>(
   );
 }
 
-function parseJson(text: string, path: string) {
+function parseJson(text: string, path: typeof RuntimePathSchema.Type) {
   return Effect.try({
     catch: (cause) =>
       makeRuntimeError({
@@ -452,4 +464,11 @@ function parseMergeDecisionBlockerCount(
   count: number
 ): MergeDecisionBlockerCount {
   return Schema.decodeUnknownSync(MergeDecisionBlockerCountSchema)(count);
+}
+
+function runArtifactPath(
+  paths: RunPaths,
+  absolutePath: typeof RuntimePathSchema.Type
+) {
+  return parseRunRelativeArtifactPath(runRelative(paths, absolutePath));
 }

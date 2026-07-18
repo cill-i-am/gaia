@@ -10,8 +10,12 @@ import {
   type RuntimePath,
 } from "./paths.js";
 import {
+  ReviewerNameSchema,
   ReviewerSessionEvidence,
+  ReviewerSessionAdapterKindSchema,
+  ReviewerSessionKindSchema,
   writeReviewerSessionEvidence,
+  type ReviewerName,
   type ReviewerSessionAdapterKind,
   type ReviewerSessionKind,
 } from "./reviewer-session-evidence.js";
@@ -25,11 +29,10 @@ import {
 } from "./workspace-snapshot.js";
 import { WorkspacePreparationResult } from "./workspace.js";
 
-export const ReviewerNameSchema = Schema.NonEmptyString.pipe(
-  Schema.brand("ReviewerName")
-);
-
-export type ReviewerName = typeof ReviewerNameSchema.Type;
+export {
+  ReviewerNameSchema,
+  type ReviewerName,
+} from "./reviewer-session-evidence.js";
 
 export const defaultReviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
   "deterministic-reviewer"
@@ -75,9 +78,15 @@ export class ReviewRunRequest extends Schema.Class<ReviewRunRequest>(
   workspacePath: RuntimePathSchema,
 }) {}
 
-export type GaiaReviewer = {
-  readonly adapterKind?: ReviewerSessionAdapterKind;
-  readonly name: ReviewerName;
+class GaiaReviewerMetadata extends Schema.Class<GaiaReviewerMetadata>(
+  "GaiaReviewerMetadata"
+)({
+  adapterKind: Schema.optionalKey(ReviewerSessionAdapterKindSchema),
+  name: ReviewerNameSchema,
+  sessionKind: Schema.optionalKey(ReviewerSessionKindSchema),
+}) {}
+
+export type GaiaReviewer = GaiaReviewerMetadata & {
   readonly run: (
     request: ReviewRunRequest
   ) => Effect.Effect<
@@ -85,7 +94,6 @@ export type GaiaReviewer = {
     GaiaRuntimeError,
     FileSystem.FileSystem | Path.Path
   >;
-  readonly sessionKind?: ReviewerSessionKind;
 };
 
 export type ReviewerRunOptions = {
