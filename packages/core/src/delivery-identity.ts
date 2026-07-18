@@ -134,6 +134,39 @@ export const parseGitHubPullRequestUrl = Schema.decodeUnknownSync(
   GitHubPullRequestUrlSchema
 );
 
+/** A non-empty pull-request selector accepted by GitHub delivery commands. */
+const GitHubPullRequestSelectorBaseSchema = Schema.NonEmptyString;
+export const GitHubPullRequestSelectorPublicSchema =
+  GitHubPullRequestSelectorBaseSchema;
+export const GitHubPullRequestSelectorSchema =
+  GitHubPullRequestSelectorBaseSchema.pipe(
+    Schema.brand("GitHubPullRequestSelector")
+  );
+export type GitHubPullRequestSelector =
+  typeof GitHubPullRequestSelectorSchema.Type;
+export const parseGitHubPullRequestSelector = Schema.decodeUnknownSync(
+  GitHubPullRequestSelectorSchema
+);
+
+/** Normalized GitHub checks status recorded for a Gaia delivery. */
+export const GitHubChecksStatusSchema = Schema.Literals([
+  "green",
+  "failing",
+  "pending",
+  "no-checks-configured",
+  "provider-unavailable",
+] as const);
+export type GitHubChecksStatus = typeof GitHubChecksStatusSchema.Type;
+
+/** GitHub PR human-feedback status recorded for a Gaia delivery. */
+export const GitHubPrFeedbackStatusSchema = Schema.Literals([
+  "awaiting-review",
+  "changes-requested",
+  "clear",
+  "comments",
+] as const);
+export type GitHubPrFeedbackStatus = typeof GitHubPrFeedbackStatusSchema.Type;
+
 /** A GitHub-hosted provider URL for privacy-safe public evidence. */
 const GitHubProviderUrlBaseSchema = Schema.String.pipe(
   Schema.check(Schema.isPattern(/^https:\/\/github\.com\/[^\s]+$/u)),

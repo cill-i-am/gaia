@@ -7,9 +7,14 @@ import {
   DeliverySourcePathPublicSchema,
   DeliveryTimestampPublicSchema,
   GitHubCheckFieldPublicSchema,
+  GitHubChecksStatusSchema,
   GitHubLoginPublicSchema,
+  GitHubPrFeedbackStatusSchema,
   GitHubProviderUrlPublicSchema,
+  GitHubPullRequestSelectorPublicSchema,
+  GitHubPullRequestSelectorSchema,
   GitHubPullRequestUrlPublicSchema,
+  parseGitHubPullRequestSelector,
   RunIdSchema,
   type RunId,
 } from "@gaia/core";
@@ -34,6 +39,13 @@ import {
   WorkspacePrQualityGate,
 } from "./workspace-pr-gate.js";
 import { copyWorkspaceDirectoryContents } from "./workspace.js";
+
+export {
+  GitHubChecksStatusSchema,
+  GitHubPrFeedbackStatusSchema,
+  GitHubPullRequestSelectorSchema,
+  parseGitHubPullRequestSelector,
+};
 
 const commandMaxBufferBytes = 10 * 1024 * 1024;
 const defaultRemoteName = "origin";
@@ -137,31 +149,12 @@ const parseGitHubCheckPollAttemptCount = Schema.decodeUnknownSync(
   GitHubCheckPollAttemptCountSchema
 );
 
-const GitHubPullRequestSelectorPublicSchema = Schema.NonEmptyString;
-
-export const GitHubPullRequestSelectorSchema =
-  GitHubPullRequestSelectorPublicSchema.pipe(
-    Schema.brand("GitHubPullRequestSelector")
-  );
-
 export type GitHubPullRequestSelector =
   typeof GitHubPullRequestSelectorSchema.Type;
-
-export const parseGitHubPullRequestSelector = Schema.decodeUnknownSync(
-  GitHubPullRequestSelectorSchema
-);
 
 const GitHubPrHeadShaSchema = DeliveryGitShaPublicSchema;
 
 type GitHubPrHeadSha = typeof GitHubPrHeadShaSchema.Type;
-
-export const GitHubChecksStatusSchema = Schema.Literals([
-  "green",
-  "failing",
-  "pending",
-  "no-checks-configured",
-  "provider-unavailable",
-] as const);
 
 export type GitHubChecksStatus = typeof GitHubChecksStatusSchema.Type;
 
@@ -170,13 +163,6 @@ const legacyGitHubChecksStatusMap = new Map<string, GitHubChecksStatus>([
   ["no-checks", "no-checks-configured"],
   ["passed", "green"],
 ]);
-
-export const GitHubPrFeedbackStatusSchema = Schema.Literals([
-  "awaiting-review",
-  "changes-requested",
-  "clear",
-  "comments",
-] as const);
 
 /** GitHub PR human-feedback status recorded for a Gaia run. */
 export type GitHubPrFeedbackStatus = typeof GitHubPrFeedbackStatusSchema.Type;
