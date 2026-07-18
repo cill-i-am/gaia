@@ -27,10 +27,16 @@ const parseRunStoreLockMetadataJson = Schema.decodeUnknownSync(
   RunStoreLockMetadataJson
 );
 
-export type RunStoreLockContext = {
-  readonly nextSafeAction?: string;
-  readonly operation?: string;
-};
+class RunStoreLockContextSchema extends Schema.Class<RunStoreLockContextSchema>(
+  "RunStoreLockContext"
+)({
+  nextSafeAction: Schema.optionalKey(
+    RunStoreLockMetadata.fields.nextSafeAction
+  ),
+  operation: Schema.optionalKey(RunStoreLockMetadata.fields.operation),
+}) {}
+
+export type RunStoreLockContext = RunStoreLockContextSchema;
 
 /** Run an effect while holding the local Gaia run-store mutation lock. */
 export function withRunStoreLock<A, E, R>(

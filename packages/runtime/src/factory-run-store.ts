@@ -2,10 +2,14 @@ import {
   CreateRunRequest,
   deriveDeliveryCleanupActionHistories,
   FactoryActivityListDto,
+  FactoryAgentRoleSchema,
+  FactoryArtifactDto,
   FactoryArtifactBodyDto,
   FactoryArtifactIdSchema,
   FactoryArtifactListDto,
+  FactoryGraphDiagnosticDto,
   FactoryGraphDto,
+  RunIdSchema,
   parseLocalRunArtifactName,
   parseLocalRunReadDiagnostic,
   parseDeliveryRemediation,
@@ -14,13 +18,15 @@ import {
   parseDeliveryCleanupReceipt,
   parseHarnessEvent,
   ResolvedHarnessExecution,
+  RunEvent,
   type EventType,
+  type FactoryActivityId,
+  type FactoryAgentId,
   type FactoryAgentRole,
   type FactoryAgentState,
   type FactoryArtifactId,
   type FactoryArtifactKind,
   type LocalRunReadDiagnostic,
-  type RunEvent,
   type RunId,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
@@ -34,50 +40,161 @@ import {
 } from "./factory-workflows.js";
 import {
   makeRunPaths,
+  RunPathsSchema,
   type RunPaths,
   type RunStorageOptions,
+  type RuntimePath,
 } from "./paths.js";
 
 export type FactoryRunCreateInput = typeof CreateRunRequest.Type;
-export type FactoryGraphProjection = typeof FactoryGraphDto.Type;
-export type FactoryActivityIndex = typeof FactoryActivityListDto.Type;
-export type FactoryArtifactIndex = typeof FactoryArtifactListDto.Type;
-export type FactoryArtifactBody = typeof FactoryArtifactBodyDto.Type;
+class FactoryGraphProjectionSchema extends Schema.Class<FactoryGraphProjectionSchema>(
+  "FactoryGraphProjection"
+)({
+  ...FactoryGraphDto.from.fields,
+}) {}
+class FactoryActivityIndexSchema extends Schema.Class<FactoryActivityIndexSchema>(
+  "FactoryActivityIndex"
+)({
+  ...FactoryActivityListDto.fields,
+}) {}
+class FactoryArtifactIndexSchema extends Schema.Class<FactoryArtifactIndexSchema>(
+  "FactoryArtifactIndex"
+)({
+  ...FactoryArtifactListDto.fields,
+}) {}
+class FactoryArtifactBodySchema extends Schema.Class<FactoryArtifactBodySchema>(
+  "FactoryArtifactBody"
+)({
+  ...FactoryArtifactBodyDto.fields,
+}) {}
 
-export type FactoryProjectionIndexes = {
-  readonly activity: FactoryActivityIndex;
-  readonly artifacts: FactoryArtifactIndex;
-  readonly graph: FactoryGraphProjection;
+export type FactoryGraphProjection = FactoryGraphProjectionSchema;
+export type FactoryActivityIndex = FactoryActivityIndexSchema;
+export type FactoryArtifactIndex = FactoryArtifactIndexSchema;
+export type FactoryArtifactBody = FactoryArtifactBodySchema;
+
+class FactoryProjectionIndexesSchema extends Schema.Class<FactoryProjectionIndexesSchema>(
+  "FactoryProjectionIndexes"
+)({
+  activity: FactoryActivityIndexSchema,
+  artifacts: FactoryArtifactIndexSchema,
+  graph: FactoryGraphProjectionSchema,
+}) {}
+
+export type FactoryProjectionIndexes = FactoryProjectionIndexesSchema;
+
+type FactoryProjectionDiagnostic = Schema.Schema.Type<
+  typeof FactoryGraphDiagnosticDto
+>;
+type FactoryProjectionDiagnosticCode =
+  (typeof FactoryGraphDiagnosticDto.Type)["code"];
+type FactoryProjectionDiagnosticSourceId = NonNullable<
+  (typeof FactoryGraphDiagnosticDto.Type)["sourceId"]
+>;
+
+const StoredIndexFailureKindSchema = Schema.Literals([
+  "decode",
+  "parse",
+  "read",
+]);
+type StoredIndexFailureKind = Schema.Schema.Type<
+  typeof StoredIndexFailureKindSchema
+>;
+
+const StoredIndexMissingSchema = Schema.Struct({
+  _tag: Schema.Literal("missing"),
+  diagnostic: FactoryGraphDiagnosticDto,
+});
+const StoredIndexStaleSchema = Schema.Struct({
+  _tag: Schema.Literal("stale"),
+  diagnostic: FactoryGraphDiagnosticDto,
+});
+const StoredIndexUnreadableSchema = Schema.Struct({
+  _tag: Schema.Literal("unreadable"),
+  diagnostic: FactoryGraphDiagnosticDto,
+  failureKind: StoredIndexFailureKindSchema,
+});
+const FactoryGraphStoredIndexReadSchema = Schema.Union([
+  StoredIndexMissingSchema,
+  StoredIndexStaleSchema,
+  StoredIndexUnreadableSchema,
+  Schema.Struct({ _tag: Schema.Literal("valid"), value: FactoryGraphDto }),
+]);
+const FactoryActivityStoredIndexReadSchema = Schema.Union([
+  StoredIndexMissingSchema,
+  StoredIndexStaleSchema,
+  StoredIndexUnreadableSchema,
+  Schema.Struct({
+    _tag: Schema.Literal("valid"),
+    value: FactoryActivityListDto,
+  }),
+]);
+const FactoryArtifactStoredIndexReadSchema = Schema.Union([
+  StoredIndexMissingSchema,
+  StoredIndexStaleSchema,
+  StoredIndexUnreadableSchema,
+  Schema.Struct({
+    _tag: Schema.Literal("valid"),
+    value: FactoryArtifactListDto,
+  }),
+]);
+
+type StoredIndexUnreadable = typeof StoredIndexUnreadableSchema.Type;
+
+const FactoryArtifactOwnerRoleSchema = Schema.Literals(
+  FactoryAgentRoleSchema.literals.filter(
+    (role) => role !== "researcher" && role !== "unknown"
+  )
+);
+
+const FactoryArtifactDefinitionDataSchema = Schema.Struct({
+  artifactId: FactoryArtifactIdSchema,
+  contentType: FactoryArtifactBodyDto.fields.contentType,
+  eventType: RunEvent.fields.type,
+  kind: FactoryArtifactDto.fields.kind,
+  label: FactoryArtifactDto.fields.label,
+  ownerRole: FactoryArtifactOwnerRoleSchema,
+});
+
+type FactoryArtifactDefinition = Schema.Schema.Type<
+  typeof FactoryArtifactDefinitionDataSchema
+> & {
+  readonly path: (paths: RunPaths) => RuntimePath;
 };
 
-type FactoryProjectionDiagnostic =
-  (typeof FactoryGraphDto.Type)["diagnostics"][number];
-
-type StoredIndexRead<A> =
-  | {
-      readonly _tag: "missing";
-      readonly diagnostic: FactoryProjectionDiagnostic;
-    }
-  | { readonly _tag: "stale"; readonly diagnostic: FactoryProjectionDiagnostic }
-  | {
-      readonly _tag: "unreadable";
-      readonly diagnostic: FactoryProjectionDiagnostic;
-      readonly failureKind: "decode" | "parse" | "read";
-    }
-  | { readonly _tag: "valid"; readonly value: A };
-
-type FactoryArtifactDefinition = {
-  readonly artifactId: FactoryArtifactId;
-  readonly contentType: (typeof FactoryArtifactBodyDto.Type)["contentType"];
-  readonly eventType: EventType;
-  readonly kind: FactoryArtifactKind;
-  readonly label: string;
-  readonly ownerRole: Extract<
-    FactoryAgentRole,
-    "ciWatcher" | "orchestrator" | "reviewer" | "tester" | "worker"
-  >;
-  readonly path: (paths: RunPaths) => string;
-};
+const WriteInitialFactoryRunIndexesInputSchema = Schema.Struct({
+  paths: RunPathsSchema,
+  runId: RunIdSchema,
+});
+const RebuildFactoryRunIndexesFromPathsInputSchema = Schema.Struct({
+  additionalDiagnostics: Schema.Array(FactoryGraphDiagnosticDto),
+  paths: RunPathsSchema,
+  runId: RunIdSchema,
+});
+const StoredFactoryIndexesSchema = Schema.Struct({
+  activity: FactoryActivityStoredIndexReadSchema,
+  artifacts: FactoryArtifactStoredIndexReadSchema,
+  graph: FactoryGraphStoredIndexReadSchema,
+});
+const BuildFactoryGraphInputSchema = Schema.Struct({
+  activity: FactoryActivityListDto,
+  artifacts: Schema.Array(FactoryArtifactDto),
+  createInput: CreateRunRequest,
+  diagnostics: Schema.Array(FactoryGraphDiagnosticDto),
+  events: Schema.Array(RunEvent),
+  resolvedExecution: ResolvedHarnessExecution,
+  runId: RunIdSchema,
+});
+const BuildActivityIndexInputSchema = Schema.Struct({
+  artifacts: Schema.Array(FactoryArtifactDto),
+  events: Schema.Array(RunEvent),
+  runId: RunIdSchema,
+});
+const CollectFactoryArtifactsInputSchema = Schema.Struct({
+  events: Schema.Array(RunEvent),
+  paths: RunPathsSchema,
+  runId: RunIdSchema,
+});
 
 const decodeCreateRunRequest = Schema.decodeUnknownSync(CreateRunRequest);
 const decodeResolvedHarnessExecution = Schema.decodeUnknownSync(
@@ -85,6 +202,12 @@ const decodeResolvedHarnessExecution = Schema.decodeUnknownSync(
 );
 const decodeFactoryArtifactId = Schema.decodeUnknownSync(
   FactoryArtifactIdSchema
+);
+const decodeFactoryAgentId = Schema.decodeUnknownSync(
+  FactoryArtifactDto.fields.ownerAgentId
+);
+const decodeRunEventTimestamp = Schema.decodeUnknownSync(
+  RunEvent.fields.timestamp
 );
 const decodeFactoryGraph = Schema.decodeUnknownSync(FactoryGraphDto);
 const encodeFactoryGraph = Schema.encodeSync(FactoryGraphDto);
@@ -234,10 +357,9 @@ const factoryArtifactDefinitions: ReadonlyArray<FactoryArtifactDefinition> = [
   },
 ];
 
-export function writeInitialFactoryRunIndexes(input: {
-  readonly paths: RunPaths;
-  readonly runId: RunId;
-}) {
+export function writeInitialFactoryRunIndexes(
+  input: Schema.Schema.Type<typeof WriteInitialFactoryRunIndexesInputSchema>
+) {
   return rebuildFactoryRunIndexesFromPaths({
     additionalDiagnostics: [],
     paths: input.paths,
@@ -381,11 +503,9 @@ export function readFactoryArtifactBodyFromIndex(
   });
 }
 
-function rebuildFactoryRunIndexesFromPaths(input: {
-  readonly additionalDiagnostics: ReadonlyArray<FactoryProjectionDiagnostic>;
-  readonly paths: RunPaths;
-  readonly runId: RunId;
-}) {
+function rebuildFactoryRunIndexesFromPaths(
+  input: Schema.Schema.Type<typeof RebuildFactoryRunIndexesFromPathsInputSchema>
+) {
   return Effect.gen(function* () {
     const loadedExit = yield* Effect.exit(loadRun(input.paths));
     if (loadedExit._tag === "Failure") {
@@ -448,18 +568,21 @@ function readStoredIndexes(
     const graph = yield* readStoredJson(
       paths.factoryGraph,
       decodeFactoryGraph,
+      FactoryGraphStoredIndexReadSchema,
       "FactoryGraphIndexInvalid",
       "factory-graph.json"
     );
     const activity = yield* readStoredJson(
       paths.factoryActivityIndex,
       decodeActivityIndex,
+      FactoryActivityStoredIndexReadSchema,
       "FactoryActivityIndexInvalid",
       "activity-index.json"
     );
     const artifacts = yield* readStoredJson(
       paths.factoryArtifactsIndex,
       decodeArtifactIndex,
+      FactoryArtifactStoredIndexReadSchema,
       "FactoryArtifactIndexInvalid",
       "artifacts/index.json"
     );
@@ -482,25 +605,32 @@ function readStoredIndexes(
   });
 }
 
-function readStoredJson<A>(
-  path: string,
-  decode: (input: unknown) => A,
-  invalidCode: string,
-  sourceId: string
-): Effect.Effect<StoredIndexRead<A>, never, FileSystem.FileSystem> {
+function readStoredJson<
+  Value,
+  StoredIndexSchema extends Schema.ConstraintDecoder<unknown>,
+>(
+  path: RuntimePath,
+  decode: (input: unknown) => Value,
+  storedIndexSchema: StoredIndexSchema,
+  invalidCode: FactoryProjectionDiagnosticCode,
+  sourceId: FactoryProjectionDiagnosticSourceId
+): Effect.Effect<StoredIndexSchema["Type"], never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
+    const parseStoredIndex = Schema.decodeUnknownSync(storedIndexSchema);
     const fs = yield* FileSystem.FileSystem;
     const existsExit = yield* Effect.exit(fs.exists(path));
     if (existsExit._tag === "Failure") {
-      return unreadableIndexDiagnostic(
-        sourceId,
-        "FactoryProjectionIndexUnreadable",
-        "read"
+      return parseStoredIndex(
+        unreadableIndexDiagnostic(
+          sourceId,
+          "FactoryProjectionIndexUnreadable",
+          "read"
+        )
       );
     }
     const exists = existsExit.value;
     if (!exists) {
-      return {
+      return parseStoredIndex({
         _tag: "missing",
         diagnostic: {
           code: "FactoryProjectionIndexMissing",
@@ -508,35 +638,41 @@ function readStoredJson<A>(
           recoverable: true,
           sourceId,
         },
-      };
+      });
     }
 
     const textExit = yield* Effect.exit(fs.readFileString(path));
     if (textExit._tag === "Failure") {
-      return unreadableIndexDiagnostic(
-        sourceId,
-        "FactoryProjectionIndexUnreadable",
-        "read"
+      return parseStoredIndex(
+        unreadableIndexDiagnostic(
+          sourceId,
+          "FactoryProjectionIndexUnreadable",
+          "read"
+        )
       );
     }
 
     try {
       const parsed = JSON.parse(textExit.value);
       try {
-        return { _tag: "valid", value: decode(parsed) };
+        return parseStoredIndex({ _tag: "valid", value: decode(parsed) });
       } catch {
-        return unreadableIndexDiagnostic(sourceId, invalidCode, "decode");
+        return parseStoredIndex(
+          unreadableIndexDiagnostic(sourceId, invalidCode, "decode")
+        );
       }
     } catch {
-      return unreadableIndexDiagnostic(sourceId, invalidCode, "parse");
+      return parseStoredIndex(
+        unreadableIndexDiagnostic(sourceId, invalidCode, "parse")
+      );
     }
   });
 }
 
 function markActivityStale(
-  read: StoredIndexRead<FactoryActivityIndex>,
+  read: typeof FactoryActivityStoredIndexReadSchema.Type,
   eventCount: number
-): StoredIndexRead<FactoryActivityIndex> {
+): typeof FactoryActivityStoredIndexReadSchema.Type {
   if (read._tag !== "valid" || read.value.activities.length === eventCount) {
     return read;
   }
@@ -554,9 +690,9 @@ function markActivityStale(
 }
 
 function markTerminalDeliveryGraphStale(
-  read: StoredIndexRead<FactoryGraphProjection>,
+  read: typeof FactoryGraphStoredIndexReadSchema.Type,
   terminalDeliveryCleanupCompleted: boolean
-): StoredIndexRead<FactoryGraphProjection> {
+): typeof FactoryGraphStoredIndexReadSchema.Type {
   if (!terminalDeliveryCleanupCompleted) {
     return read;
   }
@@ -587,7 +723,7 @@ function markTerminalDeliveryGraphStale(
   return terminalDeliveryGraphStaleDiagnostic();
 }
 
-function terminalDeliveryGraphStaleDiagnostic(): StoredIndexRead<FactoryGraphProjection> {
+function terminalDeliveryGraphStaleDiagnostic(): typeof FactoryGraphStoredIndexReadSchema.Type {
   return {
     _tag: "stale",
     diagnostic: {
@@ -600,11 +736,32 @@ function terminalDeliveryGraphStaleDiagnostic(): StoredIndexRead<FactoryGraphPro
   };
 }
 
-function markRunIdMismatch<A extends { readonly runId: RunId }>(
-  read: StoredIndexRead<A>,
+function markRunIdMismatch(
+  read: typeof FactoryGraphStoredIndexReadSchema.Type,
   runId: RunId | undefined,
-  sourceId: string
-): StoredIndexRead<A> {
+  sourceId: FactoryProjectionDiagnosticSourceId
+): typeof FactoryGraphStoredIndexReadSchema.Type;
+function markRunIdMismatch(
+  read: typeof FactoryActivityStoredIndexReadSchema.Type,
+  runId: RunId | undefined,
+  sourceId: FactoryProjectionDiagnosticSourceId
+): typeof FactoryActivityStoredIndexReadSchema.Type;
+function markRunIdMismatch(
+  read: typeof FactoryArtifactStoredIndexReadSchema.Type,
+  runId: RunId | undefined,
+  sourceId: FactoryProjectionDiagnosticSourceId
+): typeof FactoryArtifactStoredIndexReadSchema.Type;
+function markRunIdMismatch(
+  read:
+    | typeof FactoryGraphStoredIndexReadSchema.Type
+    | typeof FactoryActivityStoredIndexReadSchema.Type
+    | typeof FactoryArtifactStoredIndexReadSchema.Type,
+  runId: RunId | undefined,
+  sourceId: FactoryProjectionDiagnosticSourceId
+):
+  | typeof FactoryGraphStoredIndexReadSchema.Type
+  | typeof FactoryActivityStoredIndexReadSchema.Type
+  | typeof FactoryArtifactStoredIndexReadSchema.Type {
   if (
     read._tag !== "valid" ||
     runId === undefined ||
@@ -625,10 +782,10 @@ function markRunIdMismatch<A extends { readonly runId: RunId }>(
 }
 
 function unreadableIndexDiagnostic(
-  sourceId: string,
-  code: string,
-  failureKind: "decode" | "parse" | "read"
-): StoredIndexRead<never> {
+  sourceId: FactoryProjectionDiagnosticSourceId,
+  code: FactoryProjectionDiagnosticCode,
+  failureKind: StoredIndexFailureKind
+): StoredIndexUnreadable {
   return {
     _tag: "unreadable",
     diagnostic: {
@@ -641,11 +798,9 @@ function unreadableIndexDiagnostic(
   };
 }
 
-function storedDiagnostics(input: {
-  readonly activity: StoredIndexRead<FactoryActivityIndex>;
-  readonly artifacts: StoredIndexRead<FactoryArtifactIndex>;
-  readonly graph: StoredIndexRead<FactoryGraphProjection>;
-}): ReadonlyArray<FactoryProjectionDiagnostic> {
+function storedDiagnostics(
+  input: Schema.Schema.Type<typeof StoredFactoryIndexesSchema>
+): ReadonlyArray<FactoryProjectionDiagnostic> {
   const diagnostics: Array<FactoryProjectionDiagnostic> = [];
   for (const read of [input.graph, input.activity, input.artifacts]) {
     if (read._tag !== "valid") {
@@ -759,15 +914,9 @@ function publicDeliveryFromPayload(value: Schema.Json | undefined) {
   return { mode: "local" };
 }
 
-function buildFactoryGraph(input: {
-  readonly activity: FactoryActivityIndex;
-  readonly artifacts: ReadonlyArray<FactoryArtifactIndex["artifacts"][number]>;
-  readonly createInput: FactoryRunCreateInput;
-  readonly diagnostics: ReadonlyArray<FactoryProjectionDiagnostic>;
-  readonly events: ReadonlyArray<RunEvent>;
-  readonly resolvedExecution: typeof ResolvedHarnessExecution.Type;
-  readonly runId: RunId;
-}): FactoryGraphProjection {
+function buildFactoryGraph(
+  input: Schema.Schema.Type<typeof BuildFactoryGraphInputSchema>
+): FactoryGraphProjection {
   const agentStates = agentStatesFromEvents(input.events);
   const latestActivityByAgent = latestActivityIdByAgent(
     input.activity.activities
@@ -855,11 +1004,9 @@ function buildFactoryGraph(input: {
   });
 }
 
-function buildActivityIndex(input: {
-  readonly artifacts: ReadonlyArray<FactoryArtifactIndex["artifacts"][number]>;
-  readonly events: ReadonlyArray<RunEvent>;
-  readonly runId: RunId;
-}): FactoryActivityIndex {
+function buildActivityIndex(
+  input: Schema.Schema.Type<typeof BuildActivityIndexInputSchema>
+): FactoryActivityIndex {
   const artifactsByEvent = artifactsByEventType(input.artifacts);
   const states = new Map<FactoryAgentRole, FactoryAgentState>([
     ["orchestrator", "running"],
@@ -1311,8 +1458,8 @@ function harnessActivityLabel(event: ReturnType<typeof parseHarnessEvent>) {
 
 function latestActivityIdByAgent(
   activities: ReadonlyArray<FactoryActivityIndex["activities"][number]>
-): ReadonlyMap<string, string> {
-  const latest = new Map<string, string>();
+): ReadonlyMap<FactoryAgentId, FactoryActivityId> {
+  const latest = new Map<FactoryAgentId, FactoryActivityId>();
   for (const activity of activities) {
     if (activity.agentId !== undefined) {
       latest.set(activity.agentId, activity.activityId);
@@ -1324,8 +1471,8 @@ function latestActivityIdByAgent(
 
 function artifactCountByOwner(
   artifacts: ReadonlyArray<FactoryArtifactIndex["artifacts"][number]>
-): ReadonlyMap<string, number> {
-  const counts = new Map<string, number>();
+): ReadonlyMap<FactoryAgentId, number> {
+  const counts = new Map<FactoryAgentId, number>();
   for (const artifact of artifacts) {
     counts.set(
       artifact.ownerAgentId,
@@ -1338,14 +1485,14 @@ function artifactCountByOwner(
 
 function artifactsByEventType(
   artifacts: ReadonlyArray<FactoryArtifactIndex["artifacts"][number]>
-): ReadonlyMap<EventType, ReadonlyArray<string>> {
-  const byId = new Map<string, FactoryArtifactDefinition>(
+): ReadonlyMap<EventType, ReadonlyArray<FactoryArtifactId>> {
+  const byId = new Map<FactoryArtifactId, FactoryArtifactDefinition>(
     factoryArtifactDefinitions.map((definition) => [
       definition.artifactId,
       definition,
     ])
   );
-  const byEvent = new Map<EventType, Array<string>>();
+  const byEvent = new Map<EventType, Array<FactoryArtifactId>>();
   for (const artifact of artifacts) {
     const definition = byId.get(artifact.artifactId);
     if (definition === undefined) {
@@ -1360,11 +1507,9 @@ function artifactsByEventType(
   return byEvent;
 }
 
-function collectFactoryArtifacts(input: {
-  readonly events: ReadonlyArray<RunEvent>;
-  readonly paths: RunPaths;
-  readonly runId: RunId;
-}) {
+function collectFactoryArtifacts(
+  input: Schema.Schema.Type<typeof CollectFactoryArtifactsInputSchema>
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const artifacts = [];
@@ -1411,15 +1556,15 @@ function collectFactoryArtifacts(input: {
 function createdAtForArtifact(
   definition: FactoryArtifactDefinition,
   events: ReadonlyArray<RunEvent>
-): string {
+): typeof RunEvent.fields.timestamp.Type {
   return (
     events.find((event) => event.type === definition.eventType)?.timestamp ??
     events.at(-1)?.timestamp ??
-    new Date(0).toISOString()
+    decodeRunEventTimestamp(new Date(0).toISOString())
   );
 }
 
-function agentIdForRole(role: FactoryAgentRole): string {
+function agentIdForRole(role: FactoryAgentRole): FactoryAgentId {
   switch (role) {
     case "orchestrator":
       return issueDeliveryAgentIds.orchestrator;
@@ -1433,11 +1578,13 @@ function agentIdForRole(role: FactoryAgentRole): string {
       return issueDeliveryAgentIds.ciWatcher;
     case "researcher":
     case "unknown":
-      return `agent-${role}`;
+      return decodeFactoryAgentId(`agent-${role}`);
   }
 }
 
-function parentAgentIdForRole(role: FactoryAgentRole): string | undefined {
+function parentAgentIdForRole(
+  role: FactoryAgentRole
+): FactoryAgentId | undefined {
   switch (role) {
     case "orchestrator":
       return issueDeliveryAgentParentIds.orchestrator;

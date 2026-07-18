@@ -1,5 +1,6 @@
 import {
   LocalRunPathSegmentSchema,
+  LocalRunArtifactContentTypeSchema,
   LocalRunReadArtifactIdSchema,
   LocalRunReadDiagnosticSchema,
   LocalRunReadSummarySchema,
@@ -10,6 +11,7 @@ import {
   parseLocalRunList,
   parseLocalRunReadDiagnostic,
   parseRunId,
+  RunIdSchema,
   snapshotFromReplay,
   type LocalRunArtifactContentType,
   type LocalRunArtifactId,
@@ -27,6 +29,7 @@ import {
   makeRunStorePaths,
   type RunPaths,
   type RunStorageOptions,
+  type RuntimePath,
 } from "./paths.js";
 
 const decodeLocalRunArtifactId = Schema.decodeUnknownOption(
@@ -42,9 +45,14 @@ const encodeLocalRunArtifactId = Schema.encodeSync(
   LocalRunReadArtifactIdSchema
 );
 
-type ArtifactDefinition = {
-  readonly contentType: LocalRunArtifactContentType;
-  readonly path: (paths: RunPaths) => string;
+const ArtifactDefinitionDataSchema = Schema.Struct({
+  contentType: LocalRunArtifactContentTypeSchema,
+});
+
+type ArtifactDefinition = Schema.Schema.Type<
+  typeof ArtifactDefinitionDataSchema
+> & {
+  readonly path: (paths: RunPaths) => RuntimePath;
 };
 
 const artifactDefinitions: Readonly<
@@ -280,9 +288,20 @@ export function readLocalRunArtifact(
   });
 }
 
-type ParsedRunDirectoryName =
-  | { readonly _tag: "Failure"; readonly diagnostic: LocalRunReadDiagnostic }
-  | { readonly _tag: "Success"; readonly runId: RunId };
+const ParsedRunDirectoryNameSchema = Schema.Union([
+  Schema.Struct({
+    _tag: Schema.Literal("Failure"),
+    diagnostic: LocalRunReadDiagnosticSchema,
+  }),
+  Schema.Struct({
+    _tag: Schema.Literal("Success"),
+    runId: RunIdSchema,
+  }),
+]);
+
+type ParsedRunDirectoryName = Schema.Schema.Type<
+  typeof ParsedRunDirectoryNameSchema
+>;
 
 function parseRunDirectoryName(pathSegment: string): ParsedRunDirectoryName {
   const decodedPathSegment = Schema.decodeUnknownOption(

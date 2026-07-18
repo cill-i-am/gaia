@@ -6,6 +6,7 @@ import {
   projectHarnessEvents,
   replayRunEvents,
   snapshotFromReplay,
+  EventTypeSchema,
   type EventType,
   type HarnessEvent,
   type HarnessSessionId,
@@ -23,26 +24,46 @@ import {
 } from "effect";
 
 import { makeRuntimeError } from "./errors.js";
-import type { RunPaths } from "./paths.js";
+import type { RunPaths, RuntimePath } from "./paths.js";
 
-export type AppendEventInput = {
-  readonly payload?: Readonly<Record<string, Schema.Json>>;
-  readonly type: Exclude<EventType, "HARNESS_SESSION_EVENT_RECORDED">;
-};
+const AppendEventTypeSchema = EventTypeSchema.pipe(
+  Schema.refine(
+    (
+      eventType
+    ): eventType is Exclude<EventType, "HARNESS_SESSION_EVENT_RECORDED"> =>
+      eventType !== "HARNESS_SESSION_EVENT_RECORDED"
+  )
+);
 
-export type LoadedRunState = {
-  readonly events: ReadonlyArray<RunEvent>;
-  readonly latestSnapshot: RunSnapshot | undefined;
-};
+class AppendEventInputSchema extends Schema.Class<AppendEventInputSchema>(
+  "AppendEventInput"
+)({
+  payload: Schema.optionalKey(RunEvent.fields.payload),
+  type: AppendEventTypeSchema,
+}) {}
+
+export type AppendEventInput = AppendEventInputSchema;
+
+class LoadedRunStateSchema extends Schema.Class<LoadedRunStateSchema>(
+  "LoadedRunState"
+)({
+  events: Schema.Array(RunEvent),
+  latestSnapshot: Schema.UndefinedOr(RunSnapshot),
+}) {}
+
+export type LoadedRunState = LoadedRunStateSchema;
+
+const parseAppendEventInput = Schema.decodeUnknownSync(AppendEventInputSchema);
+const parseEventType = Schema.decodeUnknownSync(EventTypeSchema);
 
 type RunSubscriber = {
   overflowed: boolean;
   readonly queue: Queue.Queue<RunEvent>;
 };
-const runEventSemaphore = PartitionedSemaphore.makeUnsafe<string>({
+const runEventSemaphore = PartitionedSemaphore.makeUnsafe<RuntimePath>({
   permits: 1,
 });
-const runSubscribers = new Map<string, Set<RunSubscriber>>();
+const runSubscribers = new Map<RuntimePath, Set<RunSubscriber>>();
 
 /** Serialize sequence allocation, persistence, validation, and publication per run log. */
 export function withRunEventSerialization<A, E, R>(
@@ -69,10 +90,8 @@ export function appendEventWithinSerialization(
   input: AppendEventInput
 ) {
   return Effect.gen(function* () {
-    if (
-      (input as { readonly type: EventType }).type ===
-      "HARNESS_SESSION_EVENT_RECORDED"
-    ) {
+    const eventType = parseEventType(input.type);
+    if (eventType === "HARNESS_SESSION_EVENT_RECORDED") {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "UnsafeHarnessEventAppend",
@@ -82,23 +101,24 @@ export function appendEventWithinSerialization(
         })
       );
     }
+    const parsedInput = parseAppendEventInput(input);
     const existingEvents = yield* readEvents(paths);
     const sequence = existingEvents.length + 1;
     const timestamp = new Date().toISOString();
     const event =
-      input.payload === undefined
+      parsedInput.payload === undefined
         ? makeRunEvent({
             runId,
             sequence,
             timestamp,
-            type: input.type,
+            type: parsedInput.type,
           })
         : makeRunEvent({
-            payload: input.payload,
+            payload: parsedInput.payload,
             runId,
             sequence,
             timestamp,
-            type: input.type,
+            type: parsedInput.type,
           });
     const events = [...existingEvents, event];
     const snapshot = snapshotFromReplay(events);
@@ -286,7 +306,7 @@ function validateHarnessEventHistories(events: ReadonlyArray<RunEvent>): void {
   }
 }
 
-function appendJsonLine(path: string, value: unknown) {
+function appendJsonLine(path: RuntimePath, value: unknown) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(path, `${JSON.stringify(value)}\n`, {
@@ -295,7 +315,7 @@ function appendJsonLine(path: string, value: unknown) {
   });
 }
 
-function readOptionalFile(path: string) {
+function readOptionalFile(path: RuntimePath) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const exists = yield* fs.exists(path);
