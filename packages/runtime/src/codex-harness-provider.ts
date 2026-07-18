@@ -57,6 +57,11 @@ import {
   type HarnessSessionResume,
   type HarnessSessionStart,
 } from "./harness-session.js";
+import {
+  parseRunStorageRootInput,
+  parseRuntimePath,
+  RunStorageRootInputSchema,
+} from "./paths.js";
 
 /** Stable capabilities implemented by the initial Codex App Server adapter. */
 export const CodexHarnessCapabilities = HarnessCapabilities.make({
@@ -182,10 +187,11 @@ const correlationFileMaxBytes = 49_152;
 
 /** Durable adapter-private correlation store excluded from public run contracts. */
 export function makeFileCodexHarnessCorrelationStore(
-  rootDirectory: string
+  rootDirectory: typeof RunStorageRootInputSchema.Encoded
 ): CodexHarnessCorrelationStore {
+  const parsedRootDirectory = parseRunStorageRootInput(rootDirectory);
   const directory = path.join(
-    rootDirectory,
+    parsedRootDirectory,
     ".gaia",
     "private",
     "harness-correlations"
@@ -1098,8 +1104,15 @@ function mapApprovalDecision(
   }
 }
 
-function absoluteWorkspacePath(root: string, relativePath: string): string {
-  return path.resolve(root, relativePath === "." ? "" : relativePath);
+function absoluteWorkspacePath(
+  root: string,
+  relativePath:
+    | HarnessSessionStart["workspacePath"]
+    | HarnessSessionResume["workspacePath"]
+) {
+  return parseRuntimePath(
+    path.resolve(root, relativePath === "." ? "" : relativePath)
+  );
 }
 
 function availableCodexDetection(): HarnessDetection {

@@ -10,6 +10,7 @@ import {
   type CodexHarnessConfig,
 } from "./codex-harness.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import { parseRuntimePath } from "./paths.js";
 import { ReviewerSessionEvidence } from "./reviewer-session-evidence.js";
 import {
   ReviewFinding,
@@ -107,10 +108,9 @@ function runCodexReviewer(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const runRoot = path.dirname(request.resultPath);
-    const lastMessagePath = path.join(
-      runRoot,
-      `${request.phase}-codex-reviewer-last-message.md`
+    const runRoot = parseRuntimePath(path.dirname(request.resultPath));
+    const lastMessagePath = parseRuntimePath(
+      path.join(runRoot, `${request.phase}-codex-reviewer-last-message.md`)
     );
     const reviewerLogPath = path.join(
       runRoot,

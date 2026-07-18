@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import process from "node:process";
 import { promisify } from "node:util";
 
-import { RunIdSchema, WorkspaceRelativePathSchema } from "@gaia/core";
+import { RunEvent, RunIdSchema, WorkspaceRelativePathSchema } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
 import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
@@ -19,7 +19,11 @@ import {
   type CodexCommandOutputObservation,
 } from "./codex-harness.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
-import { RunRelativeArtifactPathSchema, RuntimePathSchema } from "./paths.js";
+import {
+  parseRuntimePath,
+  RunRelativeArtifactPathSchema,
+  RuntimePathSchema,
+} from "./paths.js";
 import {
   diffWorkspaceSnapshots,
   productOnlyWorkspaceDiff,
@@ -42,6 +46,9 @@ export const codexAppServerHarnessName = parseHarnessName("codexAppServer");
 
 const processHarnessMaxBufferBytes = 10 * 1024 * 1024;
 const harnessContractVersion = "1";
+const parseCodexHarnessTimestamp = Schema.decodeUnknownSync(
+  RunEvent.fields.timestamp
+);
 
 export const ProcessHarnessCommandSchema = Schema.NonEmptyString.pipe(
   Schema.brand("ProcessHarnessCommand")
@@ -267,17 +274,21 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const runner = options.commandRunner ?? nodeCodexCommandRunner;
-        const lastMessagePath = path.join(
-          path.dirname(request.workerResultPath),
-          "codex-last-message.md"
+        const lastMessagePath = parseRuntimePath(
+          path.join(
+            path.dirname(request.workerResultPath),
+            "codex-last-message.md"
+          )
         );
-        const startedAt = new Date().toISOString();
+        const startedAt = parseCodexHarnessTimestamp(new Date().toISOString());
         let progress = CodexHarnessProgress.make({
           command: options.config.command,
           cwd: request.workspacePath,
-          lastMessagePath: path.basename(lastMessagePath),
+          lastMessagePath: parseRuntimePath(path.basename(lastMessagePath)),
           observedOutputBytes: 0,
-          progressPath: path.basename(request.codexHarnessProgressPath),
+          progressPath: parseRuntimePath(
+            path.basename(request.codexHarnessProgressPath)
+          ),
           runId: request.runId,
           startedAt,
           status: "running",
@@ -294,7 +305,9 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
         const recordOutputProgress = (
           observation: CodexCommandOutputObservation
         ) => {
-          const observedAt = new Date().toISOString();
+          const observedAt = parseCodexHarnessTimestamp(
+            new Date().toISOString()
+          );
           progress = CodexHarnessProgress.make({
             command: progress.command,
             cwd: progress.cwd,
@@ -319,7 +332,9 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
           status: Exclude<CodexHarnessProgressStatus, "running">
         ) =>
           Effect.gen(function* () {
-            const updatedAt = new Date().toISOString();
+            const updatedAt = parseCodexHarnessTimestamp(
+              new Date().toISOString()
+            );
             progress = CodexHarnessProgress.make({
               command: progress.command,
               cwd: progress.cwd,

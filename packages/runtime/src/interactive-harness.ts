@@ -31,7 +31,14 @@ import {
   HarnessRunResult,
   type GaiaHarness,
 } from "./harness.js";
-import { makeRunPaths, type RunPaths, type RuntimePath } from "./paths.js";
+import {
+  makeRunPaths,
+  parseRunStorageRootInput,
+  RunStorageRootInputSchema,
+  type RunPaths,
+  type RunStorageRootInput,
+  type RuntimePath,
+} from "./paths.js";
 import {
   diffWorkspaceSnapshots,
   readWorkspaceSnapshot,
@@ -47,14 +54,15 @@ export function interactiveSessionHarness(input: {
   readonly expectedCheckpoint?: HarnessCheckpointToken;
   readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
   readonly provider?: HarnessProvider;
-  readonly rootDirectory: string;
+  readonly rootDirectory: typeof RunStorageRootInputSchema.Encoded;
 }): GaiaHarness {
+  const rootDirectory = parseRunStorageRootInput(input.rootDirectory);
   return {
     name: codexAppServerHarnessName,
     run: (request) =>
       Effect.gen(function* () {
         const paths = yield* makeRunPaths(request.runId, {
-          rootDirectory: input.rootDirectory,
+          rootDirectory,
         });
         const existing = yield* readEvents(paths);
         const sessionId = parseHarnessSessionId(`session-${request.runId}`);
@@ -114,7 +122,7 @@ export function interactiveSessionHarness(input: {
                         : { expectedCheckpoint: input.expectedCheckpoint }),
                       sessionId,
                       workspacePath: workspacePathFromRoot(
-                        input.rootDirectory,
+                        rootDirectory,
                         request.workspacePath
                       ),
                     },
@@ -127,7 +135,7 @@ export function interactiveSessionHarness(input: {
                       input: HarnessInput.make({ text: request.specBody }),
                       sessionId,
                       workspacePath: workspacePathFromRoot(
-                        input.rootDirectory,
+                        rootDirectory,
                         request.workspacePath
                       ),
                     },
@@ -314,7 +322,10 @@ function isTerminalSessionEvent(
   return event.kind === "turnCompleted" || event.kind === "sessionFailed";
 }
 
-function workspacePathFromRoot(rootDirectory: string, workspacePath: string) {
+function workspacePathFromRoot(
+  rootDirectory: RunStorageRootInput,
+  workspacePath: RuntimePath
+) {
   const relative = nodePath.relative(rootDirectory, workspacePath);
   return parseWorkspaceRelativePath(relative);
 }
