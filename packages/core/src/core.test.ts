@@ -1952,3 +1952,354 @@ function readyToPublishEvents(runId: ReturnType<typeof parseRunId>) {
     }),
   ];
 }
+
+describe("EvidencePromotion nested owner compatibility", () => {
+  it("preserves canonical raw and encoded contracts while rejecting malformed delivery identity", () => {
+    const canonicalHeadSha = "a".repeat(40);
+    const canonicalPullRequestUrl =
+      "https://github.com/cill-i-am/gaia/pull/123";
+    const fullRaw: typeof EvidencePromotion.Encoded = {
+      artifactPath: ".gaia/promoted/run-V7kP9sQ2xY/evidence-promotion.json",
+      cleanupStatus: "not-completed",
+      dogfood: {
+        artifactPath: "dogfood-retrospective.json",
+        findingCount: 1,
+        status: "c8-dogfood-sentinel",
+        summary: "One retained finding.",
+      },
+      generatedAt: "2026-07-17T05:30:00.000Z",
+      markdown:
+        "# Evidence Promotion run-V7kP9sQ2xY\n\nCanonical R5 projection.\n",
+      markdownPath: ".gaia/promoted/run-V7kP9sQ2xY/evidence-promotion.md",
+      promotionStatus: "pending-promotion",
+      pullRequest: {
+        artifactPaths: ["pr-checks.json", "pr-feedback.json"],
+        checksStatus: "c8-checks-sentinel",
+        feedbackStatus: "c8-feedback-sentinel",
+        headSha: canonicalHeadSha,
+        pr: "c8-selector-sentinel",
+        status: "promoted",
+        summary: "Canonical R5 PR evidence.",
+        url: canonicalPullRequestUrl,
+      },
+      reportPaths: {
+        dogfoodRetrospectivePath: "dogfood-retrospective.json",
+        reportJsonPath: "report.json",
+        reportMarkdownPath: "report.md",
+        workerPlanPath: "worker-plan.md",
+      },
+      runId: "run-V7kP9sQ2xY",
+      selectedEvidence: [
+        {
+          label: "Run report",
+          path: "report.md",
+          status: "pending-promotion",
+          summary: "Report selected before cleanup.",
+        },
+        {
+          label: "Skipped artifact",
+          status: "skipped",
+          summary: "No path was produced.",
+        },
+      ],
+      verification: {
+        checkedArtifacts: ["workspace/output.txt", "../retained/check.json"],
+        path: "verification-result.json",
+        status: "c8-verification-sentinel",
+      },
+      version: 1,
+    };
+    const sparseRaw: typeof EvidencePromotion.Encoded = {
+      artifactPath: ".gaia/promoted/run-V7kP9sQ2xY/evidence-promotion.json",
+      cleanupStatus: "not-completed",
+      dogfood: {
+        findingCount: 0,
+        status: "c8-dogfood-sentinel",
+        summary: "No dogfood artifact.",
+      },
+      generatedAt: "2026-07-17T05:31:00.000Z",
+      markdown: "# Evidence Promotion run-V7kP9sQ2xY\n",
+      markdownPath: ".gaia/promoted/run-V7kP9sQ2xY/evidence-promotion.md",
+      promotionStatus: "pending-promotion",
+      pullRequest: {
+        artifactPaths: [],
+        status: "skipped",
+        summary: "No PR evidence.",
+      },
+      reportPaths: {},
+      runId: "run-V7kP9sQ2xY",
+      selectedEvidence: [],
+      verification: {
+        checkedArtifacts: [],
+        status: "c8-verification-sentinel",
+      },
+      version: 1,
+    };
+    const makePromotion = (raw: typeof EvidencePromotion.Encoded) =>
+      EvidencePromotion.make({
+        ...raw,
+        dogfood: EvidencePromotionDogfoodSummary.make(raw.dogfood),
+        pullRequest: EvidencePromotionPullRequestSummary.make(raw.pullRequest),
+        reportPaths: EvidencePromotionReportPaths.make(raw.reportPaths),
+        runId: parseRunId(raw.runId),
+        selectedEvidence: raw.selectedEvidence.map((item) =>
+          PromotedEvidenceItem.make(item)
+        ),
+        verification: EvidencePromotionVerificationSummary.make(
+          raw.verification
+        ),
+      });
+    const encode = Schema.encodeSync(EvidencePromotion);
+    const encodeJson = Schema.encodeSync(Schema.toCodecJson(EvidencePromotion));
+    const madeFull = makePromotion(fullRaw);
+    const madeSparse = makePromotion(sparseRaw);
+    const parsedFull = parseEvidencePromotion(fullRaw);
+    const parsedSparse = parseEvidencePromotion(sparseRaw);
+    const encodedFull = encode(madeFull);
+    const encodedSparse = encode(madeSparse);
+
+    assert.deepEqual(encodedFull, fullRaw);
+    assert.deepEqual(encode(parsedFull), fullRaw);
+    assert.deepEqual(encodeJson(madeFull), fullRaw);
+    assert.deepEqual(JSON.parse(JSON.stringify(madeFull)), fullRaw);
+    assert.deepEqual(encodedSparse, sparseRaw);
+    assert.deepEqual(encode(parsedSparse), sparseRaw);
+    assert.deepEqual(encodeJson(madeSparse), sparseRaw);
+    assert.deepEqual(JSON.parse(JSON.stringify(madeSparse)), sparseRaw);
+    assert.deepEqual(Object.keys(encodedFull), [
+      "artifactPath",
+      "cleanupStatus",
+      "dogfood",
+      "generatedAt",
+      "markdown",
+      "markdownPath",
+      "promotionStatus",
+      "pullRequest",
+      "reportPaths",
+      "runId",
+      "selectedEvidence",
+      "verification",
+      "version",
+    ]);
+    assert.deepEqual(Object.keys(encodedFull.dogfood), [
+      "artifactPath",
+      "findingCount",
+      "status",
+      "summary",
+    ]);
+    assert.deepEqual(Object.keys(encodedFull.pullRequest), [
+      "artifactPaths",
+      "checksStatus",
+      "feedbackStatus",
+      "headSha",
+      "pr",
+      "status",
+      "summary",
+      "url",
+    ]);
+    assert.deepEqual(Object.keys(encodedFull.reportPaths), [
+      "dogfoodRetrospectivePath",
+      "reportJsonPath",
+      "reportMarkdownPath",
+      "workerPlanPath",
+    ]);
+    assert.deepEqual(Object.keys(encodedFull.selectedEvidence[0] ?? {}), [
+      "label",
+      "path",
+      "status",
+      "summary",
+    ]);
+    assert.deepEqual(Object.keys(encodedFull.selectedEvidence[1] ?? {}), [
+      "label",
+      "status",
+      "summary",
+    ]);
+    assert.deepEqual(Object.keys(encodedFull.verification), [
+      "checkedArtifacts",
+      "path",
+      "status",
+    ]);
+    assert.deepEqual(Object.keys(encodedSparse.pullRequest), [
+      "artifactPaths",
+      "status",
+      "summary",
+    ]);
+    assert.deepEqual(Object.keys(encodedSparse.reportPaths), []);
+    assert.deepEqual(Object.keys(encodedSparse.verification), [
+      "checkedArtifacts",
+      "status",
+    ]);
+    assert.deepEqual(
+      encodedFull.selectedEvidence.map((item) => item.label),
+      ["Run report", "Skipped artifact"]
+    );
+    assert.isTrue(
+      [
+        encodedFull.dogfood.artifactPath,
+        encodedFull.pullRequest.artifactPaths[0],
+        encodedFull.pullRequest.headSha,
+        encodedFull.pullRequest.url,
+        encodedFull.reportPaths.reportJsonPath,
+        encodedFull.selectedEvidence[0]?.path,
+        encodedFull.verification.checkedArtifacts[0],
+        encodedFull.verification.path,
+      ].every((value) => typeof value === "string")
+    );
+    assert.strictEqual(encodedFull.markdown, fullRaw.markdown);
+    assert.strictEqual(encodedFull.dogfood.status, "c8-dogfood-sentinel");
+    assert.strictEqual(
+      encodedFull.pullRequest.checksStatus,
+      "c8-checks-sentinel"
+    );
+    assert.strictEqual(
+      encodedFull.pullRequest.feedbackStatus,
+      "c8-feedback-sentinel"
+    );
+    assert.strictEqual(encodedFull.pullRequest.pr, "c8-selector-sentinel");
+    assert.strictEqual(
+      encodedFull.verification.status,
+      "c8-verification-sentinel"
+    );
+
+    for (const path of [
+      "report.md",
+      "../report.md",
+      " ",
+      "/absolute/report.json",
+      ".gaia/promoted/run-V7kP9sQ2xY/report.json",
+    ]) {
+      const selected = PromotedEvidenceItem.make({
+        label: "Path fixture",
+        path,
+        status: "promoted",
+        summary: "Path remains unchanged.",
+      });
+      const reportPaths = EvidencePromotionReportPaths.make({
+        dogfoodRetrospectivePath: path,
+        reportJsonPath: path,
+        reportMarkdownPath: path,
+        workerPlanPath: path,
+      });
+      const verification = EvidencePromotionVerificationSummary.make({
+        checkedArtifacts: [path],
+        path,
+        status: "c8-verification-sentinel",
+      });
+      const pullRequest = EvidencePromotionPullRequestSummary.make({
+        artifactPaths: [path],
+        status: "promoted",
+        summary: "Path remains unchanged.",
+      });
+      const dogfood = EvidencePromotionDogfoodSummary.make({
+        artifactPath: path,
+        findingCount: 0,
+        status: "c8-dogfood-sentinel",
+        summary: "Path remains unchanged.",
+      });
+
+      assert.strictEqual(parseRunReportArtifactPath(path), path);
+      assert.isTrue(
+        [
+          selected.path,
+          reportPaths.dogfoodRetrospectivePath,
+          reportPaths.reportJsonPath,
+          reportPaths.reportMarkdownPath,
+          reportPaths.workerPlanPath,
+          verification.checkedArtifacts[0],
+          verification.path,
+          pullRequest.artifactPaths[0],
+          dogfood.artifactPath,
+        ].every((nestedPath) => nestedPath === path)
+      );
+    }
+
+    const invalidNestedPathMakers = [
+      () =>
+        PromotedEvidenceItem.make({
+          label: "Invalid path",
+          path: "",
+          status: "promoted",
+          summary: "Invalid path.",
+        }),
+      () =>
+        EvidencePromotionReportPaths.make({
+          dogfoodRetrospectivePath: "",
+        }),
+      () => EvidencePromotionReportPaths.make({ reportJsonPath: "" }),
+      () => EvidencePromotionReportPaths.make({ reportMarkdownPath: "" }),
+      () => EvidencePromotionReportPaths.make({ workerPlanPath: "" }),
+      () =>
+        EvidencePromotionVerificationSummary.make({
+          checkedArtifacts: [""],
+          status: "c8-verification-sentinel",
+        }),
+      () =>
+        EvidencePromotionVerificationSummary.make({
+          checkedArtifacts: [],
+          path: "",
+          status: "c8-verification-sentinel",
+        }),
+      () =>
+        EvidencePromotionPullRequestSummary.make({
+          artifactPaths: [""],
+          status: "promoted",
+          summary: "Invalid path.",
+        }),
+      () =>
+        EvidencePromotionDogfoodSummary.make({
+          artifactPath: "",
+          findingCount: 0,
+          status: "c8-dogfood-sentinel",
+          summary: "Invalid path.",
+        }),
+    ];
+    for (const makeInvalidPath of invalidNestedPathMakers) {
+      assert.throws(makeInvalidPath);
+    }
+    for (const invalidPath of ["", 1, null, undefined]) {
+      assert.throws(() => parseRunReportArtifactPath(invalidPath));
+    }
+
+    assert.strictEqual(madeFull.pullRequest.headSha, canonicalHeadSha);
+    assert.strictEqual(madeFull.pullRequest.url, canonicalPullRequestUrl);
+    for (const headSha of [
+      "legacy-nonempty-sha",
+      "A".repeat(40),
+      "a".repeat(39),
+      "a".repeat(41),
+      "",
+    ]) {
+      assert.throws(() =>
+        EvidencePromotionPullRequestSummary.make({
+          ...fullRaw.pullRequest,
+          headSha,
+        })
+      );
+      assert.throws(() =>
+        parseEvidencePromotion({
+          ...fullRaw,
+          pullRequest: { ...fullRaw.pullRequest, headSha },
+        })
+      );
+    }
+    for (const url of [
+      "https://example.com/pull/123",
+      "https://github.com/cill-i-am/gaia/issues/123",
+      "https://github.com/cill-i-am/gaia/pull/0",
+      "",
+    ]) {
+      assert.throws(() =>
+        EvidencePromotionPullRequestSummary.make({
+          ...fullRaw.pullRequest,
+          url,
+        })
+      );
+      assert.throws(() =>
+        parseEvidencePromotion({
+          ...fullRaw,
+          pullRequest: { ...fullRaw.pullRequest, url },
+        })
+      );
+    }
+  });
+});

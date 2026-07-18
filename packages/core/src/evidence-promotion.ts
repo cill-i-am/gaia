@@ -1,5 +1,11 @@
 import * as Schema from "effect/Schema";
 
+import {
+  DeliveryGitShaPublicSchema,
+  DeliveryGitShaSchema,
+  GitHubPullRequestUrlPublicSchema,
+  GitHubPullRequestUrlSchema,
+} from "./delivery-identity.js";
 import { RunReportArtifactPathSchema } from "./report.js";
 import { RunIdSchema } from "./run-id.js";
 
@@ -25,53 +31,246 @@ export const EvidencePromotionCleanupStatusSchema = Schema.Literals([
 export type EvidencePromotionCleanupStatus =
   typeof EvidencePromotionCleanupStatusSchema.Type;
 
-export class PromotedEvidenceItem extends Schema.Class<PromotedEvidenceItem>(
-  "PromotedEvidenceItem"
-)({
+const PromotedEvidenceItemFields = {
   label: Schema.NonEmptyString,
-  path: Schema.optionalKey(Schema.NonEmptyString),
+  path: Schema.optionalKey(RunReportArtifactPathSchema.schema),
   status: EvidencePromotionStatusSchema,
   summary: Schema.NonEmptyString,
-}) {}
+};
+
+const PromotedEvidenceItemInputSchema = Schema.Struct(
+  PromotedEvidenceItemFields
+);
+
+export class PromotedEvidenceItem extends Schema.Class<PromotedEvidenceItem>(
+  "PromotedEvidenceItem"
+)(PromotedEvidenceItemFields) {
+  declare readonly path?: typeof RunReportArtifactPathSchema.Type;
+
+  constructor(
+    input: Schema.Schema.Type<typeof PromotedEvidenceItemInputSchema>,
+    options?: Schema.MakeOptions
+  ) {
+    super(
+      {
+        ...input,
+        ...(input.path === undefined
+          ? {}
+          : { path: RunReportArtifactPathSchema.make(input.path, options) }),
+      },
+      options
+    );
+  }
+}
+
+const EvidencePromotionReportPathsFields = {
+  dogfoodRetrospectivePath: Schema.optionalKey(
+    RunReportArtifactPathSchema.schema
+  ),
+  reportJsonPath: Schema.optionalKey(RunReportArtifactPathSchema.schema),
+  reportMarkdownPath: Schema.optionalKey(RunReportArtifactPathSchema.schema),
+  workerPlanPath: Schema.optionalKey(RunReportArtifactPathSchema.schema),
+};
+
+const EvidencePromotionReportPathsInputSchema = Schema.Struct(
+  EvidencePromotionReportPathsFields
+);
 
 export class EvidencePromotionReportPaths extends Schema.Class<EvidencePromotionReportPaths>(
   "EvidencePromotionReportPaths"
-)({
-  dogfoodRetrospectivePath: Schema.optionalKey(Schema.NonEmptyString),
-  reportJsonPath: Schema.optionalKey(Schema.NonEmptyString),
-  reportMarkdownPath: Schema.optionalKey(Schema.NonEmptyString),
-  workerPlanPath: Schema.optionalKey(Schema.NonEmptyString),
-}) {}
+)(EvidencePromotionReportPathsFields) {
+  declare readonly dogfoodRetrospectivePath?: typeof RunReportArtifactPathSchema.Type;
+  declare readonly reportJsonPath?: typeof RunReportArtifactPathSchema.Type;
+  declare readonly reportMarkdownPath?: typeof RunReportArtifactPathSchema.Type;
+  declare readonly workerPlanPath?: typeof RunReportArtifactPathSchema.Type;
+
+  constructor(
+    input: Schema.Schema.Type<
+      typeof EvidencePromotionReportPathsInputSchema
+    > = {},
+    options?: Schema.MakeOptions
+  ) {
+    super(
+      {
+        ...(input.dogfoodRetrospectivePath === undefined
+          ? {}
+          : {
+              dogfoodRetrospectivePath: RunReportArtifactPathSchema.make(
+                input.dogfoodRetrospectivePath,
+                options
+              ),
+            }),
+        ...(input.reportJsonPath === undefined
+          ? {}
+          : {
+              reportJsonPath: RunReportArtifactPathSchema.make(
+                input.reportJsonPath,
+                options
+              ),
+            }),
+        ...(input.reportMarkdownPath === undefined
+          ? {}
+          : {
+              reportMarkdownPath: RunReportArtifactPathSchema.make(
+                input.reportMarkdownPath,
+                options
+              ),
+            }),
+        ...(input.workerPlanPath === undefined
+          ? {}
+          : {
+              workerPlanPath: RunReportArtifactPathSchema.make(
+                input.workerPlanPath,
+                options
+              ),
+            }),
+      },
+      options
+    );
+  }
+}
+
+const EvidencePromotionVerificationSummaryFields = {
+  checkedArtifacts: Schema.Array(RunReportArtifactPathSchema.schema),
+  path: Schema.optionalKey(RunReportArtifactPathSchema.schema),
+  status: Schema.NonEmptyString,
+};
+
+const EvidencePromotionVerificationSummaryInputSchema = Schema.Struct(
+  EvidencePromotionVerificationSummaryFields
+);
 
 export class EvidencePromotionVerificationSummary extends Schema.Class<EvidencePromotionVerificationSummary>(
   "EvidencePromotionVerificationSummary"
-)({
-  checkedArtifacts: Schema.Array(Schema.NonEmptyString),
-  path: Schema.optionalKey(Schema.NonEmptyString),
-  status: Schema.NonEmptyString,
-}) {}
+)(EvidencePromotionVerificationSummaryFields) {
+  declare readonly checkedArtifacts: ReadonlyArray<
+    typeof RunReportArtifactPathSchema.Type
+  >;
+  declare readonly path?: typeof RunReportArtifactPathSchema.Type;
 
-export class EvidencePromotionPullRequestSummary extends Schema.Class<EvidencePromotionPullRequestSummary>(
-  "EvidencePromotionPullRequestSummary"
-)({
-  artifactPaths: Schema.Array(Schema.NonEmptyString),
+  constructor(
+    input: Schema.Schema.Type<
+      typeof EvidencePromotionVerificationSummaryInputSchema
+    >,
+    options?: Schema.MakeOptions
+  ) {
+    super(
+      {
+        checkedArtifacts: input.checkedArtifacts.map((artifactPath) =>
+          RunReportArtifactPathSchema.make(artifactPath, options)
+        ),
+        ...(input.path === undefined
+          ? {}
+          : {
+              path: RunReportArtifactPathSchema.make(input.path, options),
+            }),
+        status: input.status,
+      },
+      options
+    );
+  }
+}
+
+const EvidencePromotionPullRequestSummaryFields = {
+  artifactPaths: Schema.Array(RunReportArtifactPathSchema.schema),
   checksStatus: Schema.optionalKey(Schema.NonEmptyString),
   feedbackStatus: Schema.optionalKey(Schema.NonEmptyString),
-  headSha: Schema.optionalKey(Schema.NonEmptyString),
+  headSha: Schema.optionalKey(DeliveryGitShaPublicSchema),
   pr: Schema.optionalKey(Schema.NonEmptyString),
   status: EvidencePromotionStatusSchema,
   summary: Schema.NonEmptyString,
-  url: Schema.optionalKey(Schema.String),
-}) {}
+  url: Schema.optionalKey(GitHubPullRequestUrlPublicSchema),
+};
 
-export class EvidencePromotionDogfoodSummary extends Schema.Class<EvidencePromotionDogfoodSummary>(
-  "EvidencePromotionDogfoodSummary"
-)({
-  artifactPath: Schema.optionalKey(Schema.NonEmptyString),
+const EvidencePromotionPullRequestSummaryInputSchema = Schema.Struct(
+  EvidencePromotionPullRequestSummaryFields
+);
+
+export class EvidencePromotionPullRequestSummary extends Schema.Class<EvidencePromotionPullRequestSummary>(
+  "EvidencePromotionPullRequestSummary"
+)(EvidencePromotionPullRequestSummaryFields) {
+  declare readonly artifactPaths: ReadonlyArray<
+    typeof RunReportArtifactPathSchema.Type
+  >;
+  declare readonly headSha?: typeof DeliveryGitShaSchema.Type;
+  declare readonly url?: typeof GitHubPullRequestUrlSchema.Type;
+
+  constructor(
+    input: Schema.Schema.Type<
+      typeof EvidencePromotionPullRequestSummaryInputSchema
+    >,
+    options?: Schema.MakeOptions
+  ) {
+    super(
+      {
+        artifactPaths: input.artifactPaths.map((artifactPath) =>
+          RunReportArtifactPathSchema.make(artifactPath, options)
+        ),
+        ...(input.checksStatus === undefined
+          ? {}
+          : { checksStatus: input.checksStatus }),
+        ...(input.feedbackStatus === undefined
+          ? {}
+          : { feedbackStatus: input.feedbackStatus }),
+        ...(input.headSha === undefined
+          ? {}
+          : {
+              headSha: DeliveryGitShaSchema.make(input.headSha, options),
+            }),
+        ...(input.pr === undefined ? {} : { pr: input.pr }),
+        status: input.status,
+        summary: input.summary,
+        ...(input.url === undefined
+          ? {}
+          : {
+              url: GitHubPullRequestUrlSchema.make(input.url, options),
+            }),
+      },
+      options
+    );
+  }
+}
+
+const EvidencePromotionDogfoodSummaryFields = {
+  artifactPath: Schema.optionalKey(RunReportArtifactPathSchema.schema),
   findingCount: NonNegativeIntegerSchema,
   status: Schema.NonEmptyString,
   summary: Schema.NonEmptyString,
-}) {}
+};
+
+const EvidencePromotionDogfoodSummaryInputSchema = Schema.Struct(
+  EvidencePromotionDogfoodSummaryFields
+);
+
+export class EvidencePromotionDogfoodSummary extends Schema.Class<EvidencePromotionDogfoodSummary>(
+  "EvidencePromotionDogfoodSummary"
+)(EvidencePromotionDogfoodSummaryFields) {
+  declare readonly artifactPath?: typeof RunReportArtifactPathSchema.Type;
+
+  constructor(
+    input: Schema.Schema.Type<
+      typeof EvidencePromotionDogfoodSummaryInputSchema
+    >,
+    options?: Schema.MakeOptions
+  ) {
+    super(
+      {
+        ...(input.artifactPath === undefined
+          ? {}
+          : {
+              artifactPath: RunReportArtifactPathSchema.make(
+                input.artifactPath,
+                options
+              ),
+            }),
+        findingCount: input.findingCount,
+        status: input.status,
+        summary: input.summary,
+      },
+      options
+    );
+  }
+}
 
 const EvidencePromotionFields = {
   artifactPath: RunReportArtifactPathSchema,
