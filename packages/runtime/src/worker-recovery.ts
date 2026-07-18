@@ -4,7 +4,12 @@ import {
   parseHarnessEvent,
   parseWorkerRecoveryDigest,
   parseWorkerRecoveryReceipt,
+  DeliveryGitShaPublicSchema,
   encodeWorkerRecoveryReceiptJson,
+  HarnessExecutionSelection,
+  HarnessProfileIdSchema,
+  HarnessSessionIdSchema,
+  type RunEvent,
   type RunId,
   type WorkerRecoveryAction,
   type WorkerRecoveryDigest,
@@ -136,6 +141,18 @@ export class WorkerRecoveryConfig extends Schema.Class<WorkerRecoveryConfig>(
 
 const decodeWorkerRecoveryConfig =
   Schema.decodeUnknownSync(WorkerRecoveryConfig);
+const AcceptedWorkerRecoveryExecutionSchema = Schema.Struct({
+  selection: HarnessExecutionSelection,
+});
+const AcceptedWorkerRecoveryDeliverySchema = Schema.Struct({
+  baseRevision: DeliveryGitShaPublicSchema,
+});
+const decodeAcceptedWorkerRecoveryExecution = Schema.decodeUnknownOption(
+  AcceptedWorkerRecoveryExecutionSchema
+);
+const decodeAcceptedWorkerRecoveryDelivery = Schema.decodeUnknownOption(
+  AcceptedWorkerRecoveryDeliverySchema
+);
 
 type TrackedPayloadBinding = WorkerRecoveryWorkspaceValidation;
 
@@ -148,8 +165,8 @@ class PrivateWorkerRecoveryCheckpoint extends Schema.Class<PrivateWorkerRecovery
     expectedFailureSequence: Schema.Int.pipe(
       Schema.check(Schema.isGreaterThanOrEqualTo(1))
     ),
-    expectedSessionId: Schema.NonEmptyString,
-    harnessProfileId: Schema.NonEmptyString,
+    expectedSessionId: HarnessSessionIdSchema,
+    harnessProfileId: HarnessProfileIdSchema,
     model: WorkerRecoveryModelIdSchema,
     nativeTurnIdDigest: WorkerRecoveryDigestSchema,
     payloadDigest: WorkerRecoveryDigestSchema,
@@ -251,13 +268,10 @@ export function recoverWorkerSession(
           "A prior worker recovery generation is not terminal."
         );
       assertEligible(loaded.events, action, payloadDigest);
-      const accepted = loaded.events[0]?.payload["delivery"] as
-        | { baseRevision?: unknown }
-        | undefined;
-      const expectedHead =
-        typeof accepted?.baseRevision === "string"
-          ? accepted.baseRevision
-          : undefined;
+      const accepted = decodeAcceptedWorkerRecoveryDelivery(
+        loaded.events[0]?.payload["delivery"]
+      );
+      const expectedHead = Option.getOrUndefined(accepted)?.baseRevision;
       if (expectedHead === undefined)
         return yield* conflict("Accepted delivery base is unavailable.");
       const initialValidation =
@@ -387,11 +401,7 @@ function isSafeRecoveryThreadState(state: WorkerRecoveryThreadState) {
 }
 
 function assertEligible(
-  events: ReadonlyArray<{
-    readonly payload: Record<string, unknown>;
-    readonly sequence: number;
-    readonly type: string;
-  }>,
+  events: ReadonlyArray<RunEvent>,
   action: WorkerRecoveryAction,
   payloadDigest: WorkerRecoveryDigest
 ) {
@@ -406,9 +416,9 @@ function assertEligible(
     session === undefined
       ? undefined
       : parseHarnessEvent(session.payload["event"]);
-  const createdExecution = events[0]?.payload["execution"] as
-    | { selection?: { harnessProfileId?: unknown } }
-    | undefined;
+  const createdExecution = decodeAcceptedWorkerRecoveryExecution(
+    events[0]?.payload["execution"]
+  );
   const suffix = failureIndex < 0 ? [] : events.slice(failureIndex + 1);
   const suffixIsSameRecoveryGeneration = suffix.every((event) =>
     isSameRecoveryGenerationReceipt(event, action, payloadDigest)
@@ -424,7 +434,8 @@ function assertEligible(
     harness.failure.kind !== "providerFailure" ||
     !harness.failure.recoverable ||
     harness.sessionId !== action.expectedSessionId ||
-    createdExecution?.selection?.harnessProfileId !== action.harnessProfileId
+    Option.getOrUndefined(createdExecution)?.selection.harnessProfileId !==
+      action.harnessProfileId
   )
     throw makeRuntimeError({
       code: "DeliveryActionConflict",
@@ -434,7 +445,7 @@ function assertEligible(
 }
 
 function isSameRecoveryGenerationReceipt(
-  event: { readonly payload: Record<string, unknown>; readonly type: string },
+  event: RunEvent,
   action: WorkerRecoveryAction,
   payloadDigest: WorkerRecoveryDigest
 ) {
@@ -448,10 +459,7 @@ function isSameRecoveryGenerationReceipt(
 }
 
 function latestReceiptForFailure(
-  events: ReadonlyArray<{
-    readonly payload: Record<string, unknown>;
-    readonly type: string;
-  }>,
+  events: ReadonlyArray<RunEvent>,
   expectedFailureSequence: number
 ) {
   const event = [...events].reverse().find(({ payload, type }) => {
@@ -464,10 +472,7 @@ function latestReceiptForFailure(
     : parseWorkerRecoveryReceipt(event.payload["recovery"]);
 }
 function hasUnresolvedEarlierGeneration(
-  events: ReadonlyArray<{
-    readonly payload: Record<string, unknown>;
-    readonly type: string;
-  }>,
+  events: ReadonlyArray<RunEvent>,
   expectedFailureSequence: number
 ) {
   const latestByFailure = new Map<number, WorkerRecoveryReceipt>();

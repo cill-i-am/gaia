@@ -26,6 +26,7 @@ import {
   parseWorkerDesktopOriginCorrelationReceipt,
   parseWorkerRecoveryReceipt,
   ResolvedHarnessExecution,
+  RunIdSchema,
   snapshotFromReplay,
   type WorkerContinuationAction,
   type WorkerContinuationReceipt,
@@ -36,9 +37,10 @@ import {
   type GaiaFailure,
   type WorkerRecoveryAction,
   type WorkerRecoveryReceipt,
-  type RunEvent,
+  RunEvent,
   type RunId,
   type RunState,
+  WorkerRecoveryActionIdSchema,
 } from "@gaia/core";
 import {
   Effect,
@@ -101,6 +103,7 @@ import { interactiveSessionHarness } from "./interactive-harness.js";
 import {
   makeRunPaths,
   makeRunStorePaths,
+  RuntimePathSchema,
   type RunPaths,
   type RunStorageOptions,
 } from "./paths.js";
@@ -848,30 +851,49 @@ const decodeResolvedHarnessExecution = Schema.decodeUnknownSync(
   ResolvedHarnessExecution
 );
 
-export type ServerRunAcceptance = {
-  readonly acceptedAt: string;
-  readonly eventSequence: number;
-  readonly runDirectory: string;
-  readonly runId: RunId;
-};
+const ServerRunAcceptanceSchema = Schema.Struct({
+  acceptedAt: RunEvent.fields.timestamp,
+  eventSequence: RunEvent.fields.sequence,
+  runDirectory: RuntimePathSchema,
+  runId: RunIdSchema,
+});
+const ServerRunReconciliationSchema = Schema.Struct({
+  reconciledRunIds: Schema.Array(RunIdSchema),
+  resumableRunIds: Schema.Array(RunIdSchema),
+});
+const ServerRunSpecInputSchema = Schema.Struct({
+  specMarkdown: Schema.String,
+  title: Schema.optionalKey(Schema.UndefinedOr(Schema.String)),
+});
+const DeliveryPublicationActionSchema = Schema.Struct({
+  expectedEventSequence: RunEvent.fields.sequence,
+  kind: Schema.Literals(["reconcile", "retry"]),
+});
+const parseServerRunSpecInput = Schema.decodeUnknownSync(
+  ServerRunSpecInputSchema
+);
+const parseDeliveryPublicationAction = Schema.decodeUnknownSync(
+  DeliveryPublicationActionSchema
+);
 
-export type ServerRunReconciliation = {
-  readonly reconciledRunIds: ReadonlyArray<RunId>;
-  readonly resumableRunIds: ReadonlyArray<RunId>;
-};
+export type ServerRunAcceptance = typeof ServerRunAcceptanceSchema.Type;
+export type ServerRunReconciliation = typeof ServerRunReconciliationSchema.Type;
+type ServerRunSpecInput = typeof ServerRunSpecInputSchema.Type;
+type DeliveryPublicationAction = typeof DeliveryPublicationActionSchema.Type;
 
 export function acceptServerRun(
-  input: {
-    readonly specMarkdown: string;
-    readonly title?: string | undefined;
-  },
+  input: typeof ServerRunSpecInputSchema.Encoded,
   options: ServerWorkflowOptions = {}
 ) {
-  return withRunStoreLock(options, acceptServerRunUnlocked(input, options), {
-    nextSafeAction:
-      "Wait for the active Gaia server run acceptance to finish, then retry.",
-    operation: "Gaia server run acceptance",
-  }).pipe(Effect.mapError(toServerWorkflowError("ServerRunAcceptFailed")));
+  return withRunStoreLock(
+    options,
+    acceptServerRunUnlocked(parseServerRunSpecInput(input), options),
+    {
+      nextSafeAction:
+        "Wait for the active Gaia server run acceptance to finish, then retry.",
+      operation: "Gaia server run acceptance",
+    }
+  ).pipe(Effect.mapError(toServerWorkflowError("ServerRunAcceptFailed")));
 }
 
 export function acceptFactoryRun(
@@ -886,10 +908,7 @@ export function acceptFactoryRun(
 }
 
 function acceptServerRunUnlocked(
-  input: {
-    readonly specMarkdown: string;
-    readonly title?: string | undefined;
-  },
+  input: ServerRunSpecInput,
   options: ServerWorkflowOptions
 ): Effect.Effect<
   ServerRunAcceptance,
@@ -1317,12 +1336,11 @@ function continueServerRunWorkerOnly(
 
 export function actOnDeliveryPublication(
   runId: RunId,
-  action: {
-    readonly expectedEventSequence: number;
-    readonly kind: "reconcile" | "retry";
-  },
+  actionInput: typeof DeliveryPublicationActionSchema.Encoded,
   options: ServerWorkflowOptions = {}
 ) {
+  const action: DeliveryPublicationAction =
+    parseDeliveryPublicationAction(actionInput);
   return withRunStoreLock(
     options,
     Effect.gen(function* () {
@@ -2069,7 +2087,7 @@ const workerCorrelationFollowUpText =
 
 function workerCorrelationFollowUpClientInputId(
   runId: RunId,
-  actionId: string
+  actionId: typeof WorkerRecoveryActionIdSchema.Type
 ) {
   const digest = createHash("sha256")
     .update(
@@ -2275,10 +2293,7 @@ function reconcileInterruptedServerRunsUnlocked(
   });
 }
 
-function parseServerSpec(input: {
-  readonly specMarkdown: string;
-  readonly title?: string | undefined;
-}) {
+function parseServerSpec(input: ServerRunSpecInput) {
   return Effect.try({
     try: () =>
       parseMarkdownSpec(input.specMarkdown, input.title ?? "server-run"),
@@ -2723,7 +2738,7 @@ function canonicalDeliveryFeedbackTrustPolicy(
 
 function acceptedDeliveryProvenance(
   runId: RunId,
-  delivery: { readonly mode: "local" | "pullRequest" },
+  delivery: NonNullable<FactoryRunCreateInput["delivery"]>,
   options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {

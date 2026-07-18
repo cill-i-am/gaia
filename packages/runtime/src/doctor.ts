@@ -4,7 +4,12 @@ import { Effect, FileSystem, Path, Schema } from "effect";
 import { chromium } from "playwright";
 
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
-import { makeRunStorePaths, type RunStorageOptions } from "./paths.js";
+import {
+  makeRunStorePaths,
+  parseRuntimePath,
+  type RunStorageOptions,
+  type RuntimePath,
+} from "./paths.js";
 
 export const DoctorCheckNameSchema = Schema.Literals([
   "codex-cli",
@@ -88,7 +93,7 @@ export type DoctorOptions = RunStorageOptions & {
 /** Inspect local Gaia prerequisites without mutating external systems. */
 export function doctor(options: DoctorOptions = {}) {
   return Effect.gen(function* () {
-    const rootDirectory = options.rootDirectory ?? ".";
+    const rootDirectory = parseRuntimePath(options.rootDirectory ?? ".");
     const runner = options.commandRunner ?? nodeDoctorCommandRunner;
     const browserInspector =
       options.browserInspector ?? nodePlaywrightBrowserInspector;
@@ -179,7 +184,7 @@ function runDoctorCommand(
   );
 }
 
-function checkRunStoreWritable(rootDirectory: string) {
+function checkRunStoreWritable(rootDirectory: RuntimePath) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -210,7 +215,7 @@ function checkRunStoreWritable(rootDirectory: string) {
 }
 
 function checkGitRepository(
-  rootDirectory: string,
+  rootDirectory: RuntimePath,
   runner: DoctorCommandRunner
 ) {
   return runDoctorCommand(runner, {
@@ -235,7 +240,10 @@ function checkGitRepository(
   );
 }
 
-function checkGitHubAuth(rootDirectory: string, runner: DoctorCommandRunner) {
+function checkGitHubAuth(
+  rootDirectory: RuntimePath,
+  runner: DoctorCommandRunner
+) {
   return runDoctorCommand(runner, {
     args: ["auth", "status"],
     command: "gh",
@@ -258,7 +266,10 @@ function checkGitHubAuth(rootDirectory: string, runner: DoctorCommandRunner) {
   );
 }
 
-function checkGitWorktree(rootDirectory: string, runner: DoctorCommandRunner) {
+function checkGitWorktree(
+  rootDirectory: RuntimePath,
+  runner: DoctorCommandRunner
+) {
   return runDoctorCommand(runner, {
     args: ["worktree", "list", "--porcelain"],
     command: "git",
@@ -280,7 +291,10 @@ function checkGitWorktree(rootDirectory: string, runner: DoctorCommandRunner) {
   );
 }
 
-function checkCodexCli(rootDirectory: string, runner: DoctorCommandRunner) {
+function checkCodexCli(
+  rootDirectory: RuntimePath,
+  runner: DoctorCommandRunner
+) {
   return runDoctorCommand(runner, {
     args: ["--version"],
     command: "codex",
