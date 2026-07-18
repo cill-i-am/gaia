@@ -161,22 +161,23 @@ const getValueSymbolForEntityName = (checker, entityName) => {
   return symbol === undefined ? undefined : resolveAlias(checker, symbol);
 };
 
+const isCallableMember = (member) => {
+  if (
+    ts.isCallSignatureDeclaration(member) ||
+    ts.isConstructSignatureDeclaration(member) ||
+    ts.isMethodSignature(member)
+  ) {
+    return true;
+  }
+  return (
+    ts.isPropertySignature(member) &&
+    member.type !== undefined &&
+    ts.isFunctionTypeNode(member.type)
+  );
+};
+
 const isAllCallable = (members) =>
-  members.length > 0 &&
-  members.every((member) => {
-    if (
-      ts.isCallSignatureDeclaration(member) ||
-      ts.isConstructSignatureDeclaration(member) ||
-      ts.isMethodSignature(member)
-    ) {
-      return true;
-    }
-    return (
-      ts.isPropertySignature(member) &&
-      member.type !== undefined &&
-      ts.isFunctionTypeNode(member.type)
-    );
-  });
+  members.length > 0 && members.every(isCallableMember);
 
 const getPropertyName = (name) => {
   if (name === undefined) return undefined;
@@ -2739,6 +2740,112 @@ const getContractMembers = (declaration) => {
   return undefined;
 };
 
+const hasReadonlyModifier = (node) =>
+  node.modifiers?.some(
+    (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword
+  ) === true;
+
+const getDirectStructuralTypeDeclaration = (checker, sourceFile, reference) => {
+  if (
+    !ts.isTypeReferenceNode(reference) ||
+    !ts.isIdentifier(reference.typeName) ||
+    (reference.typeArguments?.length ?? 0) > 0
+  ) {
+    return undefined;
+  }
+  const symbol = checker.getSymbolAtLocation(reference.typeName);
+  if (symbol === undefined) return undefined;
+  const resolved = resolveAlias(checker, symbol);
+  const declarations = resolved.declarations?.filter(
+    (declaration) =>
+      declaration.getSourceFile() === sourceFile &&
+      (ts.isInterfaceDeclaration(declaration) ||
+        (ts.isTypeAliasDeclaration(declaration) &&
+          ts.isTypeLiteralNode(declaration.type)))
+  );
+  if (declarations?.length !== 1) return undefined;
+  const declaration = declarations[0];
+  if (
+    (declaration.typeParameters?.length ?? 0) > 0 ||
+    (ts.isInterfaceDeclaration(declaration) &&
+      (declaration.heritageClauses?.length ?? 0) > 0)
+  ) {
+    return undefined;
+  }
+  return declaration;
+};
+
+const hasCompilerStructuralReferenceCycle = (
+  checker,
+  sourceFile,
+  declaration,
+  active = new Set()
+) => {
+  if (active.has(declaration)) return true;
+  const members = getContractMembers(declaration);
+  if (members === undefined) return false;
+  const nextActive = new Set(active).add(declaration);
+  let cycle = false;
+  const visit = (node) => {
+    if (cycle) return;
+    if (ts.isTypeReferenceNode(node)) {
+      const target = getDirectStructuralTypeDeclaration(
+        checker,
+        sourceFile,
+        node
+      );
+      if (
+        target !== undefined &&
+        hasCompilerStructuralReferenceCycle(
+          checker,
+          sourceFile,
+          target,
+          nextActive
+        )
+      ) {
+        cycle = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  for (const member of members) visit(member);
+  return cycle;
+};
+
+const isCapabilityWrapperTypeAlias = (checker, sourceFile, declaration) => {
+  if (
+    !ts.isTypeLiteralNode(declaration.type) ||
+    (declaration.typeParameters?.length ?? 0) > 0 ||
+    declaration.type.members.length === 0
+  ) {
+    return false;
+  }
+  return declaration.type.members.every((member) => {
+    if (
+      !ts.isPropertySignature(member) ||
+      !hasReadonlyModifier(member) ||
+      member.questionToken === undefined ||
+      member.type === undefined
+    ) {
+      return false;
+    }
+    const target = getDirectStructuralTypeDeclaration(
+      checker,
+      sourceFile,
+      member.type
+    );
+    const members =
+      target === undefined ? undefined : getContractMembers(target);
+    return (
+      target !== undefined &&
+      target !== declaration &&
+      members?.some(isCallableMember) === true &&
+      !hasCompilerStructuralReferenceCycle(checker, sourceFile, target)
+    );
+  });
+};
+
 const isCanonicalXStateSetupMetadataReference = (checker, proof, reference) => {
   const typeReference = reference.parent;
   if (
@@ -3041,6 +3148,7 @@ export function analyzeSchemaContracts({
           ts.isTypeLiteralNode(node.type) &&
           !isAllCallable(node.type.members) &&
           !isFrameworkProps(checker, schemaProof, sourceFile, node) &&
+          !isCapabilityWrapperTypeAlias(checker, sourceFile, node) &&
           !exactXStateSetupMetadataAlias;
         const invalidXStateSetupMetadataAlias =
           xstateSetupMetadataAlias && !exactXStateSetupMetadataAlias;
