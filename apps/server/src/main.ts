@@ -8,13 +8,17 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import {
   codexAppServerHarnessProfileId,
+  DeliveryGitShaSchema,
   parseWorkerRecoveryDigest,
   parseWorkerRecoveryReceipt,
   parseWorkspaceRelativePath,
+  RunEvent,
+  RunIdSchema,
+  ServerMetadata,
+  WorkerRecoveryAction,
   WorkerRecoveryModelIdSchema,
   type HarnessDetection,
   type RunId,
-  type ServerMetadata,
   type WorkerRecoveryDigest,
 } from "@gaia/core";
 import {
@@ -43,6 +47,11 @@ import {
   makeRuntimeError,
   loadRun,
   parseDeliveryProvenance,
+  parseRunStorageRootInput,
+  parseRuntimePath,
+  RunPathsSchema,
+  RunStorageRootInputSchema,
+  RuntimePathSchema,
   type RunPaths,
   type CodexModelId,
   type CodexThreadId,
@@ -85,12 +94,40 @@ import {
   type LocalServerIdentity,
 } from "./discovery.js";
 
-export type ServerConfig = {
-  readonly host: "127.0.0.1";
-  readonly port: number;
-  readonly rootDirectory: string;
-  readonly testHarness: boolean;
-};
+const ServerConfigSchema = Schema.Struct({
+  host: ServerMetadata.fields.host,
+  port: ServerMetadata.fields.port,
+  rootDirectory: RunStorageRootInputSchema,
+  testHarness: Schema.Boolean,
+});
+const parseServerConfig = Schema.decodeUnknownSync(ServerConfigSchema);
+
+export type ServerConfig = typeof ServerConfigSchema.Encoded;
+
+const RunEventsSchema = Schema.Array(RunEvent);
+const AuditedWorkerWorkspaceOwnershipInputSchema = Schema.Struct({
+  events: RunEventsSchema,
+  paths: RunPathsSchema,
+  rootDirectory: RunStorageRootInputSchema,
+});
+const ValidateProductionWorkerRecoveryWorkspaceInputSchema = Schema.Struct({
+  action: WorkerRecoveryAction,
+  expectedHead: DeliveryGitShaSchema,
+  rootDirectory: RunStorageRootInputSchema,
+  runId: RunIdSchema,
+});
+const parseValidateProductionWorkerRecoveryWorkspaceInput =
+  Schema.decodeUnknownSync(
+    ValidateProductionWorkerRecoveryWorkspaceInputSchema
+  );
+const MakeServerIdentityInputSchema = Schema.Struct({
+  host: ServerMetadata.fields.host,
+  rootDirectory: RunStorageRootInputSchema,
+});
+const parseServerId = Schema.decodeUnknownSync(ServerMetadata.fields.serverId);
+const parseServerStartedAt = Schema.decodeUnknownSync(
+  ServerMetadata.fields.startedAt
+);
 
 export const defaultServerConfig = {
   host: "127.0.0.1",
@@ -105,11 +142,14 @@ export function runLocalGaiaServer(input: {
     | ((metadata: ServerMetadata) => Effect.Effect<void>)
     | undefined;
   readonly port?: number | undefined;
-  readonly rootDirectory?: string | undefined;
+  readonly rootDirectory?: typeof RunStorageRootInputSchema.Encoded | undefined;
 }): Effect.Effect<void, unknown> {
+  const rootDirectory = parseRunStorageRootInput(
+    input.rootDirectory ?? defaultServerConfig.rootDirectory
+  );
   const identity = makeServerIdentity({
     host: defaultServerConfig.host,
-    rootDirectory: input.rootDirectory ?? defaultServerConfig.rootDirectory,
+    rootDirectory,
   });
   const port = input.port ?? defaultServerConfig.port;
   const nodeLayer = NodeHttpServer.layer(createServer, {
@@ -120,7 +160,7 @@ export function runLocalGaiaServer(input: {
     Effect.gen(function* () {
       const production =
         input.harnessProviderRegistry === undefined
-          ? yield* makeProductionHarnessServices(identity.rootDirectory)
+          ? yield* makeProductionHarnessServices(rootDirectory)
           : undefined;
       const harnessProviderRegistry =
         input.harnessProviderRegistry ?? production!.registry;
@@ -178,7 +218,9 @@ export function runLocalGaiaServer(input: {
   ).pipe(Effect.provide(NodeServices.layer));
 }
 
-function makeProductionHarnessServices(rootDirectory: string) {
+function makeProductionHarnessServices(
+  rootDirectory: typeof RunStorageRootInputSchema.Type
+) {
   return Effect.gen(function* () {
     const connection = yield* makeCodexAppServerConnection({
       config: CodexAppServerSpawnConfig.make({ cwd: rootDirectory }),
@@ -382,18 +424,12 @@ function makeProductionHarnessServices(rootDirectory: string) {
                 digestStableNativeId(id) ===
                 input.action.expectedNativeTurnIdDigest
             );
-            return digestMatches.length === 1
-              ? { threadId: thread.id }
-              : undefined;
+            return digestMatches.length === 1 ? thread.id : undefined;
           })
         ).pipe(
           Effect.map((items) =>
             items.filter(
-              (
-                item
-              ): item is {
-                readonly threadId: ReturnType<typeof parseCodexThreadId>;
-              } => item !== undefined
+              (threadId): threadId is CodexThreadId => threadId !== undefined
             )
           )
         );
@@ -410,7 +446,7 @@ function makeProductionHarnessServices(rootDirectory: string) {
         }
         yield* correlationStore.save(
           input.action.expectedSessionId,
-          encodeCodexHarnessCorrelation(match.threadId)
+          encodeCodexHarnessCorrelation(match)
         );
       });
     const reconcileDesktopOriginCorrelation = (
@@ -533,28 +569,21 @@ function makeProductionHarnessServices(rootDirectory: string) {
   });
 }
 
-function workerWorkspacePath(
-  events: ReadonlyArray<{
-    readonly payload: Readonly<Record<string, unknown>>;
-    readonly type: string;
-  }>
-) {
+function workerWorkspacePath(events: typeof RunEventsSchema.Type) {
   const workspacePath = events.find(({ type }) => type === "WORKSPACE_PREPARED")
     ?.payload["workspacePath"];
   return typeof workspacePath === "string" ? workspacePath : undefined;
 }
 
 export function resolveAuditedWorkerWorkspacePath(input: {
-  readonly events: ReadonlyArray<{
-    readonly payload: Readonly<Record<string, unknown>>;
-    readonly type: string;
-  }>;
+  readonly events: typeof RunEventsSchema.Type;
   readonly inspectOwnership?:
     | (() => Effect.Effect<void, unknown, FileSystem.FileSystem>)
     | undefined;
   readonly paths: RunPaths;
-  readonly rootDirectory: string;
+  readonly rootDirectory: typeof RunStorageRootInputSchema.Encoded;
 }) {
+  const rootDirectory = parseRunStorageRootInput(input.rootDirectory);
   return Effect.gen(function* () {
     const rawWorkspacePath = workerWorkspacePath(input.events);
     if (
@@ -599,20 +628,20 @@ export function resolveAuditedWorkerWorkspacePath(input: {
 
     yield* (
       input.inspectOwnership ??
-      (() => inspectAuditedWorkerWorkspaceOwnership(input))
+      (() =>
+        inspectAuditedWorkerWorkspaceOwnership({
+          events: input.events,
+          paths: input.paths,
+          rootDirectory,
+        }))
     )().pipe(Effect.mapError(() => auditedWorkerWorkspacePathError()));
-    return canonicalWorkspace;
+    return parseRuntimePath(canonicalWorkspace);
   });
 }
 
-function inspectAuditedWorkerWorkspaceOwnership(input: {
-  readonly events: ReadonlyArray<{
-    readonly payload: Readonly<Record<string, unknown>>;
-    readonly type: string;
-  }>;
-  readonly paths: RunPaths;
-  readonly rootDirectory: string;
-}) {
+function inspectAuditedWorkerWorkspaceOwnership(
+  input: typeof AuditedWorkerWorkspaceOwnershipInputSchema.Type
+) {
   return Effect.gen(function* () {
     const provenance = parseDeliveryProvenance(
       input.events[0]?.payload["delivery"]
@@ -662,8 +691,9 @@ type StableCodexThreadClient = StableCodexThreadListClient &
 
 export function listStableCodexThreadsForWorkspace(
   client: StableCodexThreadListClient,
-  workspacePath: string
+  workspacePath: typeof RuntimePathSchema.Encoded
 ) {
+  const parsedWorkspacePath = parseRuntimePath(workspacePath);
   return Effect.gen(function* () {
     const byId = new Map<CodexThreadId, CodexListedThread>();
     for (const archived of [false, true] as const) {
@@ -673,7 +703,7 @@ export function listStableCodexThreadsForWorkspace(
         const page: ThreadListResult = yield* client.listThreads({
           archived,
           cursor,
-          cwd: workspacePath,
+          cwd: parsedWorkspacePath,
           limit: 100,
           sortDirection: "asc",
           sortKey: "created_at",
@@ -707,18 +737,19 @@ export function findStableDesktopOriginCorrelationThread(input: {
   readonly acceptedAtSeconds: number;
   readonly client: StableCodexThreadClient;
   readonly expectedDigest: WorkerRecoveryDigest;
-  readonly workspacePath: string;
+  readonly workspacePath: typeof RuntimePathSchema.Encoded;
 }) {
+  const workspacePath = parseRuntimePath(input.workspacePath);
   return Effect.gen(function* () {
     const stateDb = yield* listStableCodexThreadsForWorkspaceBySource(
       input.client,
-      input.workspacePath,
+      workspacePath,
       true,
       ["appServer", "vscode"]
     );
     const jsonl = yield* listStableCodexThreadsForWorkspaceBySource(
       input.client,
-      input.workspacePath,
+      workspacePath,
       false,
       ["appServer", "vscode"]
     );
@@ -727,7 +758,7 @@ export function findStableDesktopOriginCorrelationThread(input: {
     const latestAcceptedCandidate =
       input.acceptedAtSeconds + desktopOriginCorrelationAcceptedWindowSeconds;
     const candidateFilter = (thread: CodexListedThread) =>
-      thread.cwd === input.workspacePath &&
+      thread.cwd === workspacePath &&
       (thread.source === "appServer" || thread.source === "vscode") &&
       thread.createdAt >= earliestAcceptedCandidate &&
       thread.createdAt <= latestAcceptedCandidate;
@@ -817,7 +848,7 @@ export function findStableDesktopOriginCorrelationThread(input: {
 
 function listStableCodexThreadsForWorkspaceBySource(
   client: StableCodexThreadListClient,
-  workspacePath: string,
+  workspacePath: typeof RuntimePathSchema.Type,
   useStateDbOnly: boolean,
   sourceKinds: ReadonlyArray<"appServer" | "vscode">
 ) {
@@ -957,19 +988,18 @@ function workerRecoveryProviderError(
   });
 }
 
-export function validateProductionWorkerRecoveryWorkspace(input: {
-  readonly action: Parameters<typeof recoverWorkerSession>[1];
-  readonly expectedHead: string;
-  readonly rootDirectory: string;
-  readonly runId: RunId;
-}): Effect.Effect<
+export function validateProductionWorkerRecoveryWorkspace(
+  input: typeof ValidateProductionWorkerRecoveryWorkspaceInputSchema.Encoded
+): Effect.Effect<
   WorkerRecoveryWorkspaceValidationResult,
   WorkerRecoveryWorkspaceValidationError,
   FileSystem.FileSystem | Path.Path
 > {
+  const parsedInput =
+    parseValidateProductionWorkerRecoveryWorkspaceInput(input);
   return Effect.gen(function* () {
-    const paths = yield* makeRunPaths(input.runId, {
-      rootDirectory: input.rootDirectory,
+    const paths = yield* makeRunPaths(parsedInput.runId, {
+      rootDirectory: parsedInput.rootDirectory,
     });
     const loaded = yield* loadRun(paths);
     const provenance = parseDeliveryProvenance(
@@ -977,21 +1007,21 @@ export function validateProductionWorkerRecoveryWorkspace(input: {
     );
     if (
       provenance._tag === "None" ||
-      provenance.value.baseRevision !== input.expectedHead
+      provenance.value.baseRevision !== parsedInput.expectedHead
     ) {
       return yield* Effect.fail(
         new Error("Accepted delivery provenance changed.")
       );
     }
     const inspection = {
-      expectedHeads: [input.expectedHead],
-      options: { rootDirectory: input.rootDirectory },
+      expectedHeads: [parsedInput.expectedHead],
+      options: { rootDirectory: parsedInput.rootDirectory },
       paths,
       provenance: provenance.value,
     };
     const inspected = shouldAllowRetainedPayloadWorkerRecovery(
       loaded.events,
-      input.action
+      parsedInput.action
     )
       ? yield* inspectRetainedPayloadDeliveryWorktreeOwnership(inspection)
       : yield* inspectRecoverableDeliveryWorktreeOwnership(inspection);
@@ -1015,12 +1045,8 @@ export function validateProductionWorkerRecoveryWorkspace(input: {
 }
 
 function shouldAllowRetainedPayloadWorkerRecovery(
-  events: ReadonlyArray<{
-    readonly payload: Record<string, unknown>;
-    readonly sequence: number;
-    readonly type: string;
-  }>,
-  action: Parameters<typeof recoverWorkerSession>[1]
+  events: typeof RunEventsSchema.Type,
+  action: WorkerRecoveryAction
 ) {
   if (events.some(({ type }) => blocksRetainedPayloadWorkerRecovery(type)))
     return false;
@@ -1098,11 +1124,7 @@ function blocksRetainedPayloadWorkerRecovery(type: string) {
 }
 
 function findBoundWorkerRecoveryReceipt(
-  events: ReadonlyArray<{
-    readonly payload: Record<string, unknown>;
-    readonly sequence: number;
-    readonly type: string;
-  }>,
+  events: typeof RunEventsSchema.Type,
   action: Pick<
     | WorkerCorrelationReconciliationInput["action"]
     | WorkerDesktopOriginCorrelationInput["action"],
@@ -1170,24 +1192,23 @@ export function parseServerArgs(args: ReadonlyArray<string>): ServerConfig {
     }
   }
 
-  return {
+  return parseServerConfig({
     host: defaultServerConfig.host,
     port,
     rootDirectory,
     testHarness,
-  };
+  });
 }
 
-function makeServerIdentity(input: {
-  readonly host: "127.0.0.1";
-  readonly rootDirectory: string;
-}): LocalServerIdentity {
+function makeServerIdentity(
+  input: typeof MakeServerIdentityInputSchema.Type
+): LocalServerIdentity {
   return {
     host: input.host,
     pid: process.pid,
     rootDirectory: input.rootDirectory,
-    serverId: `srv_${randomUUID()}`,
-    startedAt: new Date().toISOString(),
+    serverId: parseServerId(`srv_${randomUUID()}`),
+    startedAt: parseServerStartedAt(new Date().toISOString()),
   };
 }
 

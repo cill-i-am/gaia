@@ -3,6 +3,8 @@ import {
   AgentSessionSnapshotSuccessEnvelope,
   makeAgentSessionSseEventId,
   DeliveryModeSchema,
+  DeliveryBranchNameSchema,
+  DeliveryGitShaSchema,
   DeliveryPublicationDto,
   DeliveryPublicationAttemptedDto,
   DeliveryPublicationConfirmedDto,
@@ -15,6 +17,7 @@ import {
   WorkerRecoveryFailureEvidence,
   encodeWorkerRecoveryFailureEvidenceJson,
   DeliveryStatusSchema,
+  DeliveryRemoteNameSchema,
   FactoryActivitySuccessEnvelope,
   CreateRunAcceptedResponse,
   FactoryArtifactListSuccessEnvelope,
@@ -46,6 +49,7 @@ import {
   type LocalRunReadDiagnostic,
   type RunId,
   RunEvent,
+  WorkerRecoveryActionIdSchema,
   parseDeliveryPublication,
   parseDeliveryPullRequestObservation,
   parseDeliveryRemediation,
@@ -78,6 +82,7 @@ import {
   dispatchAgentSessionAction,
   makeLiveHarnessSessionCoordinator,
   readAgentSessionSnapshot,
+  RunStorageRootInputSchema,
   streamAgentSessionUpdates,
   type LocalRunReadIndex,
 } from "@gaia/runtime";
@@ -154,9 +159,9 @@ type LocalServerConfigValue = LocalServerIdentity & {
 };
 
 type WorkerRecoveryFailureEvidenceWriter = (
-  rootDirectory: string,
+  rootDirectory: typeof RunStorageRootInputSchema.Encoded,
   runId: RunId,
-  actionId: string,
+  actionId: typeof WorkerRecoveryActionIdSchema.Type,
   error: LocalRunActionApiError
 ) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>;
 
@@ -213,9 +218,9 @@ const decodeLocalRunApiDiagnostic = Schema.decodeUnknownOption(
 );
 const decodeDeliveryProjection = Schema.decodeUnknownOption(
   Schema.Struct({
-    baseBranch: Schema.NonEmptyString,
-    baseRevision: Schema.NonEmptyString,
-    headBranch: Schema.NonEmptyString,
+    baseBranch: DeliveryBranchNameSchema,
+    baseRevision: DeliveryGitShaSchema,
+    headBranch: DeliveryBranchNameSchema,
     mode: DeliveryModeSchema,
     observation: Schema.optionalKey(Schema.Json),
     publication: Schema.optionalKey(Schema.Json),
@@ -223,7 +228,7 @@ const decodeDeliveryProjection = Schema.decodeUnknownOption(
     mergeDecision: Schema.optionalKey(Schema.Json),
     mergeDecisionSequence: Schema.optionalKey(Schema.Int),
     remediationRearmSequence: Schema.optionalKey(Schema.Int),
-    remote: Schema.NonEmptyString,
+    remote: DeliveryRemoteNameSchema,
     stage: DeliveryStatusSchema,
   })
 );
@@ -835,7 +840,7 @@ function readFactoryRunProjection(
 
 function readDeliverySnapshot(
   runId: RunId,
-  rootDirectory: string
+  rootDirectory: typeof RunStorageRootInputSchema.Encoded
 ): Effect.Effect<
   typeof DeliverySnapshotDto.Type,
   unknown,
@@ -864,7 +869,7 @@ function streamDeliveryUpdates(
   runId: RunId,
   afterSequence: number | undefined,
   options: {
-    readonly rootDirectory: string;
+    readonly rootDirectory: typeof RunStorageRootInputSchema.Encoded;
     readonly subscribeRunEventFeed: typeof subscribeRunEventFeed;
   }
 ): Effect.Effect<
@@ -1599,9 +1604,9 @@ function actionApiErrorFromCause(
 }
 
 function appendWorkerRecoveryFailureEvidence(
-  rootDirectory: string,
+  rootDirectory: typeof RunStorageRootInputSchema.Encoded,
   runId: RunId,
-  actionId: string,
+  actionId: typeof WorkerRecoveryActionIdSchema.Type,
   error: LocalRunActionApiError
 ) {
   return appendServerLog(
@@ -2107,24 +2112,33 @@ function forkServerContinuation(input: {
   );
 }
 
-type EventStreamState = {
-  readonly done: boolean;
-  readonly nextSequence: number;
-  readonly rootDirectory: string;
-  readonly runId: RunId;
-};
+class EventStreamState extends Schema.Class<EventStreamState>(
+  "EventStreamState"
+)({
+  done: Schema.Boolean,
+  nextSequence: RunEvent.fields.sequence,
+  rootDirectory: RunStorageRootInputSchema,
+  runId: RunEvent.fields.runId,
+}) {}
+const parseEventStreamState = Schema.decodeUnknownSync(EventStreamState);
 
-function streamRunEvents(input: {
-  readonly rootDirectory: string;
-  readonly runId: RunId;
-}) {
+const StreamRunEventsInputSchema = Schema.Struct({
+  rootDirectory: RunStorageRootInputSchema,
+  runId: RunEvent.fields.runId,
+});
+const parseStreamRunEventsInput = Schema.decodeUnknownSync(
+  StreamRunEventsInputSchema
+);
+
+function streamRunEvents(input: typeof StreamRunEventsInputSchema.Encoded) {
+  const parsedInput = parseStreamRunEventsInput(input);
   return Stream.unfold(
-    {
+    parseEventStreamState({
       done: false,
       nextSequence: 1,
-      rootDirectory: input.rootDirectory,
-      runId: input.runId,
-    } satisfies EventStreamState,
+      rootDirectory: parsedInput.rootDirectory,
+      runId: parsedInput.runId,
+    }),
     readNextStreamEvent
   );
 }
@@ -2155,11 +2169,11 @@ function readNextStreamEvent(
 
     const next: readonly [RunEvent, EventStreamState] = [
       event,
-      {
+      parseEventStreamState({
         ...state,
         done: isTerminalRunEvent(event),
         nextSequence: event.sequence + 1,
-      },
+      }),
     ];
 
     return next;
