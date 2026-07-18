@@ -54,6 +54,66 @@ tester.run(
       },
       {
         code: `
+          import { Effect, Schema } from "effect";
+
+          type ReviewRunRequest = unknown;
+          type ReviewResult = unknown;
+
+          class GaiaReviewerMetadata extends Schema.Class<GaiaReviewerMetadata>(
+            "GaiaReviewerMetadata"
+          )({ name: Schema.NonEmptyString }) {}
+
+          type GaiaReviewer = GaiaReviewerMetadata & {
+            readonly run: (
+              request: ReviewRunRequest
+            ) => Effect.Effect<ReviewResult>;
+          };
+
+          type ReviewerRunOptions = {
+            readonly reviewer?: GaiaReviewer;
+          };
+
+          class ReverseMetadata extends Schema.Class<ReverseMetadata>(
+            "ReverseMetadata"
+          )({ name: Schema.NonEmptyString }) {}
+
+          type ReverseCapability = {
+            readonly run: () => void;
+            readonly stop: () => void;
+          } & ReverseMetadata;
+
+          type ReverseCapabilityOptions = {
+            readonly capability?: ReverseCapability;
+          };
+        `,
+        filename: "schema-class-intersection-capability-wrapper.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          class Link {
+            constructor(next: Capability) {
+              void next;
+            }
+          }
+
+          type Capability = Metadata & {
+            readonly run: (link: Link) => void;
+          };
+
+          type Options = {
+            readonly capability?: Capability;
+          };
+        `,
+        filename: "ordinary-constructor-parameter-accepted.ts",
+      },
+      {
+        code: `
           type ConfirmationProps = {
             readonly children: ReactNode;
             readonly displayName?: string;
@@ -442,6 +502,441 @@ tester.run(
         `,
         errors: 3,
         filename: "generic-capability-wrappers.ts",
+      },
+      {
+        code: `
+          import type { ImportedMetadata } from "./imported-metadata.js";
+
+          declare const Schema: {
+            readonly Class: <Self>(name: string) => (
+              fields: Readonly<Record<string, unknown>>
+            ) => abstract new () => Self;
+            readonly NonEmptyString: unknown;
+          };
+
+          class CounterfeitMetadata extends Schema.Class<CounterfeitMetadata>(
+            "CounterfeitMetadata"
+          )({ name: Schema.NonEmptyString }) {}
+          class PlainMetadata {}
+          type ManualMetadata = { readonly name: string };
+
+          type ImportedCapability = ImportedMetadata & {
+            readonly run: () => void;
+          };
+          type CounterfeitCapability = CounterfeitMetadata & {
+            readonly run: () => void;
+          };
+          type PlainCapability = PlainMetadata & {
+            readonly run: () => void;
+          };
+          type ManualCapability = ManualMetadata & {
+            readonly run: () => void;
+          };
+
+          type ImportedOptions = {
+            readonly capability?: ImportedCapability;
+          };
+          type CounterfeitOptions = {
+            readonly capability?: CounterfeitCapability;
+          };
+          type PlainOptions = {
+            readonly capability?: PlainCapability;
+          };
+          type ManualOptions = {
+            readonly capability?: ManualCapability;
+          };
+        `,
+        errors: 6,
+        filename: "intersection-capability-provenance-rejections.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+
+          class AmbiguousMetadata extends Schema.Class<AmbiguousMetadata>(
+            "AmbiguousMetadata"
+          )({ name: Schema.NonEmptyString }) {}
+          interface AmbiguousMetadata {
+            readonly refresh: () => void;
+          }
+          type AmbiguousCapability = AmbiguousMetadata & {
+            readonly run: () => void;
+          };
+          type AmbiguousOptions = {
+            readonly capability?: AmbiguousCapability;
+          };
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "ambiguous-schema-class-intersection-wrapper.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          type CanonicalCapability = Metadata & {
+            readonly run: () => void;
+          };
+          type CapabilityAlias = CanonicalCapability;
+          type AliasedOptions = {
+            readonly capability?: CapabilityAlias;
+          };
+
+          type GenericCapability<Value> = Metadata & {
+            readonly run: (value: Value) => void;
+          };
+          type GenericOptions = {
+            readonly capability?: GenericCapability<string>;
+          };
+
+          type RecordCapability = Metadata & Record<string, () => void>;
+          type RecordOptions = {
+            readonly capability?: RecordCapability;
+          };
+
+          type MappedCapability = Metadata & {
+            readonly [Name in "run"]: () => void;
+          };
+          type MappedOptions = {
+            readonly capability?: MappedCapability;
+          };
+
+          type ConditionalCapability = Metadata & (
+            true extends true ? { readonly run: () => void } : never
+          );
+          type ConditionalOptions = {
+            readonly capability?: ConditionalCapability;
+          };
+
+          type NestedCapability = Metadata & (
+            { readonly run: () => void } & { readonly stop: () => void }
+          );
+          type NestedOptions = {
+            readonly capability?: NestedCapability;
+          };
+
+          type ThreeArmCapability = Metadata &
+            { readonly run: () => void } &
+            { readonly stop: () => void };
+          type ThreeArmOptions = {
+            readonly capability?: ThreeArmCapability;
+          };
+
+          type NoCallCapability = Metadata & unknown;
+          type NoCallIntersectionOptions = {
+            readonly capability?: NoCallCapability;
+          };
+
+          type MixedCapability = Metadata & {
+            readonly name: string;
+            readonly run: () => void;
+          };
+          type MixedIntersectionOptions = {
+            readonly capability?: MixedCapability;
+          };
+
+          type RequiredOptions = {
+            readonly capability: CanonicalCapability;
+          };
+          type MutableOptions = {
+            capability?: CanonicalCapability;
+          };
+          type DataBearingOptions = {
+            readonly capability?: CanonicalCapability;
+            readonly metadata?: Metadata;
+          };
+          type InlineIntersectionOptions = {
+            readonly capability?: Metadata & {
+              readonly run: () => void;
+            };
+          };
+        `,
+        errors: 14,
+        filename: "intersection-capability-shape-rejections.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          type DirectCycle = Metadata & {
+            readonly run: (next: DirectCycle) => void;
+          };
+          type DirectCycleOptions = {
+            readonly capability?: DirectCycle;
+          };
+
+          type IndirectCycle = Metadata & {
+            readonly run: (next: IndirectLink) => void;
+          };
+          type IndirectLink = IndirectCycle;
+          type IndirectCycleOptions = {
+            readonly capability?: IndirectCycle;
+          };
+
+          type UnresolvedCapability = UnknownMetadata & {
+            readonly run: () => void;
+          };
+          type UnresolvedOptions = {
+            readonly capability?: UnresolvedCapability;
+          };
+        `,
+        errors: 3,
+        filename: "intersection-capability-cycle-rejections.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          type UnresolvedCallableCapability = Metadata & {
+            readonly run: (request: MissingRequest) => void;
+          };
+          type UnresolvedCallableOptions = {
+            readonly capability?: UnresolvedCallableCapability;
+          };
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "unresolved-callable-capability.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          type QualifiedCapability = Metadata & {
+            readonly run: (request: Missing.Request) => void;
+          };
+          type QualifiedOptions = {
+            readonly capability?: QualifiedCapability;
+          };
+
+          class CycleLink {
+            next!: CyclicCapability;
+          }
+          type CyclicCapability = Metadata & {
+            readonly run: (link: CycleLink) => void;
+          };
+          type CyclicOptions = {
+            readonly capability?: CyclicCapability;
+          };
+        `,
+        errors: [
+          {
+            column: 16,
+            line: 11,
+            messageId: "schemaFirst",
+            type: "Identifier",
+          },
+          {
+            column: 16,
+            line: 21,
+            messageId: "schemaFirst",
+            type: "Identifier",
+          },
+        ],
+        filename: "qualified-and-class-mediated-callable-rejections.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          class CycleLink {
+            next(): CyclicCapability {
+              throw new Error();
+            }
+          }
+
+          type CyclicCapability = Metadata & {
+            readonly run: (link: CycleLink) => void;
+          };
+
+          type CyclicOptions = {
+            readonly capability?: CyclicCapability;
+          };
+
+          namespace Links {
+            export type Cycle = NamespaceCyclicCapability;
+          }
+
+          type NamespaceCyclicCapability = Metadata & {
+            readonly run: (link: Links.Cycle) => void;
+          };
+
+          type NamespaceCyclicOptions = {
+            readonly capability?: NamespaceCyclicCapability;
+          };
+        `,
+        errors: [
+          {
+            column: 16,
+            line: 18,
+            messageId: "schemaFirst",
+            type: "Identifier",
+          },
+          {
+            column: 16,
+            line: 30,
+            messageId: "schemaFirst",
+            type: "Identifier",
+          },
+        ],
+        filename: "method-and-namespace-cycle-rejections.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          class GetterLink {
+            get next(): GetterCapability {
+              throw new Error();
+            }
+          }
+          type GetterCapability = Metadata & {
+            readonly run: (link: GetterLink) => void;
+          };
+          type GetterOptions = {
+            readonly capability?: GetterCapability;
+          };
+
+          class SetterLink {
+            set next(value: SetterCapability) {}
+          }
+          type SetterCapability = Metadata & {
+            readonly run: (link: SetterLink) => void;
+          };
+          type SetterOptions = {
+            readonly capability?: SetterCapability;
+          };
+
+          class ConstraintLink {
+            next<Value extends ConstraintCapability>(): void {}
+          }
+          type ConstraintCapability = Metadata & {
+            readonly run: (link: ConstraintLink) => void;
+          };
+          type ConstraintOptions = {
+            readonly capability?: ConstraintCapability;
+          };
+
+          class DefaultLink {
+            next<Value = DefaultCapability>(): void {}
+          }
+          type DefaultCapability = Metadata & {
+            readonly run: (link: DefaultLink) => void;
+          };
+          type DefaultOptions = {
+            readonly capability?: DefaultCapability;
+          };
+
+          namespace Links {
+            export type Request = string;
+          }
+
+          type NamespaceCapability = Metadata & {
+            readonly run: (request: Links.Request) => void;
+          };
+          type NamespaceOptions = {
+            readonly capability?: NamespaceCapability;
+          };
+        `,
+        errors: [
+          {
+            column: 16,
+            line: 16,
+            messageId: "schemaFirst",
+            type: "Identifier",
+          },
+          {
+            column: 16,
+            line: 26,
+            messageId: "schemaFirst",
+            type: "Identifier",
+          },
+          {
+            column: 16,
+            line: 36,
+            messageId: "schemaFirst",
+            type: "Identifier",
+          },
+          {
+            column: 16,
+            line: 46,
+            messageId: "schemaFirst",
+            type: "Identifier",
+          },
+          {
+            column: 16,
+            line: 57,
+            messageId: "schemaFirst",
+            type: "Identifier",
+          },
+        ],
+        filename: "accessor-generic-and-local-namespace-rejections.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          class ParameterPropertyLink {
+            constructor(readonly next: ParameterPropertyCapability) {}
+          }
+          type ParameterPropertyCapability = Metadata & {
+            readonly run: (link: ParameterPropertyLink) => void;
+          };
+          type ParameterPropertyOptions = {
+            readonly capability?: ParameterPropertyCapability;
+          };
+
+          abstract class AbstractMethodLink {
+            abstract next(value: AbstractMethodCapability): void;
+          }
+          type AbstractMethodCapability = Metadata & {
+            readonly run: (link: AbstractMethodLink) => void;
+          };
+          type AbstractMethodOptions = {
+            readonly capability?: AbstractMethodCapability;
+          };
+        `,
+        errors: [
+          {
+            column: 16,
+            line: 14,
+            messageId: "schemaFirst",
+            type: "Identifier",
+          },
+          {
+            column: 16,
+            line: 24,
+            messageId: "schemaFirst",
+            type: "Identifier",
+          },
+        ],
+        filename: "parameter-property-and-abstract-method-rejections.ts",
       },
       {
         code: `
