@@ -1066,7 +1066,11 @@ try {
     }
   };
 
-  const analyzeCoreProject = async (prefix, files) => {
+  const analyzeCoreProject = async (
+    prefix,
+    files,
+    expectedTypeDiagnosticMessages = []
+  ) => {
     const isolatedRoot = await mkdtemp(
       path.join(repoRoot, "packages/core/node_modules", prefix)
     );
@@ -1108,8 +1112,8 @@ try {
         ].map((diagnostic) =>
           ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")
         ),
-        [],
-        "core-owned fixtures must type-check against installed dependencies"
+        expectedTypeDiagnosticMessages,
+        "core-owned fixtures must have exactly the expected type diagnostics"
       );
       return analyzeSchemaContracts({
         cwd: isolatedRoot,
@@ -1120,6 +1124,597 @@ try {
       await rm(isolatedRoot, { force: true, recursive: true });
     }
   };
+
+  const intersectionCapabilityWrapperDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-intersection-capability-wrapper-",
+    [
+      [
+        "intersection-capability-wrapper.ts",
+        `
+          import { Effect, Schema } from "effect";
+
+          type ReviewRunRequest = unknown;
+          type ReviewResult = unknown;
+
+          class GaiaReviewerMetadata extends Schema.Class<GaiaReviewerMetadata>(
+            "GaiaReviewerMetadata"
+          )({ name: Schema.NonEmptyString }) {}
+
+          type GaiaReviewer = GaiaReviewerMetadata & {
+            readonly run: (
+              request: ReviewRunRequest
+            ) => Effect.Effect<ReviewResult>;
+          };
+
+          type ReviewerRunOptions = {
+            readonly reviewer?: GaiaReviewer;
+          };
+
+          class ReverseMetadata extends Schema.Class<ReverseMetadata>(
+            "ReverseMetadata"
+          )({ name: Schema.NonEmptyString }) {}
+
+          type ReverseCapability = {
+            readonly run: () => void;
+            readonly stop: () => void;
+          } & ReverseMetadata;
+
+          type ReverseCapabilityOptions = {
+            readonly capability?: ReverseCapability;
+          };
+        `,
+      ],
+    ]
+  );
+  assert.deepEqual(
+    intersectionCapabilityWrapperDiagnostics,
+    [],
+    "an exact optional readonly wrapper may carry a local Schema.Class metadata and direct callable intersection"
+  );
+
+  const intersectionCapabilityProvenanceDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-intersection-capability-provenance-",
+    [
+      [
+        "imported-metadata.ts",
+        `
+            import { Schema } from "effect";
+            export class ImportedMetadata extends Schema.Class<ImportedMetadata>(
+              "ImportedMetadata"
+            )({ name: Schema.NonEmptyString }) {}
+          `,
+      ],
+      [
+        "imported-wrapper.ts",
+        `
+            import type { ImportedMetadata } from "./imported-metadata.js";
+            type ImportedCapability = ImportedMetadata & {
+              readonly run: () => void;
+            };
+            type ImportedOptions = {
+              readonly capability?: ImportedCapability;
+            };
+          `,
+      ],
+      [
+        "counterfeit-effect.ts",
+        `
+            export const Schema = {
+              NonEmptyString: "",
+              Class:
+                <Self>(_name: string) =>
+                (_fields: Readonly<Record<string, unknown>>) =>
+                  class {},
+            };
+          `,
+      ],
+      [
+        "counterfeit-wrapper.ts",
+        `
+            import { Schema } from "./counterfeit-effect.js";
+            class CounterfeitMetadata extends Schema.Class<CounterfeitMetadata>(
+              "CounterfeitMetadata"
+            )({ name: Schema.NonEmptyString }) {}
+            type CounterfeitCapability = CounterfeitMetadata & {
+              readonly run: () => void;
+            };
+            type CounterfeitOptions = {
+              readonly capability?: CounterfeitCapability;
+            };
+          `,
+      ],
+      [
+        "local-provenance-rejections.ts",
+        `
+            import { Schema } from "effect";
+
+            class PlainMetadata {}
+            type ManualMetadata = { readonly name: string };
+            class AmbiguousMetadata extends Schema.Class<AmbiguousMetadata>(
+              "AmbiguousMetadata"
+            )({ name: Schema.NonEmptyString }) {}
+            interface AmbiguousMetadata {
+              readonly refresh: () => void;
+            }
+
+            type PlainCapability = PlainMetadata & {
+              readonly run: () => void;
+            };
+            type ManualCapability = ManualMetadata & {
+              readonly run: () => void;
+            };
+            type AmbiguousCapability = AmbiguousMetadata & {
+              readonly run: () => void;
+            };
+
+            type PlainOptions = {
+              readonly capability?: PlainCapability;
+            };
+            type ManualOptions = {
+              readonly capability?: ManualCapability;
+            };
+            type AmbiguousOptions = {
+              readonly capability?: AmbiguousCapability;
+            };
+          `,
+      ],
+    ]
+  );
+  assert.deepEqual(
+    intersectionCapabilityProvenanceDiagnostics.reduce((counts, diagnostic) => {
+      counts[diagnostic.filePath] = (counts[diagnostic.filePath] ?? 0) + 1;
+      return counts;
+    }, {}),
+    {
+      "counterfeit-wrapper.ts": 1,
+      "imported-wrapper.ts": 1,
+      "local-provenance-rejections.ts": 4,
+    },
+    "imported, counterfeit, plain, manual, and ambiguous metadata provenance must fail closed"
+  );
+
+  const intersectionCapabilityShapeDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-intersection-capability-shapes-",
+    [
+      [
+        "intersection-shape-rejections.ts",
+        `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          type CanonicalCapability = Metadata & {
+            readonly run: () => void;
+          };
+          type CapabilityAlias = CanonicalCapability;
+          type AliasedOptions = {
+            readonly capability?: CapabilityAlias;
+          };
+
+          type GenericCapability<Value> = Metadata & {
+            readonly run: (value: Value) => void;
+          };
+          type GenericOptions = {
+            readonly capability?: GenericCapability<string>;
+          };
+
+          type RecordCapability = Metadata & Record<string, () => void>;
+          type RecordOptions = {
+            readonly capability?: RecordCapability;
+          };
+
+          type MappedCapability = Metadata & {
+            readonly [Name in "run"]: () => void;
+          };
+          type MappedOptions = {
+            readonly capability?: MappedCapability;
+          };
+
+          type ConditionalCapability = Metadata & (
+            true extends true ? { readonly run: () => void } : never
+          );
+          type ConditionalOptions = {
+            readonly capability?: ConditionalCapability;
+          };
+
+          type NestedCapability = Metadata & (
+            { readonly run: () => void } & { readonly stop: () => void }
+          );
+          type NestedOptions = {
+            readonly capability?: NestedCapability;
+          };
+
+          type ThreeArmCapability = Metadata &
+            { readonly run: () => void } &
+            { readonly stop: () => void };
+          type ThreeArmOptions = {
+            readonly capability?: ThreeArmCapability;
+          };
+
+          type NoCallCapability = Metadata & unknown;
+          type NoCallIntersectionOptions = {
+            readonly capability?: NoCallCapability;
+          };
+
+          type MixedCapability = Metadata & {
+            readonly name: string;
+            readonly run: () => void;
+          };
+          type MixedIntersectionOptions = {
+            readonly capability?: MixedCapability;
+          };
+
+          type RequiredOptions = {
+            readonly capability: CanonicalCapability;
+          };
+          type MutableOptions = {
+            capability?: CanonicalCapability;
+          };
+          type DataBearingOptions = {
+            readonly capability?: CanonicalCapability;
+            readonly metadata?: Metadata;
+          };
+          type InlineIntersectionOptions = {
+            readonly capability?: Metadata & {
+              readonly run: () => void;
+            };
+          };
+        `,
+      ],
+    ]
+  );
+  assert.equal(
+    intersectionCapabilityShapeDiagnostics.length,
+    13,
+    "aliased, generic, Record, mapped, conditional, nested, third-arm, non-callable, mixed, required, mutable, data-bearing, and inline intersection wrappers must report"
+  );
+
+  const intersectionCapabilityCycleDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-intersection-capability-cycles-",
+    [
+      [
+        "intersection-cycle-rejections.ts",
+        `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          type DirectCycle = Metadata & {
+            readonly run: (next: DirectCycle) => void;
+          };
+          type DirectCycleOptions = {
+            readonly capability?: DirectCycle;
+          };
+
+          type IndirectCycle = Metadata & {
+            readonly run: (next: IndirectLink) => void;
+          };
+          type IndirectLink = IndirectCycle;
+          type IndirectCycleOptions = {
+            readonly capability?: IndirectCycle;
+          };
+        `,
+      ],
+    ]
+  );
+  assert.equal(
+    intersectionCapabilityCycleDiagnostics.length,
+    2,
+    "direct and same-file indirect callable intersection cycles must fail closed"
+  );
+
+  const unresolvedCallableCapabilityDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-unresolved-callable-capability-",
+    [
+      [
+        "unresolved-callable-capability.ts",
+        `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          type UnresolvedCallableCapability = Metadata & {
+            readonly run: (request: MissingRequest) => void;
+          };
+          type UnresolvedCallableOptions = {
+            readonly capability?: UnresolvedCallableCapability;
+          };
+        `,
+      ],
+    ],
+    ["Cannot find name 'MissingRequest'."]
+  );
+  assert.equal(
+    unresolvedCallableCapabilityDiagnostics.length,
+    1,
+    "an unresolved callable-arm identifier must fail closed"
+  );
+
+  const unresolvedAndClassMediatedDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-qualified-and-class-mediated-",
+    [
+      [
+        "qualified-and-class-mediated.ts",
+        `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          type QualifiedCapability = Metadata & {
+            readonly run: (request: Missing.Request) => void;
+          };
+          type QualifiedOptions = {
+            readonly capability?: QualifiedCapability;
+          };
+
+          class CycleLink {
+            next!: CyclicCapability;
+          }
+          type CyclicCapability = Metadata & {
+            readonly run: (link: CycleLink) => void;
+          };
+          type CyclicOptions = {
+            readonly capability?: CyclicCapability;
+          };
+        `,
+      ],
+    ],
+    ["Cannot find namespace 'Missing'."]
+  );
+  assert.deepEqual(
+    unresolvedAndClassMediatedDiagnostics,
+    [
+      schemaDiagnostic("qualified-and-class-mediated.ts", 11, 16),
+      schemaDiagnostic("qualified-and-class-mediated.ts", 21, 16),
+    ],
+    "unresolved qualified and class-mediated callable arms must report their exact wrappers"
+  );
+
+  const methodAndNamespaceCycleDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-method-and-namespace-cycles-",
+    [
+      [
+        "method-and-namespace-cycle-rejections.ts",
+        `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          class CycleLink {
+            next(): CyclicCapability {
+              throw new Error();
+            }
+          }
+
+          type CyclicCapability = Metadata & {
+            readonly run: (link: CycleLink) => void;
+          };
+
+          type CyclicOptions = {
+            readonly capability?: CyclicCapability;
+          };
+
+          namespace Links {
+            export type Cycle = NamespaceCyclicCapability;
+          }
+
+          type NamespaceCyclicCapability = Metadata & {
+            readonly run: (link: Links.Cycle) => void;
+          };
+
+          type NamespaceCyclicOptions = {
+            readonly capability?: NamespaceCyclicCapability;
+          };
+        `,
+      ],
+    ]
+  );
+  assert.deepEqual(
+    methodAndNamespaceCycleDiagnostics,
+    [
+      schemaDiagnostic("method-and-namespace-cycle-rejections.ts", 18, 16),
+      schemaDiagnostic("method-and-namespace-cycle-rejections.ts", 30, 16),
+    ],
+    "instance-method and namespace-qualified cycles must report their exact wrappers"
+  );
+
+  const accessorGenericAndLocalNamespaceDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-accessor-generic-local-namespace-",
+    [
+      [
+        "accessor-generic-and-local-namespace-rejections.ts",
+        `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          class GetterLink {
+            get next(): GetterCapability {
+              throw new Error();
+            }
+          }
+          type GetterCapability = Metadata & {
+            readonly run: (link: GetterLink) => void;
+          };
+          type GetterOptions = {
+            readonly capability?: GetterCapability;
+          };
+
+          class SetterLink {
+            set next(value: SetterCapability) {}
+          }
+          type SetterCapability = Metadata & {
+            readonly run: (link: SetterLink) => void;
+          };
+          type SetterOptions = {
+            readonly capability?: SetterCapability;
+          };
+
+          class ConstraintLink {
+            next<Value extends ConstraintCapability>(): void {}
+          }
+          type ConstraintCapability = Metadata & {
+            readonly run: (link: ConstraintLink) => void;
+          };
+          type ConstraintOptions = {
+            readonly capability?: ConstraintCapability;
+          };
+
+          class DefaultLink {
+            next<Value = DefaultCapability>(): void {}
+          }
+          type DefaultCapability = Metadata & {
+            readonly run: (link: DefaultLink) => void;
+          };
+          type DefaultOptions = {
+            readonly capability?: DefaultCapability;
+          };
+
+          namespace Links {
+            export type Request = string;
+          }
+
+          type NamespaceCapability = Metadata & {
+            readonly run: (request: Links.Request) => void;
+          };
+          type NamespaceOptions = {
+            readonly capability?: NamespaceCapability;
+          };
+        `,
+      ],
+    ]
+  );
+  assert.deepEqual(
+    accessorGenericAndLocalNamespaceDiagnostics,
+    [
+      schemaDiagnostic(
+        "accessor-generic-and-local-namespace-rejections.ts",
+        16,
+        16
+      ),
+      schemaDiagnostic(
+        "accessor-generic-and-local-namespace-rejections.ts",
+        26,
+        16
+      ),
+      schemaDiagnostic(
+        "accessor-generic-and-local-namespace-rejections.ts",
+        36,
+        16
+      ),
+      schemaDiagnostic(
+        "accessor-generic-and-local-namespace-rejections.ts",
+        46,
+        16
+      ),
+      schemaDiagnostic(
+        "accessor-generic-and-local-namespace-rejections.ts",
+        57,
+        16
+      ),
+    ],
+    "accessor, generic-method, and local qualified-root wrappers must report at exact locations"
+  );
+
+  const parameterPropertyAndAbstractMethodDiagnostics =
+    await analyzeCoreProject(
+      ".gaia-schema-contract-parameter-property-abstract-method-",
+      [
+        [
+          "parameter-property-and-abstract-method-rejections.ts",
+          `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          class ParameterPropertyLink {
+            constructor(readonly next: ParameterPropertyCapability) {}
+          }
+          type ParameterPropertyCapability = Metadata & {
+            readonly run: (link: ParameterPropertyLink) => void;
+          };
+          type ParameterPropertyOptions = {
+            readonly capability?: ParameterPropertyCapability;
+          };
+
+          abstract class AbstractMethodLink {
+            abstract next(value: AbstractMethodCapability): void;
+          }
+          type AbstractMethodCapability = Metadata & {
+            readonly run: (link: AbstractMethodLink) => void;
+          };
+          type AbstractMethodOptions = {
+            readonly capability?: AbstractMethodCapability;
+          };
+        `,
+        ],
+      ]
+    );
+  assert.deepEqual(
+    parameterPropertyAndAbstractMethodDiagnostics,
+    [
+      schemaDiagnostic(
+        "parameter-property-and-abstract-method-rejections.ts",
+        14,
+        16
+      ),
+      schemaDiagnostic(
+        "parameter-property-and-abstract-method-rejections.ts",
+        24,
+        16
+      ),
+    ],
+    "constructor parameter-property and abstract method cycles must report exact wrappers"
+  );
+
+  const ordinaryConstructorParameterDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-ordinary-constructor-parameter-",
+    [
+      [
+        "ordinary-constructor-parameter-accepted.ts",
+        `
+          import { Schema } from "effect";
+
+          class Metadata extends Schema.Class<Metadata>("Metadata")({
+            name: Schema.NonEmptyString,
+          }) {}
+
+          class Link {
+            constructor(next: Capability) {
+              void next;
+            }
+          }
+
+          type Capability = Metadata & {
+            readonly run: (link: Link) => void;
+          };
+
+          type Options = {
+            readonly capability?: Capability;
+          };
+        `,
+      ],
+    ]
+  );
+  assert.deepEqual(
+    ordinaryConstructorParameterDiagnostics,
+    [],
+    "an ordinary constructor-only parameter must not count as an instance-property edge"
+  );
 
   const capabilityWrapperDiagnostics = await analyzeCoreProject(
     ".gaia-schema-contract-capability-wrapper-",

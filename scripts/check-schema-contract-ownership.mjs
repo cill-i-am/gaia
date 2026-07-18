@@ -435,6 +435,39 @@ const getCanonicalSchemaPipeSymbol = (checker, anchorFile) => {
   return resolveAlias(checker, symbol);
 };
 
+const getCanonicalSchemaClassSymbol = (checker, anchorFile) => {
+  const declaration = anchorFile.statements.find(
+    (statement) =>
+      ts.isClassDeclaration(statement) &&
+      statement.name?.text === "__GaiaClassSchema"
+  );
+  const heritage =
+    declaration !== undefined && ts.isClassDeclaration(declaration)
+      ? declaration.heritageClauses?.find(
+          (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword
+        )
+      : undefined;
+  const schemaClass = heritage?.types[0]?.expression;
+  const factory =
+    schemaClass !== undefined && ts.isCallExpression(schemaClass)
+      ? schemaClass.expression
+      : undefined;
+  const member =
+    factory !== undefined &&
+    ts.isCallExpression(factory) &&
+    ts.isPropertyAccessExpression(factory.expression)
+      ? factory.expression.name
+      : undefined;
+  const symbol =
+    member === undefined ? undefined : checker.getSymbolAtLocation(member);
+  if (symbol === undefined) {
+    throw new Error(
+      "Gaia schema-contract checker could not prove Schema.Class provenance"
+    );
+  }
+  return resolveAlias(checker, symbol);
+};
+
 const getCanonicalSchemaSuspendSymbol = (checker, anchorFile) => {
   const declaration = anchorFile.statements.find(
     (statement) =>
@@ -594,6 +627,10 @@ const createSchemaProof = (checker, anchorFile, xstateAnchorFile) => ({
     anchorFile
   ),
   canonicalSchemaDeclarationFiles: getCanonicalSchemaDeclarationFiles(
+    checker,
+    anchorFile
+  ),
+  canonicalSchemaClassSymbol: getCanonicalSchemaClassSymbol(
     checker,
     anchorFile
   ),
@@ -2813,7 +2850,264 @@ const hasCompilerStructuralReferenceCycle = (
   return cycle;
 };
 
-const isCapabilityWrapperTypeAlias = (checker, sourceFile, declaration) => {
+const hasCompilerLocalTypeReferenceCycle = (
+  checker,
+  sourceFile,
+  node,
+  activeDeclarations
+) => {
+  let unsafe = false;
+  const visitClassMemberTypes = (member, active) => {
+    if (
+      member.modifiers?.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword
+      )
+    ) {
+      return;
+    }
+    if (ts.isPropertyDeclaration(member)) {
+      if (member.type !== undefined) visit(member.type, active);
+      return;
+    }
+    if (ts.isConstructorDeclaration(member)) {
+      for (const parameter of member.parameters) {
+        if (
+          ts.isParameterPropertyDeclaration(parameter, member) &&
+          parameter.type !== undefined
+        ) {
+          visit(parameter.type, active);
+        }
+      }
+      return;
+    }
+    if (
+      !ts.isMethodDeclaration(member) &&
+      !ts.isGetAccessorDeclaration(member) &&
+      !ts.isSetAccessorDeclaration(member)
+    ) {
+      return;
+    }
+    if (ts.isMethodDeclaration(member)) {
+      for (const typeParameter of member.typeParameters ?? []) {
+        if (typeParameter.constraint !== undefined) {
+          visit(typeParameter.constraint, active);
+        }
+        if (typeParameter.default !== undefined) {
+          visit(typeParameter.default, active);
+        }
+      }
+    }
+    for (const parameter of member.parameters) {
+      if (parameter.type !== undefined) visit(parameter.type, active);
+    }
+    if (member.type !== undefined) visit(member.type, active);
+  };
+  const visitLocalDeclaration = (target, active) => {
+    if (active.has(target)) {
+      unsafe = true;
+      return;
+    }
+    const nextActive = new Set(active).add(target);
+    if (ts.isInterfaceDeclaration(target)) {
+      for (const member of target.members) visit(member, nextActive);
+    } else if (ts.isTypeAliasDeclaration(target)) {
+      visit(target.type, nextActive);
+    } else {
+      for (const member of target.members) {
+        visitClassMemberTypes(member, nextActive);
+      }
+    }
+  };
+  const getQualifiedRoot = (typeName) => {
+    let root = typeName;
+    while (ts.isQualifiedName(root)) root = root.left;
+    return ts.isIdentifier(root) ? root : undefined;
+  };
+  const visit = (current, active) => {
+    if (unsafe) return;
+    if (ts.isTypeReferenceNode(current)) {
+      let resolvedDeclarations;
+      if (!ts.isIdentifier(current.typeName)) {
+        const root = getQualifiedRoot(current.typeName);
+        const rootSymbol =
+          root === undefined ? undefined : checker.getSymbolAtLocation(root);
+        const rootDeclaration = rootSymbol?.declarations?.[0];
+        const targetSymbol = checker.getSymbolAtLocation(current.typeName);
+        resolvedDeclarations =
+          targetSymbol === undefined
+            ? undefined
+            : resolveAlias(checker, targetSymbol).declarations;
+        if (
+          rootSymbol === undefined ||
+          (rootSymbol.declarations?.length ?? 0) !== 1 ||
+          rootDeclaration === undefined ||
+          (!ts.isImportSpecifier(rootDeclaration) &&
+            !ts.isNamespaceImport(rootDeclaration) &&
+            !ts.isImportClause(rootDeclaration) &&
+            !ts.isImportEqualsDeclaration(rootDeclaration)) ||
+          targetSymbol === undefined ||
+          (resolvedDeclarations?.length ?? 0) === 0 ||
+          resolvedDeclarations?.some(
+            (candidate) => candidate.getSourceFile() === sourceFile
+          )
+        ) {
+          unsafe = true;
+          return;
+        }
+      } else {
+        const symbol = checker.getSymbolAtLocation(current.typeName);
+        if (symbol === undefined) {
+          unsafe = true;
+          return;
+        }
+        resolvedDeclarations = resolveAlias(checker, symbol).declarations;
+      }
+      if (
+        resolvedDeclarations === undefined ||
+        resolvedDeclarations.length === 0
+      ) {
+        unsafe = true;
+        return;
+      }
+      const localDeclarations = resolvedDeclarations.filter(
+        (candidate) => candidate.getSourceFile() === sourceFile
+      );
+      if (localDeclarations.length > 1) {
+        unsafe = true;
+        return;
+      }
+      const target = localDeclarations.find(
+        (candidate) =>
+          ts.isInterfaceDeclaration(candidate) ||
+          ts.isTypeAliasDeclaration(candidate) ||
+          ts.isClassDeclaration(candidate)
+      );
+      if (target !== undefined) visitLocalDeclaration(target, active);
+    }
+    ts.forEachChild(current, (child) => visit(child, active));
+  };
+  visit(node, activeDeclarations);
+  return unsafe;
+};
+
+const getDirectLocalCanonicalSchemaClass = (
+  checker,
+  proof,
+  sourceFile,
+  node
+) => {
+  if (
+    !ts.isTypeReferenceNode(node) ||
+    !ts.isIdentifier(node.typeName) ||
+    (node.typeArguments?.length ?? 0) > 0
+  ) {
+    return undefined;
+  }
+  const symbol = checker.getSymbolAtLocation(node.typeName);
+  if (symbol === undefined) return undefined;
+  const declarations = resolveAlias(checker, symbol).declarations ?? [];
+  if (declarations.length !== 1) return undefined;
+  const declaration = declarations[0];
+  if (
+    !ts.isClassDeclaration(declaration) ||
+    declaration.getSourceFile() !== sourceFile ||
+    declaration.name === undefined ||
+    (declaration.typeParameters?.length ?? 0) > 0
+  ) {
+    return undefined;
+  }
+  const extendsClauses = (declaration.heritageClauses ?? []).filter(
+    (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword
+  );
+  if (extendsClauses.length !== 1 || extendsClauses[0].types.length !== 1) {
+    return undefined;
+  }
+  const schemaClass = extendsClauses[0].types[0].expression;
+  if (
+    !ts.isCallExpression(schemaClass) ||
+    schemaClass.arguments.length !== 1 ||
+    !ts.isObjectLiteralExpression(schemaClass.arguments[0]) ||
+    !ts.isCallExpression(schemaClass.expression) ||
+    schemaClass.expression.arguments.length !== 1 ||
+    !ts.isPropertyAccessExpression(schemaClass.expression.expression) ||
+    (schemaClass.expression.typeArguments?.length ?? 0) !== 1
+  ) {
+    return undefined;
+  }
+  const factory = schemaClass.expression;
+  const selfType = factory.typeArguments[0];
+  const classSymbol = checker.getSymbolAtLocation(declaration.name);
+  const selfSymbol =
+    ts.isTypeReferenceNode(selfType) && ts.isIdentifier(selfType.typeName)
+      ? checker.getSymbolAtLocation(selfType.typeName)
+      : undefined;
+  const factorySymbol = checker.getSymbolAtLocation(factory.expression.name);
+  return classSymbol !== undefined &&
+    selfSymbol !== undefined &&
+    factorySymbol !== undefined &&
+    hasSameDeclaration(checker, selfSymbol, classSymbol) &&
+    hasSameDeclaration(
+      checker,
+      factorySymbol,
+      proof.canonicalSchemaClassSymbol
+    ) &&
+    isCanonicalSchemaValueSymbol(checker, proof, classSymbol)
+    ? declaration
+    : undefined;
+};
+
+const getDirectIntersectionCapabilityDeclaration = (
+  checker,
+  proof,
+  sourceFile,
+  reference
+) => {
+  if (
+    !ts.isTypeReferenceNode(reference) ||
+    !ts.isIdentifier(reference.typeName) ||
+    (reference.typeArguments?.length ?? 0) > 0
+  ) {
+    return undefined;
+  }
+  const symbol = checker.getSymbolAtLocation(reference.typeName);
+  if (symbol === undefined) return undefined;
+  const declarations = resolveAlias(checker, symbol).declarations ?? [];
+  if (declarations.length !== 1) return undefined;
+  const declaration = declarations[0];
+  if (
+    !ts.isTypeAliasDeclaration(declaration) ||
+    declaration.getSourceFile() !== sourceFile ||
+    (declaration.typeParameters?.length ?? 0) > 0 ||
+    !ts.isIntersectionTypeNode(declaration.type) ||
+    declaration.type.types.length !== 2
+  ) {
+    return undefined;
+  }
+  const callableArms = declaration.type.types.filter(
+    (type) => ts.isTypeLiteralNode(type) && isAllCallable(type.members)
+  );
+  const schemaArms = declaration.type.types.filter(
+    (type) =>
+      getDirectLocalCanonicalSchemaClass(checker, proof, sourceFile, type) !==
+      undefined
+  );
+  if (callableArms.length !== 1 || schemaArms.length !== 1) return undefined;
+  return hasCompilerLocalTypeReferenceCycle(
+    checker,
+    sourceFile,
+    callableArms[0],
+    new Set([declaration])
+  )
+    ? undefined
+    : declaration;
+};
+
+const isCapabilityWrapperTypeAlias = (
+  checker,
+  proof,
+  sourceFile,
+  declaration
+) => {
   if (
     !ts.isTypeLiteralNode(declaration.type) ||
     (declaration.typeParameters?.length ?? 0) > 0 ||
@@ -2837,11 +3131,19 @@ const isCapabilityWrapperTypeAlias = (checker, sourceFile, declaration) => {
     );
     const members =
       target === undefined ? undefined : getContractMembers(target);
-    return (
+    const structuralCapability =
       target !== undefined &&
       target !== declaration &&
       members?.some(isCallableMember) === true &&
-      !hasCompilerStructuralReferenceCycle(checker, sourceFile, target)
+      !hasCompilerStructuralReferenceCycle(checker, sourceFile, target);
+    return (
+      structuralCapability ||
+      getDirectIntersectionCapabilityDeclaration(
+        checker,
+        proof,
+        sourceFile,
+        member.type
+      ) !== undefined
     );
   });
 };
@@ -3148,7 +3450,12 @@ export function analyzeSchemaContracts({
           ts.isTypeLiteralNode(node.type) &&
           !isAllCallable(node.type.members) &&
           !isFrameworkProps(checker, schemaProof, sourceFile, node) &&
-          !isCapabilityWrapperTypeAlias(checker, sourceFile, node) &&
+          !isCapabilityWrapperTypeAlias(
+            checker,
+            schemaProof,
+            sourceFile,
+            node
+          ) &&
           !exactXStateSetupMetadataAlias;
         const invalidXStateSetupMetadataAlias =
           xstateSetupMetadataAlias && !exactXStateSetupMetadataAlias;

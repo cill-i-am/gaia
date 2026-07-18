@@ -446,7 +446,228 @@ const hasStructuralReferenceCycle = (
   return cycle;
 };
 
-const isCapabilityWrapperAlias = (node, declarations) => {
+const hasLocalTypeReferenceCycle = (
+  node,
+  declarations,
+  classDeclarations,
+  importedTypeBindingCounts,
+  isGlobalReference,
+  activeDeclarations
+) => {
+  let unsafe = false;
+  const visitParameterType = (parameter, active) => {
+    let current = parameter;
+    while (current?.type !== undefined) {
+      const annotation = current.typeAnnotation?.typeAnnotation;
+      if (annotation !== undefined) {
+        visit(annotation, active);
+        return;
+      }
+      if (current.type === "AssignmentPattern") {
+        current = current.left;
+      } else if (current.type === "RestElement") {
+        current = current.argument;
+      } else if (current.type === "TSParameterProperty") {
+        current = current.parameter;
+      } else {
+        return;
+      }
+    }
+  };
+  const visitClassMemberTypes = (member, active) => {
+    if (member.static === true) return;
+    if (
+      member.type === "PropertyDefinition" ||
+      member.type === "AccessorProperty"
+    ) {
+      visit(member.typeAnnotation?.typeAnnotation, active);
+      return;
+    }
+    if (
+      member.type !== "MethodDefinition" &&
+      member.type !== "TSAbstractMethodDefinition"
+    ) {
+      return;
+    }
+    if (member.type === "MethodDefinition" && member.kind === "constructor") {
+      for (const parameter of member.value.params) {
+        if (parameter.type === "TSParameterProperty") {
+          visitParameterType(parameter, active);
+        }
+      }
+      return;
+    }
+    for (const typeParameter of getTypeParameters(member.value)) {
+      visit(typeParameter.constraint, active);
+      visit(typeParameter.default, active);
+    }
+    for (const parameter of member.value.params) {
+      visitParameterType(parameter, active);
+    }
+    visit(member.value.returnType?.typeAnnotation, active);
+  };
+  const getQualifiedRoot = (typeName) => {
+    let root = typeName;
+    while (root?.type === "TSQualifiedName") root = root.left;
+    return root?.type === "Identifier" ? root : undefined;
+  };
+  const visit = (current, active) => {
+    if (unsafe || current?.type === undefined) return;
+    if (current.type === "TSTypeReference") {
+      if (current.typeName.type !== "Identifier") {
+        const root = getQualifiedRoot(current.typeName);
+        if (
+          root === undefined ||
+          importedTypeBindingCounts.get(root.name) !== 1
+        ) {
+          unsafe = true;
+          return;
+        }
+      } else {
+        const candidates = declarations.get(current.typeName.name) ?? [];
+        if (candidates.length > 1) {
+          unsafe = true;
+          return;
+        }
+        const declaration = candidates[0];
+        if (declaration !== undefined) {
+          if (active.has(declaration)) {
+            unsafe = true;
+            return;
+          }
+          const nextActive = new Set(active).add(declaration);
+          if (declaration.type === "TSInterfaceDeclaration") {
+            for (const member of declaration.body.body) {
+              visit(member, nextActive);
+            }
+          } else if (declaration.type === "TSTypeAliasDeclaration") {
+            visit(declaration.typeAnnotation, nextActive);
+          }
+        } else {
+          const classes = classDeclarations.get(current.typeName.name) ?? [];
+          if (
+            classes.length > 1 ||
+            (classes.length === 0 &&
+              importedTypeBindingCounts.get(current.typeName.name) !== 1 &&
+              !isGlobalReference(current.typeName))
+          ) {
+            unsafe = true;
+            return;
+          }
+          const classDeclaration = classes[0];
+          if (classDeclaration !== undefined) {
+            if (active.has(classDeclaration)) {
+              unsafe = true;
+              return;
+            }
+            const nextActive = new Set(active).add(classDeclaration);
+            for (const member of classDeclaration.body.body) {
+              visitClassMemberTypes(member, nextActive);
+            }
+          }
+        }
+      }
+    }
+    for (const key of Object.keys(current)) {
+      if (key === "parent") continue;
+      const value = current[key];
+      if (Array.isArray(value)) {
+        for (const child of value) visit(child, active);
+      } else {
+        visit(value, active);
+      }
+    }
+  };
+  visit(node, activeDeclarations);
+  return unsafe;
+};
+
+const isCanonicalLocalSchemaClass = (
+  node,
+  declarations,
+  classDeclarations,
+  hasCanonicalSchemaBinding
+) => {
+  if (
+    !hasCanonicalSchemaBinding ||
+    node?.type !== "TSTypeReference" ||
+    node.typeName.type !== "Identifier" ||
+    getTypeParameters(node).length > 0
+  ) {
+    return false;
+  }
+  const candidates = classDeclarations.get(node.typeName.name) ?? [];
+  if (
+    candidates.length !== 1 ||
+    (declarations.get(node.typeName.name)?.length ?? 0) > 0
+  ) {
+    return false;
+  }
+  const declaration = candidates[0];
+  const schemaClass = declaration.superClass;
+  const factory = schemaClass?.callee;
+  const typeParameters = getTypeParameters(factory);
+  return (
+    getTypeParameters(declaration).length === 0 &&
+    schemaClass?.type === "CallExpression" &&
+    schemaClass.arguments.length === 1 &&
+    schemaClass.arguments[0]?.type === "ObjectExpression" &&
+    factory?.type === "CallExpression" &&
+    factory.arguments.length === 1 &&
+    typeParameters.length === 1 &&
+    typeParameters[0].type === "TSTypeReference" &&
+    typeParameters[0].typeName.type === "Identifier" &&
+    typeParameters[0].typeName.name === declaration.id.name &&
+    isSchemaMemberCall(factory, "Class")
+  );
+};
+
+const isDirectIntersectionCapabilityAlias = (
+  declaration,
+  declarations,
+  classDeclarations,
+  importedTypeBindingCounts,
+  isGlobalReference,
+  hasCanonicalSchemaBinding
+) => {
+  if (
+    declaration?.type !== "TSTypeAliasDeclaration" ||
+    getTypeParameters(declaration).length > 0 ||
+    declaration.typeAnnotation.type !== "TSIntersectionType" ||
+    declaration.typeAnnotation.types.length !== 2
+  ) {
+    return false;
+  }
+  const callableArms = declaration.typeAnnotation.types.filter(
+    (type) => type.type === "TSTypeLiteral" && isAllCallable(type.members)
+  );
+  const schemaArms = declaration.typeAnnotation.types.filter((type) =>
+    isCanonicalLocalSchemaClass(
+      type,
+      declarations,
+      classDeclarations,
+      hasCanonicalSchemaBinding
+    )
+  );
+  if (callableArms.length !== 1 || schemaArms.length !== 1) return false;
+  return !hasLocalTypeReferenceCycle(
+    callableArms[0],
+    declarations,
+    classDeclarations,
+    importedTypeBindingCounts,
+    isGlobalReference,
+    new Set([declaration])
+  );
+};
+
+const isCapabilityWrapperAlias = (
+  node,
+  declarations,
+  classDeclarations,
+  importedTypeBindingCounts,
+  isGlobalReference,
+  hasCanonicalSchemaBinding
+) => {
   if (
     node.type !== "TSTypeAliasDeclaration" ||
     getTypeParameters(node).length > 0 ||
@@ -476,11 +697,25 @@ const isCapabilityWrapperAlias = (node, declarations) => {
       reference.typeName.name
     );
     const members = getStructuralDeclarationMembers(declaration);
-    return (
+    const structuralCapability =
       declaration !== undefined &&
       declaration !== node &&
       members?.some(isFunctionTypeMember) === true &&
-      !hasStructuralReferenceCycle(declaration, declarations)
+      !hasStructuralReferenceCycle(declaration, declarations);
+    if (structuralCapability) return true;
+    const intersectionCandidates =
+      declarations.get(reference.typeName.name) ?? [];
+    return (
+      intersectionCandidates.length === 1 &&
+      intersectionCandidates[0] !== node &&
+      isDirectIntersectionCapabilityAlias(
+        intersectionCandidates[0],
+        declarations,
+        classDeclarations,
+        importedTypeBindingCounts,
+        isGlobalReference,
+        hasCanonicalSchemaBinding
+      )
     );
   });
 };
@@ -1004,6 +1239,66 @@ const collectBindingIdentifiers = (program) => {
     }
   });
   return bindings;
+};
+
+const hasUniqueCanonicalEffectSchemaBinding = (program) => {
+  const schemaBindings = [];
+  const canonicalBindings = [];
+  const rememberPattern = (pattern) => {
+    if (pattern?.type === "Identifier") {
+      if (pattern.name === "Schema") schemaBindings.push(pattern);
+      return;
+    }
+    if (pattern?.type === "AssignmentPattern") {
+      rememberPattern(pattern.left);
+    } else if (pattern?.type === "RestElement") {
+      rememberPattern(pattern.argument);
+    } else if (pattern?.type === "ArrayPattern") {
+      for (const element of pattern.elements) rememberPattern(element);
+    } else if (pattern?.type === "ObjectPattern") {
+      for (const property of pattern.properties) {
+        rememberPattern(
+          property.type === "RestElement" ? property.argument : property.value
+        );
+      }
+    }
+  };
+  for (const statement of program.body) {
+    if (statement.type === "ImportDeclaration") {
+      if (statement.importKind === "type") continue;
+      for (const specifier of statement.specifiers) {
+        if (
+          specifier.importKind !== "type" &&
+          specifier.local.type === "Identifier" &&
+          specifier.local.name === "Schema"
+        ) {
+          schemaBindings.push(specifier.local);
+          if (
+            statement.source.value === "effect" &&
+            specifier.type === "ImportSpecifier" &&
+            getStaticName(specifier.imported) === "Schema"
+          ) {
+            canonicalBindings.push(specifier.local);
+          }
+        }
+      }
+      continue;
+    }
+    const declaration = unwrapProgramDeclaration(statement);
+    if (
+      declaration?.type === "ClassDeclaration" ||
+      declaration?.type === "FunctionDeclaration"
+    ) {
+      if (declaration.id?.name === "Schema") {
+        schemaBindings.push(declaration.id);
+      }
+    } else if (declaration?.type === "VariableDeclaration") {
+      for (const candidate of declaration.declarations) {
+        rememberPattern(candidate.id);
+      }
+    }
+  }
+  return schemaBindings.length === 1 && canonicalBindings.length === 1;
 };
 
 const isStaticPropertyIdentifier = (node) =>
@@ -3008,8 +3303,11 @@ const schemaFirstDataContract = {
   create(context) {
     const setupBindings = new Set();
     const typeAliases = [];
+    const classDeclarations = new Map();
+    const importedTypeBindingCounts = new Map();
     const typeDeclarations = new Map();
     const typeReferences = [];
+    let hasCanonicalSchemaBinding = false;
     const rememberTypeDeclaration = (node) => {
       const name = getStaticName(node.id);
       if (name === undefined) return;
@@ -3028,17 +3326,29 @@ const schemaFirstDataContract = {
 
     return {
       Program(node) {
+        hasCanonicalSchemaBinding = hasUniqueCanonicalEffectSchemaBinding(node);
         for (const statement of node.body) {
-          const declaration =
-            statement.type === "ExportNamedDeclaration" ||
-            statement.type === "ExportDefaultDeclaration"
-              ? statement.declaration
-              : statement;
+          if (statement.type === "ImportDeclaration") {
+            for (const specifier of statement.specifiers) {
+              importedTypeBindingCounts.set(
+                specifier.local.name,
+                (importedTypeBindingCounts.get(specifier.local.name) ?? 0) + 1
+              );
+            }
+          }
+          const declaration = unwrapProgramDeclaration(statement);
           if (
             declaration?.type === "TSInterfaceDeclaration" ||
             declaration?.type === "TSTypeAliasDeclaration"
           ) {
             rememberTypeDeclaration(declaration);
+          } else if (
+            declaration?.type === "ClassDeclaration" &&
+            declaration.id?.type === "Identifier"
+          ) {
+            const candidates = classDeclarations.get(declaration.id.name) ?? [];
+            candidates.push(declaration);
+            classDeclarations.set(declaration.id.name, candidates);
           }
         }
       },
@@ -3083,7 +3393,14 @@ const schemaFirstDataContract = {
             if (
               invalidMetadataAlias ||
               (!exactMetadataAlias &&
-                !isCapabilityWrapperAlias(node, typeDeclarations) &&
+                !isCapabilityWrapperAlias(
+                  node,
+                  typeDeclarations,
+                  classDeclarations,
+                  importedTypeBindingCounts,
+                  context.sourceCode.isGlobalReference,
+                  hasCanonicalSchemaBinding
+                ) &&
                 !isAllCallable(node.typeAnnotation.members) &&
                 !isFrameworkProps(context, node, node.typeAnnotation.members))
             ) {
@@ -3106,7 +3423,16 @@ const schemaFirstDataContract = {
           typeAliases.push(node);
           return;
         }
-        if (!isCapabilityWrapperAlias(node, typeDeclarations)) {
+        if (
+          !isCapabilityWrapperAlias(
+            node,
+            typeDeclarations,
+            classDeclarations,
+            importedTypeBindingCounts,
+            context.sourceCode.isGlobalReference,
+            hasCanonicalSchemaBinding
+          )
+        ) {
           reportDeclaration(node, node.typeAnnotation.members);
         }
       },
