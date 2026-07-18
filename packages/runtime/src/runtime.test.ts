@@ -8352,3 +8352,763 @@ function githubPublishingRunner(
     return { exitCode: 0, stderr: "", stdout: "" };
   });
 }
+
+describe("R5 delivery and reviewer compatibility locks", () => {
+  layer(NodeServices.layer)((it) => {
+    it.effect(
+      "round-trips browser and preview artifacts with exact version-1 JSON and target precedence",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-r5-compatibility-",
+          });
+          const specPath = `${cwd}/spec.md`;
+          const scriptPath = `${cwd}/process-harness.mjs`;
+          const profilePath = yield* writeFrontendRunProfile(fs, cwd, {
+            targetUrl: "http://localhost:4400",
+          });
+          yield* fs.writeFileString(
+            specPath,
+            "Lock browser and preview artifact compatibility.\n"
+          );
+          yield* fs.writeFileString(
+            scriptPath,
+            [
+              "import { writeFileSync } from 'node:fs';",
+              "if (process.env.GAIA_RUN_ID === undefined) throw new Error('missing run id');",
+              "if (process.env.GAIA_WORKSPACE_OUTPUT_PATH === undefined) throw new Error('missing output');",
+              "if (process.env.GAIA_WORKER_RESULT_PATH === undefined) throw new Error('missing result');",
+              "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `compatibility ${process.env.GAIA_RUN_ID}\\n`);",
+              "writeFileSync(process.env.GAIA_WORKER_RESULT_PATH, JSON.stringify({ browserTargetUrl: 'http://localhost:4100', previewDeploymentUrl: 'http://localhost:4200' }));",
+            ].join("\n")
+          );
+
+          const summary = yield* runSpecFile(specPath, {
+            browserEvidenceCollector: collectedBrowserEvidenceCollector,
+            harnessName: parseHarnessName("process"),
+            processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
+            rootDirectory: cwd,
+            runProfileSource: localRunProfileSource(profilePath),
+          });
+          const browserText = yield* fs.readFileString(
+            `${summary.runDirectory}/browser-evidence.json`
+          );
+          const previewText = yield* fs.readFileString(
+            `${summary.runDirectory}/preview-deployment.json`
+          );
+          const browser = parseBrowserEvidenceJson(JSON.parse(browserText));
+          const preview = parsePreviewDeploymentJson(JSON.parse(previewText));
+
+          assert.strictEqual(browser.pages[0]?.url, "http://localhost:4400/");
+          assert.strictEqual(preview.url, "http://localhost:4200");
+          assert.strictEqual(
+            browserText,
+            `${JSON.stringify(browser, null, 2)}\n`
+          );
+          assert.strictEqual(
+            previewText,
+            `${JSON.stringify(preview, null, 2)}\n`
+          );
+          assert.deepEqual(Object.keys(browser), [
+            "notes",
+            "pages",
+            "status",
+            "version",
+          ]);
+          assert.deepEqual(Object.keys(browser.pages[0] ?? {}), [
+            "consoleMessages",
+            "screenshots",
+            "url",
+          ]);
+          assert.deepEqual(Object.keys(preview), [
+            "notes",
+            "status",
+            "url",
+            "version",
+          ]);
+        })
+    );
+
+    it.effect(
+      "writes EvidencePromotion Markdown then JSON and reports promotion before raw cleanup",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-r5-compatibility-",
+          });
+          const specPath = `${cwd}/spec.md`;
+          yield* fs.writeFileString(
+            specPath,
+            "Lock EvidencePromotion write and report ordering.\n"
+          );
+
+          const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+          const promotionJsonPath = `${cwd}/.gaia/promoted/${summary.runId}/evidence-promotion.json`;
+          const promotionMarkdownPath = `${cwd}/.gaia/promoted/${summary.runId}/evidence-promotion.md`;
+          const promotionText = yield* fs.readFileString(promotionJsonPath);
+          const promotionMarkdown = yield* fs.readFileString(
+            promotionMarkdownPath
+          );
+          const promotion = parseEvidencePromotion(JSON.parse(promotionText));
+          const report = yield* fs.readFileString(commandReportPath(summary));
+
+          assert.strictEqual(promotion.markdown, promotionMarkdown);
+          assert.strictEqual(
+            promotionText,
+            `${JSON.stringify(promotion, null, 2)}\n`
+          );
+          assert.deepEqual(
+            promotion.selectedEvidence.map((item) => item.label),
+            [
+              "Worker plan",
+              "Run report",
+              "Verification summary",
+              "PR/check/feedback evidence",
+              "Dogfood findings",
+              "Promotion markdown",
+            ]
+          );
+          assert.isBelow(
+            report.indexOf("evidence-promotion.json"),
+            report.indexOf("Raw run state is disposable")
+          );
+
+          yield* fs.remove(summary.runDirectory, { recursive: true });
+          assert.isTrue(yield* fs.exists(promotionMarkdownPath));
+          assert.strictEqual(
+            parseEvidencePromotion(
+              JSON.parse(yield* fs.readFileString(promotionJsonPath))
+            ).runId,
+            summary.runId
+          );
+        })
+    );
+
+    it.effect(
+      "preserves plan-review block and browser-policy failure order before evidence review",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-r5-compatibility-",
+          });
+          const blockedSpecPath = `${cwd}/blocked-spec.md`;
+          const reviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
+            "r5-compatibility-reviewer"
+          );
+          const reviewer: GaiaReviewer = {
+            name: reviewerName,
+            run: (request) =>
+              Effect.succeed(
+                ReviewResult.make({
+                  findings: [
+                    ReviewFinding.make({
+                      message: "The plan is intentionally blocked.",
+                      severity: "blocker",
+                    }),
+                  ],
+                  phase: request.phase,
+                  resultPath:
+                    request.phase === "plan"
+                      ? "plan-review.json"
+                      : "evidence-review.json",
+                  reviewerName,
+                  runId: request.runId,
+                  status: request.phase === "plan" ? "blocked" : "approved",
+                  summary: "Compatibility reviewer decision.",
+                })
+              ),
+          };
+          yield* fs.writeFileString(
+            blockedSpecPath,
+            "Lock plan review failure order.\n"
+          );
+
+          const reviewError = yield* Effect.flip(
+            runSpecFile(blockedSpecPath, { reviewer, rootDirectory: cwd })
+          );
+          const blockedStatus = yield* statusRun(undefined, {
+            rootDirectory: cwd,
+          });
+          const blockedEvents = yield* readRunEvents(
+            fs,
+            blockedStatus.runDirectory
+          );
+
+          assert.isTrue(reviewError instanceof GaiaRuntimeError);
+          if (reviewError instanceof GaiaRuntimeError) {
+            assert.strictEqual(reviewError.code, "ReviewBlocked");
+          }
+          assert.isTrue(
+            blockedEvents.some(
+              (event) =>
+                event.type === "REVIEW_COMPLETED" &&
+                event.payload["phase"] === "plan" &&
+                event.payload["status"] === "blocked"
+            )
+          );
+          assert.strictEqual(
+            blockedEvents.findIndex((event) => event.type === "WORKER_STARTED"),
+            -1
+          );
+
+          const browserSpecPath = `${cwd}/browser-spec.md`;
+          const profilePath = yield* writeFrontendRunProfile(fs, cwd);
+          yield* fs.writeFileString(
+            browserSpecPath,
+            "Lock required browser failure order.\n"
+          );
+          const browserError = yield* Effect.flip(
+            runSpecFile(browserSpecPath, {
+              browserEvidenceCollector: failedBrowserEvidenceCollector,
+              rootDirectory: cwd,
+              runProfileSource: localRunProfileSource(profilePath),
+            })
+          );
+          const browserStatus = yield* statusRun(undefined, {
+            rootDirectory: cwd,
+          });
+          const browserEvents = yield* readRunEvents(
+            fs,
+            browserStatus.runDirectory
+          );
+          const browserRecordedIndex = browserEvents.findIndex(
+            (event) => event.type === "BROWSER_EVIDENCE_RECORDED"
+          );
+          const runFailedIndex = browserEvents.findIndex(
+            (event) => event.type === "RUN_FAILED"
+          );
+          const evidenceReviewIndex = browserEvents.findIndex(
+            (event) =>
+              event.type === "REVIEW_STARTED" &&
+              event.payload["phase"] === "evidence"
+          );
+
+          assert.isTrue(browserError instanceof GaiaRuntimeError);
+          if (browserError instanceof GaiaRuntimeError) {
+            assert.strictEqual(
+              browserError.code,
+              "RequiredBrowserEvidenceFailed"
+            );
+          }
+          assert.isTrue(browserRecordedIndex >= 0);
+          assert.isTrue(runFailedIndex >= 0);
+          assert.isBelow(browserRecordedIndex, runFailedIndex);
+          assert.strictEqual(evidenceReviewIndex, -1);
+        })
+    );
+
+    it.effect(
+      "preserves workspace delivery preview gate path and Git command order without mutation",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-r5-compatibility-",
+          });
+          const specPath = `${cwd}/spec.md`;
+          yield* fs.writeFileString(
+            specPath,
+            "Lock workspace delivery preview compatibility.\n"
+          );
+          const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+
+          const preview = yield* previewGitHubPublish(summary.runId, {
+            commandRunner: githubPublishingRunner([]),
+            mode: "workspace",
+            rootDirectory: cwd,
+          });
+          const paths = yield* makeRunPaths(summary.runId, {
+            rootDirectory: cwd,
+          });
+          const gateText = yield* fs.readFileString(paths.workspacePrGate);
+
+          assert.strictEqual(preview.workspaceGate?.status, "passed");
+          assert.strictEqual(
+            preview.workspaceGate?.artifactPath,
+            "workspace-pr-gate.json"
+          );
+          assert.strictEqual(
+            gateText,
+            `${JSON.stringify(preview.workspaceGate, null, 2)}\n`
+          );
+          assert.deepEqual(
+            preview.commands.map((command) => [
+              command.command,
+              ...command.args,
+            ]),
+            [
+              ["git", "fetch", "origin", "main"],
+              [
+                "git",
+                "checkout",
+                "-B",
+                `gaia/${summary.runId}-workspace`,
+                "origin/main",
+              ],
+              ["git", "add", "--all", "--", "."],
+              ["git", "diff", "--cached", "--quiet", "--", "."],
+              ["git", "add", `gaia-runs/${summary.runId}`],
+              [
+                "git",
+                "commit",
+                "-m",
+                `feat: apply gaia workspace for ${summary.runId}`,
+              ],
+              [
+                "git",
+                "push",
+                "--force-with-lease",
+                "-u",
+                "origin",
+                `gaia/${summary.runId}-workspace`,
+              ],
+              [
+                "gh",
+                "pr",
+                "create",
+                "--draft",
+                "--base",
+                "main",
+                "--head",
+                `gaia/${summary.runId}-workspace`,
+                "--title",
+                `Gaia workspace run ${summary.runId}`,
+                "--body-file",
+                `gaia-runs/${summary.runId}/README.md`,
+              ],
+              ["git", "checkout", "main"],
+            ]
+          );
+        })
+    );
+  });
+
+  it("round-trips review result, reviewer session, and reviewer findings without encoded shape drift", () => {
+    const runId = parseRunId("run-C5Review01");
+    const reviewerName = Schema.decodeUnknownSync(ReviewerNameSchema)(
+      "r5-compatibility-reviewer"
+    );
+    const session = ReviewerSessionEvidence.make({
+      adapterKind: "deterministic",
+      command: "codex review",
+      cwd: "/tmp/gaia",
+      decisionStatus: "approved",
+      evidencePath: "plan-reviewer-session.json",
+      logPath: "reviewer.log",
+      phase: "plan",
+      resultPath: "plan-review.json",
+      reviewPath: "plan-review.md",
+      reviewerName,
+      runId,
+      sessionId: "session-r5-compatibility",
+      sessionKind: "local",
+      transcriptPath: "reviewer-transcript.jsonl",
+      version: 1,
+    });
+    const review = ReviewResult.make({
+      findings: [
+        ReviewFinding.make({
+          message: "The public review shape remains compatible.",
+          severity: "info",
+        }),
+      ],
+      phase: "plan",
+      resultPath: "plan-review.json",
+      reviewerName,
+      runId,
+      sessionEvidence: session,
+      status: "approved",
+      summary: "Plan review approved.",
+    });
+    const sessionRaw = encodeReviewerSessionEvidenceJson(session);
+    const reviewRaw = encodeReviewResultJson(review);
+    const findingsRaw = {
+      matchedRiskNotes: [
+        {
+          findingId: "finding-r5-1",
+          matchedSurfaces: ["packages/runtime/src/runtime.test.ts"],
+          severity: "warning",
+          sourceStatus: "historical-risk",
+          sources: [
+            {
+              artifactPath: "reviewer-findings.json",
+              label: "Prior reviewer finding",
+              pullRequest: "#121",
+              url: "https://github.com/cill-i-am/gaia/pull/121",
+            },
+          ],
+          status: "historical-risk",
+          summary: "Preserve R5 compatibility.",
+          title: "R5 compatibility history",
+          verificationPrompts: ["Verify exact public encoding."],
+        },
+      ],
+      relevanceInputs: [
+        {
+          kind: "similar-test",
+          reason: "Existing runtime compatibility coverage.",
+          value: "packages/runtime/src/runtime.test.ts",
+        },
+      ],
+      suppliedFindings: [
+        {
+          id: "finding-r5-1",
+          severity: "warning",
+          sourceStatus: "historical-risk",
+          sources: [
+            {
+              artifactPath: "reviewer-findings.json",
+              label: "Prior reviewer finding",
+              pullRequest: "#121",
+              url: "https://github.com/cill-i-am/gaia/pull/121",
+            },
+          ],
+          summary: "Preserve R5 compatibility.",
+          surfaces: ["packages/runtime/src/runtime.test.ts"],
+          title: "R5 compatibility history",
+          verificationPrompts: ["Verify exact public encoding."],
+        },
+      ],
+      version: 1,
+    };
+
+    assert.deepEqual(
+      parseReviewerSessionEvidenceJson(JSON.parse(JSON.stringify(sessionRaw))),
+      session
+    );
+    assert.deepEqual(
+      parseReviewResultJson(JSON.parse(JSON.stringify(reviewRaw))),
+      review
+    );
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(parseReviewerFindingsJson(findingsRaw))),
+      findingsRaw
+    );
+    assert.deepEqual(Object.keys(JSON.parse(JSON.stringify(sessionRaw))), [
+      "adapterKind",
+      "command",
+      "cwd",
+      "decisionStatus",
+      "evidencePath",
+      "logPath",
+      "phase",
+      "resultPath",
+      "reviewPath",
+      "reviewerName",
+      "runId",
+      "sessionId",
+      "sessionKind",
+      "transcriptPath",
+      "version",
+    ]);
+    assert.deepEqual(Object.keys(JSON.parse(JSON.stringify(reviewRaw))), [
+      "findings",
+      "phase",
+      "resultPath",
+      "reviewerName",
+      "runId",
+      "sessionEvidence",
+      "status",
+      "summary",
+    ]);
+  });
+
+  it("rejects currently invalid EvidencePromotion nested owner values while preserving exact encoding", () => {
+    const fullRaw = {
+      artifactPath: ".gaia/promoted/run-C5Promote1/evidence-promotion.json",
+      cleanupStatus: "not-completed",
+      dogfood: {
+        artifactPath: "dogfood-retrospective.json",
+        findingCount: 1,
+        status: "findings",
+        summary: "One retained finding.",
+      },
+      generatedAt: "2026-07-18T12:00:00.000Z",
+      markdown: "# Evidence Promotion run-C5Promote1\n",
+      markdownPath: ".gaia/promoted/run-C5Promote1/evidence-promotion.md",
+      promotionStatus: "pending-promotion",
+      pullRequest: {
+        artifactPaths: ["pr-checks.json", "pr-feedback.json"],
+        checksStatus: "green",
+        feedbackStatus: "comments",
+        headSha: "a".repeat(40),
+        pr: "#121",
+        status: "promoted",
+        summary: "Canonical PR evidence.",
+        url: "https://github.com/cill-i-am/gaia/pull/121",
+      },
+      reportPaths: {
+        dogfoodRetrospectivePath: "dogfood-retrospective.json",
+        reportJsonPath: "report.json",
+        reportMarkdownPath: "report.md",
+        workerPlanPath: "worker-plan.md",
+      },
+      runId: "run-C5Promote1",
+      selectedEvidence: [
+        {
+          label: "Run report",
+          path: "report.md",
+          status: "pending-promotion",
+          summary: "Report selected before cleanup.",
+        },
+      ],
+      verification: {
+        checkedArtifacts: ["workspace/output.txt"],
+        path: "verification-result.json",
+        status: "passed",
+      },
+      version: 1,
+    };
+    const sparseRaw = {
+      artifactPath: ".gaia/promoted/run-C5Promote2/evidence-promotion.json",
+      cleanupStatus: "not-completed",
+      dogfood: {
+        findingCount: 0,
+        status: "skipped",
+        summary: "No dogfood artifact.",
+      },
+      generatedAt: "2026-07-18T12:01:00.000Z",
+      markdown: "# Evidence Promotion run-C5Promote2\n",
+      markdownPath: ".gaia/promoted/run-C5Promote2/evidence-promotion.md",
+      promotionStatus: "pending-promotion",
+      pullRequest: {
+        artifactPaths: [],
+        status: "skipped",
+        summary: "No PR evidence.",
+      },
+      reportPaths: {},
+      runId: "run-C5Promote2",
+      selectedEvidence: [
+        {
+          label: "Skipped artifact",
+          status: "skipped",
+          summary: "No path was produced.",
+        },
+      ],
+      verification: {
+        checkedArtifacts: [],
+        status: "skipped",
+      },
+      version: 1,
+    };
+
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(parseEvidencePromotion(fullRaw))),
+      fullRaw
+    );
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(parseEvidencePromotion(sparseRaw))),
+      sparseRaw
+    );
+
+    for (const path of [
+      "../report.md",
+      " ",
+      "/absolute/report.json",
+      ".gaia/promoted/run-C5Promote1/report.json",
+    ]) {
+      const accepted = parseEvidencePromotion({
+        ...fullRaw,
+        dogfood: { ...fullRaw.dogfood, artifactPath: path },
+        pullRequest: {
+          ...fullRaw.pullRequest,
+          artifactPaths: [path],
+          pr: "loosely formatted selector",
+        },
+        reportPaths: {
+          dogfoodRetrospectivePath: path,
+          reportJsonPath: path,
+          reportMarkdownPath: path,
+          workerPlanPath: path,
+        },
+        selectedEvidence: [{ ...fullRaw.selectedEvidence[0], path }],
+        verification: {
+          ...fullRaw.verification,
+          checkedArtifacts: [path],
+          path,
+        },
+      });
+      assert.strictEqual(accepted.selectedEvidence[0]?.path, path);
+      assert.strictEqual(accepted.pullRequest.pr, "loosely formatted selector");
+    }
+
+    for (const invalidPathPromotion of [
+      {
+        ...fullRaw,
+        selectedEvidence: [{ ...fullRaw.selectedEvidence[0], path: "" }],
+      },
+      {
+        ...fullRaw,
+        reportPaths: { ...fullRaw.reportPaths, reportJsonPath: 1 },
+      },
+      {
+        ...fullRaw,
+        verification: {
+          ...fullRaw.verification,
+          checkedArtifacts: [1],
+        },
+      },
+      {
+        ...fullRaw,
+        pullRequest: { ...fullRaw.pullRequest, artifactPaths: [1] },
+      },
+      {
+        ...fullRaw,
+        dogfood: { ...fullRaw.dogfood, artifactPath: "" },
+      },
+    ]) {
+      assert.throws(() => parseEvidencePromotion(invalidPathPromotion));
+    }
+
+    for (const headSha of [
+      "legacy-nonempty-sha",
+      "A".repeat(40),
+      "a".repeat(39),
+      "a".repeat(41),
+      "",
+    ]) {
+      assert.throws(() =>
+        parseEvidencePromotion({
+          ...fullRaw,
+          pullRequest: { ...fullRaw.pullRequest, headSha },
+        })
+      );
+    }
+    for (const url of [
+      "https://example.com/pull/121",
+      "https://github.com/cill-i-am/gaia/issues/121",
+      "https://github.com/cill-i-am/gaia/pull/0",
+      "",
+    ]) {
+      assert.throws(() =>
+        parseEvidencePromotion({
+          ...fullRaw,
+          pullRequest: { ...fullRaw.pullRequest, url },
+        })
+      );
+    }
+    for (const status of ["verified", "failed"]) {
+      assert.throws(() =>
+        parseEvidencePromotion({
+          ...fullRaw,
+          verification: { ...fullRaw.verification, status },
+        })
+      );
+    }
+    for (const status of ["passed", "failed"]) {
+      assert.throws(() =>
+        parseEvidencePromotion({
+          ...fullRaw,
+          dogfood: { ...fullRaw.dogfood, status },
+        })
+      );
+    }
+    for (const checksStatus of ["passed", "failed", "unknown"]) {
+      assert.throws(() =>
+        parseEvidencePromotion({
+          ...fullRaw,
+          pullRequest: { ...fullRaw.pullRequest, checksStatus },
+        })
+      );
+    }
+    for (const feedbackStatus of ["approved", "pending", "unknown"]) {
+      assert.throws(() =>
+        parseEvidencePromotion({
+          ...fullRaw,
+          pullRequest: { ...fullRaw.pullRequest, feedbackStatus },
+        })
+      );
+    }
+    assert.throws(() =>
+      parseEvidencePromotion({
+        ...fullRaw,
+        pullRequest: { ...fullRaw.pullRequest, pr: "" },
+      })
+    );
+  });
+
+  it("round-trips approved and blocked merge decisions with blocker order unchanged", () => {
+    const approvedRaw = {
+      blockerCount: 0,
+      blockers: [],
+      decidedAt: "2026-07-18T12:02:00.000Z",
+      evidenceReviewPath: "evidence-review.md",
+      evidenceReviewerSessionPath: "evidence-reviewer-session.json",
+      nextAction: "ready-to-merge",
+      planReviewPath: "plan-review.md",
+      planReviewerSessionPath: "plan-reviewer-session.json",
+      pr: "121",
+      prLoopPath: "github-pr-loop.json",
+      runId: "run-C5Merge001",
+      runProfilePath: "run-profile.json",
+      status: "approved",
+      version: 1,
+    };
+    const blockedRaw = {
+      blockerCount: 4,
+      blockers: [
+        {
+          action: "stabilize-pr-loop",
+          artifactPath: "github-pr-loop.json",
+          kind: "pr-loop-not-ready",
+          summary: "PR loop is not ready.",
+        },
+        {
+          action: "resolve-plan-review",
+          artifactPath: "plan-reviewer-session.json",
+          kind: "reviewer-blocked",
+          summary: "Plan reviewer blocked.",
+        },
+        {
+          action: "resolve-evidence-review",
+          artifactPath: "evidence-reviewer-session.json",
+          kind: "reviewer-blocked",
+          summary: "Evidence reviewer blocked.",
+        },
+        {
+          action: "recollect-browser-evidence",
+          artifactPath: "browser-evidence.json",
+          kind: "browser-evidence-failed",
+          summary: "Required browser evidence failed.",
+        },
+      ],
+      decidedAt: "2026-07-18T12:03:00.000Z",
+      evidenceReviewPath: "evidence-review.md",
+      evidenceReviewerSessionPath: "evidence-reviewer-session.json",
+      nextAction: "resolve-blockers",
+      planReviewPath: "plan-review.md",
+      planReviewerSessionPath: "plan-reviewer-session.json",
+      prLoopPath: "github-pr-loop.json",
+      runId: "run-C5Merge002",
+      runProfilePath: "run-profile.json",
+      status: "blocked",
+      version: 1,
+    };
+
+    const approved = parseMergeDecisionJson(approvedRaw);
+    const blocked = parseMergeDecisionJson(blockedRaw);
+
+    assert.deepEqual(JSON.parse(JSON.stringify(approved)), approvedRaw);
+    assert.deepEqual(JSON.parse(JSON.stringify(blocked)), blockedRaw);
+    assert.deepEqual(
+      blocked.blockers.map((blocker) => blocker.kind),
+      [
+        "pr-loop-not-ready",
+        "reviewer-blocked",
+        "reviewer-blocked",
+        "browser-evidence-failed",
+      ]
+    );
+    assert.strictEqual(
+      `${JSON.stringify(approved, null, 2)}\n`,
+      `${JSON.stringify(approvedRaw, null, 2)}\n`
+    );
+    assert.strictEqual(
+      `${JSON.stringify(blocked, null, 2)}\n`,
+      `${JSON.stringify(blockedRaw, null, 2)}\n`
+    );
+  });
+});
