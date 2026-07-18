@@ -2,15 +2,20 @@ import {
   parseWorkspaceRelativePath,
   RunIdSchema,
   type RunId,
+  type WorkspaceRelativePath,
+  WorkspaceRelativePathSchema,
 } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
-import { parseHarnessRunResultJson, type HarnessRunResult } from "./harness.js";
+import { parseHarnessRunResultJson } from "./harness.js";
 import {
   parseRunRelativeArtifactPath,
   runRelative,
+  RunRelativeArtifactPathSchema,
   type RunPaths,
+  type RunRelativeArtifactPath,
+  type RuntimePath,
 } from "./paths.js";
 
 const maxReviewableWorkerResultBytes = 64 * 1024;
@@ -53,7 +58,7 @@ export class WorkspacePrQualityGateItem extends Schema.Class<WorkspacePrQualityG
 export class WorkspacePrQualityGate extends Schema.Class<WorkspacePrQualityGate>(
   "WorkspacePrQualityGate"
 )({
-  artifactPath: Schema.NonEmptyString,
+  artifactPath: RunRelativeArtifactPathSchema,
   failItemCount: NonNegativeIntegerSchema,
   items: Schema.Array(WorkspacePrQualityGateItem),
   runId: RunIdSchema,
@@ -70,25 +75,29 @@ export const parseWorkspacePrQualityGateJson = Schema.decodeUnknownSync(
   WorkspacePrQualityGateJson
 );
 
-type JsonDecodeResult =
-  | {
-      readonly _tag: "Invalid";
-      readonly message: string;
-    }
-  | {
-      readonly _tag: "Valid";
-      readonly value: unknown;
-    };
+const JsonDecodeResultSchema = Schema.Union([
+  Schema.Struct({
+    _tag: Schema.Literal("Invalid"),
+    message: Schema.String,
+  }),
+  Schema.Struct({
+    _tag: Schema.Literal("Valid"),
+    value: Schema.Unknown,
+  }),
+]);
 
-type HarnessDecodeResult =
-  | {
-      readonly _tag: "Invalid";
-      readonly message: string;
-    }
-  | {
-      readonly _tag: "Valid";
-      readonly value: HarnessRunResult;
-    };
+type JsonDecodeResult = typeof JsonDecodeResultSchema.Type;
+
+const WorkspaceRelativePathInputSchema = Schema.toEncoded(
+  WorkspaceRelativePathSchema
+);
+type WorkspaceRelativePathInput = typeof WorkspaceRelativePathInputSchema.Type;
+
+const RunRelativeArtifactPathInputSchema = Schema.toEncoded(
+  RunRelativeArtifactPathSchema
+);
+type RunRelativeArtifactPathInput =
+  typeof RunRelativeArtifactPathInputSchema.Type;
 
 export function evaluateWorkspacePrQualityGate(
   runId: RunId,
@@ -173,8 +182,8 @@ export function evaluateWorkspacePrQualityGate(
     }
 
     const rawPathFailureItems = rawHarnessPathFailureItems(parsedJson.value);
-    const harnessResult = decodeHarnessResult(parsedJson.value);
-    if (harnessResult._tag === "Invalid") {
+    const harnessDecodeResult = decodeHarnessResult(parsedJson.value);
+    if (harnessDecodeResult._tag === "Invalid") {
       if (rawPathFailureItems.length > 0) {
         items.push(...rawPathFailureItems);
         return yield* writeWorkspacePrQualityGate(runId, paths, items);
@@ -184,7 +193,7 @@ export function evaluateWorkspacePrQualityGate(
         gateItem({
           changedFiles: ["worker-result.json"],
           check: "worker-result-schema",
-          reason: `worker-result.json does not match Gaia's harness result schema: ${harnessResult.message}.`,
+          reason: `worker-result.json does not match Gaia's harness result schema: ${harnessDecodeResult.message}.`,
           remediation:
             "Fix the harness result contract and rerun Gaia so workspaceDiff evidence is schema-valid.",
           severity: "fail",
@@ -193,7 +202,8 @@ export function evaluateWorkspacePrQualityGate(
       return yield* writeWorkspacePrQualityGate(runId, paths, items);
     }
 
-    const workspaceDiff = harnessResult.value.workspaceDiff;
+    const harnessResult = parseHarnessRunResultJson(harnessDecodeResult.value);
+    const workspaceDiff = harnessResult.workspaceDiff;
     if (workspaceDiff === undefined) {
       items.push(
         gateItem({
@@ -254,7 +264,7 @@ export function evaluateWorkspacePrQualityGate(
     }
 
     const unsafeChangedWorkspacePaths = unsafeRelativePaths(
-      harnessResult.value.changedWorkspacePaths
+      harnessResult.changedWorkspacePaths
     );
     if (unsafeChangedWorkspacePaths.length > 0) {
       items.push(
@@ -271,7 +281,7 @@ export function evaluateWorkspacePrQualityGate(
     }
 
     const unsafeWorkerResultPaths = unsafeRelativePaths([
-      harnessResult.value.resultPath,
+      harnessResult.resultPath,
     ]);
     if (unsafeWorkerResultPaths.length > 0) {
       items.push(
@@ -287,7 +297,7 @@ export function evaluateWorkspacePrQualityGate(
     }
 
     const unsafeOutputArtifactPaths = unsafeOutputArtifacts(
-      harnessResult.value.outputArtifacts
+      harnessResult.outputArtifacts
     );
     if (unsafeOutputArtifactPaths.length > 0) {
       items.push(
@@ -358,7 +368,9 @@ function writeWorkspacePrQualityGate(
       (item) => item.severity === "warn"
     ).length;
     const gate = WorkspacePrQualityGate.make({
-      artifactPath: runRelative(paths, paths.workspacePrGate),
+      artifactPath: parseRunRelativeArtifactPath(
+        runRelative(paths, paths.workspacePrGate)
+      ),
       failItemCount,
       items,
       runId,
@@ -387,7 +399,7 @@ function writeWorkspacePrQualityGate(
   );
 }
 
-function fileSizeBytes(path: string) {
+function fileSizeBytes(path: RuntimePath) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const info = yield* fs.stat(path);
@@ -418,7 +430,7 @@ function parseJson(input: string): JsonDecodeResult {
   }
 }
 
-function decodeHarnessResult(input: unknown): HarnessDecodeResult {
+function decodeHarnessResult(input: unknown): JsonDecodeResult {
   try {
     return {
       _tag: "Valid",
@@ -573,7 +585,7 @@ function omittedGeneratedPathValues(record: object) {
 
 function changedSourceFilesContainingRunIdCast(
   paths: RunPaths,
-  changedPaths: ReadonlyArray<string>
+  changedPaths: ReadonlyArray<WorkspaceRelativePath>
 ) {
   return Effect.gen(function* () {
     const matches: Array<string> = [];
@@ -598,7 +610,7 @@ function changedSourceFilesContainingRunIdCast(
 
 function readWorkspaceSourceFile(
   paths: RunPaths,
-  changedPath: string
+  changedPath: WorkspaceRelativePath
 ): Effect.Effect<
   string | undefined,
   GaiaRuntimeError,
@@ -634,7 +646,9 @@ function readWorkspaceSourceFile(
   );
 }
 
-function isWorkspaceRelativePath(input: string) {
+function isWorkspaceRelativePath(
+  input: WorkspaceRelativePathInput
+): input is WorkspaceRelativePath {
   try {
     parseWorkspaceRelativePath(input);
     return isStrictWorkspacePrGatePath(input);
@@ -643,7 +657,7 @@ function isWorkspaceRelativePath(input: string) {
   }
 }
 
-function isStrictWorkspacePrGatePath(input: string) {
+function isStrictWorkspacePrGatePath(input: WorkspaceRelativePathInput) {
   if (input.includes("\0")) {
     return false;
   }
@@ -653,7 +667,9 @@ function isStrictWorkspacePrGatePath(input: string) {
   });
 }
 
-function isRunRelativeArtifactPath(input: string) {
+function isRunRelativeArtifactPath(
+  input: RunRelativeArtifactPathInput
+): input is RunRelativeArtifactPath {
   try {
     parseRunRelativeArtifactPath(input);
     return true;
@@ -682,7 +698,7 @@ function unsafeOutputArtifacts(paths: ReadonlyArray<string>) {
   });
 }
 
-function isSourceFile(input: string) {
+function isSourceFile(input: WorkspaceRelativePath) {
   for (const extension of sourceFileExtensions) {
     if (input.endsWith(extension)) {
       return true;
@@ -904,13 +920,7 @@ function errorMessage(cause: unknown) {
   return cause instanceof Error ? cause.message : "unknown error";
 }
 
-function gateItem(input: {
-  readonly changedFiles: ReadonlyArray<string>;
-  readonly check: string;
-  readonly reason: string;
-  readonly remediation: string;
-  readonly severity: WorkspacePrQualityGateSeverity;
-}) {
+function gateItem(input: typeof WorkspacePrQualityGateItem.Type) {
   return WorkspacePrQualityGateItem.make({
     changedFiles: [...new Set(input.changedFiles)].toSorted(),
     check: input.check,

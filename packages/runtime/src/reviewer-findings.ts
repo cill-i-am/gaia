@@ -1,14 +1,27 @@
 import path from "node:path";
 
-import type { RunSpec } from "@gaia/core";
+import {
+  FactoryExternalRefUrlSchema,
+  GitHubProviderUrlSchema,
+  GitHubPullRequestSelectorSchema,
+  parseGitHubProviderUrl,
+  parseWorkspaceRelativePath,
+  RunSpec,
+  WorkspaceRelativePathSchema,
+} from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
-import type { RunPaths } from "./paths.js";
-import type { WorkerPlanPlanningContext } from "./source-planning-context.js";
-import type {
-  WorkerPlanDomainReference,
-  WorkerPlanVerificationCheck,
-} from "./worker-plan.js";
+import {
+  parseRunRelativeArtifactPath,
+  parseRuntimePath,
+  RunPathsSchema,
+  RunRelativeArtifactPathSchema,
+  RuntimePathSchema,
+  type RunPaths,
+  type RunRelativeArtifactPath,
+} from "./paths.js";
+import { ReviewerNameSchema } from "./reviewer-session-evidence.js";
+import type { WorkerPlan } from "./worker-plan.js";
 
 export const ReviewerFindingSeveritySchema = Schema.Literals([
   "info",
@@ -29,11 +42,15 @@ export type ReviewerFindingSourceStatus =
 export class ReviewerFindingSource extends Schema.Class<ReviewerFindingSource>(
   "ReviewerFindingSource"
 )({
-  artifactPath: Schema.optionalKey(Schema.NonEmptyString),
+  artifactPath: Schema.optionalKey(RunRelativeArtifactPathSchema),
   label: Schema.NonEmptyString,
-  pullRequest: Schema.optionalKey(Schema.NonEmptyString),
-  url: Schema.optionalKey(Schema.NonEmptyString),
+  pullRequest: Schema.optionalKey(GitHubPullRequestSelectorSchema),
+  url: Schema.optionalKey(FactoryExternalRefUrlSchema),
 }) {}
+
+const parseReviewerFindingSourceUrl = Schema.decodeUnknownSync(
+  FactoryExternalRefUrlSchema
+);
 
 export class ReviewerFindingInput extends Schema.Class<ReviewerFindingInput>(
   "ReviewerFindingInput"
@@ -115,10 +132,10 @@ const parseLegacyReviewArtifact =
 
 const LegacyReviewerSessionEvidence = Schema.Struct({
   decisionStatus: Schema.Literals(["approved", "blocked"] as const),
-  evidencePath: Schema.NonEmptyString,
+  evidencePath: RunRelativeArtifactPathSchema,
   phase: Schema.String,
-  resultPath: Schema.NonEmptyString,
-  reviewerName: Schema.NonEmptyString,
+  resultPath: RunRelativeArtifactPathSchema,
+  reviewerName: ReviewerNameSchema,
 });
 const parseLegacyReviewerSessionEvidence = Schema.decodeUnknownSync(
   LegacyReviewerSessionEvidence
@@ -142,14 +159,46 @@ const LegacyGitHubFeedback = Schema.Struct({
 const parseLegacyGitHubFeedback =
   Schema.decodeUnknownSync(LegacyGitHubFeedback);
 
-export function writeReviewerFindings(input: {
-  readonly domainReferences: ReadonlyArray<WorkerPlanDomainReference>;
-  readonly likelyTouchedSurfaces: ReadonlyArray<string>;
-  readonly paths: RunPaths;
-  readonly planningContext: WorkerPlanPlanningContext;
-  readonly spec: RunSpec;
-  readonly verificationChecks: ReadonlyArray<WorkerPlanVerificationCheck>;
-}) {
+const WriteReviewerFindingsLocalInputSchema = Schema.Struct({
+  paths: RunPathsSchema,
+  spec: RunSpec,
+});
+
+type ReviewerFindingPlanningInput = Pick<
+  typeof WorkerPlan.Type,
+  | "domainReferences"
+  | "likelyTouchedSurfaces"
+  | "planningContext"
+  | "verificationChecks"
+>;
+
+type WriteReviewerFindingsInput =
+  typeof WriteReviewerFindingsLocalInputSchema.Type &
+    ReviewerFindingPlanningInput;
+
+const MatchedHistoricalRiskNotesLocalInputSchema = Schema.Struct({
+  findings: Schema.Array(ReviewerFindingInput),
+});
+
+type MatchedHistoricalRiskNotesInput =
+  typeof MatchedHistoricalRiskNotesLocalInputSchema.Type &
+    ReviewerFindingPlanningInput;
+
+const FindingFromFeedbackTextInputSchema = Schema.Struct({
+  artifactPath: RunRelativeArtifactPathSchema,
+  fallbackTitle: Schema.NonEmptyString,
+  sourceLabel: Schema.NonEmptyString,
+  text: Schema.String,
+  url: Schema.optionalKey(Schema.String),
+});
+
+type ReviewerFindingRelevanceValue =
+  (typeof ReviewerFindingRelevanceInput.Type)["value"];
+type ReviewerFindingRelevanceReason =
+  (typeof ReviewerFindingRelevanceInput.Type)["reason"];
+type ReviewerFindingText = (typeof ReviewerFindingInput.Type)["summary"];
+
+export function writeReviewerFindings(input: WriteReviewerFindingsInput) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const suppliedFindings = uniqueFindings([
@@ -180,12 +229,7 @@ export function writeReviewerFindings(input: {
   });
 }
 
-function reviewerFindingRelevanceInputs(input: {
-  readonly domainReferences: ReadonlyArray<WorkerPlanDomainReference>;
-  readonly likelyTouchedSurfaces: ReadonlyArray<string>;
-  readonly planningContext: WorkerPlanPlanningContext;
-  readonly verificationChecks: ReadonlyArray<WorkerPlanVerificationCheck>;
-}) {
+function reviewerFindingRelevanceInputs(input: ReviewerFindingPlanningInput) {
   return uniqueRelevanceInputs([
     ...input.likelyTouchedSurfaces.map((value) =>
       relevanceInput(
@@ -231,8 +275,8 @@ function reviewerFindingRelevanceInputs(input: {
 
 function relevanceInput(
   kind: typeof ReviewerFindingRelevanceInputKindSchema.Type,
-  value: string,
-  reason: string
+  value: ReviewerFindingRelevanceValue,
+  reason: ReviewerFindingRelevanceReason
 ) {
   return ReviewerFindingRelevanceInput.make({
     kind,
@@ -241,13 +285,7 @@ function relevanceInput(
   });
 }
 
-function matchedHistoricalRiskNotes(input: {
-  readonly domainReferences: ReadonlyArray<WorkerPlanDomainReference>;
-  readonly findings: ReadonlyArray<ReviewerFindingInput>;
-  readonly likelyTouchedSurfaces: ReadonlyArray<string>;
-  readonly planningContext: WorkerPlanPlanningContext;
-  readonly verificationChecks: ReadonlyArray<WorkerPlanVerificationCheck>;
-}) {
+function matchedHistoricalRiskNotes(input: MatchedHistoricalRiskNotesInput) {
   const context = planningContextText(input);
   const contextTokens = tokenSet(context);
 
@@ -317,12 +355,7 @@ function isWeakSurface(surface: string) {
   return weakSurfaceHints.has(normalized);
 }
 
-function planningContextText(input: {
-  readonly domainReferences: ReadonlyArray<WorkerPlanDomainReference>;
-  readonly likelyTouchedSurfaces: ReadonlyArray<string>;
-  readonly planningContext: WorkerPlanPlanningContext;
-  readonly verificationChecks: ReadonlyArray<WorkerPlanVerificationCheck>;
-}) {
+function planningContextText(input: ReviewerFindingPlanningInput) {
   return [
     ...input.likelyTouchedSurfaces,
     ...input.domainReferences.map((reference) => reference.value),
@@ -364,7 +397,9 @@ function findingsFromWorkspaceArtifacts(
     const findings: Array<ReviewerFindingInput> = [];
     for (const artifactPath of artifactPaths) {
       const body = yield* fs
-        .readFileString(path.join(paths.workspace, artifactPath))
+        .readFileString(
+          parseRuntimePath(path.join(paths.workspace, artifactPath))
+        )
         .pipe(
           Effect.catchTag("PlatformError", () => Effect.succeed(undefined))
         );
@@ -378,7 +413,10 @@ function findingsFromWorkspaceArtifacts(
   });
 }
 
-function findingsFromArtifactBody(body: string, artifactPath: string) {
+function findingsFromArtifactBody(
+  body: string,
+  artifactPath: RunRelativeArtifactPath
+) {
   if (artifactPath.endsWith("reviewer-findings.json")) {
     const decoded = decodeJson(body, parseReviewerFindingsInputDocument);
     return decoded?.findings ?? [];
@@ -396,7 +434,9 @@ function findingsFromArtifactBody(body: string, artifactPath: string) {
           fallbackTitle: `GitHub PR comment ${index + 1}`,
           sourceLabel: "GitHub PR feedback",
           text: comment.body,
-          url: comment.url ?? decoded.url,
+          ...(comment.url === undefined && decoded.url === undefined
+            ? {}
+            : { url: comment.url ?? decoded.url }),
         })
       ),
       ...decoded.latestReviews.flatMap((review, index) =>
@@ -405,7 +445,9 @@ function findingsFromArtifactBody(body: string, artifactPath: string) {
           fallbackTitle: `GitHub PR review ${index + 1}`,
           sourceLabel: "GitHub PR review",
           text: review.body ?? review.state,
-          url: review.url ?? decoded.url,
+          ...(review.url === undefined && decoded.url === undefined
+            ? {}
+            : { url: review.url ?? decoded.url }),
         })
       ),
     ];
@@ -487,16 +529,23 @@ function findingsFromArtifactBody(body: string, artifactPath: string) {
   return [];
 }
 
-function findingFromFeedbackText(input: {
-  readonly artifactPath: string;
-  readonly fallbackTitle: string;
-  readonly sourceLabel: string;
-  readonly text: string;
-  readonly url?: string | undefined;
-}) {
+function findingFromFeedbackText(
+  input: typeof FindingFromFeedbackTextInputSchema.Type
+) {
   const summary = input.text.trim();
   if (summary.length === 0) {
     return [];
+  }
+
+  let providerUrl: typeof FactoryExternalRefUrlSchema.Type | undefined;
+  if (input.url !== undefined) {
+    try {
+      providerUrl = parseReviewerFindingSourceUrl(
+        parseGitHubProviderUrl(input.url)
+      );
+    } catch {
+      providerUrl = undefined;
+    }
   }
 
   return [
@@ -506,7 +555,7 @@ function findingFromFeedbackText(input: {
         ReviewerFindingSource.make({
           artifactPath: input.artifactPath,
           label: input.sourceLabel,
-          ...(input.url === undefined ? {} : { url: input.url }),
+          ...(providerUrl === undefined ? {} : { url: providerUrl }),
         }),
       ],
       summary,
@@ -519,24 +568,29 @@ function findingFromFeedbackText(input: {
 
 function listCandidateArtifactPaths(
   fs: FileSystem.FileSystem,
-  workspaceRoot: string
+  workspaceRoot: typeof RuntimePathSchema.Type
 ) {
   return Effect.gen(function* () {
-    const files = yield* listFilesBelow(fs, workspaceRoot, ".");
+    const files = yield* listFilesBelow(
+      fs,
+      workspaceRoot,
+      parseWorkspaceRelativePath(".")
+    );
     return files.filter(isCandidateArtifactPath).slice(0, 50);
   });
 }
 
 function listFilesBelow(
   fs: FileSystem.FileSystem,
-  workspaceRoot: string,
-  relativeDirectory: string
-): Effect.Effect<ReadonlyArray<string>, never> {
+  workspaceRoot: typeof RuntimePathSchema.Type,
+  relativeDirectory: typeof WorkspaceRelativePathSchema.Type
+): Effect.Effect<ReadonlyArray<RunRelativeArtifactPath>, never> {
   return Effect.gen(function* () {
-    const absoluteDirectory =
+    const absoluteDirectory = parseRuntimePath(
       relativeDirectory === "."
         ? workspaceRoot
-        : path.join(workspaceRoot, relativeDirectory);
+        : path.join(workspaceRoot, relativeDirectory)
+    );
     const info = yield* fs
       .stat(absoluteDirectory)
       .pipe(Effect.catchTag("PlatformError", () => Effect.succeed(undefined)));
@@ -547,15 +601,18 @@ function listFilesBelow(
     const entries = yield* fs
       .readDirectory(absoluteDirectory)
       .pipe(Effect.catchTag("PlatformError", () => Effect.succeed([])));
-    const files: Array<string> = [];
+    const files: Array<RunRelativeArtifactPath> = [];
     for (const entry of entries.toSorted()) {
       if (ignoredPathSegments.has(entry)) {
         continue;
       }
 
-      const relativePath =
-        relativeDirectory === "." ? entry : `${relativeDirectory}/${entry}`;
-      const absolutePath = path.join(workspaceRoot, relativePath);
+      const relativePath = parseWorkspaceRelativePath(
+        relativeDirectory === "." ? entry : `${relativeDirectory}/${entry}`
+      );
+      const absolutePath = parseRuntimePath(
+        path.join(workspaceRoot, relativePath)
+      );
       const entryInfo = yield* fs
         .stat(absolutePath)
         .pipe(
@@ -566,7 +623,7 @@ function listFilesBelow(
         continue;
       }
       if (entryInfo?.type === "File") {
-        files.push(relativePath);
+        files.push(parseRunRelativeArtifactPath(relativePath));
       }
     }
 
@@ -574,7 +631,7 @@ function listFilesBelow(
   });
 }
 
-function isCandidateArtifactPath(relativePath: string) {
+function isCandidateArtifactPath(relativePath: RunRelativeArtifactPath) {
   return (
     relativePath.endsWith("reviewer-findings.json") ||
     relativePath.endsWith("github-feedback.json") ||
@@ -619,7 +676,7 @@ function extractSectionItems(input: string, labels: ReadonlyArray<string>) {
   return uniqueStrings(items);
 }
 
-function extractSurfaceHints(input: string) {
+function extractSurfaceHints(input: ReviewerFindingText) {
   const pathHints =
     input.match(/(?:apps|packages|docs)\/[A-Za-z0-9_.\-/]+/gu) ?? [];
   const phraseHints = [
@@ -726,15 +783,15 @@ function normalizeSectionLabel(input: string) {
     .trim();
 }
 
-function normalizeForIncludes(input: string) {
+function normalizeForIncludes(input: ReviewerFindingText) {
   return input.toLowerCase().replace(/_/gu, "-");
 }
 
-function tokenSet(input: string) {
+function tokenSet(input: ReviewerFindingText) {
   return new Set(tokensFrom(input));
 }
 
-function tokensFrom(input: string) {
+function tokensFrom(input: ReviewerFindingText) {
   const rawTokens = input
     .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
     .toLowerCase()

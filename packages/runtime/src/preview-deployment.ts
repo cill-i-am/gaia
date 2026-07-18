@@ -1,12 +1,14 @@
-import { RunIdSchema, type RunId } from "@gaia/core";
+import { RunIdSchema } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
-import {
-  BrowserEvidenceTargetUrlSchema,
-  type BrowserEvidenceTargetUrl,
-} from "./browser-evidence.js";
+import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
-import { runRelative, type RunPaths } from "./paths.js";
+import {
+  parseRunRelativeArtifactPath,
+  runRelative,
+  RunPathsSchema,
+  RunRelativeArtifactPathSchema,
+} from "./paths.js";
 
 export const PreviewDeploymentStatusSchema = Schema.Literals([
   "not-created",
@@ -29,7 +31,7 @@ export class PreviewDeployment extends Schema.Class<PreviewDeployment>(
 export class PreviewDeploymentRecord extends Schema.Class<PreviewDeploymentRecord>(
   "PreviewDeploymentRecord"
 )({
-  deploymentPath: Schema.NonEmptyString,
+  deploymentPath: RunRelativeArtifactPathSchema,
   runId: RunIdSchema,
   status: PreviewDeploymentStatusSchema,
   url: Schema.optionalKey(BrowserEvidenceTargetUrlSchema),
@@ -43,6 +45,25 @@ export const parsePreviewDeploymentJson = Schema.decodeUnknownSync(
   PreviewDeploymentJson
 );
 
+const AvailablePreviewDeploymentInputSchema = Schema.Struct({
+  url: BrowserEvidenceTargetUrlSchema,
+});
+
+const WriteEmptyPreviewDeploymentInputSchema = Schema.Struct({
+  paths: RunPathsSchema,
+});
+
+const WritePreviewDeploymentInputSchema = Schema.Struct({
+  deployment: PreviewDeployment,
+  paths: RunPathsSchema,
+});
+
+const PreviewDeploymentRecordInputSchema = Schema.Struct({
+  deployment: PreviewDeployment,
+  paths: RunPathsSchema,
+  runId: RunIdSchema,
+});
+
 /** Create the empty preview deployment artifact written at run start. */
 export function emptyPreviewDeployment() {
   return PreviewDeployment.make({
@@ -53,9 +74,9 @@ export function emptyPreviewDeployment() {
 }
 
 /** Create an available preview deployment artifact from a parsed URL. */
-export function availablePreviewDeployment(input: {
-  readonly url: BrowserEvidenceTargetUrl;
-}) {
+export function availablePreviewDeployment(
+  input: typeof AvailablePreviewDeploymentInputSchema.Type
+) {
   return PreviewDeployment.make({
     notes: [`Preview deployment available at ${input.url}.`],
     status: "available",
@@ -65,9 +86,9 @@ export function availablePreviewDeployment(input: {
 }
 
 /** Persist the empty preview deployment artifact for a new run. */
-export function writeEmptyPreviewDeployment(input: {
-  readonly paths: RunPaths;
-}): Effect.Effect<PreviewDeployment, GaiaRuntimeError, FileSystem.FileSystem> {
+export function writeEmptyPreviewDeployment(
+  input: typeof WriteEmptyPreviewDeploymentInputSchema.Type
+): Effect.Effect<PreviewDeployment, GaiaRuntimeError, FileSystem.FileSystem> {
   return writePreviewDeployment({
     deployment: emptyPreviewDeployment(),
     paths: input.paths,
@@ -75,10 +96,9 @@ export function writeEmptyPreviewDeployment(input: {
 }
 
 /** Persist a preview deployment artifact. */
-export function writePreviewDeployment(input: {
-  readonly deployment: PreviewDeployment;
-  readonly paths: RunPaths;
-}): Effect.Effect<PreviewDeployment, GaiaRuntimeError, FileSystem.FileSystem> {
+export function writePreviewDeployment(
+  input: typeof WritePreviewDeploymentInputSchema.Type
+): Effect.Effect<PreviewDeployment, GaiaRuntimeError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
 
@@ -103,13 +123,13 @@ export function writePreviewDeployment(input: {
 }
 
 /** Create the event payload model for a persisted preview deployment artifact. */
-export function previewDeploymentRecord(input: {
-  readonly deployment: PreviewDeployment;
-  readonly paths: RunPaths;
-  readonly runId: RunId;
-}) {
+export function previewDeploymentRecord(
+  input: typeof PreviewDeploymentRecordInputSchema.Type
+) {
   return PreviewDeploymentRecord.make({
-    deploymentPath: runRelative(input.paths, input.paths.previewDeployment),
+    deploymentPath: parseRunRelativeArtifactPath(
+      runRelative(input.paths, input.paths.previewDeployment)
+    ),
     runId: input.runId,
     status: input.deployment.status,
     ...(input.deployment.url === undefined

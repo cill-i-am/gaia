@@ -5,64 +5,58 @@ import {
   EvidencePromotionReportPaths,
   EvidencePromotionVerificationSummary,
   PromotedEvidenceItem,
+  EvidencePromotionCleanupStatusSchema,
+  EvidencePromotionStatusSchema,
   parseDogfoodRetrospective,
-  type EvidencePromotionCleanupStatus,
-  type EvidencePromotionStatus,
-  type RunId,
+  parseRunReportArtifactPath,
+  RunIdSchema,
 } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
 import { makeRuntimeError } from "./errors.js";
-import { runRelative, type RunPaths } from "./paths.js";
+import {
+  parseRuntimePath,
+  runRelative,
+  RunPathsSchema,
+  RuntimePathSchema,
+  type RunPaths,
+} from "./paths.js";
+import { parseVerificationResultJson } from "./verifier.js";
 
 const EvidencePromotionJson = Schema.toCodecJson(EvidencePromotion);
 const encodeEvidencePromotion = Schema.encodeSync(EvidencePromotionJson);
 
-const VerificationResultArtifact = Schema.Struct({
-  checkedArtifacts: Schema.Array(Schema.NonEmptyString),
-  status: Schema.NonEmptyString,
+const WriteEvidencePromotionInputSchema = Schema.Struct({
+  cleanupStatus: Schema.optionalKey(EvidencePromotionCleanupStatusSchema),
+  promotionStatus: Schema.optionalKey(EvidencePromotionStatusSchema),
+  paths: RunPathsSchema,
+  runId: RunIdSchema,
 });
-const parseVerificationResultArtifact = Schema.decodeUnknownSync(
-  VerificationResultArtifact
-);
 
-const GitHubChecksSnapshotArtifact = Schema.Struct({
-  headSha: Schema.optionalKey(Schema.NonEmptyString),
-  pr: Schema.NonEmptyString,
-  status: Schema.NonEmptyString,
+type WriteEvidencePromotionInput =
+  typeof WriteEvidencePromotionInputSchema.Type;
+
+const BuildSelectedEvidenceInputSchema = Schema.Struct({
+  dogfood: EvidencePromotionDogfoodSummary,
+  paths: RunPathsSchema,
+  pullRequest: EvidencePromotionPullRequestSummary,
+  reportPaths: EvidencePromotionReportPaths,
+  verification: EvidencePromotionVerificationSummary,
 });
-const parseGitHubChecksSnapshotArtifact = Schema.decodeUnknownSync(
-  GitHubChecksSnapshotArtifact
-);
 
-const GitHubPrFeedbackArtifact = Schema.Struct({
-  headSha: Schema.optionalKey(Schema.NonEmptyString),
-  pr: Schema.NonEmptyString,
-  status: Schema.NonEmptyString,
-  url: Schema.optionalKey(Schema.String),
+const PromotedEvidenceItemInputSchema = Schema.toEncoded(PromotedEvidenceItem);
+
+const RenderEvidencePromotionMarkdownInputSchema = Schema.Struct({
+  cleanupStatus: EvidencePromotionCleanupStatusSchema,
+  dogfood: EvidencePromotionDogfoodSummary,
+  generatedAt: EvidencePromotion.fields.generatedAt,
+  promotionStatus: EvidencePromotionStatusSchema,
+  pullRequest: EvidencePromotionPullRequestSummary,
+  reportPaths: EvidencePromotionReportPaths,
+  runId: RunIdSchema,
+  selectedEvidence: EvidencePromotion.fields.selectedEvidence,
+  verification: EvidencePromotionVerificationSummary,
 });
-const parseGitHubPrFeedbackArtifact = Schema.decodeUnknownSync(
-  GitHubPrFeedbackArtifact
-);
-
-const GitHubPrLoopArtifact = Schema.Struct({
-  checksPath: Schema.NonEmptyString,
-  checksStatus: Schema.NonEmptyString,
-  feedbackPath: Schema.NonEmptyString,
-  feedbackStatus: Schema.NonEmptyString,
-  headSha: Schema.optionalKey(Schema.NonEmptyString),
-  pr: Schema.NonEmptyString,
-  status: Schema.NonEmptyString,
-});
-const parseGitHubPrLoopArtifact =
-  Schema.decodeUnknownSync(GitHubPrLoopArtifact);
-
-type WriteEvidencePromotionInput = {
-  readonly cleanupStatus?: EvidencePromotionCleanupStatus;
-  readonly promotionStatus?: EvidencePromotionStatus;
-  readonly paths: RunPaths;
-  readonly runId: RunId;
-};
 
 export function writeEvidencePromotion(input: WriteEvidencePromotionInput) {
   return Effect.gen(function* () {
@@ -170,7 +164,7 @@ function buildVerificationSummary(paths: RunPaths) {
   return Effect.gen(function* () {
     const artifact = yield* readJsonIfExists(
       paths.verificationResult,
-      parseVerificationResultArtifact
+      parseVerificationResultJson
     );
 
     if (artifact === undefined) {
@@ -190,13 +184,15 @@ function buildVerificationSummary(paths: RunPaths) {
 
 function buildPullRequestSummary(paths: RunPaths) {
   return Effect.gen(function* () {
+    const { parseGitHubPrFeedbackJson, parseGitHubPrLoopStateJson } =
+      yield* Effect.promise(() => import("./github-publisher.js"));
     const prLoop = yield* readJsonIfExists(
       paths.prLoopState,
-      parseGitHubPrLoopArtifact
+      parseGitHubPrLoopStateJson
     );
     const feedback = yield* readJsonIfExists(
       paths.githubFeedback,
-      parseGitHubPrFeedbackArtifact
+      parseGitHubPrFeedbackJson
     );
     const checks = yield* readLatestGitHubChecksSnapshot(paths);
     const artifactPaths = compactStrings([
@@ -254,17 +250,15 @@ function buildDogfoodSummary(paths: RunPaths) {
   });
 }
 
-function buildSelectedEvidence(input: {
-  readonly dogfood: EvidencePromotionDogfoodSummary;
-  readonly paths: RunPaths;
-  readonly pullRequest: EvidencePromotionPullRequestSummary;
-  readonly reportPaths: EvidencePromotionReportPaths;
-  readonly verification: EvidencePromotionVerificationSummary;
-}) {
+function buildSelectedEvidence(
+  input: typeof BuildSelectedEvidenceInputSchema.Type
+) {
   return [
     promotedEvidenceItem({
       label: "Worker plan",
-      path: input.reportPaths.workerPlanPath,
+      ...(input.reportPaths.workerPlanPath === undefined
+        ? {}
+        : { path: input.reportPaths.workerPlanPath }),
       status:
         input.reportPaths.workerPlanPath === undefined ? "skipped" : "promoted",
       summary:
@@ -274,9 +268,14 @@ function buildSelectedEvidence(input: {
     }),
     promotedEvidenceItem({
       label: "Run report",
-      path:
-        input.reportPaths.reportMarkdownPath ??
-        input.reportPaths.reportJsonPath,
+      ...(input.reportPaths.reportMarkdownPath === undefined &&
+      input.reportPaths.reportJsonPath === undefined
+        ? {}
+        : {
+            path:
+              input.reportPaths.reportMarkdownPath ??
+              input.reportPaths.reportJsonPath,
+          }),
       status:
         input.reportPaths.reportMarkdownPath === undefined &&
         input.reportPaths.reportJsonPath === undefined
@@ -290,7 +289,9 @@ function buildSelectedEvidence(input: {
     }),
     promotedEvidenceItem({
       label: "Verification summary",
-      path: input.verification.path,
+      ...(input.verification.path === undefined
+        ? {}
+        : { path: input.verification.path }),
       status: input.verification.path === undefined ? "skipped" : "promoted",
       summary:
         input.verification.path === undefined
@@ -304,7 +305,9 @@ function buildSelectedEvidence(input: {
     }),
     promotedEvidenceItem({
       label: "Dogfood findings",
-      path: input.dogfood.artifactPath,
+      ...(input.dogfood.artifactPath === undefined
+        ? {}
+        : { path: input.dogfood.artifactPath }),
       status: input.dogfood.artifactPath === undefined ? "skipped" : "promoted",
       summary: input.dogfood.summary,
     }),
@@ -317,12 +320,9 @@ function buildSelectedEvidence(input: {
   ];
 }
 
-function promotedEvidenceItem(input: {
-  readonly label: string;
-  readonly path?: string | undefined;
-  readonly status: EvidencePromotionStatus;
-  readonly summary: string;
-}) {
+function promotedEvidenceItem(
+  input: typeof PromotedEvidenceItemInputSchema.Type
+) {
   return PromotedEvidenceItem.make({
     label: input.label,
     ...(input.path === undefined ? {} : { path: input.path }),
@@ -331,17 +331,9 @@ function promotedEvidenceItem(input: {
   });
 }
 
-function renderEvidencePromotionMarkdown(input: {
-  readonly cleanupStatus: EvidencePromotionCleanupStatus;
-  readonly dogfood: EvidencePromotionDogfoodSummary;
-  readonly generatedAt: string;
-  readonly promotionStatus: EvidencePromotionStatus;
-  readonly pullRequest: EvidencePromotionPullRequestSummary;
-  readonly reportPaths: EvidencePromotionReportPaths;
-  readonly runId: RunId;
-  readonly selectedEvidence: ReadonlyArray<PromotedEvidenceItem>;
-  readonly verification: EvidencePromotionVerificationSummary;
-}) {
+function renderEvidencePromotionMarkdown(
+  input: typeof RenderEvidencePromotionMarkdownInputSchema.Type
+) {
   const selectedEvidence = input.selectedEvidence
     .map(
       (evidence) =>
@@ -415,7 +407,10 @@ function compactStrings(input: ReadonlyArray<string | undefined>) {
   return input.filter((value): value is string => value !== undefined);
 }
 
-function existingRunPath(paths: RunPaths, absolutePath: string) {
+function existingRunPath(
+  paths: RunPaths,
+  absolutePath: typeof RuntimePathSchema.Type
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const exists = yield* fs.exists(absolutePath);
@@ -423,16 +418,21 @@ function existingRunPath(paths: RunPaths, absolutePath: string) {
   });
 }
 
-function gaiaRelative(paths: RunPaths, absolutePath: string): string {
+function gaiaRelative(
+  paths: RunPaths,
+  absolutePath: typeof RuntimePathSchema.Type
+) {
   if (absolutePath.startsWith(`${paths.gaiaRoot}/`)) {
-    return `.gaia/${absolutePath.slice(paths.gaiaRoot.length + 1)}`;
+    return parseRunReportArtifactPath(
+      `.gaia/${absolutePath.slice(paths.gaiaRoot.length + 1)}`
+    );
   }
 
-  return absolutePath;
+  return parseRunReportArtifactPath(absolutePath);
 }
 
 function readJsonIfExists<A>(
-  artifactPath: string,
+  artifactPath: typeof RuntimePathSchema.Type,
   parse: (input: unknown) => A
 ) {
   return Effect.gen(function* () {
@@ -485,10 +485,15 @@ function readLatestGitHubChecksSnapshot(paths: RunPaths) {
       return undefined;
     }
 
-    const artifactPath = path.join(paths.githubChecks, latest);
+    const { GitHubChecksSnapshot } = yield* Effect.promise(
+      () => import("./github-publisher.js")
+    );
+    const artifactPath = parseRuntimePath(
+      path.join(paths.githubChecks, latest)
+    );
     const snapshot = yield* readJsonIfExists(
       artifactPath,
-      parseGitHubChecksSnapshotArtifact
+      Schema.decodeUnknownSync(Schema.toCodecJson(GitHubChecksSnapshot))
     );
     if (snapshot === undefined) {
       return undefined;
