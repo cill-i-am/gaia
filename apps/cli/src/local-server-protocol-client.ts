@@ -3,10 +3,11 @@ import {
   DeliveryEvaluateMergeReadinessActionRequest,
   FactoryArtifactIdSchema,
   LocalGaiaServerApi,
+  LocalGaiaServerUrlSchema,
   LocalRunReadArtifactIdSchema,
   type LocalGaiaServerUrl,
   type LocalRunApiError,
-  type RunId,
+  RunIdSchema,
 } from "@gaia/core";
 import { Cause, Effect, Schema } from "effect";
 import {
@@ -17,6 +18,28 @@ import {
 import { HttpApiClient } from "effect/unstable/httpapi";
 
 const fetchTimeoutMs = 2_000;
+
+const LocalServerUrlInputSchema = Schema.Struct({
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+const LocalServerRunInputSchema = Schema.Struct({
+  runId: RunIdSchema,
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+const LocalServerArtifactInputSchema = Schema.Struct({
+  artifactName: Schema.String,
+  runId: RunIdSchema,
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+const LocalServerCreateRunInputSchema = Schema.Struct({
+  payload: CreateRunRequest,
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+const LocalServerMergeReadinessInputSchema = Schema.Struct({
+  payload: DeliveryEvaluateMergeReadinessActionRequest,
+  runId: RunIdSchema,
+  serverUrl: LocalGaiaServerUrlSchema,
+});
 
 /**
  * Expected failures surfaced by the local Gaia generated protocol client.
@@ -45,9 +68,9 @@ export const LocalGaiaServerProtocolClientLive = FetchHttpClient.layer;
 /**
  * Reads the local server run list through the shared `LocalGaiaServerApi` contract.
  */
-export function listRunsFromLocalServerProtocol(input: {
-  readonly serverUrl: LocalGaiaServerUrl;
-}) {
+export function listRunsFromLocalServerProtocol(
+  input: typeof LocalServerUrlInputSchema.Type
+) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
     client.runs.listRuns(undefined)
   );
@@ -56,10 +79,9 @@ export function listRunsFromLocalServerProtocol(input: {
 /**
  * Reads one local server run summary through the shared `LocalGaiaServerApi` contract.
  */
-export function getRunFromLocalServerProtocol(input: {
-  readonly runId: RunId;
-  readonly serverUrl: LocalGaiaServerUrl;
-}) {
+export function getRunFromLocalServerProtocol(
+  input: typeof LocalServerRunInputSchema.Type
+) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
     client.runs.getRun({ params: { runId: input.runId } })
   );
@@ -68,10 +90,9 @@ export function getRunFromLocalServerProtocol(input: {
 /**
  * Reads one local server run's events through the shared `LocalGaiaServerApi` contract.
  */
-export function getRunEventsFromLocalServerProtocol(input: {
-  readonly runId: RunId;
-  readonly serverUrl: LocalGaiaServerUrl;
-}) {
+export function getRunEventsFromLocalServerProtocol(
+  input: typeof LocalServerRunInputSchema.Type
+) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
     client.runs.getRunEvents({ params: { runId: input.runId } })
   );
@@ -80,11 +101,9 @@ export function getRunEventsFromLocalServerProtocol(input: {
 /**
  * Reads an allowlisted logical run artifact through the shared API contract.
  */
-export function getRunArtifactFromLocalServerProtocol(input: {
-  readonly artifactName: string;
-  readonly runId: RunId;
-  readonly serverUrl: LocalGaiaServerUrl;
-}) {
+export function getRunArtifactFromLocalServerProtocol(
+  input: typeof LocalServerArtifactInputSchema.Type
+) {
   return Effect.gen(function* () {
     const artifactId = yield* decodeArtifactIdParameter(input.artifactName);
     return yield* withLocalGaiaServerClient(input.serverUrl, (client) =>
@@ -101,20 +120,17 @@ export function getRunArtifactFromLocalServerProtocol(input: {
 /**
  * Creates a local server run from an already parsed create-run request payload.
  */
-export function createRunFromLocalServerProtocol(input: {
-  readonly payload: typeof CreateRunRequest.Type;
-  readonly serverUrl: LocalGaiaServerUrl;
-}) {
+export function createRunFromLocalServerProtocol(
+  input: typeof LocalServerCreateRunInputSchema.Type
+) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
     client.runs.createRun({ payload: input.payload })
   );
 }
 
-export function evaluateMergeReadinessFromLocalServerProtocol(input: {
-  readonly payload: typeof DeliveryEvaluateMergeReadinessActionRequest.Type;
-  readonly runId: RunId;
-  readonly serverUrl: LocalGaiaServerUrl;
-}) {
+export function evaluateMergeReadinessFromLocalServerProtocol(
+  input: typeof LocalServerMergeReadinessInputSchema.Type
+) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
     client.runs.actOnDelivery({
       params: { runId: input.runId },
@@ -126,9 +142,9 @@ export function evaluateMergeReadinessFromLocalServerProtocol(input: {
 /**
  * Reads local server health through the shared `LocalGaiaServerApi` contract.
  */
-export function healthFromLocalServerProtocol(input: {
-  readonly serverUrl: LocalGaiaServerUrl;
-}) {
+export function healthFromLocalServerProtocol(
+  input: typeof LocalServerUrlInputSchema.Type
+) {
   return withLocalGaiaServerClient(input.serverUrl, (client) =>
     client.health.health(undefined)
   );

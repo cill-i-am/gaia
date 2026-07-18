@@ -4,9 +4,11 @@ import path from "node:path";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  LocalGaiaServerUrlSchema,
   LocalRunApiDiagnosticDto,
   parseLocalGaiaServerUrl,
   parseRunId,
+  RunIdSchema,
   type LocalGaiaServerUrl,
   type LocalRunArtifact,
   type LocalRunEvents,
@@ -50,6 +52,8 @@ import {
   makeRuntimeError,
   makeProcessHarnessConfig,
   parseHarnessName,
+  parseRunStorageRootInput,
+  parseRuntimePath,
   preflightGitHubPublish,
   previewGitHubPublish,
   publishRunToGitHub,
@@ -61,6 +65,7 @@ import {
   readLocalRunArtifact,
   readLocalRunEvents,
   runSpecFile,
+  RuntimePathSchema,
   statusRun,
   watchGitHubChecks,
   watchGitHubFeedback,
@@ -86,12 +91,53 @@ import {
   type ServerRunAcceptedSummary,
 } from "./server-read-client.js";
 
-type FailureOutput = {
-  readonly code: string;
-  readonly message: string;
-  readonly recoverable: boolean;
-  readonly status: "failed";
-};
+const FailureOutputSchema = Schema.Struct({
+  code: Schema.String,
+  message: Schema.String,
+  recoverable: Schema.Boolean,
+  status: Schema.Literal("failed"),
+});
+
+type FailureOutput = typeof FailureOutputSchema.Type;
+
+const RunCommandInputSchema = Schema.Struct({
+  browserRunTargetUrl: Schema.Option(Schema.String),
+  codexArg: Schema.Array(Schema.String),
+  codexCommand: Schema.Option(Schema.String),
+  codexModel: Schema.Option(Schema.String),
+  codexProfile: Schema.Option(Schema.String),
+  codexSandbox: Schema.Option(Schema.String),
+  codexTimeoutMs: Schema.Option(Schema.String),
+  harness: Schema.Option(Schema.String),
+  harnessArg: Schema.Array(Schema.String),
+  harnessCommand: Schema.Option(Schema.String),
+  requireBrowserEvidence: Schema.Boolean,
+  reviewer: Schema.Option(Schema.String),
+  runProfile: Schema.Option(Schema.String),
+  serverMode: Schema.Boolean,
+  skillManifest: Schema.Option(Schema.String),
+  specFile: RuntimePathSchema,
+  workspaceSource: Schema.Option(Schema.String),
+});
+const ReadStatusInputSchema = Schema.Struct({
+  runId: Schema.optionalKey(RunIdSchema),
+  serverMode: Schema.Boolean,
+  serverUrl: Schema.optionalKey(LocalGaiaServerUrlSchema),
+});
+const ReadListInputSchema = Schema.Struct({
+  serverMode: Schema.Boolean,
+  serverUrl: Schema.optionalKey(LocalGaiaServerUrlSchema),
+});
+const ReadEventsInputSchema = Schema.Struct({
+  runId: RunIdSchema,
+  serverMode: Schema.Boolean,
+  serverUrl: Schema.optionalKey(LocalGaiaServerUrlSchema),
+});
+const ReadArtifactInputSchema = Schema.Struct({
+  artifactName: Schema.String,
+  runId: RunIdSchema,
+  serverUrl: Schema.optionalKey(LocalGaiaServerUrlSchema),
+});
 
 const specFile = Argument.string("spec-file");
 const linearIssueGraphFile = Argument.string("linear-issue-graph-file");
@@ -280,7 +326,7 @@ const run = Command.make("run", {
           runProfile,
           serverMode,
           skillManifest,
-          specFile,
+          specFile: parseRuntimePath(specFile),
           workspaceSource,
         }),
         json,
@@ -313,10 +359,20 @@ const status = Command.make("status", {
   ),
   Command.withHandler(({ json, runId, serverMode, serverUrl }) =>
     renderEffect(
-      readStatus({
-        ...serverUrlInput(Option.getOrUndefined(serverUrl)),
-        ...(Option.isSome(runId) ? { runId: runId.value } : {}),
-        serverMode,
+      Effect.gen(function* () {
+        const parsedRunId = yield* parseOptionalRunIdInput(
+          Option.getOrUndefined(runId)
+        );
+        const parsedServerUrl = yield* parseOptionalServerUrlInput(
+          Option.getOrUndefined(serverUrl)
+        );
+        return yield* readStatus({
+          ...(parsedRunId === undefined ? {} : { runId: parsedRunId }),
+          ...(parsedServerUrl === undefined
+            ? {}
+            : { serverUrl: parsedServerUrl }),
+          serverMode,
+        });
       }),
       json,
       renderSummary
@@ -339,10 +395,16 @@ const list = Command.make("list", { json, serverMode, serverUrl }).pipe(
   Command.withDescription("List known Gaia runs."),
   Command.withHandler(({ json, serverMode, serverUrl }) =>
     renderEffect(
-      readList({
-        ...serverUrlInput(Option.getOrUndefined(serverUrl)),
-        serverMode,
-      }),
+      parseOptionalServerUrlInput(Option.getOrUndefined(serverUrl)).pipe(
+        Effect.flatMap((parsedServerUrl) =>
+          readList({
+            ...(parsedServerUrl === undefined
+              ? {}
+              : { serverUrl: parsedServerUrl }),
+            serverMode,
+          })
+        )
+      ),
       json,
       renderRunList
     )
@@ -358,10 +420,18 @@ const events = Command.make("events", {
   Command.withDescription("Read a Gaia run's event log."),
   Command.withHandler(({ json, runId, serverMode, serverUrl }) =>
     renderEffect(
-      readEvents({
-        ...serverUrlInput(Option.getOrUndefined(serverUrl)),
-        runId,
-        serverMode,
+      Effect.gen(function* () {
+        const parsedRunId = yield* parseRunIdInput(runId);
+        const parsedServerUrl = yield* parseOptionalServerUrlInput(
+          Option.getOrUndefined(serverUrl)
+        );
+        return yield* readEvents({
+          runId: parsedRunId,
+          ...(parsedServerUrl === undefined
+            ? {}
+            : { serverUrl: parsedServerUrl }),
+          serverMode,
+        });
       }),
       json,
       renderRunEvents
@@ -378,10 +448,18 @@ const artifact = Command.make("artifact", {
   Command.withDescription("Read an allowlisted Gaia run artifact."),
   Command.withHandler(({ artifactName, json, runId, serverUrl }) =>
     renderEffect(
-      readArtifact({
-        ...serverUrlInput(Option.getOrUndefined(serverUrl)),
-        artifactName,
-        runId,
+      Effect.gen(function* () {
+        const parsedRunId = yield* parseRunIdInput(runId);
+        const parsedServerUrl = yield* parseOptionalServerUrlInput(
+          Option.getOrUndefined(serverUrl)
+        );
+        return yield* readArtifact({
+          artifactName,
+          runId: parsedRunId,
+          ...(parsedServerUrl === undefined
+            ? {}
+            : { serverUrl: parsedServerUrl }),
+        });
       }),
       json,
       renderRunArtifact
@@ -752,7 +830,7 @@ const cli = Command.make("gaia").pipe(
 const command = Command.run(cli, { version: "0.1.0" });
 
 function invocationRoot() {
-  return process.env["INIT_CWD"] ?? process.cwd();
+  return parseRunStorageRootInput(process.env["INIT_CWD"] ?? process.cwd());
 }
 
 function workflowOptions(
@@ -896,18 +974,14 @@ function githubPublishOptions(
   };
 }
 
-function resolveInvocationPath(input: string) {
-  return path.resolve(invocationRoot(), input);
+function resolveInvocationPath(input: typeof RuntimePathSchema.Encoded) {
+  return parseRuntimePath(path.resolve(invocationRoot(), input));
 }
 
-function resolveRunProfilePath(input: string) {
+function resolveRunProfilePath(input: typeof RuntimePathSchema.Encoded) {
   return /^[A-Za-z0-9_-]+$/u.test(input)
     ? resolveInvocationPath(path.join("profiles", `${input}.json`))
     : resolveInvocationPath(input);
-}
-
-function serverUrlInput(serverUrl: string | undefined) {
-  return serverUrl === undefined ? {} : { serverUrl };
 }
 
 function parseServerPortFlag(
@@ -933,25 +1007,7 @@ function parseServerPortFlag(
 
 type RunCommandSummary = CommandSummary | ServerRunAcceptedSummary;
 
-function runCommand(input: {
-  readonly browserRunTargetUrl: Option.Option<string>;
-  readonly codexArg: ReadonlyArray<string>;
-  readonly codexCommand: Option.Option<string>;
-  readonly codexModel: Option.Option<string>;
-  readonly codexProfile: Option.Option<string>;
-  readonly codexSandbox: Option.Option<string>;
-  readonly codexTimeoutMs: Option.Option<string>;
-  readonly harness: Option.Option<string>;
-  readonly harnessArg: ReadonlyArray<string>;
-  readonly harnessCommand: Option.Option<string>;
-  readonly requireBrowserEvidence: boolean;
-  readonly reviewer: Option.Option<string>;
-  readonly runProfile: Option.Option<string>;
-  readonly serverMode: boolean;
-  readonly skillManifest: Option.Option<string>;
-  readonly specFile: string;
-  readonly workspaceSource: Option.Option<string>;
-}) {
+function runCommand(input: typeof RunCommandInputSchema.Type) {
   const specPath = resolveInvocationPath(input.specFile);
   if (input.serverMode) {
     return Effect.gen(function* () {
@@ -989,23 +1045,7 @@ function runCommand(input: {
   );
 }
 
-function validateServerRunOptions(input: {
-  readonly browserRunTargetUrl: Option.Option<string>;
-  readonly codexArg: ReadonlyArray<string>;
-  readonly codexCommand: Option.Option<string>;
-  readonly codexModel: Option.Option<string>;
-  readonly codexProfile: Option.Option<string>;
-  readonly codexSandbox: Option.Option<string>;
-  readonly codexTimeoutMs: Option.Option<string>;
-  readonly harness: Option.Option<string>;
-  readonly harnessArg: ReadonlyArray<string>;
-  readonly harnessCommand: Option.Option<string>;
-  readonly requireBrowserEvidence: boolean;
-  readonly reviewer: Option.Option<string>;
-  readonly runProfile: Option.Option<string>;
-  readonly skillManifest: Option.Option<string>;
-  readonly workspaceSource: Option.Option<string>;
-}) {
+function validateServerRunOptions(input: typeof RunCommandInputSchema.Type) {
   const unsupported = [
     optionName(input.browserRunTargetUrl, "--browser-url"),
     optionName(input.codexCommand, "--codex-command"),
@@ -1041,34 +1081,23 @@ function optionName(option: Option.Option<string>, name: string) {
   return Option.isSome(option) ? name : undefined;
 }
 
-function readStatus(input: {
-  readonly runId?: string;
-  readonly serverMode: boolean;
-  readonly serverUrl?: string;
-}) {
-  return parseOptionalRunIdInput(input.runId).pipe(
-    Effect.flatMap((parsedRunId) => {
-      if (!input.serverMode && input.serverUrl === undefined) {
-        return statusRun(parsedRunId, workflowOptions());
-      }
+function readStatus(input: typeof ReadStatusInputSchema.Type) {
+  if (!input.serverMode && input.serverUrl === undefined) {
+    return statusRun(input.runId, workflowOptions());
+  }
 
-      return serverUrlFor(input).pipe(
-        Effect.flatMap((serverUrl) =>
-          statusRunFromServer({
-            rootDirectory: invocationRoot(),
-            serverUrl,
-            ...(parsedRunId === undefined ? {} : { runId: parsedRunId }),
-          })
-        )
-      );
-    })
+  return serverUrlFor(input).pipe(
+    Effect.flatMap((serverUrl) =>
+      statusRunFromServer({
+        rootDirectory: invocationRoot(),
+        serverUrl,
+        ...(input.runId === undefined ? {} : { runId: input.runId }),
+      })
+    )
   );
 }
 
-function readList(input: {
-  readonly serverMode: boolean;
-  readonly serverUrl?: string;
-}) {
+function readList(input: typeof ReadListInputSchema.Type) {
   if (!input.serverMode && input.serverUrl === undefined) {
     return listRuns(workflowOptions());
   }
@@ -1083,55 +1112,40 @@ function readList(input: {
   );
 }
 
-function readEvents(input: {
-  readonly runId: string;
-  readonly serverMode: boolean;
-  readonly serverUrl?: string;
-}) {
-  return Effect.gen(function* () {
-    const parsedRunId = yield* parseRunIdInput(input.runId);
-    if (!input.serverMode && input.serverUrl === undefined) {
-      return yield* readLocalRunEvents(parsedRunId, workflowOptions());
-    }
+function readEvents(input: typeof ReadEventsInputSchema.Type) {
+  if (!input.serverMode && input.serverUrl === undefined) {
+    return readLocalRunEvents(input.runId, workflowOptions());
+  }
 
-    const parsedServerUrl = yield* serverUrlFor(input);
-    return yield* readLocalRunEventsFromServer({
-      runId: parsedRunId,
-      serverUrl: parsedServerUrl,
-    });
+  return serverUrlFor(input).pipe(
+    Effect.flatMap((serverUrl) =>
+      readLocalRunEventsFromServer({
+        runId: input.runId,
+        serverUrl,
+      })
+    )
+  );
+}
+
+function readArtifact(input: typeof ReadArtifactInputSchema.Type) {
+  if (input.serverUrl === undefined) {
+    return readLocalRunArtifact(
+      input.runId,
+      input.artifactName,
+      workflowOptions()
+    );
+  }
+
+  return readLocalRunArtifactFromServer({
+    artifactName: input.artifactName,
+    runId: input.runId,
+    serverUrl: input.serverUrl,
   });
 }
 
-function readArtifact(input: {
-  readonly artifactName: string;
-  readonly runId: string;
-  readonly serverUrl?: string;
-}) {
-  return Effect.gen(function* () {
-    const parsedRunId = yield* parseRunIdInput(input.runId);
-    if (input.serverUrl === undefined) {
-      return yield* readLocalRunArtifact(
-        parsedRunId,
-        input.artifactName,
-        workflowOptions()
-      );
-    }
-
-    const parsedServerUrl = yield* parseServerUrlInput(input.serverUrl);
-    return yield* readLocalRunArtifactFromServer({
-      artifactName: input.artifactName,
-      runId: parsedRunId,
-      serverUrl: parsedServerUrl,
-    });
-  });
-}
-
-function serverUrlFor(input: {
-  readonly serverMode: boolean;
-  readonly serverUrl?: string;
-}) {
+function serverUrlFor(input: typeof ReadListInputSchema.Type) {
   if (input.serverUrl !== undefined) {
-    return parseServerUrlInput(input.serverUrl);
+    return Effect.succeed(input.serverUrl);
   }
 
   if (input.serverMode) {
@@ -1168,6 +1182,14 @@ function parseOptionalRunIdInput(
   return input === undefined
     ? Effect.succeed<RunId | undefined>(undefined)
     : parseRunIdInput(input);
+}
+
+function parseOptionalServerUrlInput(
+  input: string | undefined
+): Effect.Effect<LocalGaiaServerUrl | undefined, GaiaRuntimeError> {
+  return input === undefined
+    ? Effect.succeed<LocalGaiaServerUrl | undefined>(undefined)
+    : parseServerUrlInput(input);
 }
 
 function parseServerUrlInput(

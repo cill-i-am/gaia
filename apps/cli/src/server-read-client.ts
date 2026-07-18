@@ -8,9 +8,12 @@ import {
   CreateRunAcceptedResponse,
   CreateRunRequest,
   codexAppServerExecutionSelection,
+  DeliveryActionIdPublicSchema,
+  DeliveryEvaluateMergeReadinessActionRequest,
   FactoryArtifactBodyDto,
   FactoryRunDetailDto,
   FactoryRunSummaryDto,
+  LocalGaiaServerUrlSchema,
   LocalRunApiErrorEnvelope,
   LocalRunReadArtifactSchema,
   type LocalGaiaServerUrl,
@@ -22,6 +25,10 @@ import {
   makeRunPaths,
   makeRunStorePaths,
   makeRuntimeError,
+  parseRunStorageRootInput,
+  parseRuntimePath,
+  RunStorageRootInputSchema,
+  RuntimePathSchema,
   type CommandSummary,
 } from "@gaia/runtime";
 import { Cause, Effect, FileSystem, Option, Predicate, Schema } from "effect";
@@ -47,16 +54,49 @@ const decodeLocalRunArtifact = Schema.decodeUnknownSync(
 );
 const decodeServerMetadata = Schema.decodeUnknownSync(ServerMetadata);
 
-export type ServerRunAcceptedSummary = typeof CreateRunAcceptedResponse.Type & {
-  readonly serverUrl: LocalGaiaServerUrl;
-};
+const ServerRunAcceptedSummarySchema = Schema.Struct({
+  ...CreateRunAcceptedResponse.fields,
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+const EvaluateMergeReadinessFromServerInputSchema = Schema.Struct({
+  actionId: DeliveryActionIdPublicSchema,
+  mergeMethod: DeliveryEvaluateMergeReadinessActionRequest.fields.mergeMethod,
+  runId: RunIdSchema,
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+const ServerRootUrlInputSchema = Schema.Struct({
+  rootDirectory: RunStorageRootInputSchema,
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+const ServerStatusInputSchema = Schema.Struct({
+  rootDirectory: RunStorageRootInputSchema,
+  runId: Schema.optionalKey(RunIdSchema),
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+const ServerRunInputSchema = Schema.Struct({
+  runId: RunIdSchema,
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+const ServerArtifactInputSchema = Schema.Struct({
+  artifactName: Schema.String,
+  runId: RunIdSchema,
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+const ServerCreateRunInputSchema = Schema.Struct({
+  rootDirectory: RunStorageRootInputSchema,
+  serverUrl: LocalGaiaServerUrlSchema,
+  specPath: RuntimePathSchema,
+});
+const ServerRootInputSchema = Schema.Struct({
+  rootDirectory: RunStorageRootInputSchema,
+});
 
-export function evaluateMergeReadinessFromServer(input: {
-  readonly actionId: string;
-  readonly mergeMethod: "merge" | "rebase" | "squash";
-  readonly runId: RunId;
-  readonly serverUrl: LocalGaiaServerUrl;
-}) {
+export type ServerRunAcceptedSummary =
+  typeof ServerRunAcceptedSummarySchema.Type;
+
+export function evaluateMergeReadinessFromServer(
+  input: typeof EvaluateMergeReadinessFromServerInputSchema.Type
+) {
   return requestServer({
     dataName: "merge readiness decision",
     effect: evaluateMergeReadinessFromLocalServerProtocol({
@@ -72,10 +112,9 @@ export function evaluateMergeReadinessFromServer(input: {
   });
 }
 
-export function listRunsFromServer(input: {
-  readonly rootDirectory: string;
-  readonly serverUrl: LocalGaiaServerUrl;
-}) {
+export function listRunsFromServer(
+  input: typeof ServerRootUrlInputSchema.Type
+) {
   return Effect.gen(function* () {
     const response = yield* requestServer({
       dataName: "run list",
@@ -96,11 +135,9 @@ export function listRunsFromServer(input: {
   });
 }
 
-export function statusRunFromServer(input: {
-  readonly rootDirectory: string;
-  readonly runId?: RunId;
-  readonly serverUrl: LocalGaiaServerUrl;
-}) {
+export function statusRunFromServer(
+  input: typeof ServerStatusInputSchema.Type
+) {
   return Effect.gen(function* () {
     const runId =
       input.runId ?? (yield* latestRunIdFromPointer(input.rootDirectory));
@@ -120,10 +157,9 @@ export function statusRunFromServer(input: {
   });
 }
 
-export function readLocalRunEventsFromServer(input: {
-  readonly runId: RunId;
-  readonly serverUrl: LocalGaiaServerUrl;
-}) {
+export function readLocalRunEventsFromServer(
+  input: typeof ServerRunInputSchema.Type
+) {
   return requestServer({
     dataName: "run events",
     effect: getRunEventsFromLocalServerProtocol({
@@ -134,11 +170,9 @@ export function readLocalRunEventsFromServer(input: {
   }).pipe(Effect.map((response) => response.data));
 }
 
-export function readLocalRunArtifactFromServer(input: {
-  readonly artifactName: string;
-  readonly runId: RunId;
-  readonly serverUrl: LocalGaiaServerUrl;
-}) {
+export function readLocalRunArtifactFromServer(
+  input: typeof ServerArtifactInputSchema.Type
+) {
   return requestServer({
     dataName: "run artifact",
     effect: getRunArtifactFromLocalServerProtocol({
@@ -150,11 +184,9 @@ export function readLocalRunArtifactFromServer(input: {
   }).pipe(Effect.map((response) => toLocalRunArtifact(response.data)));
 }
 
-export function createRunFromServer(input: {
-  readonly rootDirectory: string;
-  readonly serverUrl: LocalGaiaServerUrl;
-  readonly specPath: string;
-}) {
+export function createRunFromServer(
+  input: typeof ServerCreateRunInputSchema.Type
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const specMarkdown = yield* fs.readFileString(input.specPath).pipe(
@@ -202,7 +234,7 @@ export function createRunFromServer(input: {
   });
 }
 
-export function ensureLocalServer(input: { readonly rootDirectory: string }) {
+export function ensureLocalServer(input: typeof ServerRootInputSchema.Type) {
   return Effect.gen(function* () {
     const rootDirectory = yield* canonicalRoot(input.rootDirectory);
     const existing = yield* readUsableMetadata(rootDirectory);
@@ -243,7 +275,9 @@ export function ensureLocalServer(input: { readonly rootDirectory: string }) {
   });
 }
 
-function latestRunIdFromPointer(rootDirectory: string) {
+function latestRunIdFromPointer(
+  rootDirectory: typeof RunStorageRootInputSchema.Type
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const store = yield* makeRunStorePaths({ rootDirectory });
@@ -291,7 +325,9 @@ type AutostartLock = {
   readonly release: Effect.Effect<void>;
 };
 
-function acquireAutostartLock(rootDirectory: string) {
+function acquireAutostartLock(
+  rootDirectory: typeof RunStorageRootInputSchema.Type
+) {
   return Effect.gen(function* () {
     const paths = yield* serverPaths(rootDirectory);
     const fs = yield* FileSystem.FileSystem;
@@ -323,7 +359,9 @@ function acquireAutostartLock(rootDirectory: string) {
   });
 }
 
-function tryAcquireAutostartLock(lockPath: string): AutostartLock | undefined {
+function tryAcquireAutostartLock(
+  lockPath: typeof RuntimePathSchema.Type
+): AutostartLock | undefined {
   try {
     const fd = openSync(lockPath, "wx");
     closeSync(fd);
@@ -417,7 +455,7 @@ function decodeServerData<A>(
 
 function commandSummaryFromLocalRun(
   run: typeof FactoryRunSummaryDto.Type | typeof FactoryRunDetailDto.Type,
-  rootDirectory: string
+  rootDirectory: typeof RunStorageRootInputSchema.Type
 ) {
   return Effect.gen(function* () {
     const status = legacyStatusFromFactoryState(run.state);
@@ -486,7 +524,9 @@ function runtimeErrorFromDiagnostic(
   });
 }
 
-function readUsableMetadata(rootDirectory: string) {
+function readUsableMetadata(
+  rootDirectory: typeof RunStorageRootInputSchema.Type
+) {
   return Effect.gen(function* () {
     const metadata = yield* readServerMetadata(rootDirectory);
     if (metadata === undefined) {
@@ -494,7 +534,9 @@ function readUsableMetadata(rootDirectory: string) {
     }
 
     const currentRoot = yield* canonicalRoot(rootDirectory);
-    const metadataRoot = yield* canonicalRoot(metadata.workspaceRoot);
+    const metadataRoot = yield* canonicalRoot(
+      parseRunStorageRootInput(metadata.workspaceRoot)
+    );
     const expectedUrl = trustedMetadataUrl(metadata);
     if (expectedUrl === undefined) {
       return undefined;
@@ -506,7 +548,7 @@ function readUsableMetadata(rootDirectory: string) {
     const healthRoot =
       health === undefined
         ? undefined
-        : yield* canonicalRoot(health.workspaceRoot);
+        : yield* canonicalRoot(parseRunStorageRootInput(health.workspaceRoot));
     if (
       health === undefined ||
       health.serverId !== metadata.serverId ||
@@ -521,7 +563,9 @@ function readUsableMetadata(rootDirectory: string) {
   });
 }
 
-function rejectedServerMetadataDiagnostic(rootDirectory: string) {
+function rejectedServerMetadataDiagnostic(
+  rootDirectory: typeof RunStorageRootInputSchema.Type
+) {
   return Effect.gen(function* () {
     const metadata = yield* readServerMetadata(rootDirectory);
     if (metadata === undefined) {
@@ -529,7 +573,9 @@ function rejectedServerMetadataDiagnostic(rootDirectory: string) {
     }
 
     const currentRoot = yield* canonicalRoot(rootDirectory);
-    const metadataRoot = yield* canonicalRoot(metadata.workspaceRoot);
+    const metadataRoot = yield* canonicalRoot(
+      parseRunStorageRootInput(metadata.workspaceRoot)
+    );
     const summary = serverMetadataSummary(metadata);
     const timestamp = new Date().toISOString();
     const expectedUrl = trustedMetadataUrl(metadata);
@@ -548,7 +594,9 @@ function rejectedServerMetadataDiagnostic(rootDirectory: string) {
       return `${timestamp} discarding stale local server metadata ${summary}; health probe failed; starting replacement server`;
     }
 
-    const healthRoot = yield* canonicalRoot(health.workspaceRoot);
+    const healthRoot = yield* canonicalRoot(
+      parseRunStorageRootInput(health.workspaceRoot)
+    );
     if (healthRoot !== currentRoot) {
       return `${timestamp} discarding wrong-root local server metadata ${summary} healthWorkspaceRoot=${health.workspaceRoot} expectedWorkspaceRoot=${rootDirectory}; starting replacement server`;
     }
@@ -561,7 +609,9 @@ function rejectedServerMetadataDiagnostic(rootDirectory: string) {
   });
 }
 
-function readServerMetadata(rootDirectory: string) {
+function readServerMetadata(
+  rootDirectory: typeof RunStorageRootInputSchema.Type
+) {
   return Effect.gen(function* () {
     const paths = yield* serverPaths(rootDirectory);
     const fs = yield* FileSystem.FileSystem;
@@ -581,7 +631,10 @@ function readServerMetadata(rootDirectory: string) {
   });
 }
 
-function appendServerLog(rootDirectory: string, line: string) {
+function appendServerLog(
+  rootDirectory: typeof RunStorageRootInputSchema.Type,
+  line: string
+) {
   return Effect.gen(function* () {
     const paths = yield* serverPaths(rootDirectory);
     const fs = yield* FileSystem.FileSystem;
@@ -616,7 +669,9 @@ function probeServerHealth(metadata: ServerMetadata) {
   });
 }
 
-function startLocalServerProcess(rootDirectory: string) {
+function startLocalServerProcess(
+  rootDirectory: typeof RunStorageRootInputSchema.Type
+) {
   return Effect.gen(function* () {
     const paths = yield* serverPaths(rootDirectory);
     const fs = yield* FileSystem.FileSystem;
@@ -658,7 +713,7 @@ function startLocalServerProcess(rootDirectory: string) {
 }
 
 function waitForUsableMetadata(
-  rootDirectory: string,
+  rootDirectory: typeof RunStorageRootInputSchema.Type,
   startedProcess?: StartedServerProcess
 ) {
   return Effect.gen(function* () {
@@ -701,18 +756,22 @@ function waitForUsableMetadata(
   });
 }
 
-function serverPaths(rootDirectory: string) {
+function serverPaths(rootDirectory: typeof RunStorageRootInputSchema.Type) {
   return makeRunStorePaths({ rootDirectory }).pipe(
     Effect.map((paths) => ({
       gaiaRoot: paths.gaiaRoot,
-      serverJson: path.join(paths.gaiaRoot, "server.json"),
-      serverLog: path.join(paths.gaiaRoot, "server.log"),
-      serverStartLock: path.join(paths.gaiaRoot, "server-start.lock"),
+      serverJson: parseRuntimePath(path.join(paths.gaiaRoot, "server.json")),
+      serverLog: parseRuntimePath(path.join(paths.gaiaRoot, "server.log")),
+      serverStartLock: parseRuntimePath(
+        path.join(paths.gaiaRoot, "server-start.lock")
+      ),
     }))
   );
 }
 
-function serverProcessCommand(rootDirectory: string) {
+function serverProcessCommand(
+  rootDirectory: typeof RunStorageRootInputSchema.Type
+) {
   const modulePath = fileURLToPath(import.meta.url);
   const workspaceMarker = `${path.sep}apps${path.sep}cli${path.sep}`;
   const markerIndex = modulePath.indexOf(workspaceMarker);
@@ -742,10 +801,10 @@ function serverProcessCommand(rootDirectory: string) {
   };
 }
 
-function canonicalRoot(rootDirectory: string) {
+function canonicalRoot(rootDirectory: typeof RunStorageRootInputSchema.Type) {
   return Effect.tryPromise({
-    try: () => realpath(rootDirectory),
-    catch: () => path.resolve(rootDirectory),
+    try: async () => parseRunStorageRootInput(await realpath(rootDirectory)),
+    catch: () => parseRunStorageRootInput(path.resolve(rootDirectory)),
   });
 }
 
