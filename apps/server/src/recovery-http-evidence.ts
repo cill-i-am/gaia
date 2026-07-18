@@ -2,6 +2,7 @@ import {
   LocalRunApiErrorEnvelope,
   WorkerRecoveryFailureEvidence,
 } from "@gaia/core";
+import { RuntimePathSchema, parseRuntimePath } from "@gaia/runtime";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
 const maxEvidenceBytes = 16_384;
@@ -10,9 +11,10 @@ const maxEvidenceBytes = 16_384;
 export function writeRecoveryHttpEvidence(input: {
   readonly body: unknown;
   readonly diagnostic: unknown;
-  readonly evidenceDirectory: string;
+  readonly evidenceDirectory: typeof RuntimePathSchema.Encoded;
 }) {
   return Effect.gen(function* () {
+    const evidenceDirectory = parseRuntimePath(input.evidenceDirectory);
     const body = yield* Schema.decodeUnknownEffect(LocalRunApiErrorEnvelope)(
       input.body
     );
@@ -27,11 +29,8 @@ export function writeRecoveryHttpEvidence(input: {
     }
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    yield* fs.makeDirectory(input.evidenceDirectory, { recursive: true });
-    const target = path.join(
-      input.evidenceDirectory,
-      "recovery-http-error.json"
-    );
+    yield* fs.makeDirectory(evidenceDirectory, { recursive: true });
+    const target = path.join(evidenceDirectory, "recovery-http-error.json");
     yield* fs.writeFileString(target, encoded);
     return target;
   });

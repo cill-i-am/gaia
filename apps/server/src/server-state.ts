@@ -1,13 +1,22 @@
 import { randomUUID } from "node:crypto";
 
-import type { RunId } from "@gaia/core";
+import { RunIdSchema, type RunId } from "@gaia/core";
 import { Effect, Ref, Schema } from "effect";
 
-type ActiveServerRun = {
-  readonly phase: "accepting" | "running";
-  readonly reservationId: string;
-  readonly runId?: RunId | undefined;
-};
+const ServerRunReservationIdSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("ServerRunReservationId")
+);
+const parseServerRunReservationId = Schema.decodeUnknownSync(
+  ServerRunReservationIdSchema
+);
+
+const ActiveServerRunSchema = Schema.Struct({
+  phase: Schema.Literals(["accepting", "running"]),
+  reservationId: ServerRunReservationIdSchema,
+  runId: Schema.optionalKey(Schema.UndefinedOr(RunIdSchema)),
+});
+
+type ActiveServerRun = typeof ActiveServerRunSchema.Type;
 
 export class ActiveServerRunConflict extends Schema.TaggedErrorClass<ActiveServerRunConflict>()(
   "ActiveServerRunConflict",
@@ -20,7 +29,7 @@ export class ActiveServerRunConflict extends Schema.TaggedErrorClass<ActiveServe
 export type ServerRunReservation = {
   readonly clear: Effect.Effect<void>;
   readonly markAccepted: (runId: RunId) => Effect.Effect<void>;
-  readonly reservationId: string;
+  readonly reservationId: typeof ServerRunReservationIdSchema.Type;
   readonly rollback: Effect.Effect<void>;
 };
 
@@ -41,8 +50,13 @@ export function makeServerRunRegistry() {
   });
 }
 
+const ReserveConflictSchema = Schema.Struct({
+  _tag: Schema.Literal("Conflict"),
+});
+const parseReserveConflict = Schema.decodeUnknownSync(ReserveConflictSchema);
+
 type ReserveResult =
-  | { readonly _tag: "Conflict" }
+  | typeof ReserveConflictSchema.Type
   | {
       readonly _tag: "Reserved";
       readonly reservation: ServerRunReservation;
@@ -50,10 +64,13 @@ type ReserveResult =
 
 function reserveCreate(active: Ref.Ref<ActiveServerRun | undefined>) {
   return Effect.gen(function* () {
-    const reservationId = randomUUID();
+    const reservationId = parseServerRunReservationId(randomUUID());
     const reserved = yield* Ref.modify(active, (current) => {
       if (current !== undefined) {
-        return reserveRefResult({ _tag: "Conflict" }, current);
+        return reserveRefResult(
+          parseReserveConflict({ _tag: "Conflict" }),
+          current
+        );
       }
 
       return reserveRefResult(
@@ -84,7 +101,7 @@ function reserveCreate(active: Ref.Ref<ActiveServerRun | undefined>) {
 
 function makeReservation(
   active: Ref.Ref<ActiveServerRun | undefined>,
-  reservationId: string
+  reservationId: typeof ServerRunReservationIdSchema.Type
 ): ServerRunReservation {
   return {
     clear: clearReservation(active, reservationId),
@@ -106,7 +123,10 @@ function reserveRefResult(
   return [result, state];
 }
 
-function runningState(reservationId: string, runId: RunId): ActiveServerRun {
+function runningState(
+  reservationId: typeof ServerRunReservationIdSchema.Type,
+  runId: RunId
+): ActiveServerRun {
   return {
     phase: "running",
     reservationId,
@@ -116,7 +136,7 @@ function runningState(reservationId: string, runId: RunId): ActiveServerRun {
 
 function clearReservation(
   active: Ref.Ref<ActiveServerRun | undefined>,
-  reservationId: string
+  reservationId: typeof ServerRunReservationIdSchema.Type
 ) {
   return Ref.update(active, (current) =>
     current?.reservationId === reservationId ? undefined : current
@@ -125,7 +145,7 @@ function clearReservation(
 
 function clearAcceptingReservation(
   active: Ref.Ref<ActiveServerRun | undefined>,
-  reservationId: string
+  reservationId: typeof ServerRunReservationIdSchema.Type
 ) {
   return Ref.update(active, (current) =>
     current?.reservationId === reservationId && current.phase === "accepting"

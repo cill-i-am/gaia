@@ -1,31 +1,48 @@
 import { ServerMetadata, parseLocalGaiaServerUrl } from "@gaia/core";
-import { makeRunStorePaths } from "@gaia/runtime/paths";
-import { Effect, FileSystem, Path } from "effect";
+import {
+  RunStorageRootInputSchema,
+  RuntimePathSchema,
+  makeRunStorePaths,
+  parseRunStorageRootInput,
+} from "@gaia/runtime/paths";
+import { Effect, FileSystem, Path, Schema } from "effect";
 import type * as HttpServer from "effect/unstable/http/HttpServer";
 
-export type LocalServerIdentity = {
-  readonly host: "127.0.0.1";
-  readonly pid: number;
-  readonly rootDirectory: string;
-  readonly serverId: string;
-  readonly startedAt: string;
-};
+const LocalServerIdentitySchema = Schema.Struct({
+  host: ServerMetadata.fields.host,
+  pid: ServerMetadata.fields.pid,
+  rootDirectory: RunStorageRootInputSchema,
+  serverId: ServerMetadata.fields.serverId,
+  startedAt: ServerMetadata.fields.startedAt,
+});
 
-export type ServerDiscoveryPaths = {
-  readonly gaiaRoot: string;
-  readonly serverJson: string;
-  readonly serverLog: string;
-};
+export type LocalServerIdentity = typeof LocalServerIdentitySchema.Encoded;
 
-export function serverDiscoveryPaths(rootDirectory: string) {
+const ServerDiscoveryPathsSchema = Schema.Struct({
+  gaiaRoot: RuntimePathSchema,
+  serverJson: RuntimePathSchema,
+  serverLog: RuntimePathSchema,
+});
+
+export type ServerDiscoveryPaths = typeof ServerDiscoveryPathsSchema.Type;
+
+const parseServerDiscoveryPaths = Schema.decodeUnknownSync(
+  ServerDiscoveryPathsSchema
+);
+
+export function serverDiscoveryPaths(
+  rootDirectory: typeof RunStorageRootInputSchema.Encoded
+) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
-    const store = yield* makeRunStorePaths({ rootDirectory });
-    return {
+    const store = yield* makeRunStorePaths({
+      rootDirectory: parseRunStorageRootInput(rootDirectory),
+    });
+    return parseServerDiscoveryPaths({
       gaiaRoot: store.gaiaRoot,
       serverJson: path.join(store.gaiaRoot, "server.json"),
       serverLog: path.join(store.gaiaRoot, "server.log"),
-    } satisfies ServerDiscoveryPaths;
+    });
   });
 }
 
@@ -70,7 +87,10 @@ export function writeServerMetadata(metadata: ServerMetadata) {
   });
 }
 
-export function appendServerLog(rootDirectory: string, line: string) {
+export function appendServerLog(
+  rootDirectory: typeof RunStorageRootInputSchema.Encoded,
+  line: string
+) {
   return Effect.gen(function* () {
     const paths = yield* serverDiscoveryPaths(rootDirectory);
     const fs = yield* FileSystem.FileSystem;
