@@ -18,6 +18,7 @@ import {
   parseBrowserEvidenceJson,
   parseBrowserEvidenceTargetUrl,
   playwrightBrowserEvidenceCollector,
+  BrowserEvidenceTargetUrlSchema,
   writeBrowserEvidence,
   writeEmptyBrowserEvidence,
   type BrowserEvidenceCollector,
@@ -97,6 +98,17 @@ const nanoid = customAlphabet(
 );
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const decodeHarnessRunResult = Schema.decodeUnknownSync(HarnessRunResultJson);
+const parseWorkflowSpecPath = Schema.decodeUnknownSync(RuntimePathSchema);
+const BrowserEvidenceTargetSelectionSchema = Schema.Struct({
+  explicitTargetUrl: Schema.UndefinedOr(BrowserEvidenceTargetUrlSchema),
+  harnessTargetUrl: Schema.UndefinedOr(BrowserEvidenceTargetUrlSchema),
+  previewDeploymentTargetUrl: Schema.UndefinedOr(
+    BrowserEvidenceTargetUrlSchema
+  ),
+  profileTargetUrl: Schema.UndefinedOr(BrowserEvidenceTargetUrlSchema),
+});
+type BrowserEvidenceTargetSelection =
+  typeof BrowserEvidenceTargetSelectionSchema.Type;
 
 export const CommandStatusSchema = Schema.Literals([
   "completed",
@@ -148,11 +160,20 @@ export type BrowserEvidenceCollectionOptions = RunStorageOptions & {
   readonly browserEvidenceCollector?: BrowserEvidenceCollector;
 };
 
-export function runSpecFile(specPath: string, options: WorkflowOptions = {}) {
-  return withRunStoreLock(options, runSpecFileUnlocked(specPath, options));
+export function runSpecFile(
+  specPath: typeof RuntimePathSchema.Encoded,
+  options: WorkflowOptions = {}
+) {
+  return withRunStoreLock(
+    options,
+    runSpecFileUnlocked(parseWorkflowSpecPath(specPath), options)
+  );
 }
 
-function runSpecFileUnlocked(specPath: string, options: WorkflowOptions) {
+function runSpecFileUnlocked(
+  specPath: typeof RuntimePathSchema.Type,
+  options: WorkflowOptions
+) {
   return Effect.gen(function* () {
     const runId = yield* generateRunId;
     const paths = yield* makeRunPaths(runId, options);
@@ -569,12 +590,7 @@ function readPersistedWorkerResult(runId: RunId, paths: RunPaths) {
   });
 }
 
-function selectBrowserEvidenceTargetUrl(input: {
-  readonly explicitTargetUrl?: BrowserEvidenceTargetUrl | undefined;
-  readonly harnessTargetUrl?: BrowserEvidenceTargetUrl | undefined;
-  readonly previewDeploymentTargetUrl?: BrowserEvidenceTargetUrl | undefined;
-  readonly profileTargetUrl?: BrowserEvidenceTargetUrl | undefined;
-}) {
+function selectBrowserEvidenceTargetUrl(input: BrowserEvidenceTargetSelection) {
   return (
     input.explicitTargetUrl ??
     input.profileTargetUrl ??

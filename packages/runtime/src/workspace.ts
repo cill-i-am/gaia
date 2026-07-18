@@ -31,12 +31,15 @@ export type WorkspaceSourcePath = RuntimePath;
 
 export const parseWorkspaceSourcePath = parseRuntimePath;
 
-export type WorkspaceSource =
-  | { readonly _tag: "Empty" }
-  | {
-      readonly _tag: "LocalDirectory";
-      readonly path: WorkspaceSourcePath;
-    };
+const WorkspaceSourceSchema = Schema.Union([
+  Schema.Struct({ _tag: Schema.Literal("Empty") }),
+  Schema.Struct({
+    _tag: Schema.Literal("LocalDirectory"),
+    path: WorkspaceSourcePathSchema,
+  }),
+]);
+
+export type WorkspaceSource = typeof WorkspaceSourceSchema.Type;
 
 export class WorkspacePreparationResult extends Schema.Class<WorkspacePreparationResult>(
   "WorkspacePreparationResult"

@@ -45,6 +45,13 @@ const generatedWorkspaceEntryReasons = new Map([
 const NonNegativeIntegerSchema = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0)
 );
+const WorkspaceSnapshotDigestSchema = Schema.NonEmptyString.pipe(
+  Schema.brand("WorkspaceSnapshotDigest")
+);
+const parseWorkspaceSnapshotDigest = Schema.decodeUnknownSync(
+  WorkspaceSnapshotDigestSchema
+);
+type WorkspaceSnapshotDigest = typeof WorkspaceSnapshotDigestSchema.Type;
 
 /** Generated workspace root summarized instead of expanded into raw path evidence. */
 export class WorkspaceDiffOmittedGeneratedPath extends Schema.Class<WorkspaceDiffOmittedGeneratedPath>(
@@ -86,41 +93,50 @@ export const encodeWorkspaceDiffSummaryJson = Schema.encodeSync(
   WorkspaceDiffSummaryJson
 );
 
+const PersistedGeneratedPathSnapshot = Schema.Struct({
+  digest: WorkspaceSnapshotDigestSchema,
+  fileCount: NonNegativeIntegerSchema,
+  path: WorkspaceRelativePathSchema,
+  reason: Schema.NonEmptyString,
+});
+const PersistedProductFileSnapshot = Schema.Struct({
+  digest: WorkspaceSnapshotDigestSchema,
+  path: WorkspaceRelativePathSchema,
+});
 const PersistedWorkspaceSnapshot = Schema.Struct({
-  generatedPaths: Schema.Array(
-    Schema.Struct({
-      digest: Schema.NonEmptyString,
-      fileCount: NonNegativeIntegerSchema,
-      path: WorkspaceRelativePathSchema,
-      reason: Schema.NonEmptyString,
-    })
-  ),
-  productFiles: Schema.Array(
-    Schema.Struct({
-      digest: Schema.NonEmptyString,
-      path: WorkspaceRelativePathSchema,
-    })
-  ),
+  generatedPaths: Schema.Array(PersistedGeneratedPathSnapshot),
+  productFiles: Schema.Array(PersistedProductFileSnapshot),
   version: Schema.Literal(1),
 });
 const decodePersistedWorkspaceSnapshot = Schema.decodeUnknownSync(
   PersistedWorkspaceSnapshot
 );
+const decodePersistedGeneratedPathSnapshot = Schema.decodeUnknownSync(
+  PersistedGeneratedPathSnapshot
+);
 
-type PersistedWorkspaceSnapshotValue = typeof PersistedWorkspaceSnapshot.Type;
+type PersistedWorkspaceSnapshotValue =
+  typeof PersistedWorkspaceSnapshot.Encoded;
+type ParsedPersistedWorkspaceSnapshotValue =
+  typeof PersistedWorkspaceSnapshot.Type;
 type GeneratedPathSnapshot =
   PersistedWorkspaceSnapshotValue["generatedPaths"][number];
+type ParsedGeneratedPathSnapshot =
+  ParsedPersistedWorkspaceSnapshotValue["generatedPaths"][number];
 
 export type WorkspaceSnapshot = {
   readonly generatedPathSummaries: ReadonlyMap<
     WorkspaceRelativePath,
     GeneratedPathSnapshot
   >;
-  readonly productFileDigests: ReadonlyMap<WorkspaceRelativePath, string>;
+  readonly productFileDigests: ReadonlyMap<
+    WorkspaceRelativePath,
+    typeof WorkspaceSnapshotDigestSchema.Encoded
+  >;
 };
 
 type GeneratedPathDigest = {
-  readonly digest: string;
+  readonly digest: WorkspaceSnapshotDigest;
   readonly fileCount: number;
 };
 
@@ -207,13 +223,17 @@ export function readWorkspaceSnapshot(snapshotPath: string) {
       )
     );
     const parsed = yield* parsePersistedWorkspaceSnapshotText(text);
+    const generatedPathSummaries = new Map<
+      WorkspaceRelativePath,
+      ParsedGeneratedPathSnapshot
+    >(parsed.generatedPaths.map((entry) => [entry.path, entry]));
+    const productFileDigests = new Map<
+      WorkspaceRelativePath,
+      WorkspaceSnapshotDigest
+    >(parsed.productFiles.map((entry) => [entry.path, entry.digest]));
     return {
-      generatedPathSummaries: new Map(
-        parsed.generatedPaths.map((entry) => [entry.path, entry])
-      ),
-      productFileDigests: new Map(
-        parsed.productFiles.map((entry) => [entry.path, entry.digest])
-      ),
+      generatedPathSummaries,
+      productFileDigests,
     } satisfies WorkspaceSnapshot;
   });
 }
@@ -383,10 +403,13 @@ function snapshotDirectory(
     const entries = (yield* fs.readDirectory(
       canonicalDirectoryPath
     )).toSorted();
-    const productFileDigests = new Map<WorkspaceRelativePath, string>();
+    const productFileDigests = new Map<
+      WorkspaceRelativePath,
+      WorkspaceSnapshotDigest
+    >();
     const generatedPathSummaries = new Map<
       WorkspaceRelativePath,
-      GeneratedPathSnapshot
+      ParsedGeneratedPathSnapshot
     >();
 
     for (const entry of entries) {
@@ -426,13 +449,19 @@ function snapshotDirectory(
             nextVisitedDirectoryPaths
           );
           for (const [childPath, digest] of childSnapshot.productFileDigests) {
-            productFileDigests.set(childPath, digest);
+            productFileDigests.set(
+              childPath,
+              parseWorkspaceSnapshotDigest(digest)
+            );
           }
           for (const [
             childPath,
             summary,
           ] of childSnapshot.generatedPathSummaries) {
-            generatedPathSummaries.set(childPath, summary);
+            generatedPathSummaries.set(
+              childPath,
+              decodePersistedGeneratedPathSnapshot(summary)
+            );
           }
           break;
         }
@@ -458,7 +487,7 @@ function summarizeGeneratedPath(
   workspaceRootPath: RuntimePath,
   visitedDirectoryPaths: ReadonlySet<RuntimePath>
 ): Effect.Effect<
-  GeneratedPathSnapshot,
+  ParsedGeneratedPathSnapshot,
   GaiaRuntimeError | PlatformError,
   FileSystem.FileSystem | Path.Path
 > {
@@ -531,7 +560,10 @@ function digestGeneratedPath(
           fileCount += childDigest.fileCount;
         }
 
-        return { digest: hash.digest("hex"), fileCount };
+        return {
+          digest: parseWorkspaceSnapshotDigest(hash.digest("hex")),
+          fileCount,
+        };
       }
       case "File": {
         const bytes = yield* fs.readFile(canonicalPath);
@@ -548,16 +580,21 @@ function digestGeneratedPath(
 }
 
 function hashBytes(bytes: Uint8Array) {
-  return createHash("sha256").update(bytes).digest("hex");
+  return parseWorkspaceSnapshotDigest(
+    createHash("sha256").update(bytes).digest("hex")
+  );
 }
 
 function emptyWorkspaceSnapshot(): WorkspaceSnapshot {
   return {
     generatedPathSummaries: new Map<
       WorkspaceRelativePath,
-      GeneratedPathSnapshot
+      ParsedGeneratedPathSnapshot
     >(),
-    productFileDigests: new Map<WorkspaceRelativePath, string>(),
+    productFileDigests: new Map<
+      WorkspaceRelativePath,
+      WorkspaceSnapshotDigest
+    >(),
   };
 }
 
@@ -652,5 +689,7 @@ function parsePersistedWorkspaceSnapshotText(text: string) {
 }
 
 function hashString(input: string) {
-  return createHash("sha256").update(input).digest("hex");
+  return parseWorkspaceSnapshotDigest(
+    createHash("sha256").update(input).digest("hex")
+  );
 }
