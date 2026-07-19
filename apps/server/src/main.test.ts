@@ -6,6 +6,7 @@ import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
+  LocalGaiaServerUrlSchema,
   makeRunEvent,
   parseHarnessEvent,
   parseHarnessProfileId,
@@ -17,6 +18,7 @@ import {
   parseWorkerRecoveryModelId,
   projectHarnessEvents,
   RunEvent,
+  RunIdSchema,
   WorkerRecoveryAction,
   type HarnessDetection,
   type ServerMetadata,
@@ -38,7 +40,12 @@ import {
   type HarnessProvider,
   type HarnessProviderRegistry,
 } from "@gaia/runtime";
-import { makeRunPaths } from "@gaia/runtime/paths";
+import {
+  makeRunPaths,
+  parseRunStorageRootInput,
+  RunStorageRootInputSchema,
+  RuntimePathTextSchema,
+} from "@gaia/runtime/paths";
 import { readLocalRunEvents } from "@gaia/runtime/run-read-api";
 import {
   acceptFactoryRun,
@@ -60,6 +67,11 @@ import {
   Stream,
 } from "effect";
 
+import {
+  CodexThreadIdSchema,
+  CodexTurnIdSchema,
+  parseCodexTurnId,
+} from "../../../packages/runtime/src/codex-app-server-protocol.js";
 import {
   findStableDesktopOriginCorrelationThread,
   listStableCodexThreadsForWorkspace,
@@ -1385,7 +1397,7 @@ describe("local Gaia server process", () => {
             catch: (cause) => cause,
           });
           const body = Schema.decodeUnknownSync(
-            Schema.Struct({ runId: Schema.String })
+            Schema.Struct({ runId: RunIdSchema })
           )(yield* Effect.promise(() => response.json()));
           assert.strictEqual(response.status, 202);
           yield* Deferred.await(started);
@@ -1428,13 +1440,17 @@ const workerRecoveryModel = () =>
   WorkerRecoveryModel.make({ hidden: false, id: workerRecoveryAction.model });
 const workerRecoveryThreadState = (status: WorkerRecoveryThreadStatus) =>
   WorkerRecoveryThreadState.make({ status });
-const workerRecoveryStartTurn = (turnId: string) =>
-  WorkerRecoveryTurnStarted.make({
+const workerRecoveryStartTurn = (
+  turnIdInput: typeof CodexTurnIdSchema.Encoded
+) => {
+  const turnId = parseCodexTurnId(turnIdInput);
+  return WorkerRecoveryTurnStarted.make({
     checkpoint: parseHarnessCheckpointToken(`hchk1_${turnId}`),
     nativeTurnIdDigest: parseWorkerRecoveryDigest(
       createHash("sha256").update(turnId).digest("hex")
     ),
   });
+};
 
 function makeWorkerRecoveryFixture() {
   return Effect.gen(function* () {
@@ -1541,8 +1557,17 @@ function makeWorkerRecoveryFixture() {
   });
 }
 
-function makeAuditedWorkspacePathFixture(workspacePath: string) {
+const RawPersistedWorkspacePathFixtureSchema = Schema.String;
+const decodeRawPersistedWorkspacePathFixture = Schema.decodeUnknownSync(
+  RawPersistedWorkspacePathFixtureSchema
+);
+
+function makeAuditedWorkspacePathFixture(
+  workspacePathInput: typeof RawPersistedWorkspacePathFixtureSchema.Encoded
+) {
   return Effect.gen(function* () {
+    const workspacePath =
+      decodeRawPersistedWorkspacePathFixture(workspacePathInput);
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.makeTempDirectory({
       prefix: "gaia-server-audited-workspace-",
@@ -1562,7 +1587,11 @@ function makeAuditedWorkspacePathFixture(workspacePath: string) {
   });
 }
 
-function workspacePathEvents(workspacePath: string) {
+function workspacePathEvents(
+  workspacePathInput: typeof RawPersistedWorkspacePathFixtureSchema.Encoded
+) {
+  const workspacePath =
+    decodeRawPersistedWorkspacePathFixture(workspacePathInput);
   return [
     makeRunEvent({
       payload: {
@@ -1597,11 +1626,12 @@ type TestServer = {
 };
 
 function startServer(
-  rootDirectory: string,
+  rootDirectoryInput: typeof RunStorageRootInputSchema.Encoded,
   port?: number,
   harnessProviderRegistry: HarnessProviderRegistry = makeTestHarnessProviderRegistry()
 ) {
   return Effect.gen(function* () {
+    const rootDirectory = parseRunStorageRootInput(rootDirectoryInput);
     const ready = yield* Deferred.make<ServerMetadata>();
     const fiber = yield* runLocalGaiaServer({
       harnessProviderRegistry,
@@ -1652,8 +1682,13 @@ function freePort() {
   });
 }
 
-function waitForTerminalRunEventFile(rootDirectory: string, runId: string) {
+function waitForTerminalRunEventFile(
+  rootDirectoryInput: typeof RunStorageRootInputSchema.Encoded,
+  runIdInput: typeof RunIdSchema.Encoded
+) {
   return Effect.gen(function* () {
+    const rootDirectory = parseRunStorageRootInput(rootDirectoryInput);
+    const runId = Schema.decodeUnknownSync(RunIdSchema)(runIdInput);
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const events = yield* Effect.tryPromise({
         try: async () => {
@@ -1690,11 +1725,13 @@ function waitForTerminalRunEventFile(rootDirectory: string, runId: string) {
 }
 
 function waitForRunEventTypeFile(
-  rootDirectory: string,
-  runId: string,
-  eventType: string
+  rootDirectoryInput: typeof RunStorageRootInputSchema.Encoded,
+  runIdInput: typeof RunIdSchema.Encoded,
+  eventType: typeof RunEvent.fields.type.Type
 ) {
   return Effect.gen(function* () {
+    const rootDirectory = parseRunStorageRootInput(rootDirectoryInput);
+    const runId = Schema.decodeUnknownSync(RunIdSchema)(runIdInput);
     for (let attempt = 0; attempt < 100; attempt += 1) {
       try {
         const contents = yield* Effect.promise(() =>
@@ -1717,7 +1754,8 @@ function waitForRunEventTypeFile(
   });
 }
 
-function fetchJsonObject(url: string) {
+function fetchJsonObject(urlInput: typeof LocalGaiaServerUrlSchema.Encoded) {
+  const url = Schema.decodeUnknownSync(LocalGaiaServerUrlSchema)(urlInput);
   return Effect.tryPromise({
     try: async () => {
       const response = await fetch(url);
@@ -1748,9 +1786,10 @@ function isJsonObject(
   return typeof input === "object" && input !== null && !Array.isArray(input);
 }
 
-function digestStableId(value: string) {
+function digestStableId(value: typeof CodexTurnIdSchema.Encoded) {
+  const turnId = parseCodexTurnId(value);
   return parseWorkerRecoveryDigest(
-    createHash("sha256").update(value).digest("hex")
+    createHash("sha256").update(turnId).digest("hex")
   );
 }
 
@@ -1780,14 +1819,18 @@ function withCodexDesktopOriginator<A, E, R>(
   );
 }
 
-function stableThread(input: {
-  readonly createdAt?: number;
-  readonly cwd?: string;
-  readonly id: ReturnType<typeof parseCodexThreadId>;
-  readonly sessionId?: string;
-  readonly source: "appServer" | "cli" | "vscode";
-  readonly statusType?: "active" | "idle" | "notLoaded" | "systemError";
-}) {
+const StableThreadInputSchema = Schema.Struct({
+  createdAt: Schema.optionalKey(Schema.Number),
+  cwd: Schema.optionalKey(RuntimePathTextSchema),
+  id: CodexThreadIdSchema,
+  sessionId: Schema.optionalKey(Schema.String),
+  source: Schema.Literals(["appServer", "cli", "vscode"]),
+  statusType: Schema.optionalKey(
+    Schema.Literals(["active", "idle", "notLoaded", "systemError"])
+  ),
+});
+
+function stableThread(input: typeof StableThreadInputSchema.Type) {
   return Schema.decodeUnknownSync(CodexListedThreadSchema)({
     createdAt: input.createdAt ?? 1_010,
     cwd: input.cwd ?? "/tmp/gaia/owned-workspace",
@@ -1802,6 +1845,14 @@ function stableThread(input: {
   });
 }
 
+const StableThreadReadTurnSchema = Schema.Struct({
+  id: CodexTurnIdSchema,
+  status: Schema.Literals(["completed", "failed", "inProgress", "interrupted"]),
+});
+const decodeStableThreadReadTurns = Schema.decodeUnknownSync(
+  Schema.Array(StableThreadReadTurnSchema)
+);
+
 function makeStableThreadClient(input: {
   readonly jsonlArchivedThreads?: ReadonlyArray<
     ReturnType<typeof stableThread>
@@ -1809,10 +1860,7 @@ function makeStableThreadClient(input: {
   readonly jsonlThreads?: ReadonlyArray<ReturnType<typeof stableThread>>;
   readonly listError?: unknown;
   readonly readError?: unknown;
-  readonly readTurns: ReadonlyArray<{
-    readonly id: string;
-    readonly status: "completed" | "failed" | "inProgress" | "interrupted";
-  }>;
+  readonly readTurns: (typeof StableThreadReadTurnSchema.Encoded)[];
   readonly stateArchivedThreads?: ReadonlyArray<
     ReturnType<typeof stableThread>
   >;
@@ -1821,9 +1869,10 @@ function makeStableThreadClient(input: {
 }) {
   return Effect.runSync(
     Effect.gen(function* () {
+      const readTurns = decodeStableThreadReadTurns(input.readTurns);
       const calls = yield* Ref.make({
         list: [] as string[],
-        read: [] as Array<ReturnType<typeof parseCodexThreadId>>,
+        read: Schema.decodeUnknownSync(Schema.Array(CodexThreadIdSchema))([]),
       });
       const stateThreads = input.stateThreads ?? input.threads ?? [];
       const jsonlThreads = input.jsonlThreads ?? input.threads ?? [];
@@ -1867,7 +1916,7 @@ function makeStableThreadClient(input: {
             return Schema.decodeUnknownSync(ThreadResultSchema)({
               thread: {
                 id: params.threadId,
-                turns: [...input.readTurns],
+                turns: [...readTurns],
               },
             });
           }),

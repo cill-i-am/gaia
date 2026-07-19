@@ -1,5 +1,5 @@
+import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
-import { describe, expect, it } from "vitest";
 
 import {
   CodexClientVersionSchema,
@@ -64,6 +64,16 @@ describe("Codex App Server provider identities", () => {
   const signedInt64MaximumRepresentable = Number(9_223_372_036_854_774_784n);
   const signedInt64BelowMinimum = Number(-9_223_372_036_854_777_856n);
   const signedInt64AboveMaximum = Number(9_223_372_036_854_775_808n);
+
+  it.prop(
+    "round-trips generated Codex thread IDs through their canonical schema",
+    { threadId: Schema.toArbitrary(CodexThreadIdSchema) },
+    ({ threadId }) => {
+      expect(
+        Schema.encodeSync(Schema.toCodecJson(CodexThreadIdSchema))(threadId)
+      ).toBe(threadId);
+    }
+  );
 
   it("decodes the source-exact raw RequestId before applying Gaia refinements", () => {
     const decodeRaw = Schema.decodeUnknownSync(CodexRawRequestIdSchema);

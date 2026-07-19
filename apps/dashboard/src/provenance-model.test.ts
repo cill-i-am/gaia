@@ -1,4 +1,3 @@
-import type { LocalRunSummaryDto } from "@gaia/core";
 import {
   LocalRunReadSummarySchema,
   RunIdSchema,
@@ -12,11 +11,28 @@ import {
   buildEvidenceProvenanceModel,
 } from "@/provenance-model";
 import {
+  RunCanvasNodeIdSchema,
   buildRunCanvasModel,
   buildRunReplayState,
   eventsForNode,
 } from "@/run-canvas-model";
 import { buildRunCompareModel } from "@/run-compare-model";
+
+const LocalRunSummaryFixtureInputSchema = Schema.Struct({
+  ...LocalRunReadSummarySchema.fields,
+  artifacts: Schema.optionalKey(LocalRunReadSummarySchema.fields.artifacts),
+  createdAt: Schema.optionalKey(LocalRunReadSummarySchema.fields.createdAt),
+  eventCount: Schema.optionalKey(LocalRunReadSummarySchema.fields.eventCount),
+  latestEventType: Schema.optionalKey(
+    LocalRunReadSummarySchema.fields.latestEventType
+  ),
+  state: Schema.optionalKey(LocalRunReadSummarySchema.fields.state),
+  status: Schema.optionalKey(LocalRunReadSummarySchema.fields.status),
+  updatedAt: Schema.optionalKey(LocalRunReadSummarySchema.fields.updatedAt),
+});
+const decodeFactoryCanvasNodeId = Schema.decodeUnknownSync(
+  RunCanvasNodeIdSchema
+);
 
 describe("evidence provenance model", () => {
   it("maps visible run and node claims to public source events and artifacts", () => {
@@ -171,9 +187,7 @@ describe("evidence provenance model", () => {
 });
 
 function localRunSummary(
-  input: Partial<typeof LocalRunSummaryDto.Type> & {
-    readonly runId: typeof LocalRunSummaryDto.Type.runId;
-  }
+  input: typeof LocalRunSummaryFixtureInputSchema.Encoded
 ): typeof LocalRunReadSummarySchema.Type {
   return Schema.decodeUnknownSync(LocalRunReadSummarySchema)({
     artifacts: ["input"],
@@ -193,8 +207,9 @@ function parseRunId(value: string): typeof RunIdSchema.Type {
 
 function requiredNode(
   run: ReturnType<typeof buildRunCanvasModel>,
-  nodeId: string
+  nodeIdInput: typeof RunCanvasNodeIdSchema.Encoded
 ) {
+  const nodeId = decodeFactoryCanvasNodeId(nodeIdInput);
   const node = run.nodes.find((candidate) => candidate.id === nodeId);
   if (node === undefined) {
     throw new Error(`Expected node ${nodeId}.`);

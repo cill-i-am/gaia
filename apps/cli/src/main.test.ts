@@ -6,16 +6,21 @@ import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
-  type ServerMetadata,
+  RunIdSchema,
+  ServerMetadata,
 } from "@gaia/core";
-import { runSpecFile } from "@gaia/runtime";
+import {
+  parseRuntimePath,
+  runSpecFile,
+  RuntimePathSchema,
+} from "@gaia/runtime";
 import {
   acceptFactoryRun,
   continueServerRun,
 } from "@gaia/runtime/server-workflows";
 import { makeTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
 import { runLocalGaiaServer } from "@gaia/server";
-import { Deferred, Effect, Fiber, FileSystem } from "effect";
+import { Deferred, Effect, Fiber, FileSystem, Schema } from "effect";
 
 const execFileAsync = promisify(execFile);
 
@@ -695,16 +700,17 @@ describe("gaia CLI local server read parity", () => {
   });
 });
 
-type CliResult = {
-  readonly exitCode: number;
-  readonly stdout: string;
-  readonly stderr: string;
-};
+const CliResultSchema = Schema.Struct({
+  exitCode: Schema.Number,
+  stderr: Schema.String,
+  stdout: Schema.String,
+});
+type CliResult = typeof CliResultSchema.Type;
 
 type TestServer = {
   readonly close: Effect.Effect<void>;
-  readonly serverId: string;
-  readonly url: string;
+  readonly serverId: typeof ServerMetadata.fields.serverId.Type;
+  readonly url: typeof ServerMetadata.fields.url.Type;
 };
 
 function createRunStore(specBody: string) {
@@ -765,8 +771,11 @@ function createSpecRun(cwd: string, specBody: string) {
   });
 }
 
-function startLocalRunServer(rootDirectory: string) {
+function startLocalRunServer(
+  rootDirectoryInput: typeof RuntimePathSchema.Encoded
+) {
   return Effect.gen(function* () {
+    const rootDirectory = parseRuntimePath(rootDirectoryInput);
     const ready = yield* Deferred.make<ServerMetadata>();
     const fiber = yield* runLocalGaiaServer({
       harnessProviderRegistry: makeTestHarnessProviderRegistry(),
@@ -806,13 +815,15 @@ function runGaiaJson(cwd: string, args: ReadonlyArray<string>) {
   );
 }
 
+const RunGaiaOptionsSchema = Schema.Struct({
+  env: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  timeoutMs: Schema.optionalKey(Schema.Number),
+});
+
 function runGaia(
   cwd: string,
   args: ReadonlyArray<string>,
-  options: {
-    readonly env?: Readonly<Record<string, string>>;
-    readonly timeoutMs?: number;
-  } = {}
+  options: typeof RunGaiaOptionsSchema.Type = {}
 ) {
   return Effect.promise(async () => {
     const result = await execFileAsync(
@@ -889,8 +900,12 @@ function getRunIds(input: unknown) {
   throw new Error("Expected list JSON output to contain run ids.");
 }
 
-function waitForCompletedServerRun(cwd: string, runId: string) {
+function waitForCompletedServerRun(
+  cwd: string,
+  runIdInput: typeof RunIdSchema.Encoded
+) {
   return Effect.gen(function* () {
+    const runId = Schema.decodeUnknownSync(RunIdSchema)(runIdInput);
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const status = yield* runGaiaJson(cwd, [
         "status",
@@ -991,8 +1006,9 @@ function isObjectRecord(input: unknown): input is Record<string, unknown> {
   return typeof input === "object" && input !== null && !Array.isArray(input);
 }
 
-function canonicalPath(input: string) {
-  return Effect.promise(() => realpath(input));
+function canonicalPath(input: typeof RuntimePathSchema.Encoded) {
+  const path = parseRuntimePath(input);
+  return Effect.promise(() => realpath(path));
 }
 
 function parseCliJson(stdout: string) {
@@ -1011,7 +1027,9 @@ function parseCliJson(stdout: string) {
   throw new Error(`Expected CLI stdout to start with JSON.\n${stdout}`);
 }
 
-function jsonEndIndex(input: string) {
+const CliJsonTextSchema = Schema.String;
+
+function jsonEndIndex(input: typeof CliJsonTextSchema.Type) {
   let depth = 0;
   let inString = false;
   let escaped = false;

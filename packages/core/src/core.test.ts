@@ -12,7 +12,11 @@ import {
   DeliveryPublicationFailed,
   DeliveryPublicationIntent,
   DeliveryPublicationOutcomeUnknown,
+  DeliveryPublicationSchema,
+  DeliveryStatusSchema,
+  DeliveryGitShaSchema,
   encodeDeliveryPublicationJson,
+  FactoryAgentIdSchema,
   FactoryRetro,
   FactoryRetroEntry,
   FactoryRetroSourceLink,
@@ -34,6 +38,7 @@ import {
   parseFactoryRetro,
   parseFactoryLaneScorecard,
   parseDeliveryPublication,
+  parseDeliveryGitSha,
   parseMarkdownSpec,
   parseGitHubPullRequestSelector,
   parseRunReport,
@@ -41,15 +46,43 @@ import {
   parseRunMachineContext,
   parseRunMachineEvent,
   parseRunId,
+  parseLocalRunArtifactId,
   replayRunEvents,
   RunReport,
+  RunIdSchema,
+  LocalRunArtifactIdSchema,
   RunMachineContextSchema,
   RunMachineEventSchema,
   snapshotFromReplay,
   validateFactoryDelegationPrompt,
 } from "./index.js";
 
+const DeliveryFixtureSchema = Schema.Struct({
+  publication: Schema.optionalKey(Schema.toEncoded(DeliveryPublicationSchema)),
+  stage: DeliveryStatusSchema,
+});
+const decodeDeliveryFixture = Schema.decodeUnknownSync(DeliveryFixtureSchema);
+
 describe("core contracts", () => {
+  it.prop(
+    "generates representative canonical core identities",
+    {
+      agentId: Schema.toArbitrary(FactoryAgentIdSchema),
+      artifactId: Schema.toArbitrary(LocalRunArtifactIdSchema),
+      gitSha: Schema.toArbitrary(DeliveryGitShaSchema),
+      runId: Schema.toArbitrary(RunIdSchema),
+    },
+    ({ agentId, artifactId, gitSha, runId }) => {
+      assert.strictEqual(
+        Schema.decodeUnknownSync(FactoryAgentIdSchema)(agentId),
+        agentId
+      );
+      assert.strictEqual(parseLocalRunArtifactId(artifactId), artifactId);
+      assert.strictEqual(parseDeliveryGitSha(gitSha), gitSha);
+      assert.strictEqual(parseRunId(runId), runId);
+    }
+  );
+
   it("parses branded run ids", () => {
     assert.strictEqual(parseRunId("run-V7kP9sQ2xY"), "run-V7kP9sQ2xY");
     assert.throws(() => parseRunId("not-a-run"));
@@ -770,15 +803,15 @@ describe("core contracts", () => {
     const waiting = snapshotFromReplay(events);
 
     assert.strictEqual(
-      (publishing.context.delivery as { stage: string }).stage,
+      decodeDeliveryFixture(publishing.context.delivery).stage,
       "publishing"
     );
     assert.strictEqual(
-      (waiting.context.delivery as { stage: string }).stage,
+      decodeDeliveryFixture(waiting.context.delivery).stage,
       "waitingForPr"
     );
     assert.deepEqual(
-      (waiting.context.delivery as { publication: unknown }).publication,
+      decodeDeliveryFixture(waiting.context.delivery).publication,
       encodeDeliveryPublicationJson(confirmed)
     );
   });
@@ -889,23 +922,19 @@ describe("core contracts", () => {
     ];
 
     assert.strictEqual(
-      (
-        snapshotFromReplay(events.slice(0, 9)).context.delivery as {
-          stage: string;
-        }
+      decodeDeliveryFixture(
+        snapshotFromReplay(events.slice(0, 9)).context.delivery
       ).stage,
       "publicationOutcomeUnknown"
     );
     assert.strictEqual(
-      (
-        snapshotFromReplay(events.slice(0, 10)).context.delivery as {
-          stage: string;
-        }
+      decodeDeliveryFixture(
+        snapshotFromReplay(events.slice(0, 10)).context.delivery
       ).stage,
       "publicationFailed"
     );
     assert.strictEqual(
-      (snapshotFromReplay(events).context.delivery as { stage: string }).stage,
+      decodeDeliveryFixture(snapshotFromReplay(events).context.delivery).stage,
       "publishing"
     );
   });

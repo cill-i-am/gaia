@@ -14,10 +14,12 @@ import {
   encodeDeliveryMergeReceiptJson,
   encodeWorkerRecoveryReceiptJson,
   FactoryArtifactIdSchema,
+  FactoryGraphDiagnosticDto,
   FactoryGraphDto,
   parseHarnessProfileId,
   parseHarnessSessionId,
   parseRunId,
+  RunIdSchema,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
@@ -30,7 +32,7 @@ import {
   readFactoryRunArtifact,
 } from "./factory-run-read-api.js";
 import { issueDeliveryAgentIds } from "./factory-workflows.js";
-import { makeRunPaths } from "./paths.js";
+import { makeRunPaths, parseRuntimePath, RuntimePathSchema } from "./paths.js";
 import {
   ReviewFinding,
   ReviewResult,
@@ -49,6 +51,14 @@ const encodeFactoryGraph = Schema.encodeSync(FactoryGraphDto);
 const workerPlanArtifactId = decodeFactoryArtifactId("worker-plan");
 
 describe("factory run read api", () => {
+  it.prop(
+    "round-trips generated runtime paths through their canonical schema",
+    { runtimePath: Schema.toArbitrary(RuntimePathSchema) },
+    ({ runtimePath }) => {
+      assert.strictEqual(parseRuntimePath(runtimePath), runtimePath);
+    }
+  );
+
   layer(NodeServices.layer)((it) => {
     it.effect(
       "creates an issueDelivery graph projection for an accepted factory run",
@@ -216,9 +226,7 @@ describe("factory run read api", () => {
             )
           );
           assert.deepEqual(
-            workerActivity.activities.map(
-              (activity: { readonly kind: string }) => activity.kind
-            ),
+            workerActivity.activities.map((activity) => activity.kind),
             [
               "WORKER_STARTED",
               "HARNESS_SESSION_EVENT_RECORDED",
@@ -297,7 +305,10 @@ describe("factory run read api", () => {
             harnessProviderRegistry,
             rootDirectory: cwd,
           });
-          yield* appendTerminalDeliveryHistory(accepted.runId, cwd);
+          yield* appendTerminalDeliveryHistory(
+            accepted.runId,
+            parseRuntimePath(cwd)
+          );
 
           const graph = yield* readFactoryGraph(accepted.runId, {
             rootDirectory: cwd,
@@ -366,7 +377,7 @@ describe("factory run read api", () => {
           });
           const { paths } = yield* appendTerminalDeliveryHistory(
             accepted.runId,
-            cwd
+            parseRuntimePath(cwd)
           );
           const currentGraph = yield* readFactoryGraph(accepted.runId, {
             rootDirectory: cwd,
@@ -497,7 +508,7 @@ describe("factory run read api", () => {
             });
             const { paths } = yield* appendTerminalDeliveryHistory(
               accepted.runId,
-              cwd
+              parseRuntimePath(cwd)
             );
             const currentGraph = yield* readFactoryGraph(accepted.runId, {
               rootDirectory: cwd,
@@ -605,7 +616,7 @@ describe("factory run read api", () => {
           });
           const { paths } = yield* appendTerminalDeliveryHistory(
             accepted.runId,
-            cwd,
+            parseRuntimePath(cwd),
             cleanupState
           );
           const graph = yield* readFactoryGraph(accepted.runId, {
@@ -762,12 +773,11 @@ function factoryCreateInput() {
 }
 
 function appendTerminalDeliveryHistory(
-  runIdInput: string,
-  rootDirectory: string,
+  runId: typeof RunIdSchema.Type,
+  rootDirectory: typeof RuntimePathSchema.Type,
   cleanupState: "none" | "cleanupRequired" | "completed" = "completed"
 ) {
   return Effect.gen(function* () {
-    const runId = parseRunId(runIdInput);
     const paths = yield* makeRunPaths(runId, { rootDirectory });
     const branchName = `gaia/${runId}`;
     const headSha = "a".repeat(40);
@@ -920,11 +930,7 @@ function appendTerminalDeliveryHistory(
 }
 
 function diagnosticSummaries(
-  diagnostics: ReadonlyArray<{
-    readonly code: string;
-    readonly recoverable: boolean;
-    readonly sourceId?: string;
-  }>
+  diagnostics: ReadonlyArray<typeof FactoryGraphDiagnosticDto.Type>
 ) {
   return diagnostics.map((diagnostic) => ({
     code: diagnostic.code,

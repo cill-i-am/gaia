@@ -15,6 +15,7 @@ import { NodeFileSystem, NodePath } from "@effect/platform-node";
 import {
   RunEvent,
   WorkerRecoveryAction,
+  WorkerRecoveryModelIdSchema,
   makeRunEvent,
   parseHarnessEvent,
   parseHarnessProfileId,
@@ -27,6 +28,10 @@ import {
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  CodexTurnIdSchema,
+  parseCodexTurnId,
+} from "./codex-app-server-protocol.js";
 import { makeRuntimeError } from "./errors.js";
 import { appendEvent, appendHarnessSessionEvent } from "./event-store.js";
 import {
@@ -38,7 +43,7 @@ import {
   type DeliveryProvenance,
 } from "./git-delivery.js";
 import { parseHarnessCheckpointToken } from "./harness-session.js";
-import { makeRunPaths } from "./paths.js";
+import { makeRunPaths, parseRuntimePath, RuntimePathSchema } from "./paths.js";
 import { actOnWorkerRecovery } from "./server-workflows.js";
 import {
   WorkerRecoveryConfig,
@@ -272,27 +277,33 @@ const threadState = (status: WorkerRecoveryThreadStatus) =>
   WorkerRecoveryThreadState.make({ status });
 const sha256 = (value: string) =>
   parseWorkerRecoveryDigest(createHash("sha256").update(value).digest("hex"));
-const workerRecoveryModel = (input?: {
-  readonly hidden?: boolean;
-  readonly id?: typeof action.model;
-}) =>
+const WorkerRecoveryModelFixtureInputSchema = Schema.Struct({
+  hidden: Schema.optionalKey(Schema.Boolean),
+  id: Schema.optionalKey(WorkerRecoveryModelIdSchema),
+});
+const workerRecoveryModel = (
+  input?: typeof WorkerRecoveryModelFixtureInputSchema.Type
+) =>
   WorkerRecoveryModel.make({
     hidden: input?.hidden ?? false,
     id: input?.id ?? action.model,
   });
-const startTurnResult = (turnId: string) =>
-  WorkerRecoveryTurnStarted.make({
+const startTurnResult = (turnIdInput: typeof CodexTurnIdSchema.Encoded) => {
+  const turnId = parseCodexTurnId(turnIdInput);
+  return WorkerRecoveryTurnStarted.make({
     checkpoint: parseHarnessCheckpointToken(`hchk1_${turnId}`),
     nativeTurnIdDigest: sha256(turnId),
   });
+};
 const providerError = (
   operation: WorkerRecoveryProviderError["operation"],
   message = `${operation} failed`
 ) => new WorkerRecoveryProviderError({ message, operation });
 function rewriteStoredEvents(
-  eventsPath: string,
+  eventsPathInput: typeof RuntimePathSchema.Encoded,
   mutate: (events: Array<Record<string, unknown>>) => void
 ) {
+  const eventsPath = parseRuntimePath(eventsPathInput);
   const events = readFileSync(eventsPath, "utf8")
     .trim()
     .split("\n")

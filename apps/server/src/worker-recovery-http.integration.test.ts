@@ -6,6 +6,7 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import { assert, describe, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
+  DeliverySnapshotSuccessEnvelope,
   parseHarnessEvent,
   parseHarnessProfileId,
   parseHarnessSessionId,
@@ -38,7 +39,7 @@ import {
   testHarnessProvider,
   makeTestHarnessProviderRegistry,
 } from "@gaia/runtime/test-support";
-import { Effect, FileSystem, Layer, Stream } from "effect";
+import { Effect, FileSystem, Layer, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import { prepareDeliveryWorktree } from "../../../packages/runtime/src/git-delivery.js";
@@ -120,12 +121,14 @@ function failureRegistry(mode: FailureMode) {
   return makeTestHarnessProviderRegistry();
 }
 
+const WorkerRecoveryHttpFixtureOptionsSchema = Schema.Struct({
+  productionWorkspaceValidation: Schema.optionalKey(Schema.Boolean),
+  retainedDirty: Schema.optionalKey(Schema.Boolean),
+});
+
 function makeFixture(
   mode?: FailureMode,
-  options: {
-    readonly retainedDirty?: boolean;
-    readonly productionWorkspaceValidation?: boolean;
-  } = {}
+  options: typeof WorkerRecoveryHttpFixtureOptionsSchema.Type = {}
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -614,15 +617,14 @@ describe("finite worker recovery HTTP lifecycle", () => {
             );
             const projection = yield* fixture.getProjection();
             assert.strictEqual(projection.status, 200);
-            const projected = JSON.parse(yield* projection.text) as {
-              readonly data: {
-                readonly stage: string;
-                readonly status: string;
-                readonly workerRecovery: { readonly state: string };
-              };
-            };
+            const projected = Schema.decodeUnknownSync(
+              DeliverySnapshotSuccessEnvelope
+            )(JSON.parse(yield* projection.text));
             const expectedStage =
               mode === "corrupt checkpoint" ? "workerRecoveryFailed" : "failed";
+            if (projected.data.workerRecovery === undefined) {
+              throw new Error("Expected projected worker recovery evidence.");
+            }
             assert.strictEqual(projected.data.stage, expectedStage);
             assert.strictEqual(projected.data.status, expectedStage);
             assert.strictEqual(projected.data.workerRecovery.state, "failed");
