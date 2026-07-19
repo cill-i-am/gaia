@@ -1,37 +1,22 @@
 # Gaia
 
-Gaia is a software-factory control plane. It coordinates work; it is not a
-mega-agent that pretends to code, review, verify, and merge by itself.
+Gaia is a local-first, cloud-ready software-factory control plane. It
+coordinates work through explicit contracts and evidence; it is not a
+mega-agent that silently combines coding, review, verification, and delivery
+authority.
 
-Prototype 1 proves the smallest useful loop:
+## Current Capability Boundary
 
-1. read a local Markdown spec;
-2. create a durable run under `.gaia/runs/<run-id>/`;
-3. replay and snapshot an explicit XState lifecycle;
-4. write a worker plan and deterministic plan review;
-5. execute a harness in an isolated workspace;
-6. verify the worker artifact;
-7. write deterministic evidence review;
-8. write human and machine evidence reports;
-9. resume from the authoritative event log.
+[`docs/current-capabilities.md`](docs/current-capabilities.md) is the routing
+source of truth for implemented, partial, missing, superseded, and historical
+prototype claims. [`docs/self-hosting-baseline.md`](docs/self-hosting-baseline.md)
+freezes the first Effect dependency and fixed-worker evaluation epoch without
+claiming a successful factory outcome.
 
-## Scope
-
-Prototype 1 deliberately excludes visible Codex/Claude/OpenCode worker
-threads, Linear, worktrees, live reviewer threads, browser evidence,
-dashboards, and merge automation. It does include a non-interactive Codex CLI
-harness, deterministic local review evidence, evidence-only GitHub PR
-publishing, workspace-change GitHub PR publishing, and GitHub PR check
-inspection/recording.
-
-See [`docs/prototype-1.md`](docs/prototype-1.md) for the detailed prototype
-contract, event lifecycle, artifact format, and deferred work.
-See [`docs/roadmap.md`](docs/roadmap.md) for the planned software-factory
-slices.
-See [`docs/codex-harness-adapter.md`](docs/codex-harness-adapter.md) for the
-implemented Codex harness spec and
-[`docs/post-harness-roadmap.md`](docs/post-harness-roadmap.md) for the ordered
-post-harness roadmap.
+[`docs/prototype-1.md`](docs/prototype-1.md) and
+[`docs/post-harness-roadmap.md`](docs/post-harness-roadmap.md) remain historical
+design records. Use the current capability ledger for present product truth
+and live Linear Projects and issues for current programme state.
 
 ## Commands
 
@@ -213,19 +198,10 @@ packages/runtime
   command workflows.
 ```
 
-## Deferred Roadmap
+## Current Programme Routing
 
-- dedicated Claude, OpenCode, or AI SDK HarnessAgent adapters;
-- visible Codex/Claude/OpenCode worker threads;
-- real target repo and git worktree execution;
-- background GitHub check watching attached to Gaia runs;
-- Linear issue intake and status sync;
-- live reviewer/spec agent threads;
-- skill bundle install and selection;
-- CI watching;
-- browser/e2e evidence capture;
-- merge/deploy automation;
-- SQLite or richer run index;
-- dashboard/TUI;
-- multi-harness support;
-- cancellation and live-worker cleanup.
+Use [`docs/current-capabilities.md`](docs/current-capabilities.md) before
+proposing a new product slice; several items in the historical roadmaps are now
+implemented or superseded. Use [`docs/roadmap.md`](docs/roadmap.md) for the
+repository delivery ledger and live Linear Projects and issues for current
+dependencies, readiness, and acceptance state.

@@ -1,5 +1,10 @@
 # Prototype 1
 
+> Historical prototype contract. This document preserves the boundaries and
+> evidence of the original slice; its “does not do yet” statements are not
+> current routing guidance. See [`current-capabilities.md`](current-capabilities.md)
+> for current product truth.
+
 Prototype 1 proves Gaia's smallest useful software-factory loop. It is a local
 control-plane experiment, not the final factory.
 

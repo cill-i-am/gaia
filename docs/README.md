@@ -5,6 +5,10 @@ agent workflow documents.
 
 ## Start Here
 
+- `current-capabilities.md`: revision-specific current capability ledger and
+  preservation boundary.
+- `self-hosting-baseline.md`: fixed GAIA-143 dependency, job, authority, and
+  evidence epoch for later comparison.
 - `vision.md`: holistic product direction.
 - `roadmap.md`: delivery ledger for thin, reversible slices.
 - `post-harness-roadmap.md`: implementation track after the real harness loop.
