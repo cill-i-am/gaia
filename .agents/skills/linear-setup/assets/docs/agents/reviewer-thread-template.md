@@ -18,9 +18,8 @@ Review implementation for Linear issue: `{ISSUE_ID}`.
 
 The reviewer must stay read-only. Route fixes to the worker or a separately
 authorized implementation task; do not turn the reviewer thread into an editing
-lane.
-Read the live Linear issue, parent Project/PRD, blockers, and comments before
-reviewing. Treat this handoff as orientation only.
+lane. Read the live Linear issue, parent Project/PRD, blockers, and comments
+before reviewing. Treat this handoff as orientation only.
 
 If the worker has not posted a plan or PR yet, acknowledge the assignment and
 wait. Do not invent implementation work.
@@ -40,7 +39,12 @@ Check:
 - standards and skills
 - tests and verification
 - security, privacy, reliability, and data risks
-- Browser/preview behavior for user-visible changes where practical
+- Browser/preview or focused runtime behavior for user-visible changes. Check
+  at least one happy path and one risk interaction where practical, such as
+  submit, retry, cancel, refresh, rapid click, or double submit. Look for
+  console errors, failed critical requests, loading-state gaps, visible FOUC,
+  layout shift, interaction jank, duplicate requests, and double submissions.
+  Use a cheap read-only subagent for this probe when available.
 
 ## Output Format
 
@@ -53,6 +57,8 @@ Simplicity and architecture:
 Standards and skills:
 
 Tests and verification:
+
+Runtime verification:
 
 Required fixes:
 
