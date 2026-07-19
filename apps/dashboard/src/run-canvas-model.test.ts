@@ -1,4 +1,3 @@
-import type { LocalRunSummaryDto } from "@gaia/core";
 import {
   LocalRunReadSummarySchema,
   RunIdSchema,
@@ -13,6 +12,19 @@ import {
   buildRunCanvasModel,
   buildRunReplayState,
 } from "@/run-canvas-model";
+
+const LocalRunSummaryFixtureInputSchema = Schema.Struct({
+  ...LocalRunReadSummarySchema.fields,
+  artifacts: Schema.optionalKey(LocalRunReadSummarySchema.fields.artifacts),
+  createdAt: Schema.optionalKey(LocalRunReadSummarySchema.fields.createdAt),
+  eventCount: Schema.optionalKey(LocalRunReadSummarySchema.fields.eventCount),
+  latestEventType: Schema.optionalKey(
+    LocalRunReadSummarySchema.fields.latestEventType
+  ),
+  state: Schema.optionalKey(LocalRunReadSummarySchema.fields.state),
+  status: Schema.optionalKey(LocalRunReadSummarySchema.fields.status),
+  updatedAt: Schema.optionalKey(LocalRunReadSummarySchema.fields.updatedAt),
+});
 
 describe("run canvas model", () => {
   it("derives a run graph from ordered events and exposed artifacts", () => {
@@ -236,9 +248,7 @@ describe("run canvas model", () => {
 });
 
 function localRunSummary(
-  input: Partial<typeof LocalRunSummaryDto.Type> & {
-    readonly runId: typeof LocalRunSummaryDto.Type.runId;
-  }
+  input: typeof LocalRunSummaryFixtureInputSchema.Encoded
 ): typeof LocalRunReadSummarySchema.Type {
   return Schema.decodeUnknownSync(LocalRunReadSummarySchema)({
     artifacts: ["input"],

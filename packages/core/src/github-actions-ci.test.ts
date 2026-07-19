@@ -2,16 +2,36 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
+import * as Schema from "effect/Schema";
 import { parse } from "yaml";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 const workflowPath = resolve(repoRoot, ".github/workflows/ci.yml");
 
+const WorkflowStepSchema = Schema.Struct({
+  name: Schema.String,
+  run: Schema.optionalKey(Schema.String),
+  uses: Schema.optionalKey(Schema.String),
+  with: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+});
+const WorkflowStepsSchema = Schema.Array(WorkflowStepSchema);
+const WorkflowJobSchema = Schema.Struct({
+  name: Schema.String,
+  "runs-on": Schema.String,
+  steps: WorkflowStepsSchema,
+});
+const WorkflowSchema = Schema.Struct({
+  env: Schema.Json,
+  jobs: Schema.Record(Schema.String, WorkflowJobSchema),
+  name: Schema.String,
+  on: Schema.Json,
+  permissions: Schema.Json,
+});
+const decodeWorkflow = Schema.decodeUnknownSync(WorkflowSchema);
+
 describe("GitHub Actions PR CI contract", () => {
   it("defines the stable Gaia pull request CI check", () => {
-    // SAFETY: This test immediately asserts every workflow field it consumes
-    // from the checked-in static YAML contract.
-    const workflow = parse(readFileSync(workflowPath, "utf8")) as Workflow;
+    const workflow = decodeWorkflow(parse(readFileSync(workflowPath, "utf8")));
     const job = workflow.jobs["gaia-pr-ci"];
 
     assert.isDefined(job, "Expected gaia-pr-ci job");
@@ -45,29 +65,8 @@ describe("GitHub Actions PR CI contract", () => {
   });
 });
 
-type Workflow = {
-  readonly name: string;
-  readonly on: unknown;
-  readonly permissions: unknown;
-  readonly env: unknown;
-  readonly jobs: Record<string, WorkflowJob>;
-};
-
-type WorkflowJob = {
-  readonly name: string;
-  readonly "runs-on": string;
-  readonly steps: readonly WorkflowStep[];
-};
-
-type WorkflowStep = {
-  readonly name: string;
-  readonly uses?: string;
-  readonly run?: string;
-  readonly with?: Record<string, unknown>;
-};
-
 function assertStepUses(
-  steps: readonly WorkflowStep[],
+  steps: typeof WorkflowStepsSchema.Type,
   name: string,
   uses: string
 ): void {
@@ -76,7 +75,7 @@ function assertStepUses(
 }
 
 function assertStepRun(
-  steps: readonly WorkflowStep[],
+  steps: typeof WorkflowStepsSchema.Type,
   name: string,
   commands: readonly string[]
 ): void {
@@ -88,7 +87,10 @@ function assertStepRun(
   }
 }
 
-function findStep(steps: readonly WorkflowStep[], name: string): WorkflowStep {
+function findStep(
+  steps: typeof WorkflowStepsSchema.Type,
+  name: string
+): typeof WorkflowStepSchema.Type {
   const step = steps.find((candidate) => candidate.name === name);
 
   assert.isDefined(step, `Expected workflow step: ${name}`);

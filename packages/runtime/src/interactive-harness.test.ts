@@ -15,7 +15,15 @@ import {
   projectHarnessEvents,
   type HarnessEvent,
 } from "@gaia/core";
-import { Deferred, Effect, Fiber, FileSystem, Option, Stream } from "effect";
+import {
+  Deferred,
+  Effect,
+  Fiber,
+  FileSystem,
+  Option,
+  Schema,
+  Stream,
+} from "effect";
 
 import type { CodexAppServerClient } from "./codex-app-server-client.js";
 import {
@@ -818,12 +826,14 @@ describe("interactive issue-delivery harness", () => {
   });
 });
 
+const SyntheticProviderCountersSchema = Schema.Struct({
+  detect: Schema.mutableKey(Schema.Number),
+  resume: Schema.mutableKey(Schema.Number),
+  start: Schema.mutableKey(Schema.Number),
+});
+
 function syntheticProvider(
-  counters: {
-    detect: number;
-    resume: number;
-    start: number;
-  },
+  counters: typeof SyntheticProviderCountersSchema.Type,
   isAvailable: () => boolean = () => true
 ): HarnessProvider {
   const descriptor = HarnessProviderDescriptor.make({

@@ -21,6 +21,18 @@ import {
 } from "@/run-console-model";
 
 const serverUrl = parseLocalGaiaServerUrl("/gaia-api");
+const LocalRunSummaryFixtureInputSchema = Schema.Struct({
+  ...LocalRunReadSummarySchema.fields,
+  artifacts: Schema.optionalKey(LocalRunReadSummarySchema.fields.artifacts),
+  createdAt: Schema.optionalKey(LocalRunReadSummarySchema.fields.createdAt),
+  eventCount: Schema.optionalKey(LocalRunReadSummarySchema.fields.eventCount),
+  latestEventType: Schema.optionalKey(
+    LocalRunReadSummarySchema.fields.latestEventType
+  ),
+  state: Schema.optionalKey(LocalRunReadSummarySchema.fields.state),
+  status: Schema.optionalKey(LocalRunReadSummarySchema.fields.status),
+  updatedAt: Schema.optionalKey(LocalRunReadSummarySchema.fields.updatedAt),
+});
 
 describe("run console model", () => {
   it("builds selectable local API run rows and preserves selection", () => {
@@ -300,9 +312,7 @@ describe("run console model", () => {
 });
 
 function localRunSummary(
-  input: Partial<typeof LocalRunSummaryDto.Type> & {
-    readonly runId: typeof LocalRunSummaryDto.Type.runId;
-  }
+  input: typeof LocalRunSummaryFixtureInputSchema.Encoded
 ): typeof LocalRunReadSummarySchema.Type {
   return Schema.decodeUnknownSync(LocalRunReadSummarySchema)({
     artifacts: ["input", "worker-plan"],

@@ -1,7 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Schema from "effect/Schema";
 
 import {
   HarnessCapabilities,
+  HarnessEventSchema,
   HarnessProviderDescriptor,
   HarnessSessionSnapshot,
   makeHarnessRunEvent,
@@ -20,6 +22,20 @@ import {
   replayHarnessSession,
   type HarnessEvent,
 } from "./index.js";
+
+const TerminalHarnessCaseSchema = Schema.Struct({
+  expectedState: Schema.Literals([
+    "completed",
+    "failed",
+    "interrupted",
+    "unavailable",
+  ]),
+  label: Schema.String,
+  terminalEvent: HarnessEventSchema,
+});
+const decodeTerminalHarnessCases = Schema.decodeUnknownSync(
+  Schema.Array(TerminalHarnessCaseSchema)
+);
 
 const runId = parseRunId("run-Gaia840001");
 const sessionId = parseHarnessSessionId("session-gaia-84");
@@ -521,15 +537,7 @@ describe("provider-neutral harness contracts", () => {
   });
 
   it("keeps completed, interrupted, unavailable, and nonrecoverable failures absorbing", () => {
-    const terminalCases: ReadonlyArray<{
-      readonly label: string;
-      readonly terminalEvent: HarnessEvent;
-      readonly expectedState:
-        | "completed"
-        | "failed"
-        | "interrupted"
-        | "unavailable";
-    }> = [
+    const terminalCases = decodeTerminalHarnessCases([
       {
         expectedState: "completed",
         label: "completed",
@@ -584,7 +592,7 @@ describe("provider-neutral harness contracts", () => {
           sessionId,
         },
       },
-    ];
+    ]);
 
     for (const { expectedState, label, terminalEvent } of terminalCases) {
       const projection = replayHarnessSession(

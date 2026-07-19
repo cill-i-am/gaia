@@ -7,7 +7,10 @@ import {
   makeCodexAppServerConnection,
   type CodexAppServerProcess,
 } from "./codex-app-server-client.js";
-import { parseCodexClientVersion } from "./codex-app-server-protocol.js";
+import {
+  CodexNotificationSchema,
+  parseCodexClientVersion,
+} from "./codex-app-server-protocol.js";
 
 function fakeProcess() {
   const lines = new Set<(line: string) => void>();
@@ -944,7 +947,7 @@ describe("Codex App Server connection", () => {
           const connection = yield* makeCodexAppServerConnection({
             process: fake.process,
           });
-          const notifications: Array<unknown> = [];
+          const notifications: Array<typeof CodexNotificationSchema.Type> = [];
           const terminations: Array<string> = [];
           connection.onNotification((notification) =>
             notifications.push(notification)
@@ -1036,17 +1039,15 @@ describe("Codex App Server connection", () => {
           expect(notifications[3]).toMatchObject({
             method: "item/completed",
           });
-          const large = notifications[3] as {
-            readonly params: {
-              readonly item: { readonly changes: ReadonlyArray<unknown> };
-            };
-          };
+          const large = notifications[3];
+          if (
+            large?.method !== "item/completed" ||
+            large.params.item.type !== "fileChange"
+          ) {
+            throw new Error("Expected a completed file-change notification.");
+          }
           expect(large.params.item.changes).toHaveLength(201);
-          expect(
-            notifications
-              .slice(4)
-              .map((value) => (value as { readonly method: string }).method)
-          ).toEqual([
+          expect(notifications.slice(4).map((value) => value.method)).toEqual([
             "item/fileChange/outputDelta",
             "item/fileChange/patchUpdated",
           ]);

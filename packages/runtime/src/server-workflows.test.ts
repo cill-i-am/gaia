@@ -15,11 +15,23 @@ import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
+  DeliveryBranchNamePublicSchema,
   DeliveryFeedbackTrustPolicyV1,
+  DeliveryGitShaPublicSchema,
   DeliveryPublicationConfirmed,
+  DeliveryRemoteNamePublicSchema,
+  HarnessProfileIdSchema,
+  HarnessSessionIdSchema,
+  RunEvent,
+  WorkerContinuationReceiptSchema,
   WorkerContinuationAction,
+  WorkerCorrelationReconciliationReceiptSchema,
   WorkerCorrelationReconciliationAction,
+  WorkerDesktopOriginCorrelationReceiptSchema,
   WorkerDesktopOriginCorrelationAction,
+  WorkerRecoveryActionIdSchema,
+  WorkerRecoveryDigestSchema,
+  WorkerRecoveryModelIdSchema,
   encodeWorkerContinuationReceiptJson,
   encodeWorkerCorrelationReconciliationReceiptJson,
   encodeWorkerDesktopOriginCorrelationReceiptJson,
@@ -36,6 +48,10 @@ import {
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
+import {
+  CodexTurnIdSchema,
+  parseCodexTurnId,
+} from "./codex-app-server-protocol.js";
 import { GaiaRuntimeError } from "./errors.js";
 import { appendEvent } from "./event-store.js";
 import {
@@ -66,6 +82,25 @@ import {
   reconcileInterruptedServerRuns,
 } from "./server-workflows.js";
 import { makeTestHarnessProviderRegistry } from "./test-support.js";
+
+const WorkerContinuationEventPayloadSchema = Schema.Struct({
+  continuation: WorkerContinuationReceiptSchema,
+});
+const WorkerCorrelationEventPayloadSchema = Schema.Struct({
+  reconciliation: WorkerCorrelationReconciliationReceiptSchema,
+});
+const WorkerDesktopOriginEventPayloadSchema = Schema.Struct({
+  desktopOriginCorrelation: WorkerDesktopOriginCorrelationReceiptSchema,
+});
+const decodeWorkerContinuationEventPayload = Schema.decodeUnknownSync(
+  WorkerContinuationEventPayloadSchema
+);
+const decodeWorkerCorrelationEventPayload = Schema.decodeUnknownSync(
+  WorkerCorrelationEventPayloadSchema
+);
+const decodeWorkerDesktopOriginEventPayload = Schema.decodeUnknownSync(
+  WorkerDesktopOriginEventPayloadSchema
+);
 
 describe("server workflows", () => {
   layer(NodeServices.layer)((it) => {
@@ -943,7 +978,10 @@ describe("server workflows", () => {
             });
             const continuationStates = events.events.flatMap((event) =>
               event.type === "WORKER_CONTINUATION_RECORDED"
-                ? [(event.payload["continuation"] as { state?: unknown }).state]
+                ? [
+                    decodeWorkerContinuationEventPayload(event.payload)
+                      .continuation.state,
+                  ]
                 : []
             );
             const workerCompletions = events.events.filter(
@@ -1111,7 +1149,10 @@ describe("server workflows", () => {
           });
           const continuationStates = events.events.flatMap((event) =>
             event.type === "WORKER_CONTINUATION_RECORDED"
-              ? [(event.payload["continuation"] as { state?: unknown }).state]
+              ? [
+                  decodeWorkerContinuationEventPayload(event.payload)
+                    .continuation.state,
+                ]
               : []
           );
           const replayEventCount = events.events.length;
@@ -1330,8 +1371,8 @@ describe("server workflows", () => {
             const reconciliationStates = events.events.flatMap((event) =>
               event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED"
                 ? [
-                    (event.payload["reconciliation"] as { state?: unknown })
-                      .state,
+                    decodeWorkerCorrelationEventPayload(event.payload)
+                      .reconciliation.state,
                   ]
                 : []
             );
@@ -1649,11 +1690,8 @@ describe("server workflows", () => {
             const desktopStates = events.events.flatMap((event) =>
               event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED"
                 ? [
-                    (
-                      event.payload["desktopOriginCorrelation"] as {
-                        state?: unknown;
-                      }
-                    ).state,
+                    decodeWorkerDesktopOriginEventPayload(event.payload)
+                      .desktopOriginCorrelation.state,
                   ]
                 : []
             );
@@ -2186,8 +2224,8 @@ describe("server workflows", () => {
             const reconciliationStates = events.events.flatMap((event) =>
               event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED"
                 ? [
-                    (event.payload["reconciliation"] as { state?: unknown })
-                      .state,
+                    decodeWorkerCorrelationEventPayload(event.payload)
+                      .reconciliation.state,
                   ]
                 : []
             );
@@ -2447,12 +2485,14 @@ function blockingReviewer(): GaiaReviewer {
   };
 }
 
+const RecordingGitRunnerInputSchema = Schema.Struct({
+  baseRevision: DeliveryGitShaPublicSchema,
+  workspaceHead: Schema.optionalKey(DeliveryGitShaPublicSchema),
+});
+
 function recordingGitRunner(
   commands: Array<GitDeliveryCommandInput>,
-  input: {
-    readonly baseRevision: string;
-    readonly workspaceHead?: string;
-  }
+  input: typeof RecordingGitRunnerInputSchema.Type
 ) {
   return (command: GitDeliveryCommandInput) =>
     Effect.sync(() => {
@@ -2530,17 +2570,24 @@ function digest(value: string) {
   );
 }
 
+const WorkerRecoveryTurnCheckpointInputSchema = Schema.Struct({
+  actionId: WorkerRecoveryActionIdSchema,
+  expectedFailureSequence: RunEvent.fields.sequence,
+  expectedSessionId: HarnessSessionIdSchema,
+  harnessProfileId: HarnessProfileIdSchema,
+  model: WorkerRecoveryModelIdSchema,
+  payloadDigest: WorkerRecoveryDigestSchema,
+});
+const decodeWorkerRecoveryTurnCheckpointInput = Schema.decodeUnknownSync(
+  WorkerRecoveryTurnCheckpointInputSchema
+);
+
 function workerRecoveryTurnCheckpoint(
-  turnId: string,
-  recovery: {
-    readonly actionId: string;
-    readonly expectedFailureSequence: number;
-    readonly expectedSessionId: string;
-    readonly harnessProfileId: string;
-    readonly model: string;
-    readonly payloadDigest: string;
-  }
+  turnIdInput: typeof CodexTurnIdSchema.Encoded,
+  recoveryInput: typeof WorkerRecoveryTurnCheckpointInputSchema.Encoded
 ) {
+  const turnId = parseCodexTurnId(turnIdInput);
+  const recovery = decodeWorkerRecoveryTurnCheckpointInput(recoveryInput);
   return JSON.stringify({
     actionId: recovery.actionId,
     checkpoint: parseHarnessCheckpointToken(`hchk1_${turnId}`),
@@ -2554,12 +2601,16 @@ function workerRecoveryTurnCheckpoint(
   });
 }
 
-function deliveryProvenanceDigest(input: {
-  readonly baseBranch: string;
-  readonly baseRevision: string;
-  readonly headBranch: string;
-  readonly remote: string;
-}) {
+const DeliveryProvenanceDigestInputSchema = Schema.Struct({
+  baseBranch: DeliveryBranchNamePublicSchema,
+  baseRevision: DeliveryGitShaPublicSchema,
+  headBranch: DeliveryBranchNamePublicSchema,
+  remote: DeliveryRemoteNamePublicSchema,
+});
+
+function deliveryProvenanceDigest(
+  input: typeof DeliveryProvenanceDigestInputSchema.Type
+) {
   return digest(
     [
       "gaia-worker-continuation-delivery-provenance-v1",

@@ -5,6 +5,7 @@ import { assert, describe, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
   CreateRunRequest,
+  DeliveryActionIdPublicSchema,
   DeliveryPublicationAttempted,
   DeliveryPublicationConfirmed,
   DeliveryPublicationIntent,
@@ -55,7 +56,9 @@ import {
   parseWorkerRecoveryModelId,
   parseWorkspaceRelativePath,
   projectHarnessEvents,
+  LocalGaiaServerUrlSchema,
   RunEvent,
+  RunIdSchema,
   WorkerRecoveryAction,
 } from "@gaia/core";
 import {
@@ -69,7 +72,13 @@ import {
   type DeliveryPublicationOptions,
   makeRuntimeError,
 } from "@gaia/runtime";
-import { makeRunPaths, makeRunStorePaths } from "@gaia/runtime/paths";
+import {
+  makeRunPaths,
+  makeRunStorePaths,
+  parseRunStorageRootInput,
+  RunStorageRootInputSchema,
+  RuntimePathTextSchema,
+} from "@gaia/runtime/paths";
 import type { ServerWorkflowOptions } from "@gaia/runtime/server-workflows";
 import {
   acceptFactoryRun,
@@ -101,6 +110,9 @@ import { deliveryUpdateFromEvents, makeLocalGaiaServerLayer } from "./api.js";
 import type { LocalServerIdentity } from "./discovery.js";
 
 const decodeCreateRunRequest = Schema.decodeUnknownSync(CreateRunRequest);
+const DeliveryActionActivationSchema = Schema.Struct({
+  actionId: DeliveryActionIdPublicSchema,
+});
 
 function recoveredCompletedDeliveryEvents(
   runId = parseRunId("run-1234567890")
@@ -1843,7 +1855,9 @@ describe("local run api http boundary", () => {
           });
           const seen = new Set<string>();
           let mutations = 0;
-          const activate = (action: { readonly actionId: string }) =>
+          const activate = (
+            action: typeof DeliveryActionActivationSchema.Type
+          ) =>
             Effect.gen(function* () {
               const key = JSON.stringify(action);
               if (action.actionId.includes("conflict"))
@@ -2801,7 +2815,7 @@ describe("local run api http boundary", () => {
 });
 
 function testServerLayer(
-  rootDirectory: string,
+  rootDirectory: typeof RunStorageRootInputSchema.Encoded,
   workflowOptions: ServerWorkflowOptions = {},
   serverOptions: Parameters<typeof makeLocalGaiaServerLayer>[3] = {}
 ) {
@@ -2816,7 +2830,9 @@ function testServerLayer(
   ).pipe(Layer.provideMerge(NodeHttpServer.layerTest));
 }
 
-function testIdentity(rootDirectory: string): LocalServerIdentity {
+function testIdentity(
+  rootDirectory: typeof RunStorageRootInputSchema.Encoded
+): LocalServerIdentity {
   return {
     host: "127.0.0.1",
     pid: process.pid,
@@ -2957,8 +2973,9 @@ function pendingApprovalSession(
   };
 }
 
-function eventuallyAgentSession(runId: string) {
+function eventuallyAgentSession(runIdInput: typeof RunIdSchema.Encoded) {
   return Effect.gen(function* () {
+    const runId = Schema.decodeUnknownSync(RunIdSchema)(runIdInput);
     for (let attempt = 0; attempt < 1_000; attempt += 1) {
       const response = yield* HttpClient.get(
         `/runs/${runId}/agents/agent-worker/session`
@@ -2997,16 +3014,19 @@ function responseJsonObject(
   );
 }
 
-function parseSseDataEvents(
-  text: string
-): ReadonlyArray<Readonly<Record<string, unknown>>> {
+function parseSseDataEvents(text: string) {
   return parseSseBlocks(text).map(({ data }) => data);
 }
 
-function parseSseBlocks(text: string): ReadonlyArray<{
-  readonly data: Readonly<Record<string, unknown>>;
-  readonly id: string | undefined;
-}> {
+const SseBlockSchema = Schema.Struct({
+  data: Schema.Record(Schema.String, Schema.Json),
+  id: Schema.UndefinedOr(Schema.String),
+});
+const decodeSseBlock = Schema.decodeUnknownSync(SseBlockSchema);
+
+function parseSseBlocks(
+  text: string
+): ReadonlyArray<typeof SseBlockSchema.Type> {
   return text
     .trim()
     .split(/\r?\n\r?\n/u)
@@ -3032,7 +3052,7 @@ function parseSseBlocks(text: string): ReadonlyArray<{
         );
       }
 
-      return [{ data: parsed, id }];
+      return [decodeSseBlock({ data: parsed, id })];
     });
 }
 
@@ -3161,7 +3181,13 @@ function eventuallyAcceptedCreate(specMarkdown: string) {
   });
 }
 
-function startNativeCreateRunRequest(baseUrl: string, specMarkdown: string) {
+function startNativeCreateRunRequest(
+  baseUrlInput: typeof LocalGaiaServerUrlSchema.Encoded,
+  specMarkdown: string
+) {
+  const baseUrl = Schema.decodeUnknownSync(LocalGaiaServerUrlSchema)(
+    baseUrlInput
+  );
   const body = JSON.stringify(createRunPayload(specMarkdown));
   const request = httpRequest(new URL("/runs", baseUrl), {
     headers: {
@@ -3191,10 +3217,11 @@ function loopbackServerUrl(server: { readonly address: HttpServer.Address }) {
 }
 
 function recordingGitRunner() {
-  return (command: {
-    readonly args: ReadonlyArray<string>;
-    readonly cwd: string;
-  }) =>
+  const RecordingGitCommandSchema = Schema.Struct({
+    args: Schema.Array(Schema.String),
+    cwd: RuntimePathTextSchema,
+  });
+  return (command: typeof RecordingGitCommandSchema.Type) =>
     Effect.sync(() => {
       const [first, ...rest] = command.args;
       if (first === "rev-parse" && rest[0] === "--show-toplevel") {
@@ -3237,9 +3264,10 @@ function recordingGitRunner() {
 
 function appendTerminalRemediation(
   runId: ReturnType<typeof parseRunId>,
-  rootDirectory: string
+  rootDirectoryInput: typeof RunStorageRootInputSchema.Encoded
 ) {
   return Effect.gen(function* () {
+    const rootDirectory = parseRunStorageRootInput(rootDirectoryInput);
     const paths = yield* makeRunPaths(runId, { rootDirectory });
     const intent = DeliveryRemediationIntent.make({
       attempt: 1,
@@ -3391,7 +3419,11 @@ function publicationTestFields(runId: ReturnType<typeof parseRunId>) {
   };
 }
 
-function deliveryActionRequest(runId: string, expectedEventSequence: number) {
+function deliveryActionRequest(
+  runIdInput: typeof RunIdSchema.Encoded,
+  expectedEventSequence: number
+) {
+  const runId = Schema.decodeUnknownSync(RunIdSchema)(runIdInput);
   return HttpClientRequest.post(`/runs/${runId}/delivery/actions`).pipe(
     HttpClientRequest.bodyJsonUnsafe({
       expectedEventSequence,

@@ -1,5 +1,10 @@
 import type { LocalRunSummaryDto } from "@gaia/core";
-import { RunIdSchema, makeRunEvent, parseLocalRunTimestamp } from "@gaia/core";
+import {
+  LocalRunReadSummarySchema,
+  RunIdSchema,
+  makeRunEvent,
+  parseLocalRunTimestamp,
+} from "@gaia/core";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -7,6 +12,19 @@ import {
   RunCompareModelSchema,
   buildRunCompareModel,
 } from "@/run-compare-model";
+
+const LocalRunSummaryFixtureInputSchema = Schema.Struct({
+  ...LocalRunReadSummarySchema.fields,
+  artifacts: Schema.optionalKey(LocalRunReadSummarySchema.fields.artifacts),
+  createdAt: Schema.optionalKey(LocalRunReadSummarySchema.fields.createdAt),
+  eventCount: Schema.optionalKey(LocalRunReadSummarySchema.fields.eventCount),
+  latestEventType: Schema.optionalKey(
+    LocalRunReadSummarySchema.fields.latestEventType
+  ),
+  state: Schema.optionalKey(LocalRunReadSummarySchema.fields.state),
+  status: Schema.optionalKey(LocalRunReadSummarySchema.fields.status),
+  updatedAt: Schema.optionalKey(LocalRunReadSummarySchema.fields.updatedAt),
+});
 
 describe("run compare model", () => {
   it("compares public run dimensions and artifact availability", () => {
@@ -143,11 +161,9 @@ describe("run compare model", () => {
 });
 
 function localRunSummary(
-  input: Partial<typeof LocalRunSummaryDto.Type> & {
-    readonly runId: typeof LocalRunSummaryDto.Type.runId;
-  }
+  input: typeof LocalRunSummaryFixtureInputSchema.Encoded
 ): typeof LocalRunSummaryDto.Type {
-  return {
+  return Schema.decodeUnknownSync(LocalRunReadSummarySchema)({
     artifacts: ["input"],
     createdAt: parseLocalRunTimestamp("2026-07-07T12:00:00.000Z"),
     eventCount: 1,
@@ -156,7 +172,7 @@ function localRunSummary(
     status: "running",
     updatedAt: parseLocalRunTimestamp("2026-07-07T12:00:00.000Z"),
     ...input,
-  };
+  });
 }
 
 function parseRunId(value: string): typeof RunIdSchema.Type {

@@ -21,6 +21,14 @@ const serverUrl = parseLocalGaiaServerUrl("/gaia-api");
 const agentWorkerId = parseAgentId("agent-worker");
 const agentReviewerId = parseAgentId("agent-reviewer");
 const sessionId = parseHarnessSessionId("session-run-1234567890");
+const AgentSessionUpdateFixtureInputSchema = Schema.Struct({
+  agentId: Schema.optionalKey(FactoryAgentIdSchema),
+  sequence: AgentSessionEventSequenceSchema,
+  terminal: Schema.optionalKey(Schema.Boolean),
+});
+const decodeAgentSessionUpdateFixtureInput = Schema.decodeUnknownSync(
+  AgentSessionUpdateFixtureInputSchema
+);
 
 describe("Agent session stream controller", () => {
   it("opens only while an agent Inspector is visible and closes on close, switch, terminal, and unmount", () => {
@@ -189,17 +197,14 @@ describe("Agent session stream controller", () => {
   });
 });
 
-function update(input: {
-  readonly agentId?: string;
-  readonly sequence: number;
-  readonly terminal?: boolean;
-}): typeof AgentSessionUpdateDto.Type {
-  const agentId = parseAgentId(input.agentId ?? "agent-worker");
+function update(
+  input: typeof AgentSessionUpdateFixtureInputSchema.Encoded
+): typeof AgentSessionUpdateDto.Type {
+  const decodedInput = decodeAgentSessionUpdateFixtureInput(input);
+  const agentId = decodedInput.agentId ?? agentWorkerId;
   const runId = parseRunId("run-1234567890");
   const sessionId = parseHarnessSessionId("session-run-1234567890");
-  const eventSequence = Schema.decodeUnknownSync(
-    AgentSessionEventSequenceSchema
-  )(input.sequence);
+  const eventSequence = decodedInput.sequence;
   const snapshot = {
     agentId,
     capabilities: {
@@ -223,7 +228,7 @@ function update(input: {
     resolvedInteractions: [],
     runId,
     sessionId,
-    state: input.terminal ? "completed" : "running",
+    state: decodedInput.terminal ? "completed" : "running",
     turns: [],
   } as const;
 
@@ -233,6 +238,6 @@ function update(input: {
     runId,
     sessionId,
     snapshot,
-    terminal: input.terminal ?? false,
+    terminal: decodedInput.terminal ?? false,
   };
 }
