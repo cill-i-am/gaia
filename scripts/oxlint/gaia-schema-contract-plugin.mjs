@@ -3651,17 +3651,516 @@ const functionHasCanonicalBoundarySyntax = (
 };
 
 const getDirectObjectParameter = (node) => {
-  const annotation = node.parent;
+  let annotation = node.parent;
+  while (
+    annotation !== undefined &&
+    annotation !== null &&
+    annotation.type !== "TSTypeAnnotation" &&
+    annotation.type !== "Program"
+  ) {
+    annotation = annotation.parent;
+  }
   const parameter = annotation?.parent;
   const functionNode = parameter?.parent;
   return annotation?.type === "TSTypeAnnotation" &&
-    parameter?.type === "Identifier" &&
+    (parameter?.type === "Identifier" || parameter?.type === "ObjectPattern") &&
     (functionNode?.type === "ArrowFunctionExpression" ||
       functionNode?.type === "FunctionDeclaration" ||
       functionNode?.type === "FunctionExpression") &&
     functionNode.params.includes(parameter)
     ? { functionNode, parameter }
     : undefined;
+};
+
+const isCanonicalBoundaryCallSyntax = (
+  program,
+  call,
+  activeInitializers = new Set()
+) => {
+  if (
+    call.type === "NewExpression" &&
+    call.callee.type === "Identifier" &&
+    call.callee.name === "EventSource" &&
+    !hasCounterfeitGlobalBinding(call, "EventSource")
+  ) {
+    return true;
+  }
+  const binding = getProgramImportBinding(
+    program,
+    getExpressionRoot(call.callee)
+  );
+  if (
+    (binding?.moduleName === "effect" && binding.importedName === "Schema") ||
+    binding?.moduleName === "effect/Schema" ||
+    binding?.moduleName === "effect" ||
+    binding?.moduleName.startsWith("effect/") ||
+    binding?.moduleName.startsWith("@effect/") ||
+    binding?.moduleName === "react"
+  ) {
+    return true;
+  }
+  if (call.type !== "CallExpression") return false;
+  if (call.callee.type === "Identifier") {
+    const targets = getTopLevelFunctions(program).get(call.callee.name) ?? [];
+    if (
+      targets.length === 1 &&
+      functionHasCanonicalBoundarySyntax(program, targets[0])
+    ) {
+      return true;
+    }
+    const owner = findEnclosingFunction(call);
+    for (const parameter of owner?.params ?? []) {
+      if (
+        parameter.type !== "AssignmentPattern" ||
+        parameter.left.type !== "Identifier" ||
+        parameter.left.name !== call.callee.name ||
+        parameter.right.type !== "Identifier"
+      ) {
+        continue;
+      }
+      const defaults =
+        getTopLevelFunctions(program).get(parameter.right.name) ?? [];
+      if (
+        defaults.length === 1 &&
+        functionHasCanonicalBoundarySyntax(program, defaults[0])
+      ) {
+        return true;
+      }
+    }
+  }
+  if (
+    call.callee.type === "MemberExpression" &&
+    call.callee.object.type === "Identifier" &&
+    hasCanonicalBoundaryInitializerSyntax(
+      program,
+      call.callee.object.name,
+      call,
+      activeInitializers
+    )
+  ) {
+    return true;
+  }
+  const root = getExpressionRoot(call.callee);
+  if (root?.type !== "Identifier") return false;
+  const classDeclaration = program.body
+    .map(unwrapProgramDeclaration)
+    .find(
+      (declaration) =>
+        declaration?.type === "ClassDeclaration" &&
+        declaration.id?.name === root.name
+    );
+  if (classDeclaration?.superClass === undefined) return false;
+  let canonical = false;
+  walkAst(classDeclaration.superClass, (candidate) => {
+    if (
+      candidate.type === "MemberExpression" &&
+      getProgramImportBinding(program, getExpressionRoot(candidate))
+        ?.moduleName === "effect"
+    ) {
+      canonical = true;
+    }
+  });
+  return canonical;
+};
+
+const hasCanonicalBoundaryInitializerSyntax = (
+  program,
+  name,
+  scopeNode,
+  activeNames = new Set()
+) => {
+  if (activeNames.has(name)) return false;
+  const nextActiveNames = new Set(activeNames).add(name);
+  const isVisibleFromScope = (declaration) => {
+    if (scopeNode === undefined) return true;
+    const declarationFunction = findEnclosingFunction(declaration);
+    let scopeFunction = findEnclosingFunction(scopeNode);
+    while (scopeFunction !== undefined) {
+      if (scopeFunction === declarationFunction) return true;
+      scopeFunction = findEnclosingFunction(scopeFunction);
+    }
+    return declarationFunction === undefined;
+  };
+  const declarations = [];
+  walkAst(program, (candidate) => {
+    if (
+      candidate.type === "VariableDeclarator" &&
+      candidate.id.type === "Identifier" &&
+      candidate.id.name === name &&
+      isVisibleFromScope(candidate)
+    ) {
+      declarations.push(candidate);
+    }
+  });
+  if (declarations.length !== 1) return false;
+  const initializer = declarations[0].init;
+  return (
+    (initializer?.type === "CallExpression" ||
+      initializer?.type === "NewExpression") &&
+    isCanonicalBoundaryCallSyntax(program, initializer, nextActiveNames)
+  );
+};
+
+const valueFlowsToCanonicalBoundarySyntax = (
+  program,
+  value,
+  functionNode,
+  bindings,
+  activeValues = new Set()
+) => {
+  if (activeValues.has(value)) return false;
+  const nextActiveValues = new Set(activeValues).add(value);
+  let current = value.parent;
+  while (
+    current !== undefined &&
+    current !== null &&
+    current !== functionNode
+  ) {
+    if (
+      (current.type === "CallExpression" || current.type === "NewExpression") &&
+      isCanonicalBoundaryCallSyntax(program, current)
+    ) {
+      return true;
+    }
+    if (current.type === "JSXElement" || current.type === "JSXFragment") {
+      return true;
+    }
+    if (
+      current.type === "AssignmentExpression" &&
+      current.left.type === "MemberExpression" &&
+      current.left.object.type === "Identifier" &&
+      hasCanonicalBoundaryInitializerSyntax(
+        program,
+        current.left.object.name,
+        current
+      )
+    ) {
+      return true;
+    }
+    if (
+      current.type === "VariableDeclarator" &&
+      current.id.type === "Identifier" &&
+      current.init !== null &&
+      (bindings.get(current.id.name) ?? []).length === 1
+    ) {
+      return getValueReferences(program, current.id.name, bindings)
+        .filter((reference) => {
+          let owner = reference.parent;
+          while (
+            owner !== undefined &&
+            owner !== null &&
+            owner !== functionNode
+          ) {
+            owner = owner.parent;
+          }
+          return owner === functionNode;
+        })
+        .some((reference) =>
+          valueFlowsToCanonicalBoundarySyntax(
+            program,
+            reference,
+            functionNode,
+            bindings,
+            nextActiveValues
+          )
+        );
+    }
+    current = current.parent;
+  }
+  return false;
+};
+
+const parameterHasConnectedCanonicalBoundarySyntax = (
+  program,
+  functionNode,
+  parameter,
+  fieldName,
+  bindings
+) => {
+  const identifiers = [];
+  if (parameter?.type === "Identifier") {
+    identifiers.push({ fieldName, identifier: parameter });
+  } else if (parameter?.type === "ObjectPattern") {
+    for (const property of parameter.properties) {
+      if (property.type !== "Property") continue;
+      const propertyName = getStaticName(property.key);
+      if (fieldName !== undefined && propertyName !== fieldName) continue;
+      let identifier = property.value;
+      if (identifier.type === "AssignmentPattern") identifier = identifier.left;
+      if (identifier.type === "Identifier") {
+        identifiers.push({ fieldName: undefined, identifier });
+      }
+    }
+  }
+
+  return identifiers.some(({ fieldName: selectedField, identifier }) =>
+    getValueReferences(program, identifier.name, bindings)
+      .filter((reference) => reference !== identifier)
+      .filter((reference) => {
+        let owner = reference.parent;
+        while (
+          owner !== undefined &&
+          owner !== null &&
+          owner !== functionNode
+        ) {
+          owner = owner.parent;
+        }
+        return owner === functionNode;
+      })
+      .some((reference) => {
+        let value = reference;
+        if (selectedField !== undefined) {
+          const access = reference.parent;
+          if (
+            access?.type !== "MemberExpression" ||
+            access.object !== reference ||
+            getStaticName(access.property) !== selectedField
+          ) {
+            return false;
+          }
+          value = access;
+        }
+        return valueFlowsToCanonicalBoundarySyntax(
+          program,
+          value,
+          functionNode,
+          bindings
+        );
+      })
+  );
+};
+
+const hasConnectedCanonicalBoundaryParameterSyntax = (
+  program,
+  node,
+  bindings
+) => {
+  const functionNode = findDirectEnclosingFunction(node);
+  if (functionNode === undefined) return false;
+
+  let parameter;
+  let fieldName;
+  if (node.type === "Identifier" && functionNode.params.includes(node)) {
+    parameter = node;
+  } else {
+    const property =
+      node.type === "TSPropertySignature"
+        ? node
+        : node.parent?.type === "TSPropertySignature"
+          ? node.parent
+          : undefined;
+    const typeLiteral =
+      node.type === "TSTypeLiteral"
+        ? node
+        : property?.parent?.type === "TSTypeLiteral"
+          ? property.parent
+          : undefined;
+    const direct =
+      typeLiteral === undefined
+        ? undefined
+        : getDirectObjectParameter(typeLiteral);
+    if (direct?.functionNode !== functionNode) return false;
+    parameter = direct.parameter;
+    fieldName = getStaticName(property?.key);
+  }
+  return parameterHasConnectedCanonicalBoundarySyntax(
+    program,
+    functionNode,
+    parameter,
+    fieldName,
+    bindings
+  );
+};
+
+const functionReturnsCanonicalBoundarySyntax = (program, functionNode) => {
+  const returns = [];
+  if (functionNode.body?.type !== "BlockStatement") {
+    if (functionNode.body !== undefined) returns.push(functionNode.body);
+  } else {
+    walkAst(functionNode.body, (candidate) => {
+      if (
+        candidate.type === "ReturnStatement" &&
+        candidate.argument !== null &&
+        findEnclosingFunction(candidate) === functionNode
+      ) {
+        returns.push(candidate.argument);
+      }
+    });
+  }
+  return returns.some((returned) => {
+    let canonical = false;
+    walkAst(returned, (candidate) => {
+      if (canonical) return;
+      if (candidate.type === "JSXElement" || candidate.type === "JSXFragment") {
+        canonical = true;
+        return;
+      }
+      if (
+        candidate.type === "Identifier" &&
+        hasCanonicalBoundaryInitializerSyntax(
+          program,
+          candidate.name,
+          candidate
+        )
+      ) {
+        canonical = true;
+        return;
+      }
+      if (
+        (candidate.type === "CallExpression" ||
+          candidate.type === "NewExpression") &&
+        isCanonicalBoundaryCallSyntax(program, candidate)
+      ) {
+        canonical = true;
+      }
+    });
+    return canonical;
+  });
+};
+
+const hasConnectedCanonicalBoundaryDeclarationContextSyntax = (
+  program,
+  node,
+  bindings,
+  activeNames = new Set()
+) => {
+  let declaration = node;
+  while (
+    declaration !== undefined &&
+    declaration !== null &&
+    declaration.type !== "TSTypeAliasDeclaration" &&
+    declaration.type !== "TSInterfaceDeclaration" &&
+    declaration.type !== "Program"
+  ) {
+    declaration = declaration.parent;
+  }
+  const name = getStaticName(declaration?.id);
+  if (name === undefined || activeNames.has(name)) return false;
+  const nextActiveNames = new Set(activeNames).add(name);
+  return getNamedTypeReferencesSyntax(program, name).some((reference) => {
+    const alias = findEnclosingTypeAlias(reference);
+    if (alias !== undefined && alias !== declaration) {
+      return hasConnectedCanonicalBoundaryDeclarationContextSyntax(
+        program,
+        alias,
+        bindings,
+        nextActiveNames
+      );
+    }
+    const functionNode = findEnclosingFunction(reference);
+    if (functionNode === undefined) return false;
+    if (functionReturnsCanonicalBoundarySyntax(program, functionNode)) {
+      return true;
+    }
+    if (
+      functionNode.returnType !== undefined &&
+      (() => {
+        let current = reference;
+        while (
+          current !== undefined &&
+          current !== null &&
+          current !== functionNode
+        ) {
+          if (current === functionNode.returnType) return true;
+          current = current.parent;
+        }
+        return false;
+      })()
+    ) {
+      return functionReturnsCanonicalBoundarySyntax(program, functionNode);
+    }
+    if (findDirectEnclosingFunction(reference) !== functionNode) return false;
+    let parameter = reference;
+    while (
+      parameter !== undefined &&
+      parameter !== null &&
+      parameter.parent !== functionNode
+    ) {
+      parameter = parameter.parent;
+    }
+    return parameterHasConnectedCanonicalBoundarySyntax(
+      program,
+      functionNode,
+      parameter,
+      undefined,
+      bindings
+    );
+  });
+};
+
+const isNestedOperationalParameterInConnectedObjectSyntax = (
+  program,
+  node,
+  bindings
+) => {
+  let current = node.parent;
+  while (current !== undefined && current !== null) {
+    if (current.type === "TSTypeLiteral") {
+      const direct = getDirectObjectParameter(current);
+      if (direct !== undefined) {
+        return (
+          isPrivateFunctionSyntax(direct.functionNode) ||
+          hasCanonicalTestContextSyntax(program, direct.functionNode) ||
+          hasConnectedCanonicalBoundaryParameterSyntax(
+            program,
+            current,
+            bindings
+          )
+        );
+      }
+    }
+    current = current.parent;
+  }
+  return false;
+};
+
+const isCanonicalBoundaryCallbackParameterSyntax = (
+  program,
+  node,
+  bindings
+) => {
+  const functionNode = findDirectEnclosingFunction(node);
+  const declaration = functionNode?.parent;
+  if (
+    (functionNode?.type !== "ArrowFunctionExpression" &&
+      functionNode?.type !== "FunctionExpression") ||
+    declaration?.type !== "VariableDeclarator" ||
+    declaration.id.type !== "Identifier"
+  ) {
+    return false;
+  }
+  return getValueReferences(program, declaration.id.name, bindings).some(
+    (reference) => {
+      const call = reference.parent;
+      return (
+        call?.type === "CallExpression" &&
+        call.arguments.includes(reference) &&
+        isCanonicalBoundaryCallSyntax(program, call)
+      );
+    }
+  );
+};
+
+const isCanonicalBoundaryCallableContractParameterSyntax = (program, node) => {
+  const callable = findDirectEnclosingFunction(node);
+  if (callable?.type !== "TSFunctionType") return false;
+  let current = callable.parent;
+  while (current !== undefined && current !== null) {
+    if (
+      current.type === "AssignmentPattern" &&
+      current.right.type === "Identifier"
+    ) {
+      const targets =
+        getTopLevelFunctions(program).get(current.right.name) ?? [];
+      return (
+        targets.length === 1 &&
+        functionHasCanonicalBoundarySyntax(program, targets[0])
+      );
+    }
+    if (callableNodeTypes.has(current.type)) return false;
+    current = current.parent;
+  }
+  return false;
 };
 
 const isClosedObjectParameterSyntax = (program, node, bindings) => {
@@ -3728,7 +4227,13 @@ const isClosedObjectParameterSyntax = (program, node, bindings) => {
     closed &&
     (isPrivateFunctionSyntax(direct.functionNode) ||
       hasCanonicalTestContextSyntax(program, direct.functionNode) ||
-      functionHasCanonicalBoundarySyntax(program, direct.functionNode) ||
+      (functionHasCanonicalBoundarySyntax(program, direct.functionNode) &&
+        (!hasRawSemanticMemberSyntax(node.members) ||
+          hasConnectedCanonicalBoundaryParameterSyntax(
+            program,
+            node,
+            bindings
+          ))) ||
       !hasRawSemanticMemberSyntax(node.members) ||
       (!hasRawSemanticMemberSyntax(node.members) &&
         isClosedProjectionFunctionSyntax(direct.functionNode)))
@@ -4233,7 +4738,13 @@ const schemaFirstDataContract = {
           functionHasCanonicalBoundarySyntax(
             program,
             findEnclosingFunction(node)
-          )) ||
+          ) &&
+          (!hasRawSemanticMemberSyntax(members) ||
+            hasConnectedCanonicalBoundaryParameterSyntax(
+              program,
+              node,
+              bindings
+            ))) ||
         isPrivateReturnContractSyntax(node, members) ||
         isCanonicalPlatformEventContractSyntax(program, members) ||
         isClosedLocalEphemeralSyntax(program, node, members, bindings) ||
@@ -5725,9 +6236,10 @@ const noUnbrandedDomainString = {
         for (const candidate of rawParameterCandidates) {
           const textGraph = createClosedTextGraph(program, bindings);
           if (
-            !hasCanonicalBoundaryDeclarationContextSyntax(
+            !hasConnectedCanonicalBoundaryParameterSyntax(
               program,
-              candidate.node
+              candidate.node,
+              bindings
             ) &&
             !textGraph.isClosed(candidate.functionNode, candidate.node) &&
             !isCanonicalSchemaRefinement(
@@ -5737,6 +6249,20 @@ const noUnbrandedDomainString = {
               bindings
             ) &&
             !isCanonicalSchemaCallbackSyntax(program, candidate.node) &&
+            !isNestedOperationalParameterInConnectedObjectSyntax(
+              program,
+              candidate.node,
+              bindings
+            ) &&
+            !isCanonicalBoundaryCallbackParameterSyntax(
+              program,
+              candidate.node,
+              bindings
+            ) &&
+            !isCanonicalBoundaryCallableContractParameterSyntax(
+              program,
+              candidate.node
+            ) &&
             !isClosedStandardTransformParameterSyntax(
               program,
               candidate.functionNode,
@@ -5803,7 +6329,21 @@ const noUnbrandedDomainString = {
             program !== undefined &&
             bindings !== undefined &&
             (isPrivateTestSupportSyntax(program, node, bindings) ||
-              hasCanonicalBoundaryDeclarationContextSyntax(program, node) ||
+              hasConnectedCanonicalBoundaryParameterSyntax(
+                program,
+                node,
+                bindings
+              ) ||
+              hasConnectedCanonicalBoundaryDeclarationContextSyntax(
+                program,
+                node,
+                bindings
+              ) ||
+              isCanonicalBoundaryCallbackParameterSyntax(
+                program,
+                node,
+                bindings
+              ) ||
               (projectionParameter !== undefined &&
                 isClosedObjectParameterSyntax(program, typeLiteral, bindings) &&
                 isClosedProjectionFunctionSyntax(

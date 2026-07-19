@@ -45,6 +45,16 @@ tester.run(
       },
       {
         code: `
+          import { Schema } from "effect";
+          const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+          export function readRunId(input: { readonly runId: string }) {
+            return Schema.decodeUnknownSync(RunIdSchema)(input.runId);
+          }
+        `,
+        filename: "schema-connected-operation-parameter.ts",
+      },
+      {
+        code: `
           type RunStore = {
             readonly load: (runId: RunId) => Promise<Run>;
             readonly save: (run: Run) => Promise<void>;
@@ -1057,6 +1067,17 @@ tester.run(
       },
       {
         code: `
+          import { Effect } from "effect";
+          export function readRunId(input: { readonly runId: string }) {
+            void Effect.succeed("unrelated");
+            return input.runId;
+          }
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "unrelated-effect-parameter-laundering.ts",
+      },
+      {
+        code: `
           type DeliveryMergeConfirmationData = {
             readonly sequence: DeliveryMergeDecisionSequence;
           };
@@ -1146,6 +1167,16 @@ tester.run(
           void projection;
         `,
         filename: "parse-run-id.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+          const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+          export function readRunId(input: { readonly runId: string }) {
+            return Schema.decodeUnknownSync(RunIdSchema)(input.runId);
+          }
+        `,
+        filename: "schema-connected-operation-parameter.ts",
       },
       {
         code: `
@@ -1660,6 +1691,17 @@ tester.run(
           { messageId: "unbrandedDomainString" },
         ],
         filename: "semantic-direct-parameters.ts",
+      },
+      {
+        code: `
+          import { Effect } from "effect";
+          export function readRunId(input: { readonly runId: string }) {
+            void Effect.succeed("unrelated");
+            return input.runId;
+          }
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "unrelated-effect-parameter-laundering.ts",
       },
       {
         code: `function makeRunId(input: string): RunId { return input; }`,

@@ -583,6 +583,28 @@ try {
     `
   );
   await writeFile(
+    path.join(projectRoot, "schema-connected-operation-parameter.ts"),
+    `
+      import { Schema } from "effect";
+
+      const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+      export function readRunId(input: { readonly runId: string }) {
+        return Schema.decodeUnknownSync(RunIdSchema)(input.runId);
+      }
+    `
+  );
+  await writeFile(
+    path.join(projectRoot, "unrelated-effect-parameter-laundering.ts"),
+    `
+      import { Effect } from "effect";
+
+      export function readRunId(input: { readonly runId: string }) {
+        void Effect.succeed("unrelated");
+        return input.runId;
+      }
+    `
+  );
+  await writeFile(
     path.join(projectRoot, "derived-manual.ts"),
     `
       import type { ManualRun } from "./manual.js";
@@ -884,7 +906,9 @@ try {
     "opaque-canonical-ancestor.ts",
     "provenance-adversarial.ts",
     "reexport.ts",
+    "schema-connected-operation-parameter.ts",
     "schema.ts",
+    "unrelated-effect-parameter-laundering.ts",
   ]);
   assert.deepEqual(
     [
@@ -1025,6 +1049,12 @@ try {
       "structural-spoof.ts",
       3,
       37,
+      "Nested operation data contract has no compiler-proven Schema origin."
+    ),
+    schemaDiagnostic(
+      "unrelated-effect-parameter-laundering.ts",
+      4,
+      40,
       "Nested operation data contract has no compiler-proven Schema origin."
     ),
   ]);

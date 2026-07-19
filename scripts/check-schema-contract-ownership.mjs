@@ -3981,6 +3981,50 @@ const functionHasCanonicalSchemaBoundary = (checker, proof, functionNode) => {
   return proven;
 };
 
+const referenceFlowsToCanonicalBoundary = (
+  checker,
+  proof,
+  reference,
+  functionNode
+) => {
+  let current = reference.parent;
+  while (current !== undefined && current !== functionNode) {
+    if (ts.isCallExpression(current)) {
+      const root = getCallRootExpression(current.expression);
+      const symbol = checker.getSymbolAtLocation(root);
+      const binding = getImportBinding(checker, symbol);
+      const owner = ts.isPropertyAccessExpression(current.expression)
+        ? current.expression.expression
+        : undefined;
+      const ownerSymbol =
+        owner === undefined ? undefined : checker.getSymbolAtLocation(owner);
+      let ownerType;
+      try {
+        ownerType =
+          owner === undefined ? undefined : checker.getTypeAtLocation(owner);
+      } catch {
+        ownerType = undefined;
+      }
+      if (
+        (symbol !== undefined &&
+          isCanonicalSchemaValueSymbol(checker, proof, symbol)) ||
+        (ownerSymbol !== undefined &&
+          isCanonicalSchemaValueSymbol(checker, proof, ownerSymbol)) ||
+        (ownerType !== undefined &&
+          isSchemaValueType(checker, proof, ownerType)) ||
+        (binding !== undefined &&
+          (binding.moduleName === "effect" ||
+            binding.moduleName.startsWith("effect/") ||
+            binding.moduleName.startsWith("@effect/")))
+      ) {
+        return true;
+      }
+    }
+    current = current.parent;
+  }
+  return false;
+};
+
 const isSchemaBoundOperationParameterContract = (checker, proof, node) => {
   if (!proof.referenceIndex.complete) return false;
   const parameter = findContainingParameter(node);
@@ -4001,7 +4045,9 @@ const isSchemaBoundOperationParameterContract = (checker, proof, node) => {
       !isDeclarationName(reference) && !isTypeOnlyReference(reference)
   );
   return (
-    uses.length > 0 &&
+    uses.some((reference) =>
+      referenceFlowsToCanonicalBoundary(checker, proof, reference, functionNode)
+    ) &&
     uses.every((reference) => {
       if (isWriteReference(reference)) return false;
       const access = getReferenceAccess(reference);
