@@ -1,5 +1,10 @@
 # Post-Harness Roadmap
 
+> Historical phase ledger. Individual statuses below record how the roadmap
+> evolved and may be stale as current routing guidance. See
+> [`current-capabilities.md`](current-capabilities.md) for current product truth
+> and live Linear for current programme state.
+
 This roadmap starts after Gaia has a real Codex worker harness. The goal is to
 keep Gaia moving toward a software factory without turning the control plane
 into a hidden mega-agent.

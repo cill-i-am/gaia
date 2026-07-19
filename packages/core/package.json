@@ -15,12 +15,12 @@
   },
   "dependencies": {
     "@noble/hashes": "^2.2.0",
-    "effect": "^4.0.0-beta.93",
+    "effect": "4.0.0-beta.93",
     "xstate": "^5.32.4",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@effect/vitest": "^4.0.0-beta.93",
+    "@effect/vitest": "4.0.0-beta.93",
     "@types/node": "^24.0.14",
     "tsdown": "^0.22.3",
     "typescript": "^6.0.3",

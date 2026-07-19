@@ -101,15 +101,15 @@ keep it for inspection.
 and draft GitHub PR. Run them only when the task explicitly includes GitHub
 publishing.
 
-## Current Prototype Boundary
+## Current Product Boundary
 
-Prototype 1 is deliberately local-first and artifact-driven. It reads a
-Markdown spec, creates a durable run directory, writes a worker plan, runs a
-harness, records read-only review evidence, verifies artifacts, writes reports,
-and can replay completed runs from the event log.
+Use `docs/current-capabilities.md` as the routing source of truth for current
+implemented, partial, missing, superseded, and historical-prototype claims.
+Prototype and phase-roadmap documents are historical evidence; do not use their
+old exclusion lists to infer current capability or authority.
 
-Explicit commands may attach browser evidence, GitHub check/feedback evidence,
-Linear graph fixtures, and merge-decision evidence to a run. Anything involving
-worktrees, live reviewer threads, dashboards, server APIs, background daemons,
-or merge/deploy mutation is a future slice. Browser evidence collection exists
-for explicit target URLs; do not add target discovery unless the task asks.
+The control plane remains local-first, artifact-driven, and event-sourced.
+Capability does not imply authority: merge, deploy, destructive cleanup, and
+provider mutation require explicit authorization. Browser evidence collection
+exists for explicit target URLs; do not add target discovery unless the task
+asks.

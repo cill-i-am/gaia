@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "turbo run build",
-    "check": "turbo run check && pnpm lint && pnpm format:check && pnpm test:tooling && pnpm test:schema-contracts && pnpm schema-contracts:audit",
+    "check": "turbo run check && pnpm lint && pnpm format:check && pnpm test:tooling && pnpm test:effect-epoch && pnpm test:baseline-docs && pnpm test:schema-contracts && pnpm schema-contracts:audit",
     "dev": "turbo run dev",
     "format": "oxfmt --config oxfmt.config.ts --write \"apps/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"packages/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"examples/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"scripts/**/*.{js,jsx,ts,tsx,mjs,cjs}\" oxlint.config.ts oxlint.audit.config.ts oxfmt.config.ts",
     "format:check": "oxfmt --config oxfmt.config.ts --check \"apps/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"packages/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"examples/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"scripts/**/*.{js,jsx,ts,tsx,mjs,cjs}\" oxlint.config.ts oxlint.audit.config.ts oxfmt.config.ts",
@@ -15,6 +15,8 @@
     "postinstall": "./scripts/ensure-effect-source.sh",
     "schema-contracts:audit": "node scripts/audit-schema-contracts.mjs",
     "test": "turbo run test",
+    "test:baseline-docs": "node scripts/verify-baseline-docs.mjs",
+    "test:effect-epoch": "node scripts/verify-effect-dependency-epoch.mjs",
     "test:schema-contracts": "node scripts/verify-schema-contract-rules.mjs && node scripts/verify-schema-contract-ownership.mjs",
     "test:tooling": "node scripts/verify-tooling-sorting.mjs",
     "tooling:doctor": "ultracite doctor"
