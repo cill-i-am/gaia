@@ -544,6 +544,95 @@ try {
     `
   );
   await writeFile(
+    path.join(projectRoot, "canonical-boundary.ts"),
+    `
+      import { Schema } from "effect";
+
+      const projection = <M extends string, S extends Schema.Top>(
+        method: M,
+        params: S
+      ) => Schema.Struct({ method: Schema.Literal(method), params });
+      const ProjectionSchema = Schema.Union([
+        projection("event", Schema.Struct({ value: Schema.String })),
+      ]);
+      const RawSchema = Schema.Struct({ method: Schema.String, params: Schema.Unknown });
+      const BoundarySchema = RawSchema.pipe(Schema.decodeTo(ProjectionSchema));
+      const PublicSchema = ProjectionSchema;
+      export type PublicProjection = typeof PublicSchema.Type;
+      void BoundarySchema;
+    `
+  );
+  await writeFile(
+    path.join(projectRoot, "counterfeit-boundary.ts"),
+    `
+      import { Schema } from "effect";
+
+      declare const fakeStruct: typeof Schema.Struct;
+      const projection = <M extends string, S extends Schema.Top>(
+        method: M,
+        params: S
+      ) => fakeStruct({ method: Schema.Literal(method), params });
+      const ProjectionSchema = Schema.Union([
+        projection("event", Schema.Struct({ value: Schema.String })),
+      ]);
+      const RawSchema = Schema.Struct({ method: Schema.String, params: Schema.Unknown });
+      const BoundarySchema = RawSchema.pipe(Schema.decodeTo(ProjectionSchema));
+      const PublicSchema = ProjectionSchema;
+      export type CounterfeitProjection = typeof PublicSchema.Type;
+      void BoundarySchema;
+    `
+  );
+  await writeFile(
+    path.join(projectRoot, "schema-connected-operation-parameter.ts"),
+    `
+      import { Schema } from "effect";
+
+      const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+      export function readRunId(input: { readonly runId: string }) {
+        return Schema.decodeUnknownSync(RunIdSchema)(input.runId);
+      }
+    `
+  );
+  await writeFile(
+    path.join(projectRoot, "unrelated-effect-parameter-laundering.ts"),
+    `
+      import { Effect } from "effect";
+
+      export function readRunId(input: { readonly runId: string }) {
+        void Effect.succeed("unrelated");
+        return input.runId;
+      }
+    `
+  );
+  await writeFile(
+    path.join(projectRoot, "unrelated-effect-named-parameter-laundering.ts"),
+    `
+      import { Effect } from "effect";
+
+      type Input = { readonly runId: string };
+      export function readRunId(input: Input) {
+        if (globalThis.Math.random() < 0) {
+          return Effect.succeed("unrelated");
+        }
+        return input.runId;
+      }
+    `
+  );
+  await writeFile(
+    path.join(projectRoot, "unrelated-schema-named-parameter-laundering.ts"),
+    `
+      import { Schema } from "effect";
+
+      type Input = { readonly runId: string };
+      export function readRunId(input: Input) {
+        if (globalThis.Math.random() < 0) {
+          return Schema.decodeUnknownSync(Schema.String)("unrelated");
+        }
+        return input.runId;
+      }
+    `
+  );
+  await writeFile(
     path.join(projectRoot, "derived-manual.ts"),
     `
       import type { ManualRun } from "./manual.js";
@@ -833,6 +922,8 @@ try {
     rootNames: parsed.fileNames,
   });
   const semanticCleanFiles = new Set([
+    "canonical-boundary.ts",
+    "counterfeit-boundary.ts",
     "counterfeit-schema-owner.ts",
     "cross-file-union-consumer.ts",
     "cross-file-union-owner.ts",
@@ -843,7 +934,11 @@ try {
     "opaque-canonical-ancestor.ts",
     "provenance-adversarial.ts",
     "reexport.ts",
+    "schema-connected-operation-parameter.ts",
     "schema.ts",
+    "unrelated-effect-named-parameter-laundering.ts",
+    "unrelated-effect-parameter-laundering.ts",
+    "unrelated-schema-named-parameter-laundering.ts",
   ]);
   assert.deepEqual(
     [
@@ -892,6 +987,7 @@ try {
       18,
       "Nested operation data contract has no compiler-proven Schema origin."
     ),
+    schemaDiagnostic("counterfeit-boundary.ts", 15, 19),
     schemaDiagnostic("counterfeit-schema-owner.ts", 5, 19),
     schemaDiagnostic("counterfeit-schema-owner.ts", 6, 19),
     schemaDiagnostic("counterfeit-schema-owner.ts", 9, 19),
@@ -985,6 +1081,14 @@ try {
       37,
       "Nested operation data contract has no compiler-proven Schema origin."
     ),
+    schemaDiagnostic("unrelated-effect-named-parameter-laundering.ts", 4, 12),
+    schemaDiagnostic(
+      "unrelated-effect-parameter-laundering.ts",
+      4,
+      40,
+      "Nested operation data contract has no compiler-proven Schema origin."
+    ),
+    schemaDiagnostic("unrelated-schema-named-parameter-laundering.ts", 4, 12),
   ]);
 
   const boundedDiagnostics = analyzeSchemaContracts({
@@ -1716,6 +1820,115 @@ try {
     "an ordinary constructor-only parameter must not count as an instance-property edge"
   );
 
+  const collectionReceiverProvenanceDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-collection-receiver-provenance-",
+    [
+      [
+        "schema-collection-receiver.ts",
+        `
+          import { Schema } from "effect";
+
+          class Item extends Schema.Class<Item>("Item")({
+            id: Schema.NonEmptyString,
+          }) {}
+
+          type Batch = {
+            readonly items: ReadonlyArray<Item>;
+          };
+
+          export function collectIds(input: Batch) {
+            return input.items.map((item) => item.id);
+          }
+        `,
+      ],
+      [
+        "counterfeit-collection-receiver.ts",
+        `
+          class CounterfeitItem {
+            constructor(readonly id: string) {}
+          }
+
+          type CounterfeitBatch = {
+            readonly items: ReadonlyArray<CounterfeitItem>;
+          };
+
+          export function collectIds(input: CounterfeitBatch) {
+            return input.items.map((item) => item.id);
+          }
+        `,
+      ],
+    ]
+  );
+  assert.equal(
+    collectionReceiverProvenanceDiagnostics.some(
+      (diagnostic) => diagnostic.filePath === "schema-collection-receiver.ts"
+    ),
+    false,
+    "a readonly built-in collection of Schema class values has semantic receiver provenance"
+  );
+  assert.ok(
+    collectionReceiverProvenanceDiagnostics.some(
+      (diagnostic) =>
+        diagnostic.filePath === "counterfeit-collection-receiver.ts"
+    ),
+    "a same-shaped collection of arbitrary class values must remain rejected"
+  );
+
+  const ephemeralOperationRecordDiagnostics = await analyzeCoreProject(
+    ".gaia-schema-contract-ephemeral-operation-record-",
+    [
+      [
+        "private-operation-record.ts",
+        `
+          type OperationRecord = {
+            readonly attempt: number;
+            readonly note: string;
+          };
+
+          class LocalCoordinator {
+            #record(input: OperationRecord) {
+              return input.note.trim();
+            }
+
+            run() {
+              return this.#record({ attempt: 1, note: "local" });
+            }
+          }
+
+          void LocalCoordinator;
+        `,
+      ],
+      [
+        "escaping-operation-record.ts",
+        `
+          type EscapingOperationRecord = {
+            readonly attempt: number;
+            readonly note: string;
+          };
+
+          export class PublicCoordinator {
+            record(input: EscapingOperationRecord) {
+              return input.note.trim();
+            }
+          }
+        `,
+      ],
+    ]
+  );
+  assert.equal(
+    ephemeralOperationRecordDiagnostics.some(
+      (diagnostic) => diagnostic.filePath === "private-operation-record.ts"
+    ),
+    false,
+    "a readonly operation record confined to a private local method is non-escaping"
+  );
+  assert.ok(
+    ephemeralOperationRecordDiagnostics.some(
+      (diagnostic) => diagnostic.filePath === "escaping-operation-record.ts"
+    ),
+    "a same-shaped record exposed by a public method on an exported class must remain rejected"
+  );
+
   const capabilityWrapperDiagnostics = await analyzeCoreProject(
     ".gaia-schema-contract-capability-wrapper-",
     [
@@ -1744,8 +1957,8 @@ try {
       filePath,
       line,
     })),
-    [{ filePath: "capability-wrapper.ts", line: 8 }],
-    "a precise optional readonly capability wrapper is not a data contract, while its mixed owner still reports"
+    [],
+    "a callable capability with schema-derived configuration and its precise optional readonly wrapper are executable contracts"
   );
 
   const rejectedCapabilityWrapperDiagnostics = await analyzeCoreProject(
@@ -1836,9 +2049,9 @@ try {
     }, {}),
     {
       "opaque-capability-wrapper.ts": 1,
-      "rejected-capability-wrappers.ts": 13,
+      "rejected-capability-wrappers.ts": 10,
     },
-    "required, mutable, data-bearing, generic, aliased, circular, opaque, and non-callable capability wrappers must report"
+    "direct and schema-configured executable capabilities are accepted while required, mutable, generic, aliased, circular, opaque, and non-callable wrappers report"
   );
 
   const xstateMetadataDiagnostics = await analyzeCoreProject(
@@ -2129,15 +2342,14 @@ try {
     ]
   );
   assert.ok(
-    providerPathDiagnostics.some(
+    providerPathDiagnostics.every(
       (diagnostic) =>
-        diagnostic.filePath ===
-          "apps/dashboard/src/codex-app-server-protocol.ts" &&
-        diagnostic.rule === "gaia/schema-first-data-contract" &&
-        diagnostic.message ===
+        diagnostic.filePath !==
+          "apps/dashboard/src/codex-app-server-protocol.ts" ||
+        diagnostic.message !==
           "Nested operation data contract has no compiler-proven Schema origin."
     ),
-    "provider projection selector literals must be accepted only at the exact runtime protocol path"
+    "direct selectors over a compiler-proven Schema union must not depend on a repository path allowance"
   );
 
   const generatedProjectRoot = await mkdtemp(
@@ -2223,8 +2435,8 @@ try {
   });
   assert.equal(audit.status, 1);
   assert.deepEqual(audit.diagnostics, [
-    "syntax.ts:1:2 gaia/schema-first-data-contract syntax finding Remedy: define a Schema",
     "ownership.ts:3:4 gaia/no-brand-cast ownership finding Remedy: decode with the owning Schema",
+    "syntax.ts:1:2 gaia/schema-first-data-contract syntax finding Remedy: define a Schema",
   ]);
 
   const temporaryAuditDirectoriesBefore = new Set(

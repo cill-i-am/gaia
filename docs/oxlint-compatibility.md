@@ -1,40 +1,24 @@
 # Oxlint Compatibility Profile
 
-Gaia uses Ultracite's current Oxlint presets through an explicit compatibility
-profile. This file explains why the green `pnpm lint` gate is not a claim of
-full preset compliance and records every inherited rule family that remains
-non-gating.
+Gaia uses Ultracite's current Oxlint presets through an explicit compatibility profile. This file explains why the green `pnpm lint` gate is not a claim of full preset compliance and records every inherited rule family that remains non-gating.
 
 ## Ownership and commands
 
-Gaia-owned JavaScript and TypeScript source is under `apps/`, `packages/`,
-`examples/`, and `scripts/`. The compatibility lint also checks the three
-root Oxc config files.
+Gaia-owned JavaScript and TypeScript source is under `apps/`, `packages/`, `examples/`, and `scripts/`. The compatibility lint also checks the three root Oxc config files.
 
 The following paths are excluded by ownership or because they are generated:
 
-- `.agents/skills/**` is tracked, vendored agent tooling rather than Gaia
-  product source.
+- `.agents/skills/**` is tracked, vendored agent tooling rather than Gaia product source.
 - `.gaia/**` is generated local run state.
-- Ultracite's canonical generated/dependency/VCS exclusions cover
-  `**/*.gen.*` (including `apps/dashboard/src/routeTree.gen.ts`), `dist/**`,
-  `.turbo/**`, coverage, lockfiles, dependencies, and VCS output.
+- Ultracite's canonical generated/dependency/VCS exclusions cover `**/*.gen.*` (including `apps/dashboard/src/routeTree.gen.ts`), `dist/**`, `.turbo/**`, coverage, lockfiles, dependencies, and VCS output.
 
-`pnpm lint` runs the green compatibility profile. `pnpm lint:audit` runs the
-unmodified Ultracite core, React, TanStack, and Vitest presets over the owned
-product directories. The audit intentionally exits non-zero while inherited
-findings remain and is not part of `pnpm check`. It is not wrapped in a
-success-forcing shell fallback.
+`pnpm lint` runs the green compatibility profile. `pnpm lint:audit` runs the unmodified Ultracite core, React, TanStack, and Vitest presets over the owned product directories. The audit intentionally exits non-zero while inherited findings remain and is not part of `pnpm check`. It is not wrapped in a success-forcing shell fallback.
 
-There is no category, path, file, line, snapshot, or diagnostic-count baseline.
-Each override below is a named rule severity. The audit keeps every finding
-visible.
+There is no category, path, file, line, snapshot, or diagnostic-count baseline. Each override below is a named rule severity. The audit keeps every finding visible.
 
 ## Measurement
 
-The untouched base at
-`d482c4d41b71e2a5b3cc4d3f624547519f7ce266` contained 11,894 diagnostics
-across 200 existing product files and 116 rule families.
+The untouched base at `d482c4d41b71e2a5b3cc4d3f624547519f7ce266` contained 11,894 diagnostics across 200 existing product files and 116 rule families.
 
 The approved commit-1 fixes remove eight findings and six rule families:
 
@@ -45,33 +29,20 @@ The approved commit-1 fixes remove eight findings and six rule families:
 - `no-promise-executor-return`
 - `no-new`
 
-The new sorting verifier is audit-clean and increases the owned source count to
-201 files. Before the mechanical migration, the unsoftened audit reports 11,886
-diagnostics across 110 rule families. The stable Oxfmt projection reports
-11,888 diagnostics across the same 110 rule families; Oxfmt's stable output
-causes two additional `unicorn/no-nested-ternary` reports without adding a new
-rule family.
+The new sorting verifier is audit-clean and increases the owned source count to 201 files. Before the mechanical migration, the unsoftened audit reports 11,886 diagnostics across 110 rule families. The stable Oxfmt projection reports 11,888 diagnostics across the same 110 rule families; Oxfmt's stable output causes two additional `unicorn/no-nested-ternary` reports without adding a new rule family.
 
-The final compatibility config contains 93 root rule entries and 17 entries
-merged only into Ultracite's existing all-test-files Vitest override. The
-Vitest merge preserves upstream file scope and is not a per-file diagnostic
-allowlist.
+The final compatibility config contains 93 root rule entries and 17 entries merged only into Ultracite's existing all-test-files Vitest override. The Vitest merge preserves upstream file scope and is not a per-file diagnostic allowlist.
 
 ## Rule removal policy
 
-A rule stays disabled only while the unsoftened owned-source audit reports a
-non-zero count and the rationale below still applies. When a migration reaches
-zero, remove the override instead of retaining a stale exception. Adding a new
-override requires a fresh review decision; it is not ordinary lint cleanup.
+A rule stays disabled only while the unsoftened owned-source audit reports a non-zero count and the rationale below still applies. When a migration reaches zero, remove the override instead of retaining a stale exception. Adding a new override requires a fresh review decision; it is not ordinary lint cleanup.
 
-The single `vitest/valid-expect` finding is a verified tool compatibility false
-positive. Gaia uses Vitest 4.1.9's supported `expect(actual, message)` form;
-Vitest declares the second argument as `message?: string`.
+The single `vitest/valid-expect` finding is a verified tool compatibility false positive. Gaia uses Vitest 4.1.9's supported `expect(actual, message)` form; Vitest declares the second argument as `message?: string`.
 
 ## Final measured profile
 
 | Scope | Rule | Final probe count | Rationale and re-enable condition |
-|---|---|---:|---|
+| --- | --- | --: | --- |
 | Root | `no-use-before-define` | 4148 | Declaration reordering crosses Effect generators, schemas, and route registration; defer to reviewed module-by-module migration. |
 | Root | `func-style` | 1895 | Converting declarations to expressions is broad and can alter hoisting; defer to a dedicated semantic cleanup. |
 | Root | `func-names` | 801 | Anonymous generator callbacks are common at Effect/runtime seams; naming changes stack and trace shape, so review separately. |
@@ -185,125 +156,12 @@ Vitest declares the second argument as `message?: string`.
 
 ## Gaia schema-contract audit
 
-The root compatibility config registers Gaia's local Oxlint plugin without
-enabling its rules in the green profile. `pnpm test:schema-contracts` runs the
-fixture gate for the syntax rules and the compiler-backed ownership checker, so
-new rule behavior cannot land without passing examples. The following rules are
-covered:
+The root compatibility config registers Gaia's local Oxlint plugin without enabling its rules in the green profile. `pnpm test:schema-contracts` runs the fixture gate for the syntax rules and the compiler-backed ownership checker, so new rule behavior cannot land without passing examples. Raw operation parameters must themselves flow into a proven canonical boundary; an unrelated Effect or Schema call elsewhere in the function establishes no provenance. The following rules are covered:
 
-- `gaia/schema-first-data-contract` rejects serializable type literals that do
-  not originate in Effect Schema. An all-callable capability surface is the
-  manual-TypeScript exception, but nested operation input objects and mixed
-  data-plus-callback contracts still require schemas. In TSX, framework Props
-  may additionally contain callable members, external framework component
-  prop references, safe literal UI state, and the exact display/prose string
-  vocabulary. Generic wrappers such as `Readonly` and `ReturnType` are not
-  blanket framework exceptions; they pass only in the narrow framework shapes
-  covered by fixtures. Cross-file aliases, re-exports, decoded indexed access,
-  schema classes, and `Pick`/`Omit`/`Extract` pass only when the checker reaches
-  the canonical Program symbols and Effect Schema declaration chain. Extract
-  selector literals are accepted only when the checker has proven the canonical
-  utility and a schema-derived first argument at an approved projection seam.
-  A direct exported `typeof UnionSchema.Type` projection is also accepted when
-  `UnionSchema` is created by the canonical `Schema.Union` symbol, has bounded
-  compiler-proven schema provenance, and is consumed as a value from another
-  source file. The proof admits flat immutable local schema-field containers
-  and canonical schema container members, but rejects counterfeit leaves,
-  mutable or escaped containers, nested-container laundering, and unions that
-  have no cross-file value consumer. XState action and guard metadata are the
-  other precise exception: only private, non-generic, non-empty type literals
-  whose static properties are required, `readonly`, and exactly `undefined`
-  may occupy generic positions five and six of the canonical `xstate` `setup`
-  symbol, and every reference to each alias must stay in those positions. The
-  syntax rule mirrors the import binding and lexical-shadow boundary; the
-  compiler checker remains authoritative for framework symbol identity.
-  A separate injected-capability wrapper exception is equally narrow: a
-  non-generic type literal may contain only `readonly` optional direct type
-  references to unique, non-generic declarations in the same source file,
-  and every referenced declaration must contain a callable member. The syntax
-  rule follows that local declaration graph; the compiler checker resolves the
-  real TypeScript symbol. The mixed data-plus-callable capability owner still
-  reports. Required or mutable properties, direct data, generic/`Record`/mapped
-  wrappers, aliases, imports, unresolved declarations, inheritance, cycles,
-  and declarations with no callable member remain diagnostics.
-  Counterfeit utilities, arbitrary schema-containing generics, metadata indexed
-  access, textual `.Type` and `["Type"]` lookalikes, manual DTO projections,
-  structural schema lookalikes, generic/`Record`/mapped XState maps, callable
-  loopholes, data-bearing metadata, exported or reused aliases, wrong generic
-  positions, and counterfeit or shadowed `setup` bindings do not establish
-  ownership.
-- `gaia/no-unbranded-domain-string` applies the reviewed terminal-token,
-  lifecycle-time, exact domain-name, and display/prose vocabularies. Direct
-  callable parameters are always inspected across declarations, call and
-  construct signatures, assigned or wrapped functions, object members, and
-  class members. Only `input`, `raw`, or `value` parameters on directly named
-  `parseX` and `decodeX` boundaries may remain raw strings; a factory such as
-  `makeRunId(input: string)` is not exempt. Provider wire schemas are limited
-  to exact Codex App Server protocol declarations and pinned schema-parity
-  metadata. Provider-shaped lookalikes, Gaia-owned DTOs, and manual semantic
-  strings still report.
-  A raw string type predicate is accepted only when its sole value reference is
-  the first predicate argument of the actual unshadowed `Schema.refine` binding
-  imported as `Schema` from `effect`, the refinement is composed from
-  `Schema.String` or `Schema.NonEmptyString`, a later pipe argument applies the
-  owning non-empty `Schema.brand`, and every use of the predicate value remains
-  inside the closed validation body. Assignment or member writes, captures,
-  object or array construction, forwarding, and any other non-validation escape
-  still report, as do aliased, counterfeit, or shadowed bindings, boolean
-  validators, callbacks such as `Array.filter`, extra references, and missing
-  brands.
-  Built-in validation and scanner operations require the actual unshadowed
-  runtime binding: value imports named `URL`, `Math`, `String`, `Set`, or
-  `RegExp` are counterfeit bindings, while type-only imports do not shadow the
-  runtime global. Closed prose receivers must come from an explicit primitive
-  or unshadowed built-in collection annotation, a closed local initializer, an
-  exact built-in collection field on a readonly parameter shape, a
-  declaration-linked ordinary text field on a local `Schema.Class`, or
-  callback provenance from an already closed receiver whose declared element
-  shape is itself closed. Schema-class callback values remain closed only
-  through their declared text and collection fields. Local arrays, objects,
-  constructed collections, and helper returns prove their contained values;
-  an unrelated safe-looking transform does not close a counterfeit receiver.
-  Being a parameter or exposing a familiar method such as `map` is not proof.
-  Ordinary reviewer prose and source scanning use a separate closed-graph
-  proof. It follows unique top-level functions, aliases and assignments,
-  callbacks, returns, helper calls, object and array construction, property
-  writes, local collection operations, and recursive scanner components. Every
-  use is accounted for: intermediate text predicates and indexes remain inside
-  the closed graph, while values leaving it must terminate in either the
-  scanner's regex test or an exact field of the locally resolved Effect
-  `Schema.Class.make` declaration. That field must itself be declared with an
-  ordinary unbranded text schema; branded, refined, aliased, unresolved, or
-  semantic fields reject regardless of their key. Once that declaration-linked
-  schema construction consumes the value, subsequent encoding and persistence
-  of the parsed projection are not treated as raw string uses. Imported or
-  unresolved calls, escaped callbacks, identity wrappers, operational sinks,
-  semantic escapes, and multi-string forwarding through a fallback helper fail
-  closed. A method name, property name, declaration name, or file path alone
-  never establishes this exception.
-- `gaia/no-brand-cast` uses Oxlint only to surface direct schema-type assertion
-  candidates. The TypeScript checker is authoritative: it resolves the actual
-  `Schema.brand` return type and accepts the brand property only when its
-  declaration is the canonical Effect `Brand` declaration. Names, suffixes,
-  `.Type` text, import paths, package paths, and structural assignability are
-  not provenance. The checker follows data through properties, index
-  signatures, tuples, arrays, generic containers, unions, intersections, and
-  referenced types with cycle-safe traversal. A local structural
-  `readonly ["~effect/Brand"]` spoof is a negative fixture and never enters the
-  no-brand-cast finding set.
+- `gaia/schema-first-data-contract` rejects serializable type literals that do not originate in Effect Schema. An all-callable capability surface is the manual-TypeScript exception, but nested operation input objects and mixed data-plus-callback contracts still require schemas. In TSX, framework Props may additionally contain callable members, external framework component prop references, safe literal UI state, and the exact display/prose string vocabulary. Generic wrappers such as `Readonly` and `ReturnType` are not blanket framework exceptions; they pass only in the narrow framework shapes covered by fixtures. Cross-file aliases, re-exports, decoded indexed access, schema classes, and `Pick`/`Omit`/`Extract` pass only when the checker reaches the canonical Program symbols and Effect Schema declaration chain. Extract selector literals are accepted only when the checker has proven the canonical utility and a schema-derived first argument at an approved projection seam. A direct exported `typeof UnionSchema.Type` projection is also accepted when `UnionSchema` is created by the canonical `Schema.Union` symbol, has bounded compiler-proven schema provenance, and is consumed as a value from another source file. The proof admits flat immutable local schema-field containers and canonical schema container members, but rejects counterfeit leaves, mutable or escaped containers, nested-container laundering, and unions that have no cross-file value consumer. XState action and guard metadata are the other precise exception: only private, non-generic, non-empty type literals whose static properties are required, `readonly`, and exactly `undefined` may occupy generic positions five and six of the canonical `xstate` `setup` symbol, and every reference to each alias must stay in those positions. The syntax rule mirrors the import binding and lexical-shadow boundary; the compiler checker remains authoritative for framework symbol identity. The reviewed non-schema families are semantic rather than name- or path-based: render-only UI projections, framework test observations, executable capability envelopes, provider/platform adapters, internal collection registries, canonical Schema projections, schema-decoded fixture builders, closed decoder/refinement callbacks, closed prose/byte/path/hash transforms, typed discriminant projections, and non-escaping ephemeral operation records. The syntax rule proves concrete imports, lexical scope, receiver shape, and escape behavior; the compiler checker resolves the real symbols and type graph. A method, parameter, declaration, or file name alone is never provenance. Required or mutable capability wrappers, arbitrary data owners, generic/`Record`/mapped wrappers, unresolved imports, unsafe cycles, counterfeit globals, and escaping values remain diagnostics. Counterfeit utilities, arbitrary schema-containing generics, metadata indexed access, textual `.Type` and `["Type"]` lookalikes, manual DTO projections, structural schema lookalikes, generic/`Record`/mapped XState maps, callable loopholes, data-bearing metadata, exported or reused aliases, wrong generic positions, and counterfeit or shadowed `setup` bindings do not establish ownership.
+- `gaia/no-unbranded-domain-string` applies the reviewed terminal-token, lifecycle-time, exact domain-name, and display/prose vocabularies. Direct callable parameters are always inspected across declarations, call and construct signatures, assigned or wrapped functions, object members, and class members. Raw strings remain valid only at a compiler- or syntax-proven boundary from the finite families above: a canonical parser/decoder, canonical Schema callback, actual framework test observation, actual platform adapter, or a fully closed transform graph. A factory such as `makeRunId(input: string)` is not exempt. Provider-shaped lookalikes, counterfeit imports/globals, arbitrary DTOs, identity forwarding, and manual semantic strings still report. A raw string type predicate is accepted only when its sole value reference is the first predicate argument of the actual unshadowed `Schema.refine` binding imported as `Schema` from `effect`, the refinement is composed from `Schema.String` or `Schema.NonEmptyString`, a later pipe argument applies the owning non-empty `Schema.brand`, and every use of the predicate value remains inside the closed validation body. Assignment or member writes, captures, object or array construction, forwarding, and any other non-validation escape still report, as do aliased, counterfeit, or shadowed bindings, boolean validators, callbacks such as `Array.filter`, extra references, and missing brands. Built-in validation and scanner operations require the actual unshadowed runtime binding: value imports named `URL`, `Math`, `String`, `Set`, or `RegExp` are counterfeit bindings, while type-only imports do not shadow the runtime global. Closed prose receivers must come from an explicit primitive or unshadowed built-in collection annotation, a closed local initializer, an exact built-in collection field on a readonly parameter shape, a declaration-linked ordinary text field on a local `Schema.Class`, or callback provenance from an already closed receiver whose declared element shape is itself closed. Schema-class callback values remain closed only through their declared text and collection fields. Local arrays, objects, constructed collections, and helper returns prove their contained values; an unrelated safe-looking transform does not close a counterfeit receiver. Being a parameter or exposing a familiar method such as `map` is not proof. Ordinary reviewer prose and source scanning use a separate closed-graph proof. It follows unique top-level functions, aliases and assignments, callbacks, returns, helper calls, object and array construction, property writes, local collection operations, and recursive scanner components. Every use is accounted for: intermediate text predicates and indexes remain inside the closed graph, while values leaving it must terminate in either the scanner's regex test or an exact field of the locally resolved Effect `Schema.Class.make` declaration. That field must itself be declared with an ordinary unbranded text schema; branded, refined, aliased, unresolved, or semantic fields reject regardless of their key. Once that declaration-linked schema construction consumes the value, subsequent encoding and persistence of the parsed projection are not treated as raw string uses. Imported or unresolved calls, escaped callbacks, identity wrappers, operational sinks, semantic escapes, and multi-string forwarding through a fallback helper fail closed. A method name, property name, declaration name, or file path alone never establishes this exception.
+- `gaia/no-brand-cast` uses Oxlint only to surface direct schema-type assertion candidates. The TypeScript checker is authoritative: it resolves the actual `Schema.brand` return type and accepts the brand property only when its declaration is the canonical Effect `Brand` declaration. Names, suffixes, `.Type` text, import paths, package paths, and structural assignability are not provenance. The checker follows data through properties, index signatures, tuples, arrays, generic containers, unions, intersections, and referenced types with cycle-safe traversal. A local structural `readonly ["~effect/Brand"]` spoof is a negative fixture and never enters the no-brand-cast finding set.
 
-`pnpm schema-contracts:audit` aggregates the Oxlint candidate stream and the
-compiler-proven ownership stream with normalized
-`path:line:column rule message Remedy: ...` diagnostics. It uses a disposable
-audit-only config to enable exactly these rules, deletes that config after every
-run, has no snapshot or diagnostic-count baseline, and exits non-zero when
-either engine reports findings or fails. The syntax stream and compiler stream
-both exclude generated files matching the existing `**/*.gen.*` policy. The
-command is deliberately not part of `pnpm check`; its passing aggregation and
-cleanup proof uses only isolated fixtures and does not assert that the live
-backlog is nonzero. GAIA-104 owns the migration backlog and may reduce the
-explicit audit to zero without breaking the normal gate.
+`pnpm schema-contracts:audit` aggregates the Oxlint candidate stream and the compiler-proven ownership stream with normalized `path:line:column rule message Remedy: ...` diagnostics. It uses a disposable audit-only config to enable exactly these rules, deletes that config after every run, has no snapshot or diagnostic-count baseline, and exits non-zero when either engine reports findings or fails. The syntax stream and compiler stream both exclude generated files matching the existing `**/*.gen.*` policy. The command is part of `pnpm check` and the repository is required to produce zero actionable diagnostics from both engines. Paired fixtures cover the accepted semantic provenance and rejected counterfeit, shadowed, mutable, and escaping forms. The audit sorts diagnostics deterministically and its injected-failure fixtures prove normalized output and temporary-config cleanup without using a count, hash, or snapshot baseline.
 
-This audit is additive to the GAIA-106 compatibility policy. It does not change
-`oxlint.audit.config.ts`, `oxfmt.config.ts`, the 93 root compatibility
-severities, the 17 Vitest override severities, or the rule-removal policy above.
+This audit is additive to the GAIA-106 compatibility policy. It does not change `oxlint.audit.config.ts`, `oxfmt.config.ts`, the 93 root compatibility severities, the 17 Vitest override severities, or the rule-removal policy above.

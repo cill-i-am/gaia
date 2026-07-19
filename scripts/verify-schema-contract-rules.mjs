@@ -45,6 +45,16 @@ tester.run(
       },
       {
         code: `
+          import { Schema } from "effect";
+          const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+          export function readRunId(input: { readonly runId: string }) {
+            return Schema.decodeUnknownSync(RunIdSchema)(input.runId);
+          }
+        `,
+        filename: "schema-connected-operation-parameter.ts",
+      },
+      {
+        code: `
           type RunStore = {
             readonly load: (runId: RunId) => Promise<Run>;
             readonly save: (run: Run) => Promise<void>;
@@ -124,6 +134,29 @@ tester.run(
       },
       {
         code: `
+          import * as React from "react";
+          function Control({ onAction }: {
+            readonly onAction: (action: string) => void;
+          }) {
+            const [value] = React.useState("");
+            return <button onClick={() => onAction(value)}>Run</button>;
+          }
+        `,
+        filename: "react-boundary-contract.tsx",
+      },
+      {
+        code: `
+          import { Effect, Schema } from "effect";
+          type Runner = (input: Input) => Effect.Effect<Output>;
+          type Options = BaseOptions & {
+            readonly runner?: Runner;
+            readonly schema?: typeof Schema.String;
+          };
+        `,
+        filename: "optional-operational-envelope.ts",
+      },
+      {
+        code: `
           type SidebarContextProps = {
             readonly state: "expanded" | "collapsed";
             readonly open: boolean;
@@ -175,10 +208,36 @@ tester.run(
             }
           }
         `,
-        filename: "apps/dashboard/src/router.tsx",
+        filename: "router.tsx",
       },
     ],
     invalid: [
+      {
+        code: `
+          import * as React from "./counterfeit-react.js";
+          function Control({ onAction }: {
+            readonly model: string;
+            readonly onAction: (action: string) => void;
+          }) {
+            React.useState("");
+            return null;
+          }
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "counterfeit-react-boundary.tsx",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+          type Options = BaseOptions & {
+            readonly enabled?: boolean;
+            readonly targetUrl?: string;
+          };
+          void Schema;
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "data-only-optional-envelope.ts",
+      },
       {
         code: `
           import { setup } from "xstate";
@@ -999,23 +1058,23 @@ tester.run(
       },
       {
         code: `
-          declare module "@tanstack/react-router" {
-            interface Register {
-              router: ReturnType<typeof getRouter>;
-            }
-          }
-        `,
-        errors: [{ messageId: "schemaFirst" }],
-        filename: "router.tsx",
-      },
-      {
-        code: `
           type RunStore = {
             readonly load: (input: { readonly runId: string }) => Promise<Run>;
           };
         `,
         errors: [{ messageId: "schemaFirst" }],
         filename: "nested-operation-input.ts",
+      },
+      {
+        code: `
+          import { Effect } from "effect";
+          export function readRunId(input: { readonly runId: string }) {
+            void Effect.succeed("unrelated");
+            return input.runId;
+          }
+        `,
+        errors: [{ messageId: "schemaFirst" }],
+        filename: "unrelated-effect-parameter-laundering.ts",
       },
       {
         code: `
@@ -1097,11 +1156,148 @@ tester.run(
         filename: "display-copy.ts",
       },
       {
-        code: `function parseRunId(input: string): RunId { return decode(input); }`,
+        code: `
+          import { Schema } from "effect";
+          const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+          const decodeRunId = Schema.decodeUnknownSync(RunIdSchema);
+          function parseRunId(input: string) {
+            return decodeRunId(input);
+          }
+          const projection = { runId: parseRunId("run-1") };
+          void projection;
+        `,
         filename: "parse-run-id.ts",
       },
       {
-        code: `const decodeWorkspacePath = (raw: unknown): WorkspacePath => decode(raw);`,
+        code: `
+          import { Schema } from "effect";
+          const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+          export function readRunId(input: { readonly runId: string }) {
+            return Schema.decodeUnknownSync(RunIdSchema)(input.runId);
+          }
+        `,
+        filename: "schema-connected-operation-parameter.ts",
+      },
+      {
+        code: `
+          import { it } from "vitest";
+          function fixture(input: { readonly runId: string }) {
+            return { runId: input.runId };
+          }
+          it("records an observation", () => void fixture({ runId: "run-1" }));
+        `,
+        filename: "canonical-test-support.ts",
+      },
+      {
+        code: `
+          function open(url: string) {
+            return new EventSource(url);
+          }
+          void open;
+        `,
+        filename: "canonical-event-source-boundary.ts",
+      },
+      {
+        code: `
+          type BrowserMessage = { readonly lastEventId: string };
+          type BrowserListener = (event: BrowserMessage) => void;
+          function open(
+            url: string,
+            listener: BrowserListener
+          ) {
+            const source = new EventSource(url);
+            source.onmessage = listener;
+            return source;
+          }
+          void open;
+        `,
+        filename: "canonical-event-source-transitive-alias.ts",
+      },
+      {
+        code: `
+          function displayTimestamp(timestamp: string) {
+            const date = new Date(timestamp);
+            return Number.isNaN(date.getTime())
+              ? "Unavailable"
+              : new Intl.DateTimeFormat().format(date);
+          }
+          const projection = {
+            timestampLabel: displayTimestamp("2026-07-18T00:00:00Z"),
+          };
+          void projection;
+        `,
+        filename: "canonical-date-display-transform.ts",
+      },
+      {
+        code: `
+          function pathnameFromUrl(url: string) {
+            try {
+              return new URL(url).pathname;
+            } catch {
+              return url.split("?")[0] ?? url;
+            }
+          }
+          const projection = {
+            pathLabel: pathnameFromUrl("https://example.com/runs"),
+          };
+          void projection;
+        `,
+        filename: "canonical-url-display-transform.ts",
+      },
+      {
+        code: `
+          import { createHash } from "node:crypto";
+          import { Schema } from "effect";
+          const DigestSchema = Schema.NonEmptyString.pipe(
+            Schema.brand("Digest")
+          );
+          const decodeDigest = Schema.decodeUnknownSync(DigestSchema);
+          function hashString(input: string) {
+            return decodeDigest(
+              createHash("sha256").update(input).digest("hex")
+            );
+          }
+          const record = { digest: hashString("content") };
+          void record;
+        `,
+        filename: "canonical-crypto-schema-projection.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+          const SafeText = Schema.makeFilter(
+            (input: string) => input.trim().length > 0
+          );
+          void SafeText;
+        `,
+        filename: "canonical-schema-filter.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+          class DisplayProjection extends Schema.Class<DisplayProjection>(
+            "DisplayProjection"
+          )({ summary: Schema.NonEmptyString }) {}
+          function renderTimestamp(createdAt: string) {
+            return createdAt.trim().toUpperCase();
+          }
+          DisplayProjection.make({
+            summary: renderTimestamp("  display timestamp  "),
+          });
+        `,
+        filename: "closed-renamed-display-transform.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+          const WorkspacePathSchema = Schema.String.pipe(
+            Schema.brand("WorkspacePath")
+          );
+          const decodeWorkspacePath = Schema.decodeUnknownSync(
+            WorkspacePathSchema
+          );
+          void decodeWorkspacePath;
+        `,
         filename: "decode-workspace-path.ts",
       },
       {
@@ -1109,19 +1305,26 @@ tester.run(
         filename: "non-callable-raw-name.ts",
       },
       {
-        code: `const parseRunId = function (input: string): RunId { return decode(input); };`,
+        code: `
+          import { Schema } from "effect";
+          const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+          const decodeRunId = Schema.decodeUnknownSync(RunIdSchema);
+          const parseRunId = function (input: string) {
+            return decodeRunId(input);
+          };
+          void parseRunId;
+        `,
         filename: "assigned-parser.ts",
       },
       {
-        code: `const parsers = { decodeRunId(raw: string): RunId { return decode(raw); } };`,
-        filename: "object-parser-method.ts",
-      },
-      {
-        code: `class Parsers { parseRunId = (value: string): RunId => decode(value); }`,
-        filename: "class-parser-property.ts",
-      },
-      {
-        code: `const parseRunId = ((input: string): RunId => decode(input)) as Parser;`,
+        code: `
+          import { Schema } from "effect";
+          const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+          const decodeRunId = Schema.decodeUnknownSync(RunIdSchema);
+          const parseRunId = ((input: string) =>
+            decodeRunId(input));
+          void parseRunId;
+        `,
         filename: "wrapped-parser.ts",
       },
       {
@@ -1238,6 +1441,7 @@ tester.run(
       },
       {
         code: `
+          import { Schema } from "effect";
           function render() {
             const input: string = "display input";
             const value: string = "display value";
@@ -1245,38 +1449,33 @@ tester.run(
             const workspacePath: string = "display workspace";
             return input + value + runId + workspacePath;
           }
-          function parseRunId(raw: unknown): RunId {
-            const input: string = String(raw);
-            return decode(input);
+          const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+          const decodeRunId = Schema.decodeUnknownSync(RunIdSchema);
+          function parseRunId(raw: unknown) {
+            const input: string = Schema.decodeUnknownSync(Schema.String)(raw);
+            return decodeRunId(input);
           }
         `,
         filename: "raw-named-locals.ts",
       },
       {
         code: `
-          type Parser = {
-            readonly parseRunId: (input: string) => RunId;
-          };
-          interface Decoder {
-            readonly decodeRunId: (raw: string) => RunId;
-          }
-          type ParenthesizedParser = {
-            readonly parseRunId: ((value: string) => RunId);
-          };
-        `,
-        filename: "capability-parser-properties.ts",
-      },
-      {
-        code: `
+          import { Schema } from "effect";
           const CodexRawFileChangeSchema = Schema.Struct({
             kind: Schema.String,
             path: Schema.String,
           });
+          const decodeCodexRawFileChange = Schema.decodeUnknownSync(
+            CodexRawFileChangeSchema
+          );
+          void decodeCodexRawFileChange;
         `,
         filename: "packages/runtime/src/codex-app-server-protocol.ts",
       },
       {
         code: `
+          import { Schema } from "effect";
+          import { it } from "vitest";
           class PinnedCodexSchemaSet extends Schema.Class<PinnedCodexSchemaSet>(
             "PinnedCodexSchemaSet"
           )({
@@ -1292,12 +1491,142 @@ tester.run(
               }),
             }),
           }) {}
+          it("pins provider metadata", () => void PinnedCodexSchemaSet);
         `,
         filename:
           "packages/runtime/src/codex-app-server-0.137.0-schema-parity.test.ts",
       },
     ],
     invalid: [
+      {
+        code: `
+          import { it } from "./counterfeit-vitest.js";
+          function fixture(input: { readonly runId: string }) {
+            return { runId: input.runId };
+          }
+          it("launders a contract", () => void fixture({ runId: "run-1" }));
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "counterfeit-test-support.ts",
+      },
+      {
+        code: `
+          import { EventSource } from "./counterfeit-browser.js";
+          function open(url: string) {
+            return new EventSource(url);
+          }
+          void open;
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "counterfeit-event-source-boundary.ts",
+      },
+      {
+        code: `
+          import { EventSource } from "./counterfeit-browser.js";
+          type BrowserMessage = { readonly lastEventId: string };
+          type BrowserListener = (event: BrowserMessage) => void;
+          function open(
+            url: string,
+            listener: BrowserListener
+          ) {
+            const source = new EventSource(url);
+            source.onmessage = listener;
+            return source;
+          }
+          void open;
+        `,
+        errors: [
+          { messageId: "unbrandedDomainString" },
+          { messageId: "unbrandedDomainString" },
+        ],
+        filename: "counterfeit-event-source-transitive-alias.ts",
+      },
+      {
+        code: `
+          import { Date } from "./counterfeit-platform.js";
+          function displayTimestamp(timestamp: string) {
+            const date = new Date(timestamp);
+            return date.format();
+          }
+          const projection = {
+            timestampLabel: displayTimestamp("2026-07-18T00:00:00Z"),
+          };
+          void projection;
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "counterfeit-date-display-transform.ts",
+      },
+      {
+        code: `
+          import { URL } from "./counterfeit-platform.js";
+          function pathnameFromUrl(url: string) {
+            return new URL(url).pathname;
+          }
+          const projection = {
+            pathLabel: pathnameFromUrl("https://example.com/runs"),
+          };
+          void projection;
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "counterfeit-url-display-transform.ts",
+      },
+      {
+        code: `
+          import { createHash } from "./counterfeit-crypto.js";
+          import { Schema } from "effect";
+          const DigestSchema = Schema.NonEmptyString.pipe(
+            Schema.brand("Digest")
+          );
+          const decodeDigest = Schema.decodeUnknownSync(DigestSchema);
+          function hashString(input: string) {
+            return decodeDigest(
+              createHash("sha256").update(input).digest("hex")
+            );
+          }
+          const record = { digest: hashString("content") };
+          void record;
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "counterfeit-crypto-schema-projection.ts",
+      },
+      {
+        code: `
+          import { Schema } from "./counterfeit-effect.js";
+          const SafeText = Schema.makeFilter(
+            (input: string) => input.trim().length > 0
+          );
+          void SafeText;
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "counterfeit-schema-filter.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+          const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+          const decodeRunId = Schema.decodeUnknownSync(RunIdSchema);
+          const parsers = {
+            parse(raw: string) {
+              return decodeRunId(raw);
+            },
+          };
+          void parsers;
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "escaping-object-parser-method.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+          const RunIdSchema = Schema.String.pipe(Schema.brand("RunId"));
+          const decodeRunId = Schema.decodeUnknownSync(RunIdSchema);
+          export class Parsers {
+            parse = (value: string) => decodeRunId(value);
+          }
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "escaping-class-parser-property.ts",
+      },
       {
         code: `type ParserInput = { readonly runId: string };`,
         errors: [
@@ -1337,6 +1666,25 @@ tester.run(
         filename: "callable-parameter.ts",
       },
       {
+        code: `
+          type Parser = {
+            readonly parseRunId: (input: string) => RunId;
+          };
+          interface Decoder {
+            readonly decodeRunId: (raw: string) => RunId;
+          }
+          type ParenthesizedParser = {
+            readonly parseRunId: ((value: string) => RunId);
+          };
+        `,
+        errors: [
+          { messageId: "unbrandedDomainString" },
+          { messageId: "unbrandedDomainString" },
+          { messageId: "unbrandedDomainString" },
+        ],
+        filename: "unproven-parser-properties.ts",
+      },
+      {
         code: `function loadRun(runId: string, workspacePath: string): void {}`,
         errors: [
           { messageId: "unbrandedDomainString" },
@@ -1345,9 +1693,66 @@ tester.run(
         filename: "semantic-direct-parameters.ts",
       },
       {
+        code: `
+          import { Effect } from "effect";
+          export function readRunId(input: { readonly runId: string }) {
+            void Effect.succeed("unrelated");
+            return input.runId;
+          }
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "unrelated-effect-parameter-laundering.ts",
+      },
+      {
+        code: `
+          import { Effect } from "effect";
+          type Input = { readonly runId: string };
+          export function readRunId(input: Input) {
+            if (globalThis.Math.random() < 0) {
+              return Effect.succeed("unrelated");
+            }
+            return input.runId;
+          }
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "unrelated-effect-named-parameter-laundering.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+          type Input = { readonly runId: string };
+          export function readRunId(input: Input) {
+            if (globalThis.Math.random() < 0) {
+              return Schema.decodeUnknownSync(Schema.String)("unrelated");
+            }
+            return input.runId;
+          }
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "unrelated-schema-named-parameter-laundering.ts",
+      },
+      {
         code: `function makeRunId(input: string): RunId { return input; }`,
         errors: [{ messageId: "unbrandedDomainString" }],
         filename: "make-run-id.ts",
+      },
+      {
+        code: `function forwardTimestamp(createdAt: string) { return createdAt; }`,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "renamed-identity-domain-string.ts",
+      },
+      {
+        code: `
+          import { externalDecode } from "./counterfeit-boundary.js";
+          type RunId = string & { readonly RunId: unique symbol };
+          function parseRunId(input: string): RunId {
+            return externalDecode(input);
+          }
+          const projection = { label: parseRunId("run-1") };
+          void projection;
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "counterfeit-imported-typed-boundary.ts",
       },
       {
         code: `
