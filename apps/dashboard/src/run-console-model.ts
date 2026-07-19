@@ -6,7 +6,6 @@ import {
   LocalRunReadSummarySchema,
   LocalRunTimestampSchema,
   RunIdSchema,
-  type LocalGaiaServerUrl,
   type RunId,
 } from "@gaia/core";
 import { Schema } from "effect";
@@ -43,7 +42,11 @@ export const RunConsoleRunSchema = Schema.Struct({
   updatedAtLabel: Schema.String,
 });
 
-export type RunConsoleRun = typeof RunConsoleRunSchema.Type;
+class RunConsoleRunTypeSchema extends Schema.Class<RunConsoleRunTypeSchema>(
+  "RunConsoleRunType"
+)(RunConsoleRunSchema.fields) {}
+
+export type RunConsoleRun = RunConsoleRunTypeSchema;
 
 export const RunConsoleStateSchema = Schema.Struct({
   diagnostics: Schema.Array(LocalRunReadDiagnosticSchema),
@@ -57,27 +60,33 @@ export const RunConsoleStateSchema = Schema.Struct({
   serverUrl: LocalGaiaServerUrlSchema,
 });
 
-export type RunConsoleState = typeof RunConsoleStateSchema.Type;
+class RunConsoleStateTypeSchema extends Schema.Class<RunConsoleStateTypeSchema>(
+  "RunConsoleStateType"
+)(RunConsoleStateSchema.fields) {}
+
+export type RunConsoleState = RunConsoleStateTypeSchema;
 
 type LocalRunSummary = typeof LocalRunReadSummarySchema.Type;
 const inputArtifactId = Schema.decodeUnknownSync(LocalRunReadArtifactIdSchema)(
   "input"
 );
 
-export function buildRunConsoleState(input: {
-  readonly healthError: unknown;
-  readonly healthFetching?: boolean;
-  readonly healthPending: boolean;
-  readonly healthStatus: string | undefined;
-  readonly runs: ReadonlyArray<LocalRunSummary>;
-  readonly runsDiagnostics: ReadonlyArray<
-    typeof LocalRunReadDiagnosticSchema.Type
-  >;
-  readonly runsError: unknown;
-  readonly runsFetching?: boolean;
-  readonly runsPending: boolean;
-  readonly serverUrl: LocalGaiaServerUrl;
-}): RunConsoleState {
+const BuildRunConsoleStateInputSchema = Schema.Struct({
+  healthError: Schema.Defect(),
+  healthFetching: Schema.optional(Schema.Boolean),
+  healthPending: Schema.Boolean,
+  healthStatus: Schema.UndefinedOr(Schema.String),
+  runs: Schema.Array(LocalRunReadSummarySchema),
+  runsDiagnostics: Schema.Array(LocalRunReadDiagnosticSchema),
+  runsError: Schema.Defect(),
+  runsFetching: Schema.optional(Schema.Boolean),
+  runsPending: Schema.Boolean,
+  serverUrl: LocalGaiaServerUrlSchema,
+});
+
+export function buildRunConsoleState(
+  input: typeof BuildRunConsoleStateInputSchema.Type
+): RunConsoleState {
   const runs = input.runs.map(toRunConsoleRun);
   const failure = dashboardQueryFailure(input.healthError ?? input.runsError);
   const hasStaleData = runs.length > 0 && failure !== undefined;

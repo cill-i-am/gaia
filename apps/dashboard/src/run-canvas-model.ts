@@ -74,7 +74,11 @@ export const DashboardEventSchema = Schema.Struct({
   type: RunEvent.fields.type,
 });
 
-export type DashboardEvent = typeof DashboardEventSchema.Type;
+class DashboardEventTypeSchema extends Schema.Class<DashboardEventTypeSchema>(
+  "DashboardEventType"
+)(DashboardEventSchema.fields) {}
+
+export type DashboardEvent = DashboardEventTypeSchema;
 
 export const RunNodeSchema = Schema.Struct({
   artifacts: Schema.Array(DashboardArtifactIdSchema),
@@ -100,6 +104,11 @@ export const RunEdgeSchema = Schema.Struct({
 
 export type RunEdge = typeof RunEdgeSchema.Type;
 
+const DashboardRunUpdatedAtSchema = Schema.Union([
+  LocalRunReadSummarySchema.fields.updatedAt,
+  Schema.Literal(""),
+]);
+
 export const DashboardRunSchema = Schema.Struct({
   branch: Schema.String,
   edges: Schema.Array(RunEdgeSchema),
@@ -108,10 +117,14 @@ export const DashboardRunSchema = Schema.Struct({
   nodes: Schema.Array(RunNodeSchema),
   status: RunStatusSchema,
   title: Schema.String,
-  updatedAt: Schema.String,
+  updatedAt: DashboardRunUpdatedAtSchema,
 });
 
-export type DashboardRun = typeof DashboardRunSchema.Type;
+class DashboardRunTypeSchema extends Schema.Class<DashboardRunTypeSchema>(
+  "DashboardRunType"
+)(DashboardRunSchema.fields) {}
+
+export type DashboardRun = DashboardRunTypeSchema;
 
 export const RunReplayStepSchema = Schema.Struct({
   event: DashboardEventSchema,
@@ -120,7 +133,11 @@ export const RunReplayStepSchema = Schema.Struct({
   progressLabel: Schema.String,
 });
 
-export type RunReplayStep = typeof RunReplayStepSchema.Type;
+class RunReplayStepTypeSchema extends Schema.Class<RunReplayStepTypeSchema>(
+  "RunReplayStepType"
+)(RunReplayStepSchema.fields) {}
+
+export type RunReplayStep = RunReplayStepTypeSchema;
 
 export const RunReplayStateSchema = Schema.Struct({
   activeEventId: Schema.optional(RunCanvasNodeIdSchema),
@@ -134,7 +151,11 @@ export const RunReplayStateSchema = Schema.Struct({
   visibleEventIds: Schema.Array(RunCanvasNodeIdSchema),
 });
 
-export type RunReplayState = typeof RunReplayStateSchema.Type;
+class RunReplayStateTypeSchema extends Schema.Class<RunReplayStateTypeSchema>(
+  "RunReplayStateType"
+)(RunReplayStateSchema.fields) {}
+
+export type RunReplayState = RunReplayStateTypeSchema;
 
 type LocalRunSummary = typeof LocalRunReadSummarySchema.Type;
 
@@ -170,10 +191,24 @@ const artifactIds = Object.freeze({
   workerResult: decodeDashboardArtifactId("worker-result"),
 });
 
-export function buildRunCanvasModel(input: {
-  readonly events: ReadonlyArray<RunEvent>;
-  readonly run: LocalRunSummary | undefined;
-}): DashboardRun {
+const BuildRunCanvasModelInputSchema = Schema.Struct({
+  events: Schema.Array(RunEvent),
+  run: Schema.UndefinedOr(LocalRunReadSummarySchema),
+});
+
+const BuildRunReplayStateInputSchema = Schema.Struct({
+  requestedIndex: Schema.UndefinedOr(Schema.Number),
+  run: DashboardRunSchema,
+});
+
+const MergeRunEventsInputSchema = Schema.Struct({
+  historical: Schema.Array(RunEvent),
+  live: Schema.Array(RunEvent),
+});
+
+export function buildRunCanvasModel(
+  input: typeof BuildRunCanvasModelInputSchema.Type
+): DashboardRun {
   if (input.run === undefined) {
     return emptyRunCanvasModel();
   }
@@ -266,10 +301,9 @@ export function buildRunCanvasModel(input: {
   };
 }
 
-export function buildRunReplayState(input: {
-  readonly requestedIndex: number | undefined;
-  readonly run: DashboardRun;
-}): RunReplayState {
+export function buildRunReplayState(
+  input: typeof BuildRunReplayStateInputSchema.Type
+): RunReplayState {
   const steps = input.run.events.map((event, index) => ({
     event,
     index,
@@ -336,10 +370,9 @@ export function eventsForNode(
   return run.events.filter((event) => eventIds.has(event.id));
 }
 
-export function mergeRunEvents(input: {
-  readonly historical: ReadonlyArray<RunEvent>;
-  readonly live: ReadonlyArray<RunEvent>;
-}): ReadonlyArray<RunEvent> {
+export function mergeRunEvents(
+  input: typeof MergeRunEventsInputSchema.Type
+): ReadonlyArray<RunEvent> {
   const eventsByIdentity = new Map<string, RunEvent>();
 
   for (const event of [...input.historical, ...input.live]) {

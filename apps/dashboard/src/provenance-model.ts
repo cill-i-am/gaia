@@ -3,14 +3,20 @@ import { Schema } from "effect";
 import {
   DashboardArtifactIdSchema,
   DashboardEventSchema,
+  DashboardRunSchema,
   RunCanvasNodeIdSchema,
+  RunNodeSchema,
+  RunReplayStateSchema,
   type DashboardArtifactId,
   type DashboardEvent,
   type DashboardRun,
   type RunNode,
   type RunReplayState,
 } from "@/run-canvas-model";
-import type { RunCompareModel } from "@/run-compare-model";
+import {
+  RunCompareModelSchema,
+  type RunCompareModel,
+} from "@/run-compare-model";
 
 export const ProvenanceAvailabilitySchema = Schema.Literals([
   "supported",
@@ -58,7 +64,31 @@ export const ProvenanceSourceTargetSchema = Schema.Union([
   }),
 ]);
 
-export type ProvenanceSourceTarget = typeof ProvenanceSourceTargetSchema.Type;
+class ProvenanceArtifactSourceTarget extends Schema.Class<ProvenanceArtifactSourceTarget>(
+  "ProvenanceArtifactSourceTarget"
+)({
+  artifactId: DashboardArtifactIdSchema,
+  type: Schema.Literal("artifact"),
+}) {}
+
+class ProvenanceEventSourceTarget extends Schema.Class<ProvenanceEventSourceTarget>(
+  "ProvenanceEventSourceTarget"
+)({
+  eventId: RunCanvasNodeIdSchema,
+  type: Schema.Literal("event"),
+}) {}
+
+class ProvenanceRawSourceTarget extends Schema.Class<ProvenanceRawSourceTarget>(
+  "ProvenanceRawSourceTarget"
+)({
+  path: ProvenancePathSchema,
+  type: Schema.Literal("raw"),
+}) {}
+
+export type ProvenanceSourceTarget =
+  | ProvenanceArtifactSourceTarget
+  | ProvenanceEventSourceTarget
+  | ProvenanceRawSourceTarget;
 
 export const ProvenanceSourceSchema = Schema.Struct({
   detail: Schema.String,
@@ -67,7 +97,11 @@ export const ProvenanceSourceSchema = Schema.Struct({
   target: Schema.optional(ProvenanceSourceTargetSchema),
 });
 
-export type ProvenanceSource = typeof ProvenanceSourceSchema.Type;
+class ProvenanceSourceTypeSchema extends Schema.Class<ProvenanceSourceTypeSchema>(
+  "ProvenanceSourceType"
+)(ProvenanceSourceSchema.fields) {}
+
+export type ProvenanceSource = ProvenanceSourceTypeSchema;
 
 export const ProvenanceClaimSchema = Schema.Struct({
   availability: ProvenanceAvailabilitySchema,
@@ -77,7 +111,11 @@ export const ProvenanceClaimSchema = Schema.Struct({
   value: Schema.String,
 });
 
-export type ProvenanceClaim = typeof ProvenanceClaimSchema.Type;
+class ProvenanceClaimTypeSchema extends Schema.Class<ProvenanceClaimTypeSchema>(
+  "ProvenanceClaimType"
+)(ProvenanceClaimSchema.fields) {}
+
+export type ProvenanceClaim = ProvenanceClaimTypeSchema;
 
 export const EvidenceProvenanceModelSchema = Schema.Struct({
   claims: Schema.Array(ProvenanceClaimSchema),
@@ -86,7 +124,11 @@ export const EvidenceProvenanceModelSchema = Schema.Struct({
   unsupportedCount: Schema.Number,
 });
 
-export type EvidenceProvenanceModel = typeof EvidenceProvenanceModelSchema.Type;
+class EvidenceProvenanceModelTypeSchema extends Schema.Class<EvidenceProvenanceModelTypeSchema>(
+  "EvidenceProvenanceModelType"
+)(EvidenceProvenanceModelSchema.fields) {}
+
+export type EvidenceProvenanceModel = EvidenceProvenanceModelTypeSchema;
 
 const decodeDashboardArtifactId = Schema.decodeUnknownSync(
   DashboardArtifactIdSchema
@@ -105,13 +147,17 @@ const provenanceArtifactIds = Object.freeze({
   verificationResult: decodeDashboardArtifactId("verification-result"),
 });
 
-export function buildEvidenceProvenanceModel(input: {
-  readonly relatedEvents: ReadonlyArray<DashboardEvent>;
-  readonly replayState: RunReplayState;
-  readonly runCompare: RunCompareModel;
-  readonly selectedNode: RunNode;
-  readonly selectedRun: DashboardRun;
-}): EvidenceProvenanceModel {
+const BuildEvidenceProvenanceModelInputSchema = Schema.Struct({
+  relatedEvents: Schema.Array(DashboardEventSchema),
+  replayState: RunReplayStateSchema,
+  runCompare: RunCompareModelSchema,
+  selectedNode: RunNodeSchema,
+  selectedRun: DashboardRunSchema,
+});
+
+export function buildEvidenceProvenanceModel(
+  input: typeof BuildEvidenceProvenanceModelInputSchema.Type
+): EvidenceProvenanceModel {
   const claims = [
     nodeStatusClaim(input.selectedNode, input.relatedEvents),
     eventCountClaim(input.selectedNode, input.relatedEvents, input.selectedRun),
@@ -429,7 +475,7 @@ function artifactSource(artifactId: DashboardArtifactId): ProvenanceSource {
 function apiSource(input: {
   readonly detail: string;
   readonly label: string;
-  readonly path: string;
+  readonly path: typeof ProvenancePathSchema.Encoded;
 }): ProvenanceSource {
   return {
     detail: input.detail,
@@ -445,7 +491,7 @@ function apiSource(input: {
 function derivedSource(input: {
   readonly detail: string;
   readonly label: string;
-  readonly path: string;
+  readonly path: typeof ProvenancePathSchema.Encoded;
 }): ProvenanceSource {
   return {
     detail: input.detail,

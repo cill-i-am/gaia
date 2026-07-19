@@ -2,7 +2,7 @@ import {
   LocalRunReadArtifactIdSchema,
   RunEvent,
   RunIdSchema,
-  type LocalRunSummaryDto,
+  LocalRunSummaryDto,
 } from "@gaia/core";
 import { Schema } from "effect";
 
@@ -78,12 +78,16 @@ const compareArtifactIds = Object.freeze({
   verificationResult: decodeRunCompareArtifactId("verification-result"),
 });
 
-export function buildRunCompareModel(input: {
-  readonly comparisonEvents: ReadonlyArray<RunEvent>;
-  readonly comparisonRun: LocalRunSummary | undefined;
-  readonly primaryEvents: ReadonlyArray<RunEvent>;
-  readonly primaryRun: LocalRunSummary | undefined;
-}): RunCompareModel {
+const BuildRunCompareModelInputSchema = Schema.Struct({
+  comparisonEvents: Schema.Array(RunEvent),
+  comparisonRun: Schema.UndefinedOr(LocalRunSummaryDto),
+  primaryEvents: Schema.Array(RunEvent),
+  primaryRun: Schema.UndefinedOr(LocalRunSummaryDto),
+});
+
+export function buildRunCompareModel(
+  input: typeof BuildRunCompareModelInputSchema.Type
+): RunCompareModel {
   const primary = toCompareSide(input.primaryRun, input.primaryEvents);
   const comparison = toCompareSide(input.comparisonRun, input.comparisonEvents);
 

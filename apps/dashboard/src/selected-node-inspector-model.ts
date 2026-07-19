@@ -4,7 +4,6 @@ import {
   FactoryArtifactDto,
   FactoryGraphDto,
   FactoryWorkItemDto,
-  RunId,
   RunIdSchema,
 } from "@gaia/core";
 import { Schema } from "effect";
@@ -43,31 +42,71 @@ export const InspectorNoticeSchema = Schema.Struct({
 
 export type InspectorNotice = typeof InspectorNoticeSchema.Type;
 
-const makeInspectorResourceSchema = <A>(dataSchema: Schema.Schema<A>) =>
-  Schema.Union([
-    Schema.Struct({
-      message: Schema.String,
-      status: Schema.Literal("loading"),
-    }),
-    Schema.Struct({
-      data: Schema.Array(dataSchema),
-      status: Schema.Literal("ready"),
-    }),
-    Schema.Struct({
-      message: Schema.String,
-      status: Schema.Literals(["unavailable", "error"] as const),
-    }),
-  ]);
+export const FactoryActivityInspectorResourceSchema = Schema.Union([
+  Schema.Struct({
+    message: Schema.String,
+    status: Schema.Literal("loading"),
+  }),
+  Schema.Struct({
+    data: Schema.Array(FactoryActivityDto),
+    status: Schema.Literal("ready"),
+  }),
+  Schema.Struct({
+    message: Schema.String,
+    status: Schema.Literals(["unavailable", "error"] as const),
+  }),
+]);
+export const FactoryArtifactInspectorResourceSchema = Schema.Union([
+  Schema.Struct({
+    message: Schema.String,
+    status: Schema.Literal("loading"),
+  }),
+  Schema.Struct({
+    data: Schema.Array(FactoryArtifactDto),
+    status: Schema.Literal("ready"),
+  }),
+  Schema.Struct({
+    message: Schema.String,
+    status: Schema.Literals(["unavailable", "error"] as const),
+  }),
+]);
 
-export const FactoryActivityInspectorResourceSchema =
-  makeInspectorResourceSchema(FactoryActivityDto);
-export const FactoryArtifactInspectorResourceSchema =
-  makeInspectorResourceSchema(FactoryArtifactDto);
+class InspectorLoadingResource extends Schema.Class<InspectorLoadingResource>(
+  "InspectorLoadingResource"
+)({
+  message: Schema.String,
+  status: Schema.Literal("loading"),
+}) {}
+
+class InspectorUnavailableResource extends Schema.Class<InspectorUnavailableResource>(
+  "InspectorUnavailableResource"
+)({
+  message: Schema.String,
+  status: Schema.Literals(["unavailable", "error"] as const),
+}) {}
+
+class FactoryActivityReadyResource extends Schema.Class<FactoryActivityReadyResource>(
+  "FactoryActivityReadyResource"
+)({
+  data: Schema.Array(FactoryActivityDto),
+  status: Schema.Literal("ready"),
+}) {}
+
+class FactoryArtifactReadyResource extends Schema.Class<FactoryArtifactReadyResource>(
+  "FactoryArtifactReadyResource"
+)({
+  data: Schema.Array(FactoryArtifactDto),
+  status: Schema.Literal("ready"),
+}) {}
 
 export type FactoryActivityInspectorResource =
-  typeof FactoryActivityInspectorResourceSchema.Type;
+  | InspectorLoadingResource
+  | FactoryActivityReadyResource
+  | InspectorUnavailableResource;
 export type FactoryArtifactInspectorResource =
-  typeof FactoryArtifactInspectorResourceSchema.Type;
+  | InspectorLoadingResource
+  | FactoryArtifactReadyResource
+  | InspectorUnavailableResource;
 
 export const SelectedNodeEmptyInspectorModelSchema = Schema.Struct({
   kind: Schema.Literal("empty"),
@@ -107,17 +146,35 @@ export const SelectedNodeInspectorModelSchema = Schema.Union([
   SelectedNodeWorkItemInspectorModelSchema,
 ]);
 
-export type SelectedNodeInspectorModel =
-  typeof SelectedNodeInspectorModelSchema.Type;
+class SelectedNodeEmptyInspectorModel extends Schema.Class<SelectedNodeEmptyInspectorModel>(
+  "SelectedNodeEmptyInspectorModel"
+)(SelectedNodeEmptyInspectorModelSchema.fields) {}
 
-export function buildSelectedNodeInspectorModel(input: {
-  readonly activity: InspectorResource<typeof FactoryActivityDto.Type>;
-  readonly artifactCatalog: InspectorResource<typeof FactoryArtifactDto.Type>;
-  readonly graph: typeof FactoryGraphDto.Type | undefined;
-  readonly graphIsLoading: boolean;
-  readonly selectedNode: FactoryCanvasNode | undefined;
-  readonly selectedRunId: typeof RunIdSchema.Type | undefined;
-}): SelectedNodeInspectorModel {
+class SelectedNodeAgentInspectorModel extends Schema.Class<SelectedNodeAgentInspectorModel>(
+  "SelectedNodeAgentInspectorModel"
+)(SelectedNodeAgentInspectorModelSchema.fields) {}
+
+class SelectedNodeWorkItemInspectorModel extends Schema.Class<SelectedNodeWorkItemInspectorModel>(
+  "SelectedNodeWorkItemInspectorModel"
+)(SelectedNodeWorkItemInspectorModelSchema.fields) {}
+
+export type SelectedNodeInspectorModel =
+  | SelectedNodeEmptyInspectorModel
+  | SelectedNodeAgentInspectorModel
+  | SelectedNodeWorkItemInspectorModel;
+
+const BuildSelectedNodeInspectorModelInputSchema = Schema.Struct({
+  activity: FactoryActivityInspectorResourceSchema,
+  artifactCatalog: FactoryArtifactInspectorResourceSchema,
+  graph: Schema.UndefinedOr(FactoryGraphDto),
+  graphIsLoading: Schema.Boolean,
+  selectedNode: Schema.UndefinedOr(FactoryCanvasNodeSchema),
+  selectedRunId: Schema.UndefinedOr(RunIdSchema),
+});
+
+export function buildSelectedNodeInspectorModel(
+  input: typeof BuildSelectedNodeInspectorModelInputSchema.Type
+): SelectedNodeInspectorModel {
   if (input.selectedRunId === undefined) {
     return {
       kind: "empty",

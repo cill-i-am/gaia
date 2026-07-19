@@ -100,11 +100,15 @@ export const AgentInspectorSessionModelSchema = Schema.Struct({
 export type AgentInspectorSessionModel =
   typeof AgentInspectorSessionModelSchema.Type;
 
-export function buildAgentInspectorSessionModel(input: {
-  readonly connection: AgentInspectorConnection;
-  readonly lastError?: string | undefined;
-  readonly session: typeof AgentSessionSnapshotDto.Type | undefined;
-}): AgentInspectorSessionModel {
+const BuildAgentInspectorSessionModelInputSchema = Schema.Struct({
+  connection: AgentInspectorConnectionSchema,
+  lastError: Schema.optional(Schema.String),
+  session: Schema.UndefinedOr(AgentSessionSnapshotDto),
+});
+
+export function buildAgentInspectorSessionModel(
+  input: typeof BuildAgentInspectorSessionModelInputSchema.Type
+): AgentInspectorSessionModel {
   if (input.connection === "reconnecting") {
     return unavailableModel({
       eventSequence: input.session?.eventSequence,
