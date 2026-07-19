@@ -14,6 +14,7 @@ import type {
   RunId,
 } from "@gaia/core";
 import {
+  CreateRunAcceptedResponse,
   FactoryActivityIdSchema,
   FactoryAgentIdSchema,
   FactoryArtifactIdSchema,
@@ -57,18 +58,9 @@ import { testFactoryExecution } from "@/test-factory-execution";
 const decodeRunEventTimestamp = Schema.decodeUnknownSync(
   RunEvent.fields.timestamp
 );
-
-type CreateRunAcceptedFixture = {
-  readonly acceptedAt: string;
-  readonly runId: string;
-  readonly status: "accepted";
-  readonly urls: {
-    readonly activity: string;
-    readonly artifacts: string;
-    readonly factoryGraph: string;
-    readonly run: string;
-  };
-};
+const decodeCreateRunAcceptedResponse = Schema.decodeUnknownSync(
+  CreateRunAcceptedResponse
+);
 
 type FactoryAgentState =
   (typeof FactoryGraphDto.Type)["agents"][number]["state"];
@@ -109,7 +101,9 @@ const queryFixture = vi.hoisted(
       readonly action: unknown;
       readonly runId: string;
     }>;
-    createRunPromise: Promise<CreateRunAcceptedFixture> | undefined;
+    createRunPromise:
+      | Promise<typeof CreateRunAcceptedResponse.Type>
+      | undefined;
     eventsByRunId: Record<string, ReadonlyArray<unknown>>;
     deliverySnapshotsByRunId: Record<string, unknown>;
     healthError?: unknown;
@@ -158,17 +152,17 @@ vi.mock("@/lib/local-gaia-query", () => ({
 
       const result =
         queryFixture.createRunPromise === undefined
-          ? {
+          ? decodeCreateRunAcceptedResponse({
               acceptedAt: "2026-07-09T00:00:00.000Z",
               runId: "run-9999999999",
-              status: "accepted" as const,
+              status: "accepted",
               urls: {
                 activity: "/runs/run-9999999999/activity",
                 artifacts: "/runs/run-9999999999/artifacts",
                 factoryGraph: "/runs/run-9999999999/factory-graph",
                 run: "/runs/run-9999999999",
               },
-            }
+            })
           : await queryFixture.createRunPromise;
 
       queryFixture.runs = [
@@ -2994,7 +2988,7 @@ describe("DashboardShell Run Console", () => {
   });
 
   it("disables duplicate issue-delivery submissions while create-run is pending", async () => {
-    const createRun = deferred<CreateRunAcceptedFixture>();
+    const createRun = deferred<typeof CreateRunAcceptedResponse.Type>();
     renderDashboardWithQueries({
       createRunPromise: createRun.promise,
       runs: [],
@@ -3020,17 +3014,19 @@ describe("DashboardShell Run Console", () => {
     });
     expect(queryFixture.createRunInputs).toHaveLength(1);
 
-    createRun.resolve({
-      acceptedAt: "2026-07-09T00:01:00.000Z",
-      runId: "run-1010101010",
-      status: "accepted",
-      urls: {
-        activity: "/runs/run-1010101010/activity",
-        artifacts: "/runs/run-1010101010/artifacts",
-        factoryGraph: "/runs/run-1010101010/factory-graph",
-        run: "/runs/run-1010101010",
-      },
-    });
+    createRun.resolve(
+      decodeCreateRunAcceptedResponse({
+        acceptedAt: "2026-07-09T00:01:00.000Z",
+        runId: "run-1010101010",
+        status: "accepted",
+        urls: {
+          activity: "/runs/run-1010101010/activity",
+          artifacts: "/runs/run-1010101010/artifacts",
+          factoryGraph: "/runs/run-1010101010/factory-graph",
+          run: "/runs/run-1010101010",
+        },
+      })
+    );
 
     await waitFor(() => {
       expect(screen.getByTestId("selected-run-title").textContent).toBe(
@@ -3246,7 +3242,7 @@ function renderDashboardWithQueries(input: {
     Record<string, typeof AgentSessionSnapshotDto.Type>
   >;
   readonly createRunError?: DashboardGaiaClientError;
-  readonly createRunPromise?: Promise<CreateRunAcceptedFixture>;
+  readonly createRunPromise?: Promise<typeof CreateRunAcceptedResponse.Type>;
   readonly healthError?: DashboardGaiaClientError;
   readonly runs: ReadonlyArray<typeof LocalRunSummaryDto.Type>;
   readonly runsDiagnostics?: ReadonlyArray<
