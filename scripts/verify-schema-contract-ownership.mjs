@@ -605,6 +605,34 @@ try {
     `
   );
   await writeFile(
+    path.join(projectRoot, "unrelated-effect-named-parameter-laundering.ts"),
+    `
+      import { Effect } from "effect";
+
+      type Input = { readonly runId: string };
+      export function readRunId(input: Input) {
+        if (globalThis.Math.random() < 0) {
+          return Effect.succeed("unrelated");
+        }
+        return input.runId;
+      }
+    `
+  );
+  await writeFile(
+    path.join(projectRoot, "unrelated-schema-named-parameter-laundering.ts"),
+    `
+      import { Schema } from "effect";
+
+      type Input = { readonly runId: string };
+      export function readRunId(input: Input) {
+        if (globalThis.Math.random() < 0) {
+          return Schema.decodeUnknownSync(Schema.String)("unrelated");
+        }
+        return input.runId;
+      }
+    `
+  );
+  await writeFile(
     path.join(projectRoot, "derived-manual.ts"),
     `
       import type { ManualRun } from "./manual.js";
@@ -908,7 +936,9 @@ try {
     "reexport.ts",
     "schema-connected-operation-parameter.ts",
     "schema.ts",
+    "unrelated-effect-named-parameter-laundering.ts",
     "unrelated-effect-parameter-laundering.ts",
+    "unrelated-schema-named-parameter-laundering.ts",
   ]);
   assert.deepEqual(
     [
@@ -1051,12 +1081,14 @@ try {
       37,
       "Nested operation data contract has no compiler-proven Schema origin."
     ),
+    schemaDiagnostic("unrelated-effect-named-parameter-laundering.ts", 4, 12),
     schemaDiagnostic(
       "unrelated-effect-parameter-laundering.ts",
       4,
       40,
       "Nested operation data contract has no compiler-proven Schema origin."
     ),
+    schemaDiagnostic("unrelated-schema-named-parameter-laundering.ts", 4, 12),
   ]);
 
   const boundedDiagnostics = analyzeSchemaContracts({

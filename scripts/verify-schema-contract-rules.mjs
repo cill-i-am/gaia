@@ -1704,6 +1704,34 @@ tester.run(
         filename: "unrelated-effect-parameter-laundering.ts",
       },
       {
+        code: `
+          import { Effect } from "effect";
+          type Input = { readonly runId: string };
+          export function readRunId(input: Input) {
+            if (globalThis.Math.random() < 0) {
+              return Effect.succeed("unrelated");
+            }
+            return input.runId;
+          }
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "unrelated-effect-named-parameter-laundering.ts",
+      },
+      {
+        code: `
+          import { Schema } from "effect";
+          type Input = { readonly runId: string };
+          export function readRunId(input: Input) {
+            if (globalThis.Math.random() < 0) {
+              return Schema.decodeUnknownSync(Schema.String)("unrelated");
+            }
+            return input.runId;
+          }
+        `,
+        errors: [{ messageId: "unbrandedDomainString" }],
+        filename: "unrelated-schema-named-parameter-laundering.ts",
+      },
+      {
         code: `function makeRunId(input: string): RunId { return input; }`,
         errors: [{ messageId: "unbrandedDomainString" }],
         filename: "make-run-id.ts",

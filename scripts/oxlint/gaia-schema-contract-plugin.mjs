@@ -182,6 +182,39 @@ const findDirectEnclosingFunction = (node) => {
   return isWithinParameter === true ? callable : undefined;
 };
 
+const findEnclosingRuntimeParameter = (node) => {
+  let current = node.parent;
+  while (current !== undefined && current !== null) {
+    if (
+      current.type === "ArrowFunctionExpression" ||
+      current.type === "FunctionDeclaration" ||
+      current.type === "FunctionExpression"
+    ) {
+      let parameter;
+      for (const candidate of current.params ?? []) {
+        let descendant = node;
+        while (
+          descendant !== undefined &&
+          descendant !== null &&
+          descendant !== current
+        ) {
+          if (descendant === candidate) {
+            parameter = candidate;
+            break;
+          }
+          descendant = descendant.parent;
+        }
+        if (parameter !== undefined) break;
+      }
+      return parameter === undefined
+        ? undefined
+        : { functionNode: current, parameter };
+    }
+    current = current.parent;
+  }
+  return undefined;
+};
+
 const getDirectCallableOwnerName = (node) => {
   let current = node.parent;
   while (current !== undefined && current !== null) {
@@ -4047,11 +4080,18 @@ const hasConnectedCanonicalBoundaryDeclarationContextSyntax = (
         nextActiveNames
       );
     }
+    const runtimeParameter = findEnclosingRuntimeParameter(reference);
+    if (runtimeParameter !== undefined) {
+      return parameterHasConnectedCanonicalBoundarySyntax(
+        program,
+        runtimeParameter.functionNode,
+        runtimeParameter.parameter,
+        undefined,
+        bindings
+      );
+    }
     const functionNode = findEnclosingFunction(reference);
     if (functionNode === undefined) return false;
-    if (functionReturnsCanonicalBoundarySyntax(program, functionNode)) {
-      return true;
-    }
     if (
       functionNode.returnType !== undefined &&
       (() => {
