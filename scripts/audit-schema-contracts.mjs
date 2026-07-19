@@ -91,10 +91,26 @@ const createDefaultSyntaxSpecification = (temporaryRoot, syntaxTargets) => {
 };
 
 const collectDiagnostics = (cwd, result, format) =>
-  result.stdout.split(/\r?\n/u).flatMap((line) => {
+  `${result.stdout}\n${result.stderr}`.split(/\r?\n/u).flatMap((line) => {
     const diagnostic = normalizeDiagnosticLine(cwd, line, format);
     return diagnostic === undefined ? [] : [diagnostic];
   });
+
+const compareDiagnostics = (left, right) => {
+  const parse = (diagnostic) => {
+    const match = /^(.*):(\d+):(\d+) (gaia\/\S+) /u.exec(diagnostic);
+    return match === null
+      ? [diagnostic, 0, 0, ""]
+      : [match[1], Number(match[2]), Number(match[3]), match[4]];
+  };
+  const [leftPath, leftLine, leftColumn, leftRule] = parse(left);
+  const [rightPath, rightLine, rightColumn, rightRule] = parse(right);
+  if (leftPath !== rightPath) return leftPath < rightPath ? -1 : 1;
+  if (leftLine !== rightLine) return leftLine - rightLine;
+  if (leftColumn !== rightColumn) return leftColumn - rightColumn;
+  if (leftRule !== rightRule) return leftRule < rightRule ? -1 : 1;
+  return left === right ? 0 : left < right ? -1 : 1;
+};
 
 /**
  * Run both schema-contract diagnostic engines and retain both result streams.
@@ -125,7 +141,7 @@ export function runSchemaContractAudit({
     const diagnostics = [
       ...collectDiagnostics(cwd, syntaxResult, syntaxSpecification.format),
       ...collectDiagnostics(cwd, ownershipResult, ownership.format),
-    ];
+    ].sort(compareDiagnostics);
 
     return {
       diagnostics,

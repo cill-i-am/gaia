@@ -2,10 +2,9 @@
   "name": "gaia",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.7.0",
   "scripts": {
     "build": "turbo run build",
-    "check": "turbo run check && pnpm lint && pnpm format:check && pnpm test:tooling && pnpm test:schema-contracts",
+    "check": "turbo run check && pnpm lint && pnpm format:check && pnpm test:tooling && pnpm test:schema-contracts && pnpm schema-contracts:audit",
     "dev": "turbo run dev",
     "format": "oxfmt --config oxfmt.config.ts --write \"apps/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"packages/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"examples/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"scripts/**/*.{js,jsx,ts,tsx,mjs,cjs}\" oxlint.config.ts oxlint.audit.config.ts oxfmt.config.ts",
     "format:check": "oxfmt --config oxfmt.config.ts --check \"apps/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"packages/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"examples/**/*.{js,jsx,ts,tsx,mjs,cjs}\" \"scripts/**/*.{js,jsx,ts,tsx,mjs,cjs}\" oxlint.config.ts oxlint.audit.config.ts oxfmt.config.ts",
@@ -27,5 +26,6 @@
     "turbo": "^2.10.3",
     "typescript": "6.0.3",
     "ultracite": "7.9.3"
-  }
+  },
+  "packageManager": "pnpm@11.7.0"
 }
