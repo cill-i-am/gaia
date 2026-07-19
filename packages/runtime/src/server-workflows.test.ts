@@ -590,13 +590,39 @@ describe("server workflows", () => {
           const paths = yield* makeRunPaths(parseRunId(accepted.runId), {
             rootDirectory: cwd,
           });
-          const encoded = JSON.parse(
-            yield* fs.readFileString(paths.events)
-          ) as { payload: Record<string, unknown> };
-          delete encoded.payload["deliveryFeedbackTrustPolicy"];
+          const encoded = Schema.decodeUnknownSync(Schema.Json)(
+            JSON.parse(yield* fs.readFileString(paths.events))
+          );
+          if (
+            typeof encoded !== "object" ||
+            encoded === null ||
+            Array.isArray(encoded)
+          ) {
+            throw new Error("Expected the stored run event to be an object.");
+          }
+          const encodedObject = Schema.decodeUnknownSync(
+            Schema.Record(Schema.String, Schema.Json)
+          )(encoded);
+          const { payload } = encodedObject;
+          if (
+            typeof payload !== "object" ||
+            payload === null ||
+            Array.isArray(payload)
+          ) {
+            throw new Error(
+              "Expected the stored run event payload to be an object."
+            );
+          }
+          const payloadObject = Schema.decodeUnknownSync(
+            Schema.Record(Schema.String, Schema.Json)
+          )(payload);
+          const {
+            deliveryFeedbackTrustPolicy: _deliveryFeedbackTrustPolicy,
+            ...legacyPayload
+          } = payloadObject;
           yield* fs.writeFileString(
             paths.events,
-            `${JSON.stringify(encoded)}\n`
+            `${JSON.stringify({ ...encodedObject, payload: legacyPayload })}\n`
           );
 
           yield* continueServerRun(accepted.runId, {
@@ -842,11 +868,42 @@ describe("server workflows", () => {
           );
           const eventLog = `${accepted.runDirectory}/events.jsonl`;
           const firstLine = yield* fs.readFileString(eventLog);
-          const created = JSON.parse(firstLine.trim()) as {
-            payload: Record<string, unknown>;
-          };
-          created.payload["delivery"] = { mode: "pullRequest" };
-          yield* fs.writeFileString(eventLog, `${JSON.stringify(created)}\n`);
+          const created = Schema.decodeUnknownSync(Schema.Json)(
+            JSON.parse(firstLine.trim())
+          );
+          if (
+            typeof created !== "object" ||
+            created === null ||
+            Array.isArray(created)
+          ) {
+            throw new Error("Expected the stored run event to be an object.");
+          }
+          const createdObject = Schema.decodeUnknownSync(
+            Schema.Record(Schema.String, Schema.Json)
+          )(created);
+          const { payload } = createdObject;
+          if (
+            typeof payload !== "object" ||
+            payload === null ||
+            Array.isArray(payload)
+          ) {
+            throw new Error(
+              "Expected the stored run event payload to be an object."
+            );
+          }
+          const payloadObject = Schema.decodeUnknownSync(
+            Schema.Record(Schema.String, Schema.Json)
+          )(payload);
+          yield* fs.writeFileString(
+            eventLog,
+            `${JSON.stringify({
+              ...createdObject,
+              payload: {
+                ...payloadObject,
+                delivery: { mode: "pullRequest" },
+              },
+            })}\n`
+          );
 
           const exit = yield* continueServerRun(accepted.runId, {
             deliveryGitCommandRunner: gitRunner,
