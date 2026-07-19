@@ -1,26 +1,24 @@
 import {
   DeliveryActionIdSchema,
-  DeliveryMergeReadinessDecisionSchema,
-  DeliverySnapshotDto,
+  DeliverySha256DigestPublicSchema,
+  RunEvent,
 } from "@gaia/core";
 import { Schema } from "effect";
 
 const decodeDeliveryActionId = Schema.decodeUnknownSync(DeliveryActionIdSchema);
 
-type DeliveryMergeReadinessDecision =
-  typeof DeliveryMergeReadinessDecisionSchema.Type;
-type DeliveryMergeDecisionSequence = NonNullable<
-  typeof DeliverySnapshotDto.Type.mergeDecisionSequence
->;
+const MergeDecisionIdentityInputSchema = Schema.Struct({
+  payloadDigest: DeliverySha256DigestPublicSchema,
+  sequence: RunEvent.fields.sequence,
+});
 
 export function createReadinessActionId(): typeof DeliveryActionIdSchema.Type {
   return decodeDeliveryActionId(`readiness-${crypto.randomUUID()}`);
 }
 
-export function mergeDecisionIdentity(input: {
-  readonly payloadDigest: DeliveryMergeReadinessDecision["payloadDigest"];
-  readonly sequence: DeliveryMergeDecisionSequence;
-}): typeof DeliveryActionIdSchema.Type {
+export function mergeDecisionIdentity(
+  input: typeof MergeDecisionIdentityInputSchema.Type
+): typeof DeliveryActionIdSchema.Type {
   return decodeDeliveryActionId(
     `merge-${input.payloadDigest}-${input.sequence}`
   );

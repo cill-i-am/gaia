@@ -4,11 +4,14 @@ import {
   AgentSessionSseEventIdSchema,
   AgentSessionUpdateDto,
   CreateRunRequest,
+  DeliveryModeSchema,
   DeliverySnapshotSuccessEnvelope,
   DeliverySnapshotDto,
   DeliveryActionRequestSchema,
   codexAppServerExecutionSelection,
   FactoryActivitySuccessEnvelope,
+  FactoryAgentIdSchema,
+  FactoryArtifactIdSchema,
   FactoryArtifactListSuccessEnvelope,
   FactoryArtifactSuccessEnvelope,
   FactoryGraphSuccessEnvelope,
@@ -23,6 +26,7 @@ import {
   LocalGaiaServerUrlSchema,
   parseLocalGaiaServerUrl,
   AgentSessionEventSequenceSchema,
+  RunIdSchema,
   type FactoryAgentId,
   type FactoryArtifactId,
   type LocalGaiaServerUrl,
@@ -75,13 +79,58 @@ export const DashboardGaiaClientConfigSchema = Schema.Struct({
 export type DashboardGaiaClientConfig =
   typeof DashboardGaiaClientConfigSchema.Type;
 
+const DashboardRunClientConfigSchema = Schema.Struct({
+  ...DashboardGaiaClientConfigSchema.fields,
+  runId: RunIdSchema,
+});
+
+const DashboardDeliveryActionClientConfigSchema = Schema.Struct({
+  ...DashboardRunClientConfigSchema.fields,
+  action: Schema.toEncoded(DeliveryActionRequestSchema),
+});
+
+const DashboardAgentClientConfigSchema = Schema.Struct({
+  ...DashboardRunClientConfigSchema.fields,
+  agentId: FactoryAgentIdSchema,
+});
+
+const DashboardAgentActionClientConfigSchema = Schema.Struct({
+  ...DashboardAgentClientConfigSchema.fields,
+  action: Schema.toEncoded(AgentOperatorActionRequestSchema),
+});
+
+const DashboardArtifactClientConfigSchema = Schema.Struct({
+  ...DashboardRunClientConfigSchema.fields,
+  artifactId: FactoryArtifactIdSchema,
+});
+
+const DashboardDeliveryStreamClientConfigSchema = Schema.Struct({
+  ...DashboardRunClientConfigSchema.fields,
+  afterSequence: Schema.optional(Schema.Number),
+});
+
+const DashboardAgentStreamClientConfigSchema = Schema.Struct({
+  ...DashboardAgentClientConfigSchema.fields,
+  afterSequence: Schema.optional(AgentSessionEventSequenceSchema),
+});
+
+const DashboardCreateRunClientConfigSchema = Schema.Struct({
+  ...DashboardGaiaClientConfigSchema.fields,
+  deliveryMode: DeliveryModeSchema,
+  description: Schema.String,
+  title: Schema.String,
+});
+
 export const DashboardLocalRunListSuccessSchema = Schema.Struct({
   data: LocalRunReadListSchema,
   status: Schema.Literal("success"),
 });
 
-export type DashboardLocalRunListSuccess =
-  typeof DashboardLocalRunListSuccessSchema.Type;
+class DashboardLocalRunListSuccessType extends Schema.Class<DashboardLocalRunListSuccessType>(
+  "DashboardLocalRunListSuccessType"
+)(DashboardLocalRunListSuccessSchema.fields) {}
+
+export type DashboardLocalRunListSuccess = DashboardLocalRunListSuccessType;
 
 export const DashboardGaiaFetchClientLive = FetchHttpClient.layer;
 
@@ -146,7 +195,7 @@ export function listRunsFromDashboardGaiaClient(
 }
 
 export function getRunFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId }
+  config: typeof DashboardRunClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
@@ -162,7 +211,7 @@ export function getRunFromDashboardGaiaClient(
 }
 
 export function getRunEventsFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId }
+  config: typeof DashboardRunClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     client.runs.getRunEvents({ params: { runId: config.runId } })
@@ -170,7 +219,7 @@ export function getRunEventsFromDashboardGaiaClient(
 }
 
 export function getFactoryGraphFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId }
+  config: typeof DashboardRunClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
@@ -183,7 +232,7 @@ export function getFactoryGraphFromDashboardGaiaClient(
 }
 
 export function getFactoryRunActivityFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId }
+  config: typeof DashboardRunClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
@@ -196,7 +245,7 @@ export function getFactoryRunActivityFromDashboardGaiaClient(
 }
 
 export function getDeliverySnapshotFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId }
+  config: typeof DashboardRunClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
@@ -209,10 +258,7 @@ export function getDeliverySnapshotFromDashboardGaiaClient(
 }
 
 export function actOnDeliveryFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & {
-    readonly action: unknown;
-    readonly runId: RunId;
-  }
+  config: typeof DashboardDeliveryActionClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
@@ -250,10 +296,7 @@ export function actOnDeliveryFromDashboardGaiaClient(
 }
 
 export function getFactoryAgentActivityFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & {
-    readonly agentId: FactoryAgentId;
-    readonly runId: RunId;
-  }
+  config: typeof DashboardAgentClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
@@ -266,10 +309,7 @@ export function getFactoryAgentActivityFromDashboardGaiaClient(
 }
 
 export function getAgentSessionFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & {
-    readonly agentId: FactoryAgentId;
-    readonly runId: RunId;
-  }
+  config: typeof DashboardAgentClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
@@ -283,11 +323,7 @@ export function getAgentSessionFromDashboardGaiaClient(
 }
 
 export function actOnAgentSessionFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & {
-    readonly action: unknown;
-    readonly agentId: FactoryAgentId;
-    readonly runId: RunId;
-  }
+  config: typeof DashboardAgentActionClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
@@ -445,10 +481,7 @@ function toDashboardSseMessage(event: Event): DashboardSseMessage {
 
 /** Browser-owned delivery SSE lifecycle for one selected run. */
 export function openDeliverySnapshotEventSource(
-  config: DashboardGaiaClientConfig & {
-    readonly afterSequence?: number;
-    readonly runId: RunId;
-  },
+  config: typeof DashboardDeliveryStreamClientConfigSchema.Type,
   handlers: {
     readonly onError: (error: unknown) => void;
     readonly onUpdate: (update: typeof DeliverySnapshotDto.Type) => void;
@@ -495,11 +528,7 @@ export function openDeliverySnapshotEventSource(
 
 /** Browser-owned SSE lifecycle. The caller closes on run/agent change or unmount. */
 export function openAgentSessionEventSource(
-  config: DashboardGaiaClientConfig & {
-    readonly afterSequence?: typeof AgentSessionEventSequenceSchema.Type;
-    readonly agentId: FactoryAgentId;
-    readonly runId: RunId;
-  },
+  config: typeof DashboardAgentStreamClientConfigSchema.Type,
   handlers: {
     readonly onError: (error: unknown) => void;
     readonly onUpdate: (update: typeof AgentSessionUpdateDto.Type) => void;
@@ -546,7 +575,7 @@ export function openAgentSessionEventSource(
 }
 
 export function listFactoryArtifactsFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId }
+  config: typeof DashboardRunClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
@@ -559,10 +588,7 @@ export function listFactoryArtifactsFromDashboardGaiaClient(
 }
 
 export function getFactoryArtifactFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & {
-    readonly artifactId: FactoryArtifactId;
-    readonly runId: RunId;
-  }
+  config: typeof DashboardArtifactClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
@@ -578,10 +604,7 @@ export function getFactoryArtifactFromDashboardGaiaClient(
 }
 
 export function getRunArtifactFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & {
-    readonly artifactId: FactoryArtifactId;
-    readonly runId: RunId;
-  }
+  config: typeof DashboardArtifactClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {
@@ -612,11 +635,7 @@ export function getRunArtifactFromDashboardGaiaClient(
 }
 
 export function createRunFromDashboardGaiaClient(
-  config: DashboardGaiaClientConfig & {
-    readonly deliveryMode: "local" | "pullRequest";
-    readonly description: string;
-    readonly title: string;
-  }
+  config: typeof DashboardCreateRunClientConfigSchema.Type
 ) {
   return withDashboardGaiaClient(config, (client) =>
     Effect.gen(function* () {

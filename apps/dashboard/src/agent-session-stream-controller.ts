@@ -40,12 +40,14 @@ export type AgentSessionStreamTarget =
 
 type StreamTarget = AgentSessionStreamTarget;
 
-type OpenStreamTarget = {
-  readonly agentId: FactoryAgentId;
-  readonly isOpen: true;
-  readonly runId: RunId;
-  readonly sessionId: HarnessSessionId;
-};
+const OpenStreamTargetSchema = Schema.Struct({
+  agentId: FactoryAgentIdSchema,
+  isOpen: Schema.Literal(true),
+  runId: RunIdSchema,
+  sessionId: HarnessSessionIdSchema,
+});
+
+type OpenStreamTarget = typeof OpenStreamTargetSchema.Type;
 
 type StreamHandle = {
   readonly close: () => void;

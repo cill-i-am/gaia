@@ -30,6 +30,7 @@ import {
   healthFromDashboardGaiaClient,
   listFactoryArtifactsFromDashboardGaiaClient,
   listRunsFromDashboardGaiaClient,
+  DashboardGaiaClientConfigSchema,
   type DashboardGaiaClientConfig,
   type DashboardGaiaClientError,
 } from "@/lib/local-gaia-client";
@@ -110,8 +111,12 @@ export const DashboardDeliveryActionMutationInputSchema = Schema.Struct({
   runId: RunIdSchema,
 });
 
+class DashboardDeliveryActionMutationInputType extends Schema.Class<DashboardDeliveryActionMutationInputType>(
+  "DashboardDeliveryActionMutationInputType"
+)(DashboardDeliveryActionMutationInputSchema.fields) {}
+
 export type DashboardDeliveryActionMutationInput =
-  typeof DashboardDeliveryActionMutationInputSchema.Type;
+  DashboardDeliveryActionMutationInputType;
 
 export const DashboardAgentSessionActionMutationInputSchema = Schema.Struct({
   action: AgentOperatorActionRequestSchema,
@@ -121,6 +126,21 @@ export const DashboardAgentSessionActionMutationInputSchema = Schema.Struct({
 
 export type DashboardAgentSessionActionMutationInput =
   typeof DashboardAgentSessionActionMutationInputSchema.Type;
+
+const DashboardOptionalRunQueryConfigSchema = Schema.Struct({
+  ...DashboardGaiaClientConfigSchema.fields,
+  runId: Schema.UndefinedOr(RunIdSchema),
+});
+
+const DashboardOptionalArtifactQueryConfigSchema = Schema.Struct({
+  ...DashboardOptionalRunQueryConfigSchema.fields,
+  artifactId: Schema.toEncoded(FactoryArtifactIdSchema),
+});
+
+const DashboardOptionalAgentQueryConfigSchema = Schema.Struct({
+  ...DashboardOptionalRunQueryConfigSchema.fields,
+  agentId: Schema.toEncoded(FactoryAgentIdSchema),
+});
 
 type DashboardGaiaParameter = Extract<
   DashboardGaiaClientError,
@@ -167,7 +187,7 @@ export function localGaiaRunsQueryOptions(config: DashboardGaiaClientConfig) {
 }
 
 export function localGaiaRunQueryOptions(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined }
+  config: typeof DashboardOptionalRunQueryConfigSchema.Type
 ) {
   const runId = config.runId;
   return localGaiaEffectQuery.queryOptions({
@@ -184,7 +204,7 @@ export function localGaiaRunQueryOptions(
 }
 
 export function localGaiaRunEventsQueryOptions(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined }
+  config: typeof DashboardOptionalRunQueryConfigSchema.Type
 ) {
   const runId = config.runId;
   return localGaiaEffectQuery.queryOptions({
@@ -201,10 +221,7 @@ export function localGaiaRunEventsQueryOptions(
 }
 
 export function localGaiaRunArtifactQueryOptions(
-  config: DashboardGaiaClientConfig & {
-    readonly artifactId: string;
-    readonly runId: RunId | undefined;
-  }
+  config: typeof DashboardOptionalArtifactQueryConfigSchema.Type
 ) {
   const runId = config.runId;
   const parsedArtifactId = Option.getOrUndefined(
@@ -232,7 +249,7 @@ export function localGaiaRunArtifactQueryOptions(
 }
 
 export function localGaiaFactoryGraphQueryOptions(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined },
+  config: typeof DashboardOptionalRunQueryConfigSchema.Type,
   effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery
 ) {
   const runId = config.runId;
@@ -250,7 +267,7 @@ export function localGaiaFactoryGraphQueryOptions(
 }
 
 export function localGaiaFactoryRunActivityQueryOptions(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined }
+  config: typeof DashboardOptionalRunQueryConfigSchema.Type
 ) {
   const runId = config.runId;
   return localGaiaEffectQuery.queryOptions({
@@ -268,7 +285,7 @@ export function localGaiaFactoryRunActivityQueryOptions(
 }
 
 export function localGaiaDeliveryQueryOptions(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined }
+  config: typeof DashboardOptionalRunQueryConfigSchema.Type
 ) {
   const runId = config.runId;
   return localGaiaEffectQuery.queryOptions({
@@ -286,10 +303,7 @@ export function localGaiaDeliveryQueryOptions(
 }
 
 export function localGaiaFactoryAgentActivityQueryOptions(
-  config: DashboardGaiaClientConfig & {
-    readonly agentId: string;
-    readonly runId: RunId | undefined;
-  }
+  config: typeof DashboardOptionalAgentQueryConfigSchema.Type
 ) {
   const parsedAgentId = Option.getOrUndefined(parseAgentId(config.agentId));
   const runId = config.runId;
@@ -315,10 +329,7 @@ export function localGaiaFactoryAgentActivityQueryOptions(
 }
 
 export function localGaiaAgentSessionQueryOptions(
-  config: DashboardGaiaClientConfig & {
-    readonly agentId: string;
-    readonly runId: RunId | undefined;
-  }
+  config: typeof DashboardOptionalAgentQueryConfigSchema.Type
 ) {
   const parsedAgentId = Option.getOrUndefined(parseAgentId(config.agentId));
   const runId = config.runId;
@@ -344,7 +355,7 @@ export function localGaiaAgentSessionQueryOptions(
 }
 
 export function localGaiaFactoryArtifactsQueryOptions(
-  config: DashboardGaiaClientConfig & { readonly runId: RunId | undefined }
+  config: typeof DashboardOptionalRunQueryConfigSchema.Type
 ) {
   const runId = config.runId;
   return localGaiaEffectQuery.queryOptions({
@@ -362,10 +373,7 @@ export function localGaiaFactoryArtifactsQueryOptions(
 }
 
 export function localGaiaFactoryArtifactQueryOptions(
-  config: DashboardGaiaClientConfig & {
-    readonly artifactId: string;
-    readonly runId: RunId | undefined;
-  }
+  config: typeof DashboardOptionalArtifactQueryConfigSchema.Type
 ) {
   const parsedArtifactId = Option.getOrUndefined(
     parseArtifactId(config.artifactId)
