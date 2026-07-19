@@ -4,11 +4,16 @@ import {
   type FactoryActivityDto,
   type FactoryArtifactBodyDto,
   type FactoryArtifactDto,
-  type FactoryGraphDto,
+  FactoryArtifactIdSchema,
+  FactoryGraphDto,
+  HarnessActionIdSchema,
   type HarnessPendingInteraction,
+  HarnessSessionIdSchema,
+  HarnessTurnIdSchema,
   parseRunId,
   type LocalGaiaServerUrl,
   type RunId,
+  RunIdSchema,
   RunEvent,
 } from "@gaia/core";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -127,6 +132,7 @@ import {
 import {
   buildFactoryCanvasModel,
   type FactoryCanvasModel,
+  FactoryCanvasModelSchema,
   type FactoryCanvasNode,
   FactoryCanvasNodeIdSchema,
 } from "@/factory-canvas-model";
@@ -144,6 +150,7 @@ import {
   localGaiaFactoryRunActivityQueryOptions,
   localGaiaAgentSessionActionMutationOptions,
   localGaiaAgentSessionQueryOptions,
+  DashboardCreateRunInputSchema,
   localGaiaCreateRunMutationOptions,
   localGaiaHealthQueryOptions,
   localGaiaRunEventsQueryOptions,
@@ -152,7 +159,10 @@ import {
 } from "@/lib/local-gaia-query";
 import { cn } from "@/lib/utils";
 import {
+  DashboardArtifactIdSchema,
+  DashboardRunSchema,
   type DashboardRun,
+  RunCanvasNodeIdSchema,
   type RunReplayState,
   type RunStatus,
   buildRunCanvasModel,
@@ -179,6 +189,7 @@ import {
 } from "@/run-console-model";
 import {
   buildSelectedNodeInspectorModel,
+  FactoryArtifactInspectorResourceSchema,
   type InspectorNotice,
   type InspectorResource,
   type SelectedNodeInspectorModel,
@@ -217,11 +228,59 @@ function signalBadgeVariant(
   return "outline";
 }
 
-function reconcileComparisonRunId(input: {
-  readonly primaryRunId: RunId | undefined;
-  readonly requestedComparisonRunId: RunId | undefined;
-  readonly runs: ReadonlyArray<RunConsoleRun>;
-}) {
+export const SelectedRunArtifactEvidenceSchema = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("loading") }),
+  Schema.Struct({
+    count: Schema.Number,
+    source: Schema.Literals(["artifactCatalog", "factoryGraph"]),
+    status: Schema.Literal("ready"),
+  }),
+  Schema.Struct({ status: Schema.Literal("unavailable") }),
+]);
+
+type SelectedRunArtifactEvidence =
+  typeof SelectedRunArtifactEvidenceSchema.Type;
+
+const ReconcileComparisonRunIdInputSchema = Schema.Struct({
+  primaryRunId: Schema.UndefinedOr(RunIdSchema),
+  requestedComparisonRunId: Schema.UndefinedOr(RunIdSchema),
+  runs: Schema.Array(RunConsoleRunSchema),
+});
+
+const BuildSelectedRunArtifactEvidenceInputSchema = Schema.Struct({
+  artifactCatalog: FactoryArtifactInspectorResourceSchema,
+  canvas: Schema.UndefinedOr(FactoryCanvasModelSchema),
+  graph: Schema.UndefinedOr(FactoryGraphDto),
+  graphIsLoading: Schema.Boolean,
+});
+
+const RunArtifactCountLabelInputSchema = Schema.Struct({
+  evidence: Schema.UndefinedOr(SelectedRunArtifactEvidenceSchema),
+  run: RunConsoleRunSchema,
+});
+
+const RequestedFactoryArtifactSchema = Schema.Struct({
+  artifactId: FactoryArtifactIdSchema,
+  nodeId: FactoryCanvasNodeIdSchema,
+});
+
+const SelectedNodeIdSchema = Schema.Union([
+  FactoryCanvasNodeIdSchema,
+  RunCanvasNodeIdSchema,
+]);
+
+const RunCanvasDataStateSchema = Schema.Struct({
+  isLoading: Schema.Boolean,
+});
+
+const decodeHarnessActionId = Schema.decodeUnknownSync(HarnessActionIdSchema);
+const decodeFactoryCanvasNodeId = Schema.decodeUnknownOption(
+  FactoryCanvasNodeIdSchema
+);
+
+function reconcileComparisonRunId(
+  input: typeof ReconcileComparisonRunIdInputSchema.Type
+) {
   if (
     input.requestedComparisonRunId !== undefined &&
     input.requestedComparisonRunId !== input.primaryRunId &&
@@ -242,12 +301,9 @@ function parseDashboardRunSelection(input: string): RunId | undefined {
   }
 }
 
-function buildSelectedRunArtifactEvidence(input: {
-  readonly artifactCatalog: InspectorResource<typeof FactoryArtifactDto.Type>;
-  readonly canvas: FactoryCanvasModel | undefined;
-  readonly graph: typeof FactoryGraphDto.Type | undefined;
-  readonly graphIsLoading: boolean;
-}): SelectedRunArtifactEvidence {
+function buildSelectedRunArtifactEvidence(
+  input: typeof BuildSelectedRunArtifactEvidenceInputSchema.Type
+): SelectedRunArtifactEvidence {
   if (input.graphIsLoading || input.artifactCatalog.status === "loading") {
     return { status: "loading" };
   }
@@ -287,10 +343,9 @@ function buildSelectedRunArtifactEvidence(input: {
     : { count: 0, source: "factoryGraph", status: "ready" };
 }
 
-function runArtifactCountLabel(input: {
-  readonly evidence: SelectedRunArtifactEvidence | undefined;
-  readonly run: RunConsoleRun;
-}) {
+function runArtifactCountLabel(
+  input: typeof RunArtifactCountLabelInputSchema.Type
+) {
   if (input.run.artifactCount > 0) {
     return `${input.run.artifactCount} ${artifactNoun(input.run.artifactCount)}`;
   }
@@ -331,19 +386,6 @@ function uniqueArtifactCount(
   return new Set(artifacts.map((artifact) => artifact.artifactId)).size;
 }
 
-export const SelectedRunArtifactEvidenceSchema = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("loading") }),
-  Schema.Struct({
-    count: Schema.Number,
-    source: Schema.Literals(["artifactCatalog", "factoryGraph"] as const),
-    status: Schema.Literal("ready"),
-  }),
-  Schema.Struct({ status: Schema.Literal("unavailable") }),
-]);
-
-type SelectedRunArtifactEvidence =
-  typeof SelectedRunArtifactEvidenceSchema.Type;
-
 export const ServerConnectionStateSchema = Schema.Struct({
   runConsole: RunConsoleStateSchema,
   selectedRun: Schema.optional(RunConsoleRunSchema),
@@ -351,8 +393,6 @@ export const ServerConnectionStateSchema = Schema.Struct({
     SelectedRunArtifactEvidenceSchema
   ),
 });
-
-type ServerConnectionState = typeof ServerConnectionStateSchema.Type;
 
 export const CommandModeSchema = Schema.Literals([
   "activity",
@@ -542,7 +582,7 @@ export function DashboardShell() {
     ]
   );
   const [selectedNodeId, setSelectedNodeId] = React.useState<
-    string | undefined
+    typeof SelectedNodeIdSchema.Type | undefined
   >();
   const selectedFactoryCanvas = React.useMemo(
     () =>
@@ -568,11 +608,11 @@ export function DashboardShell() {
       serverUrl,
     })
   );
-  const runCanvas = {
-    graphError: dashboardQueryFailure(selectedFactoryGraphQuery.error),
+  const runCanvasData: typeof RunCanvasDataStateSchema.Type = {
     isLoading:
       selectedRunId !== undefined && selectedFactoryGraphQuery.isPending,
   };
+  const runCanvasError = dashboardQueryFailure(selectedFactoryGraphQuery.error);
   const agentActivityFailure = dashboardQueryFailure(
     selectedFactoryAgentActivityQuery.error
   );
@@ -686,14 +726,14 @@ export function DashboardShell() {
         activity: inspectorActivityResource,
         artifactCatalog: inspectorArtifactResource,
         graph: selectedFactoryGraphQuery.data?.data,
-        graphIsLoading: runCanvas.isLoading,
+        graphIsLoading: runCanvasData.isLoading,
         selectedNode: selectedFactoryNode,
         selectedRunId,
       }),
     [
       inspectorActivityResource,
       inspectorArtifactResource,
-      runCanvas.isLoading,
+      runCanvasData.isLoading,
       selectedFactoryGraphQuery.data?.data,
       selectedFactoryNode,
       selectedRunId,
@@ -707,17 +747,17 @@ export function DashboardShell() {
             artifactCatalog: inspectorArtifactResource,
             canvas: selectedFactoryCanvas,
             graph: selectedFactoryGraphQuery.data?.data,
-            graphIsLoading: runCanvas.isLoading,
+            graphIsLoading: runCanvasData.isLoading,
           }),
     [
       inspectorArtifactResource,
-      runCanvas.isLoading,
+      runCanvasData.isLoading,
       selectedFactoryCanvas,
       selectedFactoryGraphQuery.data?.data,
       selectedRunId,
     ]
   );
-  const serverConnection: ServerConnectionState = {
+  const serverConnection: typeof ServerConnectionStateSchema.Type = {
     runConsole,
     selectedRun: selectedConsoleRun,
     selectedRunArtifactEvidence,
@@ -790,11 +830,9 @@ export function DashboardShell() {
     setCommandMode("inspect");
   }
 
-  async function createIssueDeliveryRun(input: {
-    readonly deliveryMode: "local" | "pullRequest";
-    readonly description: string;
-    readonly title: string;
-  }) {
+  async function createIssueDeliveryRun(
+    input: typeof DashboardCreateRunInputSchema.Type
+  ) {
     const result = await createRunMutation.mutateAsync(input);
     await runsQuery.refetch();
     selectRun(result.runId);
@@ -905,13 +943,15 @@ export function DashboardShell() {
           >
             <DesktopWorkspace
               factoryCanvas={selectedFactoryCanvas}
-              runCanvas={runCanvas}
+              runCanvasData={runCanvasData}
+              runCanvasError={runCanvasError}
               selectedFactoryNode={selectedFactoryNode}
               onSelectNode={setSelectedNodeId}
             />
             <MobileWorkspace
               factoryCanvas={selectedFactoryCanvas}
-              runCanvas={runCanvas}
+              runCanvasData={runCanvasData}
+              runCanvasError={runCanvasError}
               selectedFactoryNode={selectedFactoryNode}
               onSelectNode={setSelectedNodeId}
             />
@@ -1405,12 +1445,10 @@ function RunConsole({
   readonly createRunError: ReturnType<typeof dashboardQueryFailure>;
   readonly createRunIsPending: boolean;
   readonly selectedRunId: RunId | undefined;
-  readonly serverConnection: ServerConnectionState;
-  readonly onCreateIssueDeliveryRun: (input: {
-    readonly deliveryMode: "local" | "pullRequest";
-    readonly description: string;
-    readonly title: string;
-  }) => Promise<void>;
+  readonly serverConnection: typeof ServerConnectionStateSchema.Type;
+  readonly onCreateIssueDeliveryRun: (
+    input: typeof DashboardCreateRunInputSchema.Type
+  ) => Promise<void>;
   readonly onRefresh: () => void;
   readonly onSelectRun: (runId: RunId) => void;
 }) {
@@ -1592,11 +1630,9 @@ function IssueDeliveryIntake({
   readonly error: ReturnType<typeof dashboardQueryFailure>;
   readonly isPending: boolean;
   readonly runConsole: RunConsoleState;
-  readonly onCreateIssueDeliveryRun: (input: {
-    readonly deliveryMode: "local" | "pullRequest";
-    readonly description: string;
-    readonly title: string;
-  }) => Promise<void>;
+  readonly onCreateIssueDeliveryRun: (
+    input: typeof DashboardCreateRunInputSchema.Type
+  ) => Promise<void>;
 }) {
   const [description, setDescription] = React.useState("");
   const [deliveryMode, setDeliveryMode] = React.useState<
@@ -1963,7 +1999,7 @@ function CommandHeader({
   readonly deliveryActionPending: boolean;
   readonly deliverySnapshot: typeof DeliverySnapshotDto.Type | undefined;
   readonly selectedRun: DashboardRun;
-  readonly serverConnection: ServerConnectionState;
+  readonly serverConnection: typeof ServerConnectionStateSchema.Type;
   readonly onSelectCommandMode: (mode: CommandMode) => void;
   readonly onDeliveryAction: (action: unknown) => Promise<void>;
 }) {
@@ -2446,7 +2482,7 @@ function SecondaryCommandPanel({
   readonly primaryRunId: RunId | undefined;
   readonly replayState: RunReplayState;
   readonly runCompare: RunCompareModel;
-  readonly runEventStream: RunEventStreamState;
+  readonly runEventStream: typeof RunEventStreamStateSchema.Type;
   readonly runs: ReadonlyArray<RunConsoleRun>;
   readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedRun: DashboardRun;
@@ -2524,20 +2560,25 @@ function secondaryCommandTitle(mode: CommandMode) {
 
 function DesktopWorkspace({
   factoryCanvas,
-  runCanvas,
+  runCanvasData,
+  runCanvasError,
   selectedFactoryNode,
   onSelectNode,
 }: {
   readonly factoryCanvas: FactoryCanvasModel | undefined;
-  readonly runCanvas: RunCanvasQueryState;
+  readonly runCanvasData: typeof RunCanvasDataStateSchema.Type;
+  readonly runCanvasError: ReturnType<typeof dashboardQueryFailure>;
   readonly selectedFactoryNode: FactoryCanvasNode | undefined;
-  readonly onSelectNode: (nodeId: string) => void;
+  readonly onSelectNode: (
+    nodeId: typeof FactoryCanvasNodeIdSchema.Type
+  ) => void;
 }) {
   return (
     <section className="relative hidden size-full min-h-0 overflow-hidden lg:block">
       <RunCanvas
         factoryCanvas={factoryCanvas}
-        queryState={runCanvas}
+        queryData={runCanvasData}
+        queryError={runCanvasError}
         selectedNode={selectedFactoryNode}
         onSelectNode={onSelectNode}
       />
@@ -2547,14 +2588,18 @@ function DesktopWorkspace({
 
 function MobileWorkspace({
   factoryCanvas,
-  runCanvas,
+  runCanvasData,
+  runCanvasError,
   selectedFactoryNode,
   onSelectNode,
 }: {
   readonly factoryCanvas: FactoryCanvasModel | undefined;
-  readonly runCanvas: RunCanvasQueryState;
+  readonly runCanvasData: typeof RunCanvasDataStateSchema.Type;
+  readonly runCanvasError: ReturnType<typeof dashboardQueryFailure>;
   readonly selectedFactoryNode: FactoryCanvasNode | undefined;
-  readonly onSelectNode: (nodeId: string) => void;
+  readonly onSelectNode: (
+    nodeId: typeof FactoryCanvasNodeIdSchema.Type
+  ) => void;
 }) {
   return (
     <section className="flex size-full min-h-0 flex-col overflow-y-auto lg:hidden">
@@ -2565,7 +2610,8 @@ function MobileWorkspace({
         <RunCanvas
           factoryCanvas={factoryCanvas}
           fitViewOptions={factoryFlowMobileFitViewOptions}
-          queryState={runCanvas}
+          queryData={runCanvasData}
+          queryError={runCanvasError}
           selectedNode={selectedFactoryNode}
           onSelectNode={onSelectNode}
         />
@@ -2630,18 +2676,22 @@ function AgentInspectorSheet({
 function RunCanvas({
   fitViewOptions = factoryFlowFitViewOptions,
   factoryCanvas,
-  queryState,
+  queryData,
+  queryError,
   selectedNode,
   onSelectNode,
 }: {
   readonly factoryCanvas: FactoryCanvasModel | undefined;
   readonly fitViewOptions?: FitViewOptions;
-  readonly queryState: RunCanvasQueryState;
+  readonly queryData: typeof RunCanvasDataStateSchema.Type;
+  readonly queryError: ReturnType<typeof dashboardQueryFailure>;
   readonly selectedNode: FactoryCanvasNode | undefined;
-  readonly onSelectNode: (nodeId: string) => void;
+  readonly onSelectNode: (
+    nodeId: typeof FactoryCanvasNodeIdSchema.Type
+  ) => void;
 }) {
   const handleNodeSelect = React.useCallback(
-    (nodeId: string) => onSelectNode(nodeId),
+    (nodeId: typeof FactoryCanvasNodeIdSchema.Type) => onSelectNode(nodeId),
     [onSelectNode]
   );
   const nodes = React.useMemo(
@@ -2659,7 +2709,12 @@ function RunCanvas({
     [factoryCanvas, selectedNode?.id]
   );
   const handleNodeClick = React.useCallback<NodeMouseHandler>(
-    (_event, node) => handleNodeSelect(node.id),
+    (_event, node) => {
+      const nodeId = decodeFactoryCanvasNodeId(node.id);
+      if (Option.isSome(nodeId)) {
+        handleNodeSelect(nodeId.value);
+      }
+    },
     [handleNodeSelect]
   );
 
@@ -2669,7 +2724,7 @@ function RunCanvas({
       className="flex size-full min-h-0 flex-col"
     >
       <div className="min-h-0 flex-1 overflow-hidden bg-muted/20">
-        {queryState.graphError !== undefined ? (
+        {queryError !== undefined ? (
           <Empty data-testid="run-canvas-error">
             <EmptyHeader>
               <EmptyMedia variant="icon">
@@ -2677,11 +2732,11 @@ function RunCanvas({
               </EmptyMedia>
               <EmptyTitle>Run canvas unavailable</EmptyTitle>
               <EmptyDescription>
-                {runCanvasErrorMessage(queryState)}
+                {runCanvasErrorMessage(queryError)}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
-        ) : queryState.isLoading ? (
+        ) : queryData.isLoading ? (
           <div
             className="grid size-full place-items-center p-6"
             data-testid="run-canvas-loading"
@@ -2766,11 +2821,7 @@ function AgentInspector({
   const artifactIds = nodeArtifacts.map((artifact) => artifact.artifactId);
   const artifactKey = artifactIds.join("|");
   const [requestedArtifact, setRequestedArtifact] = React.useState<
-    | {
-        readonly artifactId: (typeof FactoryArtifactDto.Type)["artifactId"];
-        readonly nodeId: typeof FactoryCanvasNodeIdSchema.Type;
-      }
-    | undefined
+    typeof RequestedFactoryArtifactSchema.Type | undefined
   >();
   const selectedArtifactId =
     requestedArtifact !== undefined &&
@@ -2892,11 +2943,13 @@ function AgentInspector({
     lastError: sessionError,
     session: streamSession,
   });
-  const actionCounter = React.useRef(0);
-  const nextActionId = React.useCallback(() => {
-    actionCounter.current += 1;
-    return `action-${selectedRunId}-${selectedAgentId}-${actionCounter.current}`;
-  }, [selectedAgentId, selectedRunId]);
+  const nextActionId = React.useCallback(
+    () =>
+      decodeHarnessActionId(
+        `action-${selectedRunId}-${globalThis.crypto.randomUUID()}`
+      ),
+    [selectedRunId]
+  );
   const submitSessionAction = React.useCallback(
     (action: unknown) => {
       if (selectedRunId === undefined || selectedAgentId === undefined) return;
@@ -3090,7 +3143,7 @@ function AgentInspectorSession({
 }: {
   readonly model: AgentInspectorSessionModel;
   readonly pendingRequests: ReadonlyArray<HarnessPendingInteraction>;
-  readonly sessionId: string | undefined;
+  readonly sessionId: typeof HarnessSessionIdSchema.Type | undefined;
   readonly onFollowUp: (text: string) => void;
   readonly onInteraction: (
     interaction: HarnessPendingInteraction,
@@ -3098,7 +3151,10 @@ function AgentInspectorSession({
     value: string
   ) => void;
   readonly onInterrupt: () => void;
-  readonly onSteer: (text: string, turnId: string) => void;
+  readonly onSteer: (
+    text: string,
+    turnId: typeof HarnessTurnIdSchema.Type
+  ) => void;
 }) {
   const [composerText, setComposerText] = React.useState("");
   const canSubmit =
@@ -3306,9 +3362,9 @@ function PendingInteractionCard({
 
 function submitInteractionAction(input: {
   readonly action: string;
-  readonly actionId: string;
+  readonly actionId: typeof HarnessActionIdSchema.Type;
   readonly interaction: HarnessPendingInteraction;
-  readonly sessionId: string;
+  readonly sessionId: typeof HarnessSessionIdSchema.Type;
   readonly submitSessionAction: (action: unknown) => void;
   readonly value: string;
 }) {
@@ -3627,9 +3683,7 @@ function FactoryEvidenceActivity({
                 <p className="mt-2 truncate text-xs text-muted-foreground">
                   Artifacts:{" "}
                   {activity.artifactIds
-                    .map((artifactId) =>
-                      factoryArtifactLabel(String(artifactId))
-                    )
+                    .map((artifactId) => factoryArtifactLabel(artifactId))
                     .join(", ")}
                 </p>
               )}
@@ -3822,7 +3876,7 @@ function EventStrip({
   readonly replayState: RunReplayState;
   readonly selectedConsoleRun: RunConsoleRun | undefined;
   readonly selectedRun: DashboardRun;
-  readonly streamState: RunEventStreamState;
+  readonly streamState: typeof RunEventStreamStateSchema.Type;
 }) {
   const streamDisplay = eventStripDisplay({
     selectedConsoleRun,
@@ -3931,7 +3985,9 @@ function eventStripEventLabel(
   return `Event ${event.sequence}: ${event.label}. ${statusLabels[event.tone]}. ${artifactText}${replayText}`;
 }
 
-function eventArtifactSummary(artifactHints: ReadonlyArray<string>) {
+function eventArtifactSummary(
+  artifactHints: ReadonlyArray<typeof DashboardArtifactIdSchema.Type>
+) {
   const visibleArtifacts = artifactHints.slice(0, 2).map(artifactLabel);
   const hiddenCount = artifactHints.length - visibleArtifacts.length;
 
@@ -4011,21 +4067,22 @@ function isDeliveryTerminal(snapshot: typeof DeliverySnapshotDto.Type) {
   );
 }
 
-type RunEventStreamStatus =
-  | "idle"
-  | "connecting"
-  | "open"
-  | "closed"
-  | "terminal"
-  | "unavailable"
-  | "error";
+const RunEventStreamStatusSchema = Schema.Literals([
+  "idle",
+  "connecting",
+  "open",
+  "closed",
+  "terminal",
+  "unavailable",
+  "error",
+]);
 
-type RunEventStreamState = {
-  readonly events: ReadonlyArray<RunEvent>;
-  readonly message: string;
-  readonly status: RunEventStreamStatus;
-  readonly terminalEvent: RunEvent | undefined;
-};
+const RunEventStreamStateSchema = Schema.Struct({
+  events: Schema.Array(RunEvent),
+  message: Schema.String,
+  status: RunEventStreamStatusSchema,
+  terminalEvent: Schema.UndefinedOr(RunEvent),
+});
 
 function useRunEventStream({
   enabled,
@@ -4035,8 +4092,10 @@ function useRunEventStream({
   readonly enabled: boolean;
   readonly runId: RunId | undefined;
   readonly serverUrl: LocalGaiaServerUrl;
-}): RunEventStreamState {
-  const [state, setState] = React.useState<RunEventStreamState>({
+}): typeof RunEventStreamStateSchema.Type {
+  const [state, setState] = React.useState<
+    typeof RunEventStreamStateSchema.Type
+  >({
     events: [],
     message: "Select an active run to stream events.",
     status: "idle",
@@ -4160,19 +4219,23 @@ function parseStreamMessage(
   }
 }
 
+const EventStripDisplayInputSchema = Schema.Struct({
+  selectedConsoleRun: Schema.UndefinedOr(RunConsoleRunSchema),
+  selectedRun: DashboardRunSchema,
+  streamState: RunEventStreamStateSchema,
+});
+
+const EventStripDisplaySchema = Schema.Struct({
+  label: Schema.String,
+  message: Schema.String,
+  variant: Schema.Literals(["destructive", "outline", "secondary"]),
+});
+
 function eventStripDisplay({
   selectedConsoleRun,
   selectedRun,
   streamState,
-}: {
-  readonly selectedConsoleRun: RunConsoleRun | undefined;
-  readonly selectedRun: DashboardRun;
-  readonly streamState: RunEventStreamState;
-}): {
-  readonly label: string;
-  readonly message: string;
-  readonly variant: "destructive" | "outline" | "secondary";
-} {
+}: typeof EventStripDisplayInputSchema.Type): typeof EventStripDisplaySchema.Type {
   if (selectedRun.id === "no-run-selected") {
     return {
       label: "Idle",
@@ -4230,8 +4293,8 @@ function eventStripDisplay({
 
 function toFactoryFlowNodes(
   model: FactoryCanvasModel,
-  selectedNodeId: string | undefined,
-  onSelectNode: (nodeId: string) => void
+  selectedNodeId: typeof FactoryCanvasNodeIdSchema.Type | undefined,
+  onSelectNode: (nodeId: typeof FactoryCanvasNodeIdSchema.Type) => void
 ): Array<Node<{ label: React.ReactNode }>> {
   return model.nodes.map((node) => {
     const roleVisual = factoryAgentRoleVisual(node.role);
@@ -4301,12 +4364,14 @@ function factoryNodeFooterLabel(node: FactoryCanvasNode) {
   return factoryAgentStateLabel(node.state);
 }
 
-function factoryNodeMetric(node: FactoryCanvasNode):
-  | {
-      readonly accessibleLabel: string;
-      readonly value: number;
-    }
-  | undefined {
+const FactoryNodeMetricSchema = Schema.Struct({
+  accessibleLabel: Schema.String,
+  value: Schema.Number,
+});
+
+function factoryNodeMetric(
+  node: FactoryCanvasNode
+): typeof FactoryNodeMetricSchema.Type | undefined {
   if (node.artifactCount > 0) {
     return {
       accessibleLabel: countLabel(node.artifactCount, "artifact", "artifacts"),
@@ -4347,7 +4412,7 @@ const factoryFlowMobileFitViewOptions = {
 
 function toFactoryFlowEdges(
   model: FactoryCanvasModel,
-  selectedNodeId: string | undefined
+  selectedNodeId: typeof FactoryCanvasNodeIdSchema.Type | undefined
 ): Array<Edge> {
   const stateByNodeId = new Map(
     model.nodes.map((node) => [node.id, node.state])
@@ -4391,11 +4456,15 @@ export function shouldAnimateFactoryEdge(
   return sourceState === "running" || targetState === "running";
 }
 
-export function factoryFlowEdgeClassName(input: {
-  readonly animated: boolean;
-  readonly hasSelectedNode: boolean;
-  readonly selectedPath: boolean;
-}) {
+const FactoryFlowEdgeClassNameInputSchema = Schema.Struct({
+  animated: Schema.Boolean,
+  hasSelectedNode: Schema.Boolean,
+  selectedPath: Schema.Boolean,
+});
+
+export function factoryFlowEdgeClassName(
+  input: typeof FactoryFlowEdgeClassNameInputSchema.Type
+) {
   return cn(
     "factory-flow-edge",
     input.animated && "factory-flow-edge-active",
@@ -4486,14 +4555,11 @@ function diagnosticLabel(diagnostic: RunConsoleState["diagnostics"][number]) {
     : `${diagnostic.code} (${target}): ${diagnostic.message}`;
 }
 
-type RunCanvasQueryState = {
-  readonly graphError: ReturnType<typeof dashboardQueryFailure>;
-  readonly isLoading: boolean;
-};
-
-function runCanvasErrorMessage(state: RunCanvasQueryState) {
+function runCanvasErrorMessage(
+  graphError: ReturnType<typeof dashboardQueryFailure>
+) {
   return dashboardFailureMessage(
-    state.graphError,
+    graphError,
     "The selected FactoryGraph could not be loaded."
   );
 }
@@ -4536,14 +4602,14 @@ function artifactDeltaLabel(delta: RunCompareModel["artifactDelta"]) {
     : labels.join(" · ");
 }
 
-function artifactLabel(artifactId: string) {
+function artifactLabel(artifactId: typeof DashboardArtifactIdSchema.Type) {
   return artifactId
     .split("-")
     .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
     .join(" ");
 }
 
-function factoryArtifactLabel(artifactId: string) {
+function factoryArtifactLabel(artifactId: typeof FactoryArtifactIdSchema.Type) {
   return artifactId
     .split("-")
     .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
