@@ -3,7 +3,12 @@ import { createHash } from "node:crypto";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 
-import { makeRunEvent, RunEvent, RunEventTimestampSchema } from "./events.js";
+import {
+  makeRunEvent,
+  parseRunEvent,
+  RunEvent,
+  RunEventTimestampSchema,
+} from "./events.js";
 import {
   HarnessCapabilities,
   HarnessProviderDescriptor,
@@ -64,6 +69,126 @@ const source = <
 });
 
 describe("RunContractV1", () => {
+  it("rejects lone surrogates before canonical UTF-8 encoding", () => {
+    const loneHigh = "\uD800";
+    const loneLow = "\uDC00";
+
+    expect(() => canonicalV1("gaia.test.v1", [loneHigh])).toThrow(
+      /well-formed Unicode/iu
+    );
+    expect(() => canonicalV1("gaia.test.v1", [loneLow])).toThrow(
+      /well-formed Unicode/iu
+    );
+    expect(() => canonicalV1("gaia.test.v1", [{ nested: [loneHigh] }])).toThrow(
+      /well-formed Unicode/iu
+    );
+    expect(() => canonicalV1("gaia.test.v1", [{ [loneLow]: "value" }])).toThrow(
+      /well-formed Unicode/iu
+    );
+
+    const astral = "valid 😀 𝄞";
+    expect(canonicalV1("gaia.test.v1", [astral])).toEqual(
+      canonicalV1("gaia.test.v1", [astral])
+    );
+  });
+
+  it("rejects malformed contract text at construction and JSON decode", () => {
+    const loneHigh = "\uD800";
+    const loneLow = "\uDC00";
+    const wellFormedSource = source("nonGoals", "Do not deploy.");
+
+    expect(() =>
+      makeRunContract({
+        acceptedOutcomes: [],
+        baseDigest,
+        baseIdentity: { kind: "unversionedSnapshot", workspacePath: "." },
+        nonGoals: [{ source: wellFormedSource, statement: loneHigh }],
+        proofClaims: [],
+        runId,
+        stopConditions: [],
+        targetDigest,
+        targetIdentity: { kind: "unversionedWorkspace", workspacePath: "." },
+      })
+    ).toThrow(/well-formed Unicode/iu);
+
+    const legacyMalformedContract = {
+      acceptedOutcomes: [],
+      baseDigest,
+      baseIdentity: { kind: "unversionedSnapshot", workspacePath: "." },
+      baseObservation: {
+        observationModel: "single-traversal-manifest",
+        proofLimitations: [
+          "not-an-atomic-filesystem-snapshot",
+          "metadata-stable-concurrent-rewrite-may-be-undetected",
+        ],
+        version: 1,
+      },
+      contractDigest:
+        "5dd2f33a1920c1bc59029999f65e27085a35a8591ce3fe35ccdef2700577f97e",
+      contractId: "run-contract:run-Unicode001:v1",
+      nonGoals: [
+        {
+          source: {
+            itemDigest:
+              "e0990cfa8dc56fce1211c1be41ed5f360bfdcfb06e2f8116b71b4c305f6bebd7",
+            kind: "explicitSpecItem",
+            section: "nonGoals",
+            specDigest: "3".repeat(64),
+            version: 1,
+          },
+          statement: loneLow,
+        },
+      ],
+      proofClaims: [],
+      runId: "run-Unicode001",
+      stopConditions: [],
+      targetDigest,
+      targetIdentity: { kind: "unversionedWorkspace", workspacePath: "." },
+      targetObservation: {
+        observationModel: "single-traversal-manifest",
+        proofLimitations: [
+          "not-an-atomic-filesystem-snapshot",
+          "metadata-stable-concurrent-rewrite-may-be-undetected",
+        ],
+        version: 1,
+      },
+      version: 1,
+    };
+
+    expect(() => parseRunContractJson(legacyMalformedContract)).toThrow(
+      /well-formed Unicode/iu
+    );
+    expect(() =>
+      parseRunEvent({
+        payload: { contract: legacyMalformedContract },
+        runId: "run-Unicode001",
+        sequence: 2,
+        timestamp: "2026-07-20T08:00:01.000Z",
+        type: "RUN_CONTRACT_RECORDED",
+        version: 1,
+      })
+    ).toThrow(/well-formed Unicode/iu);
+  });
+
+  it("round-trips valid surrogate pairs in contract text", () => {
+    const statement = "Preserve astral text 😀 𝄞.";
+    const contract = makeRunContract({
+      acceptedOutcomes: [],
+      baseDigest,
+      baseIdentity: { kind: "unversionedSnapshot", workspacePath: "." },
+      nonGoals: [{ source: source("nonGoals", statement), statement }],
+      proofClaims: [],
+      runId,
+      stopConditions: [],
+      targetDigest,
+      targetIdentity: { kind: "unversionedWorkspace", workspacePath: "." },
+    });
+
+    expect(parseRunContractJson(encodeRunContractJson(contract))).toEqual(
+      contract
+    );
+  });
+
   it("keeps an explicit zero-claim contract completed-unverified", () => {
     const contract = makeRunContract({
       acceptedOutcomes: [],
@@ -834,6 +959,39 @@ describe("RunContractV1", () => {
         contract
       )
     ).toThrow(/evidence ID does not match its claim-bound tuple/iu);
+  });
+
+  it("rejects malformed structural manifest paths before hashing", () => {
+    for (const path of ["src/\uD800.ts", "src/\uDC00.ts"]) {
+      expect(() =>
+        workspaceStructuralDigestV1({
+          entries: [
+            {
+              contentDigest: "a".repeat(64),
+              kind: "regular-file",
+              path,
+              sizeBytes: "1",
+            },
+          ],
+          version: 1,
+        })
+      ).toThrow(/well-formed Unicode/iu);
+    }
+
+    const astralManifest = {
+      entries: [
+        {
+          contentDigest: "a".repeat(64),
+          kind: "regular-file",
+          path: "src/😀-𝄞.ts",
+          sizeBytes: "1",
+        },
+      ],
+      version: 1,
+    };
+    expect(workspaceStructuralDigestV1(astralManifest)).toBe(
+      workspaceStructuralDigestV1(astralManifest)
+    );
   });
 
   it("hashes a canonical structural manifest and changes on kind/path/content drift", () => {

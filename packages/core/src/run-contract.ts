@@ -1119,6 +1119,8 @@ export function workspaceStructuralDigestV1(input: unknown): StructuralDigest {
     u32be(manifest.entries.length),
   ];
   for (const entry of manifest.entries) {
+    if (!entry.path.isWellFormed())
+      throw new Error("Structural manifest paths must be well-formed Unicode.");
     const path = utf8ToBytes(entry.path);
     chunks.push(
       Uint8Array.of(1),
@@ -1360,6 +1362,8 @@ function isStrictlySortedUniqueStrings(values: readonly string[]) {
 }
 
 function compareUtf8(left: string, right: string) {
+  if (!left.isWellFormed() || !right.isWellFormed())
+    throw new Error("Canonical strings must be well-formed Unicode.");
   const a = utf8ToBytes(left);
   const b = utf8ToBytes(right);
   const length = Math.min(a.length, b.length);
@@ -1375,7 +1379,11 @@ function digestCanonical(domain: string, fields: readonly unknown[]) {
 
 function encodeCanonicalValue(value: unknown): Uint8Array {
   if (value === null) return Uint8Array.of(0);
-  if (typeof value === "string") return taggedBytes(1, utf8ToBytes(value));
+  if (typeof value === "string") {
+    if (!value.isWellFormed())
+      throw new Error("Canonical strings must be well-formed Unicode.");
+    return taggedBytes(1, utf8ToBytes(value));
+  }
   if (typeof value === "number") {
     if (!Number.isSafeInteger(value))
       throw new Error("Canonical integers must be safe integers.");
@@ -1391,13 +1399,20 @@ function encodeCanonicalValue(value: unknown): Uint8Array {
   }
   if (typeof value !== "object" || value === null)
     throw new Error("Unsupported canonical value.");
-  const entries = Object.entries(value)
-    .filter((entry): entry is [string, unknown] => entry[1] !== undefined)
-    .toSorted(([left], [right]) => compareUtf8(left, right));
+  const entries = Object.entries(value).filter(
+    (entry): entry is [string, unknown] => entry[1] !== undefined
+  );
+  for (const [key] of entries) {
+    if (!key.isWellFormed())
+      throw new Error("Canonical strings must be well-formed Unicode.");
+  }
+  const sortedEntries = entries.toSorted(([left], [right]) =>
+    compareUtf8(left, right)
+  );
   return concatBytes([
     Uint8Array.of(5),
-    u32be(entries.length),
-    ...entries.flatMap(([key, entry]) => [
+    u32be(sortedEntries.length),
+    ...sortedEntries.flatMap(([key, entry]) => [
       taggedBytes(1, utf8ToBytes(key)),
       encodeCanonicalValue(entry),
     ]),

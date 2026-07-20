@@ -37,6 +37,174 @@ const parseArtifactPath = Schema.decodeUnknownSync(
 );
 
 describe("MergeDecisionV2", () => {
+  it("rejects malformed canonical fields during construction and JSON decode", () => {
+    const runId = parseRunId("run-UnicodeV2a");
+    const loneHigh = "\uD800";
+    const loneLow = "\uDC00";
+    const binding = {
+      blockerCount: 1,
+      contentAuthoritySequence: parseEventSequence(1),
+      decidedAt: "2026-07-20T08:00:00.000Z",
+      evidenceReviewPath: parseArtifactPath("evidence-review.md"),
+      evidenceReviewerSessionPath: parseArtifactPath(
+        "evidence-reviewer-session.json"
+      ),
+      nextAction: "resolve-blockers" as const,
+      planReviewPath: parseArtifactPath("plan-review.md"),
+      planReviewerSessionPath: parseArtifactPath("plan-reviewer-session.json"),
+      proof: {
+        aggregate: "completed-unverified" as const,
+        kind: "noContract" as const,
+      },
+      runId,
+      runProfilePath: parseArtifactPath("run-profile.json"),
+      status: "blocked" as const,
+      version: 2 as const,
+    };
+
+    expect(() =>
+      makeMergeDecisionV2({
+        ...binding,
+        blockers: [
+          MergeDecisionBlockerV2.make({
+            action: "Resolve.",
+            kind: "reviewer-blocked",
+            summary: loneHigh,
+          }),
+        ],
+      })
+    ).toThrow(/well-formed Unicode/iu);
+    expect(() =>
+      makeMergeDecisionV2({
+        ...binding,
+        blockers: [
+          MergeDecisionBlockerV2.make({
+            action: loneLow,
+            kind: "reviewer-blocked",
+            summary: "Resolve the review blocker.",
+          }),
+        ],
+      })
+    ).toThrow(/well-formed Unicode/iu);
+    expect(() =>
+      makeMergeDecisionV2({
+        ...binding,
+        blockers: [
+          MergeDecisionBlockerV2.make({
+            action: "Resolve.",
+            kind: "reviewer-blocked",
+            summary: "Resolve the review blocker.",
+          }),
+        ],
+        planReviewPath: parseArtifactPath(`plan-${loneHigh}.md`),
+      })
+    ).toThrow(/well-formed Unicode/iu);
+
+    const legacyMalformedDecision = {
+      blockerCount: 1,
+      blockers: [
+        {
+          action: "Resolve.",
+          kind: "reviewer-blocked",
+          summary: loneLow,
+        },
+      ],
+      contentAuthoritySequence: 1,
+      decidedAt: "2026-07-20T08:00:00.000Z",
+      evidenceReviewPath: "evidence-review.md",
+      evidenceReviewerSessionPath: "evidence-reviewer-session.json",
+      nextAction: "resolve-blockers",
+      payloadDigest:
+        "64151280db5e9e06f8c811a3801090741154e55b320161ba5cb2a9151c2af718",
+      planReviewPath: "plan-review.md",
+      planReviewerSessionPath: "plan-reviewer-session.json",
+      proof: { aggregate: "completed-unverified", kind: "noContract" },
+      runId: "run-UnicodeV2a",
+      runProfilePath: "run-profile.json",
+      status: "blocked",
+      version: 2,
+    };
+
+    expect(() => parseMergeDecisionV2Json(legacyMalformedDecision)).toThrow(
+      /well-formed Unicode/iu
+    );
+
+    const events = [
+      makeRunEvent({
+        payload: { specPath: "input.md" },
+        runId,
+        sequence: 1,
+        timestamp: "2026-07-20T08:00:00.000Z",
+        type: "RUN_CREATED",
+      }),
+      makeRunEvent({
+        payload: {
+          delivery: {
+            baseBranch: "main",
+            baseRevision: "0".repeat(40),
+            headBranch: "gaia/unicode-v2",
+            mode: "pullRequest",
+            remote: "origin",
+            stage: "delivering",
+          },
+        },
+        runId,
+        sequence: 2,
+        timestamp: "2026-07-20T08:00:01.000Z",
+        type: "DELIVERY_STARTED",
+      }),
+      makeRunEvent({
+        payload: {
+          decision: legacyMalformedDecision,
+          mergeDecisionPath: "merge-decision.json",
+        },
+        runId,
+        sequence: 3,
+        timestamp: "2026-07-20T08:00:02.000Z",
+        type: "MERGE_DECISION_RECORDED",
+      }),
+    ];
+
+    expect(() => replayRunEvents(events)).toThrow(/well-formed Unicode/iu);
+  });
+
+  it("round-trips valid surrogate pairs with a deterministic payload digest", () => {
+    const runId = parseRunId("run-UnicodeV2b");
+    const blocker = MergeDecisionBlockerV2.make({
+      action: "Resolve the astral blocker 😀.",
+      kind: "reviewer-blocked",
+      summary: "Astral notation 𝄞 remains intact.",
+    });
+    const binding = {
+      blockerCount: 1,
+      blockers: [blocker],
+      contentAuthoritySequence: parseEventSequence(1),
+      decidedAt: "2026-07-20T08:00:00.000Z",
+      evidenceReviewPath: parseArtifactPath("evidence-review.md"),
+      evidenceReviewerSessionPath: parseArtifactPath(
+        "evidence-reviewer-session.json"
+      ),
+      nextAction: "resolve-blockers" as const,
+      planReviewPath: parseArtifactPath("plan-review.md"),
+      planReviewerSessionPath: parseArtifactPath("plan-reviewer-session.json"),
+      proof: {
+        aggregate: "completed-unverified" as const,
+        kind: "noContract" as const,
+      },
+      runId,
+      runProfilePath: parseArtifactPath("run-profile.json"),
+      status: "blocked" as const,
+      version: 2 as const,
+    };
+    const first = makeMergeDecisionV2(binding);
+    const second = makeMergeDecisionV2(binding);
+
+    expect(second.payloadDigest).toBe(first.payloadDigest);
+    expect(parseMergeDecisionV2Json(encodeMergeDecisionV2Json(first))).toEqual(
+      first
+    );
+  });
+
   it("requires a typed proof description even when blocked", () => {
     const runId = parseRunId("run-mergemiss1");
     const blocker = MergeDecisionBlockerV2.make({
@@ -221,6 +389,20 @@ describe("MergeDecisionV2", () => {
     expect(
       sortMergeDecisionBlockersV2(blockers).map(({ summary }) => summary)
     ).toEqual(["z", "ä"]);
+  });
+
+  it("rejects malformed blocker text before UTF-8 sorting", () => {
+    const blockers = ["\uD800", "\uDC00"].map((summary) =>
+      MergeDecisionBlockerV2.make({
+        action: "Resolve the blocker.",
+        kind: "reviewer-blocked",
+        summary,
+      })
+    );
+
+    expect(() => sortMergeDecisionBlockersV2(blockers)).toThrow(
+      /well-formed Unicode/iu
+    );
   });
 
   it("rejects a valid V2 decision embedded in another run's event history", () => {

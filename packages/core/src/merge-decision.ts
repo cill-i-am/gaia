@@ -277,11 +277,22 @@ function proofCanonicalFields(proof: MergeDecisionProofV2) {
 
 function canonicalFields(fields: readonly string[]) {
   return fields
-    .map((field) => `${utf8ToBytes(field).length}:${field}`)
+    .map((field) => {
+      if (!field.isWellFormed())
+        throw new Error(
+          "Merge decision canonical fields must be well-formed Unicode."
+        );
+      const bytes = utf8ToBytes(field);
+      return `${bytes.length}:${field}`;
+    })
     .join("|");
 }
 
 function compareUtf8(left: string, right: string) {
+  if (!left.isWellFormed() || !right.isWellFormed())
+    throw new Error(
+      "Merge decision canonical fields must be well-formed Unicode."
+    );
   const a = utf8ToBytes(left);
   const b = utf8ToBytes(right);
   const length = Math.min(a.length, b.length);

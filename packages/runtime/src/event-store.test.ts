@@ -74,6 +74,116 @@ describe("event store persistence paths", () => {
     );
 
     it.effect(
+      "rejects a digest-preserving malformed contract substitution from literal JSONL",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-event-store-unicode-contract-",
+          });
+          const runId = parseRunId("run-Unicode001");
+          const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+          yield* fs.makeDirectory(paths.root, { recursive: true });
+          yield* fs.writeFileString(
+            paths.events,
+            `${[
+              JSON.stringify({
+                payload: { specPath: "input.md" },
+                runId,
+                sequence: 1,
+                timestamp: "2026-07-20T08:00:00.000Z",
+                type: "RUN_CREATED",
+                version: 1,
+              }),
+              JSON.stringify({
+                payload: {
+                  contract: legacyMalformedContract("\uDC00"),
+                },
+                runId,
+                sequence: 2,
+                timestamp: "2026-07-20T08:00:01.000Z",
+                type: "RUN_CONTRACT_RECORDED",
+                version: 1,
+              }),
+            ].join("\n")}\n`
+          );
+
+          const failures = [
+            yield* Effect.flip(readEvents(paths)),
+            yield* Effect.flip(loadRun(paths)),
+          ];
+          for (const failure of failures) {
+            assert.instanceOf(failure, GaiaRuntimeError);
+            assert.strictEqual(failure.code, "InvalidEventLine");
+          }
+        })
+    );
+
+    it.effect(
+      "rejects a digest-preserving malformed V2 substitution from literal JSONL",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-event-store-unicode-v2-",
+          });
+          const runId = parseRunId("run-UnicodeV2a");
+          const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+          yield* fs.makeDirectory(paths.root, { recursive: true });
+          yield* fs.writeFileString(
+            paths.events,
+            `${[
+              JSON.stringify({
+                payload: { specPath: "input.md" },
+                runId,
+                sequence: 1,
+                timestamp: "2026-07-20T08:00:00.000Z",
+                type: "RUN_CREATED",
+                version: 1,
+              }),
+              JSON.stringify({
+                payload: {
+                  delivery: {
+                    baseBranch: "main",
+                    baseRevision: "0".repeat(40),
+                    headBranch: "gaia/unicode-v2",
+                    mode: "pullRequest",
+                    remote: "origin",
+                    stage: "delivering",
+                  },
+                },
+                runId,
+                sequence: 2,
+                timestamp: "2026-07-20T08:00:01.000Z",
+                type: "DELIVERY_STARTED",
+                version: 1,
+              }),
+              JSON.stringify({
+                payload: {
+                  decision: legacyMalformedMergeDecision("\uDC00"),
+                  mergeDecisionPath: "merge-decision.json",
+                },
+                runId,
+                sequence: 3,
+                timestamp: "2026-07-20T08:00:02.000Z",
+                type: "MERGE_DECISION_RECORDED",
+                version: 1,
+              }),
+            ].join("\n")}\n`
+          );
+
+          const failures = [
+            yield* Effect.flip(readEvents(paths)),
+            yield* Effect.flip(loadRun(paths)),
+          ];
+          for (const failure of failures) {
+            assert.instanceOf(failure, GaiaRuntimeError);
+            assert.strictEqual(failure.code, "InvalidRunEventHistory");
+          }
+        })
+    );
+
+    it.effect(
       "rejects literal JSONL that does not begin with RUN_CREATED",
       () =>
         Effect.gen(function* () {
@@ -623,3 +733,70 @@ describe("event store persistence paths", () => {
     }
   });
 });
+
+function legacyMalformedContract(statement: string) {
+  return {
+    acceptedOutcomes: [],
+    baseDigest: "2".repeat(64),
+    baseIdentity: { kind: "unversionedSnapshot", workspacePath: "." },
+    baseObservation: {
+      observationModel: "single-traversal-manifest",
+      proofLimitations: [
+        "not-an-atomic-filesystem-snapshot",
+        "metadata-stable-concurrent-rewrite-may-be-undetected",
+      ],
+      version: 1,
+    },
+    contractDigest:
+      "5dd2f33a1920c1bc59029999f65e27085a35a8591ce3fe35ccdef2700577f97e",
+    contractId: "run-contract:run-Unicode001:v1",
+    nonGoals: [
+      {
+        source: {
+          itemDigest:
+            "e0990cfa8dc56fce1211c1be41ed5f360bfdcfb06e2f8116b71b4c305f6bebd7",
+          kind: "explicitSpecItem",
+          section: "nonGoals",
+          specDigest: "3".repeat(64),
+          version: 1,
+        },
+        statement,
+      },
+    ],
+    proofClaims: [],
+    runId: "run-Unicode001",
+    stopConditions: [],
+    targetDigest: "1".repeat(64),
+    targetIdentity: { kind: "unversionedWorkspace", workspacePath: "." },
+    targetObservation: {
+      observationModel: "single-traversal-manifest",
+      proofLimitations: [
+        "not-an-atomic-filesystem-snapshot",
+        "metadata-stable-concurrent-rewrite-may-be-undetected",
+      ],
+      version: 1,
+    },
+    version: 1,
+  };
+}
+
+function legacyMalformedMergeDecision(summary: string) {
+  return {
+    blockerCount: 1,
+    blockers: [{ action: "Resolve.", kind: "reviewer-blocked", summary }],
+    contentAuthoritySequence: 1,
+    decidedAt: "2026-07-20T08:00:00.000Z",
+    evidenceReviewPath: "evidence-review.md",
+    evidenceReviewerSessionPath: "evidence-reviewer-session.json",
+    nextAction: "resolve-blockers",
+    payloadDigest:
+      "64151280db5e9e06f8c811a3801090741154e55b320161ba5cb2a9151c2af718",
+    planReviewPath: "plan-review.md",
+    planReviewerSessionPath: "plan-reviewer-session.json",
+    proof: { aggregate: "completed-unverified", kind: "noContract" },
+    runId: "run-UnicodeV2a",
+    runProfilePath: "run-profile.json",
+    status: "blocked",
+    version: 2,
+  };
+}
