@@ -32,10 +32,13 @@ Find and repair or report:
 - new lanes do not share the same exact fetched `origin/<default>` base, the
   worker branch was not created from that base, or the reviewer is not
   detached/read-only
-- new-lane pre-edit proof is missing, dirty, non-zero ahead/behind, or does not
-  show `HEAD == origin/<default> == merge-base` with `0/0`
-- the Codex `startingState: origin/<default>` used for a new dispatch is missing
-  from durable evidence or the created lane was not independently verified
+- new-lane pre-edit proof is missing its fetch time or durable dispatch comment,
+  is dirty, has non-zero ahead/behind, or does not show
+  `HEAD == origin/<default> == merge-base` with `0/0`
+- the Codex
+  `startingState: { type: "branch", branchName: "origin/<default>" }` used for a
+  new dispatch is missing from durable evidence or the created lane was not
+  independently verified
 - an explicit resume/special-ref lacks a durable issue/handoff comment naming
   the override ref and durable dispatch comment, exact resumed HEAD, fetched
   remote-default ref/SHA, merge-base, ahead/behind, honest clean/dirty state,

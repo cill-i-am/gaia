@@ -13,7 +13,11 @@ Review implementation for Linear issue: `{ISSUE_ID}`.
 - Issue: `{ISSUE_LINK}`
 - Project or PRD: `{PROJECT_OR_PRD}`
 - Fetched `origin/<default>` ref/SHA: `{DEFAULT_REF}` / `{BASE_SHA}`
-- Codex new-lane `startingState: origin/<default>`: `{STARTING_STATE}`
+- Fetch time: `{FETCH_TIME}`
+- Durable dispatch comment: `{DISPATCH_COMMENT}`
+- Codex new-lane
+  `startingState: { type: "branch", branchName: "origin/<default>" }`:
+  `{STARTING_STATE}`
 - Lane mode: `new` or explicit resume/special-ref `{LANE_MODE}`
 - Durable issue/handoff comment for any override: `{OVERRIDE_COMMENT}`
 - Detached reviewer worktree: `{WORKTREE_PATH}`
@@ -33,8 +37,9 @@ Before reviewing a plan, run `git fetch --prune origin`, require symbolic
 invalid provenance fails closed. For new lanes, independently prove the reviewer
 worktree is clean, detached, and at the exact dispatched default commit:
 `HEAD == origin/<default> == merge-base`, with ahead/behind `0/0`, matching the
-recorded `startingState: origin/<default>`. A local `main`, the coordinator's
-`HEAD`, or handoff prose is not evidence.
+recorded fetch time, durable dispatch comment, and
+`startingState: { type: "branch", branchName: "origin/<default>" }`. A local
+`main`, the coordinator's `HEAD`, or handoff prose is not evidence.
 
 An explicit resume/special-ref instead requires a durable issue/handoff comment
 and a durable dispatch comment recording the override ref, exact resumed HEAD,
@@ -58,9 +63,11 @@ Check:
 
 - worker plan when available, especially for overcomplication, scope drift, or
   missed constraints
-- whether both worktrees were created from the same exact fetched base, the
-  worker created and owns its topic branch there, the reviewer stayed detached,
-  and the worker proved clean exact-base and baseline status before implementation
+- for new lanes, whether both worktrees were created from the same exact fetched
+  base, the worker created and owns its topic branch there, the reviewer stayed
+  detached, and the worker proved fetch time, durable dispatch comment, clean
+  exact-base, and baseline status before implementation; for explicit resumes,
+  apply the separate override evidence above
 - spec adherence
 - simplicity and architecture
 - standards and skills

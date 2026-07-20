@@ -23,6 +23,22 @@ const scopedRequirement = (name, marker, token, maximumDistance = 1600) =>
 
 const newLaneMarker = /new[- ]lanes?/i;
 const resumeMarker = /explicit\s+resume\s*\/\s*special-ref/i;
+const newLaneRequirement = (name, token, maximumDistance = 900) =>
+  requirement(
+    name,
+    new RegExp(
+      `${newLaneMarker.source}(?=(?:(?!${resumeMarker.source})[\\s\\S]){0,${maximumDistance}}${token.source})`,
+      [
+        ...new Set(
+          `${newLaneMarker.flags}${resumeMarker.flags}${token.flags}`.replace(
+            "g",
+            ""
+          )
+        ),
+      ].join("")
+    ),
+    { mutationPattern: token }
+  );
 
 const contracts = {
   canonicalRecipe: [
@@ -81,16 +97,41 @@ const contracts = {
   ],
   newLane: [
     requirement("new-lane scope", newLaneMarker),
-    scopedRequirement(
+    newLaneRequirement(
       "exact base equality",
-      newLaneMarker,
       /HEAD == origin\/<default> == merge-base/,
       700
     ),
-    scopedRequirement("exact 0\/0 state", newLaneMarker, /0\/0/, 700),
+    newLaneRequirement("exact 0\/0 state", /0\/0/, 700),
+    newLaneRequirement("fetch time", /fetch\s+time/i, 1600),
+    newLaneRequirement(
+      "durable dispatch evidence",
+      /durable\s+dispatch\s+comment/i,
+      1600
+    ),
   ],
   dispatch: [
-    requirement("Codex starting state", /startingState: `?origin\/<default>`?/),
+    requirement(
+      "Codex branch starting state",
+      /startingState:\s*\{\s*type:\s*"branch",\s*branchName:\s*"origin\/<default>"\s*\}/
+    ),
+  ],
+  reviewerLaneSeparation: [
+    requirement("new-lane reviewer proof", /For new-lane reviews,/),
+    requirement(
+      "resume reviewer proof",
+      /For explicit resume\/special-ref reviews,/
+    ),
+  ],
+  workerTemplateLaneSeparation: [
+    requirement(
+      "new-lane topic branch label",
+      /New-lane topic branch expectation:/
+    ),
+    requirement(
+      "preserved resume topic ref",
+      /explicit resumes preserve `\{OVERRIDE_REF\}`/
+    ),
   ],
   resume: [
     requirement("explicit resume override", resumeMarker),
@@ -123,7 +164,7 @@ const contracts = {
     scopedRequirement("merge-base", resumeMarker, /merge-base/),
     scopedRequirement("ahead\/behind", resumeMarker, /ahead\/behind/),
     scopedRequirement("honest tree state", resumeMarker, /clean\/dirty/),
-    scopedRequirement("fetch time", resumeMarker, /fetch time/),
+    scopedRequirement("fetch time", resumeMarker, /fetch\s+time/i),
     scopedRequirement(
       "no implicit history rewrite",
       resumeMarker,
@@ -149,11 +190,23 @@ const owners = [
   [".agents/skills/worker/SKILL.md", ["remoteDefault", "newLane", "resume"]],
   [
     "docs/agents/execution-policy.md",
-    ["remoteDefault", "newLane", "dispatch", "resume"],
+    [
+      "remoteDefault",
+      "newLane",
+      "dispatch",
+      "reviewerLaneSeparation",
+      "resume",
+    ],
   ],
   [
     "docs/agents/worker-thread-template.md",
-    ["remoteDefault", "newLane", "dispatch", "resume"],
+    [
+      "remoteDefault",
+      "newLane",
+      "dispatch",
+      "workerTemplateLaneSeparation",
+      "resume",
+    ],
   ],
   [
     "docs/agents/reviewer-thread-template.md",
@@ -161,11 +214,23 @@ const owners = [
   ],
   [
     ".agents/skills/linear-setup/assets/docs/agents/execution-policy.md",
-    ["remoteDefault", "newLane", "dispatch", "resume"],
+    [
+      "remoteDefault",
+      "newLane",
+      "dispatch",
+      "reviewerLaneSeparation",
+      "resume",
+    ],
   ],
   [
     ".agents/skills/linear-setup/assets/docs/agents/worker-thread-template.md",
-    ["remoteDefault", "newLane", "dispatch", "resume"],
+    [
+      "remoteDefault",
+      "newLane",
+      "dispatch",
+      "workerTemplateLaneSeparation",
+      "resume",
+    ],
   ],
   [
     ".agents/skills/linear-setup/assets/docs/agents/reviewer-thread-template.md",
@@ -212,6 +277,22 @@ const scopedNegativeCases = [
         "new lane"
       ),
     name: "new-lane equality clause",
+  },
+  {
+    contract: contracts.newLane.find(({ name }) => name === "fetch time"),
+    document: "fetch time elsewhere\nnew lane\nfetch time",
+    mutate: (document) => document.replace("new lane\nfetch time", "new lane"),
+    name: "new-lane fetch-time clause",
+  },
+  {
+    contract: contracts.newLane.find(
+      ({ name }) => name === "durable dispatch evidence"
+    ),
+    document:
+      "durable dispatch comment elsewhere\nnew lane\ndurable dispatch comment",
+    mutate: (document) =>
+      document.replace("new lane\ndurable dispatch comment", "new lane"),
+    name: "new-lane dispatch-evidence clause",
   },
   {
     contract: contracts.resume.find(

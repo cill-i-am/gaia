@@ -34,17 +34,20 @@ The orchestrator owns the work loop. Workers implement. Reviewers/spec agents ve
   symbolic `refs/remotes/origin/HEAD` under `refs/remotes/origin/`, derive
   `origin/<default>`, and resolve its exact commit. Missing or invalid fetch,
   remote HEAD, commit, or merge-base evidence fails closed.
-- Create the worker and paired reviewer worktrees from that same exact commit.
-  A local `main`, the coordinator's current `HEAD`, or handoff prose is not base
-  evidence.
-- For new lanes, dispatch Codex with `startingState: origin/<default>` and
+- For new lanes, create the worker and paired reviewer worktrees from that same
+  exact commit. A local `main`, the coordinator's current `HEAD`, or handoff
+  prose is not base evidence.
+- For new lanes, dispatch Codex with
+  `startingState: { type: "branch", branchName: "origin/<default>" }` and
   independently verify the created worktree against the recorded commit.
-- The worker creates and owns its `codex/<issue>-<slug>` topic branch inside the
-  pre-provisioned worktree. The reviewer remains detached and strictly
-  read-only unless a narrower reviewed need explicitly changes that role.
+- For new lanes, the worker creates and owns its `codex/<issue>-<slug>` topic
+  branch inside the pre-provisioned worktree. The reviewer remains detached and
+  strictly read-only unless a narrower reviewed need explicitly changes that
+  role.
 - Before worker planning, reviewer plan review, or edits in new lanes, require
   an empty worktree plus proof that `HEAD == origin/<default> == merge-base` and
-  ahead/behind is `0/0` after a fresh fetch.
+  ahead/behind is `0/0` after a fresh fetch. Record the fetch time and durable
+  dispatch comment for the exact pair.
 - An explicit resume/special-ref requires a durable issue/handoff comment. Its
   durable dispatch comment records the override ref, exact resumed HEAD,
   fetched remote-default ref/SHA, merge-base, ahead/behind, honest clean/dirty
@@ -60,11 +63,14 @@ The orchestrator owns the work loop. Workers implement. Reviewers/spec agents ve
 ## Worker Rules
 
 - Use a user-visible Codex worker thread for non-trivial implementation.
-- Use the exact-base worktree provisioned by the orchestrator and create the
-  worker-owned topic branch there before planning.
-- Do not implement until the worker can report the isolated path, topic branch,
-  fetched base commit, clean-state and equality proof, ahead/behind `0/0`,
-  install result, and baseline check result or blocker.
+- For a new lane, use the exact-base worktree provisioned by the orchestrator and
+  create the worker-owned topic branch there before planning. For an explicit
+  resume/special-ref, preserve and prove the authorized ref/HEAD instead.
+- Do not implement a new lane until the worker can report the isolated path,
+  topic branch, fetched base commit, fetch time, durable dispatch comment,
+  clean-state and equality proof, ahead/behind `0/0`, install result, and
+  baseline check result or blocker. Apply the separate resume evidence above to
+  explicit resumes/special refs.
 - Read the live Linear issue, parent Project/PRD, blockers, and comments before
   planning. Handoff context is orientation only.
 - Post a short plan before implementation.
@@ -83,13 +89,16 @@ The orchestrator owns the work loop. Workers implement. Reviewers/spec agents ve
 
 ## Reviewer Rules
 
-The reviewer is detached and read-only. Before reviewing the worker's plan, it
-should independently prove its clean worktree is still at the dispatched,
-freshly fetched `origin/<default>` commit with ahead/behind `0/0`. It should read
-live Linear before reviewing the plan when possible and the final diff before
-approval. Plan review should catch overcomplication, scope drift, or missed
-constraints; it should not block normal AFK work unless approval was explicitly
-required.
+For new-lane reviews, the reviewer is detached and read-only. Before reviewing
+the worker's plan, it independently proves its clean worktree is still at the
+dispatched, freshly fetched `origin/<default>` commit with ahead/behind `0/0`.
+For explicit resume/special-ref reviews, the reviewer remains read-only and
+applies the override evidence above instead of requiring default-base equality
+or `0/0`; it reports worker clean/dirty state without mutating it. Every reviewer
+reads live Linear before reviewing the plan when possible and the final diff
+before approval. Plan review should catch overcomplication, scope drift, or
+missed constraints; it should not block normal AFK work unless approval was
+explicitly required.
 
 For user-visible changes, the reviewer should gather independent runtime
 evidence with the in-app Browser, preview target, or a focused test subset when

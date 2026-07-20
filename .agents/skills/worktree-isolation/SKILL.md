@@ -31,11 +31,12 @@ printf '%s\n' "$default_ref" "$default_sha"
 This derives an exact `origin/<default>` from `refs/remotes/origin/HEAD`; it does
 not assume a branch name. If the fetch fails, the remote HEAD is missing, is not
 symbolic, points outside `refs/remotes/origin/`, or the commit does not resolve,
-provenance fails closed. Create both the worker and paired reviewer worktrees
-from `default_sha`. A Codex thread tool may provision new lanes only with
-`startingState: origin/<default>` and only when the created lane can be
-independently verified against that recorded SHA. Otherwise, provision manually
-or stop and report the missing capability.
+provenance fails closed. For new lanes, create both the worker and paired
+reviewer worktrees from `default_sha`. A Codex thread tool may provision new
+lanes only with
+`startingState: { type: "branch", branchName: "origin/<default>" }` and only
+when the created lane can be independently verified against that recorded SHA.
+Otherwise, provision manually or stop and report the missing capability.
 
 ## Coordinator Setup
 
@@ -53,15 +54,15 @@ or stop and report the missing capability.
    record the fetch time, `remote_head`, exact `default_ref`, and `default_sha`.
    Do this once for the worker/reviewer pair so both start from identical remote
    provenance.
-5. **Create detached worktrees.** Use the resolved SHA, not a symbolic local
-   branch or the coordinator's `HEAD`:
+5. **Create detached worktrees for new lanes.** Use the resolved SHA, not a
+   symbolic local branch or the coordinator's `HEAD`:
 
    ```sh
    git worktree add --detach <worker-path> "$default_sha"
    git worktree add --detach <reviewer-path> "$default_sha"
    ```
 
-6. **Hand off role ownership.** The worker creates and owns
+6. **Hand off new-lane role ownership.** The worker creates and owns
    `codex/<issue-key>-<slug>` from its detached base. The paired reviewer remains
    detached and read-only unless a separately authorized narrower task changes
    that role.
@@ -70,7 +71,8 @@ or stop and report the missing capability.
    check that proves the worktree starts usable.
 8. **Report the handoff.** State both worktree paths, fetch time, fetched
    remote-default ref/SHA, worker branch expectation, reviewer detached/read-only
-   state, install command, baseline command/result, and any setup blocker.
+   state, durable dispatch comment, install command, baseline command/result,
+   and any setup blocker.
 
 ## Worker Activation
 
@@ -115,6 +117,7 @@ Required result for new lanes:
   output is empty because the reviewer is detached;
 - `HEAD == origin/<default> == merge-base` at the same exact SHA;
 - ahead/behind is `0/0`.
+- fetch time and the durable dispatch comment are recorded for the exact pair.
 
 Handoff prose, a local `main` pointer, or an earlier fetch log is never sufficient
 evidence.

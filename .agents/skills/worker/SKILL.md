@@ -37,10 +37,11 @@ repo still needs `linear-setup`.
    `git fetch --prune origin`, missing or invalid remote HEAD, commit, or
    merge-base evidence fails closed. Do not plan or edit a new lane until the
    tree is clean, `HEAD == origin/<default> == merge-base`, and ahead/behind is
-   `0/0`. Report the isolated path, branch, all three SHAs, ahead/behind, install
-   result, and baseline result or blocker. Local `main`, coordinator `HEAD`, and
-   handoff prose are not base evidence. Never start provider-mutating Alchemy
-   work without confirming stage and credentials. An explicit
+   `0/0`. Report the isolated path, branch, all three SHAs, ahead/behind, fetch
+   time, durable dispatch comment, install result, and baseline result or
+   blocker. Local `main`, coordinator `HEAD`, and handoff prose are not base
+   evidence. Never start provider-mutating Alchemy work without confirming stage
+   and credentials. An explicit
    resume/special-ref instead preserves the authorized existing ref/HEAD and
    requires a durable issue/handoff comment that records the override ref, exact
    resumed HEAD, fetched remote-default ref/SHA, merge-base, ahead/behind, honest

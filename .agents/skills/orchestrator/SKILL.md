@@ -35,19 +35,22 @@ needed. Do not silently substitute internal subagents for issue workers because
 the thread tool was not loaded yet.
 
 Before every dispatch, use `worktree-isolation` to run `git fetch --prune origin`,
-resolve and validate symbolic `refs/remotes/origin/HEAD`, derive the exact
-fetched `origin/<default>` ref/SHA, and provision both worker and reviewer
-worktrees from that SHA. New lanes use Codex
-`startingState: origin/<default>` and must be independently verified after
-creation. Never use local `main`, the coordinator's current `HEAD`, or handoff
-prose as base evidence. Missing or invalid fetch, remote HEAD, commit, or
-merge-base evidence fails closed; provision the worktree manually or stop.
+resolve and validate symbolic `refs/remotes/origin/HEAD`, and derive the exact
+fetched `origin/<default>` ref/SHA. For new lanes, provision both worktrees from
+that SHA with Codex
+`startingState: { type: "branch", branchName: "origin/<default>" }`, then
+independently verify them. For an explicit resume/special-ref, preserve the
+authorized worktree and ref/HEAD and prove the recorded relationships below.
+Never use local `main`, the coordinator's current `HEAD`, or handoff prose as
+base evidence. Missing or invalid fetch, remote HEAD, commit, or merge-base
+evidence fails closed; provision the new lane manually or stop.
 
-The orchestrator coordinates the pair but does not own the worker topic branch.
-Dispatch the worker into its detached exact-base worktree and require it to
-create and own `codex/<issue-key>-<slug>` there. Dispatch the reviewer into the
-paired worktree at the same SHA; it remains detached and strictly read-only
-unless a separately authorized narrower task changes that role.
+For new lanes, the orchestrator coordinates the pair but does not own the worker
+topic branch. Dispatch the worker into its detached exact-base worktree and
+require it to create and own `codex/<issue-key>-<slug>` there. Dispatch the
+reviewer into the paired worktree at the same SHA; it remains detached and
+strictly read-only unless a separately authorized narrower task changes that
+role.
 
 For every non-trivial implementation worker, also create a user-visible
 read-only reviewer/spec thread at dispatch time. The reviewer thread may stay
@@ -115,20 +118,21 @@ test, or skill-bundle validation. In Simulation Mode:
    unblocking. Do not dispatch parent outcome Issues as implementation work. Skip
    HITL issues until the human decision is captured.
 5. **Spawn workers.** Use the Codex app thread tools by default. Immediately
-   before dispatch, fetch/prune `origin`, resolve the exact
-   `origin/<default>` SHA through `refs/remotes/origin/HEAD`, and create the
-   worker/reviewer pair from that same SHA through
-   `worktree-isolation`. Create one user-visible Codex thread per dispatchable
-   Linear issue, with explicit reasoning effort. Include the Linear issue,
-   parent PRD/Project, blockers, relevant comments, exact base SHA, worktree path,
-   branch naming convention, and instruction to use the `worker` and
-   `worktree-isolation` skills. Tell workers to refresh live Linear and prove
-   clean exact-base state before planning or implementing. Require explicit plan
-   approval only for high-risk work or when the issue/orchestrator says approval
-   is required.
+   before dispatch, fetch/prune `origin` and resolve the exact
+   `origin/<default>` SHA through `refs/remotes/origin/HEAD`. For a new lane,
+   create the worker/reviewer pair from that same SHA through
+   `worktree-isolation`; for an explicit resume/special-ref, retain and prove the
+   authorized lanes. Create one user-visible Codex thread per dispatchable Linear
+   issue, with explicit reasoning effort. Include the Linear issue, parent
+   PRD/Project, blockers, relevant comments, exact base SHA, fetch time, durable
+   dispatch comment, worktree path, branch naming convention, and instruction to
+   use the `worker` and `worktree-isolation` skills. Tell new-lane workers to
+   refresh live Linear and prove clean exact-base state before planning or
+   implementing. Require explicit plan approval only for high-risk work or when
+   the issue/orchestrator says approval is required.
    - First prove the issue is not already owned by an active worker, reviewer,
      branch, PR, or heartbeat. Reuse or steer the existing owner when found.
-   - For every non-trivial worker, create a paired user-visible read-only
+   - For every non-trivial new-lane worker, create a paired user-visible read-only
      reviewer/spec thread in its detached worktree at the same exact base SHA.
      Include the worker thread, Linear issue, parent PRD/Project, base SHA,
      reviewer worktree path, expected skills/standards, and instruction to use
@@ -138,18 +142,18 @@ test, or skill-bundle validation. In Simulation Mode:
      practical. Tell the reviewer to prove clean exact-base detached state, then
      stay idle until the worker posts a plan or PR if there is nothing useful to
      inspect yet.
-   - New lanes must prove clean state, exact HEAD/default/merge-base equality,
-     `HEAD == origin/<default> == merge-base`, and ahead/behind `0/0` after
-     creation.
+   - New lanes must record fetch time and the durable dispatch comment, then
+     prove clean state, `HEAD == origin/<default> == merge-base`, and ahead/behind
+     `0/0` after creation.
    - An explicit resume/special-ref is allowed only with a durable issue/handoff
      comment that records the override. Its durable dispatch comment records the
-     override ref, exact
-     resumed HEAD, fetched remote-default ref/SHA, merge-base, ahead/behind,
+     override ref, exact resumed HEAD, fetched remote-default ref/SHA, merge-base,
+     ahead/behind,
      honest clean/dirty state, and fetch time. The evidence may be non-zero or
      dirty; prove the override ref resolves to the exact resumed HEAD and assess
-     it without mutation. An explicit resume does not
-     authorize reset, clean, merge, automatic rebase, force-move, or discard
-     work. If any required relationship is unresolvable, the lane fails closed.
+     it without mutation. An explicit resume does not authorize reset, clean,
+     merge, automatic rebase, force-move, or discard work. If any required
+     relationship is unresolvable, the lane fails closed.
    - If `origin/<default>` advances before new-lane edit authority, hold both
      lanes. Use the non-destructive refresh path in `worktree-isolation`, rerun
      relevant baselines, and repeat the worker plan plus reviewer/orchestrator
