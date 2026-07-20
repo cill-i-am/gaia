@@ -97,6 +97,54 @@ type WorkerPlanCommand = NonNullable<
   typeof WorkerPlanVerificationCheck.fields.command.Type
 >;
 
+export const ExplicitRunContractItemsSchema = Schema.Struct({
+  acceptanceCriteria: Schema.Array(Schema.NonEmptyString),
+  nonGoals: Schema.Array(Schema.NonEmptyString),
+  stopConditions: Schema.Array(Schema.NonEmptyString),
+  verificationChecks: Schema.Array(Schema.NonEmptyString),
+});
+export type ExplicitRunContractItems = Schema.Schema.Type<
+  typeof ExplicitRunContractItemsSchema
+>;
+const decodeExplicitRunContractItems = Schema.decodeUnknownSync(
+  ExplicitRunContractItemsSchema
+);
+
+/** Return only source-authored contract items; never include WorkerPlan fallbacks. */
+export function explicitRunContractItems(
+  spec: RunSpec
+): ExplicitRunContractItems {
+  return decodeExplicitRunContractItems({
+    acceptanceCriteria: extractSectionItems(spec.body, [
+      "acceptance criteria",
+      "acceptance",
+      "criteria",
+      "success criteria",
+    ]),
+    nonGoals: extractSectionItems(spec.body, [
+      "non-goals",
+      "non goals",
+      "non-goal",
+      "non goal",
+      "out of scope",
+    ]),
+    stopConditions: extractSectionItems(spec.body, [
+      "stop conditions",
+      "stop condition",
+      "abort conditions",
+      "blockers",
+    ]),
+    verificationChecks: extractVerificationChecks(spec.body, [
+      "verification",
+      "verification commands",
+      "validation",
+      "test plan",
+      "tests",
+      "commands",
+    ]).map((check) => check.expectation),
+  });
+}
+
 export function writeWorkerPlan(
   input: WriteWorkerPlanInput
 ): Effect.Effect<WorkerPlan, GaiaRuntimeError, FileSystem.FileSystem> {

@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import { RunEventTimestampSchema } from "./events.js";
 import { ResolvedHarnessExecution } from "./harness-execution.js";
+import { RunVerificationAggregateSchema } from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
 
 const NonNegativeInteger = Schema.Number.pipe(
@@ -286,6 +287,7 @@ class FactoryGraphDtoBase extends Schema.Class<FactoryGraphDtoBase>(
   edges: Schema.Array(FactoryEdgeDto),
   execution: ResolvedHarnessExecution,
   linkedArtifacts: Schema.Array(FactoryArtifactDto),
+  proofAggregate: Schema.optionalKey(RunVerificationAggregateSchema),
   runId: RunIdSchema,
   version: Schema.Literal(1),
   workflow: FactoryWorkflowIdSchema,
@@ -401,6 +403,7 @@ export class FactoryRunSummaryDto extends Schema.Class<FactoryRunSummaryDto>(
   counts: FactoryRunCountsDto,
   createdAt: RunEventTimestampSchema,
   rootWorkItem: FactoryRootWorkItemSummaryDto,
+  proofAggregate: Schema.optionalKey(RunVerificationAggregateSchema),
   runId: RunIdSchema,
   state: FactoryAgentStateSchema,
   updatedAt: RunEventTimestampSchema,
@@ -415,6 +418,7 @@ export class FactoryRunDetailDto extends Schema.Class<FactoryRunDetailDto>(
   counts: FactoryRunCountsDto,
   createdAt: RunEventTimestampSchema,
   execution: ResolvedHarnessExecution,
+  proofAggregate: Schema.optionalKey(RunVerificationAggregateSchema),
   rootWorkItem: FactoryRootWorkItemSummaryDto,
   runId: RunIdSchema,
   state: FactoryAgentStateSchema,

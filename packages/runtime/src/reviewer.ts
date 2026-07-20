@@ -5,6 +5,7 @@ import { parseBrowserEvidenceJson } from "./browser-evidence.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import { HarnessRunResult } from "./harness.js";
 import {
+  RunPathsSchema,
   RunRelativeArtifactPathSchema,
   RuntimePathSchema,
   type RuntimePath,
@@ -19,7 +20,7 @@ import {
   type ReviewerSessionAdapterKind,
   type ReviewerSessionKind,
 } from "./reviewer-session-evidence.js";
-import { parseVerificationResultJson } from "./verifier.js";
+import { loadAuthoritativeRunProofResult } from "./run-contract.js";
 import { parseWorkerPlanJson } from "./worker-plan.js";
 import {
   changedPaths,
@@ -66,6 +67,7 @@ export class ReviewRunRequest extends Schema.Class<ReviewRunRequest>(
   browserEvidencePath: RuntimePathSchema,
   markdownPath: RuntimePathSchema,
   phase: ReviewPhaseSchema,
+  paths: RunPathsSchema,
   resultPath: RuntimePathSchema,
   runId: RunIdSchema,
   sessionEvidencePath: RuntimePathSchema,
@@ -260,10 +262,9 @@ function reviewEvidence(request: ReviewRunRequest) {
       parseHarnessRunResultJson,
       "HarnessRunResult"
     );
-    const verificationResult = yield* decodeJsonArtifact(
-      request.verificationResultPath,
-      parseVerificationResultJson,
-      "VerificationResult"
+    const verificationResult = yield* loadAuthoritativeRunProofResult(
+      request.paths,
+      request.runId
     );
 
     return ReviewResult.make({
@@ -273,7 +274,7 @@ function reviewEvidence(request: ReviewRunRequest) {
           severity: "info",
         }),
         ReviewFinding.make({
-          message: `Verification ${verificationResult.status} for ${verificationResult.checkedArtifacts.length} artifact(s).`,
+          message: `Run proof aggregate '${verificationResult.aggregate}' records ${verificationResult.results.length} claim result(s); reviewer approval does not change that aggregate.`,
           severity: "info",
         }),
         ReviewFinding.make({
@@ -287,7 +288,7 @@ function reviewEvidence(request: ReviewRunRequest) {
       reviewerName: defaultReviewerName,
       runId: request.runId,
       status: "approved",
-      summary: "Evidence review approved worker and verification artifacts.",
+      summary: `Evidence review completed; run proof remains '${verificationResult.aggregate}'.`,
     });
   });
 }

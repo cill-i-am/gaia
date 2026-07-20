@@ -11,9 +11,11 @@ import {
   parseRunId,
   parseHarnessSessionId,
   parseHarnessTurnId,
+  parseMarkdownSpec,
   parseWorkspaceRelativePath,
   projectHarnessEvents,
   type HarnessEvent,
+  type RunId,
 } from "@gaia/core";
 import {
   Deferred,
@@ -61,6 +63,8 @@ import {
   refreshInteractiveHarnessResult,
 } from "./interactive-harness.js";
 import { makeRunPaths } from "./paths.js";
+import type { RunPaths } from "./paths.js";
+import { deriveAndRecordRunContract } from "./run-contract.js";
 import { readLocalRunEvents } from "./run-read-api.js";
 import { acceptFactoryRun, continueServerRun } from "./server-workflows.js";
 import {
@@ -492,6 +496,12 @@ describe("interactive issue-delivery harness", () => {
             paths.harnessWorkspaceBaseline,
             yield* snapshotWorkspace(paths.workspace)
           );
+          yield* prepareAcceptedInteractiveRun(
+            accepted.runId,
+            paths,
+            "Terminal crash window",
+            "Recover after terminal turn persistence."
+          );
           const sessionId = parseHarnessSessionId(`session-${accepted.runId}`);
           const turnId = parseHarnessTurnId("turn-before-server-crash");
           for (const event of [
@@ -596,6 +606,12 @@ describe("interactive issue-delivery harness", () => {
             paths.harnessWorkspaceBaseline,
             yield* snapshotWorkspace(paths.workspace)
           );
+          yield* prepareAcceptedInteractiveRun(
+            accepted.runId,
+            paths,
+            "Missing private correlation",
+            "Fail closed when private correlation is missing."
+          );
           const sessionId = parseHarnessSessionId(`session-${accepted.runId}`);
           yield* appendHarnessSessionEvent(accepted.runId, paths, {
             capabilities: syntheticCapabilities,
@@ -666,6 +682,12 @@ describe("interactive issue-delivery harness", () => {
           yield* writeWorkspaceSnapshot(
             paths.harnessWorkspaceBaseline,
             yield* snapshotWorkspace(paths.workspace)
+          );
+          yield* prepareAcceptedInteractiveRun(
+            accepted.runId,
+            paths,
+            "Generic resume proof",
+            "Resume a nonterminal session."
           );
           const sessionId = parseHarnessSessionId(`session-${accepted.runId}`);
           const turnId = parseHarnessTurnId("turn-synthetic-worker");
@@ -754,6 +776,12 @@ describe("interactive issue-delivery harness", () => {
             paths.harnessWorkspaceBaseline,
             yield* snapshotWorkspace(paths.workspace)
           );
+          yield* prepareAcceptedInteractiveRun(
+            accepted.runId,
+            paths,
+            "Completed worker crash window",
+            "Continue downstream after worker completion persistence."
+          );
           const sessionId = parseHarnessSessionId(`session-${accepted.runId}`);
           const turnId = parseHarnessTurnId("turn-completed-before-crash");
           for (const event of [
@@ -831,6 +859,25 @@ const SyntheticProviderCountersSchema = Schema.Struct({
   resume: Schema.mutableKey(Schema.Number),
   start: Schema.mutableKey(Schema.Number),
 });
+
+function prepareAcceptedInteractiveRun(
+  runId: RunId,
+  paths: RunPaths,
+  title: string,
+  description: string
+) {
+  return Effect.gen(function* () {
+    yield* deriveAndRecordRunContract({
+      paths,
+      runId,
+      spec: parseMarkdownSpec(description, title),
+    });
+    yield* appendEvent(runId, paths, {
+      payload: { workspacePath: "workspace" },
+      type: "WORKSPACE_PREPARED",
+    });
+  });
+}
 
 function syntheticProvider(
   counters: typeof SyntheticProviderCountersSchema.Type,

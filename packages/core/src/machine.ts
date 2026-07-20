@@ -24,6 +24,7 @@ import {
   assertDeliveryLocalReviewAttestationAuthority,
   assertDeliveryMergeReadinessDecisionAuthority,
   DeliveryMergeReadinessDecisionV2,
+  DeliveryMergeReadinessDecisionV3,
   DeliveryLocalReviewAttestationReceiptSchema,
   parseDeliveryLocalReviewAttestationReceipt,
 } from "./delivery-merge.js";
@@ -53,6 +54,19 @@ import {
   type RunState,
   RunStateSchema,
 } from "./events.js";
+import {
+  parseMergeDecisionV2,
+  type MergeDecisionV2,
+} from "./merge-decision.js";
+import {
+  parseRunContract,
+  parseRunEventSequence,
+  parseRunProofResult,
+  parseRunRelativeArtifactPath,
+  RunContractV1,
+  RunProofProjectionV1Schema,
+  RunProofResultV1,
+} from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
 import {
   encodeWorkerContinuationReceiptJson,
@@ -155,6 +169,7 @@ export const RunMachineContextSchema = Schema.Struct({
   previewDeploymentStatus: Schema.UndefinedOr(RunMachineStatusSchema),
   previewDeploymentUrl: Schema.UndefinedOr(RunMachineUrlSchema),
   reportPath: Schema.UndefinedOr(RunMachinePathSchema),
+  runProof: Schema.UndefinedOr(RunProofProjectionV1Schema),
   runId: Schema.UndefinedOr(RunIdSchema),
   specPath: Schema.UndefinedOr(RunMachinePathSchema),
   verificationResultPath: Schema.UndefinedOr(RunMachinePathSchema),
@@ -193,6 +208,10 @@ export const RunMachineEventSchema = Schema.Union([
     runId: RunIdSchema,
     specPath: RunMachinePathSchema,
     type: Schema.Literal("RUN_CREATED"),
+  }),
+  Schema.Struct({
+    contract: RunContractV1,
+    type: Schema.Literal("RUN_CONTRACT_RECORDED"),
   }),
   Schema.Struct({
     delivery: RunMachineDeliverySchema,
@@ -258,8 +277,15 @@ export const RunMachineEventSchema = Schema.Union([
   }),
   Schema.Struct({ type: Schema.Literal("VERIFICATION_STARTED") }),
   Schema.Struct({
+    runId: RunIdSchema,
+    sequence: Schema.Number,
     type: Schema.Literal("VERIFICATION_COMPLETED"),
     verificationResultPath: RunMachinePathSchema,
+  }),
+  Schema.Struct({
+    result: RunProofResultV1,
+    verificationResultPath: RunMachinePathSchema,
+    type: Schema.Literal("RUN_PROOF_RESULT_RECORDED"),
   }),
   Schema.Struct({
     evidencePath: RunMachinePathSchema,
@@ -350,8 +376,6 @@ export const RunMachineEventSchema = Schema.Union([
   }),
 ]);
 
-export type RunMachineEvent = typeof RunMachineEventSchema.Type;
-
 export const parseRunMachineEvent = Schema.decodeUnknownSync(
   RunMachineEventSchema
 );
@@ -399,6 +423,7 @@ const initialContext = parseRunMachineContext({
   previewDeploymentStatus: undefined,
   previewDeploymentUrl: undefined,
   reportPath: undefined,
+  runProof: undefined,
   runId: undefined,
   specPath: undefined,
   verificationResultPath: undefined,
@@ -427,7 +452,9 @@ type RunMachineActionParams = {
   readonly recordPreviewDeployment: undefined;
   readonly recordReportCompleted: undefined;
   readonly recordReviewCompleted: undefined;
+  readonly recordRunContract: undefined;
   readonly recordRunCreated: undefined;
+  readonly recordRunProofResult: undefined;
   readonly recordVerificationCompleted: undefined;
   readonly recordWorkerCompleted: undefined;
   readonly recordWorkerContinuation: undefined;
@@ -449,7 +476,7 @@ type RunMachineGuardParams = {
 
 const runMachineSetup = setup<
   RunMachineContext,
-  RunMachineEvent,
+  Schema.Schema.Type<typeof RunMachineEventSchema>,
   Record<never, never>,
   Record<never, string>,
   RunMachineActionParams,
@@ -622,6 +649,12 @@ export const runMachine = runMachineSetup
       },
       delivering: {
         on: {
+          RUN_CONTRACT_RECORDED: {
+            actions: "recordRunContract",
+          },
+          RUN_PROOF_RESULT_RECORDED: {
+            actions: "recordRunProofResult",
+          },
           BROWSER_EVIDENCE_RECORDED: {
             actions: "recordBrowserEvidence",
           },
@@ -633,6 +666,9 @@ export const runMachine = runMachineSetup
           },
           GITHUB_PR_LOOP_RECORDED: {
             actions: "recordGitHubPrLoop",
+          },
+          MERGE_DECISION_RECORDED: {
+            actions: "recordMergeDecision",
           },
           REVIEW_COMPLETED: {
             actions: "recordReviewCompleted",
@@ -727,6 +763,9 @@ export const runMachine = runMachineSetup
       },
       preparingWorkspace: {
         on: {
+          RUN_CONTRACT_RECORDED: {
+            actions: "recordRunContract",
+          },
           DELIVERY_STARTED: {
             actions: "recordDelivery",
             target: "delivering",
@@ -823,6 +862,10 @@ export const runMachine = runMachineSetup
           },
           VERIFICATION_COMPLETED: {
             actions: "recordVerificationCompleted",
+            target: "reporting",
+          },
+          RUN_PROOF_RESULT_RECORDED: {
+            actions: "recordRunProofResult",
             target: "reporting",
           },
           VERIFICATION_STARTED: {},
@@ -1218,8 +1261,54 @@ export const runMachine = runMachineSetup
             : context.planReviewerSessionPath,
       }),
       recordVerificationCompleted: assign({
+        runProof: ({ event }) =>
+          event.type === "VERIFICATION_COMPLETED"
+            ? {
+                aggregate: "completed-unverified",
+                kind: "no-contract",
+                legacyVerification: {
+                  recordedBy: {
+                    runId: event.runId,
+                    sequence: parseRunEventSequence(event.sequence),
+                    type: "VERIFICATION_COMPLETED",
+                  },
+                  resultPath: parseRunRelativeArtifactPath(
+                    event.verificationResultPath
+                  ),
+                },
+                version: 1,
+              }
+            : undefined,
         verificationResultPath: ({ event }) =>
           event.type === "VERIFICATION_COMPLETED"
+            ? event.verificationResultPath
+            : undefined,
+      }),
+      recordRunContract: assign({
+        runProof: ({ event }) =>
+          event.type === "RUN_CONTRACT_RECORDED"
+            ? {
+                aggregate: "completed-unverified",
+                contract: event.contract,
+                kind: "contract",
+                version: 1,
+              }
+            : undefined,
+      }),
+      recordRunProofResult: assign({
+        runProof: ({ context, event }) =>
+          event.type === "RUN_PROOF_RESULT_RECORDED" &&
+          context.runProof?.kind === "contract"
+            ? {
+                aggregate: event.result.aggregate,
+                contract: context.runProof.contract,
+                kind: "contract",
+                latestResult: event.result,
+                version: 1,
+              }
+            : context.runProof,
+        verificationResultPath: ({ event }) =>
+          event.type === "RUN_PROOF_RESULT_RECORDED"
             ? event.verificationResultPath
             : undefined,
       }),
@@ -1287,12 +1376,82 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
     [];
   const mergeActions: typeof DeliveryMergeReplayActionsSchema.Type = [];
   const cleanupActions: typeof DeliveryCleanupReplayActionsSchema.Type = [];
+  let runContract: RunContractV1 | undefined;
+  let latestProofResult: RunProofResultV1 | undefined;
+  let contentAuthoritySequence = 1;
+  let evidenceReviewSequence: number | undefined;
+  let publicationConfirmationSequence: number | undefined;
+  let sawLegacyVerification = false;
+  let sawProofVocabulary = false;
+  let crossedWorkerExecutionBoundary = false;
 
   for (const event of events) {
     if (event.sequence !== expectedSequence) {
       throw new Error(
         `Invalid event sequence: expected ${expectedSequence}, received ${event.sequence}.`
       );
+    }
+
+    if (event.type === "RUN_CONTRACT_RECORDED") {
+      if (
+        sawLegacyVerification ||
+        sawProofVocabulary ||
+        runContract !== undefined
+      )
+        throw new Error(
+          "Run history cannot mix, replace, or duplicate the immutable run contract."
+        );
+      const state = actor.getSnapshot().value;
+      if (
+        crossedWorkerExecutionBoundary ||
+        (state !== "preparingWorkspace" && state !== "delivering")
+      )
+        throw new Error(
+          "The immutable run contract must be recorded before worker execution begins."
+        );
+      runContract = parseRunContract(event.payload["contract"]);
+      sawProofVocabulary = true;
+    }
+    if (event.type === "RUN_PROOF_RESULT_RECORDED") {
+      if (sawLegacyVerification || runContract === undefined)
+        throw new Error(
+          "Run-proof results require one earlier immutable contract and cannot mix with legacy verification."
+        );
+      latestProofResult = parseRunProofResult(
+        event.payload["result"],
+        runContract
+      );
+      sawProofVocabulary = true;
+    }
+    if (event.type === "VERIFICATION_COMPLETED") {
+      if (sawProofVocabulary)
+        throw new Error(
+          "Run history cannot mix legacy verification with contract-bound proof."
+        );
+      sawLegacyVerification = true;
+    }
+    if (event.type === "MERGE_DECISION_RECORDED") {
+      const isV2 = event.payload["decision"] !== undefined;
+      const state = actor.getSnapshot().value;
+      if (isV2) {
+        const decision = parseMergeDecisionV2(event.payload["decision"]);
+        if (decision.runId !== event.runId)
+          throw new Error(
+            "MergeDecisionV2 does not belong to its enclosing run."
+          );
+        if (state !== "delivering")
+          throw new Error("MergeDecisionV2 is legal only while delivering.");
+        assertApprovedMergeDecisionReplayAuthority(decision, {
+          contentAuthoritySequence,
+          evidenceReviewSequence,
+          latestProofResult,
+          publicationConfirmationSequence,
+        });
+      } else if (state !== "completed") {
+        throw new Error(
+          "Legacy merge decisions are legal only in completed history."
+        );
+      }
     }
 
     if (isDeliveryPublicationEvent(event)) {
@@ -1303,6 +1462,8 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       );
       validatePublicationTransition(publication, next);
       publication = next;
+      if (event.type === "DELIVERY_PUBLICATION_CONFIRMED")
+        publicationConfirmationSequence = event.sequence;
     }
     if (event.type === "DELIVERY_REMEDIATION_RECORDED") {
       const next = parseDeliveryRemediation(event.payload["remediation"]);
@@ -1331,7 +1492,15 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
         );
       }
       remediation = next;
+      contentAuthoritySequence = event.sequence;
     }
+    if (event.type === "WORKER_COMPLETED")
+      contentAuthoritySequence = event.sequence;
+    if (
+      event.type === "REVIEW_COMPLETED" &&
+      event.payload["phase"] === "evidence"
+    )
+      evidenceReviewSequence = event.sequence;
     if (event.type === "DELIVERY_PR_READY_RECORDED") {
       const next = parseDeliveryPullRequestReadyReceipt(
         event.payload["readyForReviewAction"]
@@ -1415,7 +1584,10 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       const decision = parseDeliveryMergeReadinessDecision(
         event.payload["decision"]
       );
-      if (decision instanceof DeliveryMergeReadinessDecisionV2) {
+      if (
+        decision instanceof DeliveryMergeReadinessDecisionV2 ||
+        decision instanceof DeliveryMergeReadinessDecisionV3
+      ) {
         const delivery = actor.getSnapshot().context.delivery;
         if (delivery?.["mode"] !== "pullRequest")
           throw new Error(
@@ -1500,10 +1672,54 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
     }
 
     actor.send(toMachineEvent(event));
+    if (
+      event.type === "WORKSPACE_PREPARED" ||
+      event.type === "WORKER_STARTED" ||
+      event.type === "WORKER_COMPLETED" ||
+      event.type === "WORKER_CONTINUATION_RECORDED" ||
+      event.type === "WORKER_RECOVERY_RECORDED"
+    )
+      crossedWorkerExecutionBoundary = true;
     expectedSequence += 1;
   }
 
   return actor.getSnapshot();
+}
+
+function assertApprovedMergeDecisionReplayAuthority(
+  decision: MergeDecisionV2,
+  authority: {
+    readonly contentAuthoritySequence: number;
+    readonly evidenceReviewSequence: number | undefined;
+    readonly latestProofResult: RunProofResultV1 | undefined;
+    readonly publicationConfirmationSequence: number | undefined;
+  }
+) {
+  if (decision.status !== "approved") return;
+
+  const proof = authority.latestProofResult;
+  const binding = decision.proofBinding;
+  if (
+    proof === undefined ||
+    proof.aggregate !== "verified" ||
+    binding === undefined ||
+    decision.contentAuthoritySequence !== authority.contentAuthoritySequence ||
+    proof.recordedBy.sequence < authority.contentAuthoritySequence ||
+    decision.evidenceReviewSequence === undefined ||
+    decision.evidenceReviewSequence !== authority.evidenceReviewSequence ||
+    decision.evidenceReviewSequence <= proof.recordedBy.sequence ||
+    decision.publicationConfirmationSequence === undefined ||
+    decision.publicationConfirmationSequence !==
+      authority.publicationConfirmationSequence ||
+    binding.contractId !== proof.contractId ||
+    binding.contractDigest !== proof.contractDigest ||
+    binding.proofResultDigest !== proof.resultDigest ||
+    binding.proofResultSequence !== proof.recordedBy.sequence ||
+    binding.observedTargetDigest !== proof.observedTargetDigest
+  )
+    throw new Error(
+      "Approved MergeDecisionV2 replay authority does not match proof, review, content, and publication events."
+    );
 }
 
 function isDeliveryPublicationEvent(event: RunEvent) {
@@ -1536,7 +1752,9 @@ export function snapshotFromReplay(
   });
 }
 
-function toMachineEvent(event: RunEvent): RunMachineEvent {
+function toMachineEvent(
+  event: RunEvent
+): Schema.Schema.Type<typeof RunMachineEventSchema> {
   return parseRunMachineEvent(toMachineEventInput(event));
 }
 
@@ -1673,12 +1891,20 @@ function toMachineEventInput(event: RunEvent) {
         ...(issueUrl === undefined ? {} : { issueUrl }),
       };
     case "MERGE_DECISION_RECORDED":
-      const pullRequest = getOptionalStringPayload(event, "pullRequest");
+      const currentDecision =
+        event.payload["decision"] === undefined
+          ? undefined
+          : parseMergeDecisionV2(event.payload["decision"]);
+      const pullRequest =
+        currentDecision?.pr ?? getOptionalStringPayload(event, "pullRequest");
       return {
-        blockerCount: getNumberPayload(event, "blockerCount"),
+        blockerCount:
+          currentDecision?.blockerCount ??
+          getNumberPayload(event, "blockerCount"),
         mergeDecisionPath: getStringPayload(event, "mergeDecisionPath"),
-        nextAction: getStringPayload(event, "nextAction"),
-        status: getStringPayload(event, "status"),
+        nextAction:
+          currentDecision?.nextAction ?? getStringPayload(event, "nextAction"),
+        status: currentDecision?.status ?? getStringPayload(event, "status"),
         type: event.type,
         ...(pullRequest === undefined ? {} : { pullRequest }),
       };
@@ -1747,6 +1973,20 @@ function toMachineEventInput(event: RunEvent) {
         specPath: getStringPayload(event, "specPath"),
         type: event.type,
       };
+    case "RUN_CONTRACT_RECORDED":
+      return {
+        contract: parseRunContract(event.payload["contract"]),
+        type: event.type,
+      };
+    case "RUN_PROOF_RESULT_RECORDED":
+      return {
+        result: parseRunProofResult(event.payload["result"]),
+        type: event.type,
+        verificationResultPath: getStringPayload(
+          event,
+          "verificationResultPath"
+        ),
+      };
     case "RUN_FAILED":
       return {
         failure: GaiaFailure.make({
@@ -1759,6 +1999,8 @@ function toMachineEventInput(event: RunEvent) {
       };
     case "VERIFICATION_COMPLETED":
       return {
+        runId: event.runId,
+        sequence: event.sequence,
         type: event.type,
         verificationResultPath: getStringPayload(
           event,
@@ -2573,6 +2815,11 @@ function snapshotContext(
   }
   if (context.delivery !== undefined) {
     output.delivery = context.delivery;
+  }
+  if (context.runProof !== undefined) {
+    output.runProof = Schema.encodeSync(RunProofProjectionV1Schema)(
+      Schema.decodeUnknownSync(RunProofProjectionV1Schema)(context.runProof)
+    );
   }
   if (context.githubChecksPath !== undefined) {
     output.githubChecksPath = context.githubChecksPath;

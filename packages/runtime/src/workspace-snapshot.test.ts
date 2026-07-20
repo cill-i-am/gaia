@@ -2,6 +2,7 @@ import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   parseWorkspaceRelativePath,
+  workspaceStructuralDigestV1,
   type WorkspaceRelativePath,
 } from "@gaia/core";
 import { Effect, FileSystem } from "effect";
@@ -9,11 +10,44 @@ import { Effect, FileSystem } from "effect";
 import { GaiaRuntimeError } from "./errors.js";
 import {
   productOnlyWorkspaceDiff,
+  observeWorkspaceStructuralDigest,
+  parseWorkspaceStructuralFileIdentity,
   readWorkspaceSnapshot,
   snapshotWorkspace,
   type WorkspaceSnapshot,
   writeWorkspaceSnapshot,
+  type WorkspaceStructuralFileIdentity,
+  type WorkspaceStructuralObserver,
 } from "./workspace-snapshot.js";
+
+const stableIdentity = parseWorkspaceStructuralFileIdentity({
+  ctimeNs: "10",
+  dev: "1",
+  ino: "2",
+  kind: "regular-file",
+  mtimeNs: "9",
+  size: "1",
+});
+
+const fakeStructuralObserver = (
+  change: Record<string, unknown> = {},
+  target: "afterHandle" | "finalPath" = "afterHandle"
+): WorkspaceStructuralObserver => ({
+  enumerate: async () => ["src/a.ts"],
+  readFile: async () => ({
+    afterHandle:
+      target === "afterHandle"
+        ? parseWorkspaceStructuralFileIdentity({ ...stableIdentity, ...change })
+        : stableIdentity,
+    beforeHandle: stableIdentity,
+    beforePath: stableIdentity,
+    bytes: new TextEncoder().encode("a"),
+    finalPath:
+      target === "finalPath"
+        ? parseWorkspaceStructuralFileIdentity({ ...stableIdentity, ...change })
+        : stableIdentity,
+  }),
+});
 
 describe("workspace snapshot persistence", () => {
   layer(NodeServices.layer)((it) => {
@@ -210,6 +244,94 @@ describe("workspace snapshot persistence", () => {
           assert.strictEqual(
             failure.message,
             "Gaia workspace snapshot contains an entry outside the workspace root."
+          );
+        })
+    );
+  });
+});
+
+describe("workspace structural observation", () => {
+  layer(NodeServices.layer)((it) => {
+    it.effect("records the explicit non-atomic observation limitation", () =>
+      Effect.gen(function* () {
+        const observed = yield* observeWorkspaceStructuralDigest(".", {
+          observer: fakeStructuralObserver(),
+        });
+
+        assert.strictEqual(
+          observed.digest,
+          workspaceStructuralDigestV1(observed.manifest)
+        );
+        assert.deepEqual(observed.receipt.proofLimitations, [
+          "not-an-atomic-filesystem-snapshot",
+          "metadata-stable-concurrent-rewrite-may-be-undetected",
+        ]);
+      })
+    );
+
+    it.effect("fails on a changed path set", () =>
+      Effect.gen(function* () {
+        let enumeration = 0;
+        const observer: WorkspaceStructuralObserver = {
+          ...fakeStructuralObserver(),
+          enumerate: async () =>
+            enumeration++ === 0 ? ["src/a.ts"] : ["src/a.ts", "src/b.ts"],
+        };
+        const failure = yield* Effect.flip(
+          observeWorkspaceStructuralDigest(".", { observer })
+        );
+        assert.strictEqual(
+          failure.code,
+          "WorkspaceStructuralObservationChanged"
+        );
+      })
+    );
+
+    for (const [label, change, target] of [
+      ["identity", { ino: "3" }, "afterHandle"],
+      ["kind", { kind: "symlink" }, "finalPath"],
+      ["size", { size: "2" }, "afterHandle"],
+      ["mtime", { mtimeNs: "11" }, "afterHandle"],
+      ["ctime", { ctimeNs: "12" }, "afterHandle"],
+    ] as const) {
+      it.effect(`fails on observable ${label} drift`, () =>
+        Effect.gen(function* () {
+          const failure = yield* Effect.flip(
+            observeWorkspaceStructuralDigest(".", {
+              observer: fakeStructuralObserver(change, target),
+            })
+          );
+          assert.strictEqual(
+            failure.code,
+            "WorkspaceStructuralObservationChanged"
+          );
+        })
+      );
+    }
+
+    it.effect(
+      "does not pretend to detect a metadata-stable same-size rewrite",
+      () =>
+        Effect.gen(function* () {
+          const observer = fakeStructuralObserver();
+          const rewritten: WorkspaceStructuralObserver = {
+            ...observer,
+            readFile: async (...args) => ({
+              ...(await observer.readFile(...args)),
+              bytes: new TextEncoder().encode("b"),
+            }),
+          };
+          const observed = yield* observeWorkspaceStructuralDigest(".", {
+            observer: rewritten,
+          });
+
+          assert.strictEqual(
+            observed.digest,
+            workspaceStructuralDigestV1(observed.manifest)
+          );
+          assert.include(
+            observed.receipt.proofLimitations,
+            "metadata-stable-concurrent-rewrite-may-be-undetected"
           );
         })
     );

@@ -120,15 +120,47 @@ export function appendEventWithinSerialization(
             timestamp,
             type: parsedInput.type,
           });
+    return yield* appendPreparedEventWithinSerialization(
+      runId,
+      paths,
+      existingEvents,
+      event
+    );
+  }).pipe(Effect.uninterruptible);
+}
+
+/**
+ * Validate and append an already prepared event while the caller owns the
+ * per-run serialization permit. This function never reacquires that permit,
+ * rereads history, or allocates identity.
+ */
+export function appendPreparedEventWithinSerialization(
+  runId: RunId,
+  paths: RunPaths,
+  existingEvents: ReadonlyArray<RunEvent>,
+  preparedEvent: RunEvent
+) {
+  return Effect.gen(function* () {
+    const event = parseRunEvent(preparedEvent);
+    const expectedSequence = (existingEvents.at(-1)?.sequence ?? 0) + 1;
+    if (event.runId !== runId || event.sequence !== expectedSequence) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "InvalidPreparedRunEvent",
+          message:
+            "Prepared run event must bind this run and the next positive sequence.",
+          recoverable: false,
+        })
+      );
+    }
     const events = [...existingEvents, event];
-    const snapshot = snapshotFromReplay(events);
+    const snapshot = yield* validateRunEventHistory(events);
 
     yield* appendJsonLine(paths.events, Schema.encodeSync(RunEvent)(event));
     yield* appendJsonLine(
       paths.snapshots,
       Schema.encodeSync(RunSnapshot)(snapshot)
     );
-
     yield* publishRunEvent(paths, event);
     return { event, snapshot };
   }).pipe(Effect.uninterruptible);
@@ -161,16 +193,12 @@ export function appendHarnessSessionEventWithinSerialization(
       sequence: existingEvents.length + 1,
       timestamp: new Date().toISOString(),
     });
-    validateHarnessEventHistories([...existingEvents, event]);
-    const snapshot = snapshotFromReplay([...existingEvents, event]);
-
-    yield* appendJsonLine(paths.events, Schema.encodeSync(RunEvent)(event));
-    yield* appendJsonLine(
-      paths.snapshots,
-      Schema.encodeSync(RunSnapshot)(snapshot)
+    return yield* appendPreparedEventWithinSerialization(
+      runId,
+      paths,
+      existingEvents,
+      event
     );
-    yield* publishRunEvent(paths, event);
-    return { event, snapshot };
   }).pipe(Effect.uninterruptible);
 }
 
@@ -283,9 +311,24 @@ export function readEvents(paths: RunPaths) {
       expectedSequence += 1;
     }
 
-    validateHarnessEventHistories(events);
-    replayRunEvents(events);
+    yield* validateRunEventHistory(events);
     return events;
+  });
+}
+
+function validateRunEventHistory(events: ReadonlyArray<RunEvent>) {
+  return Effect.try({
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "InvalidRunEventHistory",
+        message: "Run events violate Gaia's cross-event history invariants.",
+        recoverable: false,
+      }),
+    try: () => {
+      validateHarnessEventHistories(events);
+      return snapshotFromReplay(events);
+    },
   });
 }
 

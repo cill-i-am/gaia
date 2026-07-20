@@ -12,6 +12,7 @@ import {
   parseLocalRunReadDiagnostic,
   parseRunId,
   RunIdSchema,
+  RunProofProjectionV1Schema,
   snapshotFromReplay,
   type LocalRunArtifactContentType,
   type LocalRunArtifactId,
@@ -31,6 +32,11 @@ import {
   type RunStorageOptions,
   type RuntimePath,
 } from "./paths.js";
+import {
+  canonicalRunContractBody,
+  canonicalRunProofResultBody,
+  synchronizeEventOwnedRunProjections,
+} from "./run-contract.js";
 
 const decodeLocalRunArtifactId = Schema.decodeUnknownOption(
   LocalRunReadArtifactIdSchema
@@ -101,6 +107,10 @@ const artifactDefinitions: Readonly<
   report: {
     contentType: "text/markdown",
     path: (paths) => paths.reportMarkdown,
+  },
+  "run-contract": {
+    contentType: "application/json",
+    path: (paths) => paths.runContract,
   },
   "report-json": {
     contentType: "application/json",
@@ -176,28 +186,34 @@ export function readLocalRun(runId: RunId, options: RunStorageOptions = {}) {
       return yield* Effect.fail(runNotFoundDiagnostic(runId));
     }
 
-    const loadedExit = yield* Effect.exit(loadRun(paths));
-    if (loadedExit._tag === "Failure") {
+    const synchronizedExit = yield* Effect.exit(
+      synchronizeEventOwnedRunProjections(paths, runId)
+    );
+    if (synchronizedExit._tag === "Failure") {
       return yield* Effect.fail(readFailureDiagnostic(runId));
     }
 
-    if (loadedExit.value.events.length === 0) {
+    if (synchronizedExit.value.events.length === 0) {
       return yield* Effect.fail(noEventsDiagnostic(runId));
     }
 
-    const snapshot = snapshotFromReplay(loadedExit.value.events);
-    const firstEvent = loadedExit.value.events[0];
-    const latestEvent = loadedExit.value.events.at(-1);
+    const snapshot = snapshotFromReplay(synchronizedExit.value.events);
+    const firstEvent = synchronizedExit.value.events[0];
+    const latestEvent = synchronizedExit.value.events.at(-1);
     if (firstEvent === undefined || latestEvent === undefined) {
       return yield* Effect.fail(noEventsDiagnostic(runId));
     }
 
     const artifacts = yield* existingArtifacts(paths);
+    const proofAggregate = proofAggregateFromSnapshot(
+      snapshot.context["runProof"]
+    );
     const summary = decodeLocalRunSummary({
       artifacts,
       createdAt: firstEvent.timestamp,
-      eventCount: loadedExit.value.events.length,
+      eventCount: synchronizedExit.value.events.length,
       latestEventType: latestEvent.type,
+      ...(proofAggregate === undefined ? {} : { proofAggregate }),
       runId,
       state: snapshot.state,
       status: statusFromState(snapshot.state),
@@ -209,6 +225,11 @@ export function readLocalRun(runId: RunId, options: RunStorageOptions = {}) {
 
     return summary.value;
   });
+}
+
+function proofAggregateFromSnapshot(input: unknown) {
+  const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(input);
+  return Option.isSome(proof) ? proof.value.aggregate : undefined;
 }
 
 export function readLocalRunEvents(
@@ -264,6 +285,24 @@ export function readLocalRunArtifact(
     yield* readLocalRun(runId, options);
     const fs = yield* FileSystem.FileSystem;
     const paths = yield* makeRunPaths(runId, options);
+    const synchronized = yield* synchronizeEventOwnedRunProjections(
+      paths,
+      runId
+    );
+    const eventOwnedBody =
+      artifactId.value === "run-contract" && synchronized.contract !== undefined
+        ? canonicalRunContractBody(synchronized.contract)
+        : artifactId.value === "verification-result" &&
+            synchronized.proofResult !== undefined
+          ? canonicalRunProofResultBody(synchronized.proofResult)
+          : undefined;
+    if (eventOwnedBody !== undefined)
+      return parseLocalRunArtifact({
+        artifactName: artifactId.value,
+        body: eventOwnedBody,
+        contentType: definition.contentType,
+        runId,
+      });
     const artifactPath = definition.path(paths);
     const exists = yield* fs.exists(artifactPath);
     if (!exists) {

@@ -38,6 +38,7 @@ import {
   type WorkerRecoveryAction,
   type WorkerRecoveryReceipt,
   RunEvent,
+  RunProofProjectionV1Schema,
   type RunId,
   type RunState,
   WorkerRecoveryActionIdSchema,
@@ -1172,11 +1173,15 @@ function continueServerRunUnlocked(
 
     const snapshot = snapshotFromReplay(loaded.events);
     if (snapshot.state === "completed" || snapshot.state === "failed") {
+      const proofAggregate = proofAggregateFromSnapshot(
+        snapshot.context["runProof"]
+      );
       return {
         reportPath:
           snapshot.state === "completed" ? paths.reportMarkdown : undefined,
         runDirectory: paths.root,
         runId,
+        ...(proofAggregate === undefined ? {} : { proofAggregate }),
         state: snapshot.state,
         status: snapshot.state,
       } satisfies CommandSummary;
@@ -1457,14 +1462,25 @@ function continueDeliveryPublication(
     if (options.deliveryObservationEnabled === true) {
       yield* continueDeliveryRemediationLoop(runId, options);
     }
+    const loaded = yield* loadRun(paths);
+    const snapshot = snapshotFromReplay(loaded.events);
+    const proofAggregate = proofAggregateFromSnapshot(
+      snapshot.context["runProof"]
+    );
     return {
       reportPath: paths.reportMarkdown,
       runDirectory: paths.root,
       runId,
+      ...(proofAggregate === undefined ? {} : { proofAggregate }),
       state: "delivering",
       status: "running",
     } satisfies CommandSummary;
   });
+}
+
+function proofAggregateFromSnapshot(input: unknown) {
+  const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(input);
+  return Option.isSome(proof) ? proof.value.aggregate : undefined;
 }
 
 function latestWorkerContinuationReceipt(events: ReadonlyArray<RunEvent>) {

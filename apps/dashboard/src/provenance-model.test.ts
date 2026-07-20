@@ -54,7 +54,7 @@ describe("evidence provenance model", () => {
         runId,
         sequence: 3,
         timestamp: "2026-07-07T12:02:00.000Z",
-        type: "VERIFICATION_COMPLETED",
+        type: "VERIFICATION_STARTED",
       }),
       makeRunEvent({
         runId,
@@ -74,6 +74,7 @@ describe("evidence provenance model", () => {
           "report-json",
         ],
         eventCount: 4,
+        proofAggregate: "completed-unverified",
         runId,
         status: "completed",
         state: "completed",
@@ -133,6 +134,14 @@ describe("evidence provenance model", () => {
         ?.sources.some((source) => source.kind === "event")
     ).toBe(true);
     expect(
+      provenance.claims.find((claim) => claim.id === "check-signal")
+    ).toEqual(
+      expect.objectContaining({
+        label: "Run proof aggregate",
+        value: "completed-unverified",
+      })
+    );
+    expect(
       Schema.decodeUnknownSync(EvidenceProvenanceModelSchema)(provenance)
     ).toEqual(provenance);
   });
@@ -183,6 +192,63 @@ describe("evidence provenance model", () => {
     );
     expect(provenance.unavailableCount).toBeGreaterThan(0);
     expect(provenance.unsupportedCount).toBe(1);
+  });
+
+  it("labels legacy no-contract verification without implying run proof", () => {
+    const runId = parseRunId("run-6666666666");
+    const events = [
+      makeRunEvent({
+        runId,
+        sequence: 1,
+        timestamp: "2026-07-07T12:00:00.000Z",
+        type: "RUN_CREATED",
+      }),
+      makeRunEvent({
+        runId,
+        sequence: 2,
+        timestamp: "2026-07-07T12:01:00.000Z",
+        type: "VERIFICATION_COMPLETED",
+      }),
+    ];
+    const run = buildRunCanvasModel({
+      events,
+      run: localRunSummary({
+        artifacts: ["verification-result"],
+        eventCount: 2,
+        proofAggregate: "completed-unverified",
+        runId,
+      }),
+    });
+    const selectedNode = requiredNode(run, `run:${runId}`);
+    const provenance = buildEvidenceProvenanceModel({
+      relatedEvents: eventsForNode(run, selectedNode),
+      replayState: buildRunReplayState({ requestedIndex: 1, run }),
+      runCompare: buildRunCompareModel({
+        comparisonEvents: [],
+        comparisonRun: undefined,
+        primaryEvents: [],
+        primaryRun: undefined,
+      }),
+      selectedNode,
+      selectedRun: run,
+    });
+
+    expect(run.events[1]?.label).toBe(
+      "Legacy Verification Recorded (Unverified)"
+    );
+    expect(
+      provenance.claims.find((claim) => claim.id === "check-signal")
+    ).toEqual(
+      expect.objectContaining({
+        label: "Legacy verification evidence (no contract)",
+        value: "completed-unverified",
+      })
+    );
+    expect(
+      provenance.claims
+        .find((claim) => claim.id === "check-signal")
+        ?.sources.find((source) => source.kind === "artifact")?.label
+    ).toBe("Legacy Verification Artifact (Unverified)");
   });
 });
 

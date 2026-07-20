@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   CreateRunRequest,
   deriveDeliveryCleanupActionHistories,
@@ -17,8 +19,11 @@ import {
   parseDeliveryMergeReadinessDecision,
   parseDeliveryCleanupReceipt,
   parseHarnessEvent,
+  parseRunProofResult,
+  RunProofProjectionV1Schema,
   ResolvedHarnessExecution,
   RunEvent,
+  snapshotFromReplay,
   type EventType,
   type FactoryActivityId,
   type FactoryAgentId,
@@ -29,9 +34,8 @@ import {
   type LocalRunReadDiagnostic,
   type RunId,
 } from "@gaia/core";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, FileSystem, Option, Schema } from "effect";
 
-import { loadRun } from "./event-store.js";
 import {
   issueDeliveryAgentIds,
   issueDeliveryAgentParentIds,
@@ -45,6 +49,11 @@ import {
   type RunStorageOptions,
   type RuntimePath,
 } from "./paths.js";
+import {
+  canonicalRunContractBody,
+  canonicalRunProofResultBody,
+  synchronizeEventOwnedRunProjections,
+} from "./run-contract.js";
 
 export type FactoryRunCreateInput = typeof CreateRunRequest.Type;
 class FactoryGraphProjectionSchema extends Schema.Class<FactoryGraphProjectionSchema>(
@@ -176,6 +185,22 @@ const StoredFactoryIndexesSchema = Schema.Struct({
   artifacts: FactoryArtifactStoredIndexReadSchema,
   graph: FactoryGraphStoredIndexReadSchema,
 });
+const FactoryProjectionEnvelopeV2Schema = Schema.Struct({
+  kind: Schema.Literals(["activity", "artifacts", "graph"] as const),
+  sourceEventsDigest: Schema.String.pipe(
+    Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u))
+  ),
+  sourceEventCount: Schema.Int.pipe(
+    Schema.check(Schema.isGreaterThanOrEqualTo(1))
+  ),
+  sourceLastEventSequence: Schema.Int.pipe(
+    Schema.check(Schema.isGreaterThanOrEqualTo(1))
+  ),
+  value: Schema.Unknown,
+  version: Schema.Literal(2),
+});
+type FactoryProjectionEnvelopeKind =
+  typeof FactoryProjectionEnvelopeV2Schema.Type.kind;
 const BuildFactoryGraphInputSchema = Schema.Struct({
   activity: FactoryActivityListDto,
   artifacts: Schema.Array(FactoryArtifactDto),
@@ -284,11 +309,20 @@ const factoryArtifactDefinitions: ReadonlyArray<FactoryArtifactDefinition> = [
     path: (paths) => paths.evidenceReviewResult,
   },
   {
+    artifactId: decodeFactoryArtifactId("run-contract"),
+    contentType: "application/json",
+    eventType: "RUN_CONTRACT_RECORDED",
+    kind: "custom",
+    label: "Run contract",
+    ownerRole: "orchestrator",
+    path: (paths) => paths.runContract,
+  },
+  {
     artifactId: decodeFactoryArtifactId("verification-result"),
     contentType: "application/json",
-    eventType: "VERIFICATION_COMPLETED",
+    eventType: "RUN_PROOF_RESULT_RECORDED",
     kind: "testReport",
-    label: "Verification result",
+    label: "Run proof result",
     ownerRole: "tester",
     path: (paths) => paths.verificationResult,
   },
@@ -379,20 +413,23 @@ export function readFactoryRunIndexes(
       return yield* Effect.fail(runNotFoundDiagnostic(runId));
     }
 
-    const loadedExit = yield* Effect.exit(loadRun(paths));
-    if (loadedExit._tag === "Failure") {
+    const synchronizedExit = yield* Effect.exit(
+      synchronizeEventOwnedRunProjections(paths, runId)
+    );
+    if (synchronizedExit._tag === "Failure") {
       return yield* Effect.fail(readFailureDiagnostic(runId));
     }
-    if (loadedExit.value.events.length === 0) {
+    if (synchronizedExit.value.events.length === 0) {
       return yield* Effect.fail(noEventsDiagnostic(runId));
     }
+    const latestSnapshot = snapshotFromReplay(synchronizedExit.value.events);
 
     const stored = yield* readStoredIndexes(
       paths,
-      loadedExit.value.events,
-      loadedExit.value.latestSnapshot?.state === "completed" &&
+      synchronizedExit.value.events,
+      latestSnapshot.state === "completed" &&
         deriveDeliveryCleanupActionHistories(
-          loadedExit.value.events.flatMap((event) =>
+          synchronizedExit.value.events.flatMap((event) =>
             event.type === "DELIVERY_CLEANUP_RECORDED"
               ? [
                   {
@@ -478,6 +515,24 @@ export function readFactoryArtifactBodyFromIndex(
     }
 
     const paths = yield* makeRunPaths(indexes.graph.runId, options);
+    const synchronized = yield* synchronizeEventOwnedRunProjections(
+      paths,
+      indexes.graph.runId
+    );
+    const eventOwnedBody =
+      artifactIdInput === "run-contract" && synchronized.contract !== undefined
+        ? canonicalRunContractBody(synchronized.contract)
+        : artifactIdInput === "verification-result" &&
+            synchronized.proofResult !== undefined
+          ? canonicalRunProofResultBody(synchronized.proofResult)
+          : undefined;
+    if (eventOwnedBody !== undefined)
+      return decodeFactoryArtifactBody({
+        artifactId: artifact.artifactId,
+        body: eventOwnedBody,
+        contentType: artifact.contentType,
+        runId: indexes.graph.runId,
+      });
     const fs = yield* FileSystem.FileSystem;
     const bodyExit = yield* Effect.exit(
       fs.readFileString(definition.path(paths))
@@ -507,20 +562,24 @@ function rebuildFactoryRunIndexesFromPaths(
   input: Schema.Schema.Type<typeof RebuildFactoryRunIndexesFromPathsInputSchema>
 ) {
   return Effect.gen(function* () {
-    const loadedExit = yield* Effect.exit(loadRun(input.paths));
-    if (loadedExit._tag === "Failure") {
+    const synchronizedExit = yield* Effect.exit(
+      synchronizeEventOwnedRunProjections(input.paths, input.runId)
+    );
+    if (synchronizedExit._tag === "Failure") {
       return yield* Effect.fail(readFailureDiagnostic(input.runId));
     }
-    if (loadedExit.value.events.length === 0) {
+    if (synchronizedExit.value.events.length === 0) {
       return yield* Effect.fail(noEventsDiagnostic(input.runId));
     }
 
-    const createInput = yield* parseFactoryCreateInput(loadedExit.value.events);
+    const createInput = yield* parseFactoryCreateInput(
+      synchronizedExit.value.events
+    );
     const resolvedExecution = yield* parseFactoryResolvedExecution(
-      loadedExit.value.events
+      synchronizedExit.value.events
     );
     const artifactResult = yield* collectFactoryArtifacts({
-      events: loadedExit.value.events,
+      events: synchronizedExit.value.events,
       paths: input.paths,
       runId: input.runId,
     });
@@ -530,7 +589,7 @@ function rebuildFactoryRunIndexesFromPaths(
     });
     const activity = buildActivityIndex({
       artifacts: artifactIndex.artifacts,
-      events: loadedExit.value.events,
+      events: synchronizedExit.value.events,
       runId: input.runId,
     });
     const graph = buildFactoryGraph({
@@ -541,16 +600,16 @@ function rebuildFactoryRunIndexesFromPaths(
         ...input.additionalDiagnostics,
         ...artifactResult.diagnostics,
       ],
-      events: loadedExit.value.events,
+      events: synchronizedExit.value.events,
       resolvedExecution,
       runId: input.runId,
     });
 
-    yield* writeProjectionIndexes(input.paths, {
-      activity,
-      artifacts: artifactIndex,
-      graph,
-    });
+    yield* writeProjectionIndexes(
+      input.paths,
+      { activity, artifacts: artifactIndex, graph },
+      synchronizedExit.value.events
+    );
     return {
       activity,
       artifacts: artifactIndex,
@@ -570,21 +629,27 @@ function readStoredIndexes(
       decodeFactoryGraph,
       FactoryGraphStoredIndexReadSchema,
       "FactoryGraphIndexInvalid",
-      "factory-graph.json"
+      "factory-graph.json",
+      "graph",
+      events
     );
     const activity = yield* readStoredJson(
       paths.factoryActivityIndex,
       decodeActivityIndex,
       FactoryActivityStoredIndexReadSchema,
       "FactoryActivityIndexInvalid",
-      "activity-index.json"
+      "activity-index.json",
+      "activity",
+      events
     );
     const artifacts = yield* readStoredJson(
       paths.factoryArtifactsIndex,
       decodeArtifactIndex,
       FactoryArtifactStoredIndexReadSchema,
       "FactoryArtifactIndexInvalid",
-      "artifacts/index.json"
+      "artifacts/index.json",
+      "artifacts",
+      events
     );
 
     return {
@@ -613,7 +678,9 @@ function readStoredJson<
   decode: (input: unknown) => Value,
   storedIndexSchema: StoredIndexSchema,
   invalidCode: FactoryProjectionDiagnosticCode,
-  sourceId: FactoryProjectionDiagnosticSourceId
+  sourceId: FactoryProjectionDiagnosticSourceId,
+  expectedKind: FactoryProjectionEnvelopeKind,
+  events: ReadonlyArray<RunEvent>
 ): Effect.Effect<StoredIndexSchema["Type"], never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const parseStoredIndex = Schema.decodeUnknownSync(storedIndexSchema);
@@ -654,8 +721,31 @@ function readStoredJson<
 
     try {
       const parsed = JSON.parse(textExit.value);
+      const envelope = Schema.decodeUnknownOption(
+        FactoryProjectionEnvelopeV2Schema
+      )(parsed);
+      const expectedSequence = events.at(-1)?.sequence;
+      if (
+        Option.isNone(envelope) ||
+        envelope.value.kind !== expectedKind ||
+        envelope.value.sourceEventCount !== events.length ||
+        envelope.value.sourceLastEventSequence !== expectedSequence ||
+        envelope.value.sourceEventsDigest !== sourceEventsDigest(events)
+      )
+        return parseStoredIndex({
+          _tag: "stale",
+          diagnostic: {
+            code: "FactoryProjectionIndexStale",
+            message: `${sourceId} used a stale projection envelope and was rebuilt from events.jsonl.`,
+            recoverable: true,
+            sourceId,
+          },
+        });
       try {
-        return parseStoredIndex({ _tag: "valid", value: decode(parsed) });
+        return parseStoredIndex({
+          _tag: "valid",
+          value: decode(envelope.value.value),
+        });
       } catch {
         return parseStoredIndex(
           unreadableIndexDiagnostic(sourceId, invalidCode, "decode")
@@ -813,7 +903,8 @@ function storedDiagnostics(
 
 function writeProjectionIndexes(
   paths: RunPaths,
-  indexes: FactoryProjectionIndexes
+  indexes: FactoryProjectionIndexes,
+  events: ReadonlyArray<RunEvent>
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -822,17 +913,43 @@ function writeProjectionIndexes(
     });
     yield* fs.writeFileString(
       paths.factoryGraph,
-      `${JSON.stringify(encodeFactoryGraph(indexes.graph), null, 2)}\n`
+      `${JSON.stringify(projectionEnvelope("graph", encodeFactoryGraph(indexes.graph), events), null, 2)}\n`
     );
     yield* fs.writeFileString(
       paths.factoryActivityIndex,
-      `${JSON.stringify(encodeActivityIndex(indexes.activity), null, 2)}\n`
+      `${JSON.stringify(projectionEnvelope("activity", encodeActivityIndex(indexes.activity), events), null, 2)}\n`
     );
     yield* fs.writeFileString(
       paths.factoryArtifactsIndex,
-      `${JSON.stringify(encodeArtifactIndex(indexes.artifacts), null, 2)}\n`
+      `${JSON.stringify(projectionEnvelope("artifacts", encodeArtifactIndex(indexes.artifacts), events), null, 2)}\n`
     );
   });
+}
+
+function projectionEnvelope(
+  kind: FactoryProjectionEnvelopeKind,
+  value: unknown,
+  events: ReadonlyArray<RunEvent>
+) {
+  const last = events.at(-1);
+  if (last === undefined)
+    throw new Error("Factory projections require at least one source event.");
+  return {
+    kind,
+    sourceEventCount: events.length,
+    sourceLastEventSequence: last.sequence,
+    sourceEventsDigest: sourceEventsDigest(events),
+    value,
+    version: 2 as const,
+  };
+}
+
+function sourceEventsDigest(events: ReadonlyArray<RunEvent>) {
+  const encoded = events.map((event) => Schema.encodeSync(RunEvent)(event));
+  return createHash("sha256")
+    .update("gaia.factory-projection-source-events.v1\0")
+    .update(JSON.stringify(encoded))
+    .digest("hex");
 }
 
 function parseFactoryCreateInput(
@@ -923,6 +1040,10 @@ function buildFactoryGraph(
   );
   const artifactCounts = artifactCountByOwner(input.artifacts);
   const workItemId = issueDeliveryRootWorkItemId;
+  const replay = snapshotFromReplay(input.events);
+  const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(
+    replay.context["runProof"]
+  );
   const agents = issueDeliveryWorkflow.agentRoles.map((definition) => {
     const id = agentIdForRole(definition.role);
     const parentAgentId = parentAgentIdForRole(definition.role);
@@ -989,6 +1110,7 @@ function buildFactoryGraph(
     ],
     execution: input.resolvedExecution,
     linkedArtifacts: input.artifacts,
+    ...(proof._tag === "Some" ? { proofAggregate: proof.value.aggregate } : {}),
     runId: input.runId,
     version: 1,
     workflow: input.createInput.workflow,
@@ -1107,6 +1229,9 @@ function updateStatesForEvent(
     case "VERIFICATION_COMPLETED":
       states.set("tester", "succeeded");
       return;
+    case "RUN_PROOF_RESULT_RECORDED":
+      states.set("tester", "succeeded");
+      return;
     case "GITHUB_CHECKS_RECORDED":
     case "GITHUB_FEEDBACK_RECORDED":
     case "GITHUB_PR_LOOP_RECORDED":
@@ -1180,6 +1305,7 @@ function updateStatesForEvent(
       states.set(roleFromFailureStage(event.payload["stage"]), "failed");
       return;
     case "BROWSER_EVIDENCE_RECORDED":
+    case "RUN_CONTRACT_RECORDED":
     case "LINEAR_ISSUE_GRAPH_RECORDED":
     case "MERGE_DECISION_RECORDED":
     case "PREVIEW_DEPLOYMENT_RECORDED":
@@ -1208,6 +1334,7 @@ function roleFromFailureStage(stage: unknown): FactoryAgentRole {
 function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
   switch (event.type) {
     case "RUN_CREATED":
+    case "RUN_CONTRACT_RECORDED":
     case "DELIVERY_STARTED":
     case "WORKSPACE_PREPARED":
     case "REPORT_STARTED":
@@ -1244,6 +1371,7 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "BROWSER_EVIDENCE_RECORDED":
     case "VERIFICATION_STARTED":
     case "VERIFICATION_COMPLETED":
+    case "RUN_PROOF_RESULT_RECORDED":
       return "tester";
     case "GITHUB_CHECKS_RECORDED":
     case "GITHUB_FEEDBACK_RECORDED":
@@ -1297,6 +1425,8 @@ function subStateForEvent(event: RunEvent): string | undefined {
       return "workerCorrelation";
     case "RUN_CREATED":
       return "accepted";
+    case "RUN_CONTRACT_RECORDED":
+      return "contractRecorded";
     case "WORKSPACE_PREPARED":
       return "workspacePrepared";
     case "REVIEW_STARTED":
@@ -1311,7 +1441,10 @@ function subStateForEvent(event: RunEvent): string | undefined {
     case "VERIFICATION_STARTED":
       return "verifying";
     case "VERIFICATION_COMPLETED":
-      return "verified";
+      return "completed-unverified";
+    case "RUN_PROOF_RESULT_RECORDED": {
+      return parseRunProofResult(event.payload["result"]).aggregate;
+    }
     case "REPORT_STARTED":
       return "reporting";
     case "REPORT_COMPLETED":
@@ -1371,6 +1504,8 @@ function activityLabel(event: RunEvent): string {
       return "Merge provider checkpoint recorded";
     case "RUN_CREATED":
       return "Factory run accepted";
+    case "RUN_CONTRACT_RECORDED":
+      return "Run contract recorded";
     case "WORKSPACE_PREPARED":
       return "Workspace prepared";
     case "REVIEW_STARTED":
@@ -1392,7 +1527,9 @@ function activityLabel(event: RunEvent): string {
     case "VERIFICATION_STARTED":
       return "Verification started";
     case "VERIFICATION_COMPLETED":
-      return "Verification completed";
+      return "Legacy verification recorded (unverified)";
+    case "RUN_PROOF_RESULT_RECORDED":
+      return "Run proof result recorded";
     case "BROWSER_EVIDENCE_RECORDED":
       return "Browser evidence recorded";
     case "PREVIEW_DEPLOYMENT_RECORDED":
@@ -1537,7 +1674,12 @@ function collectFactoryArtifacts(
         contentType: definition.contentType,
         createdAt: createdAtForArtifact(definition, input.events),
         kind: definition.kind,
-        label: definition.label,
+        label:
+          definition.artifactId === "verification-result" &&
+          input.events.some(({ type }) => type === "VERIFICATION_COMPLETED") &&
+          !input.events.some(({ type }) => type === "RUN_PROOF_RESULT_RECORDED")
+            ? "Legacy verification artifact (unverified)"
+            : definition.label,
         ownerAgentId: agentIdForRole(definition.ownerRole),
         visibility: "run",
       });
@@ -1558,7 +1700,12 @@ function createdAtForArtifact(
   events: ReadonlyArray<RunEvent>
 ): typeof RunEvent.fields.timestamp.Type {
   return (
-    events.find((event) => event.type === definition.eventType)?.timestamp ??
+    events.find(
+      (event) =>
+        event.type === definition.eventType ||
+        (definition.artifactId === "verification-result" &&
+          event.type === "VERIFICATION_COMPLETED")
+    )?.timestamp ??
     events.at(-1)?.timestamp ??
     decodeRunEventTimestamp(new Date(0).toISOString())
   );

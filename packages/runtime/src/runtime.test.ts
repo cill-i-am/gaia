@@ -41,6 +41,7 @@ import {
   type DoctorCommandRunner,
 } from "./doctor.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
+import { writeEvidencePromotion } from "./evidence-promotion.js";
 import {
   commentGitHubPullRequest,
   coordinateGitHubPrLoop,
@@ -98,12 +99,7 @@ import {
   type SkillInstallCommandRunner,
 } from "./skill-bundle.js";
 import { localSkillManifestSource } from "./skill-manifest.js";
-import {
-  encodeVerificationResultJson,
-  parseVerificationResultJson,
-  VerificationResult,
-  verifyHarnessOutput,
-} from "./verifier.js";
+import { recordRunProofResult } from "./verifier.js";
 import { parseWorkerPlanJson } from "./worker-plan.js";
 import {
   collectBrowserEvidence,
@@ -247,11 +243,6 @@ describe("runtime workflows", () => {
         status: "approved",
         summary: "Plan review approved.",
       });
-      const verificationResult = VerificationResult.make({
-        checkedArtifacts: ["workspace/output.txt", "worker-result.json"],
-        runId,
-        status: "passed",
-      });
 
       assert.deepEqual(
         parseReviewerSessionEvidenceJson(
@@ -266,14 +257,6 @@ describe("runtime workflows", () => {
           JSON.parse(JSON.stringify(encodeReviewResultJson(reviewResult)))
         ),
         reviewResult
-      );
-      assert.deepEqual(
-        parseVerificationResultJson(
-          JSON.parse(
-            JSON.stringify(encodeVerificationResultJson(verificationResult))
-          )
-        ),
-        verificationResult
       );
     });
 
@@ -300,11 +283,6 @@ describe("runtime workflows", () => {
         sessionEvidence: sessionJson,
         status: "approved",
         summary: "Plan review approved.",
-      };
-      const verificationJson = {
-        checkedArtifacts: ["workspace/output.txt", "worker-result.json"],
-        runId,
-        status: "passed",
       };
 
       assert.throws(() =>
@@ -363,21 +341,6 @@ describe("runtime workflows", () => {
           ...reviewJson,
           findings: [{ message: "Missing severity." }],
         })
-      );
-      assert.throws(() =>
-        parseVerificationResultJson({
-          ...verificationJson,
-          checkedArtifacts: ["workspace/output.txt", ""],
-        })
-      );
-      assert.throws(() =>
-        parseVerificationResultJson({
-          ...verificationJson,
-          runId: "not-a-run",
-        })
-      );
-      assert.throws(() =>
-        parseVerificationResultJson({ ...verificationJson, status: "failed" })
       );
     });
 
@@ -1827,6 +1790,11 @@ describe("runtime workflows", () => {
         assert.strictEqual(promotion.runId, summary.runId);
         assert.strictEqual(promotion.promotionStatus, "pending-promotion");
         assert.strictEqual(promotion.cleanupStatus, "not-completed");
+        assert.deepEqual(promotion.verification.claimEvidenceArtifacts, []);
+        assert.strictEqual(
+          promotion.verification.supplementalProtocolEvidenceArtifacts[0],
+          "workspace/output.txt"
+        );
         assert.strictEqual(
           promotion.artifactPath,
           `.gaia/promoted/${summary.runId}/evidence-promotion.json`
@@ -1836,6 +1804,12 @@ describe("runtime workflows", () => {
           `# Evidence Promotion ${summary.runId}`
         );
         assert.include(promotionMarkdown, "Cleanup status: not-completed");
+        assert.include(promotionMarkdown, "## Run Proof Summary");
+        assert.include(promotionMarkdown, "Claim evidence artifacts:\n- none");
+        assert.include(
+          promotionMarkdown,
+          "Supplemental protocol evidence artifacts:\n- workspace/output.txt"
+        );
         assert.include(reportMarkdown, "evidence-promotion.json");
         assert.include(reportMarkdown, "factory-retro.json");
         assert.isBelow(
@@ -1843,6 +1817,20 @@ describe("runtime workflows", () => {
           reportMarkdown.indexOf("Raw run state is disposable")
         );
         assert.strictEqual(run.contentType, "application/json");
+
+        const paths = yield* makeRunPaths(summary.runId, {
+          rootDirectory: cwd,
+        });
+        yield* fs.remove(paths.verificationResult);
+        const repairedPromotion = yield* writeEvidencePromotion({
+          paths,
+          runId: summary.runId,
+        });
+        assert.strictEqual(
+          repairedPromotion.verification.status,
+          "completed-unverified"
+        );
+        assert.isTrue(yield* fs.exists(paths.verificationResult));
 
         yield* fs.remove(summary.runDirectory, { recursive: true });
         const survivingPromotion = parseEvidencePromotion(
@@ -4065,7 +4053,7 @@ describe("runtime workflows", () => {
             (event) => event.type === "WORKER_COMPLETED"
           );
           const verificationCompletedIndex = events.findIndex(
-            (event) => event.type === "VERIFICATION_COMPLETED"
+            (event) => event.type === "RUN_PROOF_RESULT_RECORDED"
           );
           const runFailedIndex = events.findIndex(
             (event) => event.type === "RUN_FAILED"
@@ -7479,149 +7467,21 @@ describe("runtime workflows", () => {
       })
     );
 
-    it.effect(
-      "approves merge decision when PR loop and reviewer gates pass",
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
-          const specPath = `${cwd}/spec.md`;
-          yield* fs.writeFileString(specPath, "Approve merge decision.\n");
-          const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
-
-          yield* coordinateGitHubPrLoop(run.runId, "1", {
-            commandRunner: recordingGitHubRunner([], (input) => {
-              if (input.args.join(" ").startsWith("pr checks")) {
-                return {
-                  exitCode: 0,
-                  stderr: "",
-                  stdout: JSON.stringify([
-                    {
-                      link: "https://github.com/cill-i-am/gaia/actions/runs/1",
-                      name: "test",
-                      state: "SUCCESS",
-                      workflow: "CI",
-                    },
-                  ]),
-                };
-              }
-
-              return {
-                exitCode: 0,
-                stderr: "",
-                stdout: JSON.stringify(
-                  prFeedbackView({ reviewDecision: "APPROVED" })
-                ),
-              };
-            }),
-            rootDirectory: cwd,
-          });
-
-          const summary = yield* recordMergeDecision(run.runId, {
-            rootDirectory: cwd,
-          });
-          const decision = parseMergeDecisionJson(
-            JSON.parse(yield* fs.readFileString(summary.decisionPath))
-          );
-          const events = yield* fs.readFileString(
-            `${run.runDirectory}/events.jsonl`
-          );
-
-          assert.strictEqual(summary.status, "approved");
-          assert.strictEqual(summary.nextAction, "ready-to-merge");
-          assert.strictEqual(summary.pr, "1");
-          assert.strictEqual(summary.blockerCount, 0);
-          assert.strictEqual(decision.status, "approved");
-          assert.strictEqual(decision.pr, "1");
-          assert.strictEqual(
-            decision.planReviewerSessionPath,
-            "plan-reviewer-session.json"
-          );
-          assert.strictEqual(
-            decision.evidenceReviewerSessionPath,
-            "evidence-reviewer-session.json"
-          );
-          assert.include(events, '"type":"MERGE_DECISION_RECORDED"');
-          assert.include(events, '"mergeDecisionPath":"merge-decision.json"');
-          assert.include(events, '"nextAction":"ready-to-merge"');
-        })
-    );
-
-    it.effect(
-      "approves merge decision when no CI is configured and local verification evidence exists",
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
-          const specPath = `${cwd}/spec.md`;
-          yield* fs.writeFileString(
-            specPath,
-            "Approve no-CI merge decision.\n"
-          );
-          const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
-
-          const prLoop = yield* coordinateGitHubPrLoop(run.runId, "1", {
-            commandRunner: recordingGitHubRunner([], (input) => {
-              if (input.args.join(" ").startsWith("pr checks")) {
-                return {
-                  exitCode: 1,
-                  stderr: "no checks reported on the 'gaia/example' branch\n",
-                  stdout: "",
-                };
-              }
-
-              return {
-                exitCode: 0,
-                stderr: "",
-                stdout: JSON.stringify(
-                  prFeedbackView({ reviewDecision: "APPROVED" })
-                ),
-              };
-            }),
-            rootDirectory: cwd,
-          });
-
-          const summary = yield* recordMergeDecision(run.runId, {
-            rootDirectory: cwd,
-          });
-          const verificationLog = yield* fs.readFileString(
-            `${run.runDirectory}/verification.log`
-          );
-
-          assert.strictEqual(prLoop.status, "ready");
-          assert.strictEqual(prLoop.checksStatus, "no-checks-configured");
-          assert.strictEqual(summary.status, "approved");
-          assert.strictEqual(summary.nextAction, "ready-to-merge");
-          assert.strictEqual(summary.blockerCount, 0);
-          assert.include(verificationLog, "Verification passed.");
-        })
-    );
-
-    it.effect("blocks merge decision when PR loop evidence is missing", () =>
+    it.effect("rejects merge decisions before the delivering lifecycle", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
         const specPath = `${cwd}/spec.md`;
-        yield* fs.writeFileString(specPath, "Block merge decision.\n");
+        yield* fs.writeFileString(specPath, "Reject early merge decision.\n");
         const run = yield* runSpecFile(specPath, { rootDirectory: cwd });
 
-        const summary = yield* recordMergeDecision(run.runId, {
-          rootDirectory: cwd,
-        });
-        const decision = parseMergeDecisionJson(
-          JSON.parse(yield* fs.readFileString(summary.decisionPath))
+        const error = yield* Effect.flip(
+          recordMergeDecision(run.runId, { rootDirectory: cwd })
         );
 
-        assert.strictEqual(summary.status, "blocked");
-        assert.strictEqual(summary.nextAction, "resolve-blockers");
-        assert.strictEqual(summary.pr, undefined);
-        assert.strictEqual(summary.blockerCount, 1);
-        assert.deepEqual(
-          summary.blockers.map((blocker) => blocker.kind),
-          ["missing-pr-loop"]
-        );
-        assert.strictEqual(decision.status, "blocked");
-        assert.strictEqual(decision.blockerCount, 1);
+        assert.isTrue(error instanceof GaiaRuntimeError);
+        if (error instanceof GaiaRuntimeError)
+          assert.strictEqual(error.code, "RunNotDelivering");
       })
     );
 
@@ -7672,7 +7532,7 @@ describe("runtime workflows", () => {
       })
     );
 
-    it.effect("fails verification when the worker artifact is missing", () =>
+    it.effect("fails proof recording when its contract is missing", () =>
       Effect.gen(function* () {
         const runId = parseRunId("run-V7kP9sQ2xY");
         const fs = yield* FileSystem.FileSystem;
@@ -7680,7 +7540,7 @@ describe("runtime workflows", () => {
         const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
         yield* fs.makeDirectory(paths.workspace, { recursive: true });
 
-        const exit = yield* Effect.exit(verifyHarnessOutput(runId, paths));
+        const exit = yield* Effect.exit(recordRunProofResult(runId, paths));
         assert.isTrue(exit._tag === "Failure");
       })
     );
@@ -8263,6 +8123,7 @@ function commandReportPath(summary: {
 function expectedReportArtifacts() {
   return [
     "workspace-manifest.json",
+    "run-contract.json",
     "run-profile.json",
     "skill-manifest.json",
     "skill-bundle.json",
@@ -8464,7 +8325,7 @@ describe("R5 delivery and reviewer compatibility locks", () => {
             [
               "Worker plan",
               "Run report",
-              "Verification summary",
+              "Run proof summary",
               "PR/check/feedback evidence",
               "Dogfood findings",
               "Promotion markdown",
@@ -8856,9 +8717,10 @@ describe("R5 delivery and reviewer compatibility locks", () => {
         },
       ],
       verification: {
-        checkedArtifacts: ["workspace/output.txt"],
+        claimEvidenceArtifacts: [],
         path: "verification-result.json",
-        status: "passed",
+        status: "completed-unverified",
+        supplementalProtocolEvidenceArtifacts: ["workspace/output.txt"],
       },
       version: 1,
     };
@@ -8889,8 +8751,9 @@ describe("R5 delivery and reviewer compatibility locks", () => {
         },
       ],
       verification: {
-        checkedArtifacts: [],
+        claimEvidenceArtifacts: [],
         status: "skipped",
+        supplementalProtocolEvidenceArtifacts: [],
       },
       version: 1,
     };
@@ -8927,8 +8790,9 @@ describe("R5 delivery and reviewer compatibility locks", () => {
         selectedEvidence: [{ ...fullRaw.selectedEvidence[0], path }],
         verification: {
           ...fullRaw.verification,
-          checkedArtifacts: [path],
+          claimEvidenceArtifacts: [path],
           path,
+          supplementalProtocolEvidenceArtifacts: [path],
         },
       });
       assert.strictEqual(accepted.selectedEvidence[0]?.path, path);
@@ -8948,7 +8812,7 @@ describe("R5 delivery and reviewer compatibility locks", () => {
         ...fullRaw,
         verification: {
           ...fullRaw.verification,
-          checkedArtifacts: [1],
+          claimEvidenceArtifacts: [1],
         },
       },
       {
@@ -8990,7 +8854,7 @@ describe("R5 delivery and reviewer compatibility locks", () => {
         })
       );
     }
-    for (const status of ["verified", "failed"]) {
+    for (const status of ["passed", "failed"]) {
       assert.throws(() =>
         parseEvidencePromotion({
           ...fullRaw,

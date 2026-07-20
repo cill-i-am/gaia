@@ -8,6 +8,7 @@ import { Schema } from "effect";
 
 export const RunCompareSignalStateSchema = Schema.Literals([
   "available",
+  "blocked",
   "failed",
   "missing",
 ] as const);
@@ -284,13 +285,29 @@ function checkSignalFor(
   run: LocalRunSummary,
   events: ReadonlyArray<RunEvent>
 ): RunCompareSignal {
+  if (run.proofAggregate !== undefined) {
+    const state =
+      run.proofAggregate === "verified"
+        ? "available"
+        : run.proofAggregate === "verification-failed"
+          ? "failed"
+          : "blocked";
+    return {
+      label: `Run proof: ${run.proofAggregate}`,
+      state,
+    };
+  }
   if (
     run.artifacts.includes(compareArtifactIds.verificationResult) ||
-    events.some((event) => event.type === "VERIFICATION_COMPLETED")
+    events.some(
+      (event) =>
+        event.type === "VERIFICATION_COMPLETED" ||
+        event.type === "RUN_PROOF_RESULT_RECORDED"
+    )
   ) {
     return {
-      label: "Checks available",
-      state: "available",
+      label: "Run proof result recorded; verification unknown",
+      state: "missing",
     };
   }
 

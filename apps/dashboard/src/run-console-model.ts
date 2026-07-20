@@ -6,6 +6,7 @@ import {
   LocalRunReadSummarySchema,
   LocalRunTimestampSchema,
   RunIdSchema,
+  RunVerificationAggregateSchema,
   type RunId,
 } from "@gaia/core";
 import { Schema } from "effect";
@@ -33,6 +34,8 @@ export const RunConsoleRunSchema = Schema.Struct({
   id: RunIdSchema,
   isTerminal: Schema.Boolean,
   latestEventLabel: Schema.String,
+  proofAggregate: Schema.optionalKey(RunVerificationAggregateSchema),
+  proofLabel: Schema.String,
   specHint: Schema.optional(Schema.String),
   stateLabel: Schema.String,
   status: LocalRunReadSummarySchema.fields.status,
@@ -176,6 +179,10 @@ function toRunConsoleRun(run: LocalRunSummary): RunConsoleRun {
     id: run.runId,
     isTerminal: run.status !== "running",
     latestEventLabel: eventTypeLabel(run.latestEventType),
+    ...(run.proofAggregate === undefined
+      ? {}
+      : { proofAggregate: run.proofAggregate }),
+    proofLabel: `Run proof: ${run.proofAggregate ?? "not recorded"}`,
     specHint: run.artifacts.includes(inputArtifactId)
       ? "Input artifact available"
       : undefined,

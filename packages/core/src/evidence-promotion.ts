@@ -37,7 +37,10 @@ export type EvidencePromotionCleanupStatus =
   typeof EvidencePromotionCleanupStatusSchema.Type;
 
 const EvidencePromotionVerificationStatusSchema = Schema.Literals([
-  "passed",
+  "verified",
+  "completed-unverified",
+  "verification-failed",
+  "awaiting-outcome-decision",
   "skipped",
 ] as const);
 const parseEvidencePromotionVerificationStatus = Schema.decodeUnknownSync(
@@ -158,9 +161,12 @@ export class EvidencePromotionReportPaths extends Schema.Class<EvidencePromotion
 }
 
 const EvidencePromotionVerificationSummaryFields = {
-  checkedArtifacts: Schema.Array(RunReportArtifactPathSchema.schema),
+  claimEvidenceArtifacts: Schema.Array(RunReportArtifactPathSchema.schema),
   path: Schema.optionalKey(RunReportArtifactPathSchema.schema),
   status: Schema.NonEmptyString,
+  supplementalProtocolEvidenceArtifacts: Schema.Array(
+    RunReportArtifactPathSchema.schema
+  ),
 };
 
 const EvidencePromotionVerificationSummaryInputSchema = Schema.Struct(
@@ -170,11 +176,14 @@ const EvidencePromotionVerificationSummaryInputSchema = Schema.Struct(
 export class EvidencePromotionVerificationSummary extends Schema.Class<EvidencePromotionVerificationSummary>(
   "EvidencePromotionVerificationSummary"
 )(EvidencePromotionVerificationSummaryFields) {
-  declare readonly checkedArtifacts: ReadonlyArray<
+  declare readonly claimEvidenceArtifacts: ReadonlyArray<
     typeof RunReportArtifactPathSchema.Type
   >;
   declare readonly path?: typeof RunReportArtifactPathSchema.Type;
   declare readonly status: typeof EvidencePromotionVerificationStatusSchema.Type;
+  declare readonly supplementalProtocolEvidenceArtifacts: ReadonlyArray<
+    typeof RunReportArtifactPathSchema.Type
+  >;
 
   constructor(
     input: Schema.Schema.Type<
@@ -184,9 +193,14 @@ export class EvidencePromotionVerificationSummary extends Schema.Class<EvidenceP
   ) {
     super(
       {
-        checkedArtifacts: input.checkedArtifacts.map((artifactPath) =>
-          RunReportArtifactPathSchema.make(artifactPath, options)
+        claimEvidenceArtifacts: input.claimEvidenceArtifacts.map(
+          (artifactPath) =>
+            RunReportArtifactPathSchema.make(artifactPath, options)
         ),
+        supplementalProtocolEvidenceArtifacts:
+          input.supplementalProtocolEvidenceArtifacts.map((artifactPath) =>
+            RunReportArtifactPathSchema.make(artifactPath, options)
+          ),
         ...(input.path === undefined
           ? {}
           : {

@@ -13,9 +13,12 @@ import { NodePath, NodeServices } from "@effect/platform-node";
 import {
   DeliveryFeedbackTrustPolicyV1,
   DeliveryGitShaPublicSchema,
+  DeliverySha256DigestPublicSchema,
   DeliveryMergeDispatchAttempted,
   DeliveryMergeIntent,
-  DeliveryMergeReadinessDecision,
+  DeliveryMergeReadinessDecisionV3,
+  DeliveryGitHubApprovedReviewSource,
+  DeliveryReviewApprovalNotRequiredSource,
   DeliveryMergeTerminalFailure,
   DeliveryPublicationAttempted,
   DeliveryPublicationConfirmed,
@@ -33,17 +36,31 @@ import {
   DeliveryRemediationVerified,
   RunEvent,
   deliveryRequiredCheckPolicyCanonicalPayload,
+  deliveryMergeReadinessDecisionV3PayloadDigest,
   deliveryPullRequestReadyCanonicalPayload,
   deliveryPullRequestReadyPayloadDigest,
   encodeDeliveryMergeReadinessDecisionJson,
   encodeDeliveryMergeReceiptJson,
+  encodeMergeDecisionV2Json,
+  encodeRunContractJson,
+  encodeRunProofResultJson,
   encodeDeliveryPublicationJson,
   encodeDeliveryPullRequestReadyReceiptJson,
   encodeDeliveryRemediationJson,
   makeRunEvent,
+  makeMergeDecisionV2,
+  makeRunContract,
+  makeRunProofResult,
+  deriveAcceptedOutcomeId,
+  deriveExplicitSpecItemDigest,
+  deriveProofClaimId,
   parseDeliveryPullRequestReadyReceipt,
   parseDeliveryFeedbackId,
   parseRunId,
+  parseRunEventSequence,
+  parseRunRelativeArtifactPath,
+  workspaceStructuralDigestV1,
+  MergeDecisionPayloadDigestSchema,
 } from "@gaia/core";
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -79,7 +96,96 @@ function fixture(
     )
   );
   mkdirSync(paths.root, { recursive: true });
+  mkdirSync(paths.workspace, { recursive: true });
   writeFileSync(paths.snapshots, "");
+  const structuralDigest = workspaceStructuralDigestV1({
+    entries: [],
+    version: 1,
+  });
+  const outcomeStatement = "The delivery is acceptable.";
+  const claimStatement = "Inspect the delivery result.";
+  const specDigest = "3".repeat(64);
+  const outcomeSource = {
+    itemDigest: deriveExplicitSpecItemDigest({
+      section: "acceptanceCriteria",
+      statement: outcomeStatement,
+    }),
+    kind: "explicitSpecItem" as const,
+    section: "acceptanceCriteria" as const,
+    specDigest,
+    version: 1 as const,
+  };
+  const claimSource = {
+    itemDigest: deriveExplicitSpecItemDigest({
+      section: "verificationChecks",
+      statement: claimStatement,
+    }),
+    kind: "explicitSpecItem" as const,
+    section: "verificationChecks" as const,
+    specDigest,
+    version: 1 as const,
+  };
+  const claimId = deriveProofClaimId({
+    authorityRequirements: ["gaia-runtime"],
+    kind: "command",
+    requirement: "required",
+    source: claimSource,
+    statement: claimStatement,
+  });
+  const contract = makeRunContract({
+    acceptedOutcomes: [
+      {
+        conditionalClaimIds: [],
+        outcomeId: deriveAcceptedOutcomeId({
+          source: outcomeSource,
+          statement: outcomeStatement,
+        }),
+        requiredClaimIds: [claimId],
+        source: outcomeSource,
+        statement: outcomeStatement,
+      },
+    ],
+    baseDigest: structuralDigest,
+    baseIdentity: { kind: "unversionedSnapshot", workspacePath: "." },
+    nonGoals: [],
+    proofClaims: [
+      {
+        authorityRequirements: ["gaia-runtime"],
+        claimId,
+        kind: "command",
+        requirement: "required",
+        source: claimSource,
+        statement: claimStatement,
+      },
+    ],
+    runId,
+    stopConditions: [],
+    targetDigest: structuralDigest,
+    targetIdentity: { kind: "unversionedWorkspace", workspacePath: "." },
+  });
+  const proof = makeRunProofResult({
+    contract,
+    observedTargetDigest: structuralDigest,
+    recordedBy: {
+      runId,
+      sequence: 4,
+      type: "RUN_PROOF_RESULT_RECORDED",
+    },
+    results: [
+      {
+        claimId,
+        evidence: [
+          {
+            artifactPath: "worker-result.json",
+            contentDigest: "4".repeat(64),
+            kind: "command",
+          },
+        ],
+        status: "passed",
+      },
+    ],
+    supplementalProtocolEvidence: [],
+  });
   const trust = DeliveryFeedbackTrustPolicyV1.make({
     ...defaultDeliveryFeedbackTrustPolicy("cill-i-am/gaia"),
     ...(requireApprovedReview === undefined ? {} : { requireApprovedReview }),
@@ -154,7 +260,7 @@ function fixture(
   const binding = {
     actionId: "merge-1",
     branchName: publication.branchName,
-    decisionSequence: 9,
+    decisionSequence: 13,
     expectedHeadSha: publication.headSha,
     mergeMethod: "merge" as const,
     payloadDigest: createHash("sha256")
@@ -165,7 +271,7 @@ function fixture(
           publication.prUrl,
           publication.branchName,
           publication.headSha,
-          "9",
+          "13",
           "merge",
           policyDigest,
         ].join("\0")
@@ -177,29 +283,72 @@ function fixture(
     prUrl: publication.prUrl,
     repository: "cill-i-am/gaia",
   };
-  const decision = DeliveryMergeReadinessDecision.make({
+  const proofBinding = {
+    contractDigest: proof.contractDigest,
+    contractId: proof.contractId,
+    observedTargetDigest: proof.observedTargetDigest,
+    proofResultDigest: proof.resultDigest,
+    proofResultSequence: proof.recordedBy.sequence,
+  };
+  const mergeDecision = makeMergeDecisionV2({
+    blockerCount: 0,
+    blockers: [],
+    contentAuthoritySequence: parseRunEventSequence(1),
+    decidedAt: "2026-07-11T19:00:12.000Z",
+    evidenceReviewPath: parseRunRelativeArtifactPath("evidence-review.md"),
+    evidenceReviewSequence: parseRunEventSequence(5),
+    evidenceReviewerSessionPath: parseRunRelativeArtifactPath(
+      "evidence-reviewer-session.json"
+    ),
+    nextAction: "ready-to-merge",
+    planReviewPath: parseRunRelativeArtifactPath("plan-review.md"),
+    planReviewerSessionPath: parseRunRelativeArtifactPath(
+      "plan-reviewer-session.json"
+    ),
+    pr: "74",
+    proofBinding,
+    publicationConfirmationSequence: parseRunEventSequence(8),
+    runId,
+    runProfilePath: parseRunRelativeArtifactPath("run-profile.json"),
+    status: "approved",
+    version: 2,
+  });
+  const decisionBase = {
     actionId: "readiness-1",
     approved: true,
+    approvalSource:
+      requireApprovedReview === false
+        ? DeliveryReviewApprovalNotRequiredSource.make({
+            kind: "notRequired",
+            version: 1,
+          })
+        : DeliveryGitHubApprovedReviewSource.make({
+            kind: "githubApproved",
+            reviewDecision: "APPROVED",
+            version: 1,
+          }),
+    authoritySequence: parseRunEventSequence(8),
     blockers: [],
     branchName: binding.branchName,
     headSha: binding.expectedHeadSha,
+    mergeDecisionPayloadDigest: mergeDecision.payloadDigest,
+    mergeDecisionSequence: parseRunEventSequence(12),
     mergeMethod: binding.mergeMethod,
-    payloadDigest: createHash("sha256")
-      .update(
-        [
-          "readiness-1",
-          runId,
-          binding.prUrl,
-          binding.branchName,
-          binding.mergeMethod,
-          policyDigest,
-        ].join("\0")
-      )
-      .digest("hex"),
     policyDigest,
-    policyVersion: 1,
+    policyVersion: 1 as const,
     prNumber: 74,
     prUrl: binding.prUrl,
+    proofBinding,
+    publicationConfirmationSequence: parseRunEventSequence(8),
+    publicationOperationId: publication.operationId,
+    publicationPayloadDigest: publication.payloadDigest,
+    repository: binding.repository,
+    runId,
+    version: 3 as const,
+  };
+  const decision = DeliveryMergeReadinessDecisionV3.make({
+    ...decisionBase,
+    payloadDigest: deliveryMergeReadinessDecisionV3PayloadDigest(decisionBase),
   });
   const intent = DeliveryMergeIntent.make({
     ...binding,
@@ -236,43 +385,58 @@ function fixture(
         stage: "delivering",
       },
     }),
-    event(3, "DELIVERY_PUBLICATION_INTENT_RECORDED", {
+    event(3, "RUN_CONTRACT_RECORDED", {
+      contract: encodeRunContractJson(contract),
+    }),
+    event(4, "RUN_PROOF_RESULT_RECORDED", {
+      result: encodeRunProofResultJson(proof),
+      verificationResultPath: "verification-result.json",
+    }),
+    event(5, "REVIEW_COMPLETED", {
+      phase: "evidence",
+      reviewPath: "evidence-review.md",
+    }),
+    event(6, "DELIVERY_PUBLICATION_INTENT_RECORDED", {
       publication: encodeDeliveryPublicationJson(pubIntent),
     }),
-    event(4, "DELIVERY_PUBLICATION_ATTEMPTED", {
+    event(7, "DELIVERY_PUBLICATION_ATTEMPTED", {
       publication: encodeDeliveryPublicationJson(pubAttempt),
     }),
-    event(5, "DELIVERY_PUBLICATION_CONFIRMED", {
+    event(8, "DELIVERY_PUBLICATION_CONFIRMED", {
       publication: encodeDeliveryPublicationJson(publication),
     }),
-    event(6, "DELIVERY_PR_READY_RECORDED", {
+    event(9, "DELIVERY_PR_READY_RECORDED", {
       readyForReviewAction:
         encodeDeliveryPullRequestReadyReceiptJson(readyIntent),
     }),
-    event(7, "DELIVERY_PR_READY_RECORDED", {
+    event(10, "DELIVERY_PR_READY_RECORDED", {
       readyForReviewAction:
         encodeDeliveryPullRequestReadyReceiptJson(readyAttempted),
     }),
-    event(8, "DELIVERY_PR_READY_RECORDED", {
+    event(11, "DELIVERY_PR_READY_RECORDED", {
       readyForReviewAction:
         encodeDeliveryPullRequestReadyReceiptJson(readyConfirmed),
     }),
-    event(9, "DELIVERY_MERGE_READINESS_RECORDED", {
+    event(12, "MERGE_DECISION_RECORDED", {
+      decision: encodeMergeDecisionV2Json(mergeDecision),
+      mergeDecisionPath: "merge-decision.json",
+    }),
+    event(13, "DELIVERY_MERGE_READINESS_RECORDED", {
       decision: encodeDeliveryMergeReadinessDecisionJson(decision),
     }),
     ...(state === "ready"
       ? []
       : [
-          event(10, "DELIVERY_MERGE_RECORDED", {
+          event(14, "DELIVERY_MERGE_RECORDED", {
             mergeAction: encodeDeliveryMergeReceiptJson(intent),
           }),
-          event(11, "DELIVERY_MERGE_RECORDED", {
+          event(15, "DELIVERY_MERGE_RECORDED", {
             mergeAction: encodeDeliveryMergeReceiptJson(attempted),
           }),
         ]),
     ...(state === "checkpoint"
       ? [
-          event(12, "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED", {
+          event(16, "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED", {
             checkpoint: {
               actionId: binding.actionId,
               payloadDigest: binding.payloadDigest,
@@ -284,7 +448,7 @@ function fixture(
       : []),
     ...(state === "unknown"
       ? [
-          event(12, "DELIVERY_MERGE_RECORDED", {
+          event(16, "DELIVERY_MERGE_RECORDED", {
             mergeAction: encodeDeliveryMergeReceiptJson(
               DeliveryMergeTerminalFailure.make({
                 ...binding,
@@ -304,7 +468,7 @@ function fixture(
   const action = {
     actionId: binding.actionId,
     expectedBranchName: binding.branchName,
-    expectedDecisionSequence: 9,
+    expectedDecisionSequence: 13,
     expectedHeadSha: binding.expectedHeadSha,
     expectedPolicyDigest: policyDigest,
     expectedPrUrl: binding.prUrl,
@@ -397,6 +561,56 @@ function corruptReadyReceipts(
         payload: {
           readyForReviewAction:
             encodeDeliveryPullRequestReadyReceiptJson(changed),
+        },
+        runId: event.runId,
+        sequence: event.sequence,
+        timestamp: event.timestamp,
+        type: event.type,
+      });
+    });
+  writeFileSync(
+    eventsPath,
+    `${events.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`
+  );
+}
+
+function corruptMergeReadinessDecision(
+  result: ReturnType<typeof fixture>,
+  corruption: "payload digest" | "merge-decision binding"
+) {
+  const eventsPath = path.join(
+    result.root,
+    ".gaia",
+    "runs",
+    result.runId,
+    "events.jsonl"
+  );
+  const events = readFileSync(eventsPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)))
+    .map((event) => {
+      if (event.type !== "DELIVERY_MERGE_READINESS_RECORDED") return event;
+      const decision = Schema.decodeUnknownSync(
+        DeliveryMergeReadinessDecisionV3
+      )(event.payload["decision"]);
+      const changed = DeliveryMergeReadinessDecisionV3.make({
+        ...decision,
+        ...(corruption === "payload digest"
+          ? {
+              payloadDigest: Schema.decodeUnknownSync(
+                DeliverySha256DigestPublicSchema
+              )("f".repeat(64)),
+            }
+          : {
+              mergeDecisionPayloadDigest: Schema.decodeUnknownSync(
+                MergeDecisionPayloadDigestSchema
+              )("f".repeat(64)),
+            }),
+      });
+      return makeRunEvent({
+        payload: {
+          decision: encodeDeliveryMergeReadinessDecisionJson(changed),
         },
         runId: event.runId,
         sequence: event.sequence,
@@ -616,7 +830,7 @@ describe("delivery merge reconstructed coordinator", () => {
     expect(approved).toMatchObject({
       approved: true,
       approvalSource: { kind: "localOperatorPairedReview" },
-      version: 2,
+      version: 3,
     });
     let replayReads = 0;
     const replay = await Effect.runPromise(
@@ -659,7 +873,7 @@ describe("delivery merge reconstructed coordinator", () => {
         }
       ).pipe(Effect.provide(NodeServices.layer))
     );
-    expect(rejected).toMatchObject({ approved: false, version: 2 });
+    expect(rejected).toMatchObject({ approved: false, version: 3 });
     expect(
       "approvalSource" in rejected ? rejected.approvalSource : undefined
     ).toBeUndefined();
@@ -923,7 +1137,7 @@ describe("delivery merge reconstructed coordinator", () => {
     expect(providerCalls).toBe(0);
   });
 
-  it("permits a new readiness decision only after exact remediated-head ready confirmation", async () => {
+  it("keeps remediation stale by sequence even after exact-head ready confirmation", async () => {
     const f = fixture("ready", false);
     const currentHeadSha = appendConfirmedRemediation(f);
     appendCurrentReadyConfirmation(f, currentHeadSha);
@@ -948,22 +1162,22 @@ describe("delivery merge reconstructed coordinator", () => {
       state: "open" as const,
     };
 
-    const decision = await Effect.runPromise(
-      coordinateDeliveryMergeReadiness(
-        f.runId,
-        {
-          actionId: "readiness-remediated-1",
-          kind: "evaluateMergeReadiness",
-          mergeMethod: "merge",
-        },
-        {
-          freshStateReader: () => Effect.succeed(fresh),
-          rootDirectory: f.root,
-        }
-      ).pipe(Effect.provide(NodeServices.layer))
-    );
-
-    expect(decision).toMatchObject({ approved: true, headSha: currentHeadSha });
+    await expect(
+      Effect.runPromise(
+        coordinateDeliveryMergeReadiness(
+          f.runId,
+          {
+            actionId: "readiness-remediated-1",
+            kind: "evaluateMergeReadiness",
+            mergeMethod: "merge",
+          },
+          {
+            freshStateReader: () => Effect.succeed(fresh),
+            rootDirectory: f.root,
+          }
+        ).pipe(Effect.provide(NodeServices.layer))
+      )
+    ).rejects.toMatchObject({ code: "DeliveryActionConflict" });
   });
 
   for (const corruption of [
@@ -1016,6 +1230,38 @@ describe("delivery merge reconstructed coordinator", () => {
         )
       ).rejects.toThrow();
       expect(reads).toBe(0);
+      expect(providerCalls).toBe(0);
+    });
+  }
+
+  for (const corruption of [
+    "payload digest",
+    "merge-decision binding",
+  ] as const) {
+    it(`rejects a corrupt V3 ${corruption} during replay before merge dispatch`, async () => {
+      const f = fixture("ready", false);
+      corruptMergeReadinessDecision(f, corruption);
+      let providerCalls = 0;
+      let stateReads = 0;
+
+      await expect(
+        Effect.runPromise(
+          coordinateDeliveryMerge(f.runId, f.action, {
+            commandRunner: () =>
+              Effect.sync(() => {
+                providerCalls += 1;
+                return { exitCode: 0, stderr: "", stdout: "" };
+              }),
+            freshStateReader: () =>
+              Effect.sync(() => {
+                stateReads += 1;
+                return merged(f.binding);
+              }),
+            rootDirectory: f.root,
+          }).pipe(Effect.provide(NodeServices.layer))
+        )
+      ).rejects.toThrow();
+      expect(stateReads).toBe(0);
       expect(providerCalls).toBe(0);
     });
   }

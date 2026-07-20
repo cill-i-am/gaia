@@ -21,7 +21,7 @@ import {
   RuntimePathSchema,
   type RunPaths,
 } from "./paths.js";
-import { parseVerificationResultJson } from "./verifier.js";
+import { loadAuthoritativeRunProofResult } from "./run-contract.js";
 
 const EvidencePromotionJson = Schema.toCodecJson(EvidencePromotion);
 const encodeEvidencePromotion = Schema.encodeSync(EvidencePromotionJson);
@@ -63,7 +63,10 @@ export function writeEvidencePromotion(input: WriteEvidencePromotionInput) {
     const fs = yield* FileSystem.FileSystem;
     const generatedAt = new Date().toISOString();
     const reportPaths = yield* buildReportPaths(input.paths);
-    const verification = yield* buildVerificationSummary(input.paths);
+    const verification = yield* buildVerificationSummary(
+      input.paths,
+      input.runId
+    );
     const pullRequest = yield* buildPullRequestSummary(input.paths);
     const dogfood = yield* buildDogfoodSummary(input.paths);
     const promotionStatus = input.promotionStatus ?? "pending-promotion";
@@ -160,24 +163,39 @@ function buildReportPaths(paths: RunPaths) {
   });
 }
 
-function buildVerificationSummary(paths: RunPaths) {
+function buildVerificationSummary(
+  paths: RunPaths,
+  runId: typeof RunIdSchema.Type
+) {
   return Effect.gen(function* () {
-    const artifact = yield* readJsonIfExists(
-      paths.verificationResult,
-      parseVerificationResultJson
+    const artifact = yield* loadAuthoritativeRunProofResult(paths, runId).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        error.code === "RunProofMissing"
+          ? Effect.succeed(undefined)
+          : Effect.fail(error)
+      )
     );
 
     if (artifact === undefined) {
       return EvidencePromotionVerificationSummary.make({
-        checkedArtifacts: [],
+        claimEvidenceArtifacts: [],
         status: "skipped",
+        supplementalProtocolEvidenceArtifacts: [],
       });
     }
 
     return EvidencePromotionVerificationSummary.make({
-      checkedArtifacts: artifact.checkedArtifacts,
+      claimEvidenceArtifacts: artifact.results.flatMap((result) =>
+        result.status === "passed" || result.status === "failed"
+          ? result.evidence.map((evidence) => evidence.artifactPath)
+          : []
+      ),
       path: runRelative(paths, paths.verificationResult),
-      status: artifact.status,
+      status: artifact.aggregate,
+      supplementalProtocolEvidenceArtifacts:
+        artifact.supplementalProtocolEvidence.map(
+          (evidence) => evidence.artifactPath
+        ),
     });
   });
 }
@@ -288,15 +306,15 @@ function buildSelectedEvidence(
           : "Report path is selected here before report cleanup guidance is rendered.",
     }),
     promotedEvidenceItem({
-      label: "Verification summary",
+      label: "Run proof summary",
       ...(input.verification.path === undefined
         ? {}
         : { path: input.verification.path }),
       status: input.verification.path === undefined ? "skipped" : "promoted",
       summary:
         input.verification.path === undefined
-          ? "Verification evidence was not available for this run."
-          : `Verification ${input.verification.status} for ${input.verification.checkedArtifacts.length} artifact(s).`,
+          ? "Run-proof evidence was not available for this run."
+          : `Run proof ${input.verification.status} with ${input.verification.claimEvidenceArtifacts.length} claim evidence artifact(s) and ${input.verification.supplementalProtocolEvidenceArtifacts.length} supplemental protocol artifact(s).`,
     }),
     promotedEvidenceItem({
       label: "PR/check/feedback evidence",
@@ -340,10 +358,16 @@ function renderEvidencePromotionMarkdown(
         `- ${evidence.status}: ${evidence.label}${formatPath(evidence.path)} - ${evidence.summary}`
     )
     .join("\n");
-  const checkedArtifacts =
-    input.verification.checkedArtifacts.length === 0
+  const claimEvidenceArtifacts =
+    input.verification.claimEvidenceArtifacts.length === 0
       ? "- none"
-      : input.verification.checkedArtifacts
+      : input.verification.claimEvidenceArtifacts
+          .map((artifact) => `- ${artifact}`)
+          .join("\n");
+  const supplementalProtocolEvidenceArtifacts =
+    input.verification.supplementalProtocolEvidenceArtifacts.length === 0
+      ? "- none"
+      : input.verification.supplementalProtocolEvidenceArtifacts
           .map((artifact) => `- ${artifact}`)
           .join("\n");
   const prEvidence =
@@ -368,12 +392,15 @@ Generated at: ${input.generatedAt}
 
 ${selectedEvidence}
 
-## Verification Summary
+## Run Proof Summary
 
 Status: ${input.verification.status}${formatPath(input.verification.path)}
 
-Checked artifacts:
-${checkedArtifacts}
+Claim evidence artifacts:
+${claimEvidenceArtifacts}
+
+Supplemental protocol evidence artifacts:
+${supplementalProtocolEvidenceArtifacts}
 
 ## PR / Check / Feedback Evidence
 

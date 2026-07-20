@@ -161,7 +161,7 @@ export function buildEvidenceProvenanceModel(
   const claims = [
     nodeStatusClaim(input.selectedNode, input.relatedEvents),
     eventCountClaim(input.selectedNode, input.relatedEvents, input.selectedRun),
-    artifactCountClaim(input.selectedNode),
+    artifactCountClaim(input.selectedNode, input.selectedRun),
     replayReachabilityClaim(
       input.selectedNode,
       input.relatedEvents,
@@ -240,10 +240,10 @@ function eventCountClaim(
   };
 }
 
-function artifactCountClaim(node: RunNode): ProvenanceClaim {
+function artifactCountClaim(node: RunNode, run: DashboardRun): ProvenanceClaim {
   const sources =
     node.artifacts.length > 0
-      ? node.artifacts.map(artifactSource)
+      ? node.artifacts.map((artifactId) => artifactSource(artifactId, run))
       : [
           unavailableSource(
             "No allowlisted artifacts are attached to this visible claim."
@@ -328,15 +328,7 @@ function runSignalClaims(run: DashboardRun): ReadonlyArray<ProvenanceClaim> {
       unavailableDetail:
         "No report artifact or report completion event is exposed for this run.",
     }),
-    signalClaim({
-      artifactIds: [provenanceArtifactIds.verificationResult],
-      eventTypes: ["VERIFICATION_COMPLETED"],
-      id: decodeProvenanceClaimId("check-signal"),
-      label: "Check signal",
-      run,
-      unavailableDetail:
-        "No verification artifact or verification completion event is exposed for this run.",
-    }),
+    runProofSignalClaim(run),
     signalClaim({
       artifactIds: [
         provenanceArtifactIds.planReview,
@@ -351,6 +343,51 @@ function runSignalClaims(run: DashboardRun): ReadonlyArray<ProvenanceClaim> {
         "No review artifact or review completion event is exposed for this run.",
     }),
   ];
+}
+
+function runProofSignalClaim(run: DashboardRun): ProvenanceClaim {
+  const artifactSources = run.nodes
+    .flatMap((node) => node.artifacts)
+    .filter(
+      (artifactId) => artifactId === provenanceArtifactIds.verificationResult
+    )
+    .map((artifactId) => artifactSource(artifactId, run));
+  const proofEvents = run.events.filter(
+    (event) => event.type === "RUN_PROOF_RESULT_RECORDED"
+  );
+  const legacyEvents = run.events.filter(
+    (event) => event.type === "VERIFICATION_COMPLETED"
+  );
+  if (
+    proofEvents.length > 0 ||
+    (legacyEvents.length === 0 && run.proofAggregate !== undefined)
+  )
+    return {
+      availability: "supported",
+      id: decodeProvenanceClaimId("check-signal"),
+      label: "Run proof aggregate",
+      sources: [...proofEvents.map(eventSource), ...artifactSources],
+      value: run.proofAggregate ?? "recorded",
+    };
+  if (legacyEvents.length > 0)
+    return {
+      availability: "supported",
+      id: decodeProvenanceClaimId("check-signal"),
+      label: "Legacy verification evidence (no contract)",
+      sources: [...legacyEvents.map(eventSource), ...artifactSources],
+      value: "completed-unverified",
+    };
+  return {
+    availability: "unavailable",
+    id: decodeProvenanceClaimId("check-signal"),
+    label: "Run proof aggregate",
+    sources: [
+      unavailableSource(
+        "No contract-bound run-proof aggregate or legacy verification event is exposed for this run."
+      ),
+    ],
+    value: "Unavailable",
+  };
 }
 
 function signalClaim(input: {
@@ -373,7 +410,9 @@ function signalClaim(input: {
   );
   const sources = [
     ...matchingEvents.map(eventSource),
-    ...matchingArtifacts.map(artifactSource),
+    ...matchingArtifacts.map((artifactId) =>
+      artifactSource(artifactId, input.run)
+    ),
   ];
 
   if (sources.length === 0) {
@@ -460,11 +499,14 @@ function eventSource(event: DashboardEvent): ProvenanceSource {
   };
 }
 
-function artifactSource(artifactId: DashboardArtifactId): ProvenanceSource {
+function artifactSource(
+  artifactId: DashboardArtifactId,
+  run?: DashboardRun
+): ProvenanceSource {
   return {
     detail: `Allowlisted artifact read through GET /runs/:runId/artifacts/${artifactId}.`,
     kind: "artifact",
-    label: artifactLabel(artifactId),
+    label: artifactLabel(artifactId, run),
     target: {
       artifactId,
       type: "artifact",
@@ -522,7 +564,15 @@ function unsupportedSource(detail: string): ProvenanceSource {
   };
 }
 
-function artifactLabel(artifactId: string) {
+function artifactLabel(artifactId: string, run?: DashboardRun) {
+  if (artifactId === "verification-result") {
+    if (run?.events.some((event) => event.type === "RUN_PROOF_RESULT_RECORDED"))
+      return "Run Proof Result";
+    if (run?.events.some((event) => event.type === "VERIFICATION_COMPLETED"))
+      return "Legacy Verification Artifact (Unverified)";
+    if (run?.proofAggregate !== undefined) return "Run Proof Result";
+    return "Verification Artifact (Unverified)";
+  }
   return artifactId
     .split("-")
     .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)

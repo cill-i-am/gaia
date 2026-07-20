@@ -1,4 +1,9 @@
-import type { RunId } from "@gaia/core";
+import {
+  parseRunRelativeArtifactPath,
+  RunRelativeArtifactPathSchema,
+  type RunId,
+  type RunRelativeArtifactPath,
+} from "@gaia/core";
 import { Effect, Path, Schema } from "effect";
 
 const noControlCharacters = Schema.makeFilter(
@@ -6,29 +11,6 @@ const noControlCharacters = Schema.makeFilter(
   {
     identifier: "RuntimePathText",
     message: "Runtime paths must not contain control characters.",
-  }
-);
-
-const safeRunRelativeArtifactPath = Schema.makeFilter(
-  (input: string) => {
-    if (
-      input.length === 0 ||
-      input.startsWith("/") ||
-      /^[A-Za-z]:[\\/]/u.test(input) ||
-      input.includes("\\") ||
-      /[\u0000-\u001f\u007f]/u.test(input)
-    ) {
-      return false;
-    }
-
-    return input.split("/").every((segment) => {
-      return segment.length > 0 && segment !== "." && segment !== "..";
-    });
-  },
-  {
-    identifier: "RunRelativeArtifactPath",
-    message:
-      "Run-relative artifact paths must not be absolute, empty, or traversal paths.",
   }
 );
 
@@ -52,28 +34,14 @@ export const RunStorageRootInputSchema = Schema.NonEmptyString.pipe(
 
 export type RunStorageRootInput = typeof RunStorageRootInputSchema.Type;
 
-/** Encoded artifact path relative to one Gaia run root. */
-export const RunRelativeArtifactPathTextSchema = Schema.NonEmptyString.pipe(
-  Schema.check(safeRunRelativeArtifactPath)
-);
-
-/** Branded artifact path relative to one Gaia run root. */
-export const RunRelativeArtifactPathSchema =
-  RunRelativeArtifactPathTextSchema.pipe(
-    Schema.brand("RunRelativeArtifactPath")
-  );
-
-export type RunRelativeArtifactPath = typeof RunRelativeArtifactPathSchema.Type;
+export { RunRelativeArtifactPathSchema, parseRunRelativeArtifactPath };
+export type { RunRelativeArtifactPath };
 
 /** Decode untrusted or newly joined filesystem paths before runtime use. */
 export const parseRuntimePath = Schema.decodeUnknownSync(RuntimePathSchema);
 /** Decode user-provided run-store roots before deriving Gaia storage paths. */
 export const parseRunStorageRootInput = Schema.decodeUnknownSync(
   RunStorageRootInputSchema
-);
-/** Decode persisted or report-facing run-relative artifact paths. */
-export const parseRunRelativeArtifactPath = Schema.decodeUnknownSync(
-  RunRelativeArtifactPathSchema
 );
 
 export const RunStorageOptionsSchema = Schema.Struct({
@@ -136,6 +104,7 @@ export const RunPathsSchema = Schema.Struct({
   reviewerFindings: RuntimePathSchema,
   root: RuntimePathSchema,
   runProfile: RuntimePathSchema,
+  runContract: RuntimePathSchema,
   runsRoot: RuntimePathSchema,
   skillBundle: RuntimePathSchema,
   skillInstallRoot: RuntimePathSchema,
@@ -259,6 +228,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       reviewerFindings: path.join(root, "reviewer-findings.json"),
       root,
       runProfile: path.join(root, "run-profile.json"),
+      runContract: path.join(root, "run-contract.json"),
       runsRoot: store.runsRoot,
       snapshots: path.join(root, "snapshots.jsonl"),
       skillBundle: path.join(root, "skill-bundle.json"),

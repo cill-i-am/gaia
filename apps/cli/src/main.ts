@@ -1302,6 +1302,9 @@ function renderSummary(summary: CommandSummary) {
   const lines = [
     `${summary.status === "completed" ? "completed" : summary.status}: ${summary.runId}`,
     `state: ${summary.state}`,
+    ...(summary.proofAggregate === undefined
+      ? []
+      : [`run proof: ${summary.proofAggregate}`]),
     `run: ${summary.runDirectory}`,
   ];
 
@@ -1333,7 +1336,10 @@ function renderRunList(summaries: ReadonlyArray<CommandSummary>) {
   }
 
   return summaries
-    .map((summary) => `${summary.runId} ${summary.status} ${summary.state}`)
+    .map(
+      (summary) =>
+        `${summary.runId} ${summary.status} ${summary.state} proof:${summary.proofAggregate ?? "not-recorded"}`
+    )
     .join("\n");
 }
 

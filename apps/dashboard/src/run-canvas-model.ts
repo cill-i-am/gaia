@@ -115,6 +115,9 @@ export const DashboardRunSchema = Schema.Struct({
   events: Schema.Array(DashboardEventSchema),
   id: DashboardRunIdSchema,
   nodes: Schema.Array(RunNodeSchema),
+  proofAggregate: Schema.optionalKey(
+    LocalRunReadSummarySchema.fields.proofAggregate
+  ),
   status: RunStatusSchema,
   title: Schema.String,
   updatedAt: DashboardRunUpdatedAtSchema,
@@ -184,6 +187,7 @@ const artifactIds = Object.freeze({
   report: decodeDashboardArtifactId("report"),
   reportJson: decodeDashboardArtifactId("report-json"),
   reviewerFindings: decodeDashboardArtifactId("reviewer-findings"),
+  runContract: decodeDashboardArtifactId("run-contract"),
   snapshots: decodeDashboardArtifactId("snapshots"),
   verificationResult: decodeDashboardArtifactId("verification-result"),
   workerLog: decodeDashboardArtifactId("worker-log"),
@@ -275,8 +279,9 @@ export function buildRunCanvasModel(
     }
   }
 
+  const proofAggregate = input.run.proofAggregate;
   const artifactNodes = input.run.artifacts.map((artifact, index) =>
-    artifactNode(artifact, index, status, input.events)
+    artifactNode(artifact, index, status, input.events, proofAggregate)
   );
   nodes.push(...artifactNodes);
   for (const node of artifactNodes) {
@@ -295,6 +300,9 @@ export function buildRunCanvasModel(
     status,
     branch: "Local run",
     updatedAt: input.run.updatedAt,
+    ...(input.run.proofAggregate === undefined
+      ? {}
+      : { proofAggregate: input.run.proofAggregate }),
     nodes,
     edges,
     events: input.events.map(toDashboardEvent),
@@ -394,6 +402,8 @@ export function isTerminalRunEvent(event: RunEvent): boolean {
 }
 
 export function eventTypeLabel(eventType: string) {
+  if (eventType === "VERIFICATION_COMPLETED")
+    return "Legacy Verification Recorded (Unverified)";
   return eventType
     .toLowerCase()
     .split("_")
@@ -574,7 +584,8 @@ function artifactNode(
   artifact: DashboardArtifactId,
   index: number,
   status: RunStatus,
-  events: ReadonlyArray<RunEvent>
+  events: ReadonlyArray<RunEvent>,
+  proofAggregate: LocalRunSummary["proofAggregate"]
 ): RunNode {
   const column = Math.floor(index / 8);
   const row = index % 8;
@@ -584,7 +595,7 @@ function artifactNode(
 
   return {
     id: decodeRunCanvasNodeId(`artifact:${artifact}`),
-    label: artifactLabel(artifact),
+    label: artifactLabel(artifact, events, proofAggregate),
     role: "artifact",
     status,
     summary: `${artifact} is exposed through the allowlisted local artifact API for this run.`,
@@ -623,6 +634,8 @@ function eventArtifactHints(
       return [artifactIds.input];
     case "WORKER_STARTED":
       return [artifactIds.workerPlan];
+    case "RUN_CONTRACT_RECORDED":
+      return [artifactIds.runContract];
     case "WORKER_COMPLETED":
       return [artifactIds.workerLog, artifactIds.workerResult];
     case "REVIEW_COMPLETED":
@@ -630,6 +643,7 @@ function eventArtifactHints(
         ? [artifactIds.planReview]
         : [artifactIds.evidenceReview, artifactIds.reviewerFindings];
     case "VERIFICATION_COMPLETED":
+    case "RUN_PROOF_RESULT_RECORDED":
       return [artifactIds.verificationResult];
     case "REPORT_COMPLETED":
       return [artifactIds.report, artifactIds.reportJson];
@@ -700,7 +714,19 @@ function runStatus(status: LocalRunSummary["status"]): RunStatus {
   return "running";
 }
 
-function artifactLabel(artifact: string) {
+function artifactLabel(
+  artifact: string,
+  events: ReadonlyArray<RunEvent>,
+  proofAggregate: LocalRunSummary["proofAggregate"]
+) {
+  if (artifact === "verification-result") {
+    if (events.some((event) => event.type === "RUN_PROOF_RESULT_RECORDED"))
+      return "Run Proof Result";
+    if (events.some((event) => event.type === "VERIFICATION_COMPLETED"))
+      return "Legacy Verification Artifact (Unverified)";
+    if (proofAggregate !== undefined) return "Run Proof Result";
+    return "Verification Artifact (Unverified)";
+  }
   return artifact
     .split("-")
     .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)

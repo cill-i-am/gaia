@@ -513,12 +513,8 @@ export {
   type SkillManifestSource,
   type SkillName,
 } from "./skill-manifest.js";
-export {
-  VerificationResult,
-  encodeVerificationResultJson,
-  parseVerificationResultJson,
-  verifyHarnessOutput,
-} from "./verifier.js";
+export { recordRunProofResult } from "./verifier.js";
+export { deriveAndRecordRunContract, loadRunContract } from "./run-contract.js";
 export {
   WorkerPlan,
   WorkerPlanAgentInstruction,

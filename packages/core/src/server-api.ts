@@ -58,6 +58,7 @@ import {
 } from "./factory-graph.js";
 import { HarnessExecutionSelection } from "./harness-execution.js";
 import { LocalGaiaServerUrlSchema } from "./local-gaia-server-url.js";
+import { RunVerificationAggregateSchema } from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
 import {
   WorkerContinuationAction,
@@ -208,6 +209,7 @@ export const LocalRunArtifactIdSchema = Schema.Literals([
   "plan-review",
   "worker-log",
   "worker-result",
+  "run-contract",
   "verification-result",
   "evidence-review",
   "evidence-promotion",
@@ -350,6 +352,7 @@ export class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
     Schema.check(Schema.isInt({ identifier: "EventCount" }))
   ),
   latestEventType: EventTypeSchema,
+  proofAggregate: Schema.optionalKey(RunVerificationAggregateSchema),
   runId: RunIdSchema,
   state: RunStateSchema,
   status: LocalRunStatusSchema,

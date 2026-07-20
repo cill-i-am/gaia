@@ -11,6 +11,7 @@ import {
   parseHarnessProfileId,
   parseHarnessSessionId,
   encodeWorkerRecoveryReceiptJson,
+  parseMarkdownSpec,
   parseWorkerRecoveryReceipt,
   parseWorkerRecoveryActionId,
   parseWorkerRecoveryDigest,
@@ -21,6 +22,7 @@ import {
 import {
   appendEvent,
   appendHarnessSessionEvent,
+  deriveAndRecordRunContract,
   HarnessResumeError,
   HarnessSessionError,
   parseHarnessCheckpointToken,
@@ -186,6 +188,12 @@ function makeFixture(
       paths.harnessWorkspaceBaseline,
       yield* snapshotWorkspace(paths.workspace)
     );
+    yield* deriveAndRecordRunContract({
+      deliveryProvenance: provenance.value,
+      paths,
+      runId: accepted.runId,
+      spec: parseMarkdownSpec("retained", "HTTP recovery"),
+    });
     const sessionId = `session-${accepted.runId}`;
     yield* appendEvent(accepted.runId, paths, {
       payload: {

@@ -196,7 +196,10 @@ describe("local run read api", () => {
           "verification-result"
         );
         assert.strictEqual(verificationResult.contentType, "application/json");
-        assert.include(verificationResult.body, '"status": "passed"');
+        assert.include(
+          verificationResult.body,
+          '"aggregate": "completed-unverified"'
+        );
         const rejectedDiagnostic = Schema.decodeUnknownSync(
           LocalRunReadDiagnosticSchema
         )(rejected);
@@ -220,6 +223,87 @@ describe("local run read api", () => {
         assert.isFalse(emptyDiagnostic.recoverable);
         assert.strictEqual(emptyDiagnostic.runId, summary.runId);
       })
+    );
+
+    it.effect(
+      "repairs missing, corrupt, and schema-valid stale proof projections from events",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-read-api-" });
+          const firstSpec = `${cwd}/first.md`;
+          const secondSpec = `${cwd}/second.md`;
+          yield* fs.writeFileString(firstSpec, "Repair first projections.\n");
+          yield* fs.writeFileString(secondSpec, "Repair second projections.\n");
+          const first = yield* runSpecFile(firstSpec, { rootDirectory: cwd });
+          const second = yield* runSpecFile(secondSpec, {
+            rootDirectory: cwd,
+          });
+          const firstPaths = yield* makeRunPaths(first.runId, {
+            rootDirectory: cwd,
+          });
+          const secondPaths = yield* makeRunPaths(second.runId, {
+            rootDirectory: cwd,
+          });
+          const canonicalContract = yield* fs.readFileString(
+            firstPaths.runContract
+          );
+          const canonicalProof = yield* fs.readFileString(
+            firstPaths.verificationResult
+          );
+
+          yield* fs.remove(firstPaths.runContract);
+          yield* fs.writeFileString(firstPaths.verificationResult, "{ corrupt");
+          const repaired = yield* readLocalRun(first.runId, {
+            rootDirectory: cwd,
+          });
+          assert.isTrue(
+            repaired.artifacts.some((artifact) => artifact === "run-contract")
+          );
+          assert.isTrue(
+            repaired.artifacts.some(
+              (artifact) => artifact === "verification-result"
+            )
+          );
+          assert.strictEqual(
+            yield* fs.readFileString(firstPaths.runContract),
+            canonicalContract
+          );
+          assert.strictEqual(
+            yield* fs.readFileString(firstPaths.verificationResult),
+            canonicalProof
+          );
+
+          yield* fs.writeFileString(
+            firstPaths.runContract,
+            yield* fs.readFileString(secondPaths.runContract)
+          );
+          yield* fs.writeFileString(
+            firstPaths.verificationResult,
+            yield* fs.readFileString(secondPaths.verificationResult)
+          );
+          const contractArtifact = yield* readLocalRunArtifact(
+            first.runId,
+            "run-contract",
+            { rootDirectory: cwd }
+          );
+          const proofArtifact = yield* readLocalRunArtifact(
+            first.runId,
+            "verification-result",
+            { rootDirectory: cwd }
+          );
+
+          assert.strictEqual(contractArtifact.body, canonicalContract);
+          assert.strictEqual(proofArtifact.body, canonicalProof);
+          assert.strictEqual(
+            yield* fs.readFileString(firstPaths.runContract),
+            canonicalContract
+          );
+          assert.strictEqual(
+            yield* fs.readFileString(firstPaths.verificationResult),
+            canonicalProof
+          );
+        })
     );
 
     it.effect(

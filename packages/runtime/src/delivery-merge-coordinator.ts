@@ -11,6 +11,7 @@ import {
   DeliveryGitShaPublicSchema,
   DeliveryMergeReadinessDecision,
   DeliveryMergeReadinessDecisionV2,
+  DeliveryMergeReadinessDecisionV3,
   DeliveryGitHubApprovedReviewSource,
   DeliveryLocalOperatorReviewSource,
   DeliveryReviewApprovalNotRequiredSource,
@@ -20,6 +21,7 @@ import {
   DeliveryTimestampPublicSchema,
   deliveryRequiredCheckPolicyCanonicalPayload,
   deliveryMergeReadinessDecisionV2PayloadDigest,
+  deliveryMergeReadinessDecisionV3PayloadDigest,
   deliveryFeedbackRequiresApprovedReview,
   encodeDeliveryMergeReceiptJson,
   encodeDeliveryCleanupReceiptJson,
@@ -28,6 +30,8 @@ import {
   GitHubRepositoryPublicSchema,
   parseDeliveryMergeReceipt,
   parseDeliveryMergeReadinessDecision,
+  parseMergeDecisionV2,
+  RunProofProjectionV1Schema,
   parseDeliveryPublication,
   snapshotFromReplay,
   deriveDeliveryActionHistoriesFromEvents,
@@ -79,6 +83,7 @@ import {
   RuntimePathTextSchema,
 } from "./paths.js";
 import { withRunStoreLock } from "./run-store-lock.js";
+import { observeWorkspaceStructuralDigest } from "./workspace-snapshot.js";
 
 const DeliveryMergeMethodSchema = Schema.Literals([
   "merge",
@@ -466,25 +471,47 @@ export function coordinateDeliveryMerge(
       const decision = parseDeliveryMergeReadinessDecision(
         decisionEvent.payload["decision"]
       );
+      if (!(decision instanceof DeliveryMergeReadinessDecisionV3))
+        return yield* conflict(
+          "Legacy merge readiness decisions are decode-only and cannot authorize merge dispatch."
+        );
       const currentAuthority = deriveDeliveryAuthority(publication, events);
       if (
-        decision instanceof DeliveryMergeReadinessDecisionV2 &&
-        (decision.runId !== runId ||
-          decision.publicationOperationId !== publication.operationId ||
-          decision.publicationPayloadDigest !== publication.payloadDigest ||
-          decision.publicationConfirmationSequence !==
-            currentAuthority.publicationConfirmationSequence ||
-          decision.authoritySequence !== currentAuthority.authoritySequence ||
-          decision.repository !== repository ||
-          decision.headSha !== currentAuthority.headSha)
+        decision.runId !== runId ||
+        decision.publicationOperationId !== publication.operationId ||
+        decision.publicationPayloadDigest !== publication.payloadDigest ||
+        decision.publicationConfirmationSequence !==
+          currentAuthority.publicationConfirmationSequence ||
+        decision.authoritySequence !== currentAuthority.authoritySequence ||
+        decision.repository !== repository ||
+        decision.headSha !== currentAuthority.headSha
       )
         return yield* conflict(
           "The readiness decision is stale for the current delivery authority."
         );
+      const currentMergeDecisionEvent = events.findLast(
+        (event) => event.type === "MERGE_DECISION_RECORDED"
+      );
       if (
-        decision instanceof DeliveryMergeReadinessDecisionV2 &&
-        decision.approvalSource?.kind === "localOperatorPairedReview"
-      ) {
+        currentMergeDecisionEvent?.sequence !==
+          decision.mergeDecisionSequence ||
+        currentMergeDecisionEvent.payload["decision"] === undefined ||
+        parseMergeDecisionV2(currentMergeDecisionEvent.payload["decision"])
+          .payloadDigest !== decision.mergeDecisionPayloadDigest
+      )
+        return yield* conflict(
+          "The readiness decision is stale for the latest proof-bound merge decision."
+        );
+      const dispatchObserved = yield* observeWorkspaceStructuralDigest(
+        paths.workspace
+      );
+      if (
+        dispatchObserved.digest !== decision.proofBinding.observedTargetDigest
+      )
+        return yield* conflict(
+          "The readiness decision proof is stale for the current workspace."
+        );
+      if (decision.approvalSource?.kind === "localOperatorPairedReview") {
         const currentAttestation = currentDeliveryLocalReviewAttestation(
           events,
           { publication, repository, runId }
@@ -573,9 +600,7 @@ export function coordinateDeliveryMerge(
         publication.branchName,
         action,
         policy,
-        decision instanceof DeliveryMergeReadinessDecisionV2
-          ? decision.approvalSource
-          : undefined
+        decision.approvalSource
       );
       const intent =
         previous?.state === "intentRecorded"
@@ -670,7 +695,12 @@ export function coordinateDeliveryMergeReadiness(
       const delivery = Schema.decodeUnknownSync(
         Schema.Record(Schema.String, Schema.Json)
       )(replay.context["delivery"]);
-      const publication = parseDeliveryPublication(delivery["publication"]);
+      const publicationValue = delivery["publication"];
+      if (publicationValue === undefined)
+        return yield* conflict(
+          "Merge readiness requires a confirmed owned pull request."
+        );
+      const publication = parseDeliveryPublication(publicationValue);
       if (publication.state !== "confirmed")
         return yield* conflict(
           "Merge readiness requires a confirmed owned pull request."
@@ -685,16 +715,74 @@ export function coordinateDeliveryMergeReadiness(
         deliveryRequiredCheckPolicyCanonicalPayload(policy)
       );
       const repository = repositoryFromPrUrl(publication.prUrl);
-      const readinessDigest = hash(
-        [
-          action.actionId,
-          runId,
-          publication.prUrl,
-          publication.branchName,
-          action.mergeMethod,
-          policyDigest,
-        ].join("\0")
+      const mergeDecisionEvent = events.findLast(
+        (event) => event.type === "MERGE_DECISION_RECORDED"
       );
+      if (mergeDecisionEvent === undefined)
+        return yield* conflict(
+          "Merge readiness requires a current proof-bound MergeDecisionV2."
+        );
+      const mergeDecision = yield* Effect.try({
+        try: () => parseMergeDecisionV2(mergeDecisionEvent.payload["decision"]),
+        catch: () =>
+          makeRuntimeError({
+            code: "DeliveryMergeDecisionInvalid",
+            message: "Latest merge decision is legacy, invalid, or stale.",
+            recoverable: false,
+          }),
+      });
+      if (
+        mergeDecision.status !== "approved" ||
+        mergeDecision.nextAction !== "ready-to-merge" ||
+        mergeDecision.proofBinding === undefined
+      )
+        return yield* conflict(
+          "Merge readiness requires an approved proof-bound MergeDecisionV2."
+        );
+      const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(
+        replay.context["runProof"]
+      );
+      const proofResult =
+        Option.isSome(proof) && proof.value.kind === "contract"
+          ? proof.value.latestResult
+          : undefined;
+      const contentAuthoritySequence = Math.max(
+        1,
+        ...events
+          .filter(
+            ({ type }) =>
+              type === "WORKER_COMPLETED" ||
+              type === "DELIVERY_REMEDIATION_RECORDED"
+          )
+          .map(({ sequence }) => sequence)
+      );
+      const evidenceReviewSequence = events.findLast(
+        ({ payload, type }) =>
+          type === "REVIEW_COMPLETED" && payload["phase"] === "evidence"
+      )?.sequence;
+      const observed = yield* observeWorkspaceStructuralDigest(paths.workspace);
+      if (
+        proofResult?.aggregate !== "verified" ||
+        proofResult.observedTargetDigest !== observed.digest ||
+        mergeDecision.contentAuthoritySequence !== contentAuthoritySequence ||
+        mergeDecision.evidenceReviewSequence !== evidenceReviewSequence ||
+        evidenceReviewSequence === undefined ||
+        evidenceReviewSequence <= proofResult.recordedBy.sequence ||
+        mergeDecision.publicationConfirmationSequence !==
+          authority.publicationConfirmationSequence ||
+        mergeDecision.proofBinding.contractId !== proofResult.contractId ||
+        mergeDecision.proofBinding.contractDigest !==
+          proofResult.contractDigest ||
+        mergeDecision.proofBinding.proofResultDigest !==
+          proofResult.resultDigest ||
+        mergeDecision.proofBinding.proofResultSequence !==
+          proofResult.recordedBy.sequence ||
+        mergeDecision.proofBinding.observedTargetDigest !==
+          proofResult.observedTargetDigest
+      )
+        return yield* conflict(
+          "MergeDecisionV2 is stale for the current proof, content, review, or publication authority."
+        );
       const prior = events
         .filter(({ type }) => type === "DELIVERY_MERGE_READINESS_RECORDED")
         .map((event) =>
@@ -702,12 +790,11 @@ export function coordinateDeliveryMergeReadiness(
         )
         .find((decision) => decision.actionId === action.actionId);
       if (prior !== undefined) {
-        if (prior instanceof DeliveryMergeReadinessDecision) {
-          if (prior.payloadDigest !== readinessDigest)
-            return yield* conflict(
-              "Readiness action ID conflicts with a changed immutable tuple."
-            );
-        } else if (
+        if (!(prior instanceof DeliveryMergeReadinessDecisionV3))
+          return yield* conflict(
+            "Legacy merge readiness decisions are decode-only and fail closed."
+          );
+        if (
           prior.runId !== runId ||
           prior.publicationOperationId !== publication.operationId ||
           prior.publicationPayloadDigest !== publication.payloadDigest ||
@@ -719,7 +806,19 @@ export function coordinateDeliveryMergeReadiness(
           prior.prUrl !== publication.prUrl ||
           prior.branchName !== publication.branchName ||
           prior.mergeMethod !== action.mergeMethod ||
-          prior.policyDigest !== policyDigest
+          prior.policyDigest !== policyDigest ||
+          prior.mergeDecisionSequence !== mergeDecisionEvent.sequence ||
+          prior.mergeDecisionPayloadDigest !== mergeDecision.payloadDigest ||
+          prior.proofBinding.contractId !==
+            mergeDecision.proofBinding.contractId ||
+          prior.proofBinding.contractDigest !==
+            mergeDecision.proofBinding.contractDigest ||
+          prior.proofBinding.proofResultDigest !==
+            mergeDecision.proofBinding.proofResultDigest ||
+          prior.proofBinding.proofResultSequence !==
+            mergeDecision.proofBinding.proofResultSequence ||
+          prior.proofBinding.observedTargetDigest !==
+            mergeDecision.proofBinding.observedTargetDigest
         )
           return yield* conflict(
             "Readiness action ID conflicts with a changed immutable tuple."
@@ -815,12 +914,15 @@ export function coordinateDeliveryMergeReadiness(
         publicationPayloadDigest: publication.payloadDigest,
         repository,
         runId,
-        version: 2 as const,
+        mergeDecisionPayloadDigest: mergeDecision.payloadDigest,
+        mergeDecisionSequence: mergeDecisionEvent.sequence,
+        proofBinding: mergeDecision.proofBinding,
+        version: 3 as const,
       };
-      const decision = DeliveryMergeReadinessDecisionV2.make({
+      const decision = DeliveryMergeReadinessDecisionV3.make({
         ...decisionBase,
         payloadDigest:
-          deliveryMergeReadinessDecisionV2PayloadDigest(decisionBase),
+          deliveryMergeReadinessDecisionV3PayloadDigest(decisionBase),
       });
       yield* appendEvent(runId, paths, {
         payload: {

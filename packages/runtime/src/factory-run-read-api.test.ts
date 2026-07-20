@@ -49,6 +49,8 @@ const decodeFactoryArtifactId = Schema.decodeUnknownSync(
 );
 const encodeFactoryGraph = Schema.encodeSync(FactoryGraphDto);
 const workerPlanArtifactId = decodeFactoryArtifactId("worker-plan");
+const runContractArtifactId = decodeFactoryArtifactId("run-contract");
+const runProofArtifactId = decodeFactoryArtifactId("verification-result");
 
 describe("factory run read api", () => {
   it.prop(
@@ -348,7 +350,7 @@ describe("factory run read api", () => {
           const repeated = yield* readFactoryGraph(accepted.runId, {
             rootDirectory: cwd,
           });
-          assert.isFalse(
+          assert.isTrue(
             compatible.diagnostics.some(
               ({ code, sourceId }) =>
                 code === "FactoryProjectionIndexStale" &&
@@ -474,7 +476,7 @@ describe("factory run read api", () => {
               {
                 code: "FactoryProjectionIndexStale",
                 message:
-                  "factory-graph.json conflicted with terminal delivery cleanup and was rebuilt from events.jsonl.",
+                  "factory-graph.json used a stale projection envelope and was rebuilt from events.jsonl.",
                 recoverable: true,
                 sourceId: "factory-graph.json",
               },
@@ -640,7 +642,7 @@ describe("factory run read api", () => {
             eventsBytes,
             cleanupState
           );
-          assert.isFalse(
+          assert.isTrue(
             graph.diagnostics.some(
               ({ code, sourceId }) =>
                 code === "FactoryProjectionIndexStale" &&
@@ -701,6 +703,91 @@ describe("factory run read api", () => {
     );
 
     it.effect(
+      "rebuilds factory projections from literal legacy no-contract JSONL",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-legacy-jsonl-",
+          });
+          const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+            harnessProviderRegistry,
+            rootDirectory: cwd,
+          });
+          const paths = yield* makeRunPaths(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          const firstLine = (yield* fs.readFileString(paths.events)).trim();
+          const line = (
+            sequence: number,
+            type: string,
+            payload: Readonly<Record<string, unknown>> = {}
+          ) =>
+            JSON.stringify({
+              payload,
+              runId: accepted.runId,
+              sequence,
+              timestamp: `2026-07-20T10:00:0${sequence}.000Z`,
+              type,
+              version: 1,
+            });
+          yield* fs.writeFileString(
+            paths.events,
+            `${[
+              firstLine,
+              line(2, "WORKSPACE_PREPARED", { workspacePath: "workspace" }),
+              line(3, "WORKER_STARTED"),
+              line(4, "WORKER_COMPLETED", {
+                workerResultPath: "worker-result.json",
+              }),
+              line(5, "VERIFICATION_STARTED"),
+              line(6, "VERIFICATION_COMPLETED", {
+                verificationResultPath: "verification-result.json",
+              }),
+              line(7, "REPORT_STARTED"),
+              line(8, "REPORT_COMPLETED", { reportPath: "report.md" }),
+            ].join("\n")}\n`
+          );
+          yield* fs.writeFileString(
+            paths.verificationResult,
+            '{"legacyMarkerIntegrity":true}\n'
+          );
+
+          const activity = yield* readFactoryRunActivity(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          const artifacts = yield* listFactoryRunArtifacts(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          const body = yield* readFactoryRunArtifact(
+            accepted.runId,
+            runProofArtifactId,
+            { rootDirectory: cwd }
+          );
+
+          assert.deepInclude(
+            activity.activities.map(({ kind, label, subState }) => ({
+              kind,
+              label,
+              subState,
+            })),
+            {
+              kind: "VERIFICATION_COMPLETED",
+              label: "Legacy verification recorded (unverified)",
+              subState: "completed-unverified",
+            }
+          );
+          assert.strictEqual(
+            artifacts.artifacts.find(
+              ({ artifactId }) => artifactId === runProofArtifactId
+            )?.label,
+            "Legacy verification artifact (unverified)"
+          );
+          assert.strictEqual(body.body, '{"legacyMarkerIntegrity":true}\n');
+        })
+    );
+
+    it.effect(
       "rebuilds missing and corrupt derived indexes with typed diagnostics",
       () =>
         Effect.gen(function* () {
@@ -744,10 +831,135 @@ describe("factory run read api", () => {
             rootDirectory: cwd,
           });
           assert.deepInclude(diagnosticSummaries(rebuiltStale.diagnostics), {
-            code: "FactoryActivityIndexStale",
+            code: "FactoryProjectionIndexStale",
             recoverable: true,
             sourceId: "activity-index.json",
           });
+        })
+    );
+
+    it.effect(
+      "repairs event-owned proof artifacts and returns event-derived factory bodies",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-proof-projection-",
+          });
+          const first = yield* acceptFactoryRun(factoryCreateInput(), {
+            harnessProviderRegistry,
+            rootDirectory: cwd,
+          });
+          const second = yield* acceptFactoryRun(factoryCreateInput(), {
+            harnessProviderRegistry,
+            rootDirectory: cwd,
+          });
+          yield* continueServerRun(first.runId, {
+            harnessProviderRegistry,
+            rootDirectory: cwd,
+          });
+          yield* continueServerRun(second.runId, {
+            harnessProviderRegistry,
+            rootDirectory: cwd,
+          });
+          const firstPaths = yield* makeRunPaths(first.runId, {
+            rootDirectory: cwd,
+          });
+          const secondPaths = yield* makeRunPaths(second.runId, {
+            rootDirectory: cwd,
+          });
+          const canonicalContract = yield* fs.readFileString(
+            firstPaths.runContract
+          );
+          const canonicalProof = yield* fs.readFileString(
+            firstPaths.verificationResult
+          );
+          yield* fs.remove(firstPaths.runContract);
+          yield* fs.writeFileString(firstPaths.verificationResult, "{ corrupt");
+          yield* listFactoryRunArtifacts(first.runId, { rootDirectory: cwd });
+          assert.strictEqual(
+            yield* fs.readFileString(firstPaths.runContract),
+            canonicalContract
+          );
+          assert.strictEqual(
+            yield* fs.readFileString(firstPaths.verificationResult),
+            canonicalProof
+          );
+
+          yield* fs.writeFileString(
+            firstPaths.runContract,
+            yield* fs.readFileString(secondPaths.runContract)
+          );
+          yield* fs.writeFileString(
+            firstPaths.verificationResult,
+            yield* fs.readFileString(secondPaths.verificationResult)
+          );
+          const artifacts = yield* listFactoryRunArtifacts(first.runId, {
+            rootDirectory: cwd,
+          });
+          const contract = yield* readFactoryRunArtifact(
+            first.runId,
+            runContractArtifactId,
+            { rootDirectory: cwd }
+          );
+          const proof = yield* readFactoryRunArtifact(
+            first.runId,
+            runProofArtifactId,
+            { rootDirectory: cwd }
+          );
+
+          assert.strictEqual(contract.body, canonicalContract);
+          assert.strictEqual(proof.body, canonicalProof);
+          assert.strictEqual(
+            yield* fs.readFileString(firstPaths.runContract),
+            canonicalContract
+          );
+          assert.strictEqual(
+            yield* fs.readFileString(firstPaths.verificationResult),
+            canonicalProof
+          );
+          assert.strictEqual(
+            artifacts.artifacts.find(
+              ({ artifactId }) => artifactId === runProofArtifactId
+            )?.label,
+            "Run proof result"
+          );
+        })
+    );
+
+    it.effect(
+      "invalidates same-count indexes when authoritative event content changes",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-event-digest-",
+          });
+          const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+            harnessProviderRegistry,
+            rootDirectory: cwd,
+          });
+          yield* readFactoryGraph(accepted.runId, { rootDirectory: cwd });
+          const paths = yield* makeRunPaths(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          const events = yield* fs.readFileString(paths.events);
+          yield* fs.writeFileString(
+            paths.events,
+            events.replace(
+              /"timestamp":"[^"]+"/u,
+              '"timestamp":"2026-07-20T09:00:00.000Z"'
+            )
+          );
+
+          const rebuilt = yield* readFactoryGraph(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          assert.isTrue(
+            rebuilt.diagnostics.some(
+              ({ code }) => code === "FactoryProjectionIndexStale"
+            )
+          );
         })
     );
   });

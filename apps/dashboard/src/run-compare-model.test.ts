@@ -158,6 +158,30 @@ describe("run compare model", () => {
     expect(model.missingData).toEqual(["Primary run unavailable"]);
     expect(model.summary).toBe("Choose two local runs to compare.");
   });
+
+  it.each([
+    ["verified", "available"],
+    ["completed-unverified", "blocked"],
+    ["verification-failed", "failed"],
+    ["awaiting-outcome-decision", "blocked"],
+  ] as const)("renders %s as known proof state %s", (proofAggregate, state) => {
+    const runId = parseRunId("run-4444444444");
+    const run = localRunSummary({ proofAggregate, runId });
+    const model = buildRunCompareModel({
+      comparisonEvents: [],
+      comparisonRun: run,
+      primaryEvents: [],
+      primaryRun: run,
+    });
+
+    expect(model.primary?.checkSignal).toEqual({
+      label: `Run proof: ${proofAggregate}`,
+      state,
+    });
+    expect(model.primary?.missingData).not.toContain(
+      "check outcome unavailable"
+    );
+  });
 });
 
 function localRunSummary(
