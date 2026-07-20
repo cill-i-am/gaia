@@ -10,7 +10,10 @@ Implement Linear issue: `{ISSUE_ID}`.
 
 - Project or PRD: `{PROJECT_OR_PRD}`
 - Issue: `{ISSUE_LINK}`
-- Fetched `origin/main` base SHA: `{BASE_SHA}`
+- Fetched `origin/<default>` ref/SHA: `{DEFAULT_REF}` / `{BASE_SHA}`
+- Codex new-lane `startingState: origin/<default>`: `{STARTING_STATE}`
+- Lane mode: `new` or explicit resume/special-ref `{LANE_MODE}`
+- Durable issue/handoff comment for any override: `{OVERRIDE_COMMENT}`
 - Worker worktree: `{WORKTREE_PATH}`
 - Topic branch expectation: `codex/{ISSUE_ID}-{SLUG}`, created and owned by the worker
 - Required skills: worker, worktree-isolation, `{SKILLS}`
@@ -34,11 +37,24 @@ Out of scope:
   base SHA. Do not use local `main`, the coordinator's `HEAD`, or this handoff as
   base evidence.
 - Create and own the topic branch inside that worktree.
-- Before planning or editing, run a fresh fetch and report the isolated path,
-  topic branch, `HEAD`, `origin/main`, merge-base, empty worktree status,
-  ahead/behind `0 0`, install result, and baseline result or blocker.
-- If `origin/main` advances before edit authority, hold work and notify the
-  orchestrator. Refresh only through the non-destructive procedure in
+- Before planning or editing, run `git fetch --prune origin`, require symbolic
+  `refs/remotes/origin/HEAD` under `refs/remotes/origin/`, derive
+  `origin/<default>`, and resolve the exact commit and merge-base. Missing or
+  invalid provenance fails closed.
+- For new lanes, report the isolated path, topic branch, fetched remote-default
+  ref/SHA, empty worktree status, and prove
+  `HEAD == origin/<default> == merge-base` with ahead/behind `0/0`, plus install
+  and baseline results. Independently prove the created
+  worktree matches the recorded `startingState: origin/<default>` commit.
+- For an explicit resume/special-ref, report the override ref, exact resumed
+  HEAD, fetched remote-default ref/SHA, merge-base, ahead/behind, honest
+  clean/dirty state, fetch time, and durable dispatch comment. Prove the override
+  ref resolves to the exact resumed HEAD. Non-zero or dirty state is evidence to
+  assess. It does not authorize reset, clean, merge, automatic rebase,
+  force-move, or discard work; stop if a required relationship is unresolvable
+  so the resume fails closed.
+- If `origin/<default>` advances before new-lane edit authority, hold work and
+  notify the orchestrator. Refresh only through the non-destructive procedure in
   `worktree-isolation`, then rerun relevant baselines and repeat the
   plan/reviewer gate.
 - Keep changes surgical and simple.

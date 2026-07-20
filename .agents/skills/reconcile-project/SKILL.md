@@ -13,7 +13,8 @@ Make Linear truthful before dispatching or accepting more work.
   statuses
 - linked PRs and CI status
 - worker/orchestrator evidence comments
-- freshly fetched `origin/main` SHA and active worker/reviewer worktree evidence
+- freshly fetched `origin/<default>` ref/SHA resolved through symbolic
+  `refs/remotes/origin/HEAD`, plus active worker/reviewer worktree evidence
 - relevant source or architecture docs when spec drift is suspected
 
 ## Checks
@@ -25,12 +26,24 @@ Find and repair or report:
 - worker assigned but stale with no recent evidence
 - proposed or active worktree was based on local `main`, coordinator `HEAD`,
   handoff prose, or an unfetched/stale remote ref
-- worker/reviewer pair does not share the same exact fetched `origin/main` base,
-  the worker branch was not created from that base, or the reviewer is not
+- `git fetch --prune origin` failed, `refs/remotes/origin/HEAD` is missing,
+  non-symbolic, outside `refs/remotes/origin/`, or its exact commit or merge-base
+  cannot be resolved; provenance fails closed
+- new lanes do not share the same exact fetched `origin/<default>` base, the
+  worker branch was not created from that base, or the reviewer is not
   detached/read-only
-- pre-edit proof is missing, dirty, non-zero ahead/behind, or does not show
-  `HEAD == origin/main == merge-base`
-- `origin/main` advanced before edit authority without a held dispatch, clean
+- new-lane pre-edit proof is missing, dirty, non-zero ahead/behind, or does not
+  show `HEAD == origin/<default> == merge-base` with `0/0`
+- the Codex `startingState: origin/<default>` used for a new dispatch is missing
+  from durable evidence or the created lane was not independently verified
+- an explicit resume/special-ref lacks a durable issue/handoff comment naming
+  the override ref and durable dispatch comment, exact resumed HEAD, fetched
+  remote-default ref/SHA, merge-base, ahead/behind, honest clean/dirty state,
+  and fetch time, or does not prove the override ref resolves to the exact
+  resumed HEAD; non-zero or dirty evidence is assessed rather than rewritten
+- a resume used reset, clean, merge, automatic rebase, force-move, or discard as
+  implied authority, or an unresolvable relationship did not fail closed
+- `origin/<default>` advanced before edit authority without a held dispatch, clean
   non-destructive refresh, fresh baselines, and repeated plan/reviewer gate
 - PR opened but Linear not linked
 - PR merged but issue not moved to the completed/done state
@@ -58,6 +71,8 @@ Use Linear updates for durable state:
 - add comments with evidence
 - hold dispatch or edit authority when base provenance is stale or unproven; use
   `worktree-isolation` for exact fetched-base provisioning or refresh
+- preserve explicit resume/special-ref state; do not treat fetch or override
+  evidence as authority to rewrite history or the working tree
 - mark obsolete issues with rationale
 - trigger or recommend `ci-watch` for PRs with pending/failing CI
 

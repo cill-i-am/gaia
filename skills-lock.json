@@ -65,13 +65,13 @@
       "source": "cill-i-am/skills",
       "sourceType": "github",
       "skillPath": "skills/execution-loop/linear-setup/SKILL.md",
-      "computedHash": "9205a50a07b61a2ccb4ca01e7ae36071c0bce59ec91e56aeb931976c08271729"
+      "computedHash": "426546d92f7977713974e0866f3814f1612297ab716e2125e0892c9ff5a63d20"
     },
     "orchestrator": {
       "source": "cill-i-am/skills",
       "sourceType": "github",
       "skillPath": "skills/execution-loop/orchestrator/SKILL.md",
-      "computedHash": "2035703ad75294fbe3fd66b5b90654bc86b2e2019a188353043d4a18eb7710e5"
+      "computedHash": "825d764e9c3605d20d520faed463ce108788d0b10fda980d2b9f9aa32cf28761"
     },
     "production-ready": {
       "source": "cill-i-am/skills",
@@ -83,7 +83,7 @@
       "source": "cill-i-am/skills",
       "sourceType": "github",
       "skillPath": "skills/execution-loop/reconcile-project/SKILL.md",
-      "computedHash": "23aee51cf91c5dae4173312ca6e9703fecaed524842b5431b967526016b609c8"
+      "computedHash": "87ef29b006ec81b8ede549b555eba08c261d58568045a4a677bd5f8127491ee3"
     },
     "research-prompt": {
       "source": "cill-i-am/skills",
@@ -167,13 +167,13 @@
       "source": "cill-i-am/skills",
       "sourceType": "github",
       "skillPath": "skills/execution-loop/worker/SKILL.md",
-      "computedHash": "f0023a12a7cd597d612cb4390ebaba898f6baf97f87b9e7eac1e2216f9ec862d"
+      "computedHash": "def6a8c7284b12b7b7e2f227179514ef55c62bb6c6d9f335baa32e9a50741182"
     },
     "worktree-isolation": {
       "source": "cill-i-am/skills",
       "sourceType": "github",
       "skillPath": "skills/execution-loop/worktree-isolation/SKILL.md",
-      "computedHash": "9801fad2391498c071773a6a00533a9cb9cb0ab98f6976197e2463a6391ea7a0"
+      "computedHash": "d03c2919ecd21b528d30429267c7a38134ceaff79ae05b29916c033b0926c13c"
     },
     "youtube-transcript": {
       "source": "cill-i-am/skills",

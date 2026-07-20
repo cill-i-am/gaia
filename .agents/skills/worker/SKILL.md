@@ -29,15 +29,25 @@ repo still needs `linear-setup`.
    orientation, not the operative source of truth.
 2. **Confirm assignment.** Ensure the issue is unblocked and in an implementable
    state. If it is HITL, blocked, or under-specified, stop and update Linear.
-3. **Activate and prove isolation.** Use `worktree-isolation` to verify the
-   orchestrator-provisioned detached worktree came from the exact freshly fetched
-   `origin/main` SHA. Create and own `codex/<linear-key>-<slug>` inside that
-   worktree. After a fresh `git fetch --prune origin`, do not plan or edit until
-   the tree is clean, `HEAD == origin/main == merge-base`, and ahead/behind is
-   `0 0`. Report the isolated path, branch, all three SHAs, ahead/behind, install
+3. **Activate and prove isolation.** For a new lane, use `worktree-isolation` to
+   verify the orchestrator-provisioned detached worktree came from the exact
+   freshly fetched `origin/<default>` SHA resolved through symbolic
+   `refs/remotes/origin/HEAD`, then create and own
+   `codex/<linear-key>-<slug>` inside that worktree. After a fresh
+   `git fetch --prune origin`, missing or invalid remote HEAD, commit, or
+   merge-base evidence fails closed. Do not plan or edit a new lane until the
+   tree is clean, `HEAD == origin/<default> == merge-base`, and ahead/behind is
+   `0/0`. Report the isolated path, branch, all three SHAs, ahead/behind, install
    result, and baseline result or blocker. Local `main`, coordinator `HEAD`, and
    handoff prose are not base evidence. Never start provider-mutating Alchemy
-   work without confirming stage and credentials.
+   work without confirming stage and credentials. An explicit
+   resume/special-ref instead preserves the authorized existing ref/HEAD and
+   requires a durable issue/handoff comment that records the override ref, exact
+   resumed HEAD, fetched remote-default ref/SHA, merge-base, ahead/behind, honest
+   clean/dirty state, fetch time, and durable dispatch comment. Prove the
+   override ref resolves to the exact resumed HEAD. Preserve that evidence: it
+   does not authorize reset, clean, merge, automatic rebase, force-move, or
+   discard work.
 4. **Plan the narrow slice.** Re-state the acceptance criteria, out-of-scope
    boundaries, expected files or modules, and verification commands. Keep this
    brief. Proceed after posting unless Linear, the orchestrator, or a clear
@@ -82,9 +92,12 @@ repo still needs `linear-setup`.
 Stop and update Linear instead of improvising when:
 
 - blocker or HITL decision is discovered
-- fetched `origin/main` does not equal the worker base before edit authority
-- the worktree is dirty, has non-zero ahead/behind, or cannot prove the required
-  `HEAD == origin/main == merge-base` equality
+- fetched `origin/<default>` does not equal the new-lane worker base before edit
+  authority
+- a new-lane worktree is dirty, has non-zero ahead/behind, or cannot prove the
+  required `HEAD == origin/<default> == merge-base` equality
+- an explicit resume/special-ref lacks its durable override or any required ref,
+  commit, or relationship cannot be resolved
 - acceptance criteria conflict with source or parent PRD
 - implementation requires out-of-scope files
 - verification fails repeatedly without a clear root cause
@@ -94,7 +107,7 @@ Stop and update Linear instead of improvising when:
   or requires judgment
 - GitHub or Linear auth is unavailable for required PR/comment watching
 
-If `origin/main` advances before edit authority, hold work and notify the
-orchestrator. Use only the non-destructive exact-base refresh in
+If `origin/<default>` advances before new-lane edit authority, hold work and
+notify the orchestrator. Use only the non-destructive exact-base refresh in
 `worktree-isolation`; then rerun relevant baselines and repeat the plan/reviewer
 gate. Do not reset, rebase speculatively, or continue from stale handoff state.

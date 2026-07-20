@@ -12,7 +12,10 @@ Review implementation for Linear issue: `{ISSUE_ID}`.
 - PR: `{PR_LINK}`
 - Issue: `{ISSUE_LINK}`
 - Project or PRD: `{PROJECT_OR_PRD}`
-- Fetched `origin/main` base SHA: `{BASE_SHA}`
+- Fetched `origin/<default>` ref/SHA: `{DEFAULT_REF}` / `{BASE_SHA}`
+- Codex new-lane `startingState: origin/<default>`: `{STARTING_STATE}`
+- Lane mode: `new` or explicit resume/special-ref `{LANE_MODE}`
+- Durable issue/handoff comment for any override: `{OVERRIDE_COMMENT}`
 - Detached reviewer worktree: `{WORKTREE_PATH}`
 - Required skills and standards: `{SKILLS}`
 
@@ -24,12 +27,25 @@ thread into an editing lane.
 Read the live Linear issue, parent Project/PRD, blockers, and comments before
 reviewing. Treat this handoff as orientation only.
 
-Before reviewing a plan, run a fresh fetch and independently prove the reviewer
-worktree is clean, detached, and at the exact dispatched `origin/main` commit:
-`HEAD == origin/main == merge-base`, with ahead/behind `0 0`. A local `main`,
-the coordinator's `HEAD`, or handoff prose is not evidence. If the remote has
-advanced, hold review and require the `worktree-isolation` refresh, relevant
-baselines, and plan/reviewer gate to be repeated.
+Before reviewing a plan, run `git fetch --prune origin`, require symbolic
+`refs/remotes/origin/HEAD` under `refs/remotes/origin/`, derive
+`origin/<default>`, and resolve its exact commit and merge-base. Missing or
+invalid provenance fails closed. For new lanes, independently prove the reviewer
+worktree is clean, detached, and at the exact dispatched default commit:
+`HEAD == origin/<default> == merge-base`, with ahead/behind `0/0`, matching the
+recorded `startingState: origin/<default>`. A local `main`, the coordinator's
+`HEAD`, or handoff prose is not evidence.
+
+An explicit resume/special-ref instead requires a durable issue/handoff comment
+and a durable dispatch comment recording the override ref, exact resumed HEAD,
+fetched remote-default ref/SHA, merge-base, ahead/behind, honest clean/dirty
+state, and fetch time. Prove the override ref resolves to the exact resumed HEAD.
+Non-zero or dirty evidence must be assessed without mutation; it does not
+authorize reset, clean, merge, automatic rebase, force-move, or discard work. If
+a required relationship is unresolvable, the review fails closed. If the default
+advances before new-lane review authority,
+hold review and require the `worktree-isolation` refresh, relevant baselines,
+and plan/reviewer gate to be repeated.
 
 If the worker has not posted a plan or PR yet, acknowledge the assignment and
 wait. Do not invent implementation work.
