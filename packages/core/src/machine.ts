@@ -59,16 +59,40 @@ import {
   type MergeDecisionV2,
 } from "./merge-decision.js";
 import {
+  parseAnyRunContract,
+  parseAnyRunProofResult,
+  parseAnyRunProofResultEnvelope,
+  RunContractSchema,
+  RunProofProjectionSchema,
+  RunProofResultSchema,
+  type RunContract,
+  type RunProofResult,
+} from "./run-contract-v2.js";
+import {
   parseRunContract,
   parseRunEventSequence,
   parseRunProofResult,
   parseRunProofResultEnvelope,
   parseRunRelativeArtifactPath,
+  ProofClaimIdSchema,
+  RunContractDigestSchema,
   RunContractV1,
-  RunProofProjectionV1Schema,
+  RunEventSequenceSchema,
   RunProofResultV1,
 } from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
+import {
+  ClaimVerificationCommandStartV1,
+  ClaimVerificationCreateIntentV1,
+  ClaimVerificationGenerationStartedV1,
+  ClaimVerificationReuseReceiptV1,
+  ClaimVerificationSandboxCreatedV1,
+  VerificationIdentityDigestSchema,
+  VerificationReceiptDigestSchema,
+  makeVerificationCommandRequestDigest,
+  parseVerificationCommandReceipt,
+  parseVerificationReconciliationReceipt,
+} from "./verification-command.js";
 import {
   encodeWorkerContinuationReceiptJson,
   encodeWorkerCorrelationReconciliationReceiptJson,
@@ -127,6 +151,49 @@ const DeliveryCleanupReplayActionsSchema = Schema.Array(
   })
 ).pipe(Schema.mutable);
 
+const ClaimVerificationReplayIdentitySchema = Schema.Struct({
+  claimId: ProofClaimIdSchema,
+  contractDigest: RunContractDigestSchema,
+  executionEvidenceIdentityDigest: VerificationIdentityDigestSchema,
+  generationSequence: RunEventSequenceSchema,
+});
+type ClaimVerificationReplayIdentity = Schema.Schema.Type<
+  typeof ClaimVerificationReplayIdentitySchema
+>;
+const ClaimVerificationReplayStateSchema = Schema.Struct({
+  ...ClaimVerificationReplayIdentitySchema.fields,
+  commandStart: Schema.mutableKey(
+    Schema.optionalKey(ClaimVerificationCommandStartV1)
+  ),
+  commandStartSequence: Schema.mutableKey(
+    Schema.optionalKey(RunEventSequenceSchema)
+  ),
+  createIntent: Schema.mutableKey(
+    Schema.optionalKey(ClaimVerificationCreateIntentV1)
+  ),
+  createIntentSequence: Schema.mutableKey(
+    Schema.optionalKey(RunEventSequenceSchema)
+  ),
+  reconciliationSequence: Schema.mutableKey(
+    Schema.optionalKey(RunEventSequenceSchema)
+  ),
+  receiptDigest: Schema.mutableKey(
+    Schema.optionalKey(VerificationReceiptDigestSchema)
+  ),
+  sandboxCreated: Schema.mutableKey(
+    Schema.optionalKey(ClaimVerificationSandboxCreatedV1)
+  ),
+  sandboxCreatedSequence: Schema.mutableKey(
+    Schema.optionalKey(RunEventSequenceSchema)
+  ),
+  terminalSequence: Schema.mutableKey(
+    Schema.optionalKey(RunEventSequenceSchema)
+  ),
+});
+type ClaimVerificationReplayState = Schema.Schema.Type<
+  typeof ClaimVerificationReplayStateSchema
+>;
+
 export const RunMachineContextSchema = Schema.Struct({
   browserEvidencePath: Schema.UndefinedOr(RunMachinePathSchema),
   browserEvidenceStatus: Schema.UndefinedOr(RunMachineStatusSchema),
@@ -170,7 +237,7 @@ export const RunMachineContextSchema = Schema.Struct({
   previewDeploymentStatus: Schema.UndefinedOr(RunMachineStatusSchema),
   previewDeploymentUrl: Schema.UndefinedOr(RunMachineUrlSchema),
   reportPath: Schema.UndefinedOr(RunMachinePathSchema),
-  runProof: Schema.UndefinedOr(RunProofProjectionV1Schema),
+  runProof: Schema.UndefinedOr(RunProofProjectionSchema),
   runId: Schema.UndefinedOr(RunIdSchema),
   specPath: Schema.UndefinedOr(RunMachinePathSchema),
   verificationResultPath: Schema.UndefinedOr(RunMachinePathSchema),
@@ -178,11 +245,10 @@ export const RunMachineContextSchema = Schema.Struct({
   workspacePath: Schema.UndefinedOr(RunMachinePathSchema),
 });
 
-export type RunMachineContext = typeof RunMachineContextSchema.Type;
-
 export const parseRunMachineContext = Schema.decodeUnknownSync(
   RunMachineContextSchema
 );
+export type RunMachineContext = ReturnType<typeof parseRunMachineContext>;
 
 const DeliveryPublicationMachineEventTypeSchema = Schema.Union([
   Schema.Literal("DELIVERY_PUBLICATION_INTENT_RECORDED"),
@@ -211,7 +277,7 @@ export const RunMachineEventSchema = Schema.Union([
     type: Schema.Literal("RUN_CREATED"),
   }),
   Schema.Struct({
-    contract: RunContractV1,
+    contract: RunContractSchema,
     type: Schema.Literal("RUN_CONTRACT_RECORDED"),
   }),
   Schema.Struct({
@@ -278,13 +344,24 @@ export const RunMachineEventSchema = Schema.Union([
   }),
   Schema.Struct({ type: Schema.Literal("VERIFICATION_STARTED") }),
   Schema.Struct({
+    type: Schema.Literals([
+      "CLAIM_VERIFICATION_GENERATION_STARTED",
+      "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED",
+      "CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED",
+      "CLAIM_VERIFICATION_COMMAND_START_RECORDED",
+      "CLAIM_VERIFICATION_COMMAND_RECORDED",
+      "CLAIM_VERIFICATION_REUSE_RECORDED",
+      "CLAIM_VERIFICATION_RECONCILIATION_RECORDED",
+    ] as const),
+  }),
+  Schema.Struct({
     runId: RunIdSchema,
     sequence: Schema.Number,
     type: Schema.Literal("VERIFICATION_COMPLETED"),
     verificationResultPath: RunMachinePathSchema,
   }),
   Schema.Struct({
-    result: RunProofResultV1,
+    result: RunProofResultSchema,
     verificationResultPath: RunMachinePathSchema,
     type: Schema.Literal("RUN_PROOF_RESULT_RECORDED"),
   }),
@@ -650,6 +727,13 @@ export const runMachine = runMachineSetup
       },
       delivering: {
         on: {
+          CLAIM_VERIFICATION_GENERATION_STARTED: {},
+          CLAIM_VERIFICATION_CREATE_INTENT_RECORDED: {},
+          CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED: {},
+          CLAIM_VERIFICATION_COMMAND_START_RECORDED: {},
+          CLAIM_VERIFICATION_COMMAND_RECORDED: {},
+          CLAIM_VERIFICATION_REUSE_RECORDED: {},
+          CLAIM_VERIFICATION_RECONCILIATION_RECORDED: {},
           RUN_CONTRACT_RECORDED: {
             actions: "recordRunContract",
           },
@@ -854,6 +938,13 @@ export const runMachine = runMachineSetup
       },
       verifying: {
         on: {
+          CLAIM_VERIFICATION_GENERATION_STARTED: {},
+          CLAIM_VERIFICATION_CREATE_INTENT_RECORDED: {},
+          CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED: {},
+          CLAIM_VERIFICATION_COMMAND_START_RECORDED: {},
+          CLAIM_VERIFICATION_COMMAND_RECORDED: {},
+          CLAIM_VERIFICATION_REUSE_RECORDED: {},
+          CLAIM_VERIFICATION_RECONCILIATION_RECORDED: {},
           PREVIEW_DEPLOYMENT_RECORDED: {
             actions: "recordPreviewDeployment",
           },
@@ -1286,28 +1377,48 @@ export const runMachine = runMachineSetup
             : undefined,
       }),
       recordRunContract: assign({
-        runProof: ({ event }) =>
-          event.type === "RUN_CONTRACT_RECORDED"
+        runProof: ({ event }) => {
+          if (event.type !== "RUN_CONTRACT_RECORDED") return undefined;
+          return event.contract.version === 1
             ? {
-                aggregate: "completed-unverified",
+                aggregate: "completed-unverified" as const,
                 contract: event.contract,
-                kind: "contract",
-                version: 1,
+                kind: "contract" as const,
+                version: 1 as const,
               }
-            : undefined,
+            : {
+                aggregate: "completed-unverified" as const,
+                contract: event.contract,
+                kind: "contract" as const,
+                version: 2 as const,
+              };
+        },
       }),
       recordRunProofResult: assign({
-        runProof: ({ context, event }) =>
-          event.type === "RUN_PROOF_RESULT_RECORDED" &&
-          context.runProof?.kind === "contract"
-            ? {
-                aggregate: event.result.aggregate,
-                contract: context.runProof.contract,
-                kind: "contract",
-                latestResult: event.result,
-                version: 1,
-              }
-            : context.runProof,
+        runProof: ({ context, event }) => {
+          if (
+            event.type !== "RUN_PROOF_RESULT_RECORDED" ||
+            context.runProof?.kind !== "contract"
+          )
+            return context.runProof;
+          if (event.result.version === 1 && context.runProof.version === 1)
+            return {
+              aggregate: event.result.aggregate,
+              contract: context.runProof.contract,
+              kind: "contract" as const,
+              latestResult: event.result,
+              version: 1 as const,
+            };
+          if (event.result.version === 2 && context.runProof.version === 2)
+            return {
+              aggregate: event.result.aggregate,
+              contract: context.runProof.contract,
+              kind: "contract" as const,
+              latestResult: event.result,
+              version: 2 as const,
+            };
+          return context.runProof;
+        },
         verificationResultPath: ({ event }) =>
           event.type === "RUN_PROOF_RESULT_RECORDED"
             ? event.verificationResultPath
@@ -1378,8 +1489,8 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
     [];
   const mergeActions: typeof DeliveryMergeReplayActionsSchema.Type = [];
   const cleanupActions: typeof DeliveryCleanupReplayActionsSchema.Type = [];
-  let runContract: RunContractV1 | undefined;
-  let latestProofResult: RunProofResultV1 | undefined;
+  let runContract: RunContract | undefined;
+  let latestProofResult: RunProofResult | undefined;
   let contentAuthoritySequence = 1;
   let evidenceReviewSequence: number | undefined;
   let publicationConfirmationSequence: number | undefined;
@@ -1387,6 +1498,7 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   let sawLegacyVerification = false;
   let sawProofVocabulary = false;
   let crossedWorkerExecutionBoundary = false;
+  const claimVerification = new Map<string, ClaimVerificationReplayState>();
 
   for (const event of events) {
     if (event.sequence !== expectedSequence) {
@@ -1419,7 +1531,7 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
         throw new Error(
           "The immutable run contract must be recorded before worker execution begins."
         );
-      runContract = parseRunContract(event.payload["contract"]);
+      runContract = parseAnyRunContract(event.payload["contract"]);
       sawProofVocabulary = true;
     }
     if (event.type === "RUN_PROOF_RESULT_RECORDED") {
@@ -1435,10 +1547,22 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
         throw new Error(
           "Run-proof results require a worker execution boundary and a legal verification state."
         );
-      latestProofResult = parseRunProofResult(
+      const nextProofResult = parseAnyRunProofResult(
         event.payload["result"],
         runContract
       );
+      if (nextProofResult.recordedBy.sequence !== event.sequence)
+        throw new Error(
+          "Run-proof result does not bind its authoritative event sequence."
+        );
+      if (
+        nextProofResult.version === 2 &&
+        nextProofResult.contentAuthoritySequence !== contentAuthoritySequence
+      )
+        throw new Error(
+          "V2 run-proof result does not bind the current content authority."
+        );
+      latestProofResult = nextProofResult;
       sawProofVocabulary = true;
     }
     if (event.type === "VERIFICATION_COMPLETED") {
@@ -1449,6 +1573,12 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       sawLegacyVerification = true;
       legacyVerificationSequence = event.sequence;
     }
+    applyClaimVerificationReplay(
+      event,
+      runContract,
+      claimVerification,
+      contentAuthoritySequence
+    );
     if (event.type === "MERGE_DECISION_RECORDED") {
       const isV2 = event.payload["decision"] !== undefined;
       const state = actor.getSnapshot().value;
@@ -1715,12 +1845,191 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   return actor.getSnapshot();
 }
 
+function applyClaimVerificationReplay(
+  event: RunEvent,
+  contract: RunContract | undefined,
+  states: Map<string, ClaimVerificationReplayState>,
+  contentAuthoritySequence: number
+) {
+  const key = (
+    generationSequence: typeof RunEventSequenceSchema.Type,
+    claimId: typeof ProofClaimIdSchema.Type
+  ) => `${generationSequence}:${claimId}`;
+  const requireV2CommandClaim = (claimId: typeof ProofClaimIdSchema.Type) => {
+    if (contract?.version !== 2)
+      throw new Error(
+        "Claim-verification lifecycle requires a V2 run contract."
+      );
+    const claim = contract.proofClaims.find(
+      (entry) => entry.claimId === claimId
+    );
+    if (claim?.kind !== "command")
+      throw new Error(
+        "Claim-verification lifecycle must bind a command claim."
+      );
+    return claim;
+  };
+  switch (event.type) {
+    case "CLAIM_VERIFICATION_GENERATION_STARTED": {
+      if (contract?.version !== 2)
+        throw new Error(
+          "Claim-verification generation requires a V2 contract."
+        );
+      const generation = Schema.decodeUnknownSync(
+        ClaimVerificationGenerationStartedV1
+      )(event.payload["generation"]);
+      if (generation.contractDigest !== contract.contractDigest)
+        throw new Error(
+          "Claim-verification generation binds a stale contract."
+        );
+      if (generation.contentAuthoritySequence !== contentAuthoritySequence)
+        throw new Error(
+          "Claim-verification generation binds stale content authority."
+        );
+      if (new Set(generation.claimIds).size !== generation.claimIds.length)
+        throw new Error("Claim-verification generation repeats a claim.");
+      for (const claimId of generation.claimIds) {
+        requireV2CommandClaim(claimId);
+        const stateKey = key(event.sequence, claimId);
+        if (states.has(stateKey))
+          throw new Error("Claim-verification generation is duplicated.");
+        states.set(stateKey, {
+          claimId,
+          contractDigest: generation.contractDigest,
+          executionEvidenceIdentityDigest:
+            generation.executionEvidenceIdentityDigest,
+          generationSequence: event.sequence,
+        });
+      }
+      return;
+    }
+    case "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED": {
+      const intent = Schema.decodeUnknownSync(ClaimVerificationCreateIntentV1)(
+        event.payload["createIntent"]
+      );
+      const state = requireClaimVerificationState(states, intent);
+      if (state.createIntent !== undefined)
+        throw new Error("Claim-verification create intent is duplicated.");
+      state.createIntent = intent;
+      state.createIntentSequence = event.sequence;
+      return;
+    }
+    case "CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED": {
+      const created = Schema.decodeUnknownSync(
+        ClaimVerificationSandboxCreatedV1
+      )(event.payload["sandboxCreated"]);
+      const state = requireClaimVerificationState(states, created);
+      if (
+        state.createIntent === undefined ||
+        state.createIntentSequence !== created.createIntentSequence ||
+        state.createIntent.sandboxName !== created.sandboxName ||
+        state.sandboxCreated !== undefined
+      )
+        throw new Error("Sandbox-created evidence has no exact create intent.");
+      state.sandboxCreated = created;
+      state.sandboxCreatedSequence = event.sequence;
+      return;
+    }
+    case "CLAIM_VERIFICATION_COMMAND_START_RECORDED": {
+      const start = Schema.decodeUnknownSync(ClaimVerificationCommandStartV1)(
+        event.payload["commandStart"]
+      );
+      const state = requireClaimVerificationState(states, start);
+      if (
+        state.sandboxCreated === undefined ||
+        state.sandboxCreatedSequence !== start.sandboxCreatedSequence ||
+        state.sandboxCreated.sandboxName !== start.sandboxName ||
+        state.sandboxCreated.sandboxUuid !== start.sandboxUuid ||
+        state.commandStart !== undefined
+      )
+        throw new Error("Command start has no exact sandbox-created prefix.");
+      state.commandStart = start;
+      state.commandStartSequence = event.sequence;
+      return;
+    }
+    case "CLAIM_VERIFICATION_COMMAND_RECORDED": {
+      const receipt = parseVerificationCommandReceipt(event.payload["receipt"]);
+      const state = requireClaimVerificationState(states, receipt);
+      const claim = requireV2CommandClaim(receipt.claimId);
+      if (
+        state.commandStart === undefined ||
+        state.commandStartSequence !== receipt.commandStartSequence ||
+        state.commandStart.requestDigest !== receipt.requestDigest ||
+        state.commandStart.sandboxName !== receipt.sandboxName ||
+        state.commandStart.sandboxUuid !== receipt.sandboxUuid ||
+        receipt.contractId !== contract!.contractId ||
+        receipt.targetDigest !== contract!.targetDigest ||
+        receipt.requestDigest !==
+          makeVerificationCommandRequestDigest(claim.command) ||
+        receipt.terminalSequence !== event.sequence ||
+        state.terminalSequence !== undefined
+      )
+        throw new Error("Command receipt does not bind one unresolved start.");
+      state.terminalSequence = event.sequence;
+      state.receiptDigest = receipt.receiptDigest;
+      return;
+    }
+    case "CLAIM_VERIFICATION_REUSE_RECORDED": {
+      const reuse = Schema.decodeUnknownSync(ClaimVerificationReuseReceiptV1)(
+        event.payload["reuse"]
+      );
+      const state = requireClaimVerificationState(states, reuse);
+      const original = [...states.values()].find(
+        (entry) =>
+          entry.claimId === reuse.claimId &&
+          entry.commandStartSequence === reuse.originalCommandStartSequence &&
+          entry.terminalSequence === reuse.originalTerminalSequence &&
+          entry.receiptDigest === reuse.receiptDigest
+      );
+      if (original === undefined || state.terminalSequence !== undefined)
+        throw new Error("Claim-verification reuse has no exact prior receipt.");
+      state.terminalSequence = event.sequence;
+      return;
+    }
+    case "CLAIM_VERIFICATION_RECONCILIATION_RECORDED": {
+      const receipt = parseVerificationReconciliationReceipt(
+        event.payload["reconciliation"]
+      );
+      const state = requireClaimVerificationState(states, receipt);
+      const prefixMatches =
+        receipt.reason === "createdWithoutCommandStart"
+          ? state.sandboxCreated !== undefined &&
+            state.commandStart === undefined
+          : state.commandStart !== undefined &&
+            state.terminalSequence === undefined;
+      if (!prefixMatches || state.reconciliationSequence !== undefined)
+        throw new Error(
+          "Claim-verification reconciliation prior is not exact."
+        );
+      state.reconciliationSequence = event.sequence;
+      return;
+    }
+  }
+}
+
+function requireClaimVerificationState(
+  states: ReadonlyMap<string, ClaimVerificationReplayState>,
+  identity: ClaimVerificationReplayIdentity
+) {
+  const state = states.get(
+    `${identity.generationSequence}:${identity.claimId}`
+  );
+  if (
+    state === undefined ||
+    state.contractDigest !== identity.contractDigest ||
+    state.executionEvidenceIdentityDigest !==
+      identity.executionEvidenceIdentityDigest
+  )
+    throw new Error("Claim-verification evidence is rebound or orphaned.");
+  return state;
+}
+
 function assertMergeDecisionProofDescription(
   decision: MergeDecisionV2,
   authority: {
-    readonly latestProofResult: RunProofResultV1 | undefined;
+    readonly latestProofResult: RunProofResult | undefined;
     readonly legacyVerificationSequence: number | undefined;
-    readonly runContract: RunContractV1 | undefined;
+    readonly runContract: RunContract | undefined;
   }
 ) {
   if (authority.runContract === undefined) {
@@ -1770,7 +2079,7 @@ function assertApprovedMergeDecisionReplayAuthority(
   authority: {
     readonly contentAuthoritySequence: number;
     readonly evidenceReviewSequence: number | undefined;
-    readonly latestProofResult: RunProofResultV1 | undefined;
+    readonly latestProofResult: RunProofResult | undefined;
     readonly publicationConfirmationSequence: number | undefined;
   }
 ) {
@@ -2011,6 +2320,13 @@ function toMachineEventInput(event: RunEvent) {
     case "REVIEW_STARTED":
     case "VERIFICATION_STARTED":
     case "WORKER_STARTED":
+    case "CLAIM_VERIFICATION_GENERATION_STARTED":
+    case "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED":
+    case "CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED":
+    case "CLAIM_VERIFICATION_COMMAND_START_RECORDED":
+    case "CLAIM_VERIFICATION_COMMAND_RECORDED":
+    case "CLAIM_VERIFICATION_REUSE_RECORDED":
+    case "CLAIM_VERIFICATION_RECONCILIATION_RECORDED":
       return { type: event.type };
     case "HARNESS_SESSION_EVENT_RECORDED":
       return { type: event.type };
@@ -2061,12 +2377,12 @@ function toMachineEventInput(event: RunEvent) {
       };
     case "RUN_CONTRACT_RECORDED":
       return {
-        contract: parseRunContract(event.payload["contract"]),
+        contract: parseAnyRunContract(event.payload["contract"]),
         type: event.type,
       };
     case "RUN_PROOF_RESULT_RECORDED":
       return {
-        result: parseRunProofResultEnvelope(event.payload["result"]),
+        result: parseAnyRunProofResultEnvelope(event.payload["result"]),
         type: event.type,
         verificationResultPath: getStringPayload(
           event,
@@ -2903,8 +3219,8 @@ function snapshotContext(
     output.delivery = context.delivery;
   }
   if (context.runProof !== undefined) {
-    output.runProof = Schema.encodeSync(RunProofProjectionV1Schema)(
-      Schema.decodeUnknownSync(RunProofProjectionV1Schema)(context.runProof)
+    output.runProof = Schema.encodeSync(RunProofProjectionSchema)(
+      Schema.decodeUnknownSync(RunProofProjectionSchema)(context.runProof)
     );
   }
   if (context.githubChecksPath !== undefined) {

@@ -39,6 +39,10 @@ import {
   resumeHarnessSession,
   writePrivateWorkerCorrelationFollowUpCheckpoint,
   makeHarnessProviderRegistry,
+  makeDockerSandboxCli,
+  makeDockerSandboxVerificationExecutor,
+  nodeDockerSandboxCliRunner,
+  readVerificationExecutionProfile,
   issueDeliveryWorkerHarnessCapabilities,
   inspectContinuableDeliveryWorktreeOwnership,
   inspectRecoverableDeliveryWorktreeOwnership,
@@ -179,6 +183,7 @@ export function runLocalGaiaServer(input: {
                 production.dispatchCorrelationFollowUp,
               workerCorrelationReconciler: production.reconcileCorrelation,
               workerRecoveryActivator: production.recover,
+              verificationServices: production.verificationServices,
             }),
       };
       const reconciliation =
@@ -558,6 +563,8 @@ function makeProductionHarnessServices(
           );
         })
       );
+    const verificationServices =
+      yield* makeProductionVerificationServices(rootDirectory);
     return {
       dispatchCorrelationFollowUp,
       dispatchDesktopOriginCorrelationFollowUp,
@@ -565,6 +572,68 @@ function makeProductionHarnessServices(
       reconcileCorrelation,
       reconcileDesktopOriginCorrelation,
       registry,
+      verificationServices,
+    };
+  });
+}
+
+function makeProductionVerificationServices(
+  rootDirectory: typeof RunStorageRootInputSchema.Type
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const profile = yield* readVerificationExecutionProfile(
+      parseRuntimePath(
+        nodePath.join(rootDirectory, "profiles", "claim-verification.json")
+      )
+    );
+    const pathCandidates = (process.env.PATH ?? "")
+      .split(nodePath.delimiter)
+      .filter((entry) => entry.length > 0)
+      .map((entry) => nodePath.resolve(entry, "sbx"));
+    const candidates = [
+      "/opt/homebrew/bin/sbx",
+      "/usr/local/bin/sbx",
+      ...pathCandidates,
+    ];
+    let executable: string | undefined;
+    for (const candidate of candidates) {
+      if (!(yield* fs.exists(candidate))) continue;
+      executable = yield* fs.realPath(candidate);
+      break;
+    }
+    if (executable === undefined)
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "VerificationProviderFailure",
+          message:
+            "Pinned Docker Sandbox CLI could not be resolved absolutely.",
+          recoverable: false,
+        })
+      );
+    const cli = makeDockerSandboxCli(nodeDockerSandboxCliRunner, executable);
+    const version = yield* cli.version.pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "VerificationProviderFailure",
+          message: "Pinned Docker Sandbox CLI failed its startup check.",
+          recoverable: false,
+        })
+      )
+    );
+    const expected = `sbx version: v${profile.provider.version} ${profile.provider.build}`;
+    if (version.exitCode !== 0 || version.stdout.trim() !== expected)
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "VerificationProviderFailure",
+          message: "Docker Sandbox CLI startup version/build is not pinned.",
+          recoverable: false,
+        })
+      );
+    return {
+      executor: makeDockerSandboxVerificationExecutor(cli, profile),
+      profile,
     };
   });
 }

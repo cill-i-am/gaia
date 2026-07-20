@@ -70,6 +70,7 @@ export const WorkspaceStructuralFileIdentitySchema = Schema.Struct({
     "special",
   ] as const),
   mtimeNs: CanonicalUint64DecimalSchema,
+  nlink: CanonicalUint64DecimalSchema,
   size: CanonicalUint64DecimalSchema,
 });
 export type WorkspaceStructuralFileIdentity = Schema.Schema.Type<
@@ -101,7 +102,7 @@ export type WorkspaceStructuralObserver = {
   ) => Promise<WorkspaceStructuralObservedFile>;
 };
 
-const WorkspaceStructuralObservationSchema = Schema.Struct({
+export const WorkspaceStructuralObservationSchema = Schema.Struct({
   digest: StructuralDigestSchema,
   manifest: WorkspaceStructuralManifestV1,
   receipt: WorkspaceStructuralObservationReceiptV1,
@@ -256,6 +257,7 @@ function statIdentity(info: BigIntStats): WorkspaceStructuralFileIdentity {
     ino: info.ino.toString(),
     kind: statKind(info),
     mtimeNs: info.mtimeNs.toString(),
+    nlink: info.nlink.toString(),
     size: info.size.toString(),
   });
 }
@@ -286,8 +288,10 @@ function assertStableObservedFile(
         identity.kind !== identities[0]!.kind ||
         identity.size !== identities[0]!.size ||
         identity.mtimeNs !== identities[0]!.mtimeNs ||
-        identity.ctimeNs !== identities[0]!.ctimeNs
+        identity.ctimeNs !== identities[0]!.ctimeNs ||
+        identity.nlink !== identities[0]!.nlink
     ) ||
+    identities[0]!.nlink !== "1" ||
     BigInt(identities[0]!.size) !== BigInt(observed.bytes.byteLength)
   ) {
     throw new WorkspaceStructuralObservationChangedError(

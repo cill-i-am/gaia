@@ -126,6 +126,13 @@ export const RunPathsSchema = Schema.Struct({
 
 export type RunPaths = typeof RunPathsSchema.Type;
 
+export type VerificationClaimPaths = {
+  readonly directory: RuntimePath;
+  readonly receipt: RuntimePath;
+  readonly stderr: RuntimePath;
+  readonly stdout: RuntimePath;
+};
+
 const parseRunStorageOptions = Schema.decodeUnknownSync(
   RunStorageOptionsSchema
 );
@@ -248,6 +255,27 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       workspaceManifest: path.join(root, "workspace-manifest.json"),
       workspaceOutput: path.join(workspace, "output.txt"),
     });
+  });
+}
+
+/** Derive owned per-claim command evidence paths from a validated source key. */
+export function makeVerificationClaimPaths(paths: RunPaths, claimKey: string) {
+  return Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const key = Schema.decodeUnknownSync(
+      Schema.String.pipe(
+        Schema.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,63}$/u))
+      )
+    )(claimKey);
+    const directory = parseRuntimePath(
+      path.join(paths.root, "verification", "claims", key)
+    );
+    return {
+      directory,
+      receipt: parseRuntimePath(path.join(directory, "receipt.json")),
+      stderr: parseRuntimePath(path.join(directory, "stderr.bin")),
+      stdout: parseRuntimePath(path.join(directory, "stdout.bin")),
+    } satisfies VerificationClaimPaths;
   });
 }
 

@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 
 import {
+  canonicalV1,
+  ClaimVerificationCommandStartV1,
+  ClaimVerificationGenerationStartedV1,
+  ClaimVerificationSandboxCreatedV1,
+  CommandStartOutcomeUnknownReconciled,
+  CreatedWithoutCommandStartReconciled,
   DeliveryFeedbackTrustPolicyV1,
   deliveryFeedbackRequiresApprovedReview,
   type DeliveryMergeActionRequest,
@@ -14,6 +20,12 @@ import {
   parseHarnessEvent,
   parseHarnessSessionId,
   parseDeliveryPublication,
+  parseAnyRunProofResult,
+  parseVerificationActionRequest,
+  parseVerificationCommandReceipt,
+  parseVerificationReconciliationReceipt,
+  encodeVerificationReconciliationReceiptJson,
+  PostPublicationGenerationRecorded,
   parseRunId,
   encodeWorkerContinuationReceiptJson,
   encodeWorkerCorrelationReconciliationReceiptJson,
@@ -38,8 +50,12 @@ import {
   type WorkerRecoveryAction,
   type WorkerRecoveryReceipt,
   RunEvent,
-  RunProofProjectionV1Schema,
+  RunProofProjectionSchema,
   type RunId,
+  type RunContractV2,
+  type VerificationActionRequest,
+  VerificationRequestDigestSchema,
+  VerificationActionIdempotentReplay,
   type RunState,
   WorkerRecoveryActionIdSchema,
 } from "@gaia/core";
@@ -109,7 +125,9 @@ import {
   type RunStorageOptions,
 } from "./paths.js";
 import type { ReviewerRunOptions } from "./reviewer.js";
+import { loadRunContract } from "./run-contract.js";
 import { withRunStoreLock } from "./run-store-lock.js";
+import { recordRunProofResult, type VerificationServices } from "./verifier.js";
 import {
   readPrivateWorkerCorrelationFollowUpCheckpoint,
   readPrivateWorkerRecoveryCheckpoint,
@@ -119,6 +137,7 @@ import {
   type CommandSummary,
   type WorkerContinuationState,
 } from "./workflows.js";
+import { observeWorkspaceStructuralDigest } from "./workspace-snapshot.js";
 import {
   localDirectoryWorkspaceSource,
   type WorkspaceSource,
@@ -148,6 +167,7 @@ export type ServerWorkflowOptions = RunStorageOptions &
     readonly deliveryRetryPublisher?: typeof retryFailedDeliveryPublication;
     readonly harnessProviderRegistry?: HarnessProviderRegistry;
     readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
+    readonly verificationServices?: VerificationServices;
     readonly workspaceSource?: WorkspaceSource;
     readonly workerRecoveryActivator?: (
       runId: RunId,
@@ -1339,6 +1359,214 @@ function continueServerRunWorkerOnly(
   });
 }
 
+/** Execute exactly one public verification action under the server-workflow lock. */
+export function actOnRunVerification(
+  runId: RunId,
+  actionInput: VerificationActionRequest,
+  options: ServerWorkflowOptions = {}
+) {
+  return withRunStoreLock(
+    options,
+    Effect.scoped(actOnRunVerificationUnlocked(runId, actionInput, options)),
+    {
+      nextSafeAction:
+        "Refresh the exact run authority before retrying verification.",
+      operation: "Gaia claim verification action",
+    }
+  ).pipe(Effect.mapError(toServerWorkflowError("VerificationProviderFailure")));
+}
+
+function actOnRunVerificationUnlocked(
+  runId: RunId,
+  actionInput: VerificationActionRequest,
+  options: ServerWorkflowOptions
+) {
+  return Effect.gen(function* () {
+    const action = yield* Effect.try({
+      try: () => parseVerificationActionRequest(actionInput),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "VerificationActionInvalidRequest",
+          message: "Verification action input is invalid.",
+          recoverable: false,
+        }),
+    });
+    const paths = yield* makeRunPaths(runId, options);
+    const loaded = yield* loadRun(paths);
+    const contract = yield* loadRunContract(paths, runId);
+    if (contract.version !== 2)
+      return yield* verificationFailure(
+        "VerificationActionUnsupportedPhase",
+        "Public verification actions require a V2 run contract."
+      );
+    const actionRequestDigest = verificationActionRequestDigest(action);
+    const prior = priorVerificationActionResult(
+      runId,
+      action,
+      actionRequestDigest,
+      contract,
+      loaded.events
+    );
+    if (prior.kind === "conflict")
+      return yield* verificationFailure(
+        "VerificationActionIdempotencyConflict",
+        "The verification action ID is already bound to different input."
+      );
+    if (prior.kind === "replay") return prior.result;
+    if (prior.kind === "incomplete")
+      return yield* verificationFailure(
+        "VerificationCreatedWithoutCommandStart",
+        "A prior verification action has no reconstructable terminal result."
+      );
+
+    const latestSequence = loaded.events.at(-1)?.sequence ?? 0;
+    const contentAuthoritySequence = verificationContentAuthoritySequence(
+      loaded.events
+    );
+    if (
+      latestSequence !== action.expectedEventSequence ||
+      contract.contractDigest !== action.expectedContractDigest ||
+      contentAuthoritySequence !== action.expectedContentAuthoritySequence
+    )
+      return yield* verificationFailure(
+        "VerificationActionStaleAuthority",
+        "Verification action authority is stale."
+      );
+
+    if (action.kind === "startPostPublicationGeneration") {
+      if (contract.targetDigest !== action.expectedTargetDigest)
+        return yield* verificationFailure(
+          "VerificationActionStaleAuthority",
+          "Verification target digest changed before action acceptance."
+        );
+      const observed = yield* observeWorkspaceStructuralDigest(paths.workspace);
+      if (observed.digest !== contract.targetDigest)
+        return yield* verificationFailure(
+          "VerificationActionStaleAuthority",
+          "Disposable workspace no longer matches the immutable target."
+        );
+      const publicationEvent = loaded.events.find(
+        (event) => event.sequence === action.expectedPublicationSequence
+      );
+      if (publicationEvent?.type !== "DELIVERY_PUBLICATION_CONFIRMED")
+        return yield* verificationFailure(
+          "VerificationActionUnsupportedPhase",
+          "Post-publication verification requires exact confirmed publication."
+        );
+      const publication = parseDeliveryPublication(
+        publicationEvent.payload["publication"]
+      );
+      if (
+        publication.state !== "confirmed" ||
+        publication.headSha !== action.expectedHeadSha
+      )
+        return yield* verificationFailure(
+          "VerificationActionStaleAuthority",
+          "Published exact-head authority changed before verification."
+        );
+      const result = yield* recordRunProofResult(runId, paths, {
+        actionId: action.actionId,
+        actionRequestDigest,
+        expectedHeadSha: action.expectedHeadSha,
+        phase: "postPublication",
+        ...(options.verificationServices === undefined
+          ? {}
+          : { verificationServices: options.verificationServices }),
+      });
+      if (result.version !== 2)
+        return yield* verificationFailure(
+          "VerificationActionUnsupportedPhase",
+          "Post-publication action produced a legacy proof result."
+        );
+      const generationSequence = latestGenerationSequenceForAction(
+        yield* loadRun(paths),
+        action.actionId
+      );
+      return PostPublicationGenerationRecorded.make({
+        actionId: action.actionId,
+        actionRequestDigest,
+        aggregate: result.aggregate,
+        currentContentAuthoritySequence: contentAuthoritySequence,
+        expectedContentAuthoritySequence:
+          action.expectedContentAuthoritySequence,
+        generationSequence,
+        headSha: action.expectedHeadSha,
+        kind: "postPublicationGenerationRecorded",
+        proofResultDigest: result.resultDigest,
+        proofResultSequence: result.recordedBy.sequence,
+        publicationSequence: action.expectedPublicationSequence,
+        replayed: false,
+        runId,
+        targetDigest: action.expectedTargetDigest,
+      });
+    }
+
+    if (options.verificationServices === undefined)
+      return yield* verificationFailure(
+        "VerificationProviderFailure",
+        "Verification reconciliation provider is unavailable."
+      );
+    const priorIdentity = yield* Effect.try({
+      try: () =>
+        exactVerificationReconciliationPrior(
+          action,
+          contract.contractDigest,
+          loaded.events
+        ),
+      catch: (cause) =>
+        cause instanceof GaiaRuntimeError
+          ? cause
+          : makeRuntimeError({
+              cause,
+              code: "VerificationActionUnsupportedReconciliation",
+              message: "Verification reconciliation prior is invalid.",
+              recoverable: false,
+            }),
+    });
+    const receipt = yield* options.verificationServices.executor.reconcile({
+      actionId: action.actionId,
+      claimId: action.claimId,
+      contractDigest: contract.contractDigest,
+      executionEvidenceIdentityDigest:
+        action.expectedExecutionEvidenceIdentityDigest,
+      generationSequence: action.priorGenerationSequence,
+      reason: action.prior.kind,
+      runId,
+      sandboxName: action.expectedSandboxName,
+      sandboxUuid: action.expectedSandboxUuid,
+    });
+    const recorded = yield* appendEvent(runId, paths, {
+      payload: {
+        actionRequestDigest,
+        reconciliation: encodeVerificationReconciliationReceiptJson(receipt),
+      },
+      type: "CLAIM_VERIFICATION_RECONCILIATION_RECORDED",
+    });
+    const common = {
+      actionId: action.actionId,
+      actionRequestDigest,
+      claimId: action.claimId,
+      generationSequence: action.priorGenerationSequence,
+      reconciliationReceipt: parseVerificationReconciliationReceipt(receipt),
+      reconciliationSequence: recorded.event.sequence,
+      replayed: false as const,
+      runId,
+    };
+    return action.prior.kind === "createdWithoutCommandStart"
+      ? CreatedWithoutCommandStartReconciled.make({
+          ...common,
+          kind: "createdWithoutCommandStartReconciled",
+          sandboxCreatedSequence: priorIdentity.sequence,
+        })
+      : CommandStartOutcomeUnknownReconciled.make({
+          ...common,
+          commandStartSequence: priorIdentity.sequence,
+          kind: "commandStartOutcomeUnknownReconciled",
+        });
+  });
+}
+
 export function actOnDeliveryPublication(
   runId: RunId,
   actionInput: typeof DeliveryPublicationActionSchema.Encoded,
@@ -1479,7 +1707,7 @@ function continueDeliveryPublication(
 }
 
 function proofAggregateFromSnapshot(input: unknown) {
-  const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(input);
+  const proof = Schema.decodeUnknownOption(RunProofProjectionSchema)(input);
   return Option.isSome(proof) ? proof.value.aggregate : undefined;
 }
 
@@ -2933,4 +3161,303 @@ function jsonObjectField(
     return undefined;
   }
   return Object.getOwnPropertyDescriptor(value, field)?.value;
+}
+
+function verificationActionRequestDigest(action: VerificationActionRequest) {
+  return Schema.decodeUnknownSync(VerificationRequestDigestSchema)(
+    createHash("sha256")
+      .update(canonicalV1("gaia.verification-action-request.v1", [action]))
+      .digest("hex")
+  );
+}
+
+function verificationResponseDigest(input: unknown) {
+  return Schema.decodeUnknownSync(VerificationRequestDigestSchema)(
+    createHash("sha256")
+      .update(canonicalV1("gaia.verification-action-response.v1", [input]))
+      .digest("hex")
+  );
+}
+
+function verificationContentAuthoritySequence(events: ReadonlyArray<RunEvent>) {
+  const sequence = [...events]
+    .reverse()
+    .find(({ type }) =>
+      [
+        "WORKER_COMPLETED",
+        "WORKER_CONTINUATION_RECORDED",
+        "DELIVERY_REMEDIATION_RECORDED",
+      ].includes(type)
+    )?.sequence;
+  if (sequence === undefined)
+    throw new Error("Verification requires durable content authority.");
+  return sequence;
+}
+
+function latestGenerationSequenceForAction(
+  loaded: { readonly events: ReadonlyArray<RunEvent> },
+  actionId: string
+) {
+  const event = [...loaded.events].reverse().find((candidate) => {
+    if (candidate.type !== "CLAIM_VERIFICATION_GENERATION_STARTED")
+      return false;
+    const generation = Schema.decodeUnknownSync(
+      ClaimVerificationGenerationStartedV1
+    )(candidate.payload["generation"]);
+    return generation.actionId === actionId;
+  });
+  if (event === undefined)
+    throw new Error("Verification generation was not durably recorded.");
+  return event.sequence;
+}
+
+function priorVerificationActionResult(
+  runId: RunId,
+  action: VerificationActionRequest,
+  actionRequestDigest: typeof VerificationRequestDigestSchema.Type,
+  contract: RunContractV2,
+  events: ReadonlyArray<RunEvent>
+):
+  | { readonly kind: "new" }
+  | { readonly kind: "conflict" }
+  | { readonly kind: "incomplete" }
+  | {
+      readonly kind: "replay";
+      readonly result: InstanceType<typeof VerificationActionIdempotentReplay>;
+    } {
+  const generationEvent = events.find((candidate) => {
+    if (candidate.type !== "CLAIM_VERIFICATION_GENERATION_STARTED")
+      return false;
+    return (
+      Schema.decodeUnknownSync(ClaimVerificationGenerationStartedV1)(
+        candidate.payload["generation"]
+      ).actionId === action.actionId
+    );
+  });
+  const reconciliationEvent = events.find((candidate) => {
+    if (candidate.type !== "CLAIM_VERIFICATION_RECONCILIATION_RECORDED")
+      return false;
+    return (
+      parseVerificationReconciliationReceipt(
+        candidate.payload["reconciliation"]
+      ).actionId === action.actionId
+    );
+  });
+  if (generationEvent === undefined && reconciliationEvent === undefined)
+    return { kind: "new" };
+  if (generationEvent !== undefined) {
+    const generation = Schema.decodeUnknownSync(
+      ClaimVerificationGenerationStartedV1
+    )(generationEvent.payload["generation"]);
+    if (
+      generation.actionRequestDigest !== actionRequestDigest ||
+      action.kind !== "startPostPublicationGeneration"
+    )
+      return { kind: "conflict" };
+    const proofEvent = events.find(
+      (candidate) =>
+        candidate.type === "RUN_PROOF_RESULT_RECORDED" &&
+        candidate.sequence > generationEvent.sequence &&
+        jsonObjectField(candidate.payload["verificationAction"], "actionId") ===
+          action.actionId
+    );
+    if (proofEvent === undefined) return { kind: "incomplete" };
+    const proof = parseAnyRunProofResult(
+      proofEvent.payload["result"],
+      contract
+    );
+    if (proof.version !== 2) return { kind: "conflict" };
+    const original = PostPublicationGenerationRecorded.make({
+      actionId: action.actionId,
+      actionRequestDigest,
+      aggregate: proof.aggregate,
+      currentContentAuthoritySequence: action.expectedContentAuthoritySequence,
+      expectedContentAuthoritySequence: action.expectedContentAuthoritySequence,
+      generationSequence: generationEvent.sequence,
+      headSha: action.expectedHeadSha,
+      kind: "postPublicationGenerationRecorded",
+      proofResultDigest: proof.resultDigest,
+      proofResultSequence: proof.recordedBy.sequence,
+      publicationSequence: action.expectedPublicationSequence,
+      replayed: false,
+      runId,
+      targetDigest: action.expectedTargetDigest,
+    });
+    return {
+      kind: "replay",
+      result: VerificationActionIdempotentReplay.make({
+        actionId: action.actionId,
+        actionRequestDigest,
+        kind: "idempotentReplay",
+        originalKind: original.kind,
+        originalResponseDigest: verificationResponseDigest(original),
+        originalResult: original,
+        replayed: true,
+        runId,
+      }),
+    };
+  }
+  const reconciliation = parseVerificationReconciliationReceipt(
+    reconciliationEvent!.payload["reconciliation"]
+  );
+  if (
+    action.kind !== "reconcileOutcomeUnknown" ||
+    reconciliationEvent!.payload["actionRequestDigest"] !== actionRequestDigest
+  )
+    return { kind: "conflict" };
+  const common = {
+    actionId: action.actionId,
+    actionRequestDigest,
+    claimId: action.claimId,
+    generationSequence: action.priorGenerationSequence,
+    reconciliationReceipt: reconciliation,
+    reconciliationSequence: reconciliationEvent!.sequence,
+    replayed: false as const,
+    runId,
+  };
+  const original =
+    action.prior.kind === "createdWithoutCommandStart"
+      ? CreatedWithoutCommandStartReconciled.make({
+          ...common,
+          kind: "createdWithoutCommandStartReconciled",
+          sandboxCreatedSequence: action.prior.priorSandboxCreatedSequence,
+        })
+      : CommandStartOutcomeUnknownReconciled.make({
+          ...common,
+          commandStartSequence: action.prior.priorCommandStartSequence,
+          kind: "commandStartOutcomeUnknownReconciled",
+        });
+  return {
+    kind: "replay",
+    result: VerificationActionIdempotentReplay.make({
+      actionId: action.actionId,
+      actionRequestDigest,
+      kind: "idempotentReplay",
+      originalKind: original.kind,
+      originalResponseDigest: verificationResponseDigest(original),
+      originalResult: original,
+      replayed: true,
+      runId,
+    }),
+  };
+}
+
+function exactVerificationReconciliationPrior(
+  action: Extract<
+    VerificationActionRequest,
+    { readonly kind: "reconcileOutcomeUnknown" }
+  >,
+  contractDigest: string,
+  events: ReadonlyArray<RunEvent>
+) {
+  const generationEvent = events.find(
+    (event) => event.sequence === action.priorGenerationSequence
+  );
+  if (generationEvent?.type !== "CLAIM_VERIFICATION_GENERATION_STARTED")
+    throw makeRuntimeError({
+      code: "VerificationActionUnsupportedReconciliation",
+      message: "Reconciliation generation identity is absent.",
+      recoverable: false,
+    });
+  const generation = Schema.decodeUnknownSync(
+    ClaimVerificationGenerationStartedV1
+  )(generationEvent.payload["generation"]);
+  if (
+    generation.contractDigest !== contractDigest ||
+    generation.executionEvidenceIdentityDigest !==
+      action.expectedExecutionEvidenceIdentityDigest ||
+    !generation.claimIds.some((claimId) => claimId === action.claimId)
+  )
+    throw makeRuntimeError({
+      code: "VerificationActionUnsupportedReconciliation",
+      message: "Reconciliation generation binding is stale or mismatched.",
+      recoverable: false,
+    });
+  const sequence =
+    action.prior.kind === "createdWithoutCommandStart"
+      ? action.prior.priorSandboxCreatedSequence
+      : action.prior.priorCommandStartSequence;
+  const prior = events.find((event) => event.sequence === sequence);
+  const identity =
+    action.prior.kind === "createdWithoutCommandStart" &&
+    prior?.type === "CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED"
+      ? Schema.decodeUnknownSync(ClaimVerificationSandboxCreatedV1)(
+          prior.payload["sandboxCreated"]
+        )
+      : action.prior.kind === "commandStartOutcomeUnknown" &&
+          prior?.type === "CLAIM_VERIFICATION_COMMAND_START_RECORDED"
+        ? Schema.decodeUnknownSync(ClaimVerificationCommandStartV1)(
+            prior.payload["commandStart"]
+          )
+        : undefined;
+  if (
+    identity === undefined ||
+    identity.claimId !== action.claimId ||
+    identity.sandboxName !== action.expectedSandboxName ||
+    identity.sandboxUuid !== action.expectedSandboxUuid ||
+    identity.executionEvidenceIdentityDigest !==
+      action.expectedExecutionEvidenceIdentityDigest
+  )
+    throw makeRuntimeError({
+      code: "VerificationActionUnsupportedReconciliation",
+      message: "Reconciliation prior identity is not exact.",
+      recoverable: false,
+    });
+  if (
+    action.prior.kind === "createdWithoutCommandStart" &&
+    events.some((event) => {
+      if (event.type !== "CLAIM_VERIFICATION_COMMAND_START_RECORDED")
+        return false;
+      const start = Schema.decodeUnknownSync(ClaimVerificationCommandStartV1)(
+        event.payload["commandStart"]
+      );
+      return (
+        start.generationSequence === action.priorGenerationSequence &&
+        start.claimId === action.claimId &&
+        start.sandboxCreatedSequence === sequence
+      );
+    })
+  )
+    throw makeRuntimeError({
+      code: "VerificationActionUnsupportedReconciliation",
+      message:
+        "Created-without-command-start reconciliation cannot replace an existing command start.",
+      recoverable: false,
+    });
+  if (
+    events.some(
+      (event) =>
+        event.type === "CLAIM_VERIFICATION_COMMAND_RECORDED" &&
+        parseVerificationCommandReceipt(event.payload["receipt"])
+          .commandStartSequence === sequence
+    )
+  )
+    throw makeRuntimeError({
+      code: "VerificationActionUnsupportedReconciliation",
+      message: "Reconciliation cannot replace an existing terminal receipt.",
+      recoverable: false,
+    });
+  if (
+    events.some((event) => {
+      if (event.type !== "CLAIM_VERIFICATION_RECONCILIATION_RECORDED")
+        return false;
+      const receipt = parseVerificationReconciliationReceipt(
+        event.payload["reconciliation"]
+      );
+      return (
+        receipt.generationSequence === action.priorGenerationSequence &&
+        receipt.claimId === action.claimId
+      );
+    })
+  )
+    throw makeRuntimeError({
+      code: "VerificationActionUnsupportedReconciliation",
+      message: "Verification prior has already been reconciled.",
+      recoverable: false,
+    });
+  return { sequence };
+}
+
+function verificationFailure(code: string, message: string) {
+  return Effect.fail(makeRuntimeError({ code, message, recoverable: false }));
 }

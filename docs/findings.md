@@ -1131,3 +1131,40 @@ Verification:
 - Runtime tests prove `doctor` returns warnings when git, GitHub, Codex, and
   Playwright checks fail through fake seams.
 - CLI help smoke proves `doctor` exposes `--json`.
+
+## Slice 30: Claim-Matched Scoped Verification
+
+Outcome: a dedicated structured V2 spec can bind accepted outcomes to exact
+proof claims and execute its mapped command claims through one server-owned,
+non-reentrant Effect workflow. V1 contracts and proof history remain readable
+but never silently execute.
+
+Findings:
+
+- The human-readable body remains the statement owner. Strict frontmatter adds
+  stable keys, phases, exact mappings, and discriminated requests/selectors;
+  missing, duplicated, rebound, stale, dangling, unmapped, or excess source
+  data fails before a contract is recorded.
+- `events.jsonl` remains authoritative. Create intent, sandbox identity,
+  command start, terminal or reconciliation evidence, and the V2 result are
+  separate durable events with exact replay grammar.
+- Live command proof is deliberately narrower than the general harness path:
+  one fixed Docker Sandbox CLI/profile/image/policy, one disposable writable
+  workspace, no network, no command credentials, no host fallback, and no
+  retry. Provider ambiguity becomes typed `outcomeUnknown`, never success.
+- Capability is not authority. The public API exposes only start-generation
+  and exact prior-outcome reconciliation; it does not add merge, deploy,
+  dashboard execution, provider configuration, or discovery authority.
+
+Verification:
+
+- Core tests cover raw-body provenance, exact mappings and selector binders,
+  permanent V1/V2 parsing, created-without-start replay, and public action
+  shapes.
+- Runtime tests cover structural 125/126/127 classification, exact
+  stop-before-observation and name/UUID cleanup, no-redispatch reconciliation,
+  claim-matched proof generation, idempotent replay, and stale/wrong-prior
+  rejection before provider mutation.
+- A separately authorized live test executed the pinned `printf` proof through
+  Docker Sandbox and confirmed final sandbox absence. Fake seams remain
+  explicitly identified as fake evidence.

@@ -4,21 +4,22 @@ import {
   deriveAcceptedOutcomeId,
   deriveExplicitSpecItemDigest,
   deriveProofClaimId,
-  encodeRunContractJson,
-  encodeRunProofResultJson,
+  encodeAnyRunContractJson,
+  encodeAnyRunProofResultJson,
   makeRunContract,
+  makeRunContractV2,
   normalizeExplicitSpecStatement,
-  parseRunContract,
-  parseRunProofResult,
+  parseAnyRunContract,
+  parseAnyRunProofResult,
   parseSpecDigest,
   type ProofAuthorityRequirement,
   type ProofClaimKind,
   type ProofClaimRequirement,
   type RunBaseIdentityV1,
-  type RunContractV1,
+  type RunContract,
   type RunId,
   type RunEvent,
-  type RunProofResultV1,
+  type RunProofResult,
   type RunSpec,
   type RunTargetIdentityV1,
 } from "@gaia/core";
@@ -45,99 +46,126 @@ export function deriveAndRecordRunContract(input: {
     const observation = yield* observeWorkspaceStructuralDigest(
       input.paths.workspace
     );
-    const specDigest = parseSpecDigest(
-      createHash("sha256")
-        .update("gaia.run-spec.v1\0")
-        .update(input.spec.title)
-        .update("\0")
-        .update(input.spec.body)
-        .digest("hex")
-    );
-    const items = explicitRunContractItems(input.spec);
-    const acceptedOutcomes = uniqueStatements(items.acceptanceCriteria).map(
-      (statement) => {
-        const source = {
-          itemDigest: deriveExplicitSpecItemDigest({
-            section: "acceptanceCriteria",
-            statement,
-          }),
-          kind: "explicitSpecItem" as const,
-          section: "acceptanceCriteria" as const,
-          specDigest,
-          version: 1 as const,
-        };
-        return {
-          conditionalClaimIds: [],
-          outcomeId: deriveAcceptedOutcomeId({ source, statement }),
-          // The source format has no outcome-to-check relation. Leaving the
-          // mapping empty is honest and intentionally prevents verification.
-          requiredClaimIds: [],
-          source,
-          statement,
-        };
-      }
-    );
-    const proofClaims = uniqueStatements(items.verificationChecks).map(
-      (statement) => {
-        const kind = proofKindForExplicitCheck(statement);
-        const requirement = proofRequirementForExplicitCheck(statement);
-        const authorityRequirements = authoritiesForProofKind(kind);
-        const source = {
-          itemDigest: deriveExplicitSpecItemDigest({
-            section: "verificationChecks",
-            statement,
-          }),
-          kind: "explicitSpecItem" as const,
-          section: "verificationChecks" as const,
-          specDigest,
-          version: 1 as const,
-        };
-        return {
-          authorityRequirements,
-          claimId: deriveProofClaimId({
-            authorityRequirements,
-            kind,
-            requirement,
-            source,
-            statement,
-          }),
-          kind,
-          requirement,
-          source,
-          statement,
-        };
-      }
-    );
-    const contract = makeRunContract({
-      acceptedOutcomes,
-      baseDigest: observation.digest,
-      baseIdentity: baseIdentity(input.deliveryProvenance),
-      baseObservation: observation.receipt,
-      nonGoals: sourcedItems(
-        uniqueStatements(items.nonGoals),
-        "nonGoals",
-        specDigest
-      ),
-      proofClaims,
-      runId: input.runId,
-      stopConditions: sourcedItems(
-        uniqueStatements(items.stopConditions),
-        "stopConditions",
-        specDigest
-      ),
-      targetDigest: observation.digest,
-      targetIdentity: targetIdentity(input.deliveryProvenance),
-      targetObservation: observation.receipt,
-    });
+    const contract =
+      input.spec.verification?.version === 2
+        ? makeRunContractV2({
+            baseDigest: observation.digest,
+            baseIdentity: baseIdentity(input.deliveryProvenance),
+            baseObservation: observation.receipt,
+            runId: input.runId,
+            spec: input.spec,
+            targetDigest: observation.digest,
+            targetIdentity: targetIdentity(input.deliveryProvenance),
+            targetObservation: observation.receipt,
+          })
+        : makeLegacyRunContract(input, observation);
 
     yield* appendEvent(input.runId, input.paths, {
-      payload: { contract: encodeRunContractJson(contract) },
+      payload: { contract: encodeAnyRunContractJson(contract) },
       type: "RUN_CONTRACT_RECORDED",
     });
     yield* writeRunContractProjection(input.paths, contract);
     return contract;
   });
 }
+
+function makeLegacyRunContract(
+  input: {
+    readonly deliveryProvenance?: DeliveryProvenance;
+    readonly runId: RunId;
+    readonly spec: RunSpec;
+  },
+  observation: AwaitedObservation
+) {
+  const specDigest = parseSpecDigest(
+    createHash("sha256")
+      .update("gaia.run-spec.v1\0")
+      .update(input.spec.title)
+      .update("\0")
+      .update(input.spec.body)
+      .digest("hex")
+  );
+  const items = explicitRunContractItems(input.spec);
+  const acceptedOutcomes = uniqueStatements(items.acceptanceCriteria).map(
+    (statement) => {
+      const source = {
+        itemDigest: deriveExplicitSpecItemDigest({
+          section: "acceptanceCriteria",
+          statement,
+        }),
+        kind: "explicitSpecItem" as const,
+        section: "acceptanceCriteria" as const,
+        specDigest,
+        version: 1 as const,
+      };
+      return {
+        conditionalClaimIds: [],
+        outcomeId: deriveAcceptedOutcomeId({ source, statement }),
+        // The source format has no outcome-to-check relation. Leaving the
+        // mapping empty is honest and intentionally prevents verification.
+        requiredClaimIds: [],
+        source,
+        statement,
+      };
+    }
+  );
+  const proofClaims = uniqueStatements(items.verificationChecks).map(
+    (statement) => {
+      const kind = proofKindForExplicitCheck(statement);
+      const requirement = proofRequirementForExplicitCheck(statement);
+      const authorityRequirements = authoritiesForProofKind(kind);
+      const source = {
+        itemDigest: deriveExplicitSpecItemDigest({
+          section: "verificationChecks",
+          statement,
+        }),
+        kind: "explicitSpecItem" as const,
+        section: "verificationChecks" as const,
+        specDigest,
+        version: 1 as const,
+      };
+      return {
+        authorityRequirements,
+        claimId: deriveProofClaimId({
+          authorityRequirements,
+          kind,
+          requirement,
+          source,
+          statement,
+        }),
+        kind,
+        requirement,
+        source,
+        statement,
+      };
+    }
+  );
+  return makeRunContract({
+    acceptedOutcomes,
+    baseDigest: observation.digest,
+    baseIdentity: baseIdentity(input.deliveryProvenance),
+    baseObservation: observation.receipt,
+    nonGoals: sourcedItems(
+      uniqueStatements(items.nonGoals),
+      "nonGoals",
+      specDigest
+    ),
+    proofClaims,
+    runId: input.runId,
+    stopConditions: sourcedItems(
+      uniqueStatements(items.stopConditions),
+      "stopConditions",
+      specDigest
+    ),
+    targetDigest: observation.digest,
+    targetIdentity: targetIdentity(input.deliveryProvenance),
+    targetObservation: observation.receipt,
+  });
+}
+
+type AwaitedObservation = Effect.Success<
+  ReturnType<typeof observeWorkspaceStructuralDigest>
+>;
 
 export function loadRunContract(paths: RunPaths, runId: RunId) {
   return Effect.gen(function* () {
@@ -215,12 +243,12 @@ export function synchronizeEventOwnedRunProjections(
   );
 }
 
-export function canonicalRunContractBody(contract: RunContractV1) {
-  return `${JSON.stringify(encodeRunContractJson(contract), null, 2)}\n`;
+export function canonicalRunContractBody(contract: RunContract) {
+  return `${JSON.stringify(encodeAnyRunContractJson(contract), null, 2)}\n`;
 }
 
-export function canonicalRunProofResultBody(result: RunProofResultV1) {
-  return `${JSON.stringify(encodeRunProofResultJson(result), null, 2)}\n`;
+export function canonicalRunProofResultBody(result: RunProofResult) {
+  return `${JSON.stringify(encodeAnyRunProofResultJson(result), null, 2)}\n`;
 }
 
 function decodeEventOwnedRunProjections(
@@ -245,12 +273,14 @@ function decodeEventOwnedRunProjections(
       if (contractEvents.length === 0 && resultEvents.length === 0) return {};
       if (contractEvents.length !== 1)
         throw new Error("Expected exactly one immutable run contract.");
-      const contract = parseRunContract(contractEvents[0]!.payload["contract"]);
+      const contract = parseAnyRunContract(
+        contractEvents[0]!.payload["contract"]
+      );
       if (contract.runId !== runId)
         throw new Error("Run contract belongs to another run.");
       const resultEvent = resultEvents.at(-1);
       if (resultEvent === undefined) return { contract };
-      const proofResult = parseRunProofResult(
+      const proofResult = parseAnyRunProofResult(
         resultEvent.payload["result"],
         contract
       );
@@ -284,7 +314,7 @@ function writeProjectionIfChanged(path: RunPaths["runContract"], body: string) {
   );
 }
 
-function writeRunContractProjection(paths: RunPaths, contract: RunContractV1) {
+function writeRunContractProjection(paths: RunPaths, contract: RunContract) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(

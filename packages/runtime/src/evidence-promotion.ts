@@ -187,15 +187,23 @@ function buildVerificationSummary(
     return EvidencePromotionVerificationSummary.make({
       claimEvidenceArtifacts: artifact.results.flatMap((result) =>
         result.status === "passed" || result.status === "failed"
-          ? result.evidence.map((evidence) => evidence.artifactPath)
+          ? result.evidence.flatMap((evidence) =>
+              "artifactPath" in evidence
+                ? [evidence.artifactPath]
+                : "artifacts" in evidence
+                  ? evidence.artifacts.map((artifact) => artifact.path)
+                  : []
+            )
           : []
       ),
       path: runRelative(paths, paths.verificationResult),
       status: artifact.aggregate,
       supplementalProtocolEvidenceArtifacts:
-        artifact.supplementalProtocolEvidence.map(
-          (evidence) => evidence.artifactPath
-        ),
+        artifact.version === 1
+          ? artifact.supplementalProtocolEvidence.map(
+              (evidence) => evidence.artifactPath
+            )
+          : [],
     });
   });
 }

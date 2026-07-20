@@ -59,6 +59,7 @@ const acceptedOutcomeIdPattern = /^accepted-outcome:sha256:[a-f0-9]{64}$/u;
 const proofClaimIdPattern = /^proof-claim:sha256:[a-f0-9]{64}$/u;
 const proofEvidenceIdPattern = /^proof-evidence:sha256:[a-f0-9]{64}$/u;
 const runContractIdPattern = /^run-contract:.+:v1$/u;
+const runContractIdV2Pattern = /^run-contract:.+:v2$/u;
 
 export const AcceptedOutcomeIdSchema = Schema.String.pipe(
   Schema.check(
@@ -87,6 +88,14 @@ export const RunContractIdSchema = Schema.String.pipe(
     Schema.isPattern(runContractIdPattern, { identifier: "RunContractId" })
   ),
   Schema.brand("RunContractId")
+);
+export const RunContractIdV2Schema = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(runContractIdV2Pattern, {
+      identifier: "RunContractIdV2",
+    })
+  ),
+  Schema.brand("RunContractIdV2")
 );
 
 export type AcceptedOutcomeId = typeof AcceptedOutcomeIdSchema.Type;

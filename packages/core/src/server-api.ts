@@ -58,8 +58,20 @@ import {
 } from "./factory-graph.js";
 import { HarnessExecutionSelection } from "./harness-execution.js";
 import { LocalGaiaServerUrlSchema } from "./local-gaia-server-url.js";
-import { RunVerificationAggregateSchema } from "./run-contract.js";
+import {
+  RunEventSequenceSchema,
+  RunProofResultDigestSchema,
+  RunVerificationAggregateSchema,
+  StructuralDigestSchema,
+} from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
+import {
+  VerificationIdentityDigestSchema,
+  VerificationReconciliationReceiptV1,
+  VerificationRequestDigestSchema,
+  VerificationSandboxNameSchema,
+  VerificationSandboxUuidSchema,
+} from "./verification-command.js";
 import {
   WorkerContinuationAction,
   WorkerContinuationReceiptSchema,
@@ -108,6 +120,14 @@ const LocalRunApiAdditionalDiagnosticCodeSchema = Schema.Literals([
   "WorkerRecoveryIntentPersistenceFailed",
   "WorkerRecoveryModelCatalogUnavailable",
   "WorkerRecoveryModelUnavailable",
+  "VerificationActionInvalidRequest",
+  "VerificationActionIdempotencyConflict",
+  "VerificationActionStaleAuthority",
+  "VerificationCreatedWithoutCommandStart",
+  "VerificationActionUnsupportedPhase",
+  "VerificationActionUnsupportedReconciliation",
+  "VerificationProviderFailure",
+  "VerificationPersistenceFailure",
 ] as const);
 
 export const LocalRunApiDiagnosticCodeSchema = Schema.Literals([
@@ -119,6 +139,7 @@ const BadRequestDiagnosticCodeSchema = Schema.Literals([
   "InvalidRequest",
   "InvalidRunId",
   "InvalidSpec",
+  "VerificationActionInvalidRequest",
 ] as const);
 const NotFoundDiagnosticCodeSchema = Schema.Literals([
   "ArtifactNotAllowed",
@@ -138,6 +159,9 @@ const ConflictDiagnosticCodeSchema = Schema.Literals([
   "DeliveryActionConflict",
   "DeliveryStreamCursorConflict",
   "RunStoreLocked",
+  "VerificationActionIdempotencyConflict",
+  "VerificationActionStaleAuthority",
+  "VerificationCreatedWithoutCommandStart",
 ] as const);
 const UnprocessableDiagnosticCodeSchema = Schema.Literals([
   "HarnessAuthenticationRequired",
@@ -152,10 +176,14 @@ const UnprocessableDiagnosticCodeSchema = Schema.Literals([
   "WorkerRecoveryCorrelationUnavailable",
   "WorkerRecoveryModelCatalogUnavailable",
   "WorkerRecoveryModelUnavailable",
+  "VerificationActionUnsupportedPhase",
+  "VerificationActionUnsupportedReconciliation",
+  "VerificationProviderFailure",
 ] as const);
 const InternalServerDiagnosticCodeSchema = Schema.Literals([
   "InternalServerError",
   "WorkerRecoveryIntentPersistenceFailed",
+  "VerificationPersistenceFailure",
 ] as const);
 
 export const LocalRunApiErrorStatusSchema = Schema.Literals([
@@ -871,6 +899,183 @@ export class WorkerRecoverySuccessEnvelope extends Schema.Class<WorkerRecoverySu
   status: Schema.Literal("success"),
 }) {}
 
+const verificationActionAuthorityFields = {
+  actionId: DeliveryActionIdPublicSchema,
+  expectedContentAuthoritySequence: RunEventSequenceSchema,
+  expectedContractDigest: DeliverySha256DigestPublicSchema,
+  expectedEventSequence: RunEventSequenceSchema,
+} as const;
+
+export class StartPostPublicationGenerationAction extends Schema.Class<StartPostPublicationGenerationAction>(
+  "StartPostPublicationGenerationAction"
+)(
+  {
+    ...verificationActionAuthorityFields,
+    expectedHeadSha: DeliveryGitShaPublicSchema,
+    expectedPublicationSequence: RunEventSequenceSchema,
+    expectedTargetDigest: StructuralDigestSchema,
+    kind: Schema.Literal("startPostPublicationGeneration"),
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+export class CreatedWithoutCommandStartPrior extends Schema.Class<CreatedWithoutCommandStartPrior>(
+  "CreatedWithoutCommandStartPrior"
+)(
+  {
+    kind: Schema.Literal("createdWithoutCommandStart"),
+    priorSandboxCreatedSequence: RunEventSequenceSchema,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+export class CommandStartOutcomeUnknownPrior extends Schema.Class<CommandStartOutcomeUnknownPrior>(
+  "CommandStartOutcomeUnknownPrior"
+)(
+  {
+    kind: Schema.Literal("commandStartOutcomeUnknown"),
+    priorCommandStartSequence: RunEventSequenceSchema,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+export class ReconcileOutcomeUnknownAction extends Schema.Class<ReconcileOutcomeUnknownAction>(
+  "ReconcileOutcomeUnknownAction"
+)(
+  {
+    ...verificationActionAuthorityFields,
+    claimId: Schema.String.pipe(
+      Schema.check(Schema.isPattern(/^proof-claim:sha256:[a-f0-9]{64}$/u))
+    ),
+    expectedExecutionEvidenceIdentityDigest: VerificationIdentityDigestSchema,
+    expectedSandboxName: VerificationSandboxNameSchema,
+    expectedSandboxUuid: VerificationSandboxUuidSchema,
+    kind: Schema.Literal("reconcileOutcomeUnknown"),
+    prior: Schema.Union([
+      CreatedWithoutCommandStartPrior,
+      CommandStartOutcomeUnknownPrior,
+    ]),
+    priorGenerationSequence: RunEventSequenceSchema,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+/** Exactly two public verification mutations. */
+export const VerificationActionRequestSchema = Schema.Union([
+  StartPostPublicationGenerationAction,
+  ReconcileOutcomeUnknownAction,
+]);
+export type VerificationActionRequest =
+  typeof VerificationActionRequestSchema.Type;
+export const parseVerificationActionRequest = Schema.decodeUnknownSync(
+  VerificationActionRequestSchema,
+  { onExcessProperty: "error" }
+);
+
+/** Successful post-publication verification generation response. */
+export class PostPublicationGenerationRecorded extends Schema.Class<PostPublicationGenerationRecorded>(
+  "PostPublicationGenerationRecorded"
+)(
+  {
+    actionId: DeliveryActionIdPublicSchema,
+    actionRequestDigest: DeliverySha256DigestPublicSchema,
+    aggregate: RunVerificationAggregateSchema,
+    currentContentAuthoritySequence: RunEventSequenceSchema,
+    expectedContentAuthoritySequence: RunEventSequenceSchema,
+    generationSequence: RunEventSequenceSchema,
+    headSha: DeliveryGitShaPublicSchema,
+    kind: Schema.Literal("postPublicationGenerationRecorded"),
+    proofResultDigest: RunProofResultDigestSchema,
+    proofResultSequence: RunEventSequenceSchema,
+    publicationSequence: RunEventSequenceSchema,
+    replayed: Schema.Literal(false),
+    runId: RunIdSchema,
+    targetDigest: StructuralDigestSchema,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+const reconciliationResponseFields = {
+  actionId: DeliveryActionIdPublicSchema,
+  actionRequestDigest: VerificationRequestDigestSchema,
+  claimId: Schema.String.pipe(
+    Schema.check(Schema.isPattern(/^proof-claim:sha256:[a-f0-9]{64}$/u))
+  ),
+  generationSequence: RunEventSequenceSchema,
+  reconciliationReceipt: VerificationReconciliationReceiptV1,
+  reconciliationSequence: RunEventSequenceSchema,
+  replayed: Schema.Literal(false),
+  runId: RunIdSchema,
+} as const;
+
+export class CreatedWithoutCommandStartReconciled extends Schema.Class<CreatedWithoutCommandStartReconciled>(
+  "CreatedWithoutCommandStartReconciled"
+)(
+  {
+    ...reconciliationResponseFields,
+    kind: Schema.Literal("createdWithoutCommandStartReconciled"),
+    sandboxCreatedSequence: RunEventSequenceSchema,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+export class CommandStartOutcomeUnknownReconciled extends Schema.Class<CommandStartOutcomeUnknownReconciled>(
+  "CommandStartOutcomeUnknownReconciled"
+)(
+  {
+    ...reconciliationResponseFields,
+    commandStartSequence: RunEventSequenceSchema,
+    kind: Schema.Literal("commandStartOutcomeUnknownReconciled"),
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+export const VerificationActionRecordedResultSchema = Schema.Union([
+  PostPublicationGenerationRecorded,
+  CreatedWithoutCommandStartReconciled,
+  CommandStartOutcomeUnknownReconciled,
+]);
+
+export class VerificationActionIdempotentReplay extends Schema.Class<VerificationActionIdempotentReplay>(
+  "VerificationActionIdempotentReplay"
+)(
+  {
+    actionId: DeliveryActionIdPublicSchema,
+    actionRequestDigest: VerificationRequestDigestSchema,
+    kind: Schema.Literal("idempotentReplay"),
+    originalKind: Schema.Literals([
+      "postPublicationGenerationRecorded",
+      "createdWithoutCommandStartReconciled",
+      "commandStartOutcomeUnknownReconciled",
+    ] as const),
+    originalResponseDigest: VerificationRequestDigestSchema,
+    originalResult: VerificationActionRecordedResultSchema,
+    replayed: Schema.Literal(true),
+    runId: RunIdSchema,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+export const VerificationActionResultSchema = Schema.Union([
+  VerificationActionRecordedResultSchema,
+  VerificationActionIdempotentReplay,
+]);
+export const parseVerificationActionResult = Schema.decodeUnknownSync(
+  VerificationActionResultSchema,
+  { onExcessProperty: "error" }
+);
+
+/** Success envelope for the verification action endpoint. */
+export class VerificationActionSuccessEnvelope extends Schema.Class<VerificationActionSuccessEnvelope>(
+  "VerificationActionSuccessEnvelope"
+)(
+  {
+    data: VerificationActionResultSchema,
+    status: Schema.Literal("success"),
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
 export const DeliverySnapshotSseEventSchema = Schema.Struct({
   data: Schema.fromJsonString(DeliverySnapshotDto),
   event: Schema.Literal("delivery-update"),
@@ -1210,6 +1415,18 @@ export const RunsGroup = HttpApiGroup.make("runs")
       payload: DeliveryActionRequestSchema,
       success: DeliverySnapshotSuccessEnvelope,
     })
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "actOnRunVerification",
+      "/runs/:runId/verification/actions",
+      {
+        error: [...LocalRunReadErrorResponse, LocalRunApiConflictResponse],
+        params: { runId: RunIdSchema },
+        payload: VerificationActionRequestSchema,
+        success: VerificationActionSuccessEnvelope,
+      }
+    )
   )
   .add(
     HttpApiEndpoint.post("recoverWorker", "/runs/:runId/recovery/actions", {

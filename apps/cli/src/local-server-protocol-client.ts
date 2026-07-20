@@ -8,6 +8,7 @@ import {
   type LocalGaiaServerUrl,
   type LocalRunApiError,
   RunIdSchema,
+  type VerificationActionRequest,
 } from "@gaia/core";
 import { Cause, Effect, Schema } from "effect";
 import {
@@ -136,6 +137,25 @@ export function evaluateMergeReadinessFromLocalServerProtocol(
       params: { runId: input.runId },
       payload: DeliveryEvaluateMergeReadinessActionRequest.make(input.payload),
     })
+  );
+}
+
+/** Send one already-parsed verification action through the shared protocol. */
+export function actOnVerificationFromLocalServerProtocol(input: {
+  readonly payload: VerificationActionRequest;
+  readonly runId: typeof RunIdSchema.Type;
+  readonly serverUrl: LocalGaiaServerUrl;
+}) {
+  return withLocalGaiaServerClient(input.serverUrl, (client) =>
+    input.payload.kind === "startPostPublicationGeneration"
+      ? client.runs.actOnRunVerification({
+          params: { runId: input.runId },
+          payload: input.payload,
+        })
+      : client.runs.actOnRunVerification({
+          params: { runId: input.runId },
+          payload: input.payload,
+        })
   );
 }
 

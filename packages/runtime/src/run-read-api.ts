@@ -12,7 +12,7 @@ import {
   parseLocalRunReadDiagnostic,
   parseRunId,
   RunIdSchema,
-  RunProofProjectionV1Schema,
+  RunProofProjectionSchema,
   snapshotFromReplay,
   type LocalRunArtifactContentType,
   type LocalRunArtifactId,
@@ -228,7 +228,7 @@ export function readLocalRun(runId: RunId, options: RunStorageOptions = {}) {
 }
 
 function proofAggregateFromSnapshot(input: unknown) {
-  const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(input);
+  const proof = Schema.decodeUnknownOption(RunProofProjectionSchema)(input);
   return Option.isSome(proof) ? proof.value.aggregate : undefined;
 }
 

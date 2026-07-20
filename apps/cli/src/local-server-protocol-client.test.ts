@@ -6,6 +6,7 @@ import {
   LocalRunApiErrorEnvelope,
   parseLocalGaiaServerUrl,
   parseRunId,
+  VerificationActionRequestSchema,
 } from "@gaia/core";
 import { GaiaRuntimeError } from "@gaia/runtime";
 import { Effect, Layer, Option, Schema } from "effect";
@@ -13,6 +14,7 @@ import { FetchHttpClient } from "effect/unstable/http";
 
 import {
   createRunFromLocalServerProtocol,
+  actOnVerificationFromLocalServerProtocol,
   evaluateMergeReadinessFromLocalServerProtocol,
   getRunFromLocalServerProtocol,
   listRunsFromLocalServerProtocol,
@@ -192,6 +194,65 @@ describe("local server protocol client", () => {
         })
     );
   }
+
+  it.effect(
+    "serializes one exact verification action without client policy",
+    () =>
+      Effect.gen(function* () {
+        const requests: string[] = [];
+        const bodies: unknown[] = [];
+        const payload = Schema.decodeUnknownSync(
+          VerificationActionRequestSchema
+        )({
+          actionId: "verify-post-1",
+          expectedContentAuthoritySequence: 6,
+          expectedContractDigest: "1".repeat(64),
+          expectedEventSequence: 12,
+          expectedHeadSha: "2".repeat(40),
+          expectedPublicationSequence: 11,
+          expectedTargetDigest: "3".repeat(64),
+          kind: "startPostPublicationGeneration",
+        });
+        const result = yield* actOnVerificationFromLocalServerProtocol({
+          payload,
+          runId,
+          serverUrl,
+        }).pipe(
+          Effect.provide(
+            recordingFetchLayer(requests, async (request) => {
+              bodies.push(JSON.parse(await request.text()));
+              return jsonResponse({
+                data: {
+                  actionId: "verify-post-1",
+                  actionRequestDigest: "4".repeat(64),
+                  aggregate: "verified",
+                  currentContentAuthoritySequence: 6,
+                  expectedContentAuthoritySequence: 6,
+                  generationSequence: 13,
+                  headSha: "2".repeat(40),
+                  kind: "postPublicationGenerationRecorded",
+                  proofResultDigest: "5".repeat(64),
+                  proofResultSequence: 14,
+                  publicationSequence: 11,
+                  replayed: false,
+                  runId: "run-1234567890",
+                  targetDigest: "3".repeat(64),
+                },
+                status: "success",
+              });
+            })
+          )
+        );
+        assert.strictEqual(
+          result.data.kind,
+          "postPublicationGenerationRecorded"
+        );
+        assert.deepEqual(requests, [
+          "POST http://127.0.0.1:4321/runs/run-1234567890/verification/actions",
+        ]);
+        assert.deepEqual(bodies, [JSON.parse(JSON.stringify(payload))]);
+      })
+  );
 
   it.effect("rejects traversal artifact parameters before transport", () =>
     Effect.gen(function* () {

@@ -29,6 +29,7 @@ import {
   parseRunProofResult,
   RunContractDigestSchema,
   RunContractIdSchema,
+  RunContractIdV2Schema,
   RunEventSequenceSchema,
   RunProofResultDigestSchema,
   StructuralDigestSchema,
@@ -273,7 +274,7 @@ const readinessDecisionV3Binding = {
   ...readinessDecisionV2Binding,
   contentAuthoritySequence: RunEventSequenceSchema,
   contractDigest: RunContractDigestSchema,
-  contractId: RunContractIdSchema,
+  contractId: Schema.Union([RunContractIdSchema, RunContractIdV2Schema]),
   evidenceReviewSequence: RunEventSequenceSchema,
   mergeDecisionPayloadDigest: MergeDecisionPayloadDigestSchema,
   mergeDecisionSequence: PositiveSequence,
@@ -1423,12 +1424,8 @@ const DeliveryActionAuditSummaryInputSchema = Schema.Struct({
     DeliveryPullRequestReadyActionHistoriesSchema
   ),
 });
-type DeliveryActionAuditSummaryInput = Schema.Schema.Type<
-  typeof DeliveryActionAuditSummaryInputSchema
->;
-
 export function deliveryActionAuditSummary(
-  input: DeliveryActionAuditSummaryInput,
+  input: Schema.Schema.Type<typeof DeliveryActionAuditSummaryInputSchema>,
   limit = 20
 ) {
   const safeLimit = Math.max(1, Math.min(50, Math.trunc(limit)));

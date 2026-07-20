@@ -26,6 +26,7 @@ const stableIdentity = parseWorkspaceStructuralFileIdentity({
   ino: "2",
   kind: "regular-file",
   mtimeNs: "9",
+  nlink: "1",
   size: "1",
 });
 
@@ -293,6 +294,7 @@ describe("workspace structural observation", () => {
       ["size", { size: "2" }, "afterHandle"],
       ["mtime", { mtimeNs: "11" }, "afterHandle"],
       ["ctime", { ctimeNs: "12" }, "afterHandle"],
+      ["link count", { nlink: "2" }, "afterHandle"],
     ] as const) {
       it.effect(`fails on observable ${label} drift`, () =>
         Effect.gen(function* () {

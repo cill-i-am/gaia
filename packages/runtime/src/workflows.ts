@@ -4,7 +4,7 @@ import {
   parseRunId,
   snapshotFromReplay,
   RunIdSchema,
-  RunProofProjectionV1Schema,
+  RunProofProjectionSchema,
   RunStateSchema,
   RunVerificationAggregateSchema,
   type ReviewPhase,
@@ -86,7 +86,7 @@ import {
   writeSkillManifest,
   type SkillManifestSource,
 } from "./skill-manifest.js";
-import { recordRunProofResult } from "./verifier.js";
+import { recordRunProofResult, type VerificationServices } from "./verifier.js";
 import { writeWorkerPlan } from "./worker-plan.js";
 import { encodeWorkspaceDiffSummaryJson } from "./workspace-snapshot.js";
 import {
@@ -158,6 +158,7 @@ export type WorkflowOptions = RunStorageOptions &
     readonly runProfileSource?: RunProfileSource;
     readonly workspaceSource?: WorkspaceSource;
     readonly workerContinuationState?: WorkerContinuationState;
+    readonly verificationServices?: VerificationServices;
   };
 
 export type BrowserEvidenceCollectionOptions = RunStorageOptions & {
@@ -445,6 +446,9 @@ function executeAcceptedRun(input: {
     yield* appendEvent(runId, paths, { type: "VERIFICATION_STARTED" });
     const proofResult = yield* recordRunProofResult(runId, paths, {
       requireLegacyWorkspaceMarker: harnessName !== codexAppServerHarnessName,
+      ...(options.verificationServices === undefined
+        ? {}
+        : { verificationServices: options.verificationServices }),
     }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
         recordRunFailure(runId, paths, "verifying", error)
@@ -682,6 +686,9 @@ export function reverifyRemediatedRun(input: {
     yield* loadRunContract(input.paths, input.runId);
     yield* recordRunProofResult(input.runId, input.paths, {
       requireLegacyWorkspaceMarker: false,
+      ...(options.verificationServices === undefined
+        ? {}
+        : { verificationServices: options.verificationServices }),
     });
 
     const fs = yield* FileSystem.FileSystem;
@@ -851,7 +858,7 @@ export function statusRun(
 }
 
 function proofAggregateFromSnapshot(input: unknown) {
-  const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(input);
+  const proof = Schema.decodeUnknownOption(RunProofProjectionSchema)(input);
   return Option.isSome(proof) ? proof.value.aggregate : undefined;
 }
 

@@ -513,7 +513,30 @@ export {
   type SkillManifestSource,
   type SkillName,
 } from "./skill-manifest.js";
-export { recordRunProofResult } from "./verifier.js";
+export {
+  recordRunProofResult,
+  type RecordRunProofOptions,
+  type VerificationServices,
+} from "./verifier.js";
+export {
+  DockerSandboxVerificationExecutor,
+  DockerSandboxVerificationExecutorLive,
+  executeDockerSandboxVerification,
+  makeDockerSandboxVerificationExecutor,
+  reconcileDockerSandboxVerification,
+  type DockerSandboxVerificationExecutorService,
+} from "./docker-sandbox-verification-executor.js";
+export {
+  DockerSandboxCli,
+  DockerSandboxCliLive,
+  makeDockerSandboxCli,
+  nodeDockerSandboxCliRunner,
+} from "./docker-sandbox-cli.js";
+export {
+  readVerificationExecutionProfile,
+  parseVerificationExecutionProfile,
+  type VerificationExecutionProfileV1,
+} from "./verification-execution-profile.js";
 export { deriveAndRecordRunContract, loadRunContract } from "./run-contract.js";
 export {
   WorkerPlan,

@@ -14,8 +14,9 @@ import {
   DeliverySourcePathPublicSchema,
   DeliveryTimestampPublicSchema,
   encodeDeliveryPublicationJson,
+  isRunProofPhaseSatisfiedV2,
   parseDeliveryPublication,
-  RunProofProjectionV1Schema,
+  RunProofProjectionSchema,
   snapshotFromReplay,
   type DeliveryPublication,
   type RunEvent,
@@ -988,13 +989,12 @@ function requireProofBoundPublicationGates(
     const ready = requireCurrentReadyState
       ? events.at(-1)?.type === "DELIVERY_READY_TO_PUBLISH"
       : events.some(({ type }) => type === "DELIVERY_READY_TO_PUBLISH");
-    const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(
+    const proof = Schema.decodeUnknownOption(RunProofProjectionSchema)(
       snapshotFromReplay(events).context["runProof"]
     );
+    const proofValue = Option.getOrUndefined(proof);
     const latestResult =
-      Option.isSome(proof) && proof.value.kind === "contract"
-        ? proof.value.latestResult
-        : undefined;
+      proofValue?.kind === "contract" ? proofValue.latestResult : undefined;
     const evidenceReviewSequence = events.findLast(
       ({ payload, type }) =>
         type === "REVIEW_COMPLETED" && payload["phase"] === "evidence"
@@ -1005,6 +1005,7 @@ function requireProofBoundPublicationGates(
         .filter(
           ({ type }) =>
             type === "WORKER_COMPLETED" ||
+            type === "WORKER_CONTINUATION_RECORDED" ||
             type === "DELIVERY_REMEDIATION_RECORDED"
         )
         .map(({ sequence }) => sequence)
@@ -1012,7 +1013,15 @@ function requireProofBoundPublicationGates(
     const observed = yield* observeWorkspaceStructuralDigest(paths.workspace);
     if (
       !ready ||
-      latestResult?.aggregate !== "verified" ||
+      latestResult === undefined ||
+      (proofValue?.version === 1
+        ? latestResult.aggregate !== "verified"
+        : latestResult.version !== 2 ||
+          !isRunProofPhaseSatisfiedV2(
+            proofValue!.contract,
+            latestResult,
+            "prePublication"
+          )) ||
       latestResult.observedTargetDigest !== observed.digest ||
       latestResult.recordedBy.sequence < contentAuthoritySequence ||
       evidenceReviewSequence === undefined ||

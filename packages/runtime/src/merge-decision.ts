@@ -11,8 +11,8 @@ import {
   parseGitHubPullRequestSelector,
   parseMergeDecisionV2,
   parseRunEventSequence,
-  RunProofProjectionV1Schema,
-  RunProofResultV1,
+  RunProofProjectionSchema,
+  RunProofResultSchema,
   RunEventSequenceSchema,
   RunIdSchema,
   StructuralDigestSchema,
@@ -290,15 +290,15 @@ function recordMergeDecisionUnlocked(runId: RunId, options: RunStorageOptions) {
 
 function decodeProofProjection(input: unknown) {
   if (input === undefined) return undefined;
-  return Schema.decodeUnknownSync(RunProofProjectionV1Schema)(input);
+  return Schema.decodeUnknownSync(RunProofProjectionSchema)(input);
 }
 
 const ProofDecisionBlockersInputSchema = Schema.Struct({
   contentAuthoritySequence: RunEventSequenceSchema,
   currentDigest: StructuralDigestSchema,
   evidenceReviewSequence: Schema.optionalKey(RunEventSequenceSchema),
-  proof: Schema.UndefinedOr(RunProofProjectionV1Schema),
-  proofResult: Schema.optionalKey(RunProofResultV1),
+  proof: Schema.UndefinedOr(RunProofProjectionSchema),
+  proofResult: Schema.optionalKey(RunProofResultSchema),
   publicationSequence: Schema.optionalKey(RunEventSequenceSchema),
 });
 const decodeProofDecisionBlockersInput = Schema.decodeUnknownSync(
