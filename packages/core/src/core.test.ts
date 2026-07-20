@@ -103,6 +103,7 @@ describe("core contracts", () => {
     const artifact = parseRunReportArtifactPath("worker-plan.md");
     const report = RunReport.make({
       artifacts: [artifact],
+      proofAggregate: "completed-unverified",
       reportPath: "report.md",
       runId,
       selectedSkills: ["production-ready"],
@@ -155,9 +156,10 @@ describe("core contracts", () => {
         }),
       ],
       verification: EvidencePromotionVerificationSummary.make({
-        checkedArtifacts: ["workspace/output.txt"],
+        claimEvidenceArtifacts: [],
         path: "verification-result.json",
-        status: "passed",
+        status: "completed-unverified",
+        supplementalProtocolEvidenceArtifacts: ["workspace/output.txt"],
       }),
       version: 1,
     });
@@ -2036,9 +2038,10 @@ describe("EvidencePromotion nested owner compatibility", () => {
         },
       ],
       verification: {
-        checkedArtifacts: ["workspace/output.txt", "../retained/check.json"],
+        claimEvidenceArtifacts: ["../retained/check.json"],
         path: "verification-result.json",
-        status: "passed",
+        status: "completed-unverified",
+        supplementalProtocolEvidenceArtifacts: ["workspace/output.txt"],
       },
       version: 1,
     };
@@ -2063,8 +2066,9 @@ describe("EvidencePromotion nested owner compatibility", () => {
       runId: "run-V7kP9sQ2xY",
       selectedEvidence: [],
       verification: {
-        checkedArtifacts: [],
+        claimEvidenceArtifacts: [],
         status: "skipped",
+        supplementalProtocolEvidenceArtifacts: [],
       },
       version: 1,
     };
@@ -2154,9 +2158,10 @@ describe("EvidencePromotion nested owner compatibility", () => {
       "summary",
     ]);
     assert.deepEqual(Object.keys(encodedFull.verification), [
-      "checkedArtifacts",
+      "claimEvidenceArtifacts",
       "path",
       "status",
+      "supplementalProtocolEvidenceArtifacts",
     ]);
     assert.deepEqual(Object.keys(encodedSparse.pullRequest), [
       "artifactPaths",
@@ -2165,8 +2170,9 @@ describe("EvidencePromotion nested owner compatibility", () => {
     ]);
     assert.deepEqual(Object.keys(encodedSparse.reportPaths), []);
     assert.deepEqual(Object.keys(encodedSparse.verification), [
-      "checkedArtifacts",
+      "claimEvidenceArtifacts",
       "status",
+      "supplementalProtocolEvidenceArtifacts",
     ]);
     assert.deepEqual(
       encodedFull.selectedEvidence.map((item) => item.label),
@@ -2180,7 +2186,8 @@ describe("EvidencePromotion nested owner compatibility", () => {
         encodedFull.pullRequest.url,
         encodedFull.reportPaths.reportJsonPath,
         encodedFull.selectedEvidence[0]?.path,
-        encodedFull.verification.checkedArtifacts[0],
+        encodedFull.verification.claimEvidenceArtifacts[0],
+        encodedFull.verification.supplementalProtocolEvidenceArtifacts[0],
         encodedFull.verification.path,
       ].every((value) => typeof value === "string")
     );
@@ -2189,7 +2196,7 @@ describe("EvidencePromotion nested owner compatibility", () => {
     assert.strictEqual(encodedFull.pullRequest.checksStatus, "green");
     assert.strictEqual(encodedFull.pullRequest.feedbackStatus, "comments");
     assert.strictEqual(encodedFull.pullRequest.pr, "#123");
-    assert.strictEqual(encodedFull.verification.status, "passed");
+    assert.strictEqual(encodedFull.verification.status, "completed-unverified");
     assert.strictEqual(checksStatus, "green");
     assert.strictEqual(feedbackStatus, "comments");
     assert.strictEqual(
@@ -2218,9 +2225,10 @@ describe("EvidencePromotion nested owner compatibility", () => {
         workerPlanPath: path,
       });
       const verification = EvidencePromotionVerificationSummary.make({
-        checkedArtifacts: [path],
+        claimEvidenceArtifacts: [path],
         path,
-        status: "passed",
+        status: "completed-unverified",
+        supplementalProtocolEvidenceArtifacts: [path],
       });
       const pullRequest = EvidencePromotionPullRequestSummary.make({
         artifactPaths: [path],
@@ -2242,7 +2250,8 @@ describe("EvidencePromotion nested owner compatibility", () => {
           reportPaths.reportJsonPath,
           reportPaths.reportMarkdownPath,
           reportPaths.workerPlanPath,
-          verification.checkedArtifacts[0],
+          verification.claimEvidenceArtifacts[0],
+          verification.supplementalProtocolEvidenceArtifacts[0],
           verification.path,
           pullRequest.artifactPaths[0],
           dogfood.artifactPath,
@@ -2267,14 +2276,16 @@ describe("EvidencePromotion nested owner compatibility", () => {
       () => EvidencePromotionReportPaths.make({ workerPlanPath: "" }),
       () =>
         EvidencePromotionVerificationSummary.make({
-          checkedArtifacts: [""],
-          status: "passed",
+          claimEvidenceArtifacts: [""],
+          status: "completed-unverified",
+          supplementalProtocolEvidenceArtifacts: [],
         }),
       () =>
         EvidencePromotionVerificationSummary.make({
-          checkedArtifacts: [],
+          claimEvidenceArtifacts: [],
           path: "",
-          status: "passed",
+          status: "completed-unverified",
+          supplementalProtocolEvidenceArtifacts: [],
         }),
       () =>
         EvidencePromotionPullRequestSummary.make({
@@ -2339,7 +2350,7 @@ describe("EvidencePromotion nested owner compatibility", () => {
       );
     }
 
-    for (const status of ["verified", "failed"]) {
+    for (const status of ["passed", "failed"]) {
       assert.throws(() =>
         Schema.decodeUnknownSync(EvidencePromotionVerificationSummary)({
           ...fullRaw.verification,

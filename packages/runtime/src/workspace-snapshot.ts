@@ -1,7 +1,20 @@
 import { createHash } from "node:crypto";
+import type { BigIntStats } from "node:fs";
+import { lstat, open, readdir, realpath } from "node:fs/promises";
+import { join, relative, resolve, sep } from "node:path";
 
 import {
+  CanonicalUint64DecimalSchema,
+  makeWorkspaceStructuralObservationReceipt,
+  parseWorkspaceStructuralManifest,
   parseWorkspaceRelativePath,
+  sortWorkspaceStructuralManifestEntries,
+  StructuralDigestSchema,
+  workspaceStructuralDigestV1,
+  WorkspaceStructuralManifestV1,
+  WorkspaceStructuralObservationReceiptV1,
+  type WorkspaceStructuralPath,
+  WorkspaceStructuralPathSchema,
   type WorkspaceRelativePath,
   WorkspaceRelativePathSchema,
 } from "@gaia/core";
@@ -41,6 +54,273 @@ const generatedWorkspaceEntryReasons = new Map([
     "Installed dependencies are generated from package manifests and are omitted from product diff paths.",
   ],
 ]);
+
+const structuralExcludedSegments = new Set(
+  generatedWorkspaceEntryReasons.keys()
+);
+
+export const WorkspaceStructuralFileIdentitySchema = Schema.Struct({
+  ctimeNs: CanonicalUint64DecimalSchema,
+  dev: CanonicalUint64DecimalSchema,
+  ino: CanonicalUint64DecimalSchema,
+  kind: Schema.Literals([
+    "regular-file",
+    "directory",
+    "symlink",
+    "special",
+  ] as const),
+  mtimeNs: CanonicalUint64DecimalSchema,
+  size: CanonicalUint64DecimalSchema,
+});
+export type WorkspaceStructuralFileIdentity = Schema.Schema.Type<
+  typeof WorkspaceStructuralFileIdentitySchema
+>;
+export const parseWorkspaceStructuralFileIdentity = Schema.decodeUnknownSync(
+  WorkspaceStructuralFileIdentitySchema
+);
+
+const WorkspaceStructuralBytesSchema = Schema.declare<Uint8Array>(
+  (input): input is Uint8Array => input instanceof Uint8Array
+);
+const WorkspaceStructuralObservedFileSchema = Schema.Struct({
+  afterHandle: WorkspaceStructuralFileIdentitySchema,
+  beforeHandle: WorkspaceStructuralFileIdentitySchema,
+  beforePath: WorkspaceStructuralFileIdentitySchema,
+  bytes: WorkspaceStructuralBytesSchema,
+  finalPath: WorkspaceStructuralFileIdentitySchema,
+});
+export type WorkspaceStructuralObservedFile = Schema.Schema.Type<
+  typeof WorkspaceStructuralObservedFileSchema
+>;
+
+export type WorkspaceStructuralObserver = {
+  readonly enumerate: (root: RuntimePath) => Promise<readonly string[]>;
+  readonly readFile: (
+    root: RuntimePath,
+    path: WorkspaceStructuralPath
+  ) => Promise<WorkspaceStructuralObservedFile>;
+};
+
+const WorkspaceStructuralObservationSchema = Schema.Struct({
+  digest: StructuralDigestSchema,
+  manifest: WorkspaceStructuralManifestV1,
+  receipt: WorkspaceStructuralObservationReceiptV1,
+});
+export type WorkspaceStructuralObservation = Schema.Schema.Type<
+  typeof WorkspaceStructuralObservationSchema
+>;
+const WorkspaceStructuralObserverSchema =
+  Schema.declare<WorkspaceStructuralObserver>(
+    (input): input is WorkspaceStructuralObserver =>
+      typeof input === "object" && input !== null
+  );
+const WorkspaceStructuralObservationOptionsSchema = Schema.Struct({
+  observer: Schema.optionalKey(WorkspaceStructuralObserverSchema),
+});
+const decodeWorkspaceStructuralObservationOptions = Schema.decodeUnknownSync(
+  WorkspaceStructuralObservationOptionsSchema
+);
+
+/**
+ * Observe a deterministic manifest of the bytes read during one traversal.
+ * This is intentionally not an atomic filesystem snapshot.
+ */
+export function observeWorkspaceStructuralDigest(
+  workspacePath: string,
+  options: typeof WorkspaceStructuralObservationOptionsSchema.Encoded = {}
+) {
+  const observer =
+    decodeWorkspaceStructuralObservationOptions(options).observer ??
+    nodeWorkspaceStructuralObserver;
+  return Effect.tryPromise({
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code:
+          cause instanceof WorkspaceStructuralObservationChangedError
+            ? "WorkspaceStructuralObservationChanged"
+            : "WorkspaceStructuralObservationFailed",
+        message:
+          cause instanceof WorkspaceStructuralObservationChangedError
+            ? cause.message
+            : "Gaia could not observe a complete workspace structural manifest.",
+        recoverable: false,
+      }),
+    try: async (): Promise<WorkspaceStructuralObservation> => {
+      const root = parseRuntimePath(await realpath(resolve(workspacePath)));
+      const rootInfo = await lstat(root, { bigint: true });
+      if (!rootInfo.isDirectory())
+        throw new Error(
+          "Workspace structural observation root is not a directory."
+        );
+
+      const firstPaths = canonicalObservedPaths(await observer.enumerate(root));
+      const entries = [];
+      for (const path of firstPaths) {
+        const observed = await observer.readFile(root, path);
+        assertStableObservedFile(path, observed);
+        entries.push({
+          contentDigest: createHash("sha256")
+            .update(observed.bytes)
+            .digest("hex"),
+          kind: "regular-file" as const,
+          path,
+          sizeBytes: String(observed.bytes.byteLength),
+        });
+      }
+      const secondPaths = canonicalObservedPaths(
+        await observer.enumerate(root)
+      );
+      if (!sameStrings(firstPaths, secondPaths))
+        throw new WorkspaceStructuralObservationChangedError(
+          "Workspace path set changed during structural observation."
+        );
+
+      const manifest = parseWorkspaceStructuralManifest({
+        entries: sortWorkspaceStructuralManifestEntries(entries),
+        version: 1,
+      });
+      return {
+        digest: workspaceStructuralDigestV1(manifest),
+        manifest,
+        receipt: makeWorkspaceStructuralObservationReceipt(),
+      };
+    },
+  });
+}
+
+class WorkspaceStructuralObservationChangedError extends Error {
+  override name = "WorkspaceStructuralObservationChangedError";
+}
+
+const nodeWorkspaceStructuralObserver: WorkspaceStructuralObserver = {
+  enumerate: enumerateWorkspaceStructuralFiles,
+  readFile: readWorkspaceStructuralFile,
+};
+
+async function enumerateWorkspaceStructuralFiles(root: RuntimePath) {
+  const files: WorkspaceStructuralPath[] = [];
+  async function visit(directory: RuntimePath, prefix: string) {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (structuralExcludedSegments.has(entry.name)) continue;
+      const path = Schema.decodeUnknownSync(WorkspaceStructuralPathSchema)(
+        prefix === "" ? entry.name : `${prefix}/${entry.name}`
+      );
+      const absolute = parseRuntimePath(join(directory, entry.name));
+      const info = await lstat(absolute, { bigint: true });
+      if (info.isDirectory()) {
+        await visit(absolute, path);
+      } else if (info.isFile()) {
+        files.push(path);
+      } else {
+        throw new WorkspaceStructuralObservationChangedError(
+          `Workspace entry '${path}' changed to or is an unsupported ${statKind(info)}.`
+        );
+      }
+    }
+  }
+  await visit(root, "");
+  return files;
+}
+
+async function readWorkspaceStructuralFile(
+  root: RuntimePath,
+  path: WorkspaceStructuralPath
+) {
+  const absolute = parseRuntimePath(resolve(root, ...path.split("/")));
+  const back = relative(root, absolute);
+  if (
+    back.startsWith(`..${sep}`) ||
+    back === ".." ||
+    resolve(root, back) !== absolute
+  )
+    throw new Error("Workspace structural path escaped its root.");
+  const beforePath = statIdentity(await lstat(absolute, { bigint: true }));
+  const handle = await open(absolute, "r");
+  try {
+    const beforeHandle = statIdentity(await handle.stat({ bigint: true }));
+    const bytes = await handle.readFile();
+    const afterHandle = statIdentity(await handle.stat({ bigint: true }));
+    const finalPath = statIdentity(await lstat(absolute, { bigint: true }));
+    return { afterHandle, beforeHandle, beforePath, bytes, finalPath };
+  } finally {
+    await handle.close();
+  }
+}
+
+function statIdentity(info: BigIntStats): WorkspaceStructuralFileIdentity {
+  return parseWorkspaceStructuralFileIdentity({
+    ctimeNs: info.ctimeNs.toString(),
+    dev: info.dev.toString(),
+    ino: info.ino.toString(),
+    kind: statKind(info),
+    mtimeNs: info.mtimeNs.toString(),
+    size: info.size.toString(),
+  });
+}
+
+function statKind(info: BigIntStats): WorkspaceStructuralFileIdentity["kind"] {
+  if (info.isFile()) return "regular-file";
+  if (info.isDirectory()) return "directory";
+  if (info.isSymbolicLink()) return "symlink";
+  return "special";
+}
+
+function assertStableObservedFile(
+  path: WorkspaceStructuralPath,
+  observed: WorkspaceStructuralObservedFile
+) {
+  const identities = [
+    observed.beforePath,
+    observed.beforeHandle,
+    observed.afterHandle,
+    observed.finalPath,
+  ];
+  if (
+    identities.some((identity) => identity.kind !== "regular-file") ||
+    identities.some(
+      (identity) =>
+        identity.dev !== identities[0]!.dev ||
+        identity.ino !== identities[0]!.ino ||
+        identity.kind !== identities[0]!.kind ||
+        identity.size !== identities[0]!.size ||
+        identity.mtimeNs !== identities[0]!.mtimeNs ||
+        identity.ctimeNs !== identities[0]!.ctimeNs
+    ) ||
+    BigInt(identities[0]!.size) !== BigInt(observed.bytes.byteLength)
+  ) {
+    throw new WorkspaceStructuralObservationChangedError(
+      `Workspace entry '${path}' changed while its bytes were observed.`
+    );
+  }
+}
+
+function canonicalObservedPaths(paths: readonly string[]) {
+  const parsed = paths.map((path) =>
+    Schema.decodeUnknownSync(WorkspaceStructuralPathSchema)(path)
+  );
+  const sorted = sortWorkspaceStructuralManifestEntries(
+    parsed.map((path) => ({
+      contentDigest: "0".repeat(64),
+      kind: "regular-file" as const,
+      path,
+      sizeBytes: "0",
+    }))
+  ).map((entry) => entry.path);
+  if (new Set(sorted).size !== sorted.length)
+    throw new Error(
+      "Workspace structural enumeration returned duplicate paths."
+    );
+  return sorted;
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]) {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
 
 const NonNegativeIntegerSchema = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0)

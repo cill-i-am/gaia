@@ -759,7 +759,7 @@ export function missingHarnessCapabilities(
 const MakeHarnessRunEventInputSchema = Schema.Struct({
   event: HarnessEventSchema,
   runId: RunEvent.fields.runId,
-  sequence: RunEvent.fields.sequence,
+  sequence: Schema.toEncoded(RunEvent.fields.sequence),
   timestamp: Schema.toEncoded(RunEvent.fields.timestamp),
 });
 const parseMakeHarnessRunEventInput = Schema.decodeUnknownSync(

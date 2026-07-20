@@ -13,9 +13,12 @@ import { NodePath, NodeServices } from "@effect/platform-node";
 import {
   DeliveryFeedbackTrustPolicyV1,
   DeliveryGitShaPublicSchema,
+  DeliverySha256DigestPublicSchema,
   DeliveryMergeDispatchAttempted,
   DeliveryMergeIntent,
-  DeliveryMergeReadinessDecision,
+  DeliveryMergeReadinessDecisionV3,
+  DeliveryGitHubApprovedReviewSource,
+  DeliveryReviewApprovalNotRequiredSource,
   DeliveryMergeTerminalFailure,
   DeliveryPublicationAttempted,
   DeliveryPublicationConfirmed,
@@ -33,17 +36,32 @@ import {
   DeliveryRemediationVerified,
   RunEvent,
   deliveryRequiredCheckPolicyCanonicalPayload,
+  deliveryMergeReadinessDecisionV3PayloadDigest,
   deliveryPullRequestReadyCanonicalPayload,
   deliveryPullRequestReadyPayloadDigest,
   encodeDeliveryMergeReadinessDecisionJson,
   encodeDeliveryMergeReceiptJson,
+  encodeMergeDecisionV2Json,
+  encodeRunContractJson,
+  encodeRunProofResultJson,
   encodeDeliveryPublicationJson,
   encodeDeliveryPullRequestReadyReceiptJson,
   encodeDeliveryRemediationJson,
   makeRunEvent,
+  makeMergeDecisionV2,
+  makeRunContract,
+  makeRunProofResult,
+  MergeDecisionBlockerV2,
+  deriveAcceptedOutcomeId,
+  deriveExplicitSpecItemDigest,
+  deriveProofClaimId,
   parseDeliveryPullRequestReadyReceipt,
   parseDeliveryFeedbackId,
   parseRunId,
+  parseRunEventSequence,
+  parseRunRelativeArtifactPath,
+  workspaceStructuralDigestV1,
+  MergeDecisionPayloadDigestSchema,
 } from "@gaia/core";
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -57,6 +75,8 @@ import {
 } from "./delivery-merge-coordinator.js";
 import { defaultDeliveryFeedbackTrustPolicy } from "./delivery-remediation-coordinator.js";
 import { coordinateDeliveryLocalReviewAttestation } from "./delivery-review-attestation-coordinator.js";
+import { GaiaRuntimeError } from "./errors.js";
+import { loadRun } from "./event-store.js";
 import { makeRunPaths } from "./paths.js";
 
 const roots: string[] = [];
@@ -79,7 +99,96 @@ function fixture(
     )
   );
   mkdirSync(paths.root, { recursive: true });
+  mkdirSync(paths.workspace, { recursive: true });
   writeFileSync(paths.snapshots, "");
+  const structuralDigest = workspaceStructuralDigestV1({
+    entries: [],
+    version: 1,
+  });
+  const outcomeStatement = "The delivery is acceptable.";
+  const claimStatement = "Inspect the delivery result.";
+  const specDigest = "3".repeat(64);
+  const outcomeSource = {
+    itemDigest: deriveExplicitSpecItemDigest({
+      section: "acceptanceCriteria",
+      statement: outcomeStatement,
+    }),
+    kind: "explicitSpecItem" as const,
+    section: "acceptanceCriteria" as const,
+    specDigest,
+    version: 1 as const,
+  };
+  const claimSource = {
+    itemDigest: deriveExplicitSpecItemDigest({
+      section: "verificationChecks",
+      statement: claimStatement,
+    }),
+    kind: "explicitSpecItem" as const,
+    section: "verificationChecks" as const,
+    specDigest,
+    version: 1 as const,
+  };
+  const claimId = deriveProofClaimId({
+    authorityRequirements: ["gaia-runtime"],
+    kind: "command",
+    requirement: "required",
+    source: claimSource,
+    statement: claimStatement,
+  });
+  const contract = makeRunContract({
+    acceptedOutcomes: [
+      {
+        conditionalClaimIds: [],
+        outcomeId: deriveAcceptedOutcomeId({
+          source: outcomeSource,
+          statement: outcomeStatement,
+        }),
+        requiredClaimIds: [claimId],
+        source: outcomeSource,
+        statement: outcomeStatement,
+      },
+    ],
+    baseDigest: structuralDigest,
+    baseIdentity: { kind: "unversionedSnapshot", workspacePath: "." },
+    nonGoals: [],
+    proofClaims: [
+      {
+        authorityRequirements: ["gaia-runtime"],
+        claimId,
+        kind: "command",
+        requirement: "required",
+        source: claimSource,
+        statement: claimStatement,
+      },
+    ],
+    runId,
+    stopConditions: [],
+    targetDigest: structuralDigest,
+    targetIdentity: { kind: "unversionedWorkspace", workspacePath: "." },
+  });
+  const proof = makeRunProofResult({
+    contract,
+    observedTargetDigest: structuralDigest,
+    recordedBy: {
+      runId,
+      sequence: 6,
+      type: "RUN_PROOF_RESULT_RECORDED",
+    },
+    results: [
+      {
+        claimId,
+        evidence: [
+          {
+            artifactPath: "worker-result.json",
+            contentDigest: "4".repeat(64),
+            kind: "command",
+          },
+        ],
+        status: "passed",
+      },
+    ],
+    supplementalProtocolEvidence: [],
+  });
   const trust = DeliveryFeedbackTrustPolicyV1.make({
     ...defaultDeliveryFeedbackTrustPolicy("cill-i-am/gaia"),
     ...(requireApprovedReview === undefined ? {} : { requireApprovedReview }),
@@ -154,7 +263,7 @@ function fixture(
   const binding = {
     actionId: "merge-1",
     branchName: publication.branchName,
-    decisionSequence: 9,
+    decisionSequence: 16,
     expectedHeadSha: publication.headSha,
     mergeMethod: "merge" as const,
     payloadDigest: createHash("sha256")
@@ -165,7 +274,7 @@ function fixture(
           publication.prUrl,
           publication.branchName,
           publication.headSha,
-          "9",
+          "16",
           "merge",
           policyDigest,
         ].join("\0")
@@ -177,29 +286,84 @@ function fixture(
     prUrl: publication.prUrl,
     repository: "cill-i-am/gaia",
   };
-  const decision = DeliveryMergeReadinessDecision.make({
+  const decisionProof = {
+    contractDigest: proof.contractDigest,
+    contractId: proof.contractId,
+    kind: "contract" as const,
+    result: {
+      aggregate: "verified" as const,
+      kind: "recorded" as const,
+      observedTargetDigest: proof.observedTargetDigest,
+      resultDigest: proof.resultDigest,
+      sequence: proof.recordedBy.sequence,
+    },
+  };
+  const mergeDecision = makeMergeDecisionV2({
+    blockerCount: 0,
+    blockers: [],
+    contentAuthoritySequence: parseRunEventSequence(5),
+    decidedAt: "2026-07-11T19:00:12.000Z",
+    evidenceReviewPath: parseRunRelativeArtifactPath("evidence-review.md"),
+    evidenceReviewSequence: parseRunEventSequence(8),
+    evidenceReviewerSessionPath: parseRunRelativeArtifactPath(
+      "evidence-reviewer-session.json"
+    ),
+    nextAction: "ready-to-merge",
+    planReviewPath: parseRunRelativeArtifactPath("plan-review.md"),
+    planReviewerSessionPath: parseRunRelativeArtifactPath(
+      "plan-reviewer-session.json"
+    ),
+    pr: "74",
+    proof: decisionProof,
+    publicationConfirmationSequence: parseRunEventSequence(11),
+    runId,
+    runProfilePath: parseRunRelativeArtifactPath("run-profile.json"),
+    status: "approved",
+    version: 2,
+  });
+  const decisionBase = {
     actionId: "readiness-1",
     approved: true,
+    approvalSource:
+      requireApprovedReview === false
+        ? DeliveryReviewApprovalNotRequiredSource.make({
+            kind: "notRequired",
+            version: 1,
+          })
+        : DeliveryGitHubApprovedReviewSource.make({
+            kind: "githubApproved",
+            reviewDecision: "APPROVED",
+            version: 1,
+          }),
+    authoritySequence: parseRunEventSequence(11),
     blockers: [],
     branchName: binding.branchName,
+    contentAuthoritySequence: parseRunEventSequence(5),
+    contractDigest: proof.contractDigest,
+    contractId: proof.contractId,
+    evidenceReviewSequence: parseRunEventSequence(8),
     headSha: binding.expectedHeadSha,
+    mergeDecisionPayloadDigest: mergeDecision.payloadDigest,
+    mergeDecisionSequence: parseRunEventSequence(15),
     mergeMethod: binding.mergeMethod,
-    payloadDigest: createHash("sha256")
-      .update(
-        [
-          "readiness-1",
-          runId,
-          binding.prUrl,
-          binding.branchName,
-          binding.mergeMethod,
-          policyDigest,
-        ].join("\0")
-      )
-      .digest("hex"),
     policyDigest,
-    policyVersion: 1,
+    policyVersion: 1 as const,
     prNumber: 74,
     prUrl: binding.prUrl,
+    observedTargetDigest: proof.observedTargetDigest,
+    proofAggregate: "verified" as const,
+    proofResultDigest: proof.resultDigest,
+    proofResultSequence: proof.recordedBy.sequence,
+    publicationConfirmationSequence: parseRunEventSequence(11),
+    publicationOperationId: publication.operationId,
+    publicationPayloadDigest: publication.payloadDigest,
+    repository: binding.repository,
+    runId,
+    version: 3 as const,
+  };
+  const decision = DeliveryMergeReadinessDecisionV3.make({
+    ...decisionBase,
+    payloadDigest: deliveryMergeReadinessDecisionV3PayloadDigest(decisionBase),
   });
   const intent = DeliveryMergeIntent.make({
     ...binding,
@@ -236,43 +400,76 @@ function fixture(
         stage: "delivering",
       },
     }),
-    event(3, "DELIVERY_PUBLICATION_INTENT_RECORDED", {
+    event(3, "RUN_CONTRACT_RECORDED", {
+      contract: encodeRunContractJson(contract),
+    }),
+    event(4, "WORKSPACE_PREPARED", { workspacePath: "workspace" }),
+    event(5, "WORKER_COMPLETED", {
+      workerResultPath: "worker-result.json",
+    }),
+    event(6, "RUN_PROOF_RESULT_RECORDED", {
+      result: encodeRunProofResultJson(proof),
+      verificationResultPath: "verification-result.json",
+    }),
+    event(7, "DELIVERY_READY_TO_PUBLISH", {
+      delivery: {
+        baseBranch: "main",
+        baseRevision: "0".repeat(40),
+        feedbackTrustPolicy: Schema.encodeSync(DeliveryFeedbackTrustPolicyV1)(
+          trust
+        ),
+        headBranch: publication.branchName,
+        mode: "pullRequest",
+        remote: "origin",
+        stage: "readyToPublish",
+      },
+      reportPath: "report.md",
+    }),
+    event(8, "REVIEW_COMPLETED", {
+      phase: "evidence",
+      reviewPath: "evidence-review.md",
+    }),
+    event(9, "DELIVERY_PUBLICATION_INTENT_RECORDED", {
       publication: encodeDeliveryPublicationJson(pubIntent),
     }),
-    event(4, "DELIVERY_PUBLICATION_ATTEMPTED", {
+    event(10, "DELIVERY_PUBLICATION_ATTEMPTED", {
       publication: encodeDeliveryPublicationJson(pubAttempt),
     }),
-    event(5, "DELIVERY_PUBLICATION_CONFIRMED", {
+    event(11, "DELIVERY_PUBLICATION_CONFIRMED", {
       publication: encodeDeliveryPublicationJson(publication),
     }),
-    event(6, "DELIVERY_PR_READY_RECORDED", {
+    event(12, "DELIVERY_PR_READY_RECORDED", {
       readyForReviewAction:
         encodeDeliveryPullRequestReadyReceiptJson(readyIntent),
     }),
-    event(7, "DELIVERY_PR_READY_RECORDED", {
+    event(13, "DELIVERY_PR_READY_RECORDED", {
       readyForReviewAction:
         encodeDeliveryPullRequestReadyReceiptJson(readyAttempted),
     }),
-    event(8, "DELIVERY_PR_READY_RECORDED", {
+    event(14, "DELIVERY_PR_READY_RECORDED", {
       readyForReviewAction:
         encodeDeliveryPullRequestReadyReceiptJson(readyConfirmed),
     }),
-    event(9, "DELIVERY_MERGE_READINESS_RECORDED", {
+    event(15, "MERGE_DECISION_RECORDED", {
+      decision: encodeMergeDecisionV2Json(mergeDecision),
+      mergeDecisionPath: "merge-decision.json",
+    }),
+    event(16, "DELIVERY_MERGE_READINESS_RECORDED", {
       decision: encodeDeliveryMergeReadinessDecisionJson(decision),
     }),
     ...(state === "ready"
       ? []
       : [
-          event(10, "DELIVERY_MERGE_RECORDED", {
+          event(17, "DELIVERY_MERGE_RECORDED", {
             mergeAction: encodeDeliveryMergeReceiptJson(intent),
           }),
-          event(11, "DELIVERY_MERGE_RECORDED", {
+          event(18, "DELIVERY_MERGE_RECORDED", {
             mergeAction: encodeDeliveryMergeReceiptJson(attempted),
           }),
         ]),
     ...(state === "checkpoint"
       ? [
-          event(12, "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED", {
+          event(19, "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED", {
             checkpoint: {
               actionId: binding.actionId,
               payloadDigest: binding.payloadDigest,
@@ -284,7 +481,7 @@ function fixture(
       : []),
     ...(state === "unknown"
       ? [
-          event(12, "DELIVERY_MERGE_RECORDED", {
+          event(19, "DELIVERY_MERGE_RECORDED", {
             mergeAction: encodeDeliveryMergeReceiptJson(
               DeliveryMergeTerminalFailure.make({
                 ...binding,
@@ -304,14 +501,265 @@ function fixture(
   const action = {
     actionId: binding.actionId,
     expectedBranchName: binding.branchName,
-    expectedDecisionSequence: 9,
+    expectedDecisionSequence: 16,
     expectedHeadSha: binding.expectedHeadSha,
     expectedPolicyDigest: policyDigest,
     expectedPrUrl: binding.prUrl,
     kind: "merge" as const,
     mergeMethod: "merge" as const,
   };
-  return { action, binding, root, runId };
+  return {
+    action,
+    binding,
+    claimId,
+    contract,
+    decisionProof,
+    mergeDecision,
+    paths,
+    proof,
+    readinessDecision: decision,
+    root,
+    runId,
+  };
+}
+
+type InterveningAuthority =
+  | "content remediation"
+  | "newer blocked V2"
+  | "newer evidence review"
+  | "newer proof result"
+  | "newer publication";
+
+function insertAuthorityBeforeReadiness(
+  result: ReturnType<typeof fixture>,
+  authority: InterveningAuthority
+) {
+  const events = readFileSync(result.paths.events, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)));
+  const readinessIndex = events.findIndex(
+    ({ type }) => type === "DELIVERY_MERGE_READINESS_RECORDED"
+  );
+  if (readinessIndex < 0)
+    throw new Error("Expected a merge-readiness event in the fixture.");
+  const readiness = events[readinessIndex];
+  if (readiness === undefined)
+    throw new Error("Expected a merge-readiness event in the fixture.");
+  const nextSequence = readiness.sequence;
+  const event = (
+    offset: number,
+    type: Parameters<typeof makeRunEvent>[0]["type"],
+    payload: Readonly<Record<string, Schema.Json>>
+  ) =>
+    makeRunEvent({
+      payload,
+      runId: result.runId,
+      sequence: nextSequence + offset,
+      timestamp: `2026-07-11T20:00:${String(offset).padStart(2, "0")}.000Z`,
+      type,
+    });
+
+  const inserted = (() => {
+    switch (authority) {
+      case "newer proof result": {
+        const proof = makeRunProofResult({
+          contract: result.contract,
+          observedTargetDigest: result.proof.observedTargetDigest,
+          recordedBy: {
+            runId: result.runId,
+            sequence: nextSequence,
+            type: "RUN_PROOF_RESULT_RECORDED",
+          },
+          results: [
+            {
+              claimId: result.claimId,
+              evidence: [
+                {
+                  artifactPath: "worker-result.json",
+                  contentDigest: "4".repeat(64),
+                  kind: "command",
+                },
+              ],
+              status: "passed",
+            },
+          ],
+          supplementalProtocolEvidence: [],
+        });
+        return [
+          event(0, "RUN_PROOF_RESULT_RECORDED", {
+            result: encodeRunProofResultJson(proof),
+            verificationResultPath: "verification-result.json",
+          }),
+        ];
+      }
+      case "newer blocked V2": {
+        const blocker = MergeDecisionBlockerV2.make({
+          action: "Record current proof and review evidence.",
+          kind: "run-proof-stale",
+          summary: "The prior approved merge decision is stale.",
+        });
+        const decision = makeMergeDecisionV2({
+          blockerCount: 1,
+          blockers: [blocker],
+          contentAuthoritySequence: parseRunEventSequence(1),
+          decidedAt: "2026-07-11T20:00:00.000Z",
+          evidenceReviewPath:
+            parseRunRelativeArtifactPath("evidence-review.md"),
+          evidenceReviewerSessionPath: parseRunRelativeArtifactPath(
+            "evidence-reviewer-session.json"
+          ),
+          nextAction: "resolve-blockers",
+          planReviewPath: parseRunRelativeArtifactPath("plan-review.md"),
+          planReviewerSessionPath: parseRunRelativeArtifactPath(
+            "plan-reviewer-session.json"
+          ),
+          pr: "74",
+          proof: result.decisionProof,
+          runId: result.runId,
+          runProfilePath: parseRunRelativeArtifactPath("run-profile.json"),
+          status: "blocked",
+          version: 2,
+        });
+        return [
+          event(0, "MERGE_DECISION_RECORDED", {
+            decision: encodeMergeDecisionV2Json(decision),
+            mergeDecisionPath: "merge-decision.json",
+          }),
+        ];
+      }
+      case "content remediation": {
+        const remediation = DeliveryRemediationIntent.make({
+          attempt: 1,
+          commitTimestamp: "2026-07-11T20:00:00.000Z",
+          expectedHeadSha: result.binding.expectedHeadSha,
+          feedbackDigest: "e".repeat(64),
+          feedbackIds: [
+            parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`),
+          ],
+          inputId: "remediation-run-1234567890-1",
+          operationId: "remediation:run-1234567890:1",
+          state: "intentRecorded",
+        });
+        return [
+          event(0, "DELIVERY_REMEDIATION_RECORDED", {
+            remediation: encodeDeliveryRemediationJson(remediation),
+          }),
+        ];
+      }
+      case "newer evidence review":
+        return [
+          event(0, "REVIEW_COMPLETED", {
+            phase: "evidence",
+            reviewPath: "evidence-review-2.md",
+          }),
+        ];
+      case "newer publication": {
+        const confirmed = events.findLast(
+          ({ type }) => type === "DELIVERY_PUBLICATION_CONFIRMED"
+        );
+        if (confirmed?.type !== "DELIVERY_PUBLICATION_CONFIRMED")
+          throw new Error("Expected confirmed publication in the fixture.");
+        return [event(0, "DELIVERY_PUBLICATION_CONFIRMED", confirmed.payload)];
+      }
+    }
+  })();
+  const shiftedReadiness = makeRunEvent({
+    payload: readiness.payload,
+    runId: readiness.runId,
+    sequence: readiness.sequence + inserted.length,
+    timestamp: readiness.timestamp,
+    type: readiness.type,
+  });
+  const next = [
+    ...events.slice(0, readinessIndex),
+    ...inserted,
+    shiftedReadiness,
+  ];
+  writeFileSync(
+    result.paths.events,
+    `${next.map((value) => JSON.stringify(Schema.encodeSync(RunEvent)(value))).join("\n")}\n`
+  );
+}
+
+function appendAuthorityAfterReadiness(
+  result: ReturnType<typeof fixture>,
+  authority: "content remediation" | "evidence review" | "proof result"
+) {
+  const events = readFileSync(result.paths.events, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)));
+  const sequence = events.length + 1;
+  const next =
+    authority === "proof result"
+      ? makeRunEvent({
+          payload: {
+            result: encodeRunProofResultJson(
+              makeRunProofResult({
+                contract: result.contract,
+                observedTargetDigest: result.proof.observedTargetDigest,
+                recordedBy: {
+                  runId: result.runId,
+                  sequence,
+                  type: "RUN_PROOF_RESULT_RECORDED",
+                },
+                results: [
+                  {
+                    claimId: result.claimId,
+                    reason: "A newer proof pass has not run the claim.",
+                    status: "not-run",
+                  },
+                ],
+                supplementalProtocolEvidence: [],
+              })
+            ),
+            verificationResultPath: "verification-result-2.json",
+          },
+          runId: result.runId,
+          sequence,
+          timestamp: "2026-07-11T20:01:00.000Z",
+          type: "RUN_PROOF_RESULT_RECORDED",
+        })
+      : authority === "evidence review"
+        ? makeRunEvent({
+            payload: {
+              phase: "evidence",
+              reviewPath: "evidence-review-2.md",
+            },
+            runId: result.runId,
+            sequence,
+            timestamp: "2026-07-11T20:01:00.000Z",
+            type: "REVIEW_COMPLETED",
+          })
+        : makeRunEvent({
+            payload: {
+              remediation: encodeDeliveryRemediationJson(
+                DeliveryRemediationIntent.make({
+                  attempt: 1,
+                  commitTimestamp: "2026-07-11T20:01:00.000Z",
+                  expectedHeadSha: result.binding.expectedHeadSha,
+                  feedbackDigest: "e".repeat(64),
+                  feedbackIds: [
+                    parseDeliveryFeedbackId(
+                      `feedback-comment-${"f".repeat(64)}`
+                    ),
+                  ],
+                  inputId: "remediation-run-1234567890-1",
+                  operationId: "remediation:run-1234567890:1",
+                  state: "intentRecorded",
+                })
+              ),
+            },
+            runId: result.runId,
+            sequence,
+            timestamp: "2026-07-11T20:01:00.000Z",
+            type: "DELIVERY_REMEDIATION_RECORDED",
+          });
+  writeFileSync(
+    result.paths.events,
+    `${[...events, next].map((value) => JSON.stringify(Schema.encodeSync(RunEvent)(value))).join("\n")}\n`
+  );
 }
 
 function retainedPreReadyFixture() {
@@ -397,6 +845,56 @@ function corruptReadyReceipts(
         payload: {
           readyForReviewAction:
             encodeDeliveryPullRequestReadyReceiptJson(changed),
+        },
+        runId: event.runId,
+        sequence: event.sequence,
+        timestamp: event.timestamp,
+        type: event.type,
+      });
+    });
+  writeFileSync(
+    eventsPath,
+    `${events.map((event) => JSON.stringify(Schema.encodeSync(RunEvent)(event))).join("\n")}\n`
+  );
+}
+
+function corruptMergeReadinessDecision(
+  result: ReturnType<typeof fixture>,
+  corruption: "payload digest" | "merge-decision binding"
+) {
+  const eventsPath = path.join(
+    result.root,
+    ".gaia",
+    "runs",
+    result.runId,
+    "events.jsonl"
+  );
+  const events = readFileSync(eventsPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)))
+    .map((event) => {
+      if (event.type !== "DELIVERY_MERGE_READINESS_RECORDED") return event;
+      const decision = Schema.decodeUnknownSync(
+        DeliveryMergeReadinessDecisionV3
+      )(event.payload["decision"]);
+      const changed = DeliveryMergeReadinessDecisionV3.make({
+        ...decision,
+        ...(corruption === "payload digest"
+          ? {
+              payloadDigest: Schema.decodeUnknownSync(
+                DeliverySha256DigestPublicSchema
+              )("f".repeat(64)),
+            }
+          : {
+              mergeDecisionPayloadDigest: Schema.decodeUnknownSync(
+                MergeDecisionPayloadDigestSchema
+              )("f".repeat(64)),
+            }),
+      });
+      return makeRunEvent({
+        payload: {
+          decision: encodeDeliveryMergeReadinessDecisionJson(changed),
         },
         runId: event.runId,
         sequence: event.sequence,
@@ -563,6 +1061,17 @@ const merged = (
 });
 
 describe("delivery merge reconstructed coordinator", () => {
+  it("rejects malformed Unicode before canonical V3 digesting", () => {
+    const f = fixture("ready", false);
+
+    expect(() =>
+      deliveryMergeReadinessDecisionV3PayloadDigest({
+        ...f.readinessDecision,
+        blockers: ["\uD800"],
+      })
+    ).toThrow(/well-formed Unicode/iu);
+  });
+
   it("satisfies strict review policy from one current exact-head local operator attestation but never overrides changes requested", async () => {
     const f = fixture("ready", true);
     const current = merged(f.binding);
@@ -616,7 +1125,7 @@ describe("delivery merge reconstructed coordinator", () => {
     expect(approved).toMatchObject({
       approved: true,
       approvalSource: { kind: "localOperatorPairedReview" },
-      version: 2,
+      version: 3,
     });
     let replayReads = 0;
     const replay = await Effect.runPromise(
@@ -659,7 +1168,7 @@ describe("delivery merge reconstructed coordinator", () => {
         }
       ).pipe(Effect.provide(NodeServices.layer))
     );
-    expect(rejected).toMatchObject({ approved: false, version: 2 });
+    expect(rejected).toMatchObject({ approved: false, version: 3 });
     expect(
       "approvalSource" in rejected ? rejected.approvalSource : undefined
     ).toBeUndefined();
@@ -923,7 +1432,7 @@ describe("delivery merge reconstructed coordinator", () => {
     expect(providerCalls).toBe(0);
   });
 
-  it("permits a new readiness decision only after exact remediated-head ready confirmation", async () => {
+  it("keeps remediation stale by sequence even after exact-head ready confirmation", async () => {
     const f = fixture("ready", false);
     const currentHeadSha = appendConfirmedRemediation(f);
     appendCurrentReadyConfirmation(f, currentHeadSha);
@@ -948,22 +1457,22 @@ describe("delivery merge reconstructed coordinator", () => {
       state: "open" as const,
     };
 
-    const decision = await Effect.runPromise(
-      coordinateDeliveryMergeReadiness(
-        f.runId,
-        {
-          actionId: "readiness-remediated-1",
-          kind: "evaluateMergeReadiness",
-          mergeMethod: "merge",
-        },
-        {
-          freshStateReader: () => Effect.succeed(fresh),
-          rootDirectory: f.root,
-        }
-      ).pipe(Effect.provide(NodeServices.layer))
-    );
-
-    expect(decision).toMatchObject({ approved: true, headSha: currentHeadSha });
+    await expect(
+      Effect.runPromise(
+        coordinateDeliveryMergeReadiness(
+          f.runId,
+          {
+            actionId: "readiness-remediated-1",
+            kind: "evaluateMergeReadiness",
+            mergeMethod: "merge",
+          },
+          {
+            freshStateReader: () => Effect.succeed(fresh),
+            rootDirectory: f.root,
+          }
+        ).pipe(Effect.provide(NodeServices.layer))
+      )
+    ).rejects.toMatchObject({ code: "DeliveryActionConflict" });
   });
 
   for (const corruption of [
@@ -1016,6 +1525,104 @@ describe("delivery merge reconstructed coordinator", () => {
         )
       ).rejects.toThrow();
       expect(reads).toBe(0);
+      expect(providerCalls).toBe(0);
+    });
+  }
+
+  for (const corruption of [
+    "payload digest",
+    "merge-decision binding",
+  ] as const) {
+    it(`rejects a corrupt V3 ${corruption} during replay before merge dispatch`, async () => {
+      const f = fixture("ready", false);
+      corruptMergeReadinessDecision(f, corruption);
+      let providerCalls = 0;
+      let stateReads = 0;
+
+      await expect(
+        Effect.runPromise(
+          coordinateDeliveryMerge(f.runId, f.action, {
+            commandRunner: () =>
+              Effect.sync(() => {
+                providerCalls += 1;
+                return { exitCode: 0, stderr: "", stdout: "" };
+              }),
+            freshStateReader: () =>
+              Effect.sync(() => {
+                stateReads += 1;
+                return merged(f.binding);
+              }),
+            rootDirectory: f.root,
+          }).pipe(Effect.provide(NodeServices.layer))
+        )
+      ).rejects.toThrow();
+      expect(stateReads).toBe(0);
+      expect(providerCalls).toBe(0);
+    });
+  }
+
+  for (const authority of [
+    "newer proof result",
+    "newer blocked V2",
+    "content remediation",
+    "newer evidence review",
+  ] as const) {
+    it(`rejects literal JSONL when ${authority} intervenes between approved V2 and V3`, async () => {
+      const f = fixture("ready", false);
+      insertAuthorityBeforeReadiness(f, authority);
+
+      await expect(
+        Effect.runPromise(
+          loadRun(f.paths).pipe(Effect.provide(NodeServices.layer))
+        )
+      ).rejects.toMatchObject({ code: "InvalidRunEventHistory" });
+    });
+  }
+
+  it("rejects a newer publication record between V2 and V3 at the terminal publication lifecycle boundary", async () => {
+    const f = fixture("ready", false);
+    insertAuthorityBeforeReadiness(f, "newer publication");
+
+    const failure = await Effect.runPromise(
+      Effect.flip(loadRun(f.paths)).pipe(Effect.provide(NodeServices.layer))
+    );
+    expect(failure).toMatchObject({ code: "InvalidRunEventHistory" });
+    if (!(failure instanceof GaiaRuntimeError))
+      throw new Error("Expected typed invalid-history failure.");
+    expect(String(failure.cause)).toMatch(
+      /publication confirmation requires an attempted operation/iu
+    );
+  });
+
+  for (const authority of [
+    "proof result",
+    "content remediation",
+    "evidence review",
+  ] as const) {
+    it(`rejects merge dispatch when a newer ${authority} follows V3`, async () => {
+      const f = fixture("ready", false);
+      appendAuthorityAfterReadiness(f, authority);
+      let providerCalls = 0;
+      let stateReads = 0;
+
+      await expect(
+        Effect.runPromise(
+          coordinateDeliveryMerge(f.runId, f.action, {
+            commandRunner: () =>
+              Effect.sync(() => {
+                providerCalls += 1;
+                return { exitCode: 0, stderr: "", stdout: "" };
+              }),
+            freshStateReader: () =>
+              Effect.sync(() => {
+                stateReads += 1;
+                return merged(f.binding);
+              }),
+            rootDirectory: f.root,
+          }).pipe(Effect.provide(NodeServices.layer))
+        )
+      ).rejects.toMatchObject({ code: "DeliveryActionConflict" });
+      expect(stateReads).toBe(0);
       expect(providerCalls).toBe(0);
     });
   }

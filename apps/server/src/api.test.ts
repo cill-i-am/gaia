@@ -670,7 +670,11 @@ describe("local run api http boundary", () => {
           );
           assert.include(
             getString(verificationResult, "body"),
-            '"status": "passed"'
+            '"aggregate": "completed-unverified"'
+          );
+          assert.include(
+            getString(verificationResult, "body"),
+            '"results": []'
           );
         })
     );

@@ -20,6 +20,19 @@ import {
 } from "./delivery-publication.js";
 import { deriveDeliveryAuthority } from "./delivery-remediation.js";
 import { RunEvent } from "./events.js";
+import {
+  MergeDecisionPayloadDigestSchema,
+  parseMergeDecisionV2,
+} from "./merge-decision.js";
+import {
+  parseRunContract,
+  parseRunProofResult,
+  RunContractDigestSchema,
+  RunContractIdSchema,
+  RunEventSequenceSchema,
+  RunProofResultDigestSchema,
+  StructuralDigestSchema,
+} from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
 
 export { DeliveryActionIdSchema } from "./delivery-identity.js";
@@ -256,9 +269,84 @@ export class DeliveryMergeReadinessDecisionV2 extends Schema.Class<DeliveryMerge
   strict
 ) {}
 
+const readinessDecisionV3Binding = {
+  ...readinessDecisionV2Binding,
+  contentAuthoritySequence: RunEventSequenceSchema,
+  contractDigest: RunContractDigestSchema,
+  contractId: RunContractIdSchema,
+  evidenceReviewSequence: RunEventSequenceSchema,
+  mergeDecisionPayloadDigest: MergeDecisionPayloadDigestSchema,
+  mergeDecisionSequence: PositiveSequence,
+  observedTargetDigest: StructuralDigestSchema,
+  proofAggregate: Schema.Literal("verified"),
+  proofResultDigest: RunProofResultDigestSchema,
+  proofResultSequence: RunEventSequenceSchema,
+  version: Schema.Literal(3),
+} as const;
+
+const DeliveryMergeReadinessDecisionV3BindingSchema = Schema.Struct(
+  readinessDecisionV3Binding
+);
+export type DeliveryMergeReadinessDecisionV3Binding = Schema.Schema.Type<
+  typeof DeliveryMergeReadinessDecisionV3BindingSchema
+>;
+
+export function deliveryMergeReadinessDecisionV3CanonicalPayload(
+  binding: DeliveryMergeReadinessDecisionV3Binding
+) {
+  return canonicalFields([
+    "gaia.delivery.merge-readiness.v3",
+    binding.actionId,
+    binding.runId,
+    binding.publicationOperationId,
+    binding.publicationPayloadDigest,
+    String(binding.publicationConfirmationSequence),
+    String(binding.authoritySequence),
+    binding.repository,
+    String(binding.prNumber),
+    binding.prUrl,
+    binding.branchName,
+    binding.headSha,
+    binding.mergeMethod,
+    binding.policyDigest,
+    String(binding.policyVersion),
+    binding.approved ? "approved" : "denied",
+    ...binding.blockers,
+    readinessApprovalSourceCanonicalPayload(binding.approvalSource),
+    String(binding.mergeDecisionSequence),
+    binding.mergeDecisionPayloadDigest,
+    binding.contractId,
+    binding.contractDigest,
+    binding.proofResultDigest,
+    String(binding.proofResultSequence),
+    binding.proofAggregate,
+    binding.observedTargetDigest,
+    String(binding.contentAuthoritySequence),
+    String(binding.evidenceReviewSequence),
+    String(binding.version),
+  ]);
+}
+
+export function deliveryMergeReadinessDecisionV3PayloadDigest(
+  binding: DeliveryMergeReadinessDecisionV3Binding
+) {
+  return sha256Hex(deliveryMergeReadinessDecisionV3CanonicalPayload(binding));
+}
+
+export class DeliveryMergeReadinessDecisionV3 extends Schema.Class<DeliveryMergeReadinessDecisionV3>(
+  "DeliveryMergeReadinessDecisionV3"
+)(
+  {
+    ...readinessDecisionV3Binding,
+    payloadDigest: Digest,
+  },
+  strict
+) {}
+
 export const DeliveryMergeReadinessDecisionSchema = Schema.Union([
   DeliveryMergeReadinessDecision,
   DeliveryMergeReadinessDecisionV2,
+  DeliveryMergeReadinessDecisionV3,
 ]);
 export type DeliveryMergeReadinessDecisionReceipt = Schema.Schema.Type<
   typeof DeliveryMergeReadinessDecisionSchema
@@ -274,7 +362,15 @@ export const encodeDeliveryMergeReadinessDecisionJson = Schema.encodeSync(
 );
 
 function canonicalFields(fields: ReadonlyArray<string>) {
-  return fields.map((field) => `${field.length}:${field}`).join("|");
+  return fields
+    .map((field) => {
+      if (!field.isWellFormed())
+        throw new Error(
+          "Canonical delivery fields must contain well-formed Unicode."
+        );
+      return `${field.length}:${field}`;
+    })
+    .join("|");
 }
 
 function sha256Hex(payload: string) {
@@ -295,8 +391,12 @@ export function assertDeliveryMergeReadinessDecisionAuthority(
   decision: DeliveryMergeReadinessDecisionReceipt,
   input: Schema.Schema.Type<typeof DeliveryAuthorityAssertionInputSchema>
 ) {
-  // Version 1 is retained as a compatibility-only historical receipt.
-  if (!(decision instanceof DeliveryMergeReadinessDecisionV2)) return;
+  // Versions 1 and 2 are retained as decode-only historical receipts.
+  if (
+    !(decision instanceof DeliveryMergeReadinessDecisionV2) &&
+    !(decision instanceof DeliveryMergeReadinessDecisionV3)
+  )
+    return;
   if (input.publication.state !== "confirmed")
     throw new Error("Merge readiness requires a confirmed publication.");
   const authority = deriveDeliveryAuthority(
@@ -321,11 +421,95 @@ export function assertDeliveryMergeReadinessDecisionAuthority(
       "Merge readiness decision does not match the current delivery authority."
     );
   }
-  if (
-    decision.payloadDigest !==
-    deliveryMergeReadinessDecisionV2PayloadDigest(decision)
-  ) {
+  const expectedPayloadDigest =
+    decision instanceof DeliveryMergeReadinessDecisionV3
+      ? deliveryMergeReadinessDecisionV3PayloadDigest(decision)
+      : deliveryMergeReadinessDecisionV2PayloadDigest(decision);
+  if (decision.payloadDigest !== expectedPayloadDigest) {
     throw new Error("Merge readiness decision payload digest is invalid.");
+  }
+  if (decision instanceof DeliveryMergeReadinessDecisionV3) {
+    const priorEvents = input.events.filter(
+      ({ sequence }) => sequence < input.eventSequence
+    );
+    const mergeDecisionEvent = priorEvents.findLast(
+      ({ type }) => type === "MERGE_DECISION_RECORDED"
+    );
+    if (
+      mergeDecisionEvent?.type !== "MERGE_DECISION_RECORDED" ||
+      mergeDecisionEvent.sequence !== decision.mergeDecisionSequence
+    )
+      throw new Error(
+        "Merge readiness V3 does not bind the latest prior merge decision."
+      );
+    const mergeDecision = parseMergeDecisionV2(
+      mergeDecisionEvent.payload["decision"]
+    );
+    const recordedProof =
+      mergeDecision.proof.kind === "contract" &&
+      mergeDecision.proof.result.kind === "recorded"
+        ? mergeDecision.proof.result
+        : undefined;
+    const contractEvent = priorEvents.find(
+      ({ type }) => type === "RUN_CONTRACT_RECORDED"
+    );
+    const latestProofEvent = priorEvents.findLast(
+      ({ type }) => type === "RUN_PROOF_RESULT_RECORDED"
+    );
+    if (
+      contractEvent?.type !== "RUN_CONTRACT_RECORDED" ||
+      latestProofEvent?.type !== "RUN_PROOF_RESULT_RECORDED"
+    )
+      throw new Error("Merge readiness V3 requires current run proof.");
+    const contract = parseRunContract(contractEvent.payload["contract"]);
+    const proof = parseRunProofResult(
+      latestProofEvent.payload["result"],
+      contract
+    );
+    const contentAuthoritySequence = Math.max(
+      1,
+      ...priorEvents.flatMap((event) =>
+        event.type === "WORKER_COMPLETED" ||
+        event.type === "WORKER_CONTINUATION_RECORDED" ||
+        event.type === "DELIVERY_REMEDIATION_RECORDED"
+          ? [event.sequence]
+          : []
+      )
+    );
+    const evidenceReviewSequence = priorEvents.findLast(
+      ({ payload, type }) =>
+        type === "REVIEW_COMPLETED" && payload["phase"] === "evidence"
+    )?.sequence;
+    if (
+      mergeDecision.status !== "approved" ||
+      mergeDecision.nextAction !== "ready-to-merge" ||
+      mergeDecision.payloadDigest !== decision.mergeDecisionPayloadDigest ||
+      recordedProof === undefined ||
+      recordedProof.aggregate !== "verified" ||
+      mergeDecision.proof.kind !== "contract" ||
+      mergeDecision.proof.contractId !== decision.contractId ||
+      mergeDecision.proof.contractDigest !== decision.contractDigest ||
+      recordedProof.resultDigest !== decision.proofResultDigest ||
+      recordedProof.sequence !== decision.proofResultSequence ||
+      recordedProof.observedTargetDigest !== decision.observedTargetDigest ||
+      mergeDecision.contentAuthoritySequence !==
+        decision.contentAuthoritySequence ||
+      mergeDecision.evidenceReviewSequence !==
+        decision.evidenceReviewSequence ||
+      mergeDecision.publicationConfirmationSequence !==
+        decision.publicationConfirmationSequence ||
+      proof.aggregate !== "verified" ||
+      proof.contractId !== decision.contractId ||
+      proof.contractDigest !== decision.contractDigest ||
+      proof.resultDigest !== decision.proofResultDigest ||
+      proof.recordedBy.sequence !== decision.proofResultSequence ||
+      proof.observedTargetDigest !== decision.observedTargetDigest ||
+      contentAuthoritySequence !== decision.contentAuthoritySequence ||
+      evidenceReviewSequence !== decision.evidenceReviewSequence
+    )
+      throw new Error(
+        "Merge readiness V3 proof-bound merge decision is stale."
+      );
   }
   if (decision.approved !== (decision.blockers.length === 0)) {
     throw new Error("Merge readiness approval and blockers are inconsistent.");

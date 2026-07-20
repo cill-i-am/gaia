@@ -1311,6 +1311,9 @@ function factoryRunSummaryFromProjection(
       kind: rootWorkItem.kind,
       title: rootWorkItem.title,
     },
+    ...(projection.graph.proofAggregate === undefined
+      ? {}
+      : { proofAggregate: projection.graph.proofAggregate }),
     runId: projection.graph.runId,
     state: factoryRunState(projection),
     updatedAt:

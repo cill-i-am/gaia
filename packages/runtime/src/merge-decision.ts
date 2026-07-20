@@ -1,15 +1,30 @@
 import {
   DeliveryTimestampSchema,
+  encodeMergeDecisionV2Json,
   GitHubPullRequestSelectorSchema,
+  makeMergeDecisionV2,
+  MergeDecisionBlockerV2,
+  MergeDecisionNextActionSchema,
+  MergeDecisionStatusSchema,
+  MergeDecisionV2,
   parseDeliveryTimestamp,
+  parseGitHubPullRequestSelector,
+  parseMergeDecisionV2,
+  parseRunEventSequence,
+  RunProofProjectionV1Schema,
+  RunProofResultV1,
+  RunEventSequenceSchema,
   RunIdSchema,
+  StructuralDigestSchema,
+  sortMergeDecisionBlockersV2,
+  type MergeDecisionV2Binding,
   type RunId,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
 import { parseBrowserEvidenceJson } from "./browser-evidence.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
-import { appendEvent } from "./event-store.js";
+import { appendEvent, loadRun } from "./event-store.js";
 import {
   parseGitHubPrLoopStateJson,
   type GitHubPrLoopState,
@@ -26,22 +41,17 @@ import {
 import { parseReviewerSessionEvidenceJson } from "./reviewer-session-evidence.js";
 import { parseRunProfileJson } from "./run-profile.js";
 import { withRunStoreLock } from "./run-store-lock.js";
-import { statusRun } from "./workflows.js";
+import { observeWorkspaceStructuralDigest } from "./workspace-snapshot.js";
 
-export const MergeDecisionStatusSchema = Schema.Literals([
-  "approved",
-  "blocked",
-] as const);
-
+export {
+  MergeDecisionNextActionSchema,
+  MergeDecisionStatusSchema,
+  MergeDecisionV2,
+};
 export type MergeDecisionStatus = typeof MergeDecisionStatusSchema.Type;
-
-export const MergeDecisionNextActionSchema = Schema.Literals([
-  "ready-to-merge",
-  "resolve-blockers",
-] as const);
-
 export type MergeDecisionNextAction = typeof MergeDecisionNextActionSchema.Type;
 
+/** Decode-only historical blocker vocabulary. */
 export const MergeDecisionBlockerKindSchema = Schema.Literals([
   "browser-evidence-failed",
   "browser-evidence-missing",
@@ -50,10 +60,10 @@ export const MergeDecisionBlockerKindSchema = Schema.Literals([
   "reviewer-blocked",
   "reviewer-evidence-missing",
 ] as const);
-
 export type MergeDecisionBlockerKind =
   typeof MergeDecisionBlockerKindSchema.Type;
 
+/** Decode-only historical V1 blocker. */
 export class MergeDecisionBlocker extends Schema.Class<MergeDecisionBlocker>(
   "MergeDecisionBlocker"
 )({
@@ -67,8 +77,7 @@ const MergeDecisionBlockerCountSchema = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0)
 ).pipe(Schema.brand("MergeDecisionBlockerCount"));
 
-type MergeDecisionBlockerCount = typeof MergeDecisionBlockerCountSchema.Type;
-
+/** Decode-only historical V1 decision. New writes always emit V2. */
 export class MergeDecision extends Schema.Class<MergeDecision>("MergeDecision")(
   {
     blockerCount: MergeDecisionBlockerCountSchema,
@@ -91,8 +100,8 @@ export class MergeDecision extends Schema.Class<MergeDecision>("MergeDecision")(
 export class MergeDecisionSummary extends Schema.Class<MergeDecisionSummary>(
   "MergeDecisionSummary"
 )({
-  blockerCount: MergeDecisionBlockerCountSchema,
-  blockers: Schema.Array(MergeDecisionBlocker),
+  blockerCount: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
+  blockers: Schema.Array(MergeDecisionBlockerV2),
   decisionPath: RuntimePathSchema,
   nextAction: MergeDecisionNextActionSchema,
   pr: Schema.optionalKey(GitHubPullRequestSelectorSchema),
@@ -100,58 +109,135 @@ export class MergeDecisionSummary extends Schema.Class<MergeDecisionSummary>(
   status: MergeDecisionStatusSchema,
 }) {}
 
-const MergeDecisionJson = Schema.toCodecJson(MergeDecision);
-const encodeMergeDecisionJson = Schema.encodeSync(MergeDecisionJson);
+const LegacyMergeDecisionJson = Schema.toCodecJson(MergeDecision);
+const parseLegacyMergeDecision = Schema.decodeUnknownSync(
+  LegacyMergeDecisionJson
+);
 
-/** Parse a persisted merge decision from decoded JSON. */
-export const parseMergeDecisionJson =
-  Schema.decodeUnknownSync(MergeDecisionJson);
-
-/** Record Gaia's explicit merge decision for a completed run. */
-export function recordMergeDecision(
-  runIdInput: RunId,
-  options: RunStorageOptions = {}
-) {
-  return withRunStoreLock(
-    options,
-    recordMergeDecisionUnlocked(runIdInput, options)
-  );
+/** Parse either historical V1 or current proof-bound V2 persisted JSON. */
+export function parseMergeDecisionJson(input: unknown) {
+  if (
+    typeof input === "object" &&
+    input !== null &&
+    "version" in input &&
+    input.version === 2
+  )
+    return parseMergeDecisionV2(input);
+  return parseLegacyMergeDecision(input);
 }
 
-function recordMergeDecisionUnlocked(
-  runIdInput: RunId,
-  options: RunStorageOptions
+/** Record current proof-bound merge readiness while the delivery run is live. */
+export function recordMergeDecision(
+  runId: RunId,
+  options: RunStorageOptions = {}
 ) {
+  return withRunStoreLock(options, recordMergeDecisionUnlocked(runId, options));
+}
+
+function recordMergeDecisionUnlocked(runId: RunId, options: RunStorageOptions) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
-    const run = yield* statusRun(runIdInput, { rootDirectory });
-
-    if (run.status !== "completed") {
+    const paths = yield* makeRunPaths(runId, { rootDirectory });
+    const loaded = yield* loadRun(paths);
+    if (loaded.latestSnapshot?.state !== "delivering")
       return yield* Effect.fail(
         makeRuntimeError({
-          code: "RunNotCompleted",
-          message: `Run ${run.runId} must be completed before recording a merge decision.`,
+          code: "RunNotDelivering",
+          message: `Run ${runId} must be in delivering state before MergeDecisionV2 is recorded.`,
           recoverable: false,
         })
       );
-    }
 
-    const paths = yield* makeRunPaths(run.runId, { rootDirectory });
+    const events = loaded.events;
+    const replayProof = loaded.latestSnapshot.context["runProof"];
+    const observed = yield* observeWorkspaceStructuralDigest(paths.workspace);
+    const contentAuthoritySequence = parseRunEventSequence(
+      Math.max(
+        1,
+        ...events
+          .filter(
+            (event) =>
+              event.type === "WORKER_COMPLETED" ||
+              event.type === "WORKER_CONTINUATION_RECORDED" ||
+              event.type === "DELIVERY_REMEDIATION_RECORDED"
+          )
+          .map((event) => event.sequence)
+      )
+    );
+    const evidenceReviewEvent = events.findLast(
+      (event) =>
+        event.type === "REVIEW_COMPLETED" &&
+        event.payload["phase"] === "evidence"
+    );
+    const publicationEvent = events.findLast(
+      (event) => event.type === "DELIVERY_PUBLICATION_CONFIRMED"
+    );
+    const proof = decodeProofProjection(replayProof);
+    const proofResult =
+      proof?.kind === "contract" ? proof.latestResult : undefined;
+    const decisionProof =
+      proof?.kind === "contract"
+        ? {
+            contractDigest: proof.contract.contractDigest,
+            contractId: proof.contract.contractId,
+            kind: "contract" as const,
+            result:
+              proofResult === undefined
+                ? { kind: "missing" as const }
+                : {
+                    aggregate: proofResult.aggregate,
+                    kind: "recorded" as const,
+                    observedTargetDigest: proofResult.observedTargetDigest,
+                    resultDigest: proofResult.resultDigest,
+                    sequence: proofResult.recordedBy.sequence,
+                  },
+          }
+        : {
+            aggregate: "completed-unverified" as const,
+            kind: "noContract" as const,
+            ...(proof?.kind === "no-contract" &&
+            proof.legacyVerification !== undefined
+              ? {
+                  legacyVerificationSequence:
+                    proof.legacyVerification.recordedBy.sequence,
+                }
+              : {}),
+          };
+    const proofBlockers = proofDecisionBlockers({
+      contentAuthoritySequence,
+      currentDigest: observed.digest,
+      proof,
+      ...(proofResult === undefined ? {} : { proofResult }),
+      ...(evidenceReviewEvent === undefined
+        ? {}
+        : { evidenceReviewSequence: evidenceReviewEvent.sequence }),
+      ...(publicationEvent === undefined
+        ? {}
+        : { publicationSequence: publicationEvent.sequence }),
+    });
     const prLoop = yield* readOptionalGitHubPrLoopState(paths);
-    const blockers = [
+    const blockers = sortMergeDecisionBlockersV2([
+      ...proofBlockers,
       ...prLoopBlockers(prLoop, paths),
       ...(yield* reviewerEvidenceBlockers(paths)),
       ...(yield* browserEvidenceBlockers(paths)),
-    ];
-    const status: MergeDecisionStatus =
-      blockers.length === 0 ? "approved" : "blocked";
-    const nextAction: MergeDecisionNextAction =
+    ]);
+    const status = blockers.length === 0 ? "approved" : "blocked";
+    const nextAction =
       status === "approved" ? "ready-to-merge" : "resolve-blockers";
-    const decision = MergeDecision.make({
-      blockerCount: parseMergeDecisionBlockerCount(blockers.length),
+    const binding: MergeDecisionV2Binding = {
+      blockerCount: blockers.length,
       blockers,
+      contentAuthoritySequence,
       decidedAt: parseDeliveryTimestamp(new Date().toISOString()),
       evidenceReviewPath: runArtifactPath(paths, paths.evidenceReviewMarkdown),
+      ...(evidenceReviewEvent === undefined
+        ? {}
+        : {
+            evidenceReviewSequence: parseRunEventSequence(
+              evidenceReviewEvent.sequence
+            ),
+          }),
       evidenceReviewerSessionPath: runArtifactPath(
         paths,
         paths.evidenceReviewerSession
@@ -163,37 +249,135 @@ function recordMergeDecisionUnlocked(
         paths.planReviewerSession
       ),
       ...(prLoop === undefined ? {} : { pr: prLoop.pr }),
-      prLoopPath: runArtifactPath(paths, paths.prLoopState),
-      runId: run.runId,
+      proof: decisionProof,
+      ...(publicationEvent === undefined
+        ? {}
+        : {
+            publicationConfirmationSequence: parseRunEventSequence(
+              publicationEvent.sequence
+            ),
+          }),
+      runId,
       runProfilePath: runArtifactPath(paths, paths.runProfile),
       status,
-      version: 1,
-    });
-
-    yield* writeMergeDecision(paths, decision);
-
+      version: 2,
+    };
+    const decision = makeMergeDecisionV2(binding);
     const mergeDecisionPath = runArtifactPath(paths, paths.mergeDecision);
 
-    yield* appendEvent(run.runId, paths, {
+    yield* appendEvent(runId, paths, {
       payload: {
-        blockerCount: decision.blockerCount,
+        decision: encodeMergeDecisionV2Json(decision),
         mergeDecisionPath,
-        nextAction: decision.nextAction,
-        ...(decision.pr === undefined ? {} : { pullRequest: decision.pr }),
-        status: decision.status,
       },
       type: "MERGE_DECISION_RECORDED",
     });
+    yield* writeMergeDecision(paths, decision);
 
     return MergeDecisionSummary.make({
-      blockerCount: decision.blockerCount,
-      blockers: decision.blockers,
+      blockerCount: blockers.length,
+      blockers,
       decisionPath: paths.mergeDecision,
-      nextAction: decision.nextAction,
-      ...(decision.pr === undefined ? {} : { pr: decision.pr }),
-      runId: decision.runId,
-      status: decision.status,
+      nextAction,
+      ...(decision.pr === undefined
+        ? {}
+        : { pr: parseGitHubPullRequestSelector(decision.pr) }),
+      runId,
+      status,
     });
+  });
+}
+
+function decodeProofProjection(input: unknown) {
+  if (input === undefined) return undefined;
+  return Schema.decodeUnknownSync(RunProofProjectionV1Schema)(input);
+}
+
+const ProofDecisionBlockersInputSchema = Schema.Struct({
+  contentAuthoritySequence: RunEventSequenceSchema,
+  currentDigest: StructuralDigestSchema,
+  evidenceReviewSequence: Schema.optionalKey(RunEventSequenceSchema),
+  proof: Schema.UndefinedOr(RunProofProjectionV1Schema),
+  proofResult: Schema.optionalKey(RunProofResultV1),
+  publicationSequence: Schema.optionalKey(RunEventSequenceSchema),
+});
+const decodeProofDecisionBlockersInput = Schema.decodeUnknownSync(
+  ProofDecisionBlockersInputSchema
+);
+
+function proofDecisionBlockers(
+  input: typeof ProofDecisionBlockersInputSchema.Encoded
+) {
+  const decoded = decodeProofDecisionBlockersInput(input);
+  const blockers: MergeDecisionBlockerV2[] = [];
+  if (decoded.proof?.kind !== "contract")
+    blockers.push(
+      proofBlocker(
+        "run-contract-missing",
+        "No contract-bound proof is present."
+      )
+    );
+  else if (decoded.proofResult === undefined)
+    blockers.push(
+      proofBlocker(
+        "run-proof-result-missing",
+        "No run-proof result is present."
+      )
+    );
+  else {
+    if (decoded.proofResult.aggregate !== "verified")
+      blockers.push(
+        proofBlocker(
+          "run-proof-not-verified",
+          `Run proof aggregate is '${decoded.proofResult.aggregate}'.`
+        )
+      );
+    if (
+      decoded.proofResult.observedTargetDigest !== decoded.currentDigest ||
+      decoded.proofResult.recordedBy.sequence < decoded.contentAuthoritySequence
+    )
+      blockers.push(
+        proofBlocker(
+          "run-proof-stale",
+          "Run proof predates current content authority or observes another digest."
+        )
+      );
+    if (
+      decoded.evidenceReviewSequence === undefined ||
+      decoded.evidenceReviewSequence <= decoded.proofResult.recordedBy.sequence
+    )
+      blockers.push(
+        proofBlocker(
+          "evidence-review-stale",
+          "Evidence review must be newer than the latest proof result."
+        )
+      );
+  }
+  if (decoded.publicationSequence === undefined)
+    blockers.push(
+      proofBlocker(
+        "delivery-publication-missing",
+        "Delivery publication is not confirmed for this run."
+      )
+    );
+  return blockers;
+}
+
+function proofBlocker(
+  kind:
+    | "run-contract-missing"
+    | "run-proof-result-missing"
+    | "run-proof-not-verified"
+    | "run-proof-stale"
+    | "evidence-review-stale"
+    | "delivery-publication-missing",
+  summary: string
+) {
+  return MergeDecisionBlockerV2.make({
+    action:
+      "Record fresh, contract-bound proof and review before deciding merge.",
+    kind,
+    summary,
   });
 }
 
@@ -201,39 +385,22 @@ function prLoopBlockers(
   prLoop: GitHubPrLoopState | undefined,
   paths: RunPaths
 ) {
-  if (prLoop === undefined) {
-    return [
-      MergeDecisionBlocker.make({
-        action: "Run `gaia pr-loop <run-id> <pull-request>` before deciding.",
-        artifactPath: runArtifactPath(paths, paths.prLoopState),
-        kind: "missing-pr-loop",
-        summary: "Gaia has no PR-loop state for this run.",
-      }),
-    ];
-  }
-
+  if (prLoop === undefined) return [];
   if (
     prLoop.status === "ready" &&
     prLoop.nextAction === "ready-for-merge-decision" &&
-    mergeDecisionAcceptsChecksStatus(prLoop.checksStatus)
-  ) {
+    (prLoop.checksStatus === "green" ||
+      prLoop.checksStatus === "no-checks-configured")
+  )
     return [];
-  }
-
   return [
-    MergeDecisionBlocker.make({
+    MergeDecisionBlockerV2.make({
       action: prLoop.nextAction,
       artifactPath: runArtifactPath(paths, paths.prLoopState),
       kind: "pr-loop-not-ready",
-      summary: `PR-loop status is '${prLoop.status}' with checks '${prLoop.checksStatus}' and next action '${prLoop.nextAction}'.`,
+      summary: `PR-loop status is '${prLoop.status}' with checks '${prLoop.checksStatus}'.`,
     }),
   ];
-}
-
-function mergeDecisionAcceptsChecksStatus(
-  status: GitHubPrLoopState["checksStatus"]
-) {
-  return status === "green" || status === "no-checks-configured";
 }
 
 function reviewerEvidenceBlockers(paths: RunPaths) {
@@ -242,49 +409,30 @@ function reviewerEvidenceBlockers(paths: RunPaths) {
     const evidence = yield* readOptionalReviewerSession(
       paths.evidenceReviewerSession
     );
-    const blockers: Array<MergeDecisionBlocker> = [];
-
-    if (plan === undefined) {
-      blockers.push(
-        MergeDecisionBlocker.make({
-          action: "Rerun the Gaia run with plan reviewer evidence enabled.",
-          artifactPath: runArtifactPath(paths, paths.planReviewerSession),
-          kind: "reviewer-evidence-missing",
-          summary: "Plan reviewer session evidence is missing.",
-        })
-      );
-    } else if (plan.decisionStatus !== "approved") {
-      blockers.push(
-        MergeDecisionBlocker.make({
-          action: "Resolve the plan reviewer finding before deciding merge.",
-          artifactPath: runArtifactPath(paths, paths.planReviewerSession),
-          kind: "reviewer-blocked",
-          summary: "Plan reviewer did not approve the run.",
-        })
-      );
+    const blockers: MergeDecisionBlockerV2[] = [];
+    for (const [phase, value, path] of [
+      ["Plan", plan, paths.planReviewerSession],
+      ["Evidence", evidence, paths.evidenceReviewerSession],
+    ] as const) {
+      if (value === undefined)
+        blockers.push(
+          MergeDecisionBlockerV2.make({
+            action: `Record ${phase.toLowerCase()} reviewer evidence.`,
+            artifactPath: runArtifactPath(paths, path),
+            kind: "reviewer-evidence-missing",
+            summary: `${phase} reviewer session evidence is missing.`,
+          })
+        );
+      else if (value.decisionStatus !== "approved")
+        blockers.push(
+          MergeDecisionBlockerV2.make({
+            action: `Resolve the ${phase.toLowerCase()} reviewer finding.`,
+            artifactPath: runArtifactPath(paths, path),
+            kind: "reviewer-blocked",
+            summary: `${phase} reviewer did not approve the run.`,
+          })
+        );
     }
-
-    if (evidence === undefined) {
-      blockers.push(
-        MergeDecisionBlocker.make({
-          action: "Rerun the Gaia run with evidence reviewer evidence enabled.",
-          artifactPath: runArtifactPath(paths, paths.evidenceReviewerSession),
-          kind: "reviewer-evidence-missing",
-          summary: "Evidence reviewer session evidence is missing.",
-        })
-      );
-    } else if (evidence.decisionStatus !== "approved") {
-      blockers.push(
-        MergeDecisionBlocker.make({
-          action:
-            "Resolve the evidence reviewer finding before deciding merge.",
-          artifactPath: runArtifactPath(paths, paths.evidenceReviewerSession),
-          kind: "reviewer-blocked",
-          summary: "Evidence reviewer did not approve the run.",
-        })
-      );
-    }
-
     return blockers;
   });
 }
@@ -292,53 +440,33 @@ function reviewerEvidenceBlockers(paths: RunPaths) {
 function browserEvidenceBlockers(paths: RunPaths) {
   return Effect.gen(function* () {
     const profile = yield* readRunProfile(paths);
-
-    if (profile.checks.browserEvidence !== "required") {
-      return [];
-    }
-
+    if (profile.checks.browserEvidence !== "required") return [];
     const evidence = yield* readOptionalBrowserEvidence(paths);
-
-    if (evidence === undefined) {
-      return [
-        MergeDecisionBlocker.make({
-          action:
-            "Collect browser evidence for this run before deciding merge.",
-          artifactPath: runArtifactPath(paths, paths.browserEvidence),
-          kind: "browser-evidence-missing",
-          summary:
-            "Run profile requires browser evidence, but none is recorded.",
-        }),
-      ];
-    }
-
-    if (evidence.status !== "collected") {
-      return [
-        MergeDecisionBlocker.make({
-          action: "Fix and recollect browser evidence before deciding merge.",
-          artifactPath: runArtifactPath(paths, paths.browserEvidence),
-          kind: "browser-evidence-failed",
-          summary: `Run profile requires browser evidence, but status is '${evidence.status}'.`,
-        }),
-      ];
-    }
-
-    return [];
+    if (evidence?.status === "collected") return [];
+    return [
+      MergeDecisionBlockerV2.make({
+        action: "Collect required browser evidence before deciding merge.",
+        artifactPath: runArtifactPath(paths, paths.browserEvidence),
+        kind:
+          evidence === undefined
+            ? "browser-evidence-missing"
+            : "browser-evidence-failed",
+        summary:
+          evidence === undefined
+            ? "Required browser evidence is missing."
+            : `Required browser evidence status is '${evidence.status}'.`,
+      }),
+    ];
   });
 }
 
-function writeMergeDecision(
-  paths: RunPaths,
-  decision: MergeDecision
-): Effect.Effect<MergeDecision, GaiaRuntimeError, FileSystem.FileSystem> {
+function writeMergeDecision(paths: RunPaths, decision: MergeDecisionV2) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-
     yield* fs.writeFileString(
       paths.mergeDecision,
-      `${JSON.stringify(encodeMergeDecisionJson(decision), null, 2)}\n`
+      `${JSON.stringify(encodeMergeDecisionV2Json(decision), null, 2)}\n`
     );
-
     return decision;
   }).pipe(
     Effect.catchTag("PlatformError", (cause) =>
@@ -346,7 +474,7 @@ function writeMergeDecision(
         makeRuntimeError({
           cause,
           code: "MergeDecisionWriteFailed",
-          message: "Gaia could not write the merge decision artifact.",
+          message: "Gaia could not write MergeDecisionV2.",
           recoverable: true,
         })
       )
@@ -361,7 +489,6 @@ function readOptionalGitHubPrLoopState(paths: RunPaths) {
     "GitHubPrLoopState"
   );
 }
-
 function readOptionalReviewerSession(path: typeof RuntimePathSchema.Type) {
   return readOptionalJsonFile(
     path,
@@ -369,7 +496,6 @@ function readOptionalReviewerSession(path: typeof RuntimePathSchema.Type) {
     "ReviewerSessionEvidence"
   );
 }
-
 function readOptionalBrowserEvidence(paths: RunPaths) {
   return readOptionalJsonFile(
     paths.browserEvidence,
@@ -377,25 +503,11 @@ function readOptionalBrowserEvidence(paths: RunPaths) {
     "BrowserEvidence"
   );
 }
-
 function readRunProfile(paths: RunPaths) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const contents = yield* fs.readFileString(paths.runProfile);
-    const parsed = yield* parseJson(contents, paths.runProfile);
-
-    return yield* parseJsonValue(parsed, parseRunProfileJson, "RunProfile");
-  }).pipe(
-    Effect.catchTag("PlatformError", (cause) =>
-      Effect.fail(
-        makeRuntimeError({
-          cause,
-          code: "RunProfileReadFailed",
-          message: "Gaia could not read run-profile.json for merge decision.",
-          recoverable: false,
-        })
-      )
-    )
+  return readRequiredJsonFile(
+    paths.runProfile,
+    parseRunProfileJson,
+    "RunProfile"
   );
 }
 
@@ -406,66 +518,38 @@ function readOptionalJsonFile<A>(
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const exists = yield* fs.exists(path);
-
-    if (!exists) {
-      return undefined;
-    }
-
-    const contents = yield* fs.readFileString(path);
-    const parsed = yield* parseJson(contents, path);
-
-    return yield* parseJsonValue(parsed, parse, label);
-  }).pipe(
-    Effect.catchTag("PlatformError", (cause) =>
-      Effect.fail(
-        makeRuntimeError({
-          cause,
-          code: `${label}ReadFailed`,
-          message: `Gaia could not read ${path}.`,
-          recoverable: true,
-        })
-      )
-    )
-  );
+    if (!(yield* fs.exists(path))) return undefined;
+    return yield* decodeJson(yield* fs.readFileString(path), parse, label);
+  }).pipe(Effect.mapError((cause) => jsonReadError(cause, label)));
 }
-
-function parseJson(text: string, path: typeof RuntimePathSchema.Type) {
-  return Effect.try({
-    catch: (cause) =>
-      makeRuntimeError({
-        cause,
-        code: "MergeDecisionJsonInvalid",
-        message: `${path} is not valid JSON.`,
-        recoverable: true,
-      }),
-    try: () => JSON.parse(text) as unknown,
-  });
+function readRequiredJsonFile<A>(
+  path: typeof RuntimePathSchema.Type,
+  parse: (input: unknown) => A,
+  label: string
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* decodeJson(yield* fs.readFileString(path), parse, label);
+  }).pipe(Effect.mapError((cause) => jsonReadError(cause, label)));
 }
-
-function parseJsonValue<A>(
-  input: unknown,
+function decodeJson<A>(
+  text: string,
   parse: (input: unknown) => A,
   label: string
 ) {
   return Effect.try({
-    catch: (cause) =>
-      makeRuntimeError({
-        cause,
-        code: `${label}Invalid`,
-        message: `${label} did not match Gaia's expected schema.`,
-        recoverable: true,
-      }),
-    try: () => parse(input),
+    catch: (cause) => jsonReadError(cause, label),
+    try: () => parse(JSON.parse(text)),
   });
 }
-
-function parseMergeDecisionBlockerCount(
-  count: number
-): MergeDecisionBlockerCount {
-  return Schema.decodeUnknownSync(MergeDecisionBlockerCountSchema)(count);
+function jsonReadError(cause: unknown, label: string) {
+  return makeRuntimeError({
+    cause,
+    code: `${label}Invalid`,
+    message: `${label} did not match Gaia's expected schema.`,
+    recoverable: false,
+  });
 }
-
 function runArtifactPath(
   paths: RunPaths,
   absolutePath: typeof RuntimePathSchema.Type

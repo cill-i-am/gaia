@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 
+import { RunVerificationAggregateSchema } from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
 
 export const ReportStatusSchema = Schema.Literals([
@@ -19,6 +20,7 @@ export const parseRunReportArtifactPath = Schema.decodeUnknownSync(
 
 const RunReportFields = {
   artifacts: Schema.Array(RunReportArtifactPathSchema),
+  proofAggregate: RunVerificationAggregateSchema,
   reportPath: RunReportArtifactPathSchema,
   runId: RunIdSchema,
   selectedSkills: Schema.Array(Schema.NonEmptyString),

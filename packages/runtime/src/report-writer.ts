@@ -7,6 +7,7 @@ import {
   RunIdSchema,
   RunSpec,
   parseRunReportArtifactPath,
+  type RunProofResultV1,
   type RunReportArtifactPath,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
@@ -16,6 +17,7 @@ import {
   markdownHistoricalRiskNotes,
   WorkerPlanHistoricalRiskNote,
 } from "./reviewer-findings.js";
+import { loadAuthoritativeRunProofResult } from "./run-contract.js";
 import { selectedSkillNames, SkillManifest } from "./skill-manifest.js";
 import {
   markdownInferredRecommendations,
@@ -57,16 +59,21 @@ export function writeReport(input: WriteReportInputSchema) {
     const codexHarnessProgressExists = yield* fs.exists(
       input.paths.codexHarnessProgress
     );
+    const proofResult = yield* loadAuthoritativeRunProofResult(
+      input.paths,
+      input.runId
+    );
     const report = RunReport.make({
       artifacts: reportArtifactPaths({
         codexHarnessProgressExists,
         factoryScorecardExists: input.factoryScorecard !== undefined,
       }),
       reportPath: "report.md",
+      proofAggregate: proofResult.aggregate,
       runId: input.runId,
       selectedSkills: [...selectedSkillNames(input.skillManifest)],
       status: "completed",
-      summary: `Gaia completed, reviewed, and verified "${input.spec.title}".`,
+      summary: `Gaia lifecycle completed and evidence review finished for "${input.spec.title}"; run proof is '${proofResult.aggregate}'.`,
     });
 
     yield* fs.writeFileString(
@@ -79,7 +86,8 @@ export function writeReport(input: WriteReportInputSchema) {
         input.factoryScorecard,
         input.inferredRecommendations,
         input.historicalRiskNotes,
-        classifyDomainReferences(input.spec.body)
+        classifyDomainReferences(input.spec.body),
+        proofResult
       )
     );
     yield* fs.writeFileString(
@@ -96,6 +104,7 @@ function reportArtifactPaths(
 ): ReadonlyArray<RunReportArtifactPath> {
   return [
     "workspace-manifest.json",
+    "run-contract.json",
     "run-profile.json",
     "skill-manifest.json",
     "skill-bundle.json",
@@ -137,7 +146,8 @@ function markdownReport(
   factoryScorecard: FactoryLaneScorecard | undefined,
   inferredRecommendations: WorkerPlanInferredRecommendations,
   historicalRiskNotes: ReadonlyArray<WorkerPlanHistoricalRiskNote>,
-  domainReferences: ReadonlyArray<WorkerPlanDomainReference>
+  domainReferences: ReadonlyArray<WorkerPlanDomainReference>,
+  proofResult: RunProofResultV1
 ): string {
   const artifacts = report.artifacts
     .map((artifact) => `- ${artifact}`)
@@ -269,10 +279,28 @@ function markdownReport(
   return `# Gaia Run ${report.runId}
 
 Status: ${report.status}
+Run proof: ${report.proofAggregate}
 
 ## Summary
 
 ${report.summary}
+
+## Run Proof
+
+Aggregate: ${proofResult.aggregate}
+Contract: ${proofResult.contractId}
+Result event sequence: ${proofResult.recordedBy.sequence}
+
+Claim results:
+${
+  proofResult.results.length === 0
+    ? "- none (no explicit verification claims were present)"
+    : proofResult.results
+        .map((result) => `- ${result.claimId}: ${result.status}`)
+        .join("\n")
+}
+
+Framework protocol evidence: ${proofResult.supplementalProtocolEvidence.length}; it does not establish behavioral verification.
 
 ## Selected Skills
 

@@ -1,7 +1,6 @@
 import {
   DeliveryActionIdSchema,
   DeliverySha256DigestPublicSchema,
-  RunEvent,
 } from "@gaia/core";
 import { Schema } from "effect";
 
@@ -9,7 +8,7 @@ const decodeDeliveryActionId = Schema.decodeUnknownSync(DeliveryActionIdSchema);
 
 const MergeDecisionIdentityInputSchema = Schema.Struct({
   payloadDigest: DeliverySha256DigestPublicSchema,
-  sequence: RunEvent.fields.sequence,
+  sequence: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
 });
 
 export function createReadinessActionId(): typeof DeliveryActionIdSchema.Type {

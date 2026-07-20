@@ -462,6 +462,9 @@ function commandSummaryFromLocalRun(
     const paths = yield* makeRunPaths(run.runId, { rootDirectory });
     return {
       reportPath: status === "completed" ? paths.reportMarkdown : undefined,
+      ...(run.proofAggregate === undefined
+        ? {}
+        : { proofAggregate: run.proofAggregate }),
       runDirectory: paths.root,
       runId: run.runId,
       state: legacyRunStateFromFactoryState(run.state),

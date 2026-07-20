@@ -92,6 +92,7 @@ export function makeCodexReviewerPrompt(request: ReviewRunRequest) {
     "Artifacts to inspect:",
     ...phaseArtifacts.map((artifact) => `- ${artifact}`),
     "Inspect the worker plan acceptance criteria, non-goals, likely touched surfaces, verification checks, and stop conditions.",
+    "For evidence review, report the persisted run-proof aggregate and claim results exactly. Reviewer approval never changes an unverified, failed, or awaiting-decision proof aggregate.",
     "Decision contract:",
     "First line must be exactly one of:",
     "Status: approved",
@@ -227,7 +228,7 @@ function artifactsForPhase(request: ReviewRunRequest) {
     ...commonArtifacts,
     `Browser evidence JSON: ${request.browserEvidencePath}`,
     `Worker result JSON: ${request.workerResultPath}`,
-    `Verification result JSON: ${request.verificationResultPath}`,
+    `Run proof result JSON: ${request.verificationResultPath}`,
   ];
 }
 

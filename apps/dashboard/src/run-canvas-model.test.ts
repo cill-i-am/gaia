@@ -148,6 +148,39 @@ describe("run canvas model", () => {
     ]);
   });
 
+  it("labels a legacy no-contract verification artifact as unverified", () => {
+    const runId = parseRunId("run-legacyart1");
+    const model = buildRunCanvasModel({
+      events: [
+        makeRunEvent({
+          payload: { specPath: "input.md" },
+          runId,
+          sequence: 1,
+          timestamp: "2026-07-07T12:00:00.000Z",
+          type: "RUN_CREATED",
+        }),
+        makeRunEvent({
+          payload: { verificationResultPath: "verification-result.json" },
+          runId,
+          sequence: 2,
+          timestamp: "2026-07-07T12:01:00.000Z",
+          type: "VERIFICATION_COMPLETED",
+        }),
+      ],
+      run: localRunSummary({
+        artifacts: ["verification-result"],
+        eventCount: 2,
+        proofAggregate: "completed-unverified",
+        runId,
+      }),
+    });
+
+    expect(
+      model.nodes.find((node) => node.id === "artifact:verification-result")
+        ?.label
+    ).toBe("Legacy Verification Artifact (Unverified)");
+  });
+
   it("returns an empty canvas when no selected run is available", () => {
     const model = buildRunCanvasModel({
       events: [],

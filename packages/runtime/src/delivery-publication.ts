@@ -15,6 +15,7 @@ import {
   DeliveryTimestampPublicSchema,
   encodeDeliveryPublicationJson,
   parseDeliveryPublication,
+  RunProofProjectionV1Schema,
   snapshotFromReplay,
   type DeliveryPublication,
   type RunEvent,
@@ -45,6 +46,7 @@ import {
   RuntimePathTextSchema,
 } from "./paths.js";
 import { evaluateWorkspacePrQualityGate } from "./workspace-pr-gate.js";
+import { observeWorkspaceStructuralDigest } from "./workspace-snapshot.js";
 
 const digestVersion = 1 as const;
 const deliveryAuthorName = "Gaia Delivery";
@@ -104,11 +106,6 @@ type GitRemoteUrl = typeof GitRemoteUrlSchema.Type;
 const MarkdownCodeSpanInputSchema = Schema.String;
 type MarkdownCodeSpanInput = typeof MarkdownCodeSpanInputSchema.Type;
 
-const PublicationGateEventSchema = Schema.Struct({
-  payload: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
-  type: Schema.String,
-});
-
 const PublicationFailureInputSchema = Schema.Struct({
   code: Schema.String,
   message: Schema.String,
@@ -160,6 +157,11 @@ export function publishReadyDeliveryRun(
     if (existing?.state === "failed") {
       return existing;
     }
+    yield* requireProofBoundPublicationGates(
+      events,
+      paths,
+      existing === undefined
+    );
     const candidateHead =
       existing?.state === "intentRecorded"
         ? yield* optionalLocalBranchHead(paths, existing.branchName, runner)
@@ -318,7 +320,7 @@ export function retryFailedDeliveryPublication(
         })
       );
     }
-    yield* requireHistoricalPublicationGates(events);
+    yield* requireProofBoundPublicationGates(events, paths, false);
 
     if (existing.commitSha === undefined || existing.treeSha === undefined) {
       yield* inspectDeliveryWorktreeOwnership({
@@ -511,7 +513,6 @@ function createIntent(
   events: ReadonlyArray<RunEvent>
 ) {
   return Effect.gen(function* () {
-    yield* requireAuthoritativePublicationGates(events);
     const sourcePaths = yield* verifiedSourcePaths(
       runId,
       paths,
@@ -978,50 +979,54 @@ function optionalLocalBranchHead(
   });
 }
 
-function requireAuthoritativePublicationGates(
-  events: ReadonlyArray<typeof PublicationGateEventSchema.Type>
+function requireProofBoundPublicationGates(
+  events: ReadonlyArray<RunEvent>,
+  paths: RunPaths,
+  requireCurrentReadyState: boolean
 ) {
-  const historical = historicalPublicationGates(events);
-  const ready = events.at(-1)?.type === "DELIVERY_READY_TO_PUBLISH";
-  if (!historical || !ready) {
-    return Effect.fail(
-      makeRuntimeError({
-        code: "DeliveryNotReadyToPublish",
-        message:
-          "Publication requires authoritative verification, evidence review, and ready-to-publish state.",
-        recoverable: false,
-      })
+  return Effect.gen(function* () {
+    const ready = requireCurrentReadyState
+      ? events.at(-1)?.type === "DELIVERY_READY_TO_PUBLISH"
+      : events.some(({ type }) => type === "DELIVERY_READY_TO_PUBLISH");
+    const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(
+      snapshotFromReplay(events).context["runProof"]
     );
-  }
-  return Effect.void;
-}
-
-function requireHistoricalPublicationGates(
-  events: ReadonlyArray<typeof PublicationGateEventSchema.Type>
-) {
-  return historicalPublicationGates(events)
-    ? Effect.void
-    : Effect.fail(
+    const latestResult =
+      Option.isSome(proof) && proof.value.kind === "contract"
+        ? proof.value.latestResult
+        : undefined;
+    const evidenceReviewSequence = events.findLast(
+      ({ payload, type }) =>
+        type === "REVIEW_COMPLETED" && payload["phase"] === "evidence"
+    )?.sequence;
+    const contentAuthoritySequence = Math.max(
+      0,
+      ...events
+        .filter(
+          ({ type }) =>
+            type === "WORKER_COMPLETED" ||
+            type === "DELIVERY_REMEDIATION_RECORDED"
+        )
+        .map(({ sequence }) => sequence)
+    );
+    const observed = yield* observeWorkspaceStructuralDigest(paths.workspace);
+    if (
+      !ready ||
+      latestResult?.aggregate !== "verified" ||
+      latestResult.observedTargetDigest !== observed.digest ||
+      latestResult.recordedBy.sequence < contentAuthoritySequence ||
+      evidenceReviewSequence === undefined ||
+      evidenceReviewSequence <= latestResult.recordedBy.sequence
+    )
+      return yield* Effect.fail(
         makeRuntimeError({
           code: "DeliveryNotReadyToPublish",
           message:
-            "Publication retry requires authoritative verification, evidence review, and ready history.",
+            "Publication requires current verified proof, a newer evidence review, and ready-to-publish authority.",
           recoverable: false,
         })
       );
-}
-
-function historicalPublicationGates(
-  events: ReadonlyArray<typeof PublicationGateEventSchema.Type>
-) {
-  return (
-    events.some(({ type }) => type === "VERIFICATION_COMPLETED") &&
-    events.some(
-      ({ payload, type }) =>
-        type === "REVIEW_COMPLETED" && payload?.["phase"] === "evidence"
-    ) &&
-    events.some(({ type }) => type === "DELIVERY_READY_TO_PUBLISH")
-  );
+  });
 }
 
 function publishRemoteAndPullRequest(

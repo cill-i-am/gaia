@@ -1466,6 +1466,7 @@ function RunConsole({
         run.id,
         run.latestEventLabel,
         run.specHint ?? "",
+        run.proofLabel,
         run.stateLabel,
         run.status,
         run.statusLabel,
@@ -1913,6 +1914,8 @@ function RunConsoleRuns({
                   )}
                   <span className="mt-0.5 flex flex-wrap gap-1 text-xs text-muted-foreground">
                     <span>{run.statusLabel}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{run.proofLabel}</span>
                     <span aria-hidden="true">·</span>
                     <span>{run.latestEventLabel}</span>
                     <span aria-hidden="true">·</span>
@@ -3959,7 +3962,8 @@ function EventStrip({
                 </p>
                 {event.artifactHints.length === 0 ? null : (
                   <p className="truncate text-xs text-muted-foreground">
-                    Artifacts: {eventArtifactSummary(event.artifactHints)}
+                    Artifacts:{" "}
+                    {eventArtifactSummary(event.artifactHints, event.type)}
                   </p>
                 )}
               </div>
@@ -3978,7 +3982,7 @@ function eventStripEventLabel(
   const artifactText =
     event.artifactHints.length === 0
       ? "No artifact hints."
-      : `Artifacts: ${eventArtifactSummary(event.artifactHints)}.`;
+      : `Artifacts: ${eventArtifactSummary(event.artifactHints, event.type)}.`;
   const replayText =
     event.id === replayState.activeEventId ? " Replay position." : "";
 
@@ -3986,9 +3990,12 @@ function eventStripEventLabel(
 }
 
 function eventArtifactSummary(
-  artifactHints: ReadonlyArray<typeof DashboardArtifactIdSchema.Type>
+  artifactHints: ReadonlyArray<typeof DashboardArtifactIdSchema.Type>,
+  eventType: DashboardRun["events"][number]["type"]
 ) {
-  const visibleArtifacts = artifactHints.slice(0, 2).map(artifactLabel);
+  const visibleArtifacts = artifactHints
+    .slice(0, 2)
+    .map((artifactId) => artifactLabel(artifactId, eventType));
   const hiddenCount = artifactHints.length - visibleArtifacts.length;
 
   return hiddenCount > 0
@@ -4602,7 +4609,16 @@ function artifactDeltaLabel(delta: RunCompareModel["artifactDelta"]) {
     : labels.join(" · ");
 }
 
-function artifactLabel(artifactId: typeof DashboardArtifactIdSchema.Type) {
+function artifactLabel(
+  artifactId: typeof DashboardArtifactIdSchema.Type,
+  eventType: DashboardRun["events"][number]["type"]
+) {
+  if (artifactId === "verification-result")
+    return eventType === "RUN_PROOF_RESULT_RECORDED"
+      ? "Run Proof Result"
+      : eventType === "VERIFICATION_COMPLETED"
+        ? "Legacy Verification Artifact (Unverified)"
+        : "Verification Artifact (Unverified)";
   return artifactId
     .split("-")
     .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)

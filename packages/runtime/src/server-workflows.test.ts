@@ -38,7 +38,10 @@ import {
   encodeWorkerRecoveryReceiptJson,
   HarnessCapabilities,
   HarnessProviderDescriptor,
+  parseMergeDecisionV2,
+  parseRunContract,
   parseRunId,
+  parseRunProofResult,
   parseHarnessProviderId,
   parseHarnessSessionId,
   parseWorkerRecoveryActionId,
@@ -64,6 +67,7 @@ import {
   parseHarnessCheckpointToken,
   type HarnessProvider,
 } from "./harness-session.js";
+import { recordMergeDecision } from "./merge-decision.js";
 import { makeRunPaths } from "./paths.js";
 import {
   ReviewFinding,
@@ -75,6 +79,7 @@ import { readLocalRun, readLocalRunEvents } from "./run-read-api.js";
 import {
   acceptFactoryRun,
   acceptServerRun,
+  actOnDeliveryMerge,
   actOnWorkerDesktopOriginCorrelation,
   actOnWorkerCorrelationReconciliation,
   actOnWorkerContinuation,
@@ -2416,6 +2421,152 @@ describe("server workflows", () => {
             assert.strictEqual(workspaceHead, smoke.baseRevision);
             assert.strictEqual(workspaceBranch, "");
             assert.deepEqual(primaryAfter, primaryBefore);
+          } finally {
+            rmSync(smoke.root, { force: true, recursive: true });
+          }
+        })
+    );
+
+    it.effect(
+      "fails closed from an unmapped source contract through the public delivery seams",
+      () =>
+        Effect.gen(function* () {
+          const smoke = makeDisposableGitRemote();
+          try {
+            const accepted = yield* acceptFactoryRun(
+              {
+                delivery: { mode: "pullRequest" },
+                execution: codexAppServerExecutionSelection,
+                workflow: "issueDelivery",
+                workItem: {
+                  description: [
+                    "## Acceptance Criteria",
+                    "- The requested behavior is delivered.",
+                    "",
+                    "## Verification",
+                    "- Run the behavioral verification suite.",
+                  ].join("\n"),
+                  kind: "issue",
+                  title: "Unmapped proof relationships",
+                },
+              },
+              {
+                harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                rootDirectory: smoke.source,
+              }
+            );
+
+            const publicationError = yield* Effect.flip(
+              continueServerRun(accepted.runId, {
+                harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                rootDirectory: smoke.source,
+              })
+            );
+            assert.instanceOf(publicationError, GaiaRuntimeError);
+            assert.strictEqual(
+              publicationError.code,
+              "DeliveryNotReadyToPublish"
+            );
+
+            const beforeDecision = yield* readLocalRunEvents(accepted.runId, {
+              rootDirectory: smoke.source,
+            });
+            const contractEvent = beforeDecision.events.find(
+              ({ type }) => type === "RUN_CONTRACT_RECORDED"
+            );
+            assert.isDefined(contractEvent);
+            const contract = parseRunContract(
+              contractEvent?.payload["contract"]
+            );
+            assert.strictEqual(contract.acceptedOutcomes.length, 1);
+            assert.deepEqual(
+              contract.acceptedOutcomes[0]?.requiredClaimIds,
+              []
+            );
+            assert.deepEqual(
+              contract.acceptedOutcomes[0]?.conditionalClaimIds,
+              []
+            );
+            assert.strictEqual(contract.proofClaims.length, 1);
+
+            const proofEvent = beforeDecision.events.find(
+              ({ type }) => type === "RUN_PROOF_RESULT_RECORDED"
+            );
+            assert.isDefined(proofEvent);
+            const proof = parseRunProofResult(
+              proofEvent?.payload["result"],
+              contract
+            );
+            assert.strictEqual(proof.aggregate, "completed-unverified");
+            assert.strictEqual(proof.results[0]?.status, "not-run");
+            assert.isFalse(
+              beforeDecision.events.some(({ type }) =>
+                type.startsWith("DELIVERY_PUBLICATION_")
+              )
+            );
+
+            const mergeDecision = yield* recordMergeDecision(accepted.runId, {
+              rootDirectory: smoke.source,
+            });
+            assert.strictEqual(mergeDecision.status, "blocked");
+            assert.isTrue(
+              mergeDecision.blockers.some(
+                ({ kind }) => kind === "run-proof-not-verified"
+              )
+            );
+
+            const readinessError = yield* Effect.flip(
+              actOnDeliveryMerge(
+                accepted.runId,
+                {
+                  actionId: "gaia-144-option-a-readiness",
+                  kind: "evaluateMergeReadiness",
+                  mergeMethod: "merge",
+                },
+                { rootDirectory: smoke.source }
+              )
+            );
+            assert.instanceOf(readinessError, GaiaRuntimeError);
+            assert.strictEqual(readinessError.code, "DeliveryActionConflict");
+
+            const finalEvents = yield* readLocalRunEvents(accepted.runId, {
+              rootDirectory: smoke.source,
+            });
+            const decisionEvent = finalEvents.events.findLast(
+              ({ type }) => type === "MERGE_DECISION_RECORDED"
+            );
+            assert.isDefined(decisionEvent);
+            const persistedDecision = parseMergeDecisionV2(
+              decisionEvent?.payload["decision"]
+            );
+            assert.strictEqual(persistedDecision.status, "blocked");
+            assert.strictEqual(persistedDecision.proof.kind, "contract");
+            if (persistedDecision.proof.kind !== "contract") return;
+            assert.strictEqual(persistedDecision.proof.result.kind, "recorded");
+            if (persistedDecision.proof.result.kind !== "recorded") return;
+            assert.deepEqual(
+              {
+                ...persistedDecision.proof,
+                result: { ...persistedDecision.proof.result },
+              },
+              {
+                contractDigest: contract.contractDigest,
+                contractId: contract.contractId,
+                kind: "contract",
+                result: {
+                  aggregate: "completed-unverified",
+                  kind: "recorded",
+                  observedTargetDigest: proof.observedTargetDigest,
+                  resultDigest: proof.resultDigest,
+                  sequence: proof.recordedBy.sequence,
+                },
+              }
+            );
+            assert.isFalse(
+              finalEvents.events.some(
+                ({ type }) => type === "DELIVERY_MERGE_READINESS_RECORDED"
+              )
+            );
           } finally {
             rmSync(smoke.root, { force: true, recursive: true });
           }

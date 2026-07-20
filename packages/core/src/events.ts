@@ -1,10 +1,12 @@
 import * as Schema from "effect/Schema";
 
+import {
+  parseRunContract,
+  parseRunProofResultEnvelope,
+  RunEventSequenceSchema,
+} from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
 
-const RunEventSequenceSchema = Schema.Number.pipe(
-  Schema.check(Schema.isInt({ identifier: "Sequence" }))
-);
 export const RunEventTimestampSchema = Schema.NonEmptyString.pipe(
   Schema.brand("RunEventTimestamp")
 );
@@ -28,6 +30,7 @@ export type RunState = typeof RunStateSchema.Type;
 
 export const EventTypeSchema = Schema.Literals([
   "RUN_CREATED",
+  "RUN_CONTRACT_RECORDED",
   "DELIVERY_STARTED",
   "WORKSPACE_PREPARED",
   "REVIEW_STARTED",
@@ -37,6 +40,7 @@ export const EventTypeSchema = Schema.Literals([
   "PREVIEW_DEPLOYMENT_RECORDED",
   "VERIFICATION_STARTED",
   "VERIFICATION_COMPLETED",
+  "RUN_PROOF_RESULT_RECORDED",
   "BROWSER_EVIDENCE_RECORDED",
   "REPORT_STARTED",
   "REPORT_COMPLETED",
@@ -119,7 +123,7 @@ export class RunSnapshot extends Schema.Class<RunSnapshot>("RunSnapshot")({
 const MakeRunEventInputSchema = Schema.Struct({
   payload: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
   runId: RunIdSchema,
-  sequence: RunEventSequenceSchema,
+  sequence: Schema.toEncoded(RunEventSequenceSchema),
   timestamp: Schema.toEncoded(RunEventTimestampSchema),
   type: EventTypeSchema,
 });
@@ -128,8 +132,26 @@ const parseMakeRunEventInput = Schema.decodeUnknownSync(
   MakeRunEventInputSchema
 );
 
-/** Parse an event read from the append-only event log. */
-export const parseRunEvent = Schema.decodeUnknownSync(RunEvent);
+const decodeRunEvent = Schema.decodeUnknownSync(RunEvent);
+
+/** Parse and validate an event read from the append-only event log. */
+export const parseRunEvent = (input: unknown): RunEvent => {
+  const event = decodeRunEvent(input);
+  if (event.type === "RUN_CONTRACT_RECORDED") {
+    const contract = parseRunContract(event.payload["contract"]);
+    if (contract.runId !== event.runId)
+      throw new Error("Run-contract event payload belongs to another run.");
+  }
+  if (event.type === "RUN_PROOF_RESULT_RECORDED") {
+    const result = parseRunProofResultEnvelope(event.payload["result"]);
+    if (
+      result.runId !== event.runId ||
+      result.recordedBy.sequence !== event.sequence
+    )
+      throw new Error("Run-proof result does not bind its enclosing event.");
+  }
+  return event;
+};
 
 /** Parse a snapshot read from the derived snapshot log. */
 export const parseRunSnapshot = Schema.decodeUnknownSync(RunSnapshot);

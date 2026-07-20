@@ -4,12 +4,14 @@ import {
   parseRunId,
   snapshotFromReplay,
   RunIdSchema,
+  RunProofProjectionV1Schema,
   RunStateSchema,
+  RunVerificationAggregateSchema,
   type ReviewPhase,
   type RunId,
   type RunState,
 } from "@gaia/core";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { customAlphabet } from "nanoid";
 
 import {
@@ -65,6 +67,7 @@ import {
   runReviewer,
   type ReviewerRunOptions,
 } from "./reviewer.js";
+import { deriveAndRecordRunContract, loadRunContract } from "./run-contract.js";
 import {
   resolveRunProfile,
   parseRunProfileJson,
@@ -83,7 +86,7 @@ import {
   writeSkillManifest,
   type SkillManifestSource,
 } from "./skill-manifest.js";
-import { verifyHarnessOutput } from "./verifier.js";
+import { recordRunProofResult } from "./verifier.js";
 import { writeWorkerPlan } from "./worker-plan.js";
 import { encodeWorkspaceDiffSummaryJson } from "./workspace-snapshot.js";
 import {
@@ -121,6 +124,7 @@ export const CommandSummarySchema = Schema.Struct({
   reportPath: Schema.UndefinedOr(RuntimePathSchema),
   runDirectory: RuntimePathSchema,
   runId: RunIdSchema,
+  proofAggregate: Schema.optionalKey(RunVerificationAggregateSchema),
   state: RunStateSchema,
   status: CommandStatusSchema,
 });
@@ -280,6 +284,18 @@ function executeAcceptedRun(input: {
         paths,
         options.workspaceSource ?? emptyWorkspaceSource()
       );
+      yield* deriveAndRecordRunContract({
+        ...(options.deliveryProvenance === undefined
+          ? {}
+          : { deliveryProvenance: options.deliveryProvenance }),
+        paths,
+        runId,
+        spec,
+      }).pipe(
+        Effect.catchTag("GaiaRuntimeError", (error) =>
+          recordRunFailure(runId, paths, "preparingWorkspace", error)
+        )
+      );
       yield* appendEvent(runId, paths, {
         payload: {
           copiedFiles: workspace.copiedFiles,
@@ -289,6 +305,8 @@ function executeAcceptedRun(input: {
         },
         type: "WORKSPACE_PREPARED",
       });
+    } else {
+      yield* loadRunContract(paths, runId);
     }
     const skillManifest = yield* writeSkillManifest({
       paths,
@@ -425,17 +443,13 @@ function executeAcceptedRun(input: {
       );
     }
     yield* appendEvent(runId, paths, { type: "VERIFICATION_STARTED" });
-    yield* verifyHarnessOutput(runId, paths, {
+    const proofResult = yield* recordRunProofResult(runId, paths, {
       requireLegacyWorkspaceMarker: harnessName !== codexAppServerHarnessName,
     }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
         recordRunFailure(runId, paths, "verifying", error)
       )
     );
-    yield* appendEvent(runId, paths, {
-      payload: { verificationResultPath: "verification-result.json" },
-      type: "VERIFICATION_COMPLETED",
-    });
     const browserEvidenceTargetUrl = selectBrowserEvidenceTargetUrl({
       explicitTargetUrl: explicitBrowserEvidenceTargetUrl,
       harnessTargetUrl: harnessResult.browserTargetUrl,
@@ -541,6 +555,7 @@ function executeAcceptedRun(input: {
         ? { harnessProgressPath: paths.codexHarnessProgress }
         : {}),
       reportPath: paths.reportMarkdown,
+      proofAggregate: proofResult.aggregate,
       runDirectory: paths.root,
       runId,
       state: finalSnapshot.state,
@@ -616,9 +631,13 @@ export function resumeRun(runId: RunId, options: WorkflowOptions = {}) {
 
     const snapshot = snapshotFromReplay(loaded.events);
     if (snapshot.state === "completed") {
+      const proofAggregate = proofAggregateFromSnapshot(
+        snapshot.context["runProof"]
+      );
       return parseCommandSummary({
         ...(yield* existingHarnessProgressPath(paths)),
         reportPath: paths.reportMarkdown,
+        ...(proofAggregate === undefined ? {} : { proofAggregate }),
         runDirectory: paths.root,
         runId,
         state: snapshot.state,
@@ -660,12 +679,9 @@ export function reverifyRemediatedRun(input: {
     yield* appendEvent(input.runId, input.paths, {
       type: "VERIFICATION_STARTED",
     });
-    yield* verifyHarnessOutput(input.runId, input.paths, {
+    yield* loadRunContract(input.paths, input.runId);
+    yield* recordRunProofResult(input.runId, input.paths, {
       requireLegacyWorkspaceMarker: false,
-    });
-    yield* appendEvent(input.runId, input.paths, {
-      payload: { verificationResultPath: "verification-result.json" },
-      type: "VERIFICATION_COMPLETED",
     });
 
     const fs = yield* FileSystem.FileSystem;
@@ -728,6 +744,7 @@ export function reverifyRemediatedRun(input: {
         browserEvidencePath: input.paths.browserEvidence,
         markdownPath: reviewPaths.markdown,
         phase: "evidence",
+        paths: input.paths,
         resultPath: reviewPaths.result,
         runId: input.runId,
         sessionEvidencePath: reviewPaths.sessionEvidence,
@@ -817,16 +834,25 @@ export function statusRun(
     }
 
     const snapshot = snapshotFromReplay(loaded.events);
+    const proofAggregate = proofAggregateFromSnapshot(
+      snapshot.context["runProof"]
+    );
     return parseCommandSummary({
       ...(yield* existingHarnessProgressPath(paths)),
       reportPath:
         snapshot.state === "completed" ? paths.reportMarkdown : undefined,
+      ...(proofAggregate === undefined ? {} : { proofAggregate }),
       runDirectory: paths.root,
       runId,
       state: snapshot.state,
       status: statusFromState(snapshot.state),
     });
   });
+}
+
+function proofAggregateFromSnapshot(input: unknown) {
+  const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(input);
+  return Option.isSome(proof) ? proof.value.aggregate : undefined;
 }
 
 function existingHarnessProgressPath(paths: RunPaths) {
@@ -1063,6 +1089,7 @@ function runReviewPhase(
         browserEvidencePath: paths.browserEvidence,
         markdownPath: reviewPaths.markdown,
         phase,
+        paths,
         resultPath: reviewPaths.result,
         runId,
         sessionEvidencePath: reviewPaths.sessionEvidence,

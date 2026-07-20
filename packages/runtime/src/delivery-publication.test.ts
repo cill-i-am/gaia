@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   readFileSync,
@@ -14,7 +15,14 @@ import {
   DeliveryPublicationIntent,
   DeliverySourcePathPublicSchema,
   DeliveryTimestampPublicSchema,
+  deriveAcceptedOutcomeId,
+  deriveExplicitSpecItemDigest,
+  deriveProofClaimId,
+  encodeRunContractJson,
+  encodeRunProofResultJson,
   encodeDeliveryPublicationJson,
+  makeRunContract,
+  makeRunProofResult,
   parseRunId,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
@@ -39,7 +47,10 @@ import {
 } from "./github-publisher.js";
 import { codexAppServerHarnessName, HarnessRunResult } from "./harness.js";
 import { makeRunPaths, RuntimePathTextSchema, type RunPaths } from "./paths.js";
-import { productOnlyWorkspaceDiff } from "./workspace-snapshot.js";
+import {
+  observeWorkspaceStructuralDigest,
+  productOnlyWorkspaceDiff,
+} from "./workspace-snapshot.js";
 
 const baseRevision = "a".repeat(40);
 const commitSha = "c".repeat(40);
@@ -117,7 +128,7 @@ describe("delivery publication", () => {
         );
         assert.deepEqual(publication.sourcePaths, ["src/feature.ts"]);
         assert.deepEqual(
-          events.slice(7).map(({ type }) => type),
+          events.slice(8).map(({ type }) => type),
           [
             "DELIVERY_PUBLICATION_INTENT_RECORDED",
             "DELIVERY_PUBLICATION_INTENT_RECORDED",
@@ -276,7 +287,20 @@ describe("delivery publication", () => {
             const runId = parseRunId("run-Tampered01");
             const paths = yield* makeRunPaths(runId, { rootDirectory });
             yield* fs.makeDirectory(paths.root, { recursive: true });
-            yield* writeReadyRun(runId, paths, provenance);
+            const validContractProvenance: DeliveryProvenance = {
+              baseBranch: "main",
+              baseRevision,
+              headBranch: `gaia/${runId}`,
+              mode: "pullRequest",
+              remote: "origin",
+            };
+            yield* writeReadyRun(
+              runId,
+              paths,
+              provenance,
+              undefined,
+              validContractProvenance
+            );
             const commands: Array<GitHubCommandInput> = [];
             const error = yield* Effect.flip(
               publishReadyDeliveryRun(runId, {
@@ -1359,10 +1383,12 @@ function writeReadyRun(
   runId: ReturnType<typeof parseRunId>,
   paths: RunPaths,
   provenance: DeliveryProvenance,
-  changedPaths: ReadonlyArray<string> = ["output.txt", "src/feature.ts"]
+  changedPaths: ReadonlyArray<string> = ["output.txt", "src/feature.ts"],
+  contractProvenance: DeliveryProvenance = provenance
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(paths.workspace, { recursive: true });
     const workspaceDiff = productOnlyWorkspaceDiff(changedPaths);
     const result = HarnessRunResult.make({
       changedWorkspacePaths: workspaceDiff.productChangedPaths,
@@ -1379,9 +1405,115 @@ function writeReadyRun(
       paths.workerResult,
       `${JSON.stringify(result)}\n`
     );
+    const observed = yield* observeWorkspaceStructuralDigest(paths.workspace);
+    const outcomeStatement = "The delivery change is present.";
+    const claimStatement = "Inspect the delivered workspace change.";
+    const specDigest = "3".repeat(64);
+    const outcomeSource = {
+      itemDigest: deriveExplicitSpecItemDigest({
+        section: "acceptanceCriteria",
+        statement: outcomeStatement,
+      }),
+      kind: "explicitSpecItem" as const,
+      section: "acceptanceCriteria" as const,
+      specDigest,
+      version: 1 as const,
+    };
+    const claimSource = {
+      itemDigest: deriveExplicitSpecItemDigest({
+        section: "verificationChecks",
+        statement: claimStatement,
+      }),
+      kind: "explicitSpecItem" as const,
+      section: "verificationChecks" as const,
+      specDigest,
+      version: 1 as const,
+    };
+    const claimId = deriveProofClaimId({
+      authorityRequirements: ["gaia-runtime"],
+      kind: "command",
+      requirement: "required",
+      source: claimSource,
+      statement: claimStatement,
+    });
+    const contract = makeRunContract({
+      acceptedOutcomes: [
+        {
+          conditionalClaimIds: [],
+          outcomeId: deriveAcceptedOutcomeId({
+            source: outcomeSource,
+            statement: outcomeStatement,
+          }),
+          requiredClaimIds: [claimId],
+          source: outcomeSource,
+          statement: outcomeStatement,
+        },
+      ],
+      baseDigest: observed.digest,
+      baseIdentity: {
+        branch: contractProvenance.baseBranch,
+        kind: "gitRevision",
+        remote: contractProvenance.remote,
+        revision: contractProvenance.baseRevision,
+      },
+      baseObservation: observed.receipt,
+      nonGoals: [],
+      proofClaims: [
+        {
+          authorityRequirements: ["gaia-runtime"],
+          claimId,
+          kind: "command",
+          requirement: "required",
+          source: claimSource,
+          statement: claimStatement,
+        },
+      ],
+      runId,
+      stopConditions: [],
+      targetDigest: observed.digest,
+      targetIdentity: {
+        baseBranch: contractProvenance.baseBranch,
+        headBranch: contractProvenance.headBranch,
+        kind: "gitWorktree",
+        remote: contractProvenance.remote,
+        workspacePath: ".",
+      },
+      targetObservation: observed.receipt,
+    });
+    const workerResultBytes = yield* fs.readFile(paths.workerResult);
+    const proof = makeRunProofResult({
+      contract,
+      observedTargetDigest: observed.digest,
+      observedTargetObservation: observed.receipt,
+      recordedBy: {
+        runId,
+        sequence: 6,
+        type: "RUN_PROOF_RESULT_RECORDED",
+      },
+      results: [
+        {
+          claimId,
+          evidence: [
+            {
+              artifactPath: "worker-result.json",
+              contentDigest: createHash("sha256")
+                .update(workerResultBytes)
+                .digest("hex"),
+              kind: "command",
+            },
+          ],
+          status: "passed",
+        },
+      ],
+      supplementalProtocolEvidence: [],
+    });
+    yield* fs.writeFileString(
+      paths.runContract,
+      `${JSON.stringify(encodeRunContractJson(contract))}\n`
+    );
     yield* fs.writeFileString(
       paths.verificationResult,
-      '{"status":"passed"}\n'
+      `${JSON.stringify(encodeRunProofResultJson(proof))}\n`
     );
     yield* fs.writeFileString(
       paths.evidenceReviewResult,
@@ -1395,6 +1527,10 @@ function writeReadyRun(
     yield* appendEvent(runId, paths, {
       payload: { delivery: { ...provenance, stage: "delivering" } },
       type: "DELIVERY_STARTED",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: { contract: encodeRunContractJson(contract) },
+      type: "RUN_CONTRACT_RECORDED",
     });
     yield* appendEvent(runId, paths, {
       payload: { workspacePath: "workspace" },
@@ -1411,8 +1547,11 @@ function writeReadyRun(
       type: "WORKER_COMPLETED",
     });
     yield* appendEvent(runId, paths, {
-      payload: { verificationResultPath: "verification-result.json" },
-      type: "VERIFICATION_COMPLETED",
+      payload: {
+        result: encodeRunProofResultJson(proof),
+        verificationResultPath: "verification-result.json",
+      },
+      type: "RUN_PROOF_RESULT_RECORDED",
     });
     yield* appendEvent(runId, paths, {
       payload: { phase: "evidence", reviewPath: "evidence-review.md" },
