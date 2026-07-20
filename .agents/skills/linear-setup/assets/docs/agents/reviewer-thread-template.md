@@ -16,10 +16,9 @@ Review implementation for Linear issue: `{ISSUE_ID}`.
 
 ## Review Scope
 
-The reviewer must stay read-only. Route fixes to the worker or a separately
-authorized implementation task; do not turn the reviewer thread into an editing
-lane. Read the live Linear issue, parent Project/PRD, blockers, and comments
-before reviewing. Treat this handoff as orientation only.
+The reviewer must stay read-only unless the orchestrator explicitly asks for edits.
+Read the live Linear issue, parent Project/PRD, blockers, and comments before
+reviewing. Treat this handoff as orientation only.
 
 If the worker has not posted a plan or PR yet, acknowledge the assignment and
 wait. Do not invent implementation work.
