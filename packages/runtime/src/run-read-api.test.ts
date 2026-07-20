@@ -4,6 +4,7 @@ import {
   LocalRunReadDiagnosticSchema,
   LocalRunReadListSchema,
   LocalRunReadSummarySchema,
+  parseRunId,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
@@ -118,6 +119,44 @@ describe("local run read api", () => {
         assert.strictEqual(events.events.length, run.eventCount);
         assert.strictEqual(events.events[0]?.type, "RUN_CREATED");
       })
+    );
+
+    it.effect(
+      "rejects a public event read when the run directory contains a foreign history",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-read-api-substituted-run-",
+          });
+          const requestedRunId = parseRunId("run-PublicReq1");
+          const foreignRunId = parseRunId("run-PublicFor1");
+          const paths = yield* makeRunPaths(requestedRunId, {
+            rootDirectory: cwd,
+          });
+          yield* fs.makeDirectory(paths.root, { recursive: true });
+          yield* fs.writeFileString(
+            paths.events,
+            `${JSON.stringify({
+              payload: { specPath: "foreign.md" },
+              runId: foreignRunId,
+              sequence: 1,
+              timestamp: "2026-07-20T08:00:01.000Z",
+              type: "RUN_CREATED",
+              version: 1,
+            })}\n`
+          );
+
+          const failure = yield* Effect.flip(
+            readLocalRunEvents(requestedRunId, { rootDirectory: cwd })
+          );
+
+          assert.deepInclude(failure, {
+            code: "RunUnreadable",
+            recoverable: false,
+            runId: requestedRunId,
+          });
+        })
     );
 
     it.effect("reads logical artifacts and rejects arbitrary paths", () =>

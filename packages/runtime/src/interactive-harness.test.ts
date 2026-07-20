@@ -322,6 +322,10 @@ describe("interactive issue-delivery harness", () => {
               requiredCapabilities: [],
             })
           );
+          yield* appendEvent(runId, paths, {
+            payload: { specPath: "input.md" },
+            type: "RUN_CREATED",
+          });
           yield* appendHarnessSessionEvent(runId, paths, {
             capabilities: CodexHarnessCapabilities,
             kind: "sessionStarted",

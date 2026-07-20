@@ -44,6 +44,7 @@ import {
   type DeliveryEvaluateMergeReadinessActionRequest,
   type DeliveryRetryCleanupActionRequest,
   type DeliveryMergeReceipt,
+  type RunEvent,
   type RunId,
 } from "@gaia/core";
 import { Cause, Effect, FileSystem, Option, Schema } from "effect";
@@ -372,9 +373,10 @@ export function coordinateDeliveryMerge(
           conflict("Delivery history is invalid for the current run authority.")
         )
       );
+      const replay = snapshotFromReplay(events);
       const delivery = Schema.decodeUnknownSync(
         Schema.Record(Schema.String, Schema.Json)
-      )(snapshotFromReplay(events).context["delivery"]);
+      )(replay.context["delivery"]);
       const publication = parseDeliveryPublication(delivery["publication"]);
       if (publication.state !== "confirmed")
         return yield* conflict("Owned pull request is not confirmed.");
@@ -502,12 +504,31 @@ export function coordinateDeliveryMerge(
         return yield* conflict(
           "The readiness decision is stale for the latest proof-bound merge decision."
         );
+      const proofAuthority = currentRunProofAuthority(
+        events,
+        replay.context["runProof"]
+      );
+      const proofResult = proofAuthority.proofResult;
+      if (
+        proofResult === undefined ||
+        decision.proofAggregate !== proofResult.aggregate ||
+        decision.contractId !== proofResult.contractId ||
+        decision.contractDigest !== proofResult.contractDigest ||
+        decision.proofResultSequence !== proofResult.recordedBy.sequence ||
+        decision.proofResultDigest !== proofResult.resultDigest ||
+        decision.observedTargetDigest !== proofResult.observedTargetDigest ||
+        decision.contentAuthoritySequence !==
+          proofAuthority.contentAuthoritySequence ||
+        decision.evidenceReviewSequence !==
+          proofAuthority.evidenceReviewSequence
+      )
+        return yield* conflict(
+          "The readiness decision is stale for the current proof, content, or evidence-review authority."
+        );
       const dispatchObserved = yield* observeWorkspaceStructuralDigest(
         paths.workspace
       );
-      if (
-        dispatchObserved.digest !== decision.proofBinding.observedTargetDigest
-      )
+      if (dispatchObserved.digest !== decision.observedTargetDigest)
         return yield* conflict(
           "The readiness decision proof is stale for the current workspace."
         );
@@ -731,35 +752,21 @@ export function coordinateDeliveryMergeReadiness(
             recoverable: false,
           }),
       });
+      const mergeProof =
+        mergeDecision.proof.kind === "contract" &&
+        mergeDecision.proof.result.kind === "recorded"
+          ? mergeDecision.proof.result
+          : undefined;
       if (
         mergeDecision.status !== "approved" ||
         mergeDecision.nextAction !== "ready-to-merge" ||
-        mergeDecision.proofBinding === undefined
+        mergeProof?.aggregate !== "verified"
       )
         return yield* conflict(
           "Merge readiness requires an approved proof-bound MergeDecisionV2."
         );
-      const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(
-        replay.context["runProof"]
-      );
-      const proofResult =
-        Option.isSome(proof) && proof.value.kind === "contract"
-          ? proof.value.latestResult
-          : undefined;
-      const contentAuthoritySequence = Math.max(
-        1,
-        ...events
-          .filter(
-            ({ type }) =>
-              type === "WORKER_COMPLETED" ||
-              type === "DELIVERY_REMEDIATION_RECORDED"
-          )
-          .map(({ sequence }) => sequence)
-      );
-      const evidenceReviewSequence = events.findLast(
-        ({ payload, type }) =>
-          type === "REVIEW_COMPLETED" && payload["phase"] === "evidence"
-      )?.sequence;
+      const { contentAuthoritySequence, evidenceReviewSequence, proofResult } =
+        currentRunProofAuthority(events, replay.context["runProof"]);
       const observed = yield* observeWorkspaceStructuralDigest(paths.workspace);
       if (
         proofResult?.aggregate !== "verified" ||
@@ -770,15 +777,12 @@ export function coordinateDeliveryMergeReadiness(
         evidenceReviewSequence <= proofResult.recordedBy.sequence ||
         mergeDecision.publicationConfirmationSequence !==
           authority.publicationConfirmationSequence ||
-        mergeDecision.proofBinding.contractId !== proofResult.contractId ||
-        mergeDecision.proofBinding.contractDigest !==
-          proofResult.contractDigest ||
-        mergeDecision.proofBinding.proofResultDigest !==
-          proofResult.resultDigest ||
-        mergeDecision.proofBinding.proofResultSequence !==
-          proofResult.recordedBy.sequence ||
-        mergeDecision.proofBinding.observedTargetDigest !==
-          proofResult.observedTargetDigest
+        mergeDecision.proof.kind !== "contract" ||
+        mergeDecision.proof.contractId !== proofResult.contractId ||
+        mergeDecision.proof.contractDigest !== proofResult.contractDigest ||
+        mergeProof?.resultDigest !== proofResult.resultDigest ||
+        mergeProof.sequence !== proofResult.recordedBy.sequence ||
+        mergeProof.observedTargetDigest !== proofResult.observedTargetDigest
       )
         return yield* conflict(
           "MergeDecisionV2 is stale for the current proof, content, review, or publication authority."
@@ -809,16 +813,15 @@ export function coordinateDeliveryMergeReadiness(
           prior.policyDigest !== policyDigest ||
           prior.mergeDecisionSequence !== mergeDecisionEvent.sequence ||
           prior.mergeDecisionPayloadDigest !== mergeDecision.payloadDigest ||
-          prior.proofBinding.contractId !==
-            mergeDecision.proofBinding.contractId ||
-          prior.proofBinding.contractDigest !==
-            mergeDecision.proofBinding.contractDigest ||
-          prior.proofBinding.proofResultDigest !==
-            mergeDecision.proofBinding.proofResultDigest ||
-          prior.proofBinding.proofResultSequence !==
-            mergeDecision.proofBinding.proofResultSequence ||
-          prior.proofBinding.observedTargetDigest !==
-            mergeDecision.proofBinding.observedTargetDigest
+          prior.contractId !== mergeDecision.proof.contractId ||
+          prior.contractDigest !== mergeDecision.proof.contractDigest ||
+          prior.proofResultDigest !== mergeProof.resultDigest ||
+          prior.proofResultSequence !== mergeProof.sequence ||
+          prior.proofAggregate !== mergeProof.aggregate ||
+          prior.observedTargetDigest !== mergeProof.observedTargetDigest ||
+          prior.contentAuthoritySequence !==
+            mergeDecision.contentAuthoritySequence ||
+          prior.evidenceReviewSequence !== mergeDecision.evidenceReviewSequence
         )
           return yield* conflict(
             "Readiness action ID conflicts with a changed immutable tuple."
@@ -916,7 +919,14 @@ export function coordinateDeliveryMergeReadiness(
         runId,
         mergeDecisionPayloadDigest: mergeDecision.payloadDigest,
         mergeDecisionSequence: mergeDecisionEvent.sequence,
-        proofBinding: mergeDecision.proofBinding,
+        contentAuthoritySequence: mergeDecision.contentAuthoritySequence,
+        contractDigest: mergeDecision.proof.contractDigest,
+        contractId: mergeDecision.proof.contractId,
+        evidenceReviewSequence,
+        observedTargetDigest: mergeProof.observedTargetDigest,
+        proofAggregate: mergeProof.aggregate,
+        proofResultDigest: mergeProof.resultDigest,
+        proofResultSequence: mergeProof.sequence,
         version: 3 as const,
       };
       const decision = DeliveryMergeReadinessDecisionV3.make({
@@ -938,6 +948,36 @@ export function coordinateDeliveryMergeReadiness(
         "Refresh the latest readiness decision before any merge action.",
     }
   );
+}
+
+function currentRunProofAuthority(
+  events: ReadonlyArray<RunEvent>,
+  projection: unknown
+) {
+  const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(
+    projection
+  );
+  return {
+    contentAuthoritySequence: Math.max(
+      1,
+      ...events
+        .filter(
+          ({ type }) =>
+            type === "WORKER_COMPLETED" ||
+            type === "WORKER_CONTINUATION_RECORDED" ||
+            type === "DELIVERY_REMEDIATION_RECORDED"
+        )
+        .map(({ sequence }) => sequence)
+    ),
+    evidenceReviewSequence: events.findLast(
+      ({ payload, type }) =>
+        type === "REVIEW_COMPLETED" && payload["phase"] === "evidence"
+    )?.sequence,
+    proofResult:
+      Option.isSome(proof) && proof.value.kind === "contract"
+        ? proof.value.latestResult
+        : undefined,
+  };
 }
 
 export function coordinateDeliveryCleanup(

@@ -2536,9 +2536,31 @@ describe("server workflows", () => {
               ({ type }) => type === "MERGE_DECISION_RECORDED"
             );
             assert.isDefined(decisionEvent);
-            assert.strictEqual(
-              parseMergeDecisionV2(decisionEvent?.payload["decision"]).status,
-              "blocked"
+            const persistedDecision = parseMergeDecisionV2(
+              decisionEvent?.payload["decision"]
+            );
+            assert.strictEqual(persistedDecision.status, "blocked");
+            assert.strictEqual(persistedDecision.proof.kind, "contract");
+            if (persistedDecision.proof.kind !== "contract") return;
+            assert.strictEqual(persistedDecision.proof.result.kind, "recorded");
+            if (persistedDecision.proof.result.kind !== "recorded") return;
+            assert.deepEqual(
+              {
+                ...persistedDecision.proof,
+                result: { ...persistedDecision.proof.result },
+              },
+              {
+                contractDigest: contract.contractDigest,
+                contractId: contract.contractId,
+                kind: "contract",
+                result: {
+                  aggregate: "completed-unverified",
+                  kind: "recorded",
+                  observedTargetDigest: proof.observedTargetDigest,
+                  resultDigest: proof.resultDigest,
+                  sequence: proof.recordedBy.sequence,
+                },
+              }
             );
             assert.isFalse(
               finalEvents.events.some(

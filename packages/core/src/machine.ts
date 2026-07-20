@@ -62,6 +62,7 @@ import {
   parseRunContract,
   parseRunEventSequence,
   parseRunProofResult,
+  parseRunProofResultEnvelope,
   parseRunRelativeArtifactPath,
   RunContractV1,
   RunProofProjectionV1Schema,
@@ -1368,6 +1369,7 @@ export const runMachine = runMachineSetup
 export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   const actor = createActor(runMachine).start();
   let expectedSequence = 1;
+  let historyRunId: RunEvent["runId"] | undefined;
   let publication: DeliveryPublication | undefined;
   let remediation: DeliveryRemediation | undefined;
   const readyForReviewActions: typeof DeliveryPullRequestReadyReplayActionsSchema.Type =
@@ -1381,6 +1383,7 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   let contentAuthoritySequence = 1;
   let evidenceReviewSequence: number | undefined;
   let publicationConfirmationSequence: number | undefined;
+  let legacyVerificationSequence: number | undefined;
   let sawLegacyVerification = false;
   let sawProofVocabulary = false;
   let crossedWorkerExecutionBoundary = false;
@@ -1390,6 +1393,13 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       throw new Error(
         `Invalid event sequence: expected ${expectedSequence}, received ${event.sequence}.`
       );
+    }
+    if (historyRunId === undefined) {
+      if (event.type !== "RUN_CREATED")
+        throw new Error("Run history must begin with RUN_CREATED.");
+      historyRunId = event.runId;
+    } else if (event.runId !== historyRunId) {
+      throw new Error("Run history events must all belong to a single run.");
     }
 
     if (event.type === "RUN_CONTRACT_RECORDED") {
@@ -1413,9 +1423,17 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       sawProofVocabulary = true;
     }
     if (event.type === "RUN_PROOF_RESULT_RECORDED") {
+      const state = actor.getSnapshot().value;
       if (sawLegacyVerification || runContract === undefined)
         throw new Error(
           "Run-proof results require one earlier immutable contract and cannot mix with legacy verification."
+        );
+      if (
+        !crossedWorkerExecutionBoundary ||
+        (state !== "verifying" && state !== "delivering")
+      )
+        throw new Error(
+          "Run-proof results require a worker execution boundary and a legal verification state."
         );
       latestProofResult = parseRunProofResult(
         event.payload["result"],
@@ -1429,6 +1447,7 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
           "Run history cannot mix legacy verification with contract-bound proof."
         );
       sawLegacyVerification = true;
+      legacyVerificationSequence = event.sequence;
     }
     if (event.type === "MERGE_DECISION_RECORDED") {
       const isV2 = event.payload["decision"] !== undefined;
@@ -1441,6 +1460,11 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
           );
         if (state !== "delivering")
           throw new Error("MergeDecisionV2 is legal only while delivering.");
+        assertMergeDecisionProofDescription(decision, {
+          latestProofResult,
+          legacyVerificationSequence,
+          runContract,
+        });
         assertApprovedMergeDecisionReplayAuthority(decision, {
           contentAuthoritySequence,
           evidenceReviewSequence,
@@ -1495,6 +1519,8 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       contentAuthoritySequence = event.sequence;
     }
     if (event.type === "WORKER_COMPLETED")
+      contentAuthoritySequence = event.sequence;
+    if (event.type === "WORKER_CONTINUATION_RECORDED")
       contentAuthoritySequence = event.sequence;
     if (
       event.type === "REVIEW_COMPLETED" &&
@@ -1677,13 +1703,66 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       event.type === "WORKER_STARTED" ||
       event.type === "WORKER_COMPLETED" ||
       event.type === "WORKER_CONTINUATION_RECORDED" ||
-      event.type === "WORKER_RECOVERY_RECORDED"
+      event.type === "WORKER_RECOVERY_RECORDED" ||
+      event.type === "WORKER_CORRELATION_RECONCILIATION_RECORDED" ||
+      event.type === "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED" ||
+      event.type === "HARNESS_SESSION_EVENT_RECORDED"
     )
       crossedWorkerExecutionBoundary = true;
     expectedSequence += 1;
   }
 
   return actor.getSnapshot();
+}
+
+function assertMergeDecisionProofDescription(
+  decision: MergeDecisionV2,
+  authority: {
+    readonly latestProofResult: RunProofResultV1 | undefined;
+    readonly legacyVerificationSequence: number | undefined;
+    readonly runContract: RunContractV1 | undefined;
+  }
+) {
+  if (authority.runContract === undefined) {
+    if (
+      decision.proof.kind !== "noContract" ||
+      decision.proof.legacyVerificationSequence !==
+        authority.legacyVerificationSequence
+    )
+      throw new Error(
+        "MergeDecisionV2 proof description does not match no-contract history."
+      );
+    return;
+  }
+
+  if (
+    decision.proof.kind !== "contract" ||
+    decision.proof.contractId !== authority.runContract.contractId ||
+    decision.proof.contractDigest !== authority.runContract.contractDigest
+  )
+    throw new Error(
+      "MergeDecisionV2 proof description does not match the run contract."
+    );
+
+  const result = authority.latestProofResult;
+  if (result === undefined) {
+    if (decision.proof.result.kind !== "missing")
+      throw new Error(
+        "MergeDecisionV2 proof description invents a missing run result."
+      );
+    return;
+  }
+
+  if (
+    decision.proof.result.kind !== "recorded" ||
+    decision.proof.result.sequence !== result.recordedBy.sequence ||
+    decision.proof.result.resultDigest !== result.resultDigest ||
+    decision.proof.result.aggregate !== result.aggregate ||
+    decision.proof.result.observedTargetDigest !== result.observedTargetDigest
+  )
+    throw new Error(
+      "MergeDecisionV2 proof description does not match the latest run result."
+    );
 }
 
 function assertApprovedMergeDecisionReplayAuthority(
@@ -1698,11 +1777,17 @@ function assertApprovedMergeDecisionReplayAuthority(
   if (decision.status !== "approved") return;
 
   const proof = authority.latestProofResult;
-  const binding = decision.proofBinding;
+  const proofDescription = decision.proof;
+  const contractProof =
+    proofDescription.kind === "contract" ? proofDescription : undefined;
+  const recorded =
+    contractProof?.result.kind === "recorded"
+      ? contractProof.result
+      : undefined;
   if (
     proof === undefined ||
     proof.aggregate !== "verified" ||
-    binding === undefined ||
+    recorded === undefined ||
     decision.contentAuthoritySequence !== authority.contentAuthoritySequence ||
     proof.recordedBy.sequence < authority.contentAuthoritySequence ||
     decision.evidenceReviewSequence === undefined ||
@@ -1711,11 +1796,12 @@ function assertApprovedMergeDecisionReplayAuthority(
     decision.publicationConfirmationSequence === undefined ||
     decision.publicationConfirmationSequence !==
       authority.publicationConfirmationSequence ||
-    binding.contractId !== proof.contractId ||
-    binding.contractDigest !== proof.contractDigest ||
-    binding.proofResultDigest !== proof.resultDigest ||
-    binding.proofResultSequence !== proof.recordedBy.sequence ||
-    binding.observedTargetDigest !== proof.observedTargetDigest
+    contractProof === undefined ||
+    contractProof.contractId !== proof.contractId ||
+    contractProof.contractDigest !== proof.contractDigest ||
+    recorded.resultDigest !== proof.resultDigest ||
+    recorded.sequence !== proof.recordedBy.sequence ||
+    recorded.observedTargetDigest !== proof.observedTargetDigest
   )
     throw new Error(
       "Approved MergeDecisionV2 replay authority does not match proof, review, content, and publication events."
@@ -1980,7 +2066,7 @@ function toMachineEventInput(event: RunEvent) {
       };
     case "RUN_PROOF_RESULT_RECORDED":
       return {
-        result: parseRunProofResult(event.payload["result"]),
+        result: parseRunProofResultEnvelope(event.payload["result"]),
         type: event.type,
         verificationResultPath: getStringPayload(
           event,

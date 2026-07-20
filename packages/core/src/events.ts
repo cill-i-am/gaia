@@ -2,7 +2,7 @@ import * as Schema from "effect/Schema";
 
 import {
   parseRunContract,
-  parseRunProofResult,
+  parseRunProofResultEnvelope,
   RunEventSequenceSchema,
 } from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
@@ -143,7 +143,7 @@ export const parseRunEvent = (input: unknown): RunEvent => {
       throw new Error("Run-contract event payload belongs to another run.");
   }
   if (event.type === "RUN_PROOF_RESULT_RECORDED") {
-    const result = parseRunProofResult(event.payload["result"]);
+    const result = parseRunProofResultEnvelope(event.payload["result"]);
     if (
       result.runId !== event.runId ||
       result.recordedBy.sequence !== event.sequence

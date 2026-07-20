@@ -158,6 +158,7 @@ function recordMergeDecisionUnlocked(runId: RunId, options: RunStorageOptions) {
           .filter(
             (event) =>
               event.type === "WORKER_COMPLETED" ||
+              event.type === "WORKER_CONTINUATION_RECORDED" ||
               event.type === "DELIVERY_REMEDIATION_RECORDED"
           )
           .map((event) => event.sequence)
@@ -172,18 +173,36 @@ function recordMergeDecisionUnlocked(runId: RunId, options: RunStorageOptions) {
       (event) => event.type === "DELIVERY_PUBLICATION_CONFIRMED"
     );
     const proof = decodeProofProjection(replayProof);
-    const proofBinding =
-      proof?.kind === "contract" && proof.latestResult !== undefined
+    const proofResult =
+      proof?.kind === "contract" ? proof.latestResult : undefined;
+    const decisionProof =
+      proof?.kind === "contract"
         ? {
             contractDigest: proof.contract.contractDigest,
             contractId: proof.contract.contractId,
-            observedTargetDigest: proof.latestResult.observedTargetDigest,
-            proofResultDigest: proof.latestResult.resultDigest,
-            proofResultSequence: proof.latestResult.recordedBy.sequence,
+            kind: "contract" as const,
+            result:
+              proofResult === undefined
+                ? { kind: "missing" as const }
+                : {
+                    aggregate: proofResult.aggregate,
+                    kind: "recorded" as const,
+                    observedTargetDigest: proofResult.observedTargetDigest,
+                    resultDigest: proofResult.resultDigest,
+                    sequence: proofResult.recordedBy.sequence,
+                  },
           }
-        : undefined;
-    const proofResult =
-      proof?.kind === "contract" ? proof.latestResult : undefined;
+        : {
+            aggregate: "completed-unverified" as const,
+            kind: "noContract" as const,
+            ...(proof?.kind === "no-contract" &&
+            proof.legacyVerification !== undefined
+              ? {
+                  legacyVerificationSequence:
+                    proof.legacyVerification.recordedBy.sequence,
+                }
+              : {}),
+          };
     const proofBlockers = proofDecisionBlockers({
       contentAuthoritySequence,
       currentDigest: observed.digest,
@@ -230,9 +249,7 @@ function recordMergeDecisionUnlocked(runId: RunId, options: RunStorageOptions) {
         paths.planReviewerSession
       ),
       ...(prLoop === undefined ? {} : { pr: prLoop.pr }),
-      ...(status === "approved" && proofBinding !== undefined
-        ? { proofBinding }
-        : {}),
+      proof: decisionProof,
       ...(publicationEvent === undefined
         ? {}
         : {

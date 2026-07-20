@@ -19,7 +19,7 @@ import {
   parseDeliveryMergeReadinessDecision,
   parseDeliveryCleanupReceipt,
   parseHarnessEvent,
-  parseRunProofResult,
+  parseRunProofResultEnvelope,
   RunProofProjectionV1Schema,
   ResolvedHarnessExecution,
   RunEvent,
@@ -1443,7 +1443,7 @@ function subStateForEvent(event: RunEvent): string | undefined {
     case "VERIFICATION_COMPLETED":
       return "completed-unverified";
     case "RUN_PROOF_RESULT_RECORDED": {
-      return parseRunProofResult(event.payload["result"]).aggregate;
+      return parseRunProofResultEnvelope(event.payload["result"]).aggregate;
     }
     case "REPORT_STARTED":
       return "reporting";

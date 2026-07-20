@@ -12,6 +12,7 @@ import {
   RunEventSequenceSchema,
   RunProofResultDigestSchema,
   RunRelativeArtifactPathSchema,
+  RunVerificationAggregateSchema,
   StructuralDigestSchema,
 } from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
@@ -56,18 +57,58 @@ export class MergeDecisionBlockerV2 extends Schema.Class<MergeDecisionBlockerV2>
   strict
 ) {}
 
-export class RunProofBindingV1 extends Schema.Class<RunProofBindingV1>(
-  "RunProofBindingV1"
+export class MergeDecisionNoContractProofV2 extends Schema.Class<MergeDecisionNoContractProofV2>(
+  "MergeDecisionNoContractProofV2"
+)(
+  {
+    aggregate: Schema.Literal("completed-unverified"),
+    kind: Schema.Literal("noContract"),
+    legacyVerificationSequence: Schema.optionalKey(RunEventSequenceSchema),
+  },
+  strict
+) {}
+
+export class MergeDecisionMissingProofResultV2 extends Schema.Class<MergeDecisionMissingProofResultV2>(
+  "MergeDecisionMissingProofResultV2"
+)({ kind: Schema.Literal("missing") }, strict) {}
+
+export class MergeDecisionRecordedProofResultV2 extends Schema.Class<MergeDecisionRecordedProofResultV2>(
+  "MergeDecisionRecordedProofResultV2"
+)(
+  {
+    aggregate: RunVerificationAggregateSchema,
+    kind: Schema.Literal("recorded"),
+    observedTargetDigest: StructuralDigestSchema,
+    resultDigest: RunProofResultDigestSchema,
+    sequence: RunEventSequenceSchema,
+  },
+  strict
+) {}
+
+export const MergeDecisionContractProofResultV2Schema = Schema.Union([
+  MergeDecisionMissingProofResultV2,
+  MergeDecisionRecordedProofResultV2,
+]);
+export type MergeDecisionContractProofResultV2 =
+  typeof MergeDecisionContractProofResultV2Schema.Type;
+
+export class MergeDecisionContractProofV2 extends Schema.Class<MergeDecisionContractProofV2>(
+  "MergeDecisionContractProofV2"
 )(
   {
     contractDigest: RunContractDigestSchema,
     contractId: RunContractIdSchema,
-    observedTargetDigest: StructuralDigestSchema,
-    proofResultDigest: RunProofResultDigestSchema,
-    proofResultSequence: RunEventSequenceSchema,
+    kind: Schema.Literal("contract"),
+    result: MergeDecisionContractProofResultV2Schema,
   },
   strict
 ) {}
+
+export const MergeDecisionProofV2Schema = Schema.Union([
+  MergeDecisionNoContractProofV2,
+  MergeDecisionContractProofV2,
+]);
+export type MergeDecisionProofV2 = typeof MergeDecisionProofV2Schema.Type;
 
 const fields = {
   blockerCount: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
@@ -81,7 +122,7 @@ const fields = {
   planReviewPath: RunRelativeArtifactPathSchema,
   planReviewerSessionPath: RunRelativeArtifactPathSchema,
   pr: Schema.optionalKey(GitHubPullRequestSelectorPublicSchema),
-  proofBinding: Schema.optionalKey(RunProofBindingV1),
+  proof: MergeDecisionProofV2Schema,
   publicationConfirmationSequence: Schema.optionalKey(RunEventSequenceSchema),
   runId: RunIdSchema,
   runProfilePath: RunRelativeArtifactPathSchema,
@@ -118,6 +159,8 @@ export function mergeDecisionV2PayloadDigest(input: MergeDecisionV2Binding) {
 }
 
 export function makeMergeDecisionV2(input: MergeDecisionV2Binding) {
+  if (input.proof === undefined)
+    throw new Error("MergeDecisionV2 requires a typed proof description.");
   return parseMergeDecisionV2({
     ...input,
     payloadDigest: mergeDecisionV2PayloadDigest(input),
@@ -139,16 +182,17 @@ export function parseMergeDecisionV2(input: unknown): MergeDecisionV2 {
     (decision.status === "approved") !==
       (decision.nextAction === "ready-to-merge") ||
     (decision.status === "approved") !== (decision.blockers.length === 0) ||
-    (decision.status === "approved") !==
-      (decision.proofBinding !== undefined) ||
     (decision.status === "approved" &&
-      (decision.evidenceReviewSequence === undefined ||
+      (decision.proof.kind !== "contract" ||
+        decision.proof.result.kind !== "recorded" ||
+        decision.proof.result.aggregate !== "verified" ||
+        decision.evidenceReviewSequence === undefined ||
         decision.publicationConfirmationSequence === undefined))
   )
     throw new Error("MergeDecisionV2 approval fields are inconsistent.");
   if (
-    decision.proofBinding !== undefined &&
-    decision.proofBinding.contractId !== `run-contract:${decision.runId}:v1`
+    decision.proof.kind === "contract" &&
+    decision.proof.contractId !== `run-contract:${decision.runId}:v1`
   )
     throw new Error(
       "MergeDecisionV2 proof contract does not belong to its run."
@@ -201,17 +245,34 @@ function canonicalMergeDecisionBinding(input: MergeDecisionV2Binding) {
     input.planReviewPath,
     input.planReviewerSessionPath,
     input.pr ?? "",
-    input.proofBinding?.contractId ?? "",
-    input.proofBinding?.contractDigest ?? "",
-    input.proofBinding?.proofResultDigest ?? "",
-    String(input.proofBinding?.proofResultSequence ?? ""),
-    input.proofBinding?.observedTargetDigest ?? "",
+    ...proofCanonicalFields(input.proof),
     String(input.publicationConfirmationSequence ?? ""),
     input.runId,
     input.runProfilePath,
     input.status,
     String(input.version),
   ]);
+}
+
+function proofCanonicalFields(proof: MergeDecisionProofV2) {
+  if (proof.kind === "noContract")
+    return [
+      proof.kind,
+      proof.aggregate,
+      String(proof.legacyVerificationSequence ?? ""),
+    ];
+  if (proof.result.kind === "missing")
+    return [proof.kind, proof.contractId, proof.contractDigest, "missing"];
+  return [
+    proof.kind,
+    proof.contractId,
+    proof.contractDigest,
+    proof.result.kind,
+    String(proof.result.sequence),
+    proof.result.resultDigest,
+    proof.result.aggregate,
+    proof.result.observedTargetDigest,
+  ];
 }
 
 function canonicalFields(fields: readonly string[]) {

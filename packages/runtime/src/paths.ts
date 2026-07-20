@@ -1,5 +1,6 @@
 import {
   parseRunRelativeArtifactPath,
+  RunIdSchema,
   RunRelativeArtifactPathSchema,
   type RunId,
   type RunRelativeArtifactPath,
@@ -105,6 +106,7 @@ export const RunPathsSchema = Schema.Struct({
   root: RuntimePathSchema,
   runProfile: RuntimePathSchema,
   runContract: RuntimePathSchema,
+  runId: RunIdSchema,
   runsRoot: RuntimePathSchema,
   skillBundle: RuntimePathSchema,
   skillInstallRoot: RuntimePathSchema,
@@ -229,6 +231,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       root,
       runProfile: path.join(root, "run-profile.json"),
       runContract: path.join(root, "run-contract.json"),
+      runId,
       runsRoot: store.runsRoot,
       snapshots: path.join(root, "snapshots.jsonl"),
       skillBundle: path.join(root, "skill-bundle.json"),

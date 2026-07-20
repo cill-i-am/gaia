@@ -51,6 +51,7 @@ import {
   makeMergeDecisionV2,
   makeRunContract,
   makeRunProofResult,
+  MergeDecisionBlockerV2,
   deriveAcceptedOutcomeId,
   deriveExplicitSpecItemDigest,
   deriveProofClaimId,
@@ -74,6 +75,8 @@ import {
 } from "./delivery-merge-coordinator.js";
 import { defaultDeliveryFeedbackTrustPolicy } from "./delivery-remediation-coordinator.js";
 import { coordinateDeliveryLocalReviewAttestation } from "./delivery-review-attestation-coordinator.js";
+import { GaiaRuntimeError } from "./errors.js";
+import { loadRun } from "./event-store.js";
 import { makeRunPaths } from "./paths.js";
 
 const roots: string[] = [];
@@ -168,7 +171,7 @@ function fixture(
     observedTargetDigest: structuralDigest,
     recordedBy: {
       runId,
-      sequence: 4,
+      sequence: 6,
       type: "RUN_PROOF_RESULT_RECORDED",
     },
     results: [
@@ -260,7 +263,7 @@ function fixture(
   const binding = {
     actionId: "merge-1",
     branchName: publication.branchName,
-    decisionSequence: 13,
+    decisionSequence: 16,
     expectedHeadSha: publication.headSha,
     mergeMethod: "merge" as const,
     payloadDigest: createHash("sha256")
@@ -271,7 +274,7 @@ function fixture(
           publication.prUrl,
           publication.branchName,
           publication.headSha,
-          "13",
+          "16",
           "merge",
           policyDigest,
         ].join("\0")
@@ -283,20 +286,25 @@ function fixture(
     prUrl: publication.prUrl,
     repository: "cill-i-am/gaia",
   };
-  const proofBinding = {
+  const decisionProof = {
     contractDigest: proof.contractDigest,
     contractId: proof.contractId,
-    observedTargetDigest: proof.observedTargetDigest,
-    proofResultDigest: proof.resultDigest,
-    proofResultSequence: proof.recordedBy.sequence,
+    kind: "contract" as const,
+    result: {
+      aggregate: "verified" as const,
+      kind: "recorded" as const,
+      observedTargetDigest: proof.observedTargetDigest,
+      resultDigest: proof.resultDigest,
+      sequence: proof.recordedBy.sequence,
+    },
   };
   const mergeDecision = makeMergeDecisionV2({
     blockerCount: 0,
     blockers: [],
-    contentAuthoritySequence: parseRunEventSequence(1),
+    contentAuthoritySequence: parseRunEventSequence(5),
     decidedAt: "2026-07-11T19:00:12.000Z",
     evidenceReviewPath: parseRunRelativeArtifactPath("evidence-review.md"),
-    evidenceReviewSequence: parseRunEventSequence(5),
+    evidenceReviewSequence: parseRunEventSequence(8),
     evidenceReviewerSessionPath: parseRunRelativeArtifactPath(
       "evidence-reviewer-session.json"
     ),
@@ -306,8 +314,8 @@ function fixture(
       "plan-reviewer-session.json"
     ),
     pr: "74",
-    proofBinding,
-    publicationConfirmationSequence: parseRunEventSequence(8),
+    proof: decisionProof,
+    publicationConfirmationSequence: parseRunEventSequence(11),
     runId,
     runProfilePath: parseRunRelativeArtifactPath("run-profile.json"),
     status: "approved",
@@ -327,19 +335,26 @@ function fixture(
             reviewDecision: "APPROVED",
             version: 1,
           }),
-    authoritySequence: parseRunEventSequence(8),
+    authoritySequence: parseRunEventSequence(11),
     blockers: [],
     branchName: binding.branchName,
+    contentAuthoritySequence: parseRunEventSequence(5),
+    contractDigest: proof.contractDigest,
+    contractId: proof.contractId,
+    evidenceReviewSequence: parseRunEventSequence(8),
     headSha: binding.expectedHeadSha,
     mergeDecisionPayloadDigest: mergeDecision.payloadDigest,
-    mergeDecisionSequence: parseRunEventSequence(12),
+    mergeDecisionSequence: parseRunEventSequence(15),
     mergeMethod: binding.mergeMethod,
     policyDigest,
     policyVersion: 1 as const,
     prNumber: 74,
     prUrl: binding.prUrl,
-    proofBinding,
-    publicationConfirmationSequence: parseRunEventSequence(8),
+    observedTargetDigest: proof.observedTargetDigest,
+    proofAggregate: "verified" as const,
+    proofResultDigest: proof.resultDigest,
+    proofResultSequence: proof.recordedBy.sequence,
+    publicationConfirmationSequence: parseRunEventSequence(11),
     publicationOperationId: publication.operationId,
     publicationPayloadDigest: publication.payloadDigest,
     repository: binding.repository,
@@ -388,55 +403,73 @@ function fixture(
     event(3, "RUN_CONTRACT_RECORDED", {
       contract: encodeRunContractJson(contract),
     }),
-    event(4, "RUN_PROOF_RESULT_RECORDED", {
+    event(4, "WORKSPACE_PREPARED", { workspacePath: "workspace" }),
+    event(5, "WORKER_COMPLETED", {
+      workerResultPath: "worker-result.json",
+    }),
+    event(6, "RUN_PROOF_RESULT_RECORDED", {
       result: encodeRunProofResultJson(proof),
       verificationResultPath: "verification-result.json",
     }),
-    event(5, "REVIEW_COMPLETED", {
+    event(7, "DELIVERY_READY_TO_PUBLISH", {
+      delivery: {
+        baseBranch: "main",
+        baseRevision: "0".repeat(40),
+        feedbackTrustPolicy: Schema.encodeSync(DeliveryFeedbackTrustPolicyV1)(
+          trust
+        ),
+        headBranch: publication.branchName,
+        mode: "pullRequest",
+        remote: "origin",
+        stage: "readyToPublish",
+      },
+      reportPath: "report.md",
+    }),
+    event(8, "REVIEW_COMPLETED", {
       phase: "evidence",
       reviewPath: "evidence-review.md",
     }),
-    event(6, "DELIVERY_PUBLICATION_INTENT_RECORDED", {
+    event(9, "DELIVERY_PUBLICATION_INTENT_RECORDED", {
       publication: encodeDeliveryPublicationJson(pubIntent),
     }),
-    event(7, "DELIVERY_PUBLICATION_ATTEMPTED", {
+    event(10, "DELIVERY_PUBLICATION_ATTEMPTED", {
       publication: encodeDeliveryPublicationJson(pubAttempt),
     }),
-    event(8, "DELIVERY_PUBLICATION_CONFIRMED", {
+    event(11, "DELIVERY_PUBLICATION_CONFIRMED", {
       publication: encodeDeliveryPublicationJson(publication),
     }),
-    event(9, "DELIVERY_PR_READY_RECORDED", {
+    event(12, "DELIVERY_PR_READY_RECORDED", {
       readyForReviewAction:
         encodeDeliveryPullRequestReadyReceiptJson(readyIntent),
     }),
-    event(10, "DELIVERY_PR_READY_RECORDED", {
+    event(13, "DELIVERY_PR_READY_RECORDED", {
       readyForReviewAction:
         encodeDeliveryPullRequestReadyReceiptJson(readyAttempted),
     }),
-    event(11, "DELIVERY_PR_READY_RECORDED", {
+    event(14, "DELIVERY_PR_READY_RECORDED", {
       readyForReviewAction:
         encodeDeliveryPullRequestReadyReceiptJson(readyConfirmed),
     }),
-    event(12, "MERGE_DECISION_RECORDED", {
+    event(15, "MERGE_DECISION_RECORDED", {
       decision: encodeMergeDecisionV2Json(mergeDecision),
       mergeDecisionPath: "merge-decision.json",
     }),
-    event(13, "DELIVERY_MERGE_READINESS_RECORDED", {
+    event(16, "DELIVERY_MERGE_READINESS_RECORDED", {
       decision: encodeDeliveryMergeReadinessDecisionJson(decision),
     }),
     ...(state === "ready"
       ? []
       : [
-          event(14, "DELIVERY_MERGE_RECORDED", {
+          event(17, "DELIVERY_MERGE_RECORDED", {
             mergeAction: encodeDeliveryMergeReceiptJson(intent),
           }),
-          event(15, "DELIVERY_MERGE_RECORDED", {
+          event(18, "DELIVERY_MERGE_RECORDED", {
             mergeAction: encodeDeliveryMergeReceiptJson(attempted),
           }),
         ]),
     ...(state === "checkpoint"
       ? [
-          event(16, "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED", {
+          event(19, "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED", {
             checkpoint: {
               actionId: binding.actionId,
               payloadDigest: binding.payloadDigest,
@@ -448,7 +481,7 @@ function fixture(
       : []),
     ...(state === "unknown"
       ? [
-          event(16, "DELIVERY_MERGE_RECORDED", {
+          event(19, "DELIVERY_MERGE_RECORDED", {
             mergeAction: encodeDeliveryMergeReceiptJson(
               DeliveryMergeTerminalFailure.make({
                 ...binding,
@@ -468,14 +501,265 @@ function fixture(
   const action = {
     actionId: binding.actionId,
     expectedBranchName: binding.branchName,
-    expectedDecisionSequence: 13,
+    expectedDecisionSequence: 16,
     expectedHeadSha: binding.expectedHeadSha,
     expectedPolicyDigest: policyDigest,
     expectedPrUrl: binding.prUrl,
     kind: "merge" as const,
     mergeMethod: "merge" as const,
   };
-  return { action, binding, root, runId };
+  return {
+    action,
+    binding,
+    claimId,
+    contract,
+    decisionProof,
+    mergeDecision,
+    paths,
+    proof,
+    readinessDecision: decision,
+    root,
+    runId,
+  };
+}
+
+type InterveningAuthority =
+  | "content remediation"
+  | "newer blocked V2"
+  | "newer evidence review"
+  | "newer proof result"
+  | "newer publication";
+
+function insertAuthorityBeforeReadiness(
+  result: ReturnType<typeof fixture>,
+  authority: InterveningAuthority
+) {
+  const events = readFileSync(result.paths.events, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)));
+  const readinessIndex = events.findIndex(
+    ({ type }) => type === "DELIVERY_MERGE_READINESS_RECORDED"
+  );
+  if (readinessIndex < 0)
+    throw new Error("Expected a merge-readiness event in the fixture.");
+  const readiness = events[readinessIndex];
+  if (readiness === undefined)
+    throw new Error("Expected a merge-readiness event in the fixture.");
+  const nextSequence = readiness.sequence;
+  const event = (
+    offset: number,
+    type: Parameters<typeof makeRunEvent>[0]["type"],
+    payload: Readonly<Record<string, Schema.Json>>
+  ) =>
+    makeRunEvent({
+      payload,
+      runId: result.runId,
+      sequence: nextSequence + offset,
+      timestamp: `2026-07-11T20:00:${String(offset).padStart(2, "0")}.000Z`,
+      type,
+    });
+
+  const inserted = (() => {
+    switch (authority) {
+      case "newer proof result": {
+        const proof = makeRunProofResult({
+          contract: result.contract,
+          observedTargetDigest: result.proof.observedTargetDigest,
+          recordedBy: {
+            runId: result.runId,
+            sequence: nextSequence,
+            type: "RUN_PROOF_RESULT_RECORDED",
+          },
+          results: [
+            {
+              claimId: result.claimId,
+              evidence: [
+                {
+                  artifactPath: "worker-result.json",
+                  contentDigest: "4".repeat(64),
+                  kind: "command",
+                },
+              ],
+              status: "passed",
+            },
+          ],
+          supplementalProtocolEvidence: [],
+        });
+        return [
+          event(0, "RUN_PROOF_RESULT_RECORDED", {
+            result: encodeRunProofResultJson(proof),
+            verificationResultPath: "verification-result.json",
+          }),
+        ];
+      }
+      case "newer blocked V2": {
+        const blocker = MergeDecisionBlockerV2.make({
+          action: "Record current proof and review evidence.",
+          kind: "run-proof-stale",
+          summary: "The prior approved merge decision is stale.",
+        });
+        const decision = makeMergeDecisionV2({
+          blockerCount: 1,
+          blockers: [blocker],
+          contentAuthoritySequence: parseRunEventSequence(1),
+          decidedAt: "2026-07-11T20:00:00.000Z",
+          evidenceReviewPath:
+            parseRunRelativeArtifactPath("evidence-review.md"),
+          evidenceReviewerSessionPath: parseRunRelativeArtifactPath(
+            "evidence-reviewer-session.json"
+          ),
+          nextAction: "resolve-blockers",
+          planReviewPath: parseRunRelativeArtifactPath("plan-review.md"),
+          planReviewerSessionPath: parseRunRelativeArtifactPath(
+            "plan-reviewer-session.json"
+          ),
+          pr: "74",
+          proof: result.decisionProof,
+          runId: result.runId,
+          runProfilePath: parseRunRelativeArtifactPath("run-profile.json"),
+          status: "blocked",
+          version: 2,
+        });
+        return [
+          event(0, "MERGE_DECISION_RECORDED", {
+            decision: encodeMergeDecisionV2Json(decision),
+            mergeDecisionPath: "merge-decision.json",
+          }),
+        ];
+      }
+      case "content remediation": {
+        const remediation = DeliveryRemediationIntent.make({
+          attempt: 1,
+          commitTimestamp: "2026-07-11T20:00:00.000Z",
+          expectedHeadSha: result.binding.expectedHeadSha,
+          feedbackDigest: "e".repeat(64),
+          feedbackIds: [
+            parseDeliveryFeedbackId(`feedback-comment-${"f".repeat(64)}`),
+          ],
+          inputId: "remediation-run-1234567890-1",
+          operationId: "remediation:run-1234567890:1",
+          state: "intentRecorded",
+        });
+        return [
+          event(0, "DELIVERY_REMEDIATION_RECORDED", {
+            remediation: encodeDeliveryRemediationJson(remediation),
+          }),
+        ];
+      }
+      case "newer evidence review":
+        return [
+          event(0, "REVIEW_COMPLETED", {
+            phase: "evidence",
+            reviewPath: "evidence-review-2.md",
+          }),
+        ];
+      case "newer publication": {
+        const confirmed = events.findLast(
+          ({ type }) => type === "DELIVERY_PUBLICATION_CONFIRMED"
+        );
+        if (confirmed?.type !== "DELIVERY_PUBLICATION_CONFIRMED")
+          throw new Error("Expected confirmed publication in the fixture.");
+        return [event(0, "DELIVERY_PUBLICATION_CONFIRMED", confirmed.payload)];
+      }
+    }
+  })();
+  const shiftedReadiness = makeRunEvent({
+    payload: readiness.payload,
+    runId: readiness.runId,
+    sequence: readiness.sequence + inserted.length,
+    timestamp: readiness.timestamp,
+    type: readiness.type,
+  });
+  const next = [
+    ...events.slice(0, readinessIndex),
+    ...inserted,
+    shiftedReadiness,
+  ];
+  writeFileSync(
+    result.paths.events,
+    `${next.map((value) => JSON.stringify(Schema.encodeSync(RunEvent)(value))).join("\n")}\n`
+  );
+}
+
+function appendAuthorityAfterReadiness(
+  result: ReturnType<typeof fixture>,
+  authority: "content remediation" | "evidence review" | "proof result"
+) {
+  const events = readFileSync(result.paths.events, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => Schema.decodeUnknownSync(RunEvent)(JSON.parse(line)));
+  const sequence = events.length + 1;
+  const next =
+    authority === "proof result"
+      ? makeRunEvent({
+          payload: {
+            result: encodeRunProofResultJson(
+              makeRunProofResult({
+                contract: result.contract,
+                observedTargetDigest: result.proof.observedTargetDigest,
+                recordedBy: {
+                  runId: result.runId,
+                  sequence,
+                  type: "RUN_PROOF_RESULT_RECORDED",
+                },
+                results: [
+                  {
+                    claimId: result.claimId,
+                    reason: "A newer proof pass has not run the claim.",
+                    status: "not-run",
+                  },
+                ],
+                supplementalProtocolEvidence: [],
+              })
+            ),
+            verificationResultPath: "verification-result-2.json",
+          },
+          runId: result.runId,
+          sequence,
+          timestamp: "2026-07-11T20:01:00.000Z",
+          type: "RUN_PROOF_RESULT_RECORDED",
+        })
+      : authority === "evidence review"
+        ? makeRunEvent({
+            payload: {
+              phase: "evidence",
+              reviewPath: "evidence-review-2.md",
+            },
+            runId: result.runId,
+            sequence,
+            timestamp: "2026-07-11T20:01:00.000Z",
+            type: "REVIEW_COMPLETED",
+          })
+        : makeRunEvent({
+            payload: {
+              remediation: encodeDeliveryRemediationJson(
+                DeliveryRemediationIntent.make({
+                  attempt: 1,
+                  commitTimestamp: "2026-07-11T20:01:00.000Z",
+                  expectedHeadSha: result.binding.expectedHeadSha,
+                  feedbackDigest: "e".repeat(64),
+                  feedbackIds: [
+                    parseDeliveryFeedbackId(
+                      `feedback-comment-${"f".repeat(64)}`
+                    ),
+                  ],
+                  inputId: "remediation-run-1234567890-1",
+                  operationId: "remediation:run-1234567890:1",
+                  state: "intentRecorded",
+                })
+              ),
+            },
+            runId: result.runId,
+            sequence,
+            timestamp: "2026-07-11T20:01:00.000Z",
+            type: "DELIVERY_REMEDIATION_RECORDED",
+          });
+  writeFileSync(
+    result.paths.events,
+    `${[...events, next].map((value) => JSON.stringify(Schema.encodeSync(RunEvent)(value))).join("\n")}\n`
+  );
 }
 
 function retainedPreReadyFixture() {
@@ -777,6 +1061,17 @@ const merged = (
 });
 
 describe("delivery merge reconstructed coordinator", () => {
+  it("rejects malformed Unicode before canonical V3 digesting", () => {
+    const f = fixture("ready", false);
+
+    expect(() =>
+      deliveryMergeReadinessDecisionV3PayloadDigest({
+        ...f.readinessDecision,
+        blockers: ["\uD800"],
+      })
+    ).toThrow(/well-formed Unicode/iu);
+  });
+
   it("satisfies strict review policy from one current exact-head local operator attestation but never overrides changes requested", async () => {
     const f = fixture("ready", true);
     const current = merged(f.binding);
@@ -1261,6 +1556,72 @@ describe("delivery merge reconstructed coordinator", () => {
           }).pipe(Effect.provide(NodeServices.layer))
         )
       ).rejects.toThrow();
+      expect(stateReads).toBe(0);
+      expect(providerCalls).toBe(0);
+    });
+  }
+
+  for (const authority of [
+    "newer proof result",
+    "newer blocked V2",
+    "content remediation",
+    "newer evidence review",
+  ] as const) {
+    it(`rejects literal JSONL when ${authority} intervenes between approved V2 and V3`, async () => {
+      const f = fixture("ready", false);
+      insertAuthorityBeforeReadiness(f, authority);
+
+      await expect(
+        Effect.runPromise(
+          loadRun(f.paths).pipe(Effect.provide(NodeServices.layer))
+        )
+      ).rejects.toMatchObject({ code: "InvalidRunEventHistory" });
+    });
+  }
+
+  it("rejects a newer publication record between V2 and V3 at the terminal publication lifecycle boundary", async () => {
+    const f = fixture("ready", false);
+    insertAuthorityBeforeReadiness(f, "newer publication");
+
+    const failure = await Effect.runPromise(
+      Effect.flip(loadRun(f.paths)).pipe(Effect.provide(NodeServices.layer))
+    );
+    expect(failure).toMatchObject({ code: "InvalidRunEventHistory" });
+    if (!(failure instanceof GaiaRuntimeError))
+      throw new Error("Expected typed invalid-history failure.");
+    expect(String(failure.cause)).toMatch(
+      /publication confirmation requires an attempted operation/iu
+    );
+  });
+
+  for (const authority of [
+    "proof result",
+    "content remediation",
+    "evidence review",
+  ] as const) {
+    it(`rejects merge dispatch when a newer ${authority} follows V3`, async () => {
+      const f = fixture("ready", false);
+      appendAuthorityAfterReadiness(f, authority);
+      let providerCalls = 0;
+      let stateReads = 0;
+
+      await expect(
+        Effect.runPromise(
+          coordinateDeliveryMerge(f.runId, f.action, {
+            commandRunner: () =>
+              Effect.sync(() => {
+                providerCalls += 1;
+                return { exitCode: 0, stderr: "", stdout: "" };
+              }),
+            freshStateReader: () =>
+              Effect.sync(() => {
+                stateReads += 1;
+                return merged(f.binding);
+              }),
+            rootDirectory: f.root,
+          }).pipe(Effect.provide(NodeServices.layer))
+        )
+      ).rejects.toMatchObject({ code: "DeliveryActionConflict" });
       expect(stateReads).toBe(0);
       expect(providerCalls).toBe(0);
     });

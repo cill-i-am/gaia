@@ -143,7 +143,11 @@ export function appendPreparedEventWithinSerialization(
   return Effect.gen(function* () {
     const event = parseRunEvent(preparedEvent);
     const expectedSequence = (existingEvents.at(-1)?.sequence ?? 0) + 1;
-    if (event.runId !== runId || event.sequence !== expectedSequence) {
+    if (
+      event.runId !== runId ||
+      runId !== paths.runId ||
+      event.sequence !== expectedSequence
+    ) {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "InvalidPreparedRunEvent",
@@ -296,6 +300,16 @@ export function readEvents(paths: RunPaths) {
         yield* parseJsonLine(line, lineNumber),
         lineNumber
       );
+
+      if (parsed.runId !== paths.runId) {
+        return yield* Effect.fail(
+          makeRuntimeError({
+            code: "InvalidRunEventHistory",
+            message: "Run event history does not belong to its storage run.",
+            recoverable: false,
+          })
+        );
+      }
 
       if (parsed.sequence !== expectedSequence) {
         return yield* Effect.fail(

@@ -734,9 +734,13 @@ export const parseRunContractJson = (input: unknown) =>
   parseRunContract(
     Schema.decodeUnknownSync(Schema.toCodecJson(RunContractV1))(input)
   );
-export const parseRunProofResultJson = (input: unknown) =>
+export const parseRunProofResultJson = (
+  input: unknown,
+  expectedContract: RunContractV1
+) =>
   parseRunProofResult(
-    Schema.decodeUnknownSync(Schema.toCodecJson(RunProofResultV1))(input)
+    Schema.decodeUnknownSync(Schema.toCodecJson(RunProofResultV1))(input),
+    expectedContract
   );
 
 export function normalizeExplicitSpecStatement(
@@ -987,7 +991,9 @@ export function makeRunProofResult(
   );
   const supplementalProtocolEvidence = decodeSupplementalProtocolEvidence(
     decoded.supplementalProtocolEvidence
-      .map((evidence) => withDerivedEvidenceId(evidence, binding))
+      .map((evidence) =>
+        withDerivedEvidenceId(evidence, binding, { scope: "protocol" })
+      )
       .toSorted((left, right) =>
         compareUtf8(String(left.evidenceId), String(right.evidenceId))
       )
@@ -1016,8 +1022,26 @@ export function makeRunProofResult(
 
 export function parseRunProofResult(
   input: unknown,
-  expectedContract?: RunContractV1
+  expectedContract: RunContractV1
 ): RunProofResultV1 {
+  const result = parseRunProofResultEnvelope(input);
+  const contract = parseRunContract(expectedContract);
+  if (
+    result.runId !== contract.runId ||
+    result.contractId !== contract.contractId ||
+    result.contractDigest !== contract.contractDigest ||
+    result.baseDigest !== contract.baseDigest ||
+    result.targetDigest !== contract.targetDigest
+  )
+    throw new Error("Proof result does not bind the expected contract.");
+  validateClaimResults(contract, result.results);
+  if (result.aggregate !== aggregateRunProofResult(contract, result.results))
+    throw new Error("Stored proof aggregate does not match recomputation.");
+  return result;
+}
+
+/** Decode the self-authenticating event envelope before replay supplies its contract. */
+export function parseRunProofResultEnvelope(input: unknown): RunProofResultV1 {
   const result = decodeRunProofResult(input);
   assertStrictlySortedUniqueBy(
     result.results,
@@ -1031,20 +1055,6 @@ export function parseRunProofResult(
   );
   if (result.runId !== result.recordedBy.runId)
     throw new Error("Proof result event binding uses another run.");
-  if (expectedContract !== undefined) {
-    const contract = parseRunContract(expectedContract);
-    if (
-      result.runId !== contract.runId ||
-      result.contractId !== contract.contractId ||
-      result.contractDigest !== contract.contractDigest ||
-      result.baseDigest !== contract.baseDigest ||
-      result.targetDigest !== contract.targetDigest
-    )
-      throw new Error("Proof result does not bind the expected contract.");
-    validateClaimResults(contract, result.results);
-    if (result.aggregate !== aggregateRunProofResult(contract, result.results))
-      throw new Error("Stored proof aggregate does not match recomputation.");
-  }
   validateEvidenceIds(result);
   if (result.resultDigest !== digestRunProofResult(result))
     throw new Error("Run proof result digest does not match its payload.");
@@ -1163,10 +1173,19 @@ function withDerivedEvidenceIds(
 ) {
   if (result.status !== "passed" && result.status !== "failed") return result;
   const evidence = Array.isArray(result.evidence)
-    ? result.evidence.map((entry) => withDerivedEvidenceId(entry, binding))
+    ? result.evidence.map((entry) =>
+        withDerivedEvidenceId(entry, binding, {
+          claimId: result.claimId,
+          scope: "claim",
+        })
+      )
     : result.evidence;
   return { ...result, evidence };
 }
+
+type EvidenceScopeV1 =
+  | { readonly claimId: ProofClaimId; readonly scope: "claim" }
+  | { readonly scope: "protocol" };
 
 function withDerivedEvidenceId(
   evidence:
@@ -1174,7 +1193,8 @@ function withDerivedEvidenceId(
     | MakeSupplementalProtocolEvidenceV1
     | ClaimEvidenceV1
     | SupplementalProtocolEvidenceV1,
-  binding: EvidenceEventBindingV1
+  binding: EvidenceEventBindingV1,
+  scope: EvidenceScopeV1
 ) {
   const withoutId = withoutKey(evidence, "evidenceId");
   const evidenceId = parseProofEvidenceId(
@@ -1183,6 +1203,8 @@ function withDerivedEvidenceId(
       binding.contractId,
       binding.contractDigest,
       binding.sequence,
+      scope.scope,
+      scope.scope === "claim" ? scope.claimId : "",
       withoutId,
     ])}`
   );
@@ -1193,6 +1215,15 @@ function validateClaimResults(
   contract: RunContractV1,
   results: readonly ProofClaimResultV1[]
 ) {
+  if (
+    results.length !== contract.proofClaims.length ||
+    results.some(
+      (result, index) => result.claimId !== contract.proofClaims[index]?.claimId
+    )
+  )
+    throw new Error(
+      "Run proof requires exactly one result for every contract proof claim."
+    );
   const claimById = new Map(
     contract.proofClaims.map((claim) => [claim.claimId, claim])
   );
@@ -1232,23 +1263,38 @@ function validateEvidenceIds(result: RunProofResultV1) {
     runId: result.runId,
     sequence: result.recordedBy.sequence,
   };
-  const evidence = [
+  const evidence: ReadonlyArray<{
+    readonly item: ClaimEvidenceV1 | SupplementalProtocolEvidenceV1;
+    readonly scope: EvidenceScopeV1;
+  }> = [
     ...result.results.flatMap((entry) =>
       entry.status === "passed" || entry.status === "failed"
-        ? entry.evidence
+        ? entry.evidence.map((item) => ({
+            item,
+            scope: { claimId: entry.claimId, scope: "claim" as const },
+          }))
         : []
     ),
-    ...result.supplementalProtocolEvidence,
+    ...result.supplementalProtocolEvidence.map((item) => ({
+      item,
+      scope: { scope: "protocol" as const },
+    })),
   ];
   const ids = new Set<string>();
   const tuples = new Set<string>();
-  for (const item of evidence) {
-    const expected = withDerivedEvidenceId(item, binding).evidenceId;
+  for (const { item, scope } of evidence) {
+    const expected = withDerivedEvidenceId(item, binding, scope).evidenceId;
     if (item.evidenceId !== expected)
       throw new Error(
-        "Proof evidence ID does not match its event-bound tuple."
+        scope.scope === "claim"
+          ? "Proof evidence ID does not match its claim-bound tuple."
+          : "Proof evidence ID does not match its protocol-bound tuple."
       );
-    const tuple = canonicalKey(withoutKey(item, "evidenceId"));
+    const tuple = canonicalKey({
+      ...(scope.scope === "claim" ? { claimId: scope.claimId } : {}),
+      evidence: withoutKey(item, "evidenceId"),
+      scope: scope.scope,
+    });
     if (ids.has(item.evidenceId))
       throw new Error("Duplicate proof evidence ID.");
     if (tuples.has(tuple)) throw new Error("Duplicate proof evidence tuple.");
