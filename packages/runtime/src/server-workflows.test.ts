@@ -1,8 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -22,6 +24,7 @@ import {
   DeliveryRemoteNamePublicSchema,
   HarnessProfileIdSchema,
   HarnessSessionIdSchema,
+  ModelInvocationEpisodeStartV1,
   RunEvent,
   WorkerContinuationReceiptSchema,
   WorkerContinuationAction,
@@ -51,12 +54,14 @@ import {
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
+import { parseBrowserEvidenceTargetUrl } from "./browser-evidence.js";
 import {
   CodexTurnIdSchema,
   parseCodexTurnId,
 } from "./codex-app-server-protocol.js";
+import { makeCodexHarnessConfig } from "./codex-harness.js";
 import { GaiaRuntimeError } from "./errors.js";
-import { appendEvent } from "./event-store.js";
+import { appendEvent, readEvents } from "./event-store.js";
 import {
   DeliveryAcceptanceProvenancePolicyV1,
   prepareDeliveryWorktree,
@@ -67,14 +72,17 @@ import {
   parseHarnessCheckpointToken,
   type HarnessProvider,
 } from "./harness-session.js";
+import { makeProcessHarnessConfig } from "./harness.js";
 import { recordMergeDecision } from "./merge-decision.js";
-import { makeRunPaths } from "./paths.js";
+import { commitDerivedAppModelInvocationEpisode } from "./model-invocation.js";
+import { makeRunPaths, type RunPaths } from "./paths.js";
 import {
   ReviewFinding,
   ReviewResult,
   ReviewerNameSchema,
   type GaiaReviewer,
 } from "./reviewer.js";
+import { localRunProfileSource } from "./run-profile.js";
 import { readLocalRun, readLocalRunEvents } from "./run-read-api.js";
 import {
   acceptFactoryRun,
@@ -86,7 +94,9 @@ import {
   continueServerRun,
   reconcileInterruptedServerRuns,
 } from "./server-workflows.js";
-import { makeTestHarnessProviderRegistry } from "./test-support.js";
+import { localSkillManifestSource } from "./skill-manifest.js";
+import { testHarnessProvider } from "./test-support.js";
+import { localDirectoryWorkspaceSource } from "./workspace.js";
 
 const WorkerContinuationEventPayloadSchema = Schema.Struct({
   continuation: WorkerContinuationReceiptSchema,
@@ -106,6 +116,110 @@ const decodeWorkerCorrelationEventPayload = Schema.decodeUnknownSync(
 const decodeWorkerDesktopOriginEventPayload = Schema.decodeUnknownSync(
   WorkerDesktopOriginEventPayloadSchema
 );
+
+function appendWorkerCorrelationIntent(
+  runId: ReturnType<typeof parseRunId>,
+  paths: RunPaths,
+  receipt: Parameters<
+    typeof encodeWorkerCorrelationReconciliationReceiptJson
+  >[0]
+) {
+  return Effect.gen(function* () {
+    const events = yield* readEvents(paths);
+    const episode = yield* commitDerivedAppModelInvocationEpisode({
+      episodeKey: `workerCorrelation:${receipt.actionId}`,
+      episodeRole: "workerCorrelation",
+      events,
+      paths,
+      runId,
+      taskInput:
+        "Continue the interrupted worker recovery from the audited checkpoint. Do not restart the run, publish, merge, or change recovery policy.",
+    });
+    return yield* appendEvent(runId, paths, {
+      payload: {
+        reconciliation:
+          encodeWorkerCorrelationReconciliationReceiptJson(receipt),
+        ...(episode === undefined
+          ? {}
+          : {
+              modelInvocationEpisode: Schema.encodeSync(
+                ModelInvocationEpisodeStartV1
+              )(episode),
+            }),
+      },
+      type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+    });
+  });
+}
+
+function removeModelInvocationProtocolMarker(paths: RunPaths) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const lines = (yield* fs.readFileString(paths.events))
+      .trimEnd()
+      .split("\n");
+    const first = JSON.parse(lines[0] ?? "null") as {
+      payload?: Record<string, unknown>;
+      type?: string;
+    };
+    if (first.type !== "RUN_CREATED" || first.payload === undefined) return;
+    delete first.payload["modelInvocationProtocol"];
+    lines[0] = JSON.stringify(first);
+    yield* fs.writeFileString(paths.events, `${lines.join("\n")}\n`);
+  });
+}
+
+function snapshotAuditedActionEvidence(paths: RunPaths) {
+  const modelInvocations = existsSync(paths.modelInvocations)
+    ? readdirSync(paths.modelInvocations, {
+        encoding: "utf8",
+        recursive: true,
+        withFileTypes: true,
+      })
+        .filter((entry) => entry.isFile())
+        .map((entry) => {
+          const filePath = join(entry.parentPath, entry.name);
+          return [
+            filePath.slice(paths.modelInvocations.length + 1),
+            readFileSync(filePath, "utf8"),
+          ] as const;
+        })
+        .toSorted(([left], [right]) => left.localeCompare(right))
+    : [];
+  return {
+    events: readFileSync(paths.events, "utf8"),
+    modelInvocations,
+  };
+}
+
+function makeMarkerHarnessProviderRegistry(rootDirectory: string) {
+  const recordMarker = (request: {
+    readonly sessionId: string;
+    readonly workspacePath: string;
+  }) => {
+    const runId = request.sessionId.slice("session-".length);
+    const workspace = join(rootDirectory, request.workspacePath);
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(join(workspace, "output.txt"), `${runId}\n`);
+  };
+  const provider: HarnessProvider = {
+    ...testHarnessProvider,
+    createSession: (request) =>
+      Effect.sync(() => recordMarker(request)).pipe(
+        Effect.andThen(testHarnessProvider.createSession(request))
+      ),
+    resumeSession: (request) =>
+      Effect.sync(() => recordMarker(request)).pipe(
+        Effect.andThen(testHarnessProvider.resumeSession(request))
+      ),
+  };
+  return makeHarnessProviderRegistry([
+    {
+      profileId: codexAppServerExecutionSelection.harnessProfileId,
+      provider,
+    },
+  ]);
+}
 
 describe("server workflows", () => {
   layer(NodeServices.layer)((it) => {
@@ -132,6 +246,39 @@ describe("server workflows", () => {
         assert.strictEqual(events.events[0]?.type, "RUN_CREATED");
         assert.strictEqual(events.events[0]?.payload["source"], "server");
         assert.strictEqual(events.events[0]?.sequence, accepted.eventSequence);
+        const checkpointPath = `${accepted.runDirectory}/accepted-run-input.json`;
+        const checkpointBody = yield* fs.readFileString(checkpointPath);
+        const checkpointMtime = (yield* fs.stat(checkpointPath)).mtime;
+        yield* fs.remove(`${accepted.runDirectory}/input.md`);
+        const summary = yield* continueServerRun(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        assert.strictEqual(summary.status, "completed");
+        assert.strictEqual(
+          yield* fs.readFileString(checkpointPath),
+          checkpointBody
+        );
+        assert.deepEqual(
+          (yield* fs.stat(checkpointPath)).mtime,
+          checkpointMtime
+        );
+        assert.isFalse(yield* fs.exists(`${cwd}/.gaia/lock`));
+        const eventCount = (yield* readLocalRunEvents(accepted.runId, {
+          rootDirectory: cwd,
+        })).events.length;
+        const mismatch = yield* Effect.flip(
+          continueServerRun(accepted.runId, {
+            rootDirectory: cwd,
+            workspaceSource: localDirectoryWorkspaceSource(cwd),
+          })
+        );
+        assert.strictEqual(mismatch.code, "AcceptedRunCapabilityMismatch");
+        assert.isFalse(yield* fs.exists(`${cwd}/.gaia/lock`));
+        const afterMismatch = yield* readLocalRunEvents(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        assert.lengthOf(afterMismatch.events, eventCount + 1);
+        assert.strictEqual(afterMismatch.events.at(-1)?.type, "RUN_FAILED");
       })
     );
 
@@ -254,20 +401,18 @@ describe("server workflows", () => {
           );
           providerAvailable = false;
 
-          const continuation = yield* continueServerRun(accepted.runId, {
-            harnessProviderRegistry: registry,
-            rootDirectory: cwd,
-          }).pipe(Effect.exit);
+          const error = yield* Effect.flip(
+            continueServerRun(accepted.runId, {
+              harnessProviderRegistry: registry,
+              rootDirectory: cwd,
+            })
+          );
           const events = yield* readLocalRunEvents(accepted.runId, {
             rootDirectory: cwd,
           });
 
-          assert.strictEqual(continuation._tag, "Failure");
+          assert.strictEqual(error.code, "AcceptedRunCapabilityMismatch");
           assert.strictEqual(events.events.at(-1)?.type, "RUN_FAILED");
-          assert.strictEqual(
-            events.events.at(-1)?.payload["code"],
-            "HarnessUnavailable"
-          );
         })
     );
 
@@ -295,7 +440,7 @@ describe("server workflows", () => {
               deliveryGitCommandRunner: recordingGitRunner(commands, {
                 baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
               }),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
@@ -303,7 +448,7 @@ describe("server workflows", () => {
             deliveryGitCommandRunner: recordingGitRunner(commands, {
               baseRevision: "eea77bffa399d93ae0c90e71e9a39f1fb9a4aa92",
             }),
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const events = yield* readLocalRunEvents(accepted.runId, {
@@ -346,14 +491,14 @@ describe("server workflows", () => {
             },
             {
               deliveryGitCommandRunner: gitRunner,
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
           const summary = yield* continueServerRun(accepted.runId, {
             deliveryGitCommandRunner: gitRunner,
             deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const events = yield* readLocalRunEvents(accepted.runId, {
@@ -444,7 +589,7 @@ describe("server workflows", () => {
               deliveryAcceptanceProvenancePolicy: provenancePolicy,
               deliveryFeedbackTrustPolicy: trustPolicy,
               deliveryGitCommandRunner: gitRunner,
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
@@ -470,7 +615,7 @@ describe("server workflows", () => {
           yield* continueServerRun(accepted.runId, {
             deliveryGitCommandRunner: gitRunner,
             deliveryPublisher: recordingDeliveryPublisher([]),
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const events = yield* readLocalRunEvents(accepted.runId, {
@@ -534,7 +679,7 @@ describe("server workflows", () => {
             {
               deliveryFeedbackTrustPolicy: solo,
               deliveryGitCommandRunner: gitRunner,
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
@@ -543,7 +688,7 @@ describe("server workflows", () => {
             deliveryFeedbackTrustPolicy: strict,
             deliveryGitCommandRunner: gitRunner,
             deliveryPublisher: recordingDeliveryPublisher([]),
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           }).pipe(Effect.exit);
           const events = yield* readLocalRunEvents(accepted.runId, {
@@ -588,7 +733,7 @@ describe("server workflows", () => {
             },
             {
               deliveryGitCommandRunner: gitRunner,
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
@@ -622,6 +767,7 @@ describe("server workflows", () => {
             Schema.Record(Schema.String, Schema.Json)
           )(payload);
           const {
+            acceptedInputCheckpoint: _acceptedInputCheckpoint,
             deliveryFeedbackTrustPolicy: _deliveryFeedbackTrustPolicy,
             ...legacyPayload
           } = payloadObject;
@@ -633,7 +779,7 @@ describe("server workflows", () => {
           yield* continueServerRun(accepted.runId, {
             deliveryGitCommandRunner: gitRunner,
             deliveryPublisher: recordingDeliveryPublisher([]),
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const events = yield* readLocalRunEvents(accepted.runId, {
@@ -690,7 +836,7 @@ describe("server workflows", () => {
             {
               deliveryAcceptanceProvenancePolicy: acceptedPolicy,
               deliveryGitCommandRunner: gitRunner,
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
@@ -703,7 +849,7 @@ describe("server workflows", () => {
             deliveryAcceptanceProvenancePolicy: drifted,
             deliveryGitCommandRunner: gitRunner,
             deliveryPublisher: recordingDeliveryPublisher([]),
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           }).pipe(Effect.exit);
           const events = yield* readLocalRunEvents(accepted.runId, {
@@ -746,7 +892,7 @@ describe("server workflows", () => {
             },
             {
               deliveryGitCommandRunner: gitRunner,
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
@@ -754,21 +900,19 @@ describe("server workflows", () => {
             recursive: true,
           });
 
-          const exit = yield* continueServerRun(accepted.runId, {
-            deliveryGitCommandRunner: gitRunner,
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
-            rootDirectory: cwd,
-          }).pipe(Effect.exit);
+          const error = yield* Effect.flip(
+            continueServerRun(accepted.runId, {
+              deliveryGitCommandRunner: gitRunner,
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
+              rootDirectory: cwd,
+            })
+          );
           const events = yield* readLocalRunEvents(accepted.runId, {
             rootDirectory: cwd,
           });
 
-          assert.strictEqual(exit._tag, "Failure");
+          assert.strictEqual(error.code, "DeliveryWorktreeIdentityMismatch");
           assert.strictEqual(events.events.at(-1)?.type, "RUN_FAILED");
-          assert.strictEqual(
-            events.events.at(-1)?.payload["code"],
-            "DeliveryWorktreeIdentityMismatch"
-          );
         })
     );
 
@@ -799,7 +943,7 @@ describe("server workflows", () => {
             },
             {
               deliveryGitCommandRunner: gitRunner,
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
@@ -823,21 +967,19 @@ describe("server workflows", () => {
             )}\n`
           );
 
-          const exit = yield* continueServerRun(accepted.runId, {
-            deliveryGitCommandRunner: gitRunner,
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
-            rootDirectory: cwd,
-          }).pipe(Effect.exit);
+          const error = yield* Effect.flip(
+            continueServerRun(accepted.runId, {
+              deliveryGitCommandRunner: gitRunner,
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
+              rootDirectory: cwd,
+            })
+          );
           const events = yield* readLocalRunEvents(accepted.runId, {
             rootDirectory: cwd,
           });
 
-          assert.strictEqual(exit._tag, "Failure");
+          assert.strictEqual(error.code, "DeliveryWorktreeIdentityMismatch");
           assert.strictEqual(events.events.at(-1)?.type, "RUN_FAILED");
-          assert.strictEqual(
-            events.events.at(-1)?.payload["code"],
-            "DeliveryWorktreeIdentityMismatch"
-          );
         })
     );
 
@@ -867,7 +1009,7 @@ describe("server workflows", () => {
             },
             {
               deliveryGitCommandRunner: gitRunner,
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
@@ -910,21 +1052,19 @@ describe("server workflows", () => {
             })}\n`
           );
 
-          const exit = yield* continueServerRun(accepted.runId, {
-            deliveryGitCommandRunner: gitRunner,
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
-            rootDirectory: cwd,
-          }).pipe(Effect.exit);
+          const error = yield* Effect.flip(
+            continueServerRun(accepted.runId, {
+              deliveryGitCommandRunner: gitRunner,
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
+              rootDirectory: cwd,
+            })
+          );
           const events = yield* readLocalRunEvents(accepted.runId, {
             rootDirectory: cwd,
           });
 
-          assert.strictEqual(exit._tag, "Failure");
+          assert.strictEqual(error.code, "AcceptedRunCapabilityMismatch");
           assert.strictEqual(events.events.at(-1)?.type, "RUN_FAILED");
-          assert.strictEqual(
-            events.events.at(-1)?.payload["code"],
-            "DeliveryWorktreeIdentityMismatch"
-          );
         })
     );
 
@@ -937,6 +1077,24 @@ describe("server workflows", () => {
           try {
             const cwd = realpathSync(smoke.source);
             const publicationCalls: Array<string> = [];
+            const profilePath = `${cwd}/restart-profile.json`;
+            const skillManifestPath = `${cwd}/restart-skills.json`;
+            yield* fs.writeFileString(
+              profilePath,
+              JSON.stringify({
+                checks: { browserEvidence: "optional" },
+                name: "checkpoint-profile",
+                version: 1,
+              })
+            );
+            yield* fs.writeFileString(
+              skillManifestPath,
+              JSON.stringify({ skills: [] })
+            );
+            const acceptedSources = {
+              runProfileSource: localRunProfileSource(profilePath),
+              skillManifestSource: localSkillManifestSource(skillManifestPath),
+            };
             const accepted = yield* acceptFactoryRun(
               {
                 delivery: { mode: "pullRequest" },
@@ -949,16 +1107,20 @@ describe("server workflows", () => {
                 },
               },
               {
-                harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                ...acceptedSources,
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
                 rootDirectory: cwd,
               }
             );
             yield* continueServerRun(accepted.runId, {
+              ...acceptedSources,
               deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             });
             publicationCalls.length = 0;
+            yield* fs.remove(profilePath);
+            yield* fs.remove(skillManifestPath);
 
             const runId = parseRunId(accepted.runId);
             const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
@@ -1030,9 +1192,64 @@ describe("server workflows", () => {
                 codexAppServerExecutionSelection.harnessProfileId,
               kind: "continueInterruptedWorkerRecovery",
             });
+            const evidenceBeforeMismatch = snapshotAuditedActionEvidence(paths);
+            for (const semanticMismatch of [
+              {
+                processHarness: makeProcessHarnessConfig("node", [
+                  "changed-process-harness.mjs",
+                ]),
+              },
+              {
+                codexHarness: {
+                  config: makeCodexHarnessConfig({
+                    model: "gpt-5.4-audited-drift",
+                  }),
+                },
+              },
+              { skillInstaller: { command: "git-other" } },
+              {
+                workspaceSource: localDirectoryWorkspaceSource(
+                  `${cwd}/changed-workspace`
+                ),
+              },
+              { browserEvidenceRequirement: "required" as const },
+              {
+                browserEvidenceTargetUrl: parseBrowserEvidenceTargetUrl(
+                  "https://example.test/changed-target"
+                ),
+              },
+            ]) {
+              let mismatchedRunnerCalls = 0;
+              const mismatch = yield* Effect.flip(
+                actOnWorkerContinuation(runId, action, {
+                  ...acceptedSources,
+                  ...semanticMismatch,
+                  harnessProviderRegistry:
+                    makeMarkerHarnessProviderRegistry(cwd),
+                  rootDirectory: cwd,
+                  workerContinuationRunner: () =>
+                    Effect.sync(() => {
+                      mismatchedRunnerCalls += 1;
+                      throw new Error(
+                        "The mismatched runner must not be called."
+                      );
+                    }),
+                })
+              );
+              assert.strictEqual(
+                mismatch.code,
+                "AcceptedRunCapabilityMismatch"
+              );
+              assert.strictEqual(mismatchedRunnerCalls, 0);
+              assert.deepEqual(
+                snapshotAuditedActionEvidence(paths),
+                evidenceBeforeMismatch
+              );
+            }
             const receipt = yield* actOnWorkerContinuation(runId, action, {
+              ...acceptedSources,
               deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             });
             const events = yield* readLocalRunEvents(runId, {
@@ -1056,7 +1273,11 @@ describe("server workflows", () => {
               "delivery"
             ];
 
-            assert.strictEqual(receipt.state, "workerCompleted");
+            assert.strictEqual(
+              receipt.state,
+              "workerCompleted",
+              JSON.stringify({ receipt, tail: events.events.slice(-8) })
+            );
             assert.deepEqual(continuationStates, [
               "intentRecorded",
               "resumeAttempted",
@@ -1090,7 +1311,9 @@ describe("server workflows", () => {
               action,
               {
                 deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
-                harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(
+                  smoke.source
+                ),
                 rootDirectory: cwd,
               }
             );
@@ -1107,7 +1330,8 @@ describe("server workflows", () => {
                 {
                   deliveryPublisher:
                     recordingDeliveryPublisher(publicationCalls),
-                  harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                  harnessProviderRegistry:
+                    makeMarkerHarnessProviderRegistry(cwd),
                   rootDirectory: cwd,
                 }
               )
@@ -1269,13 +1493,15 @@ describe("server workflows", () => {
                 },
               },
               {
-                harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
                 rootDirectory: cwd,
               }
             );
             yield* continueServerRun(accepted.runId, {
               deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(
+                smoke.source
+              ),
               rootDirectory: cwd,
             });
             publicationCalls.length = 0;
@@ -1386,11 +1612,73 @@ describe("server workflows", () => {
                 codexAppServerExecutionSelection.harnessProfileId,
               kind: "reconcileInterruptedWorkerCorrelation",
             });
+            const evidenceBeforeMismatch = snapshotAuditedActionEvidence(paths);
+            for (const semanticMismatch of [
+              {
+                processHarness: makeProcessHarnessConfig("node", [
+                  "changed-process-harness.mjs",
+                ]),
+              },
+              {
+                codexHarness: {
+                  config: makeCodexHarnessConfig({
+                    model: "gpt-5.4-audited-drift",
+                  }),
+                },
+              },
+              { skillInstaller: { command: "git-other" } },
+              {
+                workspaceSource: localDirectoryWorkspaceSource(
+                  `${cwd}/changed-workspace`
+                ),
+              },
+              { browserEvidenceRequirement: "required" as const },
+              {
+                browserEvidenceTargetUrl: parseBrowserEvidenceTargetUrl(
+                  "https://example.test/changed-target"
+                ),
+              },
+            ]) {
+              const mismatchedSeamCalls: Array<string> = [];
+              const mismatch = yield* Effect.flip(
+                actOnWorkerCorrelationReconciliation(runId, action, {
+                  ...semanticMismatch,
+                  harnessProviderRegistry:
+                    makeMarkerHarnessProviderRegistry(cwd),
+                  rootDirectory: cwd,
+                  workerCorrelationFollowUpDispatcher: () =>
+                    Effect.sync(() => {
+                      mismatchedSeamCalls.push("follow-up");
+                    }),
+                  workerCorrelationReconciler: () =>
+                    Effect.sync(() => {
+                      mismatchedSeamCalls.push("reconcile");
+                    }),
+                  workerCorrelationRunner: () =>
+                    Effect.sync(() => {
+                      mismatchedSeamCalls.push("runner");
+                      throw new Error(
+                        "The mismatched runner must not be called."
+                      );
+                    }),
+                })
+              );
+              assert.strictEqual(
+                mismatch.code,
+                "AcceptedRunCapabilityMismatch"
+              );
+              assert.deepEqual(mismatchedSeamCalls, []);
+              assert.deepEqual(
+                snapshotAuditedActionEvidence(paths),
+                evidenceBeforeMismatch
+              );
+            }
             const seamCalls: Array<string> = [];
             const receipt = yield* actOnWorkerCorrelationReconciliation(
               runId,
               action,
               {
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
                 rootDirectory: cwd,
                 workerCorrelationReconciler: ({
                   action: seamAction,
@@ -1466,6 +1754,7 @@ describe("server workflows", () => {
               runId,
               action,
               {
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
                 rootDirectory: cwd,
                 workerCorrelationReconciler: () =>
                   Effect.die("must not reconcile twice"),
@@ -1488,6 +1777,8 @@ describe("server workflows", () => {
                   ),
                 }),
                 {
+                  harnessProviderRegistry:
+                    makeMarkerHarnessProviderRegistry(cwd),
                   rootDirectory: cwd,
                   workerCorrelationReconciler: () =>
                     Effect.die("must not reconcile conflicting action"),
@@ -1532,13 +1823,15 @@ describe("server workflows", () => {
                 },
               },
               {
-                harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(
+                  smoke.source
+                ),
                 rootDirectory: cwd,
               }
             );
             yield* continueServerRun(accepted.runId, {
               deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             });
             publicationCalls.length = 0;
@@ -1646,15 +1939,9 @@ describe("server workflows", () => {
               workerEvidenceEpochSequence:
                 failedContinuation.event.sequence + 1,
             };
-            yield* appendEvent(runId, paths, {
-              payload: {
-                reconciliation:
-                  encodeWorkerCorrelationReconciliationReceiptJson({
-                    ...correlationBase,
-                    state: "intentRecorded",
-                  }),
-              },
-              type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+            yield* appendWorkerCorrelationIntent(runId, paths, {
+              ...correlationBase,
+              state: "intentRecorded",
             });
             yield* appendEvent(runId, paths, {
               payload: {
@@ -1705,11 +1992,73 @@ describe("server workflows", () => {
                 codexAppServerExecutionSelection.harnessProfileId,
               kind: "reconcileDesktopOriginatedWorkerCorrelation",
             });
+            const evidenceBeforeMismatch = snapshotAuditedActionEvidence(paths);
+            for (const semanticMismatch of [
+              {
+                processHarness: makeProcessHarnessConfig("node", [
+                  "changed-process-harness.mjs",
+                ]),
+              },
+              {
+                codexHarness: {
+                  config: makeCodexHarnessConfig({
+                    model: "gpt-5.4-audited-drift",
+                  }),
+                },
+              },
+              { skillInstaller: { command: "git-other" } },
+              {
+                workspaceSource: localDirectoryWorkspaceSource(
+                  `${cwd}/changed-workspace`
+                ),
+              },
+              { browserEvidenceRequirement: "required" as const },
+              {
+                browserEvidenceTargetUrl: parseBrowserEvidenceTargetUrl(
+                  "https://example.test/changed-target"
+                ),
+              },
+            ]) {
+              const mismatchedSeamCalls: Array<string> = [];
+              const mismatch = yield* Effect.flip(
+                actOnWorkerDesktopOriginCorrelation(runId, action, {
+                  ...semanticMismatch,
+                  harnessProviderRegistry:
+                    makeMarkerHarnessProviderRegistry(cwd),
+                  rootDirectory: cwd,
+                  workerDesktopOriginCorrelationFollowUpDispatcher: () =>
+                    Effect.sync(() => {
+                      mismatchedSeamCalls.push("follow-up");
+                    }),
+                  workerDesktopOriginCorrelationReconciler: () =>
+                    Effect.sync(() => {
+                      mismatchedSeamCalls.push("reconcile");
+                    }),
+                  workerDesktopOriginCorrelationRunner: () =>
+                    Effect.sync(() => {
+                      mismatchedSeamCalls.push("runner");
+                      throw new Error(
+                        "The mismatched runner must not be called."
+                      );
+                    }),
+                })
+              );
+              assert.strictEqual(
+                mismatch.code,
+                "AcceptedRunCapabilityMismatch"
+              );
+              assert.deepEqual(mismatchedSeamCalls, []);
+              assert.deepEqual(
+                snapshotAuditedActionEvidence(paths),
+                evidenceBeforeMismatch
+              );
+            }
             const seamCalls: Array<string> = [];
             const receipt = yield* actOnWorkerDesktopOriginCorrelation(
               runId,
               action,
               {
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
                 rootDirectory: cwd,
                 workerDesktopOriginCorrelationFollowUpDispatcher: ({
                   clientInputId,
@@ -1784,6 +2133,7 @@ describe("server workflows", () => {
               runId,
               action,
               {
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
                 rootDirectory: cwd,
                 workerDesktopOriginCorrelationFollowUpDispatcher: () =>
                   Effect.die("must not redispatch follow-up"),
@@ -1806,6 +2156,8 @@ describe("server workflows", () => {
                   ),
                 }),
                 {
+                  harnessProviderRegistry:
+                    makeMarkerHarnessProviderRegistry(cwd),
                   rootDirectory: cwd,
                   workerDesktopOriginCorrelationFollowUpDispatcher: () =>
                     Effect.die("must not dispatch conflicting action"),
@@ -1845,13 +2197,15 @@ describe("server workflows", () => {
                 },
               },
               {
-                harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(
+                  smoke.source
+                ),
                 rootDirectory: cwd,
               }
             );
             yield* continueServerRun(accepted.runId, {
               deliveryPublisher: recordingDeliveryPublisher([]),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             });
             const runId = parseRunId(accepted.runId);
@@ -1958,15 +2312,9 @@ describe("server workflows", () => {
               workerEvidenceEpochSequence:
                 failedContinuation.event.sequence + 1,
             };
-            yield* appendEvent(runId, paths, {
-              payload: {
-                reconciliation:
-                  encodeWorkerCorrelationReconciliationReceiptJson({
-                    ...correlationBase,
-                    state: "intentRecorded",
-                  }),
-              },
-              type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+            yield* appendWorkerCorrelationIntent(runId, paths, {
+              ...correlationBase,
+              state: "intentRecorded",
             });
             yield* appendEvent(runId, paths, {
               payload: {
@@ -2060,6 +2408,7 @@ describe("server workflows", () => {
 
             const error = yield* Effect.flip(
               actOnWorkerDesktopOriginCorrelation(runId, action, {
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
                 rootDirectory: cwd,
                 workerDesktopOriginCorrelationFollowUpDispatcher: () =>
                   Effect.die("must not dispatch"),
@@ -2162,12 +2511,13 @@ describe("server workflows", () => {
                 },
               },
               {
-                harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
                 rootDirectory: cwd,
               }
             );
             const runId = parseRunId(accepted.runId);
             const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+            yield* removeModelInvocationProtocolMarker(paths);
             yield* appendEvent(runId, paths, {
               payload: {
                 delivery: {
@@ -2223,15 +2573,9 @@ describe("server workflows", () => {
               maxAttempts: 1 as const,
               workerEvidenceEpochSequence: accepted.eventSequence + 1,
             };
-            yield* appendEvent(runId, paths, {
-              payload: {
-                reconciliation:
-                  encodeWorkerCorrelationReconciliationReceiptJson({
-                    ...base,
-                    state: "intentRecorded",
-                  }),
-              },
-              type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+            yield* appendWorkerCorrelationIntent(runId, paths, {
+              ...base,
+              state: "intentRecorded",
             });
             yield* appendEvent(runId, paths, {
               payload: {
@@ -2269,6 +2613,7 @@ describe("server workflows", () => {
               runId,
               action,
               {
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
                 rootDirectory: cwd,
                 workerCorrelationFollowUpDispatcher: () =>
                   Effect.sync(() => {
@@ -2296,6 +2641,7 @@ describe("server workflows", () => {
               runId,
               action,
               {
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(cwd),
                 rootDirectory: cwd,
                 workerCorrelationFollowUpDispatcher: () =>
                   Effect.die("must not redispatch ambiguous follow-up"),
@@ -2402,13 +2748,17 @@ describe("server workflows", () => {
                 },
               },
               {
-                harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(
+                  smoke.source
+                ),
                 rootDirectory: smoke.source,
               }
             );
             const summary = yield* continueServerRun(accepted.runId, {
               deliveryPublisher: recordingDeliveryPublisher(publicationCalls),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry: makeMarkerHarnessProviderRegistry(
+                smoke.source
+              ),
               rootDirectory: smoke.source,
             });
             const workspace = `${accepted.runDirectory}/workspace`;
@@ -2451,14 +2801,18 @@ describe("server workflows", () => {
                 },
               },
               {
-                harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(
+                  smoke.source
+                ),
                 rootDirectory: smoke.source,
               }
             );
 
             const publicationError = yield* Effect.flip(
               continueServerRun(accepted.runId, {
-                harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+                harnessProviderRegistry: makeMarkerHarnessProviderRegistry(
+                  smoke.source
+                ),
                 rootDirectory: smoke.source,
               })
             );

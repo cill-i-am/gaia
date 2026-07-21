@@ -63,6 +63,14 @@ export class HarnessInput extends Schema.Class<HarnessInput>("HarnessInput")({
   text: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(16_384))),
 }) {}
 
+/** Structural proof emitted only after an exact provider transport accepts input. */
+export class HarnessActionTransportWitness extends Schema.Class<HarnessActionTransportWitness>(
+  "HarnessActionTransportWitness"
+)({
+  kind: Schema.Literal("codexAppServerTransportOffered"),
+  version: Schema.Literal(1),
+}) {}
+
 /** Provider-facing interaction response whose sensitive values are not persisted. */
 export const HarnessInteractionResponseSchema = Schema.Union([
   Schema.Struct({
@@ -216,10 +224,18 @@ export interface HarnessSession {
   ) => Effect.Effect<void, HarnessActionError>;
   readonly send: (
     input: HarnessInput
-  ) => Effect.Effect<void, HarnessActionError>;
+  ) => Effect.Effect<
+    HarnessActionTransportWitness | undefined,
+    HarnessActionError
+  >;
   readonly snapshot: Effect.Effect<HarnessSessionSnapshot, HarnessSessionError>;
   readonly steer: Option.Option<
-    (input: HarnessInput) => Effect.Effect<void, HarnessActionError>
+    (
+      input: HarnessInput
+    ) => Effect.Effect<
+      HarnessActionTransportWitness | undefined,
+      HarnessActionError
+    >
   >;
 }
 

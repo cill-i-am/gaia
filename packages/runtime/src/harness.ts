@@ -2,7 +2,13 @@ import { execFile } from "node:child_process";
 import process from "node:process";
 import { promisify } from "node:util";
 
-import { RunEvent, RunIdSchema, WorkspaceRelativePathSchema } from "@gaia/core";
+import {
+  ModelWorkspaceBindingV1,
+  RenderedModelInputV1,
+  RunEvent,
+  RunIdSchema,
+  WorkspaceRelativePathSchema,
+} from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
 import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
@@ -19,6 +25,7 @@ import {
   type CodexCommandOutputObservation,
 } from "./codex-harness.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
+import { verifyModelAdapterCwd } from "./model-invocation.js";
 import {
   parseRuntimePath,
   RunRelativeArtifactPathSchema,
@@ -78,6 +85,8 @@ export class HarnessRunRequest extends Schema.Class<HarnessRunRequest>(
 )({
   codexHarnessProgressPath: RuntimePathSchema,
   harnessName: HarnessNameSchema,
+  modelRenderedInput: Schema.optionalKey(RenderedModelInputV1),
+  modelWorkspaceBinding: Schema.optionalKey(ModelWorkspaceBindingV1),
   runId: RunIdSchema,
   resolvedSkillPaths: Schema.Array(RuntimePathSchema),
   skillBundlePath: RuntimePathSchema,
@@ -202,56 +211,77 @@ function processHarness(config: ProcessHarnessConfig): GaiaHarness {
   return {
     name: processHarnessName,
     run: (request) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        yield* fs.writeFileString(
-          request.workerLogPath,
-          `Process harness started: ${config.command}\n`,
-          { flag: "a" }
-        );
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const declarationPath = yield* fs.makeTempFileScoped({
+            directory: path.dirname(request.workerResultPath),
+            prefix: ".process-harness-declaration-",
+            suffix: ".json",
+          });
+          yield* fs.writeFileString(
+            request.workerLogPath,
+            `Process harness started: ${config.command}\n`,
+            { flag: "a" }
+          );
 
-        const beforeWorkspace = yield* snapshotWorkspace(request.workspacePath);
-        const execution = yield* runProcessHarnessCommand(config, request);
-        const declaration = yield* readProcessHarnessDeclaration(request);
-        const afterWorkspace = yield* snapshotWorkspace(request.workspacePath);
-        const workspaceDiff = diffWorkspaceSnapshots(
-          beforeWorkspace,
-          afterWorkspace
-        );
-        yield* fs.writeFileString(
-          request.workerLogPath,
-          formatProcessOutput(execution),
-          { flag: "a" }
-        );
+          const beforeWorkspace = yield* snapshotWorkspace(
+            request.workspacePath
+          );
+          const execution = yield* runProcessHarnessCommand(
+            config,
+            request,
+            declarationPath
+          );
+          const declaration = yield* readProcessHarnessDeclaration(
+            request,
+            declarationPath
+          );
+          const afterWorkspace = yield* snapshotWorkspace(
+            request.workspacePath
+          );
+          const workspaceDiff = diffWorkspaceSnapshots(
+            beforeWorkspace,
+            afterWorkspace
+          );
+          yield* fs.writeFileString(
+            request.workerLogPath,
+            formatProcessOutput(execution),
+            { flag: "a" }
+          );
 
-        const result = HarnessRunResult.make({
-          ...(declaration.browserTargetUrl === undefined
-            ? {}
-            : { browserTargetUrl: declaration.browserTargetUrl }),
-          ...(declaration.previewDeploymentUrl === undefined
-            ? {}
-            : { previewDeploymentUrl: declaration.previewDeploymentUrl }),
-          changedWorkspacePaths: workspaceDiff.productChangedPaths,
-          exitCode: execution.exitCode,
-          harnessName: request.harnessName,
-          outputArtifacts: ["workspace/output.txt"],
-          resultPath: "worker-result.json",
-          runId: request.runId,
-          status: "completed",
-          summary: `Process harness completed "${request.specTitle}".`,
-          workspaceDiff,
-        });
+          const result = HarnessRunResult.make({
+            ...(declaration.browserTargetUrl === undefined
+              ? {}
+              : { browserTargetUrl: declaration.browserTargetUrl }),
+            ...(declaration.previewDeploymentUrl === undefined
+              ? {}
+              : {
+                  previewDeploymentUrl: declaration.previewDeploymentUrl,
+                }),
+            changedWorkspacePaths: workspaceDiff.productChangedPaths,
+            exitCode: execution.exitCode,
+            harnessName: request.harnessName,
+            outputArtifacts: ["workspace/output.txt"],
+            resultPath: "worker-result.json",
+            runId: request.runId,
+            status: "completed",
+            summary: `Process harness completed "${request.specTitle}".`,
+            workspaceDiff,
+          });
 
-        yield* requireDeclaredOutputArtifacts(request, result);
-        yield* writeHarnessRunResult(request, result);
-        yield* fs.writeFileString(
-          request.workerLogPath,
-          "Process harness completed.\n",
-          { flag: "a" }
-        );
+          yield* requireDeclaredOutputArtifacts(request, result);
+          yield* writeHarnessRunResult(request, result);
+          yield* fs.writeFileString(
+            request.workerLogPath,
+            "Process harness completed.\n",
+            { flag: "a" }
+          );
 
-        return result;
-      }).pipe(
+          return result;
+        })
+      ).pipe(
         Effect.catchTag("PlatformError", (cause) =>
           Effect.fail(
             makeRuntimeError({
@@ -364,6 +394,12 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
         );
         yield* writeProgress(progress);
 
+        if (request.modelWorkspaceBinding !== undefined)
+          yield* verifyModelAdapterCwd(
+            request.workspacePath,
+            request.modelWorkspaceBinding
+          );
+
         const beforeWorkspace = yield* snapshotWorkspace(request.workspacePath);
         const execution = yield* runner({
           recordProgress: recordOutputProgress,
@@ -376,15 +412,17 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
             command: options.config.command,
             cwd: request.workspacePath,
             progressPath: request.codexHarnessProgressPath,
-            stdin: makeCodexHarnessPrompt({
-              resolvedSkillPaths: request.resolvedSkillPaths,
-              runId: request.runId,
-              skillBundlePath: request.skillBundlePath,
-              specBody: request.specBody,
-              specTitle: request.specTitle,
-              workspaceOutputPath: request.workspaceOutputPath,
-              workspacePath: request.workspacePath,
-            }),
+            stdin:
+              request.modelRenderedInput?.text ??
+              makeCodexHarnessPrompt({
+                resolvedSkillPaths: request.resolvedSkillPaths,
+                runId: request.runId,
+                skillBundlePath: request.skillBundlePath,
+                specBody: request.specBody,
+                specTitle: request.specTitle,
+                workspaceOutputPath: request.workspaceOutputPath,
+                workspacePath: request.workspacePath,
+              }),
             timeoutMs: options.config.timeoutMs,
           }),
         }).pipe(
@@ -572,7 +610,8 @@ type ProcessExecutionResult = {
 
 function runProcessHarnessCommand(
   config: ProcessHarnessConfig,
-  request: HarnessRunRequest
+  request: HarnessRunRequest,
+  declarationPath: string
 ) {
   return Effect.tryPromise({
     try: () =>
@@ -589,7 +628,7 @@ function runProcessHarnessCommand(
           GAIA_SPEC_BODY: request.specBody,
           GAIA_SPEC_TITLE: request.specTitle,
           GAIA_WORKER_LOG_PATH: request.workerLogPath,
-          GAIA_WORKER_RESULT_PATH: request.workerResultPath,
+          GAIA_WORKER_RESULT_PATH: declarationPath,
           GAIA_WORKSPACE_OUTPUT_PATH: request.workspaceOutputPath,
           GAIA_WORKSPACE_PATH: request.workspacePath,
         },
@@ -683,7 +722,8 @@ function writeHarnessRunResult(
 }
 
 function readProcessHarnessDeclaration(
-  request: HarnessRunRequest
+  request: HarnessRunRequest,
+  declarationPath: string
 ): Effect.Effect<
   ProcessHarnessDeclaration,
   GaiaRuntimeError,
@@ -691,12 +731,13 @@ function readProcessHarnessDeclaration(
 > {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const exists = yield* fs.exists(request.workerResultPath);
+    const exists = yield* fs.exists(declarationPath);
     if (!exists) {
       return ProcessHarnessDeclaration.make({});
     }
 
-    const contents = yield* fs.readFileString(request.workerResultPath);
+    const contents = yield* fs.readFileString(declarationPath);
+    if (contents.trim().length === 0) return ProcessHarnessDeclaration.make({});
     return yield* parseProcessHarnessDeclaration(contents, request);
   }).pipe(
     Effect.catchTag("PlatformError", (cause) =>
@@ -719,9 +760,8 @@ function parseProcessHarnessDeclaration(
 ) {
   return Effect.try({
     try: () => decodeProcessHarnessDeclaration(JSON.parse(contents)),
-    catch: (cause) =>
+    catch: () =>
       makeRuntimeError({
-        cause,
         code: "ProcessHarnessDeclarationInvalid",
         message: `Process harness '${request.harnessName}' wrote an invalid worker result declaration.`,
         recoverable: true,

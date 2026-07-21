@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { readFile, symlink } from "node:fs/promises";
 import { createServer } from "node:net";
 import nodePath from "node:path";
@@ -1354,8 +1355,42 @@ describe("local Gaia server process", () => {
               rootDirectory: cwd,
             }
           );
+          const checkpointPath = `${accepted.runDirectory}/accepted-run-input.json`;
+          const checkpointBody = yield* fs.readFileString(checkpointPath);
+          const checkpointMtime = (yield* fs.stat(checkpointPath)).mtime;
+          yield* fs.remove(`${accepted.runDirectory}/input.md`);
 
-          const server = yield* startServer(cwd);
+          const provider: HarnessProvider = {
+            ...testHarnessProvider,
+            createSession: (request) =>
+              Effect.gen(function* () {
+                const requestCwd = nodePath.resolve(cwd, request.workspacePath);
+                const runId = parseRunId(
+                  nodePath.basename(nodePath.dirname(requestCwd))
+                );
+                const expectedCwd = nodePath.join(
+                  cwd,
+                  ".gaia",
+                  "runs",
+                  runId,
+                  "workspace"
+                );
+                if (requestCwd !== expectedCwd)
+                  throw new Error("unexpected restart workspace cwd");
+                writeFileSync(
+                  nodePath.join(requestCwd, "output.txt"),
+                  `${runId}\n`
+                );
+                return yield* testHarnessProvider.createSession(request);
+              }),
+          };
+          const registry = makeHarnessProviderRegistry([
+            {
+              profileId: codexAppServerExecutionSelection.harnessProfileId,
+              provider,
+            },
+          ]);
+          const server = yield* startServer(cwd, undefined, registry);
           const events = yield* waitForTerminalRunEventFile(
             cwd,
             accepted.runId
@@ -1365,6 +1400,14 @@ describe("local Gaia server process", () => {
           assert.notInclude(
             events.map(({ type }) => type),
             "RUN_FAILED"
+          );
+          assert.strictEqual(
+            yield* fs.readFileString(checkpointPath),
+            checkpointBody
+          );
+          assert.deepEqual(
+            (yield* fs.stat(checkpointPath)).mtime,
+            checkpointMtime
           );
           yield* server.close;
         }),
@@ -1409,7 +1452,7 @@ describe("local Gaia server process", () => {
                   ),
                   interrupt: Option.some(Effect.void),
                   resolveInteraction: () => Effect.void,
-                  send: () => Effect.void,
+                  send: () => Effect.succeed(undefined),
                   snapshot: Effect.succeed(
                     projectHarnessEvents(events, request.sessionId)
                   ),

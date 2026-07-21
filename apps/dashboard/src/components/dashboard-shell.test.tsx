@@ -3316,6 +3316,7 @@ function localRunSummary(
     createdAt: parseLocalRunTimestamp("2026-07-07T12:00:00.000Z"),
     eventCount: 4,
     latestEventType: "RUN_CREATED",
+    modelInvocationArtifacts: [],
     state: "created",
     status: "running",
     updatedAt: parseLocalRunTimestamp("2026-07-07T12:00:00.000Z"),
@@ -3491,6 +3492,7 @@ function factoryArtifact(
   }
 ): typeof FactoryArtifactDto.Type {
   return {
+    availability: "available",
     contentType: "text/markdown",
     createdAt: decodeRunEventTimestamp("2026-07-08T12:01:00.000Z"),
     kind: "codeSummary",

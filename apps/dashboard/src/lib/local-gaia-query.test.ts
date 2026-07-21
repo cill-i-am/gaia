@@ -349,6 +349,13 @@ describe("local Gaia query options", () => {
     expect(result.artifacts.data.artifacts[0]?.artifactId).toBe(
       "artifact-plan"
     );
+    expect(result.artifacts.data.artifacts[0]?.availability).toBe("available");
+    expect(result.artifacts.data.artifacts[1]?.availability).toBe(
+      "unavailable"
+    );
+    expect(result.artifacts.data.artifacts[1]?.diagnostic?.code).toBe(
+      "ArtifactBodyMissing"
+    );
     expect(result.artifact.data.body).toContain("Plan body");
   });
 
@@ -774,6 +781,7 @@ const factoryGraphEnvelope = {
     execution: testFactoryExecution,
     linkedArtifacts: [
       {
+        availability: "available",
         artifactId: "artifact-plan",
         contentType: "text/markdown",
         createdAt: "2026-07-08T12:00:00.000Z",
@@ -823,11 +831,27 @@ const artifactListEnvelope = {
   data: {
     artifacts: [
       {
+        availability: "available",
         artifactId: "artifact-plan",
         contentType: "text/markdown",
         createdAt: "2026-07-08T12:00:00.000Z",
         kind: "plan",
         label: "Worker plan",
+        ownerAgentId: "agent-worker",
+        visibility: "run",
+      },
+      {
+        availability: "unavailable",
+        artifactId: "artifact-missing",
+        contentType: "text/markdown",
+        createdAt: "2026-07-08T12:00:00.000Z",
+        diagnostic: {
+          code: "ArtifactBodyMissing",
+          message: "The event-referenced artifact body is missing.",
+          recoverable: false,
+        },
+        kind: "plan",
+        label: "Missing worker plan",
         ownerAgentId: "agent-worker",
         visibility: "run",
       },

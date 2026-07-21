@@ -680,6 +680,7 @@ function legacyRunSummaryFromFactoryRun(
     createdAt: run.createdAt,
     eventCount: run.counts.activity,
     latestEventType: legacyEventTypeFromFactoryState(run.state),
+    modelInvocationArtifacts: [],
     runId: run.runId,
     state: legacyRunStateFromFactoryState(run.state),
     status: legacyStatusFromFactoryState(run.state),

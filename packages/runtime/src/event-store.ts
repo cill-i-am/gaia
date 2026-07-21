@@ -10,6 +10,8 @@ import {
   type EventType,
   type HarnessEvent,
   type HarnessSessionId,
+  type ModelInvocationEpisodeStartV1,
+  type ModelInvocationObservationV1,
   RunEvent,
   type RunId,
   RunSnapshot,
@@ -174,11 +176,19 @@ export function appendPreparedEventWithinSerialization(
 export function appendHarnessSessionEvent(
   runId: RunId,
   paths: RunPaths,
-  input: HarnessEvent
+  input: HarnessEvent,
+  modelInvocationEpisode?: ModelInvocationEpisodeStartV1,
+  modelInvocationObservation?: ModelInvocationObservationV1
 ) {
   return withRunEventSerialization(
     paths,
-    appendHarnessSessionEventWithinSerialization(runId, paths, input)
+    appendHarnessSessionEventWithinSerialization(
+      runId,
+      paths,
+      input,
+      modelInvocationEpisode,
+      modelInvocationObservation
+    )
   );
 }
 
@@ -186,13 +196,21 @@ export function appendHarnessSessionEvent(
 export function appendHarnessSessionEventWithinSerialization(
   runId: RunId,
   paths: RunPaths,
-  input: HarnessEvent
+  input: HarnessEvent,
+  modelInvocationEpisode?: ModelInvocationEpisodeStartV1,
+  modelInvocationObservation?: ModelInvocationObservationV1
 ) {
   return Effect.gen(function* () {
     const existingEvents = yield* readEvents(paths);
     const parsed = parseHarnessEvent(input);
     const event = makeHarnessRunEvent({
       event: parsed,
+      ...(modelInvocationEpisode === undefined
+        ? {}
+        : { modelInvocationEpisode }),
+      ...(modelInvocationObservation === undefined
+        ? {}
+        : { modelInvocationObservation }),
       runId,
       sequence: existingEvents.length + 1,
       timestamp: new Date().toISOString(),

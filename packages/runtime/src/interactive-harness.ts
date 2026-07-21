@@ -31,6 +31,7 @@ import {
   HarnessRunResult,
   type GaiaHarness,
 } from "./harness.js";
+import { verifyModelAdapterCwd } from "./model-invocation.js";
 import {
   makeRunPaths,
   parseRunStorageRootInput,
@@ -94,6 +95,11 @@ export function interactiveSessionHarness(input: {
             (event) => event.kind === "sessionStarted"
           );
           if (!sessionStarted) {
+            if (request.modelWorkspaceBinding !== undefined)
+              yield* verifyModelAdapterCwd(
+                request.workspacePath,
+                request.modelWorkspaceBinding
+              );
             const baseline = yield* snapshotWorkspace(request.workspacePath);
             yield* writeWorkspaceSnapshot(
               paths.harnessWorkspaceBaseline,
@@ -132,7 +138,10 @@ export function interactiveSessionHarness(input: {
                 : yield* startHarnessSession({
                     provider,
                     request: {
-                      input: HarnessInput.make({ text: request.specBody }),
+                      input: HarnessInput.make({
+                        text:
+                          request.modelRenderedInput?.text ?? request.specBody,
+                      }),
                       sessionId,
                       workspacePath: workspacePathFromRoot(
                         rootDirectory,

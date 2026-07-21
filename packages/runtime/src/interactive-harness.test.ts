@@ -1,9 +1,16 @@
+import { mkdir, writeFile } from "node:fs/promises";
+
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
   HarnessCapabilities,
   HarnessProviderDescriptor,
+  MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+  makeModelContextContentV1,
+  makeModelContextManifestV1,
+  makeModelInvocationManifestV1,
+  ModelInvocationEpisodeStartV1,
   parseHarnessEvent,
   parseHarnessInteractionId,
   parseHarnessItemId,
@@ -14,6 +21,7 @@ import {
   parseMarkdownSpec,
   parseWorkspaceRelativePath,
   projectHarnessEvents,
+  renderModelInputV1,
   type HarnessEvent,
   type RunId,
 } from "@gaia/core";
@@ -45,6 +53,10 @@ import {
   encodeCodexHarnessCheckpoint,
   makeInMemoryCodexHarnessCorrelationStore,
 } from "./codex-harness-provider.js";
+import {
+  makeCodexHarnessConfig,
+  type CodexCommandInvocation,
+} from "./codex-harness.js";
 import { appendEvent, appendHarnessSessionEvent } from "./event-store.js";
 import {
   readFactoryGraph,
@@ -57,16 +69,26 @@ import {
   type HarnessProvider,
   type HarnessSession,
 } from "./harness-session.js";
-import { codexAppServerHarnessName, HarnessRunRequest } from "./harness.js";
+import {
+  codexAppServerHarnessName,
+  codexHarnessName,
+  HarnessRunRequest,
+  runHarness,
+} from "./harness.js";
 import {
   interactiveSessionHarness,
   refreshInteractiveHarnessResult,
 } from "./interactive-harness.js";
+import {
+  commitModelInvocationPair,
+  deriveModelWorkspaceBinding,
+} from "./model-invocation.js";
 import { makeRunPaths } from "./paths.js";
 import type { RunPaths } from "./paths.js";
-import { deriveAndRecordRunContract } from "./run-contract.js";
+import { deriveAndRecordRunContract, loadRunContract } from "./run-contract.js";
 import { readLocalRunEvents } from "./run-read-api.js";
 import { acceptFactoryRun, continueServerRun } from "./server-workflows.js";
+import { recordRunProofResult } from "./verifier.js";
 import {
   snapshotWorkspace,
   writeWorkspaceSnapshot,
@@ -89,6 +111,229 @@ const syntheticCapabilities = HarnessCapabilities.make({
 
 describe("interactive issue-delivery harness", () => {
   layer(NodeServices.layer)((it) => {
+    it.effect(
+      "keeps distinct-run batch stdin and App turn text byte-identical while binding each actual cwd",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-model-adapter-parity-",
+          });
+          const batchRunId = parseRunId("run-BatchPair1");
+          const appRunId = parseRunId("run-AppPair001");
+          const batchPaths = yield* makeRunPaths(batchRunId, {
+            rootDirectory: root,
+          });
+          const appPaths = yield* makeRunPaths(appRunId, {
+            rootDirectory: root,
+          });
+          for (const [runId, paths] of [
+            [batchRunId, batchPaths],
+            [appRunId, appPaths],
+          ] as const) {
+            yield* fs.makeDirectory(paths.root, { recursive: true });
+            yield* fs.makeDirectory(paths.workspace, { recursive: true });
+            yield* appendEvent(runId, paths, {
+              payload: {
+                modelInvocationProtocol: "v1",
+                specPath: "input.md",
+              },
+              type: "RUN_CREATED",
+            });
+          }
+          const title = "Stable adapter parity";
+          const description = "Complete the same accepted worker outcome.";
+          const batchPrepared = yield* prepareAcceptedInteractiveRun(
+            batchRunId,
+            batchPaths,
+            title,
+            description
+          );
+          const appPrepared = yield* prepareAcceptedInteractiveRun(
+            appRunId,
+            appPaths,
+            title,
+            description
+          );
+          const batchCommands: Array<CodexCommandInvocation> = [];
+          const batchResult = yield* runHarness(
+            HarnessRunRequest.make({
+              codexHarnessProgressPath: batchPaths.codexHarnessProgress,
+              harnessName: codexHarnessName,
+              modelRenderedInput: batchPrepared.rendered,
+              modelWorkspaceBinding: batchPrepared.workspaceBinding,
+              resolvedSkillPaths: [],
+              runId: batchRunId,
+              skillBundlePath: batchPaths.skillBundle,
+              specBody: description,
+              specTitle: title,
+              workerLogPath: batchPaths.workerLog,
+              workerResultPath: batchPaths.workerResult,
+              workspaceOutputPath: batchPaths.workspaceOutput,
+              workspacePath: batchPaths.workspace,
+            }),
+            {
+              codexHarness: {
+                commandRunner: (input) =>
+                  Effect.gen(function* () {
+                    batchCommands.push(input);
+                    const lastMessageIndex = input.request.args.indexOf(
+                      "--output-last-message"
+                    );
+                    const lastMessagePath =
+                      input.request.args[lastMessageIndex + 1];
+                    assert.isString(lastMessagePath);
+                    yield* fs.writeFileString(
+                      lastMessagePath!,
+                      "Recorded batch completion.\n"
+                    );
+                    yield* fs.writeFileString(
+                      `${input.request.cwd}/output.txt`,
+                      `recorded batch ${batchRunId}\n`
+                    );
+                    return { exitCode: 0, stderr: "", stdout: "" };
+                  }),
+                config: makeCodexHarnessConfig({ command: "codex-recording" }),
+              },
+            }
+          );
+          yield* appendEvent(batchRunId, batchPaths, {
+            payload: {
+              changedWorkspacePaths: batchResult.changedWorkspacePaths,
+              harnessName: batchResult.harnessName,
+              outputArtifacts: batchResult.outputArtifacts,
+              workerResultPath: batchResult.resultPath,
+            },
+            type: "WORKER_COMPLETED",
+          });
+          const batchProof = yield* recordRunProofResult(
+            batchRunId,
+            batchPaths
+          );
+
+          const subscribed = yield* Deferred.make<void>();
+          const appClient = recordingCodexClient({
+            onSubscribed: () => {
+              Deferred.doneUnsafe(subscribed, Effect.void);
+            },
+            recoveredTurns: [],
+            startTurnId: parseCodexTurnId("native-app-parity-turn"),
+            threadId: parseCodexThreadId("native-app-parity-thread"),
+          });
+          const appProvider = createCodexHarnessProvider({
+            client: appClient.client,
+            config: CodexHarnessProviderConfig.make({ workspaceRoot: root }),
+            correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+          });
+          const appFiber = yield* interactiveSessionHarness({
+            provider: appProvider,
+            rootDirectory: root,
+          })
+            .run(
+              HarnessRunRequest.make({
+                codexHarnessProgressPath: appPaths.codexHarnessProgress,
+                harnessName: codexAppServerHarnessName,
+                modelRenderedInput: appPrepared.rendered,
+                modelWorkspaceBinding: appPrepared.workspaceBinding,
+                resolvedSkillPaths: [],
+                runId: appRunId,
+                skillBundlePath: appPaths.skillBundle,
+                specBody: description,
+                specTitle: title,
+                workerLogPath: appPaths.workerLog,
+                workerResultPath: appPaths.workerResult,
+                workspaceOutputPath: appPaths.workspaceOutput,
+                workspacePath: appPaths.workspace,
+              })
+            )
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(subscribed);
+          for (let attempt = 0; attempt < 100; attempt += 1) {
+            if (
+              appClient.threadStarts.length === 1 &&
+              appClient.turnStarts.length === 1 &&
+              appClient.notifications.size > 0
+            )
+              break;
+            yield* Effect.yieldNow;
+          }
+          assert.strictEqual(appClient.threadStarts.length, 1);
+          assert.strictEqual(appClient.turnStarts.length, 1);
+          assert.isAbove(appClient.notifications.size, 0);
+          yield* fs.writeFileString(
+            appPaths.workspaceOutput,
+            `recorded app ${appRunId}\n`
+          );
+          for (const listener of appClient.notifications) {
+            listener({
+              method: "turn/completed",
+              params: {
+                threadId: parseCodexThreadId("native-app-parity-thread"),
+                turn: {
+                  id: parseCodexTurnId("native-app-parity-turn"),
+                  status: "completed",
+                },
+              },
+            });
+          }
+          const appResult = yield* Fiber.join(appFiber);
+          yield* appendEvent(appRunId, appPaths, {
+            payload: {
+              changedWorkspacePaths: appResult.changedWorkspacePaths,
+              harnessName: appResult.harnessName,
+              outputArtifacts: appResult.outputArtifacts,
+              workerResultPath: appResult.resultPath,
+            },
+            type: "WORKER_COMPLETED",
+          });
+          const appProof = yield* recordRunProofResult(appRunId, appPaths);
+
+          assert.strictEqual(batchCommands.length, 1);
+          assert.strictEqual(appClient.threadStarts.length, 1);
+          assert.strictEqual(appClient.turnStarts.length, 1);
+          const batchCommand = batchCommands[0]!;
+          const appThread = appClient.threadStarts[0] as { cwd: string };
+          const appTurn = appClient.turnStarts[0] as {
+            input: ReadonlyArray<{ text?: string; type: string }>;
+          };
+          const appText = appTurn.input[0]?.text;
+          assert.strictEqual(batchCommand.request.stdin, appText);
+          assert.strictEqual(
+            batchCommand.request.stdin,
+            batchPrepared.rendered.text
+          );
+          assert.strictEqual(appText, appPrepared.rendered.text);
+          assert.strictEqual(
+            batchPrepared.rendered.renderedInputDigest,
+            appPrepared.rendered.renderedInputDigest
+          );
+          assert.notInclude(batchCommand.request.stdin, batchRunId);
+          assert.notInclude(batchCommand.request.stdin, appRunId);
+          assert.notInclude(batchCommand.request.stdin, batchPaths.workspace);
+          assert.notInclude(batchCommand.request.stdin, appPaths.workspace);
+          assert.strictEqual(batchCommand.request.cwd, batchPaths.workspace);
+          assert.strictEqual(appThread.cwd, appPaths.workspace);
+          assert.strictEqual(
+            batchCommand.request.args[
+              batchCommand.request.args.indexOf("--cd") + 1
+            ],
+            batchPaths.workspace
+          );
+          assert.strictEqual(batchProof.version, 1);
+          assert.strictEqual(appProof.version, 1);
+          if (batchProof.version === 1 && appProof.version === 1) {
+            assert.strictEqual(
+              batchProof.supplementalProtocolEvidence[0]?.kind,
+              "framework-output-marker"
+            );
+            assert.strictEqual(
+              appProof.supplementalProtocolEvidence[0]?.kind,
+              "framework-output-marker"
+            );
+          }
+        })
+    );
+
     it.effect(
       "keeps interactive file changes publishable instead of classifying them as harness artifacts",
       () =>
@@ -138,7 +383,7 @@ describe("interactive issue-delivery harness", () => {
             prefix: "gaia-interactive-",
           });
           const counters = { detect: 0, resume: 0, start: 0 };
-          const provider = syntheticProvider(counters);
+          const provider = syntheticProvider(counters, () => true, cwd);
           const registry = makeHarnessProviderRegistry([
             {
               profileId: codexAppServerExecutionSelection.harnessProfileId,
@@ -871,6 +1116,11 @@ function prepareAcceptedInteractiveRun(
   description: string
 ) {
   return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(
+      paths.workspaceOutput,
+      `synthetic interactive completion ${runId}\n`
+    );
     yield* deriveAndRecordRunContract({
       paths,
       runId,
@@ -880,12 +1130,75 @@ function prepareAcceptedInteractiveRun(
       payload: { workspacePath: "workspace" },
       type: "WORKSPACE_PREPARED",
     });
+    const content = makeModelContextContentV1({
+      acceptedOutcomes: [],
+      authority: ["Synthetic accepted worker authority."],
+      budget: { maxOutputBytes: 16_384, maxTurns: 1 },
+      contentRefs: [],
+      episodeRole: "workerInitial",
+      instructions: ["Complete the accepted synthetic worker turn."],
+      nonGoals: [],
+      outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+      planningFacts: [`Accepted task title: ${title}`],
+      safeExclusions: ["credentials", "ambient environment"],
+      skills: [],
+      stops: [],
+      taskInput: description,
+      verificationCommands: [],
+    });
+    const rendered = renderModelInputV1(content);
+    const workspaceBinding = yield* deriveModelWorkspaceBinding(paths);
+    const contract = yield* loadRunContract(paths, runId);
+    const context = makeModelContextManifestV1({
+      authoritativeRefs: [
+        { digest: contract.contractDigest, kind: "runContract" },
+      ],
+      binding: { episodeKey: "workerInitial", runId },
+      content,
+      workspaceBinding,
+    });
+    const invocation = makeModelInvocationManifestV1({
+      acceptedProviderCapabilityObservation: "unobservable",
+      adapterInputClass: "codexAppTurn",
+      adapterSemantics: {
+        kind: "codexAppServer",
+        semanticDigest: "a".repeat(64),
+      },
+      authorityRef: { digest: "b".repeat(64), kind: "authority" },
+      binding: context.payload.binding,
+      budget: content.payload.budget,
+      context,
+      outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+      rendered,
+      runContractRef: {
+        digest: contract.contractDigest,
+        kind: "runContract",
+      },
+      template: { id: "gaia.worker-input.v1", version: 1 },
+      workspaceBinding,
+    });
+    const episode = yield* commitModelInvocationPair({
+      context,
+      episodeKey: "workerInitial",
+      invocation,
+      paths,
+    });
+    yield* appendEvent(runId, paths, {
+      payload: {
+        modelInvocationEpisode: Schema.encodeSync(
+          ModelInvocationEpisodeStartV1
+        )(episode),
+      },
+      type: "WORKER_STARTED",
+    });
+    return { rendered, workspaceBinding };
   });
 }
 
 function syntheticProvider(
   counters: typeof SyntheticProviderCountersSchema.Type,
-  isAvailable: () => boolean = () => true
+  isAvailable: () => boolean = () => true,
+  rootDirectory?: string
 ): HarnessProvider {
   const descriptor = HarnessProviderDescriptor.make({
     displayName: "Synthetic Interactive Provider",
@@ -894,8 +1207,20 @@ function syntheticProvider(
   });
   return {
     createSession: (request) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         counters.start += 1;
+        if (rootDirectory !== undefined) {
+          const runId = request.sessionId.slice("session-".length);
+          const workspace = `${rootDirectory}/.gaia/runs/${runId}/workspace`;
+          yield* Effect.promise(async () => {
+            await mkdir(workspace, { recursive: true });
+            await writeFile(
+              `${workspace}/output.txt`,
+              `synthetic interactive completion ${runId}\n`,
+              "utf8"
+            );
+          });
+        }
         return syntheticSession(request.sessionId, descriptor);
       }),
     descriptor,
@@ -947,7 +1272,7 @@ function syntheticSession(
     ),
     interrupt: Option.some(Effect.void),
     resolveInteraction: () => Effect.void,
-    send: () => Effect.void,
+    send: () => Effect.succeed(undefined),
     snapshot: Effect.succeed(projectHarnessEvents(events, sessionId)),
     steer: Option.none(),
   };
@@ -1041,7 +1366,7 @@ function recoveredPendingSession(
     events: Stream.concat(Stream.fromIterable(events), Stream.never),
     interrupt: Option.some(Effect.void),
     resolveInteraction: () => Effect.void,
-    send: () => Effect.void,
+    send: () => Effect.succeed(undefined),
     snapshot: Effect.succeed(projectHarnessEvents(events, sessionId)),
     steer: Option.none(),
   };
@@ -1057,6 +1382,7 @@ function recordingCodexClient(input: {
 }) {
   const interrupts: Array<unknown> = [];
   const notifications = new Set<(notification: CodexNotification) => void>();
+  const threadStarts: Array<unknown> = [];
   const turnStarts: Array<unknown> = [];
   const client = {
     initialize: () =>
@@ -1094,7 +1420,11 @@ function recordingCodexClient(input: {
     respondPermissionApproval: () => Effect.void,
     respondUserInput: () => Effect.void,
     resumeThread: () => Effect.succeed({ thread: { id: input.threadId } }),
-    startThread: () => Effect.succeed({ thread: { id: input.threadId } }),
+    startThread: (params) =>
+      Effect.sync(() => {
+        threadStarts.push(params);
+        return { thread: { id: input.threadId } };
+      }),
     startTurn: (params) =>
       Effect.sync(() => {
         turnStarts.push(params);
@@ -1104,5 +1434,5 @@ function recordingCodexClient(input: {
       }),
     steerTurn: () => Effect.succeed({ turnId: input.startTurnId }),
   } satisfies CodexAppServerClient;
-  return { client, interrupts, notifications, turnStarts };
+  return { client, interrupts, notifications, threadStarts, turnStarts };
 }

@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Schema, SchemaGetter } from "effect";
 
 import { RunEventTimestampSchema } from "./events.js";
 import { ResolvedHarnessExecution } from "./harness-execution.js";
@@ -102,6 +102,27 @@ export const FactoryArtifactContentTypeSchema = Schema.Literals([
 /** A supported factory artifact body content type. */
 export type FactoryArtifactContentType =
   typeof FactoryArtifactContentTypeSchema.Type;
+
+export const FactoryArtifactAvailabilitySchema = Schema.Literals([
+  "available",
+  "unavailable",
+] as const).annotate({ identifier: "FactoryArtifactAvailability" });
+
+export const ModelManifestArtifactDiagnosticCodeSchema = Schema.Literals([
+  "ArtifactBodyMissing",
+  "ArtifactBodyUnreadable",
+  "ArtifactBodyCorrupt",
+  "ArtifactBodyMismatch",
+  "ArtifactPairConflict",
+] as const).annotate({ identifier: "ModelManifestArtifactDiagnosticCode" });
+
+export class ModelManifestArtifactDiagnosticDto extends Schema.Class<ModelManifestArtifactDiagnosticDto>(
+  "ModelManifestArtifactDiagnosticDto"
+)({
+  code: ModelManifestArtifactDiagnosticCodeSchema,
+  message: Schema.NonEmptyString,
+  recoverable: Schema.Literal(false),
+}) {}
 
 /** A parsed factory work item identifier. */
 export const FactoryGraphNodeIdSchema = Schema.NonEmptyString.pipe(
@@ -231,15 +252,69 @@ export class FactoryEdgeDto extends Schema.Class<FactoryEdgeDto>(
 export class FactoryArtifactDto extends Schema.Class<FactoryArtifactDto>(
   "FactoryArtifactDto"
 )({
+  availability: FactoryArtifactAvailabilitySchema,
   artifactId: FactoryArtifactIdSchema,
   contentType: FactoryArtifactContentTypeSchema,
   createdAt: RunEventTimestampSchema,
   customKind: Schema.optionalKey(Schema.NonEmptyString),
+  diagnostic: Schema.optionalKey(ModelManifestArtifactDiagnosticDto),
   kind: FactoryArtifactKindSchema,
   label: Schema.NonEmptyString,
   ownerAgentId: FactoryAgentIdSchema,
   visibility: Schema.Literal("run"),
 }) {}
+
+export const FactoryArtifactSchema = FactoryArtifactDto.pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (artifact) =>
+        artifact.availability === "available"
+          ? artifact.diagnostic === undefined
+          : artifact.diagnostic !== undefined,
+      {
+        expected:
+          "available artifacts without diagnostics or unavailable artifacts with diagnostics",
+      }
+    )
+  )
+);
+
+const LegacyFactoryArtifactEncodedIngress = Schema.Struct({
+  ...FactoryArtifactDto.fields,
+  availability: Schema.optionalKey(FactoryArtifactAvailabilitySchema),
+}).pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (input) =>
+        input.availability !== undefined ||
+        (input.customKind !== "modelContextManifest" &&
+          input.customKind !== "modelInvocationManifest"),
+      {
+        identifier: "LegacyFactoryArtifactAvailability",
+        message:
+          "Manifest artifacts must carry explicit availability at the wire boundary.",
+      }
+    )
+  )
+);
+
+/** Legacy wire-only ingress; decoded/domain FactoryArtifactDto stays required. */
+export const LegacyFactoryArtifactIngress =
+  LegacyFactoryArtifactEncodedIngress.pipe(
+    Schema.decodeTo(FactoryArtifactSchema, {
+      decode: SchemaGetter.transform((value) =>
+        Schema.encodeSync(FactoryArtifactDto)(
+          FactoryArtifactDto.make({
+            ...value,
+            availability: value.availability ?? "available",
+          })
+        )
+      ),
+      encode: SchemaGetter.transform((value) =>
+        Schema.decodeUnknownSync(LegacyFactoryArtifactEncodedIngress)(value)
+      ),
+    })
+  );
 
 /** Public body returned for a factory artifact read. */
 export class FactoryArtifactBodyDto extends Schema.Class<FactoryArtifactBodyDto>(
@@ -286,7 +361,7 @@ class FactoryGraphDtoBase extends Schema.Class<FactoryGraphDtoBase>(
   diagnostics: Schema.Array(FactoryGraphDiagnosticDto),
   edges: Schema.Array(FactoryEdgeDto),
   execution: ResolvedHarnessExecution,
-  linkedArtifacts: Schema.Array(FactoryArtifactDto),
+  linkedArtifacts: Schema.Array(FactoryArtifactSchema),
   proofAggregate: Schema.optionalKey(RunVerificationAggregateSchema),
   runId: RunIdSchema,
   version: Schema.Literal(1),
@@ -452,7 +527,7 @@ export class FactoryActivityListDto extends Schema.Class<FactoryActivityListDto>
 export class FactoryArtifactListDto extends Schema.Class<FactoryArtifactListDto>(
   "FactoryArtifactListDto"
 )({
-  artifacts: Schema.Array(FactoryArtifactDto),
+  artifacts: Schema.Array(FactoryArtifactSchema),
   runId: RunIdSchema,
 }) {}
 

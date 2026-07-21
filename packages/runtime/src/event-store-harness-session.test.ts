@@ -17,8 +17,10 @@ import { describe, expect, it } from "vitest";
 import {
   appendEvent,
   appendHarnessSessionEvent,
+  appendHarnessSessionEventWithinSerialization,
   loadRun,
   readEvents,
+  withRunEventSerialization,
   type AppendEventInput,
 } from "./event-store.js";
 import { makeRunPaths } from "./paths.js";
@@ -85,10 +87,22 @@ describe("harness session event persistence", () => {
             sessionId,
             state: "connecting",
           });
+          yield* withRunEventSerialization(
+            paths,
+            appendHarnessSessionEventWithinSerialization(runId, paths, {
+              kind: "sessionStateChanged",
+              sessionId,
+              state: "running",
+            })
+          );
 
           const events = yield* readEvents(paths);
-          expect(events.at(-1)?.payload.event).toMatchObject({
+          expect(events.at(-2)?.payload.event).toMatchObject({
             kind: "sessionStarted",
+            sessionId,
+          });
+          expect(events.at(-1)?.payload.event).toMatchObject({
+            kind: "sessionStateChanged",
             sessionId,
           });
         })

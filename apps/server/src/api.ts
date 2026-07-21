@@ -106,8 +106,9 @@ import {
   actOnWorkerCorrelationReconciliation,
   actOnWorkerContinuation,
   actOnWorkerRecovery,
-  acceptFactoryRun,
+  acceptPreparedFactoryRun,
   continueServerRun,
+  prepareFactoryRunAcceptance,
   type ServerRunAcceptance,
   type ServerWorkflowOptions,
 } from "@gaia/runtime/server-workflows";
@@ -290,6 +291,10 @@ export const RunsLive = HttpApiBuilder.group(
           }
 
           const identity = yield* LocalServerConfig;
+          const prepared = yield* prepareFactoryRunAcceptance(payload, {
+            ...identity.workflowOptions,
+            rootDirectory: identity.rootDirectory,
+          }).pipe(Effect.mapError(apiErrorFromRuntimeError));
           const accepted = yield* Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {
               const reservation =
@@ -298,7 +303,7 @@ export const RunsLive = HttpApiBuilder.group(
                 );
               const acceptedExit = yield* Effect.exit(
                 restore(
-                  acceptFactoryRun(payload, {
+                  acceptPreparedFactoryRun(prepared, {
                     ...identity.workflowOptions,
                     rootDirectory: identity.rootDirectory,
                   }).pipe(Effect.onInterrupt(() => reservation.rollback))
@@ -1547,6 +1552,11 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
     case "VerificationCreatedWithoutCommandStart":
       return 409;
     case "HarnessAuthenticationRequired":
+    case "ArtifactBodyCorrupt":
+    case "ArtifactBodyMismatch":
+    case "ArtifactBodyMissing":
+    case "ArtifactBodyUnreadable":
+    case "ArtifactPairConflict":
     case "HarnessCapabilityMismatch":
     case "HarnessIncompatible":
     case "HarnessProfileNotFound":
@@ -1608,6 +1618,7 @@ function actionApiErrorFromCause(
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
+    case "RunStoreLocked":
       return LocalRunApiConflict.make({
         ...publicDiagnosticFields(diagnostic),
         code: diagnostic.code,
@@ -2098,6 +2109,7 @@ function apiErrorFromRuntimeError(
   error: GaiaRuntimeError
 ): LocalRunCreateApiError {
   switch (error.code) {
+    case "AcceptedInputRejected":
     case "InvalidSpec":
       return createApiError({
         code: "InvalidSpec",

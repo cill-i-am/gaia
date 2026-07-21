@@ -26,6 +26,9 @@ const LocalRunSummaryFixtureInputSchema = Schema.Struct({
   latestEventType: Schema.optionalKey(
     LocalRunReadSummarySchema.fields.latestEventType
   ),
+  modelInvocationArtifacts: Schema.optionalKey(
+    LocalRunReadSummarySchema.fields.modelInvocationArtifacts
+  ),
   state: Schema.optionalKey(LocalRunReadSummarySchema.fields.state),
   status: Schema.optionalKey(LocalRunReadSummarySchema.fields.status),
   updatedAt: Schema.optionalKey(LocalRunReadSummarySchema.fields.updatedAt),
@@ -260,6 +263,7 @@ function localRunSummary(
     createdAt: "2026-07-07T12:00:00.000Z",
     eventCount: 1,
     latestEventType: "RUN_CREATED",
+    modelInvocationArtifacts: [],
     state: "created",
     status: "running",
     updatedAt: "2026-07-07T12:00:00.000Z",

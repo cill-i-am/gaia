@@ -1,6 +1,10 @@
 import * as Schema from "effect/Schema";
 
 import { makeRunEvent, RunEvent } from "./events.js";
+import {
+  ModelInvocationEpisodeStartV1,
+  ModelInvocationObservationV1,
+} from "./model-invocation.js";
 
 const IdTextSchema = Schema.NonEmptyString.pipe(
   Schema.check(Schema.isMaxLength(200))
@@ -758,6 +762,8 @@ export function missingHarnessCapabilities(
 
 const MakeHarnessRunEventInputSchema = Schema.Struct({
   event: HarnessEventSchema,
+  modelInvocationEpisode: Schema.optionalKey(ModelInvocationEpisodeStartV1),
+  modelInvocationObservation: Schema.optionalKey(ModelInvocationObservationV1),
   runId: RunEvent.fields.runId,
   sequence: Schema.toEncoded(RunEvent.fields.sequence),
   timestamp: Schema.toEncoded(RunEvent.fields.timestamp),
@@ -774,7 +780,23 @@ export function makeHarnessRunEvent(
   const event = parseHarnessEvent(parsed.event);
   const encoded = Schema.encodeSync(HarnessEventSchema)(event);
   return makeRunEvent({
-    payload: { event: encoded },
+    payload: {
+      event: encoded,
+      ...(parsed.modelInvocationEpisode === undefined
+        ? {}
+        : {
+            modelInvocationEpisode: Schema.encodeSync(
+              ModelInvocationEpisodeStartV1
+            )(parsed.modelInvocationEpisode),
+          }),
+      ...(parsed.modelInvocationObservation === undefined
+        ? {}
+        : {
+            modelInvocationObservation: Schema.encodeSync(
+              ModelInvocationObservationV1
+            )(parsed.modelInvocationObservation),
+          }),
+    },
     runId: parsed.runId,
     sequence: parsed.sequence,
     timestamp: parsed.timestamp,

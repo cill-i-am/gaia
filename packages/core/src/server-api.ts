@@ -46,6 +46,7 @@ import { EventTypeSchema, RunEvent, RunStateSchema } from "./events.js";
 import {
   FactoryActivityListDto,
   FactoryAgentIdSchema,
+  FactoryArtifactAvailabilitySchema,
   FactoryArtifactBodyDto,
   FactoryArtifactIdSchema,
   FactoryArtifactListDto,
@@ -55,9 +56,15 @@ import {
   FactoryRunListDto,
   FactoryRunSummaryDto,
   FactoryWorkflowIdSchema,
+  ModelManifestArtifactDiagnosticDto,
+  ModelManifestArtifactDiagnosticCodeSchema,
 } from "./factory-graph.js";
 import { HarnessExecutionSelection } from "./harness-execution.js";
 import { LocalGaiaServerUrlSchema } from "./local-gaia-server-url.js";
+import {
+  ModelInvocationEpisodeRoleSchema,
+  ModelManifestArtifactIdSchema,
+} from "./model-invocation.js";
 import {
   RunEventSequenceSchema,
   RunProofResultDigestSchema,
@@ -84,6 +91,7 @@ import {
 } from "./worker-recovery.js";
 
 export const LocalRunReadDiagnosticCodeSchema = Schema.Literals([
+  ...ModelManifestArtifactDiagnosticCodeSchema.literals,
   "ArtifactNotAllowed",
   "ArtifactNotFound",
   "FactoryAgentNotFound",
@@ -164,6 +172,7 @@ const ConflictDiagnosticCodeSchema = Schema.Literals([
   "VerificationCreatedWithoutCommandStart",
 ] as const);
 const UnprocessableDiagnosticCodeSchema = Schema.Literals([
+  ...ModelManifestArtifactDiagnosticCodeSchema.literals,
   "HarnessAuthenticationRequired",
   "HarnessCapabilityMismatch",
   "HarnessIncompatible",
@@ -357,6 +366,54 @@ export const parseLocalRunReadDiagnostic = Schema.decodeUnknownSync(
   LocalRunReadDiagnosticSchema
 );
 
+const ModelManifestEpisodeIdSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^episode1_[a-f0-9]{64}$/u))
+);
+
+export class LocalRunModelManifestArtifactDto extends Schema.Class<LocalRunModelManifestArtifactDto>(
+  "LocalRunModelManifestArtifactDto"
+)(
+  {
+    artifactId: ModelManifestArtifactIdSchema,
+    availability: FactoryArtifactAvailabilitySchema,
+    bodyDigest: DeliverySha256DigestPublicSchema,
+    byteLength: Schema.Number.pipe(
+      Schema.check(
+        Schema.isInt(),
+        Schema.isBetween({ minimum: 1, maximum: 131_072 })
+      )
+    ),
+    contentType: Schema.Literal("application/json"),
+    diagnostic: Schema.optionalKey(ModelManifestArtifactDiagnosticDto),
+    episodeId: ModelManifestEpisodeIdSchema,
+    episodeRole: ModelInvocationEpisodeRoleSchema,
+    identityDigest: DeliverySha256DigestPublicSchema,
+    manifestId: Schema.NonEmptyString,
+    manifestKind: Schema.Literals([
+      "modelContextManifest",
+      "modelInvocationManifest",
+    ] as const),
+    version: Schema.Literal(1),
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+export const LocalRunModelManifestArtifactSchema =
+  LocalRunModelManifestArtifactDto.pipe(
+    Schema.check(
+      Schema.makeFilter(
+        (artifact) =>
+          artifact.availability === "available"
+            ? artifact.diagnostic === undefined
+            : artifact.diagnostic !== undefined,
+        {
+          expected:
+            "available manifests without diagnostics or unavailable manifests with diagnostics",
+        }
+      )
+    )
+  );
+
 export class LocalRunApiDiagnosticDto extends Schema.Class<LocalRunApiDiagnosticDto>(
   "LocalRunApiDiagnosticDto"
 )({
@@ -380,6 +437,7 @@ export class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
     Schema.check(Schema.isInt({ identifier: "EventCount" }))
   ),
   latestEventType: EventTypeSchema,
+  modelInvocationArtifacts: Schema.Array(LocalRunModelManifestArtifactSchema),
   proofAggregate: Schema.optionalKey(RunVerificationAggregateSchema),
   runId: RunIdSchema,
   state: RunStateSchema,
@@ -396,6 +454,31 @@ export class LocalRunReadSummary extends Schema.Class<LocalRunReadSummary>(
   status: LocalRunReadStatusSchema,
   updatedAt: LocalRunTimestampSchema,
 }) {}
+
+const LegacyLocalRunReadSummaryEncodedIngress = Schema.Struct({
+  ...LocalRunReadSummary.fields,
+  modelInvocationArtifacts: Schema.optionalKey(
+    Schema.Array(LocalRunModelManifestArtifactSchema)
+  ),
+});
+
+/** Legacy wire-only ingress; decoded/domain summary Types remain required. */
+export const LegacyLocalRunReadSummaryIngress =
+  LegacyLocalRunReadSummaryEncodedIngress.pipe(
+    Schema.decodeTo(LocalRunReadSummary, {
+      decode: SchemaGetter.transform((value) =>
+        Schema.encodeSync(LocalRunReadSummary)(
+          LocalRunReadSummary.make({
+            ...value,
+            modelInvocationArtifacts: value.modelInvocationArtifacts ?? [],
+          })
+        )
+      ),
+      encode: SchemaGetter.transform((value) =>
+        Schema.decodeUnknownSync(LegacyLocalRunReadSummaryEncodedIngress)(value)
+      ),
+    })
+  );
 
 export const LocalRunReadSummarySchema = LocalRunReadSummary;
 
@@ -452,10 +535,22 @@ export class LocalRunArtifactDto extends Schema.Class<LocalRunArtifactDto>(
   runId: RunIdSchema,
 }) {}
 
-export const LocalRunReadArtifactSchema = Schema.Struct({
-  ...LocalRunArtifactDto.fields,
-  artifactName: LocalRunReadArtifactIdSchema,
-}).annotate({ identifier: "LocalRunReadArtifact" });
+export class LocalRunModelManifestArtifactBodyDto extends Schema.Class<LocalRunModelManifestArtifactBodyDto>(
+  "LocalRunModelManifestArtifactBodyDto"
+)({
+  artifactName: ModelManifestArtifactIdSchema,
+  body: Schema.String,
+  contentType: Schema.Literal("application/json"),
+  runId: RunIdSchema,
+}) {}
+
+export const LocalRunReadArtifactSchema = Schema.Union([
+  Schema.Struct({
+    ...LocalRunArtifactDto.fields,
+    artifactName: LocalRunReadArtifactIdSchema,
+  }),
+  LocalRunModelManifestArtifactBodyDto,
+]).annotate({ identifier: "LocalRunReadArtifact" });
 
 export type LocalRunArtifact = typeof LocalRunReadArtifactSchema.Type;
 export type LocalRunArtifactContentType =
@@ -525,7 +620,7 @@ export class FactoryArtifactListSuccessEnvelope extends Schema.Class<FactoryArti
 export class LocalRunArtifactSuccessEnvelope extends Schema.Class<LocalRunArtifactSuccessEnvelope>(
   "LocalRunArtifactSuccessEnvelope"
 )({
-  data: LocalRunArtifactDto,
+  data: LocalRunReadArtifactSchema,
   status: Schema.Literal("success"),
 }) {}
 

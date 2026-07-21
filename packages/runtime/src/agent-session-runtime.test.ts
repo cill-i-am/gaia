@@ -6,6 +6,11 @@ import {
   HarnessCapabilities,
   HarnessProviderDescriptor,
   HarnessSessionSnapshot,
+  MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+  ModelInvocationEpisodeStartV1,
+  makeModelContextContentV1,
+  makeModelContextManifestV1,
+  makeModelInvocationManifestV1,
   parseHarnessActionId,
   parseHarnessInteractionId,
   parseHarnessItemId,
@@ -15,6 +20,7 @@ import {
   parseHarnessTurnId,
   parseRunId,
   parseWorkspaceRelativePath,
+  renderModelInputV1,
 } from "@gaia/core";
 import {
   Effect,
@@ -44,6 +50,11 @@ import {
 } from "./event-store.js";
 import { issueDeliveryAgentIds } from "./factory-workflows.js";
 import type { HarnessSession } from "./harness-session.js";
+import {
+  commitModelInvocationPair,
+  deriveModelWorkspaceBinding,
+  loadModelInvocationPair,
+} from "./model-invocation.js";
 import { makeRunPaths } from "./paths.js";
 
 const runId = parseRunId("run-Gaia86rt01");
@@ -329,7 +340,7 @@ describe("agent session runtime", () => {
       () =>
         Effect.scoped(
           Effect.gen(function* () {
-            const rootDirectory = yield* setupRun();
+            const rootDirectory = yield* setupMarkedRun();
             const paths = yield* makeRunPaths(runId, { rootDirectory });
             yield* appendHarnessSessionEvent(runId, paths, {
               kind: "turnStarted",
@@ -371,7 +382,27 @@ describe("agent session runtime", () => {
             expect(first.state).toBe("dispatchConfirmed");
             expect(second.state).toBe("dispatchConfirmed");
             expect(second.payloadDigest).toBe(first.payloadDigest);
-            expect(calls).toEqual(["focus"]);
+            const events = yield* readEvents(paths);
+            const owner = events.find(
+              (event) =>
+                event.type === "HARNESS_SESSION_EVENT_RECORDED" &&
+                event.payload["modelInvocationEpisode"] !== undefined
+            );
+            const episode = Schema.decodeUnknownSync(
+              ModelInvocationEpisodeStartV1
+            )(owner?.payload["modelInvocationEpisode"]);
+            const pair = yield* loadModelInvocationPair(paths, episode);
+            expect(calls).toEqual([pair.rendered.text]);
+            expect(calls[0]).not.toBe(action.text);
+            expect(calls[0]).toContain(action.text);
+            expect(
+              events.flatMap((event) =>
+                event.type === "HARNESS_SESSION_EVENT_RECORDED" &&
+                event.payload["modelInvocationObservation"] !== undefined
+                  ? [event.payload["modelInvocationObservation"]]
+                  : []
+              )
+            ).toEqual([]);
           })
         )
     );
@@ -1023,6 +1054,83 @@ function setupRun(runCapabilities = capabilities) {
   });
 }
 
+function setupMarkedRun() {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const rootDirectory = yield* fs.makeTempDirectory({
+      prefix: "gaia-agent-session-model-input-",
+    });
+    const paths = yield* makeRunPaths(runId, { rootDirectory });
+    yield* fs.makeDirectory(paths.workspace, { recursive: true });
+    yield* appendEvent(runId, paths, {
+      payload: { modelInvocationProtocol: "v1", specPath: "spec.md" },
+      type: "RUN_CREATED",
+    });
+    const content = makeModelContextContentV1({
+      acceptedOutcomes: ["Complete the accepted worker task."],
+      authority: ["Operate only inside the accepted run."],
+      budget: { maxOutputBytes: 16_384, maxTurns: 1 },
+      contentRefs: [],
+      episodeRole: "workerInitial",
+      instructions: ["Use the accepted operator inputs."],
+      nonGoals: ["Do not deploy."],
+      outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+      planningFacts: ["events.jsonl is authoritative."],
+      safeExclusions: ["credentials"],
+      skills: [],
+      stops: ["Stop on scope drift."],
+      taskInput: "Complete the initial worker task.",
+      verificationCommands: [],
+    });
+    const workspaceBinding = yield* deriveModelWorkspaceBinding(paths);
+    const context = makeModelContextManifestV1({
+      authoritativeRefs: [],
+      binding: { episodeKey: "workerInitial", runId },
+      content,
+      workspaceBinding,
+    });
+    const invocation = makeModelInvocationManifestV1({
+      acceptedProviderCapabilityObservation: "unobservable",
+      adapterInputClass: "codexAppTurn",
+      adapterSemantics: {
+        kind: "codexAppServer",
+        semanticDigest: "a".repeat(64),
+      },
+      authorityRef: { digest: "b".repeat(64), kind: "authority" },
+      binding: context.payload.binding,
+      budget: content.payload.budget,
+      context,
+      outputContract: content.payload.outputContract,
+      rendered: renderModelInputV1(content),
+      runContractRef: { digest: "c".repeat(64), kind: "runContract" },
+      template: { id: "gaia.worker-input.v1", version: 1 },
+      workspaceBinding,
+    });
+    const modelInvocationEpisode = yield* commitModelInvocationPair({
+      context,
+      episodeKey: "workerInitial",
+      invocation,
+      paths,
+    });
+    yield* appendEvent(runId, paths, {
+      payload: {
+        modelInvocationEpisode: Schema.encodeSync(
+          ModelInvocationEpisodeStartV1
+        )(modelInvocationEpisode),
+      },
+      type: "WORKER_STARTED",
+    });
+    yield* appendHarnessSessionEvent(runId, paths, {
+      capabilities,
+      kind: "sessionStarted",
+      provider,
+      sessionId,
+      state: "running",
+    });
+    return rootDirectory;
+  });
+}
+
 function setupRecoveredRun() {
   return Effect.gen(function* () {
     const rootDirectory = yield* setupRun(approvalCapabilities);
@@ -1106,12 +1214,12 @@ function fakeSession(
       Effect.sync(() => {
         resolutions.push(resolution);
       }),
-    send: () => Effect.void,
+    send: () => Effect.succeed(undefined),
     snapshot: Effect.succeed(snapshot),
     steer: Option.some((input) =>
       Effect.sync(() => {
         calls.push(input.text);
-      })
+      }).pipe(Effect.as(undefined))
     ),
   };
 }

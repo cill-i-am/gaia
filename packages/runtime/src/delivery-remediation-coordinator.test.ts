@@ -81,7 +81,12 @@ import {
 } from "./github-publisher.js";
 import { makeDeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
-import type { HarnessProvider, HarnessSession } from "./harness-session.js";
+import {
+  HarnessActionError,
+  HarnessSessionError,
+  type HarnessProvider,
+  type HarnessSession,
+} from "./harness-session.js";
 import {
   makeRunPaths,
   makeRunStorePaths,
@@ -134,7 +139,7 @@ const descriptor = HarnessProviderDescriptor.make({
 describe("delivery remediation coordinator", () => {
   layer(NodeServices.layer)((it) => {
     it.effect(
-      "tolerates one stale old-head confirmation after the exact lease push",
+      "does not redispatch a remediation with an attempted turn but no terminal receipt",
       () =>
         Effect.scoped(
           Effect.gen(function* () {
@@ -403,13 +408,13 @@ describe("delivery remediation coordinator", () => {
               sessionCoordinator: coordinator,
             });
 
-            expect(result.remediation).toMatchObject({ state: "confirmed" });
-            expect(readCount).toBe(3);
-            expect(pushCount).toBe(1);
-            expect(provider.prompts).toHaveLength(1);
-            expect(provider.prompts[0]).toContain(
-              "Hosted check gaia-pr-ci failed."
-            );
+            expect(result.remediation).toMatchObject({
+              code: "RemediationTurnOutcomeUnknown",
+              state: "outcomeUnknown",
+            });
+            expect(readCount).toBe(1);
+            expect(pushCount).toBe(0);
+            expect(provider.prompts).toHaveLength(0);
             expect(
               git(root, [
                 "ls-remote",
@@ -417,12 +422,7 @@ describe("delivery remediation coordinator", () => {
                 "origin",
                 `refs/heads/${provenance.headBranch}`,
               ]).split(/\s/u)[0]
-            ).toBe(
-              result.remediation !== undefined &&
-                "commitSha" in result.remediation
-                ? result.remediation.commitSha
-                : ""
-            );
+            ).toBe(oldHead);
             const events = yield* readEvents(paths);
             expect(
               events
@@ -434,17 +434,104 @@ describe("delivery remediation coordinator", () => {
             ).toEqual([
               "intentRecorded",
               "dispatchAttempted",
-              "turnCompleted",
-              "verified",
-              "commitAttempted",
-              "pushAttempted",
-              "confirmed",
+              "outcomeUnknown",
             ]);
             expect(
               events.filter(
                 ({ type }) => type === "HARNESS_SESSION_EVENT_RECORDED"
               )
-            ).toHaveLength(7);
+            ).toHaveLength(5);
+          })
+        ),
+      20_000
+    );
+
+    it.effect(
+      "makes post-attempt send and terminal-record ambiguity absorbing without redispatch",
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            for (const failure of ["send", "record"] as const) {
+              const seeded = yield* setupPublishedCoordinatorRun();
+              const feedbackId = parseDeliveryFeedbackId(
+                `feedback-check-${(failure === "send" ? "d" : "e").repeat(64)}`
+              );
+              const provider = recordingProvider(
+                seeded.paths.workspace,
+                failure
+              );
+              const reader: DeliveryPullRequestReader = () =>
+                Effect.succeed({
+                  observation: DeliveryPullRequestObservation.make({
+                    blockers: [
+                      DeliveryBlocker.make({
+                        feedbackIds: [],
+                        kind: "failedCheck",
+                        summary: "One trusted check requires remediation.",
+                      }),
+                    ],
+                    checks: [],
+                    draft: true,
+                    feedback: [],
+                    headSha: seeded.oldHead,
+                    mergeability: "mergeable",
+                    observedAt: "2026-07-11T11:05:00.000Z",
+                    prNumber: seeded.publication.prNumber,
+                    prUrl: seeded.publication.prUrl,
+                    repository: "cill-i-am/gaia",
+                    snapshotDigest: "d".repeat(64),
+                    status: "blocked",
+                    version: 1,
+                  }),
+                  remediationInputs: [
+                    {
+                      id: feedbackId,
+                      kind: "check" as const,
+                      text: "The trusted check failed.",
+                    },
+                  ],
+                });
+              const options = {
+                harnessProviderRegistry: makeHarnessProviderRegistry([
+                  {
+                    profileId: codexAppServerHarnessProfileId,
+                    provider,
+                  },
+                ]),
+                pullRequestReader: reader,
+                refreshWorkerResult: () => Effect.void,
+                reverify: () => Effect.die("must not verify"),
+                rootDirectory: seeded.root,
+                sessionCoordinator: makeLiveHarnessSessionCoordinator(),
+              };
+
+              const first = yield* continueDeliveryRemediation(runId, options);
+              expect(first.remediation).toMatchObject({
+                attempt: 1,
+                code: "RemediationTurnOutcomeUnknown",
+                state: "outcomeUnknown",
+              });
+              const replay = yield* continueDeliveryRemediation(runId, options);
+              expect(replay.remediation).toMatchObject({
+                attempt: 1,
+                state: "outcomeUnknown",
+              });
+              expect(provider.prompts).toHaveLength(1);
+              expect(
+                (yield* readEvents(seeded.paths))
+                  .filter(
+                    ({ type }) => type === "DELIVERY_REMEDIATION_RECORDED"
+                  )
+                  .map((event) =>
+                    parseDeliveryRemediation(event.payload["remediation"])
+                  )
+                  .map(({ state }) => state)
+              ).toEqual([
+                "intentRecorded",
+                "dispatchAttempted",
+                "outcomeUnknown",
+              ]);
+            }
           })
         ),
       20_000
@@ -901,16 +988,21 @@ describe("delivery remediation coordinator", () => {
 
             const concurrent = yield* Effect.all(
               [
-                continueDeliveryRemediation(runId, options),
-                continueDeliveryRemediation(runId, options),
+                Effect.exit(continueDeliveryRemediation(runId, options)),
+                Effect.exit(continueDeliveryRemediation(runId, options)),
               ],
               { concurrency: "unbounded" }
             );
             expect(provider.prompts).toHaveLength(1);
+            expect(concurrent.some(({ _tag }) => _tag === "Failure")).toBe(
+              true
+            );
             expect(
               concurrent.some(
-                ({ remediation }) =>
-                  remediation?.state === "failed" && remediation.recoverable
+                (exit) =>
+                  exit._tag === "Success" &&
+                  exit.value.remediation?.state === "failed" &&
+                  exit.value.remediation.recoverable
               )
             ).toBe(true);
 
@@ -923,8 +1015,8 @@ describe("delivery remediation coordinator", () => {
               state: "failed",
             });
             expect(provider.prompts).toHaveLength(1);
-            expect(observedAuthorizations.filter(Boolean)).toHaveLength(2);
-            expect(observedAuthorizations).toHaveLength(2);
+            expect(observedAuthorizations.filter(Boolean)).toHaveLength(1);
+            expect(observedAuthorizations).toHaveLength(1);
             const remediationEvents = (yield* readEvents(paths))
               .filter(({ type }) => type === "DELIVERY_REMEDIATION_RECORDED")
               .map((event) =>
@@ -1197,12 +1289,13 @@ describe("delivery remediation coordinator", () => {
               sessionCoordinator: makeLiveHarnessSessionCoordinator(),
             });
 
-            expect(provider.prompts).toEqual([prompt]);
+            expect(provider.prompts).toEqual([]);
             expect(result.remediation).toMatchObject({
               attempt: 1,
+              code: "RemediationTurnOutcomeUnknown",
               inputId: envelope.clientInputId,
               operationId: envelope.operationId,
-              state: "failed",
+              state: "outcomeUnknown",
             });
           })
         ),
@@ -2123,7 +2216,8 @@ function jsonDigest(value: unknown) {
 }
 
 function recordingProvider(
-  workspace: typeof RuntimePathTextSchema.Type
+  workspace: typeof RuntimePathTextSchema.Type,
+  failure?: "record" | "send"
 ): HarnessProvider & { readonly prompts: string[] } {
   const prompts: string[] = [];
   return {
@@ -2137,14 +2231,17 @@ function recordingProvider(
     }),
     prompts,
     resumeSession: (request) =>
-      Effect.succeed(recordingSession(request.sessionId, workspace, prompts)),
+      Effect.succeed(
+        recordingSession(request.sessionId, workspace, prompts, failure)
+      ),
   };
 }
 
 function recordingSession(
   sessionId: HarnessSessionId,
   workspace: typeof RuntimePathTextSchema.Type,
-  prompts: string[]
+  prompts: string[],
+  failure?: "record" | "send"
 ): HarnessSession {
   const oldTurnId = parseHarnessTurnId("turn-initial");
   const newTurnId = parseHarnessTurnId("turn-remediation");
@@ -2181,13 +2278,33 @@ function recordingSession(
     },
   ];
   return {
-    events: Stream.fromIterable(events),
+    events:
+      failure === "record"
+        ? Stream.fail(
+            HarnessSessionError.make({
+              message: "Terminal event recording failed.",
+              providerId: descriptor.providerId,
+            })
+          )
+        : Stream.fromIterable(events),
     interrupt: Option.some(Effect.void),
     resolveInteraction: () => Effect.void,
     send: (input) =>
-      Effect.sync(() => {
-        prompts.push(input.text);
-        writeFileSync(`${workspace}/fix.txt`, "remediated\n", "utf8");
+      Effect.gen(function* () {
+        yield* Effect.sync(() => {
+          prompts.push(input.text);
+        });
+        if (failure === "send")
+          return yield* Effect.fail(
+            HarnessActionError.make({
+              actionKind: "send",
+              message: "Provider send result was ambiguous.",
+              providerId: descriptor.providerId,
+            })
+          );
+        yield* Effect.sync(() => {
+          writeFileSync(`${workspace}/fix.txt`, "remediated\n", "utf8");
+        });
       }),
     snapshot: Effect.die("not used"),
     steer: Option.none(),

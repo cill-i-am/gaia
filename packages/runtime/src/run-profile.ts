@@ -1,7 +1,10 @@
 import { Effect, FileSystem, Schema } from "effect";
 
-import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
-import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import {
+  BrowserEvidenceTargetUrlSchema,
+  parseBrowserEvidenceTargetUrl,
+} from "./browser-evidence.js";
+import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import { RunPathsSchema } from "./paths.js";
 
 export const BrowserEvidenceRequirementSchema = Schema.Literals([
@@ -43,7 +46,7 @@ export class RunProfile extends Schema.Class<RunProfile>("RunProfile")({
 const RunProfileSourcePathSchema = Schema.String.pipe(
   Schema.brand("RunProfileSourcePath")
 );
-const RunProfileSourceSchema = Schema.Struct({
+export const RunProfileSourceSchema = Schema.Struct({
   path: RunProfileSourcePathSchema,
 });
 
@@ -131,7 +134,7 @@ function readRunProfile(
         makeRuntimeError({
           cause,
           code: "RunProfileReadFailed",
-          message: `Gaia could not read run profile '${profilePath}'.`,
+          message: "Gaia could not read the selected run profile.",
           recoverable: false,
         })
       )
@@ -144,13 +147,49 @@ function parseRunProfile(
   profilePath: typeof RunProfileSourcePathSchema.Type
 ) {
   return Effect.try({
-    try: () => decodeRunProfileJson(JSON.parse(contents)),
+    try: () => {
+      const input: unknown = JSON.parse(contents);
+      try {
+        return decodeRunProfileJson(input);
+      } catch (cause) {
+        const browser =
+          typeof input === "object" && input !== null && "browser" in input
+            ? input.browser
+            : undefined;
+        const targetUrl =
+          typeof browser === "object" &&
+          browser !== null &&
+          "targetUrl" in browser
+            ? browser.targetUrl
+            : undefined;
+        if (typeof targetUrl === "string") {
+          try {
+            parseBrowserEvidenceTargetUrl(targetUrl);
+          } catch {
+            throw makeRuntimeError({
+              code: "AcceptedInputRejected",
+              message:
+                "Accepted input profile.browser.targetUrl failed the credential-free-url safety policy.",
+              recoverable: false,
+            });
+          }
+        }
+        throw makeRuntimeError({
+          cause,
+          code: "RunProfileInvalid",
+          message: "The selected run profile is not valid.",
+          recoverable: false,
+        });
+      }
+    },
     catch: (cause) =>
-      makeRuntimeError({
-        cause,
-        code: "RunProfileInvalid",
-        message: `Run profile '${profilePath}' is not valid.`,
-        recoverable: false,
-      }),
+      cause instanceof GaiaRuntimeError
+        ? cause
+        : makeRuntimeError({
+            cause,
+            code: "RunProfileInvalid",
+            message: "The selected run profile is not valid.",
+            recoverable: false,
+          }),
   });
 }

@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import { assign, createActor, setup } from "xstate";
 
+import { resolveAcceptedRunInputCheckpoint } from "./accepted-run-input.js";
 import {
   DeliveryCleanupReceiptSchema,
   encodeDeliveryCleanupReceiptJson,
@@ -58,6 +59,7 @@ import {
   parseMergeDecisionV2,
   type MergeDecisionV2,
 } from "./merge-decision.js";
+import { resolveModelInvocationEpisodes } from "./model-invocation.js";
 import {
   parseAnyRunContract,
   parseAnyRunProofResult,
@@ -1481,6 +1483,8 @@ export const runMachine = runMachineSetup
   });
 
 export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
+  resolveAcceptedRunInputCheckpoint(events);
+  resolveModelInvocationEpisodes(events);
   const actor = createActor(runMachine).start();
   let expectedSequence = 1;
   let historyRunId: RunEvent["runId"] | undefined;

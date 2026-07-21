@@ -1,4 +1,12 @@
 export {
+  commitAcceptedRunInputCheckpointNoReplace,
+  decodeAcceptedRunInputSemantics,
+  encodeAcceptedRunInputCheckpointBody,
+  loadAcceptedRunInputCheckpoint,
+  AcceptedRunInputSemanticsV1,
+  type AcceptedCheckpointPayload,
+} from "./accepted-run-input.js";
+export {
   recoverWorkerSession,
   readPrivateWorkerCorrelationFollowUpCheckpoint,
   readPrivateWorkerRecoveryCheckpoint,
@@ -132,6 +140,7 @@ export {
 } from "./harness-provider-registry.js";
 export {
   HarnessActionError,
+  HarnessActionTransportWitness,
   HarnessCapabilityMismatchError,
   HarnessDetectionError,
   HarnessIncompatibleError,
@@ -566,6 +575,26 @@ export {
   WorkspaceDiffOmittedGeneratedPath,
   WorkspaceDiffSummary,
 } from "./workspace-snapshot.js";
+export {
+  CodexBatchSemanticConfigV1,
+  PreparedSkillInstallerV1,
+  ProcessHarnessSemanticConfigV1,
+  decodeCodexBatchSemanticConfig,
+  decodeProcessHarnessSemanticConfig,
+  deriveModelWorkspaceBinding,
+  commitDerivedAppModelInvocationEpisode,
+  commitModelInvocationPair,
+  assertFactoryRunAcceptanceSecretSafe,
+  assertPreparedRunSemanticsV1,
+  prepareSkillInstaller,
+  prepareServerRunAcceptance,
+  prepareSpecRunAcceptance,
+  verifyModelAdapterCwd,
+  type PreparedServerRunAcceptanceV1,
+  type PreparedSpecRunAcceptanceV1,
+  type PreparedRunSemanticsV1,
+  type PrepareSpecRunOptions,
+} from "./model-invocation.js";
 export {
   CommandStatusSchema,
   CommandSummarySchema,

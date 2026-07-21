@@ -18,7 +18,7 @@ import {
   acceptFactoryRun,
   continueServerRun,
 } from "@gaia/runtime/server-workflows";
-import { makeTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
+import { makeMarkerWritingTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
 import { runLocalGaiaServer } from "@gaia/server";
 import { Deferred, Effect, Fiber, FileSystem, Schema } from "effect";
 
@@ -750,12 +750,14 @@ function createFactoryRun(cwd: string, specBody: string) {
         },
       },
       {
-        harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+        harnessProviderRegistry:
+          makeMarkerWritingTestHarnessProviderRegistry(cwd),
         rootDirectory: cwd,
       }
     );
     yield* continueServerRun(accepted.runId, {
-      harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+      harnessProviderRegistry:
+        makeMarkerWritingTestHarnessProviderRegistry(cwd),
       rootDirectory: cwd,
     });
     return accepted;
@@ -778,7 +780,8 @@ function startLocalRunServer(
     const rootDirectory = parseRuntimePath(rootDirectoryInput);
     const ready = yield* Deferred.make<ServerMetadata>();
     const fiber = yield* runLocalGaiaServer({
-      harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+      harnessProviderRegistry:
+        makeMarkerWritingTestHarnessProviderRegistry(rootDirectory),
       onReady: (metadata) =>
         Deferred.succeed(ready, metadata).pipe(Effect.asVoid),
       rootDirectory,
