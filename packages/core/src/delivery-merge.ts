@@ -25,8 +25,10 @@ import {
   parseMergeDecisionV2,
 } from "./merge-decision.js";
 import {
-  parseRunContract,
-  parseRunProofResult,
+  parseAnyRunContract,
+  parseAnyRunProofResult,
+} from "./run-contract-v2.js";
+import {
   RunContractDigestSchema,
   RunContractIdSchema,
   RunContractIdV2Schema,
@@ -462,8 +464,8 @@ export function assertDeliveryMergeReadinessDecisionAuthority(
       latestProofEvent?.type !== "RUN_PROOF_RESULT_RECORDED"
     )
       throw new Error("Merge readiness V3 requires current run proof.");
-    const contract = parseRunContract(contractEvent.payload["contract"]);
-    const proof = parseRunProofResult(
+    const contract = parseAnyRunContract(contractEvent.payload["contract"]);
+    const proof = parseAnyRunProofResult(
       latestProofEvent.payload["result"],
       contract
     );

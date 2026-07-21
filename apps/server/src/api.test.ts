@@ -50,6 +50,7 @@ import {
   parseHarnessItemId,
   parseHarnessProviderId,
   parseHarnessSessionId,
+  parseMarkdownSpec,
   parseHarnessTurnId,
   parseRunId,
   parseWorkerRecoveryActionId,
@@ -65,6 +66,7 @@ import {
   makeHarnessProviderRegistry,
   appendEvent,
   appendHarnessSessionEvent,
+  deriveAndRecordRunContract,
   ReviewResult,
   ReviewerNameSchema,
   subscribeRunEventFeed,
@@ -2749,6 +2751,55 @@ describe("local run api http boundary", () => {
     );
 
     it.effect(
+      "serves verification actions and preserves typed provider diagnostics",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-server-verification-actions-",
+          });
+          const successful = yield* makeVerificationActionFixture(
+            cwd,
+            parseRunId("run-Gaia145ok1"),
+            true
+          );
+          const unavailable = yield* makeVerificationActionFixture(
+            cwd,
+            parseRunId("run-Gaia145bad"),
+            false
+          );
+          const serverLayer = testServerLayer(cwd);
+          const successResponse = yield* HttpClientRequest.post(
+            `/runs/${successful.runId}/verification/actions`
+          ).pipe(
+            HttpClientRequest.bodyJsonUnsafe(successful.action),
+            HttpClient.execute,
+            Effect.provide(serverLayer)
+          );
+          const unavailableResponse = yield* HttpClientRequest.post(
+            `/runs/${unavailable.runId}/verification/actions`
+          ).pipe(
+            HttpClientRequest.bodyJsonUnsafe(unavailable.action),
+            HttpClient.execute,
+            Effect.provide(serverLayer)
+          );
+          const successBody = yield* responseJsonObject(successResponse);
+          const unavailableBody =
+            yield* responseJsonObject(unavailableResponse);
+
+          assert.strictEqual(successResponse.status, 200);
+          assert.strictEqual(getString(successBody, "status"), "success");
+          assert.strictEqual(
+            getString(getObject(successBody, "data"), "kind"),
+            "postPublicationGenerationRecorded"
+          );
+          assert.strictEqual(unavailableResponse.status, 422);
+          assertApiError(unavailableBody, "VerificationProviderFailure", 422);
+        }),
+      20_000
+    );
+
+    it.effect(
       "rejects malformed ids, path-like artifacts, and mutation methods",
       () =>
         Effect.gen(function* () {
@@ -2777,6 +2828,9 @@ describe("local run api http boundary", () => {
             HttpClient.execute,
             Effect.provide(layer)
           );
+          const verificationPost = yield* HttpClientRequest.post(
+            `/runs/${accepted.runId}/verification/actions`
+          ).pipe(HttpClient.execute, Effect.provide(artifactLayer));
           const head = yield* HttpClientRequest.head("/runs").pipe(
             HttpClient.execute,
             Effect.provide(layer)
@@ -2795,6 +2849,10 @@ describe("local run api http boundary", () => {
           );
           const postBody = yield* responseJsonObject(post, "post runs");
           const putBody = yield* responseJsonObject(put, "put run");
+          const verificationPostBody = yield* responseJsonObject(
+            verificationPost,
+            "verification post"
+          );
           const malformedPathBody = yield* responseJsonObject(
             malformedPath,
             "malformed path"
@@ -2810,6 +2868,8 @@ describe("local run api http boundary", () => {
           assertApiError(postBody, "InvalidRequest", 400);
           assert.strictEqual(put.status, 405);
           assertApiError(putBody, "MethodNotAllowed", 405);
+          assert.strictEqual(verificationPost.status, 400);
+          assertApiError(verificationPostBody, "InvalidRequest", 400);
           assert.strictEqual(head.status, 405);
           assert.strictEqual(malformedPath.status, 404);
           assertApiError(malformedPathBody, "EndpointNotFound", 404);
@@ -2832,6 +2892,135 @@ function testServerLayer(
     [],
     serverOptions
   ).pipe(Layer.provideMerge(NodeHttpServer.layerTest));
+}
+
+function makeVerificationActionFixture(
+  rootDirectory: typeof RunStorageRootInputSchema.Encoded,
+  runId: ReturnType<typeof parseRunId>,
+  published: boolean
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const paths = yield* makeRunPaths(runId, { rootDirectory });
+    yield* fs.makeDirectory(paths.workspace, { recursive: true });
+    yield* fs.writeFileString(paths.verificationLog, "");
+    const spec = parseMarkdownSpec(
+      yield* fs.readFileString(
+        `${process.cwd()}/../../examples/specs/claim-verification-v2.md`
+      ),
+      "claim-verification-v2"
+    );
+    const provenance = {
+      baseBranch: "main",
+      baseRevision: "1".repeat(40),
+      headBranch: `gaia/${runId}`,
+      mode: "pullRequest" as const,
+      remote: "origin",
+    };
+    yield* appendEvent(runId, paths, {
+      payload: { delivery: provenance, specPath: "input.md" },
+      type: "RUN_CREATED",
+    });
+    const contract = yield* deriveAndRecordRunContract({
+      deliveryProvenance: provenance,
+      paths,
+      runId,
+      spec,
+    });
+    yield* appendEvent(runId, paths, {
+      payload: { delivery: { ...provenance, stage: "delivering" } },
+      type: "DELIVERY_STARTED",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: { workspacePath: "workspace" },
+      type: "WORKSPACE_PREPARED",
+    });
+    yield* appendEvent(runId, paths, { type: "WORKER_STARTED" });
+    const workerCompletion = yield* appendEvent(runId, paths, {
+      payload: { workerResultPath: "worker-result.json" },
+      type: "WORKER_COMPLETED",
+    });
+    const current = yield* appendEvent(runId, paths, {
+      type: "VERIFICATION_STARTED",
+    });
+    if (!published) {
+      return {
+        action: {
+          actionId: "reconcile-unavailable-gaia-145",
+          claimId: contract.proofClaims[0]!.claimId,
+          expectedContentAuthoritySequence: workerCompletion.event.sequence,
+          expectedContractDigest: contract.contractDigest,
+          expectedEventSequence: current.event.sequence,
+          expectedExecutionEvidenceIdentityDigest: "2".repeat(64),
+          expectedSandboxName: `gaia-${runId}-smoke-command`,
+          expectedSandboxUuid: "123e4567-e89b-12d3-a456-426614174000",
+          kind: "reconcileOutcomeUnknown",
+          prior: {
+            kind: "createdWithoutCommandStart",
+            priorSandboxCreatedSequence: current.event.sequence,
+          },
+          priorGenerationSequence: current.event.sequence,
+        },
+        runId,
+      };
+    }
+
+    const publicationBase = {
+      baseBranch: provenance.baseBranch,
+      baseRevision: provenance.baseRevision,
+      branchName: provenance.headBranch,
+      commitMessage: "fix(server): serve verification actions",
+      commitTimestamp: "2026-07-20T22:00:00.000Z",
+      digestVersion: 1 as const,
+      operationId: `publish-${runId}`,
+      payloadDigest: "3".repeat(64),
+      sourcePaths: ["apps/server/src/api.ts"],
+      treeSha: "4".repeat(40),
+    };
+    const intent = DeliveryPublicationIntent.make({
+      ...publicationBase,
+      state: "intentRecorded",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: { publication: encodeDeliveryPublicationJson(intent) },
+      type: "DELIVERY_PUBLICATION_INTENT_RECORDED",
+    });
+    const attempted = DeliveryPublicationAttempted.make({
+      ...publicationBase,
+      commitSha: "5".repeat(40),
+      state: "attempted",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: { publication: encodeDeliveryPublicationJson(attempted) },
+      type: "DELIVERY_PUBLICATION_ATTEMPTED",
+    });
+    const confirmed = DeliveryPublicationConfirmed.make({
+      ...publicationBase,
+      commitSha: "5".repeat(40),
+      draft: true,
+      headSha: "5".repeat(40),
+      prNumber: 145,
+      prUrl: "https://github.com/cill-i-am/gaia/pull/145",
+      state: "confirmed",
+    });
+    const publication = yield* appendEvent(runId, paths, {
+      payload: { publication: encodeDeliveryPublicationJson(confirmed) },
+      type: "DELIVERY_PUBLICATION_CONFIRMED",
+    });
+    return {
+      action: {
+        actionId: "post-publication-gaia-145-api",
+        expectedContentAuthoritySequence: workerCompletion.event.sequence,
+        expectedContractDigest: contract.contractDigest,
+        expectedEventSequence: publication.event.sequence,
+        expectedHeadSha: confirmed.headSha,
+        expectedPublicationSequence: publication.event.sequence,
+        expectedTargetDigest: contract.targetDigest,
+        kind: "startPostPublicationGeneration",
+      },
+      runId,
+    };
+  });
 }
 
 function testIdentity(

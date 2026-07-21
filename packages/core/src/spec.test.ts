@@ -115,6 +115,22 @@ describe("structured claim verification source", () => {
       )
     );
   });
+
+  it("rejects V2 verification with no mapped proof obligation", () => {
+    const input = fixture()
+      .replace(/ {2}claims:\n[\s\S]*?\n---/u, "  claims: []\n---")
+      .replace(
+        "prePublicationRequiredClaims: [smoke-command]",
+        "prePublicationRequiredClaims: []"
+      )
+      .replace(
+        "postPublicationRequiredClaims: [smoke-ci, smoke-review]",
+        "postPublicationRequiredClaims: []"
+      )
+      .replace(/\n## Verification\n[\s\S]*$/u, "");
+
+    assert.throws(() => parseMarkdownSpec(input, "fallback"));
+  });
 });
 
 function fixture() {

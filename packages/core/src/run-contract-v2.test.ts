@@ -185,6 +185,62 @@ describe("RunContractV2", () => {
     );
   });
 
+  it("rejects empty V2 obligations, mappings, results, and phase evaluation", () => {
+    const contract = makeFixtureContract("run-Gaia145V2e");
+    const emptyMappings = {
+      ...contract,
+      acceptedOutcomes: contract.acceptedOutcomes.map((outcome) => ({
+        ...outcome,
+        conditionalClaimIds: [],
+        postPublicationRequiredClaimIds: [],
+        prePublicationRequiredClaimIds: [],
+      })),
+    };
+    const emptyResultInput = {
+      contentAuthoritySequence: 7,
+      contract,
+      observedTargetDigest: contract.targetDigest,
+      recordedBy: {
+        runId: contract.runId,
+        sequence: 9,
+        type: "RUN_PROOF_RESULT_RECORDED" as const,
+      },
+      results: [],
+    };
+    const validResult = makeRunProofResultV2({
+      ...emptyResultInput,
+      results: contract.proofClaims.map((claim) => ({
+        claimId: claim.claimId,
+        reason: "Evidence has not been collected.",
+        status: "not-run" as const,
+      })),
+    });
+
+    assert.throws(
+      () => parseRunContractV2({ ...contract, proofClaims: [] }),
+      /at least one proof claim/u
+    );
+    assert.throws(
+      () => parseRunContractV2(emptyMappings),
+      /mappings|unmapped claim/u
+    );
+    assert.throws(
+      () => makeRunProofResultV2(emptyResultInput),
+      /at least one claim result/u
+    );
+    assert.throws(() =>
+      isRunProofPhaseSatisfiedV2(
+        contract,
+        {
+          ...validResult,
+          aggregate: "verified",
+          results: [],
+        },
+        "prePublication"
+      )
+    );
+  });
+
   it("rejects evidence rebound from an exact command or source selector", () => {
     const contract = makeFixtureContract("run-Gaia145V2b");
     const command = contract.proofClaims.find(

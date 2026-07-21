@@ -1940,7 +1940,8 @@ function applyClaimVerificationReplay(
         state.sandboxCreatedSequence !== start.sandboxCreatedSequence ||
         state.sandboxCreated.sandboxName !== start.sandboxName ||
         state.sandboxCreated.sandboxUuid !== start.sandboxUuid ||
-        state.commandStart !== undefined
+        state.commandStart !== undefined ||
+        state.terminalSequence !== undefined
       )
         throw new Error("Command start has no exact sandbox-created prefix.");
       state.commandStart = start;
@@ -1953,6 +1954,7 @@ function applyClaimVerificationReplay(
       const claim = requireV2CommandClaim(receipt.claimId);
       if (
         state.commandStart === undefined ||
+        state.reconciliationSequence !== undefined ||
         state.commandStartSequence !== receipt.commandStartSequence ||
         state.commandStart.requestDigest !== receipt.requestDigest ||
         state.commandStart.sandboxName !== receipt.sandboxName ||
@@ -1977,11 +1979,18 @@ function applyClaimVerificationReplay(
       const original = [...states.values()].find(
         (entry) =>
           entry.claimId === reuse.claimId &&
+          entry.contractDigest === reuse.contractDigest &&
+          entry.executionEvidenceIdentityDigest ===
+            reuse.executionEvidenceIdentityDigest &&
           entry.commandStartSequence === reuse.originalCommandStartSequence &&
           entry.terminalSequence === reuse.originalTerminalSequence &&
           entry.receiptDigest === reuse.receiptDigest
       );
-      if (original === undefined || state.terminalSequence !== undefined)
+      if (
+        original === undefined ||
+        state.terminalSequence !== undefined ||
+        state.reconciliationSequence !== undefined
+      )
         throw new Error("Claim-verification reuse has no exact prior receipt.");
       state.terminalSequence = event.sequence;
       return;
@@ -1994,14 +2003,25 @@ function applyClaimVerificationReplay(
       const prefixMatches =
         receipt.reason === "createdWithoutCommandStart"
           ? state.sandboxCreated !== undefined &&
-            state.commandStart === undefined
+            state.commandStart === undefined &&
+            state.sandboxCreatedSequence === receipt.priorSequence &&
+            state.sandboxCreated.sandboxName === receipt.sandboxName &&
+            state.sandboxCreated.sandboxUuid === receipt.sandboxUuid
           : state.commandStart !== undefined &&
+            state.commandStartSequence === receipt.priorSequence &&
+            state.commandStart.sandboxName === receipt.sandboxName &&
+            state.commandStart.sandboxUuid === receipt.sandboxUuid &&
             state.terminalSequence === undefined;
-      if (!prefixMatches || state.reconciliationSequence !== undefined)
+      if (
+        !prefixMatches ||
+        state.reconciliationSequence !== undefined ||
+        state.terminalSequence !== undefined
+      )
         throw new Error(
           "Claim-verification reconciliation prior is not exact."
         );
       state.reconciliationSequence = event.sequence;
+      state.terminalSequence = event.sequence;
       return;
     }
   }

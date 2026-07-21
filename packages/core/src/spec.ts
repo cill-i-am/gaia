@@ -155,7 +155,7 @@ export class VerificationSourceV2 extends Schema.Class<VerificationSourceV2>(
   "VerificationSourceV2"
 )(
   {
-    claims: Schema.Array(
+    claims: Schema.NonEmptyArray(
       Schema.Union([
         VerificationCommandClaimSourceV2,
         VerificationArtifactClaimSourceV2,

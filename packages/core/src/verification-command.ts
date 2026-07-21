@@ -252,7 +252,13 @@ export const VerificationCommandReceiptSchema = Schema.Union([
   VerificationCommandOutputLimitExceededReceipt,
 ]);
 export type VerificationCommandReceipt =
-  typeof VerificationCommandReceiptSchema.Type;
+  | VerificationCommandSucceededReceipt
+  | VerificationCommandNonZeroReceipt
+  | VerificationCommandTimedOutReceipt
+  | VerificationCommandMissingExecutableReceipt
+  | VerificationCommandSpawnFailedReceipt
+  | VerificationCommandInterruptedReceipt
+  | VerificationCommandOutputLimitExceededReceipt;
 const decodeVerificationCommandReceipt = Schema.decodeUnknownSync(
   VerificationCommandReceiptSchema
 );
@@ -331,6 +337,7 @@ export class VerificationReconciliationReceiptV1 extends Schema.Class<Verificati
     finalAbsenceConfirmed: Schema.Literal(true),
     generationSequence: RunEventSequenceSchema,
     operationCounts: VerificationOperationCounts,
+    priorSequence: RunEventSequenceSchema,
     reason: Schema.Literals([
       "createdWithoutCommandStart",
       "commandStartOutcomeUnknown",

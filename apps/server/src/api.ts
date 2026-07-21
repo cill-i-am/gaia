@@ -1487,6 +1487,7 @@ function isAllowedMethod(method: string, url: string) {
     (path === "/runs" ||
       /^\/runs\/[^/]+\/agents\/[^/]+\/session\/actions$/u.test(path) ||
       /^\/runs\/[^/]+\/delivery\/actions$/u.test(path) ||
+      /^\/runs\/[^/]+\/verification\/actions$/u.test(path) ||
       /^\/runs\/[^/]+\/recovery\/actions$/u.test(path))
   );
 }

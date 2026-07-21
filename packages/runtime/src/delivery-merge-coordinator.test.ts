@@ -42,6 +42,8 @@ import {
   encodeDeliveryMergeReadinessDecisionJson,
   encodeDeliveryMergeReceiptJson,
   encodeMergeDecisionV2Json,
+  encodeAnyRunContractJson,
+  encodeAnyRunProofResultJson,
   encodeRunContractJson,
   encodeRunProofResultJson,
   encodeDeliveryPublicationJson,
@@ -50,7 +52,11 @@ import {
   makeRunEvent,
   makeMergeDecisionV2,
   makeRunContract,
+  makeRunContractV2,
   makeRunProofResult,
+  makeRunProofResultV2,
+  makeProofEvidenceIdV2,
+  makeVerificationCommandRequestDigest,
   MergeDecisionBlockerV2,
   deriveAcceptedOutcomeId,
   deriveExplicitSpecItemDigest,
@@ -62,6 +68,8 @@ import {
   parseRunRelativeArtifactPath,
   workspaceStructuralDigestV1,
   MergeDecisionPayloadDigestSchema,
+  parseMarkdownSpec,
+  ProofClaimResultV2Schema,
 } from "@gaia/core";
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -88,7 +96,8 @@ afterEach(() => {
 function fixture(
   state: "ready" | "attempted" | "checkpoint" | "unknown",
   requireApprovedReview?: boolean,
-  readyHeadSha = "a".repeat(40)
+  readyHeadSha = "a".repeat(40),
+  proofVersion: 1 | 2 = 1
 ) {
   const root = mkdtempSync(path.join(tmpdir(), "gaia-merge-restart-"));
   roots.push(root);
@@ -135,7 +144,7 @@ function fixture(
     source: claimSource,
     statement: claimStatement,
   });
-  const contract = makeRunContract({
+  const contractV1 = makeRunContract({
     acceptedOutcomes: [
       {
         conditionalClaimIds: [],
@@ -166,8 +175,8 @@ function fixture(
     targetDigest: structuralDigest,
     targetIdentity: { kind: "unversionedWorkspace", workspacePath: "." },
   });
-  const proof = makeRunProofResult({
-    contract,
+  const proofV1 = makeRunProofResult({
+    contract: contractV1,
     observedTargetDigest: structuralDigest,
     recordedBy: {
       runId,
@@ -189,6 +198,101 @@ function fixture(
     ],
     supplementalProtocolEvidence: [],
   });
+  const contractV2 = makeRunContractV2({
+    baseDigest: structuralDigest,
+    baseIdentity: { kind: "unversionedSnapshot", workspacePath: "." },
+    runId,
+    spec: parseMarkdownSpec(
+      readFileSync(
+        new URL(
+          "../../../examples/specs/claim-verification-v2.md",
+          import.meta.url
+        ),
+        "utf8"
+      ),
+      "fallback"
+    ),
+    targetDigest: structuralDigest,
+    targetIdentity: { kind: "unversionedWorkspace", workspacePath: "." },
+  });
+  const proofV2 = makeRunProofResultV2({
+    contentAuthoritySequence: 5,
+    contract: contractV2,
+    observedTargetDigest: structuralDigest,
+    recordedBy: {
+      runId,
+      sequence: 6,
+      type: "RUN_PROOF_RESULT_RECORDED",
+    },
+    results: Schema.decodeUnknownSync(Schema.Array(ProofClaimResultV2Schema))(
+      contractV2.proofClaims.map((claim) => {
+        if (claim.kind === "command") {
+          const receiptDigest = "4".repeat(64);
+          return {
+            claimId: claim.claimId,
+            evidence: [
+              {
+                evidenceId: makeProofEvidenceIdV2("command", [receiptDigest]),
+                kind: "command" as const,
+                receiptDigest,
+                requestDigest: makeVerificationCommandRequestDigest(
+                  claim.command
+                ),
+                status: "succeeded" as const,
+                terminalSequence: 6,
+              },
+            ],
+            status: "passed" as const,
+          };
+        }
+        if (claim.kind === "external-check") {
+          const eventSequence = 6;
+          return {
+            claimId: claim.claimId,
+            evidence: [
+              {
+                ...claim.selector,
+                evidenceId: makeProofEvidenceIdV2("external-check", [
+                  claim.claimId,
+                  eventSequence,
+                ]),
+                eventSequence,
+                headSha: "a".repeat(40),
+                kind: "external-check" as const,
+              },
+            ],
+            status: "passed" as const,
+          };
+        }
+        if (claim.kind === "human-judgment") {
+          const eventSequence = 6;
+          return {
+            claimId: claim.claimId,
+            evidence: [
+              {
+                ...claim.selector,
+                evidenceId: makeProofEvidenceIdV2("human", [
+                  claim.claimId,
+                  eventSequence,
+                ]),
+                eventSequence,
+                headSha: "a".repeat(40),
+                kind: "human-judgment" as const,
+              },
+            ],
+            status: "passed" as const,
+          };
+        }
+        return {
+          claimId: claim.claimId,
+          reason: "Unexpected claim kind in the dedicated V2 fixture.",
+          status: "not-run" as const,
+        };
+      })
+    ),
+  });
+  const contract = proofVersion === 2 ? contractV2 : contractV1;
+  const proof = proofVersion === 2 ? proofV2 : proofV1;
   const trust = DeliveryFeedbackTrustPolicyV1.make({
     ...defaultDeliveryFeedbackTrustPolicy("cill-i-am/gaia"),
     ...(requireApprovedReview === undefined ? {} : { requireApprovedReview }),
@@ -401,14 +505,14 @@ function fixture(
       },
     }),
     event(3, "RUN_CONTRACT_RECORDED", {
-      contract: encodeRunContractJson(contract),
+      contract: encodeAnyRunContractJson(contract),
     }),
     event(4, "WORKSPACE_PREPARED", { workspacePath: "workspace" }),
     event(5, "WORKER_COMPLETED", {
       workerResultPath: "worker-result.json",
     }),
     event(6, "RUN_PROOF_RESULT_RECORDED", {
-      result: encodeRunProofResultJson(proof),
+      result: encodeAnyRunProofResultJson(proof),
       verificationResultPath: "verification-result.json",
     }),
     event(7, "DELIVERY_READY_TO_PUBLISH", {
@@ -513,10 +617,12 @@ function fixture(
     binding,
     claimId,
     contract,
+    contractV1,
     decisionProof,
     mergeDecision,
     paths,
     proof,
+    proofV1,
     readinessDecision: decision,
     root,
     runId,
@@ -564,8 +670,8 @@ function insertAuthorityBeforeReadiness(
     switch (authority) {
       case "newer proof result": {
         const proof = makeRunProofResult({
-          contract: result.contract,
-          observedTargetDigest: result.proof.observedTargetDigest,
+          contract: result.contractV1,
+          observedTargetDigest: result.proofV1.observedTargetDigest,
           recordedBy: {
             runId: result.runId,
             sequence: nextSequence,
@@ -697,8 +803,8 @@ function appendAuthorityAfterReadiness(
           payload: {
             result: encodeRunProofResultJson(
               makeRunProofResult({
-                contract: result.contract,
-                observedTargetDigest: result.proof.observedTargetDigest,
+                contract: result.contractV1,
+                observedTargetDigest: result.proofV1.observedTargetDigest,
                 recordedBy: {
                   runId: result.runId,
                   sequence,
@@ -1061,6 +1167,22 @@ const merged = (
 });
 
 describe("delivery merge reconstructed coordinator", () => {
+  it("replays the natural V2 proof through MergeDecisionV2 and readiness V3", async () => {
+    const f = fixture("ready", false, "a".repeat(40), 2);
+
+    const loaded = await Effect.runPromise(
+      loadRun(f.paths).pipe(Effect.provide(NodeServices.layer))
+    );
+
+    expect(loaded.latestSnapshot?.context["runProof"]).toMatchObject({
+      aggregate: "verified",
+      version: 2,
+    });
+    expect(loaded.events.at(-1)?.type).toBe(
+      "DELIVERY_MERGE_READINESS_RECORDED"
+    );
+  });
+
   it("rejects malformed Unicode before canonical V3 digesting", () => {
     const f = fixture("ready", false);
 

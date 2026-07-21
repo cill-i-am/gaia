@@ -76,6 +76,9 @@ import {
   WorkerRecoveryWorkspaceValidationError,
   type WorkerRecoveryWorkspaceValidationResult,
   type WorkerRecoveryThreadStatus,
+  type VerificationExecutionProfileV1,
+  type VerificationServices,
+  VerificationProviderFailure,
 } from "@gaia/runtime";
 import {
   reconcileInterruptedServerRuns,
@@ -577,9 +580,13 @@ function makeProductionHarnessServices(
   });
 }
 
-function makeProductionVerificationServices(
-  rootDirectory: typeof RunStorageRootInputSchema.Type
-) {
+export function makeProductionVerificationServices(
+  rootDirectory: typeof RunStorageRootInputSchema.Type,
+  options: {
+    readonly executableCandidates?: ReadonlyArray<string>;
+    readonly runner?: Parameters<typeof makeDockerSandboxCli>[0];
+  } = {}
+): Effect.Effect<VerificationServices, unknown, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const profile = yield* readVerificationExecutionProfile(
@@ -591,7 +598,7 @@ function makeProductionVerificationServices(
       .split(nodePath.delimiter)
       .filter((entry) => entry.length > 0)
       .map((entry) => nodePath.resolve(entry, "sbx"));
-    const candidates = [
+    const candidates = options.executableCandidates ?? [
       "/opt/homebrew/bin/sbx",
       "/usr/local/bin/sbx",
       ...pathCandidates,
@@ -602,40 +609,57 @@ function makeProductionVerificationServices(
       executable = yield* fs.realPath(candidate);
       break;
     }
-    if (executable === undefined)
-      return yield* Effect.fail(
-        makeRuntimeError({
-          code: "VerificationProviderFailure",
-          message:
-            "Pinned Docker Sandbox CLI could not be resolved absolutely.",
-          recoverable: false,
-        })
+    if (executable === undefined) {
+      return unavailableVerificationServices(
+        profile,
+        "Pinned Docker Sandbox CLI could not be resolved absolutely."
       );
-    const cli = makeDockerSandboxCli(nodeDockerSandboxCliRunner, executable);
-    const version = yield* cli.version.pipe(
-      Effect.mapError((cause) =>
-        makeRuntimeError({
-          cause,
-          code: "VerificationProviderFailure",
-          message: "Pinned Docker Sandbox CLI failed its startup check.",
-          recoverable: false,
-        })
-      )
+    }
+    const cli = makeDockerSandboxCli(
+      options.runner ?? nodeDockerSandboxCliRunner,
+      executable
     );
-    const expected = `sbx version: v${profile.provider.version} ${profile.provider.build}`;
-    if (version.exitCode !== 0 || version.stdout.trim() !== expected)
-      return yield* Effect.fail(
-        makeRuntimeError({
-          code: "VerificationProviderFailure",
-          message: "Docker Sandbox CLI startup version/build is not pinned.",
-          recoverable: false,
-        })
+    const versionExit = yield* Effect.exit(cli.version);
+    if (versionExit._tag === "Failure") {
+      return unavailableVerificationServices(
+        profile,
+        "Pinned Docker Sandbox CLI failed its capability check."
       );
+    }
+    const version = versionExit.value;
+    const expected = `sbx version: v${profile.provider.version} ${profile.provider.build}`;
+    if (version.exitCode !== 0 || version.stdout.trim() !== expected) {
+      return unavailableVerificationServices(
+        profile,
+        "Docker Sandbox CLI capability version/build is not pinned."
+      );
+    }
     return {
       executor: makeDockerSandboxVerificationExecutor(cli, profile),
       profile,
     };
   });
+}
+
+function unavailableVerificationServices(
+  profile: VerificationExecutionProfileV1,
+  message: string
+) {
+  const unavailable = () =>
+    Effect.fail(
+      new VerificationProviderFailure({
+        code: "VerificationProviderFailure",
+        message,
+        recoverable: false,
+      })
+    );
+  return {
+    executor: {
+      execute: unavailable,
+      reconcile: unavailable,
+    },
+    profile,
+  };
 }
 
 function workerWorkspacePath(events: typeof RunEventsSchema.Type) {

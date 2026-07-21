@@ -5,6 +5,7 @@ import {
   DeliveryPublicationConfirmed,
   DeliveryPublicationIntent,
   encodeDeliveryPublicationJson,
+  parseAnyRunProofResult,
   parseMarkdownSpec,
   parseRunId,
   VerificationActionRequestSchema,
@@ -17,7 +18,7 @@ import { makeRunPaths, parseRuntimePath } from "./paths.js";
 import { deriveAndRecordRunContract } from "./run-contract.js";
 import { actOnRunVerification } from "./server-workflows.js";
 import { readVerificationExecutionProfile } from "./verification-execution-profile.js";
-import { recordRunProofResult } from "./verifier.js";
+import { recordRunProofResult, type VerificationServices } from "./verifier.js";
 import { observeWorkspaceStructuralDigest } from "./workspace-snapshot.js";
 
 describe("V2 claim verifier", () => {
@@ -78,62 +79,69 @@ describe("V2 claim verifier", () => {
             )
           );
           let executions = 0;
-          const result = yield* recordRunProofResult(runId, paths, {
-            verificationServices: {
-              executor: {
-                execute: (invocation) =>
-                  Effect.gen(function* () {
-                    executions += 1;
-                    yield* invocation.onSandboxCreated({
-                      sandboxName: invocation.sandboxName,
-                      sandboxUuid: "123e4567-e89b-12d3-a456-426614174000",
-                    });
-                    yield* fs.writeFileString(
-                      invocation.stdoutPath,
-                      "gaia-claim-ok\n"
-                    );
-                    yield* fs.writeFileString(invocation.stderrPath, "");
-                    const observed = yield* observeWorkspaceStructuralDigest(
-                      invocation.workspace
-                    );
-                    return Schema.decodeUnknownSync(
-                      StagedDockerSandboxVerificationReceiptSchema
-                    )({
-                      cleanup: {
-                        finalAbsenceConfirmed: true as const,
-                        removedSandboxUuid:
-                          "123e4567-e89b-12d3-a456-426614174000",
-                        stoppedSandboxUuid:
-                          "123e4567-e89b-12d3-a456-426614174000",
-                      },
-                      durationMs: 1,
-                      exitCode: 0,
-                      observedProviderExitCode: 0,
-                      sandboxUuid: "123e4567-e89b-12d3-a456-426614174000",
-                      status: "succeeded" as const,
-                      stderr: {
-                        artifactPath: invocation.stderrArtifactPath,
-                        contentDigest:
-                          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                        observedByteCount: 0,
-                        retainedByteCount: 0,
-                        truncated: false,
-                      },
-                      stdout: {
-                        artifactPath: invocation.stdoutArtifactPath,
-                        contentDigest:
-                          "c67d2c0ac3e5ea53ed76dadc9aab773e884efedcaac2be11aaa4b096576f5849",
-                        observedByteCount: 14,
-                        retainedByteCount: 14,
-                        truncated: false,
-                      },
-                      workspaceObservation: observed,
-                    });
-                  }).pipe(Effect.orDie),
-                reconcile: () => Effect.die("not used"),
-              },
-              profile,
+          const verificationServices = {
+            executor: {
+              execute: (invocation) =>
+                Effect.gen(function* () {
+                  executions += 1;
+                  yield* invocation.onSandboxCreated({
+                    sandboxName: invocation.sandboxName,
+                    sandboxUuid: "123e4567-e89b-12d3-a456-426614174000",
+                  });
+                  yield* fs.writeFileString(
+                    invocation.stdoutPath,
+                    "gaia-claim-ok\n"
+                  );
+                  yield* fs.writeFileString(invocation.stderrPath, "");
+                  const observed = yield* observeWorkspaceStructuralDigest(
+                    invocation.workspace
+                  );
+                  return Schema.decodeUnknownSync(
+                    StagedDockerSandboxVerificationReceiptSchema
+                  )({
+                    cleanup: {
+                      finalAbsenceConfirmed: true as const,
+                      removedSandboxUuid:
+                        "123e4567-e89b-12d3-a456-426614174000",
+                      stoppedSandboxUuid:
+                        "123e4567-e89b-12d3-a456-426614174000",
+                    },
+                    durationMs: 1,
+                    exitCode: 0,
+                    observedProviderExitCode: 0,
+                    observedExecutionIdentity: {
+                      imageDigest: profile.imageDigest,
+                      providerBuild: profile.provider.build,
+                      providerVersion: profile.provider.version,
+                      templateReference: profile.templateReference,
+                    },
+                    sandboxUuid: "123e4567-e89b-12d3-a456-426614174000",
+                    status: "succeeded" as const,
+                    stderr: {
+                      artifactPath: invocation.stderrArtifactPath,
+                      contentDigest:
+                        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                      observedByteCount: 0,
+                      retainedByteCount: 0,
+                      truncated: false,
+                    },
+                    stdout: {
+                      artifactPath: invocation.stdoutArtifactPath,
+                      contentDigest:
+                        "c67d2c0ac3e5ea53ed76dadc9aab773e884efedcaac2be11aaa4b096576f5849",
+                      observedByteCount: 14,
+                      retainedByteCount: 14,
+                      truncated: false,
+                    },
+                    workspaceObservation: observed,
+                  });
+                }).pipe(Effect.orDie),
+              reconcile: () => Effect.die("not used"),
             },
+            profile,
+          } satisfies VerificationServices;
+          const result = yield* recordRunProofResult(runId, paths, {
+            verificationServices,
           });
           const events = yield* readEvents(paths);
 
@@ -315,6 +323,7 @@ describe("V2 claim verifier", () => {
           );
           const post = yield* actOnRunVerification(runId, action, {
             rootDirectory,
+            verificationServices,
           });
           assert.strictEqual(post.kind, "postPublicationGenerationRecorded");
           if (post.kind !== "postPublicationGenerationRecorded")
@@ -323,8 +332,24 @@ describe("V2 claim verifier", () => {
             post.proofResultSequence,
             post.generationSequence + 1
           );
+          const postResult = yield* readEvents(paths).pipe(
+            Effect.map((recorded) => recorded.at(-1))
+          );
+          assert.strictEqual(postResult?.type, "RUN_PROOF_RESULT_RECORDED");
+          assert.strictEqual(
+            parseAnyRunProofResult(
+              postResult!.payload["result"],
+              contract
+            ).results.find(
+              (claimResult) =>
+                claimResult.claimId === contract.proofClaims[0]?.claimId
+            )?.status,
+            "passed"
+          );
+          assert.strictEqual(executions, 1);
           const replay = yield* actOnRunVerification(runId, action, {
             rootDirectory,
+            verificationServices,
           });
           assert.strictEqual(replay.kind, "idempotentReplay");
           if (

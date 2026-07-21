@@ -299,6 +299,8 @@ export function makeRunContractV2(
 /** Parse and self-authenticate a stored V2 run contract. */
 export function parseRunContractV2(input: unknown): RunContractV2 {
   const contract = decodeRunContractV2(input);
+  if (contract.proofClaims.length === 0)
+    throw new Error("RunContractV2 requires at least one proof claim.");
   if (contract.contractId !== `run-contract:${contract.runId}:v2`)
     throw new Error("V2 run contract ID does not bind the run.");
   assertUniqueBy(contract.proofClaims, (claim) => claim.claimId, "claim IDs");
@@ -693,6 +695,8 @@ export function isRunProofPhaseSatisfiedV2(
 ) {
   const contract = parseRunContractV2(contractInput);
   const result = parseRunProofResultV2(resultInput, contract);
+  if (contract.proofClaims.length === 0 || result.results.length === 0)
+    return false;
   const resultById = new Map(
     result.results.map((claimResult) => [claimResult.claimId, claimResult])
   );
@@ -710,6 +714,8 @@ function validateV2ClaimResults(
   contract: RunContractV2,
   results: readonly ProofClaimResultV2[]
 ) {
+  if (contract.proofClaims.length === 0 || results.length === 0)
+    throw new Error("V2 proof requires at least one claim result.");
   if (results.length !== contract.proofClaims.length)
     throw new Error("V2 proof requires exactly one result per claim.");
   const resultById = new Map(results.map((result) => [result.claimId, result]));
@@ -832,6 +838,8 @@ function aggregateV2(
   contract: RunContractV2,
   results: readonly ProofClaimResultV2[]
 ) {
+  if (contract.proofClaims.length === 0 || results.length === 0)
+    throw new Error("V2 proof aggregation requires at least one claim result.");
   const resultById = new Map(results.map((result) => [result.claimId, result]));
   const mapped = contract.acceptedOutcomes
     .flatMap((outcome) => [

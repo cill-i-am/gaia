@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, symlink } from "node:fs/promises";
 import { createServer } from "node:net";
+import nodePath from "node:path";
 
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
@@ -75,6 +76,7 @@ import {
 import {
   findStableDesktopOriginCorrelationThread,
   listStableCodexThreadsForWorkspace,
+  makeProductionVerificationServices,
   makeProductionWorkerRecoveryProvider,
   projectWorkerRecoveryThreadState,
   resolveAuditedWorkerWorkspacePath,
@@ -84,6 +86,49 @@ import {
 
 describe("local Gaia server process", () => {
   layer(NodeServices.layer)((it) => {
+    it.effect(
+      "keeps production startup available and returns typed verification provider failure when sbx is missing",
+      () =>
+        Effect.gen(function* () {
+          const root = yield* makeVerificationProfileRoot();
+          const services = yield* makeProductionVerificationServices(root, {
+            executableCandidates: [nodePath.join(root, "missing-sbx")],
+          });
+          const exit = yield* services.executor
+            .reconcile(verificationReconciliationInvocation())
+            .pipe(Effect.exit);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "VerificationProviderFailure");
+        })
+    );
+
+    it.effect(
+      "keeps production startup available and returns typed verification provider failure when sbx version mismatches",
+      () =>
+        Effect.gen(function* () {
+          const root = yield* makeVerificationProfileRoot();
+          const executable = nodePath.join(root, "sbx");
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.writeFileString(executable, "not executed");
+          const services = yield* makeProductionVerificationServices(root, {
+            executableCandidates: [executable],
+            runner: () =>
+              Effect.succeed({
+                exitCode: 0,
+                stderr: "",
+                stdout: "sbx version: v0.35.1 wrong-build\n",
+              }),
+          });
+          const exit = yield* services.executor
+            .reconcile(verificationReconciliationInvocation())
+            .pipe(Effect.exit);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(JSON.stringify(exit), "VerificationProviderFailure");
+        })
+    );
+
     it.effect(
       "detects before direct recovery model catalog and reaches preflight",
       () =>
@@ -1618,6 +1663,38 @@ function workspacePathEvents(
       type: "WORKSPACE_PREPARED",
     }),
   ];
+}
+
+function makeVerificationProfileRoot() {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectory({ prefix: "gaia-verification-" });
+    const profileDirectory = nodePath.join(root, "profiles");
+    yield* fs.makeDirectory(profileDirectory, { recursive: true });
+    const profile = yield* fs.readFileString(
+      nodePath.resolve(process.cwd(), "../../profiles/claim-verification.json")
+    );
+    yield* fs.writeFileString(
+      nodePath.join(profileDirectory, "claim-verification.json"),
+      profile
+    );
+    return parseRunStorageRootInput(root);
+  });
+}
+
+function verificationReconciliationInvocation() {
+  return {
+    actionId: "verify-provider-unavailable",
+    claimId: `proof-claim:sha256:${"2".repeat(64)}`,
+    contractDigest: "3".repeat(64),
+    executionEvidenceIdentityDigest: "4".repeat(64),
+    generationSequence: 6,
+    priorSequence: 7,
+    reason: "commandStartOutcomeUnknown" as const,
+    runId: "run-Gaia145V2x",
+    sandboxName: "gaia-sandbox-1",
+    sandboxUuid: "11111111-1111-4111-8111-111111111111",
+  };
 }
 
 type TestServer = {

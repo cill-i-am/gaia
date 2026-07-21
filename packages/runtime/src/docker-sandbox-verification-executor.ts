@@ -17,6 +17,7 @@ import {
   RunRelativeArtifactPathSchema,
   StructuralDigestSchema,
   VerificationCleanupEvidenceV1,
+  VerificationCommandSucceededReceipt,
   VerificationIdentityDigestSchema,
   VerificationReconciliationReceiptV1,
   VerificationSandboxNameSchema,
@@ -30,7 +31,6 @@ import {
   Effect,
   FileSystem,
   Layer,
-  Option,
   Path,
   Result,
   Schema,
@@ -47,7 +47,7 @@ import {
   verificationExecutionProfileDigests,
 } from "./verification-execution-profile.js";
 import {
-  observeWorkspaceStructuralDigest,
+  observeVerificationWorkspaceStructuralDigest,
   WorkspaceStructuralObservationSchema,
 } from "./workspace-snapshot.js";
 
@@ -241,6 +241,13 @@ export const StagedDockerSandboxVerificationReceiptSchema = Schema.Struct({
   durationMs: Schema.Int,
   exitCode: Schema.optionalKey(Schema.Int),
   observedProviderExitCode: Schema.optionalKey(ObservedExitCodeSchema),
+  observedExecutionIdentity: Schema.Struct({
+    imageDigest: VerificationCommandSucceededReceipt.fields.imageDigest,
+    providerBuild: VerificationCommandSucceededReceipt.fields.providerBuild,
+    providerVersion: VerificationCommandSucceededReceipt.fields.providerVersion,
+    templateReference:
+      VerificationCommandSucceededReceipt.fields.templateReference,
+  }),
   sandboxUuid: VerificationSandboxUuidSchema,
   status: Schema.Literals([
     "succeeded",
@@ -286,6 +293,7 @@ export const DockerSandboxVerificationReconciliationInvocationSchema =
     contractDigest: RunContractDigestSchema,
     executionEvidenceIdentityDigest: VerificationIdentityDigestSchema,
     generationSequence: RunEventSequenceSchema,
+    priorSequence: RunEventSequenceSchema,
     reason: Schema.Literals([
       "createdWithoutCommandStart",
       "commandStartOutcomeUnknown",
@@ -438,7 +446,7 @@ export function executeDockerSandboxVerification(
   const invocation = parseDockerSandboxVerificationInvocation(input);
   return Effect.gen(function* () {
     yield* assertInvocationMatchesProfile(invocation, profile);
-    yield* preflight(cli, profile);
+    const providerIdentity = yield* preflight(cli, profile);
     const initial = yield* listSandboxes(cli, "preflight");
     if (findSandbox(initial, invocation.sandboxName) !== undefined)
       return yield* providerFailure(
@@ -463,18 +471,30 @@ export function executeDockerSandboxVerification(
       return yield* outcomeUnknown(
         "Sandbox creation returned without an exact name and UUID observation."
       );
-    let finalized = false;
+    let cleanupStarted = false;
     yield* Effect.addFinalizer(() =>
-      finalized
+      cleanupStarted
         ? Effect.void
-        : cleanupSandbox(cli, invocation.sandboxName, created.uuid).pipe(
-            Effect.ignore
-          )
+        : Effect.suspend(() => {
+            cleanupStarted = true;
+            return cleanupSandbox(
+              cli,
+              invocation.sandboxName,
+              created.uuid
+            ).pipe(Effect.asVoid, Effect.orDie);
+          })
     );
     yield* invocation.onSandboxCreated({
       sandboxName: invocation.sandboxName,
       sandboxUuid: created.uuid,
     });
+    const observedExecutionIdentity = yield* inspectSandboxContainment(
+      cli,
+      created,
+      invocation.workspace,
+      profile,
+      providerIdentity
+    );
 
     const startedAt = yield* Clock.currentTimeMillis;
     const executable = profile.executables[0].sandboxPath;
@@ -487,51 +507,50 @@ export function executeDockerSandboxVerification(
         ...invocation.request.argv,
       ],
       name: invocation.sandboxName,
+      outputLimitBytes: invocation.request.outputLimitBytes,
+      timeoutMs: invocation.request.timeoutMs,
       workdir: invocation.workspace,
     });
-    const attempted = yield* command.pipe(
-      Effect.timeoutOption(invocation.request.timeoutMs),
-      Effect.result
-    );
+    const attempted = yield* command.pipe(Effect.result);
     const finishedAt = yield* Clock.currentTimeMillis;
 
+    cleanupStarted = true;
     const stoppedSandboxUuid = yield* stopSandbox(
       cli,
       invocation.sandboxName,
       created.uuid
     );
-    const workspaceObservation = yield* observeWorkspaceStructuralDigest(
-      invocation.workspace
-    ).pipe(
-      Effect.mapError(
-        () =>
-          new VerificationProviderFailure({
-            code: "VerificationProviderFailure",
-            message: "Post-stop no-follow workspace observation failed.",
-            recoverable: false,
-          })
-      )
-    );
+    const workspaceObservation =
+      yield* observeVerificationWorkspaceStructuralDigest(
+        invocation.workspace
+      ).pipe(
+        Effect.mapError(
+          () =>
+            new VerificationProviderFailure({
+              code: "VerificationProviderFailure",
+              message: "Post-stop no-follow workspace observation failed.",
+              recoverable: false,
+            })
+        )
+      );
     const cleanup = yield* removeSandbox(
       cli,
       invocation.sandboxName,
       created.uuid,
       stoppedSandboxUuid
     );
-    finalized = true;
-
     if (Result.isFailure(attempted))
       return yield* outcomeUnknown(
         "Sandbox command dispatch lost structural provider acknowledgement."
       );
-    const result = Option.getOrUndefined(attempted.success);
+    const result = attempted.success;
     const classification =
-      result === undefined
-        ? ({ status: "timedOut" } as const)
-        : classifyDockerSandboxExecOutcome({
+      result.terminationReason === undefined
+        ? classifyDockerSandboxExecOutcome({
             kind: "exited",
             observedExitCode: result.exitCode,
-          });
+          })
+        : { status: result.terminationReason };
     if ("kind" in classification) {
       if (classification.kind === "providerFailure")
         return yield* Effect.fail(
@@ -553,9 +572,10 @@ export function executeDockerSandboxVerification(
       );
     }
 
-    const output = result ?? { exitCode: 0, stderr: "", stdout: "" };
+    const output = result;
     const totalBytes =
-      Buffer.byteLength(output.stdout) + Buffer.byteLength(output.stderr);
+      (output.stdoutObservedByteCount ?? Buffer.byteLength(output.stdout)) +
+      (output.stderrObservedByteCount ?? Buffer.byteLength(output.stderr));
     const outputLimitExceeded =
       totalBytes > invocation.request.outputLimitBytes;
     const retained = retainCombinedOutput(
@@ -569,12 +589,14 @@ export function executeDockerSandboxVerification(
     const stdout = outputEvidence(
       invocation.stdoutArtifactPath,
       Buffer.from(output.stdout),
-      retained.stdout
+      retained.stdout,
+      output.stdoutObservedByteCount
     );
     const stderr = outputEvidence(
       invocation.stderrArtifactPath,
       Buffer.from(output.stderr),
-      retained.stderr
+      retained.stderr,
+      output.stderrObservedByteCount
     );
     return {
       cleanup,
@@ -587,6 +609,7 @@ export function executeDockerSandboxVerification(
         ? { observedProviderExitCode: classification.observedProviderExitCode }
         : {}),
       sandboxUuid: created.uuid,
+      observedExecutionIdentity,
       status: outputLimitExceeded
         ? ("outputLimitExceeded" as const)
         : classification.status,
@@ -636,12 +659,12 @@ export function finalizeDockerSandboxVerificationReceipt(
     executionEvidenceIdentityDigest: invocation.executionEvidenceIdentityDigest,
     executionProfileDigest: profileDigests.profileDigest,
     generationSequence: invocation.generationSequence,
-    imageDigest: profile.imageDigest,
+    imageDigest: staged.observedExecutionIdentity.imageDigest,
     network: invocation.request.network,
     policyDigest: profileDigests.policyDigest,
-    providerBuild: profile.provider.build,
+    providerBuild: staged.observedExecutionIdentity.providerBuild,
     providerId: profile.provider.providerId,
-    providerVersion: profile.provider.version,
+    providerVersion: staged.observedExecutionIdentity.providerVersion,
     requestDigest,
     runId: invocation.runId,
     sandboxName: invocation.sandboxName,
@@ -649,7 +672,7 @@ export function finalizeDockerSandboxVerificationReceipt(
     stderr: staged.stderr,
     stdout: staged.stdout,
     targetDigest: invocation.targetDigest,
-    templateReference: profile.templateReference,
+    templateReference: staged.observedExecutionIdentity.templateReference,
     terminalSequence,
     workspace: invocation.request.workingDirectory,
   };
@@ -742,6 +765,10 @@ function preflight(
       return yield* providerFailure(
         "Docker Sandbox deny-all network policy is missing or drifted."
       );
+    return {
+      providerBuild: profile.provider.build,
+      providerVersion: profile.provider.version,
+    };
   });
 }
 
@@ -749,6 +776,7 @@ const SandboxObservationSchema = Schema.Struct({
   name: VerificationSandboxNameSchema,
   status: Schema.NonEmptyString,
   uuid: VerificationSandboxUuidSchema,
+  workspaces: Schema.Array(Schema.NonEmptyString),
 });
 type SandboxObservation = Schema.Schema.Type<typeof SandboxObservationSchema>;
 const SandboxListWireSchema = Schema.Struct({
@@ -758,6 +786,7 @@ const SandboxListWireSchema = Schema.Struct({
       name: VerificationSandboxNameSchema,
       status: Schema.NonEmptyString,
       uuid: Schema.optionalKey(VerificationSandboxUuidSchema),
+      workspaces: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
     })
   ),
 });
@@ -825,8 +854,100 @@ function parseSandboxList(body: string): ReadonlyArray<SandboxObservation> {
       name: value.name,
       status: value.status,
       uuid,
+      workspaces: value.workspaces ?? [],
     });
   });
+}
+
+const SandboxInspectWireSchema = Schema.Struct({
+  agent: Schema.NonEmptyString,
+  image: Schema.NonEmptyString,
+  image_digest: Schema.NonEmptyString,
+  kits: Schema.Array(Schema.Unknown),
+  mcp_gateway: Schema.Boolean,
+  name: VerificationSandboxNameSchema,
+  network_policy: Schema.Struct({ scope: Schema.NonEmptyString }),
+  sessions: Schema.Int,
+  state: Schema.NonEmptyString,
+  workspace: Schema.NonEmptyString,
+});
+const parseSandboxInspectWire = Schema.decodeUnknownSync(
+  SandboxInspectWireSchema
+);
+const parseUnknownRecord = Schema.decodeUnknownSync(
+  Schema.Record(Schema.String, Schema.Unknown)
+);
+
+function inspectSandboxContainment(
+  cli: DockerSandboxCliService,
+  created: SandboxObservation,
+  workspace: RuntimePath,
+  profile: VerificationExecutionProfileV1,
+  providerIdentity: {
+    readonly providerBuild: string;
+    readonly providerVersion: string;
+  }
+) {
+  return cli.inspect(created.name).pipe(
+    Effect.mapError(
+      () =>
+        new VerificationProviderFailure({
+          code: "VerificationProviderFailure",
+          message: "Created sandbox containment could not be inspected.",
+          recoverable: false,
+        })
+    ),
+    Effect.flatMap((result) =>
+      Effect.try({
+        catch: () =>
+          new VerificationProviderFailure({
+            code: "VerificationProviderFailure",
+            message:
+              "Created sandbox containment does not match the trusted profile.",
+            recoverable: false,
+          }),
+        try: () => {
+          if (result.exitCode !== 0)
+            throw new Error("Sandbox inspection was rejected.");
+          const raw: unknown = JSON.parse(result.stdout);
+          const inspected = parseSandboxInspectWire(raw);
+          const record = parseUnknownRecord(raw);
+          const emptyCollection = (key: string) => {
+            const value = record[key];
+            return (
+              value === undefined ||
+              (Array.isArray(value) && value.length === 0)
+            );
+          };
+          const auth = record["auth"] ?? record["auth_mode"];
+          if (
+            inspected.name !== created.name ||
+            inspected.state !== "running" ||
+            inspected.agent !== "shell" ||
+            inspected.image !== profile.templateReference ||
+            inspected.image_digest !== profile.imageDigest ||
+            inspected.workspace !== workspace ||
+            inspected.network_policy.scope !== "global" ||
+            inspected.kits.length !== 0 ||
+            inspected.mcp_gateway ||
+            inspected.sessions !== 0 ||
+            created.workspaces.length !== 1 ||
+            created.workspaces[0] !== workspace ||
+            !emptyCollection("secrets") ||
+            !emptyCollection("published_ports") ||
+            (auth !== undefined && auth !== false && auth !== "none")
+          )
+            throw new Error("Sandbox containment drifted.");
+          return {
+            imageDigest: inspected.image_digest,
+            providerBuild: providerIdentity.providerBuild,
+            providerVersion: providerIdentity.providerVersion,
+            templateReference: inspected.image,
+          };
+        },
+      })
+    )
+  );
 }
 
 function findSandbox(
@@ -922,16 +1043,17 @@ function hasExactDenyAllNetworkPolicy(body: string) {
 function outputEvidence(
   artifactPath: typeof RunRelativeArtifactPathSchema.Type,
   observed: Uint8Array,
-  retained: Uint8Array
+  retained: Uint8Array,
+  observedByteCount = observed.byteLength
 ): StagedOutputEvidence {
   return {
     artifactPath,
     contentDigest: parseContentDigest(
       createHash("sha256").update(retained).digest("hex")
     ),
-    observedByteCount: observed.byteLength,
+    observedByteCount,
     retainedByteCount: retained.byteLength,
-    truncated: observed.byteLength !== retained.byteLength,
+    truncated: observedByteCount !== retained.byteLength,
   };
 }
 

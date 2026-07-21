@@ -1531,6 +1531,7 @@ function actOnRunVerificationUnlocked(
       executionEvidenceIdentityDigest:
         action.expectedExecutionEvidenceIdentityDigest,
       generationSequence: action.priorGenerationSequence,
+      priorSequence: priorIdentity.sequence,
       reason: action.prior.kind,
       runId,
       sandboxName: action.expectedSandboxName,

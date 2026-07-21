@@ -48,7 +48,10 @@ import {
   type RunPaths,
 } from "./paths.js";
 import { loadRunContract } from "./run-contract.js";
-import { VerificationExecutionProfileV1 } from "./verification-execution-profile.js";
+import {
+  VerificationExecutionProfileV1,
+  verificationExecutionProfileDigests,
+} from "./verification-execution-profile.js";
 import { observeWorkspaceStructuralDigest } from "./workspace-snapshot.js";
 
 const VerificationGitHubChecksSnapshotSchema = Schema.Struct({
@@ -134,6 +137,21 @@ function recordV2RunProofResult(
     const initialEvents = yield* readEvents(paths);
     const contentAuthoritySequence =
       currentContentAuthoritySequence(initialEvents);
+    const profileIdentity =
+      services === undefined
+        ? null
+        : verificationExecutionProfileDigests(services.profile);
+    const executionIdentityForPhase = (
+      evidencePhase: "prePublication" | "postPublication"
+    ) =>
+      parseVerificationIdentityDigest(
+        digest("gaia.claim-verification-execution-identity.v1", [
+          contract.contractDigest,
+          contentAuthoritySequence,
+          evidencePhase,
+          profileIdentity,
+        ])
+      );
     const commandClaims = contract.proofClaims.filter(
       (claim): claim is Extract<ProofClaimV2, { readonly kind: "command" }> =>
         claim.kind === "command" && claim.phase === phase
@@ -148,13 +166,7 @@ function recordV2RunProofResult(
         })
       );
 
-    const executionEvidenceIdentityDigest = parseVerificationIdentityDigest(
-      digest("gaia.claim-verification-execution-identity.v1", [
-        contract.contractDigest,
-        contentAuthoritySequence,
-        phase,
-      ])
-    );
+    const executionEvidenceIdentityDigest = executionIdentityForPhase(phase);
     const actionId =
       options.actionId ??
       `internal:${runId}:${phase}:${contentAuthoritySequence}`;
@@ -188,7 +200,8 @@ function recordV2RunProofResult(
       const reusable = latestExactCommandReceipt(
         yield* readEvents(paths),
         contract,
-        claim
+        claim,
+        executionEvidenceIdentityDigest
       );
       if (reusable !== undefined) {
         yield* appendEvent(runId, paths, {
@@ -229,7 +242,8 @@ function recordV2RunProofResult(
             contract,
             events,
             paths,
-            options.expectedHeadSha
+            options.expectedHeadSha,
+            executionIdentityForPhase(claim.phase)
           )
         )
       );
@@ -451,11 +465,17 @@ function resultForClaim(
   contract: RunContractV2,
   events: readonly RunEvent[],
   paths: RunPaths,
-  expectedHeadSha: typeof DeliveryGitShaPublicSchema.Type | undefined
+  expectedHeadSha: typeof DeliveryGitShaPublicSchema.Type | undefined,
+  executionEvidenceIdentityDigest: typeof VerificationIdentityDigestSchema.Type
 ) {
   switch (claim.kind) {
     case "command": {
-      const receipt = latestExactCommandReceipt(events, contract, claim);
+      const receipt = latestExactCommandReceipt(
+        events,
+        contract,
+        claim,
+        executionEvidenceIdentityDigest
+      );
       if (receipt === undefined)
         return Effect.succeed(
           notRun(claim, "No exact terminal command receipt exists.")
@@ -680,7 +700,8 @@ function notRun(claim: ProofClaimV2, reason: string) {
 function latestExactCommandReceipt(
   events: readonly RunEvent[],
   contract: RunContractV2,
-  claim: Extract<ProofClaimV2, { readonly kind: "command" }>
+  claim: Extract<ProofClaimV2, { readonly kind: "command" }>,
+  executionEvidenceIdentityDigest: typeof VerificationIdentityDigestSchema.Type
 ) {
   for (const event of [...events].reverse()) {
     if (event.type !== "CLAIM_VERIFICATION_COMMAND_RECORDED") continue;
@@ -689,6 +710,8 @@ function latestExactCommandReceipt(
       if (
         receipt.claimId === claim.claimId &&
         receipt.contractDigest === contract.contractDigest &&
+        receipt.executionEvidenceIdentityDigest ===
+          executionEvidenceIdentityDigest &&
         receipt.targetDigest === contract.targetDigest &&
         receipt.requestDigest ===
           makeVerificationCommandRequestDigest(claim.command)

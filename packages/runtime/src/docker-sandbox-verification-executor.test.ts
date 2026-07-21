@@ -103,7 +103,19 @@ describe("Docker Sandbox verification outcome classification", () => {
           const stdoutPath = parseRuntimePath(`${root}/stdout.bin`);
           const stderrPath = parseRuntimePath(`${root}/stderr.bin`);
           yield* fs.makeDirectory(workspace);
-          let sandbox: { id: string; name: string; status: string } | undefined;
+          let sandbox:
+            | {
+                id: string;
+                name: string;
+                status: string;
+                workspaces: ReadonlyArray<string>;
+              }
+            | undefined;
+          let execCount = 0;
+          let stopCount = 0;
+          let rejectStop = false;
+          let inspectedImageDigest =
+            "sha256:39cf20eca861ec92747487af6197f6d916f774bdb98245d267dbd8dfd3debb05";
           const uuid = "123e4567-e89b-12d3-a456-426614174000";
           const cli = makeDockerSandboxCli((command) => {
             const [verb] = command.args;
@@ -138,17 +150,54 @@ describe("Docker Sandbox verification outcome classification", () => {
                 }),
               });
             if (verb === "create") {
-              sandbox = { id: uuid, name: "gaia-sandbox-1", status: "running" };
+              sandbox = {
+                id: uuid,
+                name: "gaia-sandbox-1",
+                status: "running",
+                workspaces: [workspace],
+              };
               return Effect.succeed({ exitCode: 0, stderr: "", stdout: "" });
             }
-            if (verb === "exec")
+            if (verb === "inspect")
+              return Effect.succeed({
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify({
+                  agent: "shell",
+                  image:
+                    "docker/sandbox-templates:shell-docker@sha256:39cf20eca861ec92747487af6197f6d916f774bdb98245d267dbd8dfd3debb05",
+                  image_digest: inspectedImageDigest,
+                  kits: [],
+                  mcp_gateway: false,
+                  name: "gaia-sandbox-1",
+                  network_policy: { scope: "global" },
+                  sessions: 0,
+                  state: sandbox?.status,
+                  workspace,
+                }),
+              });
+            if (verb === "exec") {
+              execCount += 1;
               return Effect.succeed({
                 exitCode: 0,
                 stderr: "",
                 stdout: "gaia-claim-ok\n",
               });
+            }
             if (verb === "stop") {
-              sandbox = { id: uuid, name: "gaia-sandbox-1", status: "stopped" };
+              stopCount += 1;
+              if (rejectStop)
+                return Effect.succeed({
+                  exitCode: 1,
+                  stderr: "stop rejected",
+                  stdout: "",
+                });
+              sandbox = {
+                id: uuid,
+                name: "gaia-sandbox-1",
+                status: "stopped",
+                workspaces: [workspace],
+              };
               return Effect.succeed({ exitCode: 0, stderr: "", stdout: "" });
             }
             if (verb === "rm") {
@@ -278,6 +327,40 @@ describe("Docker Sandbox verification outcome classification", () => {
           assert.strictEqual(capped.stdout.observedByteCount, 14);
           assert.strictEqual(capped.stdout.retainedByteCount, 4);
           assert.strictEqual(capped.stdout.truncated, true);
+          inspectedImageDigest = `sha256:${"0".repeat(64)}`;
+          const drifted = yield* Effect.scoped(
+            executeDockerSandboxVerification(
+              {
+                authorityDigest: "1".repeat(64),
+                claimId: `proof-claim:sha256:${"2".repeat(64)}`,
+                contractDigest: "3".repeat(64),
+                contractId: "run-contract:run-Gaia145V2x:v2",
+                executionEvidenceIdentityDigest: "4".repeat(64),
+                generationSequence: 7,
+                onSandboxCreated: () => Effect.void,
+                request,
+                runId: "run-Gaia145V2x",
+                sandboxName: "gaia-sandbox-1",
+                stderrArtifactPath:
+                  "verification/claims/smoke-command/stderr.bin",
+                stderrPath,
+                stdoutArtifactPath:
+                  "verification/claims/smoke-command/stdout.bin",
+                stdoutPath,
+                targetDigest: "5".repeat(64),
+                workspace,
+              },
+              cli,
+              profile
+            ).pipe(Effect.exit)
+          );
+          assert.strictEqual(drifted._tag, "Failure");
+          assert.include(
+            JSON.stringify(drifted),
+            "VerificationProviderFailure"
+          );
+          assert.strictEqual(execCount, 2);
+          assert.strictEqual(sandbox, undefined);
           const reconciled = yield* reconcileDockerSandboxVerification(
             {
               actionId: "reconcile-gaia-145",
@@ -285,6 +368,7 @@ describe("Docker Sandbox verification outcome classification", () => {
               contractDigest: "3".repeat(64),
               executionEvidenceIdentityDigest: "4".repeat(64),
               generationSequence: 6,
+              priorSequence: 7,
               reason: "commandStartOutcomeUnknown",
               runId: "run-Gaia145V2x",
               sandboxName: "gaia-sandbox-1",
@@ -305,6 +389,42 @@ describe("Docker Sandbox verification outcome classification", () => {
             }
           );
           assert.strictEqual(reconciled.finalAbsenceConfirmed, true);
+          inspectedImageDigest = profile.imageDigest;
+          rejectStop = true;
+          const stopsBeforeFailure = stopCount;
+          const cleanupFailure = yield* Effect.scoped(
+            executeDockerSandboxVerification(
+              {
+                authorityDigest: "1".repeat(64),
+                claimId: `proof-claim:sha256:${"2".repeat(64)}`,
+                contractDigest: "3".repeat(64),
+                contractId: "run-contract:run-Gaia145V2x:v2",
+                executionEvidenceIdentityDigest: "4".repeat(64),
+                generationSequence: 8,
+                onSandboxCreated: () => Effect.void,
+                request,
+                runId: "run-Gaia145V2x",
+                sandboxName: "gaia-sandbox-1",
+                stderrArtifactPath:
+                  "verification/claims/smoke-command/stderr.bin",
+                stderrPath,
+                stdoutArtifactPath:
+                  "verification/claims/smoke-command/stdout.bin",
+                stdoutPath,
+                targetDigest: "5".repeat(64),
+                workspace,
+              },
+              cli,
+              profile
+            ).pipe(Effect.exit)
+          );
+          assert.strictEqual(cleanupFailure._tag, "Failure");
+          assert.include(
+            JSON.stringify(cleanupFailure),
+            "VerificationCommandOutcomeUnknown"
+          );
+          assert.strictEqual(stopCount, stopsBeforeFailure + 1);
+          assert.strictEqual(sandbox?.status, "running");
         })
     );
   });

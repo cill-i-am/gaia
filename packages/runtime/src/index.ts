@@ -525,6 +525,7 @@ export {
   makeDockerSandboxVerificationExecutor,
   reconcileDockerSandboxVerification,
   type DockerSandboxVerificationExecutorService,
+  VerificationProviderFailure,
 } from "./docker-sandbox-verification-executor.js";
 export {
   DockerSandboxCli,

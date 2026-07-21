@@ -3,6 +3,7 @@ import { Effect } from "effect";
 
 import {
   makeDockerSandboxCli,
+  nodeDockerSandboxCliRunner,
   type DockerSandboxCliCommand,
 } from "./docker-sandbox-cli.js";
 
@@ -23,6 +24,7 @@ describe("DockerSandboxCli", () => {
           "docker/sandbox-templates:shell-docker@sha256:" + "1".repeat(64),
         workspace: "/tmp/gaia-run/workspace",
       });
+      yield* cli.inspect("gaia-sandbox-1");
       yield* cli.execute({
         argv: [
           "/usr/bin/env",
@@ -33,6 +35,8 @@ describe("DockerSandboxCli", () => {
           "ok\n",
         ],
         name: "gaia-sandbox-1",
+        outputLimitBytes: 1_024,
+        timeoutMs: 1_000,
         workdir: "/tmp/gaia-run/workspace",
       });
       yield* cli.stop("gaia-sandbox-1");
@@ -53,6 +57,7 @@ describe("DockerSandboxCli", () => {
             "docker/sandbox-templates:shell-docker@sha256:" + "1".repeat(64),
             "--quiet",
           ],
+          ["inspect", "gaia-sandbox-1", "--json"],
           [
             "exec",
             "--workdir",
@@ -69,6 +74,55 @@ describe("DockerSandboxCli", () => {
           ["rm", "--force", "gaia-sandbox-1"],
         ]
       );
+    })
+  );
+});
+
+describe("Docker Sandbox CLI child lifecycle", () => {
+  it.effect(
+    "bounds output at the request cap and reports structural overflow",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* nodeDockerSandboxCliRunner({
+          args: ["-e", 'process.stdout.write("x".repeat(10_000))'],
+          executable: process.execPath,
+          outputLimitBytes: 16,
+          timeoutMs: 5_000,
+        });
+
+        assert.strictEqual(result.terminationReason, "outputLimitExceeded");
+        assert.isAtMost(Buffer.byteLength(result.stdout), 16);
+        assert.isAbove(result.stdoutObservedByteCount ?? 0, 16);
+      })
+  );
+
+  it.effect(
+    "bounds provider calls and reports structural timeout after close",
+    () =>
+      Effect.gen(function* () {
+        const startedAt = Date.now();
+        const result = yield* nodeDockerSandboxCliRunner({
+          args: ["-e", "setInterval(() => {}, 1_000)"],
+          executable: process.execPath,
+          outputLimitBytes: 16,
+          timeoutMs: 25,
+        });
+
+        assert.strictEqual(result.terminationReason, "timedOut");
+        assert.isBelow(Date.now() - startedAt, 5_000);
+      })
+  );
+
+  it.effect("reports an externally interrupted child structurally", () =>
+    Effect.gen(function* () {
+      const result = yield* nodeDockerSandboxCliRunner({
+        args: ["-e", 'process.kill(process.pid, "SIGTERM")'],
+        executable: process.execPath,
+        outputLimitBytes: 16,
+        timeoutMs: 5_000,
+      });
+
+      assert.strictEqual(result.terminationReason, "interrupted");
     })
   );
 });

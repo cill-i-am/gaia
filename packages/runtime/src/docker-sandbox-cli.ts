@@ -8,6 +8,8 @@ const DockerSandboxCliTextSchema = Schema.String.pipe(
 export const DockerSandboxCliCommandSchema = Schema.Struct({
   args: Schema.Array(DockerSandboxCliTextSchema),
   executable: Schema.NonEmptyString,
+  outputLimitBytes: Schema.optionalKey(Schema.Int),
+  timeoutMs: Schema.optionalKey(Schema.Int),
 });
 export type DockerSandboxCliCommand = Schema.Schema.Type<
   typeof DockerSandboxCliCommandSchema
@@ -15,11 +17,23 @@ export type DockerSandboxCliCommand = Schema.Schema.Type<
 
 export const DockerSandboxCliResultSchema = Schema.Struct({
   exitCode: Schema.Int,
+  stderrObservedByteCount: Schema.optionalKey(Schema.Int),
   stderr: Schema.String,
+  stdoutObservedByteCount: Schema.optionalKey(Schema.Int),
   stdout: Schema.String,
+  terminationReason: Schema.optionalKey(
+    Schema.Literals(["interrupted", "outputLimitExceeded", "timedOut"] as const)
+  ),
 });
 export type DockerSandboxCliResult = Schema.Schema.Type<
   typeof DockerSandboxCliResultSchema
+>;
+const DockerSandboxCliLimitsSchema = Schema.Struct({
+  outputLimitBytes: Schema.optionalKey(Schema.Int),
+  timeoutMs: Schema.optionalKey(Schema.Int),
+});
+type DockerSandboxCliLimits = Schema.Schema.Type<
+  typeof DockerSandboxCliLimitsSchema
 >;
 
 export class DockerSandboxCliSpawnError extends Schema.TaggedErrorClass<DockerSandboxCliSpawnError>()(
@@ -47,6 +61,8 @@ export type DockerSandboxCreateInput = Schema.Schema.Type<
 export const DockerSandboxExecuteInputSchema = Schema.Struct({
   argv: Schema.Array(DockerSandboxCliTextSchema),
   name: Schema.NonEmptyString,
+  outputLimitBytes: Schema.Int,
+  timeoutMs: Schema.Int,
   workdir: Schema.NonEmptyString,
 });
 export type DockerSandboxExecuteInput = Schema.Schema.Type<
@@ -62,7 +78,10 @@ export function makeDockerSandboxCli(
   runner: DockerSandboxCliRunner,
   executable = "sbx"
 ) {
-  const run = (args: ReadonlyArray<string>) => runner({ args, executable });
+  const run = (
+    args: ReadonlyArray<string>,
+    limits: DockerSandboxCliLimits = {}
+  ) => runner({ args, executable, ...limits });
   return {
     create: (input: DockerSandboxCreateInput) =>
       run([
@@ -76,7 +95,11 @@ export function makeDockerSandboxCli(
         "--quiet",
       ]),
     execute: (input: DockerSandboxExecuteInput) =>
-      run(["exec", "--workdir", input.workdir, input.name, ...input.argv]),
+      run(["exec", "--workdir", input.workdir, input.name, ...input.argv], {
+        outputLimitBytes: input.outputLimitBytes,
+        timeoutMs: input.timeoutMs,
+      }),
+    inspect: (name: string) => run(["inspect", name, "--json"]),
     list: Effect.suspend(() => run(["ls", "--json"])),
     policyList: Effect.suspend(() => run(["policy", "ls", "--json"])),
     remove: (name: string) => run(["rm", "--force", name]),
@@ -97,30 +120,56 @@ export function DockerSandboxCliLive(executable: string) {
 
 export const nodeDockerSandboxCliRunner: DockerSandboxCliRunner = (command) =>
   Effect.callback((resume) => {
+    const outputLimitBytes = command.outputLimitBytes ?? 1_048_576;
+    const timeoutMs = command.timeoutMs ?? 30_000;
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
-    let overflow = false;
+    let stdoutObservedByteCount = 0;
+    let stderrObservedByteCount = 0;
+    let terminationReason:
+      | "interrupted"
+      | "outputLimitExceeded"
+      | "timedOut"
+      | undefined;
+    let closed = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
     const child = spawn(command.executable, [...command.args], {
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const terminate = (
+      reason: "interrupted" | "outputLimitExceeded" | "timedOut"
+    ) => {
+      terminationReason ??= reason;
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      child.kill("SIGTERM");
+      killTimer ??= setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null)
+          child.kill("SIGKILL");
+      }, 1_000);
+    };
+    const timeout = setTimeout(() => terminate("timedOut"), timeoutMs);
     const append = (current: Buffer, chunk: Buffer) => {
       const remaining = Math.max(
         0,
-        1_048_576 - stdout.byteLength - stderr.byteLength
+        outputLimitBytes - stdout.byteLength - stderr.byteLength
       );
-      if (chunk.byteLength > remaining) overflow = true;
+      if (chunk.byteLength > remaining) terminate("outputLimitExceeded");
       return Buffer.concat([current, chunk.subarray(0, remaining)]);
     };
     child.stdout.on("data", (chunk: Buffer) => {
+      stdoutObservedByteCount += chunk.byteLength;
       stdout = append(stdout, chunk);
-      if (overflow && child.exitCode === null) child.kill("SIGTERM");
     });
     child.stderr.on("data", (chunk: Buffer) => {
+      stderrObservedByteCount += chunk.byteLength;
       stderr = append(stderr, chunk);
-      if (overflow && child.exitCode === null) child.kill("SIGTERM");
     });
-    child.once("error", (cause) =>
+    child.once("error", (cause) => {
+      if (closed) return;
+      closed = true;
+      clearTimeout(timeout);
+      if (killTimer !== undefined) clearTimeout(killTimer);
       resume(
         Effect.fail(
           new DockerSandboxCliSpawnError({
@@ -129,25 +178,33 @@ export const nodeDockerSandboxCliRunner: DockerSandboxCliRunner = (command) =>
             message: "Docker Sandbox CLI could not be spawned.",
           })
         )
-      )
-    );
-    child.once("close", (code) =>
+      );
+    });
+    child.once("close", (code) => {
+      if (closed) return;
+      closed = true;
+      clearTimeout(timeout);
+      if (killTimer !== undefined) clearTimeout(killTimer);
+      const observedTerminationReason =
+        terminationReason ?? (code === null ? "interrupted" : undefined);
       resume(
-        overflow
-          ? Effect.fail(
-              new DockerSandboxCliSpawnError({
-                command,
-                message: "Docker Sandbox CLI output exceeded its host cap.",
-              })
-            )
-          : Effect.succeed({
-              exitCode: code ?? 125,
-              stderr: stderr.toString("utf8"),
-              stdout: stdout.toString("utf8"),
-            })
-      )
-    );
-    return Effect.sync(() => {
-      if (child.exitCode === null) child.kill("SIGTERM");
+        Effect.succeed({
+          exitCode: code ?? 125,
+          stderr: stderr.toString("utf8"),
+          stderrObservedByteCount,
+          stdout: stdout.toString("utf8"),
+          stdoutObservedByteCount,
+          ...(observedTerminationReason === undefined
+            ? {}
+            : { terminationReason: observedTerminationReason }),
+        })
+      );
+    });
+    return Effect.promise(() => {
+      if (closed) return Promise.resolve();
+      terminate("interrupted");
+      return new Promise<void>((resolve) => {
+        child.once("close", resolve);
+      });
     });
   });

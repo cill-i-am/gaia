@@ -10,6 +10,7 @@ import { Effect, FileSystem } from "effect";
 import { GaiaRuntimeError } from "./errors.js";
 import {
   productOnlyWorkspaceDiff,
+  observeVerificationWorkspaceStructuralDigest,
   observeWorkspaceStructuralDigest,
   parseWorkspaceStructuralFileIdentity,
   readWorkspaceSnapshot,
@@ -253,6 +254,69 @@ describe("workspace snapshot persistence", () => {
 
 describe("workspace structural observation", () => {
   layer(NodeServices.layer)((it) => {
+    it.effect(
+      "rejects a symlink even when its name is excluded from product snapshots",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-verification-observation-",
+          });
+          const outside = yield* fs.makeTempDirectory({
+            prefix: "gaia-verification-observation-outside-",
+          });
+          yield* fs.symlink(outside, `${cwd}/node_modules`);
+
+          const failure = yield* Effect.flip(
+            observeVerificationWorkspaceStructuralDigest(cwd)
+          );
+
+          assert.strictEqual(
+            failure.code,
+            "WorkspaceStructuralObservationChanged"
+          );
+          assert.include(failure.message, "unsupported symlink");
+        })
+    );
+
+    it.effect("enforces deterministic entry and byte bounds", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({
+          prefix: "gaia-verification-observation-",
+        });
+        yield* fs.writeFileString(`${cwd}/a.txt`, "abc");
+        yield* fs.writeFileString(`${cwd}/b.txt`, "def");
+
+        const entryFailure = yield* Effect.flip(
+          observeVerificationWorkspaceStructuralDigest(cwd, { maxEntries: 1 })
+        );
+        const fileFailure = yield* Effect.flip(
+          observeVerificationWorkspaceStructuralDigest(cwd, {
+            maxFileBytes: 2,
+          })
+        );
+        const totalFailure = yield* Effect.flip(
+          observeVerificationWorkspaceStructuralDigest(cwd, {
+            maxTotalBytes: 5,
+          })
+        );
+
+        assert.strictEqual(
+          entryFailure.code,
+          "WorkspaceStructuralObservationFailed"
+        );
+        assert.strictEqual(
+          fileFailure.code,
+          "WorkspaceStructuralObservationFailed"
+        );
+        assert.strictEqual(
+          totalFailure.code,
+          "WorkspaceStructuralObservationFailed"
+        );
+      })
+    );
+
     it.effect("records the explicit non-atomic observation limitation", () =>
       Effect.gen(function* () {
         const observed = yield* observeWorkspaceStructuralDigest(".", {

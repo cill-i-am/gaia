@@ -121,6 +121,31 @@ const WorkspaceStructuralObservationOptionsSchema = Schema.Struct({
 const decodeWorkspaceStructuralObservationOptions = Schema.decodeUnknownSync(
   WorkspaceStructuralObservationOptionsSchema
 );
+const VerificationWorkspaceObservationOptionsSchema = Schema.Struct({
+  maxEntries: Schema.optionalKey(
+    Schema.Int.pipe(
+      Schema.check(Schema.isBetween({ minimum: 1, maximum: 20_000 }))
+    )
+  ),
+  maxFileBytes: Schema.optionalKey(
+    Schema.Int.pipe(
+      Schema.check(Schema.isBetween({ minimum: 1, maximum: 16 * 1024 * 1024 }))
+    )
+  ),
+  maxTotalBytes: Schema.optionalKey(
+    Schema.Int.pipe(
+      Schema.check(Schema.isBetween({ minimum: 1, maximum: 128 * 1024 * 1024 }))
+    )
+  ),
+});
+const decodeVerificationWorkspaceObservationOptions = Schema.decodeUnknownSync(
+  VerificationWorkspaceObservationOptionsSchema
+);
+const defaultVerificationWorkspaceObservationLimits = {
+  maxEntries: 20_000,
+  maxFileBytes: 16 * 1024 * 1024,
+  maxTotalBytes: 128 * 1024 * 1024,
+};
 
 /**
  * Observe a deterministic manifest of the bytes read during one traversal.
@@ -133,6 +158,51 @@ export function observeWorkspaceStructuralDigest(
   const observer =
     decodeWorkspaceStructuralObservationOptions(options).observer ??
     nodeWorkspaceStructuralObserver;
+  return observeWorkspaceStructuralDigestWithObserver(workspacePath, observer);
+}
+
+/** Complete bounded no-follow observation for the disposable verifier workspace. */
+export function observeVerificationWorkspaceStructuralDigest(
+  workspacePath: string,
+  options: typeof VerificationWorkspaceObservationOptionsSchema.Encoded = {}
+) {
+  const decoded = decodeVerificationWorkspaceObservationOptions(options);
+  const limits = {
+    maxEntries:
+      decoded.maxEntries ??
+      defaultVerificationWorkspaceObservationLimits.maxEntries,
+    maxFileBytes:
+      decoded.maxFileBytes ??
+      defaultVerificationWorkspaceObservationLimits.maxFileBytes,
+    maxTotalBytes:
+      decoded.maxTotalBytes ??
+      defaultVerificationWorkspaceObservationLimits.maxTotalBytes,
+  };
+  let observedBytes = 0;
+  const observer: WorkspaceStructuralObserver = {
+    enumerate: (root) =>
+      enumerateVerificationWorkspaceStructuralFiles(root, limits),
+    readFile: async (root, path) => {
+      const observed = await readVerificationWorkspaceStructuralFile(
+        root,
+        path,
+        limits
+      );
+      observedBytes += observed.bytes.byteLength;
+      if (observedBytes > limits.maxTotalBytes)
+        throw new Error(
+          "Verification workspace total-byte bound was exceeded."
+        );
+      return observed;
+    },
+  };
+  return observeWorkspaceStructuralDigestWithObserver(workspacePath, observer);
+}
+
+function observeWorkspaceStructuralDigestWithObserver(
+  workspacePath: string,
+  observer: WorkspaceStructuralObserver
+) {
   return Effect.tryPromise({
     catch: (cause) =>
       makeRuntimeError({
@@ -188,6 +258,88 @@ export function observeWorkspaceStructuralDigest(
       };
     },
   });
+}
+
+async function enumerateVerificationWorkspaceStructuralFiles(
+  root: RuntimePath,
+  limits: typeof defaultVerificationWorkspaceObservationLimits
+) {
+  const files: WorkspaceStructuralPath[] = [];
+  let entries = 0;
+  let totalBytes = 0n;
+  async function visit(directory: RuntimePath, prefix: string) {
+    const children = await readdir(directory, { withFileTypes: true });
+    for (const child of children) {
+      const path = Schema.decodeUnknownSync(WorkspaceStructuralPathSchema)(
+        prefix === "" ? child.name : `${prefix}/${child.name}`
+      );
+      const absolute = parseRuntimePath(join(directory, child.name));
+      const info = await lstat(absolute, { bigint: true });
+      entries += 1;
+      if (entries > limits.maxEntries)
+        throw new Error("Verification workspace entry bound was exceeded.");
+      if (info.isDirectory()) {
+        await visit(absolute, path);
+        continue;
+      }
+      if (!info.isFile())
+        throw new WorkspaceStructuralObservationChangedError(
+          `Verification workspace entry '${path}' is an unsupported ${statKind(info)}.`
+        );
+      if (info.size > BigInt(limits.maxFileBytes))
+        throw new Error("Verification workspace per-file bound was exceeded.");
+      totalBytes += info.size;
+      if (totalBytes > BigInt(limits.maxTotalBytes))
+        throw new Error(
+          "Verification workspace total-byte bound was exceeded."
+        );
+      files.push(path);
+    }
+  }
+  await visit(root, "");
+  return files;
+}
+
+async function readVerificationWorkspaceStructuralFile(
+  root: RuntimePath,
+  path: WorkspaceStructuralPath,
+  limits: typeof defaultVerificationWorkspaceObservationLimits
+) {
+  const absolute = parseRuntimePath(resolve(root, ...path.split("/")));
+  const back = relative(root, absolute);
+  if (
+    back.startsWith(`..${sep}`) ||
+    back === ".." ||
+    resolve(root, back) !== absolute
+  )
+    throw new Error("Verification workspace path escaped its root.");
+  const beforePath = statIdentity(await lstat(absolute, { bigint: true }));
+  const handle = await open(absolute, "r");
+  try {
+    const beforeHandleInfo = await handle.stat({ bigint: true });
+    if (beforeHandleInfo.size > BigInt(limits.maxFileBytes))
+      throw new Error("Verification workspace per-file bound was exceeded.");
+    const beforeHandle = statIdentity(beforeHandleInfo);
+    const allocation = Number(beforeHandleInfo.size) + 1;
+    const buffer = Buffer.alloc(allocation);
+    let offset = 0;
+    while (offset < buffer.byteLength) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        offset,
+        buffer.byteLength - offset,
+        offset
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const bytes = buffer.subarray(0, offset);
+    const afterHandle = statIdentity(await handle.stat({ bigint: true }));
+    const finalPath = statIdentity(await lstat(absolute, { bigint: true }));
+    return { afterHandle, beforeHandle, beforePath, bytes, finalPath };
+  } finally {
+    await handle.close();
+  }
 }
 
 class WorkspaceStructuralObservationChangedError extends Error {
