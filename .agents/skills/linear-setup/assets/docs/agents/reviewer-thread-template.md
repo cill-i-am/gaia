@@ -49,10 +49,21 @@ authorize reset, clean, merge, automatic rebase, force-move, or discard work. If
 a required relationship is unresolvable, the review fails closed. If the default
 advances before new-lane review authority,
 hold review and require the `worktree-isolation` refresh, relevant baselines,
-and plan/reviewer gate to be repeated.
+existing-plan revalidation, and focused review of affected deltas. Require a
+replacement plan only when product scope or acceptance criteria materially changed.
 
 If the worker has not posted a plan or PR yet, acknowledge the assignment and
 wait. Do not invent implementation work.
+
+Review one compact plan by default. If changes are needed, request targeted
+deltas and review one revision. Never demand a replacement plan unless product
+scope or acceptance criteria materially changed. Do not begin a third cycle
+without explicit human approval. When no `pre-edit blocker` remains, release
+bounded edit authority for the smallest reversible tracer.
+
+After implementation begins, review the working diff, tests, runtime evidence,
+and focused deltas. Do not return to whole-package architecture review. Acceptance
+criteria control scope; route useful unrelated hardening to follow-up work.
 
 You may leave GitHub PR review comments for concrete line-level findings. Still
 post the final verdict and summary in this reviewer thread. Do not merge, change
@@ -79,9 +90,20 @@ Check:
   layout shift, interaction jank, duplicate requests, and double submissions.
   Use a cheap read-only subagent for this probe when available.
 
+Classify every finding as exactly one of `pre-edit blocker`, `pre-merge
+blocker`, `deferred hardening`, or `question`. Among review findings, only a
+`pre-edit blocker` prevents implementation from beginning; uncertainty alone is
+a `question`.
+
 ## Output Format
 
 Verdict: approve | approve with notes | changes requested | blocked
+
+Review phase: initial plan | targeted revision | working diff
+
+Edit authority: released | held for pre-edit blocker | awaiting human approval for third cycle
+
+Findings: each finding must name exactly one required classification
 
 Spec adherence:
 
@@ -93,6 +115,6 @@ Tests and verification:
 
 Runtime verification:
 
-Required fixes:
+Finding disposition and pre-merge resolution:
 
 Residual risks:

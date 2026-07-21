@@ -49,16 +49,24 @@ repo still needs `linear-setup`.
    override ref resolves to the exact resumed HEAD. Preserve that evidence: it
    does not authorize reset, clean, merge, automatic rebase, force-move, or
    discard work.
-4. **Plan the narrow slice.** Re-state the acceptance criteria, out-of-scope
-   boundaries, expected files or modules, and verification commands. Keep this
-   brief. Proceed after posting unless Linear, the orchestrator, or a clear
-   risk flag requires explicit plan approval.
-5. **Implement with the right discipline.**
+4. **Plan the narrow slice.** Post one compact plan covering material architecture
+   decisions, acceptance criteria, out-of-scope boundaries, the smallest
+   end-to-end tracer, intended verification, known risks, and deferred questions.
+   Do not specify every table, query, retry, operation count, or hypothetical
+   failure path. Keep high-risk planning within approximately 60-90 minutes.
+   Obtain one independent review and apply at most one targeted revision. Replace
+   the plan only if product scope or acceptance criteria materially changed.
+   Never begin a third cycle without explicit human approval. Once no classified
+   `pre-edit blocker` remains, begin the bounded reversible slice.
+5. **Implement with the right discipline and executable evidence.**
    - Use `tdd` for behavior changes when practical.
    - Use `systematic-debugging` for failures, bugs, flakes, or unexpected
      behavior.
    - Use `subagent-execution` for bounded implementation, investigation, and
      review tasks.
+   - Prefer the smallest tracer, realistic fixtures, provider-free fakes and
+     outbound-call traps, measured operation counts, and crash/replay or lifecycle
+     tests where relevant. Open a draft PR as soon as the tracer works.
 6. **Review locally.** Before claiming done, run `production-ready`.
 7. **Open or update a PR.** Use the Linear issue title as the PR title when it
    includes the key.
@@ -104,11 +112,13 @@ Stop and update Linear instead of improvising when:
 - verification fails repeatedly without a clear root cause
 - provider credentials, Alchemy stage mutation, or production data is needed
 - PR scope grows beyond one vertical slice
-- reviewer feedback changes scope, product behavior, architecture, data shape,
-  or requires judgment
+- reviewer feedback materially changes product scope or acceptance criteria,
+  reveals a `pre-edit blocker`, or asks for work outside worker authority
 - GitHub or Linear auth is unavailable for required PR/comment watching
 
 If `origin/<default>` advances before new-lane edit authority, hold work and
 notify the orchestrator. Use only the non-destructive exact-base refresh in
-`worktree-isolation`; then rerun relevant baselines and repeat the plan/reviewer
-gate. Do not reset, rebase speculatively, or continue from stale handoff state.
+`worktree-isolation`; then rerun relevant baselines, revalidate the existing
+plan, and repeat focused review for affected deltas. Do not reset, rebase
+speculatively, replace the plan without material scope change, or continue from
+stale handoff state.
