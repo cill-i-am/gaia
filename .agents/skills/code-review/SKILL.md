@@ -160,16 +160,13 @@ For each finding:
   ```ts
   // real excerpt quoted from the changed file(s)
   ```
-````
-
 - **Proof:** <value flow, reachable state, reproduction with observed result, or missing evidence>
 - **Why it matters:** <behavioral consequence>
 - **Fix direction:** <specific correction shape, followed by a snippet or pseudo-code showing it>
   ```ts
   // snippet or pseudo-code of the fix; not a full patch unless asked
   ```
-
-```
+````
 
 Include the **Problematic code** block whenever the issue lives in code you can quote; omit it only when the finding is about something absent (e.g. a missing contract or test), and say what is missing instead. Always include a fix-direction snippet or pseudo-code unless the fix is purely a deletion.
 
@@ -177,4 +174,3 @@ Group findings in this order: `pre-edit blocker`, `pre-merge blocker`,
 `deferred hardening`, `question`.
 
 Completion criterion: the final review is actionable without code edits, every finding includes proof, and no review-only step modified the workspace.
-```

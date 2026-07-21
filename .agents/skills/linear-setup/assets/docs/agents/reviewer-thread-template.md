@@ -49,7 +49,8 @@ authorize reset, clean, merge, automatic rebase, force-move, or discard work. If
 a required relationship is unresolvable, the review fails closed. If the default
 advances before new-lane review authority,
 hold review and require the `worktree-isolation` refresh, relevant baselines,
-and plan/reviewer gate to be repeated.
+existing-plan revalidation, and focused review of affected deltas. Require a
+replacement plan only when product scope or acceptance criteria materially changed.
 
 If the worker has not posted a plan or PR yet, acknowledge the assignment and
 wait. Do not invent implementation work.
