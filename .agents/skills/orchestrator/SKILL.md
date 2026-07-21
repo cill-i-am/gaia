@@ -61,6 +61,22 @@ adherence, simplicity, and quality review.
 Use internal multi-agent subagents only for bounded side investigations,
 additional review depth, or when the user explicitly asks for subagents.
 
+## Planning And Edit Authority
+
+- Default to one compact worker plan and one independent reviewer pass.
+- Permit one targeted revision when needed. A replacement plan requires a
+  material change to product scope or acceptance criteria.
+- Never start a third plan-review cycle automatically; request explicit human
+  approval.
+- Release bounded edit authority for the smallest reversible tracer when no
+  classified `pre-edit blocker` remains. High-risk planning should normally fit
+  within approximately 60-90 minutes.
+- Acceptance criteria control scope. Operational hardening requires orchestrator
+  approval unless a failing tracer or acceptance criterion proves it necessary.
+- Prefer executable evidence and an early draft PR. After edits, review the
+  working diff, tests, runtime evidence, and focused deltas rather than
+  recommissioning architecture planning.
+
 ## Automation Tooling
 
 When creating, updating, viewing, or stopping heartbeats, use the Codex app
@@ -127,9 +143,10 @@ test, or skill-bundle validation. In Simulation Mode:
    PRD/Project, blockers, relevant comments, exact base SHA, fetch time, durable
    dispatch comment, worktree path, branch naming convention, and instruction to
    use the `worker` and `worktree-isolation` skills. Tell new-lane workers to
-   refresh live Linear and prove clean exact-base state before planning or
-   implementing. Require explicit plan approval only for high-risk work or when
-   the issue/orchestrator says approval is required.
+   refresh live Linear and prove clean exact-base state before planning. Require
+   one compact plan, one independent review, at most one targeted revision, and
+   then the smallest bounded reversible slice unless a `pre-edit blocker`
+   remains. A third cycle requires explicit human approval.
    - First prove the issue is not already owned by an active worker, reviewer,
      branch, PR, or heartbeat. Reuse or steer the existing owner when found.
    - For every non-trivial new-lane worker, create a paired user-visible read-only
@@ -156,8 +173,9 @@ test, or skill-bundle validation. In Simulation Mode:
      relationship is unresolvable, the lane fails closed.
    - If `origin/<default>` advances before new-lane edit authority, hold both
      lanes. Use the non-destructive refresh path in `worktree-isolation`, rerun
-     relevant baselines, and repeat the worker plan plus reviewer/orchestrator
-     gate.
+     relevant baselines, revalidate the existing plan, and repeat focused review
+     for affected deltas. Replace the plan only if scope or acceptance criteria
+     changed.
    - Tell every worker that after opening or updating a PR it must run
      `ci-watch`, monitor CI plus GitHub PR comments/review threads and Linear
      comments, fix actionable in-scope failures or comments, and keep watching
@@ -182,6 +200,12 @@ test, or skill-bundle validation. In Simulation Mode:
    work is accepted, blocked, or waiting on human input. Update an existing
    project heartbeat instead of creating duplicates, and verify the automation
    exists after creating or updating it.
+   - If an In Progress issue completes two plan-review cycles with no source diff
+     or draft PR, stop planning and notify the human with cycle evidence, finding
+     classification, and the smallest rescue tracer. Never commission another
+     complete plan.
+   - Also notify when several hours pass after edit authority without a source
+     diff, executable blocker, or draft PR.
 8. **Review returns.** For each worker report or PR, run the acceptance gates
    below before moving Linear forward.
 
@@ -214,6 +238,12 @@ double-submit or duplicate-request checks when relevant.
 For tiny or mechanical changes, the orchestrator may explicitly waive the
 reviewer thread and record why.
 
+Classify every finding as exactly one of `pre-edit blocker`, `pre-merge
+blocker`, `deferred hardening`, or `question`. Among review findings, only a
+`pre-edit blocker` stops implementation. Resolve concrete `pre-merge blocker`
+risks before merge unless the orchestrator explicitly accepts the residual risk.
+Route useful non-blocking hardening to an outcome-named follow-up issue.
+
 ### Quality Gate
 
 Require worker evidence from `production-ready`:
@@ -234,6 +264,8 @@ stack skills when risk is high or worker evidence is weak.
 ## Feedback
 
 If a gate fails, send targeted feedback to the worker thread or Linear issue.
+Do not request a replacement plan or whole-package architecture review after
+implementation begins unless scope or acceptance criteria materially changed.
 Do not rewrite the code yourself unless the user explicitly changes your role.
 
 ## Done

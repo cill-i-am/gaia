@@ -174,8 +174,9 @@ git -C "<reviewer-path>" switch --detach "$fresh_base_sha" || exit 1
 If fetch, symbolic-ref validation, commit resolution, or either lane operation
 fails, stop and report the divergence. Do not reset, force-move, or discard work.
 After refresh, repeat the full provenance proof using `fresh_default_ref`,
-dependency install when needed, relevant baselines, worker plan, and
-reviewer/orchestrator gate before edits.
+dependency install when needed, relevant baselines, existing-plan revalidation,
+and focused reviewer/orchestrator review of affected deltas before edits. Replace
+the plan only if product scope or acceptance criteria materially changed.
 
 Completion criterion: both paths and the exact fetched `origin/<default>` SHA are
 recorded; the worker owns a topic branch created from that SHA; the reviewer is

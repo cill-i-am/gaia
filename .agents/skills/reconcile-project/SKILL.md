@@ -13,6 +13,8 @@ Make Linear truthful before dispatching or accepting more work.
   statuses
 - linked PRs and CI status
 - worker/orchestrator evidence comments
+- plan-review cycle count, edit-authority time, source-diff or draft-PR evidence,
+  and any claimed executable blocker
 - freshly fetched `origin/<default>` ref/SHA resolved through symbolic
   `refs/remotes/origin/HEAD`, plus active worker/reviewer worktree evidence
 - relevant source or architecture docs when spec drift is suspected
@@ -47,7 +49,16 @@ Find and repair or report:
 - a resume used reset, clean, merge, automatic rebase, force-move, or discard as
   implied authority, or an unresolvable relationship did not fail closed
 - `origin/<default>` advanced before edit authority without a held dispatch, clean
-  non-destructive refresh, fresh baselines, and repeated plan/reviewer gate
+  non-destructive refresh, fresh baselines, existing-plan revalidation, and
+  focused review of affected deltas
+- a third plan-review cycle started without explicit human approval
+- two plan-review cycles completed with no source diff or draft PR
+- several hours passed after edit authority with no source diff, executable
+  blocker, or draft PR
+- a review finding lacks exactly one of `pre-edit blocker`, `pre-merge
+  blocker`, `deferred hardening`, or `question`
+- uncertainty or unrelated hardening was treated as a `pre-edit blocker`
+- reviewer feedback silently expanded scope beyond acceptance criteria
 - PR opened but Linear not linked
 - PR merged but issue not moved to the completed/done state
 - PR failed CI but no `ci-watch` is active
@@ -78,6 +89,10 @@ Use Linear updates for durable state:
   evidence as authority to rewrite history or the working tree
 - mark obsolete issues with rationale
 - trigger or recommend `ci-watch` for PRs with pending/failing CI
+- stop stalled planning and notify the human with elapsed/cycle evidence, current
+  classification, and the smallest rescue tracer; never commission another
+  complete plan
+- route useful non-blocking hardening to an outcome-named follow-up issue
 
 Do not implement code. Do not close or mark done without evidence.
 
@@ -87,7 +102,8 @@ Report every touched item in exactly one bucket:
 
 - `dispatchable`: issue is ready for an AFK worker and blockers are clear.
 - `active-worker`: issue already has an active worker, reviewer, branch, PR, or
-  heartbeat; include the owner and next check.
+  heartbeat; include the owner, next check, planning cycle, edit authority, and
+  executable evidence.
 - `needs-ci-watch`: PR exists but checks, PR comments, review threads, or Linear
   comments still need monitoring.
 - `blocked-hitl`: human decision, external provider state, credentials, or
