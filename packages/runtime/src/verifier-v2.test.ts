@@ -12,7 +12,7 @@ import {
   parseVerificationCommandReceipt,
   VerificationActionRequestSchema,
 } from "@gaia/core";
-import { Effect, Fiber, FileSystem, Schema } from "effect";
+import { Deferred, Effect, Fiber, FileSystem, Schema } from "effect";
 
 import {
   BrowserEvidenceV2,
@@ -737,6 +737,7 @@ describe("V2 claim verifier", () => {
                 )
               );
               const sandboxUuid = "123e4567-e89b-12d3-a456-426614174000";
+              const stageEntered = yield* Deferred.make<void>();
               let enteredStage: typeof stage | undefined;
               let sandbox:
                 | {
@@ -748,18 +749,12 @@ describe("V2 claim verifier", () => {
                 | undefined;
               const delayed = (candidate: typeof stage) =>
                 candidate === stage
-                  ? Effect.sync(() => {
+                  ? Effect.callback<void>((resume) => {
                       enteredStage = candidate;
-                    }).pipe(
-                      Effect.andThen(
-                        Effect.promise(
-                          () =>
-                            new Promise<void>((resolve) => {
-                              setTimeout(resolve, 20);
-                            })
-                        )
-                      )
-                    )
+                      Deferred.doneUnsafe(stageEntered, Effect.void);
+                      const timer = setTimeout(() => resume(Effect.void), 20);
+                      return Effect.sync(() => clearTimeout(timer));
+                    })
                   : Effect.void;
               const cli = makeDockerSandboxCli((command) => {
                 const [verb] = command.args;
@@ -848,9 +843,11 @@ describe("V2 claim verifier", () => {
                   });
                 if (verb === "exec") {
                   if (stage === "execute")
-                    return Effect.sync(() => {
+                    return Effect.callback(() => {
                       enteredStage = "execute";
-                    }).pipe(Effect.andThen(Effect.never));
+                      Deferred.doneUnsafe(stageEntered, Effect.void);
+                      return Effect.void;
+                    });
                   return Effect.succeed({
                     exitCode: 0,
                     stderr: "",
@@ -894,10 +891,18 @@ describe("V2 claim verifier", () => {
               const fiber = yield* Effect.scoped(
                 recordRunProofResult(runId, paths, { verificationServices })
               ).pipe(Effect.forkChild);
-              for (let attempts = 0; attempts < 1_000; attempts += 1) {
-                if (enteredStage === stage) break;
-                yield* Effect.yieldNow;
-              }
+              const barrier = yield* Effect.race(
+                Deferred.await(stageEntered).pipe(
+                  Effect.as({ _tag: "StageEntered" } as const)
+                ),
+                Fiber.await(fiber).pipe(
+                  Effect.map((exit) => ({ _tag: "Exited", exit }) as const)
+                )
+              );
+              if (barrier._tag === "Exited")
+                return assert.fail(
+                  `Verifier exited before entering ${stage}: ${barrier.exit._tag}`
+                );
               assert.strictEqual(enteredStage, stage);
               yield* Fiber.interrupt(fiber);
               const exit = yield* Fiber.await(fiber);

@@ -1,7 +1,7 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import { VerificationCommandRequestV1 } from "@gaia/core";
-import { Effect, Fiber, FileSystem, Path, Schema } from "effect";
+import { Deferred, Effect, Fiber, FileSystem, Path, Schema } from "effect";
 
 import {
   makeDockerSandboxCli,
@@ -240,6 +240,39 @@ describe("Docker Sandbox verification outcome classification", () => {
             | "stop"
             | undefined;
           let enteredStage: typeof delayedStage;
+          let stageEntryLatch: Deferred.Deferred<void> | undefined;
+          const signalStageEntry = (
+            stage: Exclude<typeof delayedStage, undefined>
+          ) => {
+            enteredStage = stage;
+            const latch = stageEntryLatch;
+            if (latch === undefined) return false;
+            Deferred.doneUnsafe(latch, Effect.void);
+            return true;
+          };
+          const suspendAtStage = (
+            stage: Exclude<typeof delayedStage, undefined>
+          ) =>
+            Effect.callback<never>((resume) => {
+              if (!signalStageEntry(stage))
+                resume(Effect.die(`Missing stage-entry latch for ${stage}.`));
+              return Effect.void;
+            });
+          const delayAtStage = (
+            stage: Exclude<typeof delayedStage, undefined>,
+            delayMilliseconds: number
+          ) =>
+            Effect.callback<void>((resume) => {
+              if (!signalStageEntry(stage)) {
+                resume(Effect.die(`Missing stage-entry latch for ${stage}.`));
+                return Effect.void;
+              }
+              const timer = setTimeout(
+                () => resume(Effect.void),
+                delayMilliseconds
+              );
+              return Effect.sync(() => clearTimeout(timer));
+            });
           let identityDrift: "rebound" | "rename" | undefined;
           let surviveRemovalAs: "rebound" | "rename" | undefined;
           let postCreateListCount = 0;
@@ -346,10 +379,7 @@ describe("Docker Sandbox verification outcome classification", () => {
               });
             if (verb === "exec") {
               execCount += 1;
-              if (delayedStage === "execute") {
-                enteredStage = "execute";
-                return Effect.never;
-              }
+              if (delayedStage === "execute") return suspendAtStage("execute");
               return Effect.succeed({
                 exitCode: 0,
                 stderr: "",
@@ -365,20 +395,7 @@ describe("Docker Sandbox verification outcome classification", () => {
                   stdout: "",
                 });
               return (
-                delayedStage === "stop"
-                  ? Effect.sync(() => {
-                      enteredStage = "stop";
-                    }).pipe(
-                      Effect.andThen(
-                        Effect.promise(
-                          () =>
-                            new Promise<void>((resolve) => {
-                              setTimeout(resolve, 20);
-                            })
-                        )
-                      )
-                    )
-                  : Effect.void
+                delayedStage === "stop" ? delayAtStage("stop", 20) : Effect.void
               ).pipe(
                 Effect.map(() => {
                   sandbox = {
@@ -394,18 +411,7 @@ describe("Docker Sandbox verification outcome classification", () => {
             if (verb === "rm") {
               return (
                 delayedStage === "remove"
-                  ? Effect.sync(() => {
-                      enteredStage = "remove";
-                    }).pipe(
-                      Effect.andThen(
-                        Effect.promise(
-                          () =>
-                            new Promise<void>((resolve) => {
-                              setTimeout(resolve, 20);
-                            })
-                        )
-                      )
-                    )
+                  ? delayAtStage("remove", 20)
                   : Effect.void
               ).pipe(
                 Effect.map(() => {
@@ -694,18 +700,7 @@ describe("Docker Sandbox verification outcome classification", () => {
           inspectedImageDigest = profile.imageDigest;
           const observeWorkspace = (observedWorkspace: string) =>
             (delayedStage === "observation"
-              ? Effect.sync(() => {
-                  enteredStage = "observation";
-                }).pipe(
-                  Effect.andThen(
-                    Effect.promise(
-                      () =>
-                        new Promise<void>((resolve) => {
-                          setTimeout(resolve, 20);
-                        })
-                    )
-                  )
-                )
+              ? delayAtStage("observation", 20)
               : Effect.void
             ).pipe(
               Effect.andThen(
@@ -723,6 +718,8 @@ describe("Docker Sandbox verification outcome classification", () => {
               [];
             delayedStage = stage;
             enteredStage = undefined;
+            const stageEntered = yield* Deferred.make<void>();
+            stageEntryLatch = stageEntered;
             const interruptedFiber = yield* Effect.scoped(
               executeDockerSandboxVerification(
                 {
@@ -754,10 +751,18 @@ describe("Docker Sandbox verification outcome classification", () => {
                 { observeWorkspace }
               )
             ).pipe(Effect.forkChild);
-            for (let attempts = 0; attempts < 1_000; attempts += 1) {
-              if (enteredStage === stage) break;
-              yield* Effect.yieldNow;
-            }
+            const barrier = yield* Effect.race(
+              Deferred.await(stageEntered).pipe(
+                Effect.as({ _tag: "StageEntered" } as const)
+              ),
+              Fiber.await(interruptedFiber).pipe(
+                Effect.map((exit) => ({ _tag: "Exited", exit }) as const)
+              )
+            );
+            if (barrier._tag === "Exited")
+              return assert.fail(
+                `Executor exited before entering ${stage}: ${barrier.exit._tag}`
+              );
             assert.strictEqual(enteredStage, stage);
             yield* Fiber.interrupt(interruptedFiber);
             const interrupted = yield* Fiber.await(interruptedFiber);
@@ -776,6 +781,7 @@ describe("Docker Sandbox verification outcome classification", () => {
             assert.strictEqual(sandbox, undefined);
           }
           delayedStage = undefined;
+          stageEntryLatch = undefined;
           rejectStop = true;
           const stopsBeforeFailure = stopCount;
           const cleanupFailure = yield* Effect.scoped(
