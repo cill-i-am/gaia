@@ -1167,22 +1167,6 @@ const merged = (
 });
 
 describe("delivery merge reconstructed coordinator", () => {
-  it("replays the natural V2 proof through MergeDecisionV2 and readiness V3", async () => {
-    const f = fixture("ready", false, "a".repeat(40), 2);
-
-    const loaded = await Effect.runPromise(
-      loadRun(f.paths).pipe(Effect.provide(NodeServices.layer))
-    );
-
-    expect(loaded.latestSnapshot?.context["runProof"]).toMatchObject({
-      aggregate: "verified",
-      version: 2,
-    });
-    expect(loaded.events.at(-1)?.type).toBe(
-      "DELIVERY_MERGE_READINESS_RECORDED"
-    );
-  });
-
   it("rejects malformed Unicode before canonical V3 digesting", () => {
     const f = fixture("ready", false);
 

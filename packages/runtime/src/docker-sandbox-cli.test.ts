@@ -25,6 +25,7 @@ describe("DockerSandboxCli", () => {
         workspace: "/tmp/gaia-run/workspace",
       });
       yield* cli.inspect("gaia-sandbox-1");
+      yield* cli.inspectAuthority("gaia-sandbox-1");
       yield* cli.execute({
         argv: [
           "/usr/bin/env",
@@ -58,6 +59,7 @@ describe("DockerSandboxCli", () => {
             "--quiet",
           ],
           ["inspect", "gaia-sandbox-1", "--json"],
+          ["inspect", "gaia-sandbox-1"],
           [
             "exec",
             "--workdir",

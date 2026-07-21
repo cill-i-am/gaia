@@ -89,6 +89,7 @@ import {
   ClaimVerificationSandboxCreatedV1,
   VerificationIdentityDigestSchema,
   VerificationReceiptDigestSchema,
+  VerificationSourceKeySchema,
   makeVerificationCommandRequestDigest,
   parseVerificationCommandReceipt,
   parseVerificationReconciliationReceipt,
@@ -366,7 +367,9 @@ export const RunMachineEventSchema = Schema.Union([
     type: Schema.Literal("RUN_PROOF_RESULT_RECORDED"),
   }),
   Schema.Struct({
+    evidenceKind: Schema.optionalKey(Schema.Literal("page")),
     evidencePath: RunMachinePathSchema,
+    evidenceSelector: Schema.optionalKey(VerificationSourceKeySchema),
     status: RunMachineStatusSchema,
     targetUrl: RunMachineUrlSchema,
     type: Schema.Literal("BROWSER_EVIDENCE_RECORDED"),
@@ -2177,7 +2180,20 @@ function toMachineEventInput(event: RunEvent) {
   switch (event.type) {
     case "BROWSER_EVIDENCE_RECORDED":
       return {
+        ...(getOptionalStringPayload(event, "evidenceKind") === undefined
+          ? {}
+          : {
+              evidenceKind: getOptionalStringPayload(event, "evidenceKind"),
+            }),
         evidencePath: getStringPayload(event, "evidencePath"),
+        ...(getOptionalStringPayload(event, "evidenceSelector") === undefined
+          ? {}
+          : {
+              evidenceSelector: getOptionalStringPayload(
+                event,
+                "evidenceSelector"
+              ),
+            }),
         status: getStringPayload(event, "status"),
         targetUrl: getStringPayload(event, "targetUrl"),
         type: event.type,

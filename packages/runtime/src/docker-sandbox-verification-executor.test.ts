@@ -1,7 +1,7 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import { VerificationCommandRequestV1 } from "@gaia/core";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, Fiber, FileSystem, Path, Schema } from "effect";
 
 import {
   makeDockerSandboxCli,
@@ -10,13 +10,17 @@ import {
 import {
   classifyDockerSandboxExecOutcome,
   executeDockerSandboxVerification,
+  parseDockerSandboxInspectAuthorityJson,
+  parseDockerSandboxInspectAuthoritySummary,
   reconcileDockerSandboxVerification,
+  type StagedDockerSandboxVerificationReceipt,
 } from "./docker-sandbox-verification-executor.js";
 import { parseRuntimePath } from "./paths.js";
 import {
   parseVerificationExecutionProfile,
   readVerificationExecutionProfile,
 } from "./verification-execution-profile.js";
+import { observeVerificationWorkspaceStructuralDigest } from "./workspace-snapshot.js";
 
 const runLiveDockerSandboxProof =
   process.env["GAIA_DOCKER_SANDBOX_LIVE"] === "1";
@@ -90,6 +94,121 @@ describe("Docker Sandbox verification outcome classification", () => {
     );
   });
 
+  it("requires every normalized containment authority field explicitly", () => {
+    const summary = [
+      "Name: gaia-sandbox-1",
+      "Agent: shell",
+      "Kits: none",
+      "State: running (1s)",
+      "Image: pinned@example",
+      "Image digest: sha256:expected",
+      "Auth mode: not configured",
+      "Workspace: /tmp/workspace",
+      "Network Policy: global (local policy)",
+      "Mount Policy: allowed",
+      "Proxy: 172.17.0.0:3128",
+      "Secrets: none",
+      "Ports: none published",
+      "Sessions: 0",
+      "Daemon: v0.35.0 uptime 1m",
+    ].join("\n");
+    assert.strictEqual(
+      parseDockerSandboxInspectAuthoritySummary(summary).authMode,
+      "not configured"
+    );
+    for (const forbidden of [
+      ["Auth mode: not configured", "Auth mode: oauth"],
+      ["Kits: none", "Kits: credential-kit"],
+      ["Mount Policy: allowed", "Mount Policy: read-only"],
+      ["Ports: none published", "Ports: 3000:3000"],
+      ["Secrets: none", "Secrets: github"],
+      ["Sessions: 0", "Sessions: 1"],
+    ] as const) {
+      assert.throws(() =>
+        parseDockerSandboxInspectAuthoritySummary(
+          summary.replace(forbidden[0], forbidden[1])
+        )
+      );
+    }
+    for (const omitted of [
+      "Auth mode",
+      "Kits",
+      "Mount Policy",
+      "Ports",
+      "Secrets",
+      "Sessions",
+    ]) {
+      assert.throws(() =>
+        parseDockerSandboxInspectAuthoritySummary(
+          summary
+            .split("\n")
+            .filter((line) => !line.startsWith(`${omitted}:`))
+            .join("\n")
+        )
+      );
+    }
+    assert.throws(() =>
+      parseDockerSandboxInspectAuthoritySummary(`${summary}\nToken: present`)
+    );
+  });
+
+  it("rejects omitted and positive forbidden JSON containment authority", () => {
+    const authority = {
+      agent: "shell",
+      daemon_uptime: "12h 11m",
+      daemon_version: "v0.35.0",
+      image: "pinned@example",
+      image_digest: "sha256:expected",
+      kits: [],
+      mcp_gateway: false,
+      name: "gaia-sandbox-1",
+      network: "gaia-sandbox-1",
+      network_policy: { scope: "global" },
+      proxy: "172.17.0.0:3128",
+      sessions: 0,
+      state: "running",
+      uptime: "9s",
+      workspace: "/tmp/workspace",
+    };
+    assert.strictEqual(
+      parseDockerSandboxInspectAuthorityJson(JSON.stringify(authority)).name,
+      "gaia-sandbox-1"
+    );
+    for (const omitted of Object.keys(authority)) {
+      const candidate = { ...authority };
+      Reflect.deleteProperty(candidate, omitted);
+      assert.throws(() =>
+        parseDockerSandboxInspectAuthorityJson(JSON.stringify(candidate))
+      );
+    }
+    for (const forbidden of [
+      { ...authority, agent: "claude" },
+      { ...authority, kits: ["credential-kit"] },
+      { ...authority, mcp_gateway: true },
+      { ...authority, network_policy: { scope: "project" } },
+      { ...authority, sessions: 1 },
+      { ...authority, state: "paused" },
+    ]) {
+      assert.throws(() =>
+        parseDockerSandboxInspectAuthorityJson(JSON.stringify(forbidden))
+      );
+    }
+    for (const [field, value] of [
+      ["auth", { mode: "oauth" }],
+      ["secrets", ["github"]],
+      ["published_ports", ["3000:3000"]],
+      ["credential_proxy", true],
+      ["docker_socket", "/var/run/docker.sock"],
+      ["environment", { GITHUB_TOKEN: "present" }],
+    ] as const) {
+      assert.throws(() =>
+        parseDockerSandboxInspectAuthorityJson(
+          JSON.stringify({ ...authority, [field]: value })
+        )
+      );
+    }
+  });
+
   layer(NodeServices.layer)((it) => {
     it.effect(
       "stops before observation and removes the exact name and UUID",
@@ -114,6 +233,16 @@ describe("Docker Sandbox verification outcome classification", () => {
           let execCount = 0;
           let stopCount = 0;
           let rejectStop = false;
+          let delayedStage:
+            | "execute"
+            | "observation"
+            | "remove"
+            | "stop"
+            | undefined;
+          let enteredStage: typeof delayedStage;
+          let identityDrift: "rebound" | "rename" | undefined;
+          let surviveRemovalAs: "rebound" | "rename" | undefined;
+          let postCreateListCount = 0;
           let inspectedImageDigest =
             "sha256:39cf20eca861ec92747487af6197f6d916f774bdb98245d267dbd8dfd3debb05";
           const uuid = "123e4567-e89b-12d3-a456-426614174000";
@@ -141,15 +270,31 @@ describe("Docker Sandbox verification outcome classification", () => {
                   ],
                 }),
               });
-            if (verb === "ls")
+            if (verb === "ls") {
+              const observedSandbox = sandbox;
+              const shouldDrift =
+                observedSandbox !== undefined &&
+                identityDrift !== undefined &&
+                (postCreateListCount += 1) === 2;
+              const listedSandbox = shouldDrift
+                ? {
+                    ...observedSandbox,
+                    ...(identityDrift === "rebound"
+                      ? { id: "123e4567-e89b-12d3-a456-426614174999" }
+                      : { name: "gaia-sandbox-renamed" }),
+                  }
+                : observedSandbox;
+              if (shouldDrift) identityDrift = undefined;
               return Effect.succeed({
                 exitCode: 0,
                 stderr: "",
                 stdout: JSON.stringify({
-                  sandboxes: sandbox === undefined ? [] : [sandbox],
+                  sandboxes: listedSandbox === undefined ? [] : [listedSandbox],
                 }),
               });
+            }
             if (verb === "create") {
+              postCreateListCount = 0;
               sandbox = {
                 id: uuid,
                 name: "gaia-sandbox-1",
@@ -162,22 +307,49 @@ describe("Docker Sandbox verification outcome classification", () => {
               return Effect.succeed({
                 exitCode: 0,
                 stderr: "",
-                stdout: JSON.stringify({
-                  agent: "shell",
-                  image:
-                    "docker/sandbox-templates:shell-docker@sha256:39cf20eca861ec92747487af6197f6d916f774bdb98245d267dbd8dfd3debb05",
-                  image_digest: inspectedImageDigest,
-                  kits: [],
-                  mcp_gateway: false,
-                  name: "gaia-sandbox-1",
-                  network_policy: { scope: "global" },
-                  sessions: 0,
-                  state: sandbox?.status,
-                  workspace,
-                }),
+                stdout: command.args.includes("--json")
+                  ? JSON.stringify({
+                      agent: "shell",
+                      daemon_uptime: "1m",
+                      daemon_version: "v0.35.0",
+                      image:
+                        "docker/sandbox-templates:shell-docker@sha256:39cf20eca861ec92747487af6197f6d916f774bdb98245d267dbd8dfd3debb05",
+                      image_digest: inspectedImageDigest,
+                      kits: [],
+                      mcp_gateway: false,
+                      name: "gaia-sandbox-1",
+                      network: "gaia-sandbox-1",
+                      network_policy: { scope: "global" },
+                      proxy: "172.17.0.0:3128",
+                      sessions: 0,
+                      state: sandbox?.status,
+                      uptime: "1s",
+                      workspace,
+                    })
+                  : [
+                      "Name: gaia-sandbox-1",
+                      "Agent: shell",
+                      "Kits: none",
+                      `State: ${sandbox?.status} (1s)`,
+                      `Image: ${profile.templateReference}`,
+                      `Image digest: ${inspectedImageDigest}`,
+                      "Auth mode: not configured",
+                      `Workspace: ${workspace}`,
+                      "Network Policy: global (local policy)",
+                      "Mount Policy: allowed",
+                      "Proxy: 172.17.0.0:3128",
+                      "Secrets: none",
+                      "Ports: none published",
+                      "Sessions: 0",
+                      `Daemon: v${profile.provider.version} uptime 1m`,
+                    ].join("\n"),
               });
             if (verb === "exec") {
               execCount += 1;
+              if (delayedStage === "execute") {
+                enteredStage = "execute";
+                return Effect.never;
+              }
               return Effect.succeed({
                 exitCode: 0,
                 stderr: "",
@@ -192,17 +364,69 @@ describe("Docker Sandbox verification outcome classification", () => {
                   stderr: "stop rejected",
                   stdout: "",
                 });
-              sandbox = {
-                id: uuid,
-                name: "gaia-sandbox-1",
-                status: "stopped",
-                workspaces: [workspace],
-              };
-              return Effect.succeed({ exitCode: 0, stderr: "", stdout: "" });
+              return (
+                delayedStage === "stop"
+                  ? Effect.sync(() => {
+                      enteredStage = "stop";
+                    }).pipe(
+                      Effect.andThen(
+                        Effect.promise(
+                          () =>
+                            new Promise<void>((resolve) => {
+                              setTimeout(resolve, 20);
+                            })
+                        )
+                      )
+                    )
+                  : Effect.void
+              ).pipe(
+                Effect.map(() => {
+                  sandbox = {
+                    id: uuid,
+                    name: "gaia-sandbox-1",
+                    status: "stopped",
+                    workspaces: [workspace],
+                  };
+                  return { exitCode: 0, stderr: "", stdout: "" };
+                })
+              );
             }
             if (verb === "rm") {
-              sandbox = undefined;
-              return Effect.succeed({ exitCode: 0, stderr: "", stdout: "" });
+              return (
+                delayedStage === "remove"
+                  ? Effect.sync(() => {
+                      enteredStage = "remove";
+                    }).pipe(
+                      Effect.andThen(
+                        Effect.promise(
+                          () =>
+                            new Promise<void>((resolve) => {
+                              setTimeout(resolve, 20);
+                            })
+                        )
+                      )
+                    )
+                  : Effect.void
+              ).pipe(
+                Effect.map(() => {
+                  sandbox =
+                    surviveRemovalAs === undefined
+                      ? undefined
+                      : {
+                          id:
+                            surviveRemovalAs === "rebound"
+                              ? "123e4567-e89b-12d3-a456-426614174999"
+                              : uuid,
+                          name:
+                            surviveRemovalAs === "rename"
+                              ? "gaia-sandbox-renamed"
+                              : "gaia-sandbox-1",
+                          status: "stopped",
+                          workspaces: [workspace],
+                        };
+                  return { exitCode: 0, stderr: "", stdout: "" };
+                })
+              );
             }
             return Effect.die("unexpected fake sbx command");
           });
@@ -265,6 +489,7 @@ describe("Docker Sandbox verification outcome classification", () => {
                 contractId: "run-contract:run-Gaia145V2x:v2",
                 executionEvidenceIdentityDigest: "4".repeat(64),
                 generationSequence: 5,
+                onInterrupted: () => Effect.void,
                 onSandboxCreated: () => Effect.void,
                 request,
                 runId: "run-Gaia145V2x",
@@ -303,6 +528,7 @@ describe("Docker Sandbox verification outcome classification", () => {
                 contractId: "run-contract:run-Gaia145V2x:v2",
                 executionEvidenceIdentityDigest: "4".repeat(64),
                 generationSequence: 6,
+                onInterrupted: () => Effect.void,
                 onSandboxCreated: () => Effect.void,
                 request: cappedRequest,
                 runId: "run-Gaia145V2x",
@@ -337,6 +563,7 @@ describe("Docker Sandbox verification outcome classification", () => {
                 contractId: "run-contract:run-Gaia145V2x:v2",
                 executionEvidenceIdentityDigest: "4".repeat(64),
                 generationSequence: 7,
+                onInterrupted: () => Effect.void,
                 onSandboxCreated: () => Effect.void,
                 request,
                 runId: "run-Gaia145V2x",
@@ -361,6 +588,44 @@ describe("Docker Sandbox verification outcome classification", () => {
           );
           assert.strictEqual(execCount, 2);
           assert.strictEqual(sandbox, undefined);
+          inspectedImageDigest = profile.imageDigest;
+          for (const drift of ["rebound", "rename"] as const) {
+            identityDrift = drift;
+            const identityDrifted = yield* Effect.scoped(
+              executeDockerSandboxVerification(
+                {
+                  authorityDigest: "1".repeat(64),
+                  claimId: `proof-claim:sha256:${"2".repeat(64)}`,
+                  contractDigest: "3".repeat(64),
+                  contractId: "run-contract:run-Gaia145V2x:v2",
+                  executionEvidenceIdentityDigest: "4".repeat(64),
+                  generationSequence: 8,
+                  onInterrupted: () => Effect.void,
+                  onSandboxCreated: () => Effect.void,
+                  request,
+                  runId: "run-Gaia145V2x",
+                  sandboxName: "gaia-sandbox-1",
+                  stderrArtifactPath:
+                    "verification/claims/smoke-command/stderr.bin",
+                  stderrPath,
+                  stdoutArtifactPath:
+                    "verification/claims/smoke-command/stdout.bin",
+                  stdoutPath,
+                  targetDigest: "5".repeat(64),
+                  workspace,
+                },
+                cli,
+                profile
+              ).pipe(Effect.exit)
+            );
+            assert.strictEqual(identityDrifted._tag, "Failure");
+            assert.include(
+              JSON.stringify(identityDrifted),
+              "VerificationProviderFailure"
+            );
+            assert.strictEqual(execCount, 2);
+            assert.strictEqual(sandbox, undefined);
+          }
           const reconciled = yield* reconcileDockerSandboxVerification(
             {
               actionId: "reconcile-gaia-145",
@@ -389,7 +654,128 @@ describe("Docker Sandbox verification outcome classification", () => {
             }
           );
           assert.strictEqual(reconciled.finalAbsenceConfirmed, true);
+          for (const survivingIdentity of ["rebound", "rename"] as const) {
+            surviveRemovalAs = survivingIdentity;
+            const absenceUnknown = yield* Effect.scoped(
+              executeDockerSandboxVerification(
+                {
+                  authorityDigest: "1".repeat(64),
+                  claimId: `proof-claim:sha256:${"2".repeat(64)}`,
+                  contractDigest: "3".repeat(64),
+                  contractId: "run-contract:run-Gaia145V2x:v2",
+                  executionEvidenceIdentityDigest: "4".repeat(64),
+                  generationSequence: 8,
+                  onInterrupted: () => Effect.void,
+                  onSandboxCreated: () => Effect.void,
+                  request,
+                  runId: "run-Gaia145V2x",
+                  sandboxName: "gaia-sandbox-1",
+                  stderrArtifactPath:
+                    "verification/claims/smoke-command/stderr.bin",
+                  stderrPath,
+                  stdoutArtifactPath:
+                    "verification/claims/smoke-command/stdout.bin",
+                  stdoutPath,
+                  targetDigest: "5".repeat(64),
+                  workspace,
+                },
+                cli,
+                profile
+              ).pipe(Effect.exit)
+            );
+            assert.strictEqual(absenceUnknown._tag, "Failure");
+            assert.include(
+              JSON.stringify(absenceUnknown),
+              "VerificationCommandOutcomeUnknown"
+            );
+            sandbox = undefined;
+            surviveRemovalAs = undefined;
+          }
           inspectedImageDigest = profile.imageDigest;
+          const observeWorkspace = (observedWorkspace: string) =>
+            (delayedStage === "observation"
+              ? Effect.sync(() => {
+                  enteredStage = "observation";
+                }).pipe(
+                  Effect.andThen(
+                    Effect.promise(
+                      () =>
+                        new Promise<void>((resolve) => {
+                          setTimeout(resolve, 20);
+                        })
+                    )
+                  )
+                )
+              : Effect.void
+            ).pipe(
+              Effect.andThen(
+                observeVerificationWorkspaceStructuralDigest(observedWorkspace)
+              )
+            );
+
+          for (const stage of [
+            "execute",
+            "stop",
+            "observation",
+            "remove",
+          ] as const) {
+            const interruptedReceipts: Array<StagedDockerSandboxVerificationReceipt> =
+              [];
+            delayedStage = stage;
+            enteredStage = undefined;
+            const interruptedFiber = yield* Effect.scoped(
+              executeDockerSandboxVerification(
+                {
+                  authorityDigest: "1".repeat(64),
+                  claimId: `proof-claim:sha256:${"2".repeat(64)}`,
+                  contractDigest: "3".repeat(64),
+                  contractId: "run-contract:run-Gaia145V2x:v2",
+                  executionEvidenceIdentityDigest: "4".repeat(64),
+                  generationSequence: 9,
+                  onInterrupted: (receipt) =>
+                    Effect.sync(() => {
+                      interruptedReceipts.push(receipt);
+                    }),
+                  onSandboxCreated: () => Effect.void,
+                  request,
+                  runId: "run-Gaia145V2x",
+                  sandboxName: "gaia-sandbox-1",
+                  stderrArtifactPath:
+                    "verification/claims/smoke-command/stderr.bin",
+                  stderrPath,
+                  stdoutArtifactPath:
+                    "verification/claims/smoke-command/stdout.bin",
+                  stdoutPath,
+                  targetDigest: "5".repeat(64),
+                  workspace,
+                },
+                cli,
+                profile,
+                { observeWorkspace }
+              )
+            ).pipe(Effect.forkChild);
+            for (let attempts = 0; attempts < 1_000; attempts += 1) {
+              if (enteredStage === stage) break;
+              yield* Effect.yieldNow;
+            }
+            assert.strictEqual(enteredStage, stage);
+            yield* Fiber.interrupt(interruptedFiber);
+            const interrupted = yield* Fiber.await(interruptedFiber);
+            assert.strictEqual(interrupted._tag, "Failure");
+            assert.strictEqual(interruptedReceipts.length, 1);
+            const interruptedReceipt = interruptedReceipts[0];
+            if (interruptedReceipt === undefined)
+              return yield* Effect.die(
+                "interruption did not publish its typed terminal receipt"
+              );
+            assert.strictEqual(interruptedReceipt.status, "interrupted");
+            assert.strictEqual(
+              interruptedReceipt.cleanup.finalAbsenceConfirmed,
+              true
+            );
+            assert.strictEqual(sandbox, undefined);
+          }
+          delayedStage = undefined;
           rejectStop = true;
           const stopsBeforeFailure = stopCount;
           const cleanupFailure = yield* Effect.scoped(
@@ -401,6 +787,7 @@ describe("Docker Sandbox verification outcome classification", () => {
                 contractId: "run-contract:run-Gaia145V2x:v2",
                 executionEvidenceIdentityDigest: "4".repeat(64),
                 generationSequence: 8,
+                onInterrupted: () => Effect.void,
                 onSandboxCreated: () => Effect.void,
                 request,
                 runId: "run-Gaia145V2x",
@@ -471,6 +858,7 @@ describe("Docker Sandbox verification outcome classification", () => {
                 contractId: `run-contract:${runId}:v2`,
                 executionEvidenceIdentityDigest: "d".repeat(64),
                 generationSequence: 1,
+                onInterrupted: () => Effect.void,
                 onSandboxCreated: () => Effect.void,
                 request: {
                   argv: ["%s", "gaia-claim-ok\n"],

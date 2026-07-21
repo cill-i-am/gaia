@@ -26,9 +26,11 @@ import {
   type VerificationCommandReceipt,
   VerificationIdentityDigestSchema,
   VerificationRequestDigestSchema,
+  VerificationSourceKeySchema,
 } from "@gaia/core";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Option, Path, Schema } from "effect";
 
+import { BrowserEvidenceTargetUrlSchema } from "./browser-evidence.js";
 import {
   finalizeDockerSandboxVerificationReceipt,
   VerificationCommandOutcomeUnknown,
@@ -74,6 +76,16 @@ export const VerificationServicesSchema = Schema.Struct({
   executor: DockerSandboxVerificationExecutorServiceSchema,
   profile: VerificationExecutionProfileV1,
 });
+
+const BrowserEvidenceObservationSchema = Schema.Struct({
+  evidenceKind: Schema.Literal("page"),
+  evidenceSelector: VerificationSourceKeySchema,
+  status: Schema.Literal("collected"),
+  targetUrl: BrowserEvidenceTargetUrlSchema,
+});
+const parseBrowserEvidenceObservation = Schema.decodeUnknownOption(
+  BrowserEvidenceObservationSchema
+);
 export type VerificationServices = Schema.Schema.Type<
   typeof VerificationServicesSchema
 >;
@@ -340,7 +352,60 @@ function executeCommandClaim(input: {
       type: "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED",
     });
     let commandStartSequence: number | undefined;
-    const invocation: DockerSandboxVerificationInvocation = {
+    let invocation: DockerSandboxVerificationInvocation;
+    const persistStagedReceipt = (
+      staged: Parameters<
+        DockerSandboxVerificationInvocation["onInterrupted"]
+      >[0]
+    ) =>
+      Effect.gen(function* () {
+        if (commandStartSequence === undefined)
+          return yield* Effect.fail(
+            new VerificationCommandOutcomeUnknown({
+              code: "VerificationCommandOutcomeUnknown",
+              message: "Command dispatch has no durable command-start prefix.",
+              recoverable: false,
+            })
+          );
+        const receipt = yield* withRunEventSerialization(
+          input.paths,
+          Effect.gen(function* () {
+            const events = yield* readEvents(input.paths);
+            const terminalSequence = parseRunEventSequence(
+              (events.at(-1)?.sequence ?? 0) + 1
+            );
+            const finalized = finalizeDockerSandboxVerificationReceipt(
+              invocation,
+              staged,
+              input.services.profile,
+              commandStartSequence!,
+              terminalSequence
+            );
+            const event = makeRunEvent({
+              payload: {
+                receipt: encodeVerificationCommandReceiptJson(finalized),
+              },
+              runId: input.runId,
+              sequence: terminalSequence,
+              timestamp: new Date().toISOString(),
+              type: "CLAIM_VERIFICATION_COMMAND_RECORDED",
+            });
+            yield* appendPreparedEventWithinSerialization(
+              input.runId,
+              input.paths,
+              events,
+              event
+            );
+            return finalized;
+          })
+        );
+        yield* fs.writeFileString(
+          claimPaths.receipt,
+          `${JSON.stringify(receipt, null, 2)}\n`
+        );
+        return receipt;
+      });
+    invocation = {
       authorityDigest: digest("gaia.verification-authority.v1", [
         input.contract.contractDigest,
         input.generationSequence,
@@ -350,6 +415,19 @@ function executeCommandClaim(input: {
       contractId: input.contract.contractId,
       executionEvidenceIdentityDigest: input.executionEvidenceIdentityDigest,
       generationSequence: input.generationSequence,
+      onInterrupted: (staged) =>
+        persistStagedReceipt(staged).pipe(
+          Effect.asVoid,
+          Effect.mapError(
+            () =>
+              new VerificationCommandOutcomeUnknown({
+                code: "VerificationCommandOutcomeUnknown",
+                message:
+                  "Interrupted terminal evidence could not be persisted.",
+                recoverable: false,
+              })
+          )
+        ),
       onSandboxCreated: ({ sandboxName: createdName, sandboxUuid }) =>
         Effect.gen(function* () {
           const created = yield* appendEvent(input.runId, input.paths, {
@@ -412,50 +490,7 @@ function executeCommandClaim(input: {
     const staged = yield* Effect.scoped(
       input.services.executor.execute(invocation)
     );
-    if (commandStartSequence === undefined)
-      return yield* Effect.fail(
-        makeRuntimeError({
-          code: "VerificationCommandOutcomeUnknown",
-          message: "Command dispatch has no durable command-start prefix.",
-          recoverable: false,
-        })
-      );
-    const receipt = yield* withRunEventSerialization(
-      input.paths,
-      Effect.gen(function* () {
-        const events = yield* readEvents(input.paths);
-        const terminalSequence = parseRunEventSequence(
-          (events.at(-1)?.sequence ?? 0) + 1
-        );
-        const finalized = finalizeDockerSandboxVerificationReceipt(
-          invocation,
-          staged,
-          input.services.profile,
-          commandStartSequence!,
-          terminalSequence
-        );
-        const event = makeRunEvent({
-          payload: {
-            receipt: encodeVerificationCommandReceiptJson(finalized),
-          },
-          runId: input.runId,
-          sequence: terminalSequence,
-          timestamp: new Date().toISOString(),
-          type: "CLAIM_VERIFICATION_COMMAND_RECORDED",
-        });
-        yield* appendPreparedEventWithinSerialization(
-          input.runId,
-          input.paths,
-          events,
-          event
-        );
-        return finalized;
-      })
-    );
-    yield* fs.writeFileString(
-      claimPaths.receipt,
-      `${JSON.stringify(receipt, null, 2)}\n`
-    );
+    const receipt = yield* persistStagedReceipt(staged);
     return receipt;
   });
 }
@@ -506,16 +541,18 @@ function resultForClaim(
     case "artifact-integrity":
       return artifactResult(claim, paths);
     case "browser": {
-      const event = [...events]
-        .reverse()
-        .find(
-          (candidate) =>
-            candidate.type === "BROWSER_EVIDENCE_RECORDED" &&
-            candidate.payload["status"] === "collected" &&
-            candidate.payload["targetUrl"] === claim.selector.targetUrl
-        );
+      const matched = [...events].reverse().flatMap((candidate) => {
+        if (candidate.type !== "BROWSER_EVIDENCE_RECORDED") return [];
+        const observation = parseBrowserEvidenceObservation(candidate.payload);
+        return Option.isSome(observation) &&
+          observation.value.evidenceSelector ===
+            claim.selector.evidenceSelector &&
+          observation.value.targetUrl === claim.selector.targetUrl
+          ? [{ event: candidate, observation: observation.value }]
+          : [];
+      })[0];
       return Effect.succeed(
-        event === undefined
+        matched === undefined
           ? notRun(claim, "No exact collected browser evidence event exists.")
           : {
               claimId: claim.claimId,
@@ -523,12 +560,12 @@ function resultForClaim(
                 {
                   evidenceId: evidenceId("browser", [
                     claim.claimId,
-                    event.sequence,
+                    matched.event.sequence,
                   ]),
-                  evidenceSelector: claim.selector.evidenceSelector,
-                  eventSequence: event.sequence,
+                  evidenceSelector: matched.observation.evidenceSelector,
+                  eventSequence: matched.event.sequence,
                   kind: "browser" as const,
-                  targetUrl: claim.selector.targetUrl,
+                  targetUrl: matched.observation.targetUrl,
                 },
               ],
               status: "passed" as const,

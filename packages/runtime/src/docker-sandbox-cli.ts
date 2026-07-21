@@ -100,6 +100,7 @@ export function makeDockerSandboxCli(
         timeoutMs: input.timeoutMs,
       }),
     inspect: (name: string) => run(["inspect", name, "--json"]),
+    inspectAuthority: (name: string) => run(["inspect", name]),
     list: Effect.suspend(() => run(["ls", "--json"])),
     policyList: Effect.suspend(() => run(["policy", "ls", "--json"])),
     remove: (name: string) => run(["rm", "--force", name]),
