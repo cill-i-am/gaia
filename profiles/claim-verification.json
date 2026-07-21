@@ -1,0 +1,32 @@
+{
+  "profileId": "docker-sandbox-claim-verification-v1",
+  "version": 1,
+  "provider": {
+    "providerId": "docker-sandboxes-sbx",
+    "version": "0.35.0",
+    "build": "01e01520456e4126a9653471e7072e4d9b280321",
+    "cliExecutableId": "sbx-v0.35.0"
+  },
+  "executables": [
+    {
+      "executableId": "posix-printf-v1",
+      "sandboxPath": "/usr/bin/printf"
+    }
+  ],
+  "templateReference": "docker/sandbox-templates:shell-docker@sha256:39cf20eca861ec92747487af6197f6d916f774bdb98245d267dbd8dfd3debb05",
+  "imageDigest": "sha256:39cf20eca861ec92747487af6197f6d916f774bdb98245d267dbd8dfd3debb05",
+  "policy": {
+    "policyId": "local-deny-all-v1",
+    "network": "denied",
+    "activeAllowCount": 0,
+    "workspaceMount": "direct-sole-read-write"
+  },
+  "credentials": {
+    "credentialProfileId": "credentials-none-env-i-v1",
+    "mode": "none",
+    "environmentScrubExecutable": "/usr/bin/env",
+    "minimalPath": "/usr/bin:/bin",
+    "inheritCommandEnvironment": false,
+    "expectedCredentialLikeCount": 0
+  }
+}

@@ -7,7 +7,7 @@ import {
   RunIdSchema,
   RunSpec,
   parseRunReportArtifactPath,
-  type RunProofResultV1,
+  type RunProofResult,
   type RunReportArtifactPath,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
@@ -147,7 +147,7 @@ function markdownReport(
   inferredRecommendations: WorkerPlanInferredRecommendations,
   historicalRiskNotes: ReadonlyArray<WorkerPlanHistoricalRiskNote>,
   domainReferences: ReadonlyArray<WorkerPlanDomainReference>,
-  proofResult: RunProofResultV1
+  proofResult: RunProofResult
 ): string {
   const artifacts = report.artifacts
     .map((artifact) => `- ${artifact}`)
@@ -300,7 +300,7 @@ ${
         .join("\n")
 }
 
-Framework protocol evidence: ${proofResult.supplementalProtocolEvidence.length}; it does not establish behavioral verification.
+Framework protocol evidence: ${proofResult.version === 1 ? proofResult.supplementalProtocolEvidence.length : 0}; it does not establish behavioral verification.
 
 ## Selected Skills
 

@@ -177,6 +177,7 @@ export function copyWorkspaceDirectoryContents(
     const sourcePath = yield* parseWorkspaceRuntimePath(sourceDirectory);
     const destinationPath =
       yield* parseWorkspaceRuntimePath(destinationDirectory);
+    yield* rejectSourceSymbolicLink(sourcePath, ".");
 
     return yield* copyDirectoryContents(sourcePath, destinationPath, {
       deleteExtraneous: options.deleteExtraneous ?? false,
@@ -255,6 +256,7 @@ function copyDirectoryContents(
       const destinationPath = yield* parseWorkspaceRuntimePath(
         path.join(destinationDirectory, entry)
       );
+      yield* rejectSourceSymbolicLink(sourcePath, relativePath);
       const info = yield* fs.stat(sourcePath);
 
       switch (info.type) {
@@ -282,12 +284,36 @@ function copyDirectoryContents(
           break;
         }
         default: {
-          skippedEntries.push(relativePath);
+          return yield* Effect.fail(
+            makeRuntimeError({
+              code: "WorkspaceSourceEntryUnsupported",
+              message: `Workspace source entry '${relativePath}' is not a regular file or directory.`,
+              recoverable: false,
+            })
+          );
         }
       }
     }
 
     return { copiedFiles, skippedEntries } satisfies CopyDirectoryResult;
+  });
+}
+
+function rejectSourceSymbolicLink(path: RuntimePath, relativePath: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.readLink(path).pipe(
+      Effect.flatMap(() =>
+        Effect.fail(
+          makeRuntimeError({
+            code: "WorkspaceSourceSymlinkRejected",
+            message: `Workspace source entry '${relativePath}' is a symbolic link.`,
+            recoverable: false,
+          })
+        )
+      ),
+      Effect.catchTag("PlatformError", () => Effect.void)
+    );
   });
 }
 

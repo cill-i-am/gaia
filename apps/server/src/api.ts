@@ -14,6 +14,7 @@ import {
   DeliverySnapshotDto,
   DeliverySnapshotSuccessEnvelope,
   WorkerRecoverySuccessEnvelope,
+  VerificationActionSuccessEnvelope,
   WorkerRecoveryFailureEvidence,
   encodeWorkerRecoveryFailureEvidenceJson,
   DeliveryStatusSchema,
@@ -100,6 +101,7 @@ import {
   actOnDeliveryMerge,
   actOnDeliveryReadyForReview,
   actOnDeliveryLocalReviewAttestation,
+  actOnRunVerification,
   actOnWorkerDesktopOriginCorrelation,
   actOnWorkerCorrelationReconciliation,
   actOnWorkerContinuation,
@@ -497,6 +499,24 @@ export const RunsLive = HttpApiBuilder.group(
           }
           return DeliverySnapshotSuccessEnvelope.make({
             data: snapshotExit.value,
+            status: "success",
+          });
+        })
+      )
+      .handle("actOnRunVerification", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(
+            actOnRunVerification(params.runId, payload, {
+              ...identity.workflowOptions,
+              rootDirectory: identity.rootDirectory,
+            })
+          );
+          if (exit._tag === "Failure")
+            return yield* Effect.fail(actionApiErrorFromCause(exit.cause));
+          yield* identity.runIndex.refreshRun(params.runId);
+          return VerificationActionSuccessEnvelope.make({
+            data: exit.value,
             status: "success",
           });
         })
@@ -1467,6 +1487,7 @@ function isAllowedMethod(method: string, url: string) {
     (path === "/runs" ||
       /^\/runs\/[^/]+\/agents\/[^/]+\/session\/actions$/u.test(path) ||
       /^\/runs\/[^/]+\/delivery\/actions$/u.test(path) ||
+      /^\/runs\/[^/]+\/verification\/actions$/u.test(path) ||
       /^\/runs\/[^/]+\/recovery\/actions$/u.test(path))
   );
 }
@@ -1504,6 +1525,7 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
     case "InvalidRunId":
     case "InvalidRequest":
     case "InvalidSpec":
+    case "VerificationActionInvalidRequest":
       return 400;
     case "ArtifactNotAllowed":
     case "ArtifactNotFound":
@@ -1520,6 +1542,9 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
     case "RunStoreLocked":
+    case "VerificationActionIdempotencyConflict":
+    case "VerificationActionStaleAuthority":
+    case "VerificationCreatedWithoutCommandStart":
       return 409;
     case "HarnessAuthenticationRequired":
     case "HarnessCapabilityMismatch":
@@ -1533,9 +1558,13 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
     case "WorkerRecoveryCorrelationUnavailable":
     case "WorkerRecoveryModelCatalogUnavailable":
     case "WorkerRecoveryModelUnavailable":
+    case "VerificationActionUnsupportedPhase":
+    case "VerificationActionUnsupportedReconciliation":
+    case "VerificationProviderFailure":
       return 422;
     case "InternalServerError":
     case "WorkerRecoveryIntentPersistenceFailed":
+    case "VerificationPersistenceFailure":
       return 500;
   }
 }
@@ -1570,9 +1599,23 @@ function actionApiErrorFromCause(
 ): LocalRunActionApiError {
   const diagnostic = causeToDiagnostic(cause);
   switch (diagnostic.code) {
+    case "VerificationActionInvalidRequest":
+      return LocalRunApiBadRequest.make({
+        ...publicDiagnosticFields(diagnostic),
+        code: diagnostic.code,
+        status: 400,
+      });
     case "AgentActionConflict":
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
+      return LocalRunApiConflict.make({
+        ...publicDiagnosticFields(diagnostic),
+        code: diagnostic.code,
+        status: 409,
+      });
+    case "VerificationActionIdempotencyConflict":
+    case "VerificationActionStaleAuthority":
+    case "VerificationCreatedWithoutCommandStart":
       return LocalRunApiConflict.make({
         ...publicDiagnosticFields(diagnostic),
         code: diagnostic.code,
@@ -1590,12 +1633,16 @@ function actionApiErrorFromCause(
     case "WorkerRecoveryCorrelationUnavailable":
     case "WorkerRecoveryModelCatalogUnavailable":
     case "WorkerRecoveryModelUnavailable":
+    case "VerificationActionUnsupportedPhase":
+    case "VerificationActionUnsupportedReconciliation":
+    case "VerificationProviderFailure":
       return LocalRunApiUnprocessable.make({
         ...publicDiagnosticFields(diagnostic),
         code: diagnostic.code,
         status: 422,
       });
     case "WorkerRecoveryIntentPersistenceFailed":
+    case "VerificationPersistenceFailure":
       return LocalRunApiInternalServerError.make({
         ...publicDiagnosticFields(diagnostic),
         code: diagnostic.code,
@@ -1798,6 +1845,8 @@ function readApiError(diagnostic: ApiDiagnostic): LocalRunReadApiError {
     case "InternalServerError":
     case "MethodNotAllowed":
       return internalApiError(diagnostic);
+    default:
+      return internalApiError(diagnostic);
   }
 }
 
@@ -1943,14 +1992,14 @@ function apiError(diagnostic: ApiDiagnostic): LocalRunApiError {
         code: "InternalServerError",
         status: 500,
       });
+    default:
+      return LocalRunApiInternalServerError.make({
+        code: "InternalServerError",
+        message: diagnostic.message,
+        recoverable: false,
+        status: 500,
+      });
   }
-
-  return LocalRunApiInternalServerError.make({
-    code: "InternalServerError",
-    message: diagnostic.message,
-    recoverable: false,
-    status: 500,
-  });
 }
 
 function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
@@ -2039,6 +2088,8 @@ function createApiError(diagnostic: ApiDiagnostic): LocalRunCreateApiError {
     case "RunNotFound":
     case "InternalServerError":
     case "WorkerRecoveryIntentPersistenceFailed":
+      return internalApiError(diagnostic);
+    default:
       return internalApiError(diagnostic);
   }
 }

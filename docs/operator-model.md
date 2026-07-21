@@ -59,6 +59,25 @@ local attestation. Merge readiness records which source satisfied the policy,
 and merge revalidates that exact source with fresh pull-request state before
 recording merge intent.
 
+## Claim Verification Authority
+
+V2 claim verification is an explicit server action, not an implicit side
+effect of reading a run. The public surface has exactly two mutations:
+`startPostPublicationGeneration` and `reconcileOutcomeUnknown`. The server owns
+the complete non-reentrant run epoch; the protocol client does not read or
+append `.gaia` state and the dashboard gains no verification mutation.
+
+The production executor may use only the checked-in claim-verification profile.
+It cannot accept source-selected provider flags, images, policies, credentials,
+network exceptions, absolute executables, or a host-process fallback. After a
+provider dispatch becomes uncertain, Gaia records or reports that uncertainty
+and requires an exact identity-bound reconciliation action. It does not retry
+or redispatch the command.
+
+This capability still grants no merge, deploy, daemon-policy, provider-config,
+secret, or global cleanup authority. Those remain separate explicit operator
+decisions.
+
 ## Demo Fixtures
 
 Portable examples live under `examples/*`.

@@ -9,6 +9,7 @@ import {
 import {
   RunContractDigestSchema,
   RunContractIdSchema,
+  RunContractIdV2Schema,
   RunEventSequenceSchema,
   RunProofResultDigestSchema,
   RunRelativeArtifactPathSchema,
@@ -97,7 +98,7 @@ export class MergeDecisionContractProofV2 extends Schema.Class<MergeDecisionCont
 )(
   {
     contractDigest: RunContractDigestSchema,
-    contractId: RunContractIdSchema,
+    contractId: Schema.Union([RunContractIdSchema, RunContractIdV2Schema]),
     kind: Schema.Literal("contract"),
     result: MergeDecisionContractProofResultV2Schema,
   },
@@ -192,7 +193,8 @@ export function parseMergeDecisionV2(input: unknown): MergeDecisionV2 {
     throw new Error("MergeDecisionV2 approval fields are inconsistent.");
   if (
     decision.proof.kind === "contract" &&
-    decision.proof.contractId !== `run-contract:${decision.runId}:v1`
+    decision.proof.contractId !== `run-contract:${decision.runId}:v1` &&
+    decision.proof.contractId !== `run-contract:${decision.runId}:v2`
   )
     throw new Error(
       "MergeDecisionV2 proof contract does not belong to its run."

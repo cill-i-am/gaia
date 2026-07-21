@@ -39,6 +39,10 @@ import {
   resumeHarnessSession,
   writePrivateWorkerCorrelationFollowUpCheckpoint,
   makeHarnessProviderRegistry,
+  makeDockerSandboxCli,
+  makeDockerSandboxVerificationExecutor,
+  nodeDockerSandboxCliRunner,
+  readVerificationExecutionProfile,
   issueDeliveryWorkerHarnessCapabilities,
   inspectContinuableDeliveryWorktreeOwnership,
   inspectRecoverableDeliveryWorktreeOwnership,
@@ -72,6 +76,9 @@ import {
   WorkerRecoveryWorkspaceValidationError,
   type WorkerRecoveryWorkspaceValidationResult,
   type WorkerRecoveryThreadStatus,
+  type VerificationExecutionProfileV1,
+  type VerificationServices,
+  VerificationProviderFailure,
 } from "@gaia/runtime";
 import {
   reconcileInterruptedServerRuns,
@@ -179,6 +186,7 @@ export function runLocalGaiaServer(input: {
                 production.dispatchCorrelationFollowUp,
               workerCorrelationReconciler: production.reconcileCorrelation,
               workerRecoveryActivator: production.recover,
+              verificationServices: production.verificationServices,
             }),
       };
       const reconciliation =
@@ -558,6 +566,8 @@ function makeProductionHarnessServices(
           );
         })
       );
+    const verificationServices =
+      yield* makeProductionVerificationServices(rootDirectory);
     return {
       dispatchCorrelationFollowUp,
       dispatchDesktopOriginCorrelationFollowUp,
@@ -565,8 +575,91 @@ function makeProductionHarnessServices(
       reconcileCorrelation,
       reconcileDesktopOriginCorrelation,
       registry,
+      verificationServices,
     };
   });
+}
+
+export function makeProductionVerificationServices(
+  rootDirectory: typeof RunStorageRootInputSchema.Type,
+  options: {
+    readonly executableCandidates?: ReadonlyArray<string>;
+    readonly runner?: Parameters<typeof makeDockerSandboxCli>[0];
+  } = {}
+): Effect.Effect<VerificationServices, unknown, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const profile = yield* readVerificationExecutionProfile(
+      parseRuntimePath(
+        nodePath.join(rootDirectory, "profiles", "claim-verification.json")
+      )
+    );
+    const pathCandidates = (process.env.PATH ?? "")
+      .split(nodePath.delimiter)
+      .filter((entry) => entry.length > 0)
+      .map((entry) => nodePath.resolve(entry, "sbx"));
+    const candidates = options.executableCandidates ?? [
+      "/opt/homebrew/bin/sbx",
+      "/usr/local/bin/sbx",
+      ...pathCandidates,
+    ];
+    let executable: string | undefined;
+    for (const candidate of candidates) {
+      if (!(yield* fs.exists(candidate))) continue;
+      executable = yield* fs.realPath(candidate);
+      break;
+    }
+    if (executable === undefined) {
+      return unavailableVerificationServices(
+        profile,
+        "Pinned Docker Sandbox CLI could not be resolved absolutely."
+      );
+    }
+    const cli = makeDockerSandboxCli(
+      options.runner ?? nodeDockerSandboxCliRunner,
+      executable
+    );
+    const versionExit = yield* Effect.exit(cli.version);
+    if (versionExit._tag === "Failure") {
+      return unavailableVerificationServices(
+        profile,
+        "Pinned Docker Sandbox CLI failed its capability check."
+      );
+    }
+    const version = versionExit.value;
+    const expected = `sbx version: v${profile.provider.version} ${profile.provider.build}`;
+    if (version.exitCode !== 0 || version.stdout.trim() !== expected) {
+      return unavailableVerificationServices(
+        profile,
+        "Docker Sandbox CLI capability version/build is not pinned."
+      );
+    }
+    return {
+      executor: makeDockerSandboxVerificationExecutor(cli, profile),
+      profile,
+    };
+  });
+}
+
+function unavailableVerificationServices(
+  profile: VerificationExecutionProfileV1,
+  message: string
+) {
+  const unavailable = () =>
+    Effect.fail(
+      new VerificationProviderFailure({
+        code: "VerificationProviderFailure",
+        message,
+        recoverable: false,
+      })
+    );
+  return {
+    executor: {
+      execute: unavailable,
+      reconcile: unavailable,
+    },
+    profile,
+  };
 }
 
 function workerWorkspacePath(events: typeof RunEventsSchema.Type) {

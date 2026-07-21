@@ -1,4 +1,4 @@
-import { RunIdSchema } from "@gaia/core";
+import { RunIdSchema, VerificationSourceKeySchema } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import {
   chromium,
@@ -80,6 +80,29 @@ export class BrowserPageEvidence extends Schema.Class<BrowserPageEvidence>(
 
 const decodeBrowserPageEvidence = Schema.decodeUnknownSync(BrowserPageEvidence);
 
+export class BrowserPageEvidenceV2 extends Schema.Class<BrowserPageEvidenceV2>(
+  "BrowserPageEvidenceV2"
+)({
+  consoleMessages: Schema.Array(BrowserConsoleMessage),
+  evidenceKind: Schema.Literal("page"),
+  evidenceSelector: VerificationSourceKeySchema,
+  screenshots: Schema.Array(BrowserScreenshotEvidence),
+  url: BrowserEvidenceTargetUrlSchema,
+}) {
+  static override make(input: unknown): BrowserPageEvidenceV2 {
+    return decodeBrowserPageEvidenceV2(input);
+  }
+}
+
+const decodeBrowserPageEvidenceV2 = Schema.decodeUnknownSync(
+  BrowserPageEvidenceV2
+);
+
+export const AnyBrowserPageEvidenceSchema = Schema.Union([
+  BrowserPageEvidenceV2,
+  BrowserPageEvidence,
+]);
+
 export class BrowserEvidence extends Schema.Class<BrowserEvidence>(
   "BrowserEvidence"
 )({
@@ -89,11 +112,25 @@ export class BrowserEvidence extends Schema.Class<BrowserEvidence>(
   version: Schema.Literal(1),
 }) {}
 
+export class BrowserEvidenceV2 extends Schema.Class<BrowserEvidenceV2>(
+  "BrowserEvidenceV2"
+)({
+  notes: Schema.Array(Schema.NonEmptyString),
+  pages: Schema.Array(BrowserPageEvidenceV2),
+  status: BrowserEvidenceStatusSchema,
+  version: Schema.Literal(2),
+}) {}
+
+export const AnyBrowserEvidenceSchema = Schema.Union([
+  BrowserEvidence,
+  BrowserEvidenceV2,
+]);
+
 export class BrowserEvidenceRecord extends Schema.Class<BrowserEvidenceRecord>(
   "BrowserEvidenceRecord"
 )({
   evidencePath: RunRelativeArtifactPathSchema,
-  pages: Schema.Array(BrowserPageEvidence),
+  pages: Schema.Array(AnyBrowserPageEvidenceSchema),
   runId: RunIdSchema,
   status: BrowserEvidenceStatusSchema,
   targetUrl: BrowserEvidenceTargetUrlSchema,
@@ -110,12 +147,12 @@ export type BrowserEvidenceCollectorInput =
 export type BrowserEvidenceCollector = (
   input: BrowserEvidenceCollectorInput
 ) => Effect.Effect<
-  BrowserEvidence,
+  typeof AnyBrowserEvidenceSchema.Type,
   GaiaRuntimeError,
   FileSystem.FileSystem | Path.Path
 >;
 
-const BrowserEvidenceJson = Schema.toCodecJson(BrowserEvidence);
+const BrowserEvidenceJson = Schema.toCodecJson(AnyBrowserEvidenceSchema);
 const encodeBrowserEvidenceJson = Schema.encodeSync(BrowserEvidenceJson);
 export const parseBrowserEvidenceJson =
   Schema.decodeUnknownSync(BrowserEvidenceJson);
@@ -128,7 +165,7 @@ const WriteEmptyBrowserEvidenceInputSchema = Schema.Struct({
 });
 
 const WriteBrowserEvidenceInputSchema = Schema.Struct({
-  evidence: BrowserEvidence,
+  evidence: AnyBrowserEvidenceSchema,
   paths: RunPathsSchema,
 });
 
@@ -138,7 +175,7 @@ const FailedBrowserEvidenceInputSchema = Schema.Struct({
 });
 
 const BrowserEvidenceRecordInputSchema = Schema.Struct({
-  evidence: BrowserEvidence,
+  evidence: AnyBrowserEvidenceSchema,
   paths: RunPathsSchema,
   runId: RunIdSchema,
   targetUrl: BrowserEvidenceTargetUrlSchema,
@@ -146,7 +183,11 @@ const BrowserEvidenceRecordInputSchema = Schema.Struct({
 
 export function writeEmptyBrowserEvidence(
   input: typeof WriteEmptyBrowserEvidenceInputSchema.Type
-): Effect.Effect<BrowserEvidence, GaiaRuntimeError, FileSystem.FileSystem> {
+): Effect.Effect<
+  typeof AnyBrowserEvidenceSchema.Type,
+  GaiaRuntimeError,
+  FileSystem.FileSystem
+> {
   return writeBrowserEvidence({
     evidence: BrowserEvidence.make({
       notes: ["Browser automation is not collected for this run yet."],
@@ -160,7 +201,11 @@ export function writeEmptyBrowserEvidence(
 
 export function writeBrowserEvidence(
   input: typeof WriteBrowserEvidenceInputSchema.Type
-): Effect.Effect<BrowserEvidence, GaiaRuntimeError, FileSystem.FileSystem> {
+): Effect.Effect<
+  typeof AnyBrowserEvidenceSchema.Type,
+  GaiaRuntimeError,
+  FileSystem.FileSystem
+> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(
@@ -277,11 +322,13 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
         }),
     });
 
-    return BrowserEvidence.make({
+    return BrowserEvidenceV2.make({
       notes: [`Browser evidence captured for ${input.targetUrl}.`],
       pages: [
-        BrowserPageEvidence.make({
+        BrowserPageEvidenceV2.make({
           consoleMessages,
+          evidenceKind: "page",
+          evidenceSelector: "page-1",
           screenshots: [
             BrowserScreenshotEvidence.make({
               description: "Full page screenshot after initial page load.",
@@ -292,7 +339,7 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
         }),
       ],
       status: "collected",
-      version: 1,
+      version: 2,
     });
   });
 

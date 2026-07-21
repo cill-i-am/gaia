@@ -25,10 +25,13 @@ import {
   parseMergeDecisionV2,
 } from "./merge-decision.js";
 import {
-  parseRunContract,
-  parseRunProofResult,
+  parseAnyRunContract,
+  parseAnyRunProofResult,
+} from "./run-contract-v2.js";
+import {
   RunContractDigestSchema,
   RunContractIdSchema,
+  RunContractIdV2Schema,
   RunEventSequenceSchema,
   RunProofResultDigestSchema,
   StructuralDigestSchema,
@@ -273,7 +276,7 @@ const readinessDecisionV3Binding = {
   ...readinessDecisionV2Binding,
   contentAuthoritySequence: RunEventSequenceSchema,
   contractDigest: RunContractDigestSchema,
-  contractId: RunContractIdSchema,
+  contractId: Schema.Union([RunContractIdSchema, RunContractIdV2Schema]),
   evidenceReviewSequence: RunEventSequenceSchema,
   mergeDecisionPayloadDigest: MergeDecisionPayloadDigestSchema,
   mergeDecisionSequence: PositiveSequence,
@@ -461,8 +464,8 @@ export function assertDeliveryMergeReadinessDecisionAuthority(
       latestProofEvent?.type !== "RUN_PROOF_RESULT_RECORDED"
     )
       throw new Error("Merge readiness V3 requires current run proof.");
-    const contract = parseRunContract(contractEvent.payload["contract"]);
-    const proof = parseRunProofResult(
+    const contract = parseAnyRunContract(contractEvent.payload["contract"]);
+    const proof = parseAnyRunProofResult(
       latestProofEvent.payload["result"],
       contract
     );
@@ -1423,12 +1426,8 @@ const DeliveryActionAuditSummaryInputSchema = Schema.Struct({
     DeliveryPullRequestReadyActionHistoriesSchema
   ),
 });
-type DeliveryActionAuditSummaryInput = Schema.Schema.Type<
-  typeof DeliveryActionAuditSummaryInputSchema
->;
-
 export function deliveryActionAuditSummary(
-  input: DeliveryActionAuditSummaryInput,
+  input: Schema.Schema.Type<typeof DeliveryActionAuditSummaryInputSchema>,
   limit = 20
 ) {
   const safeLimit = Math.max(1, Math.min(50, Math.trunc(limit)));

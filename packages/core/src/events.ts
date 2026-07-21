@@ -1,11 +1,20 @@
 import * as Schema from "effect/Schema";
 
 import {
-  parseRunContract,
-  parseRunProofResultEnvelope,
-  RunEventSequenceSchema,
-} from "./run-contract.js";
+  parseAnyRunContract,
+  parseAnyRunProofResultEnvelope,
+} from "./run-contract-v2.js";
+import { RunEventSequenceSchema } from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
+import {
+  ClaimVerificationCommandStartV1,
+  ClaimVerificationCreateIntentV1,
+  ClaimVerificationGenerationStartedV1,
+  ClaimVerificationReuseReceiptV1,
+  ClaimVerificationSandboxCreatedV1,
+  parseVerificationCommandReceipt,
+  parseVerificationReconciliationReceipt,
+} from "./verification-command.js";
 
 export const RunEventTimestampSchema = Schema.NonEmptyString.pipe(
   Schema.brand("RunEventTimestamp")
@@ -41,6 +50,13 @@ export const EventTypeSchema = Schema.Literals([
   "VERIFICATION_STARTED",
   "VERIFICATION_COMPLETED",
   "RUN_PROOF_RESULT_RECORDED",
+  "CLAIM_VERIFICATION_GENERATION_STARTED",
+  "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED",
+  "CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED",
+  "CLAIM_VERIFICATION_COMMAND_START_RECORDED",
+  "CLAIM_VERIFICATION_COMMAND_RECORDED",
+  "CLAIM_VERIFICATION_REUSE_RECORDED",
+  "CLAIM_VERIFICATION_RECONCILIATION_RECORDED",
   "BROWSER_EVIDENCE_RECORDED",
   "REPORT_STARTED",
   "REPORT_COMPLETED",
@@ -138,20 +154,76 @@ const decodeRunEvent = Schema.decodeUnknownSync(RunEvent);
 export const parseRunEvent = (input: unknown): RunEvent => {
   const event = decodeRunEvent(input);
   if (event.type === "RUN_CONTRACT_RECORDED") {
-    const contract = parseRunContract(event.payload["contract"]);
+    const contract = parseAnyRunContract(event.payload["contract"]);
     if (contract.runId !== event.runId)
       throw new Error("Run-contract event payload belongs to another run.");
   }
   if (event.type === "RUN_PROOF_RESULT_RECORDED") {
-    const result = parseRunProofResultEnvelope(event.payload["result"]);
+    const result = parseAnyRunProofResultEnvelope(event.payload["result"]);
     if (
       result.runId !== event.runId ||
       result.recordedBy.sequence !== event.sequence
     )
       throw new Error("Run-proof result does not bind its enclosing event.");
   }
+  validateClaimVerificationPayload(event);
   return event;
 };
+
+function validateClaimVerificationPayload(event: RunEvent) {
+  const ensureRun = (runId: string) => {
+    if (runId !== event.runId)
+      throw new Error("Claim-verification payload belongs to another run.");
+  };
+  switch (event.type) {
+    case "CLAIM_VERIFICATION_GENERATION_STARTED":
+      ensureRun(
+        Schema.decodeUnknownSync(ClaimVerificationGenerationStartedV1)(
+          event.payload["generation"]
+        ).runId
+      );
+      return;
+    case "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED":
+      ensureRun(
+        Schema.decodeUnknownSync(ClaimVerificationCreateIntentV1)(
+          event.payload["createIntent"]
+        ).runId
+      );
+      return;
+    case "CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED":
+      ensureRun(
+        Schema.decodeUnknownSync(ClaimVerificationSandboxCreatedV1)(
+          event.payload["sandboxCreated"]
+        ).runId
+      );
+      return;
+    case "CLAIM_VERIFICATION_COMMAND_START_RECORDED":
+      ensureRun(
+        Schema.decodeUnknownSync(ClaimVerificationCommandStartV1)(
+          event.payload["commandStart"]
+        ).runId
+      );
+      return;
+    case "CLAIM_VERIFICATION_COMMAND_RECORDED":
+      ensureRun(
+        parseVerificationCommandReceipt(event.payload["receipt"]).runId
+      );
+      return;
+    case "CLAIM_VERIFICATION_REUSE_RECORDED":
+      ensureRun(
+        Schema.decodeUnknownSync(ClaimVerificationReuseReceiptV1)(
+          event.payload["reuse"]
+        ).runId
+      );
+      return;
+    case "CLAIM_VERIFICATION_RECONCILIATION_RECORDED":
+      ensureRun(
+        parseVerificationReconciliationReceipt(event.payload["reconciliation"])
+          .runId
+      );
+      return;
+  }
+}
 
 /** Parse a snapshot read from the derived snapshot log. */
 export const parseRunSnapshot = Schema.decodeUnknownSync(RunSnapshot);

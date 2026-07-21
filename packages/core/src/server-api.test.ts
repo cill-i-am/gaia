@@ -15,11 +15,101 @@ import {
   LocalRunReadSummarySchema,
   LocalGaiaServerOpenApi,
   ServerMetadata,
+  VerificationActionSuccessEnvelope,
+  VerificationActionRequestSchema,
   parseLocalRunArtifactId,
   parseLocalRunArtifactName,
   parseLocalRunPathSegment,
   parseLocalRunTimestamp,
 } from "./server-api.js";
+
+describe("verification action success contract", () => {
+  const postPublicationResult = {
+    actionId: "verification-action-0001",
+    actionRequestDigest:
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    aggregate: "verified",
+    currentContentAuthoritySequence: 42,
+    expectedContentAuthoritySequence: 42,
+    generationSequence: 43,
+    headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    kind: "postPublicationGenerationRecorded",
+    proofResultDigest:
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    proofResultSequence: 48,
+    publicationSequence: 41,
+    replayed: false,
+    runId: "run-L84-kMhLY8",
+    targetDigest:
+      "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  } as const;
+
+  it("uses proofResultSequence for a zero-command generation", () => {
+    const decoded = Schema.decodeUnknownSync(VerificationActionSuccessEnvelope)(
+      {
+        data: postPublicationResult,
+        status: "success",
+      }
+    );
+
+    assert.strictEqual(decoded.data.kind, "postPublicationGenerationRecorded");
+    assert.strictEqual(
+      decoded.data.kind === "postPublicationGenerationRecorded"
+        ? decoded.data.proofResultSequence
+        : undefined,
+      48
+    );
+    assert.notProperty(decoded.data, "terminalEventSequence");
+  });
+
+  it("cannot choose an arbitrary terminal receipt for multiple command claims", () => {
+    assert.throws(() =>
+      Schema.decodeUnknownSync(VerificationActionSuccessEnvelope)({
+        data: {
+          ...postPublicationResult,
+          terminalEventSequence: 47,
+        },
+        status: "success",
+      })
+    );
+  });
+});
+
+describe("verification action request contract", () => {
+  it("accepts exactly two top-level actions and rejects cross-variant prior fields", () => {
+    const base = {
+      actionId: "verification-action-0002",
+      expectedContentAuthoritySequence: 42,
+      expectedContractDigest: "a".repeat(64),
+      expectedEventSequence: 43,
+    };
+    const start = Schema.decodeUnknownSync(VerificationActionRequestSchema)({
+      ...base,
+      expectedHeadSha: "b".repeat(40),
+      expectedPublicationSequence: 41,
+      expectedTargetDigest: "c".repeat(64),
+      kind: "startPostPublicationGeneration",
+    });
+    assert.strictEqual(start.kind, "startPostPublicationGeneration");
+
+    assert.throws(() =>
+      Schema.decodeUnknownSync(VerificationActionRequestSchema)({
+        ...base,
+        claimId: `proof-claim:sha256:${"d".repeat(64)}`,
+        expectedExecutionEvidenceIdentityDigest: "e".repeat(64),
+        expectedSandboxName: "gaia-sandbox-1",
+        expectedSandboxUuid: "123e4567-e89b-12d3-a456-426614174000",
+        kind: "reconcileOutcomeUnknown",
+        prior: {
+          kind: "createdWithoutCommandStart",
+          priorCommandStartSequence: 45,
+          priorSandboxCreatedSequence: 44,
+        },
+        priorGenerationSequence: 43,
+      })
+    );
+  });
+});
 
 describe("local run read contracts", () => {
   it("owns the exact reader diagnostic and status subsets", () => {

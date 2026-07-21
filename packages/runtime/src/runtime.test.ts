@@ -16,7 +16,9 @@ import { Effect, FileSystem, Schema } from "effect";
 
 import {
   BrowserEvidence,
+  BrowserEvidenceV2,
   BrowserPageEvidence,
+  BrowserPageEvidenceV2,
   BrowserScreenshotEvidence,
   parseBrowserEvidenceJson,
   type BrowserEvidenceCollector,
@@ -3509,7 +3511,7 @@ describe("runtime workflows", () => {
         const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
         const record = yield* collectBrowserEvidence(
           summary.runId,
-          "http://localhost:3000",
+          "http://localhost:3000/",
           {
             browserEvidenceCollector: collectedBrowserEvidenceCollector,
             rootDirectory: cwd,
@@ -3539,7 +3541,9 @@ describe("runtime workflows", () => {
           "http://localhost:3000/"
         );
         assert.include(events, '"type":"BROWSER_EVIDENCE_RECORDED"');
-        assert.include(events, '"targetUrl":"http://localhost:3000"');
+        assert.include(events, '"evidenceKind":"page"');
+        assert.include(events, '"evidenceSelector":"primary-page"');
+        assert.include(events, '"targetUrl":"http://localhost:3000/"');
         assert.strictEqual(resumed.status, "completed");
       })
     );
@@ -8012,11 +8016,13 @@ function recordingGitWorktreeDoctorCommandRunner(
 
 const collectedBrowserEvidenceCollector: BrowserEvidenceCollector = (input) =>
   Effect.sync(() =>
-    BrowserEvidence.make({
+    BrowserEvidenceV2.make({
       notes: ["Browser evidence captured by test collector."],
       pages: [
-        BrowserPageEvidence.make({
+        BrowserPageEvidenceV2.make({
           consoleMessages: [],
+          evidenceKind: "page",
+          evidenceSelector: "primary-page",
           screenshots: [
             BrowserScreenshotEvidence.make({
               description: "Test screenshot.",
@@ -8027,7 +8033,7 @@ const collectedBrowserEvidenceCollector: BrowserEvidenceCollector = (input) =>
         }),
       ],
       status: "collected",
-      version: 1,
+      version: 2,
     })
   );
 
@@ -8217,7 +8223,7 @@ function githubPublishingRunner(
 describe("R5 delivery and reviewer compatibility locks", () => {
   layer(NodeServices.layer)((it) => {
     it.effect(
-      "round-trips browser and preview artifacts with exact version-1 JSON and target precedence",
+      "round-trips additive browser V2 while retaining exact browser V1 and preview V1 JSON",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -8262,6 +8268,7 @@ describe("R5 delivery and reviewer compatibility locks", () => {
           const preview = parsePreviewDeploymentJson(JSON.parse(previewText));
 
           assert.strictEqual(browser.pages[0]?.url, "http://localhost:4400/");
+          assert.strictEqual(browser.version, 2);
           assert.strictEqual(preview.url, "http://localhost:4200");
           assert.strictEqual(
             browserText,
@@ -8278,6 +8285,32 @@ describe("R5 delivery and reviewer compatibility locks", () => {
             "version",
           ]);
           assert.deepEqual(Object.keys(browser.pages[0] ?? {}), [
+            "consoleMessages",
+            "evidenceKind",
+            "evidenceSelector",
+            "screenshots",
+            "url",
+          ]);
+          const legacyBrowser = parseBrowserEvidenceJson(
+            JSON.parse(
+              JSON.stringify(
+                BrowserEvidence.make({
+                  notes: ["Legacy browser evidence."],
+                  pages: [
+                    BrowserPageEvidence.make({
+                      consoleMessages: [],
+                      screenshots: [],
+                      url: "http://localhost:4400/",
+                    }),
+                  ],
+                  status: "collected",
+                  version: 1,
+                })
+              )
+            )
+          );
+          assert.strictEqual(legacyBrowser.version, 1);
+          assert.deepEqual(Object.keys(legacyBrowser.pages[0] ?? {}), [
             "consoleMessages",
             "screenshots",
             "url",

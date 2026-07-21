@@ -31,7 +31,7 @@ import {
   parseDeliveryMergeReceipt,
   parseDeliveryMergeReadinessDecision,
   parseMergeDecisionV2,
-  RunProofProjectionV1Schema,
+  RunProofProjectionSchema,
   parseDeliveryPublication,
   snapshotFromReplay,
   deriveDeliveryActionHistoriesFromEvents,
@@ -954,7 +954,7 @@ function currentRunProofAuthority(
   events: ReadonlyArray<RunEvent>,
   projection: unknown
 ) {
-  const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(
+  const proof = Schema.decodeUnknownOption(RunProofProjectionSchema)(
     projection
   );
   return {

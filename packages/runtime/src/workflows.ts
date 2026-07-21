@@ -4,7 +4,7 @@ import {
   parseRunId,
   snapshotFromReplay,
   RunIdSchema,
-  RunProofProjectionV1Schema,
+  RunProofProjectionSchema,
   RunStateSchema,
   RunVerificationAggregateSchema,
   type ReviewPhase,
@@ -86,7 +86,7 @@ import {
   writeSkillManifest,
   type SkillManifestSource,
 } from "./skill-manifest.js";
-import { recordRunProofResult } from "./verifier.js";
+import { recordRunProofResult, type VerificationServices } from "./verifier.js";
 import { writeWorkerPlan } from "./worker-plan.js";
 import { encodeWorkspaceDiffSummaryJson } from "./workspace-snapshot.js";
 import {
@@ -158,6 +158,7 @@ export type WorkflowOptions = RunStorageOptions &
     readonly runProfileSource?: RunProfileSource;
     readonly workspaceSource?: WorkspaceSource;
     readonly workerContinuationState?: WorkerContinuationState;
+    readonly verificationServices?: VerificationServices;
   };
 
 export type BrowserEvidenceCollectionOptions = RunStorageOptions & {
@@ -442,31 +443,15 @@ function executeAcceptedRun(input: {
         )
       );
     }
-    yield* appendEvent(runId, paths, { type: "VERIFICATION_STARTED" });
-    const proofResult = yield* recordRunProofResult(runId, paths, {
-      requireLegacyWorkspaceMarker: harnessName !== codexAppServerHarnessName,
-    }).pipe(
-      Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "verifying", error)
-      )
-    );
     const browserEvidenceTargetUrl = selectBrowserEvidenceTargetUrl({
       explicitTargetUrl: explicitBrowserEvidenceTargetUrl,
       harnessTargetUrl: harnessResult.browserTargetUrl,
       previewDeploymentTargetUrl,
       profileTargetUrl: runProfile.browser?.targetUrl,
     });
-    if (
+    const requiredBrowserTargetMissing =
       browserEvidenceRequirement === "required" &&
-      browserEvidenceTargetUrl === undefined
-    ) {
-      return yield* recordRunFailure(
-        runId,
-        paths,
-        "reporting",
-        browserEvidenceTargetRequiredError()
-      );
-    }
+      browserEvidenceTargetUrl === undefined;
     if (browserEvidenceTargetUrl !== undefined) {
       const browserEvidenceRecord = yield* recordBrowserEvidence(
         runId,
@@ -487,6 +472,24 @@ function executeAcceptedRun(input: {
         )
       );
     }
+    yield* appendEvent(runId, paths, { type: "VERIFICATION_STARTED" });
+    const proofResult = yield* recordRunProofResult(runId, paths, {
+      requireLegacyWorkspaceMarker: harnessName !== codexAppServerHarnessName,
+      ...(options.verificationServices === undefined
+        ? {}
+        : { verificationServices: options.verificationServices }),
+    }).pipe(
+      Effect.catchTag("GaiaRuntimeError", (error) =>
+        recordRunFailure(runId, paths, "verifying", error)
+      )
+    );
+    if (requiredBrowserTargetMissing)
+      return yield* recordRunFailure(
+        runId,
+        paths,
+        "reporting",
+        browserEvidenceTargetRequiredError()
+      );
     yield* runReviewPhase(runId, paths, spec, "evidence", options);
     yield* appendEvent(runId, paths, { type: "REPORT_STARTED" });
     const retrospective = yield* writeDogfoodRetrospective(runId, paths).pipe(
@@ -682,6 +685,9 @@ export function reverifyRemediatedRun(input: {
     yield* loadRunContract(input.paths, input.runId);
     yield* recordRunProofResult(input.runId, input.paths, {
       requireLegacyWorkspaceMarker: false,
+      ...(options.verificationServices === undefined
+        ? {}
+        : { verificationServices: options.verificationServices }),
     });
 
     const fs = yield* FileSystem.FileSystem;
@@ -851,7 +857,7 @@ export function statusRun(
 }
 
 function proofAggregateFromSnapshot(input: unknown) {
-  const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(input);
+  const proof = Schema.decodeUnknownOption(RunProofProjectionSchema)(input);
   return Option.isSome(proof) ? proof.value.aggregate : undefined;
 }
 
@@ -968,9 +974,26 @@ function recordBrowserEvidence(
       runId,
       targetUrl,
     });
+    const matchingPages = record.pages.filter((page) => page.url === targetUrl);
+    const matchingPage = matchingPages[0];
+    const observedPage =
+      record.status === "collected" &&
+      matchingPages.length === 1 &&
+      matchingPage !== undefined &&
+      "evidenceKind" in matchingPage &&
+      matchingPage.evidenceKind === "page"
+        ? matchingPage
+        : undefined;
+    const observedSelector = observedPage?.evidenceSelector;
 
     yield* appendEvent(runId, paths, {
       payload: {
+        ...(observedSelector === undefined
+          ? {}
+          : {
+              evidenceKind: "page",
+              evidenceSelector: observedSelector,
+            }),
         evidencePath: runRelative(paths, paths.browserEvidence),
         status: record.status,
         targetUrl,

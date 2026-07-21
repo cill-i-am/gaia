@@ -19,8 +19,8 @@ import {
   parseDeliveryMergeReadinessDecision,
   parseDeliveryCleanupReceipt,
   parseHarnessEvent,
-  parseRunProofResultEnvelope,
-  RunProofProjectionV1Schema,
+  parseAnyRunProofResultEnvelope,
+  RunProofProjectionSchema,
   ResolvedHarnessExecution,
   RunEvent,
   snapshotFromReplay,
@@ -1041,7 +1041,7 @@ function buildFactoryGraph(
   const artifactCounts = artifactCountByOwner(input.artifacts);
   const workItemId = issueDeliveryRootWorkItemId;
   const replay = snapshotFromReplay(input.events);
-  const proof = Schema.decodeUnknownOption(RunProofProjectionV1Schema)(
+  const proof = Schema.decodeUnknownOption(RunProofProjectionSchema)(
     replay.context["runProof"]
   );
   const agents = issueDeliveryWorkflow.agentRoles.map((definition) => {
@@ -1305,6 +1305,13 @@ function updateStatesForEvent(
       states.set(roleFromFailureStage(event.payload["stage"]), "failed");
       return;
     case "BROWSER_EVIDENCE_RECORDED":
+    case "CLAIM_VERIFICATION_GENERATION_STARTED":
+    case "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED":
+    case "CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED":
+    case "CLAIM_VERIFICATION_COMMAND_START_RECORDED":
+    case "CLAIM_VERIFICATION_COMMAND_RECORDED":
+    case "CLAIM_VERIFICATION_REUSE_RECORDED":
+    case "CLAIM_VERIFICATION_RECONCILIATION_RECORDED":
     case "RUN_CONTRACT_RECORDED":
     case "LINEAR_ISSUE_GRAPH_RECORDED":
     case "MERGE_DECISION_RECORDED":
@@ -1369,6 +1376,13 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "REVIEW_COMPLETED":
       return "reviewer";
     case "BROWSER_EVIDENCE_RECORDED":
+    case "CLAIM_VERIFICATION_GENERATION_STARTED":
+    case "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED":
+    case "CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED":
+    case "CLAIM_VERIFICATION_COMMAND_START_RECORDED":
+    case "CLAIM_VERIFICATION_COMMAND_RECORDED":
+    case "CLAIM_VERIFICATION_REUSE_RECORDED":
+    case "CLAIM_VERIFICATION_RECONCILIATION_RECORDED":
     case "VERIFICATION_STARTED":
     case "VERIFICATION_COMPLETED":
     case "RUN_PROOF_RESULT_RECORDED":
@@ -1443,7 +1457,7 @@ function subStateForEvent(event: RunEvent): string | undefined {
     case "VERIFICATION_COMPLETED":
       return "completed-unverified";
     case "RUN_PROOF_RESULT_RECORDED": {
-      return parseRunProofResultEnvelope(event.payload["result"]).aggregate;
+      return parseAnyRunProofResultEnvelope(event.payload["result"]).aggregate;
     }
     case "REPORT_STARTED":
       return "reporting";
@@ -1530,6 +1544,20 @@ function activityLabel(event: RunEvent): string {
       return "Legacy verification recorded (unverified)";
     case "RUN_PROOF_RESULT_RECORDED":
       return "Run proof result recorded";
+    case "CLAIM_VERIFICATION_GENERATION_STARTED":
+      return "Claim verification generation started";
+    case "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED":
+      return "Sandbox create intent recorded";
+    case "CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED":
+      return "Verification sandbox created";
+    case "CLAIM_VERIFICATION_COMMAND_START_RECORDED":
+      return "Verification command start recorded";
+    case "CLAIM_VERIFICATION_COMMAND_RECORDED":
+      return "Verification command receipt recorded";
+    case "CLAIM_VERIFICATION_REUSE_RECORDED":
+      return "Verification command receipt reused";
+    case "CLAIM_VERIFICATION_RECONCILIATION_RECORDED":
+      return "Verification uncertainty reconciled";
     case "BROWSER_EVIDENCE_RECORDED":
       return "Browser evidence recorded";
     case "PREVIEW_DEPLOYMENT_RECORDED":
