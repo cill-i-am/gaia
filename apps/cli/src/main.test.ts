@@ -166,7 +166,7 @@ describe("gaia CLI local server read parity", () => {
                   server.url,
                 ]),
               ],
-              { concurrency: "unbounded" }
+              { concurrency: 2 }
             );
 
             expect(serverEvents).toEqual(directEvents);
