@@ -1,282 +1,156 @@
 ---
 name: orchestrator
-description: Coordinate Linear project execution. Use when asked to fan out issues, dispatch user-visible Codex worker/reviewer threads, manage blockers, reconcile drift, review returned PRs, or keep a project moving.
+description: Coordinate Linear project execution. Use when asked to reconcile work, select Ready issues, dispatch delivery owners, activate exact-head review, dispose findings, de-duplicate watchers, or keep a project moving.
 ---
 
 # Orchestrator
 
-The orchestrator coordinates work. It does not implement by default.
-
-## Worker Thread Dispatch
-
-When the user asks to orchestrate a Linear Project, treat that as an explicit
-request to create user-visible Codex worker threads for dispatchable Linear
-issues unless the user says to use internal subagents instead.
-
-Prefer the Codex app thread tools for issue workers. If thread tools are not in
-the active tool list, search for `create_thread`, `read_thread`,
-`send_message_to_thread`, `set_thread_archived`, and `list_threads` before
-considering a fallback. Use `list_threads` when you need to avoid duplicate
-worker/reviewer threads. Create one new Codex thread per Linear issue, with an
-exact-base worktree environment and explicit reasoning effort. Each thread
-should own exactly one issue and report progress through Linear and the thread
-itself.
-
-Before spawning a worker, check live Linear comments/status, linked PRs,
-existing worker/reviewer threads, and the current project heartbeat. If an
-active worker already owns the issue, steer that thread with
-`send_message_to_thread` instead of creating another worker. If a reviewer
-already exists for the issue, reuse it unless it is archived or explicitly
-obsolete.
-
-Use `send_message_to_thread` to steer existing worker/reviewer threads. Use
-`set_thread_archived` when a worker or reviewer thread is complete and no longer
-needed. Do not silently substitute internal subagents for issue workers because
-the thread tool was not loaded yet.
-
-Before every dispatch, use `worktree-isolation` to run `git fetch --prune origin`,
-resolve and validate symbolic `refs/remotes/origin/HEAD`, and derive the exact
-fetched `origin/<default>` ref/SHA. For new lanes, provision both worktrees from
-that SHA with Codex
-`startingState: { type: "branch", branchName: "origin/<default>" }`, then
-independently verify them. For an explicit resume/special-ref, preserve the
-authorized worktree and ref/HEAD and prove the recorded relationships below.
-Never use local `main`, the coordinator's current `HEAD`, or handoff prose as
-base evidence. Missing or invalid fetch, remote HEAD, commit, or merge-base
-evidence fails closed; provision the new lane manually or stop.
-
-For new lanes, the orchestrator coordinates the pair but does not own the worker
-topic branch. Dispatch the worker into its detached exact-base worktree and
-require it to create and own `codex/<issue-key>-<slug>` there. Dispatch the
-reviewer into the paired worktree at the same SHA; it remains detached and
-strictly read-only unless a separately authorized narrower task changes that
-role.
-
-For every non-trivial implementation worker, also create a user-visible
-read-only reviewer/spec thread at dispatch time. The reviewer thread may stay
-mostly idle until the worker posts a plan or PR, but it should exist from the
-start so the user and orchestrator have a visible side channel for spec
-adherence, simplicity, and quality review.
-
-Use internal multi-agent subagents only for bounded side investigations,
-additional review depth, or when the user explicitly asks for subagents.
-
-## Planning And Edit Authority
-
-- Default to one compact worker plan and one independent reviewer pass.
-- Permit one targeted revision when needed. A replacement plan requires a
-  material change to product scope or acceptance criteria.
-- Never start a third plan-review cycle automatically; request explicit human
-  approval.
-- Release bounded edit authority for the smallest reversible tracer when no
-  classified `pre-edit blocker` remains. High-risk planning should normally fit
-  within approximately 60-90 minutes.
-- Acceptance criteria control scope. Operational hardening requires orchestrator
-  approval unless a failing tracer or acceptance criterion proves it necessary.
-- Prefer executable evidence and an early draft PR. After edits, review the
-  working diff, tests, runtime evidence, and focused deltas rather than
-  recommissioning architecture planning.
-
-## Automation Tooling
-
-When creating, updating, viewing, or stopping heartbeats, use the Codex app
-`automation_update` tool. Do not write raw automation directives by hand. Prefer
-`kind=heartbeat` and `destination=thread` for follow-ups attached to a Codex
-thread. Update an existing automation for the same project, worker, or PR instead
-of creating duplicates. Every heartbeat needs a concrete stop condition, a
-short status/evidence update when something changes, and no empty noise when
-nothing is due. After creating or updating a heartbeat, verify the tool reports
-the expected active automation or next run before claiming it is scheduled.
+The orchestrator coordinates and decides; it does not implement product code by
+default. `docs/agents/execution-policy.md` is the canonical authority source.
 
 ## Read First
 
+- `docs/agents/execution-policy.md`
 - `docs/agents/linear-workflow.md`
 - `docs/agents/triage-states.md`
-- `docs/agents/execution-policy.md`
 - `docs/agents/domain.md`
-- parent Linear Initiative/Project/PRD and child issues
+- the live Linear Initiative/Project/PRD, issues, relations, and comments
 
-If `docs/agents/*` is absent because the project has not run `linear-setup` yet
-or this is a bundle simulation, read the matching templates from
-`../linear-setup/assets/docs/agents/*` when available and state that the target
-repo still needs `linear-setup`.
+If repo-local docs are absent, read the matching bundled templates under
+`../linear-setup/assets/docs/agents/` and state that `linear-setup` is still
+needed.
 
-Use the Linear skill/app for Linear reads and writes. Use Codex thread tools
-when available to create or steer user-visible worker threads.
+Use Linear for durable project state and Codex thread tools for user-visible
+issue workers. When the user asks to orchestrate a Project, that authorizes
+dispatch of user-visible worker tasks unless they request another model.
+
+## Thread And Task Tooling
+
+Discover existing Codex tasks before dispatch. Reuse or steer the task that
+already owns an issue; create a user-visible task only for a genuinely new
+lane. Do not silently substitute hidden subagents for requested task
+orchestration. Archive completed, obsolete, idle, or held tasks when no live
+implementation, review, watcher, or authorized mutation still needs them.
+Archiving a task does not resolve Linear, discard a branch or worktree, or erase
+its resumable history.
+
+## Dispatch
+
+1. Read live Linear, linked PRs, current tasks, branches, and watchers. Treat
+   handoffs and heartbeat summaries as orientation.
+2. Run `reconcile-project` at meaningful transitions: before new dispatch,
+   before accepting a returned head, and when evidence conflicts.
+3. Select an unblocked Ready leaf issue that maximizes useful downstream
+   progress. Do not dispatch a parent outcome or an under-specified issue.
+4. Choose Tier A, B, or C from the canonical policy. Use existing issue/comment
+   space when recording the judgment; do not create a new form or approval
+   chain.
+5. Before creating a lane, fetch/prune the remote, require a valid symbolic
+   `refs/remotes/origin/HEAD`, resolve its commit, and use `worktree-isolation`
+   to provision one exact-base worker workspace. When task tooling supports a
+   starting branch, pass `startingState: { type: "branch", branchName:
+   "origin/<default>" }` and independently verify the resulting `HEAD`. Never
+   substitute local `main`, coordinator `HEAD`, or handoff prose.
+6. Prove no active worker, branch, PR, or watcher already owns the issue. Reuse
+   or steer the existing owner instead of duplicating it.
+7. Dispatch one worker with the Ready issue, risk tier, exact base, scope,
+   relevant capabilities, proof expectations, and genuine external gates.
+
+Tier A workers begin immediately. Do not create a planner, pre-edit package, or
+idle reviewer. For Tier B, create at most one focused, timeboxed pre-edit review
+only when a named dangerous seam needs it. Tier C human approval gates the
+external or irreversible effect, not safely separable internal proof.
+
+Move the issue to the live in-progress state and record the owner, branch
+expectation, exact base, fetch time, risk tier, and external gates concisely in
+a durable dispatch comment.
+
+An explicit resume or special-ref instruction is an exception to fresh-default
+dispatch only when the durable task context names it. Preserve that history and
+prove the requested ref, exact head, fetched remote default, merge-base,
+ahead/behind counts, and clean/dirty state. Provenance never grants permission
+to reset, clean, merge, auto-rebase, force-move, or discard work.
+
+## Build Oversight
+
+Expect executable movement: a failing test or probe, source diff, vertical
+tracer, physical proof, and early draft PR. TDD, debugging, Effect guidance,
+coding standards, simplification, and architecture techniques are capabilities
+inside Build, not sequential gates.
+
+For Gaia runtime-affecting work, expect the worker to exercise the actual
+browser, preview, CLI, or process as appropriate, including the happy path and
+one material risk interaction. Record console/network behavior, loading and
+duplicate-submit behavior, and relevant layout evidence, or name the concrete
+reason a dimension was not run.
+
+If movement stalls, ask for the concrete blocker and smallest executable tracer
+or slice. Do not request another complete plan. A fixable compiler, tooling,
+test, or runtime defect stays with the worker when in scope.
+
+Directional drift signals, not SLAs: routine Dispatch should take minutes;
+expect a first test, probe, or source diff within roughly 30 minutes, a working
+tracer within 30–90 minutes, and a meaningful draft PR within 60–120 minutes.
+Keep a focused Tier B boundary review within about 60 minutes, exact-head review
+within 30–60 minutes of a stable request, and a normal correction pass within
+30–90 minutes. When these drift, slice or surface the concrete blocker rather
+than creating timer forms or another plan.
+
+## Verify
+
+Activate one independent read-only reviewer when there is a working diff, draft
+PR, immutable head, and evidence. Provision its detached worktree from the
+current exact fetched remote default when review begins, then fetch the requested
+PR head without mutating it. Review the exact implementation head rather than a
+hypothetical plan.
+
+The reviewer checks acceptance, correctness, simplicity, tests, and physical
+proof and returns findings using the canonical four dispositions. `review-swarm`
+is exceptional: use it only when explicitly requested or justified by broad,
+security/privacy-sensitive, data-affecting, or genuinely cross-boundary risk.
+
+Normally allow one focused correction pass for `Fix before merge` findings and
+verify only the necessary delta. A newly proven serious defect must still be
+fixed or consciously escalated, but it does not reopen pre-edit planning.
+
+## Decide
+
+For each finding, choose exactly one action:
+
+- fix before merge;
+- accept as residual risk;
+- create a concrete follow-up;
+- ask the human for a genuine decision.
+
+Dismiss speculative blockers with a short technical reason. “Wait for more
+review” is not a decision unless a specific evidence gap is named.
+
+When delegated merge authority exists, merge only after the exact head,
+acceptance-to-proof mapping, checks, finding dispositions, external gates, and
+residual risks are current. Record the decision in Linear. Move the issue and
+parent outcomes only when their claimed outcomes are actually proven.
+
+## Watcher Ownership
+
+At most one watcher owns a PR's next poll. Before creating or updating a
+heartbeat with `automation_update`, find any watcher for the same PR and reuse,
+replace, or stop it. The watcher stores only the issue, owner, PR, exact head,
+pending delta, next action, retry/fix budget, stop condition, and last meaningful
+observation. Do not also create a project watcher for the same event.
+
+After creating or updating a heartbeat, verify the returned automation and its
+next run instead of assuming the schedule was accepted.
+
+Stop and clean up the watcher when the PR is green, merged, closed, or genuinely
+blocked. Linear and GitHub remain the durable evidence stores.
 
 ## Simulation Mode
 
-Use Simulation Mode when the user asks for a no-mutation rehearsal, workflow
-test, or skill-bundle validation. In Simulation Mode:
+For a no-mutation rehearsal, do not create tasks, Linear changes, automations,
+branches, commits, or PRs. Apply the same readiness, risk, authority, proof, and
+decision rules and label every live action as not run.
 
-- do not create Codex threads, Linear issues, automations, branches, commits, or
-  PRs;
-- use Draft Mode outputs from `to-prd` and `to-issues` as the source of truth;
-- produce the dispatch plan that would be executed, including worker/reviewer
-  thread prompts, dependency order, required skills, and stop conditions;
-- produce the expected acceptance gates from `production-ready`;
-- clearly label every live action as "not run - simulation".
-
-## Loop
-
-1. **Load project state.** Read the Project/PRD, issues, blockers, comments,
-   statuses, linked PRs, and recent worker evidence live from Linear. Treat any
-   handoff or previous heartbeat summary as orientation, not the operative
-   source of truth.
-2. **Reconcile.** Run `reconcile-project` before dispatching new work, including
-   fetched-remote base provenance for active or proposed worker/reviewer pairs.
-3. **Load the outcome hierarchy and dependency graph.** Use parent/sub-Issue
-   relations for outcome grouping and Linear blocker relations for execution
-   order. Do not infer either structure only from prose; update Linear when the
-   durable graph is wrong.
-4. **Pick dispatchable leaf issues.** Prefer unblocked AFK leaf Issues in the live
-   Linear state that means "ready for agent work" and maximize downstream
-   unblocking. Do not dispatch parent outcome Issues as implementation work. Skip
-   HITL issues until the human decision is captured.
-5. **Spawn workers.** Use the Codex app thread tools by default. Immediately
-   before dispatch, fetch/prune `origin` and resolve the exact
-   `origin/<default>` SHA through `refs/remotes/origin/HEAD`. For a new lane,
-   create the worker/reviewer pair from that same SHA through
-   `worktree-isolation`; for an explicit resume/special-ref, retain and prove the
-   authorized lanes. Create one user-visible Codex thread per dispatchable Linear
-   issue, with explicit reasoning effort. Include the Linear issue, parent
-   PRD/Project, blockers, relevant comments, exact base SHA, fetch time, durable
-   dispatch comment, worktree path, branch naming convention, and instruction to
-   use the `worker` and `worktree-isolation` skills. Tell new-lane workers to
-   refresh live Linear and prove clean exact-base state before planning. Require
-   one compact plan, one independent review, at most one targeted revision, and
-   then the smallest bounded reversible slice unless a `pre-edit blocker`
-   remains. A third cycle requires explicit human approval.
-   - First prove the issue is not already owned by an active worker, reviewer,
-     branch, PR, or heartbeat. Reuse or steer the existing owner when found.
-   - For every non-trivial new-lane worker, create a paired user-visible read-only
-     reviewer/spec thread in its detached worktree at the same exact base SHA.
-     Include the worker thread, Linear issue, parent PRD/Project, base SHA,
-     reviewer worktree path, expected skills/standards, and instruction to use
-     the reviewer thread template. For user-visible changes, include the
-     expectation that the reviewer should gather independent runtime evidence
-     with Browser or a narrow test subset, or explicitly say why it was not
-     practical. Tell the reviewer to prove clean exact-base detached state, then
-     stay idle until the worker posts a plan or PR if there is nothing useful to
-     inspect yet.
-   - New lanes must record fetch time and the durable dispatch comment, then
-     prove clean state, `HEAD == origin/<default> == merge-base`, and ahead/behind
-     `0/0` after creation.
-   - An explicit resume/special-ref is allowed only with a durable issue/handoff
-     comment that records the override. Its durable dispatch comment records the
-     override ref, exact resumed HEAD, fetched remote-default ref/SHA, merge-base,
-     ahead/behind,
-     honest clean/dirty state, and fetch time. The evidence may be non-zero or
-     dirty; prove the override ref resolves to the exact resumed HEAD and assess
-     it without mutation. An explicit resume does not authorize reset, clean,
-     merge, automatic rebase, force-move, or discard work. If any required
-     relationship is unresolvable, the lane fails closed.
-   - If `origin/<default>` advances before new-lane edit authority, hold both
-     lanes. Use the non-destructive refresh path in `worktree-isolation`, rerun
-     relevant baselines, revalidate the existing plan, and repeat focused review
-     for affected deltas. Replace the plan only if scope or acceptance criteria
-     changed.
-   - Tell every worker that after opening or updating a PR it must run
-     `ci-watch`, monitor CI plus GitHub PR comments/review threads and Linear
-     comments, fix actionable in-scope failures or comments, and keep watching
-     until checks are green or genuinely blocked.
-   - Tell every worker to create or update a 2-3 minute heartbeat automation via
-     `automation_update` for its worker thread when PR checks or comments are
-     still pending after a short inline watch. The heartbeat prompt should
-     include the PR URL, Linear issue key, branch, head SHA, current blockers,
-     comment-review requirement, retry/fix budget, Linear update requirement,
-     and stop condition.
-6. **Track status.** Move assigned issues to the live Linear in-progress state
-   and comment with the worker thread, branch expectation, and dispatch time.
-   Keep parent outcome state aligned with its children without pretending the
-   combined outcome is complete before it is verified.
-7. **Set a heartbeat.** After dispatching workers, create or update one
-   current-thread heartbeat automation via `automation_update` to continue
-   orchestration while work is active. Prefer a short interval, such as 10
-   minutes, for active worker batches; lengthen or pause it only when the project
-   is waiting on human input or external systems. The heartbeat prompt should
-   check Linear issue status, worker threads, PRs, CI, blockers, and acceptance
-   gates. It should stay silent when no state changed and stop when all active
-   work is accepted, blocked, or waiting on human input. Update an existing
-   project heartbeat instead of creating duplicates, and verify the automation
-   exists after creating or updating it.
-   - If an In Progress issue completes two plan-review cycles with no source diff
-     or draft PR, stop planning and notify the human with cycle evidence, finding
-     classification, and the smallest rescue tracer. Never commission another
-     complete plan.
-   - Also notify when several hours pass after edit authority without a source
-     diff, executable blocker, or draft PR.
-8. **Review returns.** For each worker report or PR, run the acceptance gates
-   below before moving Linear forward.
-
-Dispatch is complete only when every selected issue is either assigned to one
-active worker with a paired reviewer when required and exact-base provenance is
-recorded, skipped with a durable reason, or blocked in Linear.
-
-## Acceptance Gates
-
-### Spec Gate
-
-Verify the PR against fresh Linear state, not the worker's memory:
-
-- issue acceptance criteria satisfied
-- parent PRD/Project intent preserved
-- blockers respected
-- comments and HITL decisions since dispatch honored
-- out-of-scope boundaries respected
-- no missing UX/API/persistence/test piece for the vertical slice
-
-Use the paired reviewer/spec thread for non-trivial implementation review. It
-should refresh live Linear before finding mismatches, omissions, or scope drift.
-It may leave GitHub PR review comments for concrete line-level findings, but
-the orchestrator should use the reviewer thread verdict as the acceptance input.
-For user-visible changes, the reviewer verdict should include independent
-runtime evidence or a concrete not-run reason. Useful evidence includes
-Browser/preview smoke results, focused test output, console or network error
-checks, FOUC or layout-shift observations, jank during key interactions, and
-double-submit or duplicate-request checks when relevant.
-For tiny or mechanical changes, the orchestrator may explicitly waive the
-reviewer thread and record why.
-
-Classify every finding as exactly one of `pre-edit blocker`, `pre-merge
-blocker`, `deferred hardening`, or `question`. Among review findings, only a
-`pre-edit blocker` stops implementation. Resolve concrete `pre-merge blocker`
-risks before merge unless the orchestrator explicitly accepts the residual risk.
-Route useful non-blocking hardening to an outcome-named follow-up issue.
-
-### Quality Gate
-
-Require worker evidence from `production-ready`:
-
-- relevant review stack completed
-- verification commands and results recorded
-- Browser, preview, or focused runtime evidence recorded for user-visible
-  changes, or explicitly waived by the orchestrator
-- PR linked
-- CI and PR/Linear comments watched until green/resolved or blocked with
-  evidence
-- any active worker CI heartbeat automation named with its interval and stop
-  condition
-
-Escalate to additional read-only review through `review-swarm` or relevant
-stack skills when risk is high or worker evidence is weak.
-
-## Feedback
-
-If a gate fails, send targeted feedback to the worker thread or Linear issue.
-Do not request a replacement plan or whole-package architecture review after
-implementation begins unless scope or acceptance criteria materially changed.
-Do not rewrite the code yourself unless the user explicitly changes your role.
-
-## Done
-
-Move an issue to the live Linear completed state only when:
-
-- spec gate passes
-- quality gate passes
-- CI is green or the accepted completion path does not require CI
-- Linear has a final evidence comment with PR, verification, and residual risk
-
-Move a parent outcome Issue to completed only when all required child outcomes
-are complete and the combined parent outcome has been verified. A closed set of
-child tickets is evidence to review, not automatic proof of the parent outcome.
+Completion criterion: every active issue has one owner and one next action;
+review and watcher ownership are not duplicated; every material finding has an
+orchestrator disposition; and no human is asked to decide an ordinary technical
+problem.

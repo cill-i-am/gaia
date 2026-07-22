@@ -4,388 +4,105 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
+const read = (relativePath) =>
+  readFileSync(path.join(repoRoot, relativePath), "utf-8");
 
-const requirement = (
-  name,
-  pattern,
-  { minimumMatches = 1, mutationPattern = pattern } = {}
-) => ({ minimumMatches, mutationPattern, name, pattern });
-
-const scopedRequirement = (name, marker, token, maximumDistance = 1600) =>
-  requirement(
-    name,
-    new RegExp(
-      `${marker.source}(?=[\\s\\S]{0,${maximumDistance}}${token.source})`,
-      [...new Set(`${marker.flags}${token.flags}`.replace("g", ""))].join("")
-    ),
-    { mutationPattern: token }
-  );
-
-const newLaneMarker = /new[- ]lanes?/i;
-const resumeMarker = /explicit\s+resume\s*\/\s*special-ref/i;
-const newLaneRequirement = (name, token, maximumDistance = 900) =>
-  requirement(
-    name,
-    new RegExp(
-      `${newLaneMarker.source}(?=(?:(?!${resumeMarker.source})[\\s\\S]){0,${maximumDistance}}${token.source})`,
-      [
-        ...new Set(
-          `${newLaneMarker.flags}${resumeMarker.flags}${token.flags}`.replace(
-            "g",
-            ""
-          )
-        ),
-      ].join("")
-    ),
-    { mutationPattern: token }
-  );
-
-const contracts = {
-  canonicalRecipe: [
-    requirement("fetch failure guard", /git fetch --prune origin \|\| exit 1/, {
-      minimumMatches: 3,
-    }),
-    requirement(
-      "symbolic-ref failure guard",
-      /remote_head=\$\(git symbolic-ref refs\/remotes\/origin\/HEAD\) \|\| exit 1/,
-      { minimumMatches: 3 }
-    ),
-    requirement("origin namespace guard", /refs\/remotes\/origin\/\?\*\) ;;/, {
-      minimumMatches: 3,
-    }),
-    requirement(
-      "derived default ref",
-      /(?:default_ref|fresh_default_ref)=\$\{remote_head#refs\/remotes\/\}/,
-      { minimumMatches: 3 }
-    ),
-    requirement(
-      "exact symbolic-ref commit",
-      /git rev-parse --verify "\$\{remote_head\}\^\{commit\}"\) \|\| exit 1/,
-      { minimumMatches: 3 }
-    ),
-    requirement(
-      "honest ahead/behind command",
-      /git rev-list --left-right --count HEAD\.\.\."\$default_ref"/,
-      { minimumMatches: 2 }
-    ),
-    requirement(
-      "override ref exact commit",
-      /override_sha=\$\(git rev-parse --verify "\$\{override_ref\}\^\{commit\}"\) \|\| exit 1/
-    ),
-    requirement(
-      "override equals resumed HEAD",
-      /test "\$head_sha" = "\$override_sha" \|\| exit 1/
-    ),
-    requirement(
-      "worker refresh failure guard",
-      /git -C "<worker-path>" merge --ff-only "\$fresh_base_sha" \|\| exit 1/
-    ),
-    requirement(
-      "reviewer refresh failure guard",
-      /git -C "<reviewer-path>" switch --detach "\$fresh_base_sha" \|\| exit 1/
-    ),
-  ],
-  remoteDefault: [
-    requirement("fresh fetch", /git fetch --prune origin/),
-    requirement("symbolic remote HEAD", /refs\/remotes\/origin\/HEAD/),
-    requirement("derived remote default", /origin\/<default>/),
-    requirement(
-      "fail-closed provenance",
-      /(?:missing|invalid)[\s\S]{0,180}fail(?:s)? closed/i,
-      { mutationPattern: /fail(?:s)? closed/i }
-    ),
-  ],
-  newLane: [
-    requirement("new-lane scope", newLaneMarker),
-    newLaneRequirement(
-      "exact base equality",
-      /HEAD == origin\/<default> == merge-base/,
-      700
-    ),
-    newLaneRequirement("exact 0\/0 state", /0\/0/, 700),
-    newLaneRequirement("fetch time", /fetch\s+time/i, 1600),
-    newLaneRequirement(
-      "durable dispatch evidence",
-      /durable\s+dispatch\s+comment/i,
-      1600
-    ),
-  ],
-  dispatch: [
-    requirement(
-      "Codex branch starting state",
-      /startingState:\s*\{\s*type:\s*"branch",\s*branchName:\s*"origin\/<default>"\s*\}/
-    ),
-  ],
-  reviewerLaneSeparation: [
-    requirement("new-lane reviewer proof", /For new-lane reviews,/),
-    requirement(
-      "resume reviewer proof",
-      /For explicit resume\/special-ref reviews,/
-    ),
-  ],
-  workerTemplateLaneSeparation: [
-    requirement(
-      "new-lane topic branch label",
-      /New-lane topic branch expectation:/
-    ),
-    requirement(
-      "preserved resume topic ref",
-      /explicit resumes preserve `\{OVERRIDE_REF\}`/
-    ),
-  ],
-  resume: [
-    requirement("explicit resume override", resumeMarker),
-    scopedRequirement(
-      "durable issue/handoff authority",
-      resumeMarker,
-      /durable\s+issue\/handoff\s+comment/i
-    ),
-    scopedRequirement(
-      "durable dispatch evidence",
-      resumeMarker,
-      /durable\s+dispatch\s+comment/i
-    ),
-    scopedRequirement("override ref", resumeMarker, /override ref/i),
-    scopedRequirement(
-      "exact resumed HEAD",
-      resumeMarker,
-      /exact\s+resumed\s+HEAD/i
-    ),
-    scopedRequirement(
-      "override bound to resumed HEAD",
-      resumeMarker,
-      /override\s+ref\s+resolves\s+to\s+the\s+exact\s+resumed\s+HEAD/i
-    ),
-    scopedRequirement(
-      "fetched default identity",
-      resumeMarker,
-      /fetched\s+remote-default\s+ref\/SHA/i
-    ),
-    scopedRequirement("merge-base", resumeMarker, /merge-base/),
-    scopedRequirement("ahead\/behind", resumeMarker, /ahead\/behind/),
-    scopedRequirement("honest tree state", resumeMarker, /clean\/dirty/),
-    scopedRequirement("fetch time", resumeMarker, /fetch\s+time/i),
-    scopedRequirement(
-      "no implicit history rewrite",
-      resumeMarker,
-      /reset,\s+clean,\s+merge,\s+automatic(?:ally)?\s+rebase,\s+force-move,\s+or\s+discard/i,
-      2200
-    ),
-  ],
-};
-
-const owners = [
-  [
-    ".agents/skills/worktree-isolation/SKILL.md",
-    ["canonicalRecipe", "remoteDefault", "newLane", "dispatch", "resume"],
-  ],
-  [
-    ".agents/skills/orchestrator/SKILL.md",
-    ["remoteDefault", "newLane", "dispatch", "resume"],
-  ],
-  [
-    ".agents/skills/reconcile-project/SKILL.md",
-    ["remoteDefault", "newLane", "resume"],
-  ],
-  [".agents/skills/worker/SKILL.md", ["remoteDefault", "newLane", "resume"]],
-  [
-    "docs/agents/execution-policy.md",
-    [
-      "remoteDefault",
-      "newLane",
-      "dispatch",
-      "reviewerLaneSeparation",
-      "resume",
-    ],
-  ],
-  [
-    "docs/agents/worker-thread-template.md",
-    [
-      "remoteDefault",
-      "newLane",
-      "dispatch",
-      "workerTemplateLaneSeparation",
-      "resume",
-    ],
-  ],
-  [
-    "docs/agents/reviewer-thread-template.md",
-    ["remoteDefault", "newLane", "dispatch", "resume"],
-  ],
-  [
-    ".agents/skills/linear-setup/assets/docs/agents/execution-policy.md",
-    [
-      "remoteDefault",
-      "newLane",
-      "dispatch",
-      "reviewerLaneSeparation",
-      "resume",
-    ],
-  ],
-  [
-    ".agents/skills/linear-setup/assets/docs/agents/worker-thread-template.md",
-    [
-      "remoteDefault",
-      "newLane",
-      "dispatch",
-      "workerTemplateLaneSeparation",
-      "resume",
-    ],
-  ],
-  [
-    ".agents/skills/linear-setup/assets/docs/agents/reviewer-thread-template.md",
-    ["remoteDefault", "newLane", "dispatch", "resume"],
-  ],
+const policyPath = "docs/agents/execution-policy.md";
+const bundledRoot = ".agents/skills/linear-setup/assets/docs/agents";
+const rolePaths = [
+  ".agents/skills/orchestrator/SKILL.md",
+  ".agents/skills/reconcile-project/SKILL.md",
+  ".agents/skills/worker/SKILL.md",
+];
+const syncedDocs = [
+  "execution-policy.md",
+  "issue-template.md",
+  "linear-workflow.md",
+  "reviewer-thread-template.md",
+  "triage-states.md",
+  "worker-thread-template.md",
 ];
 
-const requiredContracts = (roles) =>
-  roles.flatMap((role) =>
-    contracts[role].map((contract) => ({ ...contract, role }))
-  );
-
-const countMatches = (document, pattern) => {
-  const everyMatch = new RegExp(
-    pattern.source,
-    `${pattern.flags.replace("g", "")}g`
-  );
-  return document.match(everyMatch)?.length ?? 0;
-};
-
-const scopedNegativeCases = [
-  {
-    contract: contracts.remoteDefault.find(
-      ({ name }) => name === "fail-closed provenance"
-    ),
-    document:
-      "provenance fails closed elsewhere\nmissing remote HEAD; provenance fails closed",
-    mutate: (document) =>
-      document.replace(
-        "missing remote HEAD; provenance fails closed",
-        "missing remote HEAD"
-      ),
-    name: "remote fail-closed clause",
-  },
-  {
-    contract: contracts.newLane.find(
-      ({ name }) => name === "exact base equality"
-    ),
-    document:
-      "HEAD == origin/<default> == merge-base elsewhere\nnew lane\nHEAD == origin/<default> == merge-base",
-    mutate: (document) =>
-      document.replace(
-        "new lane\nHEAD == origin/<default> == merge-base",
-        "new lane"
-      ),
-    name: "new-lane equality clause",
-  },
-  {
-    contract: contracts.newLane.find(({ name }) => name === "fetch time"),
-    document: "fetch time elsewhere\nnew lane\nfetch time",
-    mutate: (document) => document.replace("new lane\nfetch time", "new lane"),
-    name: "new-lane fetch-time clause",
-  },
-  {
-    contract: contracts.newLane.find(
-      ({ name }) => name === "durable dispatch evidence"
-    ),
-    document:
-      "durable dispatch comment elsewhere\nnew lane\ndurable dispatch comment",
-    mutate: (document) =>
-      document.replace("new lane\ndurable dispatch comment", "new lane"),
-    name: "new-lane dispatch-evidence clause",
-  },
-  {
-    contract: contracts.resume.find(
-      ({ name }) => name === "durable dispatch evidence"
-    ),
-    document:
-      "durable dispatch comment elsewhere\nexplicit resume/special-ref\ndurable dispatch comment",
-    mutate: (document) =>
-      document.replace(
-        "explicit resume/special-ref\ndurable dispatch comment",
-        "explicit resume/special-ref"
-      ),
-    name: "resume dispatch-evidence clause",
-  },
-];
-
-for (const { contract, document, mutate, name } of scopedNegativeCases) {
-  assert.ok(contract, `${name} contract must exist`);
-  assert.ok(countMatches(document, contract.pattern) > 0, `${name} must match`);
-  const mutatedDocument = mutate(document);
-  assert.ok(
-    countMatches(mutatedDocument, contract.mutationPattern) > 0,
-    `${name} mutation must retain duplicate vocabulary outside its scope`
-  );
+for (const name of syncedDocs) {
   assert.equal(
-    countMatches(mutatedDocument, contract.pattern),
-    0,
-    `${name} must reject removal from its owning scope`
+    read(`docs/agents/${name}`),
+    read(`${bundledRoot}/${name}`),
+    `${name} must match the linear-setup installed copy`
   );
 }
 
-const validate = (relativePath, document, roles) => {
-  const violations = requiredContracts(roles)
-    .filter(
-      ({ minimumMatches, pattern }) =>
-        countMatches(document, pattern) < minimumMatches
-    )
-    .map(({ name, role }) => `${relativePath} [${role}] missing ${name}`);
+const policy = read(policyPath);
+assert.match(policy, /canonical owner of workflow phases, role authority/i);
+assert.match(policy, /exact fetched-remote provenance/i);
+assert.match(policy, /no\s+pre-edit reviewer/i);
+assert.match(policy, /reviewer does not grant edit authority/i);
+assert.match(policy, /Fix before merge/i);
+assert.match(policy, /Accept as residual risk/i);
+assert.match(policy, /Create a follow-up/i);
+assert.match(policy, /Ask the human for a genuine decision/i);
 
-  if (
-    /(?<!refs\/remotes\/)origin\/(?!<default>)[A-Za-z0-9._/-]+/.test(document)
-  ) {
-    violations.push(`${relativePath} hard-codes a remote default`);
-  }
+for (const relativePath of rolePaths) {
+  const document = read(relativePath);
+  assert.match(
+    document,
+    /docs\/agents\/execution-policy\.md/,
+    `${relativePath} must consume the canonical policy`
+  );
+  assert.doesNotMatch(
+    document,
+    /(?<!refs\/remotes\/)origin\/(?!<default>|HEAD\b)[A-Za-z0-9._/-]+/,
+    `${relativePath} must not hard-code a remote default`
+  );
+}
 
-  return violations;
-};
-
-const documents = owners.map(([relativePath, roles]) => [
-  relativePath,
-  roles,
-  readFileSync(path.join(repoRoot, relativePath), "utf-8"),
-]);
-const violations = documents.flatMap(([relativePath, roles, document]) =>
-  validate(relativePath, document, roles)
+const worktree = read(".agents/skills/worktree-isolation/SKILL.md");
+assert.doesNotMatch(
+  worktree,
+  /(?<!refs\/remotes\/)origin\/(?!<default>|HEAD\b)[A-Za-z0-9._/-]+/,
+  "worktree isolation must not hard-code a remote default"
 );
-
-if (violations.length > 0) {
-  throw new Error(
-    `Agent workspace provenance violations:\n${violations
-      .map((violation) => `- ${violation}`)
-      .join("\n")}`
-  );
+for (const [name, pattern] of [
+  ["fetch failure guard", /git fetch --prune origin \|\| exit 1/],
+  [
+    "symbolic remote HEAD guard",
+    /remote_head=\$\(git symbolic-ref refs\/remotes\/origin\/HEAD\) \|\| exit 1/,
+  ],
+  ["origin namespace guard", /refs\/remotes\/origin\/\?\*\) ;;/],
+  [
+    "derived remote default",
+    /remote_default=\$\{remote_head#refs\/remotes\/\}/,
+  ],
+  [
+    "exact symbolic-ref commit",
+    /git rev-parse --verify "\$\{remote_head\}\^\{commit\}"\) \|\| exit 1/,
+  ],
+  ["honest ahead and behind proof", /git rev-list --left-right --count/],
+  ["clean-tree proof", /git status --porcelain/],
+  ["reviewer detached", /reviewer stays detached/i],
+  ["resume exception", /Explicit Resume Or Special Ref/],
+  ["no implicit history rewrite", /never reset, clean, merge, auto-rebase/],
+]) {
+  assert.match(worktree, pattern, `worktree isolation missing ${name}`);
 }
 
-for (const [relativePath, roles, document] of documents) {
-  for (const { mutationPattern, name, pattern, role } of requiredContracts(
-    roles
-  )) {
-    const match = document.match(pattern);
-    assert.ok(match, `${relativePath} must match ${role}/${name}`);
+const orchestrator = read(".agents/skills/orchestrator/SKILL.md");
+assert.match(
+  orchestrator,
+  /startingState: \{ type: "branch", branchName:\s*"origin\/<default>" \}/
+);
+assert.match(orchestrator, /Activate one independent read-only reviewer when/);
+assert.match(orchestrator, /archive completed, obsolete, idle, or held tasks/i);
 
-    const everyMatch = new RegExp(
-      mutationPattern.source,
-      `${mutationPattern.flags.replace("g", "")}g`
-    );
-    const mutatedDocument = document.replace(everyMatch, "");
-    assert.ok(
-      validate(relativePath, mutatedDocument, roles).some((violation) =>
-        violation.includes(`[${role}] missing ${name}`)
-      ),
-      `${relativePath} must reject removal of ${role}/${name}`
-    );
-  }
+const worker = read(".agents/skills/worker/SKILL.md");
+assert.match(worker, /exact dispatched\s+SHA/);
+assert.match(worker, /fetch time and exact base/);
+assert.match(worker, /Do not reset, clean, merge,\s+auto-rebase/);
 
-  assert.ok(
-    validate(relativePath, `${document}\norigin/main`, roles).some(
-      (violation) => violation.endsWith("hard-codes a remote default")
-    ),
-    `${relativePath} must reject a hard-coded remote default`
-  );
-}
+const reconcile = read(".agents/skills/reconcile-project/SKILL.md");
+assert.match(reconcile, /invalid symbolic `origin\/HEAD`/);
+assert.match(reconcile, /startingState.*independently verified/);
+assert.match(reconcile, /archive obsolete idle tasks/);
 
 console.log(
-  `Agent workspace provenance verified: ${documents.length} role-aware owners`
+  `Agent workspace provenance verified: ${syncedDocs.length} synced docs and ${rolePaths.length} policy-consuming roles`
 );

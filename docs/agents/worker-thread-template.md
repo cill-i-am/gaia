@@ -1,57 +1,45 @@
 # Worker Thread Template
 
-Use this when dispatching a Codex worker thread.
+Use this to dispatch one delivery owner for a Ready issue.
 
 ## Mission
 
-Implement Linear issue: `{ISSUE_ID}`.
+Implement Linear issue `{ISSUE_ID}` through the smallest proven vertical slice.
 
 ## Required Context
 
 - Project or PRD: `{PROJECT_OR_PRD}`
 - Issue: `{ISSUE_LINK}`
-- Fetched `origin/<default>` ref/SHA: `{DEFAULT_REF}` / `{BASE_SHA}`
-- Fetch time: `{FETCH_TIME}`
-- Durable dispatch comment: `{DISPATCH_COMMENT}`
-- Codex new-lane `startingState: { type: "branch", branchName: "origin/<default>" }`: `{STARTING_STATE}`
-- Lane mode: `new` or explicit resume/special-ref `{LANE_MODE}`
-- Durable issue/handoff comment for any override: `{OVERRIDE_COMMENT}`
+- Risk tier: `{RISK_TIER}`
+- Exact fetched remote-default base SHA: `{BASE_SHA}`
 - Worker worktree: `{WORKTREE_PATH}`
-- New-lane topic branch expectation: `codex/{ISSUE_ID}-{SLUG}`, created and owned by the worker; explicit resumes preserve `{OVERRIDE_REF}`
-- Required skills: worker, worktree-isolation, `{SKILLS}`
-
-## Scope
-
-In scope:
-
-- `{IN_SCOPE}`
-
-Out of scope:
-
-- `{OUT_OF_SCOPE}`
+- Topic branch: `codex/{ISSUE_ID}-{SLUG}`, created and owned by the worker
+- Relevant capability skills: `{SKILLS}`
+- Genuine human/external gates: `{EXTERNAL_GATES}`
 
 ## Requirements
 
-- Follow repo `AGENTS.md` and nested instructions.
-- Read the live Linear issue, parent Project/PRD, blockers, and comments before planning. Treat this handoff as orientation only.
-- For a new lane, use the orchestrator-provisioned worktree created from the exact dispatched base SHA and create and own the topic branch there. For an explicit resume/special-ref, preserve and prove the authorized ref/HEAD instead of running new-lane branch creation. Do not use local `main`, the coordinator's `HEAD`, or this handoff as base evidence.
-- Before planning or editing, run `git fetch --prune origin`, require symbolic `refs/remotes/origin/HEAD` under `refs/remotes/origin/`, derive `origin/<default>`, and resolve the exact commit and merge-base. Missing or invalid provenance fails closed.
-- For new lanes, report the isolated path, topic branch, fetch time, durable dispatch comment, fetched remote-default ref/SHA, empty worktree status, and prove `HEAD == origin/<default> == merge-base` with ahead/behind `0/0`, plus install and baseline results. Independently prove the created worktree matches the recorded `startingState: { type: "branch", branchName: "origin/<default>" }` commit.
-- For an explicit resume/special-ref, report the override ref, exact resumed HEAD, fetched remote-default ref/SHA, merge-base, ahead/behind, honest clean/dirty state, fetch time, and durable dispatch comment. Prove the override ref resolves to the exact resumed HEAD. Non-zero or dirty state is evidence to assess. It does not authorize reset, clean, merge, automatic rebase, force-move, or discard work; stop if a required relationship is unresolvable so the resume fails closed.
-- If `origin/<default>` advances before new-lane edit authority, hold work and notify the orchestrator. Refresh only through the non-destructive procedure in `worktree-isolation`, then rerun relevant baselines, revalidate the existing plan, and repeat focused review for affected deltas.
-- Keep changes surgical and simple.
-- Post one compact plan covering material architecture decisions, scope and explicit boundaries, the smallest end-to-end tracer, intended tests and verification, known risks, and deferred questions. Do not pre-specify every table, query, retry, operation count, or hypothetical failure path. Keep high-risk planning within approximately 60-90 minutes by default.
-- Obtain one independent plan review. If changes are requested, make one targeted revision; replace the plan only if product scope or acceptance criteria changed.
-- Never enter a third plan-review cycle without explicit human approval.
-- Begin a bounded reversible slice once no `pre-edit blocker` remains. Build the smallest tracer, gather executable evidence, and open a draft PR when it works.
-- Stop and report if scope or product intent is wrong.
-- Use Linear blockers for dependency issues.
-- Use Browser verification for user-visible changes where practical.
-
-## Verification
-
-Run relevant checks and report exact commands/results.
+- Follow `AGENTS.md`, `docs/agents/execution-policy.md`, and the live issue.
+- Treat this handoff as orientation. Refresh Linear, fetch/prune the remote,
+  dynamically resolve `origin/HEAD`, and prove the isolated tree and branch begin
+  clean at the exact dispatched SHA before editing.
+- Confirm the issue meets the Ready bar. If it does, begin; do not rewrite the
+  issue as a plan. Post at most one compact execution note with the base/branch,
+  first tracer or failing test, changed surfaces, intended physical proof, and
+  any newly discovered divergence.
+- Tier A has no pre-edit reviewer. Tier B may have one already named, focused,
+  timeboxed review of the dangerous seam. Tier C gates only the external or
+  irreversible effect when safe internal work is separable.
+- Build the smallest end-to-end tracer, use capability skills inside Build,
+  test through real seams, physically exercise the changed outcome, simplify,
+  and open a draft PR once the tracer works.
+- Fix reproducible in-scope implementation defects without requesting a new
+  planning or authorization cycle.
+- Stop for a material product change, scope expansion, unsafe provenance,
+  credentials/real data, or an unauthorized destructive/external action.
 
 ## Done Evidence
 
-Report changed files, verification, PR link, preview link if any, and residual risks.
+Report the exact head and changed scope, acceptance-to-proof mapping, commands
+and results, physical/runtime evidence, draft PR, external gates, and residual
+risks. The orchestrator activates exact-head review and owns the final decision.
