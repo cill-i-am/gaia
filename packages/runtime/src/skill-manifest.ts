@@ -52,6 +52,7 @@ export const SkillManifestSourceSchema = Schema.Struct({
 export type SkillManifestSource = typeof SkillManifestSourceSchema.Type;
 
 const WriteSkillManifestInputSchema = Schema.Struct({
+  manifest: Schema.optionalKey(SkillManifest),
   paths: RunPathsSchema,
   source: Schema.optionalKey(SkillManifestSourceSchema),
 });
@@ -73,9 +74,10 @@ export function writeSkillManifest(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const manifest =
-      input.source === undefined
+      input.manifest ??
+      (input.source === undefined
         ? SkillManifest.make({ skills: [] })
-        : yield* readSkillManifest(input.source.path);
+        : yield* readSkillManifest(input.source.path));
 
     yield* fs.writeFileString(
       input.paths.skillManifest,
@@ -97,6 +99,15 @@ export function writeSkillManifest(
   );
 }
 
+/** Read, strictly decode, and pin-check a skill manifest without persisting state. */
+export function resolveSkillManifest(
+  source?: SkillManifestSource
+): Effect.Effect<SkillManifest, GaiaRuntimeError, FileSystem.FileSystem> {
+  return source === undefined
+    ? Effect.succeed(SkillManifest.make({ skills: [] }))
+    : readSkillManifest(source.path);
+}
+
 export function selectedSkillNames(
   manifest: SkillManifest
 ): ReadonlyArray<SkillName> {
@@ -116,7 +127,7 @@ function readSkillManifest(
         return yield* Effect.fail(
           makeRuntimeError({
             code: "SkillManifestEntryUnpinned",
-            message: `Skill manifest entry '${skill.name}' must include a version or commit.`,
+            message: "A skill manifest entry must include a version or commit.",
             recoverable: false,
           })
         );
@@ -130,7 +141,7 @@ function readSkillManifest(
         makeRuntimeError({
           cause,
           code: "SkillManifestReadFailed",
-          message: `Gaia could not read skill manifest '${manifestPath}'.`,
+          message: "Gaia could not read the selected skill manifest.",
           recoverable: false,
         })
       )
@@ -145,7 +156,7 @@ function parseSkillManifest(contents: string, manifestPath: RuntimePath) {
       makeRuntimeError({
         cause,
         code: "SkillManifestInvalid",
-        message: `Skill manifest '${manifestPath}' is not valid.`,
+        message: "The selected skill manifest is not valid.",
         recoverable: false,
       }),
   });

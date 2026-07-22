@@ -1,12 +1,24 @@
+import { createHash } from "node:crypto";
+
 import {
   GaiaFailure,
+  MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+  MODEL_REVIEW_OUTPUT_CONTRACT_V1,
+  makeModelContextContentV1,
+  makeModelContextManifestV1,
+  makeModelInvocationManifestV1,
+  ModelInvocationEpisodeStartV1,
+  ModelInvocationObservationV1,
   parseMarkdownSpec,
   parseRunId,
+  resolveAcceptedRunInputCheckpoint,
+  resolveModelInvocationEpisodes,
   snapshotFromReplay,
   RunIdSchema,
   RunProofProjectionSchema,
   RunStateSchema,
   RunVerificationAggregateSchema,
+  renderModelInputV1,
   type ReviewPhase,
   type RunId,
   type RunState,
@@ -14,6 +26,7 @@ import {
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { customAlphabet } from "nanoid";
 
+import { loadAcceptedRunInputCheckpoint } from "./accepted-run-input.js";
 import {
   browserEvidenceRecord,
   failedBrowserEvidence,
@@ -27,7 +40,10 @@ import {
   type BrowserEvidenceRecord,
   type BrowserEvidenceTargetUrl,
 } from "./browser-evidence.js";
-import type { CodexHarnessOptions } from "./codex-harness.js";
+import {
+  makeCodexHarnessConfig,
+  type CodexHarnessOptions,
+} from "./codex-harness.js";
 import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import { appendEvent, loadRun } from "./event-store.js";
@@ -41,11 +57,20 @@ import {
   codexAppServerHarnessName,
   codexHarnessName,
   defaultHarnessName,
+  processHarnessName,
   runHarness,
   type GaiaHarness,
   type HarnessName,
   type ProcessHarnessConfig,
 } from "./harness.js";
+import {
+  commitModelInvocationPair,
+  decodeCodexBatchSemanticConfig,
+  deriveModelWorkspaceBinding,
+  loadModelInvocationPair,
+  prepareSpecRunAcceptance,
+  type PreparedSpecRunAcceptanceV1,
+} from "./model-invocation.js";
 import {
   makeRunPaths,
   makeRunStorePaths,
@@ -83,11 +108,17 @@ import {
   type SkillInstallerOptions,
 } from "./skill-bundle.js";
 import {
+  selectedSkillNames,
+  SkillManifest,
   writeSkillManifest,
   type SkillManifestSource,
 } from "./skill-manifest.js";
 import { recordRunProofResult, type VerificationServices } from "./verifier.js";
-import { writeWorkerPlan } from "./worker-plan.js";
+import {
+  parseWorkerPlanJson,
+  writeWorkerPlan,
+  type WorkerPlan,
+} from "./worker-plan.js";
 import { encodeWorkspaceDiffSummaryJson } from "./workspace-snapshot.js";
 import {
   emptyWorkspaceSource,
@@ -101,6 +132,9 @@ const nanoid = customAlphabet(
 );
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const decodeHarnessRunResult = Schema.decodeUnknownSync(HarnessRunResultJson);
+const decodePersistedSkillManifest = Schema.decodeUnknownSync(
+  Schema.toCodecJson(SkillManifest)
+);
 const parseWorkflowSpecPath = Schema.decodeUnknownSync(RuntimePathSchema);
 const BrowserEvidenceTargetSelectionSchema = Schema.Struct({
   explicitTargetUrl: Schema.UndefinedOr(BrowserEvidenceTargetUrlSchema),
@@ -169,34 +203,31 @@ export function runSpecFile(
   specPath: typeof RuntimePathSchema.Encoded,
   options: WorkflowOptions = {}
 ) {
-  return withRunStoreLock(
-    options,
-    runSpecFileUnlocked(parseWorkflowSpecPath(specPath), options)
+  return prepareSpecRunAcceptance(
+    parseWorkflowSpecPath(specPath),
+    options
+  ).pipe(
+    Effect.flatMap((prepared) =>
+      withRunStoreLock(options, runSpecFileUnlocked(prepared, options))
+    )
   );
 }
 
 function runSpecFileUnlocked(
-  specPath: typeof RuntimePathSchema.Type,
+  prepared: PreparedSpecRunAcceptanceV1,
   options: WorkflowOptions
 ) {
   return Effect.gen(function* () {
     const runId = yield* generateRunId;
     const paths = yield* makeRunPaths(runId, options);
     const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-
-    const input = yield* fs.readFileString(specPath);
-    const fallbackTitle = path.basename(specPath, path.extname(specPath));
-    const spec = yield* parseSpec(input, fallbackTitle);
-    const runProfile = yield* resolveRunProfile(options.runProfileSource);
-    const browserEvidenceRequirement =
-      options.browserEvidenceRequirement ?? runProfile.checks.browserEvidence;
-    const explicitBrowserEvidenceTargetUrl =
-      options.browserEvidenceTargetUrl === undefined
-        ? undefined
-        : yield* parseBrowserEvidenceTargetUrlEffect(
-            options.browserEvidenceTargetUrl
-          );
+    const {
+      browserEvidenceRequirement,
+      explicitBrowserEvidenceTargetUrl,
+      input,
+      runProfile,
+      spec,
+    } = prepared;
     yield* fs.makeDirectory(paths.root, { recursive: true });
     yield* fs.writeFileString(paths.input, input);
     yield* fs.writeFileString(paths.latest, runId);
@@ -207,7 +238,14 @@ function runSpecFileUnlocked(
     );
 
     yield* appendEvent(runId, paths, {
-      payload: { specPath: "input.md" },
+      payload: {
+        ...(options.harnessName === codexHarnessName ||
+        options.workerHarness?.name === codexAppServerHarnessName ||
+        options.reviewer?.adapterKind === "codex-cli"
+          ? { modelInvocationProtocol: "v1" }
+          : {}),
+        specPath: "input.md",
+      },
       type: "RUN_CREATED",
     });
 
@@ -218,6 +256,7 @@ function runSpecFileUnlocked(
       paths,
       runId,
       runProfile,
+      preparedAcceptance: prepared,
       spec,
     });
   });
@@ -227,18 +266,24 @@ export function continueAcceptedRun(
   runId: RunId,
   paths: RunPaths,
   spec: ReturnType<typeof parseMarkdownSpec>,
-  options: WorkflowOptions = {}
+  options: WorkflowOptions = {},
+  preparedAcceptance?: PreparedSpecRunAcceptanceV1
 ) {
   return Effect.gen(function* () {
-    const runProfile = yield* resolveRunProfile(options.runProfileSource);
+    const runProfile =
+      preparedAcceptance?.runProfile ??
+      (yield* resolveRunProfile(options.runProfileSource));
     const browserEvidenceRequirement =
-      options.browserEvidenceRequirement ?? runProfile.checks.browserEvidence;
+      preparedAcceptance?.browserEvidenceRequirement ??
+      options.browserEvidenceRequirement ??
+      runProfile.checks.browserEvidence;
     const explicitBrowserEvidenceTargetUrl =
-      options.browserEvidenceTargetUrl === undefined
+      preparedAcceptance?.explicitBrowserEvidenceTargetUrl ??
+      (options.browserEvidenceTargetUrl === undefined
         ? undefined
         : yield* parseBrowserEvidenceTargetUrlEffect(
             options.browserEvidenceTargetUrl
-          );
+          ));
 
     yield* writeRunProfile({ paths, profile: runProfile }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
@@ -251,6 +296,7 @@ export function continueAcceptedRun(
       explicitBrowserEvidenceTargetUrl,
       options,
       paths,
+      ...(preparedAcceptance === undefined ? {} : { preparedAcceptance }),
       runId,
       runProfile,
       spec,
@@ -267,6 +313,7 @@ function executeAcceptedRun(input: {
   readonly paths: RunPaths;
   readonly runId: RunId;
   readonly runProfile: RunProfile;
+  readonly preparedAcceptance?: PreparedSpecRunAcceptanceV1;
   readonly spec: ReturnType<typeof parseMarkdownSpec>;
 }) {
   return Effect.gen(function* () {
@@ -277,13 +324,16 @@ function executeAcceptedRun(input: {
       paths,
       runId,
       runProfile,
+      preparedAcceptance,
       spec,
     } = input;
     const workerContinuationState = options.workerContinuationState ?? "start";
     if (workerContinuationState === "start") {
       const workspace = yield* prepareWorkspace(
         paths,
-        options.workspaceSource ?? emptyWorkspaceSource()
+        preparedAcceptance?.workspaceSource ??
+          options.workspaceSource ??
+          emptyWorkspaceSource()
       );
       yield* deriveAndRecordRunContract({
         ...(options.deliveryProvenance === undefined
@@ -310,8 +360,12 @@ function executeAcceptedRun(input: {
       yield* loadRunContract(paths, runId);
     }
     const skillManifest = yield* writeSkillManifest({
+      ...(preparedAcceptance === undefined
+        ? {}
+        : { manifest: preparedAcceptance.skillManifest }),
       paths,
-      ...(options.skillManifestSource === undefined
+      ...(preparedAcceptance !== undefined ||
+      options.skillManifestSource === undefined
         ? {}
         : { source: options.skillManifestSource }),
     }).pipe(
@@ -322,9 +376,18 @@ function executeAcceptedRun(input: {
     const skillBundle = yield* writeSkillBundle({
       manifest: skillManifest,
       paths,
-      ...(options.skillInstaller === undefined
-        ? {}
-        : { installer: options.skillInstaller }),
+      ...(preparedAcceptance === undefined
+        ? options.skillInstaller === undefined
+          ? {}
+          : { installer: options.skillInstaller }
+        : {
+            installer: {
+              command: preparedAcceptance.installer.command,
+              ...(options.skillInstaller?.commandRunner === undefined
+                ? {}
+                : { commandRunner: options.skillInstaller.commandRunner }),
+            },
+          }),
       ...(options.skillManifestSource === undefined
         ? {}
         : { source: options.skillManifestSource }),
@@ -358,11 +421,172 @@ function executeAcceptedRun(input: {
         recordRunFailure(runId, paths, "reviewing", error)
       )
     );
+    const modelHistory = (yield* loadRun(paths)).events;
+    const modelResolution = resolveModelInvocationEpisodes(modelHistory);
+    const modelProtocolEnabled = modelResolution.protocol === "v1";
+    const modelProjection = modelProtocolEnabled
+      ? yield* Effect.gen(function* () {
+          const existing = modelResolution.episodes.find(
+            ({ start }) => start.episodeKey === "workerInitial"
+          );
+          if (existing !== undefined) {
+            const pair = yield* loadModelInvocationPair(paths, existing.start);
+            return {
+              modelInvocationEpisode: existing.start,
+              modelRenderedInput: pair.rendered,
+              modelWorkspaceBinding: pair.workspaceBinding,
+            };
+          }
+          if (workerContinuationState !== "start")
+            return yield* Effect.fail(
+              makeRuntimeError({
+                code: "ModelInvocationEpisodeMissing",
+                message:
+                  "The marked run cannot resume worker execution without its event-owned initial invocation pair.",
+                recoverable: false,
+              })
+            );
+          const content = makeModelContextContentV1({
+            acceptedOutcomes: workerPlan.acceptanceCriteria,
+            authority: [
+              "Operate only within the accepted Gaia run and workspace authority.",
+            ],
+            budget: { maxOutputBytes: 16_384, maxTurns: 1 },
+            contentRefs: [],
+            episodeRole: "workerInitial",
+            instructions: [
+              "Apply the accepted plan and preserve the recorded verification contract.",
+            ],
+            nonGoals: workerPlan.nonGoals,
+            outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+            planningFacts: [`Accepted task title: ${spec.title}`],
+            safeExclusions: [
+              "credentials",
+              "ambient environment",
+              "provider handles",
+              "unbounded logs",
+            ],
+            skills: selectedSkillNames(skillManifest),
+            stops: workerPlan.stopConditions,
+            taskInput: spec.body,
+            verificationCommands: workerPlan.verificationChecks.map(
+              (check) => check.command ?? check.expectation
+            ),
+          });
+          const modelRenderedInput = renderModelInputV1(content);
+          const modelWorkspaceBinding =
+            yield* deriveModelWorkspaceBinding(paths);
+          const runContract = yield* loadRunContract(paths, runId);
+          const digestText = (value: string) =>
+            createHash("sha256").update(value, "utf8").digest("hex");
+          const context = makeModelContextManifestV1({
+            authoritativeRefs: [
+              {
+                digest: digestText(JSON.stringify(workerPlan)),
+                kind: "workerPlan",
+              },
+              { digest: runContract.contractDigest, kind: "runContract" },
+            ],
+            binding: { episodeKey: "workerInitial", runId },
+            content,
+            workspaceBinding: modelWorkspaceBinding,
+          });
+          const batchSemantics = decodeCodexBatchSemanticConfig(
+            options.codexHarness
+          );
+          const adapterSemantics =
+            harnessName === codexHarnessName
+              ? {
+                  kind: "codexBatch" as const,
+                  semanticDigest:
+                    batchSemantics?.semanticDigest ??
+                    digestText("gaia.codex-batch.default.v1"),
+                }
+              : harnessName === codexAppServerHarnessName
+                ? {
+                    kind: "codexAppServer" as const,
+                    semanticDigest: digestText(
+                      "gaia.codex-app-server.on-request.ephemeral-false.workspace-write.start-turn.v1"
+                    ),
+                  }
+                : harnessName === processHarnessName
+                  ? {
+                      kind: "legacyProcess" as const,
+                      semanticDigest: digestText(
+                        "gaia.legacy-process.spec-environment.unobservable.v1"
+                      ),
+                    }
+                  : {
+                      kind: "deterministicFake" as const,
+                      semanticDigest: digestText(
+                        "gaia.deterministic-fake.not-applicable.v1"
+                      ),
+                    };
+          const invocation = makeModelInvocationManifestV1({
+            acceptedProviderCapabilityObservation:
+              harnessName === defaultHarnessName
+                ? "notApplicable"
+                : "unobservable",
+            adapterInputClass:
+              harnessName === codexHarnessName
+                ? "codexBatchStdin"
+                : harnessName === codexAppServerHarnessName
+                  ? "codexAppTurn"
+                  : harnessName === processHarnessName
+                    ? "legacySpecEnvironment"
+                    : "deterministicInput",
+            adapterSemantics,
+            authorityRef: {
+              digest: digestText(
+                "Operate only within the accepted Gaia run and workspace authority."
+              ),
+              kind: "authority",
+            },
+            binding: context.payload.binding,
+            budget: content.payload.budget,
+            context,
+            outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+            rendered: modelRenderedInput,
+            runContractRef: {
+              digest: runContract.contractDigest,
+              kind: "runContract",
+            },
+            template: { id: "gaia.worker-input.v1", version: 1 },
+            workspaceBinding: modelWorkspaceBinding,
+          });
+          const modelInvocationEpisode = yield* commitModelInvocationPair({
+            context,
+            episodeKey: "workerInitial",
+            invocation,
+            paths,
+          });
+          return {
+            modelInvocationEpisode,
+            modelRenderedInput,
+            modelWorkspaceBinding,
+          };
+        })
+      : undefined;
     if (workerContinuationState === "start") {
-      yield* runReviewPhase(runId, paths, spec, "plan", options);
+      yield* runReviewPhase(
+        runId,
+        paths,
+        spec,
+        "plan",
+        options,
+        workerPlan,
+        skillManifest
+      );
       yield* appendEvent(runId, paths, {
         payload: {
           harnessName,
+          ...(modelProjection === undefined
+            ? {}
+            : {
+                modelInvocationEpisode: Schema.encodeSync(
+                  ModelInvocationEpisodeStartV1
+                )(modelProjection.modelInvocationEpisode),
+              }),
           ...(harnessName === codexHarnessName
             ? {
                 harnessProgressPath: runRelative(
@@ -378,7 +602,17 @@ function executeAcceptedRun(input: {
     const harnessOptions = {
       ...(options.codexHarness === undefined
         ? {}
-        : { codexHarness: options.codexHarness }),
+        : {
+            codexHarness: {
+              ...(options.codexHarness.commandRunner === undefined
+                ? {}
+                : { commandRunner: options.codexHarness.commandRunner }),
+              config:
+                preparedAcceptance?.codexHarness === undefined
+                  ? options.codexHarness.config
+                  : makeCodexHarnessConfig(preparedAcceptance.codexHarness),
+            },
+          }),
       ...(options.processHarness === undefined
         ? {}
         : { processHarness: options.processHarness }),
@@ -386,6 +620,12 @@ function executeAcceptedRun(input: {
     const harnessRequest = HarnessRunRequest.make({
       codexHarnessProgressPath: paths.codexHarnessProgress,
       harnessName,
+      ...(modelProjection === undefined
+        ? {}
+        : {
+            modelRenderedInput: modelProjection.modelRenderedInput,
+            modelWorkspaceBinding: modelProjection.modelWorkspaceBinding,
+          }),
       resolvedSkillPaths: [...resolvedSkillPaths(skillBundle)],
       runId,
       skillBundlePath: paths.skillBundle,
@@ -403,6 +643,7 @@ function executeAcceptedRun(input: {
           ? runHarness(harnessRequest, harnessOptions)
           : options.workerHarness.run(harnessRequest)
     ).pipe(
+      Effect.flatMap(decodeProviderHarnessRunResult),
       Effect.catchTag("GaiaRuntimeError", (error) =>
         recordRunFailure(runId, paths, "runningWorker", error)
       )
@@ -411,6 +652,28 @@ function executeAcceptedRun(input: {
     if (workerContinuationState !== "completed") {
       yield* appendEvent(runId, paths, {
         payload: {
+          ...(workerContinuationState === "start" &&
+          modelProjection !== undefined &&
+          (harnessName === codexHarnessName ||
+            harnessName === codexAppServerHarnessName)
+            ? {
+                modelInvocationObservation: Schema.encodeSync(
+                  ModelInvocationObservationV1
+                )(
+                  ModelInvocationObservationV1.make({
+                    episodeKey:
+                      modelProjection.modelInvocationEpisode.episodeKey,
+                    kind: "offered",
+                    source:
+                      harnessName === codexHarnessName
+                        ? "codexBatchTransport"
+                        : "codexAppServerTransport",
+                    trust: "high",
+                    version: 1,
+                  })
+                ),
+              }
+            : {}),
           ...(harnessResult.browserTargetUrl === undefined
             ? {}
             : { browserTargetUrl: harnessResult.browserTargetUrl }),
@@ -474,7 +737,6 @@ function executeAcceptedRun(input: {
     }
     yield* appendEvent(runId, paths, { type: "VERIFICATION_STARTED" });
     const proofResult = yield* recordRunProofResult(runId, paths, {
-      requireLegacyWorkspaceMarker: harnessName !== codexAppServerHarnessName,
       ...(options.verificationServices === undefined
         ? {}
         : { verificationServices: options.verificationServices }),
@@ -490,7 +752,15 @@ function executeAcceptedRun(input: {
         "reporting",
         browserEvidenceTargetRequiredError()
       );
-    yield* runReviewPhase(runId, paths, spec, "evidence", options);
+    yield* runReviewPhase(
+      runId,
+      paths,
+      spec,
+      "evidence",
+      options,
+      workerPlan,
+      skillManifest
+    );
     yield* appendEvent(runId, paths, { type: "REPORT_STARTED" });
     const retrospective = yield* writeDogfoodRetrospective(runId, paths).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
@@ -564,6 +834,18 @@ function executeAcceptedRun(input: {
       state: finalSnapshot.state,
       status: finalSnapshot.state === "delivering" ? "running" : "completed",
     });
+  });
+}
+
+function decodeProviderHarnessRunResult(input: unknown) {
+  return Effect.try({
+    try: () => HarnessRunResult.make(input),
+    catch: () =>
+      makeRuntimeError({
+        code: "HarnessRunResultInvalid",
+        message: "The harness provider returned an invalid worker result.",
+        recoverable: false,
+      }),
   });
 }
 
@@ -684,7 +966,6 @@ export function reverifyRemediatedRun(input: {
     });
     yield* loadRunContract(input.paths, input.runId);
     yield* recordRunProofResult(input.runId, input.paths, {
-      requireLegacyWorkspaceMarker: false,
       ...(options.verificationServices === undefined
         ? {}
         : { verificationServices: options.verificationServices }),
@@ -741,14 +1022,65 @@ export function reverifyRemediatedRun(input: {
 
     const reviewPaths = reviewPathsForPhase(input.paths, "evidence");
     const reviewerName = reviewerNameFromOptions(options);
+    const workerPlanText = yield* fs.readFileString(
+      input.paths.workerPlanResult
+    );
+    const workerPlan = yield* Effect.try({
+      try: () => parseWorkerPlanJson(workerPlanText),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "WorkerPlanUnreadable",
+          message: "Persisted worker plan is invalid.",
+          recoverable: false,
+        }),
+    });
+    const skillManifestText = yield* fs.readFileString(
+      input.paths.skillManifest
+    );
+    const skillManifest = yield* Effect.try({
+      try: () => decodePersistedSkillManifest(skillManifestText),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "SkillManifestUnreadable",
+          message: "Persisted skill manifest is invalid.",
+          recoverable: false,
+        }),
+    });
+    const modelProjection = yield* makeReviewModelProjection({
+      options,
+      paths: input.paths,
+      phase: "evidence",
+      runId: input.runId,
+      skillManifest,
+      spec: input.spec,
+      workerPlan,
+    });
     yield* appendEvent(input.runId, input.paths, {
-      payload: { phase: "evidence", reviewerName },
+      payload: {
+        ...(modelProjection === undefined
+          ? {}
+          : {
+              modelInvocationEpisode: Schema.encodeSync(
+                ModelInvocationEpisodeStartV1
+              )(modelProjection.episode),
+            }),
+        phase: "evidence",
+        reviewerName,
+      },
       type: "REVIEW_STARTED",
     });
     const review = yield* runReviewer(
       ReviewRunRequest.make({
         browserEvidencePath: input.paths.browserEvidence,
         markdownPath: reviewPaths.markdown,
+        ...(modelProjection === undefined
+          ? {}
+          : {
+              modelRenderedInput: modelProjection.rendered,
+              modelWorkspaceBinding: modelProjection.workspaceBinding,
+            }),
         phase: "evidence",
         paths: input.paths,
         resultPath: reviewPaths.result,
@@ -766,6 +1098,21 @@ export function reverifyRemediatedRun(input: {
     );
     yield* appendEvent(input.runId, input.paths, {
       payload: {
+        ...(modelProjection?.codex === true
+          ? {
+              modelInvocationObservation: Schema.encodeSync(
+                ModelInvocationObservationV1
+              )(
+                ModelInvocationObservationV1.make({
+                  episodeKey: modelProjection.episode.episodeKey,
+                  kind: "offered",
+                  source: "codexBatchTransport",
+                  trust: "high",
+                  version: 1,
+                })
+              ),
+            }
+          : {}),
         phase: review.phase,
         resultPath: review.resultPath,
         reviewPath: runRelative(input.paths, reviewPaths.markdown),
@@ -959,12 +1306,15 @@ function recordBrowserEvidence(
       options.browserEvidenceCollector ?? playwrightBrowserEvidenceCollector;
     const captured = yield* collector({ paths, targetUrl }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        Effect.succeed(
-          failedBrowserEvidence({
-            message: error.message,
-            targetUrl,
-          })
-        )
+        error.code === "BrowserConsoleSourceUrlInvalid" ||
+        error.code === "BrowserEvidenceFinalUrlInvalid"
+          ? Effect.fail(error)
+          : Effect.succeed(
+              failedBrowserEvidence({
+                message: error.message,
+                targetUrl,
+              })
+            )
       )
     );
     const evidence = yield* writeBrowserEvidence({ evidence: captured, paths });
@@ -1073,13 +1423,42 @@ function recordRunFailure(
       body: "Failed run did not have a parseable source spec.",
       title: "factory-retro-failed-run",
     };
-    const inputText = yield* Effect.exit(fs.readFileString(paths.input));
-    if (inputText._tag === "Success") {
-      const parsedSpec = yield* Effect.exit(
-        parseSpec(inputText.value, "factory-retro-failed-run")
+    const history = yield* Effect.exit(loadRun(paths));
+    const checkpointResolution =
+      history._tag === "Success"
+        ? yield* Effect.exit(
+            Effect.try({
+              try: () =>
+                resolveAcceptedRunInputCheckpoint(history.value.events),
+              catch: (cause) => cause,
+            })
+          )
+        : undefined;
+    if (
+      checkpointResolution?._tag === "Success" &&
+      checkpointResolution.value.kind === "v1"
+    ) {
+      const checkpoint = yield* Effect.exit(
+        loadAcceptedRunInputCheckpoint(paths, checkpointResolution.value.ref)
       );
-      if (parsedSpec._tag === "Success") {
-        input = parsedSpec.value;
+      if (checkpoint._tag === "Success") {
+        input = {
+          body: checkpoint.value.payload.spec.body,
+          title: checkpoint.value.payload.spec.title,
+        };
+      }
+    } else if (
+      checkpointResolution?._tag === "Success" &&
+      checkpointResolution.value.kind === "legacyAbsent"
+    ) {
+      const inputText = yield* Effect.exit(fs.readFileString(paths.input));
+      if (inputText._tag === "Success") {
+        const parsedSpec = yield* Effect.exit(
+          parseSpec(inputText.value, "factory-retro-failed-run")
+        );
+        if (parsedSpec._tag === "Success") {
+          input = parsedSpec.value;
+        }
       }
     }
     yield* writeFactoryRetro({ paths, runId, spec: input }).pipe(
@@ -1090,18 +1469,163 @@ function recordRunFailure(
   });
 }
 
+function makeReviewModelProjection(input: {
+  readonly options: ReviewerRunOptions;
+  readonly paths: RunPaths;
+  readonly phase: ReviewPhase;
+  readonly runId: RunId;
+  readonly skillManifest: SkillManifest;
+  readonly spec: ReturnType<typeof parseMarkdownSpec>;
+  readonly workerPlan: WorkerPlan;
+}) {
+  return Effect.gen(function* () {
+    const loaded = yield* loadRun(input.paths);
+    const marked =
+      loaded.events[0]?.payload["modelInvocationProtocol"] === "v1";
+    if (!marked) return undefined;
+    const ownerSequence = loaded.events.length + 1;
+    const episodeKey =
+      input.phase === "plan" ? "planReview" : `evidenceReview:${ownerSequence}`;
+    const content = makeModelContextContentV1({
+      acceptedOutcomes: input.workerPlan.acceptanceCriteria,
+      authority: [
+        "Review only the accepted Gaia run evidence under read-only authority.",
+      ],
+      budget: { maxOutputBytes: 16_384, maxTurns: 1 },
+      contentRefs: [],
+      episodeRole: input.phase === "plan" ? "planReview" : "evidenceReview",
+      instructions: [
+        input.phase === "plan"
+          ? "Review the accepted plan before worker execution."
+          : "Review the recorded worker and verification evidence without changing its proof aggregate.",
+      ],
+      nonGoals: input.workerPlan.nonGoals,
+      outputContract: MODEL_REVIEW_OUTPUT_CONTRACT_V1,
+      planningFacts: [`Accepted task title: ${input.spec.title}`],
+      safeExclusions: [
+        "credentials",
+        "ambient environment",
+        "provider handles",
+        "unbounded logs",
+      ],
+      skills: selectedSkillNames(input.skillManifest),
+      stops: input.workerPlan.stopConditions,
+      taskInput: input.spec.body,
+      verificationCommands: input.workerPlan.verificationChecks.map(
+        (check) => check.command ?? check.expectation
+      ),
+    });
+    const rendered = renderModelInputV1(content);
+    const workspaceBinding = yield* deriveModelWorkspaceBinding(input.paths);
+    const runContract = yield* loadRunContract(input.paths, input.runId);
+    const digestText = (value: string) =>
+      createHash("sha256").update(value, "utf8").digest("hex");
+    const context = makeModelContextManifestV1({
+      authoritativeRefs: [
+        {
+          digest: digestText(JSON.stringify(input.workerPlan)),
+          kind: "workerPlan",
+        },
+        { digest: runContract.contractDigest, kind: "runContract" },
+      ],
+      binding: { episodeKey, runId: input.runId },
+      content,
+      workspaceBinding,
+    });
+    const reviewer = input.options.reviewer;
+    const codex = reviewer?.adapterKind === "codex-cli";
+    const adapterSemantics = codex
+      ? reviewer.modelAdapterSemantics
+      : {
+          kind: "deterministicReviewer" as const,
+          semanticDigest: digestText(
+            JSON.stringify({
+              adapterKind: reviewer?.adapterKind ?? "deterministic",
+              reviewerName: reviewer?.name ?? defaultReviewerName,
+              sessionKind: reviewer?.sessionKind ?? "local",
+            })
+          ),
+        };
+    if (adapterSemantics === undefined)
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "AcceptedInputRejected",
+          message:
+            "Codex reviewer semantic configuration is required before review ownership.",
+          recoverable: false,
+        })
+      );
+    const invocation = makeModelInvocationManifestV1({
+      acceptedProviderCapabilityObservation: codex
+        ? "unobservable"
+        : "notApplicable",
+      adapterInputClass: "codexReviewerStdin",
+      adapterSemantics,
+      authorityRef: {
+        digest: digestText(
+          "Review only the accepted Gaia run evidence under read-only authority."
+        ),
+        kind: "authority",
+      },
+      binding: context.payload.binding,
+      budget: content.payload.budget,
+      context,
+      outputContract: MODEL_REVIEW_OUTPUT_CONTRACT_V1,
+      rendered,
+      runContractRef: {
+        digest: runContract.contractDigest,
+        kind: "runContract",
+      },
+      template: {
+        id: "gaia.worker-input.v1",
+        version: 1,
+      },
+      workspaceBinding,
+    });
+    return {
+      codex,
+      episode: yield* commitModelInvocationPair({
+        context,
+        episodeKey,
+        invocation,
+        paths: input.paths,
+      }),
+      rendered,
+      workspaceBinding,
+    };
+  });
+}
+
 function runReviewPhase(
   runId: RunId,
   paths: RunPaths,
   spec: ReturnType<typeof parseMarkdownSpec>,
   phase: ReviewPhase,
-  options: ReviewerRunOptions
+  options: ReviewerRunOptions,
+  workerPlan: WorkerPlan,
+  skillManifest: SkillManifest
 ) {
   return Effect.gen(function* () {
     const reviewPaths = reviewPathsForPhase(paths, phase);
     const reviewerName = reviewerNameFromOptions(options);
+    const modelProjection = yield* makeReviewModelProjection({
+      options,
+      paths,
+      phase,
+      runId,
+      skillManifest,
+      spec,
+      workerPlan,
+    });
     yield* appendEvent(runId, paths, {
       payload: {
+        ...(modelProjection === undefined
+          ? {}
+          : {
+              modelInvocationEpisode: Schema.encodeSync(
+                ModelInvocationEpisodeStartV1
+              )(modelProjection.episode),
+            }),
         phase,
         reviewerName,
       },
@@ -1111,6 +1635,12 @@ function runReviewPhase(
       ReviewRunRequest.make({
         browserEvidencePath: paths.browserEvidence,
         markdownPath: reviewPaths.markdown,
+        ...(modelProjection === undefined
+          ? {}
+          : {
+              modelRenderedInput: modelProjection.rendered,
+              modelWorkspaceBinding: modelProjection.workspaceBinding,
+            }),
         phase,
         paths,
         resultPath: reviewPaths.result,
@@ -1133,6 +1663,21 @@ function runReviewPhase(
 
     yield* appendEvent(runId, paths, {
       payload: {
+        ...(modelProjection?.codex === true
+          ? {
+              modelInvocationObservation: Schema.encodeSync(
+                ModelInvocationObservationV1
+              )(
+                ModelInvocationObservationV1.make({
+                  episodeKey: modelProjection.episode.episodeKey,
+                  kind: "offered",
+                  source: "codexBatchTransport",
+                  trust: "high",
+                  version: 1,
+                })
+              ),
+            }
+          : {}),
         phase: review.phase,
         resultPath: review.resultPath,
         reviewPath: runRelative(paths, reviewPaths.markdown),
@@ -1187,11 +1732,11 @@ function reviewPathsForPhase(paths: RunPaths, phase: ReviewPhase) {
 function parseBrowserEvidenceTargetUrlEffect(input: string) {
   return Effect.try({
     try: () => parseBrowserEvidenceTargetUrl(input),
-    catch: (cause) =>
+    catch: () =>
       makeRuntimeError({
-        cause,
         code: "BrowserEvidenceTargetUrlInvalid",
-        message: `Browser evidence target URL '${input}' must be a valid HTTP or HTTPS URL.`,
+        message:
+          "The browser evidence target URL is invalid or contains credential material.",
         recoverable: false,
       }),
   });

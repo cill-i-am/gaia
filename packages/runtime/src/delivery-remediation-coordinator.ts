@@ -28,6 +28,8 @@ import {
   deriveDeliveryActionHistoriesFromEvents,
   HarnessEventSchema,
   HarnessExecutionSelection,
+  ModelInvocationEpisodeStartV1,
+  ModelInvocationObservationV1,
   ResolvedHarnessExecution,
   RunEvent,
   encodeDeliveryPullRequestObservationJson,
@@ -44,6 +46,7 @@ import {
   GitHubPullRequestUrlPublicSchema,
   GitHubRepositoryPublicSchema,
   RunIdSchema,
+  resolveModelInvocationEpisodes,
   snapshotFromReplay,
   type DeliveryRemediation,
   type HarnessEvent,
@@ -90,6 +93,10 @@ import {
 import { HarnessInput, resumeHarnessSession } from "./harness-session.js";
 import { refreshInteractiveHarnessResult } from "./interactive-harness.js";
 import {
+  commitDerivedAppModelInvocationEpisode,
+  loadModelInvocationPair,
+} from "./model-invocation.js";
+import {
   makeRunPaths,
   runRelative,
   RunPathsSchema,
@@ -97,6 +104,7 @@ import {
   type RunStorageOptions,
   RuntimePathTextSchema,
 } from "./paths.js";
+import { withRunStoreLock } from "./run-store-lock.js";
 import type { WorkflowOptions } from "./workflows.js";
 import { reverifyRemediatedRun } from "./workflows.js";
 
@@ -286,6 +294,7 @@ const ReserveRemediationIntentInputSchema = Schema.Struct({
   feedbackIds: RemediationFeedbackIdsSchema,
   paths: RunPathsSchema,
   predecessor: Schema.UndefinedOr(DeliveryRemediationSchema),
+  prompt: Schema.String,
   runId: RunIdSchema,
 });
 const ExpectedHeadChangedReadInputSchema = Schema.Struct({
@@ -308,6 +317,21 @@ const ProviderUnavailableReadInputSchema = Schema.Struct({
 export function continueDeliveryRemediation(
   runId: RunId,
   options: DeliveryRemediationCoordinatorOptions = {}
+) {
+  return withRunStoreLock(
+    options,
+    continueDeliveryRemediationWithinLease(runId, options),
+    {
+      nextSafeAction:
+        "Refresh delivery state before retrying the exact remediation operation.",
+      operation: "Gaia delivery remediation",
+    }
+  );
+}
+
+function continueDeliveryRemediationWithinLease(
+  runId: RunId,
+  options: DeliveryRemediationCoordinatorOptions
 ) {
   const workflow = Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options);
@@ -683,6 +707,15 @@ export function continueDeliveryRemediation(
           ...(remediation === undefined ? {} : { remediation }),
         };
       }
+      if (prompt === undefined) {
+        return yield* Effect.fail(
+          remediationError(
+            "RemediationPromptUnavailable",
+            "The normalized remediation prompt is unavailable.",
+            false
+          )
+        );
+      }
       const now = options.now?.() ?? new Date();
       const commitTimestamp = new Date(
         Math.floor(now.getTime() / 1000) * 1000
@@ -713,6 +746,7 @@ export function continueDeliveryRemediation(
         feedbackIds,
         paths,
         predecessor: remediation,
+        prompt,
         runId,
       });
       remediation = reservation.remediation;
@@ -770,6 +804,13 @@ export function continueDeliveryRemediation(
             state: "turnCompleted",
           })
         );
+      } else if (remediation.state === "dispatchAttempted") {
+        remediation = yield* recordOutcomeUnknown(runId, paths, remediation, {
+          code: "RemediationTurnOutcomeUnknown",
+          message:
+            "A prior remediation turn attempt has no durable terminal receipt and will not be redispatched.",
+          recoverable: true,
+        });
       } else {
         remediation = yield* runRemediationTurn({
           actionableInputs,
@@ -1017,143 +1058,216 @@ function readRemediationPushConfirmation(
 }
 
 function runRemediationTurn(input: typeof RunRemediationTurnInputSchema.Type) {
-  return Effect.scoped(
-    Effect.gen(function* () {
-      const coordinator = input.options.sessionCoordinator;
-      const registry = input.options.harnessProviderRegistry;
-      if (input.prompt === undefined || input.prompt.trim().length === 0) {
-        return yield* Effect.fail(
-          remediationError(
-            "RemediationPromptUnavailable",
-            "The normalized remediation prompt is unavailable.",
-            false
-          )
-        );
-      }
-      if (
-        coordinator === undefined ||
-        registry === undefined ||
-        input.firstEvent?.type !== "RUN_CREATED"
-      ) {
-        return yield* Effect.fail(
-          remediationError(
-            "SessionUnavailable",
-            "The accepted provider session cannot be reacquired.",
-            true
-          )
-        );
-      }
-      const execution = acceptedExecution(input.firstEvent);
-      const resolved = yield* registry
-        .resolve(execution.selection, issueDeliveryWorkerHarnessCapabilities)
-        .pipe(
-          Effect.mapError((cause) =>
-            remediationError(
-              "SessionUnavailable",
-              "The accepted provider session cannot be reacquired.",
-              true,
-              cause
-            )
-          )
-        );
-      if (
-        JSON.stringify(
-          Schema.encodeSync(ResolvedHarnessExecution)(resolved.execution)
-        ) !==
-        JSON.stringify(
-          Schema.encodeSync(ResolvedHarnessExecution)(execution.resolved)
+  const preparation = Effect.gen(function* () {
+    const coordinator = input.options.sessionCoordinator;
+    const registry = input.options.harnessProviderRegistry;
+    if (input.prompt === undefined || input.prompt.trim().length === 0) {
+      return yield* Effect.fail(
+        remediationError(
+          "RemediationPromptUnavailable",
+          "The normalized remediation prompt is unavailable.",
+          false
         )
-      ) {
-        return yield* Effect.fail(
-          remediationError(
-            "SessionProviderChanged",
-            "The accepted provider resolution changed.",
-            false
-          )
-        );
-      }
-      const sessionId = parseHarnessSessionId(`session-${input.runId}`);
-      const session = yield* resumeHarnessSession({
-        provider: resolved.provider,
-        request: {
-          sessionId,
-          workspacePath: parseWorkspaceRelativePath(
-            nodePath.relative(
-              input.options.rootDirectory ?? ".",
-              input.paths.workspace
-            )
-          ),
-        },
-        requiredCapabilities: issueDeliveryWorkerHarnessCapabilities,
-      }).pipe(
+      );
+    }
+    const prompt = input.prompt;
+    if (
+      coordinator === undefined ||
+      registry === undefined ||
+      input.firstEvent?.type !== "RUN_CREATED"
+    ) {
+      return yield* Effect.fail(
+        remediationError(
+          "SessionUnavailable",
+          "The accepted provider session cannot be reacquired.",
+          true
+        )
+      );
+    }
+    const execution = acceptedExecution(input.firstEvent);
+    const resolved = yield* registry
+      .resolve(execution.selection, issueDeliveryWorkerHarnessCapabilities)
+      .pipe(
         Effect.mapError((cause) =>
           remediationError(
             "SessionUnavailable",
-            "The private provider session could not be resumed.",
+            "The accepted provider session cannot be reacquired.",
             true,
             cause
           )
         )
       );
-      yield* coordinator.register({
-        agentId: issueDeliveryAgentIds.worker,
-        generation: input.intentSequence,
-        runId: input.runId,
-        session,
+    if (
+      JSON.stringify(
+        Schema.encodeSync(ResolvedHarnessExecution)(resolved.execution)
+      ) !==
+      JSON.stringify(
+        Schema.encodeSync(ResolvedHarnessExecution)(execution.resolved)
+      )
+    ) {
+      return yield* Effect.fail(
+        remediationError(
+          "SessionProviderChanged",
+          "The accepted provider resolution changed.",
+          false
+        )
+      );
+    }
+    const sessionId = parseHarnessSessionId(`session-${input.runId}`);
+    const session = yield* resumeHarnessSession({
+      provider: resolved.provider,
+      request: {
         sessionId,
-      });
-      let remediation: DeliveryRemediationDispatchAttempted;
-      if (input.remediation.state === "intentRecorded") {
-        remediation = yield* appendRemediation(
-          input.runId,
-          input.paths,
-          DeliveryRemediationDispatchAttempted.make({
-            ...input.remediation,
-            state: "dispatchAttempted",
-          })
-        );
-      } else {
-        remediation = input.remediation;
-      }
-      yield* session.send(
-        HarnessInput.make({
-          clientInputId: remediation.inputId,
-          text: input.prompt,
-        })
+        workspacePath: parseWorkspaceRelativePath(
+          nodePath.relative(
+            input.options.rootDirectory ?? ".",
+            input.paths.workspace
+          )
+        ),
+      },
+      requiredCapabilities: issueDeliveryWorkerHarnessCapabilities,
+    }).pipe(
+      Effect.mapError((cause) =>
+        remediationError(
+          "SessionUnavailable",
+          "The private provider session could not be resumed.",
+          true,
+          cause
+        )
+      )
+    );
+    yield* coordinator.register({
+      agentId: issueDeliveryAgentIds.worker,
+      generation: input.intentSequence,
+      runId: input.runId,
+      session,
+      sessionId,
+    });
+    const currentEvents = yield* readEvents(input.paths);
+    const resolution = resolveModelInvocationEpisodes(currentEvents);
+    const modelEpisode =
+      resolution.protocol === "legacyAbsent"
+        ? undefined
+        : resolution.episodes.find(
+            ({ start }) =>
+              start.episodeKey ===
+              `deliveryRemediation:${input.remediation.operationId}`
+          );
+    if (resolution.protocol === "v1" && modelEpisode === undefined) {
+      return yield* Effect.fail(
+        remediationError(
+          "ModelInvocationEpisodeMissing",
+          "The authoritative remediation input manifest is missing.",
+          false
+        )
       );
-      yield* recordNewTurn(
-        input.runId,
-        input.paths,
-        input.events,
-        input.intentSequence,
-        session.events
-      );
-      return yield* appendRemediation(
-        input.runId,
-        input.paths,
-        DeliveryRemediationTurnCompleted.make({
-          ...remediation,
-          state: "turnCompleted",
-        })
-      );
-    })
-  ).pipe(
-    Effect.catch((cause) => {
-      const error =
-        cause instanceof GaiaRuntimeError
-          ? cause
-          : remediationError(
-              "SessionUnavailable",
-              "The resumed provider turn failed.",
-              true,
-              cause
+    }
+    const modelInput =
+      modelEpisode === undefined
+        ? undefined
+        : yield* loadModelInvocationPair(input.paths, modelEpisode.start);
+    return { modelEpisode, modelInput, prompt, session } as const;
+  });
+  const normalizeFailure = (cause: unknown) => {
+    const error =
+      cause instanceof GaiaRuntimeError
+        ? cause
+        : remediationError(
+            "SessionUnavailable",
+            "The resumed provider turn failed.",
+            true,
+            cause
+          );
+    return {
+      code: error.code,
+      message: error.message,
+      recoverable: error.recoverable,
+    } as const;
+  };
+  return Effect.scoped(
+    preparation.pipe(
+      Effect.matchEffect({
+        onFailure: (cause) =>
+          recordFailed(
+            input.runId,
+            input.paths,
+            input.remediation,
+            normalizeFailure(cause)
+          ),
+        onSuccess: ({ modelEpisode, modelInput, prompt, session }) => {
+          if (input.remediation.state === "dispatchAttempted")
+            return recordOutcomeUnknown(
+              input.runId,
+              input.paths,
+              input.remediation,
+              {
+                code: "RemediationTurnOutcomeUnknown",
+                message:
+                  "A prior remediation turn attempt has no durable terminal receipt and will not be redispatched.",
+                recoverable: false,
+              }
             );
-      return recordFailed(input.runId, input.paths, input.remediation, {
-        code: error.code,
-        message: error.message,
-        recoverable: error.recoverable,
-      });
-    })
+          const attempt = appendRemediation(
+            input.runId,
+            input.paths,
+            DeliveryRemediationDispatchAttempted.make({
+              ...input.remediation,
+              state: "dispatchAttempted",
+            })
+          );
+          return attempt.pipe(
+            Effect.matchEffect({
+              onFailure: (cause) =>
+                recordFailed(
+                  input.runId,
+                  input.paths,
+                  input.remediation,
+                  normalizeFailure(cause)
+                ),
+              onSuccess: (remediation) =>
+                Effect.gen(function* () {
+                  yield* session.send(
+                    HarnessInput.make({
+                      clientInputId: remediation.inputId,
+                      text: modelInput?.rendered.text ?? prompt,
+                    })
+                  );
+                  yield* recordNewTurn(
+                    input.runId,
+                    input.paths,
+                    input.events,
+                    input.intentSequence,
+                    session.events,
+                    modelEpisode?.start.episodeKey
+                  );
+                  return yield* appendRemediation(
+                    input.runId,
+                    input.paths,
+                    DeliveryRemediationTurnCompleted.make({
+                      ...remediation,
+                      state: "turnCompleted",
+                    })
+                  );
+                }).pipe(
+                  Effect.catch(() =>
+                    recordOutcomeUnknown(
+                      input.runId,
+                      input.paths,
+                      remediation,
+                      {
+                        code: "RemediationTurnOutcomeUnknown",
+                        message:
+                          "The remediation transport has no exact durable terminal receipt and will not be redispatched.",
+                        recoverable: false,
+                      }
+                    )
+                  )
+                ),
+            })
+          );
+        },
+      })
+    )
   );
 }
 
@@ -1162,7 +1276,8 @@ function recordNewTurn(
   paths: RunPaths,
   existingEvents: ReadonlyArray<RunEvent>,
   intentSequence: number,
-  stream: Stream.Stream<HarnessEvent, unknown>
+  stream: Stream.Stream<HarnessEvent, unknown>,
+  modelEpisodeKey?: string
 ) {
   const existingHarnessEvents = existingEvents.flatMap((event) => {
     if (event.type !== "HARNESS_SESSION_EVENT_RECORDED") return [];
@@ -1195,6 +1310,17 @@ function recordNewTurn(
   let recoveredRecorded = persistedRemediationEvents.some(
     ({ event }) => event.kind === "sessionRecovered"
   );
+  let offeredRecorded = existingEvents.some((event) => {
+    const observation = event.payload["modelInvocationObservation"];
+    return (
+      typeof observation === "object" &&
+      observation !== null &&
+      "episodeKey" in observation &&
+      observation.episodeKey === modelEpisodeKey &&
+      "kind" in observation &&
+      observation.kind === "offered"
+    );
+  });
   let terminalStatus: "completed" | "failed" | "interrupted" | undefined;
   return Effect.gen(function* () {
     if (activeTurns.size > 1) {
@@ -1228,7 +1354,24 @@ function recordNewTurn(
             );
           }
           activeTurn = event.turnId;
-          yield* appendHarnessSessionEvent(runId, paths, event);
+          const observation =
+            modelEpisodeKey === undefined || offeredRecorded
+              ? undefined
+              : ModelInvocationObservationV1.make({
+                  episodeKey: modelEpisodeKey,
+                  kind: "offered",
+                  source: "codexAppServerTransport",
+                  trust: "high",
+                  version: 1,
+                });
+          yield* appendHarnessSessionEvent(
+            runId,
+            paths,
+            event,
+            undefined,
+            observation
+          );
+          if (observation !== undefined) offeredRecorded = true;
           return true;
         }
         if (activeTurn === undefined) return true;
@@ -1761,8 +1904,26 @@ function reserveRemediationIntent(
             }),
         state: "intentRecorded",
       });
+      const modelInvocationEpisode =
+        yield* commitDerivedAppModelInvocationEpisode({
+          episodeKey: `deliveryRemediation:${intent.operationId}`,
+          episodeRole: "deliveryRemediation",
+          events,
+          paths: input.paths,
+          runId: input.runId,
+          taskInput: input.prompt,
+        });
       yield* appendEventWithinSerialization(input.runId, input.paths, {
-        payload: { remediation: encodeDeliveryRemediationJson(intent) },
+        payload: {
+          remediation: encodeDeliveryRemediationJson(intent),
+          ...(modelInvocationEpisode === undefined
+            ? {}
+            : {
+                modelInvocationEpisode: Schema.encodeSync(
+                  ModelInvocationEpisodeStartV1
+                )(modelInvocationEpisode),
+              }),
+        },
         type: "DELIVERY_REMEDIATION_RECORDED",
       });
       return { created: true as const, remediation: intent };

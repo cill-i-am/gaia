@@ -6,6 +6,7 @@ import {
   FactoryActivityListDto,
   FactoryAgentRoleSchema,
   FactoryArtifactDto,
+  FactoryArtifactSchema,
   FactoryArtifactBodyDto,
   FactoryArtifactIdSchema,
   FactoryArtifactListDto,
@@ -42,6 +43,10 @@ import {
   issueDeliveryRootWorkItemId,
   issueDeliveryWorkflow,
 } from "./factory-workflows.js";
+import {
+  inspectModelInvocationArtifacts,
+  readModelInvocationArtifactBody,
+} from "./model-invocation.js";
 import {
   makeRunPaths,
   RunPathsSchema,
@@ -203,7 +208,7 @@ type FactoryProjectionEnvelopeKind =
   typeof FactoryProjectionEnvelopeV2Schema.Type.kind;
 const BuildFactoryGraphInputSchema = Schema.Struct({
   activity: FactoryActivityListDto,
-  artifacts: Schema.Array(FactoryArtifactDto),
+  artifacts: Schema.Array(FactoryArtifactSchema),
   createInput: CreateRunRequest,
   diagnostics: Schema.Array(FactoryGraphDiagnosticDto),
   events: Schema.Array(RunEvent),
@@ -211,7 +216,7 @@ const BuildFactoryGraphInputSchema = Schema.Struct({
   runId: RunIdSchema,
 });
 const BuildActivityIndexInputSchema = Schema.Struct({
-  artifacts: Schema.Array(FactoryArtifactDto),
+  artifacts: Schema.Array(FactoryArtifactSchema),
   events: Schema.Array(RunEvent),
   runId: RunIdSchema,
 });
@@ -448,11 +453,21 @@ export function readFactoryRunIndexes(
       stored.activity._tag === "valid" &&
       stored.artifacts._tag === "valid"
     ) {
-      return {
-        activity: stored.activity.value,
-        artifacts: stored.artifacts.value,
-        graph: stored.graph.value,
-      } satisfies FactoryProjectionIndexes;
+      const observedArtifacts = yield* collectFactoryArtifacts({
+        events: synchronizedExit.value.events,
+        paths,
+        runId,
+      });
+      if (
+        JSON.stringify(observedArtifacts.artifacts) ===
+        JSON.stringify(stored.artifacts.value.artifacts)
+      ) {
+        return {
+          activity: stored.activity.value,
+          artifacts: stored.artifacts.value,
+          graph: stored.graph.value,
+        } satisfies FactoryProjectionIndexes;
+      }
     }
 
     return yield* rebuildFactoryRunIndexesFromPaths({
@@ -499,15 +514,65 @@ export function readFactoryArtifactBodyFromIndex(
       );
     }
 
+    if (artifact.availability === "unavailable") {
+      return yield* Effect.fail(
+        parseLocalRunReadDiagnostic({
+          artifactName: parseLocalRunArtifactName(artifactIdInput),
+          code: artifact.diagnostic?.code ?? "ArtifactBodyUnreadable",
+          message:
+            artifact.diagnostic?.message ??
+            "Factory artifact body is unavailable for this run.",
+          recoverable: false,
+          runId: indexes.graph.runId,
+        })
+      );
+    }
+
     const definition = factoryArtifactDefinitions.find(
       (candidate) => candidate.artifactId === artifactIdInput
     );
     if (definition === undefined) {
+      const paths = yield* makeRunPaths(indexes.graph.runId, options);
+      const synchronized = yield* synchronizeEventOwnedRunProjections(
+        paths,
+        indexes.graph.runId
+      );
+      const manifest = yield* readModelInvocationArtifactBody(
+        paths,
+        synchronized.events,
+        artifactIdInput
+      ).pipe(
+        Effect.mapError((error) =>
+          parseLocalRunReadDiagnostic({
+            artifactName: parseLocalRunArtifactName(artifactIdInput),
+            code:
+              error.code === "ModelInvocationArtifactCorrupt"
+                ? "ArtifactBodyCorrupt"
+                : error.code === "ModelInvocationArtifactMismatch" ||
+                    error.code === "ModelInvocationArtifactEncodingMismatch"
+                  ? "ArtifactBodyMismatch"
+                  : error.code === "ModelInvocationPairConflict"
+                    ? "ArtifactPairConflict"
+                    : "ArtifactBodyMissing",
+            message:
+              "The event-referenced factory manifest body could not be read.",
+            recoverable: false,
+            runId: indexes.graph.runId,
+          })
+        )
+      );
+      if (Option.isSome(manifest))
+        return decodeFactoryArtifactBody({
+          artifactId: artifact.artifactId,
+          body: manifest.value.body,
+          contentType: "application/json",
+          runId: indexes.graph.runId,
+        });
       return yield* Effect.fail(
         parseLocalRunReadDiagnostic({
           artifactName: parseLocalRunArtifactName(artifactIdInput),
           code: "ArtifactNotFound",
-          message: "Factory artifact body is not readable by the runtime.",
+          message: "Factory artifact body is not referenced by this run.",
           recoverable: false,
           runId: indexes.graph.runId,
         })
@@ -1698,6 +1763,7 @@ function collectFactoryArtifacts(
       }
 
       artifacts.push({
+        availability: "available",
         artifactId: definition.artifactId,
         contentType: definition.contentType,
         createdAt: createdAtForArtifact(definition, input.events),
@@ -1709,6 +1775,54 @@ function collectFactoryArtifacts(
             ? "Legacy verification artifact (unverified)"
             : definition.label,
         ownerAgentId: agentIdForRole(definition.ownerRole),
+        visibility: "run",
+      });
+    }
+
+    const modelArtifacts = yield* inspectModelInvocationArtifacts(
+      input.paths,
+      input.events
+    ).pipe(Effect.mapError(() => readFailureDiagnostic(input.runId)));
+    for (const artifact of modelArtifacts) {
+      const ownerRole =
+        artifact.episodeRole === "planReview" ||
+        artifact.episodeRole === "evidenceReview"
+          ? "reviewer"
+          : "worker";
+      const ownerEvent = input.events.find((event) => {
+        const raw = event.payload["modelInvocationEpisode"];
+        return (
+          typeof raw === "object" &&
+          raw !== null &&
+          "contextRef" in raw &&
+          "invocationRef" in raw &&
+          [raw.contextRef, raw.invocationRef].some(
+            (ref) =>
+              typeof ref === "object" &&
+              ref !== null &&
+              "artifactId" in ref &&
+              ref.artifactId === artifact.artifactId
+          )
+        );
+      });
+      artifacts.push({
+        availability: artifact.availability,
+        artifactId: decodeFactoryArtifactId(artifact.artifactId),
+        contentType: "application/json",
+        createdAt:
+          ownerEvent?.timestamp ??
+          input.events.at(-1)?.timestamp ??
+          decodeRunEventTimestamp(new Date(0).toISOString()),
+        customKind: artifact.manifestKind,
+        ...(artifact.diagnostic === undefined
+          ? {}
+          : { diagnostic: artifact.diagnostic }),
+        kind: "custom",
+        label:
+          artifact.manifestKind === "modelContextManifest"
+            ? `Model context (${artifact.episodeRole})`
+            : `Model invocation (${artifact.episodeRole})`,
+        ownerAgentId: agentIdForRole(ownerRole),
         visibility: "run",
       });
     }

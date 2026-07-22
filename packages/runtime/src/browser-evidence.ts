@@ -5,7 +5,7 @@ import {
   type ConsoleMessage as PlaywrightConsoleMessage,
 } from "playwright";
 
-import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
   runRelative,
   parseRunRelativeArtifactPath,
@@ -29,9 +29,9 @@ export const BrowserConsoleLevelSchema = Schema.Literals([
 ] as const);
 
 export const BrowserEvidenceTargetUrlSchema = Schema.NonEmptyString.pipe(
-  Schema.refine(isBrowserEvidenceTargetUrl, {
+  Schema.refine(passesBrowserEvidenceTargetUrlChecks, {
     identifier: "BrowserEvidenceTargetUrl",
-    message: "Expected an HTTP or HTTPS URL.",
+    message: "Expected a bounded credential-free HTTP or HTTPS URL.",
   }),
   Schema.brand("BrowserEvidenceTargetUrl")
 );
@@ -48,7 +48,7 @@ export class BrowserConsoleMessage extends Schema.Class<BrowserConsoleMessage>(
 )({
   level: BrowserConsoleLevelSchema,
   message: Schema.NonEmptyString,
-  sourceUrl: Schema.optionalKey(Schema.NonEmptyString),
+  sourceUrl: Schema.optionalKey(BrowserEvidenceTargetUrlSchema),
 }) {}
 
 export class BrowserScreenshotEvidence extends Schema.Class<BrowserScreenshotEvidence>(
@@ -267,6 +267,7 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
       "page-1.png"
     );
     const consoleMessages: Array<BrowserConsoleMessage> = [];
+    let consoleSourceError: GaiaRuntimeError | undefined;
 
     yield* fs
       .makeDirectory(input.paths.browserScreenshots, { recursive: true })
@@ -284,16 +285,23 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
         )
       );
 
-    const finalUrl = yield* Effect.tryPromise({
+    const capture = yield* Effect.tryPromise({
       try: async () => {
         const browser = await chromium.launch({ headless: true });
 
         try {
           const page = await browser.newPage();
           page.on("console", (message) => {
-            const parsed = browserConsoleMessage(message);
-            if (parsed !== undefined) {
-              consoleMessages.push(parsed);
+            try {
+              const parsed = browserConsoleMessage(message);
+              if (parsed !== undefined) {
+                consoleMessages.push(parsed);
+              }
+            } catch (cause) {
+              consoleSourceError =
+                cause instanceof GaiaRuntimeError
+                  ? cause
+                  : browserConsoleSourceUrlInvalidError();
             }
           });
 
@@ -306,21 +314,45 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
               timeout: browserNetworkIdleTimeoutMs,
             })
             .catch(() => undefined);
-          await page.screenshot({ fullPage: true, path: screenshotPath });
+          if (consoleSourceError !== undefined) {
+            return Promise.reject(consoleSourceError);
+          }
+          const screenshotBytes = await page.screenshot({ fullPage: true });
+          if (consoleSourceError !== undefined) {
+            return Promise.reject(consoleSourceError);
+          }
 
-          return parseBrowserEvidenceTargetUrl(page.url());
+          return {
+            finalUrl: parseBrowserEvidenceFinalUrl(page.url()),
+            screenshotBytes,
+          };
         } finally {
           await browser.close();
         }
       },
       catch: (cause) =>
-        makeRuntimeError({
-          cause,
-          code: "BrowserEvidenceCaptureFailed",
-          message: `Gaia could not collect browser evidence for ${input.targetUrl}.`,
-          recoverable: true,
-        }),
+        cause instanceof GaiaRuntimeError
+          ? cause
+          : makeRuntimeError({
+              cause,
+              code: "BrowserEvidenceCaptureFailed",
+              message: `Gaia could not collect browser evidence for ${input.targetUrl}.`,
+              recoverable: true,
+            }),
     });
+
+    yield* fs.writeFile(screenshotPath, capture.screenshotBytes).pipe(
+      Effect.catchTag("PlatformError", (cause) =>
+        Effect.fail(
+          makeRuntimeError({
+            cause,
+            code: "BrowserEvidenceCaptureFailed",
+            message: `Gaia could not collect browser evidence for ${input.targetUrl}.`,
+            recoverable: true,
+          })
+        )
+      )
+    );
 
     return BrowserEvidenceV2.make({
       notes: [`Browser evidence captured for ${input.targetUrl}.`],
@@ -335,7 +367,7 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
               path: runRelative(input.paths, screenshotPath),
             }),
           ],
-          url: finalUrl,
+          url: capture.finalUrl,
         }),
       ],
       status: "collected",
@@ -351,13 +383,44 @@ function browserConsoleMessage(
     return undefined;
   }
 
-  const sourceUrl = message.location().url;
+  const sourceUrl = parseBrowserConsoleSourceUrl(message.location().url);
 
   return BrowserConsoleMessage.make({
     level: browserConsoleLevel(message.type()),
     message: text,
-    ...(sourceUrl.length === 0 ? {} : { sourceUrl }),
+    ...(sourceUrl === undefined ? {} : { sourceUrl }),
   });
+}
+
+function browserConsoleSourceUrlInvalidError() {
+  return makeRuntimeError({
+    code: "BrowserConsoleSourceUrlInvalid",
+    message:
+      "A browser console message reported an invalid or credential-bearing source URL.",
+    recoverable: false,
+  });
+}
+
+export function parseBrowserConsoleSourceUrl(input: unknown) {
+  if (input === "") return undefined;
+  try {
+    return parseBrowserEvidenceTargetUrl(input);
+  } catch {
+    throw browserConsoleSourceUrlInvalidError();
+  }
+}
+
+function parseBrowserEvidenceFinalUrl(input: unknown) {
+  try {
+    return parseBrowserEvidenceTargetUrl(input);
+  } catch {
+    throw makeRuntimeError({
+      code: "BrowserEvidenceFinalUrlInvalid",
+      message:
+        "The browser reported an invalid or credential-bearing final URL.",
+      recoverable: false,
+    });
+  }
 }
 
 function browserConsoleLevel(level: string) {
@@ -375,10 +438,112 @@ function browserConsoleLevel(level: string) {
   }
 }
 
-function isBrowserEvidenceTargetUrl(value: string): value is string {
+const browserUrlMaximumBytes = 16_384;
+const browserUrlTextEncoder = new TextEncoder();
+const credentialUrlNames = new Set([
+  "accesskey",
+  "accesskeyid",
+  "accesstoken",
+  "apikey",
+  "auth",
+  "authorization",
+  "authorizationcode",
+  "authtoken",
+  "awsaccesskeyid",
+  "bearer",
+  "clientsecret",
+  "code",
+  "credential",
+  "credentials",
+  "googleaccessid",
+  "oauth",
+  "oauthcode",
+  "password",
+  "passwd",
+  "privatekey",
+  "secret",
+  "securitytoken",
+  "sig",
+  "signature",
+  "signed",
+  "token",
+  "xamzcredential",
+  "xamzsecuritytoken",
+  "xamzsignature",
+  "xgoogcredential",
+  "xgoogsignature",
+]);
+
+function normalizeUrlSecurityText(text: string) {
+  return text
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/gu, "");
+}
+
+function matchesCredentialUrlText(text: string) {
+  const normalized = normalizeUrlSecurityText(text);
+  return (
+    credentialUrlNames.has(normalized) ||
+    /^(?:xamz|xgoog)(?:credential|securitytoken|signature|signedheaders)$/u.test(
+      normalized
+    )
+  );
+}
+
+function decodeUrlComponent(value: string) {
   try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function containsCredentialUrlText(value: string) {
+  const decoded = decodeUrlComponent(value);
+  if (decoded === undefined) return true;
+  return decoded
+    .split(/[^\p{L}\p{N}]+/gu)
+    .some((part) => part.length > 0 && matchesCredentialUrlText(part));
+}
+
+function hasCredentialUrlMaterial(url: URL) {
+  if (
+    [...url.searchParams.entries()].some(
+      ([key, value]) =>
+        matchesCredentialUrlText(key) ||
+        (/^https?:\/\//iu.test(value) && containsCredentialUrlText(value))
+    )
+  )
+    return true;
+
+  if (
+    url.pathname
+      .split("/")
+      .some(
+        (segment) => segment.length > 0 && containsCredentialUrlText(segment)
+      )
+  )
+    return true;
+
+  const fragment = url.hash.slice(1);
+  return fragment.length > 0 && containsCredentialUrlText(fragment);
+}
+
+function passesBrowserEvidenceTargetUrlChecks(text: string): text is string {
+  if (
+    !text.isWellFormed() ||
+    browserUrlTextEncoder.encode(text).byteLength > browserUrlMaximumBytes
+  )
+    return false;
+  try {
+    const url = new URL(text);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.username === "" &&
+      url.password === "" &&
+      !hasCredentialUrlMaterial(url)
+    );
   } catch {
     return false;
   }

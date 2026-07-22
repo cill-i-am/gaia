@@ -7,6 +7,7 @@ import {
   FactoryAgentDto,
   FactoryAgentIdSchema,
   FactoryArtifactDto,
+  FactoryArtifactSchema,
   FactoryArtifactIdSchema,
   FactoryEdgeIdSchema,
   FactoryExternalRefDto,
@@ -16,6 +17,7 @@ import {
   FactoryWorkItemIdSchema,
   FactoryWorkflowDefinitionDto,
   IssueDeliveryWorkflowDefinition,
+  LegacyFactoryArtifactIngress,
   type FactoryGraphNodeId,
 } from "./factory-graph.js";
 import {
@@ -77,6 +79,7 @@ describe("FactoryGraph core contracts", () => {
       },
       linkedArtifacts: [
         {
+          availability: "available",
           artifactId: "artifact-worker-plan",
           contentType: "text/markdown",
           createdAt: "2026-07-08T18:00:00.000Z",
@@ -341,6 +344,7 @@ function serializableFactoryGraph() {
     },
     linkedArtifacts: [
       {
+        availability: "available",
         artifactId: "artifact-worker-plan",
         contentType: "text/markdown",
         createdAt: "2026-07-08T18:00:00.000Z",
@@ -369,3 +373,49 @@ function serializableFactoryGraph() {
     ],
   };
 }
+
+describe("FactoryArtifact legacy ingress", () => {
+  it("defaults only pre-manifest wire artifacts and re-encodes availability", () => {
+    const legacy = {
+      artifactId: "artifact-worker-plan",
+      contentType: "text/markdown",
+      createdAt: "2026-07-08T18:00:00.000Z",
+      kind: "plan",
+      label: "Worker plan",
+      ownerAgentId: "agent-orchestrator",
+      visibility: "run",
+    } as const;
+    const decoded = Schema.decodeUnknownSync(LegacyFactoryArtifactIngress)(
+      legacy
+    );
+    assert.strictEqual(decoded.availability, "available");
+    assert.strictEqual(
+      Schema.encodeSync(LegacyFactoryArtifactIngress)(decoded).availability,
+      "available"
+    );
+    assert.throws(() =>
+      Schema.decodeUnknownSync(LegacyFactoryArtifactIngress)({
+        ...legacy,
+        customKind: "modelContextManifest",
+        kind: "custom",
+      })
+    );
+    assert.throws(() =>
+      Schema.decodeUnknownSync(FactoryArtifactSchema)({
+        ...legacy,
+        availability: "unavailable",
+      })
+    );
+    assert.throws(() =>
+      Schema.decodeUnknownSync(FactoryArtifactSchema)({
+        ...legacy,
+        availability: "available",
+        diagnostic: {
+          code: "ArtifactBodyMissing",
+          message: "Referenced body is missing.",
+          recoverable: false,
+        },
+      })
+    );
+  });
+});

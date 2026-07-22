@@ -1,4 +1,11 @@
-import { ReviewPhaseSchema, RunIdSchema, type ReviewPhase } from "@gaia/core";
+import {
+  ModelAdapterSemanticsV1,
+  ModelWorkspaceBindingV1,
+  RenderedModelInputV1,
+  ReviewPhaseSchema,
+  RunIdSchema,
+  type ReviewPhase,
+} from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
 import { parseBrowserEvidenceJson } from "./browser-evidence.js";
@@ -66,6 +73,8 @@ export class ReviewRunRequest extends Schema.Class<ReviewRunRequest>(
 )({
   browserEvidencePath: RuntimePathSchema,
   markdownPath: RuntimePathSchema,
+  modelRenderedInput: Schema.optionalKey(RenderedModelInputV1),
+  modelWorkspaceBinding: Schema.optionalKey(ModelWorkspaceBindingV1),
   phase: ReviewPhaseSchema,
   paths: RunPathsSchema,
   resultPath: RuntimePathSchema,
@@ -84,6 +93,7 @@ class GaiaReviewerMetadata extends Schema.Class<GaiaReviewerMetadata>(
   "GaiaReviewerMetadata"
 )({
   adapterKind: Schema.optionalKey(ReviewerSessionAdapterKindSchema),
+  modelAdapterSemantics: Schema.optionalKey(ModelAdapterSemanticsV1),
   name: ReviewerNameSchema,
   sessionKind: Schema.optionalKey(ReviewerSessionKindSchema),
 }) {}

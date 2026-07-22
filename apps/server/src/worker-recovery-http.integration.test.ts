@@ -7,6 +7,12 @@ import { assert, describe, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
   DeliverySnapshotSuccessEnvelope,
+  makeModelContextContentV1,
+  makeModelContextManifestV1,
+  makeModelInvocationManifestV1,
+  MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+  MODEL_REVIEW_OUTPUT_CONTRACT_V1,
+  ModelInvocationEpisodeStartV1,
   parseHarnessEvent,
   parseHarnessProfileId,
   parseHarnessSessionId,
@@ -16,18 +22,23 @@ import {
   parseWorkerRecoveryActionId,
   parseWorkerRecoveryDigest,
   parseWorkerRecoveryModelId,
+  renderModelInputV1,
   WorkerRecoveryAction,
   type WorkerRecoveryReceipt,
 } from "@gaia/core";
 import {
   appendEvent,
   appendHarnessSessionEvent,
+  commitDerivedAppModelInvocationEpisode,
+  commitModelInvocationPair,
   deriveAndRecordRunContract,
+  deriveModelWorkspaceBinding,
   HarnessResumeError,
   HarnessSessionError,
   parseHarnessCheckpointToken,
   inspectRecoverableDeliveryWorktreeOwnership,
   loadRun,
+  loadRunContract,
   parseDeliveryProvenance,
   recoverWorkerSession,
   WorkerRecoveryModel,
@@ -194,6 +205,86 @@ function makeFixture(
       runId: accepted.runId,
       spec: parseMarkdownSpec("retained", "HTTP recovery"),
     });
+    const workspaceBinding = yield* deriveModelWorkspaceBinding(paths);
+    const runContract = yield* loadRunContract(paths, accepted.runId);
+    const digestText = (value: string) =>
+      createHash("sha256").update(value, "utf8").digest("hex");
+    const commitNamedPairOwner = (
+      episodeKey: "planReview" | "workerInitial"
+    ) => {
+      const planReview = episodeKey === "planReview";
+      const outputContract = planReview
+        ? MODEL_REVIEW_OUTPUT_CONTRACT_V1
+        : MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1;
+      const content = makeModelContextContentV1({
+        acceptedOutcomes: ["Recover the retained worker session."],
+        authority: ["Operate only inside the accepted recovery fixture."],
+        budget: { maxOutputBytes: 16_384, maxTurns: 1 },
+        contentRefs: [],
+        episodeRole: episodeKey,
+        instructions: [
+          planReview
+            ? "Review the accepted recovery plan."
+            : "Execute the accepted recovery plan.",
+        ],
+        nonGoals: ["Do not mutate providers."],
+        outputContract,
+        planningFacts: ["events.jsonl is authoritative."],
+        safeExclusions: ["credentials"],
+        skills: [],
+        stops: ["Stop on scope drift."],
+        taskInput: "HTTP recovery",
+        verificationCommands: [
+          "pnpm --filter @gaia/server test -- worker-recovery-http.integration.test.ts",
+        ],
+      });
+      const context = makeModelContextManifestV1({
+        authoritativeRefs: [
+          { digest: runContract.contractDigest, kind: "runContract" },
+        ],
+        binding: { episodeKey, runId: accepted.runId },
+        content,
+        workspaceBinding,
+      });
+      return commitModelInvocationPair({
+        context,
+        episodeKey,
+        invocation: makeModelInvocationManifestV1({
+          acceptedProviderCapabilityObservation: planReview
+            ? "notApplicable"
+            : "unobservable",
+          adapterInputClass: planReview ? "codexReviewerStdin" : "codexAppTurn",
+          adapterSemantics: {
+            kind: planReview ? "deterministicReviewer" : "codexAppServer",
+            semanticDigest: digestText(
+              planReview
+                ? "gaia.fixture.plan-review.deterministic.v1"
+                : "gaia.codex-app-server.on-request.ephemeral-false.workspace-write.start-turn.v1"
+            ),
+          },
+          authorityRef: {
+            digest: digestText(
+              "Operate only inside the accepted recovery fixture."
+            ),
+            kind: "authority",
+          },
+          binding: context.payload.binding,
+          budget: content.payload.budget,
+          context,
+          outputContract,
+          rendered: renderModelInputV1(content),
+          runContractRef: {
+            digest: runContract.contractDigest,
+            kind: "runContract",
+          },
+          template: { id: "gaia.worker-input.v1", version: 1 },
+          workspaceBinding,
+        }),
+        paths,
+      });
+    };
+    const planReviewPair = yield* commitNamedPairOwner("planReview");
+    const workerInitialPair = yield* commitNamedPairOwner("workerInitial");
     const sessionId = `session-${accepted.runId}`;
     yield* appendEvent(accepted.runId, paths, {
       payload: {
@@ -210,7 +301,12 @@ function makeFixture(
       type: "WORKSPACE_PREPARED",
     });
     yield* appendEvent(accepted.runId, paths, {
-      payload: { phase: "plan" },
+      payload: {
+        modelInvocationEpisode: Schema.encodeSync(
+          ModelInvocationEpisodeStartV1
+        )(planReviewPair),
+        phase: "plan",
+      },
       type: "REVIEW_STARTED",
     });
     yield* appendEvent(accepted.runId, paths, {
@@ -222,7 +318,14 @@ function makeFixture(
       },
       type: "REVIEW_COMPLETED",
     });
-    yield* appendEvent(accepted.runId, paths, { type: "WORKER_STARTED" });
+    yield* appendEvent(accepted.runId, paths, {
+      payload: {
+        modelInvocationEpisode: Schema.encodeSync(
+          ModelInvocationEpisodeStartV1
+        )(workerInitialPair),
+      },
+      type: "WORKER_STARTED",
+    });
     yield* appendHarnessSessionEvent(
       accepted.runId,
       paths,
@@ -288,6 +391,18 @@ function makeFixture(
     )!.sequence;
     let failureSequence = firstFailureSequence;
     if (options.retainedDirty === true) {
+      const priorRecoveryEpisode =
+        yield* commitDerivedAppModelInvocationEpisode({
+          episodeKey: "workerRecovery:recover-http-prior",
+          episodeRole: "workerRecovery",
+          events: (yield* loadRun(paths)).events,
+          paths,
+          runId: accepted.runId,
+          taskInput:
+            "Continue the interrupted worker from its accepted recovery checkpoint.",
+        });
+      if (priorRecoveryEpisode === undefined)
+        throw new Error("missing prior worker recovery model input");
       const priorReceipt = {
         actionId: "recover-http-prior",
         attempt: 1 as const,
@@ -301,6 +416,9 @@ function makeFixture(
       };
       yield* appendEvent(accepted.runId, paths, {
         payload: {
+          modelInvocationEpisode: Schema.encodeSync(
+            ModelInvocationEpisodeStartV1
+          )(priorRecoveryEpisode),
           recovery: encodeWorkerRecoveryReceiptJson({
             ...priorReceipt,
             state: "intentRecorded",

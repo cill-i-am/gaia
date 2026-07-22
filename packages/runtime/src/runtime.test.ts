@@ -1,3 +1,4 @@
+import { createServer, type Server } from "node:http";
 import { execPath } from "node:process";
 
 import { NodeServices } from "@effect/platform-node";
@@ -15,12 +16,14 @@ import {
 import { Effect, FileSystem, Schema } from "effect";
 
 import {
+  BrowserConsoleMessage,
   BrowserEvidence,
   BrowserEvidenceV2,
   BrowserPageEvidence,
   BrowserPageEvidenceV2,
   BrowserScreenshotEvidence,
   parseBrowserEvidenceJson,
+  parseBrowserConsoleSourceUrl,
   type BrowserEvidenceCollector,
 } from "./browser-evidence.js";
 import {
@@ -2985,25 +2988,16 @@ describe("runtime workflows", () => {
               ),
             })
           );
-          const unsupportedStatus = yield* statusRun(undefined, {
-            rootDirectory: cwd,
-          });
           assert.isTrue(unsupportedError instanceof GaiaRuntimeError);
           if (unsupportedError instanceof GaiaRuntimeError) {
-            assert.strictEqual(
-              unsupportedError.code,
-              "SkillBundleRepositoryUnsupported"
-            );
+            assert.strictEqual(unsupportedError.code, "AcceptedInputRejected");
             assert.isFalse(unsupportedError.recoverable);
             assert.include(
               unsupportedError.message,
-              "is not a supported git repository reference"
+              "credential-free-repository"
             );
           }
           assert.deepEqual(unsupportedCommands, []);
-          assert.isFalse(
-            yield* fs.exists(`${unsupportedStatus.runDirectory}/skill-sources`)
-          );
 
           const absoluteSpecPath = `${cwd}/absolute-external-path.md`;
           const absoluteManifestPath = `${cwd}/absolute-external-path.json`;
@@ -3302,7 +3296,7 @@ describe("runtime workflows", () => {
           assert.isFalse(malformedError.recoverable);
           assert.strictEqual(
             malformedError.message,
-            `Skill manifest '${malformedManifestPath}' is not valid.`
+            "The selected skill manifest is not valid."
           );
         }
 
@@ -3328,7 +3322,7 @@ describe("runtime workflows", () => {
           assert.isFalse(invalidError.recoverable);
           assert.strictEqual(
             invalidError.message,
-            `Skill manifest '${invalidManifestPath}' is not valid.`
+            "The selected skill manifest is not valid."
           );
         }
 
@@ -3370,7 +3364,7 @@ describe("runtime workflows", () => {
           assert.isFalse(unpinnedError.recoverable);
           assert.strictEqual(
             unpinnedError.message,
-            "Skill manifest entry 'coding-standards' must include a version or commit."
+            "A skill manifest entry must include a version or commit."
           );
         }
         assert.deepEqual(unpinnedCommands, []);
@@ -3426,7 +3420,7 @@ describe("runtime workflows", () => {
           assert.isTrue(checkoutError.recoverable);
           assert.strictEqual(
             checkoutError.message,
-            `Skill 'coding-standards' install command 'git -C ${repositoryDirectory} checkout abc123' exited with code 128.`
+            "The prepared skill installation command exited unsuccessfully."
           );
         }
         assert.deepEqual(
@@ -3546,6 +3540,199 @@ describe("runtime workflows", () => {
         assert.include(events, '"targetUrl":"http://localhost:3000/"');
         assert.strictEqual(resumed.status, "completed");
       })
+    );
+
+    it.effect(
+      "rejects browser target credentials without exposing the raw value",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+          const specPath = `${cwd}/spec.md`;
+          yield* fs.writeFileString(
+            specPath,
+            "Reject unsafe browser target.\n"
+          );
+          const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+          const canary = "GAIA_BROWSER_TARGET_CANARY";
+          const rejected = `https://user:${canary}@example.com/page?token=${canary}`;
+
+          const error = yield* collectBrowserEvidence(summary.runId, rejected, {
+            rootDirectory: cwd,
+          }).pipe(Effect.flip);
+          if (!(error instanceof GaiaRuntimeError)) {
+            throw new Error("Expected a typed Gaia runtime error.");
+          }
+          const errorSurface = `${error.message}\n${String(
+            error.cause
+          )}\n${JSON.stringify(error)}`;
+
+          assert.strictEqual(error.code, "BrowserEvidenceTargetUrlInvalid");
+          assert.isUndefined(error.cause);
+          assert.notInclude(errorSurface, canary);
+          assert.notInclude(errorSurface, rejected);
+          assert.notInclude(yield* readDurableTree(fs, cwd), canary);
+        })
+    );
+
+    it.effect(
+      "rejects credential-bearing redirected final URLs without durable disclosure",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+          const specPath = `${cwd}/spec.md`;
+          yield* fs.writeFileString(
+            specPath,
+            "Reject an unsafe redirected browser target.\n"
+          );
+          const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+          const canary = "GAIA_BROWSER_REDIRECT_CANARY";
+          const fixture = yield* acquireBrowserRedirectFixture(canary);
+          const rejectedFinalUrl = `${fixture.origin}/landing?token=${canary}`;
+          const screenshotPath = `${summary.runDirectory}/browser/page-1.png`;
+
+          const error = yield* collectBrowserEvidence(
+            summary.runId,
+            `${fixture.origin}/unsafe-start`,
+            { rootDirectory: cwd }
+          ).pipe(Effect.flip);
+          if (!(error instanceof GaiaRuntimeError)) {
+            throw new Error("Expected a typed Gaia runtime error.");
+          }
+          const errorSurface = `${error.message}\n${String(
+            error.cause
+          )}\n${JSON.stringify(error)}`;
+
+          assert.strictEqual(error.code, "BrowserEvidenceFinalUrlInvalid");
+          assert.isUndefined(error.cause);
+          assert.notInclude(errorSurface, canary);
+          assert.notInclude(errorSurface, rejectedFinalUrl);
+          assert.isFalse(yield* fs.exists(screenshotPath));
+          const rejectedDurableTree = yield* readDurableTree(fs, cwd);
+          assert.notInclude(rejectedDurableTree, canary);
+          assert.notInclude(rejectedDurableTree, rejectedFinalUrl);
+
+          const safeRecord = yield* collectBrowserEvidence(
+            summary.runId,
+            `${fixture.origin}/safe-start`,
+            { rootDirectory: cwd }
+          );
+          assert.strictEqual(
+            safeRecord.pages[0]?.url,
+            `${fixture.origin}/landing?view=summary`
+          );
+          assert.isTrue(yield* fs.exists(screenshotPath));
+          const finalDurableTree = yield* readDurableTree(fs, cwd);
+          assert.notInclude(finalDurableTree, canary);
+          assert.notInclude(finalDurableTree, rejectedFinalUrl);
+        }).pipe(Effect.scoped)
+    );
+
+    it.effect(
+      "rejects credential-bearing console sources without durable disclosure",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+          const specPath = `${cwd}/spec.md`;
+          yield* fs.writeFileString(
+            specPath,
+            "Reject unsafe console source.\n"
+          );
+          const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+          const canary = "GAIA_CONSOLE_URL_CANARY";
+          const collectorFor =
+            (sourceUrl: string): BrowserEvidenceCollector =>
+            (input) =>
+              Effect.try({
+                try: () => {
+                  const parsedSourceUrl =
+                    parseBrowserConsoleSourceUrl(sourceUrl);
+                  return BrowserEvidenceV2.make({
+                    notes: ["Browser console source boundary test."],
+                    pages: [
+                      BrowserPageEvidenceV2.make({
+                        consoleMessages: [
+                          BrowserConsoleMessage.make({
+                            level: "info",
+                            message: "console boundary test",
+                            ...(parsedSourceUrl === undefined
+                              ? {}
+                              : { sourceUrl: parsedSourceUrl }),
+                          }),
+                        ],
+                        evidenceKind: "page",
+                        evidenceSelector: "primary-page",
+                        screenshots: [],
+                        url: input.targetUrl,
+                      }),
+                    ],
+                    status: "collected",
+                    version: 2,
+                  });
+                },
+                catch: (cause) =>
+                  cause instanceof GaiaRuntimeError
+                    ? cause
+                    : makeRuntimeError({
+                        code: "TestBrowserConsoleBoundaryFailed",
+                        message: "The browser console boundary test failed.",
+                      }),
+              });
+          for (const rejected of [
+            `https://${canary}@example.com/app.js`,
+            `https://example.com/app.js?X-Amz-Signature=${canary}`,
+            `https://example.com/app.js?token=${canary}`,
+            `https://example.com/app.js#secret=${canary}`,
+          ]) {
+            const error = yield* collectBrowserEvidence(
+              summary.runId,
+              "https://example.com/",
+              {
+                browserEvidenceCollector: collectorFor(rejected),
+                rootDirectory: cwd,
+              }
+            ).pipe(Effect.flip);
+            if (!(error instanceof GaiaRuntimeError)) {
+              throw new Error("Expected a typed Gaia runtime error.");
+            }
+            const errorSurface = `${error.message}\n${String(
+              error.cause
+            )}\n${JSON.stringify(error)}`;
+            assert.strictEqual(error.code, "BrowserConsoleSourceUrlInvalid");
+            assert.isUndefined(error.cause);
+            assert.notInclude(errorSurface, canary);
+            assert.notInclude(errorSurface, rejected);
+          }
+          assert.notInclude(yield* readDurableTree(fs, cwd), canary);
+
+          const emptyRecord = yield* collectBrowserEvidence(
+            summary.runId,
+            "https://example.com/",
+            {
+              browserEvidenceCollector: collectorFor(""),
+              rootDirectory: cwd,
+            }
+          );
+          assert.isUndefined(
+            emptyRecord.pages[0]?.consoleMessages[0]?.sourceUrl
+          );
+
+          const validSource = "https://example.com/assets/app.js?v=1";
+          const validRecord = yield* collectBrowserEvidence(
+            summary.runId,
+            "https://example.com/",
+            {
+              browserEvidenceCollector: collectorFor(validSource),
+              rootDirectory: cwd,
+            }
+          );
+          assert.strictEqual(
+            validRecord.pages[0]?.consoleMessages[0]?.sourceUrl,
+            validSource
+          );
+        })
     );
 
     it.effect("records failed browser capture as browser evidence", () =>
@@ -3812,7 +3999,7 @@ describe("runtime workflows", () => {
             "if (process.env.GAIA_WORKSPACE_OUTPUT_PATH === undefined) { throw new Error('missing output'); }",
             "if (process.env.GAIA_WORKER_RESULT_PATH === undefined) { throw new Error('missing result'); }",
             "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness output ${process.env.GAIA_RUN_ID}\\n`);",
-            "writeFileSync(process.env.GAIA_WORKER_RESULT_PATH, JSON.stringify({ browserTargetUrl: 'http://localhost:4100' }));",
+            "writeFileSync(process.env.GAIA_WORKER_RESULT_PATH, JSON.stringify({ browserTargetUrl: 'http://localhost:4100/?view=summary&tab=evidence' }));",
           ].join("\n")
         );
 
@@ -3841,14 +4028,20 @@ describe("runtime workflows", () => {
         assert.strictEqual(browserEvidence.status, "collected");
         assert.strictEqual(
           browserEvidence.pages[0]?.url,
-          "http://localhost:4100/"
+          "http://localhost:4100/?view=summary&tab=evidence"
         );
         assert.include(
           harnessResult,
-          '"browserTargetUrl": "http://localhost:4100"'
+          '"browserTargetUrl": "http://localhost:4100/?view=summary&tab=evidence"'
         );
-        assert.include(events, '"browserTargetUrl":"http://localhost:4100"');
-        assert.include(events, '"targetUrl":"http://localhost:4100"');
+        assert.include(
+          events,
+          '"browserTargetUrl":"http://localhost:4100/?view=summary&tab=evidence"'
+        );
+        assert.include(
+          events,
+          '"targetUrl":"http://localhost:4100/?view=summary&tab=evidence"'
+        );
       })
     );
 
@@ -3988,45 +4181,161 @@ describe("runtime workflows", () => {
     );
 
     it.effect(
-      "rejects invalid preview deployment URLs from the process harness",
+      "rejects credential-bearing process harness URLs before durable worker evidence",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
-          const specPath = `${cwd}/spec.md`;
-          const scriptPath = `${cwd}/process-harness.mjs`;
-          yield* fs.writeFileString(
-            specPath,
-            "Run with an invalid preview deployment URL.\n"
-          );
-          yield* fs.writeFileString(
-            scriptPath,
+          const unsafeUrls = [
             [
-              "import { writeFileSync } from 'node:fs';",
-              "if (process.env.GAIA_RUN_ID === undefined) { throw new Error('missing run id'); }",
-              "if (process.env.GAIA_WORKSPACE_OUTPUT_PATH === undefined) { throw new Error('missing output'); }",
-              "if (process.env.GAIA_WORKER_RESULT_PATH === undefined) { throw new Error('missing result'); }",
-              "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness output ${process.env.GAIA_RUN_ID}\\n`);",
-              "writeFileSync(process.env.GAIA_WORKER_RESULT_PATH, JSON.stringify({ previewDeploymentUrl: 'not-a-url' }));",
-            ].join("\n")
-          );
+              "oauth-code",
+              "https://example.test/callback?code=URL_CANARY_CODE",
+            ],
+            [
+              "security-token",
+              "https://example.test/?X-Amz-Security-Token=URL_CANARY_SECURITY_TOKEN",
+            ],
+            [
+              "signature",
+              "https://example.test/?X-Amz-Signature=URL_CANARY_SIGNATURE",
+            ],
+            [
+              "fragment",
+              "https://example.test/#access_token=URL_CANARY_FRAGMENT",
+            ],
+            ["path", "https://example.test/auth/URL_CANARY_PATH_CREDENTIAL"],
+          ] as const;
 
-          const error = yield* Effect.flip(
-            runSpecFile(specPath, {
-              browserEvidenceRequirement: "required",
-              harnessName: parseHarnessName("process"),
-              processHarness: makeProcessHarnessConfig(execPath, [scriptPath]),
-              rootDirectory: cwd,
-            })
-          );
-          const status = yield* statusRun(undefined, { rootDirectory: cwd });
+          for (const field of [
+            "browserTargetUrl",
+            "previewDeploymentUrl",
+          ] as const) {
+            for (const [name, unsafeUrl] of unsafeUrls) {
+              const specPath = `${cwd}/${field}-${name}.md`;
+              const scriptPath = `${cwd}/${field}-${name}.mjs`;
+              yield* fs.writeFileString(specPath, `Reject ${field} ${name}.\n`);
+              yield* fs.writeFileString(
+                scriptPath,
+                [
+                  "import { writeFileSync } from 'node:fs';",
+                  "if (process.env.GAIA_RUN_ID === undefined) { throw new Error('missing run id'); }",
+                  "if (process.env.GAIA_WORKSPACE_OUTPUT_PATH === undefined) { throw new Error('missing output'); }",
+                  "if (process.env.GAIA_WORKER_RESULT_PATH === undefined) { throw new Error('missing result'); }",
+                  "writeFileSync(process.env.GAIA_WORKSPACE_OUTPUT_PATH, `process harness output ${process.env.GAIA_RUN_ID}\\n`);",
+                  `writeFileSync(process.env.GAIA_WORKER_RESULT_PATH, ${JSON.stringify(
+                    JSON.stringify({ [field]: unsafeUrl })
+                  )});`,
+                ].join("\n")
+              );
 
-          assert.isTrue(error instanceof GaiaRuntimeError);
-          if (error instanceof GaiaRuntimeError) {
-            assert.strictEqual(error.code, "ProcessHarnessDeclarationInvalid");
-            assert.isTrue(error.recoverable);
+              const error = yield* Effect.flip(
+                runSpecFile(specPath, {
+                  harnessName: parseHarnessName("process"),
+                  processHarness: makeProcessHarnessConfig(execPath, [
+                    scriptPath,
+                  ]),
+                  rootDirectory: cwd,
+                })
+              );
+              const status = yield* statusRun(undefined, {
+                rootDirectory: cwd,
+              });
+              const entries = yield* fs.readDirectory(status.runDirectory, {
+                recursive: true,
+              });
+              const durableText = (yield* Effect.forEach(entries, (entry) =>
+                fs.readFileString(`${status.runDirectory}/${entry}`).pipe(
+                  Effect.match({
+                    onFailure: () => "",
+                    onSuccess: (contents) => contents,
+                  })
+                )
+              )).join("\n");
+
+              assert.isTrue(error instanceof GaiaRuntimeError);
+              if (error instanceof GaiaRuntimeError) {
+                assert.strictEqual(
+                  error.code,
+                  "ProcessHarnessDeclarationInvalid"
+                );
+                assert.notInclude(error.message, "URL_CANARY");
+              }
+              assert.strictEqual(status.state, "failed");
+              assert.notInclude(durableText, "URL_CANARY");
+              assert.notInclude(durableText, '"type":"WORKER_COMPLETED"');
+              assert.isFalse(
+                entries.some((entry) =>
+                  entry.includes(".process-harness-declaration-")
+                )
+              );
+            }
           }
-          assert.strictEqual(status.state, "failed");
+        })
+    );
+
+    it.effect(
+      "re-decodes forged custom harness URLs before durable worker evidence",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+
+          for (const field of [
+            "browserTargetUrl",
+            "previewDeploymentUrl",
+          ] as const) {
+            const specPath = `${cwd}/forged-${field}.md`;
+            yield* fs.writeFileString(specPath, `Reject forged ${field}.\n`);
+            const unsafeUrl = `https://example.test/callback?code=CUSTOM_URL_CANARY_${field}`;
+            const error = yield* Effect.flip(
+              runSpecFile(specPath, {
+                browserEvidenceCollector: collectedBrowserEvidenceCollector,
+                rootDirectory: cwd,
+                workerHarness: {
+                  name: parseHarnessName("forged-custom"),
+                  run: (request) => {
+                    const forged = HarnessRunResult.make({
+                      changedWorkspacePaths: [],
+                      exitCode: 0,
+                      harnessName: parseHarnessName("forged-custom"),
+                      outputArtifacts: [],
+                      resultPath: "worker-result.json",
+                      runId: request.runId,
+                      status: "completed",
+                      summary: "Forged custom harness result.",
+                    });
+                    Object.defineProperty(forged, field, {
+                      enumerable: true,
+                      value: unsafeUrl,
+                    });
+                    return Effect.succeed(forged);
+                  },
+                },
+              })
+            );
+            const status = yield* statusRun(undefined, {
+              rootDirectory: cwd,
+            });
+            const entries = yield* fs.readDirectory(status.runDirectory, {
+              recursive: true,
+            });
+            const durableText = (yield* Effect.forEach(entries, (entry) =>
+              fs.readFileString(`${status.runDirectory}/${entry}`).pipe(
+                Effect.match({
+                  onFailure: () => "",
+                  onSuccess: (contents) => contents,
+                })
+              )
+            )).join("\n");
+
+            assert.isTrue(error instanceof GaiaRuntimeError);
+            if (error instanceof GaiaRuntimeError) {
+              assert.strictEqual(error.code, "HarnessRunResultInvalid");
+              assert.notInclude(error.message, "CUSTOM_URL_CANARY");
+            }
+            assert.notInclude(durableText, "CUSTOM_URL_CANARY");
+            assert.notInclude(durableText, '"type":"WORKER_COMPLETED"');
+          }
         })
     );
 
@@ -4240,8 +4549,7 @@ describe("runtime workflows", () => {
           assert.strictEqual(error.code, "SkillManifestEntryUnpinned");
         }
 
-        const status = yield* statusRun(undefined, { rootDirectory: cwd });
-        assert.strictEqual(status.state, "failed");
+        assert.isFalse(yield* fs.exists(`${cwd}/.gaia`));
       })
     );
 
@@ -4461,7 +4769,7 @@ describe("runtime workflows", () => {
 
             yield* fs.writeFileString(
               `${input.request.cwd}/output.txt`,
-              `codex harness ${runIdFromCodexPrompt(input.request.stdin)} saw ${input.request.stdin.includes("Run through Codex")}\n`
+              `codex harness ${runIdFromCodexCwd(input.request.cwd)} saw ${input.request.stdin.includes("Run through Codex")}\n`
             );
             yield* fs.writeFileString(
               `${input.request.cwd}/changed.txt`,
@@ -4578,10 +4886,10 @@ describe("runtime workflows", () => {
           assert.include(command.request.stdin, "Run through Codex.");
           assert.include(
             command.request.stdin,
-            "that artifact is ./output.txt"
+            "include that exact component as the run marker"
           );
-          assert.include(command.request.stdin, "Skill bundle JSON:");
-          assert.include(command.request.stdin, skillDirectory);
+          assert.include(command.request.stdin, "Skills:\n- coding-standards");
+          assert.notInclude(command.request.stdin, skillDirectory);
         }
       })
     );
@@ -4667,7 +4975,7 @@ describe("runtime workflows", () => {
               );
               yield* fs.writeFileString(
                 `${input.request.cwd}/output.txt`,
-                `codex harness ${runIdFromCodexPrompt(input.request.stdin)}\n`
+                `codex harness ${runIdFromCodexCwd(input.request.cwd)}\n`
               );
 
               return {
@@ -4731,7 +5039,7 @@ describe("runtime workflows", () => {
               outputLastMessagePath,
               [
                 "Status: approved",
-                `Summary: Codex reviewer approved ${codexReviewPhaseFromPrompt(input.request.stdin)}.`,
+                `Summary: Codex reviewer approved ${codexReviewPhaseFromCommand(input)}.`,
                 "",
                 "- The reviewed artifacts are coherent.",
               ].join("\n")
@@ -4776,37 +5084,33 @@ describe("runtime workflows", () => {
         assert.lengthOf(commands, 2);
         for (const command of commands) {
           assert.strictEqual(command.request.command, "codex-review-test");
-          assert.strictEqual(command.request.cwd, summary.runDirectory);
+          assert.strictEqual(
+            command.request.cwd,
+            `${summary.runDirectory}/workspace`
+          );
           assert.strictEqual(command.request.timeoutMs, 12345);
           assert.deepEqual(command.request.args, [
             "exec",
             "--json",
             "--cd",
-            summary.runDirectory,
+            `${summary.runDirectory}/workspace`,
             "--skip-git-repo-check",
             "--ephemeral",
             "--ignore-user-config",
             "--sandbox",
             "read-only",
             "--output-last-message",
-            `${summary.runDirectory}/${codexReviewPhaseFromPrompt(command.request.stdin)}-codex-reviewer-last-message.md`,
+            `${summary.runDirectory}/${codexReviewPhaseFromCommand(command)}-codex-reviewer-last-message.md`,
             "-",
           ]);
           assert.include(
             command.request.stdin,
-            "Do not write, edit, delete, move, or create files."
+            "Review only the accepted Gaia run evidence under read-only authority."
           );
-          assert.include(
-            command.request.stdin,
-            "Inspect the worker plan acceptance criteria, non-goals, likely touched surfaces, verification checks, and stop conditions."
-          );
+          assert.include(command.request.stdin, "Accepted outcomes:");
           assert.include(command.request.stdin, "Status: approved");
           assert.include(command.request.stdin, "Summary: ");
-          if (
-            codexReviewPhaseFromPrompt(command.request.stdin) === "evidence"
-          ) {
-            assert.include(command.request.stdin, "Browser evidence JSON:");
-          }
+          assert.notInclude(command.request.stdin, summary.runDirectory);
         }
         assert.include(planReview, "Reviewer: codex-reviewer");
         assert.include(
@@ -4818,7 +5122,10 @@ describe("runtime workflows", () => {
         assert.include(planReviewerLog, "Codex reviewer stdout:");
         assert.strictEqual(planReviewerSession.adapterKind, "codex-cli");
         assert.strictEqual(planReviewerSession.command, "codex-review-test");
-        assert.strictEqual(planReviewerSession.cwd, summary.runDirectory);
+        assert.strictEqual(
+          planReviewerSession.cwd,
+          `${summary.runDirectory}/workspace`
+        );
         assert.strictEqual(planReviewerSession.decisionStatus, "approved");
         assert.strictEqual(
           planReviewerSession.transcriptPath,
@@ -6328,7 +6635,7 @@ describe("runtime workflows", () => {
           if (error instanceof GaiaRuntimeError) {
             assert.strictEqual(error.code, "RunStoreLocked");
             assert.isTrue(error.recoverable);
-            assert.include(error.message, "GitHub CI watch");
+            assert.include(error.message, "GitHub PR feedback watch");
             assert.include(error.message, "rerun pnpm gaia pr-loop");
           }
         })
@@ -7884,12 +8191,95 @@ function readRunEvents(fs: FileSystem.FileSystem, runDirectory: string) {
   });
 }
 
-function runIdFromCodexPrompt(prompt: string) {
-  return prompt.match(/^Run ID: (.+)$/mu)?.[1] ?? "missing-run-id";
+function readDurableTree(fs: FileSystem.FileSystem, root: string) {
+  return Effect.gen(function* () {
+    const pending = [root];
+    const bodies: Array<string> = [];
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (current === undefined) break;
+      const info = yield* fs.stat(current);
+      if (info.type === "Directory") {
+        for (const child of yield* fs.readDirectory(current))
+          pending.push(`${current}/${child}`);
+      } else if (info.type === "File") {
+        bodies.push(new TextDecoder().decode(yield* fs.readFile(current)));
+      }
+    }
+    return bodies.join("\n");
+  });
 }
 
-function codexReviewPhaseFromPrompt(prompt: string) {
-  return prompt.match(/^Review phase: (plan|evidence)$/mu)?.[1] ?? "plan";
+function acquireBrowserRedirectFixture(canary: string) {
+  return Effect.acquireRelease(
+    Effect.tryPromise({
+      try: () =>
+        new Promise<Readonly<{ origin: string; server: Server }>>(
+          (resolve, reject) => {
+            const server = createServer((request, response) => {
+              if (request.url === "/unsafe-start") {
+                response.writeHead(302, {
+                  location: `/landing?token=${canary}`,
+                });
+                response.end();
+                return;
+              }
+              if (request.url === "/safe-start") {
+                response.writeHead(302, {
+                  location: "/landing?view=summary",
+                });
+                response.end();
+                return;
+              }
+              response.writeHead(200, { "content-type": "text/html" });
+              response.end(
+                "<!doctype html><title>Redirect target</title><body><script>document.body.textContent = location.href;</script></body>"
+              );
+            });
+            const onError = (cause: Error) => reject(cause);
+            server.once("error", onError);
+            server.listen(0, "127.0.0.1", () => {
+              server.off("error", onError);
+              const address = server.address();
+              if (address === null || typeof address === "string") {
+                reject(new Error("Redirect fixture address was unavailable."));
+                return;
+              }
+              resolve({
+                origin: `http://127.0.0.1:${address.port}`,
+                server,
+              });
+            });
+          }
+        ),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "TestBrowserRedirectFixtureFailed",
+          message: "The browser redirect fixture could not start.",
+          recoverable: false,
+        }),
+    }),
+    ({ server }) =>
+      Effect.promise(
+        () =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          })
+      )
+  );
+}
+
+function runIdFromCodexCwd(cwd: string) {
+  return cwd.split("/").at(-2) ?? "missing-run-id";
+}
+
+function codexReviewPhaseFromCommand(input: CodexCommandInvocation) {
+  const index = input.request.args.indexOf("--output-last-message");
+  const output = input.request.args[index + 1];
+  return output?.endsWith("/evidence-codex-reviewer-last-message.md")
+    ? "evidence"
+    : "plan";
 }
 
 function codexLastMessagePath(input: CodexCommandInvocation) {

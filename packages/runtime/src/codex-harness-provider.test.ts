@@ -497,7 +497,7 @@ describe("Codex HarnessProvider adapter", () => {
     const second = recordingClient([
       { id: first.turnId, status: "interrupted" },
     ]);
-    const snapshot = await Effect.runPromise(
+    const result = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const session = yield* resumeHarnessSession({
@@ -517,18 +517,22 @@ describe("Codex HarnessProvider adapter", () => {
             requiredCapabilities: [],
           });
           const initial = yield* session.snapshot;
-          yield* session.send(
+          const transportWitness = yield* session.send(
             HarnessInput.make({
               clientInputId: "audited-follow-up-1",
               text: "continue from checkpoint",
             })
           );
-          return initial;
+          return { initial, transportWitness };
         })
       )
     );
 
-    expect(snapshot.turns).toHaveLength(0);
+    expect(result.initial.turns).toHaveLength(0);
+    expect(result.transportWitness).toEqual({
+      kind: "codexAppServerTransportOffered",
+      version: 1,
+    });
     expect(second.starts).toEqual([
       {
         clientUserMessageId: "audited-follow-up-1",

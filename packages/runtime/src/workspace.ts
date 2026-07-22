@@ -31,7 +31,7 @@ export type WorkspaceSourcePath = RuntimePath;
 
 export const parseWorkspaceSourcePath = parseRuntimePath;
 
-const WorkspaceSourceSchema = Schema.Union([
+export const WorkspaceSourceSchema = Schema.Union([
   Schema.Struct({ _tag: Schema.Literal("Empty") }),
   Schema.Struct({
     _tag: Schema.Literal("LocalDirectory"),

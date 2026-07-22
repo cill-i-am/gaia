@@ -85,7 +85,7 @@ import {
   type WorkerDesktopOriginCorrelationInput,
   type WorkerCorrelationReconciliationInput,
 } from "@gaia/runtime/server-workflows";
-import { makeTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
+import { makeMarkerWritingTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
 import { Effect, FileSystem, Layer, Path, Schema } from "effect";
 import * as Console from "effect/Console";
 import { HttpServer } from "effect/unstable/http";
@@ -1321,7 +1321,11 @@ if (
   const config = parseServerArgs(process.argv.slice(2));
   runLocalGaiaServer({
     ...(config.testHarness
-      ? { harnessProviderRegistry: makeTestHarnessProviderRegistry() }
+      ? {
+          harnessProviderRegistry: makeMarkerWritingTestHarnessProviderRegistry(
+            config.rootDirectory
+          ),
+        }
       : {}),
     port: config.port,
     rootDirectory: config.rootDirectory,

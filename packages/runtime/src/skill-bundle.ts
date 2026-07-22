@@ -151,7 +151,7 @@ export const nodeSkillInstallCommandRunner: SkillInstallCommandRunner = (
       makeRuntimeError({
         cause,
         code: "SkillBundleInstallCommandFailed",
-        message: `${input.command} ${input.args.join(" ")} failed.`,
+        message: "The prepared skill installation command failed.",
         recoverable: true,
       }),
   });
@@ -320,27 +320,56 @@ function resolveExternalSkillBundleEntry(
   });
 }
 
+export function isCredentialFreeSkillSourceRepository(value: string) {
+  if (value === "local" || value === "file") return true;
+  if (/^github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(?:\.git)?$/u.test(value))
+    return true;
+
+  if (/^https?:\/\//u.test(value))
+    try {
+      const url = new URL(value);
+      if (
+        url.username === "" &&
+        url.password === "" &&
+        url.hash === "" &&
+        url.search === "" &&
+        url.hostname.length > 0
+      )
+        return true;
+    } catch {
+      return false;
+    }
+
+  return (
+    /^git@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?:[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+$/u.test(
+      value
+    ) &&
+    !value.includes("..") &&
+    !value.includes("%")
+  );
+}
+
 function resolveRepositoryCloneUrl(skill: SkillManifestEntry) {
-  if (skill.sourceRepository.startsWith("github.com/")) {
+  if (!isCredentialFreeSkillSourceRepository(skill.sourceRepository))
+    return Effect.fail(
+      makeRuntimeError({
+        code: "SkillBundleRepositoryUnsupported",
+        message:
+          "A skill source repository is not a supported credential-free git reference.",
+        recoverable: false,
+      })
+    );
+
+  if (
+    /^github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(?:\.git)?$/u.test(
+      skill.sourceRepository
+    )
+  ) {
     const suffix = skill.sourceRepository.endsWith(".git") ? "" : ".git";
     return Effect.succeed(`https://${skill.sourceRepository}${suffix}`);
   }
 
-  if (
-    skill.sourceRepository.startsWith("https://") ||
-    skill.sourceRepository.startsWith("http://") ||
-    skill.sourceRepository.startsWith("git@")
-  ) {
-    return Effect.succeed(skill.sourceRepository);
-  }
-
-  return Effect.fail(
-    makeRuntimeError({
-      code: "SkillBundleRepositoryUnsupported",
-      message: `Skill '${skill.name}' source repository '${skill.sourceRepository}' is not a supported git repository reference.`,
-      recoverable: false,
-    })
-  );
+  return Effect.succeed(skill.sourceRepository);
 }
 
 function runSkillInstallCommand(
@@ -355,7 +384,8 @@ function runSkillInstallCommand(
       return yield* Effect.fail(
         makeRuntimeError({
           code: "SkillBundleInstallCommandFailed",
-          message: `Skill '${skill.name}' install command '${input.command} ${input.args.join(" ")}' exited with code ${result.exitCode}.`,
+          message:
+            "The prepared skill installation command exited unsuccessfully.",
           recoverable: true,
         })
       );

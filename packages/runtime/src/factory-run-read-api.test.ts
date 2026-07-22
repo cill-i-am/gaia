@@ -16,6 +16,7 @@ import {
   FactoryArtifactIdSchema,
   FactoryGraphDiagnosticDto,
   FactoryGraphDto,
+  LocalRunReadDiagnosticSchema,
   parseHarnessProfileId,
   parseHarnessSessionId,
   parseRunId,
@@ -51,6 +52,21 @@ const encodeFactoryGraph = Schema.encodeSync(FactoryGraphDto);
 const workerPlanArtifactId = decodeFactoryArtifactId("worker-plan");
 const runContractArtifactId = decodeFactoryArtifactId("run-contract");
 const runProofArtifactId = decodeFactoryArtifactId("verification-result");
+
+function writeWorkerMarker(
+  fs: FileSystem.FileSystem,
+  runDirectory: string,
+  runId: string
+) {
+  const workspace = `${runDirectory}/workspace`;
+  return fs
+    .makeDirectory(workspace, { recursive: true })
+    .pipe(
+      Effect.andThen(
+        fs.writeFileString(`${workspace}/output.txt`, `${runId}\n`)
+      )
+    );
+}
 
 describe("factory run read api", () => {
   it.prop(
@@ -180,6 +196,7 @@ describe("factory run read api", () => {
             harnessProviderRegistry,
             rootDirectory: cwd,
           });
+          yield* writeWorkerMarker(fs, accepted.runDirectory, accepted.runId);
 
           yield* continueServerRun(accepted.runId, {
             harnessProviderRegistry,
@@ -211,7 +228,7 @@ describe("factory run read api", () => {
               role: agent.role,
               state: agent.state,
             })),
-            { artifactCount: 4, role: "worker", state: "succeeded" }
+            { artifactCount: 6, role: "worker", state: "succeeded" }
           );
           assert.deepInclude(
             graph.agents.map((agent) => ({
@@ -717,7 +734,16 @@ describe("factory run read api", () => {
           const paths = yield* makeRunPaths(accepted.runId, {
             rootDirectory: cwd,
           });
-          const firstLine = (yield* fs.readFileString(paths.events)).trim();
+          const firstEvent = JSON.parse(
+            (yield* fs.readFileString(paths.events)).trim()
+          ) as Record<string, unknown>;
+          const firstPayload = firstEvent["payload"] as Record<string, unknown>;
+          const { modelInvocationProtocol: _marker, ...legacyFirstPayload } =
+            firstPayload;
+          const firstLine = JSON.stringify({
+            ...firstEvent,
+            payload: legacyFirstPayload,
+          });
           const line = (
             sequence: number,
             type: string,
@@ -854,6 +880,8 @@ describe("factory run read api", () => {
             harnessProviderRegistry,
             rootDirectory: cwd,
           });
+          yield* writeWorkerMarker(fs, first.runDirectory, first.runId);
+          yield* writeWorkerMarker(fs, second.runDirectory, second.runId);
           yield* continueServerRun(first.runId, {
             harnessProviderRegistry,
             rootDirectory: cwd,
@@ -962,8 +990,110 @@ describe("factory run read api", () => {
           );
         })
     );
+
+    it.effect(
+      "projects typed manifest availability from event-owned bodies",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-manifests-",
+          });
+          const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+            harnessProviderRegistry,
+            rootDirectory: cwd,
+          });
+          const paths = yield* makeRunPaths(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          yield* writeWorkerMarker(fs, paths.root, accepted.runId);
+          yield* continueServerRun(accepted.runId, {
+            harnessProviderRegistry,
+            rootDirectory: cwd,
+          });
+          const initial = yield* listFactoryRunArtifacts(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          const manifest = initial.artifacts.find(
+            ({ customKind }) => customKind === "modelContextManifest"
+          );
+          if (manifest === undefined)
+            assert.fail("Expected manifest artifact.");
+          const availableBody = yield* readFactoryRunArtifact(
+            accepted.runId,
+            manifest.artifactId,
+            { rootDirectory: cwd }
+          );
+          const eventsBody = yield* fs.readFileString(paths.events);
+          const relativePath = manifestPathFromJsonl(
+            eventsBody,
+            manifest.artifactId
+          );
+          yield* fs.writeFileString(`${paths.root}/${relativePath}`, "{}\n");
+
+          const refreshed = yield* listFactoryRunArtifacts(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          const unavailable = refreshed.artifacts.find(
+            ({ artifactId }) => artifactId === manifest.artifactId
+          );
+          const bodyFailure = Schema.decodeUnknownSync(
+            LocalRunReadDiagnosticSchema
+          )(
+            yield* Effect.flip(
+              readFactoryRunArtifact(accepted.runId, manifest.artifactId, {
+                rootDirectory: cwd,
+              })
+            )
+          );
+          const orphanId = decodeFactoryArtifactId(`mmf1_${"9".repeat(64)}`);
+          yield* fs.makeDirectory(`${paths.modelInvocations}/orphan`, {
+            recursive: true,
+          });
+          yield* fs.writeFileString(
+            `${paths.modelInvocations}/orphan/context-manifest.json`,
+            "{}\n"
+          );
+          const orphanFailure = Schema.decodeUnknownSync(
+            LocalRunReadDiagnosticSchema
+          )(
+            yield* Effect.flip(
+              readFactoryRunArtifact(accepted.runId, orphanId, {
+                rootDirectory: cwd,
+              })
+            )
+          );
+
+          assert.strictEqual(availableBody.contentType, "application/json");
+          assert.strictEqual(unavailable?.availability, "unavailable");
+          assert.strictEqual(
+            unavailable?.diagnostic?.code,
+            "ArtifactBodyMismatch"
+          );
+          assert.strictEqual(bodyFailure.code, "ArtifactBodyMismatch");
+          assert.strictEqual(orphanFailure.code, "ArtifactNotFound");
+        })
+    );
   });
 });
+
+function manifestPathFromJsonl(body: string, artifactId: string) {
+  for (const line of body.trimEnd().split("\n")) {
+    const event = JSON.parse(line) as {
+      payload?: {
+        modelInvocationEpisode?: {
+          contextRef?: { artifactId?: string; path?: string };
+          invocationRef?: { artifactId?: string; path?: string };
+        };
+      };
+    };
+    const episode = event.payload?.modelInvocationEpisode;
+    for (const ref of [episode?.contextRef, episode?.invocationRef])
+      if (ref?.artifactId === artifactId && ref.path !== undefined)
+        return ref.path;
+  }
+  throw new Error("Manifest reference path is unavailable.");
+}
 
 function factoryCreateInput() {
   return decodeCreateRunRequest({

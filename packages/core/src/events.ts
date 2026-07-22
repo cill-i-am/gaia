@@ -1,5 +1,10 @@
 import * as Schema from "effect/Schema";
 
+import { parseAcceptedRunInputCheckpointRef } from "./accepted-run-input.js";
+import {
+  parseModelInvocationEpisodeStart,
+  parseModelInvocationObservation,
+} from "./model-invocation.js";
 import {
   parseAnyRunContract,
   parseAnyRunProofResultEnvelope,
@@ -153,6 +158,14 @@ const decodeRunEvent = Schema.decodeUnknownSync(RunEvent);
 /** Parse and validate an event read from the append-only event log. */
 export const parseRunEvent = (input: unknown): RunEvent => {
   const event = decodeRunEvent(input);
+  if (event.type === "RUN_CREATED") {
+    const checkpoint = event.payload["acceptedInputCheckpoint"];
+    if (checkpoint !== undefined)
+      parseAcceptedRunInputCheckpointRef(checkpoint);
+    const protocol = event.payload["modelInvocationProtocol"];
+    if (protocol !== undefined && protocol !== "v1")
+      throw new Error("Unknown model invocation protocol marker.");
+  }
   if (event.type === "RUN_CONTRACT_RECORDED") {
     const contract = parseAnyRunContract(event.payload["contract"]);
     if (contract.runId !== event.runId)
@@ -166,6 +179,23 @@ export const parseRunEvent = (input: unknown): RunEvent => {
     )
       throw new Error("Run-proof result does not bind its enclosing event.");
   }
+  const episode = event.payload["modelInvocationEpisode"];
+  if (episode !== undefined) {
+    const parsed = parseModelInvocationEpisodeStart(episode);
+    if (
+      parsed.contextRef.runId !== event.runId ||
+      parsed.invocationRef.runId !== event.runId ||
+      parsed.contextRef.episodeKey !== parsed.episodeKey ||
+      parsed.invocationRef.episodeKey !== parsed.episodeKey ||
+      parsed.contextRef.kind !== "modelContextManifest" ||
+      parsed.invocationRef.kind !== "modelInvocationManifest"
+    )
+      throw new Error(
+        "Model invocation episode does not bind its owner event."
+      );
+  }
+  const observation = event.payload["modelInvocationObservation"];
+  if (observation !== undefined) parseModelInvocationObservation(observation);
   validateClaimVerificationPayload(event);
   return event;
 };

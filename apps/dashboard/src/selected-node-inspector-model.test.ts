@@ -377,6 +377,7 @@ function artifactFixture(input: {
   readonly ownerAgentId: string;
 }) {
   return {
+    availability: "available" as const,
     artifactId: artifactId(input.artifactId),
     contentType: "text/markdown" as const,
     createdAt: decodeRunEventTimestamp("2026-07-08T12:00:00.000Z"),

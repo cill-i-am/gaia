@@ -1,6 +1,7 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
+  codexAppServerExecutionSelection,
   LocalRunReadDiagnosticSchema,
   LocalRunReadListSchema,
   LocalRunReadSummarySchema,
@@ -15,6 +16,8 @@ import {
   readLocalRunArtifact,
   readLocalRunEvents,
 } from "./run-read-api.js";
+import { acceptFactoryRun, continueServerRun } from "./server-workflows.js";
+import { makeTestHarnessProviderRegistry } from "./test-support.js";
 import { runSpecFile } from "./workflows.js";
 
 describe("local run read api", () => {
@@ -119,6 +122,107 @@ describe("local run read api", () => {
         assert.strictEqual(events.events.length, run.eventCount);
         assert.strictEqual(events.events[0]?.type, "RUN_CREATED");
       })
+    );
+
+    it.effect(
+      "lists and reads only event-referenced model manifest bodies",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-read-model-",
+          });
+          const completed = yield* makeManifestRun(fs, cwd);
+          const run = yield* readLocalRun(completed.runId, {
+            rootDirectory: cwd,
+          });
+          const first = run.modelInvocationArtifacts[0];
+          if (first === undefined)
+            assert.fail("Expected model manifest artifacts.");
+          const body = yield* readLocalRunArtifact(
+            completed.runId,
+            first.artifactId,
+            { rootDirectory: cwd }
+          );
+          const paths = yield* makeRunPaths(completed.runId, {
+            rootDirectory: cwd,
+          });
+          yield* fs.makeDirectory(`${paths.modelInvocations}/orphan`, {
+            recursive: true,
+          });
+          yield* fs.writeFileString(
+            `${paths.modelInvocations}/orphan/context-manifest.json`,
+            "{}\n"
+          );
+          const orphan = Schema.decodeUnknownSync(LocalRunReadDiagnosticSchema)(
+            yield* Effect.flip(
+              readLocalRunArtifact(completed.runId, `mmf1_${"9".repeat(64)}`, {
+                rootDirectory: cwd,
+              })
+            )
+          );
+          const repeated = yield* readLocalRun(completed.runId, {
+            rootDirectory: cwd,
+          });
+
+          assert.isAtLeast(run.modelInvocationArtifacts.length, 6);
+          assert.strictEqual(first.availability, "available");
+          assert.strictEqual(body.contentType, "application/json");
+          assert.strictEqual(JSON.parse(body.body).payload.version, 1);
+          assert.strictEqual(orphan.code, "ArtifactNotFound");
+          assert.lengthOf(
+            repeated.modelInvocationArtifacts,
+            run.modelInvocationArtifacts.length
+          );
+        })
+    );
+
+    it.effect(
+      "reports typed unavailable diagnostics for a corrupt referenced pair",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-read-corrupt-",
+          });
+          const completed = yield* makeManifestRun(fs, cwd);
+          const events = yield* readLocalRunEvents(completed.runId, {
+            rootDirectory: cwd,
+          });
+          const first = (yield* readLocalRun(completed.runId, {
+            rootDirectory: cwd,
+          })).modelInvocationArtifacts[0];
+          if (first === undefined)
+            assert.fail("Expected model manifest artifacts.");
+          const relativePath = manifestPath(events.events, first.artifactId);
+          const paths = yield* makeRunPaths(completed.runId, {
+            rootDirectory: cwd,
+          });
+          yield* fs.writeFileString(`${paths.root}/${relativePath}`, "{}\n");
+
+          const summary = yield* readLocalRun(completed.runId, {
+            rootDirectory: cwd,
+          });
+          const unavailable = summary.modelInvocationArtifacts.find(
+            ({ artifactId }) => artifactId === first.artifactId
+          );
+          const bodyFailure = Schema.decodeUnknownSync(
+            LocalRunReadDiagnosticSchema
+          )(
+            yield* Effect.flip(
+              readLocalRunArtifact(completed.runId, first.artifactId, {
+                rootDirectory: cwd,
+              })
+            )
+          );
+
+          assert.strictEqual(unavailable?.availability, "unavailable");
+          assert.strictEqual(
+            unavailable?.diagnostic?.code,
+            "ArtifactBodyMismatch"
+          );
+          assert.strictEqual(bodyFailure.code, "ArtifactBodyMismatch");
+        })
     );
 
     it.effect(
@@ -384,3 +488,53 @@ describe("local run read api", () => {
     );
   });
 });
+
+function manifestPath(
+  events: ReadonlyArray<{ readonly payload: Record<string, unknown> }>,
+  artifactId: string
+) {
+  for (const event of events) {
+    const episode = event.payload["modelInvocationEpisode"];
+    if (typeof episode !== "object" || episode === null) continue;
+    const record = episode as Record<string, unknown>;
+    for (const key of ["contextRef", "invocationRef"] as const) {
+      const ref = record[key];
+      if (
+        typeof ref === "object" &&
+        ref !== null &&
+        "artifactId" in ref &&
+        ref.artifactId === artifactId &&
+        "path" in ref &&
+        typeof ref.path === "string"
+      )
+        return ref.path;
+    }
+  }
+  throw new Error("Manifest reference path is unavailable.");
+}
+
+function makeManifestRun(fs: FileSystem.FileSystem, cwd: string) {
+  const harnessProviderRegistry = makeTestHarnessProviderRegistry();
+  return Effect.gen(function* () {
+    const accepted = yield* acceptFactoryRun(
+      {
+        execution: codexAppServerExecutionSelection,
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Read event-owned manifests.",
+          kind: "issue",
+          title: "Manifest read API",
+        },
+      },
+      { harnessProviderRegistry, rootDirectory: cwd }
+    );
+    const paths = yield* makeRunPaths(accepted.runId, { rootDirectory: cwd });
+    yield* fs.makeDirectory(paths.workspace, { recursive: true });
+    yield* fs.writeFileString(paths.workspaceOutput, `${accepted.runId}\n`);
+    yield* continueServerRun(accepted.runId, {
+      harnessProviderRegistry,
+      rootDirectory: cwd,
+    });
+    return { runId: accepted.runId } as const;
+  });
+}

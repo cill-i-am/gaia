@@ -72,7 +72,7 @@ function syntheticProvider(started: Array<string>): HarnessProvider {
     ]),
     interrupt: Option.some(Effect.void),
     resolveInteraction: () => Effect.void,
-    send: () => Effect.void,
+    send: () => Effect.succeed(undefined),
     snapshot: Effect.succeed(snapshot),
     steer: Option.none(),
   };
@@ -221,7 +221,7 @@ describe("provider-neutral harness session SPI", () => {
         provider.createSession(request).pipe(
           Effect.map((session) => ({
             ...session,
-            steer: Option.some(() => Effect.void),
+            steer: Option.some(() => Effect.succeed(undefined)),
           }))
         ),
     };

@@ -49,6 +49,7 @@ import {
   HarnessInteractionResponseSchema,
   HarnessResumeError,
   HarnessSessionError,
+  HarnessActionTransportWitness,
   HarnessStartError,
   type HarnessInteractionResponse,
   type HarnessCheckpointToken,
@@ -901,7 +902,7 @@ function makeCodexSession<E>(
               parsedMessage.clientInputId !== undefined &&
               dispatchedClientInputIds.has(parsedMessage.clientInputId)
             ) {
-              return Effect.void;
+              return Effect.succeed(undefined);
             }
             return input.options.client
               .startTurn({
@@ -932,7 +933,12 @@ function makeCodexSession<E>(
                     );
                   })
                 ),
-                Effect.asVoid,
+                Effect.as(
+                  HarnessActionTransportWitness.make({
+                    kind: "codexAppServerTransportOffered",
+                    version: 1,
+                  })
+                ),
                 Effect.mapError(() =>
                   actionError("send", "Codex follow-up turn failed.")
                 )
@@ -972,7 +978,12 @@ function makeCodexSession<E>(
                   threadId: input.nativeThreadId,
                 })
                 .pipe(
-                  Effect.asVoid,
+                  Effect.as(
+                    HarnessActionTransportWitness.make({
+                      kind: "codexAppServerTransportOffered",
+                      version: 1,
+                    })
+                  ),
                   Effect.mapError(() =>
                     actionError("steer", "Codex turn steering failed.")
                   )

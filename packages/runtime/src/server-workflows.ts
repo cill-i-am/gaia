@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 
 import {
+  AcceptedRunInputCheckpointRefV1,
+  type AcceptedRunInputCheckpointV1,
   canonicalV1,
   ClaimVerificationCommandStartV1,
   ClaimVerificationGenerationStartedV1,
   ClaimVerificationSandboxCreatedV1,
+  CreateRunRequest,
   CommandStartOutcomeUnknownReconciled,
   CreatedWithoutCommandStartReconciled,
   DeliveryFeedbackTrustPolicyV1,
@@ -16,7 +19,10 @@ import {
   type DeliveryRetryCleanupActionRequest,
   type DeliveryRemediationActivationActionRequest,
   parseMarkdownSpec,
+  parseSpecDigest,
   HarnessExecutionSelection,
+  ModelInvocationEpisodeStartV1,
+  ModelInvocationObservationV1,
   parseHarnessEvent,
   parseHarnessSessionId,
   parseDeliveryPublication,
@@ -38,8 +44,11 @@ import {
   parseWorkerDesktopOriginCorrelationReceipt,
   parseWorkerRecoveryReceipt,
   ResolvedHarnessExecution,
+  makeAcceptedRunInputCheckpointV1,
+  resolveAcceptedRunInputCheckpoint,
   RunIdSchema,
   snapshotFromReplay,
+  resolveModelInvocationEpisodes,
   type WorkerContinuationAction,
   type WorkerContinuationReceipt,
   type WorkerCorrelationReconciliationAction,
@@ -69,7 +78,14 @@ import {
 } from "effect";
 import { customAlphabet } from "nanoid";
 
+import {
+  commitAcceptedRunInputCheckpointNoReplace,
+  decodeAcceptedRunInputSemantics,
+  loadAcceptedRunInputCheckpoint,
+  type AcceptedRunInputSemanticsV1,
+} from "./accepted-run-input.js";
 import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
+import { makeCodexHarnessConfig } from "./codex-harness.js";
 import {
   coordinateDeliveryCleanup,
   coordinateDeliveryMerge,
@@ -109,6 +125,7 @@ import {
   HarnessProfileNotFoundError,
   issueDeliveryWorkerHarnessCapabilities,
   type HarnessProviderRegistry,
+  type ResolvedHarnessProvider,
 } from "./harness-provider-registry.js";
 import {
   HarnessCapabilityMismatchError,
@@ -116,7 +133,19 @@ import {
   HarnessIncompatibleError,
   HarnessUnavailableError,
 } from "./harness-session.js";
+import { makeProcessHarnessConfig } from "./harness.js";
 import { interactiveSessionHarness } from "./interactive-harness.js";
+import {
+  assertFactoryRunAcceptanceSecretSafe,
+  commitDerivedAppModelInvocationEpisode,
+  loadModelInvocationPair,
+  prepareServerRunAcceptance,
+  decodeCodexBatchSemanticConfig,
+  decodeProcessHarnessSemanticConfig,
+  prepareSkillInstaller,
+  PreparedServerRunAcceptanceV1,
+  type PreparedSpecRunAcceptanceV1,
+} from "./model-invocation.js";
 import {
   makeRunPaths,
   makeRunStorePaths,
@@ -136,6 +165,7 @@ import {
   continueAcceptedRun,
   type CommandSummary,
   type WorkerContinuationState,
+  type WorkflowOptions,
 } from "./workflows.js";
 import { observeWorkspaceStructuralDigest } from "./workspace-snapshot.js";
 import {
@@ -148,7 +178,7 @@ const nanoid = customAlphabet(
   10
 );
 
-export type ServerWorkflowOptions = RunStorageOptions &
+export type ServerWorkflowOptions = WorkflowOptions &
   ReviewerRunOptions & {
     readonly deliveryAcceptanceProvenancePolicy?: DeliveryAcceptanceProvenancePolicyV1;
     readonly deliveryMergeActivator?: DeliveryMergeActionHandler;
@@ -280,6 +310,10 @@ function actOnWorkerContinuationUnlocked(
 ) {
   return Effect.gen(function* () {
     const action = parseWorkerContinuationAction(actionInput);
+    const preparedContinuation = yield* prepareAcceptedServerContinuation(
+      runId,
+      options
+    );
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths);
     const prior = latestWorkerContinuationReceipt(loaded.events);
@@ -329,10 +363,9 @@ function actOnWorkerContinuationUnlocked(
       state: "resumeAttempted",
     });
     const continued = yield* Effect.exit(
-      (options.workerContinuationRunner ?? continueServerRunWorkerOnly)(
-        runId,
-        options
-      )
+      options.workerContinuationRunner === undefined
+        ? continueServerRunWorkerOnly(runId, options, preparedContinuation)
+        : options.workerContinuationRunner(runId, options)
     );
     if (continued._tag === "Failure") {
       return yield* recordWorkerContinuationReceipt(runId, paths, {
@@ -386,6 +419,11 @@ function actOnWorkerCorrelationReconciliationUnlocked(
   options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
+    const action = parseWorkerCorrelationReconciliationAction(actionInput);
+    const preparedContinuation = yield* prepareAcceptedServerContinuation(
+      runId,
+      options
+    );
     if (
       options.workerCorrelationReconciler === undefined ||
       options.workerCorrelationFollowUpDispatcher === undefined
@@ -398,7 +436,6 @@ function actOnWorkerCorrelationReconciliationUnlocked(
         })
       );
     }
-    const action = parseWorkerCorrelationReconciliationAction(actionInput);
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths);
     const prior = latestWorkerCorrelationReconciliationReceipt(loaded.events);
@@ -421,17 +458,14 @@ function actOnWorkerCorrelationReconciliationUnlocked(
       maxAttempts: 1 as const,
       workerEvidenceEpochSequence: epochSequence,
     };
-    const input = {
-      action,
-      clientInputId: workerCorrelationFollowUpClientInputId(
-        runId,
-        action.actionId
-      ),
-      events: loaded.events,
-      followUpText: workerCorrelationFollowUpText,
-      paths,
-      runId,
-    } satisfies WorkerCorrelationReconciliationInput;
+    const episodeKey = `workerCorrelation:${action.actionId}`;
+    const resolution = resolveModelInvocationEpisodes(loaded.events);
+    let modelInvocationEpisode =
+      resolution.protocol === "legacyAbsent"
+        ? undefined
+        : resolution.episodes.find(
+            ({ start }) => start.episodeKey === episodeKey
+          )?.start;
 
     if (prior !== undefined) {
       yield* assertWorkerCorrelationReconciliationReplay(prior, base);
@@ -463,11 +497,46 @@ function actOnWorkerCorrelationReconciliationUnlocked(
         loaded.events,
         action
       );
-      yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
-        ...base,
-        state: "intentRecorded",
+      modelInvocationEpisode = yield* commitDerivedAppModelInvocationEpisode({
+        episodeKey,
+        episodeRole: "workerCorrelation",
+        events: loaded.events,
+        paths,
+        runId,
+        taskInput: workerCorrelationFollowUpText,
       });
+      yield* recordWorkerCorrelationReconciliationReceipt(
+        runId,
+        paths,
+        { ...base, state: "intentRecorded" },
+        modelInvocationEpisode
+      );
     }
+
+    if (resolution.protocol === "v1" && modelInvocationEpisode === undefined)
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "ModelInvocationEpisodeMissing",
+          message:
+            "The authoritative worker correlation input manifest is missing.",
+          recoverable: false,
+        })
+      );
+    const modelInput =
+      modelInvocationEpisode === undefined
+        ? undefined
+        : yield* loadModelInvocationPair(paths, modelInvocationEpisode);
+    const input = {
+      action,
+      clientInputId: workerCorrelationFollowUpClientInputId(
+        runId,
+        action.actionId
+      ),
+      events: loaded.events,
+      followUpText: modelInput?.rendered.text ?? workerCorrelationFollowUpText,
+      paths,
+      runId,
+    } satisfies WorkerCorrelationReconciliationInput;
 
     if (prior === undefined || prior.state === "intentRecorded") {
       yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
@@ -521,18 +590,29 @@ function actOnWorkerCorrelationReconciliationUnlocked(
           }
         );
       }
-      yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
-        ...base,
-        state: "followUpConfirmed",
-      });
+      yield* recordWorkerCorrelationReconciliationReceipt(
+        runId,
+        paths,
+        { ...base, state: "followUpConfirmed" },
+        undefined,
+        modelInvocationEpisode === undefined
+          ? undefined
+          : ModelInvocationObservationV1.make({
+              episodeKey,
+              kind: "offered",
+              source: "codexAppServerTransport",
+              trust: "high",
+              version: 1,
+            })
+      );
     }
 
+    const runner =
+      options.workerCorrelationRunner ?? options.workerContinuationRunner;
     const continued = yield* Effect.exit(
-      (
-        options.workerCorrelationRunner ??
-        options.workerContinuationRunner ??
-        continueServerRunWorkerOnly
-      )(runId, options)
+      runner === undefined
+        ? continueServerRunWorkerOnly(runId, options, preparedContinuation)
+        : runner(runId, options)
     );
     if (continued._tag === "Failure") {
       return yield* recordWorkerCorrelationReconciliationReceipt(runId, paths, {
@@ -586,6 +666,11 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
   options: ServerWorkflowOptions
 ) {
   return Effect.gen(function* () {
+    const action = parseWorkerDesktopOriginCorrelationAction(actionInput);
+    const preparedContinuation = yield* prepareAcceptedServerContinuation(
+      runId,
+      options
+    );
     if (
       options.workerDesktopOriginCorrelationReconciler === undefined ||
       options.workerDesktopOriginCorrelationFollowUpDispatcher === undefined
@@ -599,7 +684,6 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
         })
       );
     }
-    const action = parseWorkerDesktopOriginCorrelationAction(actionInput);
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths);
     const prior = latestWorkerDesktopOriginCorrelationReceipt(loaded.events);
@@ -625,17 +709,14 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
       maxAttempts: 1 as const,
       workerEvidenceEpochSequence: epochSequence,
     };
-    const input = {
-      action,
-      clientInputId: workerCorrelationFollowUpClientInputId(
-        runId,
-        action.actionId
-      ),
-      events: loaded.events,
-      followUpText: workerCorrelationFollowUpText,
-      paths,
-      runId,
-    } satisfies WorkerDesktopOriginCorrelationInput;
+    const episodeKey = `workerDesktopOriginCorrelation:${action.actionId}`;
+    const resolution = resolveModelInvocationEpisodes(loaded.events);
+    let modelInvocationEpisode =
+      resolution.protocol === "legacyAbsent"
+        ? undefined
+        : resolution.episodes.find(
+            ({ start }) => start.episodeKey === episodeKey
+          )?.start;
 
     if (prior !== undefined) {
       yield* assertWorkerDesktopOriginCorrelationReplay(prior, base);
@@ -667,11 +748,46 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
         loaded.events,
         action
       );
-      yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
-        ...base,
-        state: "intentRecorded",
+      modelInvocationEpisode = yield* commitDerivedAppModelInvocationEpisode({
+        episodeKey,
+        episodeRole: "workerDesktopOriginCorrelation",
+        events: loaded.events,
+        paths,
+        runId,
+        taskInput: workerCorrelationFollowUpText,
       });
+      yield* recordWorkerDesktopOriginCorrelationReceipt(
+        runId,
+        paths,
+        { ...base, state: "intentRecorded" },
+        modelInvocationEpisode
+      );
     }
+
+    if (resolution.protocol === "v1" && modelInvocationEpisode === undefined)
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "ModelInvocationEpisodeMissing",
+          message:
+            "The authoritative Desktop-origin correlation input manifest is missing.",
+          recoverable: false,
+        })
+      );
+    const modelInput =
+      modelInvocationEpisode === undefined
+        ? undefined
+        : yield* loadModelInvocationPair(paths, modelInvocationEpisode);
+    const input = {
+      action,
+      clientInputId: workerCorrelationFollowUpClientInputId(
+        runId,
+        action.actionId
+      ),
+      events: loaded.events,
+      followUpText: modelInput?.rendered.text ?? workerCorrelationFollowUpText,
+      paths,
+      runId,
+    } satisfies WorkerDesktopOriginCorrelationInput;
 
     if (prior === undefined || prior.state === "intentRecorded") {
       yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
@@ -725,19 +841,31 @@ function actOnWorkerDesktopOriginCorrelationUnlocked(
           }
         );
       }
-      yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
-        ...base,
-        state: "followUpConfirmed",
-      });
+      yield* recordWorkerDesktopOriginCorrelationReceipt(
+        runId,
+        paths,
+        { ...base, state: "followUpConfirmed" },
+        undefined,
+        modelInvocationEpisode === undefined
+          ? undefined
+          : ModelInvocationObservationV1.make({
+              episodeKey,
+              kind: "offered",
+              source: "codexAppServerTransport",
+              trust: "high",
+              version: 1,
+            })
+      );
     }
 
+    const runner =
+      options.workerDesktopOriginCorrelationRunner ??
+      options.workerCorrelationRunner ??
+      options.workerContinuationRunner;
     const continued = yield* Effect.exit(
-      (
-        options.workerDesktopOriginCorrelationRunner ??
-        options.workerCorrelationRunner ??
-        options.workerContinuationRunner ??
-        continueServerRunWorkerOnly
-      )(runId, options)
+      runner === undefined
+        ? continueServerRunWorkerOnly(runId, options, preparedContinuation)
+        : runner(runId, options)
     );
     if (continued._tag === "Failure") {
       return yield* recordWorkerDesktopOriginCorrelationReceipt(runId, paths, {
@@ -906,30 +1034,116 @@ export function acceptServerRun(
   input: typeof ServerRunSpecInputSchema.Encoded,
   options: ServerWorkflowOptions = {}
 ) {
-  return withRunStoreLock(
-    options,
-    acceptServerRunUnlocked(parseServerRunSpecInput(input), options),
-    {
-      nextSafeAction:
-        "Wait for the active Gaia server run acceptance to finish, then retry.",
-      operation: "Gaia server run acceptance",
-    }
-  ).pipe(Effect.mapError(toServerWorkflowError("ServerRunAcceptFailed")));
+  return Effect.try({
+    try: () => parseServerRunSpecInput(input),
+    catch: (cause) =>
+      makeRuntimeError({
+        cause,
+        code: "InvalidSpec",
+        message: "The server run request is invalid.",
+        recoverable: false,
+      }),
+  }).pipe(
+    Effect.flatMap((acceptedInput) =>
+      prepareServerRunAcceptance(acceptedInput, options)
+    ),
+    Effect.flatMap((prepared) =>
+      withRunStoreLock(options, acceptServerRunUnlocked(prepared, options), {
+        nextSafeAction:
+          "Wait for the active Gaia server run acceptance to finish, then retry.",
+        operation: "Gaia server run acceptance",
+      })
+    ),
+    Effect.mapError(toServerWorkflowError("ServerRunAcceptFailed"))
+  );
 }
 
 export function acceptFactoryRun(
   input: FactoryRunCreateInput,
   options: ServerWorkflowOptions = {}
 ) {
-  return withRunStoreLock(options, acceptFactoryRunUnlocked(input, options), {
-    nextSafeAction:
-      "Wait for the active Gaia factory run acceptance to finish, then retry.",
-    operation: "Gaia factory run acceptance",
-  }).pipe(Effect.mapError(toServerWorkflowError("FactoryRunAcceptFailed")));
+  return prepareFactoryRunAcceptance(input, options).pipe(
+    Effect.flatMap((prepared) => acceptPreparedFactoryRun(prepared, options)),
+    Effect.mapError(toServerWorkflowError("FactoryRunAcceptFailed"))
+  );
+}
+
+export class PreparedFactoryRunAcceptanceV1 extends Schema.Class<PreparedFactoryRunAcceptanceV1>(
+  "PreparedFactoryRunAcceptanceV1"
+)({
+  input: CreateRunRequest,
+  preparedSpec: PreparedServerRunAcceptanceV1,
+  resolvedExecution: ResolvedHarnessExecution,
+}) {}
+
+export function prepareFactoryRunAcceptance(
+  input: FactoryRunCreateInput,
+  options: ServerWorkflowOptions = {}
+) {
+  return assertFactoryRunAcceptanceSecretSafe(input).pipe(
+    Effect.flatMap(() =>
+      prepareServerRunAcceptance(
+        {
+          specMarkdown: input.workItem.description,
+          title: input.workItem.title,
+        },
+        {
+          ...options,
+          workspaceSource:
+            options.workspaceSource ??
+            localDirectoryWorkspaceSource(options.rootDirectory ?? "."),
+        }
+      )
+    ),
+    Effect.flatMap((preparedSpec) => {
+      const registry = options.harnessProviderRegistry;
+      if (registry === undefined)
+        return Effect.fail(
+          makeRuntimeError({
+            code: "HarnessProviderRegistryMissing",
+            message: "No harness provider registry is available for this run.",
+            recoverable: true,
+          })
+        );
+      return registry
+        .resolve(input.execution, issueDeliveryWorkerHarnessCapabilities)
+        .pipe(
+          Effect.mapError(harnessAcceptanceError),
+          Effect.map(
+            (resolved) =>
+              ({
+                input,
+                preparedSpec,
+                resolvedExecution: resolved.execution,
+              }) satisfies PreparedFactoryRunAcceptanceV1
+          )
+        );
+    })
+  );
+}
+
+export function acceptPreparedFactoryRun(
+  prepared: PreparedFactoryRunAcceptanceV1,
+  options: ServerWorkflowOptions = {}
+) {
+  return withRunStoreLock(
+    options,
+    acceptFactoryRunUnlocked(
+      prepared.input,
+      prepared.preparedSpec,
+      prepared.resolvedExecution,
+      options
+    ),
+    {
+      nextSafeAction:
+        "Wait for the active Gaia factory run acceptance to finish, then retry.",
+      operation: "Gaia factory run acceptance",
+    }
+  );
 }
 
 function acceptServerRunUnlocked(
-  input: ServerRunSpecInput,
+  prepared: PreparedServerRunAcceptanceV1,
   options: ServerWorkflowOptions
 ): Effect.Effect<
   ServerRunAcceptance,
@@ -937,8 +1151,7 @@ function acceptServerRunUnlocked(
   FileSystem.FileSystem | Path.Path
 > {
   return Effect.gen(function* () {
-    yield* parseServerSpec(input);
-
+    const { input, spec } = prepared;
     const runId = yield* generateRunId;
     const paths = yield* makeRunPaths(runId, options);
     const fs = yield* FileSystem.FileSystem;
@@ -952,6 +1165,43 @@ function acceptServerRunUnlocked(
           recoverable: true,
         })
       )
+    );
+    const checkpoint = makeAcceptedRunInputCheckpointV1({
+      acceptanceKind: "server",
+      acceptedSemantics: JSON.parse(
+        JSON.stringify({
+          browserEvidenceRequirement: prepared.browserEvidenceRequirement,
+          ...(prepared.explicitBrowserEvidenceTargetUrl === undefined
+            ? {}
+            : {
+                browserEvidenceTargetUrl:
+                  prepared.explicitBrowserEvidenceTargetUrl,
+              }),
+          ...(prepared.codexHarness === undefined
+            ? {}
+            : { codexHarness: prepared.codexHarness }),
+          installer: prepared.installer,
+          ...(prepared.processHarness === undefined
+            ? {}
+            : { processHarness: prepared.processHarness }),
+          profile: prepared.runProfile,
+          skills: prepared.skillManifest,
+          source: "server",
+          workspaceSource: prepared.workspaceSource,
+        })
+      ),
+      runId,
+      spec: {
+        body: spec.body,
+        bodyDigest: createHash("sha256").update(spec.body).digest("hex"),
+        byteLength: Buffer.byteLength(spec.body, "utf8"),
+        title: spec.title,
+      },
+      version: 1,
+    });
+    const checkpointRef = yield* commitAcceptedRunInputCheckpointNoReplace(
+      paths,
+      checkpoint
     );
     yield* fs.writeFileString(paths.input, input.specMarkdown).pipe(
       Effect.mapError((cause) =>
@@ -974,7 +1224,14 @@ function acceptServerRunUnlocked(
       )
     );
     const { event } = yield* appendEvent(runId, paths, {
-      payload: { source: "server", specPath: "input.md" },
+      payload: {
+        acceptedInputCheckpoint: Schema.encodeSync(
+          AcceptedRunInputCheckpointRefV1
+        )(checkpointRef),
+        modelInvocationProtocol: "v1",
+        source: "server",
+        specPath: "input.md",
+      },
       type: "RUN_CREATED",
     }).pipe(
       Effect.mapError((cause) =>
@@ -1000,6 +1257,8 @@ function acceptServerRunUnlocked(
 
 function acceptFactoryRunUnlocked(
   input: FactoryRunCreateInput,
+  preparedSpec: PreparedServerRunAcceptanceV1,
+  acceptedExecution: ResolvedHarnessExecution,
   options: ServerWorkflowOptions
 ): Effect.Effect<
   ServerRunAcceptance,
@@ -1007,25 +1266,6 @@ function acceptFactoryRunUnlocked(
   FileSystem.FileSystem | Path.Path
 > {
   return Effect.gen(function* () {
-    yield* parseServerSpec({
-      specMarkdown: input.workItem.description,
-      title: input.workItem.title,
-    });
-
-    const registry = options.harnessProviderRegistry;
-    if (registry === undefined) {
-      return yield* Effect.fail(
-        makeRuntimeError({
-          code: "HarnessProviderRegistryMissing",
-          message: "No harness provider registry is available for this run.",
-          recoverable: true,
-        })
-      );
-    }
-    const resolved = yield* registry
-      .resolve(input.execution, issueDeliveryWorkerHarnessCapabilities)
-      .pipe(Effect.mapError(harnessAcceptanceError));
-
     const runId = yield* generateRunId;
     const paths = yield* makeRunPaths(runId, options);
     const fs = yield* FileSystem.FileSystem;
@@ -1050,6 +1290,75 @@ function acceptFactoryRunUnlocked(
         })
       )
     );
+    const eventProjection = {
+      execution: {
+        resolved: encodeResolvedHarnessExecution(acceptedExecution),
+        selection: { harnessProfileId: input.execution.harnessProfileId },
+      },
+      delivery,
+      ...(deliveryFeedbackTrustPolicy === undefined
+        ? {}
+        : {
+            deliveryFeedbackTrustPolicy: Schema.encodeSync(
+              DeliveryFeedbackTrustPolicyV1
+            )(deliveryFeedbackTrustPolicy),
+          }),
+      workflow: input.workflow,
+      workItem: {
+        description: input.workItem.description,
+        ...(input.workItem.externalRefs === undefined
+          ? {}
+          : {
+              externalRefs: input.workItem.externalRefs.map((ref) => ({
+                id: ref.id,
+                provider: ref.provider,
+                ...(ref.url === undefined ? {} : { url: ref.url }),
+              })),
+            }),
+        kind: input.workItem.kind,
+        title: input.workItem.title,
+      },
+    };
+    const checkpoint = makeAcceptedRunInputCheckpointV1({
+      acceptanceKind: "factory",
+      acceptedSemantics: JSON.parse(
+        JSON.stringify({
+          ...eventProjection,
+          browserEvidenceRequirement: preparedSpec.browserEvidenceRequirement,
+          ...(preparedSpec.explicitBrowserEvidenceTargetUrl === undefined
+            ? {}
+            : {
+                browserEvidenceTargetUrl:
+                  preparedSpec.explicitBrowserEvidenceTargetUrl,
+              }),
+          ...(preparedSpec.codexHarness === undefined
+            ? {}
+            : { codexHarness: preparedSpec.codexHarness }),
+          installer: preparedSpec.installer,
+          ...(preparedSpec.processHarness === undefined
+            ? {}
+            : { processHarness: preparedSpec.processHarness }),
+          profile: preparedSpec.runProfile,
+          skills: preparedSpec.skillManifest,
+          source: "server",
+          workspaceSource: preparedSpec.workspaceSource,
+        })
+      ),
+      runId,
+      spec: {
+        body: preparedSpec.spec.body,
+        bodyDigest: createHash("sha256")
+          .update(preparedSpec.spec.body)
+          .digest("hex"),
+        byteLength: Buffer.byteLength(preparedSpec.spec.body, "utf8"),
+        title: preparedSpec.spec.title,
+      },
+      version: 1,
+    });
+    const checkpointRef = yield* commitAcceptedRunInputCheckpointNoReplace(
+      paths,
+      checkpoint
+    );
     yield* fs.writeFileString(paths.input, input.workItem.description).pipe(
       Effect.mapError((cause) =>
         makeRuntimeError({
@@ -1073,37 +1382,13 @@ function acceptFactoryRunUnlocked(
     );
     const { event } = yield* appendEvent(runId, paths, {
       payload: {
-        execution: {
-          resolved: encodeResolvedHarnessExecution(resolved.execution),
-          selection: {
-            harnessProfileId: input.execution.harnessProfileId,
-          },
-        },
-        delivery,
-        ...(deliveryFeedbackTrustPolicy === undefined
-          ? {}
-          : {
-              deliveryFeedbackTrustPolicy: Schema.encodeSync(
-                DeliveryFeedbackTrustPolicyV1
-              )(deliveryFeedbackTrustPolicy),
-            }),
+        acceptedInputCheckpoint: Schema.encodeSync(
+          AcceptedRunInputCheckpointRefV1
+        )(checkpointRef),
+        ...eventProjection,
+        modelInvocationProtocol: "v1",
         source: "server",
         specPath: "input.md",
-        workflow: input.workflow,
-        workItem: {
-          description: input.workItem.description,
-          ...(input.workItem.externalRefs === undefined
-            ? {}
-            : {
-                externalRefs: input.workItem.externalRefs.map((ref) => ({
-                  id: ref.id,
-                  provider: ref.provider,
-                  ...(ref.url === undefined ? {} : { url: ref.url }),
-                })),
-              }),
-          kind: input.workItem.kind,
-          title: input.workItem.title,
-        },
       },
       type: "RUN_CREATED",
     }).pipe(
@@ -1151,18 +1436,287 @@ export function continueServerRun(
   GaiaRuntimeError,
   FileSystem.FileSystem | Path.Path
 > {
-  return withRunStoreLock(options, continueServerRunUnlocked(runId, options), {
+  const lockFailure = {
     nextSafeAction:
       "Wait for the active Gaia server run continuation to finish, then retry.",
     operation: "Gaia server run continuation",
-  }).pipe(
+  } as const;
+  return prepareAcceptedServerContinuation(runId, options).pipe(
+    Effect.mapError(toServerWorkflowError("ServerRunContinuationFailed")),
+    Effect.matchEffect({
+      onFailure: (error) =>
+        withRunStoreLock(
+          options,
+          Effect.gen(function* () {
+            const paths = yield* makeRunPaths(runId, options);
+            return yield* failServerRunIfNeeded(
+              runId,
+              paths,
+              "runningWorker",
+              error
+            );
+          }),
+          lockFailure
+        ),
+      onSuccess: (prepared) =>
+        withRunStoreLock(
+          options,
+          continueServerRunUnlocked(runId, options, prepared),
+          lockFailure
+        ),
+    }),
     Effect.mapError(toServerWorkflowError("ServerRunContinuationFailed"))
   );
 }
 
-function continueServerRunUnlocked(
+type PreparedAcceptedServerContinuation = {
+  readonly checkpoint?: AcceptedRunInputCheckpointV1;
+  readonly resolvedFactoryProvider?: ResolvedHarnessProvider;
+  readonly semantics?: AcceptedRunInputSemanticsV1;
+};
+
+function prepareAcceptedServerContinuation(
   runId: RunId,
   options: ServerWorkflowOptions
+): Effect.Effect<
+  PreparedAcceptedServerContinuation,
+  unknown,
+  FileSystem.FileSystem | Path.Path
+> {
+  return Effect.gen(function* () {
+    const paths = yield* makeRunPaths(runId, options);
+    const loaded = yield* loadRun(paths);
+    const resolution = yield* Effect.try({
+      try: () => resolveAcceptedRunInputCheckpoint(loaded.events),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "AcceptedRunInputCheckpointRefInvalid",
+          message: "The accepted input checkpoint event reference is invalid.",
+          recoverable: false,
+        }),
+    });
+    if (resolution.kind === "legacyAbsent") return {};
+    const checkpoint = yield* loadAcceptedRunInputCheckpoint(
+      paths,
+      resolution.ref
+    );
+    if (checkpoint.payload.runId !== runId)
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "AcceptedRunInputCheckpointBindingMismatch",
+          message: "The accepted input checkpoint belongs to another run.",
+          recoverable: false,
+        })
+      );
+    const semantics = yield* Effect.try({
+      try: () => decodeAcceptedRunInputSemantics(checkpoint),
+      catch: (cause) =>
+        acceptedRunCapabilityMismatch(
+          "The accepted input checkpoint semantics are invalid.",
+          cause
+        ),
+    });
+    yield* assertCurrentAcceptedSemantics(semantics, options);
+    const firstEvent = loaded.events[0];
+    if (firstEvent === undefined || firstEvent.type !== "RUN_CREATED")
+      return yield* Effect.fail(
+        acceptedRunCapabilityMismatch(
+          "The accepted input checkpoint has no authoritative run owner."
+        )
+      );
+    yield* assertCheckpointEventProjection(checkpoint, semantics, firstEvent);
+    const sessionEvents = issueDeliveryWorkerSessionEvents(
+      runId,
+      loaded.events
+    );
+    const continuationState = issueDeliveryWorkerContinuationState(
+      loaded.events,
+      sessionEvents
+    );
+    const resolvedFactoryProvider =
+      checkpoint.payload.acceptanceKind === "factory" &&
+      continuationState !== "completed" &&
+      continuationState !== "terminal"
+        ? yield* resolveAcceptedFactoryProvider(semantics, options)
+        : undefined;
+    return {
+      checkpoint,
+      ...(resolvedFactoryProvider === undefined
+        ? {}
+        : { resolvedFactoryProvider }),
+      semantics,
+    };
+  });
+}
+
+function acceptedRunCapabilityMismatch(message: string, cause?: unknown) {
+  return makeRuntimeError({
+    cause,
+    code: "AcceptedRunCapabilityMismatch",
+    message,
+    recoverable: false,
+  });
+}
+
+const decodeSemanticJson = Schema.decodeUnknownSync(Schema.Json);
+
+function semanticEqual(left: unknown, right: unknown) {
+  if (left === undefined || right === undefined) return left === right;
+  try {
+    const decodedLeft = decodeSemanticJson(left);
+    const decodedRight = decodeSemanticJson(right);
+    return Buffer.from(
+      canonicalV1("gaia.accepted-run-semantic-comparison.v1", [decodedLeft])
+    ).equals(
+      Buffer.from(
+        canonicalV1("gaia.accepted-run-semantic-comparison.v1", [decodedRight])
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function assertCurrentAcceptedSemantics(
+  accepted: AcceptedRunInputSemanticsV1,
+  options: ServerWorkflowOptions
+) {
+  return Effect.gen(function* () {
+    const currentCodex = yield* Effect.try({
+      try: () => decodeCodexBatchSemanticConfig(options.codexHarness),
+      catch: (cause) =>
+        acceptedRunCapabilityMismatch(
+          "Current Codex semantics do not match the accepted run.",
+          cause
+        ),
+    });
+    const currentProcess = yield* Effect.try({
+      try: () => decodeProcessHarnessSemanticConfig(options.processHarness),
+      catch: (cause) =>
+        acceptedRunCapabilityMismatch(
+          "Current process semantics do not match the accepted run.",
+          cause
+        ),
+    });
+    const currentInstaller =
+      options.skillInstaller?.command === undefined
+        ? undefined
+        : yield* Effect.try({
+            try: () =>
+              prepareSkillInstaller(options.skillInstaller, accepted.skills),
+            catch: (cause) =>
+              acceptedRunCapabilityMismatch(
+                "Current installer semantics do not match the accepted run.",
+                cause
+              ),
+          });
+    const candidates: ReadonlyArray<readonly [unknown, unknown]> = [
+      [currentCodex, accepted.codexHarness],
+      [currentProcess, accepted.processHarness],
+      [currentInstaller, accepted.installer],
+      [options.workspaceSource, accepted.workspaceSource],
+      [options.browserEvidenceRequirement, accepted.browserEvidenceRequirement],
+      [options.browserEvidenceTargetUrl, accepted.browserEvidenceTargetUrl],
+    ];
+    for (const [current, expected] of candidates) {
+      if (current !== undefined && !semanticEqual(current, expected))
+        return yield* Effect.fail(
+          acceptedRunCapabilityMismatch(
+            "Current run semantics do not match the accepted checkpoint."
+          )
+        );
+    }
+  });
+}
+
+function assertCheckpointEventProjection(
+  checkpoint: AcceptedRunInputCheckpointV1,
+  semantics: AcceptedRunInputSemanticsV1,
+  firstEvent: RunEvent
+) {
+  return Effect.gen(function* () {
+    if (firstEvent.runId !== checkpoint.payload.runId)
+      return yield* Effect.fail(
+        acceptedRunCapabilityMismatch(
+          "The accepted checkpoint and RUN_CREATED event bind different runs."
+        )
+      );
+    if (checkpoint.payload.acceptanceKind !== "factory") return;
+    for (const [field, expected] of [
+      ["delivery", semantics.delivery],
+      ["deliveryFeedbackTrustPolicy", semantics.deliveryFeedbackTrustPolicy],
+      ["execution", semantics.execution],
+      ["workflow", semantics.workflow],
+      ["workItem", semantics.workItem],
+    ] as const) {
+      if (!semanticEqual(firstEvent.payload[field], expected))
+        return yield* Effect.fail(
+          acceptedRunCapabilityMismatch(
+            "The accepted checkpoint disagrees with RUN_CREATED."
+          )
+        );
+    }
+  });
+}
+
+function resolveAcceptedFactoryProvider(
+  semantics: AcceptedRunInputSemanticsV1,
+  options: ServerWorkflowOptions
+) {
+  return Effect.gen(function* () {
+    const registry = options.harnessProviderRegistry;
+    if (registry === undefined)
+      return yield* Effect.fail(
+        acceptedRunCapabilityMismatch(
+          "The accepted factory provider capability is unavailable."
+        )
+      );
+    const execution = semantics.execution;
+    const accepted = yield* Effect.try({
+      try: () => ({
+        resolved: decodeResolvedHarnessExecution(
+          jsonObjectField(execution, "resolved")
+        ),
+        selection: decodeHarnessExecutionSelection(
+          jsonObjectField(execution, "selection")
+        ),
+      }),
+      catch: (cause) =>
+        acceptedRunCapabilityMismatch(
+          "The accepted factory provider binding is invalid.",
+          cause
+        ),
+    });
+    const resolved = yield* registry
+      .resolve(accepted.selection, issueDeliveryWorkerHarnessCapabilities)
+      .pipe(
+        Effect.mapError((cause) =>
+          acceptedRunCapabilityMismatch(
+            "The accepted factory provider capability changed.",
+            cause
+          )
+        )
+      );
+    if (
+      !semanticEqual(
+        encodeResolvedHarnessExecution(resolved.execution),
+        encodeResolvedHarnessExecution(accepted.resolved)
+      )
+    )
+      return yield* Effect.fail(
+        acceptedRunCapabilityMismatch(
+          "The accepted factory provider capability changed."
+        )
+      );
+    return resolved;
+  });
+}
+
+function continueServerRunUnlocked(
+  runId: RunId,
+  options: ServerWorkflowOptions,
+  prepared: PreparedAcceptedServerContinuation
 ) {
   return Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options);
@@ -1214,36 +1768,90 @@ function continueServerRunUnlocked(
       return yield* continueDeliveryPublication(runId, paths, options);
     }
 
-    const fs = yield* FileSystem.FileSystem;
-    const specMarkdown = yield* fs.readFileString(paths.input).pipe(
-      Effect.mapError((cause) =>
+    const resolution = yield* Effect.try({
+      try: () => resolveAcceptedRunInputCheckpoint(loaded.events),
+      catch: (cause) =>
         makeRuntimeError({
           cause,
-          code: "ServerRunInputUnreadable",
-          message: `Gaia server could not read accepted input for ${runId}.`,
-          recoverable: true,
-        })
-      )
-    );
-    const spec = yield* parseServerSpec({
-      specMarkdown,
-      title: runId,
+          code: "AcceptedRunInputCheckpointRefInvalid",
+          message: "The accepted input checkpoint event reference is invalid.",
+          recoverable: false,
+        }),
     });
+    let spec: ReturnType<typeof parseMarkdownSpec>;
+    if (resolution.kind === "v1") {
+      if (prepared.checkpoint === undefined)
+        return yield* Effect.fail(
+          makeRuntimeError({
+            code: "AcceptedRunInputCheckpointBindingMismatch",
+            message:
+              "The accepted input checkpoint changed during continuation.",
+            recoverable: false,
+          })
+        );
+      const checkpoint = yield* loadAcceptedRunInputCheckpoint(
+        paths,
+        resolution.ref
+      );
+      if (
+        checkpoint.checkpointId !== prepared.checkpoint.checkpointId ||
+        checkpoint.checkpointDigest !== prepared.checkpoint.checkpointDigest
+      )
+        return yield* Effect.fail(
+          makeRuntimeError({
+            code: "AcceptedRunInputCheckpointBindingMismatch",
+            message:
+              "The accepted input checkpoint changed during continuation.",
+            recoverable: false,
+          })
+        );
+      spec = yield* parseServerSpec({
+        specMarkdown: checkpoint.payload.spec.body,
+        title: checkpoint.payload.spec.title,
+      });
+    } else {
+      const fs = yield* FileSystem.FileSystem;
+      const specMarkdown = yield* fs.readFileString(paths.input).pipe(
+        Effect.mapError((cause) =>
+          makeRuntimeError({
+            cause,
+            code: "ServerRunInputUnreadable",
+            message: `Gaia server could not read accepted input for ${runId}.`,
+            recoverable: true,
+          })
+        )
+      );
+      spec = yield* parseServerSpec({ specMarkdown, title: runId });
+    }
 
     const summary = yield* Effect.gen(function* () {
+      const acceptedOptions =
+        prepared.semantics === undefined
+          ? options
+          : workflowOptionsFromAcceptedSemantics(prepared.semantics, options);
+      const preparedAcceptance =
+        prepared.checkpoint === undefined || prepared.semantics === undefined
+          ? undefined
+          : preparedAcceptanceFromCheckpoint(
+              prepared.checkpoint,
+              prepared.semantics,
+              spec
+            );
       const continuationOptions =
         firstEvent.payload["workflow"] === "issueDelivery"
           ? yield* factoryContinuationOptions(
               firstEvent,
               loaded.events,
-              options
+              acceptedOptions,
+              prepared.resolvedFactoryProvider
             )
-          : options;
+          : acceptedOptions;
       return yield* continueAcceptedRun(
         runId,
         paths,
         spec,
-        continuationOptions
+        continuationOptions,
+        preparedAcceptance
       );
     }).pipe(
       Effect.mapError((error) =>
@@ -1273,11 +1881,104 @@ function continueServerRunUnlocked(
   });
 }
 
+function workflowOptionsFromAcceptedSemantics(
+  accepted: AcceptedRunInputSemanticsV1,
+  options: ServerWorkflowOptions
+): ServerWorkflowOptions {
+  const {
+    browserEvidenceRequirement: _browserEvidenceRequirement,
+    browserEvidenceTargetUrl: _browserEvidenceTargetUrl,
+    codexHarness: currentCodex,
+    processHarness: _processHarness,
+    runProfileSource: _runProfileSource,
+    skillInstaller: currentInstaller,
+    skillManifestSource: _skillManifestSource,
+    workspaceSource: _workspaceSource,
+    ...capabilities
+  } = options;
+  const codexHarness =
+    accepted.codexHarness === undefined
+      ? undefined
+      : {
+          ...(currentCodex?.commandRunner === undefined
+            ? {}
+            : { commandRunner: currentCodex.commandRunner }),
+          config: makeCodexHarnessConfig({
+            command: accepted.codexHarness.command,
+            extraArgs: accepted.codexHarness.extraArgs,
+            ...(accepted.codexHarness.model === undefined
+              ? {}
+              : { model: accepted.codexHarness.model }),
+            ...(accepted.codexHarness.profile === undefined
+              ? {}
+              : { profile: accepted.codexHarness.profile }),
+            sandbox: accepted.codexHarness.sandbox,
+            timeoutMs: accepted.codexHarness.timeoutMs,
+          }),
+        };
+  return {
+    ...capabilities,
+    browserEvidenceRequirement: accepted.browserEvidenceRequirement,
+    ...(accepted.browserEvidenceTargetUrl === undefined
+      ? {}
+      : { browserEvidenceTargetUrl: accepted.browserEvidenceTargetUrl }),
+    ...(codexHarness === undefined ? {} : { codexHarness }),
+    ...(accepted.processHarness === undefined
+      ? {}
+      : {
+          processHarness: makeProcessHarnessConfig(
+            accepted.processHarness.command,
+            accepted.processHarness.args
+          ),
+        }),
+    skillInstaller: {
+      command: accepted.installer.command,
+      ...(currentInstaller?.commandRunner === undefined
+        ? {}
+        : { commandRunner: currentInstaller.commandRunner }),
+    },
+    workspaceSource: accepted.workspaceSource,
+  };
+}
+
+function preparedAcceptanceFromCheckpoint(
+  checkpoint: AcceptedRunInputCheckpointV1,
+  accepted: AcceptedRunInputSemanticsV1,
+  spec: ReturnType<typeof parseMarkdownSpec>
+): PreparedSpecRunAcceptanceV1 {
+  return {
+    browserEvidenceRequirement: accepted.browserEvidenceRequirement,
+    ...(accepted.browserEvidenceTargetUrl === undefined
+      ? {}
+      : {
+          explicitBrowserEvidenceTargetUrl: accepted.browserEvidenceTargetUrl,
+        }),
+    ...(accepted.codexHarness === undefined
+      ? {}
+      : { codexHarness: accepted.codexHarness }),
+    input: checkpoint.payload.spec.body,
+    installer: accepted.installer,
+    ...(accepted.processHarness === undefined
+      ? {}
+      : { processHarness: accepted.processHarness }),
+    runProfile: accepted.profile,
+    skillManifest: accepted.skills,
+    spec,
+    specDigest: parseSpecDigest(checkpoint.payload.spec.bodyDigest),
+    specPath: Schema.decodeUnknownSync(RuntimePathSchema)("input.md"),
+    workspaceSource: accepted.workspaceSource,
+  };
+}
+
 function continueServerRunWorkerOnly(
   runId: RunId,
-  options: ServerWorkflowOptions
+  options: ServerWorkflowOptions,
+  preparedInput?: PreparedAcceptedServerContinuation
 ) {
   return Effect.gen(function* () {
+    const prepared =
+      preparedInput ??
+      (yield* prepareAcceptedServerContinuation(runId, options));
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths).pipe(
       Effect.mapError((cause) =>
@@ -1313,33 +2014,78 @@ function continueServerRunWorkerOnly(
         })
       );
     }
-    const fs = yield* FileSystem.FileSystem;
-    const specMarkdown = yield* fs.readFileString(paths.input).pipe(
-      Effect.mapError((cause) =>
+    const resolution = yield* Effect.try({
+      try: () => resolveAcceptedRunInputCheckpoint(loaded.events),
+      catch: (cause) =>
         makeRuntimeError({
           cause,
-          code: "ServerRunInputUnreadable",
-          message: `Gaia server could not read accepted input for ${runId}.`,
-          recoverable: true,
-        })
-      )
-    );
-    const spec = yield* parseServerSpec({
-      specMarkdown,
-      title: runId,
+          code: "AcceptedRunInputCheckpointRefInvalid",
+          message: "The accepted input checkpoint event reference is invalid.",
+          recoverable: false,
+        }),
     });
+    const spec =
+      resolution.kind === "v1"
+        ? yield* Effect.gen(function* () {
+            if (
+              prepared.checkpoint === undefined ||
+              prepared.semantics === undefined ||
+              resolution.ref.checkpointId !==
+                prepared.checkpoint.checkpointId ||
+              resolution.ref.checkpointDigest !==
+                prepared.checkpoint.checkpointDigest
+            )
+              return yield* Effect.fail(
+                makeRuntimeError({
+                  code: "AcceptedRunInputCheckpointBindingMismatch",
+                  message:
+                    "The accepted input checkpoint changed during audited continuation.",
+                  recoverable: false,
+                })
+              );
+            return yield* parseServerSpec({
+              specMarkdown: prepared.checkpoint.payload.spec.body,
+              title: prepared.checkpoint.payload.spec.title,
+            });
+          })
+        : yield* Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const specMarkdown = yield* fs.readFileString(paths.input).pipe(
+              Effect.mapError((cause) =>
+                makeRuntimeError({
+                  cause,
+                  code: "ServerRunInputUnreadable",
+                  message: `Gaia server could not read accepted input for ${runId}.`,
+                  recoverable: true,
+                })
+              )
+            );
+            return yield* parseServerSpec({ specMarkdown, title: runId });
+          });
 
     return yield* Effect.gen(function* () {
+      const acceptedOptions =
+        prepared.semantics === undefined
+          ? options
+          : workflowOptionsFromAcceptedSemantics(prepared.semantics, options);
       const continuationOptions = yield* factoryContinuationOptions(
         firstEvent,
         loaded.events,
-        options
+        acceptedOptions,
+        prepared.resolvedFactoryProvider
       );
       return yield* continueAcceptedRun(
         runId,
         paths,
         spec,
-        continuationOptions
+        continuationOptions,
+        prepared.checkpoint === undefined || prepared.semantics === undefined
+          ? undefined
+          : preparedAcceptanceFromCheckpoint(
+              prepared.checkpoint,
+              prepared.semantics,
+              spec
+            )
       );
     }).pipe(
       Effect.mapError((error) =>
@@ -1759,11 +2505,27 @@ function recordWorkerContinuationReceipt(
 function recordWorkerCorrelationReconciliationReceipt(
   runId: RunId,
   paths: RunPaths,
-  receipt: WorkerCorrelationReconciliationReceipt
+  receipt: WorkerCorrelationReconciliationReceipt,
+  modelInvocationEpisode?: ModelInvocationEpisodeStartV1,
+  modelInvocationObservation?: ModelInvocationObservationV1
 ) {
   return appendEvent(runId, paths, {
     payload: {
       reconciliation: encodeWorkerCorrelationReconciliationReceiptJson(receipt),
+      ...(modelInvocationEpisode === undefined
+        ? {}
+        : {
+            modelInvocationEpisode: Schema.encodeSync(
+              ModelInvocationEpisodeStartV1
+            )(modelInvocationEpisode),
+          }),
+      ...(modelInvocationObservation === undefined
+        ? {}
+        : {
+            modelInvocationObservation: Schema.encodeSync(
+              ModelInvocationObservationV1
+            )(modelInvocationObservation),
+          }),
     },
     type: "WORKER_CORRELATION_RECONCILIATION_RECORDED",
   }).pipe(Effect.as(receipt));
@@ -1772,12 +2534,28 @@ function recordWorkerCorrelationReconciliationReceipt(
 function recordWorkerDesktopOriginCorrelationReceipt(
   runId: RunId,
   paths: RunPaths,
-  receipt: WorkerDesktopOriginCorrelationReceipt
+  receipt: WorkerDesktopOriginCorrelationReceipt,
+  modelInvocationEpisode?: ModelInvocationEpisodeStartV1,
+  modelInvocationObservation?: ModelInvocationObservationV1
 ) {
   return appendEvent(runId, paths, {
     payload: {
       desktopOriginCorrelation:
         encodeWorkerDesktopOriginCorrelationReceiptJson(receipt),
+      ...(modelInvocationEpisode === undefined
+        ? {}
+        : {
+            modelInvocationEpisode: Schema.encodeSync(
+              ModelInvocationEpisodeStartV1
+            )(modelInvocationEpisode),
+          }),
+      ...(modelInvocationObservation === undefined
+        ? {}
+        : {
+            modelInvocationObservation: Schema.encodeSync(
+              ModelInvocationObservationV1
+            )(modelInvocationObservation),
+          }),
     },
     type: "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED",
   }).pipe(Effect.as(receipt));
@@ -2716,7 +3494,8 @@ function acceptedDeliveryFeedbackTrustPolicy(
 function factoryContinuationOptions(
   firstEvent: RunEvent,
   events: ReadonlyArray<RunEvent>,
-  options: ServerWorkflowOptions
+  options: ServerWorkflowOptions,
+  acceptedProvider?: ResolvedHarnessProvider
 ) {
   return Effect.gen(function* () {
     const rootDirectory = options.rootDirectory ?? ".";
@@ -2858,7 +3637,7 @@ function factoryContinuationOptions(
     }
 
     const registry = options.harnessProviderRegistry;
-    if (registry === undefined) {
+    if (acceptedProvider === undefined && registry === undefined) {
       return yield* Effect.fail(
         makeRuntimeError({
           code: "HarnessProviderRegistryMissing",
@@ -2867,12 +3646,14 @@ function factoryContinuationOptions(
         })
       );
     }
-    const resolved = yield* registry
-      .resolve(
-        acceptedExecution.selection,
-        issueDeliveryWorkerHarnessCapabilities
-      )
-      .pipe(Effect.mapError(harnessAcceptanceError));
+    const resolved =
+      acceptedProvider ??
+      (yield* registry!
+        .resolve(
+          acceptedExecution.selection,
+          issueDeliveryWorkerHarnessCapabilities
+        )
+        .pipe(Effect.mapError(harnessAcceptanceError)));
     if (
       JSON.stringify(encodeResolvedHarnessExecution(resolved.execution)) !==
       JSON.stringify(encodeResolvedHarnessExecution(acceptedExecution.resolved))

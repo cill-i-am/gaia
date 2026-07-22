@@ -1,3 +1,4 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
@@ -41,6 +42,7 @@ import {
   encodeWorkerCorrelationReconciliationReceiptJson,
   HarnessCapabilities,
   HarnessProviderDescriptor,
+  ModelInvocationEpisodeStartV1,
   deliveryPullRequestReadyPayloadDigest,
   makeRunEvent,
   parseDeliveryFeedbackId,
@@ -66,7 +68,9 @@ import {
   makeHarnessProviderRegistry,
   appendEvent,
   appendHarnessSessionEvent,
+  commitDerivedAppModelInvocationEpisode,
   deriveAndRecordRunContract,
+  readEvents,
   ReviewResult,
   ReviewerNameSchema,
   subscribeRunEventFeed,
@@ -80,6 +84,7 @@ import {
   parseRunStorageRootInput,
   RunStorageRootInputSchema,
   RuntimePathTextSchema,
+  type RunPaths,
 } from "@gaia/runtime/paths";
 import type { ServerWorkflowOptions } from "@gaia/runtime/server-workflows";
 import {
@@ -87,10 +92,7 @@ import {
   acceptServerRun,
   continueServerRun,
 } from "@gaia/runtime/server-workflows";
-import {
-  makeTestHarnessProviderRegistry,
-  testHarnessProvider,
-} from "@gaia/runtime/test-support";
+import { testHarnessProvider } from "@gaia/runtime/test-support";
 import {
   Deferred,
   Effect,
@@ -477,7 +479,8 @@ describe("local run api http boundary", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
         const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
-          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          harnessProviderRegistry:
+            markerWritingTestHarnessProviderRegistry(cwd),
           rootDirectory: cwd,
         });
         yield* fs.makeDirectory(`${cwd}/.gaia/runs/run-not-valid`);
@@ -516,7 +519,8 @@ describe("local run api http boundary", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
         const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
-          harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+          harnessProviderRegistry:
+            markerWritingTestHarnessProviderRegistry(cwd),
           rootDirectory: cwd,
         });
 
@@ -561,11 +565,13 @@ describe("local run api http boundary", () => {
           const fs = yield* FileSystem.FileSystem;
           const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
           const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           yield* continueServerRun(accepted.runId, {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
 
@@ -697,7 +703,8 @@ describe("local run api http boundary", () => {
           );
 
           yield* continueServerRun(accepted.runId, {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const response = yield* HttpClient.get(
@@ -770,7 +777,8 @@ describe("local run api http boundary", () => {
             );
 
             const summary = yield* acceptFactoryRun(factoryCreateInput(), {
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry:
+                markerWritingTestHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             });
 
@@ -803,11 +811,13 @@ describe("local run api http boundary", () => {
           const fs = yield* FileSystem.FileSystem;
           const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
           const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           yield* continueServerRun(accepted.runId, {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const layer = testServerLayer(cwd);
@@ -877,11 +887,13 @@ describe("local run api http boundary", () => {
           const fs = yield* FileSystem.FileSystem;
           const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
           const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           yield* continueServerRun(accepted.runId, {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const layer = testServerLayer(cwd);
@@ -939,7 +951,7 @@ describe("local run api http boundary", () => {
     );
 
     it.effect(
-      "serves recovered pending interactions and resolves them through LocalGaiaServerApi",
+      "serves recovered pending interactions and blocks actions behind the live continuation lease",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -999,8 +1011,12 @@ describe("local run api http boundary", () => {
               HttpClient.execute
             );
             const staleBody = yield* responseJsonObject(staleResponse);
-            assert.strictEqual(staleResponse.status, 409);
-            assertApiError(staleBody, "AgentActionConflict", 409);
+            assert.strictEqual(
+              staleResponse.status,
+              409,
+              JSON.stringify(staleBody)
+            );
+            assertApiError(staleBody, "RunStoreLocked", 409);
             assert.deepEqual(resolutions, []);
 
             const action = {
@@ -1016,44 +1032,11 @@ describe("local run api http boundary", () => {
               HttpClientRequest.bodyJsonUnsafe(action),
               HttpClient.execute
             );
-            const replayResponse = yield* HttpClientRequest.post(
-              `/runs/${runId}/agents/agent-worker/session/actions`
-            ).pipe(
-              HttpClientRequest.bodyJsonUnsafe(action),
-              HttpClient.execute
-            );
-            const conflictResponse = yield* HttpClientRequest.post(
-              `/runs/${runId}/agents/agent-worker/session/actions`
-            ).pipe(
-              HttpClientRequest.bodyJsonUnsafe({
-                ...action,
-                actionId: "action-server-recovered-approval-other",
-              }),
-              HttpClient.execute
-            );
-            const firstBody = getObject(
-              yield* responseJsonObject(firstResponse),
-              "data"
-            );
-            const replayBody = getObject(
-              yield* responseJsonObject(replayResponse),
-              "data"
-            );
-            const conflictBody = yield* responseJsonObject(conflictResponse);
+            const firstBody = yield* responseJsonObject(firstResponse);
 
-            assert.strictEqual(firstResponse.status, 200);
-            assert.strictEqual(replayResponse.status, 200);
-            assert.deepEqual(replayBody, firstBody);
-            assert.strictEqual(conflictResponse.status, 409);
-            assertApiError(conflictBody, "AgentActionConflict", 409);
-            assert.deepEqual(resolutions, [
-              {
-                actionId: action.actionId,
-                decision: "decline",
-                interactionId: serverRecoveredInteractionId,
-                kind: "approval",
-              },
-            ]);
+            assert.strictEqual(firstResponse.status, 409);
+            assertApiError(firstBody, "RunStoreLocked", 409);
+            assert.deepEqual(resolutions, []);
           }).pipe(Effect.provide(layer));
         }),
       20_000
@@ -1080,14 +1063,16 @@ describe("local run api http boundary", () => {
             },
             {
               deliveryGitCommandRunner: recordingGitRunner(),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry:
+                markerWritingTestHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
           yield* continueServerRun(accepted.runId, {
             deliveryGitCommandRunner: recordingGitRunner(),
             deliveryPublisher: recordingDeliveryPublisher(),
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const layer = testServerLayer(cwd, {
@@ -1177,14 +1162,16 @@ describe("local run api http boundary", () => {
             },
             {
               deliveryGitCommandRunner: recordingGitRunner(),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry:
+                markerWritingTestHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
           yield* continueServerRun(accepted.runId, {
             deliveryGitCommandRunner: recordingGitRunner(),
             deliveryPublisher: recordingDeliveryPublisher(),
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           let deliveryEventReads = 0;
@@ -1253,14 +1240,16 @@ describe("local run api http boundary", () => {
             },
             {
               deliveryGitCommandRunner: recordingGitRunner(),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry:
+                markerWritingTestHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
           yield* continueServerRun(accepted.runId, {
             deliveryGitCommandRunner: recordingGitRunner(),
             deliveryPublisher: recordingUnknownDeliveryPublisher(),
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const layer = testServerLayer(cwd, {
@@ -1515,7 +1504,8 @@ describe("local run api http boundary", () => {
             },
             {
               deliveryGitCommandRunner: recordingGitRunner(),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry:
+                markerWritingTestHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
@@ -1661,7 +1651,8 @@ describe("local run api http boundary", () => {
             prefix: "gaia-server-private-merge-",
           });
           const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const hostile =
@@ -1713,7 +1704,8 @@ describe("local run api http boundary", () => {
             prefix: "gaia-server-private-events-",
           });
           const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const paths = yield* makeRunPaths(parseRunId(accepted.runId), {
@@ -1856,7 +1848,8 @@ describe("local run api http boundary", () => {
             prefix: "gaia-server-merge-matrix-",
           });
           const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const seen = new Set<string>();
@@ -2027,14 +2020,16 @@ describe("local run api http boundary", () => {
             },
             {
               deliveryGitCommandRunner: recordingGitRunner(),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry:
+                markerWritingTestHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
           yield* continueServerRun(accepted.runId, {
             deliveryGitCommandRunner: recordingGitRunner(),
             deliveryPublisher: recordingDeliveryPublisher(),
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const paths = yield* makeRunPaths(accepted.runId, {
@@ -2097,7 +2092,8 @@ describe("local run api http boundary", () => {
             prefix: "gaia-server-activation-",
           });
           const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           let usedLiveCoordinator = false;
@@ -2155,14 +2151,16 @@ describe("local run api http boundary", () => {
             },
             {
               deliveryGitCommandRunner: recordingGitRunner(),
-              harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+              harnessProviderRegistry:
+                markerWritingTestHarnessProviderRegistry(cwd),
               rootDirectory: cwd,
             }
           );
           yield* continueServerRun(accepted.runId, {
             deliveryGitCommandRunner: recordingGitRunner(),
             deliveryPublisher: recordingDeliveryPublisher(),
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const paths = yield* makeRunPaths(accepted.runId, {
@@ -2226,10 +2224,12 @@ describe("local run api http boundary", () => {
             operationId: `remediation:${accepted.runId}:1`,
             state: "intentRecorded",
           });
-          const intentEvent = yield* appendEvent(accepted.runId, paths, {
-            payload: { remediation: encodeDeliveryRemediationJson(intent) },
-            type: "DELIVERY_REMEDIATION_RECORDED",
-          });
+          const intentEvent = yield* appendTestRemediationIntent(
+            accepted.runId,
+            paths,
+            intent,
+            "Apply the bounded projection remediation input."
+          );
           const response = yield* HttpClient.get(
             `/runs/${accepted.runId}/delivery`
           ).pipe(Effect.provide(testServerLayer(cwd)));
@@ -2324,11 +2324,13 @@ describe("local run api http boundary", () => {
           const fs = yield* FileSystem.FileSystem;
           const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
           const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           yield* continueServerRun(accepted.runId, {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const response = yield* HttpClientRequest.post(
@@ -2358,7 +2360,8 @@ describe("local run api http boundary", () => {
           const fs = yield* FileSystem.FileSystem;
           const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
           const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const paths = yield* makeRunPaths(accepted.runId, {
@@ -2472,14 +2475,30 @@ describe("local run api http boundary", () => {
         })
     );
 
-    it.effect("returns typed 400 for invalid Markdown content", () =>
-      Effect.gen(function* () {
-        const response = yield* postCreateRun(testServerLayer("."), "   ");
-        const body = yield* responseJsonObject(response);
+    it.effect(
+      "returns typed 400 before persistence for invalid or sensitive input",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-server-preflight-",
+          });
+          const layer = testServerLayer(cwd);
+          const response = yield* postCreateRun(layer, "   ");
+          const body = yield* responseJsonObject(response);
+          const secret = "sensitive-preflight-canary";
+          const sensitiveResponse = yield* createRunRequest(
+            `Authorization=${secret}`
+          ).pipe(Effect.provide(layer));
+          const sensitiveBody = yield* responseJsonObject(sensitiveResponse);
 
-        assert.strictEqual(response.status, 400);
-        assertApiError(body, "InvalidSpec", 400);
-      })
+          assert.strictEqual(response.status, 400);
+          assertApiError(body, "InvalidSpec", 400);
+          assert.strictEqual(sensitiveResponse.status, 400);
+          assertApiError(sensitiveBody, "InvalidSpec", 400);
+          assert.notInclude(JSON.stringify(sensitiveBody), secret);
+          assert.isFalse(yield* fs.exists(`${cwd}/.gaia`));
+        })
     );
 
     it.effect(
@@ -2633,7 +2652,7 @@ describe("local run api http boundary", () => {
     );
 
     it.effect(
-      "returns typed 409 while the first create is still accepting",
+      "resolves provider semantics before reserving create ownership",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -2659,11 +2678,11 @@ describe("local run api http boundary", () => {
             const accepted = yield* Fiber.join(firstFiber);
             return { first: accepted, second: conflict };
           }).pipe(Effect.provide(layer));
-          const secondBody = yield* responseJsonObject(second);
+          const firstBody = yield* responseJsonObject(first);
 
-          assert.strictEqual(first.status, 202);
-          assert.strictEqual(second.status, 409);
-          assertApiError(secondBody, "ActiveRunConflict", 409);
+          assert.strictEqual(first.status, 409);
+          assert.strictEqual(second.status, 202);
+          assertApiError(firstBody, "ActiveRunConflict", 409);
         }),
       20_000
     );
@@ -2810,7 +2829,8 @@ describe("local run api http boundary", () => {
           const fs = yield* FileSystem.FileSystem;
           const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
           const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
-            harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
             rootDirectory: cwd,
           });
           const artifactLayer = testServerLayer(cwd);
@@ -2886,12 +2906,36 @@ function testServerLayer(
   return makeLocalGaiaServerLayer(
     testIdentity(rootDirectory),
     {
-      harnessProviderRegistry: makeTestHarnessProviderRegistry(),
+      harnessProviderRegistry:
+        markerWritingTestHarnessProviderRegistry(rootDirectory),
       ...workflowOptions,
     },
     [],
     serverOptions
   ).pipe(Layer.provideMerge(NodeHttpServer.layerTest));
+}
+
+function markerWritingTestHarnessProviderRegistry(
+  rootDirectory: typeof RunStorageRootInputSchema.Encoded
+) {
+  return makeHarnessProviderRegistry([
+    {
+      profileId: codexAppServerExecutionSelection.harnessProfileId,
+      provider: {
+        ...testHarnessProvider,
+        createSession: (request) =>
+          Effect.sync(() => {
+            const runId = request.sessionId.slice("session-".length);
+            const workspace = `${rootDirectory}/.gaia/runs/${runId}/workspace`;
+            mkdirSync(workspace, { recursive: true });
+            writeFileSync(
+              `${workspace}/output.txt`,
+              `test interactive completion ${runId}\n`
+            );
+          }).pipe(Effect.andThen(testHarnessProvider.createSession(request))),
+      },
+    },
+  ]);
 }
 
 function makeVerificationActionFixture(
@@ -3160,7 +3204,7 @@ function pendingApprovalSession(
       Effect.sync(() => {
         resolutions.push(resolution);
       }),
-    send: () => Effect.void,
+    send: () => Effect.succeed(undefined),
     snapshot: Effect.succeed(projectHarnessEvents(events, sessionId)),
     steer: Option.none(),
   };
@@ -3474,21 +3518,58 @@ function appendTerminalRemediation(
       operationId: `remediation:${runId}:1`,
       state: "intentRecorded",
     });
-    for (const remediation of [
+    yield* appendTestRemediationIntent(
+      runId,
+      paths,
       intent,
-      DeliveryRemediationFailed.make({
-        ...intent,
-        code: "TestTerminalBlocker",
-        message: "Terminal test blocker.",
-        recoverable: false,
-        state: "failed",
-      }),
-    ]) {
-      yield* appendEvent(runId, paths, {
-        payload: { remediation: encodeDeliveryRemediationJson(remediation) },
-        type: "DELIVERY_REMEDIATION_RECORDED",
+      "Apply the bounded terminal remediation input."
+    );
+    yield* appendEvent(runId, paths, {
+      payload: {
+        remediation: encodeDeliveryRemediationJson(
+          DeliveryRemediationFailed.make({
+            ...intent,
+            code: "TestTerminalBlocker",
+            message: "Terminal test blocker.",
+            recoverable: false,
+            state: "failed",
+          })
+        ),
+      },
+      type: "DELIVERY_REMEDIATION_RECORDED",
+    });
+  });
+}
+
+function appendTestRemediationIntent(
+  runId: ReturnType<typeof parseRunId>,
+  paths: RunPaths,
+  intent: DeliveryRemediationIntent,
+  taskInput: string
+) {
+  return Effect.gen(function* () {
+    const modelInvocationEpisode =
+      yield* commitDerivedAppModelInvocationEpisode({
+        episodeKey: `deliveryRemediation:${intent.operationId}`,
+        episodeRole: "deliveryRemediation",
+        events: yield* readEvents(paths),
+        paths,
+        runId,
+        taskInput,
       });
-    }
+    return yield* appendEvent(runId, paths, {
+      payload: {
+        remediation: encodeDeliveryRemediationJson(intent),
+        ...(modelInvocationEpisode === undefined
+          ? {}
+          : {
+              modelInvocationEpisode: Schema.encodeSync(
+                ModelInvocationEpisodeStartV1
+              )(modelInvocationEpisode),
+            }),
+      },
+      type: "DELIVERY_REMEDIATION_RECORDED",
+    });
   });
 }
 

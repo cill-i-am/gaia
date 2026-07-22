@@ -63,6 +63,7 @@ export const RunStorePathsSchema = Schema.Struct({
 export type RunStorePaths = typeof RunStorePathsSchema.Type;
 
 export const RunPathsSchema = Schema.Struct({
+  acceptedRunInput: RuntimePathSchema,
   browserEvidence: RuntimePathSchema,
   browserScreenshots: RuntimePathSchema,
   ciWatchState: RuntimePathSchema,
@@ -94,6 +95,7 @@ export const RunPathsSchema = Schema.Struct({
   latest: RuntimePathSchema,
   linearIssueGraph: RuntimePathSchema,
   mergeDecision: RuntimePathSchema,
+  modelInvocations: RuntimePathSchema,
   planReviewMarkdown: RuntimePathSchema,
   planReviewResult: RuntimePathSchema,
   planReviewerSession: RuntimePathSchema,
@@ -171,6 +173,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
     const workspace = path.join(root, "workspace");
 
     return parseRunPaths({
+      acceptedRunInput: path.join(root, "accepted-run-input.json"),
       browserEvidence: path.join(root, "browser-evidence.json"),
       browserScreenshots: path.join(root, "browser"),
       ciWatchState: path.join(root, "ci-watch-state.json"),
@@ -218,6 +221,7 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       latest: store.latest,
       linearIssueGraph: path.join(root, "linear-issue-graph.json"),
       mergeDecision: path.join(root, "merge-decision.json"),
+      modelInvocations: path.join(root, "model-invocations"),
       planReviewMarkdown: path.join(root, "plan-review.md"),
       planReviewResult: path.join(root, "plan-review.json"),
       planReviewerSession: path.join(root, "plan-reviewer-session.json"),

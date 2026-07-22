@@ -1,3 +1,4 @@
+import { ModelAdapterSemanticsV1 } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
 import {
@@ -10,6 +11,10 @@ import {
   type CodexHarnessConfig,
 } from "./codex-harness.js";
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
+import {
+  decodeCodexBatchSemanticConfig,
+  verifyModelAdapterCwd,
+} from "./model-invocation.js";
 import { parseRuntimePath } from "./paths.js";
 import { ReviewerSessionEvidence } from "./reviewer-session-evidence.js";
 import {
@@ -66,8 +71,27 @@ export function makeCodexReviewerConfig(
 
 /** Build a read-only Gaia reviewer backed by `codex exec`. */
 export function makeCodexReviewer(options: CodexReviewerOptions): GaiaReviewer {
+  if (options.config.sandbox !== "read-only")
+    throw makeRuntimeError({
+      code: "AcceptedInputRejected",
+      message: "Codex reviewer sandbox must remain read-only.",
+      recoverable: false,
+    });
+  const semanticConfig = decodeCodexBatchSemanticConfig({
+    config: options.config,
+  });
+  if (semanticConfig === undefined)
+    throw makeRuntimeError({
+      code: "AcceptedInputRejected",
+      message: "Codex reviewer semantic configuration is required.",
+      recoverable: false,
+    });
   return {
     adapterKind: "codex-cli",
+    modelAdapterSemantics: ModelAdapterSemanticsV1.make({
+      kind: "deterministicReviewer",
+      semanticDigest: semanticConfig.semanticDigest,
+    }),
     name: codexReviewerName,
     run: (request) => runCodexReviewer(request, options),
     sessionKind: "cli",
@@ -117,17 +141,23 @@ function runCodexReviewer(
       runRoot,
       `${request.phase}-codex-reviewer.log`
     );
+    if (request.modelWorkspaceBinding !== undefined)
+      yield* verifyModelAdapterCwd(
+        request.workspacePath,
+        request.modelWorkspaceBinding
+      );
     const runner = options.commandRunner ?? nodeCodexCommandRunner;
     const execution = yield* runner({
       request: CodexCommandRequest.make({
         args: makeCodexCommandArgs({
           config: options.config,
           lastMessagePath,
-          workspacePath: runRoot,
+          workspacePath: request.workspacePath,
         }),
         command: options.config.command,
-        cwd: runRoot,
-        stdin: makeCodexReviewerPrompt(request),
+        cwd: request.workspacePath,
+        stdin:
+          request.modelRenderedInput?.text ?? makeCodexReviewerPrompt(request),
         timeoutMs: options.config.timeoutMs,
       }),
     });
@@ -166,7 +196,7 @@ function runCodexReviewer(
     const sessionEvidence = ReviewerSessionEvidence.make({
       adapterKind: "codex-cli",
       command: options.config.command,
-      cwd: runRoot,
+      cwd: request.workspacePath,
       decisionStatus: decision.status,
       evidencePath: path.basename(request.sessionEvidencePath),
       logPath: path.basename(reviewerLogPath),

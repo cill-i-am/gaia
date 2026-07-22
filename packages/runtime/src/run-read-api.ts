@@ -2,6 +2,7 @@ import {
   LocalRunPathSegmentSchema,
   LocalRunArtifactContentTypeSchema,
   LocalRunReadArtifactIdSchema,
+  ModelManifestArtifactIdSchema,
   LocalRunReadDiagnosticSchema,
   LocalRunReadSummarySchema,
   localRunArtifactIds,
@@ -26,6 +27,10 @@ import { Cause, Effect, FileSystem, Option, Schema } from "effect";
 
 import { loadRun } from "./event-store.js";
 import {
+  inspectModelInvocationArtifacts,
+  readModelInvocationArtifactBody,
+} from "./model-invocation.js";
+import {
   makeRunPaths,
   makeRunStorePaths,
   type RunPaths,
@@ -40,6 +45,9 @@ import {
 
 const decodeLocalRunArtifactId = Schema.decodeUnknownOption(
   LocalRunReadArtifactIdSchema
+);
+const decodeModelManifestArtifactId = Schema.decodeUnknownOption(
+  ModelManifestArtifactIdSchema
 );
 const decodeLocalRunDiagnostic = Schema.decodeUnknownOption(
   LocalRunReadDiagnosticSchema
@@ -205,6 +213,10 @@ export function readLocalRun(runId: RunId, options: RunStorageOptions = {}) {
     }
 
     const artifacts = yield* existingArtifacts(paths);
+    const modelInvocationArtifacts = yield* inspectModelInvocationArtifacts(
+      paths,
+      synchronizedExit.value.events
+    ).pipe(Effect.mapError(() => readFailureDiagnostic(runId)));
     const proofAggregate = proofAggregateFromSnapshot(
       snapshot.context["runProof"]
     );
@@ -213,6 +225,7 @@ export function readLocalRun(runId: RunId, options: RunStorageOptions = {}) {
       createdAt: firstEvent.timestamp,
       eventCount: synchronizedExit.value.events.length,
       latestEventType: latestEvent.type,
+      modelInvocationArtifacts,
       ...(proofAggregate === undefined ? {} : { proofAggregate }),
       runId,
       state: snapshot.state,
@@ -268,7 +281,55 @@ export function readLocalRunArtifact(
   return Effect.gen(function* () {
     const attemptedArtifactName = parseLocalRunArtifactName(artifactName);
     const artifactId = decodeLocalRunArtifactId(artifactName);
+    const modelManifestArtifactId = decodeModelManifestArtifactId(artifactName);
     if (Option.isNone(artifactId)) {
+      if (Option.isSome(modelManifestArtifactId)) {
+        const paths = yield* makeRunPaths(runId, options);
+        const loaded = yield* loadRun(paths).pipe(
+          Effect.mapError(() => readFailureDiagnostic(runId))
+        );
+        const manifest = yield* readModelInvocationArtifactBody(
+          paths,
+          loaded.events,
+          modelManifestArtifactId.value
+        ).pipe(
+          Effect.mapError((error) =>
+            parseLocalRunReadDiagnostic({
+              artifactName: attemptedArtifactName,
+              code:
+                error.code === "ModelInvocationArtifactCorrupt"
+                  ? "ArtifactBodyCorrupt"
+                  : error.code === "ModelInvocationArtifactMismatch" ||
+                      error.code === "ModelInvocationArtifactEncodingMismatch"
+                    ? "ArtifactBodyMismatch"
+                    : error.code === "ModelInvocationPairConflict"
+                      ? "ArtifactPairConflict"
+                      : "ArtifactBodyMissing",
+              message:
+                "The event-referenced model invocation manifest could not be read.",
+              recoverable: false,
+              runId,
+            })
+          )
+        );
+        if (Option.isNone(manifest))
+          return yield* Effect.fail(
+            parseLocalRunReadDiagnostic({
+              artifactName: attemptedArtifactName,
+              code: "ArtifactNotFound",
+              message:
+                "Artifact is not referenced by authoritative run history.",
+              recoverable: false,
+              runId,
+            })
+          );
+        return parseLocalRunArtifact({
+          artifactName: modelManifestArtifactId.value,
+          body: manifest.value.body,
+          contentType: "application/json",
+          runId,
+        });
+      }
       return yield* Effect.fail(
         parseLocalRunReadDiagnostic({
           artifactName: attemptedArtifactName,

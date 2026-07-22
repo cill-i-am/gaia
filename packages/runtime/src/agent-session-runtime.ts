@@ -8,6 +8,7 @@ import {
   FactoryAgentIdSchema,
   HarnessInteractionResolutionSchema,
   HarnessSessionIdSchema,
+  ModelInvocationObservationV1,
   RunIdSchema,
   parseHarnessSessionId,
   parseHarnessEvent,
@@ -31,12 +32,47 @@ import {
   withRunEventSerialization,
 } from "./event-store.js";
 import { issueDeliveryAgentIds } from "./factory-workflows.js";
-import { HarnessInput, type HarnessSession } from "./harness-session.js";
-import { makeRunPaths, type RunStorageOptions } from "./paths.js";
+import {
+  HarnessInput,
+  type HarnessActionTransportWitness,
+  type HarnessSession,
+} from "./harness-session.js";
+import {
+  commitDerivedAppModelInvocationEpisode,
+  loadModelInvocationPair,
+} from "./model-invocation.js";
+import {
+  makeRunPaths,
+  type RunPaths,
+  type RunStorageOptions,
+} from "./paths.js";
+import { withRunStoreLock } from "./run-store-lock.js";
 
 const decodeAgentSessionEventSequence = Schema.decodeUnknownSync(
   AgentSessionEventSequenceSchema
 );
+
+function prepareOperatorInputEpisode(input: {
+  readonly action: AgentOperatorActionRequest;
+  readonly events: ReadonlyArray<RunEvent>;
+  readonly paths: RunPaths;
+  readonly runId: RunId;
+}) {
+  if (input.action.kind !== "followUp" && input.action.kind !== "steer")
+    return Effect.succeed(undefined);
+  const action = input.action;
+  return commitDerivedAppModelInvocationEpisode({
+    episodeKey: `${
+      action.kind === "followUp" ? "operatorFollowUp" : "operatorSteer"
+    }:${action.actionId}`,
+    episodeRole:
+      action.kind === "followUp" ? "operatorFollowUp" : "operatorSteer",
+    events: input.events,
+    paths: input.paths,
+    runId: input.runId,
+    taskInput: action.text,
+  });
+}
 
 const LiveSessionIdentitySchema = Schema.Struct({
   agentId: FactoryAgentIdSchema,
@@ -181,6 +217,24 @@ export function dispatchAgentSessionAction(input: {
   readonly options?: RunStorageOptions;
   readonly runId: RunId;
 }) {
+  return withRunStoreLock(
+    input.options ?? {},
+    dispatchAgentSessionActionWithinLease(input),
+    {
+      nextSafeAction:
+        "Refresh the agent session before retrying the audited operator action.",
+      operation: "Gaia agent session action",
+    }
+  );
+}
+
+function dispatchAgentSessionActionWithinLease(input: {
+  readonly action: AgentOperatorActionRequest;
+  readonly agentId: FactoryAgentId;
+  readonly coordinator: LiveHarnessSessionCoordinator;
+  readonly options?: RunStorageOptions;
+  readonly runId: RunId;
+}) {
   return Effect.gen(function* () {
     yield* expectRuntime(() => requireWorkerAgent(input.agentId));
     const paths = yield* makeRunPaths(input.runId, input.options ?? {});
@@ -200,17 +254,28 @@ export function dispatchAgentSessionAction(input: {
         yield* expectRuntime(() =>
           validateAction(snapshot, input.action, events)
         );
+        const modelInvocationEpisode = yield* prepareOperatorInputEpisode({
+          action: input.action,
+          events,
+          paths,
+          runId: input.runId,
+        });
         const intent = yield* appendHarnessSessionEventWithinSerialization(
           input.runId,
           paths,
-          { ...binding, kind: "operatorActionIntentRecorded" }
+          { ...binding, kind: "operatorActionIntentRecorded" },
+          modelInvocationEpisode
         );
         yield* appendHarnessSessionEventWithinSerialization(
           input.runId,
           paths,
           { ...binding, kind: "operatorActionDispatchAttempted" }
         );
-        return { intentSequence: intent.event.sequence, snapshot } as const;
+        return {
+          intentSequence: intent.event.sequence,
+          modelInvocationEpisode,
+          snapshot,
+        } as const;
       })
     );
     if ("existing" in prepared) return prepared.existing;
@@ -230,8 +295,15 @@ export function dispatchAgentSessionAction(input: {
         })
       );
     }
+    const recordedInput =
+      prepared.modelInvocationEpisode === undefined
+        ? undefined
+        : (yield* loadModelInvocationPair(
+            paths,
+            prepared.modelInvocationEpisode
+          )).rendered.text;
     const dispatchExit = yield* Effect.exit(
-      dispatchToSession(live.session, input.action)
+      dispatchToSession(live.session, input.action, recordedInput)
     );
     if (dispatchExit._tag === "Failure") {
       return yield* Effect.fail(
@@ -249,7 +321,18 @@ export function dispatchAgentSessionAction(input: {
         const confirmed = yield* appendHarnessSessionEventWithinSerialization(
           input.runId,
           paths,
-          { ...binding, kind: "operatorActionDispatchConfirmed" }
+          { ...binding, kind: "operatorActionDispatchConfirmed" },
+          undefined,
+          prepared.modelInvocationEpisode === undefined ||
+            dispatchExit.value?.kind !== "codexAppServerTransportOffered"
+            ? undefined
+            : ModelInvocationObservationV1.make({
+                episodeKey: prepared.modelInvocationEpisode.episodeKey,
+                kind: "offered",
+                source: "codexAppServerTransport",
+                trust: "high",
+                version: 1,
+              })
         );
         if (isInteractionAction(input.action)) {
           yield* appendHarnessSessionEventWithinSerialization(
@@ -664,11 +747,14 @@ function validateAction(
 
 function dispatchToSession(
   session: HarnessSession,
-  action: AgentOperatorActionRequest
-): Effect.Effect<void, unknown> {
+  action: AgentOperatorActionRequest,
+  recordedInput: string | undefined
+): Effect.Effect<HarnessActionTransportWitness | undefined, unknown> {
   switch (action.kind) {
     case "followUp":
-      return session.send(HarnessInput.make({ text: action.text }));
+      return session.send(
+        HarnessInput.make({ text: recordedInput ?? action.text })
+      );
     case "steer":
       return Option.match(session.steer, {
         onNone: () =>
@@ -679,7 +765,8 @@ function dispatchToSession(
               recoverable: true,
             })
           ),
-        onSome: (steer) => steer(HarnessInput.make({ text: action.text })),
+        onSome: (steer) =>
+          steer(HarnessInput.make({ text: recordedInput ?? action.text })),
       });
     case "interrupt":
       return Option.match(session.interrupt, {
@@ -691,30 +778,36 @@ function dispatchToSession(
               recoverable: true,
             })
           ),
-        onSome: (interrupt) => interrupt,
+        onSome: (interrupt) => interrupt.pipe(Effect.as(undefined)),
       });
     case "approval":
-      return session.resolveInteraction({
-        actionId: action.actionId,
-        decision: action.decision,
-        interactionId: action.interactionId,
-        kind: "approval",
-      });
+      return session
+        .resolveInteraction({
+          actionId: action.actionId,
+          decision: action.decision,
+          interactionId: action.interactionId,
+          kind: "approval",
+        })
+        .pipe(Effect.as(undefined));
     case "userInput":
-      return session.resolveInteraction({
-        actionId: action.actionId,
-        answers: action.answers,
-        interactionId: action.interactionId,
-        kind: "userInput",
-      });
+      return session
+        .resolveInteraction({
+          actionId: action.actionId,
+          answers: action.answers,
+          interactionId: action.interactionId,
+          kind: "userInput",
+        })
+        .pipe(Effect.as(undefined));
     case "mcpElicitation":
-      return session.resolveInteraction({
-        actionId: action.actionId,
-        action: action.action,
-        ...(action.content === undefined ? {} : { content: action.content }),
-        interactionId: action.interactionId,
-        kind: "mcpElicitation",
-      });
+      return session
+        .resolveInteraction({
+          actionId: action.actionId,
+          action: action.action,
+          ...(action.content === undefined ? {} : { content: action.content }),
+          interactionId: action.interactionId,
+          kind: "mcpElicitation",
+        })
+        .pipe(Effect.as(undefined));
   }
 }
 

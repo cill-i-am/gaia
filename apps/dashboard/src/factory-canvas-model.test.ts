@@ -585,6 +585,7 @@ function factoryGraphFixture(
     ],
     linkedArtifacts: [
       {
+        availability: "available",
         artifactId: artifactId("artifact-plan"),
         contentType: "text/markdown",
         createdAt: decodeRunEventTimestamp("2026-07-08T12:00:00.000Z"),
@@ -594,6 +595,7 @@ function factoryGraphFixture(
         visibility: "run",
       },
       {
+        availability: "available",
         artifactId: artifactId("artifact-summary"),
         contentType: "text/markdown",
         createdAt: decodeRunEventTimestamp("2026-07-08T12:01:00.000Z"),
@@ -603,6 +605,7 @@ function factoryGraphFixture(
         visibility: "run",
       },
       {
+        availability: "available",
         artifactId: artifactId("artifact-review"),
         contentType: "text/markdown",
         createdAt: decodeRunEventTimestamp("2026-07-08T12:02:00.000Z"),

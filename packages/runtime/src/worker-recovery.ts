@@ -9,6 +9,8 @@ import {
   HarnessExecutionSelection,
   HarnessProfileIdSchema,
   HarnessSessionIdSchema,
+  ModelInvocationEpisodeStartV1,
+  ModelInvocationObservationV1,
   type RunEvent,
   type RunId,
   type WorkerRecoveryAction,
@@ -16,6 +18,7 @@ import {
   WorkerRecoveryActionIdSchema,
   WorkerRecoveryDigestSchema,
   WorkerRecoveryModelIdSchema,
+  resolveModelInvocationEpisodes,
   type WorkerRecoveryReceipt,
 } from "@gaia/core";
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
@@ -26,6 +29,10 @@ import {
   HarnessCheckpointTokenSchema,
   type HarnessCheckpointToken,
 } from "./harness-session.js";
+import {
+  commitDerivedAppModelInvocationEpisode,
+  loadModelInvocationPair,
+} from "./model-invocation.js";
 import { makeRunPaths, type RunPaths } from "./paths.js";
 import { withRunStoreLock } from "./run-store-lock.js";
 
@@ -61,9 +68,12 @@ export type WorkerRecoveryModelCatalog =
 export class WorkerRecoveryStartTurn extends Schema.Class<WorkerRecoveryStartTurn>(
   "WorkerRecoveryStartTurn"
 )(
-  { model: WorkerRecoveryModelIdSchema },
+  { input: Schema.NonEmptyString, model: WorkerRecoveryModelIdSchema },
   { parseOptions: { onExcessProperty: "error" } }
 ) {}
+
+const workerRecoveryTurnInput =
+  "Continue the interrupted worker from its accepted recovery checkpoint. Preserve the accepted scope and stop conditions; do not restart, publish, merge, deploy, or broaden the run.";
 
 export class WorkerRecoveryTurnStarted extends Schema.Class<WorkerRecoveryTurnStarted>(
   "WorkerRecoveryTurnStarted"
@@ -228,8 +238,19 @@ export function recoverWorkerSession(
     config,
     Effect.gen(function* () {
       const paths = yield* makeRunPaths(runId, config);
-      const recordReceipt = (receipt: WorkerRecoveryReceipt) =>
-        record(runId, paths, receipt, input.appendRecoveryEvent ?? appendEvent);
+      const recordReceipt = (
+        receipt: WorkerRecoveryReceipt,
+        modelInvocationEpisode?: ModelInvocationEpisodeStartV1,
+        modelInvocationObservation?: ModelInvocationObservationV1
+      ) =>
+        record(
+          runId,
+          paths,
+          receipt,
+          input.appendRecoveryEvent ?? appendEvent,
+          modelInvocationEpisode,
+          modelInvocationObservation
+        );
       const loaded = yield* loadRun(paths);
       const payloadDigest = digest(action);
       const prior = latestReceiptForFailure(
@@ -314,8 +335,38 @@ export function recoverWorkerSession(
         payloadDigest,
         ...trackedPayloadReceiptFields(expectedTrackedPayload),
       };
+      const episodeKey = `workerRecovery:${action.actionId}`;
+      const resolution = resolveModelInvocationEpisodes(loaded.events);
+      const existingEpisode =
+        resolution.protocol === "legacyAbsent"
+          ? undefined
+          : resolution.episodes.find(
+              ({ start }) => start.episodeKey === episodeKey
+            )?.start;
+      const modelInvocationEpisode =
+        prior === undefined
+          ? yield* commitDerivedAppModelInvocationEpisode({
+              episodeKey,
+              episodeRole: "workerRecovery",
+              events: loaded.events,
+              paths,
+              runId,
+              taskInput: workerRecoveryTurnInput,
+            })
+          : existingEpisode;
+      if (resolution.protocol === "v1" && modelInvocationEpisode === undefined)
+        return yield* conflict(
+          "The authoritative worker recovery input manifest is missing."
+        );
+      const modelInput =
+        modelInvocationEpisode === undefined
+          ? undefined
+          : yield* loadModelInvocationPair(paths, modelInvocationEpisode);
       if (prior === undefined) {
-        yield* recordReceipt({ ...base, state: "intentRecorded" }).pipe(
+        yield* recordReceipt(
+          { ...base, state: "intentRecorded" },
+          modelInvocationEpisode
+        ).pipe(
           Effect.mapError(() =>
             failure(
               "WorkerRecoveryIntentPersistenceFailed",
@@ -359,7 +410,10 @@ export function recoverWorkerSession(
       yield* recordReceipt({ ...base, state: "dispatchAttempted" });
       const started = yield* Effect.exit(
         input.provider.startTurn(
-          WorkerRecoveryStartTurn.make({ model: action.model })
+          WorkerRecoveryStartTurn.make({
+            input: modelInput?.rendered.text ?? workerRecoveryTurnInput,
+            model: action.model,
+          })
         )
       );
       if (started._tag === "Failure") {
@@ -383,11 +437,23 @@ export function recoverWorkerSession(
             "Codex returned a turn but its private receipt was not durable.",
           state: "outcomeUnknown",
         });
-      return yield* recordReceipt({
-        ...base,
-        nativeTurnIdDigest: started.value.nativeTurnIdDigest,
-        state: "dispatchConfirmed",
-      });
+      return yield* recordReceipt(
+        {
+          ...base,
+          nativeTurnIdDigest: started.value.nativeTurnIdDigest,
+          state: "dispatchConfirmed",
+        },
+        undefined,
+        modelInvocationEpisode === undefined
+          ? undefined
+          : ModelInvocationObservationV1.make({
+              episodeKey,
+              kind: "offered",
+              source: "codexAppServerTransport",
+              trust: "high",
+              version: 1,
+            })
+      );
     })
   );
 }
@@ -587,10 +653,28 @@ function record(
   runId: RunId,
   paths: RunPaths,
   receipt: WorkerRecoveryReceipt,
-  appendRecoveryEvent: typeof appendEvent
+  appendRecoveryEvent: typeof appendEvent,
+  modelInvocationEpisode?: ModelInvocationEpisodeStartV1,
+  modelInvocationObservation?: ModelInvocationObservationV1
 ) {
   return appendRecoveryEvent(runId, paths, {
-    payload: { recovery: encodeWorkerRecoveryReceiptJson(receipt) },
+    payload: {
+      recovery: encodeWorkerRecoveryReceiptJson(receipt),
+      ...(modelInvocationEpisode === undefined
+        ? {}
+        : {
+            modelInvocationEpisode: Schema.encodeSync(
+              ModelInvocationEpisodeStartV1
+            )(modelInvocationEpisode),
+          }),
+      ...(modelInvocationObservation === undefined
+        ? {}
+        : {
+            modelInvocationObservation: Schema.encodeSync(
+              ModelInvocationObservationV1
+            )(modelInvocationObservation),
+          }),
+    },
     type: "WORKER_RECOVERY_RECORDED",
   }).pipe(Effect.as(receipt));
 }

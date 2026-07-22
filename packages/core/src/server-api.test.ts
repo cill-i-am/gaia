@@ -10,9 +10,11 @@ import {
   LocalRunReadArtifactSchema,
   LocalRunReadDiagnosticSchema,
   LocalRunReadListSchema,
+  LocalRunModelManifestArtifactSchema,
   LocalRunReadDiagnosticCodeSchema,
   LocalRunReadStatusSchema,
   LocalRunReadSummarySchema,
+  LegacyLocalRunReadSummaryIngress,
   LocalGaiaServerOpenApi,
   ServerMetadata,
   VerificationActionSuccessEnvelope,
@@ -22,6 +24,48 @@ import {
   parseLocalRunPathSegment,
   parseLocalRunTimestamp,
 } from "./server-api.js";
+
+describe("local run legacy ingress", () => {
+  it("defaults only the encoded omission and re-encodes an explicit manifest list", () => {
+    const legacy = {
+      artifacts: ["events"],
+      createdAt: "2026-07-21T00:00:00.000Z",
+      eventCount: 1,
+      latestEventType: "RUN_CREATED",
+      runId: "run-1234567890",
+      state: "created",
+      status: "running",
+      updatedAt: "2026-07-21T00:00:00.000Z",
+    } as const;
+    const decoded = Schema.decodeUnknownSync(LegacyLocalRunReadSummaryIngress)(
+      legacy
+    );
+    assert.deepEqual(decoded.modelInvocationArtifacts, []);
+    assert.deepEqual(
+      Schema.encodeSync(LegacyLocalRunReadSummaryIngress)(decoded)
+        .modelInvocationArtifacts,
+      []
+    );
+    assert.throws(() =>
+      Schema.decodeUnknownSync(LocalRunReadSummarySchema)(legacy)
+    );
+    assert.throws(() =>
+      Schema.decodeUnknownSync(LocalRunModelManifestArtifactSchema)({
+        artifactId: `mmf1_${"a".repeat(64)}`,
+        availability: "unavailable",
+        bodyDigest: "b".repeat(64),
+        byteLength: 100,
+        contentType: "application/json",
+        episodeId: `episode1_${"c".repeat(64)}`,
+        episodeRole: "workerInitial",
+        identityDigest: "d".repeat(64),
+        manifestId: `mctx1_${"d".repeat(64)}`,
+        manifestKind: "modelContextManifest",
+        version: 1,
+      })
+    );
+  });
+});
 
 describe("verification action success contract", () => {
   const postPublicationResult = {
@@ -114,6 +158,11 @@ describe("verification action request contract", () => {
 describe("local run read contracts", () => {
   it("owns the exact reader diagnostic and status subsets", () => {
     assert.deepEqual(LocalRunReadDiagnosticCodeSchema.literals, [
+      "ArtifactBodyMissing",
+      "ArtifactBodyUnreadable",
+      "ArtifactBodyCorrupt",
+      "ArtifactBodyMismatch",
+      "ArtifactPairConflict",
       "ArtifactNotAllowed",
       "ArtifactNotFound",
       "FactoryAgentNotFound",
@@ -200,6 +249,7 @@ describe("local run read contracts", () => {
           createdAt: "2026-07-13T12:00:00.000Z",
           eventCount: 2,
           latestEventType: "REPORT_COMPLETED",
+          modelInvocationArtifacts: [],
           runId: "run-L84-kMhLY8",
           state: "completed",
           status: "completed",
