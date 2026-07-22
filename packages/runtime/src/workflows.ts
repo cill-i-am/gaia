@@ -1306,7 +1306,8 @@ function recordBrowserEvidence(
       options.browserEvidenceCollector ?? playwrightBrowserEvidenceCollector;
     const captured = yield* collector({ paths, targetUrl }).pipe(
       Effect.catchTag("GaiaRuntimeError", (error) =>
-        error.code === "BrowserConsoleSourceUrlInvalid"
+        error.code === "BrowserConsoleSourceUrlInvalid" ||
+        error.code === "BrowserEvidenceFinalUrlInvalid"
           ? Effect.fail(error)
           : Effect.succeed(
               failedBrowserEvidence({

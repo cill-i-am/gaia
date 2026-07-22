@@ -1,3 +1,4 @@
+import { createServer, type Server } from "node:http";
 import { execPath } from "node:process";
 
 import { NodeServices } from "@effect/platform-node";
@@ -3572,6 +3573,57 @@ describe("runtime workflows", () => {
           assert.notInclude(errorSurface, rejected);
           assert.notInclude(yield* readDurableTree(fs, cwd), canary);
         })
+    );
+
+    it.effect(
+      "rejects credential-bearing redirected final URLs without durable disclosure",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-runtime-" });
+          const specPath = `${cwd}/spec.md`;
+          yield* fs.writeFileString(
+            specPath,
+            "Reject an unsafe redirected browser target.\n"
+          );
+          const summary = yield* runSpecFile(specPath, { rootDirectory: cwd });
+          const canary = "GAIA_BROWSER_REDIRECT_CANARY";
+          const fixture = yield* acquireBrowserRedirectFixture(canary);
+          const rejectedFinalUrl = `${fixture.origin}/landing?token=${canary}`;
+
+          const error = yield* collectBrowserEvidence(
+            summary.runId,
+            `${fixture.origin}/unsafe-start`,
+            { rootDirectory: cwd }
+          ).pipe(Effect.flip);
+          if (!(error instanceof GaiaRuntimeError)) {
+            throw new Error("Expected a typed Gaia runtime error.");
+          }
+          const errorSurface = `${error.message}\n${String(
+            error.cause
+          )}\n${JSON.stringify(error)}`;
+
+          assert.strictEqual(error.code, "BrowserEvidenceFinalUrlInvalid");
+          assert.isUndefined(error.cause);
+          assert.notInclude(errorSurface, canary);
+          assert.notInclude(errorSurface, rejectedFinalUrl);
+          const rejectedDurableTree = yield* readDurableTree(fs, cwd);
+          assert.notInclude(rejectedDurableTree, canary);
+          assert.notInclude(rejectedDurableTree, rejectedFinalUrl);
+
+          const safeRecord = yield* collectBrowserEvidence(
+            summary.runId,
+            `${fixture.origin}/safe-start`,
+            { rootDirectory: cwd }
+          );
+          assert.strictEqual(
+            safeRecord.pages[0]?.url,
+            `${fixture.origin}/landing?view=summary`
+          );
+          const finalDurableTree = yield* readDurableTree(fs, cwd);
+          assert.notInclude(finalDurableTree, canary);
+          assert.notInclude(finalDurableTree, rejectedFinalUrl);
+        }).pipe(Effect.scoped)
     );
 
     it.effect(
@@ -8153,6 +8205,64 @@ function readDurableTree(fs: FileSystem.FileSystem, root: string) {
     }
     return bodies.join("\n");
   });
+}
+
+function acquireBrowserRedirectFixture(canary: string) {
+  return Effect.acquireRelease(
+    Effect.tryPromise({
+      try: () =>
+        new Promise<Readonly<{ origin: string; server: Server }>>(
+          (resolve, reject) => {
+            const server = createServer((request, response) => {
+              if (request.url === "/unsafe-start") {
+                response.writeHead(302, {
+                  location: `/landing?token=${canary}`,
+                });
+                response.end();
+                return;
+              }
+              if (request.url === "/safe-start") {
+                response.writeHead(302, {
+                  location: "/landing?view=summary",
+                });
+                response.end();
+                return;
+              }
+              response.writeHead(200, { "content-type": "text/html" });
+              response.end("<!doctype html><title>Redirect target</title>");
+            });
+            const onError = (cause: Error) => reject(cause);
+            server.once("error", onError);
+            server.listen(0, "127.0.0.1", () => {
+              server.off("error", onError);
+              const address = server.address();
+              if (address === null || typeof address === "string") {
+                reject(new Error("Redirect fixture address was unavailable."));
+                return;
+              }
+              resolve({
+                origin: `http://127.0.0.1:${address.port}`,
+                server,
+              });
+            });
+          }
+        ),
+      catch: (cause) =>
+        makeRuntimeError({
+          cause,
+          code: "TestBrowserRedirectFixtureFailed",
+          message: "The browser redirect fixture could not start.",
+          recoverable: false,
+        }),
+    }),
+    ({ server }) =>
+      Effect.promise(
+        () =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          })
+      )
+  );
 }
 
 function runIdFromCodexCwd(cwd: string) {

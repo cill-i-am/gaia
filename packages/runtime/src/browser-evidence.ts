@@ -322,7 +322,7 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
             return Promise.reject(consoleSourceError);
           }
 
-          return parseBrowserEvidenceTargetUrl(page.url());
+          return parseBrowserEvidenceFinalUrl(page.url());
         } finally {
           await browser.close();
         }
@@ -391,6 +391,19 @@ export function parseBrowserConsoleSourceUrl(input: unknown) {
     return parseBrowserEvidenceTargetUrl(input);
   } catch {
     throw browserConsoleSourceUrlInvalidError();
+  }
+}
+
+function parseBrowserEvidenceFinalUrl(input: unknown) {
+  try {
+    return parseBrowserEvidenceTargetUrl(input);
+  } catch {
+    throw makeRuntimeError({
+      code: "BrowserEvidenceFinalUrlInvalid",
+      message:
+        "The browser reported an invalid or credential-bearing final URL.",
+      recoverable: false,
+    });
   }
 }
 
