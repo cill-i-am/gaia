@@ -33,7 +33,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: pnpm --filter @gaia/runtime exec playwright install --with-deps chromium
 
       - name: Check
         run: pnpm check
