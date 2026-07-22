@@ -4,6 +4,7 @@ import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
+  digestHarnessEnvironmentContract,
   HarnessCapabilities,
   HarnessProviderDescriptor,
   MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
@@ -76,6 +77,9 @@ import {
   runHarness,
 } from "./harness.js";
 import {
+  digestRunContractEnvironmentSemantics,
+  digestModelInvocationEnvironmentSemantics,
+  digestWorkerPlanEnvironmentSemantics,
   interactiveSessionHarness,
   refreshInteractiveHarnessResult,
 } from "./interactive-harness.js";
@@ -89,6 +93,7 @@ import { deriveAndRecordRunContract, loadRunContract } from "./run-contract.js";
 import { readLocalRunEvents } from "./run-read-api.js";
 import { acceptFactoryRun, continueServerRun } from "./server-workflows.js";
 import { recordRunProofResult } from "./verifier.js";
+import { writeWorkerPlan } from "./worker-plan.js";
 import {
   snapshotWorkspace,
   writeWorkspaceSnapshot,
@@ -111,6 +116,157 @@ const syntheticCapabilities = HarnessCapabilities.make({
 
 describe("interactive issue-delivery harness", () => {
   layer(NodeServices.layer)((it) => {
+    it.effect(
+      "keeps actual run-contract and WorkerPlan semantics stable across run IDs",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-epoch-semantic-digest-",
+          });
+          const spec = parseMarkdownSpec(
+            "Implement the same bounded behavior.",
+            "Stable worker epoch"
+          );
+          const evidence = [];
+          for (const runId of [
+            parseRunId("run-EpochSem01"),
+            parseRunId("run-EpochSem02"),
+          ]) {
+            const paths = yield* makeRunPaths(runId, { rootDirectory: root });
+            yield* fs.makeDirectory(paths.workspace, { recursive: true });
+            yield* appendEvent(runId, paths, {
+              payload: { specPath: "input.md" },
+              type: "RUN_CREATED",
+            });
+            const contract = yield* deriveAndRecordRunContract({
+              paths,
+              runId,
+              spec,
+            });
+            yield* writeWorkerPlan({
+              harnessName: codexAppServerHarnessName,
+              paths,
+              runId,
+              spec,
+            });
+            const workerPlan = yield* fs.readFileString(paths.workerPlanResult);
+            evidence.push({
+              contractDigest: contract.contractDigest,
+              contractSemanticDigest:
+                digestRunContractEnvironmentSemantics(contract),
+              workerPlan,
+              workerPlanSemanticDigest:
+                digestWorkerPlanEnvironmentSemantics(workerPlan),
+            });
+          }
+
+          assert.notStrictEqual(
+            evidence[0]?.contractDigest,
+            evidence[1]?.contractDigest
+          );
+          assert.notStrictEqual(
+            evidence[0]?.workerPlan,
+            evidence[1]?.workerPlan
+          );
+          assert.strictEqual(
+            evidence[0]?.contractSemanticDigest,
+            evidence[1]?.contractSemanticDigest
+          );
+          assert.strictEqual(
+            evidence[0]?.workerPlanSemanticDigest,
+            evidence[1]?.workerPlanSemanticDigest
+          );
+        })
+    );
+
+    it.effect(
+      "changes GAIA-146 semantic identity for material invocation evidence",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-invocation-semantic-digest-",
+          });
+          const runId = parseRunId("run-InvSem0001");
+          const paths = yield* makeRunPaths(runId, { rootDirectory: root });
+          yield* fs.makeDirectory(paths.workspace, { recursive: true });
+          const workspaceBinding = yield* deriveModelWorkspaceBinding(paths);
+          const content = makeModelContextContentV1({
+            acceptedOutcomes: [],
+            authority: ["Apply only accepted worker authority."],
+            budget: { maxOutputBytes: 16_384, maxTurns: 1 },
+            contentRefs: [],
+            episodeRole: "workerInitial",
+            instructions: ["Complete the bounded task."],
+            nonGoals: [],
+            outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+            planningFacts: [],
+            safeExclusions: [],
+            skills: [],
+            stops: [],
+            taskInput: "Complete the bounded task.",
+            verificationCommands: [],
+          });
+          const rendered = renderModelInputV1(content);
+          const context = makeModelContextManifestV1({
+            authoritativeRefs: [{ digest: "a".repeat(64), kind: "authority" }],
+            binding: { episodeKey: "workerInitial", runId },
+            content,
+            workspaceBinding,
+          });
+          const invocation = (
+            observation: "offered" | "unobservable",
+            authorityDigest = "a".repeat(64)
+          ) =>
+            makeModelInvocationManifestV1({
+              acceptedProviderCapabilityObservation: observation,
+              adapterInputClass: "codexAppTurn",
+              adapterSemantics: {
+                kind: "codexAppServer",
+                semanticDigest: "b".repeat(64),
+              },
+              authorityRef: { digest: authorityDigest, kind: "authority" },
+              binding: context.payload.binding,
+              budget: content.payload.budget,
+              context,
+              outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+              rendered,
+              runContractRef: {
+                digest: "c".repeat(64),
+                kind: "runContract",
+              },
+              template: { id: "gaia.worker-input.v1", version: 1 },
+              workspaceBinding,
+            });
+          const semanticDigest = (
+            observation: "offered" | "unobservable",
+            authorityDigest?: string
+          ) =>
+            digestModelInvocationEnvironmentSemantics({
+              context,
+              invocation: invocation(
+                observation,
+                authorityDigest ?? "a".repeat(64)
+              ),
+              runContractSemanticDigest: digestHarnessEnvironmentContract(
+                "gaia.test.run-contract-semantic.v1",
+                ["stable"]
+              ),
+              workspaceBinding,
+            });
+
+          assert.notStrictEqual(
+            semanticDigest("offered"),
+            semanticDigest("unobservable")
+          );
+          assert.notStrictEqual(
+            semanticDigest("unobservable", "a".repeat(64)),
+            semanticDigest("unobservable", "e".repeat(64))
+          );
+        })
+    );
+
     it.effect(
       "keeps distinct-run batch stdin and App turn text byte-identical while binding each actual cwd",
       () =>
@@ -1374,6 +1530,18 @@ function recoveredPendingSession(
 
 type RecoveredCodexTurn = NonNullable<CodexThread["turns"]>[number];
 
+function runtimeThreadResult(threadId: CodexThreadId) {
+  return {
+    approvalPolicy: "on-request" as const,
+    cwd: "/workspace/project",
+    model: "gpt-5.6-codex",
+    modelProvider: "openai",
+    reasoningEffort: "high" as const,
+    sandbox: { type: "workspaceWrite" as const },
+    thread: { id: threadId },
+  };
+}
+
 function recordingCodexClient(input: {
   readonly onSubscribed?: () => void;
   readonly recoveredTurns: ReadonlyArray<RecoveredCodexTurn>;
@@ -1419,11 +1587,11 @@ function recordingCodexClient(input: {
     respondFileApproval: () => Effect.void,
     respondPermissionApproval: () => Effect.void,
     respondUserInput: () => Effect.void,
-    resumeThread: () => Effect.succeed({ thread: { id: input.threadId } }),
+    resumeThread: () => Effect.succeed(runtimeThreadResult(input.threadId)),
     startThread: (params) =>
       Effect.sync(() => {
         threadStarts.push(params);
-        return { thread: { id: input.threadId } };
+        return runtimeThreadResult(input.threadId);
       }),
     startTurn: (params) =>
       Effect.sync(() => {

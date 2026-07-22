@@ -1,10 +1,13 @@
 import {
+  HarnessEnvironmentAssignmentV1,
   HarnessProfileIdSchema,
   ResolvedHarnessExecution,
   missingHarnessCapabilities,
+  type HarnessCapabilities,
   type HarnessCapability,
   type HarnessExecutionSelection,
   type HarnessProfileId,
+  type HarnessProviderDescriptor,
 } from "@gaia/core";
 import { Effect, Schema } from "effect";
 
@@ -14,6 +17,7 @@ import {
   HarnessUnavailableError,
   type HarnessProvider,
 } from "./harness-session.js";
+import type { HarnessLaunchObservationService } from "./worker-runtime-environment.js";
 
 /** Capabilities required by the issue-delivery worker role in this slice. */
 export const issueDeliveryWorkerHarnessCapabilities = [
@@ -32,21 +36,38 @@ export class HarnessProfileNotFoundError extends Schema.TaggedErrorClass<Harness
 /** A detected compatible provider plus the safe immutable run assignment. */
 export type ResolvedHarnessProvider = {
   readonly execution: ResolvedHarnessExecution;
+  readonly launchObservation?: HarnessLaunchObservationService["Service"];
   readonly provider: HarnessProvider;
 };
 
 /** Static profile-to-provider binding used by the local execution runtime. */
 export type HarnessProviderRegistration = {
+  readonly environmentAssignment?: (input: {
+    readonly capabilities: HarnessCapabilities;
+    readonly provider: HarnessProviderDescriptor;
+    readonly version: string;
+  }) => Effect.Effect<HarnessEnvironmentAssignmentV1, unknown>;
+  readonly launchObservation?: HarnessLaunchObservationService["Service"];
   readonly profileId: HarnessProfileId;
   readonly provider: HarnessProvider;
 };
+
+/** New production Codex acceptance is missing its complete environment proof. */
+export class HarnessEnvironmentAssignmentError extends Schema.TaggedErrorClass<HarnessEnvironmentAssignmentError>()(
+  "HarnessEnvironmentAssignmentError",
+  {
+    message: Schema.Literal(
+      "Production harness environment assignment is unavailable."
+    ),
+  }
+) {}
 
 /** Build the bounded static provider registry for local issue delivery. */
 export function makeHarnessProviderRegistry(
   registrations: ReadonlyArray<HarnessProviderRegistration>
 ) {
   const providers = new Map(
-    registrations.map(({ profileId, provider }) => [profileId, provider])
+    registrations.map((entry) => [entry.profileId, entry])
   );
 
   return {
@@ -55,12 +76,13 @@ export function makeHarnessProviderRegistry(
       requiredCapabilities: ReadonlyArray<HarnessCapability>
     ) =>
       Effect.gen(function* () {
-        const provider = providers.get(selection.harnessProfileId);
-        if (provider === undefined) {
+        const registration = providers.get(selection.harnessProfileId);
+        if (registration === undefined) {
           return yield* new HarnessProfileNotFoundError({
             harnessProfileId: selection.harnessProfileId,
           });
         }
+        const { provider } = registration;
 
         const detection = yield* provider.detect;
         switch (detection.state) {
@@ -82,14 +104,36 @@ export function makeHarnessProviderRegistry(
                 version: detection.version,
               });
             }
+            const environmentAssignment =
+              registration.environmentAssignment === undefined
+                ? undefined
+                : yield* registration.environmentAssignment({
+                    capabilities: detection.capabilities,
+                    provider: provider.descriptor,
+                    version: detection.version,
+                  });
+            if (
+              provider.descriptor.providerId === "codex-app-server" &&
+              environmentAssignment === undefined
+            )
+              return yield* new HarnessEnvironmentAssignmentError({
+                message:
+                  "Production harness environment assignment is unavailable.",
+              });
             return {
               execution: ResolvedHarnessExecution.make({
                 capabilities: detection.capabilities,
+                ...(environmentAssignment === undefined
+                  ? {}
+                  : { environmentAssignment }),
                 executionMode: "local",
                 harnessProfileId: selection.harnessProfileId,
                 provider: provider.descriptor,
                 version: detection.version,
               }),
+              ...(registration.launchObservation === undefined
+                ? {}
+                : { launchObservation: registration.launchObservation }),
               provider,
             } satisfies ResolvedHarnessProvider;
           }

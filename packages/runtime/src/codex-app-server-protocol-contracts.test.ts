@@ -416,6 +416,29 @@ describe("Codex App Server provider identities", () => {
     ).toThrow();
   });
 
+  it("retains only the allowlisted effective thread runtime evidence", () => {
+    const decoded = Schema.decodeUnknownSync(ThreadStartBoundaryResultSchema)({
+      ...rawThreadRuntimeResult,
+      approvalPolicy: "on-request",
+      instructionSources: ["/private/instructions.md"],
+      model: "gpt-5.6-codex",
+      reasoningEffort: "high",
+      runtimeWorkspaceRoots: ["/private/root"],
+      sandbox: { type: "workspaceWrite", writableRoots: ["/workspace"] },
+    });
+
+    expect(decoded).toMatchObject({
+      approvalPolicy: "on-request",
+      cwd: "/workspace",
+      model: "gpt-5.6-codex",
+      modelProvider: "openai",
+      reasoningEffort: "high",
+      sandbox: { type: "workspaceWrite" },
+    });
+    expect(decoded).not.toHaveProperty("instructionSources");
+    expect(decoded).not.toHaveProperty("runtimeWorkspaceRoots");
+  });
+
   it("accepts source-valid optional nested fields at every affected boundary", () => {
     const cases = [
       {

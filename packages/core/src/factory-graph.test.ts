@@ -13,6 +13,8 @@ import {
   FactoryExternalRefDto,
   FactoryExternalRefUrlSchema,
   FactoryGraphDto,
+  FactoryRunDetailDto,
+  FactoryRunSummaryDto,
   FactoryRelationshipTypeSchema,
   FactoryWorkItemIdSchema,
   FactoryWorkflowDefinitionDto,
@@ -287,6 +289,72 @@ describe("FactoryGraph core contracts", () => {
     assert.deepEqual(
       definition.relationships.map((relationship) => relationship.type),
       ["owns", "spawned", "reviewed", "tested", "watched"]
+    );
+  });
+});
+
+describe("factory run worker environment epoch projection", () => {
+  const summary = {
+    counts: { activity: 0, agents: 0, artifacts: 0, workItems: 1 },
+    createdAt: "2026-07-22T11:20:00.000Z",
+    rootWorkItem: { id: "work-item-root", kind: "issue", title: "GAIA-147" },
+    runId: "run-1234567890",
+    state: "running",
+    updatedAt: "2026-07-22T11:20:00.000Z",
+    workflow: "issueDelivery",
+  } as const;
+
+  it("requires every bounded state on list and detail DTOs", () => {
+    const states = [
+      { limitations: [], state: "missing", version: 1 },
+      { limitations: [], state: "incomplete", version: 1 },
+      {
+        limitations: ["providerNativeToolInventoryRequired"],
+        state: "nonComparable",
+        version: 1,
+      },
+      {
+        limitations: ["providerNativeToolInventoryNotExposed"],
+        state: "completeComparable",
+        structuralDigest: "a".repeat(64),
+        version: 1,
+      },
+    ] as const;
+
+    for (const workerEnvironmentEpoch of states) {
+      const decodedSummary = Schema.decodeUnknownSync(FactoryRunSummaryDto)({
+        ...summary,
+        workerEnvironmentEpoch,
+      });
+      const decodedDetail = Schema.decodeUnknownSync(FactoryRunDetailDto)({
+        ...decodedSummary,
+        execution: serializableFactoryGraph().execution,
+        urls: {
+          activity: "/activity",
+          artifacts: "/artifacts",
+          factoryGraph: "/factory",
+          run: "/run",
+        },
+      });
+      assert.deepEqual(
+        decodedDetail.workerEnvironmentEpoch,
+        decodedSummary.workerEnvironmentEpoch
+      );
+    }
+
+    assert.throws(() =>
+      Schema.decodeUnknownSync(FactoryRunSummaryDto)(summary)
+    );
+    assert.throws(() =>
+      Schema.decodeUnknownSync(FactoryRunSummaryDto)({
+        ...summary,
+        workerEnvironmentEpoch: {
+          limitations: [],
+          state: "incomplete",
+          structuralDigest: "a".repeat(64),
+          version: 1,
+        },
+      })
     );
   });
 });

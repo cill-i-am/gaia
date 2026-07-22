@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  HarnessLaunchObservationV1,
   parseHarnessActionId,
   parseHarnessInteractionId,
   parseHarnessSessionId,
@@ -43,8 +44,24 @@ import {
   resumeHarnessSession,
   startHarnessSession,
 } from "./harness-session.js";
+import {
+  HarnessLaunchObservationLive,
+  HarnessLaunchObservationService,
+} from "./worker-runtime-environment.js";
 
 type RecoveredTurn = NonNullable<CodexThread["turns"]>[number];
+
+function runtimeThreadResult(threadId: ReturnType<typeof parseCodexThreadId>) {
+  return {
+    approvalPolicy: "on-request" as const,
+    cwd: "/workspace/project",
+    model: "gpt-5.6-codex",
+    modelProvider: "openai",
+    reasoningEffort: "high" as const,
+    sandbox: { type: "workspaceWrite" as const },
+    thread: { id: threadId },
+  };
+}
 
 describe("CodexHarnessProviderConfig", () => {
   it("round-trips JSON-safe configuration and rejects capability data", () => {
@@ -134,10 +151,10 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
         permissionResponses.push(response);
       }),
     respondUserInput: () => Effect.void,
-    resumeThread: () => Effect.succeed({ thread: { id: threadId } }),
+    resumeThread: () => Effect.succeed(runtimeThreadResult(threadId)),
     startThread: (params) => {
       starts.push(params);
-      return Effect.succeed({ thread: { id: threadId } });
+      return Effect.succeed(runtimeThreadResult(threadId));
     },
     startTurn: (params) => {
       starts.push(params);
@@ -164,6 +181,170 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
 }
 
 describe("Codex HarnessProvider adapter", () => {
+  it("releases a failed observation attempt so the same session can retry", async () => {
+    const sessionId = parseHarnessSessionId("session-observation-retry");
+    const observation = HarnessLaunchObservationV1.make({
+      approvalPolicy: "on-request",
+      cwdMatchesWorkspaceBinding: true,
+      model: "gpt-5.6-codex",
+      modelProvider: "openai",
+      reasoningEffort: "high",
+      sandbox: "workspace-write",
+      source: "threadRuntimeResult",
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* HarnessLaunchObservationService;
+        yield* Effect.scoped(
+          Effect.acquireRelease(service.open(sessionId), () =>
+            service.release(sessionId)
+          ).pipe(Effect.andThen(Effect.fail("provider failed")), Effect.exit)
+        );
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* Effect.acquireRelease(service.open(sessionId), () =>
+              service.release(sessionId)
+            );
+            yield* service.complete(sessionId, observation);
+            return yield* service.take(sessionId);
+          })
+        );
+      }).pipe(Effect.provide(HarnessLaunchObservationLive))
+    );
+
+    expect(result).toEqual(observation);
+  });
+
+  it("recovers an already-correlated create without starting another thread or turn", async () => {
+    const sessionId = parseHarnessSessionId("session-create-crash-recovery");
+    const recoveredTurnId = parseCodexTurnId("native-recovered-create-turn");
+    const recorded = recordingClient([
+      { id: recoveredTurnId, status: "completed" },
+    ]);
+    const store = makeInMemoryCodexHarnessCorrelationStore();
+    await Effect.runPromise(
+      store.save(sessionId, encodeCodexHarnessCorrelation(recorded.threadId))
+    );
+
+    const snapshot = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* startHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: recorded.client,
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
+              correlationStore: store,
+            }),
+            request: {
+              input: { text: "must not be redispatched" },
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          return yield* session.snapshot;
+        })
+      )
+    );
+
+    expect(recorded.starts).toEqual([]);
+    expect(recorded.reads).toEqual([
+      { includeTurns: true, threadId: recorded.threadId },
+    ]);
+    expect(snapshot.turns).toHaveLength(1);
+    expect(snapshot.turns[0]?.status).toBe("completed");
+  });
+
+  it("binds the selected model and records effective evidence only after the checked start result", async () => {
+    const sessionId = parseHarnessSessionId("session-effective-runtime");
+    const recorded = recordingClient();
+    const observations: unknown[] = [];
+    const launchObservation = HarnessLaunchObservationService.of({
+      complete: (_sessionId, observation) =>
+        Effect.sync(() => observations.push(observation)),
+      open: () => Effect.void,
+      release: () => Effect.void,
+      take: () => Effect.die("not used by provider test"),
+    });
+    await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: recorded.client,
+            config: CodexHarnessProviderConfig.make({
+              model: "gpt-5.6-codex",
+              modelProvider: "openai",
+              reasoningEffort: "high",
+              workspaceRoot: "/workspace",
+            }),
+            correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+            launchObservation,
+          }),
+          request: {
+            input: { text: "start" },
+            sessionId,
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: [],
+        })
+      )
+    );
+
+    expect(recorded.starts[0]).toMatchObject({
+      approvalPolicy: "on-request",
+      cwd: "/workspace/project",
+      model: "gpt-5.6-codex",
+      sandbox: "workspace-write",
+    });
+    expect(observations).toEqual([
+      expect.objectContaining({
+        cwdMatchesWorkspaceBinding: true,
+        model: "gpt-5.6-codex",
+        modelProvider: "openai",
+        reasoningEffort: "high",
+        source: "threadRuntimeResult",
+      }),
+    ]);
+
+    const mismatched = recordingClient();
+    const exit = await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: {
+              ...mismatched.client,
+              startThread: () =>
+                Effect.succeed({
+                  ...runtimeThreadResult(mismatched.threadId),
+                  model: "different-model",
+                }),
+            },
+            config: CodexHarnessProviderConfig.make({
+              model: "gpt-5.6-codex",
+              modelProvider: "openai",
+              reasoningEffort: "high",
+              workspaceRoot: "/workspace",
+            }),
+            correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+            launchObservation,
+          }),
+          request: {
+            input: { text: "start" },
+            sessionId: parseHarnessSessionId("session-runtime-mismatch"),
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: [],
+        }).pipe(Effect.exit)
+      )
+    );
+    expect(exit._tag).toBe("Failure");
+    expect(mismatched.starts).toEqual([]);
+    expect(observations).toHaveLength(1);
+  });
+
   it("projects only the latest checkpointed turn into the resumed session", async () => {
     const sessionId = parseHarnessSessionId("session-exact-latest-turn");
     const store = makeInMemoryCodexHarnessCorrelationStore();
@@ -903,7 +1084,7 @@ describe("Codex HarnessProvider adapter", () => {
     const client: CodexAppServerClient = {
       ...second.client,
       resumeThread: () =>
-        Effect.succeed({ thread: { id: mismatchedThreadId } }),
+        Effect.succeed(runtimeThreadResult(mismatchedThreadId)),
     };
     const error = await Effect.runPromise(
       Effect.scoped(

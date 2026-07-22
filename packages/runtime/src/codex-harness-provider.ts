@@ -1,14 +1,15 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import path from "node:path";
+import nodePath from "node:path";
 
+import { NodeServices } from "@effect/platform-node";
 import {
   HarnessCapabilities,
+  HarnessLaunchObservationV1,
   HarnessSessionIdSchema,
   HarnessSessionEventBudgetBytes,
   HarnessProviderDescriptor,
   parseHarnessEvent,
   harnessEventByteLength,
+  digestHarnessEnvironmentContract,
   parseHarnessProviderId,
   projectHarnessEvents,
   type HarnessEvent,
@@ -18,9 +19,13 @@ import {
 } from "@gaia/core";
 import {
   Cause,
+  Clock,
   Effect,
+  FileSystem,
   Option,
+  Path,
   Queue,
+  Random,
   Schema,
   Semaphore,
   Stream,
@@ -30,8 +35,10 @@ import {
 import { type CodexAppServerClient } from "./codex-app-server-client.js";
 import {
   CodexThreadIdSchema,
+  CodexThreadRuntimeResultSchema,
   CodexTurnIdSchema,
   supportedCodexCliVersion,
+  parseCodexModelId,
   parseCodexThreadId,
   parseCodexClientVersion,
   type CodexAppServerError,
@@ -63,6 +70,7 @@ import {
   parseRuntimePath,
   RunStorageRootInputSchema,
 } from "./paths.js";
+import type { HarnessLaunchObservationService } from "./worker-runtime-environment.js";
 
 /** Stable capabilities implemented by the initial Codex App Server adapter. */
 export const CodexHarnessCapabilities = HarnessCapabilities.make({
@@ -99,6 +107,9 @@ export class CodexHarnessProviderConfig extends Schema.Class<CodexHarnessProvide
 )(
   {
     sensitiveValues: Schema.optionalKey(Schema.Array(Schema.String)),
+    model: Schema.optionalKey(Schema.NonEmptyString),
+    modelProvider: Schema.optionalKey(Schema.NonEmptyString),
+    reasoningEffort: Schema.optionalKey(Schema.NonEmptyString),
     workspaceRoot: Schema.NonEmptyString,
   },
   { parseOptions: { onExcessProperty: "error" } }
@@ -108,6 +119,8 @@ export class CodexHarnessProviderConfig extends Schema.Class<CodexHarnessProvide
 export type CodexHarnessProviderOptions = {
   readonly client: CodexAppServerClient;
   readonly config: CodexHarnessProviderConfig;
+  readonly launchObservation?: HarnessLaunchObservationService["Service"];
+  readonly path?: Path.Path;
   readonly correlationStore: CodexHarnessCorrelationStore;
   readonly detectionProbe?: Effect.Effect<HarnessDetection>;
 };
@@ -188,66 +201,64 @@ const correlationFileMaxBytes = 49_152;
 
 /** Durable adapter-private correlation store excluded from public run contracts. */
 export function makeFileCodexHarnessCorrelationStore(
-  rootDirectory: typeof RunStorageRootInputSchema.Encoded
+  rootDirectory: typeof RunStorageRootInputSchema.Encoded,
+  services?: {
+    readonly fileSystem: FileSystem.FileSystem;
+    readonly path: Path.Path;
+  }
 ): CodexHarnessCorrelationStore {
   const parsedRootDirectory = parseRunStorageRootInput(rootDirectory);
-  const directory = path.join(
-    parsedRootDirectory,
-    ".gaia",
-    "private",
-    "harness-correlations"
-  );
-  const correlationPath = (sessionId: HarnessSessionId) =>
-    path.join(
-      directory,
-      `${createHash("sha256").update(sessionId).digest("hex")}.json`
+  const buildStore = (
+    fs: FileSystem.FileSystem,
+    pathService: Path.Path
+  ): CodexHarnessCorrelationStore => {
+    const directory = pathService.join(
+      parsedRootDirectory,
+      ".gaia",
+      "private",
+      "harness-correlations"
     );
-
-  return {
-    load: (sessionId) =>
-      Effect.tryPromise({
-        try: async () => {
-          try {
-            const target = correlationPath(sessionId);
-            if ((await stat(target)).size > correlationFileMaxBytes) {
-              throw new Error(
-                "Harness correlation file exceeds its size limit."
-              );
-            }
-            const contents = await readFile(target, "utf8");
-            const parsed = decodeCodexHarnessCorrelationFile(
-              JSON.parse(contents)
-            );
-            if (parsed.sessionId !== sessionId) {
-              throw new Error("Harness correlation session does not match.");
-            }
-            return CodexHarnessOpaqueCorrelation.make({ token: parsed.token });
-          } catch (error) {
-            if (
-              typeof error === "object" &&
-              error !== null &&
-              "code" in error &&
-              error.code === "ENOENT"
-            ) {
-              return undefined;
-            }
-            throw error;
-          }
-        },
-        catch: () =>
-          new CodexHarnessCorrelationStoreError({
-            message: "Codex harness correlation could not be loaded.",
-            operation: "load",
-          }),
-      }),
-    save: (sessionId, correlation) =>
-      Effect.tryPromise({
-        try: async () => {
+    const correlationPath = (sessionId: HarnessSessionId) =>
+      pathService.join(
+        directory,
+        `${digestHarnessEnvironmentContract("gaia.harness-correlation-path.v1", [sessionId])}.json`
+      );
+    const failure = (operation: "load" | "save") =>
+      new CodexHarnessCorrelationStoreError({
+        message: `Codex harness correlation could not be ${operation === "load" ? "loaded" : "saved"}.`,
+        operation,
+      });
+    return {
+      load: (sessionId: HarnessSessionId) =>
+        Effect.gen(function* () {
+          const target = correlationPath(sessionId);
+          if (!(yield* fs.exists(target))) return undefined;
+          const info = yield* fs.stat(target);
+          if (info.type !== "File" || info.size > correlationFileMaxBytes)
+            return yield* Effect.fail(failure("load"));
+          const contents = yield* fs.readFileString(target);
+          const parsed = yield* Effect.try({
+            try: () => decodeCodexHarnessCorrelationFile(JSON.parse(contents)),
+            catch: () => failure("load"),
+          });
+          if (parsed.sessionId !== sessionId)
+            return yield* Effect.fail(failure("load"));
+          return CodexHarnessOpaqueCorrelation.make({ token: parsed.token });
+        }).pipe(Effect.mapError(() => failure("load"))),
+      save: (
+        sessionId: HarnessSessionId,
+        correlation: CodexHarnessOpaqueCorrelation
+      ) =>
+        Effect.gen(function* () {
           const parsedCorrelation =
             decodeCodexHarnessOpaqueCorrelation(correlation);
-          await mkdir(directory, { recursive: true, mode: 0o700 });
+          yield* fs.makeDirectory(directory, {
+            mode: 0o700,
+            recursive: true,
+          });
           const target = correlationPath(sessionId);
-          const temporary = `${target}.${process.pid}.tmp`;
+          const suffix = yield* randomSuffix(16);
+          const temporary = `${target}.${suffix}.tmp`;
           const record = CodexHarnessCorrelationFile.make({
             harnessProfileId: "codexAppServer",
             providerId: "codex-app-server",
@@ -255,20 +266,42 @@ export function makeFileCodexHarnessCorrelationStore(
             token: parsedCorrelation.token,
             version: 1,
           });
-          await writeFile(
-            temporary,
-            `${JSON.stringify(encodeCodexHarnessCorrelationFile(record))}\n`,
-            { encoding: "utf8", mode: 0o600 }
-          );
-          await rename(temporary, target);
-        },
-        catch: () =>
-          new CodexHarnessCorrelationStoreError({
-            message: "Codex harness correlation could not be saved.",
-            operation: "save",
-          }),
-      }),
+          yield* fs
+            .writeFileString(
+              temporary,
+              `${JSON.stringify(encodeCodexHarnessCorrelationFile(record))}\n`,
+              { flag: "wx", mode: 0o600 }
+            )
+            .pipe(
+              Effect.andThen(fs.rename(temporary, target)),
+              Effect.onExit(() =>
+                fs.remove(temporary).pipe(Effect.orElseSucceed(() => undefined))
+              )
+            );
+        }).pipe(Effect.mapError(() => failure("save"))),
+    };
   };
+  if (services !== undefined)
+    return buildStore(services.fileSystem, services.path);
+  return Effect.runSync(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const pathService = yield* Path.Path;
+      return buildStore(fs, pathService);
+    }).pipe(Effect.provide(NodeServices.layer))
+  );
+}
+
+function randomSuffix(length: number) {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  return Effect.gen(function* () {
+    let suffix = "";
+    for (let index = 0; index < length; index += 1) {
+      const position = yield* Random.nextIntBetween(0, alphabet.length);
+      suffix += alphabet[position];
+    }
+    return suffix;
+  });
 }
 
 /** Build the first rich HarnessProvider implementation over the landed GAIA-83 client. */
@@ -324,14 +357,112 @@ export function createCodexHarnessProvider(
             providerId: CodexHarnessProviderDescriptor.providerId,
           });
         }
+        const existingCorrelation = yield* options.correlationStore
+          .load(request.sessionId)
+          .pipe(
+            Effect.mapError(
+              () =>
+                new HarnessStartError({
+                  message: "Codex session correlation could not be loaded.",
+                  providerId: CodexHarnessProviderDescriptor.providerId,
+                })
+            )
+          );
+        if (existingCorrelation !== undefined) {
+          const correlatedThreadId =
+            decodeCodexHarnessCorrelation(existingCorrelation);
+          if (correlatedThreadId === undefined)
+            return yield* new HarnessStartError({
+              message: "Codex session correlation is invalid.",
+              providerId: CodexHarnessProviderDescriptor.providerId,
+            });
+          const resumed = yield* options.client
+            .resumeThread({ threadId: correlatedThreadId })
+            .pipe(
+              Effect.mapError(
+                () =>
+                  new HarnessStartError({
+                    message:
+                      "Codex App Server could not recover the session thread.",
+                    providerId: CodexHarnessProviderDescriptor.providerId,
+                  })
+              )
+            );
+          if (resumed.thread.id !== correlatedThreadId)
+            return yield* new HarnessStartError({
+              message:
+                "Codex recovered a thread that does not match stored session correlation.",
+              providerId: CodexHarnessProviderDescriptor.providerId,
+            });
+          const recovered = yield* options.client
+            .readThread({ includeTurns: true, threadId: correlatedThreadId })
+            .pipe(
+              Effect.mapError(
+                () =>
+                  new HarnessStartError({
+                    message:
+                      "Codex App Server could not read the recovered session.",
+                    providerId: CodexHarnessProviderDescriptor.providerId,
+                  })
+              )
+            );
+          if (recovered.thread.id !== correlatedThreadId)
+            return yield* new HarnessStartError({
+              message:
+                "Codex read a thread that does not match stored session correlation.",
+              providerId: CodexHarnessProviderDescriptor.providerId,
+            });
+          yield* validateAndRecordLaunchObservation(
+            options,
+            request.sessionId,
+            resumed,
+            absoluteWorkspacePath(
+              options.config.workspaceRoot,
+              request.workspacePath,
+              options.path
+            ),
+            () =>
+              new HarnessStartError({
+                message: "Codex App Server returned a mismatched runtime.",
+                providerId: CodexHarnessProviderDescriptor.providerId,
+              })
+          );
+          const recoveredTurn = recovered.thread.turns?.at(-1);
+          return yield* makeCodexSession(
+            {
+              nativeThreadId: correlatedThreadId,
+              options,
+              ...(recoveredTurn === undefined
+                ? {}
+                : { recoveredProjectionTurnId: recoveredTurn.id }),
+              recoveredThread: recovered.thread,
+              request:
+                recoveredTurn === undefined
+                  ? request
+                  : {
+                      sessionId: request.sessionId,
+                      workspacePath: request.workspacePath,
+                    },
+            },
+            () =>
+              new HarnessStartError({
+                message: "Codex App Server could not recover the session.",
+                providerId: CodexHarnessProviderDescriptor.providerId,
+              })
+          );
+        }
         const thread = yield* options.client
           .startThread({
             approvalPolicy: "on-request",
             cwd: absoluteWorkspacePath(
               options.config.workspaceRoot,
-              request.workspacePath
+              request.workspacePath,
+              options.path
             ),
             ephemeral: false,
+            ...(options.config.model === undefined
+              ? {}
+              : { model: parseCodexModelId(options.config.model) }),
             sandbox: "workspace-write",
           })
           .pipe(
@@ -344,6 +475,21 @@ export function createCodexHarnessProvider(
                 })
             )
           );
+        yield* validateAndRecordLaunchObservation(
+          options,
+          request.sessionId,
+          thread,
+          absoluteWorkspacePath(
+            options.config.workspaceRoot,
+            request.workspacePath,
+            options.path
+          ),
+          () =>
+            new HarnessStartError({
+              message: "Codex App Server returned a mismatched runtime.",
+              providerId: CodexHarnessProviderDescriptor.providerId,
+            })
+        );
         yield* options.correlationStore
           .save(
             request.sessionId,
@@ -481,6 +627,21 @@ export function createCodexHarnessProvider(
             exact.status === "interrupted";
           recoveredProjectionTurnId = exact.id;
         }
+        yield* validateAndRecordLaunchObservation(
+          options,
+          request.sessionId,
+          thread,
+          absoluteWorkspacePath(
+            options.config.workspaceRoot,
+            request.workspacePath,
+            options.path
+          ),
+          () =>
+            new HarnessResumeError({
+              message: "Codex App Server returned a mismatched runtime.",
+              providerId: CodexHarnessProviderDescriptor.providerId,
+            })
+        );
         return yield* makeCodexSession(
           {
             nativeThreadId: thread.thread.id,
@@ -502,6 +663,48 @@ export function createCodexHarnessProvider(
         );
       }),
   };
+}
+
+function validateAndRecordLaunchObservation<E>(
+  options: CodexHarnessProviderOptions,
+  sessionId: HarnessSessionId,
+  result: typeof CodexThreadRuntimeResultSchema.Type,
+  expectedCwd: string,
+  mismatch: () => E
+): Effect.Effect<void, E> {
+  const expectedModel = options.config.model;
+  const expectedProvider = options.config.modelProvider;
+  const expectedReasoning = options.config.reasoningEffort;
+  if (
+    expectedModel === undefined ||
+    expectedProvider === undefined ||
+    expectedReasoning === undefined
+  )
+    return Effect.void;
+  if (
+    result.model !== expectedModel ||
+    result.modelProvider !== expectedProvider ||
+    result.reasoningEffort !== expectedReasoning ||
+    result.approvalPolicy !== "on-request" ||
+    result.sandbox.type !== "workspaceWrite" ||
+    result.cwd !== expectedCwd
+  )
+    return Effect.fail(mismatch());
+  if (options.launchObservation === undefined) return Effect.void;
+  return options.launchObservation
+    .complete(
+      sessionId,
+      HarnessLaunchObservationV1.make({
+        approvalPolicy: "on-request",
+        cwdMatchesWorkspaceBinding: true,
+        model: expectedModel,
+        modelProvider: expectedProvider,
+        reasoningEffort: expectedReasoning,
+        sandbox: "workspace-write",
+        source: "threadRuntimeResult",
+      })
+    )
+    .pipe(Effect.mapError(() => mismatch()));
 }
 
 function makeCodexSession<E>(
@@ -528,7 +731,8 @@ function makeCodexSession<E>(
       sessionId: input.request.sessionId,
       workspaceRoot: absoluteWorkspacePath(
         input.options.config.workspaceRoot,
-        input.request.workspacePath
+        input.request.workspacePath,
+        input.options.path
       ),
     });
     const recoveredThreadForProjection =
@@ -865,9 +1069,12 @@ function makeCodexSession<E>(
               parsedResponse
             ).pipe(
               Effect.tap(() =>
-                Effect.sync(() => {
+                Effect.gen(function* () {
                   if (adapterFailed || bufferFailed) return;
                   pendingRequests.delete(parsedResponse.interactionId);
+                  const resolvedAt = new Date(
+                    yield* Clock.currentTimeMillis
+                  ).toISOString();
                   const auditDecision =
                     parsedResponse.kind === "approval"
                       ? parsedResponse.decision
@@ -878,7 +1085,7 @@ function makeCodexSession<E>(
                     mapper.resolveServerRequest(request.id, {
                       actionId: parsedResponse.actionId,
                       decision: auditDecision,
-                      resolvedAt: new Date().toISOString(),
+                      resolvedAt,
                       responseKind: parsedResponse.kind,
                     })
                   );
@@ -1119,10 +1326,12 @@ function absoluteWorkspacePath(
   root: string,
   relativePath:
     | HarnessSessionStart["workspacePath"]
-    | HarnessSessionResume["workspacePath"]
+    | HarnessSessionResume["workspacePath"],
+  injectedPath?: Pick<Path.Path, "resolve">
 ) {
+  const pathService = injectedPath ?? nodePath;
   return parseRuntimePath(
-    path.resolve(root, relativePath === "." ? "" : relativePath)
+    pathService.resolve(root, relativePath === "." ? "" : relativePath)
   );
 }
 

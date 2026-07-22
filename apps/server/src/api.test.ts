@@ -498,6 +498,10 @@ describe("local run api http boundary", () => {
         assert.strictEqual(response.status, 200);
         assert.strictEqual(getString(body, "status"), "success");
         assert.strictEqual(getString(firstRun, "runId"), accepted.runId);
+        assert.strictEqual(
+          getString(getObject(firstRun, "workerEnvironmentEpoch"), "state"),
+          "missing"
+        );
         assert.strictEqual(getString(firstRun, "workflow"), "issueDelivery");
         assert.strictEqual(
           getString(getObject(firstRun, "rootWorkItem"), "title"),
@@ -540,6 +544,10 @@ describe("local run api http boundary", () => {
         assert.strictEqual(detailResponse.status, 200);
         assert.strictEqual(eventsResponse.status, 200);
         assert.strictEqual(getString(detailData, "runId"), accepted.runId);
+        assert.strictEqual(
+          getString(getObject(detailData, "workerEnvironmentEpoch"), "state"),
+          "missing"
+        );
         assert.strictEqual(getString(eventsData, "runId"), accepted.runId);
         assert.strictEqual(
           getString(getObject(detailData, "execution"), "harnessProfileId"),

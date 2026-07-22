@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { readFile, symlink } from "node:fs/promises";
@@ -36,6 +37,10 @@ import {
   WorkerRecoveryThreadState,
   ThreadListResultSchema,
   ThreadResultSchema,
+  WorkerRuntimeConfig,
+  WorkerRuntimeConfigValue,
+  WorkerRuntimeEnvironmentLive,
+  WorkerRuntimeEnvironmentService,
   type ThreadListParams,
   type ThreadReadParams,
   type WorkerRecoveryThreadStatus,
@@ -63,6 +68,9 @@ import {
   Effect,
   Fiber,
   FileSystem,
+  ConfigProvider,
+  Context,
+  Layer,
   Option,
   Ref,
   Schema,
@@ -87,6 +95,71 @@ import {
 
 describe("local Gaia server process", () => {
   layer(NodeServices.layer)((it) => {
+    it.effect(
+      "fails closed when tracked or untracked Gaia runtime source is dirty",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-runtime-source-",
+          });
+          const git = (args: ReadonlyArray<string>) =>
+            execFileSync("git", ["-C", root, ...args], {
+              encoding: "utf8",
+            }).trim();
+          git(["init"]);
+          git(["config", "user.email", "gaia-test@example.invalid"]);
+          git(["config", "user.name", "Gaia Test"]);
+          git([
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/cill-i-am/gaia.git",
+          ]);
+          yield* fs.writeFileString(nodePath.join(root, "tracked.txt"), "v1\n");
+          git(["add", "tracked.txt"]);
+          git(["commit", "-m", "test: establish source identity"]);
+
+          const runtimeConfig = WorkerRuntimeConfigValue.make({
+            adapterVersion: "1",
+            codexArgs: ["app-server", "--listen", "stdio://"],
+            codexCommand: "codex",
+            codexModel: "gpt-5.6-codex",
+            codexModelProvider: "openai",
+            codexReasoningEffort: "high",
+            expectedRepositoryIdentity: "cill-i-am/gaia",
+            originatorOverride: "Codex Desktop",
+            path: "/usr/bin:/bin",
+            runtimeSourceRoot: root,
+          });
+          const environmentContext = yield* Layer.build(
+            WorkerRuntimeEnvironmentLive.pipe(
+              Layer.provide(Layer.succeed(WorkerRuntimeConfig, runtimeConfig))
+            )
+          );
+          const environment = Context.get(
+            environmentContext,
+            WorkerRuntimeEnvironmentService
+          );
+          const clean = yield* environment.sourceIdentity;
+          assert.strictEqual(clean.revision, git(["rev-parse", "HEAD"]));
+
+          const untrackedPath = nodePath.join(root, "untracked.txt");
+          yield* fs.writeFileString(untrackedPath, "untracked\n");
+          const untrackedExit = yield* environment.sourceIdentity.pipe(
+            Effect.exit
+          );
+          assert.include(JSON.stringify(untrackedExit), "dirtySource");
+          yield* fs.remove(untrackedPath);
+
+          yield* fs.writeFileString(nodePath.join(root, "tracked.txt"), "v2\n");
+          const trackedExit = yield* environment.sourceIdentity.pipe(
+            Effect.exit
+          );
+          assert.include(JSON.stringify(trackedExit), "dirtySource");
+        })
+    );
+
     it.effect(
       "keeps production startup available and returns typed verification provider failure when sbx is missing",
       () =>
@@ -1917,25 +1990,13 @@ function withCodexDesktopOriginator<A, E, R>(
   value: string | undefined,
   effect: Effect.Effect<A, E, R>
 ) {
-  return Effect.acquireUseRelease(
-    Effect.sync(() => {
-      const previous = process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
-      if (value === undefined) {
-        delete process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
-      } else {
-        process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = value;
-      }
-      return previous;
-    }),
-    () => effect,
-    (previous) =>
-      Effect.sync(() => {
-        if (previous === undefined) {
-          delete process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
-        } else {
-          process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = previous;
-        }
-      })
+  return effect.pipe(
+    Effect.provideService(
+      ConfigProvider.ConfigProvider,
+      ConfigProvider.fromUnknown(
+        value === undefined ? {} : { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: value }
+      )
+    )
   );
 }
 

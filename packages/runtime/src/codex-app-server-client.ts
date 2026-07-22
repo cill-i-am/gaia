@@ -1,7 +1,15 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface } from "node:readline";
-
-import { Context, Effect, Layer, Option, Schema } from "effect";
+import { NodeServices } from "@effect/platform-node";
+import {
+  Context,
+  Deferred,
+  Effect,
+  Layer,
+  Option,
+  Queue,
+  Schema,
+  Stream,
+} from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   CodexAppServerInboundRequestBoundarySchema,
@@ -89,12 +97,12 @@ export interface CodexAppServerConnection {
 }
 
 export interface CodexAppServerProcess {
-  readonly kill: () => void;
+  readonly kill: () => Effect.Effect<void, CodexAppServerError>;
   readonly onError: (listener: () => void) => () => void;
   readonly onExit: (listener: (code: number | null) => void) => () => void;
   readonly onLine: (listener: (line: string) => void) => () => void;
   readonly stderr: () => string;
-  readonly write: (line: string) => void;
+  readonly write: (line: string) => Effect.Effect<void, CodexAppServerError>;
 }
 
 /** Serializable process-spawn data for the Codex App Server adapter. */
@@ -102,6 +110,11 @@ export class CodexAppServerSpawnConfig extends Schema.Class<CodexAppServerSpawnC
   "CodexAppServerSpawnConfig"
 )(
   {
+    args: Schema.optionalKey(
+      Schema.Array(
+        Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(4_096)))
+      ).pipe(Schema.check(Schema.isMaxLength(16)))
+    ),
     command: Schema.optionalKey(
       Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(4_096)))
     ),
@@ -117,6 +130,7 @@ export class CodexAppServerSpawnConfig extends Schema.Class<CodexAppServerSpawnC
 export type CodexAppServerTransportOptions = {
   readonly config?: CodexAppServerSpawnConfig;
   readonly process?: CodexAppServerProcess;
+  readonly spawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
 };
 
 const decodeResponse = Schema.decodeUnknownOption(
@@ -136,58 +150,138 @@ const decodeCuratedNotification = Schema.decodeUnknownOption(
   CodexNotificationBoundarySchema
 );
 
-function nodeProcess(
-  options: CodexAppServerTransportOptions
-): CodexAppServerProcess {
+function effectProcess(
+  options: CodexAppServerTransportOptions,
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]
+) {
   const config = options.config ?? CodexAppServerSpawnConfig.make({});
-  const child: ChildProcessWithoutNullStreams = spawn(
-    config.command ?? "codex",
-    ["app-server", "--listen", "stdio://"],
-    { cwd: config.cwd, env: config.env, stdio: "pipe" }
+  return Effect.gen(function* () {
+    const handle = yield* spawner.spawn(
+      ChildProcess.make(
+        config.command ?? "codex",
+        config.args ?? ["app-server", "--listen", "stdio://"],
+        {
+          ...(config.cwd === undefined ? {} : { cwd: config.cwd }),
+          ...(config.env === undefined
+            ? {}
+            : { env: { ...config.env }, extendEnv: false }),
+          stderr: "pipe",
+          stdin: "pipe",
+          stdout: "pipe",
+        }
+      )
+    );
+    const writes = yield* Queue.unbounded<Uint8Array>();
+    const lines = new Set<(line: string) => void>();
+    const exits = new Set<(code: number | null) => void>();
+    const errors = new Set<() => void>();
+    let stderr = "";
+    const mapTransportError = () =>
+      new CodexAppServerTransportError({
+        message: "Codex App Server process transport failed",
+      });
+    yield* Stream.fromQueue(writes).pipe(
+      Stream.run(handle.stdin),
+      Effect.mapError(mapTransportError),
+      Effect.catch((_) =>
+        Effect.sync(() => {
+          for (const listener of errors) listener();
+        })
+      ),
+      Effect.forkScoped
+    );
+    yield* Stream.decodeText(handle.stdout).pipe(
+      Stream.splitLines,
+      Stream.runForEach((line) =>
+        Effect.sync(() => {
+          for (const listener of lines) listener(line);
+        })
+      ),
+      Effect.catch(() =>
+        Effect.sync(() => {
+          for (const listener of errors) listener();
+        })
+      ),
+      Effect.forkScoped
+    );
+    yield* Stream.decodeText(handle.stderr).pipe(
+      Stream.runForEach((chunk) =>
+        Effect.sync(() => {
+          stderr = `${stderr}${chunk}`.slice(-16_384);
+        })
+      ),
+      Effect.catch(() => Effect.void),
+      Effect.forkScoped
+    );
+    yield* handle.exitCode.pipe(
+      Effect.flatMap((code) =>
+        Effect.sync(() => {
+          for (const listener of exits) listener(Number(code));
+        })
+      ),
+      Effect.catch(() =>
+        Effect.sync(() => {
+          for (const listener of errors) listener();
+        })
+      ),
+      Effect.forkScoped
+    );
+    return {
+      kill: () =>
+        Effect.gen(function* () {
+          yield* Queue.shutdown(writes);
+          yield* handle.kill({ forceKillAfter: "2 seconds" });
+        }).pipe(Effect.mapError(mapTransportError)),
+      onError: (listener: () => void) => {
+        errors.add(listener);
+        return () => errors.delete(listener);
+      },
+      onExit: (listener: (code: number | null) => void) => {
+        exits.add(listener);
+        return () => exits.delete(listener);
+      },
+      onLine: (listener: (line: string) => void) => {
+        lines.add(listener);
+        return () => lines.delete(listener);
+      },
+      stderr: () => stderr,
+      write: (line: string) =>
+        Queue.offer(writes, new TextEncoder().encode(line)).pipe(
+          Effect.asVoid,
+          Effect.mapError(mapTransportError)
+        ),
+    } satisfies CodexAppServerProcess;
+  }).pipe(
+    Effect.mapError(
+      () =>
+        new CodexAppServerTransportError({
+          message: "Failed to start Codex App Server",
+        })
+    )
   );
-  const lines = createInterface({ input: child.stdout });
-  let stderr = "";
-  child.stderr.on("data", (chunk: Buffer) => {
-    stderr = `${stderr}${chunk.toString("utf8")}`.slice(-16_384);
-  });
-  return {
-    kill: () => {
-      lines.close();
-      child.stdin.end();
-      if (child.exitCode === null) child.kill("SIGTERM");
-    },
-    onError: (listener) => {
-      child.on("error", listener);
-      return () => child.off("error", listener);
-    },
-    onExit: (listener) => {
-      child.on("exit", listener);
-      return () => child.off("exit", listener);
-    },
-    onLine: (listener) => {
-      lines.on("line", listener);
-      return () => lines.off("line", listener);
-    },
-    stderr: () => stderr,
-    write: (line) => child.stdin.write(line),
-  };
 }
 
 export function makeCodexAppServerConnection(
   options: CodexAppServerTransportOptions = {}
 ) {
+  const acquireProcess =
+    options.process !== undefined
+      ? Effect.succeed(options.process)
+      : options.spawner !== undefined
+        ? effectProcess(options, options.spawner)
+        : Effect.gen(function* () {
+            const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+            return yield* effectProcess(options, spawner);
+          }).pipe(Effect.provide(NodeServices.layer));
   return Effect.acquireRelease(
-    Effect.sync(() => {
-      const process = options.process ?? nodeProcess(options);
+    Effect.gen(function* () {
+      const process = yield* acquireProcess;
       let nextId = 1;
       let closed = false;
       let terminalError: CodexAppServerError | undefined;
       const pending = new Map<
         CodexRequestId,
-        {
-          readonly fail: (error: CodexAppServerError) => void;
-          readonly succeed: (value: Schema.Json) => void;
-        }
+        Deferred.Deferred<Schema.Json, CodexAppServerError>
       >();
       const notificationListeners = new Set<
         (value: CodexNotification) => void
@@ -198,35 +292,32 @@ export function makeCodexAppServerConnection(
       >();
 
       const write = (message: unknown) =>
-        Effect.try({
-          try: () => process.write(`${JSON.stringify(message)}\n`),
-          catch: () =>
-            new CodexAppServerTransportError({
-              message: "Failed to write to Codex App Server",
-            }),
-        });
+        process.write(`${JSON.stringify(message)}\n`);
       const failAll = (error: CodexAppServerError) => {
         if (closed) return;
         closed = true;
         terminalError = error;
-        for (const entry of pending.values()) entry.fail(error);
+        for (const entry of pending.values())
+          Deferred.doneUnsafe(entry, Effect.fail(error));
         pending.clear();
         for (const listener of terminationListeners) listener(error);
       };
       const rejectUnsupportedServerRequest = (
         id: typeof CodexRawRequestIdSchema.Type
       ) => {
-        try {
-          process.write(
-            `${JSON.stringify({ id, error: { code: -32601, message: "Unsupported server request" } })}\n`
-          );
-        } catch {
-          failAll(
-            new CodexAppServerTransportError({
-              message: "Failed to write to Codex App Server",
-            })
-          );
-        }
+        const frame = `${JSON.stringify({ id, error: { code: -32601, message: "Unsupported server request" } })}\n`;
+        Effect.runFork(
+          Effect.try({
+            try: () => process.write(frame),
+            catch: () =>
+              new CodexAppServerTransportError({
+                message: "Codex App Server process transport failed",
+              }),
+          }).pipe(
+            Effect.flatten,
+            Effect.catch((error) => Effect.sync(() => failAll(error)))
+          )
+        );
       };
       const removeLine = process.onLine((line) => {
         if (closed) return;
@@ -307,12 +398,16 @@ export function makeCodexAppServerConnection(
           if (!entry) return;
           pending.delete(response.value.id);
           if ("error" in response.value)
-            entry.fail(
-              new CodexAppServerProtocolError({
-                message: response.value.error.message,
-              })
+            Deferred.doneUnsafe(
+              entry,
+              Effect.fail(
+                new CodexAppServerProtocolError({
+                  message: response.value.error.message,
+                })
+              )
             );
-          else entry.succeed(response.value.result);
+          else
+            Deferred.doneUnsafe(entry, Effect.succeed(response.value.result));
           return;
         }
         const responseId = Schema.decodeUnknownOption(CodexRequestIdSchema)(
@@ -322,10 +417,13 @@ export function makeCodexAppServerConnection(
         const entry = pending.get(responseId.value);
         if (entry !== undefined) {
           pending.delete(responseId.value);
-          entry.fail(
-            new CodexAppServerProtocolError({
-              message: "Invalid Codex App Server response",
-            })
+          Deferred.doneUnsafe(
+            entry,
+            Effect.fail(
+              new CodexAppServerProtocolError({
+                message: "Invalid Codex App Server response",
+              })
+            )
           );
         }
       });
@@ -361,52 +459,30 @@ export function makeCodexAppServerConnection(
           return () => terminationListeners.delete(listener);
         },
         request: (method, params = {}, timeoutMs = 30_000) =>
-          Effect.callback<Schema.Json, CodexAppServerError>((resume) => {
-            if (terminalError !== undefined) {
-              resume(Effect.fail(terminalError));
-              return Effect.void;
-            }
+          Effect.suspend(() => {
+            if (terminalError !== undefined) return Effect.fail(terminalError);
             const id = parseCodexRequestId(nextId++);
-            const timer = setTimeout(() => {
-              if (!pending.delete(id)) return;
-              resume(
-                Effect.fail(
-                  new CodexAppServerTimeoutError({ method, timeoutMs })
-                )
-              );
-            }, timeoutMs);
-            pending.set(id, {
-              fail: (error) => {
-                clearTimeout(timer);
-                resume(Effect.fail(error));
-              },
-              succeed: (result) => {
-                clearTimeout(timer);
-                resume(Effect.succeed(result));
-              },
-            });
-            try {
-              process.write(`${JSON.stringify({ id, method, params })}\n`);
-            } catch {
-              clearTimeout(timer);
-              pending.delete(id);
-              resume(
-                Effect.fail(
-                  new CodexAppServerTransportError({
-                    message: "Failed to write to Codex App Server",
-                  })
-                )
-              );
-            }
-            return Effect.sync(() => {
-              clearTimeout(timer);
-              pending.delete(id);
-            });
+            const awaited = Deferred.makeUnsafe<
+              Schema.Json,
+              CodexAppServerError
+            >();
+            pending.set(id, awaited);
+            return write({ id, method, params }).pipe(
+              Effect.andThen(Deferred.await(awaited)),
+              Effect.timeoutOrElse({
+                duration: `${timeoutMs} millis`,
+                orElse: () =>
+                  Effect.fail(
+                    new CodexAppServerTimeoutError({ method, timeoutMs })
+                  ),
+              }),
+              Effect.ensuring(Effect.sync(() => pending.delete(id)))
+            );
           }),
         respond: (id, result) => write({ id, result }),
       };
       return {
-        close: () => {
+        close: Effect.gen(function* () {
           failAll(
             new CodexAppServerTransportError({
               message: "Codex App Server connection released",
@@ -415,12 +491,12 @@ export function makeCodexAppServerConnection(
           removeLine();
           removeExit();
           removeError();
-          process.kill();
-        },
+          yield* process.kill().pipe(Effect.orElseSucceed(() => undefined));
+        }),
         connection,
       };
     }),
-    ({ close }) => Effect.sync(close)
+    ({ close }) => close
   ).pipe(Effect.map(({ connection }) => connection));
 }
 

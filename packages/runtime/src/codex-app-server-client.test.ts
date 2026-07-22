@@ -12,16 +12,22 @@ import {
   parseCodexClientVersion,
 } from "./codex-app-server-protocol.js";
 
-function fakeProcess() {
+function fakeProcess(
+  onWrite?: (
+    value: Record<string, unknown>,
+    lines: ReadonlySet<(line: string) => void>
+  ) => void
+) {
   const lines = new Set<(line: string) => void>();
   const exits = new Set<(code: number | null) => void>();
   const errors = new Set<() => void>();
   const writes: Array<Record<string, unknown>> = [];
   let kills = 0;
   const process: CodexAppServerProcess = {
-    kill: () => {
-      kills += 1;
-    },
+    kill: () =>
+      Effect.sync(() => {
+        kills += 1;
+      }),
     onError: (listener) => {
       errors.add(listener);
       return () => errors.delete(listener);
@@ -35,12 +41,38 @@ function fakeProcess() {
       return () => lines.delete(listener);
     },
     stderr: () => "bounded stderr",
-    write: (line) => writes.push(JSON.parse(line)),
+    write: (line) =>
+      Effect.sync(() => {
+        const value = JSON.parse(line) as Record<string, unknown>;
+        writes.push(value);
+        onWrite?.(value, lines);
+      }),
   };
   return { errors, exits, kills: () => kills, lines, process, writes };
 }
 
 describe("Codex App Server connection", () => {
+  it("registers correlation before a synchronous transport response", async () => {
+    const fake = fakeProcess((value, lines) => {
+      for (const listener of lines)
+        listener(
+          JSON.stringify({ id: value["id"], result: { immediate: true } })
+        );
+    });
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          return yield* connection.request("immediate");
+        })
+      )
+    );
+
+    expect(result).toEqual({ immediate: true });
+  });
+
   it("schema-owns strict JSON-safe spawn data outside the process capability", () => {
     const decode = Schema.decodeUnknownSync(CodexAppServerSpawnConfig);
     const config = decode({

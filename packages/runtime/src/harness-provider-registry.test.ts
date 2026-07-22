@@ -12,6 +12,7 @@ import { Effect, Schema } from "effect";
 
 import {
   HarnessProfileNotFoundError,
+  HarnessEnvironmentAssignmentError,
   issueDeliveryWorkerHarnessCapabilities,
   makeHarnessProviderRegistry,
 } from "./harness-provider-registry.js";
@@ -75,6 +76,36 @@ describe("HarnessProvider registry", () => {
             version: "synthetic-1",
           }
         );
+      })
+  );
+
+  it.effect(
+    "fails closed for a production Codex registration without an environment assignment",
+    () =>
+      Effect.gen(function* () {
+        const selection = HarnessExecutionSelection.make({
+          harnessProfileId: parseHarnessProfileId("codexAppServer"),
+        });
+        const provider = {
+          ...syntheticProvider({
+            auth: { state: "authenticated" },
+            capabilities,
+            state: "available",
+            version: "0.137.0",
+          }),
+          descriptor: HarnessProviderDescriptor.make({
+            displayName: "Codex App Server",
+            executionModes: ["local"],
+            providerId: parseHarnessProviderId("codex-app-server"),
+          }),
+        };
+        const error = yield* Effect.flip(
+          makeHarnessProviderRegistry([
+            { profileId: selection.harnessProfileId, provider },
+          ]).resolve(selection, issueDeliveryWorkerHarnessCapabilities)
+        );
+
+        assert.isTrue(error instanceof HarnessEnvironmentAssignmentError);
       })
   );
 

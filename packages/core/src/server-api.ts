@@ -59,7 +59,10 @@ import {
   ModelManifestArtifactDiagnosticDto,
   ModelManifestArtifactDiagnosticCodeSchema,
 } from "./factory-graph.js";
-import { HarnessExecutionSelection } from "./harness-execution.js";
+import {
+  HarnessExecutionSelection,
+  WorkerEnvironmentEpochComparisonDto,
+} from "./harness-execution.js";
 import { LocalGaiaServerUrlSchema } from "./local-gaia-server-url.js";
 import {
   ModelInvocationEpisodeRoleSchema,
@@ -443,6 +446,9 @@ export class LocalRunSummaryDto extends Schema.Class<LocalRunSummaryDto>(
   state: RunStateSchema,
   status: LocalRunStatusSchema,
   updatedAt: LocalRunTimestampSchema,
+  workerEnvironmentEpoch: Schema.optionalKey(
+    WorkerEnvironmentEpochComparisonDto
+  ),
 }) {}
 
 export class LocalRunReadSummary extends Schema.Class<LocalRunReadSummary>(
