@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { lstat } from "node:fs/promises";
 
 import {
   ModelContextManifestV1,
@@ -1311,7 +1312,13 @@ export function commitModelInvocationPair(
       yield* writeSyncedExclusive(fs, stagedInvocation, invocationBody);
       yield* fs
         .link(stagedReservation, reservationPath)
-        .pipe(Effect.mapError(() => modelPairConflict()));
+        .pipe(Effect.catchTag("PlatformError", () => Effect.void));
+      yield* verifyCanonicalModelFile(
+        fs,
+        reservationPath,
+        path.join(expectedManifestRoot, path.basename(reservationPath)),
+        reservationBody
+      );
       yield* fs
         .link(stagedContext, contextPath)
         .pipe(Effect.mapError(() => modelPairConflict()));
@@ -1356,10 +1363,21 @@ function verifyCanonicalModelFile(
   expectedBody: string
 ) {
   return Effect.gen(function* () {
+    const info = yield* Effect.tryPromise({
+      try: () => lstat(target),
+      catch: () => modelPairConflict(),
+    });
+    const real = yield* fs
+      .realPath(target)
+      .pipe(Effect.mapError(() => modelPairConflict()));
+    const body = yield* fs
+      .readFileString(target)
+      .pipe(Effect.mapError(() => modelPairConflict()));
     if (
-      (yield* fs.realPath(target)) !== expectedRealPath ||
-      (yield* fs.stat(target)).type !== "File" ||
-      (yield* fs.readFileString(target)) !== expectedBody
+      info.isSymbolicLink() ||
+      !info.isFile() ||
+      real !== expectedRealPath ||
+      body !== expectedBody
     )
       return yield* Effect.fail(modelPairConflict());
   });

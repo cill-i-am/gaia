@@ -158,7 +158,7 @@ describe("model invocation acceptance preparation", () => {
     );
 
     it.effect(
-      "adopts one exact post-pair/pre-event crash without rewriting bytes",
+      "adopts exact reservation-only and post-pair crash state without rewriting bytes",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -169,11 +169,41 @@ describe("model invocation acceptance preparation", () => {
           const paths = yield* makeRunPaths(runId, { rootDirectory: root });
           yield* fs.makeDirectory(paths.root, { recursive: true });
           const pair = makePair(runId, "workerInitial");
+          const episodeKey = "workerInitial";
+          const episodeId = `episode1_${createHash("sha256")
+            .update(`${runId}\0${episodeKey}`)
+            .digest("hex")}`;
+          const episodeDirectory = `${paths.modelInvocations}/${episodeId}`;
+          const reservationPath = `${paths.modelInvocations}/.${episodeId}.reservation.json`;
+          const reservationBody = `${JSON.stringify({
+            episodeId,
+            episodeKey,
+            runId,
+            version: 1,
+          })}\n`;
+          yield* fs.makeDirectory(episodeDirectory, { recursive: true });
+          yield* fs.writeFileString(reservationPath, reservationBody);
+          const reservationMtime = (yield* fs.stat(reservationPath)).mtime;
+          assert.isFalse(
+            yield* fs.exists(`${episodeDirectory}/context-manifest.json`)
+          );
+          assert.isFalse(
+            yield* fs.exists(`${episodeDirectory}/invocation-manifest.json`)
+          );
+
           const first = yield* commitModelInvocationPair({
             ...pair,
-            episodeKey: "workerInitial",
+            episodeKey,
             paths,
           });
+          assert.strictEqual(
+            yield* fs.readFileString(reservationPath),
+            reservationBody
+          );
+          assert.deepEqual(
+            (yield* fs.stat(reservationPath)).mtime,
+            reservationMtime
+          );
           const contextPath = `${paths.root}/${first.contextRef.path}`;
           const invocationPath = `${paths.root}/${first.invocationRef.path}`;
           const before = {
@@ -185,7 +215,7 @@ describe("model invocation acceptance preparation", () => {
 
           const adopted = yield* commitModelInvocationPair({
             ...pair,
-            episodeKey: "workerInitial",
+            episodeKey,
             paths,
           });
           const loaded = yield* loadModelInvocationPair(paths, adopted);
@@ -210,6 +240,98 @@ describe("model invocation acceptance preparation", () => {
           assert.strictEqual(
             loaded.rendered.text,
             pair.invocation.payload.rendered.text
+          );
+
+          for (const [rawRunId, invalidBodyKind] of [
+            ["run-1234567891", "mismatched"],
+            ["run-1234567892", "malformed"],
+            ["run-1234567893", "nonCanonical"],
+          ] as const) {
+            const invalidRunId = parseRunId(rawRunId);
+            const invalidPaths = yield* makeRunPaths(invalidRunId, {
+              rootDirectory: root,
+            });
+            const invalidEpisodeId = `episode1_${createHash("sha256")
+              .update(`${invalidRunId}\0${episodeKey}`)
+              .digest("hex")}`;
+            const invalidEpisodeDirectory = `${invalidPaths.modelInvocations}/${invalidEpisodeId}`;
+            const invalidReservationPath = `${invalidPaths.modelInvocations}/.${invalidEpisodeId}.reservation.json`;
+            const expectedReservation = {
+              episodeId: invalidEpisodeId,
+              episodeKey,
+              runId: invalidRunId,
+              version: 1,
+            } as const;
+            const invalidBody =
+              invalidBodyKind === "mismatched"
+                ? `${JSON.stringify({
+                    ...expectedReservation,
+                    runId: "run-0000000000",
+                  })}\n`
+                : invalidBodyKind === "malformed"
+                  ? "{\n"
+                  : `${JSON.stringify({
+                      version: 1,
+                      runId: invalidRunId,
+                      episodeKey,
+                      episodeId: invalidEpisodeId,
+                    })}\n`;
+            yield* fs.makeDirectory(invalidEpisodeDirectory, {
+              recursive: true,
+            });
+            yield* fs.writeFileString(invalidReservationPath, invalidBody);
+
+            const invalidReservation = yield* Effect.flip(
+              commitModelInvocationPair({
+                ...makePair(invalidRunId, episodeKey),
+                episodeKey,
+                paths: invalidPaths,
+              })
+            );
+            assert.strictEqual(
+              invalidReservation.code,
+              "ModelInvocationPairConflict"
+            );
+          }
+
+          const symlinkRunId = parseRunId("run-1234567894");
+          const symlinkPaths = yield* makeRunPaths(symlinkRunId, {
+            rootDirectory: root,
+          });
+          const symlinkEpisodeId = `episode1_${createHash("sha256")
+            .update(`${symlinkRunId}\0${episodeKey}`)
+            .digest("hex")}`;
+          const symlinkEpisodeDirectory = `${symlinkPaths.modelInvocations}/${symlinkEpisodeId}`;
+          const symlinkReservationPath = `${symlinkPaths.modelInvocations}/.${symlinkEpisodeId}.reservation.json`;
+          const symlinkReservationBody = `${JSON.stringify({
+            episodeId: symlinkEpisodeId,
+            episodeKey,
+            runId: symlinkRunId,
+            version: 1,
+          })}\n`;
+          const outsideReservation = `${root}/outside-reservation.json`;
+          yield* fs.makeDirectory(symlinkEpisodeDirectory, { recursive: true });
+          yield* fs.writeFileString(outsideReservation, symlinkReservationBody);
+          yield* fs.symlink(outsideReservation, symlinkReservationPath);
+
+          const symlinkReservation = yield* Effect.flip(
+            commitModelInvocationPair({
+              ...makePair(symlinkRunId, episodeKey),
+              episodeKey,
+              paths: symlinkPaths,
+            })
+          );
+          assert.strictEqual(
+            symlinkReservation.code,
+            "ModelInvocationPairConflict"
+          );
+          assert.isFalse(
+            yield* fs.exists(`${symlinkEpisodeDirectory}/context-manifest.json`)
+          );
+          assert.isFalse(
+            yield* fs.exists(
+              `${symlinkEpisodeDirectory}/invocation-manifest.json`
+            )
           );
         })
     );
