@@ -285,7 +285,7 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
         )
       );
 
-    const finalUrl = yield* Effect.tryPromise({
+    const capture = yield* Effect.tryPromise({
       try: async () => {
         const browser = await chromium.launch({ headless: true });
 
@@ -317,12 +317,15 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
           if (consoleSourceError !== undefined) {
             return Promise.reject(consoleSourceError);
           }
-          await page.screenshot({ fullPage: true, path: screenshotPath });
+          const screenshotBytes = await page.screenshot({ fullPage: true });
           if (consoleSourceError !== undefined) {
             return Promise.reject(consoleSourceError);
           }
 
-          return parseBrowserEvidenceFinalUrl(page.url());
+          return {
+            finalUrl: parseBrowserEvidenceFinalUrl(page.url()),
+            screenshotBytes,
+          };
         } finally {
           await browser.close();
         }
@@ -338,6 +341,19 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
             }),
     });
 
+    yield* fs.writeFile(screenshotPath, capture.screenshotBytes).pipe(
+      Effect.catchTag("PlatformError", (cause) =>
+        Effect.fail(
+          makeRuntimeError({
+            cause,
+            code: "BrowserEvidenceCaptureFailed",
+            message: `Gaia could not collect browser evidence for ${input.targetUrl}.`,
+            recoverable: true,
+          })
+        )
+      )
+    );
+
     return BrowserEvidenceV2.make({
       notes: [`Browser evidence captured for ${input.targetUrl}.`],
       pages: [
@@ -351,7 +367,7 @@ export const playwrightBrowserEvidenceCollector: BrowserEvidenceCollector = (
               path: runRelative(input.paths, screenshotPath),
             }),
           ],
-          url: finalUrl,
+          url: capture.finalUrl,
         }),
       ],
       status: "collected",

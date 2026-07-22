@@ -3590,6 +3590,7 @@ describe("runtime workflows", () => {
           const canary = "GAIA_BROWSER_REDIRECT_CANARY";
           const fixture = yield* acquireBrowserRedirectFixture(canary);
           const rejectedFinalUrl = `${fixture.origin}/landing?token=${canary}`;
+          const screenshotPath = `${summary.runDirectory}/browser/page-1.png`;
 
           const error = yield* collectBrowserEvidence(
             summary.runId,
@@ -3607,6 +3608,7 @@ describe("runtime workflows", () => {
           assert.isUndefined(error.cause);
           assert.notInclude(errorSurface, canary);
           assert.notInclude(errorSurface, rejectedFinalUrl);
+          assert.isFalse(yield* fs.exists(screenshotPath));
           const rejectedDurableTree = yield* readDurableTree(fs, cwd);
           assert.notInclude(rejectedDurableTree, canary);
           assert.notInclude(rejectedDurableTree, rejectedFinalUrl);
@@ -3620,6 +3622,7 @@ describe("runtime workflows", () => {
             safeRecord.pages[0]?.url,
             `${fixture.origin}/landing?view=summary`
           );
+          assert.isTrue(yield* fs.exists(screenshotPath));
           const finalDurableTree = yield* readDurableTree(fs, cwd);
           assert.notInclude(finalDurableTree, canary);
           assert.notInclude(finalDurableTree, rejectedFinalUrl);
@@ -8229,7 +8232,9 @@ function acquireBrowserRedirectFixture(canary: string) {
                 return;
               }
               response.writeHead(200, { "content-type": "text/html" });
-              response.end("<!doctype html><title>Redirect target</title>");
+              response.end(
+                "<!doctype html><title>Redirect target</title><body><script>document.body.textContent = location.href;</script></body>"
+              );
             });
             const onError = (cause: Error) => reject(cause);
             server.once("error", onError);
