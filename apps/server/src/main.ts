@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import nodePath from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,9 +25,16 @@ import {
   createCodexHarnessProvider,
   CodexAppServerSpawnConfig,
   CodexHarnessProviderConfig,
-  detectInstalledCodexAppServer,
+  HarnessLaunchObservationLive,
+  HarnessLaunchObservationService,
+  WorkerRuntimeConfig,
+  WorkerRuntimeConfigLive,
+  WorkerRuntimeEnvironmentLive,
+  WorkerRuntimeEnvironmentService,
+  parseWorkerRuntimeProviderVersion,
   makeCodexAppServerClient,
   makeCodexAppServerConnection,
+  makeInstalledCodexAppServerDetection,
   makeFileCodexHarnessCorrelationStore,
   decodeCodexHarnessCorrelation,
   encodeCodexHarnessCorrelation,
@@ -86,9 +93,21 @@ import {
   type WorkerCorrelationReconciliationInput,
 } from "@gaia/runtime/server-workflows";
 import { makeMarkerWritingTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
-import { Effect, FileSystem, Layer, Path, Schema } from "effect";
+import {
+  Clock,
+  Config,
+  Context,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Random,
+  Schema,
+} from "effect";
 import * as Console from "effect/Console";
 import { HttpServer } from "effect/unstable/http";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeLocalGaiaServerLayer } from "./api.js";
 export { writeRecoveryHttpEvidence } from "./recovery-http-evidence.js";
@@ -139,7 +158,7 @@ const parseServerStartedAt = Schema.decodeUnknownSync(
 export const defaultServerConfig = {
   host: "127.0.0.1",
   port: 0,
-  rootDirectory: process.cwd(),
+  rootDirectory: ".",
   testHarness: false,
 } satisfies ServerConfig;
 
@@ -154,17 +173,17 @@ export function runLocalGaiaServer(input: {
   const rootDirectory = parseRunStorageRootInput(
     input.rootDirectory ?? defaultServerConfig.rootDirectory
   );
-  const identity = makeServerIdentity({
-    host: defaultServerConfig.host,
-    rootDirectory,
-  });
   const port = input.port ?? defaultServerConfig.port;
-  const nodeLayer = NodeHttpServer.layer(createServer, {
-    host: identity.host,
-    port,
-  });
   return Effect.scoped(
     Effect.gen(function* () {
+      const identity = yield* makeServerIdentity({
+        host: defaultServerConfig.host,
+        rootDirectory,
+      });
+      const nodeLayer = NodeHttpServer.layer(createServer, {
+        host: identity.host,
+        port,
+      });
       const production =
         input.harnessProviderRegistry === undefined
           ? yield* makeProductionHarnessServices(rootDirectory)
@@ -230,22 +249,75 @@ function makeProductionHarnessServices(
   rootDirectory: typeof RunStorageRootInputSchema.Type
 ) {
   return Effect.gen(function* () {
+    const productionRuntime = yield* Layer.build(
+      Layer.mergeAll(
+        WorkerRuntimeConfigLive,
+        WorkerRuntimeEnvironmentLive.pipe(
+          Layer.provide(WorkerRuntimeConfigLive)
+        ),
+        HarnessLaunchObservationLive
+      )
+    );
+    const runtimeConfig = Context.get(productionRuntime, WorkerRuntimeConfig);
+    const runtimeEnvironment = Context.get(
+      productionRuntime,
+      WorkerRuntimeEnvironmentService
+    );
+    const launchObservation = Context.get(
+      productionRuntime,
+      HarnessLaunchObservationService
+    );
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const codexEnvironment = {
+      CODEX_INTERNAL_ORIGINATOR_OVERRIDE: runtimeConfig.originatorOverride,
+      PATH: runtimeConfig.path,
+    };
     const connection = yield* makeCodexAppServerConnection({
-      config: CodexAppServerSpawnConfig.make({ cwd: rootDirectory }),
+      config: CodexAppServerSpawnConfig.make({
+        args: runtimeConfig.codexArgs,
+        command: runtimeConfig.codexCommand,
+        cwd: rootDirectory,
+        env: codexEnvironment,
+      }),
+      spawner,
     });
     const client = makeCodexAppServerClient(connection);
-    const correlationStore =
-      makeFileCodexHarnessCorrelationStore(rootDirectory);
+    const correlationStore = makeFileCodexHarnessCorrelationStore(
+      rootDirectory,
+      { fileSystem, path }
+    );
     const provider = createCodexHarnessProvider({
       client,
       config: CodexHarnessProviderConfig.make({
+        model: runtimeConfig.codexModel,
+        modelProvider: runtimeConfig.codexModelProvider,
+        reasoningEffort: runtimeConfig.codexReasoningEffort,
         workspaceRoot: rootDirectory,
       }),
       correlationStore,
-      detectionProbe: detectInstalledCodexAppServer,
+      detectionProbe: makeInstalledCodexAppServerDetection({
+        command: runtimeConfig.codexCommand,
+        cwd: rootDirectory,
+        env: codexEnvironment,
+        spawner,
+      }),
+      launchObservation,
+      path,
     });
     const registry = makeHarnessProviderRegistry([
-      { profileId: codexAppServerHarnessProfileId, provider },
+      {
+        environmentAssignment: ({ capabilities, provider, version }) =>
+          runtimeEnvironment.assignment(
+            provider,
+            capabilities,
+            parseWorkerRuntimeProviderVersion(version)
+          ),
+        launchObservation,
+        profileId: codexAppServerHarnessProfileId,
+        provider,
+      },
     ]);
     const recover = (
       runId: RunId,
@@ -401,7 +473,8 @@ function makeProductionHarnessServices(
             })
           );
         }
-        const nowSeconds = Math.ceil(Date.now() / 1000) + 60;
+        const nowSeconds =
+          Math.ceil((yield* Clock.currentTimeMillis) / 1000) + 60;
         const matches = yield* Effect.forEach(candidates, (thread) =>
           Effect.gen(function* () {
             if (
@@ -492,6 +565,7 @@ function makeProductionHarnessServices(
           client,
           expectedDigest: input.action.expectedNativeTurnIdDigest,
           acceptedAtSeconds,
+          originatorOverride: runtimeConfig.originatorOverride,
           workspacePath,
         });
         yield* correlationStore.save(
@@ -830,10 +904,18 @@ export function findStableDesktopOriginCorrelationThread(input: {
   readonly acceptedAtSeconds: number;
   readonly client: StableCodexThreadClient;
   readonly expectedDigest: WorkerRecoveryDigest;
+  readonly originatorOverride?: string;
   readonly workspacePath: typeof RuntimePathSchema.Encoded;
 }) {
   const workspacePath = parseRuntimePath(input.workspacePath);
   return Effect.gen(function* () {
+    const configuredOriginator =
+      input.originatorOverride ??
+      Option.getOrUndefined(
+        yield* Effect.option(
+          Config.string("CODEX_INTERNAL_ORIGINATOR_OVERRIDE")
+        )
+      );
     const stateDb = yield* listStableCodexThreadsForWorkspaceBySource(
       input.client,
       workspacePath,
@@ -882,7 +964,7 @@ export function findStableDesktopOriginCorrelationThread(input: {
     }
     if (
       stateDbMatch.source === "vscode" &&
-      process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE !== "Codex Desktop"
+      configuredOriginator !== "Codex Desktop"
     ) {
       return yield* Effect.fail(
         makeRuntimeError({
@@ -1295,14 +1377,23 @@ export function parseServerArgs(args: ReadonlyArray<string>): ServerConfig {
 
 function makeServerIdentity(
   input: typeof MakeServerIdentityInputSchema.Type
-): LocalServerIdentity {
-  return {
-    host: input.host,
-    pid: process.pid,
-    rootDirectory: input.rootDirectory,
-    serverId: parseServerId(`srv_${randomUUID()}`),
-    startedAt: parseServerStartedAt(new Date().toISOString()),
-  };
+): Effect.Effect<LocalServerIdentity> {
+  return Effect.gen(function* () {
+    let entropy = "";
+    const alphabet = "0123456789abcdef";
+    for (let index = 0; index < 32; index += 1) {
+      entropy += alphabet[yield* Random.nextIntBetween(0, alphabet.length)];
+    }
+    return {
+      host: input.host,
+      pid: process.pid,
+      rootDirectory: input.rootDirectory,
+      serverId: parseServerId(`srv_${entropy}`),
+      startedAt: parseServerStartedAt(
+        new Date(yield* Clock.currentTimeMillis).toISOString()
+      ),
+    };
+  });
 }
 
 function parsePort(input: string): number {

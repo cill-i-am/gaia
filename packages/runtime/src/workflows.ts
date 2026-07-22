@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import {
   GaiaFailure,
+  HarnessEnvironmentReceiptArtifactRefV1,
   MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
   MODEL_REVIEW_OUTPUT_CONTRACT_V1,
   makeModelContextContentV1,
@@ -9,6 +10,7 @@ import {
   makeModelInvocationManifestV1,
   ModelInvocationEpisodeStartV1,
   ModelInvocationObservationV1,
+  ResolvedHarnessExecution,
   parseMarkdownSpec,
   parseRunId,
   resolveAcceptedRunInputCheckpoint,
@@ -20,6 +22,7 @@ import {
   RunVerificationAggregateSchema,
   renderModelInputV1,
   type ReviewPhase,
+  type RunEvent,
   type RunId,
   type RunState,
 } from "@gaia/core";
@@ -46,7 +49,7 @@ import {
 } from "./codex-harness.js";
 import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
-import { appendEvent, loadRun } from "./event-store.js";
+import { appendEvent, loadRun, readEvents } from "./event-store.js";
 import { writeEvidencePromotion } from "./evidence-promotion.js";
 import { writeFactoryRetro } from "./factory-retro.js";
 import { writeFactoryScorecard } from "./factory-scorecard.js";
@@ -63,6 +66,8 @@ import {
   type HarnessName,
   type ProcessHarnessConfig,
 } from "./harness.js";
+import { readHarnessEnvironmentReceipt } from "./interactive-harness.js";
+export { readHarnessEnvironmentReceipt } from "./interactive-harness.js";
 import {
   commitModelInvocationPair,
   decodeCodexBatchSemanticConfig,
@@ -119,6 +124,59 @@ import {
   writeWorkerPlan,
   type WorkerPlan,
 } from "./worker-plan.js";
+
+const encodeHarnessEnvironmentReceiptRef = Schema.encodeSync(
+  HarnessEnvironmentReceiptArtifactRefV1
+);
+const decodeResolvedHarnessExecution = Schema.decodeUnknownSync(
+  ResolvedHarnessExecution
+);
+
+function harnessEnvironmentError() {
+  return makeRuntimeError({
+    code: "HarnessEnvironmentEvidenceInvalid",
+    message: "Harness environment evidence is missing or invalid.",
+    recoverable: false,
+  });
+}
+
+function acceptedEnvironmentExecution(events: ReadonlyArray<RunEvent>) {
+  const created = events[0];
+  if (created?.type !== "RUN_CREATED") return undefined;
+  const execution = created.payload["execution"];
+  if (typeof execution !== "object" || execution === null) return undefined;
+  return Option.getOrUndefined(
+    Schema.decodeUnknownOption(ResolvedHarnessExecution)(
+      Reflect.get(execution, "resolved")
+    )
+  );
+}
+
+function promoteHarnessEnvironmentCandidate(paths: RunPaths, runId: RunId) {
+  return Effect.gen(function* () {
+    const events = yield* readEvents(paths);
+    const execution = acceptedEnvironmentExecution(events);
+    if (execution?.environmentAssignment === undefined) return undefined;
+    const fs = yield* FileSystem.FileSystem;
+    if (!(yield* fs.exists(paths.harnessEnvironmentCandidate)))
+      return yield* Effect.fail(harnessEnvironmentError());
+    const candidate = yield* fs
+      .readFileString(paths.harnessEnvironmentCandidate)
+      .pipe(Effect.mapError(() => harnessEnvironmentError()));
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(candidate),
+      catch: () => harnessEnvironmentError(),
+    });
+    const validated = yield* readHarnessEnvironmentReceipt(
+      paths,
+      events,
+      parsed
+    );
+    if (validated.ref.runId !== runId)
+      return yield* Effect.fail(harnessEnvironmentError());
+    return validated.ref;
+  });
+}
 import { encodeWorkspaceDiffSummaryJson } from "./workspace-snapshot.js";
 import {
   emptyWorkspaceSource,
@@ -650,8 +708,19 @@ function executeAcceptedRun(input: {
     );
     const previewDeploymentTargetUrl = harnessResult.previewDeploymentUrl;
     if (workerContinuationState !== "completed") {
+      const harnessEnvironmentReceipt =
+        harnessName === codexAppServerHarnessName
+          ? yield* promoteHarnessEnvironmentCandidate(paths, runId)
+          : undefined;
       yield* appendEvent(runId, paths, {
         payload: {
+          ...(harnessEnvironmentReceipt === undefined
+            ? {}
+            : {
+                harnessEnvironmentReceipt: encodeHarnessEnvironmentReceiptRef(
+                  harnessEnvironmentReceipt
+                ),
+              }),
           ...(workerContinuationState === "start" &&
           modelProjection !== undefined &&
           (harnessName === codexHarnessName ||

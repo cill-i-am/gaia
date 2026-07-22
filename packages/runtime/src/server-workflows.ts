@@ -58,6 +58,7 @@ import {
   type GaiaFailure,
   type WorkerRecoveryAction,
   type WorkerRecoveryReceipt,
+  WorkerEnvironmentEpochComparisonDto,
   RunEvent,
   RunProofProjectionSchema,
   type RunId,
@@ -105,7 +106,7 @@ import {
 } from "./delivery-remediation-coordinator.js";
 import { coordinateDeliveryLocalReviewAttestation } from "./delivery-review-attestation-coordinator.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
-import { appendEvent, loadRun } from "./event-store.js";
+import { appendEvent, loadRun, readEvents } from "./event-store.js";
 import {
   writeInitialFactoryRunIndexes,
   type FactoryRunCreateInput,
@@ -123,6 +124,7 @@ import type { GitHubCommandRunner } from "./github-publisher.js";
 import type { DeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
 import {
   HarnessProfileNotFoundError,
+  HarnessEnvironmentAssignmentError,
   issueDeliveryWorkerHarnessCapabilities,
   type HarnessProviderRegistry,
   type ResolvedHarnessProvider,
@@ -163,6 +165,7 @@ import {
 } from "./worker-recovery.js";
 import {
   continueAcceptedRun,
+  readHarnessEnvironmentReceipt,
   type CommandSummary,
   type WorkerContinuationState,
   type WorkflowOptions,
@@ -999,6 +1002,84 @@ const decodeHarnessExecutionSelection = Schema.decodeUnknownSync(
 const decodeResolvedHarnessExecution = Schema.decodeUnknownSync(
   ResolvedHarnessExecution
 );
+const decodeWorkerEnvironmentEpochComparison = Schema.decodeUnknownSync(
+  WorkerEnvironmentEpochComparisonDto
+);
+
+/** Project comparison state only from accepted assignment and completed authority. */
+export function readWorkerEnvironmentEpochComparison(
+  paths: RunPaths,
+  options: { readonly requireProviderNativeToolInventory?: boolean } = {}
+) {
+  return Effect.gen(function* () {
+    const events = yield* readEvents(paths);
+    const created = events[0];
+    const executionInput =
+      created?.type === "RUN_CREATED"
+        ? created.payload["execution"]
+        : undefined;
+    const resolvedInput =
+      typeof executionInput === "object" && executionInput !== null
+        ? Reflect.get(executionInput, "resolved")
+        : undefined;
+    const resolved = Option.getOrUndefined(
+      Schema.decodeUnknownOption(ResolvedHarnessExecution)(resolvedInput)
+    );
+    if (resolved?.environmentAssignment === undefined)
+      return decodeWorkerEnvironmentEpochComparison({
+        limitations: ["acceptedEnvironmentAssignmentMissing"],
+        state: "missing",
+        version: 1,
+      });
+    const latestStarted = [...events]
+      .reverse()
+      .find(({ type }) => type === "WORKER_STARTED");
+    const latestCompleted = [...events]
+      .reverse()
+      .find(({ type }) => type === "WORKER_COMPLETED");
+    if (
+      latestCompleted === undefined ||
+      (latestStarted !== undefined &&
+        latestStarted.sequence > latestCompleted.sequence)
+    )
+      return decodeWorkerEnvironmentEpochComparison({
+        limitations: ["authoritativeReceiptMissing"],
+        state: "incomplete",
+        version: 1,
+      });
+    const receiptRef = latestCompleted.payload["harnessEnvironmentReceipt"];
+    if (receiptRef === undefined)
+      return decodeWorkerEnvironmentEpochComparison({
+        limitations: ["authoritativeReceiptMissing"],
+        state: "incomplete",
+        version: 1,
+      });
+    const receiptExit = yield* Effect.exit(
+      readHarnessEnvironmentReceipt(paths, events, receiptRef)
+    );
+    if (receiptExit._tag === "Failure")
+      return decodeWorkerEnvironmentEpochComparison({
+        limitations: ["authoritativeReceiptInvalid"],
+        state: "incomplete",
+        version: 1,
+      });
+    if (options.requireProviderNativeToolInventory === true)
+      return decodeWorkerEnvironmentEpochComparison({
+        limitations: [
+          "providerNativeToolInventoryNotExposed",
+          "providerNativeToolInventoryRequired",
+        ],
+        state: "nonComparable",
+        version: 1,
+      });
+    return decodeWorkerEnvironmentEpochComparison({
+      limitations: ["providerNativeToolInventoryNotExposed"],
+      state: "completeComparable",
+      structuralDigest: receiptExit.value.receipt.structuralDigest,
+      version: 1,
+    });
+  });
+}
 
 const ServerRunAcceptanceSchema = Schema.Struct({
   acceptedAt: RunEvent.fields.timestamp,
@@ -3403,6 +3484,13 @@ function toServerWorkflowError(code: string) {
 }
 
 function harnessAcceptanceError(error: unknown): GaiaRuntimeError {
+  if (error instanceof HarnessEnvironmentAssignmentError) {
+    return makeRuntimeError({
+      code: "HarnessEnvironmentAssignmentUnavailable",
+      message: "The production harness environment assignment is unavailable.",
+      recoverable: false,
+    });
+  }
   if (error instanceof HarnessProfileNotFoundError) {
     return makeRuntimeError({
       code: "HarnessProfileNotFound",
@@ -3623,7 +3711,10 @@ function factoryContinuationOptions(
         workerContinuationState: continuationState,
       };
     }
-    if (continuationState === "terminal") {
+    if (
+      continuationState === "terminal" &&
+      acceptedExecution.resolved.environmentAssignment === undefined
+    ) {
       return {
         ...commonOptions,
         workerContinuationState: continuationState,
@@ -3693,10 +3784,14 @@ function factoryContinuationOptions(
             );
     return {
       ...commonOptions,
-      workerContinuationState: continuationState,
+      workerContinuationState:
+        continuationState === "terminal" ? "resume" : continuationState,
       workerHarness: interactiveSessionHarness({
         ...(expectedCheckpoint === undefined ? {} : { expectedCheckpoint }),
         provider: resolved.provider,
+        ...(resolved.launchObservation === undefined
+          ? {}
+          : { launchObservation: resolved.launchObservation }),
         rootDirectory,
         ...(options.sessionCoordinator === undefined
           ? {}

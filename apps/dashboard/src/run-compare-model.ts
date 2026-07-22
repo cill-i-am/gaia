@@ -1,4 +1,6 @@
 import {
+  WorkerEnvironmentEpochComparisonDto,
+  compareWorkerEnvironmentEpochs,
   LocalRunReadArtifactIdSchema,
   RunEvent,
   RunIdSchema,
@@ -34,6 +36,10 @@ export const RunCompareSideSchema = Schema.Struct({
   runId: RunIdSchema,
   statusLabel: Schema.String,
   updatedAtLabel: Schema.String,
+  workerEnvironmentEpoch: Schema.optionalKey(
+    WorkerEnvironmentEpochComparisonDto
+  ),
+  workerEnvironmentEpochLabel: Schema.String,
 });
 
 export type RunCompareSide = typeof RunCompareSideSchema.Type;
@@ -121,6 +127,14 @@ export function buildRunCompareModel(
     ...primary.missingData.map((item) => `Primary: ${item}`),
     ...comparison.missingData.map((item) => `Comparison: ${item}`),
   ];
+  const environmentComparison = compareWorkerEnvironmentEpochs(
+    primary.workerEnvironmentEpoch,
+    comparison.workerEnvironmentEpoch
+  );
+  const environmentRefusal = environmentEquivalenceRefusal(
+    environmentComparison.reason
+  );
+  if (environmentRefusal !== undefined) missingData.push(environmentRefusal);
 
   return {
     artifactDelta,
@@ -130,9 +144,11 @@ export function buildRunCompareModel(
     missingData,
     primary,
     summary:
-      differenceCount === 0
-        ? "No key differences detected in public run data."
-        : `${differenceCount} key differences detected in public run data.`,
+      environmentRefusal !== undefined
+        ? `${environmentRefusal} ${differenceCount} key differences detected in public run data.`
+        : differenceCount === 0
+          ? "No key differences detected in public run data."
+          : `${differenceCount} key differences detected in public run data.`,
   };
 }
 
@@ -178,6 +194,15 @@ function toCompareSide(
     missingData.push("duration unavailable");
   }
 
+  if (
+    run.workerEnvironmentEpoch === undefined ||
+    run.workerEnvironmentEpoch.state !== "completeComparable"
+  ) {
+    missingData.push(
+      "worker environment epoch equivalence refused because comparable evidence is unavailable"
+    );
+  }
+
   return {
     artifactCountLabel: `${run.artifacts.length} exposed`,
     artifactNames: run.artifacts.map((artifact) =>
@@ -194,13 +219,39 @@ function toCompareSide(
     runId: run.runId,
     statusLabel: statusLabel(run.status),
     updatedAtLabel: timestampLabel(run.updatedAt),
+    ...(run.workerEnvironmentEpoch === undefined
+      ? {}
+      : { workerEnvironmentEpoch: run.workerEnvironmentEpoch }),
+    workerEnvironmentEpochLabel: environmentEpochLabel(
+      run.workerEnvironmentEpoch
+    ),
   };
+}
+
+function environmentEquivalenceRefusal(
+  reason: ReturnType<typeof compareWorkerEnvironmentEpochs>["reason"]
+) {
+  switch (reason) {
+    case "missingEvidence":
+      return "Worker environment epoch equivalence refused: evidence is missing.";
+    case "incompleteEvidence":
+      return "Worker environment epoch equivalence refused: evidence is incomplete.";
+    case "nonComparableEvidence":
+      return "Worker environment epoch equivalence refused: policy marks evidence non-comparable.";
+    case "differentStructuralDigest":
+    case "matchingCompleteStructuralDigest":
+      return undefined;
+  }
 }
 
 function compareMetrics(
   primary: RunCompareSide,
   comparison: RunCompareSide
 ): ReadonlyArray<RunCompareMetric> {
+  const environmentComparison = compareWorkerEnvironmentEpochs(
+    primary.workerEnvironmentEpoch,
+    comparison.workerEnvironmentEpoch
+  );
   return [
     metric("Status", primary.statusLabel, comparison.statusLabel),
     metric("Lifecycle", primary.lifecycleLabel, comparison.lifecycleLabel),
@@ -216,7 +267,31 @@ function compareMetrics(
     metric("Duration", primary.durationLabel, comparison.durationLabel),
     metric("Created", primary.createdAtLabel, comparison.createdAtLabel),
     metric("Updated", primary.updatedAtLabel, comparison.updatedAtLabel),
+    {
+      ...metric(
+        "Worker environment",
+        primary.workerEnvironmentEpochLabel,
+        comparison.workerEnvironmentEpochLabel
+      ),
+      isDifferent: !environmentComparison.equivalent,
+    },
   ];
+}
+
+function environmentEpochLabel(
+  epoch: typeof WorkerEnvironmentEpochComparisonDto.Type | undefined
+) {
+  if (epoch === undefined) return "Unavailable";
+  switch (epoch.state) {
+    case "completeComparable":
+      return `Complete ${epoch.structuralDigest.slice(0, 12)}`;
+    case "incomplete":
+      return "Incomplete";
+    case "missing":
+      return "Missing";
+    case "nonComparable":
+      return "Non-comparable";
+  }
 }
 
 function metric(

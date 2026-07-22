@@ -40,6 +40,9 @@ import {
   encodeWorkerDesktopOriginCorrelationReceiptJson,
   encodeWorkerRecoveryReceiptJson,
   HarnessCapabilities,
+  HarnessLaunchObservationV1,
+  HarnessEnvironmentReceiptArtifactRefV1,
+  digestHarnessEnvironmentContract,
   HarnessProviderDescriptor,
   parseMergeDecisionV2,
   parseRunContract,
@@ -73,6 +76,7 @@ import {
   type HarnessProvider,
 } from "./harness-session.js";
 import { makeProcessHarnessConfig } from "./harness.js";
+import { commitHarnessEnvironmentCandidate } from "./interactive-harness.js";
 import { recordMergeDecision } from "./merge-decision.js";
 import { commitDerivedAppModelInvocationEpisode } from "./model-invocation.js";
 import { makeRunPaths, type RunPaths } from "./paths.js";
@@ -86,16 +90,23 @@ import { localRunProfileSource } from "./run-profile.js";
 import { readLocalRun, readLocalRunEvents } from "./run-read-api.js";
 import {
   acceptFactoryRun,
+  acceptPreparedFactoryRun,
   acceptServerRun,
   actOnDeliveryMerge,
   actOnWorkerDesktopOriginCorrelation,
   actOnWorkerCorrelationReconciliation,
   actOnWorkerContinuation,
   continueServerRun,
+  prepareFactoryRunAcceptance,
   reconcileInterruptedServerRuns,
+  readWorkerEnvironmentEpochComparison,
 } from "./server-workflows.js";
 import { localSkillManifestSource } from "./skill-manifest.js";
 import { testHarnessProvider } from "./test-support.js";
+import {
+  HarnessLaunchObservationLive,
+  HarnessLaunchObservationService,
+} from "./worker-runtime-environment.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
 
 const WorkerContinuationEventPayloadSchema = Schema.Struct({
@@ -223,6 +234,337 @@ function makeMarkerHarnessProviderRegistry(rootDirectory: string) {
 
 describe("server workflows", () => {
   layer(NodeServices.layer)((it) => {
+    it.effect(
+      "projects only event-authoritative worker environment evidence and ignores an orphan candidate",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const rootDirectory = yield* fs.makeTempDirectory({
+            prefix: "gaia-worker-epoch-",
+          });
+          const runId = parseRunId("run-EpochProof");
+          const paths = yield* makeRunPaths(runId, { rootDirectory });
+          yield* fs.makeDirectory(paths.root, { recursive: true });
+          const environmentAssignment = {
+            adapter: {
+              contractDigest: "a".repeat(64),
+              contractId: "gaia.codex-app-server",
+              contractVersion: "1",
+              providerNativeToolInventoryObservation: "notExposed",
+              toolContractDigest: "b".repeat(64),
+            },
+            authority: {
+              approvalPolicy: "on-request",
+              ephemeral: false,
+              sandbox: "workspace-write",
+              workspaceBindingDigest: digestHarnessEnvironmentContract(
+                "gaia.worker-workspace-authority.v1",
+                ["cill-i-am/gaia", ".gaia/runs/<runId>/workspace"]
+              ),
+            },
+            effectDependencyEpoch: "4.0.0-beta.93",
+            hostClass: "localGaiaServer",
+            interfaceClass: "codexAppServerStdio",
+            model: {
+              id: "gpt-5.6-codex",
+              provider: "openai",
+              reasoningEffort: "high",
+            },
+            runtimeSource: {
+              repositoryIdentity: "cill-i-am/gaia",
+              revision: "6cc2350063cec02229fde3669af0f67a8cc3497a",
+              sourceState: "clean",
+            },
+            version: 1,
+          } as const;
+          const execution = ResolvedHarnessExecution.make({
+            capabilities: acceptanceCapabilities,
+            environmentAssignment,
+            executionMode: "local",
+            harnessProfileId: codexAppServerExecutionSelection.harnessProfileId,
+            provider: HarnessProviderDescriptor.make({
+              displayName: "Codex App Server",
+              executionModes: ["local"],
+              providerId: parseHarnessProviderId("codex-app-server"),
+            }),
+            version: "0.137.0",
+          });
+          yield* appendEvent(runId, paths, {
+            payload: {
+              execution: {
+                resolved: Schema.encodeSync(ResolvedHarnessExecution)(
+                  execution
+                ),
+              },
+              specPath: "spec.md",
+            },
+            type: "RUN_CREATED",
+          });
+          yield* fs.makeDirectory(paths.harnessEnvironmentDirectory, {
+            recursive: true,
+          });
+          yield* fs.writeFileString(
+            paths.harnessEnvironmentCandidate,
+            '{"forged":"candidate"}\n'
+          );
+
+          const incomplete = yield* readWorkerEnvironmentEpochComparison(paths);
+          assert.strictEqual(incomplete.state, "incomplete");
+          assert.deepEqual(incomplete.limitations, [
+            "authoritativeReceiptMissing",
+          ]);
+
+          const legacyRunId = parseRunId("run-EpochMiss1");
+          const legacyPaths = yield* makeRunPaths(legacyRunId, {
+            rootDirectory,
+          });
+          yield* fs.makeDirectory(legacyPaths.root, { recursive: true });
+          yield* appendEvent(legacyRunId, legacyPaths, {
+            payload: {
+              execution: {
+                resolved: Schema.encodeSync(ResolvedHarnessExecution)(
+                  ResolvedHarnessExecution.make({
+                    capabilities: acceptanceCapabilities,
+                    executionMode: "local",
+                    harnessProfileId:
+                      codexAppServerExecutionSelection.harnessProfileId,
+                    provider: HarnessProviderDescriptor.make({
+                      displayName: "Historical Harness",
+                      executionModes: ["local"],
+                      providerId: parseHarnessProviderId("historical"),
+                    }),
+                    version: "historical-1",
+                  })
+                ),
+              },
+              specPath: "spec.md",
+            },
+            type: "RUN_CREATED",
+          });
+          const missing =
+            yield* readWorkerEnvironmentEpochComparison(legacyPaths);
+          assert.strictEqual(missing.state, "missing");
+          assert.deepEqual(missing.limitations, [
+            "acceptedEnvironmentAssignmentMissing",
+          ]);
+        })
+    );
+
+    it.effect(
+      "projects complete, non-comparable, corrupt, and replay-stable worker epochs from event authority",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const rootDirectory = yield* fs.makeTempDirectory({
+            prefix: "gaia-worker-epoch-complete-",
+          });
+          const launchObservation = yield* HarnessLaunchObservationService;
+          const observation = HarnessLaunchObservationV1.make({
+            approvalPolicy: "on-request",
+            cwdMatchesWorkspaceBinding: true,
+            model: "gpt-5.6-codex",
+            modelProvider: "openai",
+            reasoningEffort: "high",
+            sandbox: "workspace-write",
+            source: "threadRuntimeResult",
+          });
+          const observe = (sessionId: typeof HarnessSessionIdSchema.Type) =>
+            launchObservation
+              .complete(sessionId, observation)
+              .pipe(Effect.orDie);
+          const recordMarker = (request: {
+            readonly sessionId: string;
+            readonly workspacePath: string;
+          }) =>
+            Effect.sync(() => {
+              const workspace = join(rootDirectory, request.workspacePath);
+              mkdirSync(workspace, { recursive: true });
+              writeFileSync(
+                join(workspace, "output.txt"),
+                `${request.sessionId.slice("session-".length)}\n`
+              );
+            });
+          let createCount = 0;
+          let resumeCount = 0;
+          const provider: HarnessProvider = {
+            ...testHarnessProvider,
+            createSession: (request) =>
+              Effect.sync(() => {
+                createCount += 1;
+              }).pipe(
+                Effect.andThen(observe(request.sessionId)),
+                Effect.andThen(recordMarker(request)),
+                Effect.andThen(testHarnessProvider.createSession(request))
+              ),
+            resumeSession: (request) =>
+              Effect.sync(() => {
+                resumeCount += 1;
+              }).pipe(
+                Effect.andThen(observe(request.sessionId)),
+                Effect.andThen(recordMarker(request)),
+                Effect.andThen(testHarnessProvider.resumeSession(request))
+              ),
+          };
+          const environmentAssignment = {
+            adapter: {
+              contractDigest: "a".repeat(64),
+              contractId: "gaia.codex-app-server",
+              contractVersion: "1",
+              providerNativeToolInventoryObservation: "notExposed",
+              toolContractDigest: "b".repeat(64),
+            },
+            authority: {
+              approvalPolicy: "on-request",
+              ephemeral: false,
+              sandbox: "workspace-write",
+              workspaceBindingDigest: digestHarnessEnvironmentContract(
+                "gaia.worker-workspace-authority.v1",
+                ["cill-i-am/gaia", ".gaia/runs/<runId>/workspace"]
+              ),
+            },
+            effectDependencyEpoch: "4.0.0-beta.93",
+            hostClass: "localGaiaServer",
+            interfaceClass: "codexAppServerStdio",
+            model: {
+              id: "gpt-5.6-codex",
+              provider: "openai",
+              reasoningEffort: "high",
+            },
+            runtimeSource: {
+              repositoryIdentity: "cill-i-am/gaia",
+              revision: "6cc2350063cec02229fde3669af0f67a8cc3497a",
+              sourceState: "clean",
+            },
+            version: 1,
+          } as const;
+          const registry = makeHarnessProviderRegistry([
+            {
+              environmentAssignment: () =>
+                Effect.succeed(environmentAssignment),
+              launchObservation,
+              profileId: codexAppServerExecutionSelection.harnessProfileId,
+              provider,
+            },
+          ]);
+          const factoryInput = {
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery" as const,
+            workItem: {
+              description: "Prove the complete worker epoch projection.",
+              kind: "issue" as const,
+              title: "Complete worker epoch",
+            },
+          };
+          const workflowOptions = {
+            harnessProviderRegistry: registry,
+            rootDirectory,
+          };
+          const prepared = yield* prepareFactoryRunAcceptance(
+            factoryInput,
+            workflowOptions
+          );
+          const accepted = yield* acceptPreparedFactoryRun(
+            prepared,
+            workflowOptions
+          );
+          yield* continueServerRun(accepted.runId, {
+            harnessProviderRegistry: registry,
+            rootDirectory,
+          });
+          const paths = yield* makeRunPaths(accepted.runId, { rootDirectory });
+          const completedEvents = yield* readEvents(paths);
+          const workerCompletedIndex = completedEvents.findIndex(
+            ({ type }) => type === "WORKER_COMPLETED"
+          );
+          if (workerCompletedIndex < 0)
+            throw new Error("Expected an authoritative worker completion.");
+          const lines = (yield* fs.readFileString(paths.events))
+            .trimEnd()
+            .split("\n");
+          yield* fs.writeFileString(
+            paths.events,
+            `${lines.slice(0, workerCompletedIndex).join("\n")}\n`
+          );
+          const orphan = yield* readWorkerEnvironmentEpochComparison(paths);
+          assert.strictEqual(orphan.state, "incomplete");
+          yield* continueServerRun(accepted.runId, {
+            harnessProviderRegistry: registry,
+            rootDirectory,
+          });
+          assert.strictEqual(createCount, 1);
+          assert.strictEqual(resumeCount, 1);
+          const first = yield* readWorkerEnvironmentEpochComparison(paths);
+          const replay = yield* readWorkerEnvironmentEpochComparison(paths);
+          assert.strictEqual(first.state, "completeComparable");
+          assert.deepEqual(replay, first);
+
+          const authoritativeEvents = yield* readEvents(paths);
+          const authoritativeCompletion = [...authoritativeEvents]
+            .reverse()
+            .find(({ type }) => type === "WORKER_COMPLETED");
+          const authoritativeRef = Schema.decodeUnknownSync(
+            HarnessEnvironmentReceiptArtifactRefV1
+          )(authoritativeCompletion?.payload["harnessEnvironmentReceipt"]);
+          const reusedRef = yield* commitHarnessEnvironmentCandidate({
+            events: authoritativeEvents,
+            observation,
+            paths,
+            resolvedExecution: prepared.resolvedExecution,
+            runId: accepted.runId,
+          });
+          assert.deepEqual(reusedRef, authoritativeRef);
+
+          const changedObservation = HarnessLaunchObservationV1.make({
+            ...observation,
+            reasoningEffort: "medium",
+          });
+          const mismatch = yield* commitHarnessEnvironmentCandidate({
+            events: authoritativeEvents,
+            observation: changedObservation,
+            paths,
+            resolvedExecution: prepared.resolvedExecution,
+            runId: accepted.runId,
+          }).pipe(Effect.flip);
+          assert.strictEqual(
+            mismatch.code,
+            "HarnessEnvironmentEvidenceUnavailable"
+          );
+          assert.deepEqual(yield* readEvents(paths), authoritativeEvents);
+
+          const policyLimited = yield* readWorkerEnvironmentEpochComparison(
+            paths,
+            {
+              requireProviderNativeToolInventory: true,
+            }
+          );
+          assert.strictEqual(policyLimited.state, "nonComparable");
+
+          const events = yield* readEvents(paths);
+          const completed = [...events]
+            .reverse()
+            .find(({ type }) => type === "WORKER_COMPLETED");
+          const receiptRef = completed?.payload["harnessEnvironmentReceipt"];
+          if (typeof receiptRef !== "object" || receiptRef === null)
+            throw new Error("Expected an authoritative receipt reference.");
+          const receiptPath = Reflect.get(receiptRef, "path");
+          if (typeof receiptPath !== "string")
+            throw new Error("Expected an authoritative receipt path.");
+          const target = join(paths.root, receiptPath);
+          const body = yield* fs.readFileString(target);
+          yield* fs.writeFileString(target, "{}\n");
+          const corrupt = yield* readWorkerEnvironmentEpochComparison(paths);
+          assert.strictEqual(corrupt.state, "incomplete");
+          assert.deepEqual(corrupt.limitations, [
+            "authoritativeReceiptInvalid",
+          ]);
+          yield* fs.writeFileString(target, body);
+          assert.deepEqual(
+            yield* readWorkerEnvironmentEpochComparison(paths),
+            first
+          );
+        }).pipe(Effect.provide(HarnessLaunchObservationLive))
+    );
+
     it.effect("durably accepts Markdown content before continuation", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;

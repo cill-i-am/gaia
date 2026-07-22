@@ -90,6 +90,7 @@ export {
   ThreadListResultSchema,
   ThreadReadParamsSchema,
   ThreadResultSchema,
+  CodexThreadRuntimeResultSchema,
   parseCodexThreadId,
   parseCodexRequestId,
   parseCodexClientVersion,
@@ -124,6 +125,7 @@ export {
 export {
   detectInstalledCodexAppServer,
   makeCodexAppServerDetectionProbe,
+  makeInstalledCodexAppServerDetection,
   type CodexDetectionProbeRunner,
 } from "./codex-provider-detection.js";
 export { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
@@ -132,12 +134,27 @@ export { writeFactoryRetro } from "./factory-retro.js";
 export { writeFactoryScorecard } from "./factory-scorecard.js";
 export {
   HarnessProfileNotFoundError,
+  HarnessEnvironmentAssignmentError,
   issueDeliveryWorkerHarnessCapabilities,
   makeHarnessProviderRegistry,
   type HarnessProviderRegistration,
   type HarnessProviderRegistry,
   type ResolvedHarnessProvider,
 } from "./harness-provider-registry.js";
+export {
+  HarnessLaunchObservationError,
+  HarnessLaunchObservationLive,
+  HarnessLaunchObservationService,
+  WorkerRuntimeConfig,
+  WorkerRuntimeConfigLive,
+  WorkerRuntimeConfigValue,
+  WorkerRuntimeEnvironmentError,
+  WorkerRuntimeEnvironmentLive,
+  WorkerRuntimeEnvironmentService,
+  WorkerRuntimeProviderVersionSchema,
+  parseWorkerRuntimeProviderVersion,
+  type WorkerRuntimeProviderVersion,
+} from "./worker-runtime-environment.js";
 export {
   HarnessActionError,
   HarnessActionTransportWitness,

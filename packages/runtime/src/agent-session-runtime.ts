@@ -22,7 +22,7 @@ import {
   type RunEvent,
   type RunId,
 } from "@gaia/core";
-import { Effect, Option, Schema, Stream } from "effect";
+import { Clock, Effect, Option, Schema, Stream } from "effect";
 
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import {
@@ -340,7 +340,7 @@ function dispatchAgentSessionActionWithinLease(input: {
             paths,
             {
               kind: "interactionResolved",
-              resolution: resolutionFromAction(input.action),
+              resolution: yield* resolutionFromAction(input.action),
               sessionId: input.action.sessionId,
             }
           );
@@ -834,30 +834,32 @@ function resolutionFromAction(
     { kind: "approval" | "userInput" | "mcpElicitation" }
   >
 ) {
-  const resolvedAt = new Date().toISOString();
-  return Schema.decodeUnknownSync(HarnessInteractionResolutionSchema)(
-    action.kind === "approval"
-      ? {
-          actionId: action.actionId,
-          decision: action.decision,
-          interactionId: action.interactionId,
-          kind: "approval",
-          resolvedAt,
-        }
-      : action.kind === "userInput"
+  return Effect.gen(function* () {
+    const resolvedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    return Schema.decodeUnknownSync(HarnessInteractionResolutionSchema)(
+      action.kind === "approval"
         ? {
             actionId: action.actionId,
-            decision: "submit",
+            decision: action.decision,
             interactionId: action.interactionId,
-            kind: "userInput",
+            kind: "approval",
             resolvedAt,
           }
-        : {
-            actionId: action.actionId,
-            decision: action.action,
-            interactionId: action.interactionId,
-            kind: "mcpElicitation",
-            resolvedAt,
-          }
-  );
+        : action.kind === "userInput"
+          ? {
+              actionId: action.actionId,
+              decision: "submit",
+              interactionId: action.interactionId,
+              kind: "userInput",
+              resolvedAt,
+            }
+          : {
+              actionId: action.actionId,
+              decision: action.action,
+              interactionId: action.interactionId,
+              kind: "mcpElicitation",
+              resolvedAt,
+            }
+    );
+  });
 }

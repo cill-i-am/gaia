@@ -91,6 +91,8 @@ export const RunPathsSchema = Schema.Struct({
   githubPrComment: RuntimePathSchema,
   githubRemediationSpec: RuntimePathSchema,
   harnessWorkspaceBaseline: RuntimePathSchema,
+  harnessEnvironmentCandidate: RuntimePathSchema,
+  harnessEnvironmentDirectory: RuntimePathSchema,
   input: RuntimePathSchema,
   latest: RuntimePathSchema,
   linearIssueGraph: RuntimePathSchema,
@@ -217,6 +219,12 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
         root,
         ".harness-workspace-baseline.json"
       ),
+      harnessEnvironmentCandidate: path.join(
+        root,
+        "harness-environment",
+        "candidate.json"
+      ),
+      harnessEnvironmentDirectory: path.join(root, "harness-environment"),
       input: path.join(root, "input.md"),
       latest: store.latest,
       linearIssueGraph: path.join(root, "linear-issue-graph.json"),

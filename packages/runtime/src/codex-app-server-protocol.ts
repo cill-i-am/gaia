@@ -992,12 +992,26 @@ export const CodexRawThreadResumeResultSchema = Schema.Struct({
     )
   ),
 });
+/** Allowlisted effective runtime fields retained in memory for launch checks. */
+export const CodexThreadRuntimeResultSchema = Schema.Struct({
+  approvalPolicy: CodexRawThreadRuntimeResultFields.approvalPolicy,
+  cwd: CodexRawThreadRuntimeResultFields.cwd,
+  model: CodexRawThreadRuntimeResultFields.model,
+  modelProvider: CodexRawThreadRuntimeResultFields.modelProvider,
+  reasoningEffort: CodexRawThreadRuntimeResultFields.reasoningEffort,
+  sandbox: CodexRawThreadRuntimeResultFields.sandbox,
+  thread: Thread,
+});
 export const ThreadReadBoundaryResultSchema =
   CodexRawThreadReadResultSchema.pipe(Schema.decodeTo(ThreadResultSchema));
 export const ThreadStartBoundaryResultSchema =
-  CodexRawThreadStartResultSchema.pipe(Schema.decodeTo(ThreadResultSchema));
+  CodexRawThreadStartResultSchema.pipe(
+    Schema.decodeTo(CodexThreadRuntimeResultSchema)
+  );
 export const ThreadResumeBoundaryResultSchema =
-  CodexRawThreadResumeResultSchema.pipe(Schema.decodeTo(ThreadResultSchema));
+  CodexRawThreadResumeResultSchema.pipe(
+    Schema.decodeTo(CodexThreadRuntimeResultSchema)
+  );
 export const TextInputSchema = Schema.Struct({
   text: Schema.String,
   type: Schema.Literal("text"),

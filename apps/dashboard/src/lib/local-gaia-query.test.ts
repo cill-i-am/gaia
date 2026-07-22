@@ -245,6 +245,52 @@ describe("local Gaia query options", () => {
     expect(requests).toEqual(["GET http://127.0.0.1:4321/runs"]);
   });
 
+  it("preserves the public worker epoch through the legacy dashboard run model", async () => {
+    const epoch = {
+      limitations: ["providerNativeToolInventoryNotExposed"],
+      state: "completeComparable",
+      structuralDigest: "a".repeat(64),
+      version: 1,
+    } as const;
+    const result = await Effect.runPromise(
+      listRunsFromDashboardGaiaClient({ serverUrl }).pipe(
+        Effect.provide(
+          recordingFetchLayer([], () =>
+            jsonResponse({
+              data: {
+                diagnostics: [],
+                runs: [
+                  {
+                    counts: {
+                      activity: 1,
+                      agents: 1,
+                      artifacts: 0,
+                      workItems: 1,
+                    },
+                    createdAt: "2026-07-22T11:20:00.000Z",
+                    rootWorkItem: {
+                      id: "work-root",
+                      kind: "issue",
+                      title: "GAIA-147",
+                    },
+                    runId,
+                    state: "running",
+                    updatedAt: "2026-07-22T11:21:00.000Z",
+                    workerEnvironmentEpoch: epoch,
+                    workflow: "issueDelivery",
+                  },
+                ],
+              },
+              status: "success",
+            })
+          )
+        )
+      )
+    );
+
+    expect(result.data.runs[0]?.workerEnvironmentEpoch).toEqual(epoch);
+  });
+
   it("maps declared API failures into a tagged dashboard query error", async () => {
     const error = await Effect.runPromise(
       getRunFromDashboardGaiaClient({

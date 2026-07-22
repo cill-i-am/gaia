@@ -157,10 +157,110 @@ describe("run compare model", () => {
       "check outcome unavailable",
       "review outcome unavailable",
       "duration unavailable",
+      "worker environment epoch equivalence refused because comparable evidence is unavailable",
     ]);
     expect(model.missingData).toEqual(["Primary run unavailable"]);
     expect(model.summary).toBe("Choose two local runs to compare.");
   });
+
+  it("equates only matching complete worker environment epochs", () => {
+    const primaryRunId = parseRunId("run-5555555555");
+    const comparisonRunId = parseRunId("run-6666666666");
+    const complete = {
+      limitations: ["providerNativeToolInventoryNotExposed"],
+      state: "completeComparable",
+      structuralDigest: "a".repeat(64),
+      version: 1,
+    } as const;
+    const compare = (
+      primaryEpoch: typeof complete,
+      comparisonEpoch:
+        | typeof complete
+        | {
+            readonly limitations: readonly ["authoritativeReceiptMissing"];
+            readonly state: "incomplete";
+            readonly version: 1;
+          }
+    ) =>
+      buildRunCompareModel({
+        comparisonEvents: [],
+        comparisonRun: localRunSummary({
+          runId: comparisonRunId,
+          workerEnvironmentEpoch: comparisonEpoch,
+        }),
+        primaryEvents: [],
+        primaryRun: localRunSummary({
+          runId: primaryRunId,
+          workerEnvironmentEpoch: primaryEpoch,
+        }),
+      }).metrics.find(({ label }) => label === "Worker environment");
+
+    expect(compare(complete, complete)?.isDifferent).toBe(false);
+    expect(
+      compare(complete, {
+        ...complete,
+        structuralDigest: "b".repeat(64),
+      })?.isDifferent
+    ).toBe(true);
+    expect(
+      compare(complete, {
+        limitations: ["authoritativeReceiptMissing"],
+        state: "incomplete",
+        version: 1,
+      })?.isDifferent
+    ).toBe(true);
+  });
+
+  it.each([
+    [
+      undefined,
+      "Worker environment epoch equivalence refused: evidence is missing.",
+    ],
+    [
+      {
+        limitations: ["authoritativeReceiptMissing"],
+        state: "incomplete",
+        version: 1,
+      },
+      "Worker environment epoch equivalence refused: evidence is incomplete.",
+    ],
+    [
+      {
+        limitations: ["providerNativeToolInventoryRequired"],
+        state: "nonComparable",
+        version: 1,
+      },
+      "Worker environment epoch equivalence refused: policy marks evidence non-comparable.",
+    ],
+  ] as const)(
+    "visibly refuses epoch equivalence for %j public evidence",
+    (workerEnvironmentEpoch, refusal) => {
+      const primaryRunId = parseRunId("run-7777777777");
+      const comparisonRunId = parseRunId("run-8888888888");
+      const model = buildRunCompareModel({
+        comparisonEvents: [],
+        comparisonRun: localRunSummary({
+          runId: comparisonRunId,
+          ...(workerEnvironmentEpoch === undefined
+            ? {}
+            : { workerEnvironmentEpoch }),
+        }),
+        primaryEvents: [],
+        primaryRun: localRunSummary({
+          runId: primaryRunId,
+          ...(workerEnvironmentEpoch === undefined
+            ? {}
+            : { workerEnvironmentEpoch }),
+        }),
+      });
+
+      expect(model.missingData).toContain(refusal);
+      expect(model.summary).toContain(refusal);
+      expect(model.summary).not.toBe(
+        "No key differences detected in public run data."
+      );
+    }
+  );
 
   it.each([
     ["verified", "available"],

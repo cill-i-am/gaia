@@ -65,6 +65,44 @@ describe("local run legacy ingress", () => {
       })
     );
   });
+
+  it("preserves a routed epoch while allowing older legacy wire omission", () => {
+    const legacy = {
+      artifacts: ["events"],
+      createdAt: "2026-07-21T00:00:00.000Z",
+      eventCount: 1,
+      latestEventType: "RUN_CREATED",
+      modelInvocationArtifacts: [],
+      runId: "run-1234567890",
+      state: "created",
+      status: "running",
+      updatedAt: "2026-07-21T00:00:00.000Z",
+    } as const;
+    const withoutEpoch = Schema.decodeUnknownSync(LocalRunReadSummarySchema)(
+      legacy
+    );
+    const withEpoch = Schema.decodeUnknownSync(LocalRunReadSummarySchema)({
+      ...legacy,
+      workerEnvironmentEpoch: {
+        limitations: ["providerNativeToolInventoryNotExposed"],
+        state: "completeComparable",
+        structuralDigest: "a".repeat(64),
+        version: 1,
+      },
+    });
+
+    assert.isUndefined(withoutEpoch.workerEnvironmentEpoch);
+    assert.strictEqual(
+      withEpoch.workerEnvironmentEpoch?.state,
+      "completeComparable"
+    );
+    if (withEpoch.workerEnvironmentEpoch?.state !== "completeComparable")
+      throw new Error("Expected a complete comparable worker epoch.");
+    assert.strictEqual(
+      withEpoch.workerEnvironmentEpoch.structuralDigest,
+      "a".repeat(64)
+    );
+  });
 });
 
 describe("verification action success contract", () => {

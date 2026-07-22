@@ -109,6 +109,7 @@ import {
   acceptPreparedFactoryRun,
   continueServerRun,
   prepareFactoryRunAcceptance,
+  readWorkerEnvironmentEpochComparison,
   type ServerRunAcceptance,
   type ServerWorkflowOptions,
 } from "@gaia/runtime/server-workflows";
@@ -792,6 +793,7 @@ type FactoryRunProjection = {
   readonly activity: typeof FactoryActivityListDto.Type;
   readonly artifacts: typeof FactoryArtifactListDto.Type;
   readonly graph: typeof FactoryGraphDto.Type;
+  readonly workerEnvironmentEpoch: typeof FactoryRunSummaryDto.Type.workerEnvironmentEpoch;
 };
 type FactoryListDiagnostic =
   (typeof FactoryGraphDto.Type)["diagnostics"][number];
@@ -847,6 +849,9 @@ function readFactoryRunProjection(
     const graph = yield* readFactoryGraph(runId, options);
     const activity = yield* readFactoryRunActivity(runId, options);
     const artifacts = yield* listFactoryRunArtifacts(runId, options);
+    const paths = yield* makeRunPaths(runId, options);
+    const workerEnvironmentEpoch =
+      yield* readWorkerEnvironmentEpochComparison(paths);
     if (graph.workItems[0] === undefined) {
       return yield* Effect.fail(
         parseLocalRunReadDiagnostic({
@@ -859,7 +864,7 @@ function readFactoryRunProjection(
       );
     }
 
-    return { activity, artifacts, graph };
+    return { activity, artifacts, graph, workerEnvironmentEpoch };
   });
 }
 
@@ -1345,6 +1350,7 @@ function factoryRunSummaryFromProjection(
       projection.activity.activities.at(-1)?.timestamp ??
       new Date(0).toISOString(),
     workflow: projection.graph.workflow,
+    workerEnvironmentEpoch: projection.workerEnvironmentEpoch,
   });
 }
 

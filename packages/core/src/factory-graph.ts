@@ -1,7 +1,10 @@
 import { Schema, SchemaGetter } from "effect";
 
 import { RunEventTimestampSchema } from "./events.js";
-import { ResolvedHarnessExecution } from "./harness-execution.js";
+import {
+  ResolvedHarnessExecution,
+  WorkerEnvironmentEpochComparisonDto,
+} from "./harness-execution.js";
 import { RunVerificationAggregateSchema } from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
 
@@ -483,6 +486,7 @@ export class FactoryRunSummaryDto extends Schema.Class<FactoryRunSummaryDto>(
   state: FactoryAgentStateSchema,
   updatedAt: RunEventTimestampSchema,
   workflow: FactoryWorkflowIdSchema,
+  workerEnvironmentEpoch: WorkerEnvironmentEpochComparisonDto,
 }) {}
 
 /** Factory-aware run detail metadata; full topology lives on the graph endpoint. */
@@ -505,6 +509,7 @@ export class FactoryRunDetailDto extends Schema.Class<FactoryRunDetailDto>(
     run: Schema.NonEmptyString,
   }),
   workflow: FactoryWorkflowIdSchema,
+  workerEnvironmentEpoch: WorkerEnvironmentEpochComparisonDto,
 }) {}
 
 /** Collection response data for factory run lists. */

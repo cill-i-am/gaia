@@ -685,6 +685,7 @@ function legacyRunSummaryFromFactoryRun(
     state: legacyRunStateFromFactoryState(run.state),
     status: legacyStatusFromFactoryState(run.state),
     updatedAt: run.updatedAt,
+    workerEnvironmentEpoch: run.workerEnvironmentEpoch,
   };
 }
 
