@@ -15,6 +15,7 @@ import {
   RunIdSchema,
   parseLocalRunArtifactName,
   parseLocalRunReadDiagnostic,
+  parseRunControlEventPayload,
   parseDeliveryRemediation,
   parseDeliveryMergeReceipt,
   parseDeliveryMergeReadinessDecision,
@@ -1360,11 +1361,26 @@ function updateStatesForEvent(
     case "DELIVERY_CLEANUP_PROVENANCE_RECORDED":
     case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
     case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
+    case "RUN_INTERACTION_EXPIRED":
+    case "RUN_CONTROL_INTENT_RECORDED":
+    case "RUN_CONTROL_ATTEMPTED":
+    case "RUN_CONTROL_FAILED":
+    case "RUN_CONTROL_OUTCOME_UNKNOWN":
     case "WORKER_CONTINUATION_RECORDED":
     case "WORKER_CORRELATION_RECONCILIATION_RECORDED":
     case "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED":
       states.set("orchestrator", "running");
       return;
+    case "RUN_CONTROL_CONFIRMED": {
+      const control = parseRunControlEventPayload(event.payload["control"]);
+      if (control.operation === "cancel") {
+        states.set("orchestrator", "canceled");
+        states.set("worker", "canceled");
+      } else {
+        states.set("orchestrator", "running");
+      }
+      return;
+    }
     case "RUN_FAILED":
       states.set("orchestrator", "failed");
       states.set(roleFromFailureStage(event.payload["stage"]), "failed");
@@ -1426,6 +1442,12 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "DELIVERY_CLEANUP_PROVENANCE_RECORDED":
     case "DELIVERY_CLEANUP_RESOURCE_CHECKPOINT_RECORDED":
     case "DELIVERY_MERGE_PROVIDER_CHECKPOINT_RECORDED":
+    case "RUN_INTERACTION_EXPIRED":
+    case "RUN_CONTROL_INTENT_RECORDED":
+    case "RUN_CONTROL_ATTEMPTED":
+    case "RUN_CONTROL_CONFIRMED":
+    case "RUN_CONTROL_FAILED":
+    case "RUN_CONTROL_OUTCOME_UNKNOWN":
     case "WORKER_CONTINUATION_RECORDED":
     case "WORKER_CORRELATION_RECONCILIATION_RECORDED":
     case "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED":
@@ -1435,6 +1457,7 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "WORKER_STARTED":
     case "WORKER_COMPLETED":
     case "WORKER_RECOVERY_RECORDED":
+    case "RUN_WAITING_FOR_HUMAN":
     case "HARNESS_SESSION_EVENT_RECORDED":
       return "worker";
     case "REVIEW_STARTED":
@@ -1649,6 +1672,20 @@ function activityLabel(event: RunEvent): string {
       return harnessActivityLabel(parseHarnessEvent(event.payload.event));
     case "RUN_FAILED":
       return "Factory run failed";
+    case "RUN_WAITING_FOR_HUMAN":
+      return "Run waiting for human";
+    case "RUN_INTERACTION_EXPIRED":
+      return "Run interaction expired";
+    case "RUN_CONTROL_INTENT_RECORDED":
+      return "Run control intent recorded";
+    case "RUN_CONTROL_ATTEMPTED":
+      return "Run control attempted";
+    case "RUN_CONTROL_CONFIRMED":
+      return "Run control confirmed";
+    case "RUN_CONTROL_FAILED":
+      return "Run control failed";
+    case "RUN_CONTROL_OUTCOME_UNKNOWN":
+      return "Run control outcome unknown";
   }
 }
 

@@ -27,6 +27,9 @@ import {
 
 export const testHarnessCapabilities = HarnessCapabilities.make({
   approvals: [],
+  durableCancellation: true,
+  durableInteractionResolution: true,
+  durablePause: true,
   fileChangeEvents: true,
   interruption: true,
   resumableSessions: true,

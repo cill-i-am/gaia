@@ -6,10 +6,20 @@ import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
+  FactoryAgentIdSchema,
+  makeRunControlActionBindingDigest,
+  parseHarnessProviderId,
+  parseHarnessSessionId,
+  parseRunControlActionId,
+  parseRunControlAuthorityId,
+  parseRunControlEventPayload,
+  parseRunEventSequence,
+  RunControlEventPayload,
   RunIdSchema,
   ServerMetadata,
 } from "@gaia/core";
 import {
+  makeRunPaths,
   parseRuntimePath,
   runSpecFile,
   RuntimePathSchema,
@@ -58,6 +68,81 @@ describe("gaia CLI local server read parity", () => {
 
             expect(serverList).toEqual(directList);
             expect(serverStatus).toEqual(directStatus);
+          } finally {
+            yield* stopServer(server);
+          }
+
+          const cancelled = yield* createCancelledFactoryRunStoreState();
+          const cancelledServer = yield* startLocalRunServer(cancelled.cwd);
+          try {
+            const [directList, serverList, directStatus, serverStatus] =
+              yield* Effect.all([
+                runGaiaJson(cancelled.cwd, ["list", "--json"]),
+                runGaiaJson(cancelled.cwd, [
+                  "list",
+                  "--json",
+                  "--server-url",
+                  cancelledServer.url,
+                ]),
+                runGaiaJson(cancelled.cwd, [
+                  "status",
+                  cancelled.runId,
+                  "--json",
+                ]),
+                runGaiaJson(cancelled.cwd, [
+                  "status",
+                  cancelled.runId,
+                  "--json",
+                  "--server-url",
+                  cancelledServer.url,
+                ]),
+              ]);
+            expect(serverList).toEqual(directList);
+            expect(serverStatus).toEqual(directStatus);
+            expect(serverStatus).toMatchObject({
+              state: "cancelled",
+              status: "cancelled",
+            });
+          } finally {
+            yield* stopServer(cancelledServer);
+          }
+        }),
+      20_000
+    );
+
+    it.effect(
+      "reads durable pending state only through the local server",
+      () =>
+        Effect.gen(function* () {
+          const { cwd, runId } = yield* createFactoryRunStoreState(
+            "CLI pending control state."
+          );
+          const server = yield* startLocalRunServer(cwd);
+          try {
+            const pending = yield* runGaiaJson(cwd, [
+              "pending",
+              runId,
+              "--json",
+              "--server-url",
+              server.url,
+            ]);
+            expect(pending).toMatchObject({
+              allowedActions: [],
+              runId,
+              state: "completed",
+            });
+            const resume = yield* runGaia(cwd, [
+              "resume",
+              runId,
+              "--json",
+              "--server-url",
+              server.url,
+            ]);
+            expect(resume.exitCode).toBe(1);
+            expect(parseCliJson(resume.stdout)).toMatchObject({
+              code: "RunControlTerminal",
+              status: "failed",
+            });
           } finally {
             yield* stopServer(server);
           }
@@ -733,6 +818,80 @@ function createFactoryRunStoreState(specBody: string) {
     const fs = yield* FileSystem.FileSystem;
     const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-" });
     const accepted = yield* createFactoryRun(cwd, specBody);
+    return { cwd, runId: accepted.runId };
+  });
+}
+
+function createCancelledFactoryRunStoreState() {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-cli-cancelled-" });
+    const accepted = yield* acceptFactoryRun(
+      {
+        execution: codexAppServerExecutionSelection,
+        workflow: "issueDelivery",
+        workItem: {
+          description: "Project one cancelled factory run.",
+          kind: "issue",
+          title: "CLI cancelled server parity",
+        },
+      },
+      {
+        harnessProviderRegistry:
+          makeMarkerWritingTestHarnessProviderRegistry(cwd),
+        rootDirectory: cwd,
+      }
+    );
+    const paths = yield* makeRunPaths(accepted.runId, { rootDirectory: cwd });
+    const first = JSON.parse(
+      (yield* fs.readFileString(paths.events)).split("\n")[0] ?? "null"
+    ) as Record<string, unknown>;
+    const payload = first["payload"] as Record<string, unknown>;
+    const { modelInvocationProtocol: _marker, ...legacyPayload } = payload;
+    const line = (
+      sequence: number,
+      type: string,
+      eventPayload: Readonly<Record<string, unknown>> = {}
+    ) =>
+      JSON.stringify({
+        payload: eventPayload,
+        runId: accepted.runId,
+        sequence,
+        timestamp: `2026-07-22T18:00:0${sequence}.000Z`,
+        type,
+        version: 1,
+      });
+    const controlFields = {
+      actionId: parseRunControlActionId("action-cli-cancel"),
+      authorityId: parseRunControlAuthorityId("local-gaia-server"),
+      expectedEventSequence: parseRunEventSequence(3),
+      operation: "cancel",
+      providerId: parseHarnessProviderId("fake"),
+      sessionId: parseHarnessSessionId("session-cli-cancel"),
+      workerAgentId:
+        Schema.decodeUnknownSync(FactoryAgentIdSchema)("agent-worker"),
+      workerStartedSequence: parseRunEventSequence(3),
+    } as const;
+    const control = Schema.encodeSync(RunControlEventPayload)(
+      parseRunControlEventPayload({
+        ...controlFields,
+        actionBindingDigest: makeRunControlActionBindingDigest({
+          ...controlFields,
+          runId: accepted.runId,
+        }),
+      })
+    );
+    yield* fs.writeFileString(
+      paths.events,
+      `${[
+        JSON.stringify({ ...first, payload: legacyPayload }),
+        line(2, "WORKSPACE_PREPARED", { workspacePath: "workspace" }),
+        line(3, "WORKER_STARTED"),
+        line(4, "RUN_CONTROL_INTENT_RECORDED", { control }),
+        line(5, "RUN_CONTROL_ATTEMPTED", { control }),
+        line(6, "RUN_CONTROL_CONFIRMED", { control }),
+      ].join("\n")}\n`
+    );
     return { cwd, runId: accepted.runId };
   });
 }

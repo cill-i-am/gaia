@@ -17,6 +17,7 @@ import {
   LocalRunApiErrorEnvelope,
   LocalRunReadArtifactSchema,
   type LocalGaiaServerUrl,
+  type RunControlAction,
   type RunId,
   RunIdSchema,
   ServerMetadata,
@@ -35,9 +36,11 @@ import { Cause, Effect, FileSystem, Option, Predicate, Schema } from "effect";
 import { HttpClient, HttpClientError } from "effect/unstable/http";
 
 import {
+  actOnRunControlFromLocalServerProtocol,
   createRunFromLocalServerProtocol,
   evaluateMergeReadinessFromLocalServerProtocol,
   getRunArtifactFromLocalServerProtocol,
+  getRunControlFromLocalServerProtocol,
   getRunEventsFromLocalServerProtocol,
   getRunFromLocalServerProtocol,
   healthFromLocalServerProtocol,
@@ -154,6 +157,42 @@ export function statusRunFromServer(
       response.data,
       input.rootDirectory
     );
+  });
+}
+
+export function pendingRunControlFromServer(input: {
+  readonly rootDirectory: typeof RunStorageRootInputSchema.Type;
+  readonly runId?: RunId;
+  readonly serverUrl: LocalGaiaServerUrl;
+}) {
+  return Effect.gen(function* () {
+    const runId =
+      input.runId ?? (yield* latestRunIdFromPointer(input.rootDirectory));
+    const response = yield* requestServer({
+      dataName: "run control state",
+      effect: getRunControlFromLocalServerProtocol({
+        runId,
+        serverUrl: input.serverUrl,
+      }),
+      serverUrl: input.serverUrl,
+    });
+    return response;
+  });
+}
+
+export function actOnRunControlFromServer(input: {
+  readonly action: RunControlAction;
+  readonly runId: RunId;
+  readonly serverUrl: LocalGaiaServerUrl;
+}) {
+  return requestServer({
+    dataName: "run control receipt",
+    effect: actOnRunControlFromLocalServerProtocol({
+      payload: input.action,
+      runId: input.runId,
+      serverUrl: input.serverUrl,
+    }),
+    serverUrl: input.serverUrl,
   });
 }
 
@@ -489,6 +528,7 @@ function legacyStatusFromFactoryState(
     case "succeeded":
       return "completed";
     case "canceled":
+      return "cancelled";
     case "failed":
       return "failed";
     case "blocked":
@@ -506,6 +546,7 @@ function legacyRunStateFromFactoryState(
     case "succeeded":
       return "completed";
     case "canceled":
+      return "cancelled";
     case "failed":
       return "failed";
     case "blocked":

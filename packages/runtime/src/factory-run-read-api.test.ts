@@ -17,9 +17,16 @@ import {
   FactoryGraphDiagnosticDto,
   FactoryGraphDto,
   LocalRunReadDiagnosticSchema,
+  makeRunControlActionBindingDigest,
   parseHarnessProfileId,
+  parseHarnessProviderId,
   parseHarnessSessionId,
+  parseRunControlActionId,
+  parseRunControlAuthorityId,
+  parseRunControlEventPayload,
+  parseRunEventSequence,
   parseRunId,
+  RunControlEventPayload,
   RunIdSchema,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
@@ -810,6 +817,47 @@ describe("factory run read api", () => {
             "Legacy verification artifact (unverified)"
           );
           assert.strictEqual(body.body, '{"legacyMarkerIntegrity":true}\n');
+          const controlFields = {
+            actionId: parseRunControlActionId("action-factory-cancel"),
+            authorityId: parseRunControlAuthorityId("local-gaia-server"),
+            expectedEventSequence: parseRunEventSequence(3),
+            operation: "cancel",
+            providerId: parseHarnessProviderId("fake"),
+            sessionId: parseHarnessSessionId("session-factory-cancel"),
+            workerAgentId: issueDeliveryAgentIds.worker,
+            workerStartedSequence: parseRunEventSequence(3),
+          } as const;
+          const control = Schema.encodeSync(RunControlEventPayload)(
+            parseRunControlEventPayload({
+              ...controlFields,
+              actionBindingDigest: makeRunControlActionBindingDigest({
+                ...controlFields,
+                runId: accepted.runId,
+              }),
+            })
+          );
+          yield* fs.writeFileString(
+            paths.events,
+            `${[
+              firstLine,
+              line(2, "WORKSPACE_PREPARED", { workspacePath: "workspace" }),
+              line(3, "WORKER_STARTED"),
+              line(4, "RUN_CONTROL_INTENT_RECORDED", { control }),
+              line(5, "RUN_CONTROL_ATTEMPTED", { control }),
+              line(6, "RUN_CONTROL_CONFIRMED", { control }),
+            ].join("\n")}\n`
+          );
+          const cancelled = yield* readFactoryGraph(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          assert.deepInclude(
+            cancelled.agents.map(({ role, state }) => ({ role, state })),
+            { role: "orchestrator", state: "canceled" }
+          );
+          assert.deepInclude(
+            cancelled.agents.map(({ role, state }) => ({ role, state })),
+            { role: "worker", state: "canceled" }
+          );
         })
     );
 

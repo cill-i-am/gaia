@@ -2,13 +2,23 @@ import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
+  FactoryAgentIdSchema,
   LocalRunReadDiagnosticSchema,
   LocalRunReadListSchema,
   LocalRunReadSummarySchema,
+  makeRunControlActionBindingDigest,
+  parseHarnessProviderId,
+  parseHarnessSessionId,
   parseRunId,
+  parseRunControlActionId,
+  parseRunControlAuthorityId,
+  parseRunControlEventPayload,
+  parseRunEventSequence,
+  RunControlEventPayload,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
+import { appendEvent } from "./event-store.js";
 import { makeRunPaths, makeRunStorePaths } from "./paths.js";
 import {
   listLocalRuns,
@@ -122,6 +132,68 @@ describe("local run read api", () => {
         assert.strictEqual(events.events.length, run.eventCount);
         assert.strictEqual(events.events[0]?.type, "RUN_CREATED");
       })
+    );
+
+    it.effect(
+      "projects a cancelled terminal run as non-running in reads and lists",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-read-cancelled-",
+          });
+          const runId = parseRunId("run-Gaia148Rd1");
+          const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+          yield* fs.makeDirectory(paths.root, { recursive: true });
+          yield* appendEvent(runId, paths, {
+            payload: { specPath: "cancelled.md" },
+            type: "RUN_CREATED",
+          });
+          yield* appendEvent(runId, paths, {
+            payload: { workspacePath: "." },
+            type: "WORKSPACE_PREPARED",
+          });
+          yield* appendEvent(runId, paths, { type: "WORKER_STARTED" });
+          const workerStartedSequence = parseRunEventSequence(3);
+          const controlFields = {
+            actionId: parseRunControlActionId("action-cancel-read"),
+            authorityId: parseRunControlAuthorityId("authority-local"),
+            expectedEventSequence: workerStartedSequence,
+            operation: "cancel",
+            providerId: parseHarnessProviderId("fake"),
+            sessionId: parseHarnessSessionId("session-cancel-read"),
+            workerAgentId:
+              Schema.decodeUnknownSync(FactoryAgentIdSchema)("agent-worker"),
+            workerStartedSequence,
+          } as const;
+          const control = parseRunControlEventPayload({
+            ...controlFields,
+            actionBindingDigest: makeRunControlActionBindingDigest({
+              ...controlFields,
+              runId,
+            }),
+          });
+          for (const type of [
+            "RUN_CONTROL_INTENT_RECORDED",
+            "RUN_CONTROL_ATTEMPTED",
+            "RUN_CONTROL_CONFIRMED",
+          ] as const) {
+            yield* appendEvent(runId, paths, {
+              payload: {
+                control: Schema.encodeSync(RunControlEventPayload)(control),
+              },
+              type,
+            });
+          }
+
+          const run = yield* readLocalRun(runId, { rootDirectory: cwd });
+          const listed = yield* listLocalRuns({ rootDirectory: cwd });
+
+          assert.strictEqual(run.state, "cancelled");
+          assert.strictEqual(run.status, "cancelled");
+          assert.strictEqual(listed.runs[0]?.state, "cancelled");
+          assert.strictEqual(listed.runs[0]?.status, "cancelled");
+        })
     );
 
     it.effect(

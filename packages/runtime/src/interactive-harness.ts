@@ -9,12 +9,18 @@ import {
   ModelInvocationManifestV1,
   ModelWorkspaceBindingV1,
   ResolvedHarnessExecution,
+  RunHumanWaitCheckpointV1,
   StructuralDigestSchema,
   digestHarnessEnvironmentContract,
   makeHarnessEnvironmentReceiptV1,
+  makeRunControlCheckpointDigest,
+  makeRunControlRequestDigest,
   parseHarnessEnvironmentReceiptV1,
   parseHarnessEvent,
   parseHarnessSessionId,
+  parseRunControlAuthorityId,
+  parseRunControlEventPayload,
+  parseRunEventSequence,
   parseWorkerContinuationReceipt,
   parseWorkerCorrelationReconciliationReceipt,
   parseWorkerRecoveryReceipt,
@@ -38,7 +44,13 @@ import {
 
 import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
-import { appendHarnessSessionEvent, readEvents } from "./event-store.js";
+import {
+  appendEventWithinSerialization,
+  appendHarnessSessionEvent,
+  appendHarnessSessionEventWithinSerialization,
+  readEvents,
+  withRunEventSerialization,
+} from "./event-store.js";
 import { issueDeliveryAgentIds } from "./factory-workflows.js";
 import { issueDeliveryWorkerHarnessCapabilities } from "./harness-provider-registry.js";
 import {
@@ -51,6 +63,7 @@ import {
 } from "./harness-session.js";
 import {
   codexAppServerHarnessName,
+  HarnessControlRelease,
   HarnessRunResult,
   type GaiaHarness,
 } from "./harness.js";
@@ -78,6 +91,14 @@ import {
 
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const encodeHarnessRunResult = Schema.encodeSync(HarnessRunResultJson);
+const encodeRunHumanWaitCheckpoint = Schema.encodeSync(
+  Schema.toCodecJson(RunHumanWaitCheckpointV1)
+);
+
+type TerminalSessionEvent = Extract<
+  HarnessEvent,
+  { readonly kind: "sessionFailed" | "turnCompleted" }
+>;
 
 /** Adapt one provider-neutral interactive session into the existing worker stage. */
 export function interactiveSessionHarness(input: {
@@ -123,11 +144,13 @@ export function interactiveSessionHarness(input: {
         // An environment-assigned epoch may have crashed after persisting a
         // terminal session event but before WORKER_COMPLETED. It must obtain a
         // fresh provider result before any candidate can become authoritative.
-        let terminal =
-          acceptedExecution?.environmentAssignment === undefined
-            ? existingTerminal
-            : undefined;
-        if (terminal === undefined) {
+        let terminal: TerminalSessionEvent | HarnessControlRelease;
+        if (
+          acceptedExecution?.environmentAssignment === undefined &&
+          existingTerminal !== undefined
+        ) {
+          terminal = existingTerminal;
+        } else {
           const sessionStarted = fullHistory.some(
             (event) => event.kind === "sessionStarted"
           );
@@ -229,13 +252,52 @@ export function interactiveSessionHarness(input: {
                   sessionId,
                 });
               }
+              let releasedCheckpoint: RunHumanWaitCheckpointV1 | undefined;
               const last = yield* session.events.pipe(
-                Stream.tap((event) =>
-                  appendHarnessSessionEvent(request.runId, paths, event)
+                Stream.filter(
+                  (event) =>
+                    !(sessionStarted && event.kind === "sessionStarted")
                 ),
-                Stream.takeUntil(shouldStopLiveSessionStream),
+                Stream.tap((event) =>
+                  recordInteractiveHarnessEvent({
+                    acceptedExecution,
+                    event,
+                    paths,
+                    runId: request.runId,
+                  }).pipe(
+                    Effect.tap((checkpoint) =>
+                      Effect.sync(() => {
+                        releasedCheckpoint = checkpoint;
+                      })
+                    )
+                  )
+                ),
+                Stream.takeUntil((event) =>
+                  shouldStopLiveSessionStream(event, acceptedExecution)
+                ),
                 Stream.runLast
               );
+              if (releasedCheckpoint !== undefined) {
+                return HarnessControlRelease.make({
+                  checkpoint: releasedCheckpoint,
+                  kind: "controlRelease",
+                  runId: request.runId,
+                  state: "waitingForHuman",
+                });
+              }
+              if (
+                Option.isSome(last) &&
+                last.value.kind === "turnCompleted" &&
+                last.value.status === "interrupted"
+              ) {
+                const release = yield* readIntentionalControlRelease(
+                  request.runId,
+                  paths,
+                  sessionId,
+                  input.sessionCoordinator
+                );
+                if (release !== undefined) return release;
+              }
               if (Option.isNone(last) || !isTerminalSessionEvent(last.value)) {
                 return yield* Effect.fail(
                   makeRuntimeError({
@@ -250,6 +312,8 @@ export function interactiveSessionHarness(input: {
             })
           );
         }
+
+        if (terminal.kind === "controlRelease") return terminal;
 
         if (terminal.kind === "sessionFailed") {
           return yield* Effect.fail(
@@ -305,6 +369,55 @@ export function interactiveSessionHarness(input: {
         )
       ),
   };
+}
+
+function readIntentionalControlRelease(
+  runId: RunId,
+  paths: RunPaths,
+  sessionId: ReturnType<typeof parseHarnessSessionId>,
+  sessionCoordinator?: LiveHarnessSessionCoordinator
+) {
+  return Effect.gen(function* () {
+    while (true) {
+      const events = yield* readEvents(paths);
+      const control = [...events].reverse().flatMap((event) => {
+        if (
+          event.type !== "RUN_CONTROL_INTENT_RECORDED" &&
+          event.type !== "RUN_CONTROL_ATTEMPTED" &&
+          event.type !== "RUN_CONTROL_CONFIRMED" &&
+          event.type !== "RUN_CONTROL_FAILED" &&
+          event.type !== "RUN_CONTROL_OUTCOME_UNKNOWN"
+        )
+          return [];
+        const parsed = parseRunControlEventPayload(event.payload["control"]);
+        return parsed.sessionId === sessionId ? [{ event, parsed }] : [];
+      })[0];
+      if (
+        control?.event.type === "RUN_CONTROL_CONFIRMED" &&
+        (control.parsed.operation === "pause" ||
+          control.parsed.operation === "cancel")
+      )
+        return HarnessControlRelease.make({
+          kind: "controlRelease",
+          runId,
+          state: control.parsed.operation === "cancel" ? "cancelled" : "paused",
+        });
+      if (
+        control?.event.type !== "RUN_CONTROL_ATTEMPTED" ||
+        (control.parsed.operation !== "pause" &&
+          control.parsed.operation !== "cancel") ||
+        sessionCoordinator === undefined
+      )
+        return undefined;
+      const live = yield* sessionCoordinator.get({
+        agentId: issueDeliveryAgentIds.worker,
+        runId,
+        sessionId,
+      });
+      if (live === undefined) return undefined;
+      yield* Effect.yieldNow;
+    }
+  });
 }
 
 const decodeModelInvocationEpisodeStart = Schema.decodeUnknownSync(
@@ -710,17 +823,114 @@ function harnessHistory(
   });
 }
 
-function terminalSessionEvent(events: ReadonlyArray<HarnessEvent>) {
+function terminalSessionEvent(
+  events: ReadonlyArray<HarnessEvent>
+): TerminalSessionEvent | undefined {
   return events.find(isTerminalSessionEvent);
 }
 
-function shouldStopLiveSessionStream(event: HarnessEvent) {
+function shouldStopLiveSessionStream(
+  event: HarnessEvent,
+  acceptedExecution: ResolvedHarnessExecution | undefined
+) {
+  if (event.kind === "interactionRequested")
+    return (
+      acceptedExecution?.capabilities.durableInteractionResolution === true
+    );
   if (event.kind === "turnCompleted") return true;
   if (event.kind !== "sessionFailed") return false;
   return (
     event.failure.kind !== "providerFailure" ||
     event.failure.recoverable !== true
   );
+}
+
+function recordInteractiveHarnessEvent(input: {
+  readonly acceptedExecution: ResolvedHarnessExecution | undefined;
+  readonly event: HarnessEvent;
+  readonly paths: RunPaths;
+  readonly runId: RunId;
+}) {
+  return Effect.gen(function* () {
+    const event = input.event;
+    const acceptedExecution = input.acceptedExecution;
+    if (
+      event.kind !== "interactionRequested" ||
+      acceptedExecution?.capabilities.durableInteractionResolution !== true
+    ) {
+      yield* appendHarnessSessionEvent(input.runId, input.paths, event);
+      return undefined;
+    }
+    return yield* withRunEventSerialization(
+      input.paths,
+      Effect.gen(function* () {
+        const recorded = yield* appendHarnessSessionEventWithinSerialization(
+          input.runId,
+          input.paths,
+          event
+        );
+        const events = yield* readEvents(input.paths);
+        const fs = yield* FileSystem.FileSystem;
+        const candidateInput = yield* fs
+          .readFileString(input.paths.harnessEnvironmentCandidate)
+          .pipe(Effect.mapError(() => environmentEvidenceError()));
+        const environment = yield* readHarnessEnvironmentReceipt(
+          input.paths,
+          events,
+          yield* Effect.try({
+            try: () => JSON.parse(candidateInput),
+            catch: () => environmentEvidenceError(),
+          })
+        );
+        const workerStarted = [...events]
+          .reverse()
+          .find(({ type }) => type === "WORKER_STARTED");
+        if (workerStarted === undefined)
+          return yield* Effect.fail(environmentEvidenceError());
+        const checkpointWithoutDigest = {
+          environmentReceipt: environment.ref,
+          expectedEventSequence: parseRunEventSequence(
+            recorded.event.sequence + 1
+          ),
+          interactionId: event.interaction.interactionId,
+          providerId: acceptedExecution.provider.providerId,
+          requestDigest: makeRunControlRequestDigest(event.interaction),
+          requestedAt: event.interaction.requestedAt,
+          resolverAuthorityId: parseRunControlAuthorityId("local-gaia-server"),
+          runId: input.runId,
+          sessionId: event.sessionId,
+          version: 1 as const,
+          workerAgentId: issueDeliveryAgentIds.worker,
+          workerStartedSequence: workerStarted.sequence,
+        };
+        const checkpoint = RunHumanWaitCheckpointV1.make({
+          ...checkpointWithoutDigest,
+          checkpointDigest: makeRunControlCheckpointDigest(
+            checkpointWithoutDigest
+          ),
+        });
+        const waiting = yield* appendEventWithinSerialization(
+          input.runId,
+          input.paths,
+          {
+            payload: {
+              checkpoint: encodeRunHumanWaitCheckpoint(checkpoint),
+            },
+            type: "RUN_WAITING_FOR_HUMAN",
+          }
+        );
+        if (waiting.snapshot.state !== "waitingForHuman")
+          return yield* Effect.fail(
+            makeRuntimeError({
+              code: "RunControlCheckpointInvalid",
+              message: "The durable human-wait checkpoint did not replay.",
+              recoverable: false,
+            })
+          );
+        return checkpoint;
+      })
+    );
+  });
 }
 
 function isTerminalSessionEvent(

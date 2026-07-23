@@ -27,6 +27,7 @@ import {
   parseLocalGaiaServerUrl,
   AgentSessionEventSequenceSchema,
   RunIdSchema,
+  RunControlActionSchema,
   type FactoryAgentId,
   type FactoryArtifactId,
   type LocalGaiaServerUrl,
@@ -61,7 +62,8 @@ export type DashboardGaiaClientError =
         | "agentId"
         | "artifactId"
         | "createRun"
-        | "deliveryAction";
+        | "deliveryAction"
+        | "runControlAction";
     }
   | {
       readonly _tag: "DashboardGaiaTimeoutError";
@@ -87,6 +89,11 @@ const DashboardRunClientConfigSchema = Schema.Struct({
 const DashboardDeliveryActionClientConfigSchema = Schema.Struct({
   ...DashboardRunClientConfigSchema.fields,
   action: Schema.toEncoded(DeliveryActionRequestSchema),
+});
+
+const DashboardRunControlActionClientConfigSchema = Schema.Struct({
+  ...DashboardRunClientConfigSchema.fields,
+  action: Schema.toEncoded(RunControlActionSchema),
 });
 
 const DashboardAgentClientConfigSchema = Schema.Struct({
@@ -215,6 +222,39 @@ export function getRunEventsFromDashboardGaiaClient(
 ) {
   return withDashboardGaiaClient(config, (client) =>
     client.runs.getRunEvents({ params: { runId: config.runId } })
+  );
+}
+
+export function getRunControlFromDashboardGaiaClient(
+  config: typeof DashboardRunClientConfigSchema.Type
+) {
+  return withDashboardGaiaClient(config, (client) =>
+    client.runs.getRunControl({ params: { runId: config.runId } })
+  );
+}
+
+export function actOnRunControlFromDashboardGaiaClient(
+  config: typeof DashboardRunControlActionClientConfigSchema.Type
+) {
+  return withDashboardGaiaClient(config, (client) =>
+    Effect.gen(function* () {
+      const payload = yield* Schema.decodeUnknownEffect(RunControlActionSchema)(
+        config.action
+      ).pipe(
+        Effect.mapError((cause) => parameterError("runControlAction", cause))
+      );
+      const params = { runId: config.runId };
+      switch (payload.operation) {
+        case "resolveInteraction":
+          return yield* client.runs.actOnRunControl({ params, payload });
+        case "pause":
+          return yield* client.runs.actOnRunControl({ params, payload });
+        case "resume":
+          return yield* client.runs.actOnRunControl({ params, payload });
+        case "cancel":
+          return yield* client.runs.actOnRunControl({ params, payload });
+      }
+    })
   );
 }
 
@@ -696,6 +736,7 @@ function legacyStatusFromFactoryState(
     case "succeeded":
       return "completed";
     case "canceled":
+      return "cancelled";
     case "failed":
       return "failed";
     case "blocked":
@@ -713,6 +754,7 @@ function legacyRunStateFromFactoryState(
     case "succeeded":
       return "completed";
     case "canceled":
+      return "cancelled";
     case "failed":
       return "failed";
     case "blocked":
@@ -748,7 +790,8 @@ function parameterError(
     | "agentId"
     | "artifactId"
     | "createRun"
-    | "deliveryAction",
+    | "deliveryAction"
+    | "runControlAction",
   cause: Schema.SchemaError
 ): DashboardGaiaClientError {
   return {

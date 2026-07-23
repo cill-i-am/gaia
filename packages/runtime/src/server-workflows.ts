@@ -19,6 +19,7 @@ import {
   type DeliveryRetryCleanupActionRequest,
   type DeliveryRemediationActivationActionRequest,
   parseMarkdownSpec,
+  parseRunControlEventPayload,
   parseSpecDigest,
   HarnessExecutionSelection,
   ModelInvocationEpisodeStartV1,
@@ -157,6 +158,7 @@ import {
 } from "./paths.js";
 import type { ReviewerRunOptions } from "./reviewer.js";
 import { loadRunContract } from "./run-contract.js";
+import { reconcileRunControlExpiryWithinLease } from "./run-control-runtime.js";
 import { withRunStoreLock } from "./run-store-lock.js";
 import { recordRunProofResult, type VerificationServices } from "./verifier.js";
 import {
@@ -1553,6 +1555,7 @@ export function continueServerRun(
 type PreparedAcceptedServerContinuation = {
   readonly checkpoint?: AcceptedRunInputCheckpointV1;
   readonly resolvedFactoryProvider?: ResolvedHarnessProvider;
+  readonly runControlOutcomeUnknown?: true;
   readonly semantics?: AcceptedRunInputSemanticsV1;
 };
 
@@ -1567,6 +1570,8 @@ function prepareAcceptedServerContinuation(
   return Effect.gen(function* () {
     const paths = yield* makeRunPaths(runId, options);
     const loaded = yield* loadRun(paths);
+    if (hasStickyRunControlAmbiguity(loaded.events))
+      return { runControlOutcomeUnknown: true };
     const resolution = yield* Effect.try({
       try: () => resolveAcceptedRunInputCheckpoint(loaded.events),
       catch: (cause) =>
@@ -1611,12 +1616,16 @@ function prepareAcceptedServerContinuation(
       runId,
       loaded.events
     );
+    const runState = snapshotFromReplay(loaded.events).state;
     const continuationState = issueDeliveryWorkerContinuationState(
       loaded.events,
       sessionEvents
     );
     const resolvedFactoryProvider =
       checkpoint.payload.acceptanceKind === "factory" &&
+      runState !== "waitingForHuman" &&
+      runState !== "paused" &&
+      runState !== "cancelled" &&
       continuationState !== "completed" &&
       continuationState !== "terminal"
         ? yield* resolveAcceptedFactoryProvider(semantics, options)
@@ -1826,8 +1835,27 @@ function continueServerRunUnlocked(
       );
     }
 
+    if (
+      prepared.runControlOutcomeUnknown === true ||
+      hasStickyRunControlAmbiguity(loaded.events)
+    )
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "RunControlOutcomeUnknown",
+          message:
+            "The durable run-control outcome is unknown; automatic continuation is forbidden.",
+          recoverable: false,
+        })
+      );
+
     const snapshot = snapshotFromReplay(loaded.events);
-    if (snapshot.state === "completed" || snapshot.state === "failed") {
+    if (
+      snapshot.state === "waitingForHuman" ||
+      snapshot.state === "paused" ||
+      snapshot.state === "cancelled" ||
+      snapshot.state === "completed" ||
+      snapshot.state === "failed"
+    ) {
       const proofAggregate = proofAggregateFromSnapshot(
         snapshot.context["runProof"]
       );
@@ -1838,7 +1866,12 @@ function continueServerRunUnlocked(
         runId,
         ...(proofAggregate === undefined ? {} : { proofAggregate }),
         state: snapshot.state,
-        status: snapshot.state,
+        status:
+          snapshot.state === "cancelled"
+            ? "cancelled"
+            : snapshot.state === "completed" || snapshot.state === "failed"
+              ? snapshot.state
+              : "running",
       } satisfies CommandSummary;
     }
 
@@ -3365,7 +3398,18 @@ function reconcileInterruptedServerRunsUnlocked(
       }
 
       const snapshot = snapshotFromReplay(loadedExit.value.events);
-      if (snapshot.state === "completed" || snapshot.state === "failed") {
+      if (hasStickyRunControlAmbiguity(loadedExit.value.events)) {
+        continue;
+      }
+      if (snapshot.state === "waitingForHuman" || snapshot.state === "paused") {
+        yield* reconcileRunControlExpiryWithinLease(runId, options);
+        continue;
+      }
+      if (
+        snapshot.state === "completed" ||
+        snapshot.state === "failed" ||
+        snapshot.state === "cancelled"
+      ) {
         continue;
       }
 
@@ -3397,6 +3441,27 @@ function reconcileInterruptedServerRunsUnlocked(
   });
 }
 
+function hasStickyRunControlAmbiguity(events: ReadonlyArray<RunEvent>) {
+  const phases = new Map<string, RunEvent["type"]>();
+  for (const event of events) {
+    if (
+      event.type !== "RUN_CONTROL_INTENT_RECORDED" &&
+      event.type !== "RUN_CONTROL_ATTEMPTED" &&
+      event.type !== "RUN_CONTROL_CONFIRMED" &&
+      event.type !== "RUN_CONTROL_FAILED" &&
+      event.type !== "RUN_CONTROL_OUTCOME_UNKNOWN"
+    )
+      continue;
+    const control = parseRunControlEventPayload(event.payload["control"]);
+    phases.set(control.actionId, event.type);
+  }
+  return [...phases.values()].some(
+    (phase) =>
+      phase === "RUN_CONTROL_ATTEMPTED" ||
+      phase === "RUN_CONTROL_OUTCOME_UNKNOWN"
+  );
+}
+
 function parseServerSpec(input: ServerRunSpecInput) {
   return Effect.try({
     try: () =>
@@ -3421,7 +3486,10 @@ function failServerRunIfNeeded(
     const loadedExit = yield* Effect.exit(loadRun(paths));
     if (loadedExit._tag === "Success") {
       const snapshot = snapshotFromReplay(loadedExit.value.events);
-      if (snapshot.state === "failed") {
+      if (
+        snapshot.state === "failed" ||
+        hasStickyRunControlAmbiguity(loadedExit.value.events)
+      ) {
         return yield* Effect.fail(error);
       }
     }
@@ -3453,6 +3521,9 @@ function failureStageFromRunState(
     case "preparingWorkspace":
       return "preparingWorkspace";
     case "runningWorker":
+    case "waitingForHuman":
+    case "paused":
+    case "cancelled":
       return "runningWorker";
     case "verifying":
       return "verifying";

@@ -8,6 +8,9 @@ import {
   HarnessSessionStateSchema,
   HarnessTurnSnapshot,
   HarnessTurnIdSchema,
+  RunControlActionTarget,
+  RunControlOperationSchema,
+  RunControlSnapshot,
   type HarnessItem,
   type HarnessPendingInteraction,
   type HarnessSessionState,
@@ -99,6 +102,29 @@ export const AgentInspectorSessionModelSchema = Schema.Struct({
 
 export type AgentInspectorSessionModel =
   typeof AgentInspectorSessionModelSchema.Type;
+
+export const AgentInspectorRunControlModelSchema = Schema.Struct({
+  actionTarget: Schema.optionalKey(RunControlActionTarget),
+  allowedActions: Schema.Array(RunControlOperationSchema),
+  expired: Schema.Boolean,
+  state: RunControlSnapshot.fields.state,
+});
+
+export type AgentInspectorRunControlModel =
+  typeof AgentInspectorRunControlModelSchema.Type;
+
+export function buildAgentInspectorRunControlModel(
+  snapshot: typeof RunControlSnapshot.Type
+): AgentInspectorRunControlModel {
+  return {
+    ...(snapshot.actionTarget === undefined
+      ? {}
+      : { actionTarget: snapshot.actionTarget }),
+    allowedActions: snapshot.allowedActions,
+    expired: snapshot.expired,
+    state: snapshot.state,
+  };
+}
 
 const BuildAgentInspectorSessionModelInputSchema = Schema.Struct({
   connection: AgentInspectorConnectionSchema,
