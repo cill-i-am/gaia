@@ -60,7 +60,14 @@ import {
   makeCodexHarnessConfig,
   type CodexCommandInvocation,
 } from "./codex-harness.js";
-import { appendEvent, appendHarnessSessionEvent } from "./event-store.js";
+import { GaiaRuntimeError } from "./errors.js";
+import {
+  appendEvent,
+  appendEventWithinSerialization,
+  appendHarnessSessionEvent,
+  readEvents,
+  withRunEventSerialization,
+} from "./event-store.js";
 import {
   readFactoryGraph,
   readFactoryRunActivity,
@@ -77,6 +84,7 @@ import {
   codexAppServerHarnessName,
   codexHarnessName,
   HarnessRunRequest,
+  parseHarnessName,
   runHarness,
 } from "./harness.js";
 import {
@@ -97,6 +105,7 @@ import { readLocalRunEvents } from "./run-read-api.js";
 import { acceptFactoryRun, continueServerRun } from "./server-workflows.js";
 import { recordRunProofResult } from "./verifier.js";
 import { writeWorkerPlan } from "./worker-plan.js";
+import { runSpecFile } from "./workflows.js";
 import {
   snapshotWorkspace,
   writeWorkspaceSnapshot,
@@ -1223,10 +1232,12 @@ describe("interactive issue-delivery harness", () => {
               controlSessionId,
               provider.descriptor
             );
+            let controlResumeCalls = 0;
             const interruptedProvider: HarnessProvider = {
               ...provider,
-              resumeSession: () =>
-                Effect.succeed({
+              resumeSession: () => {
+                controlResumeCalls += 1;
+                return Effect.succeed({
                   ...interruptedSession,
                   events: Stream.fromIterable([
                     {
@@ -1236,30 +1247,153 @@ describe("interactive issue-delivery harness", () => {
                       turnId: controlTurnId,
                     },
                   ]),
-                }),
+                });
+              },
             };
-            const interrupted = yield* interactiveSessionHarness({
-              provider: interruptedProvider,
+            const interruptedRegistry = makeHarnessProviderRegistry([
+              {
+                profileId: codexAppServerExecutionSelection.harnessProfileId,
+                provider: interruptedProvider,
+              },
+            ]);
+            const interrupted = yield* continueServerRun(controlRunId, {
+              harnessProviderRegistry: interruptedRegistry,
               rootDirectory: cwd,
-            })
-              .run(
-                HarnessRunRequest.make({
-                  codexHarnessProgressPath: controlPaths.codexHarnessProgress,
-                  harnessName: codexAppServerHarnessName,
-                  resolvedSkillPaths: [],
-                  runId: controlRunId,
-                  skillBundlePath: controlPaths.skillBundle,
-                  specBody: "Do not project an unconfirmed control release.",
-                  specTitle: "Unconfirmed release",
-                  workerLogPath: controlPaths.workerLog,
-                  workerResultPath: controlPaths.workerResult,
-                  workspaceOutputPath: controlPaths.workspaceOutput,
-                  workspacePath: controlPaths.workspace,
-                })
-              )
-              .pipe(Effect.exit);
+            }).pipe(Effect.exit);
+            const controlEvents = yield* readLocalRunEvents(controlRunId, {
+              rootDirectory: cwd,
+            });
             assert.strictEqual(interrupted._tag, "Failure");
+            assert.strictEqual(controlResumeCalls, 0);
+            assert.notInclude(
+              controlEvents.events.map(({ type }) => type),
+              "RUN_FAILED"
+            );
           }
+
+          const stickySpec = `${cwd}/sticky-control.md`;
+          yield* fs.writeFileString(
+            stickySpec,
+            "# Sticky control ambiguity\n\nPreserve an indeterminate control outcome.\n"
+          );
+          let stickyRunId: RunId | undefined;
+          let stickyProviderActions = 0;
+          const stickyHarnessReady = yield* Deferred.make<{
+            readonly control: typeof RunControlEventPayload.Type;
+            readonly paths: RunPaths;
+          }>();
+          const releaseStickyHarness = yield* Deferred.make<void>();
+          const stickyFiber = yield* runSpecFile(stickySpec, {
+            rootDirectory: cwd,
+            workerHarness: {
+              name: parseHarnessName("sticky-control-harness"),
+              run: (request) =>
+                Effect.gen(function* () {
+                  stickyRunId = request.runId;
+                  const stickyPaths = yield* makeRunPaths(request.runId, {
+                    rootDirectory: cwd,
+                  });
+                  const workerStarted = (yield* readEvents(
+                    stickyPaths
+                  )).findLast(({ type }) => type === "WORKER_STARTED");
+                  assert.isDefined(workerStarted);
+                  const stickySessionId = parseHarnessSessionId(
+                    `session-${request.runId}`
+                  );
+                  yield* appendHarnessSessionEvent(request.runId, stickyPaths, {
+                    capabilities: syntheticCapabilities,
+                    kind: "sessionStarted",
+                    provider: provider.descriptor,
+                    sessionId: stickySessionId,
+                    state: "running",
+                  });
+                  yield* appendHarnessSessionEvent(request.runId, stickyPaths, {
+                    kind: "turnStarted",
+                    sessionId: stickySessionId,
+                    turnId: parseHarnessTurnId(`turn-${request.runId}`),
+                  });
+                  const beforeControl = yield* readEvents(stickyPaths);
+                  const stickyControl = parseRunControlEventPayload({
+                    actionBindingDigest: "c".repeat(64),
+                    actionId: `action-${request.runId}`,
+                    authorityId: "local-gaia-server",
+                    expectedEventSequence: beforeControl.at(-1)!.sequence,
+                    operation: "pause",
+                    providerId: provider.descriptor.providerId,
+                    restoreState: "runningWorker",
+                    sessionId: stickySessionId,
+                    workerAgentId: issueDeliveryAgentIds.worker,
+                    workerStartedSequence: workerStarted!.sequence,
+                  });
+                  yield* Deferred.succeed(stickyHarnessReady, {
+                    control: stickyControl,
+                    paths: stickyPaths,
+                  });
+                  yield* Deferred.await(releaseStickyHarness);
+                  stickyProviderActions += 1;
+                  return yield* Effect.fail(
+                    new GaiaRuntimeError({
+                      code: "HarnessSessionFailed",
+                      message:
+                        "Provider acknowledgement was lost after dispatch.",
+                      recoverable: true,
+                    })
+                  );
+                }).pipe(
+                  Effect.mapError((cause) =>
+                    cause instanceof GaiaRuntimeError
+                      ? cause
+                      : new GaiaRuntimeError({
+                          cause,
+                          code: "HarnessSessionFailed",
+                          message:
+                            "The synthetic sticky-control harness failed.",
+                          recoverable: true,
+                        })
+                  )
+                ),
+            },
+          }).pipe(Effect.exit, Effect.forkChild);
+          const stickyPrepared = yield* Deferred.await(stickyHarnessReady);
+          yield* withRunEventSerialization(
+            stickyPrepared.paths,
+            Effect.gen(function* () {
+              yield* Deferred.succeed(releaseStickyHarness, undefined);
+              for (let attempt = 0; attempt < 100; attempt += 1) {
+                yield* Effect.yieldNow;
+              }
+              assert.strictEqual(stickyFiber.pollUnsafe(), undefined);
+              for (const type of [
+                "RUN_CONTROL_INTENT_RECORDED",
+                "RUN_CONTROL_ATTEMPTED",
+                "RUN_CONTROL_OUTCOME_UNKNOWN",
+              ] as const) {
+                yield* appendEventWithinSerialization(
+                  stickyPrepared.paths.runId,
+                  stickyPrepared.paths,
+                  {
+                    payload: {
+                      control: Schema.encodeSync(RunControlEventPayload)(
+                        stickyPrepared.control
+                      ),
+                    },
+                    type,
+                  }
+                );
+              }
+            })
+          );
+          const sticky = yield* Fiber.join(stickyFiber);
+          assert.strictEqual(sticky._tag, "Failure");
+          assert.isDefined(stickyRunId);
+          const stickyEvents = yield* readLocalRunEvents(stickyRunId!, {
+            rootDirectory: cwd,
+          });
+          assert.strictEqual(stickyProviderActions, 1);
+          assert.notInclude(
+            stickyEvents.events.map(({ type }) => type),
+            "RUN_FAILED"
+          );
         })
     );
 

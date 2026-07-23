@@ -65,6 +65,7 @@ import {
   parseRunControlAction,
   parseRunControlActionId,
   parseRunControlAuthorityId,
+  parseRunControlEventPayload,
   parseWorkerRecoveryActionId,
   parseWorkerRecoveryModelId,
   parseWorkspaceRelativePath,
@@ -72,6 +73,7 @@ import {
   renderModelInputV1,
   LocalGaiaServerUrlSchema,
   RunEvent,
+  RunControlEventPayload,
   RunHumanWaitCheckpointV1,
   RunIdSchema,
   WorkerRecoveryAction,
@@ -1724,6 +1726,173 @@ describe("local run api http boundary", () => {
           assert.strictEqual(resumeBlocks[0]?.id, String(lastSequence));
           assert.strictEqual(conflictResponse.status, 409);
           assertApiError(conflictBody, "DeliveryStreamCursorConflict", 409);
+
+          const cancelled = yield* acceptFactoryRun(factoryCreateInput(), {
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
+            rootDirectory: cwd,
+          });
+          const cancelledPaths = yield* makeRunPaths(cancelled.runId, {
+            rootDirectory: cwd,
+          });
+          yield* fs.makeDirectory(cancelledPaths.workspace, {
+            recursive: true,
+          });
+          yield* deriveAndRecordRunContract({
+            paths: cancelledPaths,
+            runId: cancelled.runId,
+            spec: parseMarkdownSpec(
+              "# Cancel stream\n\nClose every live feed on confirmed cancel.\n",
+              "input.md"
+            ),
+          });
+          yield* appendEvent(cancelled.runId, cancelledPaths, {
+            payload: { workspacePath: "." },
+            type: "WORKSPACE_PREPARED",
+          });
+          const cancelContent = makeModelContextContentV1({
+            acceptedOutcomes: [],
+            authority: ["Apply only accepted worker authority."],
+            budget: { maxOutputBytes: 16_384, maxTurns: 1 },
+            contentRefs: [],
+            episodeRole: "workerInitial",
+            instructions: ["Complete the bounded task."],
+            nonGoals: [],
+            outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+            planningFacts: [],
+            safeExclusions: [],
+            skills: [],
+            stops: [],
+            taskInput: "Complete the bounded task.",
+            verificationCommands: [],
+          });
+          const cancelWorkspaceBinding =
+            yield* deriveModelWorkspaceBinding(cancelledPaths);
+          const cancelContract = yield* loadRunContract(
+            cancelledPaths,
+            cancelled.runId
+          );
+          const cancelContext = makeModelContextManifestV1({
+            authoritativeRefs: [
+              {
+                digest: cancelContract.contractDigest,
+                kind: "runContract",
+              },
+            ],
+            binding: {
+              episodeKey: "workerInitial",
+              runId: cancelled.runId,
+            },
+            content: cancelContent,
+            workspaceBinding: cancelWorkspaceBinding,
+          });
+          const cancelInvocation = makeModelInvocationManifestV1({
+            acceptedProviderCapabilityObservation: "unobservable",
+            adapterInputClass: "codexAppTurn",
+            adapterSemantics: {
+              kind: "codexAppServer",
+              semanticDigest: "a".repeat(64),
+            },
+            authorityRef: {
+              digest: "b".repeat(64),
+              kind: "authority",
+            },
+            binding: cancelContext.payload.binding,
+            budget: cancelContent.payload.budget,
+            context: cancelContext,
+            outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+            rendered: renderModelInputV1(cancelContent),
+            runContractRef: {
+              digest: cancelContract.contractDigest,
+              kind: "runContract",
+            },
+            template: { id: "gaia.worker-input.v1", version: 1 },
+            workspaceBinding: cancelWorkspaceBinding,
+          });
+          const cancelEpisode = yield* commitModelInvocationPair({
+            context: cancelContext,
+            episodeKey: "workerInitial",
+            invocation: cancelInvocation,
+            paths: cancelledPaths,
+          });
+          const cancelWorkerStarted = yield* appendEvent(
+            cancelled.runId,
+            cancelledPaths,
+            {
+              payload: {
+                modelInvocationEpisode: Schema.encodeSync(
+                  ModelInvocationEpisodeStartV1
+                )(cancelEpisode),
+              },
+              type: "WORKER_STARTED",
+            }
+          );
+          yield* appendHarnessSessionEvent(cancelled.runId, cancelledPaths, {
+            capabilities: testHarnessCapabilities,
+            kind: "sessionStarted",
+            provider: testHarnessProvider.descriptor,
+            sessionId: parseHarnessSessionId(`session-${cancelled.runId}`),
+            state: "running",
+          });
+          const cancelEvents = yield* readEvents(cancelledPaths);
+          const cancelControl = parseRunControlEventPayload({
+            actionBindingDigest: "a".repeat(64),
+            actionId: parseRunControlActionId(
+              "action-server-delivery-stream-cancel"
+            ),
+            authorityId: parseRunControlAuthorityId("authority-local"),
+            expectedEventSequence: cancelEvents.at(-1)!.sequence,
+            operation: "cancel",
+            providerId: testHarnessProvider.descriptor.providerId,
+            sessionId: parseHarnessSessionId(`session-${cancelled.runId}`),
+            workerAgentId: "agent-worker",
+            workerStartedSequence: cancelWorkerStarted.event.sequence,
+          });
+          for (const type of [
+            "RUN_CONTROL_INTENT_RECORDED",
+            "RUN_CONTROL_ATTEMPTED",
+            "RUN_CONTROL_CONFIRMED",
+          ] as const) {
+            yield* appendEvent(cancelled.runId, cancelledPaths, {
+              payload: {
+                control: Schema.encodeSync(RunControlEventPayload)(
+                  cancelControl
+                ),
+              },
+              type,
+            });
+          }
+          const cancelledFiber = yield* HttpClient.get(
+            `/runs/${cancelled.runId}/delivery/stream`
+          ).pipe(
+            Effect.flatMap((response) => response.text),
+            Effect.provide(layer),
+            Effect.forkChild
+          );
+          const cancelledStream = yield* Effect.raceFirst(
+            Fiber.join(cancelledFiber).pipe(Effect.map(Option.some)),
+            Effect.promise(
+              () =>
+                new Promise<Option.Option<never>>((resolve) => {
+                  setTimeout(() => resolve(Option.none()), 500);
+                })
+            )
+          );
+
+          assert.isTrue(Option.isSome(cancelledStream));
+          if (Option.isSome(cancelledStream)) {
+            const cancelledUpdates = parseSseBlocks(cancelledStream.value);
+            assert.strictEqual(
+              getNumber(
+                getObjectFromArray(
+                  cancelledUpdates.map(({ data }) => data),
+                  cancelledUpdates.length - 1
+                ),
+                "eventSequence"
+              ),
+              cancelEvents.at(-1)!.sequence + 3
+            );
+          }
         }),
       20_000
     );

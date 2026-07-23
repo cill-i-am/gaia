@@ -1039,7 +1039,7 @@ function streamDeliveryUpdates(
             next,
             update === undefined || update.eventSequence !== event.sequence
               ? []
-              : [update],
+              : [{ terminal: isTerminalRunEvent(event), update }],
           ] as const;
         }
       )
@@ -1047,13 +1047,15 @@ function streamDeliveryUpdates(
     return Stream.fromIterable(backlog).pipe(
       Stream.concat(live),
       Stream.takeUntil(
-        (update) =>
+        ({ terminal, update }) =>
+          terminal ||
           update.stage === "publicationFailed" ||
           update.stage === "publicationOutcomeUnknown" ||
           update.stage === "remediationFailed" ||
           update.stage === "remediationOutcomeUnknown" ||
           update.stage === "failed"
-      )
+      ),
+      Stream.map(({ update }) => update)
     );
   });
 }
@@ -1070,7 +1072,7 @@ function deliveryUpdatesFromEvents(
     );
     return update === undefined || update.eventSequence !== event.sequence
       ? []
-      : [update];
+      : [{ terminal: isTerminalRunEvent(event), update }];
   });
 }
 

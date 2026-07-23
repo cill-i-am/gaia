@@ -2,6 +2,7 @@ import {
   FactoryAgentIdSchema,
   FactoryArtifactIdSchema,
   parseLocalGaiaServerUrl,
+  parseRunControlAction,
   parseRunId,
 } from "@gaia/core";
 import { QueryClient } from "@tanstack/react-query";
@@ -24,6 +25,7 @@ import {
   listRunsFromDashboardGaiaClient,
 } from "@/lib/local-gaia-client";
 import {
+  DashboardRunControlActionMutationRequestIdSchema,
   localGaiaCreateRunMutationOptions,
   localGaiaDeliveryActionMutationOptions,
   localGaiaFactoryAgentActivityQueryOptions,
@@ -36,6 +38,7 @@ import {
   localGaiaAgentSessionQueryOptions,
   localGaiaQueryKeys,
   localGaiaRunArtifactQueryOptions,
+  localGaiaRunControlActionMutationOptions,
   localGaiaRunControlQueryOptions,
   localGaiaRunQueryOptions,
   localGaiaRunsQueryOptions,
@@ -48,6 +51,8 @@ const agentWorkerId =
   Schema.decodeUnknownSync(FactoryAgentIdSchema)("agent-worker");
 const missingAgentId =
   Schema.decodeUnknownSync(FactoryAgentIdSchema)("missing-agent");
+const decodeDashboardRunControlActionMutationRequestId =
+  Schema.decodeUnknownSync(DashboardRunControlActionMutationRequestIdSchema);
 const artifactPlanId = Schema.decodeUnknownSync(FactoryArtifactIdSchema)(
   "artifact-plan"
 );
@@ -805,6 +810,94 @@ describe("local Gaia query options", () => {
         turnId: "turn-1",
       },
     ]);
+  });
+
+  it("keeps hidden run-control responses out of mutation cache on success and failure", async () => {
+    const requests: Array<string> = [];
+    const retained = new Map<string, ReturnType<typeof hiddenInput>>();
+    let failProvider = false;
+    const effectQuery = createEffectQuery(
+      recordingFetchLayer(requests, async () => {
+        expect(retained.size).toBe(0);
+        return failProvider
+          ? Promise.reject(new TypeError("The dashboard server is offline."))
+          : jsonResponse({
+              actionBindingDigest: "c".repeat(64),
+              actionId: "action-dashboard-hidden-response",
+              duplicate: false,
+              operation: "resolveInteraction",
+              runId,
+              state: "confirmed",
+            });
+      })
+    );
+    const queryClient = new QueryClient();
+    function hiddenInput(answer: string) {
+      return {
+        action: parseRunControlAction({
+          actionId: "action-dashboard-hidden-response",
+          authorityId: "authority-local",
+          checkpointDigest: "a".repeat(64),
+          expectedEventSequence: 7,
+          interactionId: "interaction-question",
+          operation: "resolveInteraction",
+          providerId: "fake",
+          requestDigest: "b".repeat(64),
+          response: {
+            answers: [
+              {
+                answers: [answer],
+                questionId: "question-hidden",
+              },
+            ],
+            kind: "userInput",
+          },
+          runId,
+          sessionId: `session-${runId}`,
+          workerAgentId: agentWorkerId,
+          workerStartedSequence: 3,
+        }),
+        runId,
+      };
+    }
+    const options = localGaiaRunControlActionMutationOptions(
+      { serverUrl },
+      ({ requestId }) => {
+        const input = retained.get(requestId);
+        retained.delete(requestId);
+        if (input === undefined) throw new Error("Missing hidden input.");
+        return input;
+      },
+      effectQuery
+    );
+
+    const successCanary = "MUTATION_CACHE_SUCCESS_SECRET";
+    const successRequestId = decodeDashboardRunControlActionMutationRequestId(
+      globalThis.crypto.randomUUID()
+    );
+    retained.set(successRequestId, hiddenInput(successCanary));
+    const success = queryClient.getMutationCache().build(queryClient, options);
+    await success.execute({ requestId: successRequestId });
+
+    failProvider = true;
+    const failureCanary = "MUTATION_CACHE_FAILURE_SECRET";
+    const failureRequestId = decodeDashboardRunControlActionMutationRequestId(
+      globalThis.crypto.randomUUID()
+    );
+    retained.set(failureRequestId, hiddenInput(failureCanary));
+    const failure = queryClient.getMutationCache().build(queryClient, options);
+    await expect(
+      failure.execute({ requestId: failureRequestId })
+    ).rejects.toBeDefined();
+
+    expect(retained.size).toBe(0);
+    const mutationCache = JSON.stringify(
+      queryClient.getMutationCache().getAll()
+    );
+    expect(mutationCache).not.toContain(successCanary);
+    expect(mutationCache).not.toContain(failureCanary);
+    expect(mutationCache).not.toContain("question-hidden");
+    expect(requests).toHaveLength(2);
   });
 });
 

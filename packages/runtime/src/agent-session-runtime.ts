@@ -12,6 +12,7 @@ import {
   RunIdSchema,
   parseHarnessSessionId,
   parseHarnessEvent,
+  parseRunControlEventPayload,
   replayHarnessSession,
   type AgentSessionCursor,
   type AgentSessionEventSequence,
@@ -510,6 +511,25 @@ function updateFromRunEvent(
   event: RunEvent,
   terminalHistory: ReadonlyArray<RunEvent> = history
 ) {
+  if (event.type === "RUN_CONTROL_CONFIRMED") {
+    const control = parseRunControlEventPayload(event.payload["control"]);
+    if (
+      control.workerAgentId !== agentId ||
+      control.sessionId !== sessionIdForRun(runId) ||
+      (control.operation !== "cancel" && control.operation !== "resume")
+    ) {
+      return undefined;
+    }
+    const snapshot = publicSnapshot(runId, agentId, history);
+    return AgentSessionUpdateDto.make({
+      agentId: snapshot.agentId,
+      eventSequence: event.sequence,
+      runId,
+      sessionId: snapshot.sessionId,
+      snapshot,
+      terminal: control.operation === "cancel",
+    });
+  }
   if (event.type !== "HARNESS_SESSION_EVENT_RECORDED") return undefined;
   const harnessEvent = parseHarnessEvent(event.payload.event);
   if (harnessEvent.sessionId !== sessionIdForRun(runId)) return undefined;

@@ -732,6 +732,50 @@ describe("durable run control", () => {
           expect(JSON.stringify(waitingEvents)).not.toContain(
             "UNSUPPORTED_SECRET"
           );
+
+          const claimed = yield* setupWaitingControlRun(
+            capabilities,
+            "gaia-run-control-claimed-preparation-failure-"
+          );
+          const claimSnapshot = yield* readRunControlSnapshot(runId, {
+            rootDirectory: claimed.rootDirectory,
+          });
+          const claimedAction = parseRunControlAction({
+            ...claimSnapshot.actionTarget,
+            actionId: parseRunControlActionId(
+              "action-claimed-preparation-failure"
+            ),
+            operation: "resolveInteraction",
+            response: {
+              answers: [{ answers: ["CLAIMED_SECRET"], questionId }],
+              kind: "userInput",
+            },
+            runId,
+          });
+          const preparationFailure = yield* dispatchRunControlAction({
+            action: claimedAction,
+            options: { rootDirectory: claimed.rootDirectory },
+            runId,
+          }).pipe(Effect.flip);
+          const afterClaim = yield* readRunControlSnapshot(runId, {
+            rootDirectory: claimed.rootDirectory,
+          });
+          const replayAfterClaim = yield* dispatchRunControlAction({
+            action: claimedAction,
+            options: { rootDirectory: claimed.rootDirectory },
+            runId,
+          }).pipe(Effect.flip);
+
+          expect(preparationFailure).toMatchObject({
+            code: "unsupportedProviderOperation",
+          });
+          expect(afterClaim.allowedActions).not.toContain("resolveInteraction");
+          expect(replayAfterClaim).toMatchObject({
+            code: "resolutionReplayNotComparable",
+          });
+          expect(
+            JSON.stringify(yield* readEvents(claimed.paths))
+          ).not.toContain("CLAIMED_SECRET");
         })
     );
 

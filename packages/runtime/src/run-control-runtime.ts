@@ -839,6 +839,9 @@ function projectSnapshot(
         });
   const active = controlEvents(events).at(-1);
   const stickyAmbiguity = hasStickyRunControlAmbiguity(events);
+  const resolutionClaimed =
+    pendingCheckpoint !== undefined &&
+    resolutionClaims(events, pendingCheckpoint.interactionId).length > 0;
   const activeReceipt =
     active === undefined
       ? undefined
@@ -860,7 +863,10 @@ function projectSnapshot(
     ...(actionTarget === undefined ? {} : { actionTarget }),
     allowedActions: stickyAmbiguity
       ? []
-      : allowedActions(replayed.state, expired, capabilities),
+      : allowedActions(replayed.state, expired, capabilities).filter(
+          (operation) =>
+            operation !== "resolveInteraction" || !resolutionClaimed
+        ),
     expired,
     ...(pendingCheckpoint === undefined ? {} : { pendingCheckpoint }),
     runId,

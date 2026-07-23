@@ -150,6 +150,9 @@ const queryFixture = vi.hoisted(
 );
 
 vi.mock("@/lib/local-gaia-query", () => ({
+  DashboardRunControlActionMutationRequestIdSchema: Schema.String.pipe(
+    Schema.brand("DashboardRunControlActionMutationRequestId")
+  ),
   localGaiaCreateRunMutationOptions: () => ({
     mutationFn: async (input: {
       readonly deliveryMode: "local" | "pullRequest";
@@ -302,24 +305,28 @@ vi.mock("@/lib/local-gaia-query", () => ({
     ] as const,
     retry: false,
   }),
-  localGaiaRunControlActionMutationOptions: () => ({
-    mutationFn: async (input: {
+  localGaiaRunControlActionMutationOptions: (
+    _config: unknown,
+    consume: (input: { readonly requestId: string }) => {
       readonly action: {
         readonly actionId: string;
         readonly operation: string;
       };
       readonly runId: string;
-    }) => {
-      queryFixture.runControlActionInputs.push(input);
+    }
+  ) => ({
+    mutationFn: async (input: { readonly requestId: string }) => {
+      const consumed = consume(input);
+      queryFixture.runControlActionInputs.push(consumed);
       if (queryFixture.runControlActionPromise !== undefined) {
         await queryFixture.runControlActionPromise;
       }
       return {
         actionBindingDigest: "c".repeat(64),
-        actionId: input.action.actionId,
+        actionId: consumed.action.actionId,
         duplicate: false,
-        operation: input.action.operation,
-        runId: input.runId,
+        operation: consumed.action.operation,
+        runId: consumed.runId,
         state: "confirmed",
       };
     },
@@ -1137,6 +1144,12 @@ describe("DashboardShell Run Console", () => {
                     questionId: parseHarnessQuestionId("question-continuation"),
                     secret: true,
                   },
+                  {
+                    options: [],
+                    prompt: "Public operator note",
+                    questionId: parseHarnessQuestionId("question-public-note"),
+                    secret: false,
+                  },
                 ],
                 requestedAt: "2026-07-22T17:00:00.000Z",
                 turnId: parseHarnessTurnId("turn-1"),
@@ -1178,12 +1191,19 @@ describe("DashboardShell Run Console", () => {
     fireEvent.click(workerNode);
 
     const response = "hidden-response-canary";
-    fireEvent.change(
-      await screen.findByPlaceholderText("Type operator response"),
-      {
-        target: { value: response },
-      }
-    );
+    const publicResponse = "public-response-canary";
+    fireEvent.change(await screen.findByLabelText("Operator continuation"), {
+      target: { value: response },
+    });
+    fireEvent.change(await screen.findByLabelText("Public operator note"), {
+      target: { value: publicResponse },
+    });
+    expect(
+      (screen.getByLabelText("Operator continuation") as HTMLInputElement).type
+    ).toBe("password");
+    expect(
+      (screen.getByLabelText("Public operator note") as HTMLInputElement).type
+    ).toBe("text");
     const submit = screen.getByRole("button", {
       name: "Submit operator input",
     });
@@ -1197,6 +1217,30 @@ describe("DashboardShell Run Console", () => {
       expect(queryFixture.runControlActionInputs).toHaveLength(1);
     });
     expect((submit as HTMLButtonElement).disabled).toBe(true);
+    expect(queryFixture.runControlActionInputs[0]).toMatchObject({
+      action: {
+        response: {
+          answers: [
+            {
+              answers: [response],
+              questionId: "question-continuation",
+            },
+            {
+              answers: [publicResponse],
+              questionId: "question-public-note",
+            },
+          ],
+          kind: "userInput",
+        },
+      },
+      runId,
+    });
+    expect(
+      (screen.getByLabelText("Operator continuation") as HTMLInputElement).value
+    ).toBe("");
+    expect(
+      (screen.getByLabelText("Public operator note") as HTMLInputElement).value
+    ).toBe("");
 
     runControlAction.reject({
       failure: {
@@ -1213,6 +1257,33 @@ describe("DashboardShell Run Console", () => {
       "RunControlStale: The durable response was not accepted."
     );
     expect(document.body.textContent).not.toContain(response);
+    expect(document.body.textContent).not.toContain(publicResponse);
+    expect(
+      JSON.stringify(view.queryClient.getMutationCache().getAll())
+    ).not.toContain(response);
+    expect(
+      JSON.stringify(view.queryClient.getMutationCache().getAll())
+    ).not.toContain(publicResponse);
+
+    queryFixture.runControlActionPromise = undefined;
+    const successSecret = "hidden-success-canary";
+    const successPublic = "public-success-canary";
+    fireEvent.change(screen.getByLabelText("Operator continuation"), {
+      target: { value: successSecret },
+    });
+    fireEvent.change(screen.getByLabelText("Public operator note"), {
+      target: { value: successPublic },
+    });
+    fireEvent.click(submit);
+    await waitFor(() => {
+      expect(queryFixture.runControlActionInputs).toHaveLength(2);
+    });
+    expect(
+      JSON.stringify(view.queryClient.getMutationCache().getAll())
+    ).not.toContain(successSecret);
+    expect(
+      JSON.stringify(view.queryClient.getMutationCache().getAll())
+    ).not.toContain(successPublic);
   });
 
   it("fails closed unless operator input matches the current durable wait target", async () => {
@@ -1401,7 +1472,7 @@ describe("DashboardShell Run Console", () => {
   });
 
   it("keeps the cached agent session snapshot after closing and reselecting Inspector", async () => {
-    installMockEventSource();
+    const eventSource = installMockEventSource();
     const runId = parseRunId("run-7070707071");
     const workerId = agentId("agent-worker");
     const view = renderDashboardWithQueries({
@@ -1475,6 +1546,74 @@ describe("DashboardShell Run Console", () => {
       expect(
         screen.getByTestId("agent-inspector-panel").textContent
       ).not.toContain("Agent session is connecting.");
+    });
+
+    const runSource = eventSource.instances.find(
+      (source) =>
+        source.listenerCount("agent-session-update") === 0 &&
+        source.onmessage !== null
+    );
+    if (runSource === undefined) {
+      throw new Error("Expected the selected run event stream.");
+    }
+    const resume = makeRunEvent({
+      payload: {
+        control: {
+          actionBindingDigest: "a".repeat(64),
+          actionId: "action-dashboard-agent-stream-resume",
+          authorityId: "authority-local",
+          expectedEventSequence: 4,
+          operation: "resume",
+          providerId: "fake",
+          restoreState: "runningWorker",
+          sessionId: `session-${runId}`,
+          workerAgentId: workerId,
+          workerStartedSequence: 3,
+        },
+      },
+      runId,
+      sequence: 5,
+      timestamp: "2026-07-22T17:05:00.000Z",
+      type: "RUN_CONTROL_CONFIRMED",
+    });
+    act(() => {
+      runSource.onmessage?.({
+        data: JSON.stringify(resume),
+      } as MessageEvent<string>);
+    });
+
+    await waitFor(() => {
+      const agentSources = eventSource.instances.filter((source) =>
+        source.url.includes("/agents/agent-worker/session/stream")
+      );
+      expect(agentSources).toHaveLength(3);
+      expect(agentSources[0]?.close).toHaveBeenCalledTimes(1);
+      expect(agentSources[1]?.close).toHaveBeenCalledTimes(1);
+      expect(agentSources[2]?.close).not.toHaveBeenCalled();
+    });
+
+    queryFixture.deliverySnapshotsByRunId[runId] = {
+      eventSequence: 8,
+      mode: "local",
+      recoveryActions: [],
+      remediationRearmSequence: 8,
+      runId,
+      stage: "unavailable",
+      status: "unavailable",
+    };
+    await act(async () => {
+      await view.queryClient.invalidateQueries({
+        queryKey: ["local-gaia", "runs", "detail", runId, "delivery"],
+      });
+    });
+
+    await waitFor(() => {
+      const agentSources = eventSource.instances.filter((source) =>
+        source.url.includes("/agents/agent-worker/session/stream")
+      );
+      expect(agentSources).toHaveLength(4);
+      expect(agentSources[2]?.close).toHaveBeenCalledTimes(1);
+      expect(agentSources[3]?.close).not.toHaveBeenCalled();
     });
   });
 
@@ -3783,8 +3922,9 @@ function renderDashboardWithQueries(input: {
     </QueryClientProvider>
   );
 
-  return render(
-    input.strictMode === true ? <StrictMode>{tree}</StrictMode> : tree
+  return Object.assign(
+    render(input.strictMode === true ? <StrictMode>{tree}</StrictMode> : tree),
+    { queryClient }
   );
 }
 

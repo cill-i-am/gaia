@@ -146,6 +146,22 @@ class DashboardRunControlActionMutationInputType extends Schema.Class<DashboardR
 export type DashboardRunControlActionMutationInput =
   DashboardRunControlActionMutationInputType;
 
+export const DashboardRunControlActionMutationRequestIdSchema =
+  Schema.String.pipe(
+    Schema.brand("DashboardRunControlActionMutationRequestId")
+  );
+
+const DashboardRunControlActionMutationRequestSchema = Schema.Struct({
+  requestId: DashboardRunControlActionMutationRequestIdSchema,
+});
+
+export type DashboardRunControlActionMutationRequest =
+  typeof DashboardRunControlActionMutationRequestSchema.Type;
+
+export type DashboardRunControlActionMutationInputConsumer = (
+  request: DashboardRunControlActionMutationRequest
+) => DashboardRunControlActionMutationInput;
+
 const DashboardOptionalRunQueryConfigSchema = Schema.Struct({
   ...DashboardGaiaClientConfigSchema.fields,
   runId: Schema.UndefinedOr(RunIdSchema),
@@ -177,6 +193,8 @@ const decodeDashboardAgentSessionActionMutationInput =
 const decodeDashboardRunControlActionMutationInput = Schema.decodeUnknownEffect(
   DashboardRunControlActionMutationInputSchema
 );
+const decodeDashboardRunControlActionMutationRequest =
+  Schema.decodeUnknownEffect(DashboardRunControlActionMutationRequestSchema);
 
 function dashboardMutationInputError(
   parameter: DashboardGaiaParameter,
@@ -511,14 +529,29 @@ export function localGaiaAgentSessionActionMutationOptions(
 
 export function localGaiaRunControlActionMutationOptions(
   config: DashboardGaiaClientConfig,
+  consumeInput: DashboardRunControlActionMutationInputConsumer,
   effectQuery: LocalGaiaEffectQuery = localGaiaEffectQuery
 ) {
   return effectQuery.mutationOptions({
     mutationKey: [...localGaiaQueryKeys.all, "run-control", "action"] as const,
     mutationFn: (input: unknown) =>
       Effect.gen(function* () {
-        const parsedInput = yield* decodeDashboardRunControlActionMutationInput(
+        const request = yield* decodeDashboardRunControlActionMutationRequest(
           input
+        ).pipe(
+          Effect.mapError((cause) =>
+            dashboardMutationInputError("runControlAction", cause)
+          )
+        );
+        const consumedInput = yield* Effect.try({
+          catch: (cause): DashboardGaiaClientError => ({
+            _tag: "DashboardGaiaUnexpectedError",
+            cause,
+          }),
+          try: () => consumeInput(request),
+        });
+        const parsedInput = yield* decodeDashboardRunControlActionMutationInput(
+          consumedInput
         ).pipe(
           Effect.mapError((cause) =>
             dashboardMutationInputError("runControlAction", cause)
@@ -527,7 +560,17 @@ export function localGaiaRunControlActionMutationOptions(
         return yield* actOnRunControlFromDashboardGaiaClient({
           ...config,
           ...parsedInput,
-        });
+        }).pipe(
+          Effect.mapError(
+            (error): DashboardGaiaClientError =>
+              error._tag === "DashboardGaiaHttpClientError"
+                ? {
+                    _tag: "DashboardGaiaUnexpectedError",
+                    cause: "Run-control transport failed.",
+                  }
+                : error
+          )
+        );
       }),
   });
 }

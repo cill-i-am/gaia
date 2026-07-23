@@ -13,6 +13,7 @@ import {
   ResolvedHarnessExecution,
   parseMarkdownSpec,
   parseRunId,
+  parseRunControlEventPayload,
   resolveAcceptedRunInputCheckpoint,
   resolveModelInvocationEpisodes,
   snapshotFromReplay,
@@ -49,7 +50,13 @@ import {
 } from "./codex-harness.js";
 import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
-import { appendEvent, loadRun, readEvents } from "./event-store.js";
+import {
+  appendEvent,
+  appendEventWithinSerialization,
+  loadRun,
+  readEvents,
+  withRunEventSerialization,
+} from "./event-store.js";
 import { writeEvidencePromotion } from "./evidence-promotion.js";
 import { writeFactoryRetro } from "./factory-retro.js";
 import { writeFactoryScorecard } from "./factory-scorecard.js";
@@ -1491,10 +1498,21 @@ function recordRunFailure(
   error: GaiaRuntimeError
 ) {
   return Effect.gen(function* () {
-    yield* appendEvent(runId, paths, {
-      payload: failureToEventPayload(error, stage),
-      type: "RUN_FAILED",
-    });
+    const recorded = yield* withRunEventSerialization(
+      paths,
+      Effect.gen(function* () {
+        const events = yield* readEvents(paths);
+        if (hasStickyRunControlAmbiguity(events)) return false;
+        yield* appendEventWithinSerialization(runId, paths, {
+          payload: failureToEventPayload(error, stage),
+          type: "RUN_FAILED",
+        });
+        return true;
+      })
+    );
+    if (!recorded) {
+      return yield* Effect.fail(error);
+    }
     yield* writeDogfoodRetrospective(runId, paths).pipe(
       Effect.catchTag("GaiaRuntimeError", () => Effect.void)
     );
@@ -1550,6 +1568,28 @@ function recordRunFailure(
 
     return yield* Effect.fail(error);
   });
+}
+
+function hasStickyRunControlAmbiguity(events: ReadonlyArray<RunEvent>) {
+  const phases = new Map<string, RunEvent["type"]>();
+  for (const event of events) {
+    if (
+      event.type !== "RUN_CONTROL_INTENT_RECORDED" &&
+      event.type !== "RUN_CONTROL_ATTEMPTED" &&
+      event.type !== "RUN_CONTROL_CONFIRMED" &&
+      event.type !== "RUN_CONTROL_FAILED" &&
+      event.type !== "RUN_CONTROL_OUTCOME_UNKNOWN"
+    ) {
+      continue;
+    }
+    const control = parseRunControlEventPayload(event.payload["control"]);
+    phases.set(control.actionId, event.type);
+  }
+  return [...phases.values()].some(
+    (phase) =>
+      phase === "RUN_CONTROL_ATTEMPTED" ||
+      phase === "RUN_CONTROL_OUTCOME_UNKNOWN"
+  );
 }
 
 function makeReviewModelProjection(input: {

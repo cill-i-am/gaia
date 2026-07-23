@@ -8,6 +8,7 @@ import {
   HarnessSessionSnapshot,
   MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
   ModelInvocationEpisodeStartV1,
+  RunControlEventPayload,
   makeModelContextContentV1,
   makeModelContextManifestV1,
   makeModelInvocationManifestV1,
@@ -18,6 +19,7 @@ import {
   parseHarnessQuestionId,
   parseHarnessSessionId,
   parseHarnessTurnId,
+  parseRunControlEventPayload,
   parseRunId,
   parseWorkspaceRelativePath,
   renderModelInputV1,
@@ -223,6 +225,124 @@ describe("agent session runtime", () => {
               2, 3, 4,
             ]);
             expect(updates.at(-1)?.terminal).toBe(true);
+
+            const cancelledRoot = yield* setupMarkedRun();
+            const cancelledPaths = yield* makeRunPaths(runId, {
+              rootDirectory: cancelledRoot,
+            });
+            yield* appendHarnessSessionEvent(runId, cancelledPaths, {
+              kind: "turnStarted",
+              sessionId,
+              turnId,
+            });
+            const cancelledControl = parseRunControlEventPayload({
+              actionBindingDigest: "a".repeat(64),
+              actionId: "action-agent-stream-cancel",
+              authorityId: "authority-local",
+              expectedEventSequence: 5,
+              operation: "cancel",
+              providerId: provider.providerId,
+              sessionId,
+              workerAgentId,
+              workerStartedSequence: 3,
+            });
+            for (const type of [
+              "RUN_CONTROL_INTENT_RECORDED",
+              "RUN_CONTROL_ATTEMPTED",
+              "RUN_CONTROL_CONFIRMED",
+            ] as const) {
+              yield* appendEvent(runId, cancelledPaths, {
+                payload: {
+                  control: Schema.encodeSync(RunControlEventPayload)(
+                    cancelledControl
+                  ),
+                },
+                type,
+              });
+            }
+            const cancelledStream = yield* streamAgentSessionUpdates(
+              runId,
+              workerAgentId,
+              4,
+              { rootDirectory: cancelledRoot }
+            );
+            const cancelledFiber = yield* cancelledStream.pipe(
+              Stream.runCollect,
+              Effect.forkChild
+            );
+            for (let attempt = 0; attempt < 10; attempt += 1) {
+              yield* Effect.yieldNow;
+            }
+            const cancelledExit = cancelledFiber.pollUnsafe();
+            if (cancelledExit?._tag === "Success") {
+              expect(cancelledExit.value.at(-1)?.eventSequence).toBe(8);
+              expect(cancelledExit.value.at(-1)?.terminal).toBe(true);
+            }
+
+            const resumedRoot = yield* setupMarkedRun();
+            const resumedPaths = yield* makeRunPaths(runId, {
+              rootDirectory: resumedRoot,
+            });
+            yield* appendHarnessSessionEvent(runId, resumedPaths, {
+              kind: "turnStarted",
+              sessionId,
+              turnId,
+            });
+            for (const [sequence, operation] of [
+              [5, "pause"],
+              [8, "resume"],
+            ] as const) {
+              const control = parseRunControlEventPayload({
+                actionBindingDigest: "b".repeat(64),
+                actionId: `action-agent-stream-${operation}`,
+                authorityId: "authority-local",
+                expectedEventSequence: sequence,
+                operation,
+                providerId: provider.providerId,
+                restoreState: "runningWorker",
+                sessionId,
+                workerAgentId,
+                workerStartedSequence: 3,
+              });
+              for (const type of [
+                "RUN_CONTROL_INTENT_RECORDED",
+                "RUN_CONTROL_ATTEMPTED",
+                "RUN_CONTROL_CONFIRMED",
+              ] as const) {
+                yield* appendEvent(runId, resumedPaths, {
+                  payload: {
+                    control: Schema.encodeSync(RunControlEventPayload)(control),
+                  },
+                  type,
+                });
+              }
+            }
+            const resumedStream = yield* streamAgentSessionUpdates(
+              runId,
+              workerAgentId,
+              8,
+              { rootDirectory: resumedRoot }
+            );
+            const resumedFiber = yield* resumedStream.pipe(
+              Stream.take(1),
+              Stream.runCollect,
+              Effect.forkChild
+            );
+            for (let attempt = 0; attempt < 10; attempt += 1) {
+              yield* Effect.yieldNow;
+            }
+            const resumedExit = resumedFiber.pollUnsafe();
+            expect([cancelledExit?._tag, resumedExit?._tag]).toEqual([
+              "Success",
+              "Success",
+            ]);
+            if (resumedExit?._tag === "Success") {
+              expect(resumedExit.value).toHaveLength(1);
+              expect(resumedExit.value[0]).toMatchObject({
+                eventSequence: 11,
+                terminal: false,
+              });
+            }
           })
         )
     );
@@ -1138,6 +1258,10 @@ function setupMarkedRun() {
     yield* appendEvent(runId, paths, {
       payload: { modelInvocationProtocol: "v1", specPath: "spec.md" },
       type: "RUN_CREATED",
+    });
+    yield* appendEvent(runId, paths, {
+      payload: { workspacePath: "." },
+      type: "WORKSPACE_PREPARED",
     });
     const content = makeModelContextContentV1({
       acceptedOutcomes: ["Complete the accepted worker task."],
