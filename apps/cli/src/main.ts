@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -6,12 +7,17 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   LocalGaiaServerUrlSchema,
   LocalRunApiDiagnosticDto,
+  parseRunControlAction,
+  parseRunControlActionId,
   parseLocalGaiaServerUrl,
   parseRunId,
   RunIdSchema,
   type LocalGaiaServerUrl,
   type LocalRunArtifact,
   type LocalRunEvents,
+  type RunControlOperation,
+  type RunControlReceipt,
+  type RunControlSnapshot,
   type RunId,
 } from "@gaia/core";
 import type {
@@ -61,7 +67,6 @@ import {
   recordLinearIssueGraph,
   recordMergeDecision,
   recordGitHubChecks,
-  resumeRun,
   readLocalRunArtifact,
   readLocalRunEvents,
   runSpecFile,
@@ -81,12 +86,14 @@ import * as Flag from "effect/unstable/cli/Flag";
 
 import { parseServerPort } from "./server-port.js";
 import {
+  actOnRunControlFromServer,
   createRunFromServer,
   evaluateMergeReadinessFromServer,
   ensureLocalServer,
   readLocalRunArtifactFromServer,
   readLocalRunEventsFromServer,
   listRunsFromServer,
+  pendingRunControlFromServer,
   statusRunFromServer,
   type ServerRunAcceptedSummary,
 } from "./server-read-client.js";
@@ -169,7 +176,7 @@ const json = Flag.boolean("json").pipe(
 );
 const serverUrl = Flag.string("server-url").pipe(
   Flag.withDescription(
-    "Opt into read-only CLI reads through an already-running local Gaia API server."
+    "Use an already-running authoritative local Gaia API server."
   ),
   Flag.optional
 );
@@ -335,17 +342,54 @@ const run = Command.make("run", {
   )
 );
 
-const resume = Command.make("resume", { json, runId }).pipe(
-  Command.withDescription("Replay and validate an existing Gaia run."),
-  Command.withHandler(({ json, runId }) =>
+const pending = Command.make("pending", {
+  json,
+  runId: optionalRunId,
+  serverMode,
+  serverUrl,
+}).pipe(
+  Command.withDescription("Show durable run control state."),
+  Command.withHandler(({ json, runId, serverMode, serverUrl }) =>
     renderEffect(
-      withRunIdInput(runId, (parsedRunId) =>
-        resumeRun(parsedRunId, workflowOptions())
-      ),
+      Effect.gen(function* () {
+        const parsedRunId = yield* parseOptionalRunIdInput(
+          Option.getOrUndefined(runId)
+        );
+        const parsedServerUrl = yield* durableControlServerUrl(
+          serverMode,
+          Option.getOrUndefined(serverUrl)
+        );
+        return yield* pendingRunControlFromServer({
+          rootDirectory: invocationRoot(),
+          ...(parsedRunId === undefined ? {} : { runId: parsedRunId }),
+          serverUrl: parsedServerUrl,
+        });
+      }),
       json,
-      renderSummary
+      renderRunControlSnapshot
     )
   )
+);
+
+const resolve = durableControlCommand(
+  "resolve",
+  "resolveInteraction",
+  "Resolve the pending interaction from one JSON response read from stdin."
+);
+const pause = durableControlCommand(
+  "pause",
+  "pause",
+  "Pause a durably controllable run."
+);
+const resume = durableControlCommand(
+  "resume",
+  "resume",
+  "Resume a durably paused run."
+);
+const cancel = durableControlCommand(
+  "cancel",
+  "cancel",
+  "Cancel a durably controllable run."
 );
 
 const status = Command.make("status", {
@@ -803,7 +847,11 @@ const cli = Command.make("gaia").pipe(
   Command.withSubcommands([
     run,
     doctorCommand,
+    pending,
+    resolve,
+    pause,
     resume,
+    cancel,
     status,
     list,
     events,
@@ -1143,6 +1191,94 @@ function readArtifact(input: typeof ReadArtifactInputSchema.Type) {
   });
 }
 
+function durableControlCommand(
+  name: "resolve" | "pause" | "resume" | "cancel",
+  operation: RunControlOperation,
+  description: string
+) {
+  return Command.make(name, { json, runId, serverMode, serverUrl }).pipe(
+    Command.withDescription(description),
+    Command.withHandler(({ json, runId, serverMode, serverUrl }) =>
+      renderEffect(
+        Effect.gen(function* () {
+          const parsedRunId = yield* parseRunIdInput(runId);
+          const parsedServerUrl = yield* durableControlServerUrl(
+            serverMode,
+            Option.getOrUndefined(serverUrl)
+          );
+          const snapshot = yield* pendingRunControlFromServer({
+            rootDirectory: invocationRoot(),
+            runId: parsedRunId,
+            serverUrl: parsedServerUrl,
+          });
+          if (snapshot.actionTarget === undefined)
+            return yield* Effect.fail(
+              makeRuntimeError({
+                code: "RunControlUnavailable",
+                message:
+                  "The run has no active durable control target. Inspect `gaia pending` before retrying.",
+                recoverable: false,
+              })
+            );
+          const actionTarget = snapshot.actionTarget;
+          const response =
+            operation === "resolveInteraction"
+              ? yield* readEphemeralRunControlResponse()
+              : undefined;
+          const action = yield* Effect.try({
+            catch: () =>
+              makeRuntimeError({
+                code: "InvalidRunControlInput",
+                message:
+                  "The durable control request is invalid. Inspect `gaia pending` before retrying.",
+                recoverable: false,
+              }),
+            try: () =>
+              parseRunControlAction({
+                ...actionTarget,
+                actionId: parseRunControlActionId(
+                  `gaia-${name}-${globalThis.crypto.randomUUID()}`
+                ),
+                operation,
+                ...(response === undefined ? {} : { response }),
+                runId: parsedRunId,
+              }),
+          });
+          return yield* actOnRunControlFromServer({
+            action,
+            runId: parsedRunId,
+            serverUrl: parsedServerUrl,
+          });
+        }),
+        json,
+        renderRunControlReceipt
+      )
+    )
+  );
+}
+
+function readEphemeralRunControlResponse() {
+  return Effect.try({
+    catch: () =>
+      makeRuntimeError({
+        code: "InvalidRunControlInput",
+        message:
+          "Resolve expects one JSON interaction response on standard input.",
+        recoverable: false,
+      }),
+    try: () => JSON.parse(readFileSync(0, "utf8")) as unknown,
+  });
+}
+
+function durableControlServerUrl(
+  _serverMode: boolean,
+  input: string | undefined
+) {
+  return input === undefined
+    ? ensureLocalServer({ rootDirectory: invocationRoot() })
+    : parseServerUrlInput(input);
+}
+
 function serverUrlFor(input: typeof ReadListInputSchema.Type) {
   if (input.serverUrl !== undefined) {
     return Effect.succeed(input.serverUrl);
@@ -1311,6 +1447,24 @@ function renderSummary(summary: CommandSummary) {
   return [...lines, harnessProgressLine, reportLine]
     .filter((line): line is string => line !== undefined)
     .join("\n");
+}
+
+function renderRunControlSnapshot(snapshot: RunControlSnapshot) {
+  return [
+    `run: ${snapshot.runId}`,
+    `state: ${snapshot.state}`,
+    `expired: ${snapshot.expired}`,
+    `allowed actions: ${snapshot.allowedActions.join(", ") || "none"}`,
+  ].join("\n");
+}
+
+function renderRunControlReceipt(receipt: RunControlReceipt) {
+  return [
+    `run: ${receipt.runId}`,
+    `operation: ${receipt.operation}`,
+    `state: ${receipt.state}`,
+    `duplicate: ${receipt.duplicate}`,
+  ].join("\n");
 }
 
 function renderRunCommandSummary(summary: RunCommandSummary) {

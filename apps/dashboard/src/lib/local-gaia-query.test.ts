@@ -36,6 +36,7 @@ import {
   localGaiaAgentSessionQueryOptions,
   localGaiaQueryKeys,
   localGaiaRunArtifactQueryOptions,
+  localGaiaRunControlQueryOptions,
   localGaiaRunQueryOptions,
   localGaiaRunsQueryOptions,
 } from "@/lib/local-gaia-query";
@@ -98,6 +99,10 @@ describe("local Gaia query options", () => {
       runId,
       serverUrl,
     });
+    const runControl = localGaiaRunControlQueryOptions({
+      runId,
+      serverUrl,
+    });
 
     expect(health.queryKey).toEqual(localGaiaQueryKeys.health());
     expect(runs.queryKey).toEqual(localGaiaQueryKeys.runs());
@@ -156,6 +161,13 @@ describe("local Gaia query options", () => {
       "agent-worker",
       "session",
     ]);
+    expect(runControl.queryKey).toEqual([
+      "local-gaia",
+      "runs",
+      "detail",
+      "run-1234567890",
+      "control",
+    ]);
     expect(artifact.enabled).toBe(true);
     expect(graph.enabled).toBe(true);
     expect(runActivity.enabled).toBe(true);
@@ -163,6 +175,7 @@ describe("local Gaia query options", () => {
     expect(artifactCatalog.enabled).toBe(true);
     expect(factoryArtifact.enabled).toBe(true);
     expect(agentSession.enabled).toBe(true);
+    expect(runControl.enabled).toBe(true);
     expect(typeof health.queryFn).toBe("function");
     expect(typeof runs.queryFn).toBe("function");
   });
@@ -245,7 +258,7 @@ describe("local Gaia query options", () => {
     expect(requests).toEqual(["GET http://127.0.0.1:4321/runs"]);
   });
 
-  it("preserves the public worker epoch through the legacy dashboard run model", async () => {
+  it("preserves the worker epoch and cancelled terminal state through the legacy dashboard run model", async () => {
     const epoch = {
       limitations: ["providerNativeToolInventoryNotExposed"],
       state: "completeComparable",
@@ -279,6 +292,25 @@ describe("local Gaia query options", () => {
                     workerEnvironmentEpoch: epoch,
                     workflow: "issueDelivery",
                   },
+                  {
+                    counts: {
+                      activity: 2,
+                      agents: 1,
+                      artifacts: 0,
+                      workItems: 1,
+                    },
+                    createdAt: "2026-07-22T11:20:00.000Z",
+                    rootWorkItem: {
+                      id: "work-cancelled",
+                      kind: "issue",
+                      title: "GAIA-148",
+                    },
+                    runId: "run-148cancel1",
+                    state: "canceled",
+                    updatedAt: "2026-07-22T11:22:00.000Z",
+                    workerEnvironmentEpoch: epoch,
+                    workflow: "issueDelivery",
+                  },
                 ],
               },
               status: "success",
@@ -289,6 +321,10 @@ describe("local Gaia query options", () => {
     );
 
     expect(result.data.runs[0]?.workerEnvironmentEpoch).toEqual(epoch);
+    expect(result.data.runs[1]).toMatchObject({
+      state: "cancelled",
+      status: "cancelled",
+    });
   });
 
   it("maps declared API failures into a tagged dashboard query error", async () => {

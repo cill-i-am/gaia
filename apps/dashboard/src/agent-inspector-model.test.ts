@@ -1,6 +1,7 @@
 import type { AgentSessionSnapshotDto } from "@gaia/core";
 import {
   FactoryAgentIdSchema,
+  RunControlActionTarget,
   parseHarnessInteractionId,
   parseHarnessItemId,
   parseHarnessQuestionId,
@@ -16,10 +17,46 @@ import {
   AgentInspectorSessionModelSchema,
   buildAgentInspectorSessionModel,
 } from "@/agent-inspector-model";
+import * as agentInspectorModel from "@/agent-inspector-model";
 
 const parseAgentId = Schema.decodeUnknownSync(FactoryAgentIdSchema);
 
 describe("Agent Inspector session model", () => {
+  it("projects only server-authorized durable run actions with their exact binding", () => {
+    const buildRunControl = Reflect.get(
+      agentInspectorModel,
+      "buildAgentInspectorRunControlModel"
+    );
+    expect(buildRunControl).toBeTypeOf("function");
+
+    const actionTarget = Schema.decodeUnknownSync(RunControlActionTarget)({
+      authorityId: "authority-local",
+      checkpointDigest: "a".repeat(64),
+      expectedEventSequence: 7,
+      interactionId: "interaction-command",
+      providerId: "fake",
+      requestDigest: "b".repeat(64),
+      sessionId: "session-run-1234567890",
+      workerAgentId: "agent-worker",
+      workerStartedSequence: 3,
+    });
+    const model = buildRunControl({
+      actionTarget,
+      allowedActions: ["resolveInteraction", "pause", "cancel"],
+      expired: false,
+      runId: parseRunId("run-1234567890"),
+      state: "waitingForHuman",
+    });
+
+    expect(model.allowedActions).toEqual([
+      "resolveInteraction",
+      "pause",
+      "cancel",
+    ]);
+    expect(model.actionTarget).toEqual(actionTarget);
+    expect(model.allowedActions).not.toContain("resume");
+  });
+
   it("maps a running public session to steer and interrupt controls", () => {
     const model = buildAgentInspectorSessionModel({
       connection: "connected",

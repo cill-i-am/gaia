@@ -11,6 +11,7 @@ import {
   RunReplayStateSchema,
   buildRunCanvasModel,
   buildRunReplayState,
+  isTerminalRunEvent,
 } from "@/run-canvas-model";
 
 const LocalRunSummaryFixtureInputSchema = Schema.Struct({
@@ -30,6 +31,87 @@ const LocalRunSummaryFixtureInputSchema = Schema.Struct({
 });
 
 describe("run canvas model", () => {
+  it("preserves cancelled as a terminal non-running canvas status", () => {
+    const runId = parseRunId("run-cancelled1");
+    const model = buildRunCanvasModel({
+      events: [
+        makeRunEvent({
+          runId,
+          sequence: 1,
+          timestamp: "2026-07-22T16:00:00.000Z",
+          type: "WORKER_STARTED",
+        }),
+      ],
+      run: localRunSummary({
+        artifacts: [],
+        eventCount: 4,
+        runId,
+        state: "cancelled",
+        status: "cancelled",
+      }),
+    });
+
+    expect(model.status).toBe("cancelled");
+    expect(model.nodes.find((node) => node.id === `run:${runId}`)?.status).toBe(
+      "cancelled"
+    );
+    expect(model.nodes.find((node) => node.id === "lane:worker")?.status).toBe(
+      "cancelled"
+    );
+    expect(Schema.decodeUnknownSync(DashboardRunSchema)(model)).toEqual(model);
+  });
+
+  it("treats only a confirmed cancel control event as terminal", () => {
+    const runId = parseRunId("run-control148");
+    const control = {
+      actionBindingDigest: "a".repeat(64),
+      actionId: "action-control",
+      authorityId: "authority-local",
+      expectedEventSequence: 4,
+      operation: "cancel" as const,
+      providerId: "fake",
+      sessionId: "session-control",
+      workerAgentId: "agent-worker",
+      workerStartedSequence: 3,
+    };
+    const controlEvent = (
+      type: Parameters<typeof makeRunEvent>[0]["type"],
+      operation:
+        | typeof control.operation
+        | "pause"
+        | "resume"
+        | "resolveInteraction"
+    ) =>
+      makeRunEvent({
+        payload: { control: { ...control, operation } },
+        runId,
+        sequence: 4,
+        timestamp: "2026-07-22T16:00:00.000Z",
+        type,
+      });
+
+    expect(
+      isTerminalRunEvent(controlEvent("RUN_CONTROL_CONFIRMED", "cancel"))
+    ).toBe(true);
+    for (const operation of [
+      "resolveInteraction",
+      "pause",
+      "resume",
+    ] as const) {
+      expect(
+        isTerminalRunEvent(controlEvent("RUN_CONTROL_CONFIRMED", operation))
+      ).toBe(false);
+    }
+    for (const type of [
+      "RUN_CONTROL_INTENT_RECORDED",
+      "RUN_CONTROL_ATTEMPTED",
+      "RUN_CONTROL_FAILED",
+      "RUN_CONTROL_OUTCOME_UNKNOWN",
+    ] as const) {
+      expect(isTerminalRunEvent(controlEvent(type, "cancel"))).toBe(false);
+    }
+  });
+
   it("derives a run graph from ordered events and exposed artifacts", () => {
     const runId = parseRunId("run-1234567890");
     const model = buildRunCanvasModel({

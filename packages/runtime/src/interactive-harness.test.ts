@@ -12,6 +12,7 @@ import {
   makeModelContextManifestV1,
   makeModelInvocationManifestV1,
   ModelInvocationEpisodeStartV1,
+  RunControlEventPayload,
   parseHarnessEvent,
   parseHarnessInteractionId,
   parseHarnessItemId,
@@ -20,6 +21,7 @@ import {
   parseHarnessSessionId,
   parseHarnessTurnId,
   parseMarkdownSpec,
+  parseRunControlEventPayload,
   parseWorkspaceRelativePath,
   projectHarnessEvents,
   renderModelInputV1,
@@ -63,6 +65,7 @@ import {
   readFactoryGraph,
   readFactoryRunActivity,
 } from "./factory-run-read-api.js";
+import { issueDeliveryAgentIds } from "./factory-workflows.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import {
   HarnessResumeError,
@@ -433,6 +436,8 @@ describe("interactive issue-delivery harness", () => {
             });
           }
           const appResult = yield* Fiber.join(appFiber);
+          if ("kind" in appResult)
+            assert.fail("Expected a completed interactive harness result.");
           yield* appendEvent(appRunId, appPaths, {
             payload: {
               changedWorkspacePaths: appResult.changedWorkspacePaths,
@@ -843,6 +848,8 @@ describe("interactive issue-delivery harness", () => {
             (event) => event.kind === "turnCompleted"
           );
 
+          if ("kind" in result)
+            assert.fail("Expected a completed interactive harness result.");
           assert.strictEqual(result.harnessName, codexAppServerHarnessName);
           assert.strictEqual(second.turnStarts.length, 0);
           assert.deepEqual(second.interrupts, []);
@@ -1140,6 +1147,119 @@ describe("interactive issue-delivery harness", () => {
           assert.strictEqual(summary.status, "completed");
           assert.strictEqual(counters.start, 0);
           assert.strictEqual(counters.resume, 1);
+
+          for (const terminalPhase of [
+            "RUN_CONTROL_ATTEMPTED",
+            "RUN_CONTROL_OUTCOME_UNKNOWN",
+          ] as const) {
+            const controlRunId = parseRunId(
+              terminalPhase === "RUN_CONTROL_ATTEMPTED"
+                ? "run-AttemptR1x"
+                : "run-UnknownR1x"
+            );
+            const controlPaths = yield* makeRunPaths(controlRunId, {
+              rootDirectory: cwd,
+            });
+            yield* fs.makeDirectory(controlPaths.workspace, {
+              recursive: true,
+            });
+            yield* appendEvent(controlRunId, controlPaths, {
+              payload: { specPath: "input.md" },
+              type: "RUN_CREATED",
+            });
+            yield* appendEvent(controlRunId, controlPaths, {
+              payload: { workspacePath: "workspace" },
+              type: "WORKSPACE_PREPARED",
+            });
+            yield* appendEvent(controlRunId, controlPaths, {
+              type: "WORKER_STARTED",
+            });
+            const controlSessionId = parseHarnessSessionId(
+              `session-${controlRunId}`
+            );
+            const controlTurnId = parseHarnessTurnId(`turn-${controlRunId}`);
+            yield* appendHarnessSessionEvent(controlRunId, controlPaths, {
+              capabilities: syntheticCapabilities,
+              kind: "sessionStarted",
+              provider: provider.descriptor,
+              sessionId: controlSessionId,
+              state: "running",
+            });
+            yield* appendHarnessSessionEvent(controlRunId, controlPaths, {
+              kind: "turnStarted",
+              sessionId: controlSessionId,
+              turnId: controlTurnId,
+            });
+            const control = parseRunControlEventPayload({
+              actionBindingDigest: "a".repeat(64),
+              actionId: `action-${controlRunId}`,
+              authorityId: "local-gaia-server",
+              expectedEventSequence: 5,
+              operation: "pause",
+              providerId: provider.descriptor.providerId,
+              restoreState: "runningWorker",
+              sessionId: controlSessionId,
+              workerAgentId: issueDeliveryAgentIds.worker,
+              workerStartedSequence: 3,
+            });
+            const encodedControl = Schema.encodeSync(RunControlEventPayload)(
+              control
+            );
+            yield* appendEvent(controlRunId, controlPaths, {
+              payload: { control: encodedControl },
+              type: "RUN_CONTROL_INTENT_RECORDED",
+            });
+            yield* appendEvent(controlRunId, controlPaths, {
+              payload: { control: encodedControl },
+              type: "RUN_CONTROL_ATTEMPTED",
+            });
+            if (terminalPhase === "RUN_CONTROL_OUTCOME_UNKNOWN") {
+              yield* appendEvent(controlRunId, controlPaths, {
+                payload: { control: encodedControl },
+                type: terminalPhase,
+              });
+            }
+            const interruptedSession = syntheticSession(
+              controlSessionId,
+              provider.descriptor
+            );
+            const interruptedProvider: HarnessProvider = {
+              ...provider,
+              resumeSession: () =>
+                Effect.succeed({
+                  ...interruptedSession,
+                  events: Stream.fromIterable([
+                    {
+                      kind: "turnCompleted" as const,
+                      sessionId: controlSessionId,
+                      status: "interrupted" as const,
+                      turnId: controlTurnId,
+                    },
+                  ]),
+                }),
+            };
+            const interrupted = yield* interactiveSessionHarness({
+              provider: interruptedProvider,
+              rootDirectory: cwd,
+            })
+              .run(
+                HarnessRunRequest.make({
+                  codexHarnessProgressPath: controlPaths.codexHarnessProgress,
+                  harnessName: codexAppServerHarnessName,
+                  resolvedSkillPaths: [],
+                  runId: controlRunId,
+                  skillBundlePath: controlPaths.skillBundle,
+                  specBody: "Do not project an unconfirmed control release.",
+                  specTitle: "Unconfirmed release",
+                  workerLogPath: controlPaths.workerLog,
+                  workerResultPath: controlPaths.workerResult,
+                  workspaceOutputPath: controlPaths.workspaceOutput,
+                  workspacePath: controlPaths.workspace,
+                })
+              )
+              .pipe(Effect.exit);
+            assert.strictEqual(interrupted._tag, "Failure");
+          }
         })
     );
 
@@ -1225,6 +1345,8 @@ describe("interactive issue-delivery harness", () => {
               workspacePath: paths.workspace,
             })
           );
+          if ("kind" in result)
+            assert.fail("Expected a completed interactive harness result.");
           yield* appendEvent(accepted.runId, paths, {
             payload: {
               changedWorkspacePaths: result.changedWorkspacePaths,

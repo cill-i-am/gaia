@@ -23,6 +23,7 @@ import {
   renderModelInputV1,
 } from "@gaia/core";
 import {
+  Deferred,
   Effect,
   Exit,
   Fiber,
@@ -627,7 +628,7 @@ describe("agent session runtime", () => {
     );
 
     it.effect(
-      "resolves only the recovered pending interaction after replay and replays the same action canonically",
+      "resolves only the recovered pending interaction and rejects hidden-response replay",
       () =>
         Effect.scoped(
           Effect.gen(function* () {
@@ -694,7 +695,7 @@ describe("agent session runtime", () => {
               coordinator,
               options: { rootDirectory },
               runId,
-            });
+            }).pipe(Effect.flip);
             const differentAction = yield* dispatchAgentSessionAction({
               action: {
                 ...action,
@@ -709,7 +710,9 @@ describe("agent session runtime", () => {
             }).pipe(Effect.exit);
 
             expect(first.state).toBe("dispatchConfirmed");
-            expect(replay).toEqual(first);
+            expect(replay).toMatchObject({
+              code: "ResolutionReplayNotComparable",
+            });
             expect(differentAction._tag).toBe("Failure");
             expect(resolutions).toEqual([
               {
@@ -798,26 +801,18 @@ describe("agent session runtime", () => {
               options: { rootDirectory },
               runId,
             });
-            const retry = yield* dispatchAgentSessionAction({
-              action: {
-                ...userAction,
-                answers: [{ answers: ["DIFFERENT_PASSWORD"], questionId }],
-              },
-              agentId: workerAgentId,
-              coordinator,
-              options: { rootDirectory },
+            const eventsAfterUserInput = yield* readEvents(paths);
+            const snapshotAfterUserInput = yield* readAgentSessionSnapshot(
               runId,
-            });
-            expect(retry.payloadDigest).toBe(first.payloadDigest);
-            expect(retry.eventSequence).toBe(first.eventSequence);
-            expect(resolutions).toHaveLength(1);
-
-            const structuralConflict = yield* dispatchAgentSessionAction({
+              workerAgentId,
+              { rootDirectory }
+            );
+            const retry = yield* dispatchAgentSessionAction({
               action: {
                 ...userAction,
                 answers: [
                   {
-                    answers: ["SECRET_ONE_TIME_CODE", "SECOND_VALUE"],
+                    answers: ["DIFFERENT_PASSWORD", "SECOND_PASSWORD"],
                     questionId,
                   },
                 ],
@@ -826,8 +821,42 @@ describe("agent session runtime", () => {
               coordinator,
               options: { rootDirectory },
               runId,
-            }).pipe(Effect.exit);
-            expect(structuralConflict._tag).toBe("Failure");
+            }).pipe(Effect.flip);
+            expect(retry).toMatchObject({
+              code: "ResolutionReplayNotComparable",
+            });
+            expect(resolutions).toHaveLength(1);
+
+            const groupedReplay = yield* dispatchAgentSessionAction({
+              action: {
+                ...userAction,
+                answers: [
+                  {
+                    answers: ["GROUPED_SECRET"],
+                    questionId,
+                  },
+                  {
+                    answers: ["OTHER_GROUP_SECRET"],
+                    questionId: parseHarnessQuestionId(
+                      "question-secret-other-group"
+                    ),
+                  },
+                ],
+              },
+              agentId: workerAgentId,
+              coordinator,
+              options: { rootDirectory },
+              runId,
+            }).pipe(Effect.flip);
+            expect(groupedReplay).toMatchObject({
+              code: "ResolutionReplayNotComparable",
+            });
+            expect(yield* readEvents(paths)).toEqual(eventsAfterUserInput);
+            expect(
+              yield* readAgentSessionSnapshot(runId, workerAgentId, {
+                rootDirectory,
+              })
+            ).toEqual(snapshotAfterUserInput);
 
             const mcpAction = {
               action: "submit" as const,
@@ -844,19 +873,38 @@ describe("agent session runtime", () => {
               options: { rootDirectory },
               runId,
             });
+            const eventsAfterMcp = yield* readEvents(paths);
+            const snapshotAfterMcp = yield* readAgentSessionSnapshot(
+              runId,
+              workerAgentId,
+              { rootDirectory }
+            );
+            const { content: _content, ...mcpWithoutContent } = mcpAction;
             const mcpRetry = yield* dispatchAgentSessionAction({
-              action: { ...mcpAction, content: "DIFFERENT_MCP_SECRET_CONTENT" },
+              action: mcpWithoutContent,
               agentId: workerAgentId,
               coordinator,
               options: { rootDirectory },
               runId,
+            }).pipe(Effect.flip);
+            expect(mcpRetry).toMatchObject({
+              code: "ResolutionReplayNotComparable",
             });
-            expect(mcpRetry.payloadDigest).toBe(mcp.payloadDigest);
             expect(resolutions).toHaveLength(2);
+            expect(yield* readEvents(paths)).toEqual(eventsAfterMcp);
+            expect(
+              yield* readAgentSessionSnapshot(runId, workerAgentId, {
+                rootDirectory,
+              })
+            ).toEqual(snapshotAfterMcp);
+            expect(first.payloadDigest).not.toBe(mcp.payloadDigest);
 
             const persisted = JSON.stringify(yield* readEvents(paths));
             expect(persisted).not.toContain("SECRET_ONE_TIME_CODE");
             expect(persisted).not.toContain("DIFFERENT_PASSWORD");
+            expect(persisted).not.toContain("SECOND_PASSWORD");
+            expect(persisted).not.toContain("GROUPED_SECRET");
+            expect(persisted).not.toContain("OTHER_GROUP_SECRET");
             expect(persisted).not.toContain("UNRESTRICTED_MCP_SECRET_CONTENT");
             expect(persisted).not.toContain("DIFFERENT_MCP_SECRET_CONTENT");
           })
@@ -954,34 +1002,59 @@ describe("agent session runtime", () => {
     );
 
     it.effect(
-      "rejects duplicate live registration and clears scoped handles on shutdown",
+      "rejects duplicate registration and drains a pinned handle on shutdown",
       () =>
         Effect.scoped(
           Effect.gen(function* () {
             const coordinator = makeLiveHarnessSessionCoordinator();
             const calls: string[] = [];
-            yield* coordinator.register({
+            const identity = {
               agentId: workerAgentId,
               runId,
-              session: fakeSession(calls),
               sessionId,
-            });
+            } as const;
+            const registrationScope = yield* Scope.make();
+            yield* coordinator
+              .register({ ...identity, session: fakeSession(calls) })
+              .pipe(Effect.provideService(Scope.Scope, registrationScope));
             const duplicate = yield* coordinator
               .register({
-                agentId: workerAgentId,
-                runId,
+                ...identity,
                 session: fakeSession(calls),
-                sessionId,
               })
               .pipe(Effect.exit);
             expect(duplicate._tag).toBe("Failure");
-            yield* coordinator.shutdown;
-            const live = yield* coordinator.get({
-              agentId: workerAgentId,
-              runId,
-              sessionId,
-            });
-            expect(live).toBeUndefined();
+
+            const pinEntered = yield* Deferred.make<void>();
+            const releasePin = yield* Deferred.make<void>();
+            const pinFiber = yield* coordinator
+              .use(identity, () =>
+                Deferred.succeed(pinEntered, undefined).pipe(
+                  Effect.andThen(Deferred.await(releasePin))
+                )
+              )
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(pinEntered);
+
+            const closeFiber = yield* Scope.close(
+              registrationScope,
+              Exit.void
+            ).pipe(Effect.forkChild);
+            while ((yield* coordinator.get(identity))?.closing !== true)
+              yield* Effect.yieldNow;
+            const shutdownFiber = yield* coordinator.shutdown.pipe(
+              Effect.forkChild
+            );
+            yield* Effect.yieldNow;
+
+            yield* Deferred.succeed(releasePin, undefined);
+            yield* Fiber.join(pinFiber);
+            for (let attempt = 0; attempt < 10; attempt += 1)
+              yield* Effect.yieldNow;
+
+            expect(closeFiber.pollUnsafe()).toBeDefined();
+            expect(shutdownFiber.pollUnsafe()).toBeDefined();
+            expect(yield* coordinator.get(identity)).toBeUndefined();
           })
         )
     );

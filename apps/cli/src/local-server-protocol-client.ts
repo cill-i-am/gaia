@@ -5,6 +5,7 @@ import {
   LocalGaiaServerApi,
   LocalGaiaServerUrlSchema,
   LocalRunReadArtifactIdSchema,
+  type RunControlAction,
   type LocalGaiaServerUrl,
   type LocalRunApiError,
   RunIdSchema,
@@ -41,6 +42,47 @@ const LocalServerMergeReadinessInputSchema = Schema.Struct({
   runId: RunIdSchema,
   serverUrl: LocalGaiaServerUrlSchema,
 });
+
+/** Reads one run's event-derived durable control snapshot. */
+export function getRunControlFromLocalServerProtocol(
+  input: typeof LocalServerRunInputSchema.Type
+) {
+  return withLocalGaiaServerClient(input.serverUrl, (client) =>
+    client.runs.getRunControl({ params: { runId: input.runId } })
+  );
+}
+
+/** Sends one already-parsed durable control action without local fallback. */
+export function actOnRunControlFromLocalServerProtocol(input: {
+  readonly payload: RunControlAction;
+  readonly runId: typeof RunIdSchema.Type;
+  readonly serverUrl: LocalGaiaServerUrl;
+}) {
+  return withLocalGaiaServerClient(input.serverUrl, (client) => {
+    switch (input.payload.operation) {
+      case "resolveInteraction":
+        return client.runs.actOnRunControl({
+          params: { runId: input.runId },
+          payload: input.payload,
+        });
+      case "pause":
+        return client.runs.actOnRunControl({
+          params: { runId: input.runId },
+          payload: input.payload,
+        });
+      case "resume":
+        return client.runs.actOnRunControl({
+          params: { runId: input.runId },
+          payload: input.payload,
+        });
+      case "cancel":
+        return client.runs.actOnRunControl({
+          params: { runId: input.runId },
+          payload: input.payload,
+        });
+    }
+  });
+}
 
 /**
  * Expected failures surfaced by the local Gaia generated protocol client.

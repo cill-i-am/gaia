@@ -22,7 +22,7 @@ import {
   type RunEvent,
   type RunId,
 } from "@gaia/core";
-import { Clock, Effect, Option, Schema, Stream } from "effect";
+import { Clock, Deferred, Effect, Option, Schema, Stream } from "effect";
 
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
 import {
@@ -82,7 +82,12 @@ const LiveSessionIdentitySchema = Schema.Struct({
 type LiveSessionIdentity = typeof LiveSessionIdentitySchema.Type;
 type LiveEntry = LiveSessionIdentity & { readonly session: HarnessSession };
 type RegisteredLiveEntry = LiveEntry & { readonly generation: number };
-type StoredLiveEntry = RegisteredLiveEntry & { readonly lease: symbol };
+type StoredLiveEntry = RegisteredLiveEntry & {
+  readonly closing: boolean;
+  readonly drained: Deferred.Deferred<void>;
+  readonly lease: symbol;
+  readonly pinCount: number;
+};
 
 export type LiveHarnessSessionCoordinator = ReturnType<
   typeof makeLiveHarnessSessionCoordinator
@@ -117,16 +122,102 @@ export function makeLiveHarnessSessionCoordinator() {
             );
           }
           const lease = Symbol(entryKey);
-          sessions.set(entryKey, { ...entry, generation, lease });
+          const drained = yield* Deferred.make<void>();
+          sessions.set(entryKey, {
+            ...entry,
+            closing: false,
+            drained,
+            generation,
+            lease,
+            pinCount: 0,
+          });
           return { entryKey, lease } as const;
         }),
         ({ entryKey, lease }) =>
-          Effect.sync(() => {
-            if (sessions.get(entryKey)?.lease === lease)
-              sessions.delete(entryKey);
+          Effect.gen(function* () {
+            const drained = yield* Effect.sync(() => {
+              const stored = sessions.get(entryKey);
+              if (stored?.lease !== lease) return undefined;
+              const closing = { ...stored, closing: true };
+              sessions.set(entryKey, closing);
+              return closing.pinCount === 0 ? undefined : closing.drained;
+            });
+            if (drained !== undefined) yield* Deferred.await(drained);
+            yield* Effect.sync(() => {
+              if (sessions.get(entryKey)?.lease === lease)
+                sessions.delete(entryKey);
+            });
           })
       ).pipe(Effect.asVoid),
-    shutdown: Effect.sync(() => sessions.clear()),
+    shutdown: Effect.gen(function* () {
+      const closing = yield* Effect.sync(() =>
+        Array.from(sessions.entries(), ([entryKey, stored]) => {
+          const entry = { ...stored, closing: true };
+          sessions.set(entryKey, entry);
+          return {
+            drained: entry.pinCount === 0 ? undefined : entry.drained,
+            entryKey,
+            lease: entry.lease,
+          };
+        })
+      );
+      yield* Effect.forEach(closing, ({ drained }) =>
+        drained === undefined ? Effect.void : Deferred.await(drained)
+      );
+      yield* Effect.sync(() => {
+        for (const { entryKey, lease } of closing) {
+          if (sessions.get(entryKey)?.lease === lease)
+            sessions.delete(entryKey);
+        }
+      });
+    }),
+    use: <A, E, R>(
+      identity: LiveSessionIdentity,
+      effect: (entry: RegisteredLiveEntry) => Effect.Effect<A, E, R>
+    ): Effect.Effect<Option.Option<A>, E, R> => {
+      const acquire = Effect.sync(() => {
+        const entryKey = key(identity);
+        const stored = sessions.get(entryKey);
+        if (stored === undefined || stored.closing) return Option.none();
+        const pinned = { ...stored, pinCount: stored.pinCount + 1 };
+        sessions.set(entryKey, pinned);
+        const {
+          closing: _closing,
+          drained: _drained,
+          lease,
+          pinCount: _pinCount,
+          ...entry
+        } = pinned;
+        return Option.some({ entry, entryKey, lease });
+      });
+      return Effect.acquireUseRelease(
+        acquire,
+        Option.match({
+          onNone: () => Effect.succeed(Option.none()),
+          onSome: ({ entry }) => effect(entry).pipe(Effect.map(Option.some)),
+        }),
+        Option.match({
+          onNone: () => Effect.void,
+          onSome: ({ entryKey, lease }) =>
+            Effect.gen(function* () {
+              const drained = yield* Effect.sync(() => {
+                const stored = sessions.get(entryKey);
+                if (stored?.lease !== lease) return undefined;
+                const unpinned = {
+                  ...stored,
+                  pinCount: stored.pinCount - 1,
+                };
+                sessions.set(entryKey, unpinned);
+                return unpinned.closing && unpinned.pinCount === 0
+                  ? unpinned.drained
+                  : undefined;
+              });
+              if (drained !== undefined)
+                yield* Deferred.succeed(drained, undefined);
+            }),
+        })
+      );
+    },
   };
 }
 
@@ -547,27 +638,17 @@ function actionDigestBinding(
     case "approval":
       return {
         ...base,
-        decision: action.decision,
         interactionId: action.interactionId,
       };
     case "userInput":
       return {
         ...base,
-        answerShape: action.answers
-          .map(({ answers, questionId }) => ({
-            answerCount: answers.length,
-            questionId,
-          }))
-          .toSorted((left, right) =>
-            left.questionId.localeCompare(right.questionId)
-          ),
         interactionId: action.interactionId,
       };
     case "mcpElicitation":
       return {
         ...base,
         action: action.action,
-        contentProvided: action.content !== undefined,
         interactionId: action.interactionId,
       };
   }
@@ -608,6 +689,17 @@ function existingReceipt(
     throw makeRuntimeError({
       code: "AgentActionConflict",
       message: "Action ID is already bound to a different immutable action.",
+      recoverable: false,
+    });
+  if (
+    binding.actionKind === "approval" ||
+    binding.actionKind === "userInput" ||
+    binding.actionKind === "mcpElicitation"
+  )
+    throw makeRuntimeError({
+      code: "ResolutionReplayNotComparable",
+      message:
+        "The hidden interaction response is single-use and cannot be compared or redispatched. Read the current run control state.",
       recoverable: false,
     });
   const last = audits.at(-1)!;

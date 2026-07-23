@@ -111,6 +111,13 @@ const queryFixture = vi.hoisted(
     runsDiagnostics: ReadonlyArray<unknown>;
     runsError?: unknown;
     runsRequestCount: number;
+    runControlActionInputs: Array<{
+      readonly action: unknown;
+      readonly runId: string;
+    }>;
+    runControlActionPromise: Promise<void> | undefined;
+    runControlSnapshotPromisesByRunId: Record<string, Promise<unknown>>;
+    runControlSnapshotsByRunId: Record<string, unknown>;
   } => ({
     artifactsByRunId: {},
     factoryActivitiesByRunId: {},
@@ -135,6 +142,10 @@ const queryFixture = vi.hoisted(
     runsDiagnostics: [],
     runsError: undefined,
     runsRequestCount: 0,
+    runControlActionInputs: [],
+    runControlActionPromise: undefined,
+    runControlSnapshotPromisesByRunId: {},
+    runControlSnapshotsByRunId: {},
   })
 );
 
@@ -269,6 +280,50 @@ vi.mock("@/lib/local-gaia-query", () => ({
       }),
     queryKey: ["local-gaia", "runs", "detail", config.runId, "events"] as const,
     retry: false,
+  }),
+  localGaiaRunControlQueryOptions: (config: { readonly runId: string }) => ({
+    enabled: config.runId !== undefined,
+    queryFn: () =>
+      queryFixture.runControlSnapshotPromisesByRunId[config.runId] ??
+      Promise.resolve(
+        queryFixture.runControlSnapshotsByRunId[config.runId] ?? {
+          allowedActions: [],
+          expired: false,
+          runId: config.runId,
+          state: "completed",
+        }
+      ),
+    queryKey: [
+      "local-gaia",
+      "runs",
+      "detail",
+      config.runId,
+      "control",
+    ] as const,
+    retry: false,
+  }),
+  localGaiaRunControlActionMutationOptions: () => ({
+    mutationFn: async (input: {
+      readonly action: {
+        readonly actionId: string;
+        readonly operation: string;
+      };
+      readonly runId: string;
+    }) => {
+      queryFixture.runControlActionInputs.push(input);
+      if (queryFixture.runControlActionPromise !== undefined) {
+        await queryFixture.runControlActionPromise;
+      }
+      return {
+        actionBindingDigest: "c".repeat(64),
+        actionId: input.action.actionId,
+        duplicate: false,
+        operation: input.action.operation,
+        runId: input.runId,
+        state: "confirmed",
+      };
+    },
+    mutationKey: ["local-gaia", "run-control", "action"] as const,
   }),
   localGaiaDeliveryQueryOptions: (config: { readonly runId: string }) => ({
     enabled: config.runId !== undefined,
@@ -847,7 +902,7 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
-  it("renders live Agent Inspector controls and finite pending interaction actions", async () => {
+  it("renders live Agent Inspector controls and disables unbound pending interactions", async () => {
     installMockEventSource();
     const runId = parseRunId("run-7070707070");
     const workerId = agentId("agent-worker");
@@ -936,7 +991,7 @@ describe("DashboardShell Run Console", () => {
     );
 
     await waitFor(() => {
-      expect(queryFixture.agentSessionActionInputs).toHaveLength(3);
+      expect(queryFixture.agentSessionActionInputs).toHaveLength(2);
     });
     expect(
       queryFixture.agentSessionActionInputs.map((input) => input.action)
@@ -952,18 +1007,397 @@ describe("DashboardShell Run Console", () => {
         sessionId: "session-run-7070707070",
         turnId: "turn-1",
       }),
-      expect.objectContaining({
-        decision: "approve",
-        interactionId: "interaction-command",
-        kind: "approval",
-        sessionId: "session-run-7070707070",
-      }),
     ]);
     expect(
-      screen.queryByRole("button", {
-        name: "Approve for session command approval",
+      screen.getByRole("button", {
+        name: "Approve command approval",
       })
-    ).toBeNull();
+    ).toHaveProperty("disabled", true);
+  });
+
+  it("renders and posts only bound durable run controls while preserving Interrupt turn", async () => {
+    installMockEventSource();
+    const runId = parseRunId("run-148dash001");
+    const workerId = agentId("agent-worker");
+    const actionTarget = {
+      authorityId: "authority-local",
+      checkpointDigest: "a".repeat(64),
+      expectedEventSequence: 7,
+      interactionId: "interaction-command",
+      providerId: "fake",
+      requestDigest: "b".repeat(64),
+      sessionId: `session-${runId}`,
+      workerAgentId: workerId,
+      workerStartedSequence: 3,
+    };
+    const view = renderDashboardWithQueries({
+      agentSessionsByRunId: {
+        [runId]: {
+          [workerId]: agentSessionSnapshot({
+            agentId: workerId,
+            pendingInteractions: [
+              {
+                allowedDecisions: ["approve", "decline"],
+                command: "pnpm check",
+                interactionId: parseHarnessInteractionId("interaction-command"),
+                itemId: parseHarnessItemId("item-command-approval"),
+                kind: "commandApproval",
+                requestedAt: "2026-07-22T17:00:00.000Z",
+                turnId: parseHarnessTurnId("turn-1"),
+                workspacePath: parseWorkspaceRelativePath("."),
+              },
+            ],
+            runId,
+            state: "waitingForOperator",
+          }),
+        },
+      },
+      runControlSnapshotsByRunId: {
+        [runId]: {
+          actionTarget,
+          allowedActions: ["resolveInteraction", "pause", "cancel"],
+          expired: false,
+          runId,
+          state: "waitingForHuman",
+        },
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "waitingForHuman",
+          status: "running",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector(
+        '[data-id="agent:agent-worker"]'
+      );
+      if (node === null)
+        throw new Error("Expected a worker FactoryGraph node.");
+      return node;
+    });
+    fireEvent.click(workerNode);
+
+    expect(
+      await screen.findByRole("button", { name: "Pause run" })
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel run" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Resume run" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Interrupt turn" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause run" }));
+    await waitFor(() => {
+      expect(queryFixture.runControlActionInputs).toHaveLength(1);
+    });
+    expect(queryFixture.runControlActionInputs[0]).toEqual({
+      action: expect.objectContaining({
+        ...actionTarget,
+        operation: "pause",
+        runId,
+      }),
+      runId,
+    });
+  });
+
+  it("keeps a hidden durable response single-use while its request is pending", async () => {
+    installMockEventSource();
+    const runControlAction = deferred<void>();
+    const runId = parseRunId("run-148dash002");
+    const workerId = agentId("agent-worker");
+    const actionTarget = {
+      authorityId: "authority-local",
+      checkpointDigest: "a".repeat(64),
+      expectedEventSequence: 7,
+      interactionId: "interaction-question",
+      providerId: "fake",
+      requestDigest: "b".repeat(64),
+      sessionId: `session-${runId}`,
+      workerAgentId: workerId,
+      workerStartedSequence: 3,
+    };
+    const view = renderDashboardWithQueries({
+      agentSessionsByRunId: {
+        [runId]: {
+          [workerId]: agentSessionSnapshot({
+            agentId: workerId,
+            pendingInteractions: [
+              {
+                interactionId: parseHarnessInteractionId(
+                  "interaction-question"
+                ),
+                itemId: parseHarnessItemId("item-question"),
+                kind: "userInput",
+                questions: [
+                  {
+                    options: ["Continue", "Stop"],
+                    prompt: "Operator continuation",
+                    questionId: parseHarnessQuestionId("question-continuation"),
+                    secret: true,
+                  },
+                ],
+                requestedAt: "2026-07-22T17:00:00.000Z",
+                turnId: parseHarnessTurnId("turn-1"),
+              },
+            ],
+            runId,
+            state: "waitingForOperator",
+          }),
+        },
+      },
+      runControlActionPromise: runControlAction.promise,
+      runControlSnapshotsByRunId: {
+        [runId]: {
+          actionTarget,
+          allowedActions: ["resolveInteraction", "cancel"],
+          expired: false,
+          runId,
+          state: "waitingForHuman",
+        },
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "waitingForHuman",
+          status: "running",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector(
+        '[data-id="agent:agent-worker"]'
+      );
+      if (node === null)
+        throw new Error("Expected a worker FactoryGraph node.");
+      return node;
+    });
+    fireEvent.click(workerNode);
+
+    const response = "hidden-response-canary";
+    fireEvent.change(
+      await screen.findByPlaceholderText("Type operator response"),
+      {
+        target: { value: response },
+      }
+    );
+    const submit = screen.getByRole("button", {
+      name: "Submit operator input",
+    });
+    await waitFor(() => {
+      expect((submit as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(queryFixture.runControlActionInputs).toHaveLength(1);
+    });
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+
+    runControlAction.reject({
+      failure: {
+        _tag: "DashboardGaiaApiError",
+        error: localRunApiError({
+          code: "RunControlStale",
+          message: "The durable response was not accepted.",
+          status: 409,
+        }),
+      },
+    });
+    const error = await screen.findByTestId("run-control-action-error");
+    expect(error.textContent).toContain(
+      "RunControlStale: The durable response was not accepted."
+    );
+    expect(document.body.textContent).not.toContain(response);
+  });
+
+  it("fails closed unless operator input matches the current durable wait target", async () => {
+    const scenarios = [
+      { kind: "loading" as const },
+      { kind: "staleSession" as const },
+      { kind: "mismatchedInteraction" as const },
+      { kind: "expired" as const },
+      { kind: "nonWaiting" as const },
+    ];
+
+    for (const [index, scenario] of scenarios.entries()) {
+      cleanup();
+      installMockEventSource();
+      const runId = parseRunId(`run-148guard0${index}`);
+      const workerId = agentId("agent-worker");
+      const interactionId = parseHarnessInteractionId("interaction-command");
+      const actionTarget = {
+        authorityId: "authority-local",
+        checkpointDigest: "a".repeat(64),
+        expectedEventSequence: 7,
+        interactionId,
+        providerId: "fake",
+        requestDigest: "b".repeat(64),
+        sessionId:
+          scenario.kind === "staleSession"
+            ? "session-stale"
+            : `session-${runId}`,
+        workerAgentId: workerId,
+        workerStartedSequence: 3,
+      };
+      const view = renderDashboardWithQueries({
+        agentSessionsByRunId: {
+          [runId]: {
+            [workerId]: agentSessionSnapshot({
+              agentId: workerId,
+              pendingInteractions: [
+                {
+                  allowedDecisions: ["approve", "decline"],
+                  command: "pnpm check",
+                  interactionId,
+                  itemId: parseHarnessItemId("item-command-approval"),
+                  kind: "commandApproval",
+                  requestedAt: "2026-07-22T17:00:00.000Z",
+                  turnId: parseHarnessTurnId("turn-1"),
+                  workspacePath: parseWorkspaceRelativePath("."),
+                },
+              ],
+              runId,
+              state: "waitingForOperator",
+            }),
+          },
+        },
+        ...(scenario.kind === "loading"
+          ? {
+              runControlSnapshotPromisesByRunId: {
+                [runId]: new Promise<unknown>(() => {}),
+              },
+            }
+          : {
+              runControlSnapshotsByRunId: {
+                [runId]: {
+                  actionTarget: {
+                    ...actionTarget,
+                    ...(scenario.kind === "mismatchedInteraction"
+                      ? { interactionId: "interaction-other" }
+                      : {}),
+                  },
+                  allowedActions: ["resolveInteraction"],
+                  expired: scenario.kind === "expired",
+                  runId,
+                  state:
+                    scenario.kind === "nonWaiting"
+                      ? "runningWorker"
+                      : "waitingForHuman",
+                },
+              },
+            }),
+        runs: [
+          localRunSummary({
+            runId,
+            state: "waitingForHuman",
+            status: "running",
+          }),
+        ],
+      });
+
+      await screen.findByTestId("selected-run-title");
+      const workerNode = await waitFor(() => {
+        const node = view.container.querySelector(
+          '[data-id="agent:agent-worker"]'
+        );
+        if (node === null)
+          throw new Error("Expected a worker FactoryGraph node.");
+        return node;
+      });
+      fireEvent.click(workerNode);
+      const submit = await screen.findByRole("button", {
+        name: "Approve command approval",
+      });
+
+      expect((submit as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(submit);
+      await act(async () => Promise.resolve());
+      expect(queryFixture.agentSessionActionInputs).toHaveLength(0);
+      expect(queryFixture.runControlActionInputs).toHaveLength(0);
+    }
+
+    cleanup();
+    installMockEventSource();
+    const runId = parseRunId("run-148guard05");
+    const workerId = agentId("agent-worker");
+    const interactionId = parseHarnessInteractionId("interaction-command");
+    const view = renderDashboardWithQueries({
+      agentSessionsByRunId: {
+        [runId]: {
+          [workerId]: agentSessionSnapshot({
+            agentId: workerId,
+            pendingInteractions: [
+              {
+                allowedDecisions: ["approve", "decline"],
+                command: "pnpm check",
+                interactionId,
+                itemId: parseHarnessItemId("item-command-approval"),
+                kind: "commandApproval",
+                requestedAt: "2026-07-22T17:00:00.000Z",
+                turnId: parseHarnessTurnId("turn-1"),
+                workspacePath: parseWorkspaceRelativePath("."),
+              },
+            ],
+            runId,
+            state: "waitingForOperator",
+          }),
+        },
+      },
+      runControlSnapshotsByRunId: {
+        [runId]: {
+          actionTarget: {
+            authorityId: "authority-local",
+            checkpointDigest: "a".repeat(64),
+            expectedEventSequence: 7,
+            interactionId,
+            providerId: "fake",
+            requestDigest: "b".repeat(64),
+            sessionId: `session-${runId}`,
+            workerAgentId: workerId,
+            workerStartedSequence: 3,
+          },
+          allowedActions: ["resolveInteraction"],
+          expired: false,
+          runId,
+          state: "waitingForHuman",
+        },
+      },
+      runs: [
+        localRunSummary({
+          runId,
+          state: "waitingForHuman",
+          status: "running",
+        }),
+      ],
+    });
+
+    await screen.findByTestId("selected-run-title");
+    const workerNode = await waitFor(() => {
+      const node = view.container.querySelector(
+        '[data-id="agent:agent-worker"]'
+      );
+      if (node === null)
+        throw new Error("Expected a worker FactoryGraph node.");
+      return node;
+    });
+    fireEvent.click(workerNode);
+    const submit = await screen.findByRole("button", {
+      name: "Approve command approval",
+    });
+    await waitFor(() => {
+      expect((submit as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(queryFixture.runControlActionInputs).toHaveLength(1);
+    });
+    expect(queryFixture.agentSessionActionInputs).toHaveLength(0);
   });
 
   it("keeps the cached agent session snapshot after closing and reselecting Inspector", async () => {
@@ -1872,7 +2306,7 @@ describe("DashboardShell Run Console", () => {
     });
   });
 
-  it("refreshes a selected active run to terminal state from the live stream", async () => {
+  it("keeps non-cancel control confirmations live and closes on confirmed cancel", async () => {
     const eventSource = installMockEventSource();
     const runId = parseRunId("run-3333333333");
     const createdEvent = makeRunEvent({
@@ -1881,12 +2315,30 @@ describe("DashboardShell Run Console", () => {
       timestamp: "2026-07-07T12:00:00.000Z",
       type: "RUN_CREATED",
     });
-    const terminalEvent = makeRunEvent({
-      payload: { reportPath: "report.md" },
+    const control = {
+      actionBindingDigest: "a".repeat(64),
+      actionId: "action-live-control",
+      authorityId: "authority-local",
+      expectedEventSequence: 2,
+      operation: "pause" as const,
+      providerId: "fake",
+      sessionId: `session-${runId}`,
+      workerAgentId: "agent-worker",
+      workerStartedSequence: 1,
+    };
+    const pauseConfirmed = makeRunEvent({
+      payload: { control },
       runId,
       sequence: 2,
       timestamp: "2026-07-07T12:01:00.000Z",
-      type: "REPORT_COMPLETED",
+      type: "RUN_CONTROL_CONFIRMED",
+    });
+    const cancelConfirmed = makeRunEvent({
+      payload: { control: { ...control, operation: "cancel" } },
+      runId,
+      sequence: 3,
+      timestamp: "2026-07-07T12:02:00.000Z",
+      type: "RUN_CONTROL_CONFIRMED",
     });
     renderDashboardWithQueries({
       eventsByRunId: {
@@ -1922,58 +2374,79 @@ describe("DashboardShell Run Console", () => {
     ).toContain("1 event");
 
     act(() => {
-      queryFixture.eventsByRunId[runId] = [createdEvent, terminalEvent];
+      source.onmessage?.({
+        data: JSON.stringify(pauseConfirmed),
+      } as MessageEvent<string>);
+    });
+    expect(source.close).not.toHaveBeenCalled();
+
+    act(() => {
+      queryFixture.eventsByRunId[runId] = [
+        createdEvent,
+        pauseConfirmed,
+        cancelConfirmed,
+      ];
       queryFixture.runs = [
         localRunSummary({
-          artifacts: ["input", "report"],
-          eventCount: 2,
-          latestEventType: "REPORT_COMPLETED",
+          artifacts: ["input"],
+          eventCount: 3,
+          latestEventType: "RUN_CONTROL_CONFIRMED",
           runId,
-          state: "completed",
-          status: "completed",
-          updatedAt: parseLocalRunTimestamp("2026-07-07T12:01:00.000Z"),
+          state: "cancelled",
+          status: "cancelled",
+          updatedAt: parseLocalRunTimestamp("2026-07-07T12:02:00.000Z"),
         }),
       ];
       source.onmessage?.({
-        data: JSON.stringify(terminalEvent),
+        data: JSON.stringify(cancelConfirmed),
       } as MessageEvent<string>);
     });
 
     await waitFor(() => {
       expect(
         screen.getByTestId("run-console-row-run-3333333333").textContent
-      ).toContain("Completed");
+      ).toContain("Cancelled");
       expect(
         screen.getByTestId("run-console-row-run-3333333333").textContent
-      ).toContain("Report Completed");
+      ).toContain("Run Control Confirmed");
       expect(
         screen.getByTestId("run-console-row-run-3333333333").textContent
-      ).toContain("2 events");
-      expect(screen.getAllByText("Report Completed")).not.toHaveLength(0);
+      ).toContain("3 events");
+      expect(screen.getAllByText("Run Control Confirmed")).not.toHaveLength(0);
     });
     expect(queryFixture.runsRequestCount).toBe(2);
     expect(eventSource.instances).toHaveLength(1);
     expect(source.close).toHaveBeenCalledTimes(1);
   });
 
-  it("does not subscribe to the live stream for already terminal runs", async () => {
+  it("shows cancelled as terminal and does not subscribe to its live stream", async () => {
     const eventSource = installMockEventSource();
     const runId = parseRunId("run-3434343434");
     renderDashboardWithQueries({
       runs: [
         localRunSummary({
           eventCount: 2,
-          latestEventType: "REPORT_COMPLETED",
+          latestEventType: "RUN_CONTROL_CONFIRMED",
           runId,
-          state: "completed",
-          status: "completed",
+          state: "cancelled",
+          status: "cancelled",
         }),
       ],
     });
 
     await screen.findByTestId("run-console-row-run-3434343434");
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
 
     expect(eventSource.instances).toHaveLength(0);
+    expect(
+      screen.getByTestId("run-console-row-run-3434343434").textContent
+    ).toContain("Cancelled");
+    expect(
+      screen.queryByText("Completed run; showing ordered event history.")
+    ).toBeNull();
+    expect(
+      screen.getByText("Cancelled run; showing ordered event history.")
+    ).toBeDefined();
   });
 
   it("compares two runs while comparison selection keeps the primary canvas selected", async () => {
@@ -3249,6 +3722,9 @@ function renderDashboardWithQueries(input: {
     typeof LocalRunReadDiagnosticDto.Type
   >;
   readonly runsError?: DashboardGaiaClientError;
+  readonly runControlSnapshotsByRunId?: Record<string, unknown>;
+  readonly runControlSnapshotPromisesByRunId?: Record<string, Promise<unknown>>;
+  readonly runControlActionPromise?: Promise<void>;
   readonly strictMode?: boolean;
 }) {
   queryFixture.artifactsByRunId = input.artifactsByRunId ?? {};
@@ -3286,6 +3762,12 @@ function renderDashboardWithQueries(input: {
   queryFixture.runsDiagnostics = input.runsDiagnostics ?? [];
   queryFixture.runsError = input.runsError;
   queryFixture.runsRequestCount = 0;
+  queryFixture.runControlActionInputs = [];
+  queryFixture.runControlActionPromise = input.runControlActionPromise;
+  queryFixture.runControlSnapshotPromisesByRunId =
+    input.runControlSnapshotPromisesByRunId ?? {};
+  queryFixture.runControlSnapshotsByRunId =
+    input.runControlSnapshotsByRunId ?? {};
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -3846,11 +4328,13 @@ function firstElement<T>(items: ReadonlyArray<T>): T {
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => {};
-  const promise = new Promise<T>((innerResolve) => {
+  let reject: (reason?: unknown) => void = () => {};
+  const promise = new Promise<T>((innerResolve, innerReject) => {
     resolve = innerResolve;
+    reject = innerReject;
   });
 
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function captureConsoleErrors() {

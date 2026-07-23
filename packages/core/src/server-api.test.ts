@@ -212,6 +212,7 @@ describe("local run read contracts", () => {
       "RunUnreadable",
     ]);
     assert.deepEqual(LocalRunReadStatusSchema.literals, [
+      "cancelled",
       "completed",
       "failed",
       "running",

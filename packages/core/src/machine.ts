@@ -55,6 +55,7 @@ import {
   type RunState,
   RunStateSchema,
 } from "./events.js";
+import { parseHarnessEvent, replayHarnessSession } from "./harness-session.js";
 import {
   parseMergeDecisionV2,
   type MergeDecisionV2,
@@ -82,7 +83,23 @@ import {
   RunEventSequenceSchema,
   RunProofResultV1,
 } from "./run-contract.js";
+import {
+  RunControlCheckpointDigestSchema,
+  RunControlEventPayload,
+  RunHumanWaitCheckpointV1,
+  makeRunControlCheckpointDigest,
+  makeRunControlRequestDigest,
+  parseRunControlEventPayload,
+  parseRunHumanWaitCheckpoint,
+} from "./run-control.js";
 import { RunIdSchema } from "./run-id.js";
+
+const encodeRunHumanWaitCheckpoint = Schema.encodeSync(
+  Schema.toCodecJson(RunHumanWaitCheckpointV1)
+);
+const encodeRunControlEventPayload = Schema.encodeSync(
+  Schema.toCodecJson(RunControlEventPayload)
+);
 import {
   ClaimVerificationCommandStartV1,
   ClaimVerificationCreateIntentV1,
@@ -240,6 +257,7 @@ export const RunMachineContextSchema = Schema.Struct({
   previewDeploymentStatus: Schema.UndefinedOr(RunMachineStatusSchema),
   previewDeploymentUrl: Schema.UndefinedOr(RunMachineUrlSchema),
   reportPath: Schema.UndefinedOr(RunMachinePathSchema),
+  runControl: Schema.UndefinedOr(Schema.Record(Schema.String, Schema.Json)),
   runProof: Schema.UndefinedOr(RunProofProjectionSchema),
   runId: Schema.UndefinedOr(RunIdSchema),
   specPath: Schema.UndefinedOr(RunMachinePathSchema),
@@ -438,6 +456,24 @@ export const RunMachineEventSchema = Schema.Union([
   }),
   Schema.Struct({ type: Schema.Literal("HARNESS_SESSION_EVENT_RECORDED") }),
   Schema.Struct({
+    checkpoint: RunHumanWaitCheckpointV1,
+    type: Schema.Literal("RUN_WAITING_FOR_HUMAN"),
+  }),
+  Schema.Struct({
+    checkpointDigest: RunControlCheckpointDigestSchema,
+    type: Schema.Literal("RUN_INTERACTION_EXPIRED"),
+  }),
+  Schema.Struct({
+    control: RunControlEventPayload,
+    type: Schema.Literals([
+      "RUN_CONTROL_INTENT_RECORDED",
+      "RUN_CONTROL_ATTEMPTED",
+      "RUN_CONTROL_CONFIRMED",
+      "RUN_CONTROL_FAILED",
+      "RUN_CONTROL_OUTCOME_UNKNOWN",
+    ] as const),
+  }),
+  Schema.Struct({
     recovery: WorkerRecoveryReceiptSchema,
     type: Schema.Literal("WORKER_RECOVERY_RECORDED"),
   }),
@@ -506,6 +542,7 @@ const initialContext = parseRunMachineContext({
   previewDeploymentStatus: undefined,
   previewDeploymentUrl: undefined,
   reportPath: undefined,
+  runControl: undefined,
   runProof: undefined,
   runId: undefined,
   specPath: undefined,
@@ -538,6 +575,9 @@ type RunMachineActionParams = {
   readonly recordRunContract: undefined;
   readonly recordRunCreated: undefined;
   readonly recordRunProofResult: undefined;
+  readonly recordRunControl: undefined;
+  readonly recordRunInteractionExpired: undefined;
+  readonly recordRunWaitingForHuman: undefined;
   readonly recordVerificationCompleted: undefined;
   readonly recordWorkerCompleted: undefined;
   readonly recordWorkerContinuation: undefined;
@@ -548,6 +588,11 @@ type RunMachineActionParams = {
 
 type RunMachineGuardParams = {
   readonly cleanupCompleted: undefined;
+  readonly controlCancel: undefined;
+  readonly controlPause: undefined;
+  readonly controlResolveInteraction: undefined;
+  readonly controlResume: undefined;
+  readonly restoreWaitingForHuman: undefined;
   readonly workerContinuationFailed: undefined;
   readonly workerContinuationRunning: undefined;
   readonly workerCorrelationFailed: undefined;
@@ -652,8 +697,14 @@ export const runMachine = runMachineSetup
           },
         },
       },
+      cancelled: {},
       created: {
         on: {
+          RUN_CONTROL_CONFIRMED: {
+            actions: "recordRunControl",
+            guard: "controlCancel",
+            target: "cancelled",
+          },
           RUN_CREATED: {
             actions: "recordRunCreated",
             target: "preparingWorkspace",
@@ -732,6 +783,11 @@ export const runMachine = runMachineSetup
       },
       delivering: {
         on: {
+          RUN_CONTROL_CONFIRMED: {
+            actions: "recordRunControl",
+            guard: "controlCancel",
+            target: "cancelled",
+          },
           CLAIM_VERIFICATION_GENERATION_STARTED: {},
           CLAIM_VERIFICATION_CREATE_INTENT_RECORDED: {},
           CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED: {},
@@ -853,6 +909,11 @@ export const runMachine = runMachineSetup
       },
       preparingWorkspace: {
         on: {
+          RUN_CONTROL_CONFIRMED: {
+            actions: "recordRunControl",
+            guard: "controlCancel",
+            target: "cancelled",
+          },
           RUN_CONTRACT_RECORDED: {
             actions: "recordRunContract",
           },
@@ -872,6 +933,11 @@ export const runMachine = runMachineSetup
       },
       reporting: {
         on: {
+          RUN_CONTROL_CONFIRMED: {
+            actions: "recordRunControl",
+            guard: "controlCancel",
+            target: "cancelled",
+          },
           BROWSER_EVIDENCE_RECORDED: {
             actions: "recordBrowserEvidence",
           },
@@ -899,6 +965,26 @@ export const runMachine = runMachineSetup
       },
       runningWorker: {
         on: {
+          RUN_CONTROL_INTENT_RECORDED: { actions: "recordRunControl" },
+          RUN_CONTROL_ATTEMPTED: { actions: "recordRunControl" },
+          RUN_CONTROL_FAILED: { actions: "recordRunControl" },
+          RUN_CONTROL_OUTCOME_UNKNOWN: { actions: "recordRunControl" },
+          RUN_CONTROL_CONFIRMED: [
+            {
+              actions: "recordRunControl",
+              guard: "controlCancel",
+              target: "cancelled",
+            },
+            {
+              actions: "recordRunControl",
+              guard: "controlPause",
+              target: "paused",
+            },
+          ],
+          RUN_WAITING_FOR_HUMAN: {
+            actions: "recordRunWaitingForHuman",
+            target: "waitingForHuman",
+          },
           RUN_FAILED: {
             actions: "recordFailure",
             target: "failed",
@@ -941,8 +1027,69 @@ export const runMachine = runMachineSetup
           ],
         },
       },
+      waitingForHuman: {
+        on: {
+          RUN_CONTROL_INTENT_RECORDED: { actions: "recordRunControl" },
+          RUN_CONTROL_ATTEMPTED: { actions: "recordRunControl" },
+          RUN_CONTROL_FAILED: { actions: "recordRunControl" },
+          RUN_CONTROL_OUTCOME_UNKNOWN: { actions: "recordRunControl" },
+          RUN_INTERACTION_EXPIRED: {
+            actions: "recordRunInteractionExpired",
+          },
+          RUN_CONTROL_CONFIRMED: [
+            {
+              actions: "recordRunControl",
+              guard: "controlCancel",
+              target: "cancelled",
+            },
+            {
+              actions: "recordRunControl",
+              guard: "controlPause",
+              target: "paused",
+            },
+            {
+              actions: "recordRunControl",
+              guard: "controlResolveInteraction",
+              target: "runningWorker",
+            },
+          ],
+        },
+      },
+      paused: {
+        on: {
+          RUN_CONTROL_INTENT_RECORDED: { actions: "recordRunControl" },
+          RUN_CONTROL_ATTEMPTED: { actions: "recordRunControl" },
+          RUN_CONTROL_FAILED: { actions: "recordRunControl" },
+          RUN_CONTROL_OUTCOME_UNKNOWN: { actions: "recordRunControl" },
+          RUN_INTERACTION_EXPIRED: {
+            actions: "recordRunInteractionExpired",
+          },
+          RUN_CONTROL_CONFIRMED: [
+            {
+              actions: "recordRunControl",
+              guard: "controlCancel",
+              target: "cancelled",
+            },
+            {
+              actions: "recordRunControl",
+              guard: "restoreWaitingForHuman",
+              target: "waitingForHuman",
+            },
+            {
+              actions: "recordRunControl",
+              guard: "controlResume",
+              target: "runningWorker",
+            },
+          ],
+        },
+      },
       verifying: {
         on: {
+          RUN_CONTROL_CONFIRMED: {
+            actions: "recordRunControl",
+            guard: "controlCancel",
+            target: "cancelled",
+          },
           CLAIM_VERIFICATION_GENERATION_STARTED: {},
           CLAIM_VERIFICATION_CREATE_INTENT_RECORDED: {},
           CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED: {},
@@ -988,6 +1135,50 @@ export const runMachine = runMachineSetup
   })
   .provide({
     actions: {
+      recordRunWaitingForHuman: assign({
+        runControl: ({ event }) =>
+          event.type === "RUN_WAITING_FOR_HUMAN"
+            ? {
+                checkpoint: encodeRunHumanWaitCheckpoint(event.checkpoint),
+                expired: false,
+                restoreState: "waitingForHuman",
+              }
+            : undefined,
+      }),
+      recordRunInteractionExpired: assign({
+        runControl: ({ context }) =>
+          context.runControl === undefined
+            ? undefined
+            : { ...context.runControl, expired: true },
+      }),
+      recordRunControl: assign({
+        runControl: ({ context, event }) => {
+          if (
+            event.type !== "RUN_CONTROL_INTENT_RECORDED" &&
+            event.type !== "RUN_CONTROL_ATTEMPTED" &&
+            event.type !== "RUN_CONTROL_CONFIRMED" &&
+            event.type !== "RUN_CONTROL_FAILED" &&
+            event.type !== "RUN_CONTROL_OUTCOME_UNKNOWN"
+          )
+            return context.runControl;
+          const next: Record<string, Schema.Json> = {
+            ...context.runControl,
+            activeAction: encodeRunControlEventPayload(event.control),
+            ...(event.control.restoreState === undefined
+              ? {}
+              : { restoreState: event.control.restoreState }),
+          };
+          if (
+            event.type === "RUN_CONTROL_CONFIRMED" &&
+            event.control.operation === "resolveInteraction"
+          ) {
+            delete next["checkpoint"];
+            delete next["expired"];
+            delete next["restoreState"];
+          }
+          return next;
+        },
+      }),
       recordBrowserEvidence: assign({
         browserEvidencePath: ({ event }) =>
           event.type === "BROWSER_EVIDENCE_RECORDED"
@@ -1441,6 +1632,22 @@ export const runMachine = runMachineSetup
       }),
     },
     guards: {
+      controlCancel: ({ event }) =>
+        event.type === "RUN_CONTROL_CONFIRMED" &&
+        event.control.operation === "cancel",
+      controlPause: ({ event }) =>
+        event.type === "RUN_CONTROL_CONFIRMED" &&
+        event.control.operation === "pause",
+      controlResolveInteraction: ({ event }) =>
+        event.type === "RUN_CONTROL_CONFIRMED" &&
+        event.control.operation === "resolveInteraction",
+      controlResume: ({ event }) =>
+        event.type === "RUN_CONTROL_CONFIRMED" &&
+        event.control.operation === "resume",
+      restoreWaitingForHuman: ({ event }) =>
+        event.type === "RUN_CONTROL_CONFIRMED" &&
+        event.control.operation === "resume" &&
+        event.control.restoreState === "waitingForHuman",
       workerRecoveryConfirmed: ({ event }) =>
         event.type === "WORKER_RECOVERY_RECORDED" &&
         event.recovery.state === "dispatchConfirmed",
@@ -1520,6 +1727,15 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
     } else if (event.runId !== historyRunId) {
       throw new Error("Run history events must all belong to a single run.");
     }
+
+    const stateBeforeEvent = actor.getSnapshot().value;
+    if (stateBeforeEvent === "cancelled")
+      throw new Error("A cancelled run is terminal and rejects later events.");
+    validateRunControlReplayEvent(
+      event,
+      events.slice(0, event.sequence - 1),
+      stateBeforeEvent
+    );
 
     if (event.type === "RUN_CONTRACT_RECORDED") {
       if (
@@ -2154,6 +2370,314 @@ function isDeliveryPublicationEvent(event: RunEvent) {
   );
 }
 
+function validateRunControlReplayEvent(
+  event: RunEvent,
+  priorEvents: ReadonlyArray<RunEvent>,
+  state: unknown
+) {
+  if (event.type === "RUN_WAITING_FOR_HUMAN") {
+    if (state !== "runningWorker")
+      throw new Error("A human-wait checkpoint requires runningWorker state.");
+    const checkpoint = parseRunHumanWaitCheckpoint(event.payload["checkpoint"]);
+    const { checkpointDigest: _checkpointDigest, ...checkpointInput } =
+      checkpoint;
+    if (
+      checkpoint.runId !== event.runId ||
+      checkpoint.environmentReceipt.runId !== event.runId ||
+      checkpoint.expectedEventSequence !== event.sequence ||
+      checkpoint.checkpointDigest !==
+        makeRunControlCheckpointDigest(checkpointInput)
+    )
+      throw new Error(
+        "Human-wait checkpoint does not bind its run and event sequence."
+      );
+    const workerStart = priorEvents.find(
+      (candidate) =>
+        candidate.sequence === checkpoint.workerStartedSequence &&
+        candidate.type === "WORKER_STARTED"
+    );
+    if (workerStart === undefined)
+      throw new Error(
+        "Human-wait checkpoint does not bind an authoritative WORKER_STARTED event."
+      );
+    const harnessEvents = priorEvents.flatMap((candidate) =>
+      candidate.type === "HARNESS_SESSION_EVENT_RECORDED"
+        ? [
+            {
+              event: parseHarnessEvent(candidate.payload["event"]),
+              sequence: candidate.sequence,
+            },
+          ]
+        : []
+    );
+    const sessionStart = [...harnessEvents]
+      .reverse()
+      .find(
+        ({ event: harnessEvent }) => harnessEvent.kind === "sessionStarted"
+      );
+    if (
+      sessionStart === undefined ||
+      sessionStart.event.kind !== "sessionStarted" ||
+      sessionStart.sequence <= workerStart.sequence ||
+      sessionStart.event.sessionId !== checkpoint.sessionId ||
+      sessionStart.event.provider.providerId !== checkpoint.providerId
+    )
+      throw new Error(
+        "Human-wait checkpoint does not bind the authoritative harness session."
+      );
+    const interactionRequest = [...harnessEvents]
+      .reverse()
+      .find(
+        ({ event: harnessEvent, sequence }) =>
+          sequence > sessionStart.sequence &&
+          harnessEvent.kind === "interactionRequested" &&
+          harnessEvent.sessionId === checkpoint.sessionId &&
+          harnessEvent.interaction.interactionId === checkpoint.interactionId
+      );
+    if (
+      interactionRequest === undefined ||
+      interactionRequest.event.kind !== "interactionRequested" ||
+      interactionRequest.event.interaction.requestedAt !==
+        checkpoint.requestedAt ||
+      makeRunControlRequestDigest(interactionRequest.event.interaction) !==
+        checkpoint.requestDigest
+    )
+      throw new Error(
+        "Human-wait checkpoint does not bind an authoritative prior interaction."
+      );
+    const session = replayHarnessSession(priorEvents, checkpoint.sessionId);
+    const pendingInteraction = session.pendingInteractions.find(
+      ({ interactionId }) => interactionId === checkpoint.interactionId
+    );
+    if (
+      session.state === "interrupted" ||
+      session.state === "failed" ||
+      session.state === "completed" ||
+      session.state === "unavailable" ||
+      pendingInteraction === undefined ||
+      pendingInteraction.requestedAt !== checkpoint.requestedAt ||
+      makeRunControlRequestDigest(pendingInteraction) !==
+        checkpoint.requestDigest
+    )
+      throw new Error(
+        "Human-wait checkpoint interaction is not pending in the authoritative session."
+      );
+    return;
+  }
+  if (event.type === "RUN_INTERACTION_EXPIRED") {
+    if (state !== "waitingForHuman" && state !== "paused")
+      throw new Error("Interaction expiry requires an intentional wait.");
+    const checkpointDigest = Schema.decodeUnknownSync(
+      RunControlCheckpointDigestSchema
+    )(event.payload["checkpointDigest"]);
+    const activeCheckpoint = [...priorEvents]
+      .reverse()
+      .find(({ type }) => type === "RUN_WAITING_FOR_HUMAN");
+    if (activeCheckpoint === undefined)
+      throw new Error("Interaction expiry has no active checkpoint.");
+    const checkpoint = parseRunHumanWaitCheckpoint(
+      activeCheckpoint.payload["checkpoint"]
+    );
+    if (checkpoint.checkpointDigest !== checkpointDigest)
+      throw new Error(
+        "Interaction expiry does not bind the active checkpoint."
+      );
+    if (
+      priorEvents.some(
+        (candidate) =>
+          candidate.sequence > activeCheckpoint.sequence &&
+          candidate.type === "RUN_INTERACTION_EXPIRED" &&
+          candidate.payload["checkpointDigest"] === checkpointDigest
+      )
+    )
+      throw new Error("Interaction expiry is already recorded.");
+    return;
+  }
+  if (
+    event.type !== "RUN_CONTROL_INTENT_RECORDED" &&
+    event.type !== "RUN_CONTROL_ATTEMPTED" &&
+    event.type !== "RUN_CONTROL_CONFIRMED" &&
+    event.type !== "RUN_CONTROL_FAILED" &&
+    event.type !== "RUN_CONTROL_OUTCOME_UNKNOWN"
+  )
+    return;
+
+  const control = parseRunControlEventPayload(event.payload["control"]);
+  const workerStart = priorEvents.find(
+    (candidate) =>
+      candidate.sequence === control.workerStartedSequence &&
+      candidate.type === "WORKER_STARTED"
+  );
+  if (workerStart === undefined)
+    throw new Error(
+      "Run-control event does not bind an authoritative WORKER_STARTED event."
+    );
+  const sameAction = priorEvents.flatMap((candidate) => {
+    if (
+      candidate.type !== "RUN_CONTROL_INTENT_RECORDED" &&
+      candidate.type !== "RUN_CONTROL_ATTEMPTED" &&
+      candidate.type !== "RUN_CONTROL_CONFIRMED" &&
+      candidate.type !== "RUN_CONTROL_FAILED" &&
+      candidate.type !== "RUN_CONTROL_OUTCOME_UNKNOWN"
+    )
+      return [];
+    const priorControl = parseRunControlEventPayload(
+      candidate.payload["control"]
+    );
+    return priorControl.actionId === control.actionId
+      ? [{ control: priorControl, event: candidate }]
+      : [];
+  });
+  const standaloneFailure =
+    event.type === "RUN_CONTROL_FAILED" && sameAction.length === 0;
+  const activeCheckpoint = [...priorEvents]
+    .reverse()
+    .find(({ type }) => type === "RUN_WAITING_FOR_HUMAN");
+  if (
+    activeCheckpoint !== undefined &&
+    (state === "waitingForHuman" || state === "paused")
+  ) {
+    const checkpoint = parseRunHumanWaitCheckpoint(
+      activeCheckpoint.payload["checkpoint"]
+    );
+    if (
+      !standaloneFailure &&
+      !sameRunControlCheckpointBinding(control, checkpoint)
+    )
+      throw new Error("Run-control event changed the wait-checkpoint binding.");
+  }
+  if (!standaloneFailure)
+    assertRunControlOperationLegal(control, priorEvents, state);
+  if (event.type === "RUN_CONTROL_INTENT_RECORDED") {
+    if (sameAction.length > 0)
+      throw new Error("Run-control intent action identity is not unique.");
+    if (hasStickyRunControlAmbiguity(priorEvents))
+      throw new Error(
+        "Run-control ambiguity is sticky and forbids redispatch."
+      );
+    return;
+  }
+  if (standaloneFailure) return;
+  const expectedPriorTypes =
+    event.type === "RUN_CONTROL_ATTEMPTED"
+      ? ["RUN_CONTROL_INTENT_RECORDED"]
+      : event.type === "RUN_CONTROL_FAILED"
+        ? ["RUN_CONTROL_INTENT_RECORDED"]
+        : ["RUN_CONTROL_INTENT_RECORDED", "RUN_CONTROL_ATTEMPTED"];
+  if (
+    sameAction.length !== expectedPriorTypes.length ||
+    sameAction.some(
+      ({ control: priorControl, event: priorEvent }, index) =>
+        priorEvent.type !== expectedPriorTypes[index] ||
+        !sameRunControlBinding(priorControl, control)
+    )
+  )
+    throw new Error("Run-control event phase ordering or binding is invalid.");
+}
+
+function sameRunControlCheckpointBinding(
+  control: RunControlEventPayload,
+  checkpoint: RunHumanWaitCheckpointV1
+) {
+  return (
+    control.authorityId === checkpoint.resolverAuthorityId &&
+    control.checkpointDigest === checkpoint.checkpointDigest &&
+    control.expectedEventSequence === checkpoint.expectedEventSequence &&
+    control.interactionId === checkpoint.interactionId &&
+    control.providerId === checkpoint.providerId &&
+    control.requestDigest === checkpoint.requestDigest &&
+    control.sessionId === checkpoint.sessionId &&
+    control.workerAgentId === checkpoint.workerAgentId &&
+    control.workerStartedSequence === checkpoint.workerStartedSequence
+  );
+}
+
+function assertRunControlOperationLegal(
+  control: RunControlEventPayload,
+  priorEvents: ReadonlyArray<RunEvent>,
+  state: unknown
+) {
+  if (control.operation === "cancel") {
+    if (state === "cancelled" || state === "completed" || state === "failed")
+      throw new Error("Cancel requires a non-terminal state.");
+    return;
+  }
+  if (control.operation === "pause") {
+    if (state !== "runningWorker" && state !== "waitingForHuman")
+      throw new Error("Pause requires runningWorker or waitingForHuman state.");
+    if (control.restoreState !== state)
+      throw new Error(
+        "Pause restoreState must match its authoritative source state."
+      );
+    return;
+  }
+  if (control.operation === "resume") {
+    if (state !== "paused") throw new Error("Resume requires paused state.");
+    const precedingPause = [...priorEvents]
+      .reverse()
+      .find(({ type, payload }) => {
+        if (type !== "RUN_CONTROL_CONFIRMED") return false;
+        return (
+          parseRunControlEventPayload(payload["control"]).operation === "pause"
+        );
+      });
+    if (
+      precedingPause === undefined ||
+      control.restoreState !==
+        parseRunControlEventPayload(precedingPause.payload["control"])
+          .restoreState
+    )
+      throw new Error(
+        "Resume restoreState must match the preceding confirmed pause."
+      );
+    return;
+  }
+  if (state !== "waitingForHuman")
+    throw new Error("Resolution requires waitingForHuman state.");
+}
+
+function hasStickyRunControlAmbiguity(events: ReadonlyArray<RunEvent>) {
+  const phases = new Map<string, RunEvent["type"]>();
+  for (const event of events) {
+    if (
+      event.type !== "RUN_CONTROL_INTENT_RECORDED" &&
+      event.type !== "RUN_CONTROL_ATTEMPTED" &&
+      event.type !== "RUN_CONTROL_CONFIRMED" &&
+      event.type !== "RUN_CONTROL_FAILED" &&
+      event.type !== "RUN_CONTROL_OUTCOME_UNKNOWN"
+    )
+      continue;
+    const control = parseRunControlEventPayload(event.payload["control"]);
+    phases.set(control.actionId, event.type);
+  }
+  return [...phases.values()].some(
+    (phase) =>
+      phase === "RUN_CONTROL_ATTEMPTED" ||
+      phase === "RUN_CONTROL_OUTCOME_UNKNOWN"
+  );
+}
+
+function sameRunControlBinding(
+  left: RunControlEventPayload,
+  right: RunControlEventPayload
+) {
+  return (
+    left.actionBindingDigest === right.actionBindingDigest &&
+    left.actionId === right.actionId &&
+    left.authorityId === right.authorityId &&
+    left.checkpointDigest === right.checkpointDigest &&
+    left.expectedEventSequence === right.expectedEventSequence &&
+    left.interactionId === right.interactionId &&
+    left.operation === right.operation &&
+    left.providerId === right.providerId &&
+    left.requestDigest === right.requestDigest &&
+    left.restoreState === right.restoreState &&
+    left.sessionId === right.sessionId &&
+    left.workerAgentId === right.workerAgentId &&
+    left.workerStartedSequence === right.workerStartedSequence
+  );
+}
+
 export function snapshotFromReplay(
   events: ReadonlyArray<RunEvent>
 ): RunSnapshot {
@@ -2370,6 +2894,27 @@ function toMachineEventInput(event: RunEvent) {
       return { type: event.type };
     case "HARNESS_SESSION_EVENT_RECORDED":
       return { type: event.type };
+    case "RUN_WAITING_FOR_HUMAN":
+      return {
+        checkpoint: parseRunHumanWaitCheckpoint(event.payload["checkpoint"]),
+        type: event.type,
+      };
+    case "RUN_INTERACTION_EXPIRED":
+      return {
+        checkpointDigest: Schema.decodeUnknownSync(
+          RunControlCheckpointDigestSchema
+        )(event.payload["checkpointDigest"]),
+        type: event.type,
+      };
+    case "RUN_CONTROL_INTENT_RECORDED":
+    case "RUN_CONTROL_ATTEMPTED":
+    case "RUN_CONTROL_CONFIRMED":
+    case "RUN_CONTROL_FAILED":
+    case "RUN_CONTROL_OUTCOME_UNKNOWN":
+      return {
+        control: parseRunControlEventPayload(event.payload["control"]),
+        type: event.type,
+      };
     case "WORKER_RECOVERY_RECORDED":
       return {
         recovery: parseWorkerRecoveryReceipt(event.payload["recovery"]),
@@ -3262,6 +3807,11 @@ function snapshotContext(
     output.runProof = Schema.encodeSync(RunProofProjectionSchema)(
       Schema.decodeUnknownSync(RunProofProjectionSchema)(context.runProof)
     );
+  }
+  if (context.runControl !== undefined) {
+    output.runControl = Schema.encodeSync(
+      Schema.Record(Schema.String, Schema.Json)
+    )(context.runControl);
   }
   if (context.githubChecksPath !== undefined) {
     output.githubChecksPath = context.githubChecksPath;

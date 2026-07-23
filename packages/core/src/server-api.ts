@@ -74,6 +74,11 @@ import {
   RunVerificationAggregateSchema,
   StructuralDigestSchema,
 } from "./run-contract.js";
+import {
+  RunControlActionSchema,
+  RunControlReceipt,
+  RunControlSnapshot,
+} from "./run-control.js";
 import { RunIdSchema } from "./run-id.js";
 import {
   VerificationIdentityDigestSchema,
@@ -127,6 +132,15 @@ const LocalRunApiAdditionalDiagnosticCodeSchema = Schema.Literals([
   "InternalServerError",
   "MethodNotAllowed",
   "RunStoreLocked",
+  "RunControlChangedDigest",
+  "RunControlExpired",
+  "RunControlOutcomeUnknown",
+  "RunControlResolutionAlreadyClaimed",
+  "RunControlResolutionReplayNotComparable",
+  "RunControlStale",
+  "RunControlTerminal",
+  "RunControlUnsupportedProviderOperation",
+  "RunControlWrongAuthority",
   "WorkerRecoveryCorrelationUnavailable",
   "WorkerRecoveryIntentPersistenceFailed",
   "WorkerRecoveryModelCatalogUnavailable",
@@ -170,6 +184,13 @@ const ConflictDiagnosticCodeSchema = Schema.Literals([
   "DeliveryActionConflict",
   "DeliveryStreamCursorConflict",
   "RunStoreLocked",
+  "RunControlChangedDigest",
+  "RunControlExpired",
+  "RunControlOutcomeUnknown",
+  "RunControlResolutionAlreadyClaimed",
+  "RunControlResolutionReplayNotComparable",
+  "RunControlStale",
+  "RunControlTerminal",
   "VerificationActionIdempotencyConflict",
   "VerificationActionStaleAuthority",
   "VerificationCreatedWithoutCommandStart",
@@ -185,6 +206,7 @@ const UnprocessableDiagnosticCodeSchema = Schema.Literals([
   "InvalidRunDirectory",
   "RunHasNoEvents",
   "RunUnreadable",
+  "RunControlUnsupportedProviderOperation",
   "WorkerRecoveryCorrelationUnavailable",
   "WorkerRecoveryModelCatalogUnavailable",
   "WorkerRecoveryModelUnavailable",
@@ -197,9 +219,12 @@ const InternalServerDiagnosticCodeSchema = Schema.Literals([
   "WorkerRecoveryIntentPersistenceFailed",
   "VerificationPersistenceFailure",
 ] as const);
+const ForbiddenDiagnosticCodeSchema = Schema.Literals([
+  "RunControlWrongAuthority",
+] as const);
 
 export const LocalRunApiErrorStatusSchema = Schema.Literals([
-  400, 404, 405, 409, 422, 500,
+  400, 403, 404, 405, 409, 422, 500,
 ] as const);
 
 const diagnosticFields = {
@@ -213,6 +238,7 @@ const diagnosticFields = {
 export const ServerHostSchema = Schema.Literal("127.0.0.1");
 
 export const LocalRunReadStatusSchema = Schema.Literals([
+  "cancelled",
   "completed",
   "failed",
   "running",
@@ -1213,6 +1239,14 @@ export class LocalRunApiNotFound extends Schema.Class<LocalRunApiNotFound>(
   status: Schema.Literal(404),
 }) {}
 
+export class LocalRunApiForbidden extends Schema.Class<LocalRunApiForbidden>(
+  "LocalRunApiForbidden"
+)({
+  ...diagnosticFields,
+  code: ForbiddenDiagnosticCodeSchema,
+  status: Schema.Literal(403),
+}) {}
+
 export class LocalRunApiMethodNotAllowed extends Schema.Class<LocalRunApiMethodNotAllowed>(
   "LocalRunApiMethodNotAllowed"
 )({
@@ -1256,6 +1290,9 @@ export const LocalRunApiBadRequestResponse = LocalRunApiBadRequest.pipe(
 export const LocalRunApiNotFoundResponse = LocalRunApiNotFound.pipe(
   HttpApiSchema.status(404)
 );
+export const LocalRunApiForbiddenResponse = LocalRunApiForbidden.pipe(
+  HttpApiSchema.status(403)
+);
 export const LocalRunApiMethodNotAllowedResponse =
   LocalRunApiMethodNotAllowed.pipe(HttpApiSchema.status(405));
 export const LocalRunApiConflictResponse = LocalRunApiConflict.pipe(
@@ -1285,6 +1322,15 @@ export const LocalRunStreamErrorResponse = [
 export const LocalRunCreateErrorResponse = [
   LocalRunApiBadRequestResponse,
   LocalRunApiMethodNotAllowedResponse,
+  LocalRunApiConflictResponse,
+  LocalRunApiUnprocessableResponse,
+  LocalRunApiInternalServerErrorResponse,
+] as const;
+
+export const LocalRunControlErrorResponse = [
+  LocalRunApiBadRequestResponse,
+  LocalRunApiForbiddenResponse,
+  LocalRunApiNotFoundResponse,
   LocalRunApiConflictResponse,
   LocalRunApiUnprocessableResponse,
   LocalRunApiInternalServerErrorResponse,
@@ -1448,6 +1494,21 @@ export const RunsGroup = HttpApiGroup.make("runs")
         runId: RunIdSchema,
       },
       success: FactoryRunDetailSuccessEnvelope,
+    })
+  )
+  .add(
+    HttpApiEndpoint.get("getRunControl", "/runs/:runId/control", {
+      error: LocalRunControlErrorResponse,
+      params: { runId: RunIdSchema },
+      success: RunControlSnapshot,
+    })
+  )
+  .add(
+    HttpApiEndpoint.post("actOnRunControl", "/runs/:runId/control/actions", {
+      error: LocalRunControlErrorResponse,
+      params: { runId: RunIdSchema },
+      payload: RunControlActionSchema,
+      success: RunControlReceipt,
     })
   )
   .add(
@@ -1627,5 +1688,6 @@ export type LocalRunApiError =
   | typeof LocalRunApiNotFound.Type
   | typeof LocalRunApiMethodNotAllowed.Type
   | typeof LocalRunApiConflict.Type
+  | typeof LocalRunApiForbidden.Type
   | typeof LocalRunApiUnprocessable.Type
   | typeof LocalRunApiInternalServerError.Type;

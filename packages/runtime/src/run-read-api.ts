@@ -442,6 +442,10 @@ function statusFromState(state: RunState): LocalRunStatus {
     return "failed";
   }
 
+  if (state === "cancelled") {
+    return "cancelled";
+  }
+
   return "running";
 }
 

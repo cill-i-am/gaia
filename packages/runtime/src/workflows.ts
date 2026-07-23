@@ -56,6 +56,7 @@ import { writeFactoryScorecard } from "./factory-scorecard.js";
 import type { DeliveryProvenance } from "./git-delivery.js";
 import {
   HarnessRunRequest,
+  HarnessExecutionResultSchema,
   HarnessRunResult,
   codexAppServerHarnessName,
   codexHarnessName,
@@ -190,6 +191,9 @@ const nanoid = customAlphabet(
 );
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const decodeHarnessRunResult = Schema.decodeUnknownSync(HarnessRunResultJson);
+const decodeHarnessExecutionResult = Schema.decodeUnknownSync(
+  HarnessExecutionResultSchema
+);
 const decodePersistedSkillManifest = Schema.decodeUnknownSync(
   Schema.toCodecJson(SkillManifest)
 );
@@ -206,6 +210,7 @@ type BrowserEvidenceTargetSelection =
   typeof BrowserEvidenceTargetSelectionSchema.Type;
 
 export const CommandStatusSchema = Schema.Literals([
+  "cancelled",
   "completed",
   "failed",
   "running",
@@ -706,6 +711,15 @@ function executeAcceptedRun(input: {
         recordRunFailure(runId, paths, "runningWorker", error)
       )
     );
+    if ("kind" in harnessResult) {
+      return parseCommandSummary({
+        reportPath: undefined,
+        runDirectory: paths.root,
+        runId,
+        state: harnessResult.state,
+        status: harnessResult.state === "cancelled" ? "cancelled" : "running",
+      });
+    }
     const previewDeploymentTargetUrl = harnessResult.previewDeploymentUrl;
     if (workerContinuationState !== "completed") {
       const harnessEnvironmentReceipt =
@@ -908,7 +922,7 @@ function executeAcceptedRun(input: {
 
 function decodeProviderHarnessRunResult(input: unknown) {
   return Effect.try({
-    try: () => HarnessRunResult.make(input),
+    try: () => decodeHarnessExecutionResult(input),
     catch: () =>
       makeRuntimeError({
         code: "HarnessRunResultInvalid",
@@ -1822,6 +1836,8 @@ function browserEvidenceTargetRequiredError() {
 
 function statusFromState(state: RunState): CommandSummary["status"] {
   switch (state) {
+    case "cancelled":
+      return "cancelled";
     case "failed":
       return "failed";
     case "completed":
@@ -1830,6 +1846,8 @@ function statusFromState(state: RunState): CommandSummary["status"] {
     case "delivering":
     case "preparingWorkspace":
     case "runningWorker":
+    case "waitingForHuman":
+    case "paused":
     case "verifying":
     case "reporting":
       return "running";

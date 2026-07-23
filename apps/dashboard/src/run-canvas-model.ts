@@ -2,6 +2,7 @@ import {
   LocalRunReadArtifactIdSchema,
   LocalRunReadSummarySchema,
   RunEvent,
+  parseRunControlEventPayload,
 } from "@gaia/core";
 import { Schema } from "effect";
 
@@ -9,6 +10,7 @@ export const RunStatusSchema = Schema.Literals([
   "running",
   "reviewing",
   "blocked",
+  "cancelled",
   "complete",
 ] as const);
 
@@ -398,7 +400,17 @@ export function mergeRunEvents(
 }
 
 export function isTerminalRunEvent(event: RunEvent): boolean {
-  return event.type === "REPORT_COMPLETED" || event.type === "RUN_FAILED";
+  if (event.type === "REPORT_COMPLETED" || event.type === "RUN_FAILED")
+    return true;
+  if (event.type !== "RUN_CONTROL_CONFIRMED") return false;
+  try {
+    return (
+      parseRunControlEventPayload(event.payload["control"]).operation ===
+      "cancel"
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function eventTypeLabel(eventType: string) {
@@ -482,7 +494,12 @@ function supportedLaneNodes(
       id: decodeRunCanvasNodeId("lane:worker"),
       label: "Worker lane",
       role: "worker",
-      status: eventTypes.has("WORKER_COMPLETED") ? "complete" : "running",
+      status:
+        run.status === "cancelled"
+          ? "cancelled"
+          : eventTypes.has("WORKER_COMPLETED")
+            ? "complete"
+            : "running",
       summary:
         "Worker activity is inferred from durable worker events and worker artifacts. No private thread identity is exposed.",
       evidence: matchingEventLabels(events, "WORKER"),
@@ -703,6 +720,9 @@ function eventStatus(event: RunEvent): RunStatus {
 }
 
 function runStatus(status: LocalRunSummary["status"]): RunStatus {
+  if (status === "cancelled") {
+    return "cancelled";
+  }
   if (status === "failed") {
     return "blocked";
   }

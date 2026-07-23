@@ -37,6 +37,7 @@ import {
   LocalRunApiDiagnosticDto,
   LocalRunApiBadRequest,
   LocalRunApiConflict,
+  LocalRunApiForbidden,
   LocalRunApiInternalServerError,
   LocalRunApiErrorEnvelope,
   LocalRunApiMethodNotAllowed,
@@ -57,6 +58,7 @@ import {
   parseDeliveryMergeReceipt,
   parseDeliveryMergeReadinessDecision,
   parseHarnessEvent,
+  parseRunControlEventPayload,
   parseDeliveryCleanupReceipt,
   snapshotFromReplay,
   deriveDeliveryActionHistoriesFromEvents,
@@ -81,8 +83,10 @@ import {
   makeLocalRunReadIndex,
   subscribeRunEventFeed,
   dispatchAgentSessionAction,
+  dispatchRunControlAction,
   makeLiveHarnessSessionCoordinator,
   readAgentSessionSnapshot,
+  readRunControlSnapshot,
   RunStorageRootInputSchema,
   streamAgentSessionUpdates,
   type LocalRunReadIndex,
@@ -359,6 +363,61 @@ export const RunsLive = HttpApiBuilder.group(
           }
 
           return yield* Effect.fail(readApiErrorFromCause(exit.cause));
+        })
+      )
+      .handle("getRunControl", ({ params }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(
+            readRunControlSnapshot(params.runId, {
+              rootDirectory: identity.rootDirectory,
+            })
+          );
+          if (exit._tag === "Failure")
+            return yield* Effect.fail(runControlApiErrorFromCause(exit.cause));
+          return exit.value;
+        })
+      )
+      .handle("actOnRunControl", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const identity = yield* LocalServerConfig;
+          const exit = yield* Effect.exit(
+            dispatchRunControlAction({
+              action: payload,
+              options: {
+                ...identity.workflowOptions,
+                rootDirectory: identity.rootDirectory,
+                sessionCoordinator: identity.sessionCoordinator,
+              },
+              runId: params.runId,
+            })
+          );
+          if (exit._tag === "Failure")
+            return yield* Effect.fail(runControlApiErrorFromCause(exit.cause));
+          yield* identity.runIndex
+            .refreshRun(params.runId)
+            .pipe(
+              Effect.mapError((error) =>
+                runControlApiErrorFromCause(Cause.fail(error))
+              )
+            );
+          if (
+            !exit.value.duplicate &&
+            (payload.operation === "resolveInteraction" ||
+              payload.operation === "resume")
+          ) {
+            const snapshot = yield* readRunControlSnapshot(params.runId, {
+              rootDirectory: identity.rootDirectory,
+            }).pipe(
+              Effect.mapError((error) =>
+                runControlApiErrorFromCause(Cause.fail(error))
+              )
+            );
+            if (snapshot.state === "runningWorker") {
+              yield* forkRunControlContinuation(params.runId, identity);
+            }
+          }
+          return exit.value;
         })
       )
       .handle("getFactoryGraph", ({ params }) =>
@@ -1497,6 +1556,7 @@ function isAllowedMethod(method: string, url: string) {
     method === "POST" &&
     (path === "/runs" ||
       /^\/runs\/[^/]+\/agents\/[^/]+\/session\/actions$/u.test(path) ||
+      /^\/runs\/[^/]+\/control\/actions$/u.test(path) ||
       /^\/runs\/[^/]+\/delivery\/actions$/u.test(path) ||
       /^\/runs\/[^/]+\/verification\/actions$/u.test(path) ||
       /^\/runs\/[^/]+\/recovery\/actions$/u.test(path))
@@ -1547,12 +1607,21 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
       return 404;
     case "MethodNotAllowed":
       return 405;
+    case "RunControlWrongAuthority":
+      return 403;
     case "ActiveRunConflict":
     case "AgentActionConflict":
     case "DeliveryActionConflict":
     case "AgentStreamCursorConflict":
     case "DeliveryStreamCursorConflict":
     case "RunStoreLocked":
+    case "RunControlChangedDigest":
+    case "RunControlExpired":
+    case "RunControlOutcomeUnknown":
+    case "RunControlResolutionAlreadyClaimed":
+    case "RunControlResolutionReplayNotComparable":
+    case "RunControlStale":
+    case "RunControlTerminal":
     case "VerificationActionIdempotencyConflict":
     case "VerificationActionStaleAuthority":
     case "VerificationCreatedWithoutCommandStart":
@@ -1571,6 +1640,7 @@ function statusForDiagnostic(diagnostic: ApiDiagnostic) {
     case "InvalidRunDirectory":
     case "RunHasNoEvents":
     case "RunUnreadable":
+    case "RunControlUnsupportedProviderOperation":
     case "WorkerRecoveryCorrelationUnavailable":
     case "WorkerRecoveryModelCatalogUnavailable":
     case "WorkerRecoveryModelUnavailable":
@@ -1667,6 +1737,67 @@ function actionApiErrorFromCause(
       });
     default:
       return readApiError(diagnostic);
+  }
+}
+
+function runControlApiErrorFromCause(cause: Cause.Cause<unknown>) {
+  const runtime = cause.reasons.flatMap((reason) =>
+    Cause.isFailReason(reason) && reason.error instanceof GaiaRuntimeError
+      ? [reason.error]
+      : []
+  )[0];
+  if (runtime === undefined) return internalApiError(cause);
+  const fields = {
+    message: runtime.message,
+    recoverable: runtime.recoverable,
+  };
+  switch (runtime.code) {
+    case "runNotFound":
+      return LocalRunApiNotFound.make({
+        ...fields,
+        code: "RunNotFound",
+        status: 404,
+      });
+    case "wrongAuthority":
+      return LocalRunApiForbidden.make({
+        ...fields,
+        code: "RunControlWrongAuthority",
+        status: 403,
+      });
+    case "changedDigest":
+    case "expired":
+    case "outcomeUnknown":
+    case "resolutionAlreadyClaimed":
+    case "resolutionReplayNotComparable":
+    case "stale":
+    case "terminal": {
+      const code = {
+        changedDigest: "RunControlChangedDigest",
+        expired: "RunControlExpired",
+        outcomeUnknown: "RunControlOutcomeUnknown",
+        resolutionAlreadyClaimed: "RunControlResolutionAlreadyClaimed",
+        resolutionReplayNotComparable:
+          "RunControlResolutionReplayNotComparable",
+        stale: "RunControlStale",
+        terminal: "RunControlTerminal",
+      }[runtime.code] as
+        | "RunControlChangedDigest"
+        | "RunControlExpired"
+        | "RunControlOutcomeUnknown"
+        | "RunControlResolutionAlreadyClaimed"
+        | "RunControlResolutionReplayNotComparable"
+        | "RunControlStale"
+        | "RunControlTerminal";
+      return LocalRunApiConflict.make({ ...fields, code, status: 409 });
+    }
+    case "unsupportedProviderOperation":
+      return LocalRunApiUnprocessable.make({
+        ...fields,
+        code: "RunControlUnsupportedProviderOperation",
+        status: 422,
+      });
+    default:
+      return internalApiError(runtime);
   }
 }
 
@@ -2184,6 +2315,25 @@ function forkServerContinuation(input: {
   );
 }
 
+function forkRunControlContinuation(
+  runId: RunId,
+  identity: LocalServerConfigValue
+) {
+  return continueServerRun(runId, {
+    ...identity.workflowOptions,
+    rootDirectory: identity.rootDirectory,
+    sessionCoordinator: identity.sessionCoordinator,
+  }).pipe(
+    Effect.ensuring(identity.runIndex.refreshRun(runId).pipe(Effect.ignore)),
+    Effect.matchEffect({
+      onFailure: () => Effect.void,
+      onSuccess: () => Effect.void,
+    }),
+    Effect.forkIn(identity.runScope),
+    Effect.asVoid
+  );
+}
+
 class EventStreamState extends Schema.Class<EventStreamState>(
   "EventStreamState"
 )({
@@ -2269,7 +2419,13 @@ function streamApiError(error: unknown): typeof LocalRunApiErrorEnvelope.Type {
 }
 
 function isTerminalRunEvent(event: RunEvent) {
-  return event.type === "REPORT_COMPLETED" || event.type === "RUN_FAILED";
+  return (
+    event.type === "REPORT_COMPLETED" ||
+    event.type === "RUN_FAILED" ||
+    (event.type === "RUN_CONTROL_CONFIRMED" &&
+      parseRunControlEventPayload(event.payload["control"]).operation ===
+        "cancel")
+  );
 }
 
 type ApiDiagnostic = typeof LocalRunApiDiagnosticDto.Type;

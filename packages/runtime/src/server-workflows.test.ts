@@ -25,6 +25,9 @@ import {
   HarnessProfileIdSchema,
   HarnessSessionIdSchema,
   ModelInvocationEpisodeStartV1,
+  RunControlEventPayload,
+  RunControlRestoreStateSchema,
+  RunControlSnapshot,
   RunEvent,
   WorkerContinuationReceiptSchema,
   WorkerContinuationAction,
@@ -44,19 +47,36 @@ import {
   HarnessEnvironmentReceiptArtifactRefV1,
   digestHarnessEnvironmentContract,
   HarnessProviderDescriptor,
+  makeRunControlActionBindingDigest,
   parseMergeDecisionV2,
   parseRunContract,
+  parseRunControlAction,
+  parseRunControlActionId,
   parseRunId,
   parseRunProofResult,
+  parseHarnessInteractionId,
+  parseHarnessItemId,
   parseHarnessProviderId,
   parseHarnessSessionId,
+  parseHarnessTurnId,
+  parseWorkspaceRelativePath,
+  projectHarnessEvents,
   parseWorkerRecoveryActionId,
   parseWorkerRecoveryDigest,
   ResolvedHarnessExecution,
   snapshotFromReplay,
 } from "@gaia/core";
-import { Effect, FileSystem, Schema } from "effect";
+import {
+  Deferred,
+  Effect,
+  Fiber,
+  FileSystem,
+  Option,
+  Schema,
+  Stream,
+} from "effect";
 
+import { makeLiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
 import { parseBrowserEvidenceTargetUrl } from "./browser-evidence.js";
 import {
   CodexTurnIdSchema,
@@ -74,6 +94,7 @@ import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import {
   parseHarnessCheckpointToken,
   type HarnessProvider,
+  type HarnessSession,
 } from "./harness-session.js";
 import { makeProcessHarnessConfig } from "./harness.js";
 import { commitHarnessEnvironmentCandidate } from "./interactive-harness.js";
@@ -86,6 +107,10 @@ import {
   ReviewerNameSchema,
   type GaiaReviewer,
 } from "./reviewer.js";
+import {
+  dispatchRunControlAction,
+  readRunControlSnapshot,
+} from "./run-control-runtime.js";
 import { localRunProfileSource } from "./run-profile.js";
 import { readLocalRun, readLocalRunEvents } from "./run-read-api.js";
 import {
@@ -3296,6 +3321,540 @@ describe("server workflows", () => {
     );
 
     it.effect(
+      "checkpoints and releases an accepted worker interaction before completion",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const rootDirectory = yield* fs.makeTempDirectory({
+            prefix: "gaia-durable-wait-",
+          });
+          const launchObservation = yield* HarnessLaunchObservationService;
+          const observation = HarnessLaunchObservationV1.make({
+            approvalPolicy: "on-request",
+            cwdMatchesWorkspaceBinding: true,
+            model: "gpt-5.6-codex",
+            modelProvider: "openai",
+            reasoningEffort: "high",
+            sandbox: "workspace-write",
+            source: "threadRuntimeResult",
+          });
+          const capabilities = HarnessCapabilities.make({
+            ...acceptanceCapabilities,
+            approvals: ["command"],
+            durableCancellation: true,
+            durableInteractionResolution: true,
+            durablePause: true,
+          });
+          const descriptor = HarnessProviderDescriptor.make({
+            displayName: "Durable Wait Harness",
+            executionModes: ["local"],
+            providerId: parseHarnessProviderId("durable-wait"),
+          });
+          const sessionFor = (
+            sessionId: ReturnType<typeof parseHarnessSessionId>
+          ): HarnessSession => {
+            const turnId = parseHarnessTurnId("turn-durable-wait");
+            const events = [
+              {
+                capabilities,
+                kind: "sessionStarted",
+                provider: descriptor,
+                sessionId,
+                state: "running",
+              },
+              { kind: "turnStarted", sessionId, turnId },
+              {
+                interaction: {
+                  allowedDecisions: ["approve"],
+                  command: "pnpm check",
+                  interactionId: parseHarnessInteractionId(
+                    "interaction-durable-wait"
+                  ),
+                  itemId: parseHarnessItemId("item-durable-wait"),
+                  kind: "commandApproval",
+                  requestedAt: "2026-07-22T16:00:00.000Z",
+                  turnId,
+                  workspacePath: parseWorkspaceRelativePath("."),
+                },
+                kind: "interactionRequested",
+                sessionId,
+              },
+            ] as const;
+            return {
+              events: Stream.concat(Stream.fromIterable(events), Stream.never),
+              interrupt: Option.some(Effect.void),
+              resolveInteraction: () => Effect.void,
+              send: () => Effect.succeed(undefined),
+              snapshot: Effect.succeed(projectHarnessEvents(events, sessionId)),
+              steer: Option.none(),
+            };
+          };
+          const provider: HarnessProvider = {
+            createSession: (request) =>
+              launchObservation
+                .complete(request.sessionId, observation)
+                .pipe(Effect.orDie, Effect.as(sessionFor(request.sessionId))),
+            descriptor,
+            detect: Effect.succeed({
+              auth: { state: "notRequired" },
+              capabilities,
+              state: "available",
+              version: "durable-wait-1",
+            }),
+            resumeSession: (request) =>
+              launchObservation
+                .complete(request.sessionId, observation)
+                .pipe(Effect.orDie, Effect.as(sessionFor(request.sessionId))),
+          };
+          const registry = makeHarnessProviderRegistry([
+            {
+              environmentAssignment: () =>
+                Effect.succeed(workerEnvironmentAssignment()),
+              launchObservation,
+              profileId: codexAppServerExecutionSelection.harnessProfileId,
+              provider,
+            },
+          ]);
+          const accepted = yield* acceptFactoryRun(
+            {
+              execution: codexAppServerExecutionSelection,
+              workflow: "issueDelivery",
+              workItem: {
+                description: "Wait durably for one operator decision.",
+                kind: "issue",
+                title: "Durable wait proof",
+              },
+            },
+            { harnessProviderRegistry: registry, rootDirectory }
+          );
+
+          const fiber = yield* continueServerRun(accepted.runId, {
+            harnessProviderRegistry: registry,
+            rootDirectory,
+          }).pipe(Effect.forkChild);
+          const paths = yield* makeRunPaths(accepted.runId, { rootDirectory });
+          let events = yield* readEvents(paths);
+          for (let attempt = 0; attempt < 1_000; attempt += 1) {
+            if (events.some(({ type }) => type === "RUN_WAITING_FOR_HUMAN"))
+              break;
+            yield* Effect.yieldNow;
+            events = yield* readEvents(paths);
+          }
+          yield* Fiber.interrupt(fiber);
+
+          assert.strictEqual(
+            snapshotFromReplay(events).state,
+            "waitingForHuman"
+          );
+          assert.include(
+            events.map(({ type }) => type),
+            "RUN_WAITING_FOR_HUMAN"
+          );
+          assert.notInclude(
+            events.map(({ type }) => type),
+            "WORKER_COMPLETED"
+          );
+          const reconciled = yield* reconcileInterruptedServerRuns({
+            rootDirectory,
+          });
+          assert.deepEqual(reconciled.reconciledRunIds, []);
+          assert.deepEqual(reconciled.resumableRunIds, []);
+          const continued = yield* continueServerRun(accepted.runId, {
+            rootDirectory,
+          });
+          assert.strictEqual(continued.state, "waitingForHuman");
+        }).pipe(Effect.provide(HarnessLaunchObservationLive))
+    );
+
+    it.effect(
+      "treats an intentional live pause interruption as control release",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const rootDirectory = yield* fs.makeTempDirectory({
+            prefix: "gaia-durable-live-pause-",
+          });
+          const launchObservation = yield* HarnessLaunchObservationService;
+          const observation = HarnessLaunchObservationV1.make({
+            approvalPolicy: "on-request",
+            cwdMatchesWorkspaceBinding: true,
+            model: "gpt-5.6-codex",
+            modelProvider: "openai",
+            reasoningEffort: "high",
+            sandbox: "workspace-write",
+            source: "threadRuntimeResult",
+          });
+          const capabilities = HarnessCapabilities.make({
+            ...acceptanceCapabilities,
+            durableCancellation: true,
+            durableInteractionResolution: true,
+            durablePause: true,
+          });
+          const descriptor = HarnessProviderDescriptor.make({
+            displayName: "Durable Live Pause Harness",
+            executionModes: ["local"],
+            providerId: parseHarnessProviderId("durable-live-pause"),
+          });
+          const interrupted = yield* Deferred.make<void>();
+          const sessionFor = (
+            sessionId: ReturnType<typeof parseHarnessSessionId>
+          ): HarnessSession => {
+            const turnId = parseHarnessTurnId("turn-durable-live-pause");
+            const initial = [
+              {
+                capabilities,
+                kind: "sessionStarted",
+                provider: descriptor,
+                sessionId,
+                state: "running",
+              },
+              { kind: "turnStarted", sessionId, turnId },
+            ] as const;
+            return {
+              events: Stream.concat(
+                Stream.fromIterable(initial),
+                Stream.fromEffect(
+                  Deferred.await(interrupted).pipe(
+                    Effect.as({
+                      kind: "turnCompleted" as const,
+                      sessionId,
+                      status: "interrupted" as const,
+                      turnId,
+                    })
+                  )
+                )
+              ),
+              interrupt: Option.some(Deferred.succeed(interrupted, undefined)),
+              resolveInteraction: () => Effect.void,
+              send: () => Effect.succeed(undefined),
+              snapshot: Effect.succeed(
+                projectHarnessEvents(initial, sessionId)
+              ),
+              steer: Option.none(),
+            };
+          };
+          const provider: HarnessProvider = {
+            createSession: (request) =>
+              launchObservation
+                .complete(request.sessionId, observation)
+                .pipe(Effect.orDie, Effect.as(sessionFor(request.sessionId))),
+            descriptor,
+            detect: Effect.succeed({
+              auth: { state: "notRequired" },
+              capabilities,
+              state: "available",
+              version: "durable-live-pause-1",
+            }),
+            resumeSession: (request) =>
+              launchObservation
+                .complete(request.sessionId, observation)
+                .pipe(Effect.orDie, Effect.as(sessionFor(request.sessionId))),
+          };
+          const registry = makeHarnessProviderRegistry([
+            {
+              environmentAssignment: () =>
+                Effect.succeed(workerEnvironmentAssignment()),
+              launchObservation,
+              profileId: codexAppServerExecutionSelection.harnessProfileId,
+              provider,
+            },
+          ]);
+          const coordinator = makeLiveHarnessSessionCoordinator();
+          const accepted = yield* acceptFactoryRun(
+            {
+              execution: codexAppServerExecutionSelection,
+              workflow: "issueDelivery",
+              workItem: {
+                description: "Pause one live worker without failing it.",
+                kind: "issue",
+                title: "Durable live pause proof",
+              },
+            },
+            { harnessProviderRegistry: registry, rootDirectory }
+          );
+          const workflow = yield* continueServerRun(accepted.runId, {
+            harnessProviderRegistry: registry,
+            rootDirectory,
+            sessionCoordinator: coordinator,
+          }).pipe(Effect.forkChild);
+          let control: RunControlSnapshot | undefined;
+          for (let attempt = 0; attempt < 1_000; attempt += 1) {
+            const observed = yield* Effect.exit(
+              readRunControlSnapshot(accepted.runId, { rootDirectory })
+            );
+            if (observed._tag === "Success") {
+              control = observed.value;
+              if (control.state === "runningWorker" && control.actionTarget)
+                break;
+            }
+            yield* Effect.yieldNow;
+          }
+          assert.isDefined(control);
+          assert.isDefined(control.actionTarget);
+          const receipt = yield* dispatchRunControlAction({
+            action: parseRunControlAction({
+              ...control.actionTarget,
+              actionId: parseRunControlActionId("action-live-pause"),
+              operation: "pause",
+              runId: accepted.runId,
+            }),
+            options: { rootDirectory, sessionCoordinator: coordinator },
+            runId: accepted.runId,
+          });
+          yield* Fiber.await(workflow);
+          const released = yield* coordinator.get({
+            agentId: control.actionTarget.workerAgentId,
+            runId: accepted.runId,
+            sessionId: control.actionTarget.sessionId,
+          });
+          const events = yield* readLocalRunEvents(accepted.runId, {
+            rootDirectory,
+          });
+          assert.strictEqual(receipt.state, "confirmed");
+          assert.isUndefined(released);
+          assert.strictEqual(snapshotFromReplay(events.events).state, "paused");
+          assert.notInclude(
+            events.events.map(({ type }) => type),
+            "RUN_FAILED"
+          );
+          assert.notInclude(
+            events.events.map(({ type }) => type),
+            "WORKER_COMPLETED"
+          );
+        }).pipe(Effect.provide(HarnessLaunchObservationLive))
+    );
+
+    it.effect(
+      "never resumes an accepted run after a control attempt becomes ambiguous",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const rootDirectory = yield* fs.makeTempDirectory({
+            prefix: "gaia-ambiguous-control-restart-",
+          });
+          const launchObservation = yield* HarnessLaunchObservationService;
+          const observation = HarnessLaunchObservationV1.make({
+            approvalPolicy: "on-request",
+            cwdMatchesWorkspaceBinding: true,
+            model: "gpt-5.6-codex",
+            modelProvider: "openai",
+            reasoningEffort: "high",
+            sandbox: "workspace-write",
+            source: "threadRuntimeResult",
+          });
+          const capabilities = HarnessCapabilities.make({
+            ...acceptanceCapabilities,
+            durableCancellation: true,
+            durableInteractionResolution: true,
+            durablePause: true,
+          });
+          const descriptor = HarnessProviderDescriptor.make({
+            displayName: "Ambiguous Control Harness",
+            executionModes: ["local"],
+            providerId: parseHarnessProviderId("ambiguous-control"),
+          });
+          let providerCalls = 0;
+          const sessionFor = (
+            sessionId: ReturnType<typeof parseHarnessSessionId>
+          ): HarnessSession => {
+            const events = [
+              {
+                capabilities,
+                kind: "sessionStarted",
+                provider: descriptor,
+                sessionId,
+                state: "running",
+              },
+            ] as const;
+            return {
+              events: Stream.concat(Stream.fromIterable(events), Stream.never),
+              interrupt: Option.some(Effect.void),
+              resolveInteraction: () => Effect.void,
+              send: () => Effect.succeed(undefined),
+              snapshot: Effect.succeed(projectHarnessEvents(events, sessionId)),
+              steer: Option.none(),
+            };
+          };
+          const provider: HarnessProvider = {
+            descriptor,
+            createSession: (request) =>
+              Effect.sync(() => {
+                providerCalls += 1;
+              }).pipe(
+                Effect.andThen(
+                  launchObservation.complete(request.sessionId, observation)
+                ),
+                Effect.orDie,
+                Effect.as(sessionFor(request.sessionId))
+              ),
+            detect: Effect.sync(() => {
+              providerCalls += 1;
+              return {
+                auth: { state: "authenticated" as const },
+                capabilities,
+                state: "available" as const,
+                version: "ambiguous-control-1",
+              };
+            }),
+            resumeSession: (request) =>
+              Effect.sync(() => {
+                providerCalls += 1;
+              }).pipe(
+                Effect.andThen(
+                  launchObservation.complete(request.sessionId, observation)
+                ),
+                Effect.orDie,
+                Effect.as(sessionFor(request.sessionId))
+              ),
+          };
+          const registry = makeHarnessProviderRegistry([
+            {
+              environmentAssignment: () =>
+                Effect.succeed(workerEnvironmentAssignment()),
+              launchObservation,
+              profileId: codexAppServerExecutionSelection.harnessProfileId,
+              provider,
+            },
+          ]);
+          const runIds = [];
+
+          for (const terminalPhase of [
+            "RUN_CONTROL_ATTEMPTED",
+            "RUN_CONTROL_OUTCOME_UNKNOWN",
+          ] as const) {
+            const accepted = yield* acceptFactoryRun(
+              {
+                execution: codexAppServerExecutionSelection,
+                workflow: "issueDelivery",
+                workItem: {
+                  description:
+                    "Do not resume after an ambiguous durable control attempt.",
+                  kind: "issue",
+                  title: `Ambiguous control ${terminalPhase}`,
+                },
+              },
+              { harnessProviderRegistry: registry, rootDirectory }
+            );
+            runIds.push(accepted.runId);
+            const workflow = yield* continueServerRun(accepted.runId, {
+              harnessProviderRegistry: registry,
+              rootDirectory,
+            }).pipe(Effect.forkChild);
+            let snapshot: RunControlSnapshot | undefined;
+            for (let attempt = 0; attempt < 1_000; attempt += 1) {
+              const observed = yield* Effect.exit(
+                readRunControlSnapshot(accepted.runId, { rootDirectory })
+              );
+              if (
+                observed._tag === "Success" &&
+                observed.value.state === "runningWorker" &&
+                observed.value.actionTarget !== undefined
+              ) {
+                snapshot = observed.value;
+                break;
+              }
+              yield* Effect.yieldNow;
+            }
+            assert.isDefined(snapshot);
+            assert.isDefined(snapshot.actionTarget);
+            const paths = yield* makeRunPaths(accepted.runId, {
+              rootDirectory,
+            });
+            const action = parseRunControlAction({
+              ...snapshot.actionTarget,
+              actionId: parseRunControlActionId(
+                `action-${terminalPhase.toLowerCase()}`
+              ),
+              operation: "pause",
+              runId: accepted.runId,
+            });
+            const actionBindingDigest = makeRunControlActionBindingDigest({
+              actionId: action.actionId,
+              authorityId: action.authorityId,
+              expectedEventSequence: action.expectedEventSequence,
+              operation: action.operation,
+              providerId: action.providerId,
+              runId: action.runId,
+              sessionId: action.sessionId,
+              workerAgentId: action.workerAgentId,
+              workerStartedSequence: action.workerStartedSequence,
+            });
+            const control = RunControlEventPayload.make({
+              actionBindingDigest,
+              actionId: action.actionId,
+              authorityId: action.authorityId,
+              expectedEventSequence: action.expectedEventSequence,
+              operation: action.operation,
+              providerId: action.providerId,
+              restoreState: Schema.decodeUnknownSync(
+                RunControlRestoreStateSchema
+              )(snapshot.state),
+              sessionId: action.sessionId,
+              workerAgentId: action.workerAgentId,
+              workerStartedSequence: action.workerStartedSequence,
+            });
+            const encodedControl = Schema.encodeSync(RunControlEventPayload)(
+              control
+            );
+            yield* appendEvent(accepted.runId, paths, {
+              payload: { control: encodedControl },
+              type: "RUN_CONTROL_INTENT_RECORDED",
+            });
+            yield* appendEvent(accepted.runId, paths, {
+              payload: { control: encodedControl },
+              type: "RUN_CONTROL_ATTEMPTED",
+            });
+            if (terminalPhase === "RUN_CONTROL_OUTCOME_UNKNOWN")
+              yield* appendEvent(accepted.runId, paths, {
+                payload: { control: encodedControl },
+                type: terminalPhase,
+              });
+            yield* Fiber.interrupt(workflow);
+          }
+
+          const providerCallsBeforeRestart = providerCalls;
+          const eventCountsBeforeRestart = yield* Effect.forEach(
+            runIds,
+            (runId) =>
+              readLocalRunEvents(runId, { rootDirectory }).pipe(
+                Effect.map(({ events }) => events.length)
+              )
+          );
+          yield* Effect.forEach(
+            runIds,
+            (runId) =>
+              makeRunPaths(runId, { rootDirectory }).pipe(
+                Effect.flatMap((paths) =>
+                  fs.writeFileString(paths.acceptedRunInput, "{}\n")
+                )
+              ),
+            { discard: true }
+          );
+          const reconciled = yield* reconcileInterruptedServerRuns({
+            rootDirectory,
+          });
+          assert.deepEqual(reconciled.reconciledRunIds, []);
+          assert.deepEqual(reconciled.resumableRunIds, []);
+
+          for (const runId of runIds) {
+            const continuation = yield* Effect.flip(
+              continueServerRun(runId, { rootDirectory })
+            );
+            assert.strictEqual(continuation.code, "RunControlOutcomeUnknown");
+          }
+          assert.strictEqual(providerCalls, providerCallsBeforeRestart);
+          const eventCountsAfterRestart = yield* Effect.forEach(
+            runIds,
+            (runId) =>
+              readLocalRunEvents(runId, { rootDirectory }).pipe(
+                Effect.map(({ events }) => events.length)
+              )
+          );
+          assert.deepEqual(eventCountsAfterRestart, eventCountsBeforeRestart);
+        }).pipe(Effect.provide(HarnessLaunchObservationLive))
+    );
+
+    it.effect(
       "marks unfinished accepted server runs interrupted on startup reconciliation",
       () =>
         Effect.gen(function* () {
@@ -3342,6 +3901,41 @@ const acceptanceCapabilities = HarnessCapabilities.make({
   usageReporting: false,
   userQuestions: false,
 });
+
+function workerEnvironmentAssignment() {
+  return {
+    adapter: {
+      contractDigest: "a".repeat(64),
+      contractId: "gaia.codex-app-server",
+      contractVersion: "1",
+      providerNativeToolInventoryObservation: "notExposed" as const,
+      toolContractDigest: "b".repeat(64),
+    },
+    authority: {
+      approvalPolicy: "on-request" as const,
+      ephemeral: false as const,
+      sandbox: "workspace-write" as const,
+      workspaceBindingDigest: digestHarnessEnvironmentContract(
+        "gaia.worker-workspace-authority.v1",
+        ["cill-i-am/gaia", ".gaia/runs/<runId>/workspace"]
+      ),
+    },
+    effectDependencyEpoch: "4.0.0-beta.93" as const,
+    hostClass: "localGaiaServer" as const,
+    interfaceClass: "codexAppServerStdio" as const,
+    model: {
+      id: "gpt-5.6-codex",
+      provider: "openai",
+      reasoningEffort: "high",
+    },
+    runtimeSource: {
+      repositoryIdentity: "cill-i-am/gaia",
+      revision: "6cc2350063cec02229fde3669af0f67a8cc3497a",
+      sourceState: "clean" as const,
+    },
+    version: 1 as const,
+  };
+}
 
 const acceptanceProvider: HarnessProvider = {
   createSession: () => Effect.die("not used during acceptance"),

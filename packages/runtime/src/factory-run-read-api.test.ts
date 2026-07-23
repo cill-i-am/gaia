@@ -810,6 +810,39 @@ describe("factory run read api", () => {
             "Legacy verification artifact (unverified)"
           );
           assert.strictEqual(body.body, '{"legacyMarkerIntegrity":true}\n');
+          const control = {
+            actionBindingDigest: "a".repeat(64),
+            actionId: "action-factory-cancel",
+            authorityId: "local-gaia-server",
+            expectedEventSequence: 3,
+            operation: "cancel",
+            providerId: "fake",
+            sessionId: "session-factory-cancel",
+            workerAgentId: issueDeliveryAgentIds.worker,
+            workerStartedSequence: 3,
+          };
+          yield* fs.writeFileString(
+            paths.events,
+            `${[
+              firstLine,
+              line(2, "WORKSPACE_PREPARED", { workspacePath: "workspace" }),
+              line(3, "WORKER_STARTED"),
+              line(4, "RUN_CONTROL_INTENT_RECORDED", { control }),
+              line(5, "RUN_CONTROL_ATTEMPTED", { control }),
+              line(6, "RUN_CONTROL_CONFIRMED", { control }),
+            ].join("\n")}\n`
+          );
+          const cancelled = yield* readFactoryGraph(accepted.runId, {
+            rootDirectory: cwd,
+          });
+          assert.deepInclude(
+            cancelled.agents.map(({ role, state }) => ({ role, state })),
+            { role: "orchestrator", state: "canceled" }
+          );
+          assert.deepInclude(
+            cancelled.agents.map(({ role, state }) => ({ role, state })),
+            { role: "worker", state: "canceled" }
+          );
         })
     );
 

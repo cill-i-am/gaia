@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import {
   ModelWorkspaceBindingV1,
   RenderedModelInputV1,
+  RunHumanWaitCheckpointV1,
   RunEvent,
   RunIdSchema,
   WorkspaceRelativePathSchema,
@@ -124,6 +125,21 @@ export class HarnessRunResult extends Schema.Class<HarnessRunResult>(
   }
 }
 
+/** Finite nonterminal result proving the worker released after a durable wait. */
+export class HarnessControlRelease extends Schema.Class<HarnessControlRelease>(
+  "HarnessControlRelease"
+)({
+  checkpoint: Schema.optionalKey(RunHumanWaitCheckpointV1),
+  kind: Schema.Literal("controlRelease"),
+  runId: RunIdSchema,
+  state: Schema.Literals(["waitingForHuman", "paused", "cancelled"] as const),
+}) {}
+
+export const HarnessExecutionResultSchema = Schema.Union([
+  HarnessRunResult,
+  HarnessControlRelease,
+]);
+
 class ProcessHarnessDeclaration extends Schema.Class<ProcessHarnessDeclaration>(
   "ProcessHarnessDeclaration"
 )({
@@ -136,7 +152,7 @@ export type GaiaHarness = {
   readonly run: (
     request: HarnessRunRequest
   ) => Effect.Effect<
-    HarnessRunResult,
+    HarnessRunResult | HarnessControlRelease,
     GaiaRuntimeError,
     FileSystem.FileSystem | Path.Path
   >;
@@ -548,7 +564,16 @@ export function runHarness(
 > {
   return Effect.gen(function* () {
     const harness = yield* selectHarness(request.harnessName, options);
-    return yield* harness.run(request);
+    const result = yield* harness.run(request);
+    if ("kind" in result)
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "HarnessRunResultInvalid",
+          message: "A batch harness returned an interactive control release.",
+          recoverable: false,
+        })
+      );
+    return result;
   });
 }
 
