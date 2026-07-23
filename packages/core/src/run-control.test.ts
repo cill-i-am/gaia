@@ -84,8 +84,37 @@ const checkpoint = {
   checkpointDigest: makeRunControlCheckpointDigest(checkpointWithoutDigest),
 };
 
-const binding = {
-  actionBindingDigest: "e".repeat(64),
+function makeBoundControl(input: Record<string, unknown>) {
+  const parsed = parseRunControlEventPayload({
+    ...input,
+    actionBindingDigest: "0".repeat(64),
+  });
+  return parseRunControlEventPayload({
+    ...parsed,
+    actionBindingDigest: makeRunControlActionBindingDigest({
+      actionId: parsed.actionId,
+      authorityId: parsed.authorityId,
+      ...(parsed.checkpointDigest === undefined
+        ? {}
+        : { checkpointDigest: parsed.checkpointDigest }),
+      expectedEventSequence: parsed.expectedEventSequence,
+      ...(parsed.interactionId === undefined
+        ? {}
+        : { interactionId: parsed.interactionId }),
+      operation: parsed.operation,
+      providerId: parsed.providerId,
+      ...(parsed.requestDigest === undefined
+        ? {}
+        : { requestDigest: parsed.requestDigest }),
+      runId,
+      sessionId: parsed.sessionId,
+      workerAgentId: parsed.workerAgentId,
+      workerStartedSequence: parsed.workerStartedSequence,
+    }),
+  });
+}
+
+const binding = makeBoundControl({
   actionId: "action-gaia-148",
   authorityId: "authority-local",
   checkpointDigest: checkpoint.checkpointDigest,
@@ -97,9 +126,8 @@ const binding = {
   sessionId: checkpoint.sessionId,
   workerAgentId: checkpoint.workerAgentId,
   workerStartedSequence: checkpoint.workerStartedSequence,
-};
-const runningControlBinding = {
-  actionBindingDigest: binding.actionBindingDigest,
+});
+const runningControlBinding = makeBoundControl({
   actionId: "action-running-control",
   authorityId: binding.authorityId,
   expectedEventSequence: 3,
@@ -109,7 +137,7 @@ const runningControlBinding = {
   sessionId: binding.sessionId,
   workerAgentId: binding.workerAgentId,
   workerStartedSequence: binding.workerStartedSequence,
-};
+});
 
 const runningHistory = () => [
   event(1, "RUN_CREATED", { specPath: "spec.md" }),
@@ -256,30 +284,7 @@ describe("durable run control replay", () => {
     ];
 
     for (const override of forgedBindings) {
-      const forged = parseRunControlEventPayload({ ...binding, ...override });
-      const control = parseRunControlEventPayload({
-        ...forged,
-        actionBindingDigest: makeRunControlActionBindingDigest({
-          actionId: forged.actionId,
-          authorityId: forged.authorityId,
-          ...(forged.checkpointDigest === undefined
-            ? {}
-            : { checkpointDigest: forged.checkpointDigest }),
-          expectedEventSequence: forged.expectedEventSequence,
-          ...(forged.interactionId === undefined
-            ? {}
-            : { interactionId: forged.interactionId }),
-          operation: forged.operation,
-          providerId: forged.providerId,
-          ...(forged.requestDigest === undefined
-            ? {}
-            : { requestDigest: forged.requestDigest }),
-          runId,
-          sessionId: forged.sessionId,
-          workerAgentId: forged.workerAgentId,
-          workerStartedSequence: forged.workerStartedSequence,
-        }),
-      });
+      const control = makeBoundControl({ ...binding, ...override });
 
       assert.throws(() =>
         replayRunEvents([
@@ -290,6 +295,33 @@ describe("durable run control replay", () => {
         ])
       );
     }
+
+    const forgedDigestControl = parseRunControlEventPayload({
+      ...binding,
+      actionBindingDigest: "f".repeat(64),
+      actionId: "action-forged-digest",
+    });
+    assert.throws(
+      () =>
+        replayRunEvents([
+          ...authoritativeWaitHistory(),
+          event(7, "RUN_WAITING_FOR_HUMAN", { checkpoint }),
+          ...attemptedControl(8, forgedDigestControl),
+          event(10, "RUN_CONTROL_CONFIRMED", {
+            control: forgedDigestControl,
+          }),
+        ]),
+      /action-binding digest/u
+    );
+    assert.throws(
+      () =>
+        replayRunEvents([
+          ...authoritativeWaitHistory(),
+          event(7, "RUN_WAITING_FOR_HUMAN", { checkpoint }),
+          event(8, "RUN_CONTROL_FAILED", { control: forgedDigestControl }),
+        ]),
+      /action-binding digest/u
+    );
   });
 
   it("requires the checkpoint interaction to remain pending", () => {
@@ -342,72 +374,86 @@ describe("durable run control replay", () => {
   });
 
   it("pauses and resumes the exact intentional state", () => {
+    const pauseWaiting = makeBoundControl({
+      ...binding,
+      actionId: "action-pause",
+      operation: "pause",
+      restoreState: "waitingForHuman",
+    });
+    const resumeWaiting = makeBoundControl({
+      ...binding,
+      actionId: "action-resume",
+      operation: "resume",
+      restoreState: "waitingForHuman",
+    });
     const events = [
       ...authoritativeWaitHistory(),
       event(7, "RUN_WAITING_FOR_HUMAN", { checkpoint }),
-      ...attemptedControl(8, {
-        ...binding,
-        actionId: "action-pause",
-        operation: "pause",
-        restoreState: "waitingForHuman",
-      }),
+      ...attemptedControl(8, pauseWaiting),
       event(10, "RUN_CONTROL_CONFIRMED", {
-        control: {
-          ...binding,
-          actionId: "action-pause",
-          operation: "pause",
-          restoreState: "waitingForHuman",
-        },
+        control: pauseWaiting,
       }),
-      ...attemptedControl(11, {
-        ...binding,
-        actionId: "action-resume",
-        operation: "resume",
-        restoreState: "waitingForHuman",
-      }),
+      ...attemptedControl(11, resumeWaiting),
       event(13, "RUN_CONTROL_CONFIRMED", {
-        control: {
-          ...binding,
-          actionId: "action-resume",
-          operation: "resume",
-          restoreState: "waitingForHuman",
-        },
+        control: resumeWaiting,
       }),
     ];
 
     assert.strictEqual(snapshotFromReplay(events.slice(0, 10)).state, "paused");
     assert.strictEqual(snapshotFromReplay(events).state, "waitingForHuman");
+
+    const resolve = makeBoundControl({
+      ...binding,
+      actionId: "action-resolve-consumed-wait",
+    });
+    const pauseRunning = makeBoundControl({
+      ...runningControlBinding,
+      actionId: "action-pause-after-resolution",
+      expectedEventSequence: 10,
+    });
+    const resumeRunning = makeBoundControl({
+      ...runningControlBinding,
+      actionId: "action-resume-after-resolution",
+      expectedEventSequence: 13,
+      operation: "resume",
+    });
+    const resolvedThenResumed = [
+      ...authoritativeWaitHistory(),
+      event(7, "RUN_WAITING_FOR_HUMAN", { checkpoint }),
+      ...attemptedControl(8, resolve),
+      event(10, "RUN_CONTROL_CONFIRMED", { control: resolve }),
+      ...attemptedControl(11, pauseRunning),
+      event(13, "RUN_CONTROL_CONFIRMED", { control: pauseRunning }),
+      ...attemptedControl(14, resumeRunning),
+      event(16, "RUN_CONTROL_CONFIRMED", { control: resumeRunning }),
+    ];
+
+    assert.strictEqual(
+      snapshotFromReplay(resolvedThenResumed.slice(0, 10)).state,
+      "runningWorker"
+    );
+    assert.strictEqual(
+      snapshotFromReplay(resolvedThenResumed.slice(0, 13)).state,
+      "paused"
+    );
+    assert.strictEqual(
+      snapshotFromReplay(resolvedThenResumed).state,
+      "runningWorker"
+    );
   });
 
   it("rejects fabricated restore states without a human-wait checkpoint", () => {
-    const boundControl = (overrides: Record<string, unknown>) => {
-      const parsed = parseRunControlEventPayload({
-        ...runningControlBinding,
-        ...overrides,
-      });
-      return parseRunControlEventPayload({
-        ...parsed,
-        actionBindingDigest: makeRunControlActionBindingDigest({
-          actionId: parsed.actionId,
-          authorityId: parsed.authorityId,
-          expectedEventSequence: parsed.expectedEventSequence,
-          operation: parsed.operation,
-          providerId: parsed.providerId,
-          runId,
-          sessionId: parsed.sessionId,
-          workerAgentId: parsed.workerAgentId,
-          workerStartedSequence: parsed.workerStartedSequence,
-        }),
-      });
-    };
-    const forgedPause = boundControl({
+    const forgedPause = makeBoundControl({
+      ...runningControlBinding,
       actionId: "action-forged-pause-restore",
       restoreState: "waitingForHuman",
     });
-    const validPause = boundControl({
+    const validPause = makeBoundControl({
+      ...runningControlBinding,
       actionId: "action-valid-pause-restore",
     });
-    const forgedResume = boundControl({
+    const forgedResume = makeBoundControl({
+      ...runningControlBinding,
       actionId: "action-forged-resume-restore",
       expectedEventSequence: 6,
       operation: "resume",
@@ -433,19 +479,16 @@ describe("durable run control replay", () => {
   });
 
   it("makes confirmed cancellation terminal", () => {
+    const cancelControl = makeBoundControl({
+      ...runningControlBinding,
+      actionId: "action-cancel",
+      operation: "cancel",
+    });
     const cancelled = [
       ...runningHistory(),
-      ...attemptedControl(4, {
-        ...runningControlBinding,
-        actionId: "action-cancel",
-        operation: "cancel",
-      }),
+      ...attemptedControl(4, cancelControl),
       event(6, "RUN_CONTROL_CONFIRMED", {
-        control: {
-          ...runningControlBinding,
-          actionId: "action-cancel",
-          operation: "cancel",
-        },
+        control: cancelControl,
       }),
     ];
 
@@ -472,11 +515,11 @@ describe("durable run control replay", () => {
         }),
       ])
     );
-    const unknownControl = {
+    const unknownControl = makeBoundControl({
       ...runningControlBinding,
       actionId: "action-unknown",
       operation: "pause",
-    };
+    });
     assert.throws(() =>
       replayRunEvents([
         ...runningHistory(),
@@ -489,14 +532,23 @@ describe("durable run control replay", () => {
       replayRunEvents([
         ...runningHistory(),
         event(4, "RUN_CONTROL_INTENT_RECORDED", {
-          control: { ...unknownControl, workerStartedSequence: 5 },
+          control: makeBoundControl({
+            ...unknownControl,
+            workerStartedSequence: 5,
+          }),
         }),
         event(5, "WORKER_STARTED"),
         event(6, "RUN_CONTROL_ATTEMPTED", {
-          control: { ...unknownControl, workerStartedSequence: 5 },
+          control: makeBoundControl({
+            ...unknownControl,
+            workerStartedSequence: 5,
+          }),
         }),
         event(7, "RUN_CONTROL_CONFIRMED", {
-          control: { ...unknownControl, workerStartedSequence: 5 },
+          control: makeBoundControl({
+            ...unknownControl,
+            workerStartedSequence: 5,
+          }),
         }),
       ])
     );
@@ -512,11 +564,11 @@ describe("durable run control replay", () => {
   });
 
   it("rejects illegal claimed phases while preserving typed failure history", () => {
-    const illegalResume = {
+    const illegalResume = makeBoundControl({
       ...runningControlBinding,
       actionId: "action-illegal-resume",
       operation: "resume",
-    };
+    });
     const histories = [
       [event(4, "RUN_CONTROL_INTENT_RECORDED", { control: illegalResume })],
       [

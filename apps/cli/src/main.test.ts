@@ -6,6 +6,15 @@ import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
+  FactoryAgentIdSchema,
+  makeRunControlActionBindingDigest,
+  parseHarnessProviderId,
+  parseHarnessSessionId,
+  parseRunControlActionId,
+  parseRunControlAuthorityId,
+  parseRunControlEventPayload,
+  parseRunEventSequence,
+  RunControlEventPayload,
   RunIdSchema,
   ServerMetadata,
 } from "@gaia/core";
@@ -852,17 +861,26 @@ function createCancelledFactoryRunStoreState() {
         type,
         version: 1,
       });
-    const control = {
-      actionBindingDigest: "a".repeat(64),
-      actionId: "action-cli-cancel",
-      authorityId: "local-gaia-server",
-      expectedEventSequence: 3,
+    const controlFields = {
+      actionId: parseRunControlActionId("action-cli-cancel"),
+      authorityId: parseRunControlAuthorityId("local-gaia-server"),
+      expectedEventSequence: parseRunEventSequence(3),
       operation: "cancel",
-      providerId: "fake",
-      sessionId: "session-cli-cancel",
-      workerAgentId: "agent-worker",
-      workerStartedSequence: 3,
-    };
+      providerId: parseHarnessProviderId("fake"),
+      sessionId: parseHarnessSessionId("session-cli-cancel"),
+      workerAgentId:
+        Schema.decodeUnknownSync(FactoryAgentIdSchema)("agent-worker"),
+      workerStartedSequence: parseRunEventSequence(3),
+    } as const;
+    const control = Schema.encodeSync(RunControlEventPayload)(
+      parseRunControlEventPayload({
+        ...controlFields,
+        actionBindingDigest: makeRunControlActionBindingDigest({
+          ...controlFields,
+          runId: accepted.runId,
+        }),
+      })
+    );
     yield* fs.writeFileString(
       paths.events,
       `${[

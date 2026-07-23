@@ -2,10 +2,19 @@ import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   codexAppServerExecutionSelection,
+  FactoryAgentIdSchema,
   LocalRunReadDiagnosticSchema,
   LocalRunReadListSchema,
   LocalRunReadSummarySchema,
+  makeRunControlActionBindingDigest,
+  parseHarnessProviderId,
+  parseHarnessSessionId,
   parseRunId,
+  parseRunControlActionId,
+  parseRunControlAuthorityId,
+  parseRunControlEventPayload,
+  parseRunEventSequence,
+  RunControlEventPayload,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
@@ -145,24 +154,34 @@ describe("local run read api", () => {
             type: "WORKSPACE_PREPARED",
           });
           yield* appendEvent(runId, paths, { type: "WORKER_STARTED" });
-          const control = {
-            actionBindingDigest: "a".repeat(64),
-            actionId: "action-cancel-read",
-            authorityId: "authority-local",
-            expectedEventSequence: 3,
+          const workerStartedSequence = parseRunEventSequence(3);
+          const controlFields = {
+            actionId: parseRunControlActionId("action-cancel-read"),
+            authorityId: parseRunControlAuthorityId("authority-local"),
+            expectedEventSequence: workerStartedSequence,
             operation: "cancel",
-            providerId: "fake",
-            sessionId: "session-cancel-read",
-            workerAgentId: "agent-worker",
-            workerStartedSequence: 3,
-          };
+            providerId: parseHarnessProviderId("fake"),
+            sessionId: parseHarnessSessionId("session-cancel-read"),
+            workerAgentId:
+              Schema.decodeUnknownSync(FactoryAgentIdSchema)("agent-worker"),
+            workerStartedSequence,
+          } as const;
+          const control = parseRunControlEventPayload({
+            ...controlFields,
+            actionBindingDigest: makeRunControlActionBindingDigest({
+              ...controlFields,
+              runId,
+            }),
+          });
           for (const type of [
             "RUN_CONTROL_INTENT_RECORDED",
             "RUN_CONTROL_ATTEMPTED",
             "RUN_CONTROL_CONFIRMED",
           ] as const) {
             yield* appendEvent(runId, paths, {
-              payload: { control },
+              payload: {
+                control: Schema.encodeSync(RunControlEventPayload)(control),
+              },
               type,
             });
           }

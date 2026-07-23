@@ -11,6 +11,7 @@ import {
   makeModelContextContentV1,
   makeModelContextManifestV1,
   makeModelInvocationManifestV1,
+  makeRunControlActionBindingDigest,
   ModelInvocationEpisodeStartV1,
   RunControlEventPayload,
   parseHarnessEvent,
@@ -21,7 +22,10 @@ import {
   parseHarnessSessionId,
   parseHarnessTurnId,
   parseMarkdownSpec,
+  parseRunControlActionId,
+  parseRunControlAuthorityId,
   parseRunControlEventPayload,
+  parseRunEventSequence,
   parseWorkspaceRelativePath,
   projectHarnessEvents,
   renderModelInputV1,
@@ -1199,17 +1203,23 @@ describe("interactive issue-delivery harness", () => {
               sessionId: controlSessionId,
               turnId: controlTurnId,
             });
-            const control = parseRunControlEventPayload({
-              actionBindingDigest: "a".repeat(64),
-              actionId: `action-${controlRunId}`,
-              authorityId: "local-gaia-server",
-              expectedEventSequence: 5,
+            const controlFields = {
+              actionId: parseRunControlActionId(`action-${controlRunId}`),
+              authorityId: parseRunControlAuthorityId("local-gaia-server"),
+              expectedEventSequence: parseRunEventSequence(5),
               operation: "pause",
               providerId: provider.descriptor.providerId,
-              restoreState: "runningWorker",
               sessionId: controlSessionId,
               workerAgentId: issueDeliveryAgentIds.worker,
-              workerStartedSequence: 3,
+              workerStartedSequence: parseRunEventSequence(3),
+            } as const;
+            const control = parseRunControlEventPayload({
+              ...controlFields,
+              actionBindingDigest: makeRunControlActionBindingDigest({
+                ...controlFields,
+                runId: controlRunId,
+              }),
+              restoreState: "runningWorker",
             });
             const encodedControl = Schema.encodeSync(RunControlEventPayload)(
               control
@@ -1313,17 +1323,26 @@ describe("interactive issue-delivery harness", () => {
                     turnId: parseHarnessTurnId(`turn-${request.runId}`),
                   });
                   const beforeControl = yield* readEvents(stickyPaths);
-                  const stickyControl = parseRunControlEventPayload({
-                    actionBindingDigest: "c".repeat(64),
-                    actionId: `action-${request.runId}`,
-                    authorityId: "local-gaia-server",
+                  const stickyControlFields = {
+                    actionId: parseRunControlActionId(
+                      `action-${request.runId}`
+                    ),
+                    authorityId:
+                      parseRunControlAuthorityId("local-gaia-server"),
                     expectedEventSequence: beforeControl.at(-1)!.sequence,
                     operation: "pause",
                     providerId: provider.descriptor.providerId,
-                    restoreState: "runningWorker",
                     sessionId: stickySessionId,
                     workerAgentId: issueDeliveryAgentIds.worker,
                     workerStartedSequence: workerStarted!.sequence,
+                  } as const;
+                  const stickyControl = parseRunControlEventPayload({
+                    ...stickyControlFields,
+                    actionBindingDigest: makeRunControlActionBindingDigest({
+                      ...stickyControlFields,
+                      runId: request.runId,
+                    }),
+                    restoreState: "runningWorker",
                   });
                   yield* Deferred.succeed(stickyHarnessReady, {
                     control: stickyControl,

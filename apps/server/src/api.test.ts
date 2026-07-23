@@ -40,11 +40,13 @@ import {
   encodeWorkerRecoveryReceiptJson,
   encodeWorkerContinuationReceiptJson,
   encodeWorkerCorrelationReconciliationReceiptJson,
+  FactoryAgentIdSchema,
   HarnessCapabilities,
   HarnessProviderDescriptor,
   makeModelContextContentV1,
   makeModelContextManifestV1,
   makeModelInvocationManifestV1,
+  makeRunControlActionBindingDigest,
   makeRunControlCheckpointDigest,
   makeRunControlRequestDigest,
   MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
@@ -1835,8 +1837,7 @@ describe("local run api http boundary", () => {
             state: "running",
           });
           const cancelEvents = yield* readEvents(cancelledPaths);
-          const cancelControl = parseRunControlEventPayload({
-            actionBindingDigest: "a".repeat(64),
+          const cancelControlFields = {
             actionId: parseRunControlActionId(
               "action-server-delivery-stream-cancel"
             ),
@@ -1845,8 +1846,16 @@ describe("local run api http boundary", () => {
             operation: "cancel",
             providerId: testHarnessProvider.descriptor.providerId,
             sessionId: parseHarnessSessionId(`session-${cancelled.runId}`),
-            workerAgentId: "agent-worker",
+            workerAgentId:
+              Schema.decodeUnknownSync(FactoryAgentIdSchema)("agent-worker"),
             workerStartedSequence: cancelWorkerStarted.event.sequence,
+          } as const;
+          const cancelControl = parseRunControlEventPayload({
+            ...cancelControlFields,
+            actionBindingDigest: makeRunControlActionBindingDigest({
+              ...cancelControlFields,
+              runId: cancelled.runId,
+            }),
           });
           for (const type of [
             "RUN_CONTROL_INTENT_RECORDED",

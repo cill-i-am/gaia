@@ -9,6 +9,7 @@ import {
   MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
   ModelInvocationEpisodeStartV1,
   RunControlEventPayload,
+  makeRunControlActionBindingDigest,
   makeModelContextContentV1,
   makeModelContextManifestV1,
   makeModelInvocationManifestV1,
@@ -19,7 +20,10 @@ import {
   parseHarnessQuestionId,
   parseHarnessSessionId,
   parseHarnessTurnId,
+  parseRunControlActionId,
+  parseRunControlAuthorityId,
   parseRunControlEventPayload,
+  parseRunEventSequence,
   parseRunId,
   parseWorkspaceRelativePath,
   renderModelInputV1,
@@ -235,16 +239,22 @@ describe("agent session runtime", () => {
               sessionId,
               turnId,
             });
-            const cancelledControl = parseRunControlEventPayload({
-              actionBindingDigest: "a".repeat(64),
-              actionId: "action-agent-stream-cancel",
-              authorityId: "authority-local",
-              expectedEventSequence: 5,
+            const cancelledControlFields = {
+              actionId: parseRunControlActionId("action-agent-stream-cancel"),
+              authorityId: parseRunControlAuthorityId("authority-local"),
+              expectedEventSequence: parseRunEventSequence(5),
               operation: "cancel",
               providerId: provider.providerId,
               sessionId,
               workerAgentId,
-              workerStartedSequence: 3,
+              workerStartedSequence: parseRunEventSequence(3),
+            } as const;
+            const cancelledControl = parseRunControlEventPayload({
+              ...cancelledControlFields,
+              actionBindingDigest: makeRunControlActionBindingDigest({
+                ...cancelledControlFields,
+                runId,
+              }),
             });
             for (const type of [
               "RUN_CONTROL_INTENT_RECORDED",
@@ -292,17 +302,25 @@ describe("agent session runtime", () => {
               [5, "pause"],
               [8, "resume"],
             ] as const) {
-              const control = parseRunControlEventPayload({
-                actionBindingDigest: "b".repeat(64),
-                actionId: `action-agent-stream-${operation}`,
-                authorityId: "authority-local",
-                expectedEventSequence: sequence,
+              const controlFields = {
+                actionId: parseRunControlActionId(
+                  `action-agent-stream-${operation}`
+                ),
+                authorityId: parseRunControlAuthorityId("authority-local"),
+                expectedEventSequence: parseRunEventSequence(sequence),
                 operation,
                 providerId: provider.providerId,
-                restoreState: "runningWorker",
                 sessionId,
                 workerAgentId,
-                workerStartedSequence: 3,
+                workerStartedSequence: parseRunEventSequence(3),
+              } as const;
+              const control = parseRunControlEventPayload({
+                ...controlFields,
+                actionBindingDigest: makeRunControlActionBindingDigest({
+                  ...controlFields,
+                  runId,
+                }),
+                restoreState: "runningWorker",
               });
               for (const type of [
                 "RUN_CONTROL_INTENT_RECORDED",

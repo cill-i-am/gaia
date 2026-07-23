@@ -17,9 +17,16 @@ import {
   FactoryGraphDiagnosticDto,
   FactoryGraphDto,
   LocalRunReadDiagnosticSchema,
+  makeRunControlActionBindingDigest,
   parseHarnessProfileId,
+  parseHarnessProviderId,
   parseHarnessSessionId,
+  parseRunControlActionId,
+  parseRunControlAuthorityId,
+  parseRunControlEventPayload,
+  parseRunEventSequence,
   parseRunId,
+  RunControlEventPayload,
   RunIdSchema,
 } from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
@@ -810,17 +817,25 @@ describe("factory run read api", () => {
             "Legacy verification artifact (unverified)"
           );
           assert.strictEqual(body.body, '{"legacyMarkerIntegrity":true}\n');
-          const control = {
-            actionBindingDigest: "a".repeat(64),
-            actionId: "action-factory-cancel",
-            authorityId: "local-gaia-server",
-            expectedEventSequence: 3,
+          const controlFields = {
+            actionId: parseRunControlActionId("action-factory-cancel"),
+            authorityId: parseRunControlAuthorityId("local-gaia-server"),
+            expectedEventSequence: parseRunEventSequence(3),
             operation: "cancel",
-            providerId: "fake",
-            sessionId: "session-factory-cancel",
+            providerId: parseHarnessProviderId("fake"),
+            sessionId: parseHarnessSessionId("session-factory-cancel"),
             workerAgentId: issueDeliveryAgentIds.worker,
-            workerStartedSequence: 3,
-          };
+            workerStartedSequence: parseRunEventSequence(3),
+          } as const;
+          const control = Schema.encodeSync(RunControlEventPayload)(
+            parseRunControlEventPayload({
+              ...controlFields,
+              actionBindingDigest: makeRunControlActionBindingDigest({
+                ...controlFields,
+                runId: accepted.runId,
+              }),
+            })
+          );
           yield* fs.writeFileString(
             paths.events,
             `${[

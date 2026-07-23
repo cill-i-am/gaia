@@ -87,6 +87,7 @@ import {
   RunControlCheckpointDigestSchema,
   RunControlEventPayload,
   RunHumanWaitCheckpointV1,
+  makeRunControlActionBindingDigest,
   makeRunControlCheckpointDigest,
   makeRunControlRequestDigest,
   parseRunControlEventPayload,
@@ -1728,13 +1729,15 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
       throw new Error("Run history events must all belong to a single run.");
     }
 
-    const stateBeforeEvent = actor.getSnapshot().value;
+    const snapshotBeforeEvent = actor.getSnapshot();
+    const stateBeforeEvent = snapshotBeforeEvent.value;
     if (stateBeforeEvent === "cancelled")
       throw new Error("A cancelled run is terminal and rejects later events.");
     validateRunControlReplayEvent(
       event,
       events.slice(0, event.sequence - 1),
-      stateBeforeEvent
+      stateBeforeEvent,
+      snapshotBeforeEvent.context.runControl?.["checkpoint"]
     );
 
     if (event.type === "RUN_CONTRACT_RECORDED") {
@@ -2373,7 +2376,8 @@ function isDeliveryPublicationEvent(event: RunEvent) {
 function validateRunControlReplayEvent(
   event: RunEvent,
   priorEvents: ReadonlyArray<RunEvent>,
-  state: unknown
+  state: unknown,
+  projectedCheckpoint: Schema.Json | undefined
 ) {
   if (event.type === "RUN_WAITING_FOR_HUMAN") {
     if (state !== "runningWorker")
@@ -2503,6 +2507,30 @@ function validateRunControlReplayEvent(
     return;
 
   const control = parseRunControlEventPayload(event.payload["control"]);
+  const authoritativeActionBindingDigest = makeRunControlActionBindingDigest({
+    actionId: control.actionId,
+    authorityId: control.authorityId,
+    ...(control.checkpointDigest === undefined
+      ? {}
+      : { checkpointDigest: control.checkpointDigest }),
+    expectedEventSequence: control.expectedEventSequence,
+    ...(control.interactionId === undefined
+      ? {}
+      : { interactionId: control.interactionId }),
+    operation: control.operation,
+    providerId: control.providerId,
+    ...(control.requestDigest === undefined
+      ? {}
+      : { requestDigest: control.requestDigest }),
+    runId: event.runId,
+    sessionId: control.sessionId,
+    workerAgentId: control.workerAgentId,
+    workerStartedSequence: control.workerStartedSequence,
+  });
+  if (control.actionBindingDigest !== authoritativeActionBindingDigest)
+    throw new Error(
+      "Run-control event action-binding digest is not authoritative."
+    );
   const workerStart = priorEvents.find(
     (candidate) =>
       candidate.sequence === control.workerStartedSequence &&
@@ -2530,16 +2558,8 @@ function validateRunControlReplayEvent(
   });
   const standaloneFailure =
     event.type === "RUN_CONTROL_FAILED" && sameAction.length === 0;
-  const activeCheckpoint = [...priorEvents]
-    .reverse()
-    .find(({ type }) => type === "RUN_WAITING_FOR_HUMAN");
-  if (
-    activeCheckpoint !== undefined &&
-    (state === "waitingForHuman" || state === "paused")
-  ) {
-    const checkpoint = parseRunHumanWaitCheckpoint(
-      activeCheckpoint.payload["checkpoint"]
-    );
+  if (projectedCheckpoint !== undefined) {
+    const checkpoint = parseRunHumanWaitCheckpoint(projectedCheckpoint);
     if (
       !standaloneFailure &&
       !sameRunControlCheckpointBinding(control, checkpoint)
