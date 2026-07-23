@@ -92,6 +92,8 @@ import {
 } from "./git-delivery.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import {
+  HarnessActionError,
+  HarnessSessionError,
   parseHarnessCheckpointToken,
   type HarnessProvider,
   type HarnessSession,
@@ -3467,12 +3469,12 @@ describe("server workflows", () => {
     );
 
     it.effect(
-      "treats an intentional live pause interruption as control release",
+      "keeps an ambiguous live pause terminal without failing the server run",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const rootDirectory = yield* fs.makeTempDirectory({
-            prefix: "gaia-durable-live-pause-",
+            prefix: "gaia-ambiguous-live-pause-",
           });
           const launchObservation = yield* HarnessLaunchObservationService;
           const observation = HarnessLaunchObservationV1.make({
@@ -3491,15 +3493,16 @@ describe("server workflows", () => {
             durablePause: true,
           });
           const descriptor = HarnessProviderDescriptor.make({
-            displayName: "Durable Live Pause Harness",
+            displayName: "Ambiguous Live Pause Harness",
             executionModes: ["local"],
-            providerId: parseHarnessProviderId("durable-live-pause"),
+            providerId: parseHarnessProviderId("ambiguous-live-pause"),
           });
-          const interrupted = yield* Deferred.make<void>();
+          const failSession = yield* Deferred.make<void>();
+          let interruptCount = 0;
           const sessionFor = (
             sessionId: ReturnType<typeof parseHarnessSessionId>
           ): HarnessSession => {
-            const turnId = parseHarnessTurnId("turn-durable-live-pause");
+            const turnId = parseHarnessTurnId("turn-ambiguous-live-pause");
             const initial = [
               {
                 capabilities,
@@ -3514,17 +3517,35 @@ describe("server workflows", () => {
               events: Stream.concat(
                 Stream.fromIterable(initial),
                 Stream.fromEffect(
-                  Deferred.await(interrupted).pipe(
-                    Effect.as({
-                      kind: "turnCompleted" as const,
-                      sessionId,
-                      status: "interrupted" as const,
-                      turnId,
-                    })
+                  Deferred.await(failSession).pipe(
+                    Effect.flatMap(() =>
+                      Effect.fail(
+                        HarnessSessionError.make({
+                          message:
+                            "Live session failed after provider acknowledgement was lost.",
+                          providerId: descriptor.providerId,
+                        })
+                      )
+                    )
                   )
                 )
               ),
-              interrupt: Option.some(Deferred.succeed(interrupted, undefined)),
+              interrupt: Option.some(
+                Effect.sync(() => {
+                  interruptCount += 1;
+                }).pipe(
+                  Effect.andThen(Deferred.succeed(failSession, undefined)),
+                  Effect.flatMap(() =>
+                    Effect.fail(
+                      HarnessActionError.make({
+                        actionKind: "interrupt",
+                        message: "Provider acknowledgement lost.",
+                        providerId: descriptor.providerId,
+                      })
+                    )
+                  )
+                )
+              ),
               resolveInteraction: () => Effect.void,
               send: () => Effect.succeed(undefined),
               snapshot: Effect.succeed(
@@ -3543,7 +3564,7 @@ describe("server workflows", () => {
               auth: { state: "notRequired" },
               capabilities,
               state: "available",
-              version: "durable-live-pause-1",
+              version: "ambiguous-live-pause-1",
             }),
             resumeSession: (request) =>
               launchObservation
@@ -3565,9 +3586,10 @@ describe("server workflows", () => {
               execution: codexAppServerExecutionSelection,
               workflow: "issueDelivery",
               workItem: {
-                description: "Pause one live worker without failing it.",
+                description:
+                  "Never fail or redispatch after a live pause becomes ambiguous.",
                 kind: "issue",
-                title: "Durable live pause proof",
+                title: "Ambiguous live pause proof",
               },
             },
             { harnessProviderRegistry: registry, rootDirectory }
@@ -3591,17 +3613,23 @@ describe("server workflows", () => {
           }
           assert.isDefined(control);
           assert.isDefined(control.actionTarget);
-          const receipt = yield* dispatchRunControlAction({
-            action: parseRunControlAction({
-              ...control.actionTarget,
-              actionId: parseRunControlActionId("action-live-pause"),
-              operation: "pause",
-              runId: accepted.runId,
-            }),
-            options: { rootDirectory, sessionCoordinator: coordinator },
+          const action = parseRunControlAction({
+            ...control.actionTarget,
+            actionId: parseRunControlActionId("action-ambiguous-live-pause"),
+            operation: "pause",
             runId: accepted.runId,
           });
-          yield* Fiber.await(workflow);
+          const first = yield* dispatchRunControlAction({
+            action,
+            options: { rootDirectory, sessionCoordinator: coordinator },
+            runId: accepted.runId,
+          }).pipe(Effect.flip);
+          const workflowExit = yield* Fiber.await(workflow);
+          const replay = yield* dispatchRunControlAction({
+            action,
+            options: { rootDirectory, sessionCoordinator: coordinator },
+            runId: accepted.runId,
+          }).pipe(Effect.flip);
           const released = yield* coordinator.get({
             agentId: control.actionTarget.workerAgentId,
             runId: accepted.runId,
@@ -3610,17 +3638,24 @@ describe("server workflows", () => {
           const events = yield* readLocalRunEvents(accepted.runId, {
             rootDirectory,
           });
-          assert.strictEqual(receipt.state, "confirmed");
+          const eventTypes = events.events.map(({ type }) => type);
+          assert.instanceOf(first, GaiaRuntimeError);
+          assert.instanceOf(replay, GaiaRuntimeError);
+          assert.strictEqual(first.code, "outcomeUnknown");
+          assert.strictEqual(replay.code, "outcomeUnknown");
+          assert.strictEqual(workflowExit._tag, "Failure");
+          assert.strictEqual(interruptCount, 1);
           assert.isUndefined(released);
-          assert.strictEqual(snapshotFromReplay(events.events).state, "paused");
-          assert.notInclude(
-            events.events.map(({ type }) => type),
-            "RUN_FAILED"
+          assert.deepEqual(
+            eventTypes.filter((type) => type.startsWith("RUN_CONTROL_")),
+            [
+              "RUN_CONTROL_INTENT_RECORDED",
+              "RUN_CONTROL_ATTEMPTED",
+              "RUN_CONTROL_OUTCOME_UNKNOWN",
+            ]
           );
-          assert.notInclude(
-            events.events.map(({ type }) => type),
-            "WORKER_COMPLETED"
-          );
+          assert.notInclude(eventTypes, "RUN_FAILED");
+          assert.notInclude(eventTypes, "WORKER_COMPLETED");
         }).pipe(Effect.provide(HarnessLaunchObservationLive))
     );
 

@@ -3486,7 +3486,10 @@ function failServerRunIfNeeded(
     const loadedExit = yield* Effect.exit(loadRun(paths));
     if (loadedExit._tag === "Success") {
       const snapshot = snapshotFromReplay(loadedExit.value.events);
-      if (snapshot.state === "failed") {
+      if (
+        snapshot.state === "failed" ||
+        hasStickyRunControlAmbiguity(loadedExit.value.events)
+      ) {
         return yield* Effect.fail(error);
       }
     }
