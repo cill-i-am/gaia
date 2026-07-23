@@ -3599,8 +3599,18 @@ describe("server workflows", () => {
             rootDirectory,
             sessionCoordinator: coordinator,
           }).pipe(Effect.forkChild);
+          const paths = yield* makeRunPaths(accepted.runId, { rootDirectory });
           let control: RunControlSnapshot | undefined;
           for (let attempt = 0; attempt < 1_000; attempt += 1) {
+            const events = yield* readEvents(paths);
+            const initialSessionHistoryRecorded =
+              events.filter(
+                ({ type }) => type === "HARNESS_SESSION_EVENT_RECORDED"
+              ).length >= 2;
+            if (!initialSessionHistoryRecorded) {
+              yield* Effect.yieldNow;
+              continue;
+            }
             const observed = yield* Effect.exit(
               readRunControlSnapshot(accepted.runId, { rootDirectory })
             );
