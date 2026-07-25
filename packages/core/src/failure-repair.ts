@@ -1,8 +1,9 @@
 import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex } from "@noble/hashes/utils.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { Schema } from "effect";
 
 import { FailureStageSchema } from "./failure-stage.js";
+import type { ClaimEvidenceV2 } from "./run-contract-v2.js";
 import {
   canonicalV1,
   ContentDigestSchema,
@@ -12,6 +13,11 @@ import {
   RunRelativeArtifactPathSchema,
 } from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
+import {
+  VerificationCommandTerminalStatusSchema,
+  VerificationReceiptDigestSchema,
+  VerificationRequestDigestSchema,
+} from "./verification-command.js";
 
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
 
@@ -83,7 +89,7 @@ export const FailureRefV1Schema = Schema.Union([
   FailureActionRefV1,
 ]);
 
-/** Compact, typed pointer to safe proof evidence. */
+/** Compact, typed pointer to safe artifact proof evidence. */
 export class FailureEvidenceRefV1 extends Schema.Class<FailureEvidenceRefV1>(
   "FailureEvidenceRefV1"
 )(
@@ -91,16 +97,121 @@ export class FailureEvidenceRefV1 extends Schema.Class<FailureEvidenceRefV1>(
     artifactPath: RunRelativeArtifactPathSchema,
     contentDigest: ContentDigestSchema,
     evidenceId: ProofEvidenceIdSchema,
-    kind: Schema.Literals([
-      "artifact-integrity",
-      "browser",
-      "command",
-      "external-check",
-      "human-judgment",
-    ] as const),
+    kind: Schema.Literal("artifact-integrity"),
   },
   strict
 ) {}
+
+/** Allowlisted command identity and receipt pointer for one failed claim. */
+export class FailureCommandEvidenceV1 extends Schema.Class<FailureCommandEvidenceV1>(
+  "FailureCommandEvidenceV1"
+)(
+  {
+    evidenceId: ProofEvidenceIdSchema,
+    kind: Schema.Literal("command"),
+    receiptDigest: VerificationReceiptDigestSchema,
+    requestDigest: VerificationRequestDigestSchema,
+    status: VerificationCommandTerminalStatusSchema,
+    terminalSequence: RunEventSequenceSchema,
+  },
+  strict
+) {}
+
+/** Compact safe evidence representation accepted by a failure digest. */
+export const FailureEvidenceV1Schema = Schema.Union([
+  FailureEvidenceRefV1,
+  FailureCommandEvidenceV1,
+]);
+
+const parseFailureEvidenceV1 = Schema.decodeUnknownSync(
+  FailureEvidenceV1Schema
+);
+
+/**
+ * Leaves enough room inside the 16 KiB model task-input ceiling for the fixed
+ * repair instructions and exact failure binding.
+ */
+export const FAILURE_REPAIR_EVIDENCE_INPUT_BUDGET_BYTES = 12_000;
+
+/** Render only the allowlisted fields owned by the compact evidence schema. */
+export function renderFailureEvidenceV1(
+  evidence: typeof FailureEvidenceV1Schema.Type
+): ReadonlyArray<string> {
+  return evidence.kind === "command"
+    ? [
+        `Evidence ID: ${evidence.evidenceId}.`,
+        `Request digest: ${evidence.requestDigest}.`,
+        `Receipt digest: ${evidence.receiptDigest}.`,
+        `Command status: ${evidence.status}.`,
+        `Terminal sequence: ${evidence.terminalSequence}.`,
+      ]
+    : [
+        `Evidence ID: ${evidence.evidenceId}.`,
+        `Artifact path: ${evidence.artifactPath}.`,
+        `Content digest: ${evidence.contentDigest}.`,
+      ];
+}
+
+/**
+ * Deterministically project authoritative V2 proof evidence into the bounded
+ * safe representation accepted by a failure digest and repair prompt.
+ */
+export function projectFailureEvidenceV1(
+  evidenceEntries: ReadonlyArray<ClaimEvidenceV2>
+): ReadonlyArray<typeof FailureEvidenceV1Schema.Type> {
+  const projected: Array<typeof FailureEvidenceV1Schema.Type> = [];
+  let renderedBytes = 0;
+  const offer = (input: unknown) => {
+    if (projected.length === 8) return;
+    const candidate = parseFailureEvidenceV1(input);
+    const candidateBytes =
+      utf8ToBytes(renderFailureEvidenceV1(candidate).join("\n")).byteLength + 1;
+    if (
+      renderedBytes + candidateBytes >
+      FAILURE_REPAIR_EVIDENCE_INPUT_BUDGET_BYTES
+    )
+      return;
+    projected.push(candidate);
+    renderedBytes += candidateBytes;
+  };
+
+  for (const evidence of evidenceEntries) {
+    if (evidence.kind === "artifact-integrity") {
+      for (const artifact of evidence.artifacts)
+        offer({
+          artifactPath: artifact.path,
+          contentDigest: artifact.contentDigest,
+          evidenceId: evidence.evidenceId,
+          kind: evidence.kind,
+        });
+    } else if (evidence.kind === "command")
+      offer({
+        evidenceId: evidence.evidenceId,
+        kind: evidence.kind,
+        receiptDigest: evidence.receiptDigest,
+        requestDigest: evidence.requestDigest,
+        status: evidence.status,
+        terminalSequence: evidence.terminalSequence,
+      });
+    if (projected.length === 8) break;
+  }
+  return projected;
+}
+
+/** Compare a persisted projection with its authoritative V2 proof evidence. */
+export function matchesFailureEvidenceProjectionV1(
+  evidenceRefs: ReadonlyArray<typeof FailureEvidenceV1Schema.Type>,
+  authoritativeEvidence: ReadonlyArray<ClaimEvidenceV2>
+): boolean {
+  const digest = (value: ReadonlyArray<typeof FailureEvidenceV1Schema.Type>) =>
+    bytesToHex(
+      sha256(canonicalV1("gaia.failure-evidence-projection.v1", [value]))
+    );
+  return (
+    digest(evidenceRefs) ===
+    digest(projectFailureEvidenceV1(authoritativeEvidence))
+  );
+}
 
 /** Bounded, serializable failure evidence and policy decision. */
 export class FailureDigestV1 extends Schema.Class<FailureDigestV1>(
@@ -110,7 +221,7 @@ export class FailureDigestV1 extends Schema.Class<FailureDigestV1>(
     attempt: Schema.Int.pipe(
       Schema.check(Schema.isBetween({ minimum: 1, maximum: 2 }))
     ),
-    evidenceRefs: Schema.Array(FailureEvidenceRefV1).pipe(
+    evidenceRefs: Schema.Array(FailureEvidenceV1Schema).pipe(
       Schema.check(Schema.isMaxLength(8))
     ),
     failedRef: FailureRefV1Schema,
@@ -225,6 +336,31 @@ export class FailureRepairFailed extends Schema.Class<FailureRepairFailed>(
   strict
 ) {}
 
+/** Terminal policy truth for an ambiguous provider action outcome. */
+export class FailureOutcomeUnknownPolicyV1 extends Schema.Class<FailureOutcomeUnknownPolicyV1>(
+  "FailureOutcomeUnknownPolicyV1"
+)(
+  {
+    nextSafeAction: Schema.Literal("reconciliation"),
+    outcomeCertainty: Schema.Literal("unknown"),
+    retryability: Schema.Literal("reconciliationRequired"),
+    tag: Schema.Literal("externalOutcomeUnknown"),
+    version: Schema.Literal(1),
+  },
+  strict
+) {}
+
+/** Canonical terminal policy for an ambiguous provider action outcome. */
+export const failureOutcomeUnknownPolicyV1 = FailureOutcomeUnknownPolicyV1.make(
+  {
+    nextSafeAction: "reconciliation",
+    outcomeCertainty: "unknown",
+    retryability: "reconciliationRequired",
+    tag: "externalOutcomeUnknown",
+    version: 1,
+  }
+);
+
 /** Sticky terminal state for an ambiguous repair provider outcome. */
 export class FailureRepairOutcomeUnknown extends Schema.Class<FailureRepairOutcomeUnknown>(
   "FailureRepairOutcomeUnknown"
@@ -234,6 +370,7 @@ export class FailureRepairOutcomeUnknown extends Schema.Class<FailureRepairOutco
     code: FailureRepairCodeSchema,
     message: FailureRepairMessageSchema,
     state: Schema.Literal("outcomeUnknown"),
+    terminalPolicy: FailureOutcomeUnknownPolicyV1,
   },
   strict
 ) {}
@@ -263,6 +400,15 @@ export const FailureRepairReceiptSchema = Schema.Union([
 
 /** Durable failure-repair receipt. */
 export type FailureRepairReceipt = typeof FailureRepairReceiptSchema.Type;
+
+/** Decide from an origin failure digest or terminal unknown-outcome receipt. */
+export function decideFailureRepair(
+  input: FailureDigestV1 | FailureRepairOutcomeUnknown
+): typeof FailureRepairDecisionSchema.Type {
+  return "terminalPolicy" in input
+    ? input.terminalPolicy.nextSafeAction
+    : input.nextSafeAction;
+}
 
 const MakeFailureDigestV1InputSchema = Schema.Struct({
   attempt: FailureDigestV1.fields.attempt,
@@ -327,13 +473,6 @@ export function makeFailureDigestV1(
           : "Failure requires operator escalation.",
     version: 1,
   });
-}
-
-/** Decide the next authorized action for one parsed failure digest. */
-export function decideFailureRepair(
-  digest: FailureDigestV1
-): typeof FailureRepairDecisionSchema.Type {
-  return digest.nextSafeAction;
 }
 
 /** Parse and self-authenticate a persisted failure digest. */

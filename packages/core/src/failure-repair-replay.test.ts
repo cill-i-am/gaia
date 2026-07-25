@@ -14,6 +14,7 @@ import {
   FailureRepairSuperseded,
   FailureRepairTurnCompleted,
   FailureRepairVerified,
+  failureOutcomeUnknownPolicyV1,
   makeFailureDigestV1,
 } from "./failure-repair.js";
 import { replayRunEvents } from "./machine.js";
@@ -104,6 +105,7 @@ describe("failure repair replay", () => {
       code: "RepairDispatchOutcomeUnknown",
       message: "Repair dispatch outcome is unknown.",
       state: "outcomeUnknown",
+      terminalPolicy: failureOutcomeUnknownPolicyV1,
     });
     events.push(
       repairEvent(fixture.runId, intent, 6),
@@ -129,6 +131,48 @@ describe("failure repair replay", () => {
         ),
       ])
     );
+  });
+
+  it("rejects schema-valid command evidence that differs from the authoritative failed proof", () => {
+    const fixture = makeFixture();
+    const original = fixture.failureEvidence[0];
+    assert.ok(original);
+    const tamperedEvidence = [
+      { ...original, evidenceId: makeProofEvidenceIdV2("command", ["7"]) },
+      { ...original, receiptDigest: "7".repeat(64) },
+      { ...original, requestDigest: "7".repeat(64) },
+      { ...original, status: "succeeded" as const },
+      {
+        ...original,
+        terminalSequence: parseRunEventSequence(original.terminalSequence + 1),
+      },
+    ];
+
+    for (const evidence of tamperedEvidence) {
+      const digest = makeFailureDigestV1({
+        attempt: 1,
+        evidenceRefs: [evidence],
+        failedRef: fixture.repair.digest.failedRef,
+        maxAttempts: 2,
+        outcomeCertainty: "confirmed",
+        retryability: "repairable",
+        stage: "verifying",
+        tag: "verificationClaimFailed",
+      });
+      const intent = FailureRepairIntent.make({
+        ...fixture.repair,
+        digest,
+        state: "intentRecorded",
+      });
+
+      assert.strictEqual(digest.fingerprint, fixture.repair.digest.fingerprint);
+      assert.throws(() =>
+        replayRunEvents([
+          ...initialFailure(fixture),
+          repairEvent(fixture.runId, intent, 6),
+        ])
+      );
+    }
   });
 
   it("rejects a terminal that predates the durable dispatch attempt", () => {
@@ -526,9 +570,19 @@ function makeFixture() {
   });
   const claim = contract.proofClaims.find((entry) => entry.kind === "command");
   assert.ok(claim);
+  const failureEvidence = [
+    {
+      evidenceId: makeProofEvidenceIdV2("command", ["6".repeat(64)]),
+      kind: "command" as const,
+      receiptDigest: "6".repeat(64),
+      requestDigest: makeVerificationCommandRequestDigest(claim.command),
+      status: "nonZero" as const,
+      terminalSequence: parseRunEventSequence(4),
+    },
+  ];
   const digest = makeFailureDigestV1({
     attempt: 1,
-    evidenceRefs: [],
+    evidenceRefs: failureEvidence,
     failedRef: { claimId: claim.claimId, kind: "claim" },
     maxAttempts: 2,
     outcomeCertainty: "confirmed",
@@ -539,6 +593,7 @@ function makeFixture() {
   return {
     claim,
     contract,
+    failureEvidence,
     repair: {
       digest,
       episodeKey: `failureRepair:${digest.fingerprint}:1`,
@@ -693,7 +748,7 @@ function makeProof(
               }
             : {
                 claimId: claim.claimId,
-                evidence: [],
+                evidence: fixture.failureEvidence,
                 reason: "The exact command returned a non-zero status.",
                 status: "failed",
               }

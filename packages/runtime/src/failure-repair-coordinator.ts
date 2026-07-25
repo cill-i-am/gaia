@@ -10,6 +10,7 @@ import {
   FailureRepairSuperseded,
   FailureRepairTurnCompleted,
   FailureRepairVerified,
+  failureOutcomeUnknownPolicyV1,
   HarnessEventSchema,
   HarnessExecutionSelection,
   ModelInvocationEpisodeStartV1,
@@ -24,6 +25,8 @@ import {
   parseModelInvocationObservation,
   parseRunEventSequence,
   parseWorkspaceRelativePath,
+  projectFailureEvidenceV1,
+  renderFailureEvidenceV1,
   resolveModelInvocationEpisodes,
   RunIdSchema,
   snapshotFromReplay,
@@ -176,18 +179,7 @@ function reserveRepairIntent(runId: RunId, paths: RunPaths) {
         return failedRepair;
       if (failed?.status !== "failed") return current;
       const attempt = (current?.digest.attempt ?? 0) + 1;
-      const evidenceRefs = failed.evidence
-        .flatMap((evidence) =>
-          evidence.kind === "artifact-integrity"
-            ? evidence.artifacts.map((artifact) => ({
-                artifactPath: artifact.path,
-                contentDigest: artifact.contentDigest,
-                evidenceId: evidence.evidenceId,
-                kind: evidence.kind,
-              }))
-            : []
-        )
-        .slice(0, 8);
+      const evidenceRefs = projectFailureEvidenceV1(failed.evidence);
       const digest = makeFailureDigestV1({
         attempt,
         evidenceRefs,
@@ -219,7 +211,7 @@ function reserveRepairIntent(runId: RunId, paths: RunPaths) {
           events,
           paths,
           runId,
-          taskInput: repairPrompt(intent),
+          taskInput: makeFailureRepairTaskInput(intent),
         });
       yield* appendEventWithinSerialization(runId, paths, {
         payload: {
@@ -470,6 +462,7 @@ function runRepairTurn(
                         message:
                           "The repair transport has no exact durable completed terminal and will not be redispatched.",
                         state: "outcomeUnknown",
+                        terminalPolicy: failureOutcomeUnknownPolicyV1,
                       })
                     )
                   )
@@ -503,6 +496,7 @@ function reconcileAttemptedRepair(
           message:
             "A prior repair attempt has no authoritative intent and will not be redispatched.",
           state: "outcomeUnknown",
+          terminalPolicy: failureOutcomeUnknownPolicyV1,
         })
       );
     const existingTurns = new Set(
@@ -573,6 +567,7 @@ function reconcileAttemptedRepair(
             message:
               "A prior repair attempt has no single durable completed terminal and will not be redispatched.",
             state: "outcomeUnknown",
+            terminalPolicy: failureOutcomeUnknownPolicyV1,
           })
         );
   });
@@ -875,7 +870,7 @@ function acceptedExecution(event: RunEvent) {
   };
 }
 
-function repairPrompt(repair: FailureRepairReceipt) {
+export function makeFailureRepairTaskInput(repair: FailureRepairReceipt) {
   const failed = repair.digest.failedRef;
   return [
     "Continue the same Gaia implementation session and repair only the exact failed verification claim.",
@@ -884,6 +879,7 @@ function repairPrompt(repair: FailureRepairReceipt) {
     `Stage: ${repair.digest.stage}.`,
     `Attempt: ${repair.digest.attempt}/${repair.digest.maxAttempts}.`,
     `Failed ${failed.kind}: ${failed.kind === "claim" ? failed.claimId : failed.actionId}.`,
+    ...repair.digest.evidenceRefs.flatMap(renderFailureEvidenceV1),
     "Run focused verification for the repaired behavior and stop.",
   ].join("\n");
 }

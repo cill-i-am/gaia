@@ -58,6 +58,7 @@ import {
 import {
   encodeFailureRepairReceiptJson,
   FailureRepairReceiptSchema,
+  matchesFailureEvidenceProjectionV1,
   parseFailureRepairReceipt,
   validateFailureRepairTransition,
   type FailureRepairReceipt,
@@ -2211,6 +2212,10 @@ function assertFailureRepairReplayAuthority(
     );
     if (
       result?.status !== "failed" ||
+      !matchesFailureEvidenceProjectionV1(
+        receipt.digest.evidenceRefs,
+        result.evidence
+      ) ||
       failed.contentAuthoritySequence !== authority.contentAuthoritySequence ||
       latestProofEvent?.sequence !== receipt.failedProofResultSequence
     )

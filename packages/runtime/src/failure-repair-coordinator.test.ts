@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { NodeServices } from "@effect/platform-node";
 import { layer } from "@effect/vitest";
 import {
+  ClaimEvidenceV2Schema,
+  FailureRepairIntent,
   HarnessCapabilities,
   HarnessProviderDescriptor,
   HarnessSessionSnapshot,
@@ -13,6 +15,9 @@ import {
   codexAppServerHarnessProfileId,
   encodeAnyRunContractJson,
   encodeAnyRunProofResultJson,
+  encodeFailureDigestV1Json,
+  encodeFailureRepairReceiptJson,
+  makeFailureDigestV1,
   makeModelContextContentV1,
   makeModelContextManifestV1,
   makeModelInvocationManifestV1,
@@ -29,6 +34,7 @@ import {
   parseRunEventSequence,
   parseRunId,
   ProofClaimResultV2Schema,
+  projectFailureEvidenceV1,
   renderModelInputV1,
   resolveModelInvocationEpisodes,
   snapshotFromReplay,
@@ -44,7 +50,7 @@ import {
   Schema,
   Stream,
 } from "effect";
-import { describe, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { makeLiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
 import {
@@ -56,12 +62,14 @@ import { issueDeliveryAgentIds } from "./factory-workflows.js";
 import {
   continueFailureRepair,
   continueFailureRepairWithinLease,
+  makeFailureRepairTaskInput,
 } from "./failure-repair-coordinator.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import type { HarnessProvider, HarnessSession } from "./harness-session.js";
 import {
   commitModelInvocationPair,
   deriveModelWorkspaceBinding,
+  loadModelInvocationPair,
 } from "./model-invocation.js";
 import { makeRunPaths } from "./paths.js";
 import type { RunPaths } from "./paths.js";
@@ -88,6 +96,67 @@ const descriptor = HarnessProviderDescriptor.make({
 });
 
 describe("failure repair coordinator", () => {
+  it("keeps the maximum valid artifact evidence projection inside the model-input byte bound", () => {
+    const evidence = Schema.decodeUnknownSync(
+      Schema.Array(ClaimEvidenceV2Schema)
+    )([
+      {
+        artifacts: Array.from({ length: 8 }, (_, index) => ({
+          contentDigest: index.toString(16).repeat(64),
+          path: `${index}/${"a".repeat(4_094)}`,
+        })),
+        evidenceId: makeProofEvidenceIdV2("artifact", ["bounded-repair"]),
+        kind: "artifact-integrity",
+      },
+    ]);
+    const evidenceRefs = projectFailureEvidenceV1(evidence);
+    const digest = makeFailureDigestV1({
+      attempt: 1,
+      evidenceRefs,
+      failedRef: {
+        claimId: `proof-claim:sha256:${"a".repeat(64)}`,
+        kind: "claim",
+      },
+      maxAttempts: 2,
+      outcomeCertainty: "confirmed",
+      retryability: "repairable",
+      stage: "verifying",
+      tag: "verificationClaimFailed",
+    });
+    const taskInput = makeFailureRepairTaskInput(
+      FailureRepairIntent.make({
+        digest,
+        episodeKey: `failureRepair:${digest.fingerprint}:1`,
+        failedProofResultSequence: parseRunEventSequence(4),
+        runId,
+        state: "intentRecorded",
+      })
+    );
+
+    expect(evidenceRefs.length).toBeLessThan(8);
+    expect(new TextEncoder().encode(taskInput).byteLength).toBeLessThanOrEqual(
+      16_384
+    );
+    expect(() =>
+      makeModelContextContentV1({
+        acceptedOutcomes: ["Repair the exact failed claim."],
+        authority: ["Edit only the accepted worker workspace."],
+        budget: { maxOutputBytes: 16_384, maxTurns: 1 },
+        contentRefs: [],
+        episodeRole: "failureRepair",
+        instructions: ["Follow the accepted instructions."],
+        nonGoals: ["Do not publish or deploy."],
+        outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+        planningFacts: ["events.jsonl is authoritative."],
+        safeExclusions: ["credentials"],
+        skills: ["effect-ts"],
+        stops: ["Stop on scope drift."],
+        taskInput,
+        verificationCommands: ["pnpm test"],
+      })
+    ).not.toThrow();
+  });
+
   layer(NodeServices.layer)((it) => {
     it.effect(
       "resumes the accepted released session, sends once, captures one terminal, and verifies with a distinct episode",
@@ -144,17 +213,47 @@ describe("failure repair coordinator", () => {
               "verified",
             ]);
             expect(repairEpisodes).toHaveLength(1);
-            expect(repairEpisodes[0]?.start.episodeKey).not.toBe(
-              "workerInitial"
-            );
+            const repairEpisode = repairEpisodes[0];
+            if (repairEpisode === undefined)
+              return yield* Effect.die("repair model episode missing");
+            expect(repairEpisode.start.episodeKey).not.toBe("workerInitial");
             if (seeded.workerEpisode === undefined)
               return yield* Effect.die("worker model episode missing");
-            expect(repairEpisodes[0]?.start.contextRef.identityDigest).not.toBe(
+            expect(repairEpisode.start.contextRef.identityDigest).not.toBe(
               seeded.workerEpisode.contextRef.identityDigest
             );
-            expect(
-              repairEpisodes[0]?.start.invocationRef.identityDigest
-            ).not.toBe(seeded.workerEpisode.invocationRef.identityDigest);
+            expect(repairEpisode.start.invocationRef.identityDigest).not.toBe(
+              seeded.workerEpisode.invocationRef.identityDigest
+            );
+            const repairModel = yield* loadModelInvocationPair(
+              seeded.paths,
+              repairEpisode.start
+            );
+            const repairTaskInput =
+              repairModel.context.payload.content.taskInput;
+            expect(repairTaskInput).toContain(
+              `Evidence ID: ${makeProofEvidenceIdV2("command", [
+                "6".repeat(64),
+              ])}.`
+            );
+            expect(repairTaskInput).toContain(
+              `Request digest: ${makeVerificationCommandRequestDigest(
+                seeded.claim.command
+              )}.`
+            );
+            expect(repairTaskInput).toContain(
+              `Receipt digest: ${"6".repeat(64)}.`
+            );
+            expect(repairTaskInput).toContain("Command status: nonZero.");
+            expect(repairTaskInput).toContain(
+              `Terminal sequence: ${seeded.contentAuthoritySequence}.`
+            );
+            expect(repairTaskInput.length).toBeLessThanOrEqual(2_048);
+            expect(repairTaskInput).not.toContain("stdout");
+            expect(repairTaskInput).not.toContain("stderr");
+            expect(repairTaskInput).not.toContain("provider-token");
+            expect(repairTaskInput).not.toContain("/Users/");
+            expect(provider.sent[0]).toContain(repairTaskInput);
             expect(result?.state).toBe("verified");
             expect(
               yield* coordinator.get({
@@ -180,7 +279,7 @@ describe("failure repair coordinator", () => {
             );
             const coordinator = makeLiveHarnessSessionCoordinator();
             let verificationCount = 0;
-            const first = yield* continueFailureRepairWithinLease(runId, {
+            const options = {
               harnessProviderRegistry: makeHarnessProviderRegistry([
                 {
                   profileId: codexAppServerHarnessProfileId,
@@ -194,34 +293,57 @@ describe("failure repair coordinator", () => {
                 }),
               rootDirectory: seeded.root,
               sessionCoordinator: coordinator,
-            }).pipe(Effect.forkChild);
+            };
+            const first = yield* continueFailureRepairWithinLease(
+              runId,
+              options
+            ).pipe(Effect.forkChild);
             yield* Deferred.await(sendStarted);
             yield* Fiber.interrupt(first);
-            const attempted = (yield* readEvents(seeded.paths)).findLast(
+            const attemptedEvent = (yield* readEvents(seeded.paths)).findLast(
               ({ type }) => type === "FAILURE_REPAIR_RECORDED"
             );
-            expect(
-              parseFailureRepairReceipt(attempted?.payload["failureRepair"])
-                .state
-            ).toBe("dispatchAttempted");
+            const attempted = parseFailureRepairReceipt(
+              attemptedEvent?.payload["failureRepair"]
+            );
+            expect(attempted.state).toBe("dispatchAttempted");
 
-            const restarted = yield* continueFailureRepairWithinLease(runId, {
-              harnessProviderRegistry: makeHarnessProviderRegistry([
-                {
-                  profileId: codexAppServerHarnessProfileId,
-                  provider,
-                },
-              ]),
-              reverify: () =>
-                Effect.sync(() => {
-                  verificationCount += 1;
-                  return seeded.failedProof;
-                }),
-              rootDirectory: seeded.root,
-              sessionCoordinator: coordinator,
-            });
+            const restarted = yield* continueFailureRepairWithinLease(
+              runId,
+              options
+            );
+            const terminalReplay = yield* continueFailureRepairWithinLease(
+              runId,
+              options
+            );
 
             expect(restarted?.state).toBe("outcomeUnknown");
+            expect(terminalReplay?.state).toBe("outcomeUnknown");
+            if (restarted?.state !== "outcomeUnknown")
+              return yield* Effect.die("unknown repair outcome missing");
+            const encodedUnknown = Schema.decodeUnknownSync(
+              Schema.Record(Schema.String, Schema.Json)
+            )(encodeFailureRepairReceiptJson(restarted));
+            expect(encodedUnknown["terminalPolicy"]).toEqual({
+              nextSafeAction: "reconciliation",
+              outcomeCertainty: "unknown",
+              retryability: "reconciliationRequired",
+              tag: "externalOutcomeUnknown",
+              version: 1,
+            });
+            expect(restarted.digest.fingerprint).toBe(
+              attempted.digest.fingerprint
+            );
+            expect(restarted.digest.attempt).toBe(attempted.digest.attempt);
+            expect(restarted.digest.failedRef).toEqual(
+              attempted.digest.failedRef
+            );
+            expect(restarted.failedProofResultSequence).toBe(
+              attempted.failedProofResultSequence
+            );
+            expect(encodeFailureDigestV1Json(restarted.digest)).toEqual(
+              encodeFailureDigestV1Json(attempted.digest)
+            );
             expect(provider.sent).toHaveLength(1);
             expect(provider.resumeRequests).toHaveLength(1);
             expect(verificationCount).toBe(0);
@@ -1132,8 +1254,22 @@ function appendProof(
                 }
               : {
                   claimId: claim.claimId,
-                  evidence: [],
-                  reason: "The exact command returned a non-zero status.",
+                  evidence: [
+                    {
+                      evidenceId: makeProofEvidenceIdV2("command", [
+                        "6".repeat(64),
+                      ]),
+                      kind: "command",
+                      receiptDigest: "6".repeat(64),
+                      requestDigest: makeVerificationCommandRequestDigest(
+                        fixture.claim.command
+                      ),
+                      status: "nonZero",
+                      terminalSequence: authority,
+                    },
+                  ],
+                  reason:
+                    "stdout: raw output; stderr: provider-token at /Users/example/workspace.",
                   status: "failed",
                 }
             : claim.kind === "human-judgment"

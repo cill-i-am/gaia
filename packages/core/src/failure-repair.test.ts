@@ -1,9 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
+import { Schema } from "effect";
 
 import { parseRunEvent } from "./events.js";
 import {
   decideFailureRepair,
   encodeFailureDigestV1Json,
+  encodeFailureRepairReceiptJson,
   FailureRepairDispatchAttempted,
   FailureRepairExhausted,
   FailureRepairFailed,
@@ -12,8 +14,10 @@ import {
   FailureRepairSuperseded,
   FailureRepairTurnCompleted,
   FailureRepairVerified,
+  failureOutcomeUnknownPolicyV1,
   makeFailureDigestV1,
   parseFailureDigestV1,
+  parseFailureRepairReceipt,
   validateFailureRepairTransition,
 } from "./failure-repair.js";
 import { parseRunEventSequence } from "./run-contract.js";
@@ -29,10 +33,12 @@ describe("failure repair contracts", () => {
       attempt: 1,
       evidenceRefs: [
         {
-          artifactPath: "verification/claim-command.json",
-          contentDigest: "c".repeat(64),
           evidenceId,
           kind: "command",
+          receiptDigest: "c".repeat(64),
+          requestDigest: "d".repeat(64),
+          status: "nonZero",
+          terminalSequence: parseRunEventSequence(4),
         },
       ],
       failedRef: { claimId, kind: "claim" },
@@ -123,10 +129,12 @@ describe("failure repair contracts", () => {
       attempt: 1,
       evidenceRefs: [
         {
-          artifactPath: "verification/claim-command.json",
-          contentDigest: "c".repeat(64),
           evidenceId,
           kind: "command",
+          receiptDigest: "c".repeat(64),
+          requestDigest: "d".repeat(64),
+          status: "nonZero",
+          terminalSequence: parseRunEventSequence(4),
         },
       ],
       failedRef: { claimId, kind: "claim" },
@@ -242,12 +250,16 @@ describe("failure repair contracts", () => {
       code: "RepairDispatchOutcomeUnknown",
       message: "Repair dispatch outcome is unknown.",
       state: "outcomeUnknown",
+      terminalPolicy: failureOutcomeUnknownPolicyV1,
     });
     const superseded = FailureRepairSuperseded.make({
       ...common,
       proofResultSequence: parseRunEventSequence(11),
       state: "superseded",
     });
+    const encodedUnknown = Schema.decodeUnknownSync(
+      Schema.Record(Schema.String, Schema.Json)
+    )(encodeFailureRepairReceiptJson(unknown));
 
     assert.doesNotThrow(() =>
       validateFailureRepairTransition(undefined, intent)
@@ -291,6 +303,30 @@ describe("failure repair contracts", () => {
     );
     assert.throws(() =>
       validateFailureRepairTransition(verified, secondIntent)
+    );
+    assert.deepEqual(
+      encodedUnknown["digest"],
+      encodeFailureDigestV1Json(digest)
+    );
+    assert.deepEqual(encodedUnknown["terminalPolicy"], {
+      nextSafeAction: "reconciliation",
+      outcomeCertainty: "unknown",
+      retryability: "reconciliationRequired",
+      tag: "externalOutcomeUnknown",
+      version: 1,
+    });
+    assert.strictEqual(decideFailureRepair(unknown), "reconciliation");
+    assert.throws(() =>
+      parseFailureRepairReceipt({
+        ...encodedUnknown,
+        terminalPolicy: {
+          nextSafeAction: "repair",
+          outcomeCertainty: "confirmed",
+          retryability: "repairable",
+          tag: "verificationClaimFailed",
+          version: 1,
+        },
+      })
     );
   });
 
