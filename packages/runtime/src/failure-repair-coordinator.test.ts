@@ -5,6 +5,7 @@ import { layer } from "@effect/vitest";
 import {
   ClaimEvidenceV2Schema,
   FailureRepairIntent,
+  FAILURE_REPAIR_EVIDENCE_INPUT_BUDGET_BYTES,
   HarnessCapabilities,
   HarnessProviderDescriptor,
   HarnessSessionSnapshot,
@@ -13,6 +14,7 @@ import {
   ModelInvocationObservationV1,
   ResolvedHarnessExecution,
   codexAppServerHarnessProfileId,
+  deriveExplicitSpecItemDigest,
   encodeAnyRunContractJson,
   encodeAnyRunProofResultJson,
   encodeFailureDigestV1Json,
@@ -35,6 +37,7 @@ import {
   parseRunId,
   ProofClaimResultV2Schema,
   projectFailureEvidenceV1,
+  renderFailureEvidenceV1,
   renderModelInputV1,
   resolveModelInvocationEpisodes,
   snapshotFromReplay,
@@ -95,21 +98,110 @@ const descriptor = HarnessProviderDescriptor.make({
   providerId: parseHarnessProviderId("recording-repair"),
 });
 
+function maximumArtifactPaths() {
+  return Array.from(
+    { length: 8 },
+    (_, index) => `${index}/${"a".repeat(1_298)}`
+  );
+}
+
+function maximumValidArtifactEvidence(claimId?: string) {
+  const artifacts = maximumArtifactPaths().map((path, index) => ({
+    contentDigest: index.toString(16).repeat(64),
+    path,
+  }));
+  return Schema.decodeUnknownSync(Schema.Array(ClaimEvidenceV2Schema))([
+    {
+      artifacts,
+      evidenceId: makeProofEvidenceIdV2(
+        "artifact",
+        claimId === undefined ? ["bounded-repair"] : [claimId, artifacts]
+      ),
+      kind: "artifact-integrity",
+    },
+  ]);
+}
+
+function specWithMaximumArtifactClaim() {
+  const outcomeStatement = "The bounded artifact set is intact.";
+  const artifactStatement = "Verify the bounded artifact set.";
+  const commandStatement =
+    "Run the pinned POSIX printf command with no network or credentials.";
+  const paths = maximumArtifactPaths()
+    .map((path) => `            - "${path}"`)
+    .join("\n");
+  return `---
+title: Bounded repair production-path fixture
+verification:
+  version: 2
+  outcomes:
+    - key: artifact-output
+      statement: ${outcomeStatement}
+      sourceItemDigest: "${deriveExplicitSpecItemDigest({
+        section: "acceptanceCriteria",
+        statement: outcomeStatement,
+      })}"
+      prePublicationRequiredClaims: [artifact-proof]
+      postPublicationRequiredClaims: []
+      conditionalClaims: [smoke-command]
+  claims:
+    - key: artifact-proof
+      statement: ${artifactStatement}
+      sourceItemDigest: "${deriveExplicitSpecItemDigest({
+        section: "verificationChecks",
+        statement: artifactStatement,
+      })}"
+      phase: prePublication
+      kind: artifact-integrity
+      selector:
+        paths:
+${paths}
+    - key: smoke-command
+      statement: ${commandStatement}
+      sourceItemDigest: "${deriveExplicitSpecItemDigest({
+        section: "verificationChecks",
+        statement: commandStatement,
+      })}"
+      phase: prePublication
+      kind: command
+      command:
+        executableId: posix-printf-v1
+        argv: ["%s", "gaia-claim-ok\\n"]
+        workingDirectory: .
+        timeoutMs: 30000
+        outputLimitBytes: 1048576
+        workspaceAccess: read-write
+        network: denied
+        credentials: none
+        expectedExitCode: 0
+        expectedStdoutByteLength: 14
+        expectedStdoutSha256: c67d2c0ac3e5ea53ed76dadc9aab773e884efedcaac2be11aaa4b096576f5849
+---
+
+## Acceptance Criteria
+
+- ${outcomeStatement}
+
+## Verification
+
+- ${artifactStatement}
+- ${commandStatement}
+`;
+}
+
 describe("failure repair coordinator", () => {
   it("keeps the maximum valid artifact evidence projection inside the model-input byte bound", () => {
-    const evidence = Schema.decodeUnknownSync(
-      Schema.Array(ClaimEvidenceV2Schema)
-    )([
-      {
-        artifacts: Array.from({ length: 8 }, (_, index) => ({
-          contentDigest: index.toString(16).repeat(64),
-          path: `${index}/${"a".repeat(4_094)}`,
-        })),
-        evidenceId: makeProofEvidenceIdV2("artifact", ["bounded-repair"]),
-        kind: "artifact-integrity",
-      },
-    ]);
+    const evidence = maximumValidArtifactEvidence();
     const evidenceRefs = projectFailureEvidenceV1(evidence);
+    const evidenceBytes = evidenceRefs.reduce(
+      (total, evidenceRef) =>
+        total +
+        new TextEncoder().encode(
+          renderFailureEvidenceV1(evidenceRef).join("\n")
+        ).byteLength +
+        1,
+      0
+    );
     const digest = makeFailureDigestV1({
       attempt: 1,
       evidenceRefs,
@@ -133,7 +225,8 @@ describe("failure repair coordinator", () => {
       })
     );
 
-    expect(evidenceRefs.length).toBeLessThan(8);
+    expect(evidenceRefs).toHaveLength(8);
+    expect(evidenceBytes).toBe(FAILURE_REPAIR_EVIDENCE_INPUT_BUDGET_BYTES);
     expect(new TextEncoder().encode(taskInput).byteLength).toBeLessThanOrEqual(
       16_384
     );
@@ -158,6 +251,114 @@ describe("failure repair coordinator", () => {
   });
 
   layer(NodeServices.layer)((it) => {
+    it.effect(
+      "bounds the committed repair invocation and exact provider input when inherited context plus evidence overflow",
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const seeded = yield* setupFailedRun({
+              initialAcceptedOutcomes: ["a".repeat(4_096), "b".repeat(4_096)],
+              maximumArtifactFailureEvidence: true,
+            });
+            if (seeded.workerEpisode === undefined)
+              return yield* Effect.die("worker model episode missing");
+            const initialModel = yield* loadModelInvocationPair(
+              seeded.paths,
+              seeded.workerEpisode
+            );
+            const provider = recordingProvider(seeded.paths.workspace);
+
+            expect(
+              new TextEncoder().encode(initialModel.rendered.text).byteLength
+            ).toBeLessThanOrEqual(16_384);
+
+            const result = yield* continueFailureRepair(runId, {
+              harnessProviderRegistry: makeHarnessProviderRegistry([
+                {
+                  profileId: codexAppServerHarnessProfileId,
+                  provider,
+                },
+              ]),
+              reverify: ({ paths }) => appendProof(paths, seeded, true),
+              rootDirectory: seeded.root,
+              sessionCoordinator: makeLiveHarnessSessionCoordinator(),
+            });
+
+            const events = yield* readEvents(seeded.paths);
+            const resolution = resolveModelInvocationEpisodes(events);
+            if (resolution.protocol !== "v1")
+              return yield* Effect.die("model protocol missing");
+            const repairEpisode = resolution.episodes.find(({ start }) =>
+              start.episodeKey.startsWith("failureRepair:")
+            );
+            if (repairEpisode === undefined)
+              return yield* Effect.die("repair model episode missing");
+            const repairModel = yield* loadModelInvocationPair(
+              seeded.paths,
+              repairEpisode.start
+            );
+            const repairBytes = new TextEncoder().encode(
+              repairModel.rendered.text
+            ).byteLength;
+            const repairContent = repairModel.context.payload.content;
+            const renderedContext = [
+              ...repairContent.acceptedOutcomes,
+              ...repairContent.authority,
+              ...repairContent.instructions,
+              ...repairContent.nonGoals,
+              ...repairContent.planningFacts,
+              ...repairContent.safeExclusions,
+              ...repairContent.skills,
+              ...repairContent.stops,
+              ...repairContent.verificationCommands,
+            ].join("\n");
+
+            expect(result?.state).toBe("verified");
+            expect(
+              initialModel.context.payload.content.acceptedOutcomes
+            ).toEqual(["a".repeat(4_096), "b".repeat(4_096)]);
+            expect(repairModel.rendered.text).not.toContain("a".repeat(4_096));
+            expect(repairModel.rendered.text).not.toContain("b".repeat(4_096));
+            expect(repairModel.rendered.byteLength).toBe(repairBytes);
+            expect(repairBytes).toBeLessThanOrEqual(16_384);
+            expect(provider.sent).toEqual([repairModel.rendered.text]);
+            expect(
+              repairModel.context.payload.authoritativeRefs
+            ).toContainEqual({
+              digest: initialModel.context.contextDigest,
+              kind: "baseContext",
+            });
+            expect(repairModel.rendered.text).toContain(
+              `Failed claim: ${seeded.failedClaimId}.`
+            );
+            expect(repairModel.rendered.text).toContain("Failure fingerprint:");
+            expect(repairModel.rendered.text).toContain("Attempt: 1/2.");
+            expect(repairModel.rendered.text).toContain(
+              "Evidence is replay-authenticated against the authoritative failed proof."
+            );
+            expect(renderedContext).toContain(
+              "every original accepted outcome remains binding"
+            );
+            expect(renderedContext).toContain(
+              "Use only the original authority and accepted worker workspace"
+            );
+            expect(renderedContext).toContain("Do not broaden scope");
+            expect(renderedContext).toContain(
+              "Stop before action on authority or scope drift"
+            );
+            expect(renderedContext).toContain(
+              "events.jsonl and the authenticated base context"
+            );
+            expect(renderedContext).toContain(
+              "raw stdout, stderr, secrets, credentials, absolute local paths, or unbounded text"
+            );
+            expect(renderedContext).toContain(
+              "Run only focused claim-matched verification"
+            );
+          })
+        )
+    );
+
     it.effect(
       "resumes the accepted released session, sends once, captures one terminal, and verifies with a distinct episode",
       () =>
@@ -1012,8 +1213,10 @@ describe("failure repair coordinator", () => {
 function setupFailedRun(
   options: {
     readonly deliveryMode?: boolean;
+    readonly initialAcceptedOutcomes?: ReadonlyArray<string>;
     readonly initialProofPassed?: boolean;
     readonly legacyModelInvocation?: boolean;
+    readonly maximumArtifactFailureEvidence?: boolean;
   } = {}
 ) {
   return Effect.gen(function* () {
@@ -1026,13 +1229,15 @@ function setupFailedRun(
     yield* fs.writeFileString(paths.input, "# Repair\n\nRepair one claim.\n");
 
     const spec = parseMarkdownSpec(
-      readFileSync(
-        new URL(
-          "../../../examples/specs/claim-verification-v2.md",
-          import.meta.url
-        ),
-        "utf8"
-      ),
+      options.maximumArtifactFailureEvidence === true
+        ? specWithMaximumArtifactClaim()
+        : readFileSync(
+            new URL(
+              "../../../examples/specs/claim-verification-v2.md",
+              import.meta.url
+            ),
+            "utf8"
+          ),
       "failure repair"
     );
     const contract = makeRunContractV2({
@@ -1047,6 +1252,14 @@ function setupFailedRun(
       (entry) => entry.kind === "command"
     );
     if (claim === undefined) return yield* Effect.die("command claim missing");
+    const failedClaim =
+      options.maximumArtifactFailureEvidence === true
+        ? contract.proofClaims.find(
+            (entry) => entry.kind === "artifact-integrity"
+          )
+        : claim;
+    if (failedClaim === undefined)
+      return yield* Effect.die("failed claim missing");
     const resolved = ResolvedHarnessExecution.make({
       capabilities,
       executionMode: "local",
@@ -1093,7 +1306,9 @@ function setupFailedRun(
     });
 
     const content = makeModelContextContentV1({
-      acceptedOutcomes: ["Repair the exact failed claim."],
+      acceptedOutcomes: options.initialAcceptedOutcomes ?? [
+        "Repair the exact failed claim.",
+      ],
       authority: ["Edit only the accepted worker workspace."],
       budget: { maxOutputBytes: 16_384, maxTurns: 1 },
       contentRefs: [],
@@ -1179,7 +1394,11 @@ function setupFailedRun(
     });
     const initialProof = yield* appendProof(
       paths,
-      { claim, contract },
+      {
+        claim,
+        contract,
+        failedClaimId: failedClaim.claimId,
+      },
       options.initialProofPassed ?? false,
       completed.event.sequence
     );
@@ -1187,6 +1406,7 @@ function setupFailedRun(
       claim,
       contract,
       contentAuthoritySequence: completed.event.sequence,
+      failedClaimId: failedClaim.claimId,
       failedProof: initialProof,
       initialProof,
       paths,
@@ -1204,6 +1424,7 @@ function appendProof(
       { readonly kind: "command" }
     >;
     readonly contract: RunContractV2;
+    readonly failedClaimId?: string;
   },
   passed: boolean,
   contentAuthoritySequence?: number
@@ -1221,6 +1442,7 @@ function appendProof(
       )?.sequence;
     if (authority === undefined)
       return yield* Effect.die("content authority missing");
+    const failedClaimId = fixture.failedClaimId ?? fixture.claim.claimId;
     const result = makeRunProofResultV2({
       contentAuthoritySequence: parseRunEventSequence(authority),
       contract: fixture.contract,
@@ -1232,46 +1454,64 @@ function appendProof(
       },
       results: Schema.decodeUnknownSync(Schema.Array(ProofClaimResultV2Schema))(
         fixture.contract.proofClaims.map((claim) =>
-          claim.claimId === fixture.claim.claimId
-            ? passed
+          claim.claimId === failedClaimId
+            ? claim.kind === "artifact-integrity"
               ? {
                   claimId: claim.claimId,
-                  evidence: [
-                    {
-                      evidenceId: makeProofEvidenceIdV2("command", [
-                        "5".repeat(64),
-                      ]),
-                      kind: "command",
-                      receiptDigest: "5".repeat(64),
-                      requestDigest: makeVerificationCommandRequestDigest(
-                        fixture.claim.command
-                      ),
-                      status: "succeeded",
-                      terminalSequence: authority,
-                    },
-                  ],
-                  status: "passed",
+                  evidence: maximumValidArtifactEvidence(claim.claimId),
+                  ...(passed
+                    ? { status: "passed" as const }
+                    : {
+                        reason:
+                          "stdout: raw output; stderr: provider-token at /Users/example/workspace.",
+                        status: "failed" as const,
+                      }),
                 }
-              : {
-                  claimId: claim.claimId,
-                  evidence: [
-                    {
-                      evidenceId: makeProofEvidenceIdV2("command", [
-                        "6".repeat(64),
-                      ]),
-                      kind: "command",
-                      receiptDigest: "6".repeat(64),
-                      requestDigest: makeVerificationCommandRequestDigest(
-                        fixture.claim.command
-                      ),
-                      status: "nonZero",
-                      terminalSequence: authority,
-                    },
-                  ],
-                  reason:
-                    "stdout: raw output; stderr: provider-token at /Users/example/workspace.",
-                  status: "failed",
-                }
+              : claim.kind === "command"
+                ? passed
+                  ? {
+                      claimId: claim.claimId,
+                      evidence: [
+                        {
+                          evidenceId: makeProofEvidenceIdV2("command", [
+                            "5".repeat(64),
+                          ]),
+                          kind: "command",
+                          receiptDigest: "5".repeat(64),
+                          requestDigest: makeVerificationCommandRequestDigest(
+                            claim.command
+                          ),
+                          status: "succeeded",
+                          terminalSequence: authority,
+                        },
+                      ],
+                      status: "passed",
+                    }
+                  : {
+                      claimId: claim.claimId,
+                      evidence: [
+                        {
+                          evidenceId: makeProofEvidenceIdV2("command", [
+                            "6".repeat(64),
+                          ]),
+                          kind: "command",
+                          receiptDigest: "6".repeat(64),
+                          requestDigest: makeVerificationCommandRequestDigest(
+                            claim.command
+                          ),
+                          status: "nonZero",
+                          terminalSequence: authority,
+                        },
+                      ],
+                      reason:
+                        "stdout: raw output; stderr: provider-token at /Users/example/workspace.",
+                      status: "failed",
+                    }
+                : {
+                    claimId: claim.claimId,
+                    reason: "Unsupported production-path failure fixture.",
+                    status: "not-run",
+                  }
             : claim.kind === "human-judgment"
               ? {
                   claimId: claim.claimId,

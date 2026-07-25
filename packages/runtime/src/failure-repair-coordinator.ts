@@ -878,7 +878,9 @@ export function makeFailureRepairTaskInput(repair: FailureRepairReceipt) {
     `Failure: ${repair.digest.safeSummary}`,
     `Stage: ${repair.digest.stage}.`,
     `Attempt: ${repair.digest.attempt}/${repair.digest.maxAttempts}.`,
+    `Failure fingerprint: ${repair.digest.fingerprint}.`,
     `Failed ${failed.kind}: ${failed.kind === "claim" ? failed.claimId : failed.actionId}.`,
+    "Evidence is replay-authenticated against the authoritative failed proof.",
     ...repair.digest.evidenceRefs.flatMap(renderFailureEvidenceV1),
     "Run focused verification for the repaired behavior and stop.",
   ].join("\n");
