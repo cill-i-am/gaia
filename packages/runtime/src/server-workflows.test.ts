@@ -47,6 +47,7 @@ import {
   HarnessEnvironmentReceiptArtifactRefV1,
   digestHarnessEnvironmentContract,
   HarnessProviderDescriptor,
+  parseFailureRepairReceipt,
   makeRunControlActionBindingDigest,
   parseMergeDecisionV2,
   parseRunContract,
@@ -83,6 +84,7 @@ import {
   parseCodexTurnId,
 } from "./codex-app-server-protocol.js";
 import { makeCodexHarnessConfig } from "./codex-harness.js";
+import { StagedDockerSandboxVerificationReceiptSchema } from "./docker-sandbox-verification-executor.js";
 import { GaiaRuntimeError } from "./errors.js";
 import { appendEvent, readEvents } from "./event-store.js";
 import {
@@ -102,7 +104,7 @@ import { makeProcessHarnessConfig } from "./harness.js";
 import { commitHarnessEnvironmentCandidate } from "./interactive-harness.js";
 import { recordMergeDecision } from "./merge-decision.js";
 import { commitDerivedAppModelInvocationEpisode } from "./model-invocation.js";
-import { makeRunPaths, type RunPaths } from "./paths.js";
+import { makeRunPaths, parseRuntimePath, type RunPaths } from "./paths.js";
 import {
   ReviewFinding,
   ReviewResult,
@@ -129,11 +131,17 @@ import {
   readWorkerEnvironmentEpochComparison,
 } from "./server-workflows.js";
 import { localSkillManifestSource } from "./skill-manifest.js";
-import { testHarnessProvider } from "./test-support.js";
+import {
+  testHarnessCapabilities,
+  testHarnessProvider,
+} from "./test-support.js";
+import { readVerificationExecutionProfile } from "./verification-execution-profile.js";
+import type { VerificationServices } from "./verifier.js";
 import {
   HarnessLaunchObservationLive,
   HarnessLaunchObservationService,
 } from "./worker-runtime-environment.js";
+import { observeWorkspaceStructuralDigest } from "./workspace-snapshot.js";
 import { localDirectoryWorkspaceSource } from "./workspace.js";
 
 const WorkerContinuationEventPayloadSchema = Schema.Struct({
@@ -257,6 +265,80 @@ function makeMarkerHarnessProviderRegistry(rootDirectory: string) {
       provider,
     },
   ]);
+}
+
+function makeFailureRepairHarnessProvider() {
+  let repairResumes = 0;
+  let repairSends = 0;
+  const makeSession = (
+    sessionId: ReturnType<typeof parseHarnessSessionId>,
+    turnId: ReturnType<typeof parseHarnessTurnId>,
+    repair: boolean
+  ): HarnessSession => {
+    const harnessEvents = [
+      {
+        capabilities: testHarnessCapabilities,
+        kind: "sessionStarted" as const,
+        provider: testHarnessProvider.descriptor,
+        sessionId,
+        state: "running" as const,
+      },
+      ...(repair ? [{ kind: "sessionRecovered" as const, sessionId }] : []),
+      { kind: "turnStarted" as const, sessionId, turnId },
+      {
+        kind: "turnCompleted" as const,
+        sessionId,
+        status: "completed" as const,
+        turnId,
+      },
+    ];
+    return {
+      events: Stream.fromIterable(harnessEvents),
+      interrupt: Option.some(Effect.void),
+      resolveInteraction: () => Effect.void,
+      send: () =>
+        Effect.sync(() => {
+          if (repair) repairSends += 1;
+          return undefined;
+        }),
+      snapshot: Effect.succeed(projectHarnessEvents(harnessEvents, sessionId)),
+      steer: Option.none(),
+    };
+  };
+  const provider: HarnessProvider = {
+    ...testHarnessProvider,
+    createSession: ({ sessionId }) =>
+      Effect.succeed(
+        makeSession(
+          sessionId,
+          parseHarnessTurnId("turn-failure-repair-initial"),
+          false
+        )
+      ),
+    resumeSession: ({ sessionId }) =>
+      Effect.sync(() => {
+        repairResumes += 1;
+        return makeSession(
+          sessionId,
+          parseHarnessTurnId(`turn-failure-repair-${repairResumes}`),
+          true
+        );
+      }),
+  };
+  return {
+    get repairResumes() {
+      return repairResumes;
+    },
+    get repairSends() {
+      return repairSends;
+    },
+    registry: makeHarnessProviderRegistry([
+      {
+        profileId: codexAppServerExecutionSelection.harnessProfileId,
+        provider,
+      },
+    ]),
+  };
 }
 
 describe("server workflows", () => {
@@ -831,6 +913,147 @@ describe("server workflows", () => {
             mode: "local",
           });
         })
+    );
+
+    it.effect("repairs one failed exact claim before evidence review", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const rootDirectory = yield* fs.makeTempDirectory({
+          prefix: "gaia-failure-repair-workflow-",
+        });
+        const harness = makeFailureRepairHarnessProvider();
+        const coordinator = makeLiveHarnessSessionCoordinator();
+        const profile = yield* readVerificationExecutionProfile(
+          parseRuntimePath(
+            `${process.cwd()}/../../profiles/claim-verification.json`
+          )
+        );
+        let verificationExecutions = 0;
+        const verificationServices = {
+          executor: {
+            execute: (invocation) =>
+              Effect.gen(function* () {
+                verificationExecutions += 1;
+                const passed = verificationExecutions === 2;
+                const sandboxUuid = passed
+                  ? "123e4567-e89b-12d3-a456-426614174002"
+                  : "123e4567-e89b-12d3-a456-426614174001";
+                yield* invocation.onSandboxCreated({
+                  sandboxName: invocation.sandboxName,
+                  sandboxUuid,
+                });
+                yield* fs.writeFileString(
+                  invocation.stdoutPath,
+                  passed ? "gaia-claim-ok\n" : ""
+                );
+                yield* fs.writeFileString(invocation.stderrPath, "");
+                const observed = yield* observeWorkspaceStructuralDigest(
+                  invocation.workspace
+                );
+                return Schema.decodeUnknownSync(
+                  StagedDockerSandboxVerificationReceiptSchema
+                )({
+                  cleanup: {
+                    finalAbsenceConfirmed: true,
+                    removedSandboxUuid: sandboxUuid,
+                    stoppedSandboxUuid: sandboxUuid,
+                  },
+                  durationMs: 1,
+                  exitCode: passed ? 0 : 1,
+                  observedProviderExitCode: passed ? 0 : 1,
+                  observedExecutionIdentity: {
+                    imageDigest: profile.imageDigest,
+                    providerBuild: profile.provider.build,
+                    providerVersion: profile.provider.version,
+                    templateReference: profile.templateReference,
+                  },
+                  sandboxUuid,
+                  status: passed ? "succeeded" : "nonZero",
+                  stderr: {
+                    artifactPath: invocation.stderrArtifactPath,
+                    contentDigest:
+                      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                    observedByteCount: 0,
+                    retainedByteCount: 0,
+                    truncated: false,
+                  },
+                  stdout: {
+                    artifactPath: invocation.stdoutArtifactPath,
+                    contentDigest: passed
+                      ? "c67d2c0ac3e5ea53ed76dadc9aab773e884efedcaac2be11aaa4b096576f5849"
+                      : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                    observedByteCount: passed ? 14 : 0,
+                    retainedByteCount: passed ? 14 : 0,
+                    truncated: false,
+                  },
+                  workspaceObservation: observed,
+                });
+              }).pipe(Effect.orDie),
+            reconcile: () => Effect.die("must not reconcile"),
+          },
+          profile,
+        } satisfies VerificationServices;
+        const accepted = yield* acceptFactoryRun(
+          {
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery",
+            workItem: {
+              description: [
+                "---",
+                "title: Accepted issue wrapper",
+                "---",
+                readFileSync(
+                  `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+                  "utf8"
+                ),
+              ].join("\n"),
+              kind: "issue",
+              title: "Repair one failed exact claim",
+            },
+          },
+          {
+            harnessProviderRegistry: harness.registry,
+            rootDirectory,
+          }
+        );
+
+        const summary = yield* continueServerRun(accepted.runId, {
+          harnessProviderRegistry: harness.registry,
+          rootDirectory,
+          sessionCoordinator: coordinator,
+          verificationServices,
+        });
+        const events = (yield* readLocalRunEvents(accepted.runId, {
+          rootDirectory,
+        })).events;
+        const repairReceipts = events.flatMap((event) =>
+          event.type === "FAILURE_REPAIR_RECORDED"
+            ? [parseFailureRepairReceipt(event.payload["failureRepair"])]
+            : []
+        );
+        const repairVerifiedIndex = events.findIndex(
+          (event) =>
+            event.type === "FAILURE_REPAIR_RECORDED" &&
+            parseFailureRepairReceipt(event.payload["failureRepair"]).state ===
+              "verified"
+        );
+        const evidenceReviewIndex = events.findIndex(
+          (event) =>
+            event.type === "REVIEW_STARTED" &&
+            event.payload["phase"] === "evidence"
+        );
+
+        assert.strictEqual(summary.state, "completed");
+        assert.strictEqual(verificationExecutions, 2);
+        assert.strictEqual(harness.repairResumes, 1);
+        assert.strictEqual(harness.repairSends, 1);
+        assert.deepEqual(
+          repairReceipts.map(({ state }) => state),
+          ["intentRecorded", "dispatchAttempted", "turnCompleted", "verified"]
+        );
+        assert.isTrue(repairVerifiedIndex >= 0);
+        assert.isTrue(evidenceReviewIndex > repairVerifiedIndex);
+      })
     );
 
     it.effect(

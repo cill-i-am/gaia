@@ -784,6 +784,43 @@ function hashText(value: unknown) {
 }
 
 /**
+ * Render one compact repair-only view without replacing the authenticated
+ * initial context, which remains authoritative history through baseContext.
+ */
+function projectFailureRepairModelContextV1(
+  baseContextDigest: typeof ModelContextManifestV1.Type.contextDigest
+) {
+  const baseContext = `authenticated base context ${baseContextDigest}`;
+  return {
+    acceptedOutcomes: [
+      `Repair only the exact failure named in the task input; every original accepted outcome remains binding through the ${baseContext}.`,
+    ],
+    authority: [
+      `Use only the original authority and accepted worker workspace from the ${baseContext}; this repair projection grants no new authority.`,
+    ],
+    instructions: [
+      "Act only on the exact claim, fingerprint, attempt, and replay-authenticated safe evidence in the task input.",
+    ],
+    nonGoals: [
+      "Do not broaden scope, change unrelated files, publish, deploy, merge, retry, redispatch, or perform a second provider action.",
+    ],
+    planningFacts: [
+      `events.jsonl and the ${baseContext} remain authoritative history; this bounded projection cannot replace or weaken them.`,
+    ],
+    safeExclusions: [
+      "Do not use or emit raw stdout, stderr, secrets, credentials, absolute local paths, or unbounded text.",
+    ],
+    skills: [`Use only skills already authorized by the ${baseContext}.`],
+    stops: [
+      "Stop before action on authority or scope drift, or if the exact failure, authenticated context, or replay evidence cannot be honored.",
+    ],
+    verificationCommands: [
+      "Run only focused claim-matched verification; Gaia re-runs the exact failed claim after durable terminal capture.",
+    ],
+  } as const;
+}
+
+/**
  * Derive one bounded App-server input episode from the event-owned initial
  * worker context. This is intentionally limited to the four named continuation
  * roles; it does not create a general prompt/session abstraction.
@@ -794,6 +831,7 @@ export function commitDerivedAppModelInvocationEpisode(input: {
     | "operatorFollowUp"
     | "operatorSteer"
     | "deliveryRemediation"
+    | "failureRepair"
     | "workerRecovery"
     | "workerCorrelation"
     | "workerDesktopOriginCorrelation";
@@ -831,21 +869,35 @@ export function commitDerivedAppModelInvocationEpisode(input: {
       );
     const base = yield* loadModelInvocationPair(input.paths, baseEpisode.start);
     const baseContent = base.context.payload.content;
+    const projectedContext =
+      input.episodeRole === "failureRepair"
+        ? projectFailureRepairModelContextV1(base.context.contextDigest)
+        : {
+            acceptedOutcomes: baseContent.acceptedOutcomes,
+            authority: baseContent.authority,
+            instructions: baseContent.instructions,
+            nonGoals: baseContent.nonGoals,
+            planningFacts: baseContent.planningFacts,
+            safeExclusions: baseContent.safeExclusions,
+            skills: baseContent.skills,
+            stops: baseContent.stops,
+            verificationCommands: baseContent.verificationCommands,
+          };
     const content = makeModelContextContentV1({
-      acceptedOutcomes: baseContent.acceptedOutcomes,
-      authority: baseContent.authority,
+      acceptedOutcomes: projectedContext.acceptedOutcomes,
+      authority: projectedContext.authority,
       budget: baseContent.budget,
       contentRefs: baseContent.contentRefs,
       episodeRole: input.episodeRole,
-      instructions: baseContent.instructions,
-      nonGoals: baseContent.nonGoals,
+      instructions: projectedContext.instructions,
+      nonGoals: projectedContext.nonGoals,
       outputContract: baseContent.outputContract,
-      planningFacts: baseContent.planningFacts,
-      safeExclusions: baseContent.safeExclusions,
-      skills: baseContent.skills,
-      stops: baseContent.stops,
+      planningFacts: projectedContext.planningFacts,
+      safeExclusions: projectedContext.safeExclusions,
+      skills: projectedContext.skills,
+      stops: projectedContext.stops,
       taskInput: input.taskInput,
-      verificationCommands: baseContent.verificationCommands,
+      verificationCommands: projectedContext.verificationCommands,
     });
     const rendered = renderModelInputV1(content);
     const context = makeModelContextManifestV1({

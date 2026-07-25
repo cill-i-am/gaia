@@ -12,6 +12,7 @@ import {
   makeProofEvidenceIdV2,
   makeVerificationCommandRequestDigest,
   parseDeliveryLocalReviewAttestationReceipt,
+  parseFailureRepairReceipt,
   ProofClaimResultV2Schema,
   parseRunContract,
   parseRunEventSequence,
@@ -762,15 +763,19 @@ function latestExactCommandReceipt(
 }
 
 function currentContentAuthoritySequence(events: readonly RunEvent[]) {
-  const sequence = [...events]
-    .reverse()
-    .find((event) =>
-      [
-        "WORKER_COMPLETED",
-        "WORKER_CONTINUATION_RECORDED",
-        "DELIVERY_REMEDIATION_RECORDED",
-      ].includes(event.type)
-    )?.sequence;
+  const sequence = [...events].reverse().find((event) => {
+    if (
+      event.type === "WORKER_COMPLETED" ||
+      event.type === "WORKER_CONTINUATION_RECORDED" ||
+      event.type === "DELIVERY_REMEDIATION_RECORDED"
+    )
+      return true;
+    return (
+      event.type === "FAILURE_REPAIR_RECORDED" &&
+      parseFailureRepairReceipt(event.payload["failureRepair"]).state ===
+        "turnCompleted"
+    );
+  })?.sequence;
   if (sequence === undefined)
     throw new Error("V2 proof requires a durable content-authority event.");
   return parseRunEventSequence(sequence);

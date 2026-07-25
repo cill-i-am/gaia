@@ -55,12 +55,23 @@ import {
   type RunState,
   RunStateSchema,
 } from "./events.js";
+import {
+  encodeFailureRepairReceiptJson,
+  FailureRepairReceiptSchema,
+  matchesFailureEvidenceProjectionV1,
+  parseFailureRepairReceipt,
+  validateFailureRepairTransition,
+  type FailureRepairReceipt,
+} from "./failure-repair.js";
 import { parseHarnessEvent, replayHarnessSession } from "./harness-session.js";
 import {
   parseMergeDecisionV2,
   type MergeDecisionV2,
 } from "./merge-decision.js";
-import { resolveModelInvocationEpisodes } from "./model-invocation.js";
+import {
+  parseModelInvocationObservation,
+  resolveModelInvocationEpisodes,
+} from "./model-invocation.js";
 import {
   parseAnyRunContract,
   parseAnyRunProofResult,
@@ -222,6 +233,7 @@ export const RunMachineContextSchema = Schema.Struct({
   delivery: Schema.UndefinedOr(RunMachineDeliverySchema),
   evidenceReviewPath: Schema.UndefinedOr(RunMachinePathSchema),
   failure: Schema.UndefinedOr(GaiaFailure),
+  failureRepair: Schema.UndefinedOr(FailureRepairReceiptSchema),
   githubChecksPath: Schema.UndefinedOr(RunMachinePathSchema),
   githubChecksStatus: Schema.UndefinedOr(RunMachineStatusSchema),
   githubFeedbackCommentCount: Schema.UndefinedOr(Schema.Number),
@@ -388,6 +400,10 @@ export const RunMachineEventSchema = Schema.Union([
     type: Schema.Literal("RUN_PROOF_RESULT_RECORDED"),
   }),
   Schema.Struct({
+    failureRepair: FailureRepairReceiptSchema,
+    type: Schema.Literal("FAILURE_REPAIR_RECORDED"),
+  }),
+  Schema.Struct({
     evidenceKind: Schema.optionalKey(Schema.Literal("page")),
     evidencePath: RunMachinePathSchema,
     evidenceSelector: Schema.optionalKey(VerificationSourceKeySchema),
@@ -507,6 +523,7 @@ const initialContext = parseRunMachineContext({
   delivery: undefined,
   evidenceReviewPath: undefined,
   failure: undefined,
+  failureRepair: undefined,
   githubChecksPath: undefined,
   githubChecksStatus: undefined,
   githubFeedbackCommentCount: undefined,
@@ -563,6 +580,7 @@ type RunMachineActionParams = {
   readonly recordDeliveryReadyToPublish: undefined;
   readonly recordDeliveryRemediation: undefined;
   readonly recordFailure: undefined;
+  readonly recordFailureRepair: undefined;
   readonly recordGitHubChecks: undefined;
   readonly recordGitHubFeedback: undefined;
   readonly recordGitHubPrComment: undefined;
@@ -593,6 +611,10 @@ type RunMachineGuardParams = {
   readonly controlPause: undefined;
   readonly controlResolveInteraction: undefined;
   readonly controlResume: undefined;
+  readonly failureRepairAttemptFailed: undefined;
+  readonly failureRepairIntent: undefined;
+  readonly failureRepairTerminalFailure: undefined;
+  readonly failureRepairTurnCompleted: undefined;
   readonly restoreWaitingForHuman: undefined;
   readonly workerContinuationFailed: undefined;
   readonly workerContinuationRunning: undefined;
@@ -946,6 +968,19 @@ export const runMachine = runMachineSetup
             actions: "recordDeliveryReadyToPublish",
             target: "delivering",
           },
+          FAILURE_REPAIR_RECORDED: [
+            {
+              actions: "recordFailureRepair",
+              guard: "failureRepairIntent",
+              target: "runningWorker",
+            },
+            {
+              actions: "recordFailureRepair",
+              guard: "failureRepairTerminalFailure",
+              target: "failed",
+            },
+            { actions: "recordFailureRepair" },
+          ],
           PREVIEW_DEPLOYMENT_RECORDED: {
             actions: "recordPreviewDeployment",
           },
@@ -966,6 +1001,24 @@ export const runMachine = runMachineSetup
       },
       runningWorker: {
         on: {
+          FAILURE_REPAIR_RECORDED: [
+            {
+              actions: "recordFailureRepair",
+              guard: "failureRepairTurnCompleted",
+              target: "verifying",
+            },
+            {
+              actions: "recordFailureRepair",
+              guard: "failureRepairAttemptFailed",
+              target: "reporting",
+            },
+            {
+              actions: "recordFailureRepair",
+              guard: "failureRepairTerminalFailure",
+              target: "failed",
+            },
+            { actions: "recordFailureRepair" },
+          ],
           RUN_CONTROL_INTENT_RECORDED: { actions: "recordRunControl" },
           RUN_CONTROL_ATTEMPTED: { actions: "recordRunControl" },
           RUN_CONTROL_FAILED: { actions: "recordRunControl" },
@@ -1086,6 +1139,14 @@ export const runMachine = runMachineSetup
       },
       verifying: {
         on: {
+          FAILURE_REPAIR_RECORDED: [
+            {
+              actions: "recordFailureRepair",
+              guard: "failureRepairTerminalFailure",
+              target: "failed",
+            },
+            { actions: "recordFailureRepair" },
+          ],
           RUN_CONTROL_CONFIRMED: {
             actions: "recordRunControl",
             guard: "controlCancel",
@@ -1195,6 +1256,12 @@ export const runMachine = runMachineSetup
       recordFailure: assign({
         failure: ({ event }) =>
           event.type === "RUN_FAILED" ? event.failure : undefined,
+      }),
+      recordFailureRepair: assign({
+        failureRepair: ({ event }) =>
+          event.type === "FAILURE_REPAIR_RECORDED"
+            ? event.failureRepair
+            : undefined,
       }),
       recordDelivery: assign({
         delivery: ({ event }) =>
@@ -1645,6 +1712,22 @@ export const runMachine = runMachineSetup
       controlResume: ({ event }) =>
         event.type === "RUN_CONTROL_CONFIRMED" &&
         event.control.operation === "resume",
+      failureRepairAttemptFailed: ({ event }) =>
+        event.type === "FAILURE_REPAIR_RECORDED" &&
+        event.failureRepair.state === "failed" &&
+        event.failureRepair.proofResultSequence !== undefined,
+      failureRepairIntent: ({ event }) =>
+        event.type === "FAILURE_REPAIR_RECORDED" &&
+        event.failureRepair.state === "intentRecorded",
+      failureRepairTerminalFailure: ({ event }) =>
+        event.type === "FAILURE_REPAIR_RECORDED" &&
+        (event.failureRepair.state === "outcomeUnknown" ||
+          event.failureRepair.state === "exhausted" ||
+          (event.failureRepair.state === "failed" &&
+            event.failureRepair.proofResultSequence === undefined)),
+      failureRepairTurnCompleted: ({ event }) =>
+        event.type === "FAILURE_REPAIR_RECORDED" &&
+        event.failureRepair.state === "turnCompleted",
       restoreWaitingForHuman: ({ event }) =>
         event.type === "RUN_CONTROL_CONFIRMED" &&
         event.control.operation === "resume" &&
@@ -1706,6 +1789,7 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   const cleanupActions: typeof DeliveryCleanupReplayActionsSchema.Type = [];
   let runContract: RunContract | undefined;
   let latestProofResult: RunProofResult | undefined;
+  let failureRepair: FailureRepairReceipt | undefined;
   let contentAuthoritySequence = 1;
   let evidenceReviewSequence: number | undefined;
   let publicationConfirmationSequence: number | undefined;
@@ -1798,6 +1882,23 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
         );
       sawLegacyVerification = true;
       legacyVerificationSequence = event.sequence;
+    }
+    if (event.type === "FAILURE_REPAIR_RECORDED") {
+      if (runContract?.version !== 2)
+        throw new Error(
+          "Failure repair requires an immutable V2 run contract."
+        );
+      const next = parseFailureRepairReceipt(event.payload["failureRepair"]);
+      validateFailureRepairTransition(failureRepair, next);
+      assertFailureRepairReplayAuthority(next, {
+        contentAuthoritySequence,
+        currentSequence: event.sequence,
+        events,
+        runContract,
+      });
+      failureRepair = next;
+      if (next.state === "turnCompleted")
+        contentAuthoritySequence = event.sequence;
     }
     applyClaimVerificationReplay(
       event,
@@ -2068,7 +2169,187 @@ export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
     expectedSequence += 1;
   }
 
+  if (
+    failureRepair?.state === "intentRecorded" &&
+    latestProofResult?.recordedBy.sequence !==
+      failureRepair.failedProofResultSequence
+  )
+    throw new Error(
+      "Active failure-repair intent does not bind the latest authoritative proof."
+    );
+
   return actor.getSnapshot();
+}
+
+function assertFailureRepairReplayAuthority(
+  receipt: FailureRepairReceipt,
+  authority: {
+    readonly contentAuthoritySequence: number;
+    readonly currentSequence: number;
+    readonly events: ReadonlyArray<RunEvent>;
+    readonly runContract: Extract<RunContract, { version: 2 }>;
+  }
+) {
+  if (receipt.digest.failedRef.kind !== "claim")
+    throw new Error(
+      "The current repair tracer accepts only exact claim failures."
+    );
+  const failedClaimId = receipt.digest.failedRef.claimId;
+  const latestProofEvent = authority.events
+    .slice(0, authority.currentSequence - 1)
+    .findLast(({ type }) => type === "RUN_PROOF_RESULT_RECORDED");
+  if (receipt.state === "intentRecorded") {
+    if (receipt.digest.nextSafeAction !== "repair")
+      throw new Error(
+        "Failure-repair intent requires an authorized repair decision."
+      );
+    const failed = failureRepairProofResultAt(
+      receipt.failedProofResultSequence,
+      authority
+    );
+    const result = failed.results.find(
+      ({ claimId }) => claimId === failedClaimId
+    );
+    if (
+      result?.status !== "failed" ||
+      !matchesFailureEvidenceProjectionV1(
+        receipt.digest.evidenceRefs,
+        result.evidence
+      ) ||
+      failed.contentAuthoritySequence !== authority.contentAuthoritySequence ||
+      latestProofEvent?.sequence !== receipt.failedProofResultSequence
+    )
+      throw new Error(
+        "Failure-repair intent does not bind the current failed exact claim."
+      );
+  }
+  if (receipt.state === "turnCompleted") {
+    const terminal = priorEventAt(
+      receipt.terminalEventSequence,
+      authority.currentSequence,
+      authority.events
+    );
+    const dispatchAttempt = authority.events
+      .slice(0, authority.currentSequence - 1)
+      .findLast((event) => {
+        if (event.type !== "FAILURE_REPAIR_RECORDED") return false;
+        const prior = parseFailureRepairReceipt(event.payload["failureRepair"]);
+        return (
+          prior.episodeKey === receipt.episodeKey &&
+          prior.state === "dispatchAttempted"
+        );
+      });
+    if (
+      dispatchAttempt === undefined ||
+      terminal.sequence <= dispatchAttempt.sequence
+    )
+      throw new Error(
+        "Failure-repair terminal evidence must follow its durable dispatch attempt."
+      );
+    if (terminal.type !== "HARNESS_SESSION_EVENT_RECORDED")
+      throw new Error(
+        "Failure-repair turn completion requires durable harness terminal evidence."
+      );
+    const harnessEvent = parseHarnessEvent(terminal.payload["event"]);
+    if (
+      harnessEvent.kind !== "turnCompleted" ||
+      harnessEvent.status !== "completed" ||
+      harnessEvent.sessionId !== `session-${receipt.runId}`
+    )
+      throw new Error(
+        "Failure-repair turn completion does not bind the accepted completed terminal harness turn."
+      );
+    const matchingStart = authority.events
+      .slice(dispatchAttempt.sequence, terminal.sequence - 1)
+      .some((event) => {
+        if (event.type !== "HARNESS_SESSION_EVENT_RECORDED") return false;
+        const candidate = parseHarnessEvent(event.payload["event"]);
+        const observationValue = event.payload["modelInvocationObservation"];
+        const observation =
+          observationValue === undefined
+            ? undefined
+            : parseModelInvocationObservation(observationValue);
+        return (
+          candidate.kind === "turnStarted" &&
+          candidate.sessionId === harnessEvent.sessionId &&
+          candidate.turnId === harnessEvent.turnId &&
+          observation?.kind === "offered" &&
+          observation.episodeKey === receipt.episodeKey
+        );
+      });
+    if (!matchingStart)
+      throw new Error(
+        "Failure-repair terminal evidence has no matching post-dispatch turn start."
+      );
+  }
+  if (
+    receipt.state === "verified" ||
+    receipt.state === "superseded" ||
+    (receipt.state === "failed" && receipt.proofResultSequence !== undefined)
+  ) {
+    const proofResultSequence = receipt.proofResultSequence;
+    if (proofResultSequence === undefined)
+      throw new Error("Failure-repair proof result sequence is missing.");
+    const proof = failureRepairProofResultAt(proofResultSequence, authority);
+    const result = proof.results.find(
+      ({ claimId }) => claimId === failedClaimId
+    );
+    const expected =
+      receipt.state === "verified" || receipt.state === "superseded"
+        ? "passed"
+        : "failed";
+    if (
+      result?.status !== expected ||
+      proof.contentAuthoritySequence !== authority.contentAuthoritySequence
+    )
+      throw new Error(
+        "Failure-repair outcome does not bind fresh exact-claim proof."
+      );
+  }
+  if (
+    receipt.state === "superseded" &&
+    latestProofEvent?.sequence !== receipt.proofResultSequence
+  )
+    throw new Error(
+      "Failure-repair supersession does not bind the latest authoritative proof."
+    );
+}
+
+function failureRepairProofResultAt(
+  sequence: number,
+  authority: {
+    readonly currentSequence: number;
+    readonly events: ReadonlyArray<RunEvent>;
+    readonly runContract: Extract<RunContract, { version: 2 }>;
+  }
+) {
+  const event = priorEventAt(
+    sequence,
+    authority.currentSequence,
+    authority.events
+  );
+  if (event.type !== "RUN_PROOF_RESULT_RECORDED")
+    throw new Error("Failure repair does not bind a run-proof result.");
+  const result = parseAnyRunProofResult(
+    event.payload["result"],
+    authority.runContract
+  );
+  if (result.version !== 2)
+    throw new Error("Failure repair requires V2 exact-claim proof.");
+  return result;
+}
+
+function priorEventAt(
+  sequence: number,
+  currentSequence: number,
+  events: ReadonlyArray<RunEvent>
+) {
+  if (sequence >= currentSequence)
+    throw new Error("Failure repair cannot cite future evidence.");
+  const event = events[sequence - 1];
+  if (event?.sequence !== sequence)
+    throw new Error("Failure repair cites missing authoritative evidence.");
+  return event;
 }
 
 function applyClaimVerificationReplay(
@@ -2994,6 +3275,13 @@ function toMachineEventInput(event: RunEvent) {
           "verificationResultPath"
         ),
       };
+    case "FAILURE_REPAIR_RECORDED":
+      return {
+        failureRepair: parseFailureRepairReceipt(
+          event.payload["failureRepair"]
+        ),
+        type: event.type,
+      };
     case "RUN_FAILED":
       return {
         failure: GaiaFailure.make({
@@ -3819,6 +4107,11 @@ function snapshotContext(
   }
   if (context.evidenceReviewPath !== undefined) {
     output.evidenceReviewPath = context.evidenceReviewPath;
+  }
+  if (context.failureRepair !== undefined) {
+    output.failureRepair = encodeFailureRepairReceiptJson(
+      context.failureRepair
+    );
   }
   if (context.delivery !== undefined) {
     output.delivery = context.delivery;

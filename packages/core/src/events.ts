@@ -1,6 +1,8 @@
 import * as Schema from "effect/Schema";
 
 import { parseAcceptedRunInputCheckpointRef } from "./accepted-run-input.js";
+import { parseFailureRepairReceipt } from "./failure-repair.js";
+import { FailureStageSchema, type FailureStage } from "./failure-stage.js";
 import {
   parseModelInvocationEpisodeStart,
   parseModelInvocationObservation,
@@ -58,6 +60,7 @@ export const EventTypeSchema = Schema.Literals([
   "VERIFICATION_STARTED",
   "VERIFICATION_COMPLETED",
   "RUN_PROOF_RESULT_RECORDED",
+  "FAILURE_REPAIR_RECORDED",
   "CLAIM_VERIFICATION_GENERATION_STARTED",
   "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED",
   "CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED",
@@ -108,18 +111,7 @@ export const EventTypeSchema = Schema.Literals([
 /** Durable Gaia run event type. */
 export type EventType = typeof EventTypeSchema.Type;
 
-export const FailureStageSchema = Schema.Literals([
-  "creating",
-  "preparingWorkspace",
-  "reviewing",
-  "runningWorker",
-  "verifying",
-  "reporting",
-  "replaying",
-] as const);
-
-/** Lifecycle stage where a typed failure occurred. */
-export type FailureStage = typeof FailureStageSchema.Type;
+export { FailureStageSchema, type FailureStage };
 
 export const ReviewPhaseSchema = Schema.Literals(["plan", "evidence"] as const);
 
@@ -188,6 +180,13 @@ export const parseRunEvent = (input: unknown): RunEvent => {
       result.recordedBy.sequence !== event.sequence
     )
       throw new Error("Run-proof result does not bind its enclosing event.");
+  }
+  if (event.type === "FAILURE_REPAIR_RECORDED") {
+    const failureRepair = parseFailureRepairReceipt(
+      event.payload["failureRepair"]
+    );
+    if (failureRepair.runId !== event.runId)
+      throw new Error("Failure-repair payload belongs to another run.");
   }
   const episode = event.payload["modelInvocationEpisode"];
   if (episode !== undefined) {
