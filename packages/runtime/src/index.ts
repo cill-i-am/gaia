@@ -196,6 +196,14 @@ export {
   type HarnessSession,
 } from "./harness-session.js";
 export {
+  FactoryLessonArtifactV1,
+  FactoryLessonAttributionV1,
+  readFactoryLessons,
+  readFactoryLessonsArtifact,
+  rebuildFactoryLessons,
+  recordFactoryLessonReview,
+} from "./factory-lesson.js";
+export {
   codexReviewerName,
   CodexReviewDecision,
   CodexReviewerConfigInputSchema,

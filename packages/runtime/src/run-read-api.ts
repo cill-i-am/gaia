@@ -26,6 +26,7 @@ import {
 import { Cause, Effect, FileSystem, Option, Schema } from "effect";
 
 import { loadRun } from "./event-store.js";
+import { canonicalFactoryLessonArtifactBody } from "./factory-lesson.js";
 import {
   inspectModelInvocationArtifacts,
   readModelInvocationArtifactBody,
@@ -107,6 +108,10 @@ const artifactDefinitions: Readonly<
   "factory-scorecard-markdown": {
     contentType: "text/markdown",
     path: (paths) => paths.factoryScorecardMarkdown,
+  },
+  "factory-lessons": {
+    contentType: "application/json",
+    path: (paths) => paths.factoryLessons,
   },
   "plan-review": {
     contentType: "application/json",
@@ -356,7 +361,20 @@ export function readLocalRunArtifact(
         : artifactId.value === "verification-result" &&
             synchronized.proofResult !== undefined
           ? canonicalRunProofResultBody(synchronized.proofResult)
-          : undefined;
+          : artifactId.value === "factory-lessons"
+            ? yield* canonicalFactoryLessonArtifactBody(runId, options).pipe(
+                Effect.mapError(() =>
+                  parseLocalRunReadDiagnostic({
+                    artifactName: attemptedArtifactName,
+                    code: "ArtifactBodyCorrupt",
+                    message:
+                      "Authoritative factory lesson events could not be projected.",
+                    recoverable: false,
+                    runId,
+                  })
+                )
+              )
+            : undefined;
     if (eventOwnedBody !== undefined)
       return parseLocalRunArtifact({
         artifactName: artifactId.value,

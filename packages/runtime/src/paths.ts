@@ -81,6 +81,7 @@ export const RunPathsSchema = Schema.Struct({
   factoryArtifactsDirectory: RuntimePathSchema,
   factoryArtifactsIndex: RuntimePathSchema,
   factoryGraph: RuntimePathSchema,
+  factoryLessons: RuntimePathSchema,
   factoryRetroJson: RuntimePathSchema,
   factoryRetroMarkdown: RuntimePathSchema,
   factoryScorecardJson: RuntimePathSchema,
@@ -194,6 +195,10 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
       factoryArtifactsDirectory: path.join(root, "artifacts"),
       factoryArtifactsIndex: path.join(root, "artifacts", "index.json"),
       factoryGraph: path.join(root, "factory-graph.json"),
+      factoryLessons: path.join(
+        promotedEvidenceDirectory,
+        "factory-lessons.json"
+      ),
       factoryRetroJson: path.join(
         promotedEvidenceDirectory,
         "factory-retro.json"

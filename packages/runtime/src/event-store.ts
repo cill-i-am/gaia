@@ -103,6 +103,16 @@ export function appendEventWithinSerialization(
         })
       );
     }
+    if (eventType === "FACTORY_LESSON_REVIEW_RECORDED") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "UnsafeFactoryLessonReviewAppend",
+          message:
+            "Factory lesson reviews must use the finite reviewed promotion path.",
+          recoverable: false,
+        })
+      );
+    }
     const parsedInput = parseAppendEventInput(input);
     const existingEvents = yield* readEvents(paths);
     const sequence = existingEvents.length + 1;

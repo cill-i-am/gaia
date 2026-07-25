@@ -39,6 +39,7 @@ import {
 } from "@gaia/core";
 import { Effect, FileSystem, Option, Schema } from "effect";
 
+import { canonicalFactoryLessonArtifactBody } from "./factory-lesson.js";
 import {
   issueDeliveryAgentIds,
   issueDeliveryAgentParentIds,
@@ -164,6 +165,7 @@ const FactoryArtifactOwnerRoleSchema = Schema.Literals(
 );
 
 const FactoryArtifactDefinitionDataSchema = Schema.Struct({
+  additionalEventTypes: Schema.optionalKey(Schema.Array(RunEvent.fields.type)),
   artifactId: FactoryArtifactIdSchema,
   contentType: FactoryArtifactBodyDto.fields.contentType,
   eventType: RunEvent.fields.type,
@@ -396,6 +398,16 @@ const factoryArtifactDefinitions: ReadonlyArray<FactoryArtifactDefinition> = [
     ownerRole: "orchestrator",
     path: (paths) => paths.factoryScorecardMarkdown,
   },
+  {
+    additionalEventTypes: ["FACTORY_LESSON_CONTEXT_OBSERVED"],
+    artifactId: decodeFactoryArtifactId("factory-lessons"),
+    contentType: "application/json",
+    eventType: "FACTORY_LESSON_REVIEW_RECORDED",
+    kind: "custom",
+    label: "Reviewed factory lessons",
+    ownerRole: "orchestrator",
+    path: (paths) => paths.factoryLessons,
+  },
 ];
 
 export function writeInitialFactoryRunIndexes(
@@ -501,6 +513,30 @@ export function readFactoryArtifactBodyFromIndex(
 ) {
   return Effect.gen(function* () {
     const indexes = yield* readFactoryRunIndexes(runId, options);
+    if (artifactIdInput === "factory-lessons") {
+      const body = yield* canonicalFactoryLessonArtifactBody(
+        indexes.graph.runId,
+        options
+      ).pipe(
+        Effect.mapError(() =>
+          parseLocalRunReadDiagnostic({
+            artifactName: parseLocalRunArtifactName(artifactIdInput),
+            code: "ArtifactBodyCorrupt",
+            message:
+              "Authoritative factory lesson events could not be projected.",
+            recoverable: false,
+            runId: indexes.graph.runId,
+          })
+        )
+      );
+      return decodeFactoryArtifactBody({
+        artifactId: artifactIdInput,
+        body,
+        contentType: "application/json",
+        runId: indexes.graph.runId,
+      });
+    }
+
     const artifact = indexes.artifacts.artifacts.find(
       (candidate) => candidate.artifactId === artifactIdInput
     );
@@ -1484,9 +1520,11 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "WORKER_RECOVERY_RECORDED":
     case "RUN_WAITING_FOR_HUMAN":
     case "HARNESS_SESSION_EVENT_RECORDED":
+    case "FACTORY_LESSON_CONTEXT_OBSERVED":
       return "worker";
     case "REVIEW_STARTED":
     case "REVIEW_COMPLETED":
+    case "FACTORY_LESSON_REVIEW_RECORDED":
       return "reviewer";
     case "BROWSER_EVIDENCE_RECORDED":
     case "CLAIM_VERIFICATION_GENERATION_STARTED":
@@ -1661,6 +1699,10 @@ function activityLabel(event: RunEvent): string {
       return "Run proof result recorded";
     case "FAILURE_REPAIR_RECORDED":
       return "Failure repair updated";
+    case "FACTORY_LESSON_REVIEW_RECORDED":
+      return "Factory lesson review recorded";
+    case "FACTORY_LESSON_CONTEXT_OBSERVED":
+      return "Factory lesson context observed";
     case "CLAIM_VERIFICATION_GENERATION_STARTED":
       return "Claim verification generation started";
     case "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED":
@@ -1795,9 +1837,14 @@ function artifactsByEventType(
       continue;
     }
 
-    const current = byEvent.get(definition.eventType) ?? [];
-    current.push(artifact.artifactId);
-    byEvent.set(definition.eventType, current);
+    for (const eventType of [
+      definition.eventType,
+      ...(definition.additionalEventTypes ?? []),
+    ]) {
+      const current = byEvent.get(eventType) ?? [];
+      current.push(artifact.artifactId);
+      byEvent.set(eventType, current);
+    }
   }
 
   return byEvent;
@@ -1911,6 +1958,7 @@ function createdAtForArtifact(
     events.find(
       (event) =>
         event.type === definition.eventType ||
+        definition.additionalEventTypes?.includes(event.type) === true ||
         (definition.artifactId === "verification-result" &&
           event.type === "VERIFICATION_COMPLETED")
     )?.timestamp ??

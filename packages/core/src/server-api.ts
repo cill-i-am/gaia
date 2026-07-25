@@ -284,6 +284,7 @@ export const LocalRunArtifactIdSchema = Schema.Literals([
   "factory-retro-markdown",
   "factory-scorecard",
   "factory-scorecard-markdown",
+  "factory-lessons",
   "report",
   "report-json",
   "events",

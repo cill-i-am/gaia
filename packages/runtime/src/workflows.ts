@@ -2,10 +2,13 @@ import { createHash } from "node:crypto";
 
 import {
   GaiaFailure,
+  FactoryLessonContextObservationV1,
+  FactoryLessonContextSelectionV1,
   HarnessEnvironmentReceiptArtifactRefV1,
   MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
   MODEL_REVIEW_OUTPUT_CONTRACT_V1,
   makeModelContextContentV1,
+  makeFactoryLessonContextObservationV1,
   makeModelContextManifestV1,
   makeModelInvocationManifestV1,
   ModelInvocationEpisodeStartV1,
@@ -15,6 +18,7 @@ import {
   parseAnyRunProofResultEnvelope,
   parseRunId,
   parseRunControlEventPayload,
+  parseFactoryLessonContextSelectionV1,
   resolveAcceptedRunInputCheckpoint,
   resolveModelInvocationEpisodes,
   snapshotFromReplay,
@@ -23,6 +27,7 @@ import {
   RunStateSchema,
   RunVerificationAggregateSchema,
   renderModelInputV1,
+  selectFactoryLessonsForWorkerInitial,
   type ReviewPhase,
   type RunEvent,
   type RunId,
@@ -59,6 +64,7 @@ import {
   withRunEventSerialization,
 } from "./event-store.js";
 import { writeEvidencePromotion } from "./evidence-promotion.js";
+import { readFactoryLessons, rebuildFactoryLessons } from "./factory-lesson.js";
 import { writeFactoryRetro } from "./factory-retro.js";
 import { writeFactoryScorecard } from "./factory-scorecard.js";
 import { continueFailureRepairWithinLease } from "./failure-repair-coordinator.js";
@@ -507,7 +513,30 @@ function executeAcceptedRun(input: {
           );
           if (existing !== undefined) {
             const pair = yield* loadModelInvocationPair(paths, existing.start);
+            const rawSelection = modelHistory.find(
+              ({ type }) => type === "WORKER_STARTED"
+            )?.payload["factoryLessonContextSelection"];
+            const factoryLessonContextSelection =
+              rawSelection === undefined
+                ? undefined
+                : parseFactoryLessonContextSelectionV1(rawSelection);
+            if (
+              factoryLessonContextSelection !== undefined &&
+              factoryLessonContextSelection.contextContentDigest !==
+                pair.context.payload.contextContentDigest
+            )
+              return yield* Effect.fail(
+                makeRuntimeError({
+                  code: "FactoryLessonContextBindingMismatch",
+                  message:
+                    "The worker lesson selection does not bind its event-owned model context.",
+                  recoverable: false,
+                })
+              );
             return {
+              ...(factoryLessonContextSelection === undefined
+                ? {}
+                : { factoryLessonContextSelection }),
               modelInvocationEpisode: existing.start,
               modelRenderedInput: pair.rendered,
               modelWorkspaceBinding: pair.workspaceBinding,
@@ -522,7 +551,7 @@ function executeAcceptedRun(input: {
                 recoverable: false,
               })
             );
-          const content = makeModelContextContentV1({
+          const baseContent = makeModelContextContentV1({
             acceptedOutcomes: workerPlan.acceptanceCriteria,
             authority: [
               "Operate only within the accepted Gaia run and workspace authority.",
@@ -549,7 +578,17 @@ function executeAcceptedRun(input: {
               (check) => check.command ?? check.expectation
             ),
           });
-          const modelRenderedInput = renderModelInputV1(content);
+          const factoryLessonProjection = yield* readFactoryLessons(options);
+          const selectedFactoryLessons = selectFactoryLessonsForWorkerInitial({
+            available: factoryLessonProjection.active,
+            baseContent,
+            target: {
+              createdAt: modelHistory[0]?.timestamp ?? new Date().toISOString(),
+              runId,
+            },
+          });
+          const content = selectedFactoryLessons.content;
+          const modelRenderedInput = selectedFactoryLessons.rendered;
           const modelWorkspaceBinding =
             yield* deriveModelWorkspaceBinding(paths);
           const runContract = yield* loadRunContract(paths, runId);
@@ -637,6 +676,7 @@ function executeAcceptedRun(input: {
             paths,
           });
           return {
+            factoryLessonContextSelection: selectedFactoryLessons.selection,
             modelInvocationEpisode,
             modelRenderedInput,
             modelWorkspaceBinding,
@@ -662,6 +702,13 @@ function executeAcceptedRun(input: {
                 modelInvocationEpisode: Schema.encodeSync(
                   ModelInvocationEpisodeStartV1
                 )(modelProjection.modelInvocationEpisode),
+                ...(modelProjection.factoryLessonContextSelection === undefined
+                  ? {}
+                  : {
+                      factoryLessonContextSelection: Schema.encodeSync(
+                        FactoryLessonContextSelectionV1
+                      )(modelProjection.factoryLessonContextSelection),
+                    }),
               }),
           ...(harnessName === codexHarnessName
             ? {
@@ -739,6 +786,61 @@ function executeAcceptedRun(input: {
         harnessName === codexAppServerHarnessName
           ? yield* promoteHarnessEnvironmentCandidate(paths, runId)
           : undefined;
+      if (
+        workerContinuationState === "start" &&
+        modelProjection?.factoryLessonContextSelection !== undefined
+      ) {
+        for (const lesson of modelProjection.factoryLessonContextSelection
+          .lessons) {
+          const observations =
+            harnessName === codexHarnessName ||
+            harnessName === codexAppServerHarnessName
+              ? [
+                  {
+                    kind: "offered" as const,
+                    source:
+                      harnessName === codexHarnessName
+                        ? ("codexBatchTransport" as const)
+                        : ("codexAppServerTransport" as const),
+                    trust: "high" as const,
+                  },
+                  {
+                    kind: "unobservable" as const,
+                    source: "gaiaBoundary" as const,
+                    trust: "none" as const,
+                  },
+                ]
+              : [
+                  {
+                    kind: "unobservable" as const,
+                    source: "gaiaBoundary" as const,
+                    trust: "none" as const,
+                  },
+                ];
+          for (const observationInput of observations) {
+            const observation = makeFactoryLessonContextObservationV1({
+              ...observationInput,
+              contextContentDigest:
+                modelProjection.factoryLessonContextSelection
+                  .contextContentDigest,
+              episodeRole: "workerInitial",
+              lesson,
+              selectionDigest:
+                modelProjection.factoryLessonContextSelection.selectionDigest,
+              targetRunId: runId,
+            });
+            yield* appendEvent(runId, paths, {
+              payload: {
+                factoryLessonContextObservation: Schema.encodeSync(
+                  FactoryLessonContextObservationV1
+                )(observation),
+              },
+              type: "FACTORY_LESSON_CONTEXT_OBSERVED",
+            });
+          }
+        }
+        yield* rebuildFactoryLessons(runId, options);
+      }
       yield* appendEvent(runId, paths, {
         payload: {
           ...(harnessEnvironmentReceipt === undefined
