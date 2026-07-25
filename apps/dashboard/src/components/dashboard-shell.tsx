@@ -11,10 +11,14 @@ import {
   HarnessSessionIdSchema,
   HarnessTurnIdSchema,
   parseRunId,
+  parseRunControlAction,
+  parseRunControlActionId,
+  parseRunControlEventPayload,
   type LocalGaiaServerUrl,
   type RunId,
   RunIdSchema,
   RunEvent,
+  type RunControlOperation,
 } from "@gaia/core";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -55,9 +59,11 @@ import * as React from "react";
 
 import {
   buildAgentInspectorSessionModel,
+  buildAgentInspectorRunControlModel,
   type AgentInspectorConnection,
   type AgentInspectorPendingInteraction,
   type AgentInspectorSessionModel,
+  type AgentInspectorRunControlModel,
 } from "@/agent-inspector-model";
 import { createAgentSessionStreamController } from "@/agent-session-stream-controller";
 import {
@@ -154,6 +160,11 @@ import {
   localGaiaCreateRunMutationOptions,
   localGaiaHealthQueryOptions,
   localGaiaRunEventsQueryOptions,
+  localGaiaRunControlActionMutationOptions,
+  type DashboardRunControlActionMutationInput,
+  type DashboardRunControlActionMutationRequest,
+  DashboardRunControlActionMutationRequestIdSchema,
+  localGaiaRunControlQueryOptions,
   localGaiaRunQueryOptions,
   localGaiaRunsQueryOptions,
 } from "@/lib/local-gaia-query";
@@ -199,6 +210,7 @@ const statusLabels = {
   running: "Running",
   reviewing: "Reviewing",
   blocked: "Blocked",
+  cancelled: "Cancelled",
   complete: "Complete",
 } satisfies Record<RunStatus, string>;
 
@@ -207,7 +219,7 @@ function statusBadgeVariant(status: RunStatus) {
     return "destructive";
   }
 
-  if (status === "complete") {
+  if (status === "complete" || status === "cancelled") {
     return "secondary";
   }
 
@@ -274,6 +286,8 @@ const RunCanvasDataStateSchema = Schema.Struct({
 });
 
 const decodeHarnessActionId = Schema.decodeUnknownSync(HarnessActionIdSchema);
+const decodeDashboardRunControlActionMutationRequestId =
+  Schema.decodeUnknownSync(DashboardRunControlActionMutationRequestIdSchema);
 const decodeFactoryCanvasNodeId = Schema.decodeUnknownOption(
   FactoryCanvasNodeIdSchema
 );
@@ -959,6 +973,7 @@ export function DashboardShell() {
               deliverySnapshot={selectedDeliverySnapshot}
               inspector={selectedNodeInspector}
               replayState={replayState}
+              runEvents={selectedRunEvents}
               runCompare={runCompare}
               selectedRun={selectedRun}
               selectedRunId={selectedRunId}
@@ -2627,6 +2642,7 @@ function AgentInspectorSheet({
   deliverySnapshot,
   inspector,
   replayState,
+  runEvents,
   runCompare,
   selectedRun,
   selectedRunId,
@@ -2636,6 +2652,7 @@ function AgentInspectorSheet({
   readonly deliverySnapshot: typeof DeliverySnapshotDto.Type | undefined;
   readonly inspector: SelectedNodeInspectorModel;
   readonly replayState: RunReplayState;
+  readonly runEvents: ReadonlyArray<RunEvent>;
   readonly runCompare: RunCompareModel;
   readonly selectedRun: DashboardRun;
   readonly selectedRunId: RunId | undefined;
@@ -2664,6 +2681,7 @@ function AgentInspectorSheet({
             deliverySnapshot={deliverySnapshot}
             inspector={inspector}
             replayState={replayState}
+            runEvents={runEvents}
             runCompare={runCompare}
             selectedRun={selectedRun}
             selectedRunId={selectedRunId}
@@ -2801,6 +2819,7 @@ function AgentInspector({
   deliverySnapshot,
   inspector,
   replayState,
+  runEvents,
   runCompare,
   selectedRun,
   selectedRunId,
@@ -2810,6 +2829,7 @@ function AgentInspector({
   readonly deliverySnapshot: typeof DeliverySnapshotDto.Type | undefined;
   readonly inspector: SelectedNodeInspectorModel;
   readonly replayState: RunReplayState;
+  readonly runEvents: ReadonlyArray<RunEvent>;
   readonly runCompare: RunCompareModel;
   readonly selectedRun: DashboardRun;
   readonly selectedRunId: RunId | undefined;
@@ -2851,6 +2871,30 @@ function AgentInspector({
   const sessionAction = useMutation(
     localGaiaAgentSessionActionMutationOptions({ serverUrl })
   );
+  const runControlQuery = useQuery(
+    localGaiaRunControlQueryOptions({ runId: selectedRunId, serverUrl })
+  );
+  const runControlInputs = React.useRef(
+    new Map<string, DashboardRunControlActionMutationInput>()
+  );
+  const consumeRunControlInput = React.useCallback(
+    ({ requestId }: DashboardRunControlActionMutationRequest) => {
+      const input = runControlInputs.current.get(requestId);
+      runControlInputs.current.delete(requestId);
+      if (input === undefined) {
+        throw new Error("Run control input is no longer available.");
+      }
+      return input;
+    },
+    []
+  );
+  const runControlAction = useMutation(
+    localGaiaRunControlActionMutationOptions(
+      { serverUrl },
+      consumeRunControlInput
+    )
+  );
+  const runControlSubmissionInFlight = React.useRef(false);
   const [streamSession, setStreamSession] = React.useState<
     typeof AgentSessionSnapshotDto.Type | undefined
   >();
@@ -2891,14 +2935,38 @@ function AgentInspector({
     }
   }, [sessionQuery.data?.data]);
 
+  const resumeRearmSequence = React.useMemo(() => {
+    for (const event of [...runEvents].reverse()) {
+      if (event.type !== "RUN_CONTROL_CONFIRMED") continue;
+      const control = parseRunControlEventPayload(event.payload["control"]);
+      if (
+        control.operation === "resume" &&
+        control.workerAgentId === selectedAgentId &&
+        (streamSession?.sessionId === undefined ||
+          control.sessionId === streamSession.sessionId)
+      ) {
+        return event.sequence;
+      }
+    }
+    return undefined;
+  }, [runEvents, selectedAgentId, streamSession?.sessionId]);
+  const remediationRearmSequence = deliverySnapshot?.remediationRearmSequence;
+  const streamRearmSequence =
+    resumeRearmSequence === undefined
+      ? remediationRearmSequence
+      : remediationRearmSequence === undefined ||
+          resumeRearmSequence >= remediationRearmSequence
+        ? resumeRearmSequence
+        : remediationRearmSequence;
+
   React.useEffect(() => {
     const controller = getStreamController();
     controller.sync({
       agentId: selectedAgentId,
       isOpen: inspector.kind === "agent",
-      ...(deliverySnapshot?.remediationRearmSequence === undefined
+      ...(streamRearmSequence === undefined
         ? {}
-        : { rearmSequence: deliverySnapshot.remediationRearmSequence }),
+        : { rearmSequence: streamRearmSequence }),
       runId: selectedRunId,
       ...(streamSession?.sessionId === undefined
         ? {}
@@ -2908,11 +2976,11 @@ function AgentInspector({
         : { snapshotSequence: streamSession.eventSequence }),
     });
   }, [
-    deliverySnapshot?.remediationRearmSequence,
     getStreamController,
     inspector.kind,
     selectedAgentId,
     selectedRunId,
+    streamRearmSequence,
     streamSession?.eventSequence,
     streamSession?.sessionId,
   ]);
@@ -2946,6 +3014,34 @@ function AgentInspector({
     lastError: sessionError,
     session: streamSession,
   });
+  const runControlModel =
+    runControlQuery.data === undefined
+      ? undefined
+      : buildAgentInspectorRunControlModel(runControlQuery.data);
+  const canResolveInteraction = React.useCallback(
+    (interactionId: HarnessPendingInteraction["interactionId"]) => {
+      const target = runControlModel?.actionTarget;
+      return (
+        !runControlQuery.isPending &&
+        !runControlQuery.isFetching &&
+        !runControlQuery.isError &&
+        runControlModel?.state === "waitingForHuman" &&
+        !runControlModel.expired &&
+        runControlModel.allowedActions.includes("resolveInteraction") &&
+        target?.interactionId === interactionId &&
+        target.sessionId === streamSession?.sessionId &&
+        target.workerAgentId === selectedAgentId
+      );
+    },
+    [
+      runControlModel,
+      runControlQuery.isError,
+      runControlQuery.isFetching,
+      runControlQuery.isPending,
+      selectedAgentId,
+      streamSession?.sessionId,
+    ]
+  );
   const nextActionId = React.useCallback(
     () =>
       decodeHarnessActionId(
@@ -2970,6 +3066,56 @@ function AgentInspector({
       );
     },
     [selectedAgentId, selectedRunId, sessionAction, sessionQuery]
+  );
+  const submitRunControlAction = React.useCallback(
+    (operation: RunControlOperation, response?: Record<string, unknown>) => {
+      if (
+        selectedRunId === undefined ||
+        runControlModel?.actionTarget === undefined ||
+        !runControlModel.allowedActions.includes(operation) ||
+        (operation === "resolveInteraction" && response === undefined) ||
+        runControlSubmissionInFlight.current
+      )
+        return;
+      const target = runControlModel.actionTarget;
+      const action = parseRunControlAction({
+        ...target,
+        actionId: parseRunControlActionId(
+          `dashboard-${operation}-${globalThis.crypto.randomUUID()}`
+        ),
+        operation,
+        ...(operation === "resolveInteraction" ? { response } : {}),
+        runId: selectedRunId,
+      });
+      const requestId = decodeDashboardRunControlActionMutationRequestId(
+        globalThis.crypto.randomUUID()
+      );
+      runControlInputs.current.set(requestId, {
+        action,
+        runId: selectedRunId,
+      });
+      runControlSubmissionInFlight.current = true;
+      runControlAction.mutate(
+        { requestId },
+        {
+          onSettled: () => {
+            runControlInputs.current.delete(requestId);
+            runControlSubmissionInFlight.current = false;
+          },
+          onSuccess: () => {
+            void runControlQuery.refetch();
+            void sessionQuery.refetch();
+          },
+        }
+      );
+    },
+    [
+      runControlAction,
+      runControlModel,
+      runControlQuery,
+      selectedRunId,
+      sessionQuery,
+    ]
   );
 
   React.useEffect(() => {
@@ -3049,8 +3195,19 @@ function AgentInspector({
         <ScrollArea className="min-h-0 flex-1">
           <TabsContent className="m-0 p-3" value="session">
             <AgentInspectorSession
+              canResolveInteraction={canResolveInteraction}
               model={sessionModel}
               pendingRequests={streamSession?.pendingInteractions ?? []}
+              runControl={runControlModel}
+              runControlError={
+                runControlAction.isError
+                  ? dashboardFailureMessage(
+                      dashboardQueryFailure(runControlAction.error),
+                      "Run control action failed."
+                    )
+                  : undefined
+              }
+              runControlPending={runControlAction.isPending}
               sessionId={streamSession?.sessionId}
               onFollowUp={(text) =>
                 streamSession === undefined
@@ -3063,16 +3220,19 @@ function AgentInspector({
                     })
               }
               onInteraction={(interaction, action, value) => {
-                if (streamSession === undefined) return;
-                submitInteractionAction({
+                if (
+                  streamSession === undefined ||
+                  !canResolveInteraction(interaction.interactionId)
+                )
+                  return;
+                const response = interactionRunControlResponse({
                   action,
-                  actionId: nextActionId(),
                   interaction,
-                  sessionId: streamSession.sessionId,
-                  submitSessionAction,
                   value,
                 });
+                submitRunControlAction("resolveInteraction", response);
               }}
+              onRunControl={submitRunControlAction}
               onInterrupt={() => {
                 if (
                   streamSession === undefined ||
@@ -3136,24 +3296,36 @@ function AgentInspector({
 }
 
 function AgentInspectorSession({
+  canResolveInteraction,
   model,
   pendingRequests,
+  runControl,
+  runControlError,
+  runControlPending,
   sessionId,
   onFollowUp,
   onInteraction,
   onInterrupt,
+  onRunControl,
   onSteer,
 }: {
+  readonly canResolveInteraction: (
+    interactionId: HarnessPendingInteraction["interactionId"]
+  ) => boolean;
   readonly model: AgentInspectorSessionModel;
   readonly pendingRequests: ReadonlyArray<HarnessPendingInteraction>;
+  readonly runControl: AgentInspectorRunControlModel | undefined;
+  readonly runControlError: string | undefined;
+  readonly runControlPending: boolean;
   readonly sessionId: typeof HarnessSessionIdSchema.Type | undefined;
   readonly onFollowUp: (text: string) => void;
   readonly onInteraction: (
     interaction: HarnessPendingInteraction,
     action: string,
-    value: string
+    value: Readonly<Record<string, string>> | string
   ) => void;
   readonly onInterrupt: () => void;
+  readonly onRunControl: (operation: RunControlOperation) => void;
   readonly onSteer: (
     text: string,
     turnId: typeof HarnessTurnIdSchema.Type
@@ -3182,6 +3354,69 @@ function AgentInspectorSession({
         </Badge>
       </div>
 
+      {runControl === undefined ? null : (
+        <section className="flex flex-col gap-2 rounded-md border p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Durable run control</p>
+              <p className="text-xs text-muted-foreground">
+                {runControl.expired
+                  ? "Operator response expired; cancellation remains available."
+                  : `Run state: ${runControl.state}`}
+              </p>
+            </div>
+            <Badge variant="secondary">{runControl.state}</Badge>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {runControl.allowedActions.includes("pause") ? (
+              <Button
+                disabled={runControlPending}
+                size="sm"
+                type="button"
+                variant="outline"
+                onClick={() => onRunControl("pause")}
+              >
+                <PauseIcon data-icon="inline-start" />
+                Pause run
+              </Button>
+            ) : null}
+            {runControl.allowedActions.includes("resume") ? (
+              <Button
+                disabled={runControlPending}
+                size="sm"
+                type="button"
+                variant="outline"
+                onClick={() => onRunControl("resume")}
+              >
+                <PlayIcon data-icon="inline-start" />
+                Resume run
+              </Button>
+            ) : null}
+            {runControl.allowedActions.includes("cancel") ? (
+              <Button
+                disabled={runControlPending}
+                size="sm"
+                type="button"
+                variant="destructive"
+                onClick={() => onRunControl("cancel")}
+              >
+                <XIcon data-icon="inline-start" />
+                Cancel run
+              </Button>
+            ) : null}
+          </div>
+          {runControlError === undefined ? null : (
+            <p
+              className="text-xs text-destructive"
+              data-testid="run-control-action-error"
+              role="alert"
+            >
+              {runControlError}
+            </p>
+          )}
+        </section>
+      )}
+
       {model.pendingInteractions.length === 0 ? null : (
         <section className="flex flex-col gap-2">
           <p className="text-xs font-medium text-muted-foreground uppercase">
@@ -3194,6 +3429,10 @@ function AgentInspectorSession({
             );
             return (
               <PendingInteractionCard
+                disabled={
+                  runControlPending ||
+                  !canResolveInteraction(interaction.interactionId)
+                }
                 interaction={interaction}
                 key={interaction.interactionId}
                 request={request}
@@ -3297,21 +3536,22 @@ function AgentInspectorSession({
 }
 
 function PendingInteractionCard({
+  disabled,
   interaction,
   request,
   onInteraction,
 }: {
+  readonly disabled: boolean;
   readonly interaction: AgentInspectorPendingInteraction;
   readonly request: HarnessPendingInteraction | undefined;
   readonly onInteraction: (
     interaction: HarnessPendingInteraction,
     action: string,
-    value: string
+    value: Readonly<Record<string, string>> | string
   ) => void;
 }) {
   const [value, setValue] = React.useState("");
-  const needsText =
-    request?.kind === "userInput" || request?.kind === "mcpElicitation";
+  const [answers, setAnswers] = React.useState<Record<string, string>>({});
 
   return (
     <section className="rounded-md border bg-background p-3">
@@ -3324,14 +3564,35 @@ function PendingInteractionCard({
         </div>
         <Badge variant="secondary">Waiting</Badge>
       </div>
-      {needsText ? (
+      {request?.kind === "userInput" ? (
+        <div className="mt-3 flex flex-col gap-3">
+          {request.questions.map((question) => {
+            const inputId = `interaction-${request.interactionId}-${question.questionId}`;
+            return (
+              <div className="flex flex-col gap-1.5" key={question.questionId}>
+                <Label htmlFor={inputId}>{question.prompt}</Label>
+                <Input
+                  disabled={disabled}
+                  id={inputId}
+                  type={question.secret ? "password" : "text"}
+                  value={answers[question.questionId] ?? ""}
+                  onChange={(event) => {
+                    const nextValue = event.currentTarget.value;
+                    setAnswers((current) => ({
+                      ...current,
+                      [question.questionId]: nextValue,
+                    }));
+                  }}
+                />
+              </div>
+            );
+          })}
+        </div>
+      ) : request?.kind === "mcpElicitation" ? (
         <Textarea
           className="mt-3"
-          placeholder={
-            request?.kind === "userInput"
-              ? "Type operator response"
-              : "Optional bounded content"
-          }
+          disabled={disabled}
+          placeholder="Optional bounded content"
           value={value}
           onChange={(event) => setValue(event.currentTarget.value)}
         />
@@ -3339,7 +3600,7 @@ function PendingInteractionCard({
       <div className="mt-3 flex flex-wrap gap-2">
         {interaction.actions.map((action) => (
           <Button
-            disabled={request === undefined}
+            disabled={disabled || request === undefined}
             key={action}
             size="sm"
             type="button"
@@ -3350,8 +3611,13 @@ function PendingInteractionCard({
             }
             onClick={() => {
               if (request !== undefined) {
-                onInteraction(request, action, value);
                 setValue("");
+                setAnswers({});
+                onInteraction(
+                  request,
+                  action,
+                  request.kind === "userInput" ? answers : value
+                );
               }
             }}
           >
@@ -3363,47 +3629,38 @@ function PendingInteractionCard({
   );
 }
 
-function submitInteractionAction(input: {
+function interactionRunControlResponse(input: {
   readonly action: string;
-  readonly actionId: typeof HarnessActionIdSchema.Type;
   readonly interaction: HarnessPendingInteraction;
-  readonly sessionId: typeof HarnessSessionIdSchema.Type;
-  readonly submitSessionAction: (action: unknown) => void;
-  readonly value: string;
-}) {
+  readonly value: Readonly<Record<string, string>> | string;
+}): Record<string, unknown> {
   switch (input.interaction.kind) {
     case "commandApproval":
     case "fileChangeApproval":
     case "permissionApproval":
-      input.submitSessionAction({
-        actionId: input.actionId,
+      return {
         decision: input.action,
-        interactionId: input.interaction.interactionId,
         kind: "approval",
-        sessionId: input.sessionId,
-      });
-      return;
+      };
     case "userInput":
-      input.submitSessionAction({
-        actionId: input.actionId,
+      return {
         answers: input.interaction.questions.map((question) => ({
-          answers: input.action === "submit" ? [input.value] : [],
+          answers:
+            input.action === "submit" && typeof input.value !== "string"
+              ? [input.value[question.questionId] ?? ""]
+              : [],
           questionId: question.questionId,
         })),
-        interactionId: input.interaction.interactionId,
         kind: "userInput",
-        sessionId: input.sessionId,
-      });
-      return;
+      };
     case "mcpElicitation":
-      input.submitSessionAction({
+      return {
         action: input.action,
-        actionId: input.actionId,
-        ...(input.value.trim() === "" ? {} : { content: input.value.trim() }),
-        interactionId: input.interaction.interactionId,
+        ...(typeof input.value !== "string" || input.value.trim() === ""
+          ? {}
+          : { content: input.value.trim() }),
         kind: "mcpElicitation",
-        sessionId: input.sessionId,
-      });
+      };
   }
 }
 
@@ -4254,7 +4511,10 @@ function eventStripDisplay({
   if (selectedConsoleRun?.isTerminal === true) {
     return {
       label: "Snapshot",
-      message: "Completed run; showing ordered event history.",
+      message:
+        selectedConsoleRun.status === "cancelled"
+          ? "Cancelled run; showing ordered event history."
+          : "Completed run; showing ordered event history.",
       variant: "secondary",
     };
   }

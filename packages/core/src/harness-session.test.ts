@@ -106,6 +106,36 @@ describe("provider-neutral harness contracts", () => {
     );
   });
 
+  it("decodes legacy provider capabilities with durable control disabled", () => {
+    const legacy = Schema.decodeUnknownSync(HarnessCapabilities)({
+      approvals: ["command"],
+      fileChangeEvents: true,
+      interruption: true,
+      resumableSessions: true,
+      review: false,
+      steering: true,
+      streamingMessages: true,
+      structuredOutput: false,
+      subagents: false,
+      toolEvents: true,
+      usageReporting: true,
+      userQuestions: true,
+    });
+
+    assert.deepStrictEqual(
+      {
+        durableCancellation: legacy.durableCancellation,
+        durableInteractionResolution: legacy.durableInteractionResolution,
+        durablePause: legacy.durablePause,
+      },
+      {
+        durableCancellation: false,
+        durableInteractionResolution: false,
+        durablePause: false,
+      }
+    );
+  });
+
   it("replays ordered events deterministically with final item authority", () => {
     const events = [
       {

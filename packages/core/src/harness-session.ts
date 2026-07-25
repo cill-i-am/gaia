@@ -1,4 +1,6 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 
 import { makeRunEvent, RunEvent } from "./events.js";
 import {
@@ -136,6 +138,9 @@ export const HarnessCapabilitySchema = Schema.Literals([
   "userQuestions",
   "steering",
   "interruption",
+  "durableInteractionResolution",
+  "durablePause",
+  "durableCancellation",
   "review",
   "subagents",
   "structuredOutput",
@@ -149,6 +154,14 @@ export const HarnessCapabilitySchema = Schema.Literals([
 /** A single harness capability requirement. */
 export type HarnessCapability = typeof HarnessCapabilitySchema.Type;
 
+const BackwardCompatibleFalseSchema = Schema.optionalKey(Schema.Boolean).pipe(
+  Schema.decodeTo(Schema.optionalKey(Schema.Boolean), {
+    decode: SchemaGetter.withDefault(Effect.succeed(false)),
+    encode: SchemaGetter.passthrough(),
+  }),
+  Schema.withConstructorDefault(Effect.succeed(false))
+);
+
 /** Serializable, explicit capabilities advertised by a harness provider. */
 export class HarnessCapabilities extends Schema.Class<HarnessCapabilities>(
   "HarnessCapabilities"
@@ -156,6 +169,9 @@ export class HarnessCapabilities extends Schema.Class<HarnessCapabilities>(
   approvals: Schema.Array(HarnessInteractionKindSchema).pipe(
     Schema.check(Schema.isMaxLength(5))
   ),
+  durableCancellation: BackwardCompatibleFalseSchema,
+  durableInteractionResolution: BackwardCompatibleFalseSchema,
+  durablePause: BackwardCompatibleFalseSchema,
   fileChangeEvents: Schema.Boolean,
   interruption: Schema.Boolean,
   resumableSessions: Schema.Boolean,
@@ -1324,7 +1340,10 @@ function hasHarnessCapability(
     case "subagents":
     case "structuredOutput":
     case "usageReporting":
-      return capabilities[capability];
+    case "durableInteractionResolution":
+    case "durablePause":
+    case "durableCancellation":
+      return capabilities[capability] === true;
     case "approval:command":
       return capabilities.approvals.includes("command");
     case "approval:fileChange":

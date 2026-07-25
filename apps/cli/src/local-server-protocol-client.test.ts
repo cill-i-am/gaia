@@ -5,6 +5,7 @@ import {
   CreateRunRequest,
   LocalRunApiErrorEnvelope,
   parseLocalGaiaServerUrl,
+  parseRunControlAction,
   parseRunId,
   VerificationActionRequestSchema,
 } from "@gaia/core";
@@ -13,9 +14,11 @@ import { Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 
 import {
+  actOnRunControlFromLocalServerProtocol,
   createRunFromLocalServerProtocol,
   actOnVerificationFromLocalServerProtocol,
   evaluateMergeReadinessFromLocalServerProtocol,
+  getRunControlFromLocalServerProtocol,
   getRunFromLocalServerProtocol,
   listRunsFromLocalServerProtocol,
 } from "./local-server-protocol-client.js";
@@ -108,6 +111,99 @@ describe("local server protocol client", () => {
           },
         ]);
       })
+  );
+
+  it.effect("reads and sends value-free durable control protocol data", () =>
+    Effect.gen(function* () {
+      const requests: string[] = [];
+      const bodies: unknown[] = [];
+      const actionTarget = {
+        authorityId: "local-gaia-server",
+        expectedEventSequence: 8,
+        providerId: "fake",
+        sessionId: "session-control-1",
+        workerAgentId: "agent-worker",
+        workerStartedSequence: 3,
+      } as const;
+      const secret = "CLI_EPHEMERAL_SECRET";
+      const actions = [
+        parseRunControlAction({
+          ...actionTarget,
+          actionId: "action-pause-1",
+          operation: "pause",
+          runId,
+        }),
+        parseRunControlAction({
+          ...actionTarget,
+          actionId: "action-cancel-1",
+          operation: "cancel",
+          runId,
+        }),
+        parseRunControlAction({
+          ...actionTarget,
+          actionId: "action-resolve-1",
+          checkpointDigest: "b".repeat(64),
+          interactionId: "interaction-control-1",
+          operation: "resolveInteraction",
+          requestDigest: "c".repeat(64),
+          response: {
+            answers: [{ answers: [secret], questionId: "question-control-1" }],
+            kind: "userInput",
+          },
+          runId,
+        }),
+      ];
+      const fetchLayer = recordingFetchLayer(requests, async (request) => {
+        if (request.method === "GET")
+          return jsonResponse({
+            actionTarget,
+            allowedActions: ["resolveInteraction", "pause", "cancel"],
+            expired: false,
+            runId,
+            state: "waitingForHuman",
+          });
+        const body: unknown = JSON.parse(await request.text());
+        bodies.push(body);
+        const parsedAction = parseRunControlAction(body);
+        return jsonResponse({
+          actionBindingDigest: "a".repeat(64),
+          actionId: parsedAction.actionId,
+          duplicate: false,
+          operation: parsedAction.operation,
+          runId,
+          state: "confirmed",
+        });
+      });
+
+      const snapshot = yield* getRunControlFromLocalServerProtocol({
+        runId,
+        serverUrl,
+      }).pipe(Effect.provide(fetchLayer));
+      const receipts = yield* Effect.forEach(actions, (payload) =>
+        actOnRunControlFromLocalServerProtocol({
+          payload,
+          runId,
+          serverUrl,
+        }).pipe(Effect.provide(fetchLayer))
+      );
+
+      assert.strictEqual(snapshot.state, "waitingForHuman");
+      assert.deepEqual(
+        receipts.map((receipt) => receipt.operation),
+        ["pause", "cancel", "resolveInteraction"]
+      );
+      assert.isFalse(JSON.stringify(receipts).includes(secret));
+      assert.deepEqual(requests, [
+        "GET http://127.0.0.1:4321/runs/run-1234567890/control",
+        "POST http://127.0.0.1:4321/runs/run-1234567890/control/actions",
+        "POST http://127.0.0.1:4321/runs/run-1234567890/control/actions",
+        "POST http://127.0.0.1:4321/runs/run-1234567890/control/actions",
+      ]);
+      assert.deepEqual(
+        bodies,
+        actions.map((action) => JSON.parse(JSON.stringify(action)))
+      );
+    })
   );
 
   it.effect("surfaces declared API errors as typed decoded failures", () =>

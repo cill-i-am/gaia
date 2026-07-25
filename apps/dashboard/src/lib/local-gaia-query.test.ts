@@ -2,6 +2,7 @@ import {
   FactoryAgentIdSchema,
   FactoryArtifactIdSchema,
   parseLocalGaiaServerUrl,
+  parseRunControlAction,
   parseRunId,
 } from "@gaia/core";
 import { QueryClient } from "@tanstack/react-query";
@@ -24,6 +25,7 @@ import {
   listRunsFromDashboardGaiaClient,
 } from "@/lib/local-gaia-client";
 import {
+  DashboardRunControlActionMutationRequestIdSchema,
   localGaiaCreateRunMutationOptions,
   localGaiaDeliveryActionMutationOptions,
   localGaiaFactoryAgentActivityQueryOptions,
@@ -36,6 +38,8 @@ import {
   localGaiaAgentSessionQueryOptions,
   localGaiaQueryKeys,
   localGaiaRunArtifactQueryOptions,
+  localGaiaRunControlActionMutationOptions,
+  localGaiaRunControlQueryOptions,
   localGaiaRunQueryOptions,
   localGaiaRunsQueryOptions,
 } from "@/lib/local-gaia-query";
@@ -47,6 +51,8 @@ const agentWorkerId =
   Schema.decodeUnknownSync(FactoryAgentIdSchema)("agent-worker");
 const missingAgentId =
   Schema.decodeUnknownSync(FactoryAgentIdSchema)("missing-agent");
+const decodeDashboardRunControlActionMutationRequestId =
+  Schema.decodeUnknownSync(DashboardRunControlActionMutationRequestIdSchema);
 const artifactPlanId = Schema.decodeUnknownSync(FactoryArtifactIdSchema)(
   "artifact-plan"
 );
@@ -95,6 +101,10 @@ describe("local Gaia query options", () => {
     });
     const agentSession = localGaiaAgentSessionQueryOptions({
       agentId: "agent-worker",
+      runId,
+      serverUrl,
+    });
+    const runControl = localGaiaRunControlQueryOptions({
       runId,
       serverUrl,
     });
@@ -156,6 +166,13 @@ describe("local Gaia query options", () => {
       "agent-worker",
       "session",
     ]);
+    expect(runControl.queryKey).toEqual([
+      "local-gaia",
+      "runs",
+      "detail",
+      "run-1234567890",
+      "control",
+    ]);
     expect(artifact.enabled).toBe(true);
     expect(graph.enabled).toBe(true);
     expect(runActivity.enabled).toBe(true);
@@ -163,6 +180,7 @@ describe("local Gaia query options", () => {
     expect(artifactCatalog.enabled).toBe(true);
     expect(factoryArtifact.enabled).toBe(true);
     expect(agentSession.enabled).toBe(true);
+    expect(runControl.enabled).toBe(true);
     expect(typeof health.queryFn).toBe("function");
     expect(typeof runs.queryFn).toBe("function");
   });
@@ -245,7 +263,7 @@ describe("local Gaia query options", () => {
     expect(requests).toEqual(["GET http://127.0.0.1:4321/runs"]);
   });
 
-  it("preserves the public worker epoch through the legacy dashboard run model", async () => {
+  it("preserves the worker epoch and cancelled terminal state through the legacy dashboard run model", async () => {
     const epoch = {
       limitations: ["providerNativeToolInventoryNotExposed"],
       state: "completeComparable",
@@ -279,6 +297,25 @@ describe("local Gaia query options", () => {
                     workerEnvironmentEpoch: epoch,
                     workflow: "issueDelivery",
                   },
+                  {
+                    counts: {
+                      activity: 2,
+                      agents: 1,
+                      artifacts: 0,
+                      workItems: 1,
+                    },
+                    createdAt: "2026-07-22T11:20:00.000Z",
+                    rootWorkItem: {
+                      id: "work-cancelled",
+                      kind: "issue",
+                      title: "GAIA-148",
+                    },
+                    runId: "run-148cancel1",
+                    state: "canceled",
+                    updatedAt: "2026-07-22T11:22:00.000Z",
+                    workerEnvironmentEpoch: epoch,
+                    workflow: "issueDelivery",
+                  },
                 ],
               },
               status: "success",
@@ -289,6 +326,10 @@ describe("local Gaia query options", () => {
     );
 
     expect(result.data.runs[0]?.workerEnvironmentEpoch).toEqual(epoch);
+    expect(result.data.runs[1]).toMatchObject({
+      state: "cancelled",
+      status: "cancelled",
+    });
   });
 
   it("maps declared API failures into a tagged dashboard query error", async () => {
@@ -769,6 +810,94 @@ describe("local Gaia query options", () => {
         turnId: "turn-1",
       },
     ]);
+  });
+
+  it("keeps hidden run-control responses out of mutation cache on success and failure", async () => {
+    const requests: Array<string> = [];
+    const retained = new Map<string, ReturnType<typeof hiddenInput>>();
+    let failProvider = false;
+    const effectQuery = createEffectQuery(
+      recordingFetchLayer(requests, async () => {
+        expect(retained.size).toBe(0);
+        return failProvider
+          ? Promise.reject(new TypeError("The dashboard server is offline."))
+          : jsonResponse({
+              actionBindingDigest: "c".repeat(64),
+              actionId: "action-dashboard-hidden-response",
+              duplicate: false,
+              operation: "resolveInteraction",
+              runId,
+              state: "confirmed",
+            });
+      })
+    );
+    const queryClient = new QueryClient();
+    function hiddenInput(answer: string) {
+      return {
+        action: parseRunControlAction({
+          actionId: "action-dashboard-hidden-response",
+          authorityId: "authority-local",
+          checkpointDigest: "a".repeat(64),
+          expectedEventSequence: 7,
+          interactionId: "interaction-question",
+          operation: "resolveInteraction",
+          providerId: "fake",
+          requestDigest: "b".repeat(64),
+          response: {
+            answers: [
+              {
+                answers: [answer],
+                questionId: "question-hidden",
+              },
+            ],
+            kind: "userInput",
+          },
+          runId,
+          sessionId: `session-${runId}`,
+          workerAgentId: agentWorkerId,
+          workerStartedSequence: 3,
+        }),
+        runId,
+      };
+    }
+    const options = localGaiaRunControlActionMutationOptions(
+      { serverUrl },
+      ({ requestId }) => {
+        const input = retained.get(requestId);
+        retained.delete(requestId);
+        if (input === undefined) throw new Error("Missing hidden input.");
+        return input;
+      },
+      effectQuery
+    );
+
+    const successCanary = "MUTATION_CACHE_SUCCESS_SECRET";
+    const successRequestId = decodeDashboardRunControlActionMutationRequestId(
+      globalThis.crypto.randomUUID()
+    );
+    retained.set(successRequestId, hiddenInput(successCanary));
+    const success = queryClient.getMutationCache().build(queryClient, options);
+    await success.execute({ requestId: successRequestId });
+
+    failProvider = true;
+    const failureCanary = "MUTATION_CACHE_FAILURE_SECRET";
+    const failureRequestId = decodeDashboardRunControlActionMutationRequestId(
+      globalThis.crypto.randomUUID()
+    );
+    retained.set(failureRequestId, hiddenInput(failureCanary));
+    const failure = queryClient.getMutationCache().build(queryClient, options);
+    await expect(
+      failure.execute({ requestId: failureRequestId })
+    ).rejects.toBeDefined();
+
+    expect(retained.size).toBe(0);
+    const mutationCache = JSON.stringify(
+      queryClient.getMutationCache().getAll()
+    );
+    expect(mutationCache).not.toContain(successCanary);
+    expect(mutationCache).not.toContain(failureCanary);
+    expect(mutationCache).not.toContain("question-hidden");
+    expect(requests).toHaveLength(2);
   });
 });
 

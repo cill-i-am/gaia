@@ -13,6 +13,7 @@ import {
   ResolvedHarnessExecution,
   parseMarkdownSpec,
   parseRunId,
+  parseRunControlEventPayload,
   resolveAcceptedRunInputCheckpoint,
   resolveModelInvocationEpisodes,
   snapshotFromReplay,
@@ -49,13 +50,20 @@ import {
 } from "./codex-harness.js";
 import { writeDogfoodRetrospective } from "./dogfood-retrospective.js";
 import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
-import { appendEvent, loadRun, readEvents } from "./event-store.js";
+import {
+  appendEvent,
+  appendEventWithinSerialization,
+  loadRun,
+  readEvents,
+  withRunEventSerialization,
+} from "./event-store.js";
 import { writeEvidencePromotion } from "./evidence-promotion.js";
 import { writeFactoryRetro } from "./factory-retro.js";
 import { writeFactoryScorecard } from "./factory-scorecard.js";
 import type { DeliveryProvenance } from "./git-delivery.js";
 import {
   HarnessRunRequest,
+  HarnessExecutionResultSchema,
   HarnessRunResult,
   codexAppServerHarnessName,
   codexHarnessName,
@@ -190,6 +198,9 @@ const nanoid = customAlphabet(
 );
 const HarnessRunResultJson = Schema.toCodecJson(HarnessRunResult);
 const decodeHarnessRunResult = Schema.decodeUnknownSync(HarnessRunResultJson);
+const decodeHarnessExecutionResult = Schema.decodeUnknownSync(
+  HarnessExecutionResultSchema
+);
 const decodePersistedSkillManifest = Schema.decodeUnknownSync(
   Schema.toCodecJson(SkillManifest)
 );
@@ -206,6 +217,7 @@ type BrowserEvidenceTargetSelection =
   typeof BrowserEvidenceTargetSelectionSchema.Type;
 
 export const CommandStatusSchema = Schema.Literals([
+  "cancelled",
   "completed",
   "failed",
   "running",
@@ -706,6 +718,15 @@ function executeAcceptedRun(input: {
         recordRunFailure(runId, paths, "runningWorker", error)
       )
     );
+    if ("kind" in harnessResult) {
+      return parseCommandSummary({
+        reportPath: undefined,
+        runDirectory: paths.root,
+        runId,
+        state: harnessResult.state,
+        status: harnessResult.state === "cancelled" ? "cancelled" : "running",
+      });
+    }
     const previewDeploymentTargetUrl = harnessResult.previewDeploymentUrl;
     if (workerContinuationState !== "completed") {
       const harnessEnvironmentReceipt =
@@ -908,7 +929,7 @@ function executeAcceptedRun(input: {
 
 function decodeProviderHarnessRunResult(input: unknown) {
   return Effect.try({
-    try: () => HarnessRunResult.make(input),
+    try: () => decodeHarnessExecutionResult(input),
     catch: () =>
       makeRuntimeError({
         code: "HarnessRunResultInvalid",
@@ -1477,10 +1498,21 @@ function recordRunFailure(
   error: GaiaRuntimeError
 ) {
   return Effect.gen(function* () {
-    yield* appendEvent(runId, paths, {
-      payload: failureToEventPayload(error, stage),
-      type: "RUN_FAILED",
-    });
+    const recorded = yield* withRunEventSerialization(
+      paths,
+      Effect.gen(function* () {
+        const events = yield* readEvents(paths);
+        if (hasStickyRunControlAmbiguity(events)) return false;
+        yield* appendEventWithinSerialization(runId, paths, {
+          payload: failureToEventPayload(error, stage),
+          type: "RUN_FAILED",
+        });
+        return true;
+      })
+    );
+    if (!recorded) {
+      return yield* Effect.fail(error);
+    }
     yield* writeDogfoodRetrospective(runId, paths).pipe(
       Effect.catchTag("GaiaRuntimeError", () => Effect.void)
     );
@@ -1536,6 +1568,28 @@ function recordRunFailure(
 
     return yield* Effect.fail(error);
   });
+}
+
+function hasStickyRunControlAmbiguity(events: ReadonlyArray<RunEvent>) {
+  const phases = new Map<string, RunEvent["type"]>();
+  for (const event of events) {
+    if (
+      event.type !== "RUN_CONTROL_INTENT_RECORDED" &&
+      event.type !== "RUN_CONTROL_ATTEMPTED" &&
+      event.type !== "RUN_CONTROL_CONFIRMED" &&
+      event.type !== "RUN_CONTROL_FAILED" &&
+      event.type !== "RUN_CONTROL_OUTCOME_UNKNOWN"
+    ) {
+      continue;
+    }
+    const control = parseRunControlEventPayload(event.payload["control"]);
+    phases.set(control.actionId, event.type);
+  }
+  return [...phases.values()].some(
+    (phase) =>
+      phase === "RUN_CONTROL_ATTEMPTED" ||
+      phase === "RUN_CONTROL_OUTCOME_UNKNOWN"
+  );
 }
 
 function makeReviewModelProjection(input: {
@@ -1822,6 +1876,8 @@ function browserEvidenceTargetRequiredError() {
 
 function statusFromState(state: RunState): CommandSummary["status"] {
   switch (state) {
+    case "cancelled":
+      return "cancelled";
     case "failed":
       return "failed";
     case "completed":
@@ -1830,6 +1886,8 @@ function statusFromState(state: RunState): CommandSummary["status"] {
     case "delivering":
     case "preparingWorkspace":
     case "runningWorker":
+    case "waitingForHuman":
+    case "paused":
     case "verifying":
     case "reporting":
       return "running";

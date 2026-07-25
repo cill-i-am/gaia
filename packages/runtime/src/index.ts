@@ -70,6 +70,12 @@ export {
   type LiveHarnessSessionCoordinator,
 } from "./agent-session-runtime.js";
 export {
+  dispatchRunControlAction,
+  readRunControlSnapshot,
+  reconcileRunControlExpiry,
+  type RunControlRuntimeOptions,
+} from "./run-control-runtime.js";
+export {
   CodexAppServerClientLive,
   CodexAppServerClientService,
   CodexAppServerSpawnConfig,

@@ -40,8 +40,16 @@ import {
   encodeWorkerRecoveryReceiptJson,
   encodeWorkerContinuationReceiptJson,
   encodeWorkerCorrelationReconciliationReceiptJson,
+  FactoryAgentIdSchema,
   HarnessCapabilities,
   HarnessProviderDescriptor,
+  makeModelContextContentV1,
+  makeModelContextManifestV1,
+  makeModelInvocationManifestV1,
+  makeRunControlActionBindingDigest,
+  makeRunControlCheckpointDigest,
+  makeRunControlRequestDigest,
+  MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
   ModelInvocationEpisodeStartV1,
   deliveryPullRequestReadyPayloadDigest,
   makeRunEvent,
@@ -51,16 +59,24 @@ import {
   parseHarnessInteractionId,
   parseHarnessItemId,
   parseHarnessProviderId,
+  parseHarnessQuestionId,
   parseHarnessSessionId,
   parseMarkdownSpec,
   parseHarnessTurnId,
   parseRunId,
+  parseRunControlAction,
+  parseRunControlActionId,
+  parseRunControlAuthorityId,
+  parseRunControlEventPayload,
   parseWorkerRecoveryActionId,
   parseWorkerRecoveryModelId,
   parseWorkspaceRelativePath,
   projectHarnessEvents,
+  renderModelInputV1,
   LocalGaiaServerUrlSchema,
   RunEvent,
+  RunControlEventPayload,
+  RunHumanWaitCheckpointV1,
   RunIdSchema,
   WorkerRecoveryAction,
 } from "@gaia/core";
@@ -68,9 +84,15 @@ import {
   makeHarnessProviderRegistry,
   appendEvent,
   appendHarnessSessionEvent,
+  commitModelInvocationPair,
   commitDerivedAppModelInvocationEpisode,
   deriveAndRecordRunContract,
+  deriveModelWorkspaceBinding,
+  dispatchRunControlAction,
+  loadRunContract,
+  makeLiveHarnessSessionCoordinator,
   readEvents,
+  readRunControlSnapshot,
   ReviewResult,
   ReviewerNameSchema,
   subscribeRunEventFeed,
@@ -92,7 +114,10 @@ import {
   acceptServerRun,
   continueServerRun,
 } from "@gaia/runtime/server-workflows";
-import { testHarnessProvider } from "@gaia/runtime/test-support";
+import {
+  testHarnessCapabilities,
+  testHarnessProvider,
+} from "@gaia/runtime/test-support";
 import {
   Deferred,
   Effect,
@@ -564,6 +589,564 @@ describe("local run api http boundary", () => {
           getNumber(getObject(detailData, "counts"), "activity")
         );
       })
+    );
+
+    it.effect("serves the event-derived durable run control resource", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectory({ prefix: "gaia-server-" });
+        const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+          harnessProviderRegistry:
+            markerWritingTestHarnessProviderRegistry(cwd),
+          rootDirectory: cwd,
+        });
+
+        const response = yield* HttpClient.get(
+          `/runs/${accepted.runId}/control`
+        ).pipe(Effect.provide(testServerLayer(cwd)));
+        const body = yield* responseJsonObject(response);
+
+        assert.strictEqual(response.status, 409);
+        assertApiError(body, "RunControlStale", 409);
+
+        const staleCanary = "SERVER_POST_HIDDEN_RESPONSE_CANARY";
+        const staleAction = parseRunControlAction({
+          actionId: parseRunControlActionId("action-server-stale-response"),
+          authorityId: "authority-stale",
+          checkpointDigest: "a".repeat(64),
+          expectedEventSequence: 1,
+          interactionId: "interaction-stale",
+          operation: "resolveInteraction",
+          providerId: "fake",
+          requestDigest: "b".repeat(64),
+          response: {
+            answers: [
+              {
+                answers: [staleCanary],
+                questionId: parseHarnessQuestionId("question-stale"),
+              },
+            ],
+            kind: "userInput",
+          },
+          runId: accepted.runId,
+          sessionId: `session-${accepted.runId}`,
+          workerAgentId: "agent-worker",
+          workerStartedSequence: 1,
+        });
+        const stalePost = yield* HttpClientRequest.post(
+          `/runs/${accepted.runId}/control/actions`
+        ).pipe(
+          HttpClientRequest.bodyJsonUnsafe(staleAction),
+          HttpClient.execute,
+          Effect.provide(testServerLayer(cwd))
+        );
+        const stalePostBody = yield* responseJsonObject(stalePost);
+        assert.strictEqual(stalePost.status, 409);
+        assertApiError(stalePostBody, "RunControlStale", 409);
+        assert.notInclude(JSON.stringify(stalePostBody), staleCanary);
+
+        const setupRunningControl = (input: {
+          readonly capabilities: typeof HarnessCapabilities.Type;
+          readonly runId: ReturnType<typeof parseRunId>;
+          readonly waitingForHuman?: boolean;
+        }) =>
+          Effect.gen(function* () {
+            const paths = yield* makeRunPaths(input.runId, {
+              rootDirectory: cwd,
+            });
+            yield* fs.makeDirectory(paths.root, { recursive: true });
+            yield* appendEvent(input.runId, paths, {
+              payload: { specPath: "spec.md" },
+              type: "RUN_CREATED",
+            });
+            yield* appendEvent(input.runId, paths, {
+              payload: { workspacePath: "." },
+              type: "WORKSPACE_PREPARED",
+            });
+            yield* appendEvent(input.runId, paths, { type: "WORKER_STARTED" });
+            yield* appendHarnessSessionEvent(input.runId, paths, {
+              capabilities: input.capabilities,
+              kind: "sessionStarted",
+              provider: testHarnessProvider.descriptor,
+              sessionId: parseHarnessSessionId(`session-${input.runId}`),
+              state: "running",
+            });
+            if (input.waitingForHuman === true) {
+              const sessionId = parseHarnessSessionId(`session-${input.runId}`);
+              const interactionId = parseHarnessInteractionId(
+                `interaction-${input.runId}`
+              );
+              const turnId = parseHarnessTurnId(`turn-${input.runId}`);
+              yield* appendHarnessSessionEvent(input.runId, paths, {
+                kind: "turnStarted",
+                sessionId,
+                turnId,
+              });
+              const interaction = {
+                interactionId,
+                itemId: parseHarnessItemId(`item-${input.runId}`),
+                kind: "userInput" as const,
+                questions: [
+                  {
+                    options: [],
+                    prompt: "Secret?",
+                    questionId: parseHarnessQuestionId(
+                      `question-${input.runId}`
+                    ),
+                    secret: true,
+                  },
+                ],
+                requestedAt: "2026-07-22T00:00:00.000Z",
+                turnId,
+              };
+              yield* appendHarnessSessionEvent(input.runId, paths, {
+                interaction,
+                kind: "interactionRequested",
+                sessionId,
+              });
+              const checkpointWithPlaceholder = Schema.decodeUnknownSync(
+                RunHumanWaitCheckpointV1
+              )({
+                checkpointDigest: "a".repeat(64),
+                environmentReceipt: {
+                  byteLength: 512,
+                  path: `harness-environment/receipt-${"b".repeat(64)}.json`,
+                  receiptDigest: "b".repeat(64),
+                  runId: input.runId,
+                  structuralDigest: "c".repeat(64),
+                  version: 1,
+                },
+                expectedEventSequence: 7,
+                interactionId,
+                providerId: testHarnessProvider.descriptor.providerId,
+                requestDigest: makeRunControlRequestDigest(interaction),
+                requestedAt: "2026-07-22T00:00:00.000Z",
+                resolverAuthorityId:
+                  parseRunControlAuthorityId("authority-local"),
+                runId: input.runId,
+                sessionId,
+                version: 1,
+                workerAgentId: "agent-worker",
+                workerStartedSequence: 3,
+              });
+              const {
+                checkpointDigest: _checkpointDigest,
+                ...checkpointInput
+              } = checkpointWithPlaceholder;
+              const checkpoint = RunHumanWaitCheckpointV1.make({
+                ...checkpointInput,
+                checkpointDigest:
+                  makeRunControlCheckpointDigest(checkpointInput),
+              });
+              yield* appendEvent(input.runId, paths, {
+                payload: {
+                  checkpoint: Schema.encodeSync(RunHumanWaitCheckpointV1)(
+                    checkpoint
+                  ),
+                },
+                type: "RUN_WAITING_FOR_HUMAN",
+              });
+            }
+            return yield* readRunControlSnapshot(input.runId, {
+              rootDirectory: cwd,
+            });
+          });
+        const durableCapabilities = HarnessCapabilities.make({
+          approvals: ["userInput"],
+          durableInteractionResolution: true,
+          durablePause: true,
+          fileChangeEvents: false,
+          interruption: true,
+          resumableSessions: true,
+          review: false,
+          steering: false,
+          streamingMessages: true,
+          structuredOutput: false,
+          subagents: false,
+          toolEvents: false,
+          usageReporting: false,
+          userQuestions: true,
+        });
+        const activeRunId = parseRunId("run-148servr01");
+        const active = yield* setupRunningControl({
+          capabilities: durableCapabilities,
+          runId: activeRunId,
+          waitingForHuman: true,
+        });
+        assert.isDefined(active.actionTarget);
+        const wrongAuthority = parseRunControlAction({
+          ...active.actionTarget,
+          actionId: parseRunControlActionId("action-server-wrong-authority"),
+          authorityId: parseRunControlAuthorityId("authority-wrong"),
+          operation: "resolveInteraction",
+          response: {
+            answers: [
+              {
+                answers: [staleCanary],
+                questionId: parseHarnessQuestionId(`question-${activeRunId}`),
+              },
+            ],
+            kind: "userInput",
+          },
+          runId: activeRunId,
+        });
+        const wrongAuthorityResponse = yield* HttpClientRequest.post(
+          `/runs/${activeRunId}/control/actions`
+        ).pipe(
+          HttpClientRequest.bodyJsonUnsafe(wrongAuthority),
+          HttpClient.execute,
+          Effect.provide(testServerLayer(cwd))
+        );
+        assert.strictEqual(wrongAuthorityResponse.status, 403);
+        const wrongAuthorityBody = yield* responseJsonObject(
+          wrongAuthorityResponse
+        );
+        assertApiError(wrongAuthorityBody, "RunControlWrongAuthority", 403);
+        assert.notInclude(JSON.stringify(wrongAuthorityBody), staleCanary);
+
+        const unsupportedRunId = parseRunId("run-148servr02");
+        const unsupported = yield* setupRunningControl({
+          capabilities: HarnessCapabilities.make({
+            ...durableCapabilities,
+            durablePause: false,
+          }),
+          runId: unsupportedRunId,
+        });
+        assert.isDefined(unsupported.actionTarget);
+        const unsupportedResponse = yield* HttpClientRequest.post(
+          `/runs/${unsupportedRunId}/control/actions`
+        ).pipe(
+          HttpClientRequest.bodyJsonUnsafe(
+            parseRunControlAction({
+              ...unsupported.actionTarget,
+              actionId: parseRunControlActionId(
+                "action-server-unsupported-pause"
+              ),
+              operation: "pause",
+              runId: unsupportedRunId,
+            })
+          ),
+          HttpClient.execute,
+          Effect.provide(testServerLayer(cwd))
+        );
+        assert.strictEqual(unsupportedResponse.status, 422);
+        assertApiError(
+          yield* responseJsonObject(unsupportedResponse),
+          "RunControlUnsupportedProviderOperation",
+          422
+        );
+      })
+    );
+
+    it.effect(
+      "resumes the provider exactly once across the control action and continuation",
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const cwd = yield* fs.makeTempDirectory({
+              prefix: "gaia-server-run-control-resume-",
+            });
+            let consumedSessions = 0;
+            let releasedSessions = 0;
+            let resumeCalls = 0;
+            const resumeCapabilities = HarnessCapabilities.make({
+              ...testHarnessCapabilities,
+              approvals: ["userInput"],
+              userQuestions: true,
+            });
+            const provider = {
+              ...testHarnessProvider,
+              detect: Effect.succeed({
+                auth: { state: "notRequired" as const },
+                capabilities: resumeCapabilities,
+                state: "available" as const,
+                version: "resume-once-1",
+              }),
+              resumeSession: (
+                request: Parameters<typeof testHarnessProvider.resumeSession>[0]
+              ) =>
+                Effect.acquireRelease(
+                  Effect.sync(() => {
+                    resumeCalls += 1;
+                  }),
+                  () =>
+                    Effect.sync(() => {
+                      releasedSessions += 1;
+                    })
+                ).pipe(
+                  Effect.map(() => {
+                    let consumed = false;
+                    const turnId = parseHarnessTurnId(
+                      "turn-server-resume-once"
+                    );
+                    const events = [
+                      {
+                        capabilities: resumeCapabilities,
+                        kind: "sessionStarted" as const,
+                        provider: testHarnessProvider.descriptor,
+                        sessionId: request.sessionId,
+                        state: "running" as const,
+                      },
+                      {
+                        kind: "turnStarted" as const,
+                        sessionId: request.sessionId,
+                        turnId,
+                      },
+                      {
+                        interaction: {
+                          interactionId: parseHarnessInteractionId(
+                            "interaction-server-resume-once"
+                          ),
+                          itemId: parseHarnessItemId("item-server-resume-once"),
+                          kind: "userInput" as const,
+                          questions: [
+                            {
+                              options: [],
+                              prompt: "Continue?",
+                              questionId: parseHarnessQuestionId(
+                                "question-server-resume-once"
+                              ),
+                              secret: false,
+                            },
+                          ],
+                          requestedAt: "2026-07-22T20:00:00.000Z",
+                          turnId,
+                        },
+                        kind: "interactionRequested" as const,
+                        sessionId: request.sessionId,
+                      },
+                    ];
+                    return {
+                      events: Stream.fromIterable(events).pipe(
+                        Stream.tap(() =>
+                          Effect.sync(() => {
+                            if (!consumed) {
+                              consumed = true;
+                              consumedSessions += 1;
+                            }
+                          })
+                        )
+                      ),
+                      interrupt: Option.some(Effect.void),
+                      resolveInteraction: () => Effect.void,
+                      send: () => Effect.succeed(undefined),
+                      snapshot: Effect.succeed(
+                        projectHarnessEvents(events, request.sessionId)
+                      ),
+                      steer: Option.none(),
+                    };
+                  })
+                ),
+            };
+            const registry = makeHarnessProviderRegistry([
+              {
+                profileId: codexAppServerExecutionSelection.harnessProfileId,
+                provider,
+              },
+            ]);
+            const accepted = yield* acceptFactoryRun(factoryCreateInput(), {
+              harnessProviderRegistry: registry,
+              rootDirectory: cwd,
+            });
+            const paths = yield* makeRunPaths(accepted.runId, {
+              rootDirectory: cwd,
+            });
+            const sessionId = parseHarnessSessionId(
+              `session-${accepted.runId}`
+            );
+            yield* fs.makeDirectory(paths.workspace, { recursive: true });
+            yield* fs.writeFileString(
+              `${paths.workspace}/output.txt`,
+              `test interactive completion ${accepted.runId}\n`
+            );
+            yield* deriveAndRecordRunContract({
+              paths,
+              runId: accepted.runId,
+              spec: parseMarkdownSpec(
+                "# Resume once\n\nComplete the bounded task.\n",
+                "input.md"
+              ),
+            });
+            yield* appendEvent(accepted.runId, paths, {
+              payload: { workspacePath: "." },
+              type: "WORKSPACE_PREPARED",
+            });
+            const content = makeModelContextContentV1({
+              acceptedOutcomes: [],
+              authority: ["Apply only accepted worker authority."],
+              budget: { maxOutputBytes: 16_384, maxTurns: 1 },
+              contentRefs: [],
+              episodeRole: "workerInitial",
+              instructions: ["Complete the bounded task."],
+              nonGoals: [],
+              outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+              planningFacts: [],
+              safeExclusions: [],
+              skills: [],
+              stops: [],
+              taskInput: "Complete the bounded task.",
+              verificationCommands: [],
+            });
+            const rendered = renderModelInputV1(content);
+            const workspaceBinding = yield* deriveModelWorkspaceBinding(paths);
+            const contract = yield* loadRunContract(paths, accepted.runId);
+            const context = makeModelContextManifestV1({
+              authoritativeRefs: [
+                { digest: contract.contractDigest, kind: "runContract" },
+              ],
+              binding: {
+                episodeKey: "workerInitial",
+                runId: accepted.runId,
+              },
+              content,
+              workspaceBinding,
+            });
+            const invocation = makeModelInvocationManifestV1({
+              acceptedProviderCapabilityObservation: "unobservable",
+              adapterInputClass: "codexAppTurn",
+              adapterSemantics: {
+                kind: "codexAppServer",
+                semanticDigest: "a".repeat(64),
+              },
+              authorityRef: {
+                digest: "b".repeat(64),
+                kind: "authority",
+              },
+              binding: context.payload.binding,
+              budget: content.payload.budget,
+              context,
+              outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+              rendered,
+              runContractRef: {
+                digest: contract.contractDigest,
+                kind: "runContract",
+              },
+              template: { id: "gaia.worker-input.v1", version: 1 },
+              workspaceBinding,
+            });
+            const episode = yield* commitModelInvocationPair({
+              context,
+              episodeKey: "workerInitial",
+              invocation,
+              paths,
+            });
+            yield* appendEvent(accepted.runId, paths, {
+              payload: {
+                modelInvocationEpisode: Schema.encodeSync(
+                  ModelInvocationEpisodeStartV1
+                )(episode),
+              },
+              type: "WORKER_STARTED",
+            });
+            yield* appendHarnessSessionEvent(accepted.runId, paths, {
+              capabilities: resumeCapabilities,
+              kind: "sessionStarted",
+              provider: testHarnessProvider.descriptor,
+              sessionId,
+              state: "running",
+            });
+
+            const coordinator = makeLiveHarnessSessionCoordinator();
+            const liveSession = yield* testHarnessProvider.resumeSession({
+              sessionId,
+              workspacePath: parseWorkspaceRelativePath("."),
+            });
+            const running = yield* readRunControlSnapshot(accepted.runId, {
+              rootDirectory: cwd,
+            });
+            if (running.actionTarget === undefined)
+              assert.fail("Expected the running control action target.");
+            yield* coordinator.register({
+              agentId: running.actionTarget.workerAgentId,
+              runId: accepted.runId,
+              session: liveSession,
+              sessionId,
+            });
+            yield* dispatchRunControlAction({
+              action: parseRunControlAction({
+                ...running.actionTarget,
+                actionId: parseRunControlActionId(
+                  "action-server-pause-before-resume"
+                ),
+                operation: "pause",
+                runId: accepted.runId,
+              }),
+              options: { rootDirectory: cwd, sessionCoordinator: coordinator },
+              runId: accepted.runId,
+            });
+            const paused = yield* readRunControlSnapshot(accepted.runId, {
+              rootDirectory: cwd,
+            });
+            assert.isDefined(paused.actionTarget);
+            const resume = parseRunControlAction({
+              ...paused.actionTarget,
+              actionId: parseRunControlActionId("action-server-resume-once"),
+              operation: "resume",
+              runId: accepted.runId,
+            });
+
+            const completed = yield* Effect.gen(function* () {
+              const result = yield* HttpClientRequest.post(
+                `/runs/${accepted.runId}/control/actions`
+              ).pipe(
+                HttpClientRequest.bodyJsonUnsafe(resume),
+                HttpClient.execute
+              );
+              for (let attempt = 0; attempt < 1_000; attempt += 1) {
+                const observed = yield* readEvents(paths);
+                if (
+                  consumedSessions === 1 &&
+                  releasedSessions === resumeCalls &&
+                  observed.some(({ type }) => type === "RUN_FAILED")
+                )
+                  return { events: observed, response: result };
+                yield* Effect.yieldNow;
+              }
+              const observedTypes = (yield* readEvents(paths)).map(
+                ({ type }) => type
+              );
+              assert.fail(
+                `Expected the resumed continuation to consume and release its provider session (resumeCalls=${resumeCalls}, consumedSessions=${consumedSessions}, releasedSessions=${releasedSessions}, events=${observedTypes.join(",")}).`
+              );
+            }).pipe(
+              Effect.provide(
+                testServerLayer(cwd, { harnessProviderRegistry: registry })
+              )
+            );
+            const { events, response } = completed;
+            const resumeLifecycle = events.filter((event) => {
+              const control = event.payload["control"];
+              return (
+                control !== null &&
+                typeof control === "object" &&
+                !Array.isArray(control) &&
+                Reflect.get(control, "actionId") === resume.actionId
+              );
+            });
+
+            assert.strictEqual(response.status, 200);
+            assert.strictEqual(resumeCalls, 1);
+            assert.strictEqual(consumedSessions, 1);
+            assert.strictEqual(releasedSessions, 1);
+            assert.strictEqual(
+              resumeLifecycle.filter(
+                ({ type }) => type === "RUN_CONTROL_ATTEMPTED"
+              ).length,
+              1
+            );
+            assert.strictEqual(
+              resumeLifecycle.filter(({ type }) =>
+                [
+                  "RUN_CONTROL_CONFIRMED",
+                  "RUN_CONTROL_FAILED",
+                  "RUN_CONTROL_OUTCOME_UNKNOWN",
+                ].includes(type)
+              ).length,
+              1
+            );
+          })
+        )
     );
 
     it.effect(
@@ -1145,6 +1728,180 @@ describe("local run api http boundary", () => {
           assert.strictEqual(resumeBlocks[0]?.id, String(lastSequence));
           assert.strictEqual(conflictResponse.status, 409);
           assertApiError(conflictBody, "DeliveryStreamCursorConflict", 409);
+
+          const cancelled = yield* acceptFactoryRun(factoryCreateInput(), {
+            harnessProviderRegistry:
+              markerWritingTestHarnessProviderRegistry(cwd),
+            rootDirectory: cwd,
+          });
+          const cancelledPaths = yield* makeRunPaths(cancelled.runId, {
+            rootDirectory: cwd,
+          });
+          yield* fs.makeDirectory(cancelledPaths.workspace, {
+            recursive: true,
+          });
+          yield* deriveAndRecordRunContract({
+            paths: cancelledPaths,
+            runId: cancelled.runId,
+            spec: parseMarkdownSpec(
+              "# Cancel stream\n\nClose every live feed on confirmed cancel.\n",
+              "input.md"
+            ),
+          });
+          yield* appendEvent(cancelled.runId, cancelledPaths, {
+            payload: { workspacePath: "." },
+            type: "WORKSPACE_PREPARED",
+          });
+          const cancelContent = makeModelContextContentV1({
+            acceptedOutcomes: [],
+            authority: ["Apply only accepted worker authority."],
+            budget: { maxOutputBytes: 16_384, maxTurns: 1 },
+            contentRefs: [],
+            episodeRole: "workerInitial",
+            instructions: ["Complete the bounded task."],
+            nonGoals: [],
+            outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+            planningFacts: [],
+            safeExclusions: [],
+            skills: [],
+            stops: [],
+            taskInput: "Complete the bounded task.",
+            verificationCommands: [],
+          });
+          const cancelWorkspaceBinding =
+            yield* deriveModelWorkspaceBinding(cancelledPaths);
+          const cancelContract = yield* loadRunContract(
+            cancelledPaths,
+            cancelled.runId
+          );
+          const cancelContext = makeModelContextManifestV1({
+            authoritativeRefs: [
+              {
+                digest: cancelContract.contractDigest,
+                kind: "runContract",
+              },
+            ],
+            binding: {
+              episodeKey: "workerInitial",
+              runId: cancelled.runId,
+            },
+            content: cancelContent,
+            workspaceBinding: cancelWorkspaceBinding,
+          });
+          const cancelInvocation = makeModelInvocationManifestV1({
+            acceptedProviderCapabilityObservation: "unobservable",
+            adapterInputClass: "codexAppTurn",
+            adapterSemantics: {
+              kind: "codexAppServer",
+              semanticDigest: "a".repeat(64),
+            },
+            authorityRef: {
+              digest: "b".repeat(64),
+              kind: "authority",
+            },
+            binding: cancelContext.payload.binding,
+            budget: cancelContent.payload.budget,
+            context: cancelContext,
+            outputContract: MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
+            rendered: renderModelInputV1(cancelContent),
+            runContractRef: {
+              digest: cancelContract.contractDigest,
+              kind: "runContract",
+            },
+            template: { id: "gaia.worker-input.v1", version: 1 },
+            workspaceBinding: cancelWorkspaceBinding,
+          });
+          const cancelEpisode = yield* commitModelInvocationPair({
+            context: cancelContext,
+            episodeKey: "workerInitial",
+            invocation: cancelInvocation,
+            paths: cancelledPaths,
+          });
+          const cancelWorkerStarted = yield* appendEvent(
+            cancelled.runId,
+            cancelledPaths,
+            {
+              payload: {
+                modelInvocationEpisode: Schema.encodeSync(
+                  ModelInvocationEpisodeStartV1
+                )(cancelEpisode),
+              },
+              type: "WORKER_STARTED",
+            }
+          );
+          yield* appendHarnessSessionEvent(cancelled.runId, cancelledPaths, {
+            capabilities: testHarnessCapabilities,
+            kind: "sessionStarted",
+            provider: testHarnessProvider.descriptor,
+            sessionId: parseHarnessSessionId(`session-${cancelled.runId}`),
+            state: "running",
+          });
+          const cancelEvents = yield* readEvents(cancelledPaths);
+          const cancelControlFields = {
+            actionId: parseRunControlActionId(
+              "action-server-delivery-stream-cancel"
+            ),
+            authorityId: parseRunControlAuthorityId("authority-local"),
+            expectedEventSequence: cancelEvents.at(-1)!.sequence,
+            operation: "cancel",
+            providerId: testHarnessProvider.descriptor.providerId,
+            sessionId: parseHarnessSessionId(`session-${cancelled.runId}`),
+            workerAgentId:
+              Schema.decodeUnknownSync(FactoryAgentIdSchema)("agent-worker"),
+            workerStartedSequence: cancelWorkerStarted.event.sequence,
+          } as const;
+          const cancelControl = parseRunControlEventPayload({
+            ...cancelControlFields,
+            actionBindingDigest: makeRunControlActionBindingDigest({
+              ...cancelControlFields,
+              runId: cancelled.runId,
+            }),
+          });
+          for (const type of [
+            "RUN_CONTROL_INTENT_RECORDED",
+            "RUN_CONTROL_ATTEMPTED",
+            "RUN_CONTROL_CONFIRMED",
+          ] as const) {
+            yield* appendEvent(cancelled.runId, cancelledPaths, {
+              payload: {
+                control: Schema.encodeSync(RunControlEventPayload)(
+                  cancelControl
+                ),
+              },
+              type,
+            });
+          }
+          const cancelledFiber = yield* HttpClient.get(
+            `/runs/${cancelled.runId}/delivery/stream`
+          ).pipe(
+            Effect.flatMap((response) => response.text),
+            Effect.provide(layer),
+            Effect.forkChild
+          );
+          const cancelledStream = yield* Effect.raceFirst(
+            Fiber.join(cancelledFiber).pipe(Effect.map(Option.some)),
+            Effect.promise(
+              () =>
+                new Promise<Option.Option<never>>((resolve) => {
+                  setTimeout(() => resolve(Option.none()), 500);
+                })
+            )
+          );
+
+          assert.isTrue(Option.isSome(cancelledStream));
+          if (Option.isSome(cancelledStream)) {
+            const cancelledUpdates = parseSseBlocks(cancelledStream.value);
+            assert.strictEqual(
+              getNumber(
+                getObjectFromArray(
+                  cancelledUpdates.map(({ data }) => data),
+                  cancelledUpdates.length - 1
+                ),
+                "eventSequence"
+              ),
+              cancelEvents.at(-1)!.sequence + 3
+            );
+          }
         }),
       20_000
     );
