@@ -20,6 +20,7 @@ import {
   parseDeliveryMergeReceipt,
   parseDeliveryMergeReadinessDecision,
   parseDeliveryCleanupReceipt,
+  parseFailureRepairReceipt,
   parseHarnessEvent,
   parseAnyRunProofResultEnvelope,
   RunProofProjectionSchema,
@@ -1371,6 +1372,24 @@ function updateStatesForEvent(
     case "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED":
       states.set("orchestrator", "running");
       return;
+    case "FAILURE_REPAIR_RECORDED": {
+      const repair = parseFailureRepairReceipt(event.payload["failureRepair"]);
+      if (
+        repair.state === "intentRecorded" ||
+        repair.state === "dispatchAttempted" ||
+        repair.state === "turnCompleted"
+      )
+        states.set("worker", "running");
+      else if (repair.state === "verified") {
+        states.set("worker", "succeeded");
+        states.set("tester", "succeeded");
+      } else {
+        states.set("worker", "failed");
+        if (repair.state === "outcomeUnknown" || repair.state === "exhausted")
+          states.set("orchestrator", "failed");
+      }
+      return;
+    }
     case "RUN_CONTROL_CONFIRMED": {
       const control = parseRunControlEventPayload(event.payload["control"]);
       if (control.operation === "cancel") {
@@ -1452,6 +1471,12 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
     case "WORKER_CORRELATION_RECONCILIATION_RECORDED":
     case "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED":
       return "orchestrator";
+    case "FAILURE_REPAIR_RECORDED": {
+      const state = parseFailureRepairReceipt(
+        event.payload["failureRepair"]
+      ).state;
+      return state === "verified" ? "tester" : "worker";
+    }
     case "RUN_FAILED":
       return roleFromFailureStage(event.payload["stage"]);
     case "WORKER_STARTED":
@@ -1505,6 +1530,8 @@ function subStateForEvent(event: RunEvent): string | undefined {
       return "publicationOutcomeUnknown";
     case "DELIVERY_REMEDIATION_RECORDED":
       return "remediation";
+    case "FAILURE_REPAIR_RECORDED":
+      return "failureRepair";
     case "DELIVERY_PR_READY_RECORDED":
       return "readyForReview";
     case "DELIVERY_LOCAL_REVIEW_ATTESTATION_RECORDED":
@@ -1632,6 +1659,8 @@ function activityLabel(event: RunEvent): string {
       return "Legacy verification recorded (unverified)";
     case "RUN_PROOF_RESULT_RECORDED":
       return "Run proof result recorded";
+    case "FAILURE_REPAIR_RECORDED":
+      return "Failure repair updated";
     case "CLAIM_VERIFICATION_GENERATION_STARTED":
       return "Claim verification generation started";
     case "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED":

@@ -130,6 +130,7 @@ export const ModelInvocationEpisodeRoleSchema = Schema.Literals([
   "operatorFollowUp",
   "operatorSteer",
   "deliveryRemediation",
+  "failureRepair",
   "workerRecovery",
   "workerCorrelation",
   "workerDesktopOriginCorrelation",
@@ -835,6 +836,18 @@ function requiredEpisodeKey(event: RunEvent) {
       typeof remediation.operationId === "string"
     )
       return `deliveryRemediation:${remediation.operationId}`;
+  }
+  if (event.type === "FAILURE_REPAIR_RECORDED") {
+    const failureRepair = event.payload["failureRepair"];
+    if (
+      typeof failureRepair === "object" &&
+      failureRepair !== null &&
+      "state" in failureRepair &&
+      failureRepair.state === "intentRecorded" &&
+      "episodeKey" in failureRepair &&
+      typeof failureRepair.episodeKey === "string"
+    )
+      return failureRepair.episodeKey;
   }
   if (event.type === "WORKER_RECOVERY_RECORDED") {
     const recovery = event.payload["recovery"];

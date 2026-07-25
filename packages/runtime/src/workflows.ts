@@ -12,6 +12,7 @@ import {
   ModelInvocationObservationV1,
   ResolvedHarnessExecution,
   parseMarkdownSpec,
+  parseAnyRunProofResultEnvelope,
   parseRunId,
   parseRunControlEventPayload,
   resolveAcceptedRunInputCheckpoint,
@@ -60,6 +61,7 @@ import {
 import { writeEvidencePromotion } from "./evidence-promotion.js";
 import { writeFactoryRetro } from "./factory-retro.js";
 import { writeFactoryScorecard } from "./factory-scorecard.js";
+import { continueFailureRepairWithinLease } from "./failure-repair-coordinator.js";
 import type { DeliveryProvenance } from "./git-delivery.js";
 import {
   HarnessRunRequest,
@@ -76,6 +78,8 @@ import {
 } from "./harness.js";
 import { readHarnessEnvironmentReceipt } from "./interactive-harness.js";
 export { readHarnessEnvironmentReceipt } from "./interactive-harness.js";
+import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
+import type { HarnessProviderRegistry } from "./harness-provider-registry.js";
 import {
   commitModelInvocationPair,
   decodeCodexBatchSemanticConfig,
@@ -255,6 +259,8 @@ export type WorkflowOptions = RunStorageOptions &
     readonly codexHarness?: CodexHarnessOptions;
     readonly deliveryProvenance?: DeliveryProvenance;
     readonly harnessName?: HarnessName;
+    readonly harnessProviderRegistry?: HarnessProviderRegistry;
+    readonly sessionCoordinator?: LiveHarnessSessionCoordinator;
     readonly workerHarness?: GaiaHarness;
     readonly processHarness?: ProcessHarnessConfig;
     readonly skillInstaller?: SkillInstallerOptions;
@@ -826,7 +832,7 @@ function executeAcceptedRun(input: {
       );
     }
     yield* appendEvent(runId, paths, { type: "VERIFICATION_STARTED" });
-    const proofResult = yield* recordRunProofResult(runId, paths, {
+    let proofResult = yield* recordRunProofResult(runId, paths, {
       ...(options.verificationServices === undefined
         ? {}
         : { verificationServices: options.verificationServices }),
@@ -842,6 +848,48 @@ function executeAcceptedRun(input: {
         "reporting",
         browserEvidenceTargetRequiredError()
       );
+    if (
+      proofResult.version === 2 &&
+      proofResult.results.some(({ status }) => status === "failed") &&
+      options.harnessProviderRegistry !== undefined &&
+      options.sessionCoordinator !== undefined
+    ) {
+      const repair = yield* continueFailureRepairWithinLease(runId, {
+        harnessProviderRegistry: options.harnessProviderRegistry,
+        rootDirectory: options.rootDirectory ?? ".",
+        sessionCoordinator: options.sessionCoordinator,
+        ...(options.verificationServices === undefined
+          ? {}
+          : { verificationServices: options.verificationServices }),
+      });
+      const repairedEvents = yield* readEvents(paths);
+      if (repair?.state !== "verified") {
+        const snapshot = snapshotFromReplay(repairedEvents);
+        return parseCommandSummary({
+          reportPath: undefined,
+          proofAggregate: proofResult.aggregate,
+          runDirectory: paths.root,
+          runId,
+          state: snapshot.state,
+          status: statusFromState(snapshot.state),
+        });
+      }
+      const proofEvent = repairedEvents[repair.proofResultSequence - 1];
+      if (proofEvent?.type !== "RUN_PROOF_RESULT_RECORDED") {
+        const snapshot = snapshotFromReplay(repairedEvents);
+        return parseCommandSummary({
+          reportPath: undefined,
+          proofAggregate: proofResult.aggregate,
+          runDirectory: paths.root,
+          runId,
+          state: snapshot.state,
+          status: statusFromState(snapshot.state),
+        });
+      }
+      proofResult = parseAnyRunProofResultEnvelope(
+        proofEvent.payload["result"]
+      );
+    }
     yield* runReviewPhase(
       runId,
       paths,

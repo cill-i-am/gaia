@@ -34,6 +34,13 @@ export {
   type DeliveryRemediationCoordinatorResult,
 } from "./delivery-remediation-coordinator.js";
 export {
+  continueFailureRepair,
+  continueFailureRepairWithinLease,
+  FailureRepairReverifyInputSchema,
+  type FailureRepairCoordinatorOptions,
+  type FailureRepairReverify,
+} from "./failure-repair-coordinator.js";
+export {
   BrowserConsoleLevelSchema,
   BrowserConsoleMessage,
   BrowserEvidence,

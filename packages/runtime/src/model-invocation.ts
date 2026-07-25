@@ -794,6 +794,7 @@ export function commitDerivedAppModelInvocationEpisode(input: {
     | "operatorFollowUp"
     | "operatorSteer"
     | "deliveryRemediation"
+    | "failureRepair"
     | "workerRecovery"
     | "workerCorrelation"
     | "workerDesktopOriginCorrelation";
