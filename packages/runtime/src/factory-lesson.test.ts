@@ -69,7 +69,10 @@ import {
   type AppendEventInput,
 } from "./index.js";
 import { interactiveSessionHarness } from "./interactive-harness.js";
-import { loadModelInvocationPair } from "./model-invocation.js";
+import {
+  commitDerivedAppModelInvocationEpisode,
+  loadModelInvocationPair,
+} from "./model-invocation.js";
 import { makeRunPaths, parseRunStorageRootInput } from "./paths.js";
 import { readLocalRunArtifact } from "./run-read-api.js";
 import {
@@ -738,6 +741,7 @@ describe("factory lesson runtime", () => {
             Schema.decodeUnknownSync(ModelInvocationEpisodeStartV1)(episode)
           );
           const attribution = resolveFactoryLessonContextAttribution(events);
+          const selectedLesson = selection.lessons[0];
 
           assert.deepEqual(
             Schema.decodeUnknownSync(FactoryLessonContextSelectionV1)(
@@ -751,7 +755,15 @@ describe("factory lesson runtime", () => {
             selection.lessons[0]?.lessonId,
             review.receipt.projection.lessonId
           );
+          if (selectedLesson === undefined)
+            return yield* Effect.die("Selected lesson is missing.");
+          const exactRenderedRef = renderedFactoryLessonRef(selectedLesson);
+          assert.include(offeredInput, exactRenderedRef);
           assert.include(offeredInput, candidate.compactLesson);
+          assert.isBelow(
+            offeredInput.indexOf(exactRenderedRef),
+            offeredInput.indexOf(candidate.compactLesson)
+          );
           assert.notInclude(offeredInput, candidate.expectedEffect);
           assert.notInclude(offeredInput, candidate.retirementCondition);
           assert.strictEqual(pair.rendered.text, offeredInput);
@@ -760,9 +772,8 @@ describe("factory lesson runtime", () => {
             selection.contextContentDigest
           );
           assert.strictEqual(attribution.attributions.length, 1);
-          const selectedLesson = selection.lessons[0];
           const observations = attribution.attributions[0]?.observations;
-          if (selectedLesson === undefined || observations === undefined)
+          if (observations === undefined)
             return yield* Effect.die("Selected lesson observation is missing.");
           assert.deepInclude(observations[0], {
             kind: "offered",
@@ -792,6 +803,128 @@ describe("factory lesson runtime", () => {
             { rootDirectory: root }
           );
           assert.include(localArtifact.body, candidate.compactLesson);
+        })
+    );
+
+    it.effect(
+      "derives failureRepair without inheriting selected factory lesson context",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-lesson-failure-repair-derived-",
+          });
+          const prepared = yield* prepareSelectedFactoryLessonRun(
+            root,
+            "failure-repair-derived"
+          );
+          const episode = yield* commitDerivedAppModelInvocationEpisode({
+            episodeKey: `failureRepair:${prepared.candidate.candidateDigest}:1`,
+            episodeRole: "failureRepair",
+            events: prepared.events,
+            paths: prepared.paths,
+            runId: prepared.runId,
+            taskInput: "Repair only the exact authenticated failure.",
+          });
+          if (episode === undefined)
+            return yield* Effect.die(
+              "Derived failure-repair episode is missing."
+            );
+          const pair = yield* loadModelInvocationPair(prepared.paths, episode);
+          const content = pair.context.payload.content;
+          const selectedLesson = prepared.selection.lessons[0];
+          if (selectedLesson === undefined)
+            return yield* Effect.die("Selected lesson is missing.");
+
+          assert.strictEqual(content.episodeRole, "failureRepair");
+          assert.isFalse(
+            content.contentRefs.some(({ kind }) => kind === "factoryLesson/v1")
+          );
+          assert.notInclude(
+            pair.rendered.text,
+            renderedFactoryLessonRef(selectedLesson)
+          );
+          assert.notInclude(
+            pair.rendered.text,
+            prepared.candidate.compactLesson
+          );
+          assert.isFalse(
+            content.planningFacts.includes(prepared.candidate.compactLesson)
+          );
+        })
+    );
+
+    it.effect(
+      "derives an ordinary App episode without the private factory lesson ref",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-lesson-ordinary-derived-",
+          });
+          const prepared = yield* prepareSelectedFactoryLessonRun(
+            root,
+            "ordinary-derived"
+          );
+          const episode = yield* commitDerivedAppModelInvocationEpisode({
+            episodeKey: `operatorFollowUp:${prepared.candidate.candidateDigest}`,
+            episodeRole: "operatorFollowUp",
+            events: prepared.events,
+            paths: prepared.paths,
+            runId: prepared.runId,
+            taskInput: "Continue only the accepted bounded worker task.",
+          });
+          if (episode === undefined)
+            return yield* Effect.die("Derived ordinary episode is missing.");
+          const pair = yield* loadModelInvocationPair(prepared.paths, episode);
+          const baseContent =
+            prepared.workerInitialPair.context.payload.content;
+          const content = pair.context.payload.content;
+          const selectedLesson = prepared.selection.lessons[0];
+          if (selectedLesson === undefined)
+            return yield* Effect.die("Selected lesson is missing.");
+
+          assert.strictEqual(content.episodeRole, "operatorFollowUp");
+          assert.deepEqual(
+            content.contentRefs,
+            baseContent.contentRefs.filter(
+              ({ kind }) => kind !== "factoryLesson/v1"
+            )
+          );
+          assert.notInclude(
+            pair.rendered.text,
+            renderedFactoryLessonRef(selectedLesson)
+          );
+          assert.isTrue(
+            content.planningFacts.some((fact) =>
+              fact.includes(prepared.candidate.compactLesson)
+            )
+          );
+          assert.include(pair.rendered.text, prepared.candidate.compactLesson);
+          assert.deepEqual(
+            {
+              acceptedOutcomes: content.acceptedOutcomes,
+              authority: content.authority,
+              instructions: content.instructions,
+              nonGoals: content.nonGoals,
+              planningFacts: content.planningFacts,
+              safeExclusions: content.safeExclusions,
+              skills: content.skills,
+              stops: content.stops,
+              verificationCommands: content.verificationCommands,
+            },
+            {
+              acceptedOutcomes: baseContent.acceptedOutcomes,
+              authority: baseContent.authority,
+              instructions: baseContent.instructions,
+              nonGoals: baseContent.nonGoals,
+              planningFacts: baseContent.planningFacts,
+              safeExclusions: baseContent.safeExclusions,
+              skills: baseContent.skills,
+              stops: baseContent.stops,
+              verificationCommands: baseContent.verificationCommands,
+            }
+          );
         })
     );
 
@@ -1175,9 +1308,18 @@ describe("factory lesson runtime", () => {
           )(workerStarted?.payload["modelInvocationEpisode"]);
           const pair = yield* loadModelInvocationPair(paths, episode);
           const attribution = resolveFactoryLessonContextAttribution(events);
+          const selectedLesson = selection.lessons[0];
 
           assert.isTrue(transportCompleted);
+          if (selectedLesson === undefined)
+            return yield* Effect.die("Selected lesson is missing.");
+          const exactRenderedRef = renderedFactoryLessonRef(selectedLesson);
+          assert.include(offeredInput, exactRenderedRef);
           assert.include(offeredInput, candidate.compactLesson);
+          assert.isBelow(
+            offeredInput.indexOf(exactRenderedRef),
+            offeredInput.indexOf(candidate.compactLesson)
+          );
           assert.strictEqual(pair.rendered.text, offeredInput);
           assert.strictEqual(selection.lessons.length, 1);
           assert.deepEqual(
@@ -1378,6 +1520,85 @@ describe("factory lesson runtime", () => {
   });
 });
 
+function prepareSelectedFactoryLessonRun(
+  rootDirectory: string,
+  fixtureName: string
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const source = yield* writeRepairSource(rootDirectory, true);
+    const candidate = makeFactoryLessonCandidateV1(lessonInput);
+    const review = makeAcceptedReview(candidate, source);
+    yield* recordFactoryLessonReview(sourceRunId, review.input, {
+      rootDirectory,
+    });
+
+    const specPath = `${rootDirectory}/${fixtureName}.md`;
+    yield* fs.writeFileString(
+      specPath,
+      `# ${fixtureName}\n\nUse accepted reviewed context.\n`
+    );
+    const summary = yield* runSpecFile(specPath, {
+      harnessName: codexHarnessName,
+      rootDirectory,
+      workerHarness: {
+        name: codexAppServerHarnessName,
+        run: (request) =>
+          Effect.gen(function* () {
+            const result = HarnessRunResult.make({
+              changedWorkspacePaths: ["output.txt"],
+              exitCode: 0,
+              harnessName: codexAppServerHarnessName,
+              outputArtifacts: ["workspace/output.txt"],
+              resultPath: "worker-result.json",
+              runId: request.runId,
+              status: "completed",
+              summary: "Selected factory lesson worker completed.",
+            });
+            yield* fs.writeFileString(
+              request.workspaceOutputPath,
+              `${request.runId}\n`
+            );
+            yield* fs.writeFileString(
+              request.workerResultPath,
+              `${JSON.stringify(result)}\n`
+            );
+            return result;
+          }).pipe(Effect.orDie),
+      },
+    });
+    const paths = yield* makeRunPaths(summary.runId, {
+      rootDirectory,
+    });
+    const events = yield* readEvents(paths);
+    const workerStarted = events.find(
+      (event) => event.type === "WORKER_STARTED"
+    );
+    if (workerStarted === undefined)
+      return yield* Effect.die("Selected lesson worker start is missing.");
+    const selection = parseFactoryLessonContextSelectionV1(
+      workerStarted.payload["factoryLessonContextSelection"]
+    );
+    assert.lengthOf(selection.lessons, 1);
+    const workerInitialEpisode = Schema.decodeUnknownSync(
+      ModelInvocationEpisodeStartV1
+    )(workerStarted.payload["modelInvocationEpisode"]);
+    const workerInitialPair = yield* loadModelInvocationPair(
+      paths,
+      workerInitialEpisode
+    );
+
+    return {
+      candidate,
+      events,
+      paths,
+      runId: summary.runId,
+      selection,
+      workerInitialPair,
+    };
+  });
+}
+
 function makeAcceptedReview(
   candidate: ReturnType<typeof makeFactoryLessonCandidateV1>,
   source: Awaited<ReturnType<typeof sourceFixture>>
@@ -1401,6 +1622,19 @@ function makeAcceptedReview(
   if (receipt.decision !== "accepted")
     throw new Error("Accepted review fixture was not accepted.");
   return { input, receipt };
+}
+
+function renderedFactoryLessonRef(input: {
+  readonly lessonId: string;
+  readonly projectionDigest: string;
+  readonly version: 1;
+}) {
+  return [
+    "kind=factoryLesson/v1",
+    `lessonId=${input.lessonId}`,
+    `version=${input.version}`,
+    `projectionDigest=${input.projectionDigest}`,
+  ].join("; ");
 }
 
 function writeRepairSource(

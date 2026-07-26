@@ -887,7 +887,9 @@ export function commitDerivedAppModelInvocationEpisode(input: {
       acceptedOutcomes: projectedContext.acceptedOutcomes,
       authority: projectedContext.authority,
       budget: baseContent.budget,
-      contentRefs: baseContent.contentRefs,
+      contentRefs: baseContent.contentRefs.filter(
+        ({ kind }) => kind !== "factoryLesson/v1"
+      ),
       episodeRole: input.episodeRole,
       instructions: projectedContext.instructions,
       nonGoals: projectedContext.nonGoals,

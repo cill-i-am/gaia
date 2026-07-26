@@ -92,9 +92,9 @@ function makeFailureRepairSource(sequence: number, fingerprintSeed: string) {
   };
 }
 
-function acceptedReview(sequence = 2) {
+function acceptedReview(sequence = 2, input = lessonInput) {
   const failure = makeFailureRepairSource(sequence - 1, `${sequence}`);
-  const candidate = makeFactoryLessonCandidateV1(lessonInput);
+  const candidate = makeFactoryLessonCandidateV1(input);
   const attestation = makeNoRawTelemetryAttestationV1({
     candidateDigest: candidate.candidateDigest,
     reviewerRef,
@@ -665,6 +665,7 @@ describe("reviewed factory lessons", () => {
         available: projection.active,
         baseContent: makeModelContextContentV1({
           ...failureRepairPayload,
+          contentRefs: [],
           episodeRole: "failureRepair",
         }),
         target: {
@@ -673,6 +674,212 @@ describe("reviewed factory lessons", () => {
         },
       })
     );
+  });
+
+  it("rejects generic and malformed reserved factory lesson refs during content construction", () => {
+    const accepted = acceptedReview();
+    if (accepted.receipt.decision !== "accepted")
+      throw new Error("Accepted boundary fixture was not accepted.");
+    const acceptedProjection = accepted.receipt.projection;
+    const { version: _version, ...payload } = baseContent().payload;
+
+    assert.throws(() =>
+      makeModelContextContentV1({
+        ...payload,
+        contentRefs: [
+          {
+            digest: acceptedProjection.projectionDigest,
+            kind: "factoryLesson/v1",
+            relevance: acceptedProjection.lessonId,
+          },
+        ],
+      })
+    );
+    assert.throws(() =>
+      makeModelContextContentV1({
+        ...payload,
+        contentRefs: [
+          {
+            kind: "factoryLesson/v1",
+            lessonId: acceptedProjection.lessonId,
+            projectionDigest: acceptedProjection.projectionDigest,
+            version: 1,
+          },
+        ],
+      })
+    );
+    const malformedReservedRefs: ReadonlyArray<unknown> = [
+      {
+        kind: "factoryLesson/v1",
+        lessonId: "not-a-factory-lesson-id",
+        projectionDigest: acceptedProjection.projectionDigest,
+        version: 1,
+      },
+      {
+        kind: "factoryLesson/v1",
+        lessonId: acceptedProjection.lessonId,
+        projectionDigest: acceptedProjection.projectionDigest,
+        version: 2,
+      },
+      {
+        kind: "factoryLesson/v1",
+        lessonId: acceptedProjection.lessonId,
+        projectionDigest: "not-a-projection-digest",
+        version: 1,
+      },
+      {
+        kind: "factoryLesson/v1",
+        lessonId: acceptedProjection.lessonId,
+        projectionDigest:
+          acceptedProjection.projectionDigest === "f".repeat(64)
+            ? "e".repeat(64)
+            : "f".repeat(64),
+        version: 1,
+      },
+      {
+        kind: "factoryLesson/v1",
+        lessonId: acceptedProjection.lessonId,
+        version: 1,
+      },
+    ];
+    for (const malformedReservedRef of malformedReservedRefs)
+      assert.throws(() =>
+        makeModelContextContentV1({
+          ...payload,
+          // @ts-expect-error Intentionally unknown input exercises boundary parsing.
+          contentRefs: [malformedReservedRef],
+        })
+      );
+  });
+
+  it("binds the exact selected factory lesson ref to rendered workerInitial bytes and budget", () => {
+    const accepted = acceptedReview();
+    const projection = projectFactoryLessons([
+      accepted.failure,
+      accepted.event,
+    ]);
+    const base = baseContent();
+    const selected = selectFactoryLessonsForWorkerInitial({
+      available: projection.active,
+      baseContent: base,
+      target: {
+        createdAt: "2026-07-25T21:00:00.000Z",
+        runId: laterRunId,
+      },
+    });
+    const selectedLesson = selected.selection.lessons[0];
+    const selectedRef = selected.content.payload.contentRefs.find(
+      (ref) =>
+        ref.kind === "factoryLesson/v1" &&
+        "projectionDigest" in ref &&
+        ref.projectionDigest === selectedLesson?.projectionDigest
+    );
+    assert.isDefined(selectedLesson);
+    assert.isDefined(selectedRef);
+    if (
+      selectedLesson === undefined ||
+      selectedRef === undefined ||
+      !("projectionDigest" in selectedRef)
+    )
+      return;
+
+    const exactRenderedRef = [
+      `kind=${selectedRef.kind}`,
+      `lessonId=${selectedRef.lessonId}`,
+      `version=${selectedRef.version}`,
+      `projectionDigest=${selectedRef.projectionDigest}`,
+    ].join("; ");
+    assert.include(selected.rendered.text, exactRenderedRef);
+
+    const { version: _selectedVersion, ...selectedPayload } =
+      selected.content.payload;
+    const withoutRef = makeModelContextContentV1({
+      ...selectedPayload,
+      contentRefs: [],
+    });
+    const renderedWithoutRef = renderModelInputV1(withoutRef);
+    assert.notStrictEqual(selected.rendered.text, renderedWithoutRef.text);
+    assert.notStrictEqual(
+      selected.rendered.renderedInputDigest,
+      renderedWithoutRef.renderedInputDigest
+    );
+    assert.isAbove(selected.rendered.byteLength, renderedWithoutRef.byteLength);
+
+    const alternateAccepted = acceptedReview(4, {
+      ...lessonInput,
+      expectedEffect: `${lessonInput.expectedEffect} Alternate projection.`,
+    });
+    const alternateProjection = projectFactoryLessons([
+      alternateAccepted.failure,
+      alternateAccepted.event,
+    ]);
+    const changedRef = selectFactoryLessonsForWorkerInitial({
+      available: alternateProjection.active,
+      baseContent: base,
+      target: {
+        createdAt: "2026-07-25T21:00:00.000Z",
+        runId: laterRunId,
+      },
+    });
+    assert.lengthOf(changedRef.selection.lessons, 1);
+    assert.strictEqual(
+      alternateProjection.active[0]?.projection.compactLesson,
+      projection.active[0]?.projection.compactLesson
+    );
+    assert.notStrictEqual(
+      changedRef.selection.lessons[0]?.projectionDigest,
+      selectedRef.projectionDigest
+    );
+    assert.notStrictEqual(selected.rendered.text, changedRef.rendered.text);
+    assert.notStrictEqual(
+      selected.rendered.renderedInputDigest,
+      changedRef.rendered.renderedInputDigest
+    );
+
+    const { version: _baseVersion, ...basePayload } = base.payload;
+    const genericRefDigest = "a".repeat(64);
+    const genericRef = renderModelInputV1(
+      makeModelContextContentV1({
+        ...basePayload,
+        contentRefs: [
+          {
+            digest: genericRefDigest,
+            kind: "existing/v1",
+            relevance: "existing bounded input",
+          },
+        ],
+      })
+    );
+    assert.notInclude(genericRef.text, "existing/v1");
+    assert.notInclude(genericRef.text, genericRefDigest);
+
+    const baseRendered = renderModelInputV1(base);
+    const proseOnlyLessonBytes =
+      renderedWithoutRef.byteLength - baseRendered.byteLength;
+    const budgetPadding =
+      16_384 - baseRendered.byteLength - proseOnlyLessonBytes;
+    assert.isAtLeast(budgetPadding, 0);
+    const atProseOnlyCeiling = baseContent(
+      `${base.payload.taskInput}${"x".repeat(budgetPadding)}`
+    );
+    assert.strictEqual(
+      renderModelInputV1(atProseOnlyCeiling).byteLength + proseOnlyLessonBytes,
+      16_384
+    );
+    const refBudgeted = selectFactoryLessonsForWorkerInitial({
+      available: projection.active,
+      baseContent: atProseOnlyCeiling,
+      target: {
+        createdAt: "2026-07-25T21:00:00.000Z",
+        runId: laterRunId,
+      },
+    });
+    assert.lengthOf(refBudgeted.selection.lessons, 0);
+    assert.strictEqual(
+      refBudgeted.selection.omitted[0]?.reason,
+      "renderBudget"
+    );
+    assert.isAtMost(refBudgeted.rendered.byteLength, 16_384);
   });
 
   it("attributes only exact selected workerInitial bindings and distinguishes every observable state", () => {

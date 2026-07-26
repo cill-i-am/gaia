@@ -6,6 +6,8 @@ import type { RunEvent } from "./events.js";
 import {
   FactoryLessonActiveV1,
   FactoryLessonContextSelectionV1,
+  FactoryLessonIdSchema,
+  FactoryLessonProjectionDigestSchema,
   FactoryLessonProjectionRefV1,
   FactoryLessonSelectionDigestSchema,
   MAXIMUM_RECORDED_FACTORY_LESSON_OMISSIONS_V1,
@@ -132,13 +134,48 @@ export class ModelContextContentRefV1 extends Schema.Class<ModelContextContentRe
 )(
   {
     digest: LowerSha256Schema,
-    kind: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(128))),
+    kind: Schema.NonEmptyString.pipe(
+      Schema.check(
+        Schema.isMaxLength(128),
+        Schema.makeFilter((kind) => kind !== "factoryLesson/v1")
+      )
+    ),
     relevance: Schema.NonEmptyString.pipe(
       Schema.check(Schema.isMaxLength(512))
     ),
   },
   strict
 ) {}
+
+class FactoryLessonModelContextContentRefV1 extends Schema.Class<FactoryLessonModelContextContentRefV1>(
+  "FactoryLessonModelContextContentRefV1"
+)(
+  {
+    kind: Schema.Literal("factoryLesson/v1"),
+    lessonId: FactoryLessonIdSchema,
+    projectionDigest: FactoryLessonProjectionDigestSchema,
+    version: Schema.Literal(1),
+  },
+  strict
+) {}
+
+const FactoryLessonModelContextContentRefV1Schema =
+  FactoryLessonModelContextContentRefV1.pipe(
+    Schema.check(
+      Schema.makeFilter(
+        ({ lessonId, projectionDigest }) =>
+          lessonId === `lesson1_${projectionDigest}`,
+        {
+          identifier: "FactoryLessonModelContextContentRefV1Identity",
+        }
+      )
+    )
+  );
+
+const AnyModelContextContentRefV1 = Schema.Union([
+  ModelContextContentRefV1,
+  FactoryLessonModelContextContentRefV1Schema,
+]);
 
 export const ModelInvocationEpisodeRoleSchema = Schema.Literals([
   "planReview",
@@ -160,7 +197,7 @@ export class ModelContextContentPayloadV1 extends Schema.Class<ModelContextConte
     acceptedOutcomes: BoundedItemsSchema,
     authority: BoundedItemsSchema,
     budget: ModelInvocationBudgetV1,
-    contentRefs: Schema.Array(ModelContextContentRefV1).pipe(
+    contentRefs: Schema.Array(AnyModelContextContentRefV1).pipe(
       Schema.check(Schema.isMaxLength(64))
     ),
     episodeRole: ModelInvocationEpisodeRoleSchema,
@@ -607,6 +644,11 @@ export function resolveFactoryLessonContextAttribution(
 const decodeContentPayload = Schema.decodeUnknownSync(
   ModelContextContentPayloadV1
 );
+const decodeGenericContentRefs = Schema.decodeUnknownSync(
+  Schema.Array(ModelContextContentRefV1).pipe(
+    Schema.check(Schema.isMaxLength(64))
+  )
+);
 const decodeContent = Schema.decodeUnknownSync(ModelContextContentV1);
 const decodeContext = Schema.decodeUnknownSync(ModelContextManifestV1);
 const decodeInvocation = Schema.decodeUnknownSync(ModelInvocationManifestV1);
@@ -639,7 +681,7 @@ function assertUtf8Bounded(value: unknown, maximum: number, label: string) {
     throw new Error(`${label} must be well-formed and within its UTF-8 bound.`);
 }
 
-export function makeModelContextContentV1(
+function makeModelContextContentInternalV1(
   input: Omit<typeof ModelContextContentPayloadV1.Type, "version">
 ) {
   const payload = decodeContentPayload({ ...input, version: 1 });
@@ -665,9 +707,18 @@ export function makeModelContextContentV1(
   });
 }
 
+export function makeModelContextContentV1(
+  input: Omit<typeof ModelContextContentPayloadV1.Type, "version">
+) {
+  return makeModelContextContentInternalV1({
+    ...input,
+    contentRefs: decodeGenericContentRefs(input.contentRefs),
+  });
+}
+
 export function parseModelContextContent(input: unknown) {
   const decoded = decodeContent(input);
-  const expected = makeModelContextContentV1(decoded.payload);
+  const expected = makeModelContextContentInternalV1(decoded.payload);
   if (expected.contextContentDigest !== decoded.contextContentDigest)
     throw new Error("Model context content failed self-authentication.");
   return decoded;
@@ -677,9 +728,27 @@ function renderItems(title: string, values: ReadonlyArray<string>) {
   return `${title}:\n${values.length === 0 ? "- none" : values.map((value) => `- ${value}`).join("\n")}`;
 }
 
+function renderFactoryLessonRefsV1(
+  payload: ModelContextContentPayloadV1
+): string | undefined {
+  if (payload.episodeRole !== "workerInitial") return undefined;
+  const refs = payload.contentRefs.filter(
+    (ref) => ref instanceof FactoryLessonModelContextContentRefV1
+  );
+  if (refs.length === 0) return undefined;
+  return renderItems(
+    "Factory lesson refs",
+    refs.map(
+      ({ kind, lessonId, projectionDigest, version }) =>
+        `kind=${kind}; lessonId=${lessonId}; version=${version}; projectionDigest=${projectionDigest}`
+    )
+  );
+}
+
 export function renderModelInputV1(contentInput: ModelContextContentV1) {
   const content = parseModelContextContent(contentInput);
   const payload = content.payload;
+  const renderedFactoryLessonRefs = renderFactoryLessonRefsV1(payload);
   const text = [
     "Gaia model input template: gaia.worker-input.v1",
     "Task input:",
@@ -687,6 +756,9 @@ export function renderModelInputV1(contentInput: ModelContextContentV1) {
     renderItems("Accepted outcomes", payload.acceptedOutcomes),
     renderItems("Non-goals", payload.nonGoals),
     renderItems("Stop conditions", payload.stops),
+    ...(renderedFactoryLessonRefs === undefined
+      ? []
+      : [renderedFactoryLessonRefs]),
     renderItems("Planning facts", payload.planningFacts),
     renderItems("Authority", payload.authority),
     renderItems("Instructions", payload.instructions),
@@ -797,15 +869,18 @@ export function selectFactoryLessonsForWorkerInitial(
     }
     const nextSelected = [...selected, candidate];
     const { version: _version, ...payload } = base.payload;
-    const nextContent = makeModelContextContentV1({
+    const nextContent = makeModelContextContentInternalV1({
       ...payload,
       contentRefs: [
         ...base.payload.contentRefs,
-        ...nextSelected.map(({ projection }) => ({
-          digest: projection.projectionDigest,
-          kind: "factoryLesson/v1",
-          relevance: "accepted reviewed workerInitial lesson",
-        })),
+        ...nextSelected.map(({ projection }) =>
+          FactoryLessonModelContextContentRefV1.make({
+            kind: "factoryLesson/v1",
+            lessonId: projection.lessonId,
+            projectionDigest: projection.projectionDigest,
+            version: 1,
+          })
+        ),
       ],
       planningFacts: [
         ...base.payload.planningFacts,
