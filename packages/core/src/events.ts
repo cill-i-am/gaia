@@ -8,6 +8,13 @@ import {
 import { parseFailureRepairReceipt } from "./failure-repair.js";
 import { FailureStageSchema, type FailureStage } from "./failure-stage.js";
 import {
+  HarnessPreparedRunReceiptRefV1,
+  parseHarnessBaselineManifestV1,
+  parseHarnessEvaluationV1,
+  parseHarnessPreparedRunReceiptV1,
+  HarnessBaselineManifestRefV1,
+} from "./harness-evaluation.js";
+import {
   parseModelInvocationEpisodeStart,
   parseModelInvocationObservation,
   parseFactoryLessonContextObservationV1,
@@ -101,6 +108,9 @@ export const EventTypeSchema = Schema.Literals([
   "LINEAR_ISSUE_GRAPH_RECORDED",
   "MERGE_DECISION_RECORDED",
   "HARNESS_SESSION_EVENT_RECORDED",
+  "HARNESS_BASELINE_MANIFEST_RECORDED",
+  "HARNESS_PREPARED_RUN_RECORDED",
+  "HARNESS_EVALUATION_RECORDED",
   "RUN_WAITING_FOR_HUMAN",
   "RUN_INTERACTION_EXPIRED",
   "RUN_CONTROL_INTENT_RECORDED",
@@ -205,6 +215,45 @@ export const parseRunEvent = (input: unknown): RunEvent => {
       throw new Error(
         "Factory lesson context observation belongs to another run."
       );
+  }
+  if (event.type === "HARNESS_BASELINE_MANIFEST_RECORDED") {
+    const manifest = parseHarnessBaselineManifestV1(
+      event.payload["harnessBaselineManifest"]
+    );
+    if (manifest.ownerRunId !== event.runId)
+      throw new Error("Harness baseline manifest belongs to another run.");
+  }
+  if (event.type === "HARNESS_PREPARED_RUN_RECORDED") {
+    const receipt = parseHarnessPreparedRunReceiptV1(
+      event.payload["harnessPreparedRunReceipt"]
+    );
+    if (receipt.runId !== event.runId)
+      throw new Error("Harness prepared-run receipt belongs to another run.");
+  }
+  if (event.type === "HARNESS_EVALUATION_RECORDED") {
+    const evaluation = parseHarnessEvaluationV1(
+      event.payload["harnessEvaluation"]
+    );
+    if (evaluation.anchorRunId !== event.runId)
+      throw new Error("Harness evaluation belongs to another run.");
+  }
+  const baselineManifestRef = event.payload["harnessBaselineManifestRef"];
+  if (baselineManifestRef !== undefined) {
+    if (event.type !== "WORKER_STARTED")
+      throw new Error(
+        "Harness baseline manifest ref has the wrong owner event."
+      );
+    Schema.decodeUnknownSync(HarnessBaselineManifestRefV1)(baselineManifestRef);
+  }
+  const preparedRunReceiptRef = event.payload["harnessPreparedRunReceiptRef"];
+  if (preparedRunReceiptRef !== undefined) {
+    if (event.type !== "WORKER_STARTED")
+      throw new Error("Harness prepared-run ref has the wrong owner event.");
+    const parsed = Schema.decodeUnknownSync(HarnessPreparedRunReceiptRefV1)(
+      preparedRunReceiptRef
+    );
+    if (parsed.runId !== event.runId)
+      throw new Error("Harness prepared-run ref belongs to another run.");
   }
   const lessonSelection = event.payload["factoryLessonContextSelection"];
   if (lessonSelection !== undefined) {

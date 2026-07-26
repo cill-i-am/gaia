@@ -47,6 +47,12 @@ import {
   issueDeliveryWorkflow,
 } from "./factory-workflows.js";
 import {
+  canonicalHarnessBaselineManifestBody,
+  canonicalHarnessEvaluationBody,
+  canonicalHarnessPreparedRunBody,
+  synchronizeHarnessEvaluationProjections,
+} from "./harness-evaluation.js";
+import {
   inspectModelInvocationArtifacts,
   readModelInvocationArtifactBody,
 } from "./model-invocation.js";
@@ -408,6 +414,33 @@ const factoryArtifactDefinitions: ReadonlyArray<FactoryArtifactDefinition> = [
     ownerRole: "orchestrator",
     path: (paths) => paths.factoryLessons,
   },
+  {
+    artifactId: decodeFactoryArtifactId("harness-baseline-manifest"),
+    contentType: "application/json",
+    eventType: "HARNESS_BASELINE_MANIFEST_RECORDED",
+    kind: "custom",
+    label: "Harness baseline manifest",
+    ownerRole: "orchestrator",
+    path: (paths) => paths.harnessBaselineManifest,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("harness-prepared-run"),
+    contentType: "application/json",
+    eventType: "HARNESS_PREPARED_RUN_RECORDED",
+    kind: "custom",
+    label: "Harness prepared run receipt",
+    ownerRole: "orchestrator",
+    path: (paths) => paths.harnessPreparedRunReceipt,
+  },
+  {
+    artifactId: decodeFactoryArtifactId("harness-evaluation"),
+    contentType: "application/json",
+    eventType: "HARNESS_EVALUATION_RECORDED",
+    kind: "testReport",
+    label: "Harness evaluation",
+    ownerRole: "orchestrator",
+    path: (paths) => paths.harnessEvaluation,
+  },
 ];
 
 export function writeInitialFactoryRunIndexes(
@@ -513,17 +546,27 @@ export function readFactoryArtifactBodyFromIndex(
 ) {
   return Effect.gen(function* () {
     const indexes = yield* readFactoryRunIndexes(runId, options);
-    if (artifactIdInput === "factory-lessons") {
-      const body = yield* canonicalFactoryLessonArtifactBody(
-        indexes.graph.runId,
-        options
-      ).pipe(
+    if (
+      artifactIdInput === "factory-lessons" ||
+      artifactIdInput === "harness-baseline-manifest" ||
+      artifactIdInput === "harness-prepared-run" ||
+      artifactIdInput === "harness-evaluation"
+    ) {
+      const bodyEffect =
+        artifactIdInput === "factory-lessons"
+          ? canonicalFactoryLessonArtifactBody(indexes.graph.runId, options)
+          : artifactIdInput === "harness-baseline-manifest"
+            ? canonicalHarnessBaselineManifestBody(indexes.graph.runId, options)
+            : artifactIdInput === "harness-prepared-run"
+              ? canonicalHarnessPreparedRunBody(indexes.graph.runId, options)
+              : canonicalHarnessEvaluationBody(indexes.graph.runId, options);
+      const body = yield* bodyEffect.pipe(
         Effect.mapError(() =>
           parseLocalRunReadDiagnostic({
             artifactName: parseLocalRunArtifactName(artifactIdInput),
             code: "ArtifactBodyCorrupt",
             message:
-              "Authoritative factory lesson events could not be projected.",
+              "Authoritative event-owned artifact could not be projected.",
             recoverable: false,
             runId: indexes.graph.runId,
           })
@@ -674,6 +717,10 @@ function rebuildFactoryRunIndexesFromPaths(
     if (synchronizedExit.value.events.length === 0) {
       return yield* Effect.fail(noEventsDiagnostic(input.runId));
     }
+    yield* synchronizeHarnessEvaluationProjections(
+      input.paths,
+      synchronizedExit.value.events
+    );
 
     const createInput = yield* parseFactoryCreateInput(
       synchronizedExit.value.events
@@ -1449,6 +1496,9 @@ function updateStatesForEvent(
     case "CLAIM_VERIFICATION_REUSE_RECORDED":
     case "CLAIM_VERIFICATION_RECONCILIATION_RECORDED":
     case "RUN_CONTRACT_RECORDED":
+    case "HARNESS_BASELINE_MANIFEST_RECORDED":
+    case "HARNESS_PREPARED_RUN_RECORDED":
+    case "HARNESS_EVALUATION_RECORDED":
     case "LINEAR_ISSUE_GRAPH_RECORDED":
     case "MERGE_DECISION_RECORDED":
     case "PREVIEW_DEPLOYMENT_RECORDED":
@@ -1478,6 +1528,9 @@ function roleForEvent(event: RunEvent): FactoryAgentRole | undefined {
   switch (event.type) {
     case "RUN_CREATED":
     case "RUN_CONTRACT_RECORDED":
+    case "HARNESS_BASELINE_MANIFEST_RECORDED":
+    case "HARNESS_PREPARED_RUN_RECORDED":
+    case "HARNESS_EVALUATION_RECORDED":
     case "DELIVERY_STARTED":
     case "WORKSPACE_PREPARED":
     case "REPORT_STARTED":
@@ -1703,6 +1756,12 @@ function activityLabel(event: RunEvent): string {
       return "Factory lesson review recorded";
     case "FACTORY_LESSON_CONTEXT_OBSERVED":
       return "Factory lesson context observed";
+    case "HARNESS_BASELINE_MANIFEST_RECORDED":
+      return "Harness baseline manifest recorded";
+    case "HARNESS_PREPARED_RUN_RECORDED":
+      return "Harness prepared run recorded";
+    case "HARNESS_EVALUATION_RECORDED":
+      return "Harness evaluation recorded";
     case "CLAIM_VERIFICATION_GENERATION_STARTED":
       return "Claim verification generation started";
     case "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED":

@@ -4,6 +4,9 @@ import {
   GaiaFailure,
   FactoryLessonContextObservationV1,
   FactoryLessonContextSelectionV1,
+  HarnessBaselineManifestRefV1,
+  HarnessPreparedRunReceiptRefV1,
+  HarnessExecutionSelection,
   HarnessEnvironmentReceiptArtifactRefV1,
   MODEL_OUTPUT_CONTRACT_CWD_RUN_MARKER_V1,
   MODEL_REVIEW_OUTPUT_CONTRACT_V1,
@@ -15,6 +18,7 @@ import {
   ModelInvocationEpisodeStartV1,
   ModelInvocationObservationV1,
   ResolvedHarnessExecution,
+  codexAppServerExecutionSelection,
   parseMarkdownSpec,
   parseAnyRunProofResultEnvelope,
   parseRunId,
@@ -34,6 +38,7 @@ import {
   type RunEvent,
   type RunId,
   type RunState,
+  type HarnessRunPreparationBinding,
 } from "@gaia/core";
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { customAlphabet } from "nanoid";
@@ -72,6 +77,7 @@ import { writeFactoryRetro } from "./factory-retro.js";
 import { writeFactoryScorecard } from "./factory-scorecard.js";
 import { continueFailureRepairWithinLease } from "./failure-repair-coordinator.js";
 import type { DeliveryProvenance } from "./git-delivery.js";
+import { preflightHarnessRun } from "./harness-evaluation.js";
 import {
   completedModelTransportObservation,
   HarnessRunRequest,
@@ -86,10 +92,17 @@ import {
   type HarnessName,
   type ProcessHarnessConfig,
 } from "./harness.js";
-import { readHarnessEnvironmentReceipt } from "./interactive-harness.js";
+import {
+  interactiveSessionHarness,
+  readHarnessEnvironmentReceipt,
+} from "./interactive-harness.js";
 export { readHarnessEnvironmentReceipt } from "./interactive-harness.js";
 import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
-import type { HarnessProviderRegistry } from "./harness-provider-registry.js";
+import {
+  issueDeliveryWorkerHarnessCapabilities,
+  type HarnessProviderRegistry,
+  type ResolvedHarnessProvider,
+} from "./harness-provider-registry.js";
 import {
   commitModelInvocationPair,
   decodeCodexBatchSemanticConfig,
@@ -150,10 +163,6 @@ import {
 const encodeHarnessEnvironmentReceiptRef = Schema.encodeSync(
   HarnessEnvironmentReceiptArtifactRefV1
 );
-const decodeResolvedHarnessExecution = Schema.decodeUnknownSync(
-  ResolvedHarnessExecution
-);
-
 function harnessEnvironmentError() {
   return makeRuntimeError({
     code: "HarnessEnvironmentEvidenceInvalid",
@@ -418,6 +427,7 @@ export type WorkflowOptions = RunStorageOptions &
     readonly workspaceSource?: WorkspaceSource;
     readonly workerContinuationState?: WorkerContinuationState;
     readonly verificationServices?: VerificationServices;
+    readonly harnessPreparationBinding?: HarnessRunPreparationBinding;
   };
 
 export type BrowserEvidenceCollectionOptions = RunStorageOptions & {
@@ -433,19 +443,89 @@ export function runSpecFile(
     options
   ).pipe(
     Effect.flatMap((prepared) =>
-      withRunStoreLock(options, runSpecFileUnlocked(prepared, options))
+      resolveBoundHarnessProvider(options).pipe(
+        Effect.flatMap((boundHarnessProvider) =>
+          withRunStoreLock(
+            options,
+            runSpecFileUnlocked(prepared, options, boundHarnessProvider)
+          )
+        )
+      )
     )
   );
 }
 
+function resolveBoundHarnessProvider(
+  options: WorkflowOptions
+): Effect.Effect<ResolvedHarnessProvider | undefined, GaiaRuntimeError> {
+  if (options.harnessPreparationBinding === undefined)
+    return Effect.succeed<ResolvedHarnessProvider | undefined>(undefined);
+  if (Reflect.has(options, "harnessPreparationExecution"))
+    return Effect.fail(
+      makeRuntimeError({
+        code: "HarnessPreparationExecutionAttested",
+        message: "Caller-attested harness execution is not accepted.",
+        recoverable: false,
+      })
+    );
+  if (options.workerHarness !== undefined)
+    return Effect.fail(
+      makeRuntimeError({
+        code: "HarnessBoundProviderSubstitution",
+        message:
+          "A harness-bound run must use the provider resolved by its registry.",
+        recoverable: false,
+      })
+    );
+  const registry = options.harnessProviderRegistry;
+  if (registry === undefined)
+    return Effect.fail(
+      makeRuntimeError({
+        code: "HarnessProviderRegistryMissing",
+        message: "No harness provider registry is available for this run.",
+        recoverable: false,
+      })
+    );
+  return registry
+    .resolve(
+      codexAppServerExecutionSelection,
+      issueDeliveryWorkerHarnessCapabilities
+    )
+    .pipe(
+      Effect.mapError((cause) =>
+        makeRuntimeError({
+          cause,
+          code: "HarnessProviderResolutionFailed",
+          message:
+            "The fixed harness provider could not be resolved for this run.",
+          recoverable: false,
+        })
+      )
+    );
+}
+
 function runSpecFileUnlocked(
   prepared: PreparedSpecRunAcceptanceV1,
-  options: WorkflowOptions
+  options: WorkflowOptions,
+  boundHarnessProvider: ResolvedHarnessProvider | undefined
 ) {
   return Effect.gen(function* () {
-    const runId = yield* generateRunId;
+    const runId =
+      options.harnessPreparationBinding?.runId ?? (yield* generateRunId);
     const paths = yield* makeRunPaths(runId, options);
     const fs = yield* FileSystem.FileSystem;
+    if (
+      options.harnessPreparationBinding !== undefined &&
+      (yield* fs.exists(paths.root))
+    )
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "HarnessBoundRunAlreadyExists",
+          message:
+            "The exact harness-bound run id already has local run-store state.",
+          recoverable: false,
+        })
+      );
     const {
       browserEvidenceRequirement,
       explicitBrowserEvidenceTargetUrl,
@@ -464,7 +544,20 @@ function runSpecFileUnlocked(
 
     yield* appendEvent(runId, paths, {
       payload: {
-        ...(options.harnessName === codexHarnessName ||
+        ...(boundHarnessProvider === undefined
+          ? {}
+          : {
+              execution: {
+                resolved: Schema.encodeSync(ResolvedHarnessExecution)(
+                  boundHarnessProvider.execution
+                ),
+                selection: Schema.encodeSync(HarnessExecutionSelection)(
+                  codexAppServerExecutionSelection
+                ),
+              },
+            }),
+        ...(boundHarnessProvider !== undefined ||
+        options.harnessName === codexHarnessName ||
         options.workerHarness?.name === codexAppServerHarnessName ||
         options.reviewer?.adapterKind === "codex-cli"
           ? { modelInvocationProtocol: "v1" }
@@ -478,6 +571,7 @@ function runSpecFileUnlocked(
       browserEvidenceRequirement,
       explicitBrowserEvidenceTargetUrl,
       options,
+      ...(boundHarnessProvider === undefined ? {} : { boundHarnessProvider }),
       paths,
       runId,
       runProfile,
@@ -535,6 +629,7 @@ function executeAcceptedRun(input: {
     | BrowserEvidenceTargetUrl
     | undefined;
   readonly options: WorkflowOptions;
+  readonly boundHarnessProvider?: ResolvedHarnessProvider;
   readonly paths: RunPaths;
   readonly runId: RunId;
   readonly runProfile: RunProfile;
@@ -546,6 +641,7 @@ function executeAcceptedRun(input: {
       browserEvidenceRequirement,
       explicitBrowserEvidenceTargetUrl,
       options,
+      boundHarnessProvider,
       paths,
       runId,
       runProfile,
@@ -632,10 +728,12 @@ function executeAcceptedRun(input: {
       )
     );
     const harnessName =
-      options.workerHarness?.name ??
-      (workerContinuationState === "completed"
-        ? codexAppServerHarnessName
-        : (options.harnessName ?? defaultHarnessName));
+      boundHarnessProvider === undefined
+        ? (options.workerHarness?.name ??
+          (workerContinuationState === "completed"
+            ? codexAppServerHarnessName
+            : (options.harnessName ?? defaultHarnessName)))
+        : codexAppServerHarnessName;
     const workerPlan = yield* writeWorkerPlan({
       harnessName,
       paths,
@@ -827,6 +925,26 @@ function executeAcceptedRun(input: {
         })
       : undefined;
     if (workerContinuationState === "start") {
+      const harnessPreparationBinding = options.harnessPreparationBinding;
+      const harnessPreparedRunReceiptRef =
+        harnessPreparationBinding === undefined
+          ? undefined
+          : modelProjection === undefined
+            ? yield* Effect.fail(
+                makeRuntimeError({
+                  code: "HarnessPreparedRunModelInvocationMissing",
+                  message:
+                    "A prepared harness run requires an event-owned initial model invocation before dispatch.",
+                  recoverable: false,
+                })
+              )
+            : (yield* preflightHarnessRun(
+                runId,
+                harnessPreparationBinding,
+                modelProjection.modelInvocationEpisode,
+                options,
+                modelProjection.factoryLessonContextSelection
+              )).receiptRef;
       yield* runReviewPhase(
         runId,
         paths,
@@ -839,6 +957,17 @@ function executeAcceptedRun(input: {
       yield* appendEvent(runId, paths, {
         payload: {
           harnessName,
+          ...(harnessPreparationBinding === undefined ||
+          harnessPreparedRunReceiptRef === undefined
+            ? {}
+            : {
+                harnessBaselineManifestRef: Schema.encodeSync(
+                  HarnessBaselineManifestRefV1
+                )(harnessPreparationBinding.manifestRef),
+                harnessPreparedRunReceiptRef: Schema.encodeSync(
+                  HarnessPreparedRunReceiptRefV1
+                )(harnessPreparedRunReceiptRef),
+              }),
           ...(modelProjection === undefined
             ? {}
             : {
@@ -905,9 +1034,22 @@ function executeAcceptedRun(input: {
     const { completedTransport, harnessResult } = yield* (
       workerContinuationState === "completed"
         ? readPersistedWorkerResult(runId, paths)
-        : options.workerHarness === undefined
-          ? runHarness(harnessRequest, harnessOptions)
-          : options.workerHarness.run(harnessRequest)
+        : boundHarnessProvider !== undefined
+          ? interactiveSessionHarness({
+              ...(boundHarnessProvider.launchObservation === undefined
+                ? {}
+                : {
+                    launchObservation: boundHarnessProvider.launchObservation,
+                  }),
+              provider: boundHarnessProvider.provider,
+              rootDirectory: options.rootDirectory ?? ".",
+              ...(options.sessionCoordinator === undefined
+                ? {}
+                : { sessionCoordinator: options.sessionCoordinator }),
+            }).run(harnessRequest)
+          : options.workerHarness === undefined
+            ? runHarness(harnessRequest, harnessOptions)
+            : options.workerHarness.run(harnessRequest)
     ).pipe(
       Effect.flatMap((rawHarnessResult) =>
         decodeProviderHarnessRunResult(rawHarnessResult).pipe(

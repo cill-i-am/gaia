@@ -412,6 +412,15 @@ export const RunMachineEventSchema = Schema.Union([
     type: Schema.Literal("FACTORY_LESSON_CONTEXT_OBSERVED"),
   }),
   Schema.Struct({
+    type: Schema.Literal("HARNESS_BASELINE_MANIFEST_RECORDED"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("HARNESS_PREPARED_RUN_RECORDED"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("HARNESS_EVALUATION_RECORDED"),
+  }),
+  Schema.Struct({
     evidenceKind: Schema.optionalKey(Schema.Literal("page")),
     evidencePath: RunMachinePathSchema,
     evidenceSelector: Schema.optionalKey(VerificationSourceKeySchema),
@@ -647,6 +656,11 @@ export const runMachine = runMachineSetup
     context: initialContext,
     id: "gaia-run",
     initial: "created",
+    on: {
+      HARNESS_BASELINE_MANIFEST_RECORDED: {},
+      HARNESS_PREPARED_RUN_RECORDED: {},
+      HARNESS_EVALUATION_RECORDED: {},
+    },
     states: {
       completed: {
         on: {
@@ -3297,6 +3311,9 @@ function toMachineEventInput(event: RunEvent) {
       };
     case "FACTORY_LESSON_REVIEW_RECORDED":
     case "FACTORY_LESSON_CONTEXT_OBSERVED":
+    case "HARNESS_BASELINE_MANIFEST_RECORDED":
+    case "HARNESS_PREPARED_RUN_RECORDED":
+    case "HARNESS_EVALUATION_RECORDED":
       return { type: event.type };
     case "RUN_FAILED":
       return {

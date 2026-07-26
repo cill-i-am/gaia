@@ -1,4 +1,8 @@
-import { RunIdSchema, RunSpec } from "@gaia/core";
+import {
+  digestHarnessEnvironmentContract,
+  RunIdSchema,
+  RunSpec,
+} from "@gaia/core";
 import { Effect, FileSystem, Schema } from "effect";
 
 import { makeRuntimeError, type GaiaRuntimeError } from "./errors.js";
@@ -80,6 +84,15 @@ export class WorkerPlan extends Schema.Class<WorkerPlan>("WorkerPlan")({
 const WorkerPlanJson = Schema.toCodecJson(WorkerPlan);
 const encodeWorkerPlan = Schema.encodeSync(WorkerPlanJson);
 export const parseWorkerPlanJson = Schema.decodeUnknownSync(WorkerPlanJson);
+
+/** Stable WorkerPlan semantics with per-run identity removed. */
+export function digestWorkerPlanEnvironmentSemantics(body: string) {
+  const { runId: _runId, ...semantic } = parseWorkerPlanJson(JSON.parse(body));
+  return digestHarnessEnvironmentContract(
+    "gaia.harness-environment.worker-plan.v1",
+    [semantic]
+  );
+}
 
 const WriteWorkerPlanInputSchema = Schema.Struct({
   harnessName: HarnessNameSchema,

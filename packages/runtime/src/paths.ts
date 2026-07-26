@@ -94,6 +94,9 @@ export const RunPathsSchema = Schema.Struct({
   harnessWorkspaceBaseline: RuntimePathSchema,
   harnessEnvironmentCandidate: RuntimePathSchema,
   harnessEnvironmentDirectory: RuntimePathSchema,
+  harnessBaselineManifest: RuntimePathSchema,
+  harnessPreparedRunReceipt: RuntimePathSchema,
+  harnessEvaluation: RuntimePathSchema,
   input: RuntimePathSchema,
   latest: RuntimePathSchema,
   linearIssueGraph: RuntimePathSchema,
@@ -230,6 +233,18 @@ export function makeRunPaths(runId: RunId, options: RunStorageOptions = {}) {
         "candidate.json"
       ),
       harnessEnvironmentDirectory: path.join(root, "harness-environment"),
+      harnessBaselineManifest: path.join(
+        promotedEvidenceDirectory,
+        "harness-baseline-manifest.json"
+      ),
+      harnessPreparedRunReceipt: path.join(
+        promotedEvidenceDirectory,
+        "harness-prepared-run.json"
+      ),
+      harnessEvaluation: path.join(
+        promotedEvidenceDirectory,
+        "harness-evaluation.json"
+      ),
       input: path.join(root, "input.md"),
       latest: store.latest,
       linearIssueGraph: path.join(root, "linear-issue-graph.json"),

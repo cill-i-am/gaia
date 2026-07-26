@@ -28,6 +28,11 @@ import { Cause, Effect, FileSystem, Option, Schema } from "effect";
 import { loadRun } from "./event-store.js";
 import { canonicalFactoryLessonArtifactBody } from "./factory-lesson.js";
 import {
+  canonicalHarnessBaselineManifestBody,
+  canonicalHarnessEvaluationBody,
+  canonicalHarnessPreparedRunBody,
+} from "./harness-evaluation.js";
+import {
   inspectModelInvocationArtifacts,
   readModelInvocationArtifactBody,
 } from "./model-invocation.js";
@@ -112,6 +117,18 @@ const artifactDefinitions: Readonly<
   "factory-lessons": {
     contentType: "application/json",
     path: (paths) => paths.factoryLessons,
+  },
+  "harness-baseline-manifest": {
+    contentType: "application/json",
+    path: (paths) => paths.harnessBaselineManifest,
+  },
+  "harness-prepared-run": {
+    contentType: "application/json",
+    path: (paths) => paths.harnessPreparedRunReceipt,
+  },
+  "harness-evaluation": {
+    contentType: "application/json",
+    path: (paths) => paths.harnessEvaluation,
   },
   "plan-review": {
     contentType: "application/json",
@@ -374,7 +391,49 @@ export function readLocalRunArtifact(
                   })
                 )
               )
-            : undefined;
+            : artifactId.value === "harness-baseline-manifest"
+              ? yield* canonicalHarnessBaselineManifestBody(
+                  runId,
+                  options
+                ).pipe(
+                  Effect.mapError(() =>
+                    parseLocalRunReadDiagnostic({
+                      artifactName: attemptedArtifactName,
+                      code: "ArtifactBodyCorrupt",
+                      message:
+                        "Authoritative harness baseline manifest event could not be projected.",
+                      recoverable: false,
+                      runId,
+                    })
+                  )
+                )
+              : artifactId.value === "harness-evaluation"
+                ? yield* canonicalHarnessEvaluationBody(runId, options).pipe(
+                    Effect.mapError(() =>
+                      parseLocalRunReadDiagnostic({
+                        artifactName: attemptedArtifactName,
+                        code: "ArtifactBodyCorrupt",
+                        message:
+                          "Authoritative harness evaluation event could not be projected.",
+                        recoverable: false,
+                        runId,
+                      })
+                    )
+                  )
+                : artifactId.value === "harness-prepared-run"
+                  ? yield* canonicalHarnessPreparedRunBody(runId, options).pipe(
+                      Effect.mapError(() =>
+                        parseLocalRunReadDiagnostic({
+                          artifactName: attemptedArtifactName,
+                          code: "ArtifactBodyCorrupt",
+                          message:
+                            "Authoritative prepared-run receipt event could not be projected.",
+                          recoverable: false,
+                          runId,
+                        })
+                      )
+                    )
+                  : undefined;
     if (eventOwnedBody !== undefined)
       return parseLocalRunArtifact({
         artifactName: artifactId.value,

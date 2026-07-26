@@ -196,6 +196,22 @@ export {
   type HarnessSession,
 } from "./harness-session.js";
 export {
+  canonicalHarnessBaselineManifestBody,
+  canonicalHarnessEvaluationBody,
+  canonicalHarnessPreparedRunBody,
+  evaluateHarnessScenario,
+  HarnessEvaluationScenarioIdSchema,
+  HarnessEvaluationScenarioProvider,
+  makeHarnessEvaluationPrefixRef,
+  preflightHarnessRun,
+  readHarnessBaselineManifest,
+  readHarnessEvaluation,
+  recordHarnessBaselineManifest,
+  recordHarnessEvaluation,
+  type HarnessRunPreparationBinding,
+  type HarnessEvaluationScenarioId,
+} from "./harness-evaluation.js";
+export {
   FactoryLessonArtifactV1,
   FactoryLessonAttributionV1,
   readFactoryLessons,
