@@ -608,31 +608,22 @@ describe("reviewed factory lessons", () => {
       "renderBudget"
     );
 
+    const activeFixture = projection.active[0];
+    if (activeFixture === undefined)
+      throw new Error("Accepted omission-bound fixture was not active.");
     const manyEligible = Array.from({ length: 1_089 }, (_item, index) => {
-      const manyCandidate = makeFactoryLessonCandidateV1({
-        ...lessonInput,
-        compactLesson: `Use bounded reviewed evidence owner ${index}.`,
-        durableOwnerDigest: index.toString(16).padStart(64, "0"),
-        durableOwnerVersion: `gaia.failure-evidence-projection.v${index + 2}`,
-      });
-      const manyReview = makeFactoryLessonReviewReceiptV1({
-        attestation: makeNoRawTelemetryAttestationV1({
-          candidateDigest: manyCandidate.candidateDigest,
-          reviewerRef,
-        }),
-        candidate: manyCandidate,
-        decision: "accepted",
-        source: budgetSource.source,
-      });
-      if (manyReview.decision !== "accepted")
-        throw new Error("Accepted omission-bound fixture was not accepted.");
-      return FactoryLessonActiveV1.make({
+      const projectionDigest = index.toString(16).padStart(64, "0");
+      return {
         acceptedAt: "2026-07-25T20:00:00.000Z",
         acceptedEventSequence: parseRunEventSequence(index + 1),
-        projection: manyReview.projection,
+        projection: {
+          ...activeFixture.projection,
+          lessonId: `lesson1_${projectionDigest}`,
+          projectionDigest,
+        },
         sourceRunId,
-        version: 1,
-      });
+        version: 1 as const,
+      };
     });
     const boundedOmissions = selectFactoryLessonsForWorkerInitial({
       available: manyEligible,
