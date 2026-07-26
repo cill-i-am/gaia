@@ -65,6 +65,7 @@ import {
   codexAppServerHarnessName,
   HarnessControlRelease,
   HarnessRunResult,
+  recordCompletedCodexAppServerTransport,
   type GaiaHarness,
 } from "./harness.js";
 import {
@@ -145,6 +146,7 @@ export function interactiveSessionHarness(input: {
         // terminal session event but before WORKER_COMPLETED. It must obtain a
         // fresh provider result before any candidate can become authoritative.
         let terminal: TerminalSessionEvent | HarnessControlRelease;
+        let completedByCurrentTransport = false;
         if (
           acceptedExecution?.environmentAssignment === undefined &&
           existingTerminal !== undefined
@@ -311,6 +313,9 @@ export function interactiveSessionHarness(input: {
               return last.value;
             })
           );
+          completedByCurrentTransport =
+            terminal.kind === "turnCompleted" &&
+            terminal.status === "completed";
         }
 
         if (terminal.kind === "controlRelease") return terminal;
@@ -343,13 +348,16 @@ export function interactiveSessionHarness(input: {
           );
         }
 
-        return yield* refreshInteractiveHarnessResult({
+        const result = yield* refreshInteractiveHarnessResult({
           paths,
           runId: request.runId,
           workerLogPath: request.workerLogPath,
           workerResultPath: request.workerResultPath,
           workspacePath: request.workspacePath,
         });
+        return completedByCurrentTransport
+          ? recordCompletedCodexAppServerTransport(request, result)
+          : result;
       }).pipe(
         Effect.mapError((error) =>
           error instanceof GaiaRuntimeError

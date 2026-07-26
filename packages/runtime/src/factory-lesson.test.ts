@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, layer } from "@effect/vitest";
@@ -13,9 +13,11 @@ import {
   FailureRepairTurnCompleted,
   FailureRepairVerified,
   FactoryArtifactIdSchema,
+  FactoryLessonContextObservationV1,
   FactoryLessonContextSelectionV1,
   HarnessCapabilities,
   HarnessProviderDescriptor,
+  makeFactoryLessonContextObservationV1,
   makeFactoryLessonCandidateV1,
   makeFactoryLessonReviewReceiptV1,
   makeFailureDigestV1,
@@ -30,18 +32,21 @@ import {
   encodeWorkerRecoveryReceiptJson,
   parseHarnessProfileId,
   parseHarnessSessionId,
+  parseHarnessTurnId,
   parseFactoryLessonContextSelectionV1,
   parseRunEventSequence,
   parseRunId,
   parseMarkdownSpec,
+  projectHarnessEvents,
   ProofClaimResultV2Schema,
   ResolvedHarnessExecution,
   resolveFactoryLessonContextAttribution,
   type RunContractV2,
   type RunEvent,
 } from "@gaia/core";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, FileSystem, Option, Schema, Stream } from "effect";
 
+import { makeCodexHarnessConfig } from "./codex-harness.js";
 import { appendEvent, readEvents } from "./event-store.js";
 import {
   readFactoryLessons,
@@ -50,7 +55,20 @@ import {
   recordFactoryLessonReview,
 } from "./factory-lesson.js";
 import { readFactoryRunArtifact } from "./factory-run-read-api.js";
-import { codexAppServerHarnessName, HarnessRunResult } from "./harness.js";
+import type { HarnessProvider } from "./harness-session.js";
+import {
+  codexAppServerHarnessName,
+  codexHarnessName,
+  defaultHarnessName,
+  HarnessRunResult,
+  processHarnessName,
+} from "./harness.js";
+import {
+  appendEvent as appendPublicRuntimeEvent,
+  appendHarnessSessionEvent as appendPublicHarnessSessionEvent,
+  type AppendEventInput,
+} from "./index.js";
+import { interactiveSessionHarness } from "./interactive-harness.js";
 import { loadModelInvocationPair } from "./model-invocation.js";
 import { makeRunPaths, parseRunStorageRootInput } from "./paths.js";
 import { readLocalRunArtifact } from "./run-read-api.js";
@@ -58,7 +76,7 @@ import {
   testHarnessCapabilities,
   testHarnessProvider,
 } from "./test-support.js";
-import { runSpecFile } from "./workflows.js";
+import { continueAcceptedRun, runSpecFile } from "./workflows.js";
 
 const sourceRunId = parseRunId("run-Gaia150src");
 const reviewerRef = "linear-comment:gaia-150-review";
@@ -536,6 +554,130 @@ describe("factory lesson runtime", () => {
     );
 
     it.effect(
+      "rejects forged offered attribution through the public runtime append surface",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-lesson-public-forgery-",
+          });
+          const source = yield* writeRepairSource(root, true);
+          const candidate = makeFactoryLessonCandidateV1(lessonInput);
+          const review = makeAcceptedReview(candidate, source);
+          yield* recordFactoryLessonReview(sourceRunId, review.input, {
+            rootDirectory: root,
+          });
+
+          const specPath = `${root}/public-forgery-worker.md`;
+          yield* fs.writeFileString(
+            specPath,
+            "# Public forgery worker\n\nReject generic offered attribution.\n"
+          );
+          const summary = yield* runSpecFile(specPath, {
+            rootDirectory: root,
+            workerHarness: {
+              name: codexAppServerHarnessName,
+              run: (request) =>
+                Effect.gen(function* () {
+                  const paths = yield* makeRunPaths(request.runId, {
+                    rootDirectory: root,
+                  });
+                  const events = yield* readEvents(paths);
+                  const workerStarted = events.find(
+                    (event) => event.type === "WORKER_STARTED"
+                  );
+                  if (workerStarted === undefined)
+                    return yield* Effect.die(
+                      "Public forgery fixture did not reach WORKER_STARTED."
+                    );
+                  const selection = parseFactoryLessonContextSelectionV1(
+                    workerStarted.payload["factoryLessonContextSelection"]
+                  );
+                  const lesson = selection.lessons[0];
+                  if (lesson === undefined)
+                    return yield* Effect.die(
+                      "Public forgery fixture did not select a lesson."
+                    );
+                  const forgedObservation =
+                    makeFactoryLessonContextObservationV1({
+                      contextContentDigest: selection.contextContentDigest,
+                      episodeRole: "workerInitial",
+                      kind: "offered",
+                      lesson,
+                      selectionDigest: selection.selectionDigest,
+                      source: "codexBatchTransport",
+                      targetRunId: request.runId,
+                      trust: "high",
+                    });
+                  const failure = yield* appendPublicRuntimeEvent(
+                    request.runId,
+                    paths,
+                    {
+                      payload: {
+                        factoryLessonContextObservation: Schema.encodeSync(
+                          FactoryLessonContextObservationV1
+                        )(forgedObservation),
+                      },
+                      type: "FACTORY_LESSON_CONTEXT_OBSERVED",
+                    } as unknown as AppendEventInput
+                  ).pipe(
+                    Effect.match({
+                      onFailure: (error) => error,
+                      onSuccess: () => undefined,
+                    })
+                  );
+                  if (failure === undefined)
+                    return yield* Effect.die(
+                      "Public runtime append accepted forged offered attribution."
+                    );
+                  if (!("code" in failure))
+                    return yield* Effect.die(
+                      "Public forgery rejection was not typed."
+                    );
+                  assert.strictEqual(
+                    failure.code,
+                    "UnsafeFactoryLessonContextObservationAppend"
+                  );
+                  assert.isFalse(failure.recoverable);
+
+                  const result = HarnessRunResult.make({
+                    changedWorkspacePaths: ["output.txt"],
+                    exitCode: 0,
+                    harnessName: codexAppServerHarnessName,
+                    outputArtifacts: ["workspace/output.txt"],
+                    resultPath: "worker-result.json",
+                    runId: request.runId,
+                    status: "completed",
+                    summary: "Public forgery rejected.",
+                  });
+                  yield* fs.writeFileString(
+                    request.workspaceOutputPath,
+                    `Public forgery rejected for ${request.runId}.\n`
+                  );
+                  yield* fs.writeFileString(
+                    request.workerResultPath,
+                    `${JSON.stringify(result)}\n`
+                  );
+                  return result;
+                }).pipe(Effect.orDie),
+            },
+          });
+          const paths = yield* makeRunPaths(summary.runId, {
+            rootDirectory: root,
+          });
+          const attribution = resolveFactoryLessonContextAttribution(
+            yield* readEvents(paths)
+          );
+          assert.deepEqual(
+            attribution.attributions[0]?.observations.map(
+              ({ kind, source }) => ({ kind, source })
+            ),
+            [{ kind: "unobservable", source: "gaiaBoundary" }]
+          );
+        })
+    );
+
+    it.effect(
       "selects accepted lessons only for a later workerInitial input and records exact offered attribution",
       () =>
         Effect.gen(function* () {
@@ -558,33 +700,25 @@ describe("factory lesson runtime", () => {
           let offeredInput = "";
           const summary = yield* runSpecFile(specPath, {
             rootDirectory: root,
-            workerHarness: {
-              name: codexAppServerHarnessName,
-              run: (request) =>
-                Effect.gen(function* () {
-                  offeredInput = request.modelRenderedInput?.text ?? "";
-                  const result = HarnessRunResult.make({
-                    changedWorkspacePaths: ["output.txt"],
-                    exitCode: 0,
-                    harnessName: codexAppServerHarnessName,
-                    outputArtifacts: ["workspace/output.txt"],
-                    resultPath: "worker-result.json",
-                    runId: request.runId,
-                    status: "completed",
-                    summary: "Accepted reviewed context.",
-                  });
-                  const runtimeFs = yield* FileSystem.FileSystem;
-                  yield* runtimeFs.writeFileString(
-                    request.workspaceOutputPath,
-                    `Reviewed context accepted for ${request.runId}.\n`
-                  );
-                  yield* runtimeFs.writeFileString(
-                    request.workerResultPath,
-                    `${JSON.stringify(result)}\n`
-                  );
-                  return result;
-                }).pipe(Effect.orDie),
-            },
+            workerHarness: interactiveSessionHarness({
+              provider: {
+                ...testHarnessProvider,
+                createSession: (request) =>
+                  Effect.sync(() => {
+                    offeredInput = request.input.text;
+                    writeFileSync(
+                      `${root}/${request.workspacePath}/output.txt`,
+                      `${request.sessionId.slice("session-".length)}\n`,
+                      "utf8"
+                    );
+                  }).pipe(
+                    Effect.flatMap(() =>
+                      testHarnessProvider.createSession(request)
+                    )
+                  ),
+              },
+              rootDirectory: root,
+            }),
           });
           const paths = yield* makeRunPaths(summary.runId, {
             rootDirectory: root,
@@ -658,6 +792,486 @@ describe("factory lesson runtime", () => {
             { rootDirectory: root }
           );
           assert.include(localArtifact.body, candidate.compactLesson);
+        })
+    );
+
+    it.effect(
+      "records one exact app-server offer when the real transport completes after a human-wait resume",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-lesson-app-server-resume-",
+          });
+          const source = yield* writeRepairSource(root, true);
+          const candidate = makeFactoryLessonCandidateV1(lessonInput);
+          const review = makeAcceptedReview(candidate, source);
+          yield* recordFactoryLessonReview(sourceRunId, review.input, {
+            rootDirectory: root,
+          });
+
+          let offeredInput = "";
+          let createSessionCount = 0;
+          let resumeSessionCount = 0;
+          const turnId = parseHarnessTurnId(
+            "turn-factory-lesson-app-server-resume"
+          );
+          const provider: HarnessProvider = {
+            ...testHarnessProvider,
+            createSession: (request) => {
+              createSessionCount += 1;
+              offeredInput = request.input.text;
+              const events = [
+                {
+                  capabilities: testHarnessCapabilities,
+                  kind: "sessionStarted" as const,
+                  provider: testHarnessProvider.descriptor,
+                  sessionId: request.sessionId,
+                  state: "running" as const,
+                },
+                {
+                  kind: "turnStarted" as const,
+                  sessionId: request.sessionId,
+                  turnId,
+                },
+              ];
+              return Effect.succeed({
+                events: Stream.fromIterable(events),
+                interrupt: Option.some(Effect.void),
+                resolveInteraction: () => Effect.void,
+                send: () => Effect.succeed(undefined),
+                snapshot: Effect.succeed(
+                  projectHarnessEvents(events, request.sessionId)
+                ),
+                steer: Option.none(),
+              });
+            },
+            resumeSession: (request) =>
+              Effect.sync(() => {
+                resumeSessionCount += 1;
+                writeFileSync(
+                  `${root}/${request.workspacePath}/output.txt`,
+                  `${request.sessionId.slice("session-".length)}\n`,
+                  "utf8"
+                );
+                const events = [
+                  {
+                    kind: "turnCompleted" as const,
+                    sessionId: request.sessionId,
+                    status: "completed" as const,
+                    turnId,
+                  },
+                ];
+                return {
+                  events: Stream.fromIterable(events),
+                  interrupt: Option.some(Effect.void),
+                  resolveInteraction: () => Effect.void,
+                  send: () => Effect.succeed(undefined),
+                  snapshot: Effect.succeed(
+                    projectHarnessEvents(
+                      [
+                        {
+                          capabilities: testHarnessCapabilities,
+                          kind: "sessionStarted" as const,
+                          provider: testHarnessProvider.descriptor,
+                          sessionId: request.sessionId,
+                          state: "running" as const,
+                        },
+                        {
+                          kind: "turnStarted" as const,
+                          sessionId: request.sessionId,
+                          turnId,
+                        },
+                        ...events,
+                      ],
+                      request.sessionId
+                    )
+                  ),
+                  steer: Option.none(),
+                };
+              }),
+          };
+          const releasingHarness = interactiveSessionHarness({
+            provider,
+            rootDirectory: root,
+          });
+          const specPath = `${root}/app-server-resume-worker.md`;
+          yield* fs.writeFileString(
+            specPath,
+            "# App-server resume worker\n\nUse the accepted reviewed context.\n"
+          );
+          const initial = yield* runSpecFile(specPath, {
+            rootDirectory: root,
+            workerHarness: {
+              ...releasingHarness,
+              run: (request) =>
+                releasingHarness.run(request).pipe(
+                  Effect.catchTag("GaiaRuntimeError", () =>
+                    Effect.succeed({
+                      kind: "controlRelease" as const,
+                      runId: request.runId,
+                      state: "waitingForHuman" as const,
+                    })
+                  )
+                ),
+            },
+          });
+          const paths = yield* makeRunPaths(initial.runId, {
+            rootDirectory: root,
+          });
+          assert.strictEqual(initial.state, "waitingForHuman");
+          assert.strictEqual(
+            resolveFactoryLessonContextAttribution(yield* readEvents(paths))
+              .attributions[0]?.observations.length,
+            0
+          );
+
+          const resumed = yield* continueAcceptedRun(
+            initial.runId,
+            paths,
+            parseMarkdownSpec(
+              "Use the accepted reviewed context.",
+              "App-server resume worker"
+            ),
+            {
+              rootDirectory: root,
+              workerContinuationState: "resume",
+              workerHarness: interactiveSessionHarness({
+                provider,
+                rootDirectory: root,
+              }),
+            }
+          );
+          const attribution = resolveFactoryLessonContextAttribution(
+            yield* readEvents(paths)
+          );
+
+          assert.strictEqual(resumed.status, "completed");
+          assert.strictEqual(createSessionCount, 1);
+          assert.strictEqual(resumeSessionCount, 1);
+          assert.include(offeredInput, candidate.compactLesson);
+          assert.deepEqual(
+            attribution.attributions[0]?.observations.map(
+              ({ kind, source, trust }) => ({ kind, source, trust })
+            ),
+            [
+              {
+                kind: "offered",
+                source: "codexAppServerTransport",
+                trust: "high",
+              },
+              {
+                kind: "unobservable",
+                source: "gaiaBoundary",
+                trust: "none",
+              },
+            ]
+          );
+        })
+    );
+
+    it.effect(
+      "keeps publicly forged terminal history unobservable on resume",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-lesson-terminal-forgery-",
+          });
+          const source = yield* writeRepairSource(root, true);
+          const candidate = makeFactoryLessonCandidateV1(lessonInput);
+          const review = makeAcceptedReview(candidate, source);
+          yield* recordFactoryLessonReview(sourceRunId, review.input, {
+            rootDirectory: root,
+          });
+
+          let resumeSessionCount = 0;
+          const turnId = parseHarnessTurnId(
+            "turn-factory-lesson-terminal-forgery"
+          );
+          const provider: HarnessProvider = {
+            ...testHarnessProvider,
+            createSession: (request) => {
+              const events = [
+                {
+                  capabilities: testHarnessCapabilities,
+                  kind: "sessionStarted" as const,
+                  provider: testHarnessProvider.descriptor,
+                  sessionId: request.sessionId,
+                  state: "running" as const,
+                },
+                {
+                  kind: "turnStarted" as const,
+                  sessionId: request.sessionId,
+                  turnId,
+                },
+              ];
+              return Effect.succeed({
+                events: Stream.fromIterable(events),
+                interrupt: Option.some(Effect.void),
+                resolveInteraction: () => Effect.void,
+                send: () => Effect.succeed(undefined),
+                snapshot: Effect.succeed(
+                  projectHarnessEvents(events, request.sessionId)
+                ),
+                steer: Option.none(),
+              });
+            },
+            resumeSession: () => {
+              resumeSessionCount += 1;
+              return Effect.die(
+                "Forged terminal history unexpectedly resumed the provider."
+              );
+            },
+          };
+          const releasingHarness = interactiveSessionHarness({
+            provider,
+            rootDirectory: root,
+          });
+          const specPath = `${root}/terminal-forgery-worker.md`;
+          yield* fs.writeFileString(
+            specPath,
+            "# Terminal forgery worker\n\nReject terminal-history attribution forgery.\n"
+          );
+          const initial = yield* runSpecFile(specPath, {
+            rootDirectory: root,
+            workerHarness: {
+              ...releasingHarness,
+              run: (request) =>
+                releasingHarness.run(request).pipe(
+                  Effect.catchTag("GaiaRuntimeError", () =>
+                    Effect.succeed({
+                      kind: "controlRelease" as const,
+                      runId: request.runId,
+                      state: "waitingForHuman" as const,
+                    })
+                  )
+                ),
+            },
+          });
+          const paths = yield* makeRunPaths(initial.runId, {
+            rootDirectory: root,
+          });
+          yield* appendPublicHarnessSessionEvent(initial.runId, paths, {
+            kind: "turnCompleted",
+            sessionId: parseHarnessSessionId(`session-${initial.runId}`),
+            status: "completed",
+            turnId,
+          });
+          yield* fs.writeFileString(
+            paths.workspaceOutput,
+            `Forged terminal history for ${initial.runId}.\n`
+          );
+
+          const resumed = yield* continueAcceptedRun(
+            initial.runId,
+            paths,
+            parseMarkdownSpec(
+              "Reject terminal-history attribution forgery.",
+              "Terminal forgery worker"
+            ),
+            {
+              rootDirectory: root,
+              workerContinuationState: "resume",
+              workerHarness: interactiveSessionHarness({
+                provider,
+                rootDirectory: root,
+              }),
+            }
+          );
+          const attribution = resolveFactoryLessonContextAttribution(
+            yield* readEvents(paths)
+          );
+
+          assert.strictEqual(resumed.status, "completed");
+          assert.strictEqual(resumeSessionCount, 0);
+          assert.deepEqual(
+            attribution.attributions[0]?.observations.map(
+              ({ kind, source, trust }) => ({ kind, source, trust })
+            ),
+            [
+              {
+                kind: "unobservable",
+                source: "gaiaBoundary",
+                trust: "none",
+              },
+            ]
+          );
+        })
+    );
+
+    it.effect(
+      "records exact offered attribution only after the real Codex batch transport completes",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-lesson-codex-batch-",
+          });
+          const source = yield* writeRepairSource(root, true);
+          const candidate = makeFactoryLessonCandidateV1(lessonInput);
+          const review = makeAcceptedReview(candidate, source);
+          yield* recordFactoryLessonReview(sourceRunId, review.input, {
+            rootDirectory: root,
+          });
+
+          const specPath = `${root}/codex-batch-worker.md`;
+          yield* fs.writeFileString(
+            specPath,
+            "# Codex batch worker\n\nUse the accepted reviewed context.\n"
+          );
+          let offeredInput = "";
+          let transportCompleted = false;
+          const summary = yield* runSpecFile(specPath, {
+            codexHarness: {
+              commandRunner: (input) =>
+                Effect.gen(function* () {
+                  offeredInput = input.request.stdin;
+                  const lastMessageIndex = input.request.args.indexOf(
+                    "--output-last-message"
+                  );
+                  const lastMessagePath =
+                    input.request.args[lastMessageIndex + 1];
+                  if (lastMessagePath === undefined)
+                    return yield* Effect.die(
+                      "Codex batch fixture did not receive a last-message path."
+                    );
+                  const targetRunId = input.request.cwd.split("/").at(-2);
+                  if (targetRunId === undefined)
+                    return yield* Effect.die(
+                      "Codex batch fixture could not resolve its run id."
+                    );
+                  yield* fs.writeFileString(
+                    `${input.request.cwd}/output.txt`,
+                    `${targetRunId}\n`
+                  );
+                  yield* fs.writeFileString(
+                    lastMessagePath,
+                    "Codex batch completed.\n"
+                  );
+                  transportCompleted = true;
+                  return { exitCode: 0, stderr: "", stdout: "" };
+                }),
+              config: makeCodexHarnessConfig({
+                command: "codex-factory-lesson-test",
+              }),
+            },
+            harnessName: codexHarnessName,
+            rootDirectory: root,
+          });
+          const paths = yield* makeRunPaths(summary.runId, {
+            rootDirectory: root,
+          });
+          const events = yield* readEvents(paths);
+          const workerStarted = events.find(
+            (event) => event.type === "WORKER_STARTED"
+          );
+          assert.isDefined(workerStarted);
+          const selection = parseFactoryLessonContextSelectionV1(
+            workerStarted?.payload["factoryLessonContextSelection"]
+          );
+          const episode = Schema.decodeUnknownSync(
+            ModelInvocationEpisodeStartV1
+          )(workerStarted?.payload["modelInvocationEpisode"]);
+          const pair = yield* loadModelInvocationPair(paths, episode);
+          const attribution = resolveFactoryLessonContextAttribution(events);
+
+          assert.isTrue(transportCompleted);
+          assert.include(offeredInput, candidate.compactLesson);
+          assert.strictEqual(pair.rendered.text, offeredInput);
+          assert.strictEqual(selection.lessons.length, 1);
+          assert.deepEqual(
+            attribution.attributions[0]?.observations.map(
+              ({ kind, source, trust }) => ({ kind, source, trust })
+            ),
+            [
+              {
+                kind: "offered",
+                source: "codexBatchTransport",
+                trust: "high",
+              },
+              {
+                kind: "unobservable",
+                source: "gaiaBoundary",
+                trust: "none",
+              },
+            ]
+          );
+        })
+    );
+
+    it.effect(
+      "keeps fake and process completions unobservable without manufacturing an offer",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-lesson-unobservable-transports-",
+          });
+          const source = yield* writeRepairSource(root, true);
+          const candidate = makeFactoryLessonCandidateV1(lessonInput);
+          const review = makeAcceptedReview(candidate, source);
+          yield* recordFactoryLessonReview(sourceRunId, review.input, {
+            rootDirectory: root,
+          });
+
+          const specPath = `${root}/unobservable-worker.md`;
+          yield* fs.writeFileString(
+            specPath,
+            "# Unobservable worker\n\nDo not infer an offer from selection.\n"
+          );
+          for (const harnessName of [defaultHarnessName, processHarnessName]) {
+            const summary = yield* runSpecFile(specPath, {
+              // Enable the existing workerInitial model protocol fixture while
+              // the injected production seam reports the actual harness kind.
+              harnessName: codexHarnessName,
+              rootDirectory: root,
+              workerHarness: {
+                name: harnessName,
+                run: (request) =>
+                  Effect.gen(function* () {
+                    const result = HarnessRunResult.make({
+                      changedWorkspacePaths: ["output.txt"],
+                      exitCode: 0,
+                      harnessName,
+                      outputArtifacts: ["workspace/output.txt"],
+                      resultPath: "worker-result.json",
+                      runId: request.runId,
+                      status: "completed",
+                      summary: `${harnessName} completed without transport evidence.`,
+                    });
+                    yield* fs.writeFileString(
+                      request.workspaceOutputPath,
+                      `${request.runId}\n`
+                    );
+                    yield* fs.writeFileString(
+                      request.workerResultPath,
+                      `${JSON.stringify(result)}\n`
+                    );
+                    return result;
+                  }).pipe(Effect.orDie),
+              },
+            });
+            const paths = yield* makeRunPaths(summary.runId, {
+              rootDirectory: root,
+            });
+            const events = yield* readEvents(paths);
+            const attribution = resolveFactoryLessonContextAttribution(events);
+
+            assert.strictEqual(attribution.selection?.lessons.length, 1);
+            assert.deepEqual(
+              attribution.attributions[0]?.observations.map(
+                ({ kind, source, trust }) => ({ kind, source, trust })
+              ),
+              [
+                {
+                  kind: "unobservable",
+                  source: "gaiaBoundary",
+                  trust: "none",
+                },
+              ]
+            );
+          }
         })
     );
 

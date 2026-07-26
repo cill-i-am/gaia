@@ -11,6 +11,7 @@ import {
   makeFactoryLessonContextObservationV1,
   makeModelContextManifestV1,
   makeModelInvocationManifestV1,
+  makeRunEvent,
   ModelInvocationEpisodeStartV1,
   ModelInvocationObservationV1,
   ResolvedHarnessExecution,
@@ -20,6 +21,7 @@ import {
   parseRunControlEventPayload,
   parseFactoryLessonContextSelectionV1,
   resolveAcceptedRunInputCheckpoint,
+  resolveFactoryLessonContextAttribution,
   resolveModelInvocationEpisodes,
   snapshotFromReplay,
   RunIdSchema,
@@ -59,6 +61,7 @@ import { GaiaRuntimeError, makeRuntimeError } from "./errors.js";
 import {
   appendEvent,
   appendEventWithinSerialization,
+  appendPreparedEventWithinSerialization,
   loadRun,
   readEvents,
   withRunEventSerialization,
@@ -70,6 +73,7 @@ import { writeFactoryScorecard } from "./factory-scorecard.js";
 import { continueFailureRepairWithinLease } from "./failure-repair-coordinator.js";
 import type { DeliveryProvenance } from "./git-delivery.js";
 import {
+  completedModelTransportObservation,
   HarnessRunRequest,
   HarnessExecutionResultSchema,
   HarnessRunResult,
@@ -225,6 +229,145 @@ const BrowserEvidenceTargetSelectionSchema = Schema.Struct({
 });
 type BrowserEvidenceTargetSelection =
   typeof BrowserEvidenceTargetSelectionSchema.Type;
+
+function factoryLessonTransportBindingError() {
+  return makeRuntimeError({
+    code: "FactoryLessonContextTransportBindingInvalid",
+    message:
+      "Factory lesson context attribution must bind the event-owned selection and exact completed model input.",
+    recoverable: false,
+  });
+}
+
+function appendCompletedHarnessFactoryLessonObservations(input: {
+  readonly completedTransport: ReturnType<
+    typeof completedModelTransportObservation
+  >;
+  readonly expectedSelection: FactoryLessonContextSelectionV1;
+  readonly harnessRequest: HarnessRunRequest;
+  readonly harnessResult: HarnessRunResult;
+  readonly paths: RunPaths;
+  readonly runId: RunId;
+}) {
+  return withRunEventSerialization(
+    input.paths,
+    Effect.gen(function* () {
+      if (
+        input.harnessRequest.runId !== input.runId ||
+        input.harnessResult.runId !== input.runId ||
+        input.harnessRequest.harnessName !== input.harnessResult.harnessName ||
+        input.harnessRequest.modelRenderedInput === undefined
+      )
+        return yield* Effect.fail(factoryLessonTransportBindingError());
+
+      const existingEvents = [...(yield* readEvents(input.paths))];
+      const workerStarted = existingEvents.findLast(
+        (event) =>
+          event.type === "WORKER_STARTED" &&
+          event.payload["factoryLessonContextSelection"] !== undefined
+      );
+      if (workerStarted === undefined)
+        return yield* Effect.fail(factoryLessonTransportBindingError());
+
+      const selection = parseFactoryLessonContextSelectionV1(
+        workerStarted.payload["factoryLessonContextSelection"]
+      );
+      const rawEpisode = workerStarted.payload["modelInvocationEpisode"];
+      if (
+        rawEpisode === undefined ||
+        selection.targetRunId !== input.runId ||
+        selection.episodeRole !== "workerInitial" ||
+        selection.selectionDigest !== input.expectedSelection.selectionDigest ||
+        selection.contextContentDigest !==
+          input.expectedSelection.contextContentDigest
+      )
+        return yield* Effect.fail(factoryLessonTransportBindingError());
+
+      const pair = yield* loadModelInvocationPair(
+        input.paths,
+        Schema.decodeUnknownSync(ModelInvocationEpisodeStartV1)(rawEpisode)
+      );
+      const requestInput = input.harnessRequest.modelRenderedInput;
+      if (
+        pair.context.payload.contextContentDigest !==
+          selection.contextContentDigest ||
+        pair.rendered.renderedInputDigest !==
+          requestInput.renderedInputDigest ||
+        pair.rendered.byteLength !== requestInput.byteLength ||
+        pair.rendered.text !== requestInput.text ||
+        (input.completedTransport !== undefined &&
+          input.completedTransport.renderedInputDigest !==
+            pair.rendered.renderedInputDigest)
+      )
+        return yield* Effect.fail(factoryLessonTransportBindingError());
+
+      const existingAttribution = yield* Effect.try({
+        catch: factoryLessonTransportBindingError,
+        try: () => resolveFactoryLessonContextAttribution(existingEvents),
+      });
+      for (const lesson of selection.lessons) {
+        const existingKinds = new Set(
+          existingAttribution.attributions
+            .find(
+              ({ lesson: attributedLesson }) =>
+                attributedLesson.lessonId === lesson.lessonId
+            )
+            ?.observations.map(({ kind }) => kind)
+        );
+        const observations = (
+          input.completedTransport === undefined
+            ? [
+                {
+                  kind: "unobservable" as const,
+                  source: "gaiaBoundary" as const,
+                  trust: "none" as const,
+                },
+              ]
+            : [
+                {
+                  kind: "offered" as const,
+                  source: input.completedTransport.source,
+                  trust: "high" as const,
+                },
+                {
+                  kind: "unobservable" as const,
+                  source: "gaiaBoundary" as const,
+                  trust: "none" as const,
+                },
+              ]
+        ).filter(({ kind }) => !existingKinds.has(kind));
+        for (const observationInput of observations) {
+          const observation = makeFactoryLessonContextObservationV1({
+            ...observationInput,
+            contextContentDigest: selection.contextContentDigest,
+            episodeRole: selection.episodeRole,
+            lesson,
+            selectionDigest: selection.selectionDigest,
+            targetRunId: selection.targetRunId,
+          });
+          const event = makeRunEvent({
+            payload: {
+              factoryLessonContextObservation: Schema.encodeSync(
+                FactoryLessonContextObservationV1
+              )(observation),
+            },
+            runId: input.runId,
+            sequence: existingEvents.length + 1,
+            timestamp: new Date().toISOString(),
+            type: "FACTORY_LESSON_CONTEXT_OBSERVED",
+          });
+          const appended = yield* appendPreparedEventWithinSerialization(
+            input.runId,
+            input.paths,
+            existingEvents,
+            event
+          );
+          existingEvents.push(appended.event);
+        }
+      }
+    }).pipe(Effect.uninterruptible)
+  );
+}
 
 export const CommandStatusSchema = Schema.Literals([
   "cancelled",
@@ -759,14 +902,27 @@ function executeAcceptedRun(input: {
       workspaceOutputPath: paths.workspaceOutput,
       workspacePath: paths.workspace,
     });
-    const harnessResult = yield* (
+    const { completedTransport, harnessResult } = yield* (
       workerContinuationState === "completed"
         ? readPersistedWorkerResult(runId, paths)
         : options.workerHarness === undefined
           ? runHarness(harnessRequest, harnessOptions)
           : options.workerHarness.run(harnessRequest)
     ).pipe(
-      Effect.flatMap(decodeProviderHarnessRunResult),
+      Effect.flatMap((rawHarnessResult) =>
+        decodeProviderHarnessRunResult(rawHarnessResult).pipe(
+          Effect.map((harnessResult) => ({
+            completedTransport:
+              rawHarnessResult instanceof HarnessRunResult
+                ? completedModelTransportObservation(
+                    harnessRequest,
+                    rawHarnessResult
+                  )
+                : undefined,
+            harnessResult,
+          }))
+        )
+      ),
       Effect.catchTag("GaiaRuntimeError", (error) =>
         recordRunFailure(runId, paths, "runningWorker", error)
       )
@@ -786,59 +942,15 @@ function executeAcceptedRun(input: {
         harnessName === codexAppServerHarnessName
           ? yield* promoteHarnessEnvironmentCandidate(paths, runId)
           : undefined;
-      if (
-        workerContinuationState === "start" &&
-        modelProjection?.factoryLessonContextSelection !== undefined
-      ) {
-        for (const lesson of modelProjection.factoryLessonContextSelection
-          .lessons) {
-          const observations =
-            harnessName === codexHarnessName ||
-            harnessName === codexAppServerHarnessName
-              ? [
-                  {
-                    kind: "offered" as const,
-                    source:
-                      harnessName === codexHarnessName
-                        ? ("codexBatchTransport" as const)
-                        : ("codexAppServerTransport" as const),
-                    trust: "high" as const,
-                  },
-                  {
-                    kind: "unobservable" as const,
-                    source: "gaiaBoundary" as const,
-                    trust: "none" as const,
-                  },
-                ]
-              : [
-                  {
-                    kind: "unobservable" as const,
-                    source: "gaiaBoundary" as const,
-                    trust: "none" as const,
-                  },
-                ];
-          for (const observationInput of observations) {
-            const observation = makeFactoryLessonContextObservationV1({
-              ...observationInput,
-              contextContentDigest:
-                modelProjection.factoryLessonContextSelection
-                  .contextContentDigest,
-              episodeRole: "workerInitial",
-              lesson,
-              selectionDigest:
-                modelProjection.factoryLessonContextSelection.selectionDigest,
-              targetRunId: runId,
-            });
-            yield* appendEvent(runId, paths, {
-              payload: {
-                factoryLessonContextObservation: Schema.encodeSync(
-                  FactoryLessonContextObservationV1
-                )(observation),
-              },
-              type: "FACTORY_LESSON_CONTEXT_OBSERVED",
-            });
-          }
-        }
+      if (modelProjection?.factoryLessonContextSelection !== undefined) {
+        yield* appendCompletedHarnessFactoryLessonObservations({
+          completedTransport,
+          expectedSelection: modelProjection.factoryLessonContextSelection,
+          harnessRequest,
+          harnessResult,
+          paths,
+          runId,
+        });
         yield* rebuildFactoryLessons(runId, options);
       }
       yield* appendEvent(runId, paths, {
