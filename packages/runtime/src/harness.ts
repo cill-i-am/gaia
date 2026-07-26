@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 
 import {
   ModelWorkspaceBindingV1,
+  RenderedModelInputDigestSchema,
   RenderedModelInputV1,
   RunHumanWaitCheckpointV1,
   RunEvent,
@@ -157,6 +158,70 @@ export type GaiaHarness = {
     FileSystem.FileSystem | Path.Path
   >;
 };
+
+class CompletedModelTransportObservation extends Schema.Class<CompletedModelTransportObservation>(
+  "CompletedModelTransportObservation"
+)({
+  renderedInputDigest: RenderedModelInputDigestSchema,
+  runId: RunIdSchema,
+  source: Schema.Literals([
+    "codexAppServerTransport",
+    "codexBatchTransport",
+  ] as const),
+}) {}
+
+const completedModelTransportObservations = new WeakMap<
+  HarnessRunResult,
+  CompletedModelTransportObservation
+>();
+
+function recordCompletedModelTransport(
+  request: HarnessRunRequest,
+  result: HarnessRunResult,
+  source: CompletedModelTransportObservation["source"]
+) {
+  if (request.modelRenderedInput !== undefined)
+    completedModelTransportObservations.set(
+      result,
+      new CompletedModelTransportObservation({
+        renderedInputDigest: request.modelRenderedInput.renderedInputDigest,
+        runId: request.runId,
+        source,
+      })
+    );
+  return result;
+}
+
+/** Internal transport proof; intentionally absent from the package export surface. */
+export function recordCompletedCodexAppServerTransport(
+  request: HarnessRunRequest,
+  result: HarnessRunResult
+) {
+  return recordCompletedModelTransport(
+    request,
+    result,
+    "codexAppServerTransport"
+  );
+}
+
+/** Resolve only a transport-owned proof bound to this exact completed request. */
+export function completedModelTransportObservation(
+  request: HarnessRunRequest,
+  result: HarnessRunResult
+) {
+  const observation = completedModelTransportObservations.get(result);
+  if (
+    observation === undefined ||
+    request.modelRenderedInput === undefined ||
+    observation.runId !== request.runId ||
+    result.runId !== request.runId ||
+    result.harnessName !== request.harnessName ||
+    observation.renderedInputDigest !==
+      request.modelRenderedInput.renderedInputDigest
+  )
+    return undefined;
+  return observation;
+}
 
 const decodeHarnessRunRequest = Schema.decodeUnknownSync(HarnessRunRequest);
 const decodeHarnessRunResult = Schema.decodeUnknownSync(HarnessRunResult);
@@ -504,7 +569,11 @@ function codexHarness(options: CodexHarnessOptions): GaiaHarness {
           { flag: "a" }
         );
 
-        return result;
+        return recordCompletedModelTransport(
+          request,
+          result,
+          "codexBatchTransport"
+        );
       }).pipe(
         Effect.catchTag("PlatformError", (cause) =>
           Effect.fail(

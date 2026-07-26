@@ -55,6 +55,7 @@ import {
   type RunState,
   RunStateSchema,
 } from "./events.js";
+import { validateFactoryLessonRunReviewEvents } from "./factory-lesson.js";
 import {
   encodeFailureRepairReceiptJson,
   FailureRepairReceiptSchema,
@@ -70,6 +71,7 @@ import {
 } from "./merge-decision.js";
 import {
   parseModelInvocationObservation,
+  resolveFactoryLessonContextAttribution,
   resolveModelInvocationEpisodes,
 } from "./model-invocation.js";
 import {
@@ -404,6 +406,12 @@ export const RunMachineEventSchema = Schema.Union([
     type: Schema.Literal("FAILURE_REPAIR_RECORDED"),
   }),
   Schema.Struct({
+    type: Schema.Literal("FACTORY_LESSON_REVIEW_RECORDED"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("FACTORY_LESSON_CONTEXT_OBSERVED"),
+  }),
+  Schema.Struct({
     evidenceKind: Schema.optionalKey(Schema.Literal("page")),
     evidencePath: RunMachinePathSchema,
     evidenceSelector: Schema.optionalKey(VerificationSourceKeySchema),
@@ -642,6 +650,7 @@ export const runMachine = runMachineSetup
     states: {
       completed: {
         on: {
+          FACTORY_LESSON_REVIEW_RECORDED: {},
           WORKER_CONTINUATION_RECORDED: [
             {
               actions: "recordWorkerContinuation",
@@ -756,6 +765,7 @@ export const runMachine = runMachineSetup
       },
       failed: {
         on: {
+          FACTORY_LESSON_REVIEW_RECORDED: {},
           WORKER_CONTINUATION_RECORDED: [
             {
               actions: "recordWorkerContinuation",
@@ -1001,6 +1011,7 @@ export const runMachine = runMachineSetup
       },
       runningWorker: {
         on: {
+          FACTORY_LESSON_CONTEXT_OBSERVED: {},
           FAILURE_REPAIR_RECORDED: [
             {
               actions: "recordFailureRepair",
@@ -1776,6 +1787,8 @@ export const runMachine = runMachineSetup
 export function replayRunEvents(events: ReadonlyArray<RunEvent>) {
   resolveAcceptedRunInputCheckpoint(events);
   resolveModelInvocationEpisodes(events);
+  validateFactoryLessonRunReviewEvents(events);
+  resolveFactoryLessonContextAttribution(events);
   const actor = createActor(runMachine).start();
   let expectedSequence = 1;
   let historyRunId: RunEvent["runId"] | undefined;
@@ -3282,6 +3295,9 @@ function toMachineEventInput(event: RunEvent) {
         ),
         type: event.type,
       };
+    case "FACTORY_LESSON_REVIEW_RECORDED":
+    case "FACTORY_LESSON_CONTEXT_OBSERVED":
+      return { type: event.type };
     case "RUN_FAILED":
       return {
         failure: GaiaFailure.make({

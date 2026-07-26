@@ -3,6 +3,19 @@ import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { Schema } from "effect";
 
 import type { RunEvent } from "./events.js";
+import {
+  FactoryLessonActiveV1,
+  FactoryLessonContextSelectionV1,
+  FactoryLessonIdSchema,
+  FactoryLessonProjectionDigestSchema,
+  FactoryLessonProjectionRefV1,
+  FactoryLessonSelectionDigestSchema,
+  MAXIMUM_RECORDED_FACTORY_LESSON_OMISSIONS_V1,
+  makeFactoryLessonContextSelectionV1,
+  parseFactoryLessonContextSelectionV1,
+  type FactoryLessonOmissionV1,
+  type FactoryLessonProjectionV1,
+} from "./factory-lesson.js";
 import { canonicalV1 } from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
 
@@ -28,6 +41,12 @@ const EpisodeKeySchema = Schema.NonEmptyString.pipe(
       identifier: "ModelInvocationEpisodeKey",
     })
   )
+);
+const FactoryLessonSelectionTimestampSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u)
+  ),
+  Schema.brand("FactoryLessonSelectionTimestamp")
 );
 
 export const ModelContextContentDigestSchema = LowerSha256Schema.pipe(
@@ -115,13 +134,48 @@ export class ModelContextContentRefV1 extends Schema.Class<ModelContextContentRe
 )(
   {
     digest: LowerSha256Schema,
-    kind: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(128))),
+    kind: Schema.NonEmptyString.pipe(
+      Schema.check(
+        Schema.isMaxLength(128),
+        Schema.makeFilter((kind) => kind !== "factoryLesson/v1")
+      )
+    ),
     relevance: Schema.NonEmptyString.pipe(
       Schema.check(Schema.isMaxLength(512))
     ),
   },
   strict
 ) {}
+
+class FactoryLessonModelContextContentRefV1 extends Schema.Class<FactoryLessonModelContextContentRefV1>(
+  "FactoryLessonModelContextContentRefV1"
+)(
+  {
+    kind: Schema.Literal("factoryLesson/v1"),
+    lessonId: FactoryLessonIdSchema,
+    projectionDigest: FactoryLessonProjectionDigestSchema,
+    version: Schema.Literal(1),
+  },
+  strict
+) {}
+
+const FactoryLessonModelContextContentRefV1Schema =
+  FactoryLessonModelContextContentRefV1.pipe(
+    Schema.check(
+      Schema.makeFilter(
+        ({ lessonId, projectionDigest }) =>
+          lessonId === `lesson1_${projectionDigest}`,
+        {
+          identifier: "FactoryLessonModelContextContentRefV1Identity",
+        }
+      )
+    )
+  );
+
+const AnyModelContextContentRefV1 = Schema.Union([
+  ModelContextContentRefV1,
+  FactoryLessonModelContextContentRefV1Schema,
+]);
 
 export const ModelInvocationEpisodeRoleSchema = Schema.Literals([
   "planReview",
@@ -143,7 +197,7 @@ export class ModelContextContentPayloadV1 extends Schema.Class<ModelContextConte
     acceptedOutcomes: BoundedItemsSchema,
     authority: BoundedItemsSchema,
     budget: ModelInvocationBudgetV1,
-    contentRefs: Schema.Array(ModelContextContentRefV1).pipe(
+    contentRefs: Schema.Array(AnyModelContextContentRefV1).pipe(
       Schema.check(Schema.isMaxLength(64))
     ),
     episodeRole: ModelInvocationEpisodeRoleSchema,
@@ -419,8 +473,181 @@ export const parseModelInvocationObservation = Schema.decodeUnknownSync(
   ModelInvocationObservationV1
 );
 
+function isValidObservationTrustContract(observation: {
+  readonly kind: string;
+  readonly source: string;
+  readonly trust: string;
+}) {
+  return (
+    (observation.kind === "offered" &&
+      (observation.source === "codexBatchTransport" ||
+        observation.source === "codexAppServerTransport") &&
+      observation.trust === "high") ||
+    ((observation.kind === "retrieved" ||
+      observation.kind === "opened" ||
+      observation.kind === "invoked") &&
+      observation.source === "providerTelemetry" &&
+      observation.trust === "high") ||
+    ((observation.kind === "reportedRelevant" ||
+      observation.kind === "relevant") &&
+      observation.source === "providerSelfReport" &&
+      observation.trust === "low") ||
+    ((observation.kind === "unobservable" ||
+      observation.kind === "notApplicable") &&
+      observation.source === "gaiaBoundary" &&
+      observation.trust === "none")
+  );
+}
+
+export const FactoryLessonObservationKindSchema = Schema.Literals([
+  "offered",
+  "retrieved",
+  "invoked",
+  "relevant",
+  "unobservable",
+] as const);
+
+export class FactoryLessonContextObservationV1 extends Schema.Class<FactoryLessonContextObservationV1>(
+  "FactoryLessonContextObservationV1"
+)(
+  {
+    contextContentDigest: LowerSha256Schema,
+    episodeRole: Schema.Literal("workerInitial"),
+    kind: FactoryLessonObservationKindSchema,
+    lesson: FactoryLessonProjectionRefV1,
+    selectionDigest: FactoryLessonSelectionDigestSchema,
+    source: ModelInvocationObservationV1.fields.source,
+    trust: ModelInvocationObservationV1.fields.trust,
+    targetRunId: RunIdSchema,
+    version: Schema.Literal(1),
+  },
+  strict
+) {}
+
+const decodeFactoryLessonObservation = Schema.decodeUnknownSync(
+  FactoryLessonContextObservationV1
+);
+const FactoryLessonObservationInput = Schema.Struct({
+  contextContentDigest: LowerSha256Schema,
+  episodeRole: Schema.Literal("workerInitial"),
+  kind: FactoryLessonObservationKindSchema,
+  lesson: FactoryLessonProjectionRefV1,
+  selectionDigest: FactoryLessonSelectionDigestSchema,
+  source: FactoryLessonContextObservationV1.fields.source,
+  targetRunId: RunIdSchema,
+  trust: FactoryLessonContextObservationV1.fields.trust,
+});
+const decodeFactoryLessonObservationInput = Schema.decodeUnknownSync(
+  FactoryLessonObservationInput,
+  { onExcessProperty: "error" }
+);
+
+function assertFactoryLessonObservationTrust(
+  observation: FactoryLessonContextObservationV1
+) {
+  if (!isValidObservationTrustContract(observation))
+    throw new Error(
+      "Factory lesson observation violates its source and trust contract."
+    );
+  return observation;
+}
+
+export function makeFactoryLessonContextObservationV1(
+  input: typeof FactoryLessonObservationInput.Encoded
+) {
+  return assertFactoryLessonObservationTrust(
+    decodeFactoryLessonObservation({
+      ...decodeFactoryLessonObservationInput(input),
+      version: 1,
+    })
+  );
+}
+
+export function parseFactoryLessonContextObservationV1(input: unknown) {
+  return assertFactoryLessonObservationTrust(
+    decodeFactoryLessonObservation(input)
+  );
+}
+
+export function resolveFactoryLessonContextAttribution(
+  events: ReadonlyArray<RunEvent>
+) {
+  let selection: FactoryLessonContextSelectionV1 | undefined;
+  const observations = new Map<
+    string,
+    Array<FactoryLessonContextObservationV1>
+  >();
+  for (const event of events) {
+    const rawSelection = event.payload["factoryLessonContextSelection"];
+    if (rawSelection !== undefined) {
+      if (event.type !== "WORKER_STARTED" || selection !== undefined)
+        throw new Error(
+          "Factory lesson context selection must have one worker-start owner."
+        );
+      selection = parseFactoryLessonContextSelectionV1(rawSelection);
+      if (selection.targetRunId !== event.runId)
+        throw new Error(
+          "Factory lesson context selection belongs to another run."
+        );
+      for (const lesson of selection.lessons)
+        observations.set(lesson.lessonId, []);
+    }
+    if (event.type !== "FACTORY_LESSON_CONTEXT_OBSERVED") continue;
+    if (selection === undefined)
+      throw new Error(
+        "Factory lesson observation precedes its exact context selection."
+      );
+    const observation = parseFactoryLessonContextObservationV1(
+      event.payload["factoryLessonContextObservation"]
+    );
+    const selected = selection.lessons.find(
+      ({ lessonId }) => lessonId === observation.lesson.lessonId
+    );
+    if (
+      event.runId !== selection.targetRunId ||
+      observation.targetRunId !== selection.targetRunId ||
+      observation.selectionDigest !== selection.selectionDigest ||
+      observation.contextContentDigest !== selection.contextContentDigest ||
+      selected?.projectionDigest !== observation.lesson.projectionDigest
+    )
+      throw new Error(
+        "Factory lesson observation does not bind an exact selected lesson."
+      );
+    const existing = observations.get(observation.lesson.lessonId);
+    if (
+      existing === undefined ||
+      existing.some(({ kind }) => kind === observation.kind) ||
+      (observation.kind === "unobservable" &&
+        existing.some(
+          ({ kind }) =>
+            kind === "retrieved" || kind === "invoked" || kind === "relevant"
+        )) ||
+      (observation.kind !== "offered" &&
+        observation.kind !== "unobservable" &&
+        existing.some(({ kind }) => kind === "unobservable"))
+    )
+      throw new Error(
+        "Factory lesson observation is unavailable, unselected, or duplicated."
+      );
+    existing.push(observation);
+  }
+  return {
+    attributions:
+      selection?.lessons.map((lesson) => ({
+        lesson,
+        observations: observations.get(lesson.lessonId) ?? [],
+      })) ?? [],
+    selection,
+  };
+}
+
 const decodeContentPayload = Schema.decodeUnknownSync(
   ModelContextContentPayloadV1
+);
+const decodeGenericContentRefs = Schema.decodeUnknownSync(
+  Schema.Array(ModelContextContentRefV1).pipe(
+    Schema.check(Schema.isMaxLength(64))
+  )
 );
 const decodeContent = Schema.decodeUnknownSync(ModelContextContentV1);
 const decodeContext = Schema.decodeUnknownSync(ModelContextManifestV1);
@@ -454,7 +681,7 @@ function assertUtf8Bounded(value: unknown, maximum: number, label: string) {
     throw new Error(`${label} must be well-formed and within its UTF-8 bound.`);
 }
 
-export function makeModelContextContentV1(
+function makeModelContextContentInternalV1(
   input: Omit<typeof ModelContextContentPayloadV1.Type, "version">
 ) {
   const payload = decodeContentPayload({ ...input, version: 1 });
@@ -480,9 +707,18 @@ export function makeModelContextContentV1(
   });
 }
 
+export function makeModelContextContentV1(
+  input: Omit<typeof ModelContextContentPayloadV1.Type, "version">
+) {
+  return makeModelContextContentInternalV1({
+    ...input,
+    contentRefs: decodeGenericContentRefs(input.contentRefs),
+  });
+}
+
 export function parseModelContextContent(input: unknown) {
   const decoded = decodeContent(input);
-  const expected = makeModelContextContentV1(decoded.payload);
+  const expected = makeModelContextContentInternalV1(decoded.payload);
   if (expected.contextContentDigest !== decoded.contextContentDigest)
     throw new Error("Model context content failed self-authentication.");
   return decoded;
@@ -492,9 +728,27 @@ function renderItems(title: string, values: ReadonlyArray<string>) {
   return `${title}:\n${values.length === 0 ? "- none" : values.map((value) => `- ${value}`).join("\n")}`;
 }
 
+function renderFactoryLessonRefsV1(
+  payload: ModelContextContentPayloadV1
+): string | undefined {
+  if (payload.episodeRole !== "workerInitial") return undefined;
+  const refs = payload.contentRefs.filter(
+    (ref) => ref instanceof FactoryLessonModelContextContentRefV1
+  );
+  if (refs.length === 0) return undefined;
+  return renderItems(
+    "Factory lesson refs",
+    refs.map(
+      ({ kind, lessonId, projectionDigest, version }) =>
+        `kind=${kind}; lessonId=${lessonId}; version=${version}; projectionDigest=${projectionDigest}`
+    )
+  );
+}
+
 export function renderModelInputV1(contentInput: ModelContextContentV1) {
   const content = parseModelContextContent(contentInput);
   const payload = content.payload;
+  const renderedFactoryLessonRefs = renderFactoryLessonRefsV1(payload);
   const text = [
     "Gaia model input template: gaia.worker-input.v1",
     "Task input:",
@@ -502,6 +756,9 @@ export function renderModelInputV1(contentInput: ModelContextContentV1) {
     renderItems("Accepted outcomes", payload.acceptedOutcomes),
     renderItems("Non-goals", payload.nonGoals),
     renderItems("Stop conditions", payload.stops),
+    ...(renderedFactoryLessonRefs === undefined
+      ? []
+      : [renderedFactoryLessonRefs]),
     renderItems("Planning facts", payload.planningFacts),
     renderItems("Authority", payload.authority),
     renderItems("Instructions", payload.instructions),
@@ -513,13 +770,151 @@ export function renderModelInputV1(contentInput: ModelContextContentV1) {
     payload.outputContract.text,
     "",
   ].join("\n");
-  assertUtf8Bounded(text, 16_384, "Rendered model input");
+  assertUtf8Bounded(
+    text,
+    MAXIMUM_RENDERED_MODEL_INPUT_BYTES_V1,
+    "Rendered model input"
+  );
   const bytes = utf8ToBytes(text);
   return RenderedModelInputV1.make({
     byteLength: bytes.byteLength,
     renderedInputDigest: parseRenderedDigest(bytesToHex(sha256(bytes))),
     text,
   });
+}
+
+export const MAXIMUM_RENDERED_MODEL_INPUT_BYTES_V1 = 16_384;
+
+function renderFactoryLessonV1(projection: FactoryLessonProjectionV1): string {
+  return `Reviewed factory lesson: ${projection.compactLesson}`;
+}
+
+/**
+ * Select only accepted lessons older than the target run. Each candidate is
+ * offered to the complete renderer, so template overhead and every existing
+ * content field consume the same final 16,384-byte budget.
+ */
+class FactoryLessonSelectionTargetV1 extends Schema.Class<FactoryLessonSelectionTargetV1>(
+  "FactoryLessonSelectionTargetV1"
+)(
+  {
+    createdAt: FactoryLessonSelectionTimestampSchema,
+    runId: RunIdSchema,
+  },
+  strict
+) {}
+
+class FactoryLessonSelectionInputV1 extends Schema.Class<FactoryLessonSelectionInputV1>(
+  "FactoryLessonSelectionInputV1"
+)(
+  {
+    available: Schema.Array(FactoryLessonActiveV1),
+    baseContent: ModelContextContentV1,
+    target: FactoryLessonSelectionTargetV1,
+  },
+  strict
+) {}
+
+const decodeFactoryLessonSelectionInput = Schema.decodeUnknownSync(
+  FactoryLessonSelectionInputV1,
+  { onExcessProperty: "error" }
+);
+
+export function selectFactoryLessonsForWorkerInitial(
+  input: typeof FactoryLessonSelectionInputV1.Encoded
+) {
+  const decoded = decodeFactoryLessonSelectionInput(input);
+  const base = parseModelContextContent(decoded.baseContent);
+  if (base.payload.episodeRole !== "workerInitial")
+    throw new Error(
+      "Factory lesson selection is routed only for workerInitial."
+    );
+  let content = base;
+  let rendered = renderModelInputV1(content);
+  const selected: Array<FactoryLessonActiveV1> = [];
+  const omitted: Array<typeof FactoryLessonOmissionV1.Encoded> = [];
+  let omittedLessonCount = 0;
+  const recordOmission = (omission: typeof FactoryLessonOmissionV1.Encoded) => {
+    omittedLessonCount += 1;
+    if (omitted.length < MAXIMUM_RECORDED_FACTORY_LESSON_OMISSIONS_V1)
+      omitted.push(omission);
+  };
+  const available = [...decoded.available]
+    .filter(
+      ({ acceptedAt, sourceRunId }) =>
+        acceptedAt < decoded.target.createdAt &&
+        sourceRunId !== decoded.target.runId
+    )
+    .sort(
+      (left, right) =>
+        left.projection.lessonId.localeCompare(right.projection.lessonId) ||
+        left.projection.version - right.projection.version ||
+        left.projection.projectionDigest.localeCompare(
+          right.projection.projectionDigest
+        )
+    );
+
+  for (const candidate of available) {
+    const lesson = {
+      lessonId: candidate.projection.lessonId,
+      projectionDigest: candidate.projection.projectionDigest,
+      version: 1 as const,
+    };
+    if (
+      base.payload.contentRefs.length + selected.length + 1 > 64 ||
+      base.payload.planningFacts.length + selected.length + 1 > 64
+    ) {
+      recordOmission({ lesson, reason: "contentRefLimit", version: 1 });
+      continue;
+    }
+    const nextSelected = [...selected, candidate];
+    const { version: _version, ...payload } = base.payload;
+    const nextContent = makeModelContextContentInternalV1({
+      ...payload,
+      contentRefs: [
+        ...base.payload.contentRefs,
+        ...nextSelected.map(({ projection }) =>
+          FactoryLessonModelContextContentRefV1.make({
+            kind: "factoryLesson/v1",
+            lessonId: projection.lessonId,
+            projectionDigest: projection.projectionDigest,
+            version: 1,
+          })
+        ),
+      ],
+      planningFacts: [
+        ...base.payload.planningFacts,
+        ...nextSelected.map(({ projection }) =>
+          renderFactoryLessonV1(projection)
+        ),
+      ],
+    });
+    try {
+      const nextRendered = renderModelInputV1(nextContent);
+      selected.push(candidate);
+      content = nextContent;
+      rendered = nextRendered;
+    } catch {
+      recordOmission({ lesson, reason: "renderBudget", version: 1 });
+    }
+  }
+
+  const selection = makeFactoryLessonContextSelectionV1({
+    baseRenderedBytes: renderModelInputV1(base).byteLength,
+    contextContentDigest: content.contextContentDigest,
+    eligibleLessonCount: available.length,
+    finalRenderedBytes: rendered.byteLength,
+    lessons: selected.map(({ projection }) => ({
+      lessonId: projection.lessonId,
+      projectionDigest: projection.projectionDigest,
+      version: 1,
+    })),
+    maximumRenderedBytes: MAXIMUM_RENDERED_MODEL_INPUT_BYTES_V1,
+    omitted,
+    omittedLessonCount,
+    targetRunId: decoded.target.runId,
+  });
+  return { content, rendered, selection };
 }
 
 export function makeModelContextManifestV1(input: {
@@ -975,24 +1370,7 @@ export function resolveModelInvocationEpisodes(
       const observation = parseModelInvocationObservation(rawObservation);
       if (!episodes.has(observation.episodeKey))
         throw new Error("Model invocation observation precedes its episode.");
-      const validObservation =
-        (observation.kind === "offered" &&
-          (observation.source === "codexBatchTransport" ||
-            observation.source === "codexAppServerTransport") &&
-          observation.trust === "high") ||
-        ((observation.kind === "retrieved" ||
-          observation.kind === "opened" ||
-          observation.kind === "invoked") &&
-          observation.source === "providerTelemetry" &&
-          observation.trust === "high") ||
-        (observation.kind === "reportedRelevant" &&
-          observation.source === "providerSelfReport" &&
-          observation.trust === "low") ||
-        ((observation.kind === "unobservable" ||
-          observation.kind === "notApplicable") &&
-          observation.source === "gaiaBoundary" &&
-          observation.trust === "none");
-      if (!validObservation)
+      if (!isValidObservationTrustContract(observation))
         throw new Error(
           "Model invocation observation violates its source and trust contract."
         );

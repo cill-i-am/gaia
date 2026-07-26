@@ -32,7 +32,11 @@ const AppendEventTypeSchema = EventTypeSchema.pipe(
   Schema.refine(
     (
       eventType
-    ): eventType is Exclude<EventType, "HARNESS_SESSION_EVENT_RECORDED"> =>
+    ): eventType is Exclude<
+      EventType,
+      "FACTORY_LESSON_CONTEXT_OBSERVED" | "HARNESS_SESSION_EVENT_RECORDED"
+    > =>
+      eventType !== "FACTORY_LESSON_CONTEXT_OBSERVED" &&
       eventType !== "HARNESS_SESSION_EVENT_RECORDED"
   )
 );
@@ -99,6 +103,26 @@ export function appendEventWithinSerialization(
           code: "UnsafeHarnessEventAppend",
           message:
             "Harness session events must use the finite appendHarnessSessionEvent path.",
+          recoverable: false,
+        })
+      );
+    }
+    if (eventType === "FACTORY_LESSON_REVIEW_RECORDED") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "UnsafeFactoryLessonReviewAppend",
+          message:
+            "Factory lesson reviews must use the finite reviewed promotion path.",
+          recoverable: false,
+        })
+      );
+    }
+    if (eventType === "FACTORY_LESSON_CONTEXT_OBSERVED") {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "UnsafeFactoryLessonContextObservationAppend",
+          message:
+            "Factory lesson context observations must use the completed model transport append path.",
           recoverable: false,
         })
       );

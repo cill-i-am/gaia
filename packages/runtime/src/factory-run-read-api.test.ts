@@ -59,6 +59,7 @@ const encodeFactoryGraph = Schema.encodeSync(FactoryGraphDto);
 const workerPlanArtifactId = decodeFactoryArtifactId("worker-plan");
 const runContractArtifactId = decodeFactoryArtifactId("run-contract");
 const runProofArtifactId = decodeFactoryArtifactId("verification-result");
+const factoryLessonsArtifactId = decodeFactoryArtifactId("factory-lessons");
 
 function writeWorkerMarker(
   fs: FileSystem.FileSystem,
@@ -228,6 +229,11 @@ describe("factory run read api", () => {
             workerPlanArtifactId,
             { rootDirectory: cwd }
           );
+          const factoryLessons = yield* readFactoryRunArtifact(
+            accepted.runId,
+            factoryLessonsArtifactId,
+            { rootDirectory: cwd }
+          );
 
           assert.deepInclude(
             graph.agents.map((agent) => ({
@@ -278,6 +284,12 @@ describe("factory run read api", () => {
           assert.strictEqual(workerPlan.artifactId, "worker-plan");
           assert.strictEqual(workerPlan.contentType, "application/json");
           assert.include(workerPlan.body, accepted.runId);
+          assert.include(
+            artifacts.artifacts.map(({ artifactId }) => artifactId),
+            factoryLessonsArtifactId
+          );
+          assert.strictEqual(factoryLessons.contentType, "application/json");
+          assert.include(factoryLessons.body, accepted.runId);
         })
     );
 

@@ -57,6 +57,10 @@ describe("runtime path contracts", () => {
             "/tmp/gaia-root/.gaia/promoted/run-PathSch001/evidence-promotion.json"
           );
           assert.strictEqual(
+            paths.factoryLessons,
+            "/tmp/gaia-root/.gaia/promoted/run-PathSch001/factory-lessons.json"
+          );
+          assert.strictEqual(
             runRelative(paths, paths.workspaceOutput),
             "workspace/output.txt"
           );

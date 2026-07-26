@@ -1,11 +1,16 @@
 import * as Schema from "effect/Schema";
 
 import { parseAcceptedRunInputCheckpointRef } from "./accepted-run-input.js";
+import {
+  parseFactoryLessonContextSelectionV1,
+  parseFactoryLessonReviewReceiptV1,
+} from "./factory-lesson.js";
 import { parseFailureRepairReceipt } from "./failure-repair.js";
 import { FailureStageSchema, type FailureStage } from "./failure-stage.js";
 import {
   parseModelInvocationEpisodeStart,
   parseModelInvocationObservation,
+  parseFactoryLessonContextObservationV1,
 } from "./model-invocation.js";
 import {
   parseAnyRunContract,
@@ -61,6 +66,8 @@ export const EventTypeSchema = Schema.Literals([
   "VERIFICATION_COMPLETED",
   "RUN_PROOF_RESULT_RECORDED",
   "FAILURE_REPAIR_RECORDED",
+  "FACTORY_LESSON_REVIEW_RECORDED",
+  "FACTORY_LESSON_CONTEXT_OBSERVED",
   "CLAIM_VERIFICATION_GENERATION_STARTED",
   "CLAIM_VERIFICATION_CREATE_INTENT_RECORDED",
   "CLAIM_VERIFICATION_SANDBOX_CREATED_RECORDED",
@@ -187,6 +194,29 @@ export const parseRunEvent = (input: unknown): RunEvent => {
     );
     if (failureRepair.runId !== event.runId)
       throw new Error("Failure-repair payload belongs to another run.");
+  }
+  if (event.type === "FACTORY_LESSON_REVIEW_RECORDED")
+    parseFactoryLessonReviewReceiptV1(event.payload["factoryLessonReview"]);
+  if (event.type === "FACTORY_LESSON_CONTEXT_OBSERVED") {
+    const observation = parseFactoryLessonContextObservationV1(
+      event.payload["factoryLessonContextObservation"]
+    );
+    if (observation.targetRunId !== event.runId)
+      throw new Error(
+        "Factory lesson context observation belongs to another run."
+      );
+  }
+  const lessonSelection = event.payload["factoryLessonContextSelection"];
+  if (lessonSelection !== undefined) {
+    if (event.type !== "WORKER_STARTED")
+      throw new Error(
+        "Factory lesson context selection has the wrong owner event."
+      );
+    const parsed = parseFactoryLessonContextSelectionV1(lessonSelection);
+    if (parsed.targetRunId !== event.runId)
+      throw new Error(
+        "Factory lesson context selection belongs to another run."
+      );
   }
   const episode = event.payload["modelInvocationEpisode"];
   if (episode !== undefined) {

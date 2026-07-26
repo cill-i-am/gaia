@@ -86,7 +86,11 @@ import {
 import { makeCodexHarnessConfig } from "./codex-harness.js";
 import { StagedDockerSandboxVerificationReceiptSchema } from "./docker-sandbox-verification-executor.js";
 import { GaiaRuntimeError } from "./errors.js";
-import { appendEvent, readEvents } from "./event-store.js";
+import {
+  appendEvent,
+  readEvents,
+  withRunEventSerialization,
+} from "./event-store.js";
 import {
   DeliveryAcceptanceProvenancePolicyV1,
   prepareDeliveryWorktree,
@@ -3658,12 +3662,15 @@ describe("server workflows", () => {
             rootDirectory,
           }).pipe(Effect.forkChild);
           const paths = yield* makeRunPaths(accepted.runId, { rootDirectory });
-          let events = yield* readEvents(paths);
+          let events = yield* withRunEventSerialization(
+            paths,
+            readEvents(paths)
+          );
           for (let attempt = 0; attempt < 1_000; attempt += 1) {
             if (events.some(({ type }) => type === "RUN_WAITING_FOR_HUMAN"))
               break;
             yield* Effect.yieldNow;
-            events = yield* readEvents(paths);
+            events = yield* withRunEventSerialization(paths, readEvents(paths));
           }
           yield* Fiber.interrupt(fiber);
 
