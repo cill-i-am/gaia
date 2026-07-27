@@ -188,6 +188,15 @@ export class HarnessStartError extends Schema.TaggedErrorClass<HarnessStartError
   { message: RuntimeMessageSchema, providerId: HarnessProviderIdSchema }
 ) {}
 
+/** The configured provider model is unavailable before a new session can start. */
+export class HarnessConfiguredModelUnavailableError extends Schema.TaggedErrorClass<HarnessConfiguredModelUnavailableError>()(
+  "HarnessConfiguredModelUnavailableError",
+  {
+    configuredModel: RuntimeMessageSchema,
+    providerId: HarnessProviderIdSchema,
+  }
+) {}
+
 /** Typed failure while resuming a provider session. */
 export class HarnessResumeError extends Schema.TaggedErrorClass<HarnessResumeError>()(
   "HarnessResumeError",
@@ -243,7 +252,11 @@ export interface HarnessSession {
 export interface HarnessProvider {
   readonly createSession: (
     request: HarnessSessionStart
-  ) => Effect.Effect<HarnessSession, HarnessStartError, Scope.Scope>;
+  ) => Effect.Effect<
+    HarnessSession,
+    HarnessConfiguredModelUnavailableError | HarnessStartError,
+    Scope.Scope
+  >;
   readonly descriptor: HarnessProviderDescriptor;
   readonly detect: Effect.Effect<HarnessDetection, HarnessDetectionError>;
   readonly resumeSession: (

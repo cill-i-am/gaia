@@ -43,6 +43,7 @@ import {
   parseCodexThreadId,
   parseCodexClientVersion,
   type CodexAppServerError,
+  type CodexModelId,
   type CodexThread,
   type CodexThreadId,
   type CodexTurnId,
@@ -56,6 +57,7 @@ import {
   HarnessCorrelationTokenSchema,
   HarnessInput,
   HarnessInteractionResponseSchema,
+  HarnessConfiguredModelUnavailableError,
   HarnessResumeError,
   HarnessSessionError,
   HarnessActionTransportWitness,
@@ -309,6 +311,44 @@ function randomSuffix(length: number) {
   });
 }
 
+const modelCatalogMaxPages = 128;
+
+function preflightConfiguredModel(
+  client: CodexAppServerClient,
+  configuredModel: CodexModelId
+) {
+  const unavailable = () =>
+    new HarnessConfiguredModelUnavailableError({
+      configuredModel,
+      providerId: CodexHarnessProviderDescriptor.providerId,
+    });
+  return Effect.gen(function* () {
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    let found = false;
+    for (
+      let pageNumber = 0;
+      pageNumber < modelCatalogMaxPages;
+      pageNumber += 1
+    ) {
+      const page = yield* client
+        .listModels(cursor === undefined ? {} : { cursor })
+        .pipe(Effect.mapError(unavailable));
+      found ||= page.data.some(({ id }) => id === configuredModel);
+      const nextCursor = page.nextCursor;
+      if (nextCursor === undefined || nextCursor === null) {
+        if (found) return;
+        return yield* Effect.fail(unavailable());
+      }
+      if (nextCursor.length === 0 || seenCursors.has(nextCursor))
+        return yield* Effect.fail(unavailable());
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    return yield* Effect.fail(unavailable());
+  });
+}
+
 /** Build the first rich HarnessProvider implementation over the landed GAIA-83 client. */
 export function createCodexHarnessProvider(
   options: CodexHarnessProviderOptions
@@ -456,6 +496,12 @@ export function createCodexHarnessProvider(
               })
           );
         }
+        const configuredModel =
+          options.config.model === undefined
+            ? undefined
+            : parseCodexModelId(options.config.model);
+        if (configuredModel !== undefined)
+          yield* preflightConfiguredModel(options.client, configuredModel);
         const thread = yield* options.client
           .startThread({
             approvalPolicy: "on-request",
@@ -465,9 +511,9 @@ export function createCodexHarnessProvider(
               options.path
             ),
             ephemeral: false,
-            ...(options.config.model === undefined
+            ...(configuredModel === undefined
               ? {}
-              : { model: parseCodexModelId(options.config.model) }),
+              : { model: configuredModel }),
             sandbox: "workspace-write",
           })
           .pipe(

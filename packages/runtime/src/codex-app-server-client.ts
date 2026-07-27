@@ -599,6 +599,13 @@ export function makeCodexAppServerClient(connection: CodexAppServerConnection) {
         ThreadListParamsSchema,
         ThreadListBoundaryResultSchema
       ),
+    listModels: (params: typeof ModelListParamsSchema.Type = {}) =>
+      request(
+        "model/list",
+        params,
+        ModelListParamsSchema,
+        ModelListBoundaryResultSchema
+      ),
     readThread: (params: ThreadReadParams) =>
       request(
         "thread/read",

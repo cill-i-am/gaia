@@ -197,6 +197,82 @@ describe("interactive issue-delivery harness", () => {
     );
 
     it.effect(
+      "maps an unavailable configured Codex model to a non-recoverable runtime failure before native start",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-unavailable-catalog-model-",
+          });
+          const runId = parseRunId("run-Catalog001");
+          const paths = yield* makeRunPaths(runId, { rootDirectory: root });
+          yield* fs.makeDirectory(paths.root, { recursive: true });
+          yield* fs.makeDirectory(paths.workspace, { recursive: true });
+          yield* appendEvent(runId, paths, {
+            payload: {
+              modelInvocationProtocol: "v1",
+              specPath: "input.md",
+            },
+            type: "RUN_CREATED",
+          });
+          const prepared = yield* prepareAcceptedInteractiveRun(
+            runId,
+            paths,
+            "Unavailable configured model",
+            "Fail before starting an unavailable configured model."
+          );
+          const recorded = recordingCodexClient({
+            recoveredTurns: [],
+            startTurnId: parseCodexTurnId("native-unavailable-turn"),
+            threadId: parseCodexThreadId("native-unavailable-thread"),
+          });
+          const saves: Array<unknown> = [];
+          const error = yield* interactiveSessionHarness({
+            provider: createCodexHarnessProvider({
+              client: recorded.client,
+              config: CodexHarnessProviderConfig.make({
+                model: "gpt-5.6-terra",
+                workspaceRoot: root,
+              }),
+              correlationStore: {
+                load: () => Effect.succeed(undefined),
+                save: (_sessionId, correlation) =>
+                  Effect.sync(() => {
+                    saves.push(correlation);
+                  }),
+              },
+            }),
+            rootDirectory: root,
+          })
+            .run(
+              HarnessRunRequest.make({
+                codexHarnessProgressPath: paths.codexHarnessProgress,
+                harnessName: codexAppServerHarnessName,
+                modelRenderedInput: prepared.rendered,
+                modelWorkspaceBinding: prepared.workspaceBinding,
+                resolvedSkillPaths: [],
+                runId,
+                skillBundlePath: paths.skillBundle,
+                specBody:
+                  "Fail before starting an unavailable configured model.",
+                specTitle: "Unavailable configured model",
+                workerLogPath: paths.workerLog,
+                workerResultPath: paths.workerResult,
+                workspaceOutputPath: paths.workspaceOutput,
+                workspacePath: paths.workspace,
+              })
+            )
+            .pipe(Effect.flip);
+
+          assert.strictEqual(error.code, "HarnessConfiguredModelUnavailable");
+          assert.strictEqual(error.recoverable, false);
+          assert.deepStrictEqual(recorded.threadStarts, []);
+          assert.deepStrictEqual(recorded.turnStarts, []);
+          assert.deepStrictEqual(saves, []);
+        })
+    );
+
+    it.effect(
       "changes GAIA-146 semantic identity for material invocation evidence",
       () =>
         Effect.gen(function* () {
@@ -1842,6 +1918,7 @@ function recordingCodexClient(input: {
       }),
     listThreads: () =>
       Effect.succeed({ backwardsCursor: null, data: [], nextCursor: null }),
+    listModels: () => Effect.succeed({ data: [], nextCursor: null }),
     onNotification: (listener) => {
       notifications.add(listener);
       input.onSubscribed?.();
