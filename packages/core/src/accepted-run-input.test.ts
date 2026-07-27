@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -11,6 +13,7 @@ import {
 } from "./accepted-run-input.js";
 import { makeRunEvent } from "./events.js";
 import { parseRunId } from "./run-id.js";
+import { parseMarkdownSpec } from "./spec.js";
 
 const runId = parseRunId("run-1234567890");
 const payload = {
@@ -38,6 +41,50 @@ describe("accepted run input checkpoint", () => {
       `arin1_${checkpoint.checkpointDigest}`
     );
     expect(parseAcceptedRunInputCheckpoint(checkpoint)).toEqual(checkpoint);
+  });
+
+  it("binds accepted V2 verification into the checkpoint digest", () => {
+    const spec = parseMarkdownSpec(
+      readFileSync(
+        new URL(
+          "../../../examples/specs/claim-verification-v2.md",
+          import.meta.url
+        ),
+        "utf8"
+      ),
+      "fallback"
+    );
+    const verification = spec.verification;
+    expect(verification).toBeDefined();
+    if (verification === undefined)
+      throw new Error("Expected the strict V2 fixture to carry verification.");
+    const [firstOutcome, ...remainingOutcomes] = verification.outcomes;
+    const checkpoint = makeAcceptedRunInputCheckpointV1({
+      ...payload,
+      spec: {
+        ...payload.spec,
+        verification,
+      },
+    });
+    const changed = makeAcceptedRunInputCheckpointV1({
+      ...payload,
+      spec: {
+        ...payload.spec,
+        verification: {
+          ...verification,
+          outcomes: [
+            {
+              ...firstOutcome,
+              statement: `${firstOutcome.statement} Changed.`,
+            },
+            ...remainingOutcomes,
+          ],
+        },
+      },
+    });
+
+    expect(checkpoint.payload.spec.verification).toEqual(verification);
+    expect(changed.checkpointDigest).not.toBe(checkpoint.checkpointDigest);
   });
 
   it("rejects mutation, excess properties, and wrong self-authentication", () => {

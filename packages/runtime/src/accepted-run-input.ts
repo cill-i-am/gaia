@@ -6,6 +6,7 @@ import {
   makeAcceptedRunInputCheckpointRefV1,
   parseAcceptedRunInputCheckpoint,
   parseAcceptedRunInputCheckpointRef,
+  RunSpec,
   type AcceptedRunInputCheckpointPayloadV1,
 } from "@gaia/core";
 import { Effect, FileSystem, Path, Schema } from "effect";
@@ -24,6 +25,7 @@ import { SkillManifest } from "./skill-manifest.js";
 import { WorkspaceSourceSchema } from "./workspace.js";
 
 const encodeCheckpoint = Schema.encodeSync(AcceptedRunInputCheckpointV1);
+const decodeRunSpec = Schema.decodeUnknownSync(RunSpec);
 const textEncoder = new TextEncoder();
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
 
@@ -100,6 +102,19 @@ export function decodeAcceptedRunInputSemantics(
       "The accepted input checkpoint kind does not match its semantic payload."
     );
   return semantics;
+}
+
+export function reconstructAcceptedRunSpec(
+  checkpointInput: AcceptedRunInputCheckpointV1
+) {
+  const checkpoint = parseAcceptedRunInputCheckpoint(checkpointInput);
+  return decodeRunSpec({
+    body: checkpoint.payload.spec.body,
+    title: checkpoint.payload.spec.title,
+    ...(checkpoint.payload.spec.verification === undefined
+      ? {}
+      : { verification: checkpoint.payload.spec.verification }),
+  });
 }
 
 function checkpointError(code: string, message: string, cause?: unknown) {

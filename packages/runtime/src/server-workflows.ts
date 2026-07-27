@@ -84,6 +84,7 @@ import {
   commitAcceptedRunInputCheckpointNoReplace,
   decodeAcceptedRunInputSemantics,
   loadAcceptedRunInputCheckpoint,
+  reconstructAcceptedRunSpec,
   type AcceptedRunInputSemanticsV1,
 } from "./accepted-run-input.js";
 import type { LiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
@@ -1279,6 +1280,9 @@ function acceptServerRunUnlocked(
         bodyDigest: createHash("sha256").update(spec.body).digest("hex"),
         byteLength: Buffer.byteLength(spec.body, "utf8"),
         title: spec.title,
+        ...(spec.verification === undefined
+          ? {}
+          : { verification: spec.verification }),
       },
       version: 1,
     });
@@ -1435,6 +1439,9 @@ function acceptFactoryRunUnlocked(
           .digest("hex"),
         byteLength: Buffer.byteLength(preparedSpec.spec.body, "utf8"),
         title: preparedSpec.spec.title,
+        ...(preparedSpec.spec.verification === undefined
+          ? {}
+          : { verification: preparedSpec.spec.verification }),
       },
       version: 1,
     });
@@ -1919,9 +1926,13 @@ function continueServerRunUnlocked(
             recoverable: false,
           })
         );
-      spec = yield* parseServerSpec({
-        specMarkdown: checkpoint.payload.spec.body,
-        title: checkpoint.payload.spec.title,
+      spec = yield* Effect.try({
+        try: () => reconstructAcceptedRunSpec(checkpoint),
+        catch: (cause) =>
+          acceptedRunCapabilityMismatch(
+            "The accepted input checkpoint spec is invalid.",
+            cause
+          ),
       });
     } else {
       const fs = yield* FileSystem.FileSystem;
@@ -2141,13 +2152,12 @@ function continueServerRunWorkerOnly(
     const spec =
       resolution.kind === "v1"
         ? yield* Effect.gen(function* () {
+            const checkpoint = prepared.checkpoint;
             if (
-              prepared.checkpoint === undefined ||
+              checkpoint === undefined ||
               prepared.semantics === undefined ||
-              resolution.ref.checkpointId !==
-                prepared.checkpoint.checkpointId ||
-              resolution.ref.checkpointDigest !==
-                prepared.checkpoint.checkpointDigest
+              resolution.ref.checkpointId !== checkpoint.checkpointId ||
+              resolution.ref.checkpointDigest !== checkpoint.checkpointDigest
             )
               return yield* Effect.fail(
                 makeRuntimeError({
@@ -2157,9 +2167,13 @@ function continueServerRunWorkerOnly(
                   recoverable: false,
                 })
               );
-            return yield* parseServerSpec({
-              specMarkdown: prepared.checkpoint.payload.spec.body,
-              title: prepared.checkpoint.payload.spec.title,
+            return yield* Effect.try({
+              try: () => reconstructAcceptedRunSpec(checkpoint),
+              catch: (cause) =>
+                acceptedRunCapabilityMismatch(
+                  "The accepted input checkpoint spec is invalid.",
+                  cause
+                ),
             });
           })
         : yield* Effect.gen(function* () {

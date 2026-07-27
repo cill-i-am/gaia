@@ -16,15 +16,18 @@ import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
+  canonicalV1,
   codexAppServerExecutionSelection,
   DeliveryBranchNamePublicSchema,
   DeliveryFeedbackTrustPolicyV1,
   DeliveryGitShaPublicSchema,
   DeliveryPublicationConfirmed,
   DeliveryRemoteNamePublicSchema,
+  deriveExplicitSpecItemDigest,
   HarnessProfileIdSchema,
   HarnessSessionIdSchema,
   ModelInvocationEpisodeStartV1,
+  ModelContextManifestV1,
   RunControlEventPayload,
   RunControlRestoreStateSchema,
   RunControlSnapshot,
@@ -50,6 +53,7 @@ import {
   parseFailureRepairReceipt,
   makeRunControlActionBindingDigest,
   parseMergeDecisionV2,
+  parseAnyRunContract,
   parseRunContract,
   parseRunControlAction,
   parseRunControlActionId,
@@ -96,6 +100,7 @@ import {
   prepareDeliveryWorktree,
   type GitDeliveryCommandInput,
 } from "./git-delivery.js";
+import { recordHarnessBaselineManifest } from "./harness-evaluation.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import {
   HarnessActionError,
@@ -141,6 +146,7 @@ import {
 } from "./test-support.js";
 import { readVerificationExecutionProfile } from "./verification-execution-profile.js";
 import type { VerificationServices } from "./verifier.js";
+import { digestWorkerPlanEnvironmentSemantics } from "./worker-plan.js";
 import {
   HarnessLaunchObservationLive,
   HarnessLaunchObservationService,
@@ -271,7 +277,7 @@ function makeMarkerHarnessProviderRegistry(rootDirectory: string) {
   ]);
 }
 
-function makeFailureRepairHarnessProvider() {
+function makeFailureRepairHarnessProvider(rootDirectory: string) {
   let repairResumes = 0;
   let repairSends = 0;
   const makeSession = (
@@ -311,17 +317,23 @@ function makeFailureRepairHarnessProvider() {
   };
   const provider: HarnessProvider = {
     ...testHarnessProvider,
-    createSession: ({ sessionId }) =>
-      Effect.succeed(
-        makeSession(
+    createSession: ({ sessionId, workspacePath }) =>
+      Effect.sync(() => {
+        const workspace = join(rootDirectory, workspacePath);
+        mkdirSync(workspace, { recursive: true });
+        writeFileSync(join(workspace, "output.txt"), `${sessionId}\n`);
+        return makeSession(
           sessionId,
           parseHarnessTurnId("turn-failure-repair-initial"),
           false
-        )
-      ),
-    resumeSession: ({ sessionId }) =>
+        );
+      }),
+    resumeSession: ({ sessionId, workspacePath }) =>
       Effect.sync(() => {
         repairResumes += 1;
+        const workspace = join(rootDirectory, workspacePath);
+        mkdirSync(workspace, { recursive: true });
+        writeFileSync(join(workspace, "output.txt"), `${sessionId}\n`);
         return makeSession(
           sessionId,
           parseHarnessTurnId(`turn-failure-repair-${repairResumes}`),
@@ -708,7 +720,18 @@ describe("server workflows", () => {
         const summary = yield* continueServerRun(accepted.runId, {
           rootDirectory: cwd,
         });
+        const continuedEvents = yield* readLocalRunEvents(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        const legacyContract = continuedEvents.events.find(
+          ({ type }) => type === "RUN_CONTRACT_RECORDED"
+        );
         assert.strictEqual(summary.status, "completed");
+        assert.ok(legacyContract);
+        assert.strictEqual(
+          parseAnyRunContract(legacyContract.payload["contract"]).version,
+          1
+        );
         assert.strictEqual(
           yield* fs.readFileString(checkpointPath),
           checkpointBody
@@ -735,6 +758,47 @@ describe("server workflows", () => {
         assert.lengthOf(afterMismatch.events, eventCount + 1);
         assert.strictEqual(afterMismatch.events.at(-1)?.type, "RUN_FAILED");
       })
+    );
+
+    it.effect(
+      "preserves an accepted server V2 contract after the source input is removed",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-server-v2-continuation-",
+          });
+          const accepted = yield* acceptServerRun(
+            {
+              specMarkdown: readFileSync(
+                `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+                "utf8"
+              ),
+            },
+            { rootDirectory: cwd }
+          );
+          yield* fs.remove(`${accepted.runDirectory}/input.md`);
+
+          const error = yield* Effect.flip(
+            continueServerRun(accepted.runId, {
+              reviewer: blockingReviewer(),
+              rootDirectory: cwd,
+            })
+          );
+          const events = (yield* readLocalRunEvents(accepted.runId, {
+            rootDirectory: cwd,
+          })).events;
+          const contractEvent = events.find(
+            ({ type }) => type === "RUN_CONTRACT_RECORDED"
+          );
+
+          assert.strictEqual(error.code, "ReviewBlocked");
+          assert.ok(contractEvent);
+          assert.strictEqual(
+            parseAnyRunContract(contractEvent.payload["contract"]).version,
+            2
+          );
+        })
     );
 
     it.effect(
@@ -925,7 +989,7 @@ describe("server workflows", () => {
         const rootDirectory = yield* fs.makeTempDirectory({
           prefix: "gaia-failure-repair-workflow-",
         });
-        const harness = makeFailureRepairHarnessProvider();
+        const harness = makeFailureRepairHarnessProvider(rootDirectory);
         const coordinator = makeLiveHarnessSessionCoordinator();
         const profile = yield* readVerificationExecutionProfile(
           parseRuntimePath(
@@ -1002,15 +1066,10 @@ describe("server workflows", () => {
             execution: codexAppServerExecutionSelection,
             workflow: "issueDelivery",
             workItem: {
-              description: [
-                "---",
-                "title: Accepted issue wrapper",
-                "---",
-                readFileSync(
-                  `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
-                  "utf8"
-                ),
-              ].join("\n"),
+              description: readFileSync(
+                `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+                "utf8"
+              ),
               kind: "issue",
               title: "Repair one failed exact claim",
             },
@@ -1697,7 +1756,7 @@ describe("server workflows", () => {
                 execution: codexAppServerExecutionSelection,
                 workflow: "issueDelivery",
                 workItem: {
-                  description: "Recover the interrupted checkpoint.",
+                  description: postPublicationOnlyV2Spec(),
                   kind: "issue",
                   title: "Audited continuation",
                 },
@@ -1720,6 +1779,7 @@ describe("server workflows", () => {
 
             const runId = parseRunId(accepted.runId);
             const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+            yield* fs.remove(paths.input);
             const readyEvents = yield* readLocalRunEvents(runId, {
               rootDirectory: cwd,
             });
@@ -1868,6 +1928,9 @@ describe("server workflows", () => {
             const delivery = snapshotFromReplay(events.events).context[
               "delivery"
             ];
+            const contractEvent = events.events.find(
+              ({ type }) => type === "RUN_CONTRACT_RECORDED"
+            );
 
             assert.strictEqual(
               receipt.state,
@@ -1889,6 +1952,11 @@ describe("server workflows", () => {
               failedRecovery.event.sequence
             );
             assert.deepEqual(publicationCalls, []);
+            assert.ok(contractEvent);
+            assert.strictEqual(
+              parseAnyRunContract(contractEvent.payload["contract"]).version,
+              2
+            );
             assert.isObject(delivery);
             assert.strictEqual(
               (delivery as Record<string, unknown>)["stage"],
@@ -4159,8 +4227,331 @@ describe("server workflows", () => {
           assert.strictEqual(failed?.payload["stage"], "preparingWorkspace");
         })
     );
+
+    it.effect(
+      "preserves an accepted factory V2 contract through continuation before provider dispatch",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-v2-continuation-",
+          });
+          let providerDispatches = 0;
+          const provider: HarnessProvider = {
+            ...acceptanceProvider,
+            createSession: (...args) => {
+              providerDispatches += 1;
+              return acceptanceProvider.createSession(...args);
+            },
+            resumeSession: (...args) => {
+              providerDispatches += 1;
+              return acceptanceProvider.resumeSession(...args);
+            },
+          };
+          const registry = makeHarnessProviderRegistry([
+            {
+              environmentAssignment: () =>
+                Effect.succeed(workerEnvironmentAssignment()),
+              profileId: codexAppServerExecutionSelection.harnessProfileId,
+              provider,
+            },
+          ]);
+          const factoryInput = {
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery" as const,
+            workItem: {
+              description: readFileSync(
+                `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+                "utf8"
+              ),
+              kind: "issue" as const,
+              title: "Preserve accepted V2 verification",
+            },
+          };
+          const options = {
+            harnessProviderRegistry: registry,
+            rootDirectory: cwd,
+          };
+          const reference = yield* acceptPreparedFactoryRun(
+            yield* prepareFactoryRunAcceptance(factoryInput, options),
+            options
+          );
+          const referenceError = yield* Effect.flip(
+            continueServerRun(reference.runId, {
+              ...options,
+              reviewer: blockingReviewer(),
+            })
+          );
+          assert.strictEqual(referenceError.code, "ReviewBlocked");
+          const referencePaths = yield* makeRunPaths(reference.runId, {
+            rootDirectory: cwd,
+          });
+          const referenceEvents = yield* readEvents(referencePaths);
+          const referenceContractEvent = referenceEvents.find(
+            ({ type }) => type === "RUN_CONTRACT_RECORDED"
+          );
+          assert.ok(referenceContractEvent);
+          const referenceContract = parseAnyRunContract(
+            referenceContractEvent.payload["contract"]
+          );
+          assert.strictEqual(referenceContract.version, 2);
+          if (referenceContract.version !== 2)
+            return yield* Effect.die("Expected a V2 reference contract.");
+          const workerInitialContext = readdirSync(
+            referencePaths.modelInvocations,
+            { withFileTypes: true }
+          )
+            .filter((entry) => entry.isDirectory())
+            .map((entry) =>
+              Schema.decodeUnknownSync(ModelContextManifestV1)(
+                JSON.parse(
+                  readFileSync(
+                    join(
+                      referencePaths.modelInvocations,
+                      entry.name,
+                      "context-manifest.json"
+                    ),
+                    "utf8"
+                  )
+                )
+              )
+            )
+            .find(
+              ({ payload }) => payload.content.episodeRole === "workerInitial"
+            );
+          assert.ok(workerInitialContext);
+          if (workerInitialContext === undefined)
+            return yield* Effect.die(
+              "Expected a prepared model invocation episode."
+            );
+          const assignment = workerEnvironmentAssignment();
+          const accepted = yield* acceptPreparedFactoryRun(
+            yield* prepareFactoryRunAcceptance(factoryInput, options),
+            options
+          );
+          const owner = yield* acceptPreparedFactoryRun(
+            yield* prepareFactoryRunAcceptance(
+              {
+                ...factoryInput,
+                workItem: {
+                  ...factoryInput.workItem,
+                  title: "Own the test baseline manifest",
+                },
+              },
+              options
+            ),
+            options
+          );
+          const fileDigest = (path: string) =>
+            createHash("sha256").update(readFileSync(path)).digest("hex");
+          const manifest = yield* recordHarnessBaselineManifest(
+            {
+              acceptedOutcome: {
+                outcomeId: referenceContract.acceptedOutcomes[0]!.outcomeId,
+                proofContractDigest: createHash("sha256")
+                  .update(
+                    canonicalV1("gaia.harness-proof-contract.v1", [
+                      {
+                        acceptedOutcomes: referenceContract.acceptedOutcomes,
+                        proofClaims: referenceContract.proofClaims,
+                        specDigest: referenceContract.specDigest,
+                        version: referenceContract.version,
+                      },
+                    ])
+                  )
+                  .digest("hex"),
+                version: 2,
+              },
+              authorityDigest: assignment.authority.workspaceBindingDigest,
+              baseDigest: referenceContract.baseDigest,
+              contextDigest: workerInitialContext.payload.contextContentDigest,
+              evaluationId: "evaluation-implementation-completes",
+              externalCondition: {
+                descriptor: "test-owned-local-host",
+                digest: "f".repeat(64),
+              },
+              freshSessionPolicy: "globallyDistinct",
+              grader: { id: "grader.fixed", version: "1" },
+              interventionWithheld: "runtimeRevision",
+              limitations: ["singleLocalHost"],
+              manifestId: "baseline-factory-continuation",
+              model: assignment.model,
+              ownerRunId: owner.runId,
+              plannedBaselineRunIds: [accepted.runId],
+              plannedRepetitions: 1,
+              profileDigest: fileDigest(referencePaths.runProfile),
+              providerInterfaceDigest: assignment.adapter.contractDigest,
+              recordedAt: "2026-07-27T00:00:00.000Z",
+              runtimeRevision: assignment.runtimeSource.revision,
+              scenario: { id: "implementation-completes", version: 1 },
+              skillManifestDigest: fileDigest(referencePaths.skillManifest),
+              stopConditions: ["unknownExternalOutcome"],
+              targetDigest: referenceContract.targetDigest,
+              worker: {
+                capabilityEpoch: assignment.effectDependencyEpoch,
+                id: provider.descriptor.providerId,
+              },
+              workerPlanDigest: digestWorkerPlanEnvironmentSemantics(
+                readFileSync(referencePaths.workerPlanResult, "utf8")
+              ),
+            },
+            { rootDirectory: cwd }
+          );
+
+          const error = yield* Effect.flip(
+            continueServerRun(accepted.runId, {
+              ...options,
+              harnessPreparationBinding: {
+                manifestRef: manifest.ref,
+                repetition: 1,
+                role: "baseline",
+                runId: accepted.runId,
+              },
+              reviewer: blockingReviewer(),
+            })
+          );
+          const events = (yield* readLocalRunEvents(accepted.runId, {
+            rootDirectory: cwd,
+          })).events;
+          const contractEvent = events.find(
+            ({ type }) => type === "RUN_CONTRACT_RECORDED"
+          );
+          const preparedEvent = events.find(
+            ({ type }) => type === "HARNESS_PREPARED_RUN_RECORDED"
+          );
+          const failedEvent = events.at(-1);
+          assert.strictEqual(error.code, "ReviewBlocked");
+          assert.ok(contractEvent);
+          assert.ok(preparedEvent);
+          assert.strictEqual(failedEvent?.type, "RUN_FAILED");
+          if (failedEvent === undefined)
+            return yield* Effect.die("Expected a terminal run failure.");
+          assert.isBelow(contractEvent.sequence, preparedEvent.sequence);
+          assert.isBelow(preparedEvent.sequence, failedEvent.sequence);
+          assert.strictEqual(
+            parseAnyRunContract(contractEvent.payload["contract"]).version,
+            2
+          );
+          assert.strictEqual(failedEvent.payload["code"], "ReviewBlocked");
+          assert.strictEqual(providerDispatches, 0);
+        })
+    );
+
+    it.effect(
+      "preserves an accepted factory legacy work-item V1 contract through public continuation",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-v1-continuation-",
+          });
+          let providerDispatches = 0;
+          const provider: HarnessProvider = {
+            ...acceptanceProvider,
+            createSession: (...args) => {
+              providerDispatches += 1;
+              return acceptanceProvider.createSession(...args);
+            },
+            resumeSession: (...args) => {
+              providerDispatches += 1;
+              return acceptanceProvider.resumeSession(...args);
+            },
+          };
+          const options = {
+            harnessProviderRegistry: makeHarnessProviderRegistry([
+              {
+                environmentAssignment: () =>
+                  Effect.succeed(workerEnvironmentAssignment()),
+                profileId: codexAppServerExecutionSelection.harnessProfileId,
+                provider,
+              },
+            ]),
+            rootDirectory: cwd,
+          };
+          const accepted = yield* acceptPreparedFactoryRun(
+            yield* prepareFactoryRunAcceptance(
+              {
+                execution: codexAppServerExecutionSelection,
+                workflow: "issueDelivery",
+                workItem: {
+                  description: "Preserve the accepted legacy factory input.",
+                  kind: "issue",
+                  title: "Preserve accepted V1 verification",
+                },
+              },
+              options
+            ),
+            options
+          );
+
+          const error = yield* Effect.flip(
+            continueServerRun(accepted.runId, {
+              ...options,
+              reviewer: blockingReviewer(),
+            })
+          );
+          const events = (yield* readLocalRunEvents(accepted.runId, {
+            rootDirectory: cwd,
+          })).events;
+          const contractEvent = events.find(
+            ({ type }) => type === "RUN_CONTRACT_RECORDED"
+          );
+
+          assert.strictEqual(error.code, "ReviewBlocked");
+          assert.ok(contractEvent);
+          assert.strictEqual(
+            parseAnyRunContract(contractEvent.payload["contract"]).version,
+            1
+          );
+          assert.strictEqual(providerDispatches, 0);
+        })
+    );
   });
 });
+
+function postPublicationOnlyV2Spec() {
+  const outcome =
+    "The audited continuation remains bound to its accepted V2 contract.";
+  const claim = "Paired local reviewer approves the published exact head.";
+  return [
+    "---",
+    "title: Audited V2 continuation",
+    "verification:",
+    "  version: 2",
+    "  outcomes:",
+    "    - key: audited-continuation",
+    `      statement: ${outcome}`,
+    `      sourceItemDigest: ${deriveExplicitSpecItemDigest({
+      section: "acceptanceCriteria",
+      statement: outcome,
+    })}`,
+    "      prePublicationRequiredClaims: []",
+    "      postPublicationRequiredClaims: [paired-review]",
+    "      conditionalClaims: []",
+    "  claims:",
+    "    - key: paired-review",
+    `      statement: ${claim}`,
+    `      sourceItemDigest: ${deriveExplicitSpecItemDigest({
+      section: "verificationChecks",
+      statement: claim,
+    })}`,
+    "      phase: postPublication",
+    "      kind: human-judgment",
+    "      selector:",
+    "        source: localOperatorPairedReview",
+    "        decision: approved",
+    "---",
+    "",
+    "## Acceptance Criteria",
+    "",
+    `- ${outcome}`,
+    "",
+    "## Verification",
+    "",
+    `- ${claim}`,
+    "",
+  ].join("\n");
+}
 
 const acceptanceCapabilities = HarnessCapabilities.make({
   approvals: [],
