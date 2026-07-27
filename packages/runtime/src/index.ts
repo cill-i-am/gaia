@@ -172,6 +172,7 @@ export {
   HarnessActionError,
   HarnessActionTransportWitness,
   HarnessCapabilityMismatchError,
+  HarnessConfiguredModelUnavailableError,
   HarnessDetectionError,
   HarnessIncompatibleError,
   HarnessInput,

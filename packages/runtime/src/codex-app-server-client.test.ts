@@ -560,6 +560,86 @@ describe("Codex App Server connection", () => {
     );
   });
 
+  it("parses model/list pages through the typed client boundary", async () => {
+    const fake = fakeProcess();
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const client = makeCodexAppServerClient(connection);
+          const fiber = yield* client
+            .listModels({ cursor: "next-page" })
+            .pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          expect(fake.writes.at(-1)).toMatchObject({
+            method: "model/list",
+            params: { cursor: "next-page" },
+          });
+          for (const listener of fake.lines)
+            listener(
+              JSON.stringify({
+                id: 1,
+                result: {
+                  data: [
+                    {
+                      defaultReasoningEffort: "medium",
+                      description: "Current model",
+                      displayName: "GPT",
+                      hidden: false,
+                      id: "gpt-5.6-terra",
+                      isDefault: true,
+                      model: "gpt-5.6-terra",
+                      supportedReasoningEfforts: [],
+                    },
+                  ],
+                  nextCursor: null,
+                },
+              })
+            );
+          const result = yield* Fiber.join(fiber);
+          expect(result).toEqual({
+            data: [
+              {
+                displayName: "GPT",
+                hidden: false,
+                id: "gpt-5.6-terra",
+                model: "gpt-5.6-terra",
+              },
+            ],
+            nextCursor: null,
+          });
+        })
+      )
+    );
+  });
+
+  it("rejects malformed model/list responses through the typed client boundary", async () => {
+    const fake = fakeProcess();
+    const exit = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const client = makeCodexAppServerClient(connection);
+          const fiber = yield* client
+            .listModels()
+            .pipe(Effect.exit, Effect.forkChild);
+          yield* Effect.yieldNow;
+          for (const listener of fake.lines)
+            listener(JSON.stringify({ id: 1, result: { data: [{}] } }));
+          return yield* Fiber.join(fiber);
+        })
+      )
+    );
+
+    expect(exit._tag).toBe("Failure");
+    expect(String(exit)).toContain("Invalid model/list response");
+    expect(fake.writes.map(({ method }) => method)).toEqual(["model/list"]);
+  });
+
   it("fails every pending request exactly once when the process exits", async () => {
     const fake = fakeProcess();
     const tags = await Effect.runPromise(

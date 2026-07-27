@@ -17,6 +17,7 @@ import { describe, expect, it } from "vitest";
 import { type CodexAppServerClient } from "./codex-app-server-client.js";
 import {
   parseCodexThreadId,
+  parseCodexModelId,
   parseCodexRequestId,
   parseCodexTurnId,
   parseCodexItemId,
@@ -26,6 +27,7 @@ import {
   type CodexAppServerError,
   type CodexServerRequest,
   CodexAppServerIncompatibilityError,
+  CodexAppServerProtocolError,
   CodexAppServerTransportError,
   CodexServerRequestBoundarySchema,
 } from "./codex-app-server-protocol.js";
@@ -100,6 +102,7 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
   const starts: Array<unknown> = [];
   const initializations: Array<unknown> = [];
   const interrupts: Array<unknown> = [];
+  const modelLists: Array<unknown> = [];
   const fileResponses: Array<unknown> = [];
   const currentTimeResponses: Array<unknown> = [];
   const permissionResponses: Array<unknown> = [];
@@ -122,6 +125,21 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
     },
     listThreads: () =>
       Effect.succeed({ backwardsCursor: null, data: [], nextCursor: null }),
+    listModels: (params) =>
+      Effect.sync(() => {
+        modelLists.push(params);
+        return {
+          data: [
+            {
+              displayName: "Codex",
+              hidden: false,
+              id: parseCodexModelId("gpt-5.6-codex"),
+              model: parseCodexModelId("gpt-5.6-codex"),
+            },
+          ],
+          nextCursor: null,
+        };
+      }),
     onNotification: (listener) => {
       notifications.add(listener);
       return () => notifications.delete(listener);
@@ -178,6 +196,7 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
     fileResponses,
     initializations,
     interrupts,
+    modelLists,
     notifications,
     permissionResponses,
     reads,
@@ -190,6 +209,202 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
 }
 
 describe("Codex HarnessProvider adapter", () => {
+  it("fails a configured model before starting or persisting a fresh session when the catalog lacks it", async () => {
+    const recorded = recordingClient();
+    const catalogRequests: Array<unknown> = [];
+    const saves: Array<unknown> = [];
+    const exit = await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: {
+              ...recorded.client,
+              listModels: (params) =>
+                Effect.sync(() => {
+                  catalogRequests.push(params);
+                  return { data: [], nextCursor: null };
+                }),
+            },
+            config: CodexHarnessProviderConfig.make({
+              model: "gpt-5.6-terra",
+              workspaceRoot: "/workspace",
+            }),
+            correlationStore: {
+              load: () => Effect.succeed(undefined),
+              save: (_sessionId, correlation) =>
+                Effect.sync(() => {
+                  saves.push(correlation);
+                }),
+            },
+          }),
+          request: {
+            input: { text: "must not start" },
+            sessionId: parseHarnessSessionId("session-missing-catalog-model"),
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: [],
+        }).pipe(Effect.exit)
+      )
+    );
+
+    expect(exit._tag).toBe("Failure");
+    expect(String(exit)).toContain("HarnessConfiguredModelUnavailable");
+    expect(catalogRequests).toEqual([{}]);
+    expect(recorded.starts).toEqual([]);
+    expect(saves).toEqual([]);
+  });
+
+  it("uses every catalog page before starting with the unchanged configured model", async () => {
+    const recorded = recordingClient();
+    const calls: Array<unknown> = [];
+    await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: {
+              ...recorded.client,
+              listModels: (params) =>
+                Effect.sync(() => {
+                  calls.push({ kind: "catalog", params });
+                  return params?.cursor === undefined
+                    ? {
+                        data: [],
+                        nextCursor: "second-page",
+                      }
+                    : {
+                        data: [
+                          {
+                            displayName: "Terra",
+                            hidden: false,
+                            id: parseCodexModelId("gpt-5.6-terra"),
+                            model: parseCodexModelId("gpt-5.6-terra"),
+                          },
+                        ],
+                        nextCursor: null,
+                      };
+                }),
+              startThread: (params) =>
+                Effect.sync(() => {
+                  calls.push({ kind: "thread", params });
+                  return runtimeThreadResult(recorded.threadId);
+                }),
+            },
+            config: CodexHarnessProviderConfig.make({
+              model: "gpt-5.6-terra",
+              workspaceRoot: "/workspace",
+            }),
+            correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+          }),
+          request: {
+            input: { text: "start only after the full catalog" },
+            sessionId: parseHarnessSessionId("session-catalog-second-page"),
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: [],
+        })
+      )
+    );
+
+    expect(calls).toEqual([
+      { kind: "catalog", params: {} },
+      { kind: "catalog", params: { cursor: "second-page" } },
+      expect.objectContaining({
+        kind: "thread",
+        params: expect.objectContaining({ model: "gpt-5.6-terra" }),
+      }),
+    ]);
+  });
+
+  it("fails closed when a configured model catalog cannot be decoded", async () => {
+    const recorded = recordingClient();
+    const saves: Array<unknown> = [];
+    const exit = await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: {
+              ...recorded.client,
+              listModels: () =>
+                Effect.fail(
+                  new CodexAppServerProtocolError({
+                    message: "Invalid model/list response",
+                    method: "model/list",
+                  })
+                ),
+            },
+            config: CodexHarnessProviderConfig.make({
+              model: "gpt-5.6-terra",
+              workspaceRoot: "/workspace",
+            }),
+            correlationStore: {
+              load: () => Effect.succeed(undefined),
+              save: (_sessionId, correlation) =>
+                Effect.sync(() => {
+                  saves.push(correlation);
+                }),
+            },
+          }),
+          request: {
+            input: { text: "must not start after malformed catalog" },
+            sessionId: parseHarnessSessionId("session-malformed-catalog"),
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: [],
+        }).pipe(Effect.exit)
+      )
+    );
+
+    expect(exit._tag).toBe("Failure");
+    expect(String(exit)).toContain("HarnessConfiguredModelUnavailable");
+    expect(recorded.starts).toEqual([]);
+    expect(saves).toEqual([]);
+  });
+
+  it("fails closed on a repeated catalog cursor before starting or persisting", async () => {
+    const recorded = recordingClient();
+    const catalogRequests: Array<unknown> = [];
+    const saves: Array<unknown> = [];
+    const exit = await Effect.runPromise(
+      Effect.scoped(
+        startHarnessSession({
+          provider: createCodexHarnessProvider({
+            client: {
+              ...recorded.client,
+              listModels: (params) =>
+                Effect.sync(() => {
+                  catalogRequests.push(params);
+                  return { data: [], nextCursor: "repeated-page" };
+                }),
+            },
+            config: CodexHarnessProviderConfig.make({
+              model: "gpt-5.6-terra",
+              workspaceRoot: "/workspace",
+            }),
+            correlationStore: {
+              load: () => Effect.succeed(undefined),
+              save: (_sessionId, correlation) =>
+                Effect.sync(() => {
+                  saves.push(correlation);
+                }),
+            },
+          }),
+          request: {
+            input: { text: "must not start after repeated catalog cursor" },
+            sessionId: parseHarnessSessionId("session-repeated-catalog-cursor"),
+            workspacePath: parseWorkspaceRelativePath("project"),
+          },
+          requiredCapabilities: [],
+        }).pipe(Effect.exit)
+      )
+    );
+
+    expect(exit._tag).toBe("Failure");
+    expect(String(exit)).toContain("HarnessConfiguredModelUnavailable");
+    expect(catalogRequests).toEqual([{}, { cursor: "repeated-page" }]);
+    expect(recorded.starts).toEqual([]);
+    expect(saves).toEqual([]);
+  });
+
   effectIt.effect(
     "answers exact-thread current-time requests once from the controlled Clock without projecting evidence",
     () =>

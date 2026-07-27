@@ -55,6 +55,7 @@ import { issueDeliveryAgentIds } from "./factory-workflows.js";
 import { issueDeliveryWorkerHarnessCapabilities } from "./harness-provider-registry.js";
 import {
   HarnessInput,
+  HarnessConfiguredModelUnavailableError,
   HarnessResumeError,
   resumeHarnessSession,
   startHarnessSession,
@@ -366,18 +367,25 @@ export function interactiveSessionHarness(input: {
         Effect.mapError((error) =>
           error instanceof GaiaRuntimeError
             ? error
-            : error instanceof HarnessResumeError
+            : error instanceof HarnessConfiguredModelUnavailableError
               ? makeRuntimeError({
-                  code: "HarnessCorrelationUnavailable",
+                  code: "HarnessConfiguredModelUnavailable",
                   message:
-                    "Harness session correlation is missing or corrupt for resume.",
+                    "The configured Codex model is unavailable. Select an available model before starting a new harness session.",
                   recoverable: false,
                 })
-              : makeRuntimeError({
-                  code: "HarnessSessionFailed",
-                  message: "Interactive harness execution failed.",
-                  recoverable: true,
-                })
+              : error instanceof HarnessResumeError
+                ? makeRuntimeError({
+                    code: "HarnessCorrelationUnavailable",
+                    message:
+                      "Harness session correlation is missing or corrupt for resume.",
+                    recoverable: false,
+                  })
+                : makeRuntimeError({
+                    code: "HarnessSessionFailed",
+                    message: "Interactive harness execution failed.",
+                    recoverable: true,
+                  })
         )
       ),
   };
