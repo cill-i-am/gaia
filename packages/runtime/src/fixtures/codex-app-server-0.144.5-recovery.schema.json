@@ -13,6 +13,17 @@
       "decline",
       "cancel"
     ],
+    "commandRequestCwdReference": "#/definitions/LegacyAppPathString",
+    "commandRequestEnvironmentIdDefault": null,
+    "commandRequestRequired": [
+      "itemId",
+      "startedAtMs",
+      "threadId",
+      "turnId"
+    ],
+    "currentTimeReadRequired": [
+      "threadId"
+    ],
     "elicitationRequestRequired": [
       "serverName",
       "threadId"
@@ -60,6 +71,7 @@
       "thread/started",
       "thread/status/changed",
       "thread/archived",
+      "thread/deleted",
       "thread/unarchived",
       "thread/closed",
       "skills/changed",
@@ -95,6 +107,7 @@
       "account/rateLimits/updated",
       "app/list/updated",
       "remoteControl/status/changed",
+      "externalAgentConfig/import/progress",
       "externalAgentConfig/import/completed",
       "fs/changed",
       "item/reasoning/summaryTextDelta",
@@ -103,6 +116,8 @@
       "thread/compacted",
       "model/rerouted",
       "model/verification",
+      "turn/moderationMetadata",
+      "model/safetyBuffering/updated",
       "warning",
       "guardianWarning",
       "deprecationNotice",
@@ -121,6 +136,7 @@
       "windowsSandbox/setupCompleted",
       "account/login/completed"
     ],
+    "permissionRequestCwdReference": "#/definitions/AbsolutePathBuf",
     "permissionApprovalResponseRequired": [
       "permissions"
     ],
@@ -140,6 +156,20 @@
     ],
     "requestPermissionProfileRequired": [],
     "requestPermissionProfileAdditionalProperties": false,
+    "serverRequestMethods": [
+      "item/commandExecution/requestApproval",
+      "item/fileChange/requestApproval",
+      "item/tool/requestUserInput",
+      "mcpServer/elicitation/request",
+      "item/permissions/requestApproval",
+      "item/tool/call",
+      "account/chatgptAuthTokens/refresh",
+      "attestation/generate",
+      "currentTime/read",
+      "applyPatchApproval",
+      "execCommandApproval"
+    ],
+    "threadHistoryModeDefault": "legacy",
     "threadItemRequired": {
       "userMessage": [
         "content",
@@ -203,6 +233,13 @@
         "tool",
         "type"
       ],
+      "subAgentActivity": [
+        "agentPath",
+        "agentThreadId",
+        "id",
+        "kind",
+        "type"
+      ],
       "webSearch": [
         "id",
         "query",
@@ -211,6 +248,11 @@
       "imageView": [
         "id",
         "path",
+        "type"
+      ],
+      "sleep": [
+        "durationMs",
+        "id",
         "type"
       ],
       "imageGeneration": [
@@ -245,8 +287,10 @@
       "mcpToolCall",
       "dynamicToolCall",
       "collabAgentToolCall",
+      "subAgentActivity",
       "webSearch",
       "imageView",
+      "sleep",
       "imageGeneration",
       "enteredReviewMode",
       "exitedReviewMode",
@@ -254,6 +298,7 @@
     ],
     "threadTimestampFormats": {
       "createdAt": "int64",
+      "recencyAt": "int64",
       "updatedAt": "int64"
     },
     "threadListRequired": [
@@ -327,59 +372,89 @@
     "turnsPageRequired": [
       "data"
     ],
+    "userInputAutoResolutionDefault": null,
+    "userInputAutoResolutionFormat": "uint64",
     "itemLifecycleTimestampFormats": {
       "completedAtMs": "int64",
       "startedAtMs": "int64"
     }
   },
-  "generatedBy": "codex-cli 0.137.0",
+  "changedSchemaPathsFrom0137": [
+    "ClientRequest.json",
+    "CommandExecutionRequestApprovalParams.json",
+    "McpServerElicitationRequestParams.json",
+    "PermissionsRequestApprovalParams.json",
+    "PermissionsRequestApprovalResponse.json",
+    "ServerNotification.json",
+    "ServerRequest.json",
+    "ToolRequestUserInputParams.json",
+    "v1/InitializeParams.json",
+    "v2/ErrorNotification.json",
+    "v2/ItemCompletedNotification.json",
+    "v2/ItemStartedNotification.json",
+    "v2/ModelListResponse.json",
+    "v2/ThreadListParams.json",
+    "v2/ThreadListResponse.json",
+    "v2/ThreadReadResponse.json",
+    "v2/ThreadResumeParams.json",
+    "v2/ThreadResumeResponse.json",
+    "v2/ThreadStartParams.json",
+    "v2/ThreadStartResponse.json",
+    "v2/ThreadStartedNotification.json",
+    "v2/TurnCompletedNotification.json",
+    "v2/TurnStartParams.json",
+    "v2/TurnStartResponse.json",
+    "v2/TurnStartedNotification.json",
+    "v2/TurnSteerParams.json"
+  ],
+  "generatedBy": "codex-cli 0.144.5",
   "schemas": {
-    "ClientRequest.json": "0778fe4fd90c5b10b4d76030c3a6823b17eb2fd469c5f242bac2b6610ebc1b46",
-    "CommandExecutionRequestApprovalParams.json": "823edb27835ac61fd2f803fc5fb28e71801dfba08261a9eb8833258f1b0b5c1d",
+    "ClientRequest.json": "d8474445e109c242a2cc1169ed6d8644f86df3a097230c8c52bdc107a9014efa",
+    "CommandExecutionRequestApprovalParams.json": "252b95dd7223b86d3bb7e786eb819a40d66dc36514e77c4221ea72c7cd5cad7c",
     "CommandExecutionRequestApprovalResponse.json": "42010a48dd9ad989171728c30338e1ff8144c31bd33921cbfb5608fd6c85a3b5",
     "FileChangeRequestApprovalParams.json": "7b465f7c5671adffdc5c339f50799860950307456e2a2b52c5ce1d3018f4babd",
     "FileChangeRequestApprovalResponse.json": "7ccbd29e5f8840c7c8aa96c5c3b6d52bc71ec5c5d7e1ad05ab958afd44c0c94c",
-    "McpServerElicitationRequestParams.json": "94cc26a4c26d1e8cc59ec50c2191157176b6f24f4bb2267e90498d72b9c1a476",
+    "McpServerElicitationRequestParams.json": "12e180a344101863b73a3ba101d12ae14fff1b6eff679b7ccd0769cc22827261",
     "McpServerElicitationRequestResponse.json": "b9658ba208bfc7ecb3139c4d9742608f260e1583bd6cd11666dce289c975d670",
-    "PermissionsRequestApprovalParams.json": "bc758dfa55920ac105d7f419f111eab0c7ec8909ead45cf8238fe242a75cebd2",
-    "PermissionsRequestApprovalResponse.json": "20f66826278687355cdbf1373f6b0f8f395c41cb5ce6809193e32eee6967288c",
+    "PermissionsRequestApprovalParams.json": "1d3d82089f06c19f1ab7c5a8790aad7c8ae8cafb3ebcf48458947cedcc201254",
+    "PermissionsRequestApprovalResponse.json": "60abc8a0d1c1f24be5be8fafbeb8a2bd0c327ba44088c74ba414b31acdfd4489",
     "RequestId.json": "a33325d0eca49631bf935e9a30d02ba542b42d563f8c58955d3e8f14ad6d3ab1",
-    "ServerNotification.json": "0c7eb2b177a763d989fd258468de8a5576cbc0b7f24c9c0de9c29419c4d2dda7",
-    "ServerRequest.json": "664be1b545a48580e57c7c480f8e4f3c2818fc3eb3822111c90b2e46bd21822c",
-    "ToolRequestUserInputParams.json": "a31740af91a1576dda5fba3eb3c5a34424929714f49db5c80ef476b44f10f596",
+    "ServerNotification.json": "fb0d6bf6b9f192257f452340de3fdca6b4b2c8e1a216aafaf48837a006e14bea",
+    "ServerRequest.json": "886f30bd882a73600566695e0f08f8a10fcd9897742c4745ecf91710ec256f6a",
+    "ToolRequestUserInputParams.json": "21e569e32c05d51c1ee5e587730c182b911ede97a4df267f6e4ef24e1717f34e",
     "ToolRequestUserInputResponse.json": "14ede53c2e51b289fb3c80903292d4b0f0b387eae217dbb257c201b2b7c65bf1",
-    "v1/InitializeParams.json": "f6540330c6492971750ad0caa532904eb08547bd8d849a053aecf36c803c49f7",
+    "v1/InitializeParams.json": "4f576f99e285beb28f71f48a72b887c1f517dada86fee348fe2af0a35511de23",
     "v1/InitializeResponse.json": "86dcd236d0576a82c85b933586dc45731260eab1b6edb3447b03f790277322b1",
     "v2/AgentMessageDeltaNotification.json": "6446e05718f69c5bbbdb7da92997ffddbc307c13c1222581708f7e5ce1c9e924",
     "v2/CommandExecutionOutputDeltaNotification.json": "e9d233bc133d3fea6022fe7032cfeedad53d20d49da771a3fd3424603d6f0db1",
-    "v2/ErrorNotification.json": "57f2d83febc6ae4db2e1e9fd94d0a4df8c6f95077e826e9f0b88f946c96a0768",
+    "v2/ErrorNotification.json": "1ec871b02771300a26a34e41a7cfaf7484330a8c37c197d1ac133e753b083a09",
     "v2/FileChangeOutputDeltaNotification.json": "c99f43238e156716f4982fc4393faeb7a9b5342ca63374fe215b9d99f2219e49",
     "v2/FileChangePatchUpdatedNotification.json": "cdfef70e910f028b9afe11538e93c7f744142c819dded0028a4da4695a7f39c7",
-    "v2/ItemCompletedNotification.json": "fa2e5785ee2f4ff87f95d51d2bf9774fc88d668d0f0b6a86306849d467be46e7",
-    "v2/ItemStartedNotification.json": "3dcb781467139d330d44f2a4faee38c02405857237337908e3aaf95c9358d019",
+    "v2/ItemCompletedNotification.json": "2905f1169b0990af2b114358b0b14ddb071fdd2643ac7e43a62c8db40643abcf",
+    "v2/ItemStartedNotification.json": "0d842417a83335153e12e8f511a401b467fbc4308035f94b503bb0b5647079e2",
     "v2/ModelListParams.json": "10ac5c0cb8ddbe840527c8eb8053dc4ced32ea3efdfb200283cadc43447f9073",
-    "v2/ModelListResponse.json": "3f5fa03c453f92565a2612e6b5dfee6a0454476e4363ef99604a009cba7944a2",
+    "v2/ModelListResponse.json": "59039842824f56f4fbdf0379b54a940986fca63e1f4577493d2498005dcbafe9",
     "v2/ServerRequestResolvedNotification.json": "7cc32a834be009c7a45dda01b80ae01bb522c642eb0e886c6d4bd7ee89fde643",
-    "v2/ThreadListParams.json": "9e71a3a25ec520816fb3a6d5b60a680602f271dd26f890d9a31c11c8cc721201",
-    "v2/ThreadListResponse.json": "888aed57a58deba99f0b3be9261412da710760a8b3775c10189fcfd2c3e32097",
+    "v2/ThreadListParams.json": "8834bb710751df3747107f04a3d9b97a02a13835459e34849574e0f4338dec53",
+    "v2/ThreadListResponse.json": "d7e512b27f3863f9864e8cd69eb91d6f8b3d632363c052bcaebe668e2156a779",
     "v2/ThreadReadParams.json": "db97080f82facc3259dbb9404e9f0df81e360619f4cd73983a9d99d25f5089ee",
-    "v2/ThreadReadResponse.json": "67d60068d52c382510a91c67700086ed81cf53cff826ade03f51f09ecae7f3ca",
-    "v2/ThreadResumeParams.json": "2154f60e42609fd68476160dd4c693b2d557504ca0fec8c222fae1ceb0d18342",
-    "v2/ThreadResumeResponse.json": "1f8d22be5ecf0e8d5bea97617c2d2fb1da299e51142dfd6667695a227e1e7dd1",
-    "v2/ThreadStartParams.json": "3163fd6a5f23eef486234cdcb2dce6b0206046d6dd65f1447c5d2dcb7165a42b",
-    "v2/ThreadStartResponse.json": "659c0f971c987d9ba8f8a02a971bc5429b9377f14590c6d2e27ad125133129ec",
-    "v2/ThreadStartedNotification.json": "25568aa6145a623109cfbf86284f6bda7b0af97d7fd927165fe09e8e67ed76ce",
+    "v2/ThreadReadResponse.json": "a3180a5c2cedb452b4d20b5ee0cdd01f021a3bc0246978710c62a2ff7e46f8c0",
+    "v2/ThreadResumeParams.json": "f828ee9846f11a68a1d259429ae147ddd49fcbd1cfb860b1a83f41604a5e97b9",
+    "v2/ThreadResumeResponse.json": "9d1eb57cf2baa00ae2b1f747a10f450bc8dcd9e400a58d6945c0d803af633dd1",
+    "v2/ThreadStartParams.json": "4f30cb90cae47ff01adba8d863228b2aa198232df895dbfc996d594270326744",
+    "v2/ThreadStartResponse.json": "eb5135241a7806db436100493c91214ef3516c4a9bd9aae700abc418c71be132",
+    "v2/ThreadStartedNotification.json": "49ecfc7478d824b9b31a38e89099c44bc1f5e5a9d9a6dda3221184a11d158e7c",
     "v2/ThreadStatusChangedNotification.json": "146af6d3702c4f3c844bd10b6b6b3e2b872e958a8d7d822157c19aaa6dc085f6",
     "v2/ThreadTokenUsageUpdatedNotification.json": "fe70a73653ae9e3fffb0db84d1312f47ac47d92526c2d44461492cd864ada3ad",
-    "v2/TurnCompletedNotification.json": "8df04b073b61e1ebbf9e3bdffba70439d3068c93fa2b81e901116b38faee8f32",
+    "v2/TurnCompletedNotification.json": "900bc6e40f0aeb5aa498ec874f026a2a077356ac1dc740c1928cfdca29630345",
     "v2/TurnDiffUpdatedNotification.json": "100de58cee497cbf2382497d0c0215761e6c5baa872009a0a55ff7d23364635c",
     "v2/TurnInterruptParams.json": "49132b57b09f09dc545ed1cd373c12eede6e880e9afb54ae50add78bb42490cd",
     "v2/TurnInterruptResponse.json": "531de6be06fe979b5963f249bab82498a175e614bf65ac12fb2e849dfe60bcf1",
     "v2/TurnPlanUpdatedNotification.json": "1198bbc36eebf79716b97ab7a36c09e77bec76efccefa1f188fe2e22db26d196",
-    "v2/TurnStartParams.json": "deb954971814db0fd6d516514c7326a22c09d377982f0a994701691a5f20b3d6",
-    "v2/TurnStartResponse.json": "dee7c5429f5fa14e3baf6db3c5243ae680cffb47d2c1127a026e9567ce2d83bb",
-    "v2/TurnStartedNotification.json": "e4c0f9849a52bb55b704f7c857f6a35518943a75e8417bd081b32b1e51481f2d",
-    "v2/TurnSteerParams.json": "b6f393b5195f55b2d7e2eb975b700234ef9c6acca829f22e044b4c595250e723",
+    "v2/TurnStartParams.json": "a28f74287e18b8a18c7aa6966ee7552a8ed2ae13c03f4ba12e9af48f7370f19d",
+    "v2/TurnStartResponse.json": "7cfae42a4652fe38119d6a0a625910357c869c448c985513a4cd5966031e18bc",
+    "v2/TurnStartedNotification.json": "8fa9297e89172a4430b8a023dc6fe6f4b5764578fb64df0d41886be25e64e669",
+    "v2/TurnSteerParams.json": "2c5a7ff12f952bab1b829bcae1afd2f79217b87f48ba296581ea3b3888eedabb",
     "v2/TurnSteerResponse.json": "a669b85e3b75b86468e39e6a2f760966bffe83f378b514c6898fb04b838cd78d",
     "v2/WarningNotification.json": "8f8f87048f846a24ce06937cbcc11098e188ff262b71a986c0bcde1a24e57a81"
   }

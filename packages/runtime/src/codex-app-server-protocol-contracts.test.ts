@@ -36,7 +36,7 @@ const decodePermissionPath = Schema.decodeUnknownSync(
   CodexPermissionAbsolutePathSchema
 );
 const rawThread = {
-  cliVersion: "0.137.0",
+  cliVersion: "0.144.5",
   createdAt: 1,
   cwd: "/workspace",
   ephemeral: false,
@@ -245,9 +245,9 @@ describe("Codex App Server provider identities", () => {
     const decodeCommand = Schema.decodeUnknownSync(CodexProtocolCommandSchema);
     const decodeServerName = Schema.decodeUnknownSync(CodexServerNameSchema);
 
-    expect(decodeVersion("0.137.0")).toBe("0.137.0");
-    expect(decodeVersion("0.137.0-beta.1+build.7")).toBe(
-      "0.137.0-beta.1+build.7"
+    expect(decodeVersion("0.144.5")).toBe("0.144.5");
+    expect(decodeVersion("0.144.5-beta.1+build.7")).toBe(
+      "0.144.5-beta.1+build.7"
     );
     expect(() => decodeVersion("latest")).toThrow();
     expect(() => decodeVersion("01.2.3")).toThrow();
@@ -261,7 +261,7 @@ describe("Codex App Server provider identities", () => {
     expect(() => decodeServerName(" github ")).toThrow();
   });
 
-  it("accepts valid 0.137.0 optional cursors and permission profiles", () => {
+  it("accepts valid 0.144.5 optional cursors and permission profiles", () => {
     expect(
       Schema.decodeUnknownSync(ThreadListResultSchema)({ data: [] })
     ).toEqual({ data: [] });
@@ -286,7 +286,61 @@ describe("Codex App Server provider identities", () => {
     ).toBe("item/permissions/requestApproval");
   });
 
-  it("accepts valid 0.137.0 omitted request and response defaults", () => {
+  it("decodes the source-exact 0.144.5 current-time request", () => {
+    const decode = Schema.decodeUnknownSync(CodexServerRequestBoundarySchema);
+    expect(
+      decode({
+        id: 7,
+        method: "currentTime/read",
+        params: { threadId: "thread-1" },
+      })
+    ).toEqual({
+      id: 7,
+      method: "currentTime/read",
+      params: { threadId: "thread-1" },
+    });
+    expect(() =>
+      decode({ id: 7, method: "currentTime/read", params: {} })
+    ).toThrow();
+    expect(() =>
+      decode({
+        id: 7,
+        method: "currentTime/read",
+        params: { threadId: "" },
+      })
+    ).toThrow();
+  });
+
+  it("rejects 0.144.5 uint64 request values above the source maximum", () => {
+    const decode = Schema.decodeUnknownSync(CodexServerRequestBoundarySchema);
+    expect(() =>
+      decode({
+        id: 8,
+        method: "item/tool/requestUserInput",
+        params: {
+          autoResolutionMs: Number(1n << 64n),
+          itemId: "item-1",
+          questions: [
+            {
+              header: "Choice",
+              id: "choice",
+              options: [
+                {
+                  description: "Continue",
+                  label: "Continue",
+                },
+              ],
+              question: "Continue?",
+            },
+          ],
+          threadId: "thread-1",
+          turnId: "turn-1",
+        },
+      })
+    ).toThrow();
+  });
+
+  it("accepts valid 0.144.5 omitted request and response defaults", () => {
     expect(
       Schema.decodeUnknownSync(CodexServerRequestSchema)({
         id: 1,
@@ -332,7 +386,7 @@ describe("Codex App Server provider identities", () => {
     ).toEqual({ action: "decline" });
   });
 
-  it("decodes every curated 0.137.0 ID-bearing item variant", () => {
+  it("decodes every curated 0.144.5 ID-bearing item variant", () => {
     const items = [
       { fragments: [], id: "hook-1", type: "hookPrompt" },
       {
@@ -392,6 +446,46 @@ describe("Codex App Server provider identities", () => {
       summary: ["summary"],
     });
     expect(mcp).toMatchObject({ arguments: { owner: "gaia" } });
+  });
+
+  it("decodes the two new 0.144.5 item variants and rejects malformed forms", () => {
+    const decodeItem = Schema.decodeUnknownSync(CodexRawThreadItemSchema);
+
+    expect(
+      decodeItem({
+        agentPath: "worker",
+        agentThreadId: "thread-worker",
+        id: "activity-1",
+        kind: "interacted",
+        type: "subAgentActivity",
+      })
+    ).toMatchObject({
+      agentPath: "worker",
+      agentThreadId: "thread-worker",
+      kind: "interacted",
+      type: "subAgentActivity",
+    });
+    expect(
+      decodeItem({ durationMs: 2_000, id: "sleep-1", type: "sleep" })
+    ).toEqual({ durationMs: 2_000, id: "sleep-1", type: "sleep" });
+    expect(() =>
+      decodeItem({
+        agentPath: "worker",
+        id: "activity-1",
+        kind: "interacted",
+        type: "subAgentActivity",
+      })
+    ).toThrow();
+    expect(() =>
+      decodeItem({ durationMs: -1, id: "sleep-1", type: "sleep" })
+    ).toThrow();
+    expect(() =>
+      decodeItem({
+        durationMs: Number(1n << 64n),
+        id: "sleep-1",
+        type: "sleep",
+      })
+    ).toThrow();
   });
 
   it("rejects incomplete raw thread results and token-usage notifications", () => {

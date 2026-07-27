@@ -91,7 +91,7 @@ describe("HarnessProvider registry", () => {
             auth: { state: "authenticated" },
             capabilities,
             state: "available",
-            version: "0.137.0",
+            version: "0.144.5",
           }),
           descriptor: HarnessProviderDescriptor.make({
             displayName: "Codex App Server",

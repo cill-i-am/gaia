@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const expectedVersion = "codex-cli 0.137.0";
+const expectedVersion = "codex-cli 0.144.5";
 if (
   execFileSync("codex", ["--version"], { encoding: "utf8" }).trim() !==
   expectedVersion
@@ -69,6 +69,34 @@ try {
     "v2/TurnSteerResponse.json",
     "v2/WarningNotification.json",
   ];
+  const changedSchemaPathsFrom0137 = [
+    "ClientRequest.json",
+    "CommandExecutionRequestApprovalParams.json",
+    "McpServerElicitationRequestParams.json",
+    "PermissionsRequestApprovalParams.json",
+    "PermissionsRequestApprovalResponse.json",
+    "ServerNotification.json",
+    "ServerRequest.json",
+    "ToolRequestUserInputParams.json",
+    "v1/InitializeParams.json",
+    "v2/ErrorNotification.json",
+    "v2/ItemCompletedNotification.json",
+    "v2/ItemStartedNotification.json",
+    "v2/ModelListResponse.json",
+    "v2/ThreadListParams.json",
+    "v2/ThreadListResponse.json",
+    "v2/ThreadReadResponse.json",
+    "v2/ThreadResumeParams.json",
+    "v2/ThreadResumeResponse.json",
+    "v2/ThreadStartParams.json",
+    "v2/ThreadStartResponse.json",
+    "v2/ThreadStartedNotification.json",
+    "v2/TurnCompletedNotification.json",
+    "v2/TurnStartParams.json",
+    "v2/TurnStartResponse.json",
+    "v2/TurnStartedNotification.json",
+    "v2/TurnSteerParams.json",
+  ];
   const sha256 = (value) => createHash("sha256").update(value).digest("hex");
   const readSchema = (schemaPath) =>
     JSON.parse(readFileSync(path.join(root, schemaPath), "utf8"));
@@ -85,9 +113,11 @@ try {
   const itemStarted = readSchema("v2/ItemStartedNotification.json");
   const itemCompleted = readSchema("v2/ItemCompletedNotification.json");
   const serverNotification = readSchema("ServerNotification.json");
+  const serverRequest = readSchema("ServerRequest.json");
   const commandRequest = readSchema(
     "CommandExecutionRequestApprovalParams.json"
   );
+  const userInputRequest = readSchema("ToolRequestUserInputParams.json");
   const modelList = readSchema("v2/ModelListResponse.json");
   const threadStart = readSchema("v2/ThreadStartResponse.json");
   const threadResume = readSchema("v2/ThreadResumeResponse.json");
@@ -113,6 +143,12 @@ try {
         commandRequest.definitions.CommandExecutionApprovalDecision.oneOf.map(
           (entry) => entry.enum?.[0] ?? Object.keys(entry.properties ?? {})[0]
         ),
+      commandRequestCwdReference: commandRequest.properties.cwd.anyOf[0].$ref,
+      commandRequestEnvironmentIdDefault:
+        commandRequest.properties.environmentId.default,
+      commandRequestRequired: commandRequest.required,
+      currentTimeReadRequired:
+        serverRequest.definitions.CurrentTimeReadParams.required,
       elicitationRequestRequired: elicitationRequest.required,
       elicitationResponseRequired: elicitationResponse.required,
       gitInfoRequired: threadStart.definitions.GitInfo.required ?? [],
@@ -131,6 +167,7 @@ try {
       notificationMethods: serverNotification.oneOf.map(
         (entry) => entry.properties.method.enum[0]
       ),
+      permissionRequestCwdReference: permissions.properties.cwd.$ref,
       permissionApprovalResponseRequired: permissionResponse.required,
       permissionApprovalScopeDefault:
         permissionResponse.properties.scope.default,
@@ -143,6 +180,10 @@ try {
         permissions.definitions.RequestPermissionProfile.required ?? [],
       requestPermissionProfileAdditionalProperties:
         permissions.definitions.RequestPermissionProfile.additionalProperties,
+      serverRequestMethods: serverRequest.oneOf.map(
+        (entry) => entry.properties.method.enum[0]
+      ),
+      threadHistoryModeDefault: rawThread.properties.historyMode.default,
       threadItemRequired: Object.fromEntries(
         itemStarted.definitions.ThreadItem.oneOf.map((entry) => [
           entry.properties.type.enum[0],
@@ -154,6 +195,7 @@ try {
       ),
       threadTimestampFormats: {
         createdAt: rawThread.properties.createdAt.format,
+        recencyAt: rawThread.properties.recencyAt.format,
         updatedAt: rawThread.properties.updatedAt.format,
       },
       threadListRequired: readSchema("v2/ThreadListResponse.json").required,
@@ -178,11 +220,16 @@ try {
       },
       turnRequired: threadStart.definitions.Turn.required,
       turnsPageRequired: threadResume.definitions.TurnsPage.required,
+      userInputAutoResolutionDefault:
+        userInputRequest.properties.autoResolutionMs.default,
+      userInputAutoResolutionFormat:
+        userInputRequest.properties.autoResolutionMs.format,
       itemLifecycleTimestampFormats: {
         completedAtMs: itemCompleted.properties.completedAtMs.format,
         startedAtMs: itemStarted.properties.startedAtMs.format,
       },
     },
+    changedSchemaPathsFrom0137,
     generatedBy: expectedVersion,
     schemas: Object.fromEntries(
       schemaPaths.map((schemaPath) => [
@@ -193,7 +240,7 @@ try {
   };
   writeFileSync(
     new URL(
-      "../src/fixtures/codex-app-server-0.137.0-recovery.schema.json",
+      "../src/fixtures/codex-app-server-0.144.5-recovery.schema.json",
       import.meta.url
     ),
     `${JSON.stringify(fixture, null, 2)}\n`

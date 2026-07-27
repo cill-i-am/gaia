@@ -1833,7 +1833,7 @@ function recordingCodexClient(input: {
         codexHome: "/tmp/codex-home",
         platformFamily: "unix",
         platformOs: "macos",
-        userAgent: "Codex/0.137.0",
+        userAgent: "Codex/0.144.5",
       }),
     interruptTurn: (params) =>
       Effect.sync(() => {
@@ -1858,6 +1858,7 @@ function recordingCodexClient(input: {
         },
       }),
     respondCommandApproval: () => Effect.void,
+    respondCurrentTime: () => Effect.void,
     respondElicitation: () => Effect.void,
     respondFileApproval: () => Effect.void,
     respondPermissionApproval: () => Effect.void,

@@ -2,6 +2,7 @@ import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { it as effectIt } from "@effect/vitest";
 import {
   HarnessLaunchObservationV1,
   parseHarnessActionId,
@@ -10,6 +11,7 @@ import {
   parseWorkspaceRelativePath,
 } from "@gaia/core";
 import { Effect, Fiber, Option, Schema, Stream } from "effect";
+import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { type CodexAppServerClient } from "./codex-app-server-client.js";
@@ -25,6 +27,7 @@ import {
   type CodexServerRequest,
   CodexAppServerIncompatibilityError,
   CodexAppServerTransportError,
+  CodexServerRequestBoundarySchema,
 } from "./codex-app-server-protocol.js";
 import {
   createCodexHarnessProvider,
@@ -98,6 +101,7 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
   const initializations: Array<unknown> = [];
   const interrupts: Array<unknown> = [];
   const fileResponses: Array<unknown> = [];
+  const currentTimeResponses: Array<unknown> = [];
   const permissionResponses: Array<unknown> = [];
   const reads: Array<unknown> = [];
   const threadId = parseCodexThreadId("native-thread-private");
@@ -109,7 +113,7 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
         codexHome: "/tmp/codex-home",
         platformFamily: "unix",
         platformOs: "macos",
-        userAgent: "Codex/0.137.0",
+        userAgent: "Codex/0.144.5",
       });
     },
     interruptTurn: (params) => {
@@ -141,6 +145,10 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
       });
     },
     respondCommandApproval: () => Effect.void,
+    respondCurrentTime: (_request, response) =>
+      Effect.sync(() => {
+        currentTimeResponses.push(response);
+      }),
     respondElicitation: () => Effect.void,
     respondFileApproval: (_request, response) =>
       Effect.sync(() => {
@@ -166,6 +174,7 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
   } satisfies CodexAppServerClient;
   return {
     client,
+    currentTimeResponses,
     fileResponses,
     initializations,
     interrupts,
@@ -181,6 +190,143 @@ function recordingClient(recoveredTurns: ReadonlyArray<RecoveredTurn> = []) {
 }
 
 describe("Codex HarnessProvider adapter", () => {
+  effectIt.effect(
+    "answers exact-thread current-time requests once from the controlled Clock without projecting evidence",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(1_234_567);
+          const recorded = recordingClient();
+          const session = yield* startHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: recorded.client,
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
+              correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+            }),
+            request: {
+              input: { text: "test" },
+              sessionId: parseHarnessSessionId("session-current-time"),
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          const before = yield* session.snapshot;
+          const request = Schema.decodeUnknownSync(
+            CodexServerRequestBoundarySchema
+          )({
+            id: 77,
+            method: "currentTime/read",
+            params: { threadId: recorded.threadId },
+          });
+          for (const listener of recorded.requests) listener(request);
+          yield* Effect.yieldNow;
+          const after = yield* session.snapshot;
+
+          expect(recorded.currentTimeResponses).toEqual([
+            { currentTimeAt: 1_234 },
+          ]);
+          expect(after).toEqual(before);
+        })
+      )
+  );
+
+  effectIt.effect(
+    "fails the session closed when current-time targets another thread",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const recorded = recordingClient();
+          const session = yield* startHarnessSession({
+            provider: createCodexHarnessProvider({
+              client: recorded.client,
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
+              correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+            }),
+            request: {
+              input: { text: "test" },
+              sessionId: parseHarnessSessionId("session-current-time-mismatch"),
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          const request = Schema.decodeUnknownSync(
+            CodexServerRequestBoundarySchema
+          )({
+            id: 78,
+            method: "currentTime/read",
+            params: { threadId: "another-thread" },
+          });
+          for (const listener of recorded.requests) listener(request);
+          yield* Effect.yieldNow;
+          const snapshot = yield* session.snapshot;
+
+          expect(recorded.currentTimeResponses).toEqual([]);
+          expect(snapshot.state).toBe("failed");
+          expect(snapshot.failure).toMatchObject({
+            code: "CodexCurrentTimeRejected",
+            recoverable: false,
+          });
+        })
+      )
+  );
+
+  effectIt.effect(
+    "fails the session closed when the current-time response cannot be written",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const recorded = recordingClient();
+          const client: CodexAppServerClient = {
+            ...recorded.client,
+            respondCurrentTime: () =>
+              Effect.fail(
+                new CodexAppServerTransportError({
+                  message: "closed",
+                })
+              ),
+          };
+          const session = yield* startHarnessSession({
+            provider: createCodexHarnessProvider({
+              client,
+              config: CodexHarnessProviderConfig.make({
+                workspaceRoot: "/workspace",
+              }),
+              correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+            }),
+            request: {
+              input: { text: "test" },
+              sessionId: parseHarnessSessionId(
+                "session-current-time-write-failure"
+              ),
+              workspacePath: parseWorkspaceRelativePath("project"),
+            },
+            requiredCapabilities: [],
+          });
+          const request = Schema.decodeUnknownSync(
+            CodexServerRequestBoundarySchema
+          )({
+            id: 79,
+            method: "currentTime/read",
+            params: { threadId: recorded.threadId },
+          });
+          for (const listener of recorded.requests) listener(request);
+          yield* Effect.yieldNow;
+          const snapshot = yield* session.snapshot;
+
+          expect(recorded.currentTimeResponses).toEqual([]);
+          expect(snapshot.state).toBe("failed");
+          expect(snapshot.failure).toMatchObject({
+            code: "CodexCurrentTimeRejected",
+            recoverable: false,
+          });
+        })
+      )
+  );
+
   it("releases a failed observation attempt so the same session can retry", async () => {
     const sessionId = parseHarnessSessionId("session-observation-retry");
     const observation = HarnessLaunchObservationV1.make({
@@ -1189,7 +1335,7 @@ describe("Codex HarnessProvider adapter", () => {
         Effect.fail(
           new CodexAppServerIncompatibilityError({
             actualUserAgent: "Codex/0.136.0 test",
-            supportedVersion: "0.137.0",
+            supportedVersion: "0.144.5",
           })
         ),
     };
@@ -1218,7 +1364,7 @@ describe("Codex HarnessProvider adapter", () => {
         Effect.fail(
           new CodexAppServerIncompatibilityError({
             actualUserAgent: "gaia/0.136.0 test",
-            supportedVersion: "0.137.0",
+            supportedVersion: "0.144.5",
           })
         ),
     };

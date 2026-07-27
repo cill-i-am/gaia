@@ -14,13 +14,13 @@ describe("Codex App Server detection", () => {
         const available = yield* makeCodexAppServerDetectionProbe((args) =>
           Effect.succeed(
             args[0] === "--version"
-              ? "codex-cli 0.137.0\n"
+              ? "codex-cli 0.144.5\n"
               : "Logged in using ChatGPT\n"
           )
         );
         const authRequired = yield* makeCodexAppServerDetectionProbe((args) =>
           args[0] === "--version"
-            ? Effect.succeed("codex-cli 0.137.0\n")
+            ? Effect.succeed("codex-cli 0.144.5\n")
             : Effect.fail("credential-value")
         );
         const incompatible = yield* makeCodexAppServerDetectionProbe(() =>
@@ -36,7 +36,7 @@ describe("Codex App Server detection", () => {
         assert.strictEqual(decodeDetection(available).state, "available");
         assert.deepEqual(authRequired, {
           state: "authenticationRequired",
-          version: "0.137.0",
+          version: "0.144.5",
         });
         assert.deepEqual(incompatible, {
           reason:

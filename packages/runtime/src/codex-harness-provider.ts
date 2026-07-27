@@ -35,6 +35,7 @@ import {
 import { type CodexAppServerClient } from "./codex-app-server-client.js";
 import {
   CodexThreadIdSchema,
+  CodexInteractionRequestSchema,
   CodexThreadRuntimeResultSchema,
   CodexTurnIdSchema,
   supportedCodexCliVersion,
@@ -46,6 +47,7 @@ import {
   type CodexThreadId,
   type CodexTurnId,
   type CodexServerRequest,
+  type CurrentTimeRequest,
 } from "./codex-app-server-protocol.js";
 import { createCodexSessionMapper } from "./codex-session-mapper.js";
 import {
@@ -725,6 +727,7 @@ function makeCodexSession<E>(
     const queue = yield* Queue.bounded<HarnessEvent, HarnessSessionError>(
       2_000
     );
+    const currentTimeRequests = yield* Queue.bounded<CurrentTimeRequest>(32);
     const mapper = createCodexSessionMapper({
       capabilities: CodexHarnessCapabilities,
       provider: CodexHarnessProviderDescriptor,
@@ -752,7 +755,10 @@ function makeCodexSession<E>(
                   ),
           };
     const projectedEvents: Array<HarnessEvent> = [];
-    const pendingRequests = new Map<HarnessInteractionId, CodexServerRequest>();
+    const pendingRequests = new Map<
+      HarnessInteractionId,
+      Schema.Schema.Type<typeof CodexInteractionRequestSchema>
+    >();
     let activeTurnId: CodexTurnId | undefined;
     let adapterFailed = false;
     let bufferFailed = false;
@@ -855,6 +861,52 @@ function makeCodexSession<E>(
       emit(events);
     };
 
+    const terminateCurrentTime = (message: string) =>
+      terminateSession(
+        [
+          parseHarnessEvent({
+            failure: {
+              code: "CodexCurrentTimeRejected",
+              kind: "providerFailure",
+              message,
+              recoverable: false,
+            },
+            kind: "sessionFailed",
+            sessionId: input.request.sessionId,
+          }),
+        ],
+        message
+      );
+
+    yield* Stream.fromQueue(currentTimeRequests).pipe(
+      Stream.runForEach((request) =>
+        Effect.gen(function* () {
+          if (adapterFailed || bufferFailed) return;
+          if (request.params.threadId !== input.nativeThreadId) {
+            terminateCurrentTime(
+              "Codex current-time request did not belong to this session."
+            );
+            return;
+          }
+          const currentTimeAt = Math.floor(
+            (yield* Clock.currentTimeMillis) / 1_000
+          );
+          yield* input.options.client
+            .respondCurrentTime(request, { currentTimeAt })
+            .pipe(
+              Effect.catch(() =>
+                Effect.sync(() =>
+                  terminateCurrentTime(
+                    "Codex current-time response could not be written."
+                  )
+                )
+              )
+            );
+        })
+      ),
+      Effect.forkScoped
+    );
+
     const mapOrFail = (
       map: () => ReadonlyArray<HarnessEvent>
     ): ReadonlyArray<HarnessEvent> => {
@@ -920,6 +972,14 @@ function makeCodexSession<E>(
       }
     );
     const removeRequest = input.options.client.onServerRequest((request) => {
+      if (request.method === "currentTime/read") {
+        if (!Queue.offerUnsafe(currentTimeRequests, request)) {
+          terminateCurrentTime(
+            "Codex current-time request capacity was exceeded."
+          );
+        }
+        return;
+      }
       const events = mapOrFail(() => mapper.mapServerRequest(request));
       for (const event of events) {
         if (event.kind === "interactionRequested") {
@@ -952,6 +1012,7 @@ function makeCodexSession<E>(
         removeNotification();
         removeRequest();
         removeTermination();
+        yield* Queue.shutdown(currentTimeRequests);
         yield* Queue.shutdown(queue);
       })
     );
@@ -1210,7 +1271,7 @@ function makeCodexSession<E>(
 function respondToCodexRequest(
   client: CodexAppServerClient,
   mapper: ReturnType<typeof createCodexSessionMapper>,
-  request: CodexServerRequest,
+  request: Schema.Schema.Type<typeof CodexInteractionRequestSchema>,
   response: HarnessInteractionResponse
 ) {
   switch (request.method) {

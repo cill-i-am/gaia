@@ -400,7 +400,7 @@ describe("server workflows", () => {
               executionModes: ["local"],
               providerId: parseHarnessProviderId("codex-app-server"),
             }),
-            version: "0.137.0",
+            version: "0.144.5",
           });
           yield* appendEvent(runId, paths, {
             payload: {
