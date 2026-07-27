@@ -41,6 +41,7 @@ const execFileAsync = promisify(execFile);
 type ProductionHarnessServiceKey =
   | "dispatchCorrelationFollowUp"
   | "dispatchDesktopOriginCorrelationFollowUp"
+  | "preflightConfiguredModelCatalog"
   | "reconcileCorrelation"
   | "reconcileDesktopOriginCorrelation"
   | "recover"
