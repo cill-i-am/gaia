@@ -29,12 +29,45 @@ import {
   continueServerRun,
 } from "@gaia/runtime/server-workflows";
 import { makeMarkerWritingTestHarnessProviderRegistry } from "@gaia/runtime/test-support";
-import { runLocalGaiaServer } from "@gaia/server";
+import {
+  makeProductionHarnessServices,
+  runLocalGaiaServer,
+  type ProductionHarnessServices,
+} from "@gaia/server";
 import { Deferred, Effect, Fiber, FileSystem, Schema } from "effect";
 
 const execFileAsync = promisify(execFile);
 
+type ProductionHarnessServiceKey =
+  | "dispatchCorrelationFollowUp"
+  | "dispatchDesktopOriginCorrelationFollowUp"
+  | "reconcileCorrelation"
+  | "reconcileDesktopOriginCorrelation"
+  | "recover"
+  | "registry"
+  | "verificationServices";
+
 describe("gaia CLI local server read parity", () => {
+  it("exports the narrow production harness-services factory", () => {
+    const factory: typeof makeProductionHarnessServices =
+      makeProductionHarnessServices;
+    const bundle: ProductionHarnessServices | undefined = undefined;
+    const hasAllExpectedKeys: ProductionHarnessServiceKey extends keyof ProductionHarnessServices
+      ? true
+      : false = true;
+    const hasNoAdditionalKeys: Exclude<
+      keyof ProductionHarnessServices,
+      ProductionHarnessServiceKey
+    > extends never
+      ? true
+      : false = true;
+
+    expect(factory).toBeTypeOf("function");
+    expect(bundle).toBeUndefined();
+    expect(hasAllExpectedKeys).toBe(true);
+    expect(hasNoAdditionalKeys).toBe(true);
+  });
+
   layer(NodeServices.layer)((it) => {
     it.effect(
       "matches direct list and status JSON output when opted into server reads",

@@ -4,6 +4,7 @@ import { writeFileSync } from "node:fs";
 import { readFile, symlink } from "node:fs/promises";
 import { createServer } from "node:net";
 import nodePath from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it, layer } from "@effect/vitest";
@@ -157,6 +158,61 @@ describe("local Gaia server process", () => {
             Effect.exit
           );
           assert.include(JSON.stringify(trackedExit), "dirtySource");
+        })
+    );
+
+    it.effect(
+      "uses the same production bundle for normal startup without provider requests",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const rootDirectory = yield* makeVerificationProfileRoot();
+          const markerPath = nodePath.join(rootDirectory, "app-server-marker");
+          const ready = yield* Deferred.make<ServerMetadata>();
+          const harmlessAppServer = [
+            'const fs = require("node:fs");',
+            "const marker = process.argv[1];",
+            'fs.writeFileSync(marker, "started");',
+            'process.stdin.on("data", () => fs.writeFileSync(marker, "provider-request"));',
+            'process.on("SIGTERM", () => { fs.writeFileSync(marker, "closed"); process.exit(0); });',
+            "setInterval(() => undefined, 1_000);",
+          ].join("");
+          const fiber = yield* withProductionHarnessConfig(
+            runLocalGaiaServer({
+              onReady: (metadata) =>
+                Deferred.succeed(ready, metadata).pipe(Effect.asVoid),
+              rootDirectory,
+            }),
+            {
+              GAIA_CODEX_APP_SERVER_ARGS: JSON.stringify([
+                "-e",
+                harmlessAppServer,
+                markerPath,
+              ]),
+              GAIA_CODEX_EXECUTABLE: process.execPath,
+            }
+          ).pipe(Effect.forkScoped);
+          const startupFailed = Fiber.await(fiber).pipe(
+            Effect.flatMap((exit) =>
+              Effect.fail(
+                new Error(`Normal server exited before ready: ${exit._tag}.`)
+              )
+            )
+          );
+
+          yield* Deferred.await(ready).pipe(
+            Effect.raceFirst(startupFailed),
+            Effect.timeout("5 seconds")
+          );
+          yield* waitForMarkerContent(markerPath, "started");
+          assert.strictEqual(
+            yield* fs.readFileString(markerPath),
+            "started",
+            "normal startup must not send a provider request"
+          );
+          yield* Fiber.interrupt(fiber);
+          yield* waitForMarkerContent(markerPath, "closed");
+          yield* fs.remove(rootDirectory, { recursive: true });
         })
     );
 
@@ -1998,6 +2054,50 @@ function withCodexDesktopOriginator<A, E, R>(
       )
     )
   );
+}
+
+function withProductionHarnessConfig<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  overrides: Readonly<Record<string, string>> = {}
+) {
+  return effect.pipe(
+    Effect.provideService(
+      ConfigProvider.ConfigProvider,
+      ConfigProvider.fromUnknown({
+        CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "Codex Desktop",
+        GAIA_CODEX_ADAPTER_VERSION: "1",
+        GAIA_CODEX_APP_SERVER_ARGS: '["app-server","--listen","stdio://"]',
+        GAIA_CODEX_EXECUTABLE: "codex-test",
+        GAIA_CODEX_MODEL: "gpt-5.6-terra",
+        GAIA_CODEX_MODEL_PROVIDER: "openai",
+        GAIA_CODEX_REASONING_EFFORT: "high",
+        GAIA_RUNTIME_REPOSITORY_IDENTITY: "cill-i-am/gaia",
+        GAIA_RUNTIME_SOURCE_ROOT: repositoryRoot(),
+        PATH: "/usr/bin:/bin",
+        ...overrides,
+      })
+    )
+  );
+}
+
+function waitForMarkerContent(markerPath: string, expected: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const content = yield* fs.readFileString(markerPath).pipe(Effect.option);
+      if (Option.isSome(content) && content.value === expected) {
+        return;
+      }
+      yield* Effect.sleep("10 millis");
+    }
+    assert.fail(
+      `Timed out waiting for harmless app-server marker ${expected}.`
+    );
+  });
+}
+
+function repositoryRoot() {
+  return fileURLToPath(new URL("../../..", import.meta.url));
 }
 
 const StableThreadInputSchema = Schema.Struct({

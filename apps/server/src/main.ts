@@ -245,7 +245,11 @@ export function runLocalGaiaServer(input: {
   ).pipe(Effect.provide(NodeServices.layer));
 }
 
-function makeProductionHarnessServices(
+/**
+ * Builds the scoped production capabilities consumed by the local server
+ * without exposing the underlying Codex connection or provider machinery.
+ */
+export function makeProductionHarnessServices(
   rootDirectory: typeof RunStorageRootInputSchema.Type
 ) {
   return Effect.gen(function* () {
@@ -653,6 +657,11 @@ function makeProductionHarnessServices(
     };
   });
 }
+
+/** The narrow production capability bundle shared with local-server startup. */
+export type ProductionHarnessServices = Effect.Success<
+  ReturnType<typeof makeProductionHarnessServices>
+>;
 
 export function makeProductionVerificationServices(
   rootDirectory: typeof RunStorageRootInputSchema.Type,
