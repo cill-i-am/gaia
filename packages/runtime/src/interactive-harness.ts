@@ -81,7 +81,11 @@ import {
   type RuntimePath,
 } from "./paths.js";
 import { loadRunContract } from "./run-contract.js";
-import { parseWorkerPlanJson } from "./worker-plan.js";
+import {
+  digestWorkerPlanEnvironmentSemantics,
+  parseWorkerPlanJson,
+} from "./worker-plan.js";
+export { digestWorkerPlanEnvironmentSemantics } from "./worker-plan.js";
 import type { HarnessLaunchObservationService } from "./worker-runtime-environment.js";
 import {
   diffWorkspaceSnapshots,
@@ -440,15 +444,6 @@ const encodeHarnessEnvironmentReceiptRef = Schema.encodeSync(
 const decodeHarnessEnvironmentReceiptRef = Schema.decodeUnknownSync(
   HarnessEnvironmentReceiptArtifactRefV1
 );
-
-/** Stable WorkerPlan semantics with per-run identity removed. */
-export function digestWorkerPlanEnvironmentSemantics(body: string) {
-  const { runId: _runId, ...semantic } = parseWorkerPlanJson(JSON.parse(body));
-  return digestHarnessEnvironmentContract(
-    "gaia.harness-environment.worker-plan.v1",
-    [semantic]
-  );
-}
 
 /** Stable run-contract semantics while preserving full receipt integrity. */
 export function digestRunContractEnvironmentSemantics(

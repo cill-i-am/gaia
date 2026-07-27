@@ -34,9 +34,16 @@ const AppendEventTypeSchema = EventTypeSchema.pipe(
       eventType
     ): eventType is Exclude<
       EventType,
-      "FACTORY_LESSON_CONTEXT_OBSERVED" | "HARNESS_SESSION_EVENT_RECORDED"
+      | "FACTORY_LESSON_CONTEXT_OBSERVED"
+      | "HARNESS_BASELINE_MANIFEST_RECORDED"
+      | "HARNESS_PREPARED_RUN_RECORDED"
+      | "HARNESS_EVALUATION_RECORDED"
+      | "HARNESS_SESSION_EVENT_RECORDED"
     > =>
       eventType !== "FACTORY_LESSON_CONTEXT_OBSERVED" &&
+      eventType !== "HARNESS_BASELINE_MANIFEST_RECORDED" &&
+      eventType !== "HARNESS_PREPARED_RUN_RECORDED" &&
+      eventType !== "HARNESS_EVALUATION_RECORDED" &&
       eventType !== "HARNESS_SESSION_EVENT_RECORDED"
   )
 );
@@ -123,6 +130,20 @@ export function appendEventWithinSerialization(
           code: "UnsafeFactoryLessonContextObservationAppend",
           message:
             "Factory lesson context observations must use the completed model transport append path.",
+          recoverable: false,
+        })
+      );
+    }
+    if (
+      eventType === "HARNESS_BASELINE_MANIFEST_RECORDED" ||
+      eventType === "HARNESS_PREPARED_RUN_RECORDED" ||
+      eventType === "HARNESS_EVALUATION_RECORDED"
+    ) {
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "UnsafeHarnessEvaluationAppend",
+          message:
+            "Harness baseline and evaluation events must use their finite event-authority operations.",
           recoverable: false,
         })
       );

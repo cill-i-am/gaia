@@ -16,6 +16,7 @@ import { makeCodexHarnessConfig } from "./codex-harness.js";
 import { GaiaRuntimeError } from "./errors.js";
 import { makeProcessHarnessConfig } from "./harness.js";
 import {
+  assertFactoryRunAcceptanceSecretSafe,
   decodeCodexBatchSemanticConfig,
   decodeProcessHarnessSemanticConfig,
   commitModelInvocationPair,
@@ -126,6 +127,57 @@ describe("model invocation acceptance preparation", () => {
             assert.notInclude(rejected.message, "abc123");
             assert.isFalse(yield* fs.exists(`${root}/.gaia`));
           }
+          for (const credential of [
+            "github_pat_11AAABBBCCCDDDEEEFFF_1234567890abcdef",
+            "ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+            "gho_1234567890abcdefghijklmnopqrstuvwxyz",
+            "ghu_1234567890abcdefghijklmnopqrstuvwxyz",
+            "ghs_1234567890abcdefghijklmnopqrstuvwxyz",
+            "ghr_1234567890abcdefghijklmnopqrstuvwxyz",
+          ]) {
+            const rejected = yield* Effect.flip(
+              assertFactoryRunAcceptanceSecretSafe({
+                statement: `Observed ${credential}`,
+              })
+            );
+            assert.instanceOf(rejected, GaiaRuntimeError);
+            if (!(rejected instanceof GaiaRuntimeError)) continue;
+            assert.strictEqual(rejected.code, "AcceptedInputRejected");
+            assert.notInclude(rejected.message, credential);
+          }
+          for (const credential of [
+            "github_pat_11AAABBBCCCDDDEEEFFF_1234567890abcdef",
+            "ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+            "gho_1234567890abcdefghijklmnopqrstuvwxyz",
+            "ghu_1234567890abcdefghijklmnopqrstuvwxyz",
+            "ghs_1234567890abcdefghijklmnopqrstuvwxyz",
+            "ghr_1234567890abcdefghijklmnopqrstuvwxyz",
+            "Bearer live-token",
+            "api_key=live-token",
+            "-----BEGIN PRIVATE KEY-----",
+            "sk-live-token",
+          ]) {
+            const rejected = yield* Effect.flip(
+              assertFactoryRunAcceptanceSecretSafe({
+                [credential]: "observed",
+              })
+            );
+            assert.instanceOf(rejected, GaiaRuntimeError);
+            if (!(rejected instanceof GaiaRuntimeError)) continue;
+            assert.strictEqual(rejected.code, "AcceptedInputRejected");
+            assert.notInclude(String(rejected), credential);
+            assert.notInclude(rejected.message, credential);
+            assert.notInclude(String(rejected.cause), credential);
+            assert.notInclude(JSON.stringify(rejected), credential);
+          }
+          yield* assertFactoryRunAcceptanceSecretSafe({
+            statement: "Observed github_pattern and ghp_sample.",
+          });
+          yield* assertFactoryRunAcceptanceSecretSafe({
+            github_pattern: "observed",
+            ghp_sample: "observed",
+            "gho.example.test": "observed",
+          });
         })
     );
 
