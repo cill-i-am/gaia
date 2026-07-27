@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { readFile, symlink } from "node:fs/promises";
 import { createServer } from "node:net";
 import nodePath from "node:path";
@@ -75,8 +75,10 @@ import {
   Option,
   Ref,
   Schema,
+  Sink,
   Stream,
 } from "effect";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   CodexThreadIdSchema,
@@ -87,6 +89,8 @@ import {
   findStableDesktopOriginCorrelationThread,
   listStableCodexThreadsForWorkspace,
   makeProductionVerificationServices,
+  ProductionConfiguredModelCatalogProof,
+  makeProductionHarnessServices,
   makeProductionWorkerRecoveryProvider,
   projectWorkerRecoveryThreadState,
   resolveAuditedWorkerWorkspacePath,
@@ -212,6 +216,175 @@ describe("local Gaia server process", () => {
           );
           yield* Fiber.interrupt(fiber);
           yield* waitForMarkerContent(markerPath, "closed");
+          yield* fs.remove(rootDirectory, { recursive: true });
+        })
+    );
+
+    it.effect(
+      "proves the configured model once across a visible two-page catalog without allocating a session",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const rootDirectory = yield* makeVerificationProfileRoot();
+          const markerPath = nodePath.join(rootDirectory, "catalog-requests");
+          const proof = yield* withProductionHarnessConfig(
+            Effect.scoped(
+              Effect.gen(function* () {
+                const services =
+                  yield* makeProductionHarnessServices(rootDirectory);
+                return yield* services.preflightConfiguredModelCatalog();
+              })
+            ),
+            productionCatalogAppServerConfig(
+              rootDirectory,
+              markerPath,
+              "two-page-success"
+            )
+          );
+
+          assert.deepEqual(
+            Schema.encodeSync(ProductionConfiguredModelCatalogProof)(proof),
+            {
+              configuredModel: "gpt-5.6-terra",
+              configuredModelMatchCount: 1,
+              pageCount: 2,
+              terminalState: "configuredModelAvailable",
+              visibleModelCount: 2,
+            }
+          );
+          assert.deepEqual(yield* readCatalogRequestMarkers(markerPath), [
+            "initialize",
+            "initialized",
+            "model/list:first:visible-only",
+            "model/list:second-page:visible-only",
+            "closed",
+          ]);
+          yield* fs.remove(rootDirectory, { recursive: true });
+        })
+    );
+
+    it.effect(
+      "keeps configured-model catalog proof lazy until the public operation runs",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const rootDirectory = yield* makeVerificationProfileRoot();
+          const markerPath = nodePath.join(rootDirectory, "catalog-requests");
+          const fixture = makeControlledCatalogSpawner();
+          yield* withProductionHarnessConfig(
+            Effect.scoped(
+              Effect.gen(function* () {
+                yield* makeProductionHarnessServices(rootDirectory);
+              })
+            ).pipe(
+              Effect.provideService(
+                ChildProcessSpawner.ChildProcessSpawner,
+                fixture.spawner
+              )
+            ),
+            productionCatalogAppServerConfig(
+              rootDirectory,
+              markerPath,
+              "two-page-success"
+            )
+          );
+
+          assert.strictEqual(fixture.spawnCount(), 1);
+          assert.strictEqual(
+            fixture.requestMethods().filter((method) => method === "initialize")
+              .length,
+            0
+          );
+          assert.strictEqual(
+            fixture.requestMethods().filter((method) => method === "model/list")
+              .length,
+            0
+          );
+          assert.strictEqual(fixture.killCount(), 1);
+          yield* fs.remove(rootDirectory, { recursive: true });
+        })
+    );
+
+    it.effect(
+      "fails closed for missing, ambiguous, malformed, cyclic, and overlong configured-model catalogs",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cases = [
+            ["missing", "configuredModelMissing", 1],
+            ["duplicate", "configuredModelAmbiguous", 1],
+            ["hidden-row", "catalogProtocolFailure", 1],
+            ["malformed", "catalogProtocolFailure", 1],
+            ["repeated-cursor", "invalidCatalogPagination", 2],
+            ["blank-cursor", "invalidCatalogPagination", 1],
+            ["page-limit", "catalogPageLimitExceeded", 128],
+          ] as const;
+
+          for (const [mode, code, expectedRequests] of cases) {
+            const rootDirectory = yield* makeVerificationProfileRoot();
+            const markerPath = nodePath.join(rootDirectory, "catalog-requests");
+            const exit = yield* withProductionHarnessConfig(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const services =
+                    yield* makeProductionHarnessServices(rootDirectory);
+                  return yield* services.preflightConfiguredModelCatalog();
+                })
+              ),
+              productionCatalogAppServerConfig(rootDirectory, markerPath, mode)
+            ).pipe(Effect.exit);
+
+            assert.strictEqual(exit._tag, "Failure");
+            assert.include(JSON.stringify(exit), `\"code\":\"${code}\"`);
+            const requests = yield* readCatalogRequestMarkers(markerPath);
+            assert.strictEqual(
+              requests.filter((request) => request.startsWith("model/list:"))
+                .length,
+              expectedRequests
+            );
+            assert.strictEqual(requests.at(-1), "closed");
+            assert.isFalse(
+              requests.some((request) => /thread|session|turn/.test(request))
+            );
+            yield* fs.remove(rootDirectory, { recursive: true });
+          }
+        }),
+      15_000
+    );
+
+    it.effect(
+      "classifies controlled App Server transport failure without exposing a provider cause",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const rootDirectory = yield* makeVerificationProfileRoot();
+          const markerPath = nodePath.join(rootDirectory, "catalog-requests");
+          const exit = yield* withProductionHarnessConfig(
+            Effect.scoped(
+              Effect.gen(function* () {
+                const services =
+                  yield* makeProductionHarnessServices(rootDirectory);
+                return yield* services.preflightConfiguredModelCatalog();
+              })
+            ),
+            productionCatalogAppServerConfig(
+              rootDirectory,
+              markerPath,
+              "transport"
+            )
+          ).pipe(Effect.exit);
+
+          assert.strictEqual(exit._tag, "Failure");
+          assert.include(
+            JSON.stringify(exit),
+            '"code":"catalogTransportFailure"'
+          );
+          assert.deepEqual(yield* readCatalogRequestMarkers(markerPath), [
+            "initialize",
+            "initialized",
+            "model/list:first:visible-only",
+            "exited",
+          ]);
           yield* fs.remove(rootDirectory, { recursive: true });
         })
     );
@@ -2079,6 +2252,154 @@ function withProductionHarnessConfig<A, E, R>(
     )
   );
 }
+
+function productionCatalogAppServerConfig(
+  rootDirectory: string,
+  markerPath: string,
+  mode: string
+) {
+  const executable = nodePath.join(rootDirectory, "catalog-codex");
+  const runtimeSourceRoot = nodePath.join(rootDirectory, "runtime-source");
+  mkdirSync(runtimeSourceRoot);
+  writeFileSync(nodePath.join(runtimeSourceRoot, "source.txt"), "clean\n");
+  const git = (args: ReadonlyArray<string>) =>
+    execFileSync("git", ["-C", runtimeSourceRoot, ...args], {
+      encoding: "utf8",
+    });
+  git(["init"]);
+  git(["config", "user.email", "gaia-test@example.invalid"]);
+  git(["config", "user.name", "Gaia Test"]);
+  git(["remote", "add", "origin", "https://github.com/cill-i-am/gaia.git"]);
+  git(["add", "source.txt"]);
+  git(["commit", "-m", "test: clean runtime source"]);
+  writeFileSync(
+    executable,
+    [
+      "#!/bin/sh",
+      'if [ "$1" = "--version" ]; then echo "codex-cli 0.144.5"; exit 0; fi',
+      'if [ "$1" = "login" ] && [ "$2" = "status" ]; then echo "Logged in"; exit 0; fi',
+      `exec "${process.execPath}" "$@"`,
+    ].join("\n"),
+    { mode: 0o755 }
+  );
+  return {
+    GAIA_CODEX_APP_SERVER_ARGS: JSON.stringify([
+      "-e",
+      controlledCatalogAppServer,
+      markerPath,
+      mode,
+    ]),
+    GAIA_CODEX_EXECUTABLE: executable,
+    GAIA_RUNTIME_SOURCE_ROOT: runtimeSourceRoot,
+  };
+}
+
+function makeControlledCatalogSpawner() {
+  const methods: string[] = [];
+  let kills = 0;
+  let spawns = 0;
+  const spawner = ChildProcessSpawner.make(() =>
+    Effect.sync(() => {
+      spawns += 1;
+      return ChildProcessSpawner.makeHandle({
+        all: Stream.empty,
+        exitCode: Effect.never,
+        getInputFd: () => Sink.drain,
+        getOutputFd: () => Stream.empty,
+        isRunning: Effect.succeed(true),
+        kill: () =>
+          Effect.sync(() => {
+            kills += 1;
+          }),
+        pid: ChildProcessSpawner.ProcessId(1),
+        stderr: Stream.empty,
+        stdin: Sink.forEach((chunk) =>
+          Effect.sync(() => {
+            const frame: unknown = JSON.parse(new TextDecoder().decode(chunk));
+            if (
+              typeof frame === "object" &&
+              frame !== null &&
+              "method" in frame &&
+              typeof frame.method === "string"
+            )
+              methods.push(frame.method);
+          })
+        ),
+        stdout: Stream.empty,
+        unref: Effect.succeed(Effect.void),
+      });
+    })
+  );
+  return {
+    killCount: () => kills,
+    requestMethods: () => methods,
+    spawnCount: () => spawns,
+    spawner,
+  };
+}
+
+function readCatalogRequestMarkers(markerPath: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const content = yield* fs.readFileString(markerPath).pipe(Effect.option);
+      if (
+        Option.isSome(content) &&
+        (content.value.endsWith("closed\n") ||
+          content.value.endsWith("exited\n"))
+      ) {
+        return content.value.trimEnd().split("\n");
+      }
+      yield* Effect.sleep("10 millis");
+    }
+    assert.fail("Timed out waiting for controlled catalog App Server cleanup.");
+  });
+}
+
+const controlledCatalogAppServer = [
+  'const fs = require("node:fs");',
+  "const marker = process.argv[1];",
+  "const mode = process.argv[2];",
+  "let buffered = '';",
+  "let page = 0;",
+  "const record = (value) => fs.appendFileSync(marker, `${value}\\n`);",
+  'const model = (id, hidden = false) => ({ defaultReasoningEffort: "medium", description: "", displayName: id, hidden, id, isDefault: false, model: id, supportedReasoningEfforts: [] });',
+  "const response = (request, result) => process.stdout.write(`${JSON.stringify({ id: request.id, result })}\\n`);",
+  "const handle = (request) => {",
+  "  if (request.method === 'initialize') {",
+  "    record('initialize');",
+  "    return response(request, { codexHome: '', platformFamily: 'unix', platformOs: 'macos', userAgent: 'codex-cli/0.144.5 ' });",
+  "  }",
+  "  if (request.method !== 'model/list') return record(request.method);",
+  "  const cursor = request.params && request.params.cursor;",
+  "  record(`model/list:${cursor || 'first'}:${request.params && request.params.includeHidden === false ? 'visible-only' : 'invalid-visibility'}`);",
+  "  if (mode === 'two-page-success') {",
+  "    return cursor === 'second-page'",
+  "      ? response(request, { data: [model('gpt-5.6-terra')], nextCursor: null })",
+  "      : response(request, { data: [model('other-model')], nextCursor: 'second-page' });",
+  "  }",
+  "  if (mode === 'missing') return response(request, { data: [model('other-model')], nextCursor: null });",
+  "  if (mode === 'duplicate') return response(request, { data: [model('gpt-5.6-terra'), model('gpt-5.6-terra')], nextCursor: null });",
+  "  if (mode === 'hidden-row') return response(request, { data: [model('gpt-5.6-terra', true)], nextCursor: null });",
+  "  if (mode === 'malformed') return response(request, { data: [{}], nextCursor: null });",
+  "  if (mode === 'repeated-cursor') return response(request, { data: [model('other-model')], nextCursor: 'again' });",
+  "  if (mode === 'blank-cursor') return response(request, { data: [model('other-model')], nextCursor: ' ' });",
+  "  if (mode === 'page-limit') { page += 1; return response(request, { data: [model('other-model')], nextCursor: `page-${page}` }); }",
+  "  if (mode === 'transport') { record('exited'); return process.exit(1); }",
+  "  return response(request, { data: [], nextCursor: null });",
+  "};",
+  "process.stdin.setEncoding('utf8');",
+  "process.stdin.on('data', (chunk) => {",
+  "  buffered += chunk;",
+  "  for (let newline = buffered.indexOf('\\n'); newline >= 0; newline = buffered.indexOf('\\n')) {",
+  "    const line = buffered.slice(0, newline);",
+  "    buffered = buffered.slice(newline + 1);",
+  "    if (line.length > 0) handle(JSON.parse(line));",
+  "  }",
+  "});",
+  "process.on('SIGTERM', () => { record('closed'); process.exit(0); });",
+  "setInterval(() => undefined, 1000);",
+].join("\n");
 
 function waitForMarkerContent(markerPath: string, expected: string) {
   return Effect.gen(function* () {

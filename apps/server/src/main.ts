@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import {
+  codexAppServerExecutionSelection,
   codexAppServerHarnessProfileId,
   DeliveryGitShaSchema,
   parseWorkerRecoveryDigest,
@@ -32,6 +33,7 @@ import {
   WorkerRuntimeEnvironmentLive,
   WorkerRuntimeEnvironmentService,
   parseWorkerRuntimeProviderVersion,
+  parseCodexModelId,
   makeCodexAppServerClient,
   makeCodexAppServerConnection,
   makeInstalledCodexAppServerDetection,
@@ -154,6 +156,48 @@ const parseServerId = Schema.decodeUnknownSync(ServerMetadata.fields.serverId);
 const parseServerStartedAt = Schema.decodeUnknownSync(
   ServerMetadata.fields.startedAt
 );
+const ProductionCatalogNonNegativeSafeCountSchema = Schema.Int.pipe(
+  Schema.check(Schema.isGreaterThanOrEqualTo(0))
+);
+const ProductionCatalogPageCountSchema =
+  ProductionCatalogNonNegativeSafeCountSchema.pipe(
+    Schema.check(Schema.isGreaterThanOrEqualTo(1)),
+    Schema.check(Schema.isLessThanOrEqualTo(128))
+  );
+
+/** Safe, finite proof that the decoded configured model is available once. */
+export class ProductionConfiguredModelCatalogProof extends Schema.Class<ProductionConfiguredModelCatalogProof>(
+  "ProductionConfiguredModelCatalogProof"
+)(
+  {
+    configuredModel: CodexModelIdSchema,
+    configuredModelMatchCount: Schema.Literal(1),
+    pageCount: ProductionCatalogPageCountSchema,
+    terminalState: Schema.Literal("configuredModelAvailable"),
+    visibleModelCount: ProductionCatalogNonNegativeSafeCountSchema,
+  },
+  { parseOptions: { onExcessProperty: "error" } }
+) {}
+
+const ProductionConfiguredModelCatalogProofErrorCodeSchema = Schema.Literals([
+  "catalogPageLimitExceeded",
+  "catalogProtocolFailure",
+  "catalogTransportFailure",
+  "configuredModelAmbiguous",
+  "configuredModelMissing",
+  "invalidCatalogPagination",
+] as const);
+
+/** Safe expected failure for the finite configured-model catalog proof. */
+export class ProductionConfiguredModelCatalogProofError extends Schema.TaggedErrorClass<ProductionConfiguredModelCatalogProofError>()(
+  "ProductionConfiguredModelCatalogProofError",
+  {
+    code: ProductionConfiguredModelCatalogProofErrorCodeSchema,
+    configuredModel: CodexModelIdSchema,
+    pageCount: ProductionCatalogNonNegativeSafeCountSchema,
+    visibleModelCount: ProductionCatalogNonNegativeSafeCountSchema,
+  }
+) {}
 
 export const defaultServerConfig = {
   host: "127.0.0.1",
@@ -323,6 +367,114 @@ export function makeProductionHarnessServices(
         provider,
       },
     ]);
+    const preflightConfiguredModelCatalog = () =>
+      Effect.gen(function* () {
+        const configuredModel = parseCodexModelId(runtimeConfig.codexModel);
+        const failure = (
+          code: typeof ProductionConfiguredModelCatalogProofErrorCodeSchema.Type,
+          pageCount: number,
+          visibleModelCount: number
+        ) =>
+          new ProductionConfiguredModelCatalogProofError({
+            code,
+            configuredModel,
+            pageCount,
+            visibleModelCount,
+          });
+        const classifyListFailure = (
+          error: { readonly _tag: string },
+          pageCount: number,
+          visibleModelCount: number
+        ) =>
+          failure(
+            error._tag === "CodexAppServerTransportError" ||
+              error._tag === "CodexAppServerTimeoutError" ||
+              error._tag === "CodexAppServerProcessExitError"
+              ? "catalogTransportFailure"
+              : "catalogProtocolFailure",
+            pageCount,
+            visibleModelCount
+          );
+        yield* registry
+          .resolve(
+            codexAppServerExecutionSelection,
+            issueDeliveryWorkerHarnessCapabilities
+          )
+          .pipe(Effect.mapError(() => failure("catalogProtocolFailure", 0, 0)));
+        const seenCursorDigests = new Set<string>();
+        const digestCursor = (value: string) =>
+          createHash("sha256").update(value).digest("hex");
+        const listPage = (
+          cursor: string | undefined,
+          pageCount: number,
+          visibleModelCount: number
+        ) =>
+          listCodexModels(
+            connection,
+            cursor === undefined
+              ? { includeHidden: false }
+              : { cursor, includeHidden: false }
+          ).pipe(
+            Effect.mapError((error) =>
+              classifyListFailure(error, pageCount, visibleModelCount)
+            )
+          );
+        let configuredModelMatchCount = 0;
+        let cursor: string | undefined;
+        let pageCount = 0;
+        let visibleModelCount = 0;
+
+        while (true) {
+          const page = yield* listPage(cursor, pageCount, visibleModelCount);
+          pageCount += 1;
+          for (const model of page.data) {
+            if (model.hidden) {
+              return yield* Effect.fail(
+                failure("catalogProtocolFailure", pageCount, visibleModelCount)
+              );
+            }
+            visibleModelCount += 1;
+            if (model.id === configuredModel) configuredModelMatchCount += 1;
+          }
+
+          const nextCursor = page.nextCursor;
+          if (nextCursor === undefined || nextCursor === null) break;
+          if (pageCount >= 128) {
+            return yield* Effect.fail(
+              failure("catalogPageLimitExceeded", pageCount, visibleModelCount)
+            );
+          }
+          const nextCursorDigest = digestCursor(nextCursor);
+          if (
+            nextCursor.trim().length === 0 ||
+            seenCursorDigests.has(nextCursorDigest)
+          ) {
+            return yield* Effect.fail(
+              failure("invalidCatalogPagination", pageCount, visibleModelCount)
+            );
+          }
+          seenCursorDigests.add(nextCursorDigest);
+          cursor = nextCursor;
+        }
+
+        if (configuredModelMatchCount === 0) {
+          return yield* Effect.fail(
+            failure("configuredModelMissing", pageCount, visibleModelCount)
+          );
+        }
+        if (configuredModelMatchCount !== 1) {
+          return yield* Effect.fail(
+            failure("configuredModelAmbiguous", pageCount, visibleModelCount)
+          );
+        }
+        return new ProductionConfiguredModelCatalogProof({
+          configuredModel,
+          configuredModelMatchCount,
+          pageCount,
+          terminalState: "configuredModelAvailable",
+          visibleModelCount,
+        });
+      });
     const recover = (
       runId: RunId,
       action: Parameters<typeof recoverWorkerSession>[1]
@@ -649,6 +801,7 @@ export function makeProductionHarnessServices(
     return {
       dispatchCorrelationFollowUp,
       dispatchDesktopOriginCorrelationFollowUp,
+      preflightConfiguredModelCatalog,
       recover,
       reconcileCorrelation,
       reconcileDesktopOriginCorrelation,
