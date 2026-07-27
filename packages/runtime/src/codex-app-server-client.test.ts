@@ -9,6 +9,7 @@ import {
 } from "./codex-app-server-client.js";
 import {
   CodexNotificationSchema,
+  CodexServerRequestBoundarySchema,
   parseCodexClientVersion,
 } from "./codex-app-server-protocol.js";
 
@@ -284,7 +285,7 @@ describe("Codex App Server connection", () => {
     expect(result.healthy).toEqual({ ok: true });
   });
 
-  it("routes curated notifications and rejects unsupported or malformed known requests without terminating", async () => {
+  it("routes curated notifications, rejects unsupported requests, and fails closed for malformed known requests", async () => {
     const fake = fakeProcess();
     await Effect.runPromise(
       Effect.scoped(
@@ -332,7 +333,7 @@ describe("Codex App Server connection", () => {
             );
           expect(notifications).toEqual(["turn/started"]);
           expect(requests).toEqual([]);
-          expect(terminations).toEqual([]);
+          expect(terminations).toEqual(["CodexAppServerProtocolError"]);
           expect(fake.writes).toEqual([
             {
               id: 40,
@@ -342,14 +343,42 @@ describe("Codex App Server connection", () => {
               id: Number.MAX_SAFE_INTEGER + 1,
               error: { code: -32601, message: "Unsupported server request" },
             },
-            {
-              id: 41,
-              error: { code: -32601, message: "Unsupported server request" },
-            },
           ]);
         })
       )
     );
+  });
+
+  it("classifies and ignores the four new intentionally unprojected notifications", async () => {
+    const fake = fakeProcess();
+    const observed = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const notifications: Array<string> = [];
+          const terminations: Array<string> = [];
+          connection.onNotification(({ method }) => notifications.push(method));
+          connection.onTermination((error) => terminations.push(error._tag));
+          for (const method of [
+            "thread/deleted",
+            "externalAgentConfig/import/progress",
+            "turn/moderationMetadata",
+            "model/safetyBuffering/updated",
+          ])
+            for (const listener of fake.lines)
+              listener(JSON.stringify({ method, params: {} }));
+          return {
+            notifications: [...notifications],
+            terminations: [...terminations],
+          };
+        })
+      )
+    );
+
+    expect(observed).toEqual({ notifications: [], terminations: [] });
+    expect(fake.writes).toEqual([]);
   });
 
   it("never lets a hybrid server-request frame settle pending client work", async () => {
@@ -438,7 +467,7 @@ describe("Codex App Server connection", () => {
                 id: 1,
                 result: {
                   codexHome: "/tmp/codex-home",
-                  userAgent: "Codex Desktop/0.137.0 (test)",
+                  userAgent: "Codex Desktop/0.144.5 (test)",
                   platformFamily: "unix",
                   platformOs: "macos",
                 },
@@ -496,7 +525,7 @@ describe("Codex App Server connection", () => {
                   backwardsCursor: "back-1",
                   data: [
                     {
-                      cliVersion: "0.137.0",
+                      cliVersion: "0.144.5",
                       createdAt: 1_789_000_000,
                       cwd: "/tmp/gaia/workspace",
                       ephemeral: false,
@@ -673,7 +702,7 @@ describe("Codex App Server connection", () => {
     expect(exit._tag).toBe("Failure");
   });
 
-  it("routes all five generated stable request shapes and writes matching responses", async () => {
+  it("routes all six generated stable request shapes and writes matching responses", async () => {
     const fake = fakeProcess();
     await Effect.runPromise(
       Effect.scoped(
@@ -742,7 +771,7 @@ describe("Codex App Server connection", () => {
                   answers: { q1: { answers: ["no"] } },
                 })
               );
-            } else {
+            } else if (request.method === "mcpServer/elicitation/request") {
               expect(request.params).toMatchObject({
                 message: "Choose",
                 mode: "form",
@@ -758,6 +787,14 @@ describe("Codex App Server connection", () => {
                   content: null,
                 })
               );
+            } else if (request.method === "currentTime/read") {
+              expect(request.params.threadId).toBe("thr-1");
+              preserved += 1;
+              Effect.runFork(
+                client.respondCurrentTime(request, { currentTimeAt: 1_234 })
+              );
+            } else {
+              throw new Error("Unexpected server request.");
             }
           });
           const base = {
@@ -813,6 +850,7 @@ describe("Codex App Server connection", () => {
               id: 4,
               method: "item/tool/requestUserInput",
               params: {
+                autoResolutionMs: 60_000,
                 itemId: "item-1",
                 threadId: "thr-1",
                 turnId: "turn-1",
@@ -841,6 +879,11 @@ describe("Codex App Server connection", () => {
                 turnId: null,
               },
             },
+            {
+              id: 6,
+              method: "currentTime/read",
+              params: { threadId: "thr-1" },
+            },
           ];
           for (const fixture of fixtures)
             for (const listener of fake.lines)
@@ -849,14 +892,48 @@ describe("Codex App Server connection", () => {
           expect(routedMethods).toEqual(fixtures.map(({ method }) => method));
           expect(
             fake.writes.filter(({ result }) => result !== undefined)
-          ).toHaveLength(5);
-          expect(preserved).toBe(5);
+          ).toHaveLength(6);
+          expect(fake.writes.at(-1)).toEqual({
+            id: 6,
+            result: { currentTimeAt: 1_234 },
+          });
+          expect(preserved).toBe(6);
         })
       )
     );
   });
 
-  it("rejects malformed known server requests without dispatch and keeps the connection live", async () => {
+  it("rejects a non-whole current-time response before transport", async () => {
+    const fake = fakeProcess();
+    const exit = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const client = makeCodexAppServerClient(connection);
+          const request = Schema.decodeUnknownSync(
+            CodexServerRequestBoundarySchema
+          )({
+            id: 7,
+            method: "currentTime/read",
+            params: { threadId: "thr-1" },
+          });
+          if (request.method !== "currentTime/read") {
+            throw new Error("Expected a current-time request.");
+          }
+          return yield* client
+            .respondCurrentTime(request, { currentTimeAt: 1.5 })
+            .pipe(Effect.exit);
+        })
+      )
+    );
+
+    expect(exit._tag).toBe("Failure");
+    expect(fake.writes).toEqual([]);
+  });
+
+  it("fails closed on the first malformed known server request without dispatch or response", async () => {
     const fake = fakeProcess();
     const observed = await Effect.runPromise(
       Effect.scoped(
@@ -927,23 +1004,10 @@ describe("Codex App Server connection", () => {
       )
     );
 
-    expect(observed.failures).toEqual([]);
-    expect(observed.notifications).toEqual(["warning"]);
+    expect(observed.failures).toEqual(["CodexAppServerProtocolError"]);
+    expect(observed.notifications).toEqual([]);
     expect(observed.requests).toEqual([]);
-    expect(fake.writes).toEqual([
-      {
-        id: 1,
-        error: { code: -32601, message: "Unsupported server request" },
-      },
-      {
-        id: 2,
-        error: { code: -32601, message: "Unsupported server request" },
-      },
-      {
-        id: Number.MAX_SAFE_INTEGER + 1,
-        error: { code: -32601, message: "Unsupported server request" },
-      },
-    ]);
+    expect(fake.writes).toEqual([]);
   });
 
   it("terminates when a server-request rejection cannot be written", async () => {

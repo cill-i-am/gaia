@@ -29,6 +29,7 @@ import { Schema } from "effect";
 import {
   PermissionApprovalResponseSchema,
   UserInputResponseSchema,
+  CodexInteractionRequestSchema,
   parseCodexPermissionAbsolutePath,
   type CodexNotification,
   type CodexServerRequest,
@@ -46,7 +47,6 @@ type CodexServerRequestResolution = Pick<
 > & {
   readonly [Key in "kind" as "responseKind"]: HarnessInteractionResolution[Key];
 };
-
 type HarnessUserInputAnswers = UserInputAgentActionRequest["answers"];
 
 type WithProperty<Union, Key extends PropertyKey> =
@@ -281,6 +281,7 @@ class MapperState {
   }
 
   mapServerRequest(request: CodexServerRequest): ReadonlyArray<HarnessEvent> {
+    if (request.method === "currentTime/read") return [];
     const nativeThreadId = request.params.threadId;
     if (
       !this.#ownsThread(nativeThreadId) ||
@@ -837,7 +838,7 @@ class MapperState {
   }
 
   #mapInteraction(
-    request: CodexServerRequest,
+    request: Schema.Schema.Type<typeof CodexInteractionRequestSchema>,
     interactionId: HarnessInteractionId
   ) {
     switch (request.method) {
@@ -946,7 +947,10 @@ class MapperState {
           interactionId,
           kind: "mcpElicitation" as const,
           message: this.#text(request.params.message),
-          mode: request.params.mode,
+          mode:
+            request.params.mode === "openai/form"
+              ? "form"
+              : request.params.mode,
           requestedAt: new Date(0).toISOString(),
           serverName: this.#text(request.params.serverName),
           ...(request.params.turnId === null ||
@@ -968,7 +972,9 @@ class MapperState {
       case "hookPrompt":
       case "reasoning":
       case "collabAgentToolCall":
+      case "subAgentActivity":
       case "imageView":
+      case "sleep":
       case "imageGeneration":
         return undefined;
       case "agentMessage":
@@ -1131,13 +1137,15 @@ class MapperState {
     return parseHarnessItemId(`item-${this.#opaqueId("item", nativeKey)}`);
   }
 
-  #interactionId(request: CodexServerRequest): HarnessInteractionId {
+  #interactionId(
+    request: Schema.Schema.Type<typeof CodexInteractionRequestSchema>
+  ): HarnessInteractionId {
     const nativeKey = [
       typeof request.id,
       String(request.id),
       request.method,
       request.params.threadId,
-      request.params.turnId ?? "",
+      "turnId" in request.params ? (request.params.turnId ?? "") : "",
       "itemId" in request.params ? request.params.itemId : "",
     ].join("\0");
     return parseHarnessInteractionId(

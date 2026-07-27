@@ -62,6 +62,35 @@ const schemaPaths = [
   "v2/WarningNotification.json",
 ] as const;
 
+const changedSchemaPathsFrom0137 = [
+  "ClientRequest.json",
+  "CommandExecutionRequestApprovalParams.json",
+  "McpServerElicitationRequestParams.json",
+  "PermissionsRequestApprovalParams.json",
+  "PermissionsRequestApprovalResponse.json",
+  "ServerNotification.json",
+  "ServerRequest.json",
+  "ToolRequestUserInputParams.json",
+  "v1/InitializeParams.json",
+  "v2/ErrorNotification.json",
+  "v2/ItemCompletedNotification.json",
+  "v2/ItemStartedNotification.json",
+  "v2/ModelListResponse.json",
+  "v2/ThreadListParams.json",
+  "v2/ThreadListResponse.json",
+  "v2/ThreadReadResponse.json",
+  "v2/ThreadResumeParams.json",
+  "v2/ThreadResumeResponse.json",
+  "v2/ThreadStartParams.json",
+  "v2/ThreadStartResponse.json",
+  "v2/ThreadStartedNotification.json",
+  "v2/TurnCompletedNotification.json",
+  "v2/TurnStartParams.json",
+  "v2/TurnStartResponse.json",
+  "v2/TurnStartedNotification.json",
+  "v2/TurnSteerParams.json",
+] as const;
+
 class PinnedCodexSchemaSet extends Schema.Class<PinnedCodexSchemaSet>(
   "PinnedCodexSchemaSet"
 )(
@@ -71,6 +100,10 @@ class PinnedCodexSchemaSet extends Schema.Class<PinnedCodexSchemaSet>(
       additionalFileSystemPermissionsRequired: Schema.Array(Schema.String),
       additionalNetworkPermissionsRequired: Schema.Array(Schema.String),
       commandApprovalDecisionVariants: Schema.Array(Schema.String),
+      commandRequestCwdReference: Schema.String,
+      commandRequestEnvironmentIdDefault: Schema.Null,
+      commandRequestRequired: Schema.Array(Schema.String),
+      currentTimeReadRequired: Schema.Array(Schema.String),
       elicitationRequestRequired: Schema.Array(Schema.String),
       elicitationResponseRequired: Schema.Array(Schema.String),
       gitInfoRequired: Schema.Array(Schema.String),
@@ -86,10 +119,13 @@ class PinnedCodexSchemaSet extends Schema.Class<PinnedCodexSchemaSet>(
       permissionApprovalResponseRequired: Schema.Array(Schema.String),
       permissionApprovalScopeDefault: Schema.String,
       permissionRequestRequired: Schema.Array(Schema.String),
+      permissionRequestCwdReference: Schema.String,
       requestIdIntegerFormat: Schema.String,
       requestIdTypes: Schema.Array(Schema.String),
       requestPermissionProfileAdditionalProperties: Schema.Boolean,
       requestPermissionProfileRequired: Schema.Array(Schema.String),
+      serverRequestMethods: Schema.Array(Schema.String),
+      threadHistoryModeDefault: Schema.String,
       threadItemRequired: Schema.Record(
         Schema.String,
         Schema.Array(Schema.String)
@@ -97,6 +133,7 @@ class PinnedCodexSchemaSet extends Schema.Class<PinnedCodexSchemaSet>(
       threadItemTypes: Schema.Array(Schema.String),
       threadTimestampFormats: Schema.Struct({
         createdAt: Schema.String,
+        recencyAt: Schema.String,
         updatedAt: Schema.String,
       }),
       threadListRequired: Schema.Array(Schema.String),
@@ -114,12 +151,15 @@ class PinnedCodexSchemaSet extends Schema.Class<PinnedCodexSchemaSet>(
       }),
       turnRequired: Schema.Array(Schema.String),
       turnsPageRequired: Schema.Array(Schema.String),
+      userInputAutoResolutionDefault: Schema.Null,
+      userInputAutoResolutionFormat: Schema.String,
       itemLifecycleTimestampFormats: Schema.Struct({
         completedAtMs: Schema.String,
         startedAtMs: Schema.String,
       }),
     }),
-    generatedBy: Schema.Literal("codex-cli 0.137.0"),
+    changedSchemaPathsFrom0137: Schema.Array(Schema.String),
+    generatedBy: Schema.Literal("codex-cli 0.144.5"),
     schemas: Schema.Record(
       Schema.String,
       Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-f0-9]{64}$/u)))
@@ -132,7 +172,7 @@ const pinned = Schema.decodeUnknownSync(PinnedCodexSchemaSet)(
   JSON.parse(
     readFileSync(
       new URL(
-        "./fixtures/codex-app-server-0.137.0-recovery.schema.json",
+        "./fixtures/codex-app-server-0.144.5-recovery.schema.json",
         import.meta.url
       ),
       "utf8"
@@ -140,13 +180,17 @@ const pinned = Schema.decodeUnknownSync(PinnedCodexSchemaSet)(
   )
 );
 
-describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
+describe("pinned Codex App Server 0.144.5 generated-schema parity", () => {
   it("pins every touched request, response, server-request, and curated notification family", () => {
-    expect(supportedCodexCliVersion).toBe("0.137.0");
-    expect(pinned.generatedBy).toBe("codex-cli 0.137.0");
+    expect(supportedCodexCliVersion).toBe("0.144.5");
+    expect(pinned.generatedBy).toBe("codex-cli 0.144.5");
     expect(Object.keys(pinned.schemas).toSorted()).toEqual(
       [...schemaPaths].toSorted()
     );
+    expect(pinned.changedSchemaPathsFrom0137).toEqual(
+      changedSchemaPathsFrom0137
+    );
+    expect(pinned.changedSchemaPathsFrom0137).toHaveLength(26);
   });
 
   it("pins the exact raw wire facts that Gaia refines or projects", () => {
@@ -154,6 +198,7 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
     expect(pinned.facts.requestIdIntegerFormat).toBe("int64");
     expect(pinned.facts.threadTimestampFormats).toEqual({
       createdAt: "int64",
+      recencyAt: "int64",
       updatedAt: "int64",
     });
     expect(pinned.facts.turnTimingFormats).toEqual({
@@ -202,6 +247,9 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
       "threadId",
       "turnId",
     ]);
+    expect(pinned.facts.permissionRequestCwdReference).toBe(
+      "#/definitions/AbsolutePathBuf"
+    );
     expect(pinned.facts.elicitationRequestRequired).toEqual([
       "serverName",
       "threadId",
@@ -219,6 +267,19 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
       "decline",
       "cancel",
     ]);
+    expect(pinned.facts.commandRequestRequired).toEqual([
+      "itemId",
+      "startedAtMs",
+      "threadId",
+      "turnId",
+    ]);
+    expect(pinned.facts.commandRequestCwdReference).toBe(
+      "#/definitions/LegacyAppPathString"
+    );
+    expect(pinned.facts.commandRequestEnvironmentIdDefault).toBeNull();
+    expect(pinned.facts.currentTimeReadRequired).toEqual(["threadId"]);
+    expect(pinned.facts.userInputAutoResolutionDefault).toBeNull();
+    expect(pinned.facts.userInputAutoResolutionFormat).toBe("uint64");
     expect(pinned.facts.permissionApprovalResponseRequired).toEqual([
       "permissions",
     ]);
@@ -247,8 +308,10 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
       "mcpToolCall",
       "dynamicToolCall",
       "collabAgentToolCall",
+      "subAgentActivity",
       "webSearch",
       "imageView",
+      "sleep",
       "imageGeneration",
       "enteredReviewMode",
       "exitedReviewMode",
@@ -264,6 +327,18 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
     expect(pinned.facts.threadItemRequired["dynamicToolCall"]).toContain(
       "arguments"
     );
+    expect(pinned.facts.threadItemRequired["subAgentActivity"]).toEqual([
+      "agentPath",
+      "agentThreadId",
+      "id",
+      "kind",
+      "type",
+    ]);
+    expect(pinned.facts.threadItemRequired["sleep"]).toEqual([
+      "durationMs",
+      "id",
+      "type",
+    ]);
     expect(pinned.facts.threadRequired).toEqual([
       "cliVersion",
       "createdAt",
@@ -278,6 +353,7 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
       "turns",
       "updatedAt",
     ]);
+    expect(pinned.facts.threadHistoryModeDefault).toBe("legacy");
     expect(pinned.facts.turnRequired).toEqual(["id", "items", "status"]);
     expect(pinned.facts.threadStartRequired).toEqual([
       "approvalPolicy",
@@ -310,6 +386,15 @@ describe("pinned Codex App Server 0.137.0 generated-schema parity", () => {
     );
     expect(pinned.facts.notificationMethods).not.toContain(
       "item/fileChange/patch/updated"
+    );
+    expect(pinned.facts.serverRequestMethods).toContain("currentTime/read");
+    expect(pinned.facts.notificationMethods).toEqual(
+      expect.arrayContaining([
+        "thread/deleted",
+        "externalAgentConfig/import/progress",
+        "turn/moderationMetadata",
+        "model/safetyBuffering/updated",
+      ])
     );
   });
 

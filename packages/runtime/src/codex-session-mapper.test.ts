@@ -88,6 +88,68 @@ function mapper() {
 }
 
 describe("Codex App Server provider-neutral mapper", () => {
+  it("does not project current-time, sub-agent activity, or sleep frames", () => {
+    const live = mapper();
+    live.mapNotification({
+      method: "thread/started",
+      params: { thread: { id: "thread-1" } },
+    });
+
+    expect(
+      live.mapServerRequest({
+        id: 1,
+        method: "currentTime/read",
+        params: { threadId: "thread-1" },
+      })
+    ).toEqual([]);
+    for (const item of [
+      {
+        agentPath: "worker",
+        agentThreadId: "thread-worker",
+        id: "activity-1",
+        kind: "started",
+        type: "subAgentActivity",
+      },
+      { durationMs: 1_000, id: "sleep-1", type: "sleep" },
+    ] as const) {
+      expect(
+        live.mapNotification({
+          method: "item/completed",
+          params: {
+            completedAtMs: 1,
+            item,
+            threadId: "thread-1",
+            turnId: "turn-1",
+          },
+        })
+      ).toEqual([]);
+    }
+
+    const recovered = mapper();
+    expect(
+      recovered.mapRecoveredThread({
+        id: "thread-1",
+        status: { type: "idle" },
+        turns: [
+          {
+            id: "turn-1",
+            items: [
+              {
+                agentPath: "worker",
+                agentThreadId: "thread-worker",
+                id: "activity-1",
+                kind: "started",
+                type: "subAgentActivity",
+              },
+              { durationMs: 1_000, id: "sleep-1", type: "sleep" },
+            ],
+            status: "completed",
+          },
+        ],
+      })
+    ).toEqual([]);
+  });
+
   it("coalesces deltas, drops reasoning, and treats the final item as authoritative", () => {
     const subject = mapper();
     expect(

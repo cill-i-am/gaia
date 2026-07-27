@@ -34,6 +34,7 @@ import {
   PermissionApprovalResponseSchema,
   UserInputResponseSchema,
   ElicitationResponseSchema,
+  CurrentTimeReadResponseSchema,
   InitializeParamsSchema,
   ThreadStartParamsSchema,
   ThreadResumeParamsSchema,
@@ -46,6 +47,7 @@ import {
   TurnSteerParamsSchema,
   TurnInterruptParamsSchema,
   isCuratedCodexNotificationMethod,
+  isIgnoredCodexNotificationMethod,
   isCodexServerRequestMethod,
   CodexRawRequestIdSchema,
   parseCodexRequestId,
@@ -68,6 +70,7 @@ import {
   type PermissionApprovalRequest,
   type UserInputRequest,
   type ElicitationRequest,
+  type CurrentTimeRequest,
 } from "./codex-app-server-protocol.js";
 
 type JsonObject = Readonly<Record<string, Schema.Json>>;
@@ -338,24 +341,35 @@ export function makeCodexAppServerConnection(
           const request = decodeRequest(frame);
           if (Option.isNone(request)) {
             if (typeof frame.method === "string") {
-              const rawRequestId = decodeRawRequestId(frame.id);
-              if (Option.isSome(rawRequestId)) {
-                rejectUnsupportedServerRequest(rawRequestId.value);
-                return;
-              }
-              if (isCodexServerRequestMethod(frame.method))
+              if (isCodexServerRequestMethod(frame.method)) {
                 failAll(
                   new CodexAppServerProtocolError({
                     message: `Invalid ${frame.method} server request`,
                     method: frame.method,
                   })
                 );
+                return;
+              }
+              const rawRequestId = decodeRawRequestId(frame.id);
+              if (Option.isSome(rawRequestId)) {
+                rejectUnsupportedServerRequest(rawRequestId.value);
+                return;
+              }
             }
             return;
           }
           const decoded = decodeServerRequest(request.value);
           if (Option.isSome(decoded)) {
             for (const listener of requestListeners) listener(decoded.value);
+            return;
+          }
+          if (isCodexServerRequestMethod(request.value.method)) {
+            failAll(
+              new CodexAppServerProtocolError({
+                message: `Invalid ${request.value.method} server request`,
+                method: request.value.method,
+              })
+            );
             return;
           }
           rejectUnsupportedServerRequest(request.value.id);
@@ -380,6 +394,10 @@ export function makeCodexAppServerConnection(
           if (Option.isSome(decoded)) {
             for (const listener of notificationListeners)
               listener(decoded.value);
+          } else if (
+            isIgnoredCodexNotificationMethod(notification.value.method)
+          ) {
+            return;
           } else if (
             isCuratedCodexNotificationMethod(notification.value.method)
           ) {
@@ -621,6 +639,20 @@ export function makeCodexAppServerClient(connection: CodexAppServerConnection) {
       response: typeof ElicitationResponseSchema.Type
     ) =>
       Schema.decodeUnknownEffect(ElicitationResponseSchema)(response).pipe(
+        Effect.flatMap((value) => connection.respond(request.id, value))
+      ),
+    respondCurrentTime: (
+      request: CurrentTimeRequest,
+      response: typeof CurrentTimeReadResponseSchema.Type
+    ) =>
+      Schema.decodeUnknownEffect(CurrentTimeReadResponseSchema)(response).pipe(
+        Effect.mapError(
+          () =>
+            new CodexAppServerProtocolError({
+              method: request.method,
+              message: `Invalid ${request.method} response`,
+            })
+        ),
         Effect.flatMap((value) => connection.respond(request.id, value))
       ),
     resumeThread: (params: ThreadResumeParams) =>
