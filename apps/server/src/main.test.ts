@@ -75,8 +75,10 @@ import {
   Option,
   Ref,
   Schema,
+  Sink,
   Stream,
 } from "effect";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   CodexThreadIdSchema,
@@ -268,11 +270,17 @@ describe("local Gaia server process", () => {
           const fs = yield* FileSystem.FileSystem;
           const rootDirectory = yield* makeVerificationProfileRoot();
           const markerPath = nodePath.join(rootDirectory, "catalog-requests");
+          const fixture = makeControlledCatalogSpawner();
           yield* withProductionHarnessConfig(
             Effect.scoped(
               Effect.gen(function* () {
                 yield* makeProductionHarnessServices(rootDirectory);
               })
+            ).pipe(
+              Effect.provideService(
+                ChildProcessSpawner.ChildProcessSpawner,
+                fixture.spawner
+              )
             ),
             productionCatalogAppServerConfig(
               rootDirectory,
@@ -281,9 +289,18 @@ describe("local Gaia server process", () => {
             )
           );
 
-          assert.deepEqual(yield* readCatalogRequestMarkers(markerPath), [
-            "closed",
-          ]);
+          assert.strictEqual(fixture.spawnCount(), 1);
+          assert.strictEqual(
+            fixture.requestMethods().filter((method) => method === "initialize")
+              .length,
+            0
+          );
+          assert.strictEqual(
+            fixture.requestMethods().filter((method) => method === "model/list")
+              .length,
+            0
+          );
+          assert.strictEqual(fixture.killCount(), 1);
           yield* fs.remove(rootDirectory, { recursive: true });
         })
     );
@@ -2274,6 +2291,50 @@ function productionCatalogAppServerConfig(
     ]),
     GAIA_CODEX_EXECUTABLE: executable,
     GAIA_RUNTIME_SOURCE_ROOT: runtimeSourceRoot,
+  };
+}
+
+function makeControlledCatalogSpawner() {
+  const methods: string[] = [];
+  let kills = 0;
+  let spawns = 0;
+  const spawner = ChildProcessSpawner.make(() =>
+    Effect.sync(() => {
+      spawns += 1;
+      return ChildProcessSpawner.makeHandle({
+        all: Stream.empty,
+        exitCode: Effect.never,
+        getInputFd: () => Sink.drain,
+        getOutputFd: () => Stream.empty,
+        isRunning: Effect.succeed(true),
+        kill: () =>
+          Effect.sync(() => {
+            kills += 1;
+          }),
+        pid: ChildProcessSpawner.ProcessId(1),
+        stderr: Stream.empty,
+        stdin: Sink.forEach((chunk) =>
+          Effect.sync(() => {
+            const frame: unknown = JSON.parse(new TextDecoder().decode(chunk));
+            if (
+              typeof frame === "object" &&
+              frame !== null &&
+              "method" in frame &&
+              typeof frame.method === "string"
+            )
+              methods.push(frame.method);
+          })
+        ),
+        stdout: Stream.empty,
+        unref: Effect.succeed(Effect.void),
+      });
+    })
+  );
+  return {
+    killCount: () => kills,
+    requestMethods: () => methods,
+    spawnCount: () => spawns,
+    spawner,
   };
 }
 
