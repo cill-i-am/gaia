@@ -125,6 +125,7 @@ import {
 import type { GitHubCommandRunner } from "./github-publisher.js";
 import type { DeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
 import {
+  inspectStrictV2HarnessPreparationState,
   readStrictV2HarnessPreparedRun,
   type StrictV2HarnessPreparationRequest,
 } from "./harness-evaluation.js";
@@ -1535,19 +1536,22 @@ export function prepareStrictV2HarnessRun(
   request: StrictV2HarnessPreparationRequest,
   options: ServerWorkflowOptions = {}
 ) {
-  return readStrictV2HarnessPreparedRun(runId, options, request).pipe(
-    Effect.catchIf(
-      (error): error is GaiaRuntimeError =>
-        error instanceof GaiaRuntimeError &&
-        error.code === "HarnessPreparedRunAuthorityMissing",
-      () =>
-        continueServerRun(runId, {
-          ...options,
-          stopAfterHarnessPreparation: true,
-          strictV2HarnessPreparation: request,
-        }).pipe(
-          Effect.flatMap(() => readStrictV2HarnessPreparedRun(runId, options))
-        )
+  return inspectStrictV2HarnessPreparationState(runId, request, options).pipe(
+    Effect.flatMap(({ state }) =>
+      state === "prepared"
+        ? readStrictV2HarnessPreparedRun(runId, options, request)
+        : continueServerRun(runId, {
+            ...options,
+            stopAfterHarnessPreparation: true,
+            strictV2HarnessPreparation: request,
+            ...(state === "partial"
+              ? { workerContinuationState: "preparing" as const }
+              : {}),
+          }).pipe(
+            Effect.flatMap(() =>
+              readStrictV2HarnessPreparedRun(runId, options, request)
+            )
+          )
     ),
     Effect.mapError(toServerWorkflowError("StrictV2HarnessPreparationFailed"))
   );
@@ -3862,6 +3866,9 @@ function factoryContinuationOptions(
       return {
         ...commonOptions,
         harnessName: codexAppServerHarnessName,
+        ...(options.workerContinuationState === "preparing"
+          ? { workerContinuationState: "preparing" as const }
+          : {}),
       };
     }
     if (

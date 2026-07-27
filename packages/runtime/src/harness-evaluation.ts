@@ -300,6 +300,72 @@ function sameEncoded(left: unknown, right: unknown) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+type StrictV2HarnessPreparationState =
+  | { readonly state: "pristine" }
+  | { readonly state: "partial" }
+  | { readonly state: "prepared" };
+
+/**
+ * Classify the event-owned strict-V2 preparation state before choosing a
+ * continuation path. A partial state is valid only for the baseline owner:
+ * treatments have no local manifest authority to resume from.
+ */
+export function inspectStrictV2HarnessPreparationState(
+  runId: RunId,
+  request: StrictV2HarnessPreparationRequest,
+  options: RunStorageOptions = {}
+) {
+  return Effect.gen(function* () {
+    const parsedRequest = yield* validate(
+      "StrictV2HarnessPreparationRequestInvalid",
+      "The strict-V2 preparation selectors are invalid.",
+      () =>
+        Schema.decodeUnknownSync(StrictV2HarnessPreparationRequestV1, {
+          onExcessProperty: "error",
+        })(request)
+    );
+    const paths = yield* makeRunPaths(runId, options);
+    const events = yield* readEvents(paths);
+    const manifests = manifestEvents(events);
+    const receipts = preparedRunEvents(events);
+    if (manifests.length > 1 || receipts.length > 1)
+      return yield* Effect.fail(
+        runtimeFailure(
+          "HarnessPreparedRunConflict",
+          "Strict-V2 preparation has ambiguous event-owned authority."
+        )
+      );
+    if (receipts.length === 1)
+      return { state: "prepared" } satisfies StrictV2HarnessPreparationState;
+    if (parsedRequest.role === "baseline") {
+      if (manifests.length === 0)
+        return { state: "pristine" } satisfies StrictV2HarnessPreparationState;
+      if (
+        manifests.length === 1 &&
+        events.at(-1) === manifests[0] &&
+        !events.some(({ type }) =>
+          [
+            "HARNESS_SESSION_EVENT_RECORDED",
+            "REVIEW_STARTED",
+            "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+            "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED",
+            "WORKER_STARTED",
+          ].includes(type)
+        )
+      )
+        return { state: "partial" } satisfies StrictV2HarnessPreparationState;
+    } else if (manifests.length === 0) {
+      return { state: "pristine" } satisfies StrictV2HarnessPreparationState;
+    }
+    return yield* Effect.fail(
+      runtimeFailure(
+        "HarnessPreparedRunConflict",
+        "Strict-V2 preparation events do not match the requested role."
+      )
+    );
+  });
+}
+
 function prefixDigest(events: ReadonlyArray<RunEvent>) {
   return createHash("sha256")
     .update(
@@ -824,6 +890,185 @@ export function preflightHarnessRun(
  * The only input is stable cohort selection; all durable facts are reloaded
  * from the run's own events and artifacts before the receipt is appended.
  */
+function prepareStrictV2BaselineBinding(
+  runId: RunId,
+  preparedRequest: Extract<
+    StrictV2HarnessPreparationRequest,
+    { readonly role: "baseline" }
+  >,
+  modelInvocationEpisode: ModelInvocationEpisodeStartV1,
+  options: RunStorageOptions
+) {
+  return Effect.gen(function* () {
+    const paths = yield* makeRunPaths(runId, options);
+    const events = yield* readEvents(paths);
+    const recordedManifests = manifestEvents(events);
+    if (recordedManifests.length > 1)
+      return yield* Effect.fail(
+        runtimeFailure(
+          "HarnessBaselineManifestConflict",
+          "The cohort owner has conflicting baseline manifest authority."
+        )
+      );
+    const existingManifest =
+      recordedManifests[0] === undefined
+        ? undefined
+        : yield* validate(
+            "HarnessBaselineManifestAuthorityInvalid",
+            "The event-owned baseline manifest is invalid.",
+            () => manifestFromEvent(recordedManifests[0]!)
+          );
+    const created = events[0];
+    const rawExecution =
+      created?.type === "RUN_CREATED"
+        ? (created.payload["execution"] as
+            | { readonly resolved?: unknown }
+            | undefined)
+        : undefined;
+    const resolved = yield* validate(
+      "HarnessPreparedRunExecutionMissing",
+      "The accepted run has no complete resolved execution authority.",
+      () =>
+        Schema.decodeUnknownSync(ResolvedHarnessExecution, {
+          onExcessProperty: "error",
+        })(rawExecution?.resolved)
+    );
+    const assignment = resolved.environmentAssignment;
+    if (assignment === undefined)
+      return yield* Effect.fail(
+        runtimeFailure(
+          "HarnessPreparedRunExecutionIncomplete",
+          "The accepted run has no complete model and runtime assignment."
+        )
+      );
+    const contractEvent = events.find(
+      ({ type }) => type === "RUN_CONTRACT_RECORDED"
+    );
+    if (contractEvent === undefined)
+      return yield* Effect.fail(
+        runtimeFailure(
+          "HarnessPreparedRunContractMissing",
+          "The accepted run has no event-owned run contract."
+        )
+      );
+    const contract = yield* validate(
+      "HarnessPreparedRunContractInvalid",
+      "The event-owned run contract is invalid.",
+      () => parseAnyRunContract(contractEvent.payload["contract"])
+    );
+    if (contract.version !== 2 || contract.acceptedOutcomes.length !== 1)
+      return yield* Effect.fail(
+        runtimeFailure(
+          "HarnessPreparedRunContractUnsupported",
+          "Strict-V2 preparation requires one accepted V2 outcome."
+        )
+      );
+    const modelPair = yield* loadModelInvocationPair(
+      paths,
+      modelInvocationEpisode
+    );
+    const fs = yield* FileSystem.FileSystem;
+    const fileDigest = (path: RuntimePath) =>
+      fs.readFile(path).pipe(
+        Effect.map((body) => createHash("sha256").update(body).digest("hex")),
+        Effect.mapError((cause) =>
+          runtimeFailure(
+            "HarnessPreparedRunArtifactMissing",
+            "A fixed strict-V2 artifact is unavailable.",
+            cause
+          )
+        )
+      );
+    const profileDigest = yield* fileDigest(paths.runProfile);
+    const skillManifestDigest = yield* fileDigest(paths.skillManifest);
+    const workerPlanBody = yield* fs
+      .readFileString(paths.workerPlanResult)
+      .pipe(
+        Effect.mapError((cause) =>
+          runtimeFailure(
+            "HarnessPreparedRunArtifactMissing",
+            "The fixed strict-V2 worker plan is unavailable.",
+            cause
+          )
+        )
+      );
+    const workerPlanDigest = yield* Effect.try({
+      try: () => digestWorkerPlanEnvironmentSemantics(workerPlanBody),
+      catch: (cause) =>
+        runtimeFailure(
+          "HarnessPreparedRunArtifactMismatch",
+          "The fixed strict-V2 worker plan is invalid.",
+          cause
+        ),
+    });
+    const recordedAt =
+      existingManifest?.recordedAt ??
+      new Date(yield* Clock.currentTimeMillis).toISOString();
+    const acceptedOutcome = contract.acceptedOutcomes[0]!;
+    const manifest = yield* recordHarnessBaselineManifest(
+      {
+        acceptedOutcome: {
+          outcomeId: acceptedOutcome.outcomeId,
+          proofContractDigest: createHash("sha256")
+            .update(
+              canonicalV1("gaia.harness-proof-contract.v1", [
+                {
+                  acceptedOutcomes: contract.acceptedOutcomes,
+                  proofClaims: contract.proofClaims,
+                  specDigest: contract.specDigest,
+                  version: contract.version,
+                },
+              ])
+            )
+            .digest("hex"),
+          version: 2,
+        },
+        authorityDigest: assignment.authority.workspaceBindingDigest,
+        baseDigest: contract.baseDigest,
+        contextDigest: modelPair.context.payload.contextContentDigest,
+        evaluationId: preparedRequest.evaluationId,
+        externalCondition: {
+          descriptor: preparedRequest.externalConditionDescriptor,
+          digest: semanticDigest(
+            "gaia.harness-external-condition.v1",
+            preparedRequest.externalConditionDescriptor
+          ),
+        },
+        freshSessionPolicy: "globallyDistinct",
+        grader: preparedRequest.grader,
+        interventionWithheld: preparedRequest.interventionWithheld,
+        limitations: preparedRequest.limitations,
+        manifestId: preparedRequest.manifestId,
+        model: assignment.model,
+        ownerRunId: runId,
+        plannedBaselineRunIds: [runId],
+        plannedRepetitions: 1,
+        profileDigest,
+        providerInterfaceDigest: assignment.adapter.contractDigest,
+        recordedAt,
+        runtimeRevision: assignment.runtimeSource.revision,
+        scenario: preparedRequest.scenario,
+        skillManifestDigest,
+        stopConditions: preparedRequest.stopConditions,
+        targetDigest: contract.targetDigest,
+        version: 1,
+        worker: {
+          capabilityEpoch: assignment.effectDependencyEpoch,
+          id: resolved.provider.providerId,
+        },
+        workerPlanDigest,
+      },
+      options
+    );
+    return {
+      manifestRef: manifest.ref,
+      repetition: 1,
+      role: "baseline" as const,
+      runId,
+    };
+  });
+}
+
 export function prepareStrictV2HarnessRun(
   runId: RunId,
   request: StrictV2HarnessPreparationRequest,
@@ -849,163 +1094,12 @@ export function prepareStrictV2HarnessRun(
             role: "treatment" as const,
             runId,
           }
-        : yield* Effect.gen(function* () {
-            const paths = yield* makeRunPaths(runId, options);
-            const events = yield* readEvents(paths);
-            const created = events[0];
-            const rawExecution =
-              created?.type === "RUN_CREATED"
-                ? (created.payload["execution"] as
-                    | { readonly resolved?: unknown }
-                    | undefined)
-                : undefined;
-            const resolved = yield* validate(
-              "HarnessPreparedRunExecutionMissing",
-              "The accepted run has no complete resolved execution authority.",
-              () =>
-                Schema.decodeUnknownSync(ResolvedHarnessExecution, {
-                  onExcessProperty: "error",
-                })(rawExecution?.resolved)
-            );
-            const assignment = resolved.environmentAssignment;
-            if (assignment === undefined)
-              return yield* Effect.fail(
-                runtimeFailure(
-                  "HarnessPreparedRunExecutionIncomplete",
-                  "The accepted run has no complete model and runtime assignment."
-                )
-              );
-            const contractEvent = events.find(
-              ({ type }) => type === "RUN_CONTRACT_RECORDED"
-            );
-            if (contractEvent === undefined)
-              return yield* Effect.fail(
-                runtimeFailure(
-                  "HarnessPreparedRunContractMissing",
-                  "The accepted run has no event-owned run contract."
-                )
-              );
-            const contract = yield* validate(
-              "HarnessPreparedRunContractInvalid",
-              "The event-owned run contract is invalid.",
-              () => parseAnyRunContract(contractEvent.payload["contract"])
-            );
-            if (
-              contract.version !== 2 ||
-              contract.acceptedOutcomes.length !== 1
-            )
-              return yield* Effect.fail(
-                runtimeFailure(
-                  "HarnessPreparedRunContractUnsupported",
-                  "Strict-V2 preparation requires one accepted V2 outcome."
-                )
-              );
-            const modelPair = yield* loadModelInvocationPair(
-              paths,
-              modelInvocationEpisode
-            );
-            const fs = yield* FileSystem.FileSystem;
-            const fileDigest = (path: RuntimePath) =>
-              fs.readFile(path).pipe(
-                Effect.map((body) =>
-                  createHash("sha256").update(body).digest("hex")
-                ),
-                Effect.mapError((cause) =>
-                  runtimeFailure(
-                    "HarnessPreparedRunArtifactMissing",
-                    "A fixed strict-V2 artifact is unavailable.",
-                    cause
-                  )
-                )
-              );
-            const profileDigest = yield* fileDigest(paths.runProfile);
-            const skillManifestDigest = yield* fileDigest(paths.skillManifest);
-            const workerPlanBody = yield* fs
-              .readFileString(paths.workerPlanResult)
-              .pipe(
-                Effect.mapError((cause) =>
-                  runtimeFailure(
-                    "HarnessPreparedRunArtifactMissing",
-                    "The fixed strict-V2 worker plan is unavailable.",
-                    cause
-                  )
-                )
-              );
-            const workerPlanDigest = yield* Effect.try({
-              try: () => digestWorkerPlanEnvironmentSemantics(workerPlanBody),
-              catch: (cause) =>
-                runtimeFailure(
-                  "HarnessPreparedRunArtifactMismatch",
-                  "The fixed strict-V2 worker plan is invalid.",
-                  cause
-                ),
-            });
-            const recordedAt = new Date(
-              yield* Clock.currentTimeMillis
-            ).toISOString();
-            const acceptedOutcome = contract.acceptedOutcomes[0]!;
-            const manifest = yield* recordHarnessBaselineManifest(
-              {
-                acceptedOutcome: {
-                  outcomeId: acceptedOutcome.outcomeId,
-                  proofContractDigest: createHash("sha256")
-                    .update(
-                      canonicalV1("gaia.harness-proof-contract.v1", [
-                        {
-                          acceptedOutcomes: contract.acceptedOutcomes,
-                          proofClaims: contract.proofClaims,
-                          specDigest: contract.specDigest,
-                          version: contract.version,
-                        },
-                      ])
-                    )
-                    .digest("hex"),
-                  version: 2,
-                },
-                authorityDigest: assignment.authority.workspaceBindingDigest,
-                baseDigest: contract.baseDigest,
-                contextDigest: modelPair.context.payload.contextContentDigest,
-                evaluationId: preparedRequest.evaluationId,
-                externalCondition: {
-                  descriptor: preparedRequest.externalConditionDescriptor,
-                  digest: semanticDigest(
-                    "gaia.harness-external-condition.v1",
-                    preparedRequest.externalConditionDescriptor
-                  ),
-                },
-                freshSessionPolicy: "globallyDistinct",
-                grader: preparedRequest.grader,
-                interventionWithheld: preparedRequest.interventionWithheld,
-                limitations: preparedRequest.limitations,
-                manifestId: preparedRequest.manifestId,
-                model: assignment.model,
-                ownerRunId: runId,
-                plannedBaselineRunIds: [runId],
-                plannedRepetitions: 1,
-                profileDigest,
-                providerInterfaceDigest: assignment.adapter.contractDigest,
-                recordedAt,
-                runtimeRevision: assignment.runtimeSource.revision,
-                scenario: preparedRequest.scenario,
-                skillManifestDigest,
-                stopConditions: preparedRequest.stopConditions,
-                targetDigest: contract.targetDigest,
-                version: 1,
-                worker: {
-                  capabilityEpoch: assignment.effectDependencyEpoch,
-                  id: resolved.provider.providerId,
-                },
-                workerPlanDigest,
-              },
-              options
-            );
-            return {
-              manifestRef: manifest.ref,
-              repetition: 1,
-              role: "baseline" as const,
-              runId,
-            };
-          });
+        : yield* prepareStrictV2BaselineBinding(
+            runId,
+            preparedRequest,
+            modelInvocationEpisode,
+            options
+          );
     return yield* preflightHarnessRun(
       runId,
       binding,

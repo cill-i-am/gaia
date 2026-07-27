@@ -103,6 +103,7 @@ import {
   Schema,
   Stream,
 } from "effect";
+import { TestClock } from "effect/testing";
 
 import { makeLiveHarnessSessionCoordinator } from "./agent-session-runtime.js";
 import { parseBrowserEvidenceTargetUrl } from "./browser-evidence.js";
@@ -123,7 +124,10 @@ import {
   prepareDeliveryWorktree,
   type GitDeliveryCommandInput,
 } from "./git-delivery.js";
-import { recordHarnessBaselineManifest } from "./harness-evaluation.js";
+import {
+  canonicalHarnessBaselineManifestBody,
+  recordHarnessBaselineManifest,
+} from "./harness-evaluation.js";
 import { makeHarnessProviderRegistry } from "./harness-provider-registry.js";
 import {
   HarnessActionError,
@@ -271,6 +275,15 @@ function snapshotAuditedActionEvidence(paths: RunPaths) {
     events: readFileSync(paths.events, "utf8"),
     modelInvocations,
   };
+}
+
+function snapshotStrictV2PreparationArtifacts(paths: RunPaths) {
+  return [
+    paths.runContract,
+    paths.runProfile,
+    paths.skillManifest,
+    paths.workerPlanResult,
+  ].map((path) => [path, readFileSync(path, "utf8")] as const);
 }
 
 function makeMarkerHarnessProviderRegistry(rootDirectory: string) {
@@ -4410,6 +4423,159 @@ describe("server workflows", () => {
           );
           assert.strictEqual(error.code, "ReviewBlocked");
           assert.strictEqual(providerDispatches, 0);
+        })
+    );
+
+    it.effect(
+      "resumes one partial strict-V2 baseline receipt without replaying Phase A",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-strict-v2-partial-preparation-",
+          });
+          let providerDispatches = 0;
+          let reviewerCalls = 0;
+          const provider: HarnessProvider = {
+            ...acceptanceProvider,
+            createSession: (...args) => {
+              providerDispatches += 1;
+              return acceptanceProvider.createSession(...args);
+            },
+            resumeSession: (...args) => {
+              providerDispatches += 1;
+              return acceptanceProvider.resumeSession(...args);
+            },
+          };
+          const reviewer = blockingReviewer();
+          const options = {
+            harnessProviderRegistry: makeHarnessProviderRegistry([
+              {
+                environmentAssignment: () =>
+                  Effect.succeed(workerEnvironmentAssignment()),
+                profileId: codexAppServerExecutionSelection.harnessProfileId,
+                provider,
+              },
+            ]),
+            reviewer: {
+              ...reviewer,
+              run: (request: Parameters<GaiaReviewer["run"]>[0]) =>
+                Effect.sync(() => {
+                  reviewerCalls += 1;
+                }).pipe(Effect.andThen(reviewer.run(request))),
+            },
+            rootDirectory: cwd,
+          };
+          const accepted = yield* acceptPreparedFactoryRun(
+            yield* prepareFactoryRunAcceptance(
+              {
+                execution: codexAppServerExecutionSelection,
+                workflow: "issueDelivery",
+                workItem: {
+                  description: readFileSync(
+                    `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+                    "utf8"
+                  ),
+                  kind: "issue",
+                  title: "Resume one partial strict V2 preparation",
+                },
+              },
+              options
+            ),
+            options
+          );
+          const request = strictV2BaselineRequest(
+            "runtimeRevision",
+            "partial-receipt"
+          );
+          yield* TestClock.setTime(1_000);
+          const initial = yield* prepareStrictV2HarnessRun(
+            accepted.runId,
+            request,
+            options
+          );
+          const paths = yield* makeRunPaths(accepted.runId, options);
+          const completeEvents = yield* readEvents(paths);
+          const manifestEvent = completeEvents.find(
+            ({ type }) => type === "HARNESS_BASELINE_MANIFEST_RECORDED"
+          );
+          const receiptEventIndex = completeEvents.findIndex(
+            ({ type }) => type === "HARNESS_PREPARED_RUN_RECORDED"
+          );
+          assert.notStrictEqual(manifestEvent, undefined);
+          assert.notStrictEqual(receiptEventIndex, -1);
+          const manifestBody = yield* canonicalHarnessBaselineManifestBody(
+            accepted.runId,
+            options
+          );
+          const artifactsBefore = snapshotStrictV2PreparationArtifacts(paths);
+          const modelInvocationsBefore =
+            snapshotAuditedActionEvidence(paths).modelInvocations;
+          yield* fs.writeFileString(
+            paths.events,
+            `${completeEvents
+              .slice(0, receiptEventIndex)
+              .map((event) => JSON.stringify(event))
+              .join("\n")}\n`
+          );
+          yield* TestClock.setTime(2_000);
+
+          const resumed = yield* prepareStrictV2HarnessRun(
+            accepted.runId,
+            request,
+            options
+          );
+          const resumedEvents = yield* readEvents(paths);
+          assert.strictEqual(
+            resumedEvents.filter(({ type }) => type === "RUN_CONTRACT_RECORDED")
+              .length,
+            1
+          );
+          assert.strictEqual(
+            resumedEvents.filter(
+              ({ type }) => type === "HARNESS_BASELINE_MANIFEST_RECORDED"
+            ).length,
+            1
+          );
+          assert.strictEqual(
+            resumedEvents.filter(
+              ({ type }) => type === "HARNESS_PREPARED_RUN_RECORDED"
+            ).length,
+            1
+          );
+          assert.deepEqual(
+            resumed.receipt.manifestRef,
+            initial.receipt.manifestRef
+          );
+          assert.strictEqual(
+            yield* canonicalHarnessBaselineManifestBody(
+              accepted.runId,
+              options
+            ),
+            manifestBody
+          );
+          assert.deepEqual(
+            snapshotStrictV2PreparationArtifacts(paths),
+            artifactsBefore
+          );
+          assert.deepEqual(
+            snapshotAuditedActionEvidence(paths).modelInvocations,
+            modelInvocationsBefore
+          );
+          assert.deepEqual(
+            resumedEvents.filter(({ type }) =>
+              [
+                "HARNESS_SESSION_EVENT_RECORDED",
+                "REVIEW_STARTED",
+                "WORKER_CORRELATION_RECONCILIATION_RECORDED",
+                "WORKER_DESKTOP_ORIGIN_CORRELATION_RECORDED",
+                "WORKER_STARTED",
+              ].includes(type)
+            ),
+            []
+          );
+          assert.strictEqual(providerDispatches, 0);
+          assert.strictEqual(reviewerCalls, 0);
         })
     );
 

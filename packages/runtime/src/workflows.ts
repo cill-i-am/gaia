@@ -114,6 +114,7 @@ import {
   deriveModelWorkspaceBinding,
   loadModelInvocationPair,
   prepareSpecRunAcceptance,
+  recoverCommittedWorkerInitialModelInvocationPair,
   type PreparedSpecRunAcceptanceV1,
 } from "./model-invocation.js";
 import {
@@ -407,6 +408,7 @@ export const parseCommandSummary =
 
 export const WorkerContinuationStateSchema = Schema.Literals([
   "start",
+  "preparing",
   "prepared",
   "resume",
   "terminal",
@@ -614,11 +616,12 @@ export function continueAcceptedRun(
             options.browserEvidenceTargetUrl
           ));
 
-    yield* writeRunProfile({ paths, profile: runProfile }).pipe(
-      Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "creating", error)
-      )
-    );
+    if (options.workerContinuationState !== "preparing")
+      yield* writeRunProfile({ paths, profile: runProfile }).pipe(
+        Effect.catchTag("GaiaRuntimeError", (error) =>
+          recordRunFailure(runId, paths, "creating", error)
+        )
+      );
 
     return yield* executeAcceptedRun({
       browserEvidenceRequirement,
@@ -729,6 +732,37 @@ function executeAcceptedRun(input: {
       spec,
     } = input;
     const workerContinuationState = options.workerContinuationState ?? "start";
+    if (workerContinuationState === "preparing") {
+      const strictPreparation = options.strictV2HarnessPreparation;
+      if (
+        strictPreparation === undefined ||
+        options.stopAfterHarnessPreparation !== true
+      )
+        return yield* Effect.fail(
+          makeRuntimeError({
+            code: "HarnessPreparedRunResumeInvalid",
+            message:
+              "Strict-V2 preparation resume requires its original selectors and stop boundary.",
+            recoverable: false,
+          })
+        );
+      const modelInvocationEpisode =
+        yield* recoverCommittedWorkerInitialModelInvocationPair(paths);
+      yield* prepareStrictV2HarnessRun(
+        runId,
+        strictPreparation,
+        modelInvocationEpisode,
+        options
+      );
+      const state = snapshotFromReplay((yield* loadRun(paths)).events).state;
+      return parseCommandSummary({
+        reportPath: undefined,
+        runDirectory: paths.root,
+        runId,
+        state,
+        status: statusFromState(state),
+      });
+    }
     if (workerContinuationState === "start") {
       const workspace = yield* prepareWorkspace(
         paths,

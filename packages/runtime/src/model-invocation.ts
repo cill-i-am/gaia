@@ -1415,11 +1415,150 @@ export function commitModelInvocationPair(
   );
 }
 
+/**
+ * Recover the one deterministic, committed worker-initial pair that exists in
+ * the narrow crash window before a prepared-run receipt can own it. This is
+ * transaction recovery only: callers must subsequently persist the returned
+ * start on its designated event owner before treating it as durable evidence.
+ */
+export function recoverCommittedWorkerInitialModelInvocationPair(
+  paths: RunPaths
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const runId = parseRunId(paths.runId);
+    const episodeKey = Schema.decodeUnknownSync(
+      ModelInvocationEpisodeStartV1.fields.episodeKey
+    )("workerInitial");
+    const episodeId = decodeEpisodeId(
+      `episode1_${hashText(`${runId}\0${episodeKey}`)}`
+    );
+    const directory = parseRuntimePath(
+      path.join(paths.modelInvocations, episodeId)
+    );
+    const contextPath = parseRuntimePath(
+      path.join(directory, "context-manifest.json")
+    );
+    const invocationPath = parseRuntimePath(
+      path.join(directory, "invocation-manifest.json")
+    );
+    const reservationPath = parseRuntimePath(
+      path.join(paths.modelInvocations, `.${episodeId}.reservation.json`)
+    );
+    const reservationBody = `${JSON.stringify({
+      episodeId,
+      episodeKey,
+      runId,
+      version: 1,
+    })}\n`;
+    const canonicalRunRoot = yield* fs
+      .realPath(paths.root)
+      .pipe(Effect.mapError(() => modelPairConflict()));
+    const expectedManifestRoot = path.join(
+      canonicalRunRoot,
+      "model-invocations"
+    );
+    const expectedDirectory = path.join(expectedManifestRoot, episodeId);
+    const [runRoot, manifestRoot, episodeDirectory] = yield* Effect.all([
+      fs.stat(paths.root),
+      fs.stat(paths.modelInvocations),
+      fs.stat(directory),
+    ]).pipe(Effect.mapError(() => modelPairConflict()));
+    if (
+      runRoot.type !== "Directory" ||
+      manifestRoot.type !== "Directory" ||
+      episodeDirectory.type !== "Directory" ||
+      (yield* fs
+        .realPath(paths.modelInvocations)
+        .pipe(Effect.mapError(() => modelPairConflict()))) !==
+        expectedManifestRoot ||
+      (yield* fs
+        .realPath(directory)
+        .pipe(Effect.mapError(() => modelPairConflict()))) !== expectedDirectory
+    )
+      return yield* Effect.fail(modelPairConflict());
+    yield* verifyCanonicalModelFile(
+      fs,
+      reservationPath,
+      path.join(expectedManifestRoot, path.basename(reservationPath)),
+      reservationBody
+    );
+    const episodeEntries = yield* fs
+      .readDirectory(directory)
+      .pipe(Effect.mapError(() => modelPairConflict()));
+    if (
+      episodeEntries.length !== 2 ||
+      episodeEntries.toSorted().join("\0") !==
+        ["context-manifest.json", "invocation-manifest.json"].join("\0")
+    )
+      return yield* Effect.fail(modelPairConflict());
+    const contextBody = yield* readCanonicalModelFile(
+      fs,
+      contextPath,
+      path.join(expectedDirectory, "context-manifest.json")
+    );
+    const context = yield* Effect.try({
+      try: (): ModelContextManifestV1 => {
+        const parsed = parseModelContextManifest(JSON.parse(contextBody));
+        if (
+          contextBody !== `${JSON.stringify(encodeContextManifest(parsed))}\n`
+        )
+          throw new Error("non-canonical context manifest");
+        return parsed;
+      },
+      catch: () => modelPairConflict(),
+    });
+    const invocationBody = yield* readCanonicalModelFile(
+      fs,
+      invocationPath,
+      path.join(expectedDirectory, "invocation-manifest.json")
+    );
+    const invocation = yield* Effect.try({
+      try: (): ModelInvocationManifestV1 => {
+        const parsed = parseModelInvocationManifest(
+          JSON.parse(invocationBody),
+          context
+        );
+        if (
+          invocationBody !==
+          `${JSON.stringify(encodeInvocationManifest(parsed))}\n`
+        )
+          throw new Error("non-canonical invocation manifest");
+        return parsed;
+      },
+      catch: () => modelPairConflict(),
+    });
+    const start = makeEpisodeStart({
+      contextBody: decodeModelManifestBody(contextBody),
+      contextPath,
+      episodeId,
+      input: { context, episodeKey, invocation, paths },
+      invocationBody: decodeModelManifestBody(invocationBody),
+      invocationPath,
+    });
+    yield* loadModelInvocationPair(paths, start);
+    return start;
+  });
+}
+
 function verifyCanonicalModelFile(
   fs: FileSystem.FileSystem,
   target: string,
   expectedRealPath: string,
   expectedBody: string
+) {
+  return readCanonicalModelFile(fs, target, expectedRealPath).pipe(
+    Effect.flatMap((body) =>
+      body === expectedBody ? Effect.void : Effect.fail(modelPairConflict())
+    )
+  );
+}
+
+function readCanonicalModelFile(
+  fs: FileSystem.FileSystem,
+  target: string,
+  expectedRealPath: string
 ) {
   return Effect.gen(function* () {
     const info = yield* Effect.tryPromise({
@@ -1432,13 +1571,9 @@ function verifyCanonicalModelFile(
     const body = yield* fs
       .readFileString(target)
       .pipe(Effect.mapError(() => modelPairConflict()));
-    if (
-      info.isSymbolicLink() ||
-      !info.isFile() ||
-      real !== expectedRealPath ||
-      body !== expectedBody
-    )
+    if (info.isSymbolicLink() || !info.isFile() || real !== expectedRealPath)
       return yield* Effect.fail(modelPairConflict());
+    return body;
   });
 }
 
