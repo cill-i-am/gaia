@@ -10,6 +10,7 @@ import {
   HarnessPreparedRunReceiptRefV1,
   HarnessPreparedRunReceiptV1,
   HarnessEvaluationV1,
+  HarnessEvaluationInputV1Schema,
   HarnessEvaluationPrefixRefV1,
   HarnessEvaluationRecordingInputV1Schema,
   makeHarnessBaselineManifestRefV1,
@@ -31,7 +32,6 @@ import {
   ResolvedHarnessExecution,
   RunEvent,
   ModelInvocationEpisodeStartV1,
-  type HarnessEvaluationRecordingInputV1Encoded,
   type RunId,
 } from "@gaia/core";
 import {
@@ -93,7 +93,7 @@ export type HarnessEvaluationScenarioId =
   typeof HarnessEvaluationScenarioIdSchema.Type;
 
 const HarnessEvaluationScenarioFixtureSchema = Schema.Struct({
-  input: HarnessEvaluationRecordingInputV1Schema,
+  input: Schema.Unknown,
   options: RunStorageOptionsSchema,
 });
 
@@ -120,10 +120,10 @@ export function evaluateHarnessScenario(
     const provider = yield* HarnessEvaluationScenarioProvider;
     const observedAtMillis = yield* Clock.currentTimeMillis;
     const loaded = yield* provider.load(scenarioId);
-    const request = yield* validate(
+    const request = yield* decodeHarnessEvaluationRecordingInput(
+      loaded.input,
       "HarnessEvaluationScenarioInvalid",
-      "The scenario provider returned invalid stable selectors.",
-      () => decodeScenarioInput(loaded.input)
+      "The scenario provider returned invalid stable selectors."
     );
     const resolved = yield* resolveEvaluationInput(request, loaded.options);
     return {
@@ -138,6 +138,17 @@ function validate<A>(code: string, message: string, evaluate: () => A) {
   return Effect.try({
     catch: (cause) => runtimeFailure(code, message, cause),
     try: evaluate,
+  });
+}
+
+function decodeHarnessEvaluationRecordingInput(
+  input: unknown,
+  code: "HarnessEvaluationScenarioInvalid" | "InvalidHarnessEvaluationRequest",
+  message: string
+) {
+  return Effect.try({
+    catch: () => runtimeFailure(code, message),
+    try: () => decodeScenarioInput(input),
   });
 }
 
@@ -1049,6 +1060,7 @@ function resolveEvaluationInput(
           },
           prefix: side.prefix,
           prefixEvents: prefix,
+          paths,
           receipt,
           receiptEventSequence: preparedEvent.sequence,
           runId: side.runId,
@@ -1111,6 +1123,136 @@ function resolveEvaluationInput(
             };
           })()
         : undefined;
+    const metrics: Array<
+      (typeof HarnessEvaluationInputV1Schema.Type)["metrics"][number]
+    > = [];
+    for (const metric of request.metrics) {
+      if ("value" in metric) {
+        metrics.push(metric);
+        continue;
+      }
+      const repetition = repetitions[metric.repetition - 1];
+      if (repetition === undefined)
+        return yield* Effect.fail(
+          runtimeFailure(
+            "HarnessEvaluationMetricProvenanceMismatch",
+            "An inferred metric does not bind a declared repetition."
+          )
+        );
+      const authorityByRun = new Map([
+        [repetition.baseline.runId, repetition.baseline],
+        [repetition.treatment.runId, repetition.treatment],
+      ]);
+      for (const source of metric.provenance.sources) {
+        const authority = authorityByRun.get(source.runId);
+        if (authority === undefined)
+          return yield* Effect.fail(
+            runtimeFailure(
+              "HarnessEvaluationMetricProvenanceMismatch",
+              "An inferred metric source was rebound outside its declared repetition."
+            )
+          );
+        if (source.kind === "event") {
+          const event = authority.prefixEvents[source.sequence - 1];
+          if (
+            event === undefined ||
+            event.type !== source.eventType ||
+            eventDigest(event) !== source.eventDigest
+          )
+            return yield* Effect.fail(
+              runtimeFailure(
+                "HarnessEvaluationMetricProvenanceMismatch",
+                "An inferred event source does not resolve inside its authoritative prefix."
+              )
+            );
+          continue;
+        }
+        const preparedArtifact = authority.receipt.artifacts.find(
+          ({ artifactId }) => artifactId === source.artifactId
+        );
+        let expected: typeof source | undefined;
+        if (preparedArtifact !== undefined)
+          expected = {
+            ...preparedArtifact,
+            kind: "artifact",
+            owningEventSequence: authority.receiptEventSequence,
+            runId: source.runId,
+          };
+        else if (source.artifactId === "verification-result") {
+          const proofEvents = authority.prefixEvents.filter(
+            ({ type }) => type === "RUN_PROOF_RESULT_RECORDED"
+          );
+          const proofEvent = proofEvents[0];
+          if (proofEvents.length === 1 && proofEvent !== undefined) {
+            const proof = yield* validate(
+              "HarnessEvaluationMetricProvenanceMismatch",
+              "The inferred verification result owner is invalid.",
+              () => parseAnyRunProofResultEnvelope(proofEvent.payload["result"])
+            );
+            const body = canonicalRunProofResultBody(proof);
+            expected = {
+              artifactId: "verification-result",
+              byteLength: new TextEncoder().encode(body).byteLength,
+              contentDigest: createHash("sha256").update(body).digest("hex"),
+              kind: "artifact",
+              owningEventSequence: proofEvent.sequence,
+              path: String(
+                runRelative(authority.paths, authority.paths.verificationResult)
+              ),
+              runId: source.runId,
+            };
+          }
+        }
+        if (
+          expected === undefined ||
+          source.byteLength !== expected.byteLength ||
+          source.contentDigest !== expected.contentDigest ||
+          source.owningEventSequence !== expected.owningEventSequence ||
+          source.path !== expected.path
+        )
+          return yield* Effect.fail(
+            runtimeFailure(
+              "HarnessEvaluationMetricProvenanceMismatch",
+              "An inferred artifact source does not bind its exact event-owned artifact definition."
+            )
+          );
+        const fs = yield* FileSystem.FileSystem;
+        const bytes = yield* fs
+          .readFile(`${authority.paths.root}/${expected.path}`)
+          .pipe(
+            Effect.mapError(() =>
+              runtimeFailure(
+                "HarnessEvaluationMetricArtifactMissing",
+                "An inferred artifact source's authoritative bytes are unavailable."
+              )
+            )
+          );
+        if (
+          bytes.byteLength !== expected.byteLength ||
+          createHash("sha256").update(bytes).digest("hex") !==
+            expected.contentDigest
+        )
+          return yield* Effect.fail(
+            runtimeFailure(
+              "HarnessEvaluationMetricProvenanceMismatch",
+              "An inferred artifact source's canonical bytes do not match its event-owned ref."
+            )
+          );
+      }
+      const artifactIds: Array<string> = [];
+      const eventTypes: Array<string> = [];
+      for (const source of metric.provenance.sources)
+        if (source.kind === "artifact") artifactIds.push(source.artifactId);
+        else eventTypes.push(source.eventType);
+      metrics.push({
+        ...metric,
+        value: {
+          artifactIds: artifactIds.sort(),
+          eventTypes: eventTypes.sort(),
+          sourceCount: metric.provenance.sources.length,
+        },
+      });
+    }
     return {
       anchorRunId: request.anchorRunId,
       baselineManifest: manifest,
@@ -1120,7 +1262,7 @@ function resolveEvaluationInput(
       intervention: request.intervention,
       ...(interventionEvidence === undefined ? {} : { interventionEvidence }),
       limitations: request.limitations,
-      metrics: request.metrics,
+      metrics,
       repetitions: repetitions.map(({ baseline, treatment }) => ({
         baseline: {
           baselineManifestRef: baseline.baselineManifestRef,
@@ -1254,24 +1396,29 @@ function validateEvaluationAuthority(
       );
     const promotedObservationKinds = new Set<string>();
     let promotedAttributionCount = 0;
-    for (const metric of evaluation.metrics) {
-      if (metric.provenance.kind === "event") {
-        const prefix = authoritativePrefixes.get(metric.provenance.runId);
-        const event = prefix?.[metric.provenance.sequence - 1];
-        if (
-          event === undefined ||
-          event.type !== metric.provenance.eventType ||
-          eventDigest(event) !== metric.provenance.eventDigest
-        )
-          return yield* Effect.fail(
-            runtimeFailure(
-              "HarnessEvaluationMetricProvenanceMismatch",
-              "An event metric does not resolve inside its authoritative prefix."
-            )
-          );
-      }
-      if (metric.provenance.kind === "artifact") {
-        const provenance = metric.provenance;
+    const validateExactMetricSource = (
+      provenance: Extract<
+        (typeof evaluation.metrics)[number]["provenance"],
+        { readonly kind: "artifact" | "event" }
+      >
+    ) =>
+      Effect.gen(function* () {
+        if (provenance.kind === "event") {
+          const prefix = authoritativePrefixes.get(provenance.runId);
+          const event = prefix?.[provenance.sequence - 1];
+          if (
+            event === undefined ||
+            event.type !== provenance.eventType ||
+            eventDigest(event) !== provenance.eventDigest
+          )
+            return yield* Effect.fail(
+              runtimeFailure(
+                "HarnessEvaluationMetricProvenanceMismatch",
+                "An event metric does not resolve inside its authoritative prefix."
+              )
+            );
+          return;
+        }
         const authority = authorityByRun.get(provenance.runId);
         if (authority === undefined)
           return yield* Effect.fail(
@@ -1352,6 +1499,47 @@ function validateEvaluationAuthority(
               "An artifact metric's canonical bytes do not match its event-owned ref."
             )
           );
+      });
+    for (const metric of evaluation.metrics) {
+      if (
+        metric.provenance.kind === "event" ||
+        metric.provenance.kind === "artifact"
+      )
+        yield* validateExactMetricSource(metric.provenance);
+      if (
+        metric.provenance.kind === "operatorSupplied" &&
+        (metric.provenance.graderId !== evaluation.grader.id ||
+          metric.provenance.graderVersion !== evaluation.grader.version)
+      )
+        return yield* Effect.fail(
+          runtimeFailure(
+            "HarnessEvaluationMetricProvenanceMismatch",
+            "Operator-supplied evidence does not bind the configured grader."
+          )
+        );
+      if (metric.provenance.kind === "inferred") {
+        const repetition = evaluation.repetitions[metric.repetition - 1];
+        if (repetition === undefined)
+          return yield* Effect.fail(
+            runtimeFailure(
+              "HarnessEvaluationMetricProvenanceMismatch",
+              "An inferred metric does not bind a declared repetition."
+            )
+          );
+        const allowedRuns = new Set([
+          repetition.baseline.runId,
+          repetition.treatment.runId,
+        ]);
+        for (const source of metric.provenance.sources) {
+          if (!allowedRuns.has(source.runId))
+            return yield* Effect.fail(
+              runtimeFailure(
+                "HarnessEvaluationMetricProvenanceMismatch",
+                "An inferred metric source was rebound outside its declared repetition."
+              )
+            );
+          yield* validateExactMetricSource(source);
+        }
       }
     }
     for (const [
@@ -1762,14 +1950,14 @@ export function synchronizeHarnessEvaluationProjections(
 }
 
 export function recordHarnessEvaluation(
-  input: HarnessEvaluationRecordingInputV1Encoded,
+  input: unknown,
   options: RunStorageOptions = {}
 ) {
   return Effect.gen(function* () {
-    const request = yield* validate(
+    const request = yield* decodeHarnessEvaluationRecordingInput(
+      input,
       "InvalidHarnessEvaluationRequest",
-      "Harness evaluation recording selectors are invalid.",
-      () => decodeScenarioInput(input)
+      "Harness evaluation recording selectors are invalid."
     );
     const resolved = yield* resolveEvaluationInput(request, options);
     const evaluation = yield* validate(

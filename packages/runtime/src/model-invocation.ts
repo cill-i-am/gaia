@@ -273,6 +273,8 @@ export function assertFactoryRunAcceptanceSecretSafe(input: unknown) {
 
 const secretAssignmentPattern =
   /(?:api[_-]?key|access[_-]?token|auth[_-]?token|auth(?:orization)?|bearer|client[_-]?secret|password|passwd|private[_-]?key)\s*(?::|=)\s*[^\s,;]+/iu;
+const standaloneCredentialPattern =
+  /(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]{20,}/iu;
 const credentialFlagPattern =
   /^--?(?:api[_-]?key|access[_-]?token|auth[_-]?token|auth(?:orization)?|bearer|client[_-]?secret|credential|password|passwd|private[_-]?key|secret|token)$/iu;
 const privateKeyPattern = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/u;
@@ -313,6 +315,7 @@ function assertSecretSafe(value: unknown, field: string) {
   const decoded = assertWellFormedBounded(value, 16_384, field);
   if (
     secretAssignmentPattern.test(decoded) ||
+    standaloneCredentialPattern.test(decoded) ||
     privateKeyPattern.test(decoded) ||
     sensitivePathPattern.test(decoded)
   )

@@ -4,10 +4,12 @@ import { createActor } from "xstate";
 
 import {
   HarnessLessonObservationSchema,
+  HarnessMetricProvenanceV1,
   HarnessRunPreparationBindingV1,
   makeHarnessBaselineManifestV1,
   makeHarnessBaselineManifestRefV1,
   makeHarnessEvaluationV1,
+  makeHarnessOperatorStatementDigestV1,
   makeHarnessPreparedRunReceiptV1,
   parseHarnessBaselineManifestV1,
   parseHarnessEvaluationV1,
@@ -57,6 +59,105 @@ const manifestInput = {
 };
 
 describe("HarnessEvaluation contracts", () => {
+  it("binds operator statements to the exact grader with bounded secret-safe content", () => {
+    const decode = Schema.decodeUnknownSync(HarnessMetricProvenanceV1, {
+      onExcessProperty: "error",
+    });
+    const statement = "The exact authoritative proof event is complete.";
+    const grader = { id: "grader.fixed", version: "1" };
+    const provenance = {
+      graderId: grader.id,
+      graderVersion: grader.version,
+      kind: "operatorSupplied" as const,
+      recordedAt: "2026-07-26T00:00:00.000Z",
+      statement,
+      statementDigest: makeHarnessOperatorStatementDigestV1({
+        grader,
+        statement,
+      }),
+    };
+    expect(decode(provenance)).toEqual(provenance);
+    expect(() =>
+      decode({ ...provenance, graderId: "grader.rebound" })
+    ).toThrow();
+    expect(() =>
+      decode({ ...provenance, statement: `${statement} Mutated.` })
+    ).toThrow();
+    expect(() =>
+      decode({ ...provenance, statementDigest: sha("f") })
+    ).toThrow();
+    expect(() =>
+      decode({ ...provenance, statement: "Bearer live-token" })
+    ).toThrow();
+    for (const credential of [
+      "github_pat_11AAABBBCCCDDDEEEFFF_1234567890abcdef",
+      "ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+      "gho_1234567890abcdefghijklmnopqrstuvwxyz",
+      "ghu_1234567890abcdefghijklmnopqrstuvwxyz",
+      "ghs_1234567890abcdefghijklmnopqrstuvwxyz",
+      "ghr_1234567890abcdefghijklmnopqrstuvwxyz",
+      "sk-live-token",
+    ])
+      expect(() =>
+        makeHarnessOperatorStatementDigestV1({
+          grader,
+          statement: `Observed ${credential}`,
+        })
+      ).toThrow();
+    for (const statement of [
+      "Observed github_pattern matching.",
+      "Observed ghp_sample in documentation.",
+      "Observed gho.example.test.",
+    ])
+      expect(
+        makeHarnessOperatorStatementDigestV1({ grader, statement })
+      ).toMatch(/^[a-f0-9]{64}$/u);
+    expect(() =>
+      decode({ ...provenance, statement: "x".repeat(513) })
+    ).toThrow();
+  });
+
+  it("requires a closed non-empty unique set of exact inferred authority refs", () => {
+    const decode = Schema.decodeUnknownSync(HarnessMetricProvenanceV1, {
+      onExcessProperty: "error",
+    });
+    const eventRef = {
+      eventDigest: sha("a"),
+      eventType: "HARNESS_PREPARED_RUN_RECORDED",
+      kind: "event" as const,
+      runId: "run-base000001",
+      sequence: 4,
+    };
+    const artifactRef = {
+      artifactId: "run-contract",
+      byteLength: 42,
+      contentDigest: sha("b"),
+      kind: "artifact" as const,
+      owningEventSequence: 4,
+      path: "run-contract.json",
+      runId: "run-base000001",
+    };
+    const provenance = {
+      algorithm: "authority-reference-summary",
+      kind: "inferred" as const,
+      limitation: "conformance-only",
+      sources: [eventRef, artifactRef],
+      version: "1",
+    };
+    expect(decode(provenance)).toEqual(provenance);
+    expect(() => decode({ ...provenance, sources: [] })).toThrow();
+    expect(() =>
+      decode({ ...provenance, sources: [eventRef, eventRef] })
+    ).toThrow();
+    expect(() =>
+      decode({ ...provenance, sourceDigests: [sha("c")], sources: undefined })
+    ).toThrow();
+    expect(() =>
+      decode({ ...provenance, algorithm: "caller-selected-algorithm" })
+    ).toThrow();
+    expect(() => decode({ ...provenance, version: "2" })).toThrow();
+  });
+
   it("commits a strict, content-addressed baseline manifest", () => {
     const manifest = makeHarnessBaselineManifestV1(manifestInput);
     expect(parseHarnessBaselineManifestV1(manifest)).toEqual(manifest);
@@ -339,6 +440,41 @@ describe("HarnessEvaluation contracts", () => {
     ).toThrow();
     const unexpectedInput: unknown = { ...evaluationInput, unexpected: true };
     expect(() => makeHarnessEvaluationV1(unexpectedInput as never)).toThrow();
+    for (const credential of [
+      "github_pat_11AAABBBCCCDDDEEEFFF_1234567890abcdef",
+      "ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+      "gho_1234567890abcdefghijklmnopqrstuvwxyz",
+      "ghu_1234567890abcdefghijklmnopqrstuvwxyz",
+      "ghs_1234567890abcdefghijklmnopqrstuvwxyz",
+      "ghr_1234567890abcdefghijklmnopqrstuvwxyz",
+    ])
+      expect(() =>
+        makeHarnessEvaluationV1({
+          ...evaluationInput,
+          metrics: [
+            {
+              ...evaluationInput.metrics[0],
+              value: { observation: credential },
+            },
+          ],
+        })
+      ).toThrow();
+    for (const safeNearMatch of [
+      "github_pattern",
+      "ghp_sample",
+      "gho.example.test",
+    ])
+      expect(
+        makeHarnessEvaluationV1({
+          ...evaluationInput,
+          metrics: [
+            {
+              ...evaluationInput.metrics[0],
+              value: { observation: safeNearMatch },
+            },
+          ],
+        }).metrics[0]?.value
+      ).toEqual({ observation: safeNearMatch });
 
     const duplicate = makeHarnessEvaluationV1({
       anchorRunId: evaluation.anchorRunId,

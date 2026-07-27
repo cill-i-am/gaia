@@ -21,12 +21,12 @@ import {
   HarnessEvaluationRecordingInputV1Schema,
   HarnessExecutionSelection,
   HarnessLaunchObservationV1,
-  type HarnessEvaluationRecordingInputV1Encoded,
   HarnessPreparedRunReceiptV1,
   HarnessPreparedRunReceiptRefV1,
   HarnessProviderDescriptor,
   makeHarnessBaselineManifestRefV1,
   makeHarnessBaselineManifestV1,
+  makeHarnessOperatorStatementDigestV1,
   makeFailureDigestV1,
   makeFactoryLessonCandidateV1,
   makeFactoryLessonContextObservationV1,
@@ -59,9 +59,10 @@ import {
 } from "@gaia/core";
 import { Effect, FileSystem, Layer, Option, Schema, Stream } from "effect";
 import { TestClock } from "effect/testing";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { StagedDockerSandboxVerificationReceiptSchema } from "./docker-sandbox-verification-executor.js";
+import { GaiaRuntimeError } from "./errors.js";
 import {
   appendEvent,
   appendHarnessSessionEvent,
@@ -115,8 +116,33 @@ import { runSpecFile } from "./workflows.js";
 import { observeWorkspaceStructuralDigest } from "./workspace-snapshot.js";
 
 const sha = (value: string) => value.repeat(64).slice(0, 64);
+const encodeMetricRunEvent = Schema.encodeSync(RunEvent);
+function exactEventMetricSource(
+  events: ReadonlyArray<typeof RunEvent.Type>,
+  type: (typeof RunEvent.Type)["type"]
+) {
+  const event = events.find((candidate) => candidate.type === type);
+  if (event === undefined)
+    throw new Error(`Missing authoritative fixture event ${type}.`);
+  return {
+    eventDigest: createHash("sha256")
+      .update(
+        canonicalV1("gaia.harness-evaluation-event.v1", [
+          encodeMetricRunEvent(event),
+        ])
+      )
+      .digest("hex"),
+    eventType: event.type,
+    kind: "event" as const,
+    runId: event.runId,
+    sequence: event.sequence,
+  };
+}
 const roots: Array<string> = [];
 const suiteRoots: Array<string> = [];
+let sharedPublicScenarioReferences:
+  | Effect.Success<ReturnType<typeof setupPublicScenarioReferences>>
+  | undefined;
 const baselineRevision = "dc559bd3236edf595ba36f8bf625d3dd97c24f91";
 const treatmentRevision = "ac559bd3236edf595ba36f8bf625d3dd97c24f91";
 const baselineSemanticContractDigest = digestHarnessEnvironmentContract(
@@ -284,6 +310,19 @@ function bytes(body: string) {
   };
 }
 
+beforeAll(async () => {
+  sharedPublicScenarioReferences = await Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const templateRoot = yield* fs.makeTempDirectory({
+        prefix: "gaia-harness-scenario-references-",
+      });
+      suiteRoots.push(templateRoot);
+      return yield* setupPublicScenarioReferences(templateRoot);
+    }).pipe(Effect.provide(NodeServices.layer))
+  );
+});
+
 afterEach(async () => {
   for (const root of roots.splice(0))
     await Effect.runPromise(
@@ -303,6 +342,12 @@ afterAll(async () => {
       }).pipe(Effect.provide(NodeServices.layer))
     );
 });
+
+function getSharedPublicScenarioReferences() {
+  if (sharedPublicScenarioReferences === undefined)
+    throw new Error("Public scenario references were not prepared.");
+  return sharedPublicScenarioReferences;
+}
 
 function contractFor(runId: ReturnType<typeof parseRunId>) {
   return makeRunContractV2({
@@ -1294,19 +1339,18 @@ function setupAuthoritativeScenario(
                         ? "unknownExternalEffects"
                         : "acceptedOutcomeCorrectness",
                   provenance: {
-                    algorithm: "deterministic-fixture",
+                    algorithm: "authority-reference-summary",
                     kind: "inferred",
                     limitation: "conformance-only",
-                    sourceDigests: [sha("a")],
+                    sources: [
+                      exactEventMetricSource(
+                        baseline.events,
+                        "HARNESS_PREPARED_RUN_RECORDED"
+                      ),
+                    ],
                     version: "1",
                   },
                   repetition: 1,
-                  value:
-                    scenarioId === "bounded-authorized-repair"
-                      ? { authorizedRepairs: 1 }
-                      : scenarioId === "unknown-outcome-no-redispatch"
-                        ? "unknown-no-redispatch"
-                        : "descriptive-only",
                 },
               ],
         repetitions: [
@@ -1395,7 +1439,7 @@ function setupPublicScenarioReferences(root: string) {
   });
 }
 
-function setupPublicAuthoritativeScenario(
+function setupPublicAuthoritativeRuns(
   root: string,
   scenarioId: string,
   shared: Effect.Success<ReturnType<typeof setupPublicScenarioReferences>>
@@ -1529,6 +1573,23 @@ function setupPublicAuthoritativeScenario(
       });
     const baseline = yield* readSide(baselineRunId);
     const treatment = yield* readSide(treatmentRunId);
+    return {
+      baseline,
+      recordedManifest,
+      selectedIntervention,
+      treatment,
+    };
+  });
+}
+
+function setupPublicAuthoritativeScenario(
+  root: string,
+  scenarioId: string,
+  shared: Effect.Success<ReturnType<typeof setupPublicScenarioReferences>>
+) {
+  return Effect.gen(function* () {
+    const { baseline, recordedManifest, selectedIntervention, treatment } =
+      yield* setupPublicAuthoritativeRuns(root, scenarioId, shared);
     const input = Schema.encodeSync(HarnessEvaluationRecordingInputV1Schema)(
       Schema.decodeUnknownSync(HarnessEvaluationRecordingInputV1Schema)({
         anchorRunId: treatment.runId,
@@ -1546,19 +1607,18 @@ function setupPublicAuthoritativeScenario(
                   ? "unknownExternalEffects"
                   : "acceptedOutcomeCorrectness",
             provenance: {
-              algorithm: "deterministic-fixture",
+              algorithm: "authority-reference-summary" as const,
               kind: "inferred",
               limitation: "conformance-only",
-              sourceDigests: [baseline.receipt.receiptDigest],
-              version: "1",
+              sources: [
+                exactEventMetricSource(
+                  baseline.events,
+                  "HARNESS_PREPARED_RUN_RECORDED"
+                ),
+              ],
+              version: "1" as const,
             },
             repetition: 1,
-            value:
-              scenarioId === "bounded-authorized-repair"
-                ? { authorizedRepairs: 1 }
-                : scenarioId === "unknown-outcome-no-redispatch"
-                  ? "unknown-no-redispatch"
-                  : "descriptive-only",
           },
         ],
         repetitions: [
@@ -2229,98 +2289,16 @@ describe("harness baseline and preparation authority", () => {
           prefix: "gaia-harness-public-promoted-control-",
         });
         roots.push(root);
-        const specPath = `${root}/spec.md`;
-        yield* fs.writeFileString(specPath, lessonSourceSpecBody);
-        const calls: Array<true> = [];
-        const execution = resolvedExecutionFor(
-          baselineRevision,
-          baselineSemanticContractDigest
-        );
-        const verificationServices = yield* failingVerificationServices();
-        const reference = yield* runSpecFile(specPath, {
-          rootDirectory: root,
-          verificationServices,
-          workerHarness: successfulProviderSpy(root, execution, calls),
-        });
-        const ownerRunId = parseRunId("run-owner00001");
-        const ownerPaths = yield* makeRunPaths(ownerRunId, {
-          rootDirectory: root,
-        });
-        yield* fs.makeDirectory(ownerPaths.root, { recursive: true });
-        yield* appendEvent(ownerRunId, ownerPaths, {
-          payload: { specPath: "input.md" },
-          type: "RUN_CREATED",
-        });
-        const baselineRunId = parseRunId("run-base000001");
-        const recordedManifest = yield* recordHarnessBaselineManifest(
-          yield* publicManifestInput(
-            root,
-            reference.runId,
-            ownerRunId,
-            baselineRunId,
-            "lesson-observation",
-            execution,
-            lessonSourceSpec
-          ),
-          { rootDirectory: root }
-        );
-        calls.length = 0;
-        yield* runSpecFile(specPath, {
-          harnessPreparationBinding: {
-            manifestRef: recordedManifest.ref,
-            repetition: 1,
-            role: "baseline",
-            runId: baselineRunId,
-          },
-          harnessProviderRegistry: successfulBoundProviderRegistry(
-            root,
-            execution,
-            calls
-          ),
-          rootDirectory: root,
-          verificationServices,
-        });
-        const projection = yield* promoteFixtureLessonFromRun(
+        const setup = yield* setupPublicAuthoritativeRuns(
           root,
-          baselineRunId
+          "lesson-observation",
+          getSharedPublicScenarioReferences()
         );
-        const treatmentRunId = parseRunId("run-treat00001");
-        yield* runSpecFile(specPath, {
-          harnessPreparationBinding: {
-            intervention: {
-              kind: "promotedControl",
-              lessonId: projection.lessonId,
-              projectionDigest: projection.projectionDigest,
-              version: 1,
-            },
-            manifestRef: recordedManifest.ref,
-            repetition: 1,
-            role: "treatment",
-            runId: treatmentRunId,
-          },
-          harnessProviderRegistry: successfulBoundProviderRegistry(
-            root,
-            execution,
-            calls
-          ),
-          rootDirectory: root,
-          verificationServices,
-        });
-        expect(calls).toHaveLength(2);
-        const baselinePaths = yield* makeRunPaths(baselineRunId, {
-          rootDirectory: root,
-        });
-        const treatmentPaths = yield* makeRunPaths(treatmentRunId, {
-          rootDirectory: root,
-        });
-        const baselineEvents = yield* readEvents(baselinePaths);
-        const treatmentEvents = yield* readEvents(treatmentPaths);
-        const prepared = Schema.decodeUnknownSync(HarnessPreparedRunReceiptV1)(
-          treatmentEvents.find(
-            ({ type }) => type === "HARNESS_PREPARED_RUN_RECORDED"
-          )?.payload["harnessPreparedRunReceipt"]
-        );
-        const workerStarted = treatmentEvents.find(
+        if (setup.selectedIntervention.kind !== "promotedControl")
+          return yield* Effect.die(
+            "The promoted-control fixture selected another intervention."
+          );
+        const workerStarted = setup.treatment.events.find(
           ({ type }) => type === "WORKER_STARTED"
         );
         if (workerStarted === undefined)
@@ -2331,29 +2309,25 @@ describe("harness baseline and preparation authority", () => {
         const episode = Schema.decodeUnknownSync(ModelInvocationEpisodeStartV1)(
           workerStarted.payload["modelInvocationEpisode"]
         );
-        const pair = yield* loadModelInvocationPair(treatmentPaths, episode);
-        const baselinePrepared = Schema.decodeUnknownSync(
-          HarnessPreparedRunReceiptV1
-        )(
-          baselineEvents.find(
-            ({ type }) => type === "HARNESS_PREPARED_RUN_RECORDED"
-          )?.payload["harnessPreparedRunReceipt"]
+        const pair = yield* loadModelInvocationPair(
+          setup.treatment.paths,
+          episode
         );
         expect(selection.lessons).toEqual([
           {
-            lessonId: projection.lessonId,
-            projectionDigest: projection.projectionDigest,
+            lessonId: setup.selectedIntervention.lessonId,
+            projectionDigest: setup.selectedIntervention.projectionDigest,
             version: 1,
           },
         ]);
-        expect(prepared.preparedInputs.contextDigest).toBe(
+        expect(setup.treatment.receipt.preparedInputs.contextDigest).toBe(
           selection.contextContentDigest
         );
         expect(pair.context.payload.contextContentDigest).toBe(
           selection.contextContentDigest
         );
-        expect(prepared.preparedInputs.contextDigest).not.toBe(
-          baselinePrepared.preparedInputs.contextDigest
+        expect(setup.treatment.receipt.preparedInputs.contextDigest).not.toBe(
+          setup.baseline.receipt.preparedInputs.contextDigest
         );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
     );
@@ -2556,6 +2530,312 @@ describe("harness baseline and preparation authority", () => {
 });
 
 describe("runtime-owned harness evaluation authority", () => {
+  it("binds operator-supplied evidence to the configured grader before append", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const makeInput = (
+          setup: Effect.Success<ReturnType<typeof setupAuthoritativeScenario>>,
+          grader: { readonly id: string; readonly version: string },
+          statement: string,
+          statementDigest = makeHarnessOperatorStatementDigestV1({
+            grader,
+            statement,
+          })
+        ) => ({
+          ...setup.input,
+          metrics: [
+            {
+              family: "humanAttention" as const,
+              provenance: {
+                graderId: grader.id,
+                graderVersion: grader.version,
+                kind: "operatorSupplied" as const,
+                recordedAt: "2026-07-26T00:00:09.000Z",
+                statement,
+                statementDigest,
+              },
+              repetition: 1,
+              value: "bounded-observation",
+            },
+          ],
+        });
+        const safeRoot = yield* fs.makeTempDirectoryScoped({
+          prefix: "gaia-harness-operator-safe-",
+        });
+        roots.push(safeRoot);
+        const safe = yield* setupAuthoritativeScenario(
+          safeRoot,
+          "implementation-completes"
+        );
+        const safeStatement = "The exact authoritative proof event completed.";
+        const recorded = yield* recordHarnessEvaluation(
+          makeInput(safe, safe.input.grader, safeStatement),
+          { rootDirectory: safeRoot }
+        );
+        expect(recorded.evaluation.metrics[0]?.provenance).toMatchObject({
+          graderId: safe.input.grader.id,
+          graderVersion: safe.input.grader.version,
+          statement: safeStatement,
+        });
+
+        const secretRoot = yield* fs.makeTempDirectoryScoped({
+          prefix: "gaia-harness-operator-safe-decode-",
+        });
+        roots.push(secretRoot);
+        const secretSetup = yield* setupAuthoritativeScenario(
+          secretRoot,
+          "implementation-completes"
+        );
+        const secretInput = makeInput(
+          secretSetup,
+          secretSetup.input.grader,
+          "Safe statement before boundary mutation."
+        );
+        const secretMetric = secretInput.metrics[0]!;
+        const credential = "github_pat_11AAABBBCCCDDDEEEFFF_1234567890abcdef";
+        const beforeEvents = yield* readEvents(secretSetup.treatment.paths);
+        const rejected = yield* Effect.flip(
+          recordHarnessEvaluation(
+            {
+              ...secretInput,
+              metrics: [
+                {
+                  ...secretMetric,
+                  provenance: {
+                    ...secretMetric.provenance,
+                    statement: `Observed ${credential}`,
+                  },
+                },
+              ],
+            },
+            { rootDirectory: secretRoot }
+          )
+        );
+        expect(rejected).toBeInstanceOf(GaiaRuntimeError);
+        if (!(rejected instanceof GaiaRuntimeError)) return;
+        expect(rejected.code).toBe("InvalidHarnessEvaluationRequest");
+        expect(rejected.message).toBe(
+          "Harness evaluation recording selectors are invalid."
+        );
+        expect(rejected.cause).toBeUndefined();
+        expect(String(rejected)).not.toContain(credential);
+        expect(JSON.stringify(rejected)).not.toContain(credential);
+        expect(yield* readEvents(secretSetup.treatment.paths)).toEqual(
+          beforeEvents
+        );
+        expect(
+          yield* fs.exists(secretSetup.treatment.paths.harnessEvaluation)
+        ).toBe(false);
+
+        for (const [name, mutate] of [
+          [
+            "grader-rebound",
+            (
+              setup: Effect.Success<
+                ReturnType<typeof setupAuthoritativeScenario>
+              >
+            ) => {
+              const grader = { id: "grader.rebound", version: "1" };
+              return makeInput(setup, grader, "Rebound grader statement.");
+            },
+          ],
+          [
+            "statement-digest-forged",
+            (
+              setup: Effect.Success<
+                ReturnType<typeof setupAuthoritativeScenario>
+              >
+            ) =>
+              makeInput(
+                setup,
+                setup.input.grader,
+                "Mutated statement.",
+                sha("f")
+              ),
+          ],
+          [
+            "statement-secret",
+            (
+              setup: Effect.Success<
+                ReturnType<typeof setupAuthoritativeScenario>
+              >
+            ) =>
+              makeInput(
+                setup,
+                setup.input.grader,
+                "Bearer live-token",
+                sha("f")
+              ),
+          ],
+          [
+            "statement-over-bound",
+            (
+              setup: Effect.Success<
+                ReturnType<typeof setupAuthoritativeScenario>
+              >
+            ) =>
+              makeInput(setup, setup.input.grader, "x".repeat(513), sha("f")),
+          ],
+        ] as const) {
+          const root = yield* fs.makeTempDirectoryScoped({
+            prefix: `gaia-harness-operator-${name}-`,
+          });
+          roots.push(root);
+          const setup = yield* setupAuthoritativeScenario(
+            root,
+            "implementation-completes"
+          );
+          expect(
+            (yield* recordHarnessEvaluation(mutate(setup), {
+              rootDirectory: root,
+            }).pipe(Effect.exit))._tag
+          ).toBe("Failure");
+          expect(
+            (yield* readEvents(setup.treatment.paths)).some(
+              ({ type }) => type === "HARNESS_EVALUATION_RECORDED"
+            )
+          ).toBe(false);
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    );
+  });
+
+  it("resolves every inferred source inside its exact cohort authority", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "gaia-harness-inferred-source-",
+        });
+        roots.push(root);
+        const setup = yield* setupAuthoritativeScenario(
+          root,
+          "implementation-completes"
+        );
+        const exact = exactEventMetricSource(
+          setup.baseline.events,
+          "HARNESS_PREPARED_RUN_RECORDED"
+        );
+        const exactArtifact = {
+          ...setup.baseline.receipt.artifacts.find(
+            ({ artifactId }) => artifactId === "run-contract"
+          )!,
+          kind: "artifact" as const,
+          owningEventSequence: exact.sequence,
+          runId: setup.baseline.runId,
+        };
+        const inputWith = (
+          sources: ReadonlyArray<typeof exact | typeof exactArtifact>
+        ) => ({
+          ...setup.input,
+          metrics: setup.input.metrics.map((metric) => ({
+            family: metric.family,
+            provenance: {
+              algorithm: "authority-reference-summary" as const,
+              kind: "inferred" as const,
+              limitation: "conformance-only",
+              sources,
+              version: "1" as const,
+            },
+            repetition: metric.repetition,
+          })),
+        });
+        const inferredRequest = inputWith([exact]);
+        const callerValued = {
+          ...inferredRequest,
+          metrics: inferredRequest.metrics.map((metric) => ({
+            ...metric,
+            value: "caller-attested",
+          })),
+        };
+        const unknownAlgorithm = {
+          ...inferredRequest,
+          metrics: inferredRequest.metrics.map((metric) => ({
+            ...metric,
+            provenance: {
+              ...metric.provenance,
+              algorithm: "caller-selected-algorithm",
+            },
+          })),
+        };
+        for (const rejectedInput of [callerValued, unknownAlgorithm]) {
+          const beforeEvents = yield* readEvents(setup.treatment.paths);
+          const rejected = yield* Effect.flip(
+            recordHarnessEvaluation(rejectedInput, { rootDirectory: root })
+          );
+          expect(rejected).toBeInstanceOf(GaiaRuntimeError);
+          expect((rejected as GaiaRuntimeError).code).toBe(
+            "InvalidHarnessEvaluationRequest"
+          );
+          expect(yield* readEvents(setup.treatment.paths)).toEqual(
+            beforeEvents
+          );
+          expect(
+            yield* fs.exists(setup.treatment.paths.harnessEvaluation)
+          ).toBe(false);
+        }
+        expect(
+          (yield* recordHarnessEvaluation(inputWith([exact, exactArtifact]), {
+            rootDirectory: root,
+          })).evaluation.metrics[0]?.provenance
+        ).toMatchObject({ sources: [exact, exactArtifact] });
+
+        for (const sources of [
+          [{ ...exact, sequence: exact.sequence + 100 }],
+          [{ ...exact, runId: parseRunId("run-missing001") }],
+          [{ ...exact, runId: setup.treatment.runId }],
+          [exact, exact],
+        ]) {
+          const invalidRoot = yield* fs.makeTempDirectoryScoped({
+            prefix: "gaia-harness-inferred-invalid-",
+          });
+          roots.push(invalidRoot);
+          const invalidSetup = yield* setupAuthoritativeScenario(
+            invalidRoot,
+            "implementation-completes"
+          );
+          const invalidExact = exactEventMetricSource(
+            invalidSetup.baseline.events,
+            "HARNESS_PREPARED_RUN_RECORDED"
+          );
+          const reboundSources = sources.map((source) => ({
+            ...source,
+            eventDigest: invalidExact.eventDigest,
+            runId:
+              source.runId === setup.treatment.runId
+                ? invalidSetup.treatment.runId
+                : source.runId === exact.runId
+                  ? invalidExact.runId
+                  : source.runId,
+            sequence:
+              source.sequence === exact.sequence
+                ? invalidExact.sequence
+                : source.sequence,
+          }));
+          expect(
+            (yield* recordHarnessEvaluation(
+              {
+                ...invalidSetup.input,
+                metrics: invalidSetup.input.metrics.map((metric) => ({
+                  ...metric,
+                  provenance: {
+                    algorithm: "authority-reference-summary",
+                    kind: "inferred" as const,
+                    limitation: "conformance-only",
+                    sources: reboundSources,
+                    version: "1",
+                  },
+                })),
+              },
+              { rootDirectory: invalidRoot }
+            ).pipe(Effect.exit))._tag
+          ).toBe("Failure");
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    );
+  });
+
   it("rejects caller-attested conditions and evidence at the recording boundary", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -2821,16 +3101,59 @@ describe("deterministic authoritative harness scenarios", () => {
     "verification-fails",
     "wait-expires-and-restarts",
   ] as const;
+  it("redacts secret-bearing invalid scenario inputs before storage resolution", async () => {
+    const credential = "github_pat_11AAABBBCCCDDDEEEFFF_1234567890abcdef";
+    const root = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        return yield* fs.makeTempDirectory({
+          prefix: "gaia-harness-scenario-safe-decode-",
+        });
+      }).pipe(Effect.provide(NodeServices.layer))
+    );
+    roots.push(root);
+    const providerLayer = Layer.succeed(HarnessEvaluationScenarioProvider, {
+      load: () =>
+        Effect.succeed({
+          input: {
+            credential,
+            metrics: [{ value: credential }],
+          },
+          options: { rootDirectory: root },
+        }),
+    });
+    const rejected = await Effect.runPromise(
+      Effect.flip(
+        evaluateHarnessScenario("implementation-completes").pipe(
+          Effect.provide(Layer.merge(providerLayer, NodeServices.layer))
+        )
+      )
+    );
+    expect(rejected).toBeInstanceOf(GaiaRuntimeError);
+    if (!(rejected instanceof GaiaRuntimeError)) return;
+    expect(rejected.code).toBe("HarnessEvaluationScenarioInvalid");
+    expect(rejected.message).toBe(
+      "The scenario provider returned invalid stable selectors."
+    );
+    expect(rejected.cause).toBeUndefined();
+    expect(String(rejected)).not.toContain(credential);
+    expect(JSON.stringify(rejected)).not.toContain(credential);
+    expect(
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return yield* fs.exists(`${root}/.gaia`);
+        }).pipe(Effect.provide(NodeServices.layer))
+      )
+    ).toBe(false);
+  });
+
   const fakeLayer = Layer.effect(
     HarnessEvaluationScenarioProvider,
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const byScenario = new Map<string, HarnessEvaluationScenarioFixture>();
-      const templateRoot = yield* fs.makeTempDirectory({
-        prefix: "gaia-harness-scenario-references-",
-      });
-      suiteRoots.push(templateRoot);
-      const shared = yield* setupPublicScenarioReferences(templateRoot);
+      const shared = getSharedPublicScenarioReferences();
       return {
         load: (scenarioId: (typeof scenarioIds)[number]) =>
           Effect.gen(function* () {
@@ -2877,6 +3200,25 @@ describe("deterministic authoritative harness scenarios", () => {
             expect(first.observedAtMillis).toBe(1_000);
             expect(second.observedAtMillis).toBe(2_000);
             expect(second.evaluation).toEqual(first.evaluation);
+            const provenance = first.evaluation.metrics[0]?.provenance;
+            expect(provenance?.kind).toBe("inferred");
+            if (provenance?.kind === "inferred")
+              expect(provenance.sources).toEqual([
+                expect.objectContaining({
+                  eventType: "HARNESS_PREPARED_RUN_RECORDED",
+                  kind: "event",
+                }),
+              ]);
+            expect(first.evaluation.metrics[0]?.value).toEqual({
+              artifactIds: [],
+              eventTypes: ["HARNESS_PREPARED_RUN_RECORDED"],
+              sourceCount: 1,
+            });
+            expect(
+              JSON.stringify(first.evaluation.metrics[0]?.value)
+            ).not.toMatch(
+              /caus|availab|relev|lesson|invok|retriev|correct|improv/iu
+            );
             if (scenarioId === "lesson-observation") {
               expect(first.evaluation.validity.state).toBe(
                 "insufficientEvidence"
@@ -2892,14 +3234,6 @@ describe("deterministic authoritative harness scenarios", () => {
             if (scenarioId === "wait-expires-and-restarts")
               expect(first.evaluation.validity.state).toBe(
                 "insufficientEvidence"
-              );
-            if (scenarioId === "bounded-authorized-repair")
-              expect(first.evaluation.metrics[0]?.value).toEqual({
-                authorizedRepairs: 1,
-              });
-            if (scenarioId === "unknown-outcome-no-redispatch")
-              expect(first.evaluation.metrics[0]?.value).toBe(
-                "unknown-no-redispatch"
               );
           })
       );

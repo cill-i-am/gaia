@@ -562,36 +562,97 @@ const ArtifactMetricProvenanceV1 = Schema.Struct({
   ),
   runId: RunIdSchema,
 });
+const credentialMaterialPattern =
+  /(?:bearer\s+\S+|(?:api[_-]?key|secret|token)\s*[:=]|(?:ghp|sk)-[A-Za-z0-9_-]+|(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]{20,})/iu;
+function containsCredentialMaterial(value: string) {
+  return credentialMaterialPattern.test(value);
+}
+const OperatorStatementV1 = Schema.NonEmptyString.pipe(
+  Schema.check(
+    Schema.isMaxLength(512),
+    Schema.makeFilter((statement) => !containsCredentialMaterial(statement), {
+      description: "bounded privacy-safe operator statement",
+    })
+  )
+);
+const HarnessOperatorStatementCommitmentInputV1 = Schema.Struct({
+  grader: GraderV1,
+  statement: OperatorStatementV1,
+});
+const decodeOperatorStatementCommitmentInput = Schema.decodeUnknownSync(
+  HarnessOperatorStatementCommitmentInputV1,
+  strict.parseOptions
+);
+
+/**
+ * Commits an operator statement to the exact configured grader identity.
+ */
+export function makeHarnessOperatorStatementDigestV1(
+  input: typeof HarnessOperatorStatementCommitmentInputV1.Encoded
+) {
+  return digest(
+    "gaia.harness-evaluation-operator-statement.v1",
+    decodeOperatorStatementCommitmentInput(input)
+  );
+}
+
 const OperatorMetricProvenanceV1 = Schema.Struct({
   graderId: BoundedIdentifierSchema,
   graderVersion: BoundedIdentifierSchema,
   kind: Schema.Literal("operatorSupplied"),
   recordedAt: TimestampSchema,
+  statement: OperatorStatementV1,
   statementDigest: LowerSha256Schema,
-});
-const InferredMetricProvenanceV1 = Schema.Struct({
-  algorithm: BoundedIdentifierSchema,
+}).pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (provenance) =>
+        provenance.statementDigest ===
+        makeHarnessOperatorStatementDigestV1({
+          grader: {
+            id: provenance.graderId,
+            version: provenance.graderVersion,
+          },
+          statement: provenance.statement,
+        }),
+      { description: "operator statement digest bound to the exact grader" }
+    )
+  )
+);
+const InferredMetricSourceV1 = Schema.Union([
+  EventMetricProvenanceV1,
+  ArtifactMetricProvenanceV1,
+]);
+function inferredMetricSourceKey(source: typeof InferredMetricSourceV1.Type) {
+  return bytesToHex(
+    canonicalV1("gaia.harness-evaluation-inferred-source-ref.v1", [source])
+  );
+}
+export const HarnessInferredMetricDerivationRequestV1 = Schema.Struct({
+  algorithm: Schema.Literal("authority-reference-summary"),
   kind: Schema.Literal("inferred"),
   limitation: BoundedIdentifierSchema,
-  sourceDigests: Schema.Array(LowerSha256Schema).pipe(
-    Schema.check(Schema.isMinLength(1), Schema.isMaxLength(32))
+  sources: Schema.Array(InferredMetricSourceV1).pipe(
+    Schema.check(Schema.isMinLength(1), Schema.isMaxLength(32)),
+    Schema.check(
+      Schema.makeFilter(
+        (sources) =>
+          new Set(sources.map(inferredMetricSourceKey)).size === sources.length,
+        { description: "unique exact inferred metric source refs" }
+      )
+    )
   ),
-  version: BoundedIdentifierSchema,
+  version: Schema.Literal("1"),
 });
 export const HarnessMetricProvenanceV1 = Schema.Union([
   EventMetricProvenanceV1,
   ArtifactMetricProvenanceV1,
   OperatorMetricProvenanceV1,
-  InferredMetricProvenanceV1,
+  HarnessInferredMetricDerivationRequestV1,
 ]);
 function isSafeNonCollapsingMetricValue(value: unknown): boolean {
   if (typeof value === "string")
-    return (
-      value.length <= 512 &&
-      !/(?:bearer\s+\S+|(?:api[_-]?key|secret|token)\s*[:=]|(?:ghp|sk)-[A-Za-z0-9_-]+)/iu.test(
-        value
-      )
-    );
+    return value.length <= 512 && !containsCredentialMaterial(value);
   if (Array.isArray(value))
     return value.length <= 64 && value.every(isSafeNonCollapsingMetricValue);
   if (value !== null && typeof value === "object")
@@ -623,6 +684,28 @@ const HarnessMetricV1 = Schema.Struct({
   ),
   value: HarnessMetricValueV1,
 });
+const DirectMetricProvenanceV1 = Schema.Union([
+  EventMetricProvenanceV1,
+  ArtifactMetricProvenanceV1,
+  OperatorMetricProvenanceV1,
+]);
+const HarnessMetricRecordingInputV1 = Schema.Union([
+  Schema.Struct({
+    family: HarnessMetricFamilySchema,
+    provenance: DirectMetricProvenanceV1,
+    repetition: Schema.Number.pipe(
+      Schema.check(Schema.isInt(), Schema.isGreaterThan(0))
+    ),
+    value: HarnessMetricValueV1,
+  }),
+  Schema.Struct({
+    family: HarnessMetricFamilySchema,
+    provenance: HarnessInferredMetricDerivationRequestV1,
+    repetition: Schema.Number.pipe(
+      Schema.check(Schema.isInt(), Schema.isGreaterThan(0))
+    ),
+  }),
+]);
 
 export const HarnessEvaluationInvalidReasonSchema = Schema.Literals([
   "conditionMismatch",
@@ -717,7 +800,7 @@ export const HarnessEvaluationRecordingInputV1Schema = Schema.Struct({
   limitations: Schema.Array(BoundedIdentifierSchema).pipe(
     Schema.check(Schema.isMaxLength(32))
   ),
-  metrics: Schema.Array(HarnessMetricV1).pipe(
+  metrics: Schema.Array(HarnessMetricRecordingInputV1).pipe(
     Schema.check(Schema.isMaxLength(4_096))
   ),
   repetitions: Schema.Array(HarnessEvaluationRecordingRepetitionV1).pipe(
