@@ -24,6 +24,9 @@ import {
   DeliveryPublicationConfirmed,
   DeliveryRemoteNamePublicSchema,
   deriveExplicitSpecItemDigest,
+  encodeAnyRunContractJson,
+  encodeAnyRunProofResultJson,
+  encodeFailureRepairReceiptJson,
   HarnessProfileIdSchema,
   HarnessSessionIdSchema,
   ModelInvocationEpisodeStartV1,
@@ -46,10 +49,26 @@ import {
   encodeWorkerDesktopOriginCorrelationReceiptJson,
   encodeWorkerRecoveryReceiptJson,
   HarnessCapabilities,
+  HarnessBaselineManifestRefV1,
   HarnessLaunchObservationV1,
   HarnessEnvironmentReceiptArtifactRefV1,
   digestHarnessEnvironmentContract,
   HarnessProviderDescriptor,
+  FailureRepairIntent,
+  FailureRepairDispatchAttempted,
+  FailureRepairTurnCompleted,
+  FailureRepairVerified,
+  FactoryLessonReviewReceiptV1,
+  makeFailureDigestV1,
+  makeFactoryLessonCandidateV1,
+  makeFactoryLessonReviewReceiptV1,
+  makeNoRawTelemetryAttestationV1,
+  makeProofEvidenceIdV2,
+  makeRunEvent,
+  makeRunContractV2,
+  makeRunProofResultV2,
+  makeVerificationCommandRequestDigest,
+  ModelInvocationObservationV1,
   parseFailureRepairReceipt,
   makeRunControlActionBindingDigest,
   parseMergeDecisionV2,
@@ -58,9 +77,12 @@ import {
   parseRunControlAction,
   parseRunControlActionId,
   parseRunId,
+  parseRunEventSequence,
+  parseMarkdownSpec,
   parseRunProofResult,
   parseHarnessInteractionId,
   parseHarnessItemId,
+  parseHarnessProfileId,
   parseHarnessProviderId,
   parseHarnessSessionId,
   parseHarnessTurnId,
@@ -69,6 +91,7 @@ import {
   parseWorkerRecoveryActionId,
   parseWorkerRecoveryDigest,
   ResolvedHarnessExecution,
+  ProofClaimResultV2Schema,
   snapshotFromReplay,
 } from "@gaia/core";
 import {
@@ -134,7 +157,9 @@ import {
   actOnWorkerDesktopOriginCorrelation,
   actOnWorkerCorrelationReconciliation,
   actOnWorkerContinuation,
+  continuePreparedStrictV2HarnessRun,
   continueServerRun,
+  prepareStrictV2HarnessRun,
   prepareFactoryRunAcceptance,
   reconcileInterruptedServerRuns,
   readWorkerEnvironmentEpochComparison,
@@ -4229,6 +4254,409 @@ describe("server workflows", () => {
     );
 
     it.effect(
+      "prepares and continues one accepted strict-V2 factory run without a reference run",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-strict-v2-same-run-",
+          });
+          let providerDispatches = 0;
+          const provider: HarnessProvider = {
+            ...acceptanceProvider,
+            createSession: (...args) => {
+              providerDispatches += 1;
+              return acceptanceProvider.createSession(...args);
+            },
+            resumeSession: (...args) => {
+              providerDispatches += 1;
+              return acceptanceProvider.resumeSession(...args);
+            },
+          };
+          const options = {
+            harnessProviderRegistry: makeHarnessProviderRegistry([
+              {
+                environmentAssignment: () =>
+                  Effect.succeed(workerEnvironmentAssignment()),
+                profileId: codexAppServerExecutionSelection.harnessProfileId,
+                provider,
+              },
+            ]),
+            rootDirectory: cwd,
+          };
+          const accepted = yield* acceptPreparedFactoryRun(
+            yield* prepareFactoryRunAcceptance(
+              {
+                execution: codexAppServerExecutionSelection,
+                workflow: "issueDelivery",
+                workItem: {
+                  description: readFileSync(
+                    `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+                    "utf8"
+                  ),
+                  kind: "issue",
+                  title: "Prepare one strict V2 run",
+                },
+              },
+              options
+            ),
+            options
+          );
+          const prepared = yield* prepareStrictV2HarnessRun(
+            accepted.runId,
+            {
+              evaluationId: "evaluation-implementation-completes",
+              externalConditionDescriptor: "test-owned-local-host",
+              grader: { id: "grader.fixed", version: "1" },
+              interventionWithheld: "runtimeRevision",
+              limitations: ["singleLocalHost"],
+              manifestId: "same-run-strict-v2",
+              role: "baseline",
+              scenario: { id: "implementation-completes", version: 1 },
+              stopConditions: ["unknownExternalOutcome"],
+            },
+            options
+          );
+          const events = (yield* readLocalRunEvents(accepted.runId, options))
+            .events;
+          assert.strictEqual(
+            prepared.receipt.preparationBinding.runId,
+            accepted.runId
+          );
+          assert.strictEqual(
+            prepared.receipt.manifestRef.ownerRunId,
+            accepted.runId
+          );
+          assert.strictEqual(
+            events.filter(
+              ({ type }) => type === "HARNESS_BASELINE_MANIFEST_RECORDED"
+            ).length,
+            1
+          );
+          assert.strictEqual(
+            events.filter(
+              ({ type }) => type === "HARNESS_PREPARED_RUN_RECORDED"
+            ).length,
+            1
+          );
+          const replayed = yield* prepareStrictV2HarnessRun(
+            accepted.runId,
+            {
+              evaluationId: "evaluation-implementation-completes",
+              externalConditionDescriptor: "test-owned-local-host",
+              grader: { id: "grader.fixed", version: "1" },
+              interventionWithheld: "runtimeRevision",
+              limitations: ["singleLocalHost"],
+              manifestId: "same-run-strict-v2",
+              role: "baseline",
+              scenario: { id: "implementation-completes", version: 1 },
+              stopConditions: ["unknownExternalOutcome"],
+            },
+            options
+          );
+          const replayedEvents = (yield* readLocalRunEvents(
+            accepted.runId,
+            options
+          )).events;
+          assert.deepEqual(replayed.receiptRef, prepared.receiptRef);
+          assert.strictEqual(
+            replayedEvents.filter(
+              ({ type }) => type === "HARNESS_BASELINE_MANIFEST_RECORDED"
+            ).length,
+            1
+          );
+          assert.strictEqual(
+            replayedEvents.filter(
+              ({ type }) => type === "HARNESS_PREPARED_RUN_RECORDED"
+            ).length,
+            1
+          );
+          const conflict = yield* Effect.flip(
+            prepareStrictV2HarnessRun(
+              accepted.runId,
+              {
+                evaluationId: "evaluation-implementation-completes",
+                externalConditionDescriptor: "different-test-owned-host",
+                grader: { id: "grader.fixed", version: "1" },
+                interventionWithheld: "runtimeRevision",
+                limitations: ["singleLocalHost"],
+                manifestId: "same-run-strict-v2",
+                role: "baseline",
+                scenario: { id: "implementation-completes", version: 1 },
+                stopConditions: ["unknownExternalOutcome"],
+              },
+              options
+            )
+          );
+          assert.strictEqual(
+            conflict.code,
+            "HarnessPreparedRunRequestConflict"
+          );
+          assert.deepEqual(
+            (yield* readLocalRunEvents(accepted.runId, options)).events,
+            replayedEvents
+          );
+          assert.strictEqual(
+            events.some(({ type }) => type === "WORKER_STARTED"),
+            false
+          );
+          assert.strictEqual(providerDispatches, 0);
+
+          const error = yield* Effect.flip(
+            continuePreparedStrictV2HarnessRun(accepted.runId, {
+              ...options,
+              reviewer: blockingReviewer(),
+            })
+          );
+          assert.strictEqual(error.code, "ReviewBlocked");
+          assert.strictEqual(providerDispatches, 0);
+        })
+    );
+
+    it.effect(
+      "prepares both strict-V2 treatment families through the public same-run seam",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-strict-v2-public-treatments-",
+          });
+          let providerDispatches = 0;
+          let reviewerCalls = 0;
+          const provider: HarnessProvider = {
+            ...acceptanceProvider,
+            createSession: (...args) => {
+              providerDispatches += 1;
+              return acceptanceProvider.createSession(...args);
+            },
+            resumeSession: (...args) => {
+              providerDispatches += 1;
+              return acceptanceProvider.resumeSession(...args);
+            },
+          };
+          const baseRegistry = makeHarnessProviderRegistry([
+            {
+              environmentAssignment: () =>
+                Effect.succeed(workerEnvironmentAssignment()),
+              profileId: codexAppServerExecutionSelection.harnessProfileId,
+              provider,
+            },
+          ]);
+          const revisedRegistry = makeHarnessProviderRegistry([
+            {
+              environmentAssignment: () =>
+                Effect.succeed(runtimeRevisionEnvironmentAssignment()),
+              profileId: codexAppServerExecutionSelection.harnessProfileId,
+              provider,
+            },
+          ]);
+          const factoryInput = (title: string) => ({
+            execution: codexAppServerExecutionSelection,
+            workflow: "issueDelivery" as const,
+            workItem: {
+              description: readFileSync(
+                `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+                "utf8"
+              ),
+              kind: "issue" as const,
+              title,
+            },
+          });
+          const accept = (
+            title: string,
+            harnessProviderRegistry = baseRegistry
+          ) =>
+            prepareFactoryRunAcceptance(factoryInput(title), {
+              harnessProviderRegistry,
+              rootDirectory: cwd,
+            }).pipe(
+              Effect.flatMap((prepared) =>
+                acceptPreparedFactoryRun(prepared, {
+                  harnessProviderRegistry,
+                  rootDirectory: cwd,
+                })
+              )
+            );
+          const baselineOptions = {
+            harnessProviderRegistry: baseRegistry,
+            rootDirectory: cwd,
+          };
+          const revisionBaseline = yield* accept("Runtime revision baseline");
+          const revisionBaselinePrepared = yield* prepareStrictV2HarnessRun(
+            revisionBaseline.runId,
+            strictV2BaselineRequest("runtimeRevision", "runtime-revision"),
+            baselineOptions
+          );
+          const revisionTreatment = yield* accept(
+            "Runtime revision treatment",
+            revisedRegistry
+          );
+          const revisionRequest = {
+            intervention: {
+              baselineRuntimeRevision:
+                revisionBaselinePrepared.receipt.preparedInputs.runtimeRevision,
+              baselineSemanticContractDigest:
+                revisionBaselinePrepared.receipt.preparedInputs
+                  .providerInterfaceDigest,
+              kind: "runtimeRevision" as const,
+              treatmentRuntimeRevision:
+                runtimeRevisionEnvironmentAssignment().runtimeSource.revision,
+              treatmentSemanticContractDigest:
+                runtimeRevisionEnvironmentAssignment().adapter.contractDigest,
+              version: 1 as const,
+            },
+            manifestRef: revisionBaselinePrepared.receipt.manifestRef,
+            repetition: 1,
+            role: "treatment" as const,
+          };
+          const revisionPrepared = yield* prepareStrictV2HarnessRun(
+            revisionTreatment.runId,
+            revisionRequest,
+            { harnessProviderRegistry: revisedRegistry, rootDirectory: cwd }
+          );
+          const revisionDelta = Object.keys(
+            revisionPrepared.receipt.preparedInputs
+          ).filter(
+            (key) =>
+              revisionPrepared.receipt.preparedInputs[
+                key as keyof typeof revisionPrepared.receipt.preparedInputs
+              ] !==
+              revisionBaselinePrepared.receipt.preparedInputs[
+                key as keyof typeof revisionBaselinePrepared.receipt.preparedInputs
+              ]
+          );
+          assert.deepEqual(revisionDelta, [
+            "providerInterfaceDigest",
+            "runtimeRevision",
+          ]);
+          const revisionReplayed = yield* prepareStrictV2HarnessRun(
+            revisionTreatment.runId,
+            revisionRequest,
+            { harnessProviderRegistry: revisedRegistry, rootDirectory: cwd }
+          );
+          assert.deepEqual(
+            revisionReplayed.receiptRef,
+            revisionPrepared.receiptRef
+          );
+          const revisionConflict = yield* Effect.flip(
+            prepareStrictV2HarnessRun(
+              revisionTreatment.runId,
+              {
+                ...revisionRequest,
+                intervention: {
+                  ...revisionRequest.intervention,
+                  treatmentSemanticContractDigest: "e".repeat(64),
+                },
+              },
+              { harnessProviderRegistry: revisedRegistry, rootDirectory: cwd }
+            )
+          );
+          assert.strictEqual(
+            revisionConflict.code,
+            "HarnessPreparedRunRequestConflict"
+          );
+
+          const lesson = yield* seedReviewedFactoryLesson(cwd);
+          const promotedBaseline = yield* accept("Promoted control baseline");
+          const promotedBaselinePrepared = yield* prepareStrictV2HarnessRun(
+            promotedBaseline.runId,
+            strictV2BaselineRequest("promotedControl", "promoted-control"),
+            baselineOptions
+          );
+          const promotedTreatment = yield* accept("Promoted control treatment");
+          const promotedRequest = {
+            intervention: {
+              kind: "promotedControl" as const,
+              lessonId: lesson.lessonId,
+              projectionDigest: lesson.projectionDigest,
+              version: 1 as const,
+            },
+            manifestRef: promotedBaselinePrepared.receipt.manifestRef,
+            repetition: 1,
+            role: "treatment" as const,
+          };
+          const promotedPrepared = yield* prepareStrictV2HarnessRun(
+            promotedTreatment.runId,
+            promotedRequest,
+            baselineOptions
+          );
+          assert.strictEqual(
+            promotedPrepared.receipt.lessonSelectionDigest === undefined,
+            false
+          );
+          assert.strictEqual(
+            promotedPrepared.receipt.preparationBinding.role,
+            "treatment"
+          );
+          if (promotedPrepared.receipt.preparationBinding.role !== "treatment")
+            return yield* Effect.die(
+              "Expected promoted-control treatment binding."
+            );
+          assert.deepEqual(
+            promotedPrepared.receipt.preparationBinding.intervention,
+            promotedRequest.intervention
+          );
+
+          const rebound = yield* Effect.flip(
+            prepareStrictV2HarnessRun(
+              promotedBaseline.runId,
+              promotedRequest,
+              baselineOptions
+            )
+          );
+          assert.strictEqual(rebound.code, "HarnessPreparedRunRequestConflict");
+          const reboundTarget = yield* accept(
+            "Promoted control rebound target"
+          );
+          const reboundManifest = yield* Effect.flip(
+            prepareStrictV2HarnessRun(
+              reboundTarget.runId,
+              {
+                ...promotedRequest,
+                manifestRef: Schema.decodeUnknownSync(
+                  HarnessBaselineManifestRefV1
+                )({
+                  ...promotedRequest.manifestRef,
+                  manifestDigest: "f".repeat(64),
+                }),
+              },
+              baselineOptions
+            )
+          );
+          assert.strictEqual(
+            reboundManifest.code,
+            "HarnessBaselineManifestRefRebound"
+          );
+          assert.strictEqual(providerDispatches, 0);
+          assert.strictEqual(reviewerCalls, 0);
+
+          const reviewer = blockingReviewer();
+          const continuation = yield* Effect.flip(
+            continuePreparedStrictV2HarnessRun(promotedTreatment.runId, {
+              ...baselineOptions,
+              reviewer: {
+                ...reviewer,
+                run: (request) =>
+                  Effect.sync(() => {
+                    reviewerCalls += 1;
+                  }).pipe(Effect.andThen(reviewer.run(request))),
+              },
+            })
+          );
+          assert.strictEqual(continuation.code, "ReviewBlocked");
+          assert.strictEqual(reviewerCalls, 1);
+          assert.strictEqual(providerDispatches, 0);
+          assert.strictEqual(
+            (yield* readLocalRunEvents(
+              promotedTreatment.runId,
+              baselineOptions
+            )).events.some(({ type }) => type === "WORKER_STARTED"),
+            false
+          );
+        })
+    );
+
+    it.effect(
       "preserves an accepted factory V2 contract through continuation before provider dispatch",
       () =>
         Effect.gen(function* () {
@@ -4601,6 +5029,445 @@ function workerEnvironmentAssignment() {
     },
     version: 1 as const,
   };
+}
+
+function runtimeRevisionEnvironmentAssignment() {
+  const assignment = workerEnvironmentAssignment();
+  return {
+    ...assignment,
+    adapter: {
+      ...assignment.adapter,
+      contractDigest: "d".repeat(64),
+    },
+    runtimeSource: {
+      ...assignment.runtimeSource,
+      revision: "d".repeat(40),
+    },
+  };
+}
+
+function strictV2BaselineRequest(
+  interventionWithheld: "promotedControl" | "runtimeRevision",
+  suffix: string
+) {
+  return {
+    evaluationId: `evaluation-${suffix}`,
+    externalConditionDescriptor: "test-owned-local-host",
+    grader: { id: "grader.fixed", version: "1" },
+    interventionWithheld,
+    limitations: ["singleLocalHost"] as const,
+    manifestId: `same-run-strict-v2-${suffix}`,
+    role: "baseline" as const,
+    scenario: { id: "implementation-completes", version: 1 },
+    stopConditions: ["unknownExternalOutcome"] as const,
+  };
+}
+
+function seedReviewedFactoryLesson(rootDirectory: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const sourceRunId = parseRunId("run-lessn00001");
+    const spec = parseMarkdownSpec(
+      readFileSync(
+        `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+        "utf8"
+      ),
+      "strict-V2 promoted-control source"
+    );
+    const contract = makeRunContractV2({
+      baseDigest: "1".repeat(64),
+      baseIdentity: { kind: "unversionedSnapshot", workspacePath: "." },
+      runId: sourceRunId,
+      spec,
+      targetDigest: "2".repeat(64),
+      targetIdentity: { kind: "unversionedWorkspace", workspacePath: "." },
+    });
+    const commandClaim = contract.proofClaims.find(
+      (claim) => claim.kind === "command"
+    );
+    if (commandClaim === undefined)
+      return yield* Effect.die("Expected a command claim in the V2 fixture.");
+    const candidate = makeFactoryLessonCandidateV1({
+      applicability: { episodeRole: "workerInitial", version: 1 },
+      carryingCostOwner: "@gaia/runtime",
+      compactLesson:
+        "Bind the claim to the current owning source and its explicit authority boundary.",
+      durableOwner: "@gaia/runtime/strict-v2-preparation",
+      durableOwnerDigest: "e".repeat(64),
+      durableOwnerVersion: "gaia.strict-v2-preparation.v1",
+      expectedEffect:
+        "A promoted control transports one authenticated lesson into the worker context.",
+      retirementCondition:
+        "Retire after the versioned successor proves every consumer migrated.",
+      version: 1,
+    });
+    const digest = makeFailureDigestV1({
+      attempt: 1,
+      evidenceRefs: [
+        {
+          evidenceId: makeProofEvidenceIdV2("command", ["6".repeat(64)]),
+          kind: "command",
+          receiptDigest: "6".repeat(64),
+          requestDigest: makeVerificationCommandRequestDigest(
+            commandClaim.command
+          ),
+          status: "nonZero",
+          terminalSequence: parseRunEventSequence(4),
+        },
+      ],
+      failedRef: {
+        claimId: commandClaim.claimId,
+        kind: "claim",
+      },
+      maxAttempts: 2,
+      outcomeCertainty: "confirmed",
+      retryability: "repairable",
+      stage: "verifying",
+      tag: "verificationClaimFailed",
+    });
+    const failureRepair = FailureRepairIntent.make({
+      digest,
+      episodeKey: `failureRepair:${digest.fingerprint}:1`,
+      failedProofResultSequence: parseRunEventSequence(5),
+      runId: sourceRunId,
+      state: "intentRecorded",
+    });
+    const attempted = FailureRepairDispatchAttempted.make({
+      ...failureRepair,
+      state: "dispatchAttempted",
+    });
+    const completed = FailureRepairTurnCompleted.make({
+      ...failureRepair,
+      state: "turnCompleted",
+      terminalEventSequence: parseRunEventSequence(10),
+    });
+    const verified = FailureRepairVerified.make({
+      ...failureRepair,
+      proofResultSequence: parseRunEventSequence(12),
+      state: "verified",
+    });
+    const proof = (
+      passed: boolean,
+      contentAuthoritySequence: number,
+      sequence: number
+    ) =>
+      makeRunProofResultV2({
+        contentAuthoritySequence,
+        contract,
+        observedTargetDigest: contract.targetDigest,
+        recordedBy: {
+          runId: sourceRunId,
+          sequence,
+          type: "RUN_PROOF_RESULT_RECORDED",
+        },
+        results: Schema.decodeUnknownSync(
+          Schema.Array(ProofClaimResultV2Schema)
+        )(
+          contract.proofClaims.map((claim) =>
+            claim.claimId === commandClaim.claimId
+              ? passed
+                ? {
+                    claimId: claim.claimId,
+                    evidence: [
+                      {
+                        evidenceId: makeProofEvidenceIdV2("command", [
+                          "4".repeat(64),
+                        ]),
+                        kind: "command",
+                        receiptDigest: "4".repeat(64),
+                        requestDigest: makeVerificationCommandRequestDigest(
+                          commandClaim.command
+                        ),
+                        status: "succeeded",
+                        terminalSequence: parseRunEventSequence(
+                          contentAuthoritySequence
+                        ),
+                      },
+                    ],
+                    status: "passed",
+                  }
+                : {
+                    claimId: claim.claimId,
+                    evidence: [
+                      {
+                        evidenceId: makeProofEvidenceIdV2("command", [
+                          "6".repeat(64),
+                        ]),
+                        kind: "command",
+                        receiptDigest: "6".repeat(64),
+                        requestDigest: makeVerificationCommandRequestDigest(
+                          commandClaim.command
+                        ),
+                        status: "nonZero",
+                        terminalSequence: parseRunEventSequence(4),
+                      },
+                    ],
+                    reason: "The exact command returned a non-zero status.",
+                    status: "failed",
+                  }
+              : claim.kind === "human-judgment"
+                ? {
+                    claimId: claim.claimId,
+                    reason: "An explicit paired-review decision is required.",
+                    requiredAuthority: "human",
+                    status: "requires-decision",
+                  }
+                : {
+                    claimId: claim.claimId,
+                    reason: "Post-publication evidence is not available yet.",
+                    status: "not-run",
+                  }
+          )
+        ),
+      });
+    const episodeId = createHash("sha256")
+      .update(failureRepair.episodeKey)
+      .digest("hex");
+    const modelContextIdentityDigest = createHash("sha256")
+      .update(`${failureRepair.episodeKey}:context`)
+      .digest("hex");
+    const modelInvocationIdentityDigest = createHash("sha256")
+      .update(`${failureRepair.episodeKey}:invocation`)
+      .digest("hex");
+    const artifactId = (kind: string, identityDigest: string) =>
+      `mmf1_${createHash("sha256")
+        .update(`${kind}\0${identityDigest}`)
+        .digest("hex")}`;
+    const modelEpisode = {
+      contextRef: {
+        artifactId: artifactId(
+          "modelContextManifest",
+          modelContextIdentityDigest
+        ),
+        bodyDigest: "f".repeat(64),
+        byteLength: 123,
+        episodeKey: failureRepair.episodeKey,
+        identityDigest: modelContextIdentityDigest,
+        kind: "modelContextManifest" as const,
+        path: `model-invocations/episode1_${episodeId}/context-manifest.json`,
+        runId: sourceRunId,
+        version: 1 as const,
+      },
+      episodeKey: failureRepair.episodeKey,
+      invocationRef: {
+        artifactId: artifactId(
+          "modelInvocationManifest",
+          modelInvocationIdentityDigest
+        ),
+        bodyDigest: "f".repeat(64),
+        byteLength: 123,
+        episodeKey: failureRepair.episodeKey,
+        identityDigest: modelInvocationIdentityDigest,
+        kind: "modelInvocationManifest" as const,
+        path: `model-invocations/episode1_${episodeId}/invocation-manifest.json`,
+        runId: sourceRunId,
+        version: 1 as const,
+      },
+      version: 1 as const,
+    };
+    const repairEvent = (
+      receipt: Parameters<typeof encodeFailureRepairReceiptJson>[0],
+      sequence: number
+    ) =>
+      makeRunEvent({
+        payload: {
+          failureRepair: encodeFailureRepairReceiptJson(receipt),
+          ...(receipt.state === "intentRecorded"
+            ? {
+                modelInvocationEpisode: modelEpisode,
+              }
+            : {}),
+        },
+        runId: sourceRunId,
+        sequence,
+        timestamp: fixtureTimestamp(sequence),
+        type: "FAILURE_REPAIR_RECORDED",
+      });
+    const review = makeFactoryLessonReviewReceiptV1({
+      attestation: makeNoRawTelemetryAttestationV1({
+        candidateDigest: candidate.candidateDigest,
+        reviewerRef: "linear-comment:test-reviewed-lesson",
+      }),
+      candidate,
+      decision: "accepted",
+      source: {
+        eventSequence: parseRunEventSequence(6),
+        failureFingerprint: digest.fingerprint,
+        runId: sourceRunId,
+        type: "FAILURE_REPAIR_RECORDED",
+        version: 1,
+      },
+    });
+    const paths = yield* makeRunPaths(sourceRunId, { rootDirectory });
+    yield* fs.makeDirectory(paths.root, { recursive: true });
+    const events = [
+      makeRunEvent({
+        payload: {
+          execution: {
+            resolved: Schema.encodeSync(ResolvedHarnessExecution)(
+              ResolvedHarnessExecution.make({
+                capabilities: testHarnessCapabilities,
+                executionMode: "local",
+                harnessProfileId: parseHarnessProfileId("codexAppServer"),
+                provider: testHarnessProvider.descriptor,
+                version: "test-1",
+              })
+            ),
+            selection: { harnessProfileId: "codexAppServer" },
+          },
+          modelInvocationProtocol: "v1",
+          specPath: "input.md",
+          workflow: "issueDelivery",
+          workItem: {
+            description: "Seed the strict-V2 promoted-control fixture.",
+            kind: "issue",
+            title: "Seed reviewed lesson",
+          },
+        },
+        runId: sourceRunId,
+        sequence: 1,
+        timestamp: "2026-07-27T00:00:01.000Z",
+        type: "RUN_CREATED",
+      }),
+      makeRunEvent({
+        payload: { contract: encodeAnyRunContractJson(contract) },
+        runId: sourceRunId,
+        sequence: 2,
+        timestamp: fixtureTimestamp(2),
+        type: "RUN_CONTRACT_RECORDED",
+      }),
+      makeRunEvent({
+        payload: { workspacePath: "workspace" },
+        runId: sourceRunId,
+        sequence: 3,
+        timestamp: fixtureTimestamp(3),
+        type: "WORKSPACE_PREPARED",
+      }),
+      makeRunEvent({
+        payload: { workerResultPath: "worker-result.json" },
+        runId: sourceRunId,
+        sequence: 4,
+        timestamp: fixtureTimestamp(4),
+        type: "WORKER_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: {
+          result: encodeAnyRunProofResultJson(proof(false, 4, 5)),
+          verificationResultPath: "verification/run-proof-5.json",
+        },
+        runId: sourceRunId,
+        sequence: 5,
+        timestamp: fixtureTimestamp(5),
+        type: "RUN_PROOF_RESULT_RECORDED",
+      }),
+      repairEvent(failureRepair, 6),
+      repairEvent(attempted, 7),
+      makeRunEvent({
+        payload: {
+          event: {
+            capabilities: Schema.encodeSync(HarnessCapabilities)(
+              testHarnessCapabilities
+            ),
+            kind: "sessionStarted",
+            provider: Schema.encodeSync(HarnessProviderDescriptor)(
+              testHarnessProvider.descriptor
+            ),
+            sessionId: `session-${sourceRunId}`,
+            state: "running",
+          },
+        },
+        runId: sourceRunId,
+        sequence: 8,
+        timestamp: fixtureTimestamp(8),
+        type: "HARNESS_SESSION_EVENT_RECORDED",
+      }),
+      makeRunEvent({
+        payload: {
+          event: {
+            kind: "turnStarted",
+            sessionId: `session-${sourceRunId}`,
+            turnId: "failure-repair-turn-1",
+          },
+          modelInvocationObservation: Schema.encodeSync(
+            ModelInvocationObservationV1
+          )(
+            ModelInvocationObservationV1.make({
+              episodeKey: failureRepair.episodeKey,
+              kind: "offered",
+              source: "codexAppServerTransport",
+              trust: "high",
+              version: 1,
+            })
+          ),
+        },
+        runId: sourceRunId,
+        sequence: 9,
+        timestamp: fixtureTimestamp(9),
+        type: "HARNESS_SESSION_EVENT_RECORDED",
+      }),
+      makeRunEvent({
+        payload: {
+          event: {
+            kind: "turnCompleted",
+            sessionId: `session-${sourceRunId}`,
+            status: "completed",
+            turnId: "failure-repair-turn-1",
+          },
+        },
+        runId: sourceRunId,
+        sequence: 10,
+        timestamp: fixtureTimestamp(10),
+        type: "HARNESS_SESSION_EVENT_RECORDED",
+      }),
+      repairEvent(completed, 11),
+      makeRunEvent({
+        payload: {
+          result: encodeAnyRunProofResultJson(proof(true, 11, 12)),
+          verificationResultPath: "verification/run-proof-12.json",
+        },
+        runId: sourceRunId,
+        sequence: 12,
+        timestamp: fixtureTimestamp(12),
+        type: "RUN_PROOF_RESULT_RECORDED",
+      }),
+      repairEvent(verified, 13),
+      makeRunEvent({
+        runId: sourceRunId,
+        sequence: 14,
+        timestamp: fixtureTimestamp(14),
+        type: "REPORT_STARTED",
+      }),
+      makeRunEvent({
+        payload: { reportPath: "report.md" },
+        runId: sourceRunId,
+        sequence: 15,
+        timestamp: fixtureTimestamp(15),
+        type: "REPORT_COMPLETED",
+      }),
+      makeRunEvent({
+        payload: {
+          factoryLessonReview: Schema.encodeSync(FactoryLessonReviewReceiptV1)(
+            review
+          ),
+        },
+        runId: sourceRunId,
+        sequence: 16,
+        timestamp: fixtureTimestamp(16),
+        type: "FACTORY_LESSON_REVIEW_RECORDED",
+      }),
+    ];
+    yield* fs.writeFileString(
+      paths.events,
+      `${events.map((event) => JSON.stringify(event)).join("\n")}\n`
+    );
+    if (review.decision !== "accepted")
+      return yield* Effect.die("Expected an accepted factory lesson review.");
+    return review.projection;
+  });
+}
+
+function fixtureTimestamp(sequence: number) {
+  return `2026-07-27T00:00:${sequence.toString().padStart(2, "0")}.000Z`;
 }
 
 const acceptanceProvider: HarnessProvider = {

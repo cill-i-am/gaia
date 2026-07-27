@@ -125,6 +125,10 @@ import {
 import type { GitHubCommandRunner } from "./github-publisher.js";
 import type { DeliveryFeedbackSmokeAuthorization } from "./github-pull-request-provider.js";
 import {
+  readStrictV2HarnessPreparedRun,
+  type StrictV2HarnessPreparationRequest,
+} from "./harness-evaluation.js";
+import {
   HarnessProfileNotFoundError,
   HarnessEnvironmentAssignmentError,
   issueDeliveryWorkerHarnessCapabilities,
@@ -137,7 +141,10 @@ import {
   HarnessIncompatibleError,
   HarnessUnavailableError,
 } from "./harness-session.js";
-import { makeProcessHarnessConfig } from "./harness.js";
+import {
+  codexAppServerHarnessName,
+  makeProcessHarnessConfig,
+} from "./harness.js";
 import { interactiveSessionHarness } from "./interactive-harness.js";
 import {
   assertFactoryRunAcceptanceSecretSafe,
@@ -173,6 +180,7 @@ import {
   type WorkerContinuationState,
   type WorkflowOptions,
 } from "./workflows.js";
+export type { StrictV2HarnessPreparationRequest } from "./harness-evaluation.js";
 import { observeWorkspaceStructuralDigest } from "./workspace-snapshot.js";
 import {
   localDirectoryWorkspaceSource,
@@ -1518,6 +1526,59 @@ function acceptFactoryRunUnlocked(
   });
 }
 
+/**
+ * Public, provider-free phase one. It materializes one accepted factory run
+ * and records its strict-V2 manifest and receipt before any worker or review.
+ */
+export function prepareStrictV2HarnessRun(
+  runId: RunId,
+  request: StrictV2HarnessPreparationRequest,
+  options: ServerWorkflowOptions = {}
+) {
+  return readStrictV2HarnessPreparedRun(runId, options, request).pipe(
+    Effect.catchIf(
+      (error): error is GaiaRuntimeError =>
+        error instanceof GaiaRuntimeError &&
+        error.code === "HarnessPreparedRunAuthorityMissing",
+      () =>
+        continueServerRun(runId, {
+          ...options,
+          stopAfterHarnessPreparation: true,
+          strictV2HarnessPreparation: request,
+        }).pipe(
+          Effect.flatMap(() => readStrictV2HarnessPreparedRun(runId, options))
+        )
+    ),
+    Effect.mapError(toServerWorkflowError("StrictV2HarnessPreparationFailed"))
+  );
+}
+
+/**
+ * Public phase two. The binding is reloaded from the one event-owned receipt;
+ * callers cannot supply a digest or redirect the run to another cohort.
+ */
+export function continuePreparedStrictV2HarnessRun(
+  runId: RunId,
+  options: ServerWorkflowOptions = {}
+) {
+  const {
+    harnessPreparationBinding: _ignoredCallerBinding,
+    stopAfterHarnessPreparation: _ignoredStopAfterPreparation,
+    strictV2HarnessPreparation: _ignoredStrictPreparation,
+    ...continuationOptions
+  } = options;
+  return readStrictV2HarnessPreparedRun(runId, options).pipe(
+    Effect.flatMap(({ receipt }) =>
+      continueServerRun(runId, {
+        ...continuationOptions,
+        harnessPreparationBinding: receipt.preparationBinding,
+        workerContinuationState: "prepared",
+      })
+    ),
+    Effect.mapError(toServerWorkflowError("StrictV2HarnessContinuationFailed"))
+  );
+}
+
 export function continueServerRun(
   runId: RunId,
   options: ServerWorkflowOptions = {}
@@ -1630,6 +1691,7 @@ function prepareAcceptedServerContinuation(
     );
     const resolvedFactoryProvider =
       checkpoint.payload.acceptanceKind === "factory" &&
+      options.stopAfterHarnessPreparation !== true &&
       runState !== "waitingForHuman" &&
       runState !== "paused" &&
       runState !== "cancelled" &&
@@ -3796,6 +3858,12 @@ function factoryContinuationOptions(
         workerContinuationState: continuationState,
       };
     }
+    if (options.stopAfterHarnessPreparation === true) {
+      return {
+        ...commonOptions,
+        harnessName: codexAppServerHarnessName,
+      };
+    }
     if (
       continuationState === "terminal" &&
       acceptedExecution.resolved.environmentAssignment === undefined
@@ -3870,7 +3938,11 @@ function factoryContinuationOptions(
     return {
       ...commonOptions,
       workerContinuationState:
-        continuationState === "terminal" ? "resume" : continuationState,
+        options.workerContinuationState === "prepared"
+          ? "prepared"
+          : continuationState === "terminal"
+            ? "resume"
+            : continuationState,
       workerHarness: interactiveSessionHarness({
         ...(expectedCheckpoint === undefined ? {} : { expectedCheckpoint }),
         provider: resolved.provider,
