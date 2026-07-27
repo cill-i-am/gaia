@@ -447,6 +447,9 @@ describe("HarnessEvaluation contracts", () => {
       "ghu_1234567890abcdefghijklmnopqrstuvwxyz",
       "ghs_1234567890abcdefghijklmnopqrstuvwxyz",
       "ghr_1234567890abcdefghijklmnopqrstuvwxyz",
+      "Bearer live-token",
+      "api_key=live-token",
+      "sk-live-token",
     ])
       expect(() =>
         makeHarnessEvaluationV1({
@@ -455,6 +458,29 @@ describe("HarnessEvaluation contracts", () => {
             {
               ...evaluationInput.metrics[0],
               value: { observation: credential },
+            },
+          ],
+        })
+      ).toThrow();
+    for (const credential of [
+      "github_pat_11AAABBBCCCDDDEEEFFF_1234567890abcdef",
+      "ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+      "gho_1234567890abcdefghijklmnopqrstuvwxyz",
+      "ghu_1234567890abcdefghijklmnopqrstuvwxyz",
+      "ghs_1234567890abcdefghijklmnopqrstuvwxyz",
+      "ghr_1234567890abcdefghijklmnopqrstuvwxyz",
+      "Bearer live-token",
+      "api_key=live-token",
+      "-----BEGIN PRIVATE KEY-----",
+      "sk-live-token",
+    ])
+      expect(() =>
+        makeHarnessEvaluationV1({
+          ...evaluationInput,
+          metrics: [
+            {
+              ...evaluationInput.metrics[0],
+              value: { [credential]: "observed" },
             },
           ],
         })
@@ -475,6 +501,22 @@ describe("HarnessEvaluation contracts", () => {
           ],
         }).metrics[0]?.value
       ).toEqual({ observation: safeNearMatch });
+    for (const safeNearMatch of [
+      "github_pattern",
+      "ghp_sample",
+      "gho.example.test",
+    ])
+      expect(
+        makeHarnessEvaluationV1({
+          ...evaluationInput,
+          metrics: [
+            {
+              ...evaluationInput.metrics[0],
+              value: { [safeNearMatch]: "observed" },
+            },
+          ],
+        }).metrics[0]?.value
+      ).toEqual({ [safeNearMatch]: "observed" });
 
     const duplicate = makeHarnessEvaluationV1({
       anchorRunId: evaluation.anchorRunId,

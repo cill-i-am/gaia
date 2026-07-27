@@ -564,6 +564,7 @@ const ArtifactMetricProvenanceV1 = Schema.Struct({
 });
 const credentialMaterialPattern =
   /(?:bearer\s+\S+|(?:api[_-]?key|secret|token)\s*[:=]|(?:ghp|sk)-[A-Za-z0-9_-]+|(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]{20,})/iu;
+const privateKeyMaterialPattern = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/u;
 function containsCredentialMaterial(value: string) {
   return credentialMaterialPattern.test(value);
 }
@@ -661,6 +662,8 @@ function isSafeNonCollapsingMetricValue(value: unknown): boolean {
       Object.entries(value).every(
         ([key, child]) =>
           !["rank", "total", "winner"].includes(key) &&
+          !containsCredentialMaterial(key) &&
+          !privateKeyMaterialPattern.test(key) &&
           isSafeNonCollapsingMetricValue(child)
       )
     );

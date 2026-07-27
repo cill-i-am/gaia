@@ -263,8 +263,10 @@ export function assertFactoryRunAcceptanceSecretSafe(input: unknown) {
         const entries = Object.entries(value);
         if (entries.length > 64)
           throw preflightFailure(field, "bounded-structure");
-        for (const [key, entry] of entries)
-          visit(entry, `${field}.${key}`, depth + 1);
+        for (const [key, entry] of entries) {
+          assertSecretSafe(key, `${field}.object-key`);
+          visit(entry, `${field}.object-value`, depth + 1);
+        }
       }
     };
     visit(input, "factory", 0);
@@ -274,7 +276,7 @@ export function assertFactoryRunAcceptanceSecretSafe(input: unknown) {
 const secretAssignmentPattern =
   /(?:api[_-]?key|access[_-]?token|auth[_-]?token|auth(?:orization)?|bearer|client[_-]?secret|password|passwd|private[_-]?key)\s*(?::|=)\s*[^\s,;]+/iu;
 const standaloneCredentialPattern =
-  /(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]{20,}/iu;
+  /(?:bearer\s+\S+|(?:ghp|sk)-[A-Za-z0-9_-]+|(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]{20,})/iu;
 const credentialFlagPattern =
   /^--?(?:api[_-]?key|access[_-]?token|auth[_-]?token|auth(?:orization)?|bearer|client[_-]?secret|credential|password|passwd|private[_-]?key|secret|token)$/iu;
 const privateKeyPattern = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/u;

@@ -2980,6 +2980,53 @@ describe("runtime-owned harness evaluation authority", () => {
     );
   });
 
+  it("rejects a secret-shaped metric key before persistence without disclosure", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({
+          prefix: "gaia-harness-evaluation-secret-",
+        });
+        roots.push(root);
+        const setup = yield* setupAuthoritativeScenario(
+          root,
+          "implementation-completes"
+        );
+        const credential = "github_pat_11AAABBBCCCDDDEEEFFF_1234567890abcdef";
+        const credentialBearingInput = {
+          ...setup.input,
+          metrics: setup.input.metrics.map((metric) => ({
+            ...metric,
+            value: { [credential]: "observed" },
+          })),
+        };
+        const beforeEvents = yield* fs.readFileString(
+          setup.treatment.paths.events
+        );
+        const rejected = yield* Effect.flip(
+          recordHarnessEvaluation(credentialBearingInput, {
+            rootDirectory: root,
+          })
+        );
+        expect(rejected).toBeInstanceOf(GaiaRuntimeError);
+        if (!(rejected instanceof GaiaRuntimeError)) return;
+        expect(rejected.code).toBe("InvalidHarnessEvaluationRequest");
+        expect(rejected.message).toBe(
+          "Harness evaluation recording selectors are invalid."
+        );
+        expect(rejected.cause).toBeUndefined();
+        expect(String(rejected)).not.toContain(credential);
+        expect(JSON.stringify(rejected)).not.toContain(credential);
+        expect(yield* fs.readFileString(setup.treatment.paths.events)).toBe(
+          beforeEvents
+        );
+        expect(yield* fs.exists(setup.treatment.paths.harnessEvaluation)).toBe(
+          false
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    );
+  });
+
   it("records valid distinct session-${runId} bindings and rebuilds exact bytes", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
