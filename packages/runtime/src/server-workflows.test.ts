@@ -22,6 +22,7 @@ import {
   DeliveryGitShaPublicSchema,
   DeliveryPublicationConfirmed,
   DeliveryRemoteNamePublicSchema,
+  deriveExplicitSpecItemDigest,
   HarnessProfileIdSchema,
   HarnessSessionIdSchema,
   ModelInvocationEpisodeStartV1,
@@ -50,6 +51,7 @@ import {
   parseFailureRepairReceipt,
   makeRunControlActionBindingDigest,
   parseMergeDecisionV2,
+  parseAnyRunContract,
   parseRunContract,
   parseRunControlAction,
   parseRunControlActionId,
@@ -271,7 +273,7 @@ function makeMarkerHarnessProviderRegistry(rootDirectory: string) {
   ]);
 }
 
-function makeFailureRepairHarnessProvider() {
+function makeFailureRepairHarnessProvider(rootDirectory: string) {
   let repairResumes = 0;
   let repairSends = 0;
   const makeSession = (
@@ -311,17 +313,23 @@ function makeFailureRepairHarnessProvider() {
   };
   const provider: HarnessProvider = {
     ...testHarnessProvider,
-    createSession: ({ sessionId }) =>
-      Effect.succeed(
-        makeSession(
+    createSession: ({ sessionId, workspacePath }) =>
+      Effect.sync(() => {
+        const workspace = join(rootDirectory, workspacePath);
+        mkdirSync(workspace, { recursive: true });
+        writeFileSync(join(workspace, "output.txt"), `${sessionId}\n`);
+        return makeSession(
           sessionId,
           parseHarnessTurnId("turn-failure-repair-initial"),
           false
-        )
-      ),
-    resumeSession: ({ sessionId }) =>
+        );
+      }),
+    resumeSession: ({ sessionId, workspacePath }) =>
       Effect.sync(() => {
         repairResumes += 1;
+        const workspace = join(rootDirectory, workspacePath);
+        mkdirSync(workspace, { recursive: true });
+        writeFileSync(join(workspace, "output.txt"), `${sessionId}\n`);
         return makeSession(
           sessionId,
           parseHarnessTurnId(`turn-failure-repair-${repairResumes}`),
@@ -708,7 +716,18 @@ describe("server workflows", () => {
         const summary = yield* continueServerRun(accepted.runId, {
           rootDirectory: cwd,
         });
+        const continuedEvents = yield* readLocalRunEvents(accepted.runId, {
+          rootDirectory: cwd,
+        });
+        const legacyContract = continuedEvents.events.find(
+          ({ type }) => type === "RUN_CONTRACT_RECORDED"
+        );
         assert.strictEqual(summary.status, "completed");
+        assert.ok(legacyContract);
+        assert.strictEqual(
+          parseAnyRunContract(legacyContract.payload["contract"]).version,
+          1
+        );
         assert.strictEqual(
           yield* fs.readFileString(checkpointPath),
           checkpointBody
@@ -735,6 +754,47 @@ describe("server workflows", () => {
         assert.lengthOf(afterMismatch.events, eventCount + 1);
         assert.strictEqual(afterMismatch.events.at(-1)?.type, "RUN_FAILED");
       })
+    );
+
+    it.effect(
+      "preserves an accepted server V2 contract after the source input is removed",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-server-v2-continuation-",
+          });
+          const accepted = yield* acceptServerRun(
+            {
+              specMarkdown: readFileSync(
+                `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+                "utf8"
+              ),
+            },
+            { rootDirectory: cwd }
+          );
+          yield* fs.remove(`${accepted.runDirectory}/input.md`);
+
+          const error = yield* Effect.flip(
+            continueServerRun(accepted.runId, {
+              reviewer: blockingReviewer(),
+              rootDirectory: cwd,
+            })
+          );
+          const events = (yield* readLocalRunEvents(accepted.runId, {
+            rootDirectory: cwd,
+          })).events;
+          const contractEvent = events.find(
+            ({ type }) => type === "RUN_CONTRACT_RECORDED"
+          );
+
+          assert.strictEqual(error.code, "ReviewBlocked");
+          assert.ok(contractEvent);
+          assert.strictEqual(
+            parseAnyRunContract(contractEvent.payload["contract"]).version,
+            2
+          );
+        })
     );
 
     it.effect(
@@ -925,7 +985,7 @@ describe("server workflows", () => {
         const rootDirectory = yield* fs.makeTempDirectory({
           prefix: "gaia-failure-repair-workflow-",
         });
-        const harness = makeFailureRepairHarnessProvider();
+        const harness = makeFailureRepairHarnessProvider(rootDirectory);
         const coordinator = makeLiveHarnessSessionCoordinator();
         const profile = yield* readVerificationExecutionProfile(
           parseRuntimePath(
@@ -1002,15 +1062,10 @@ describe("server workflows", () => {
             execution: codexAppServerExecutionSelection,
             workflow: "issueDelivery",
             workItem: {
-              description: [
-                "---",
-                "title: Accepted issue wrapper",
-                "---",
-                readFileSync(
-                  `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
-                  "utf8"
-                ),
-              ].join("\n"),
+              description: readFileSync(
+                `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+                "utf8"
+              ),
               kind: "issue",
               title: "Repair one failed exact claim",
             },
@@ -1697,7 +1752,7 @@ describe("server workflows", () => {
                 execution: codexAppServerExecutionSelection,
                 workflow: "issueDelivery",
                 workItem: {
-                  description: "Recover the interrupted checkpoint.",
+                  description: postPublicationOnlyV2Spec(),
                   kind: "issue",
                   title: "Audited continuation",
                 },
@@ -1720,6 +1775,7 @@ describe("server workflows", () => {
 
             const runId = parseRunId(accepted.runId);
             const paths = yield* makeRunPaths(runId, { rootDirectory: cwd });
+            yield* fs.remove(paths.input);
             const readyEvents = yield* readLocalRunEvents(runId, {
               rootDirectory: cwd,
             });
@@ -1868,6 +1924,9 @@ describe("server workflows", () => {
             const delivery = snapshotFromReplay(events.events).context[
               "delivery"
             ];
+            const contractEvent = events.events.find(
+              ({ type }) => type === "RUN_CONTRACT_RECORDED"
+            );
 
             assert.strictEqual(
               receipt.state,
@@ -1889,6 +1948,11 @@ describe("server workflows", () => {
               failedRecovery.event.sequence
             );
             assert.deepEqual(publicationCalls, []);
+            assert.ok(contractEvent);
+            assert.strictEqual(
+              parseAnyRunContract(contractEvent.payload["contract"]).version,
+              2
+            );
             assert.isObject(delivery);
             assert.strictEqual(
               (delivery as Record<string, unknown>)["stage"],
@@ -4159,8 +4223,104 @@ describe("server workflows", () => {
           assert.strictEqual(failed?.payload["stage"], "preparingWorkspace");
         })
     );
+
+    it.effect(
+      "preserves an accepted factory V2 contract through continuation before provider dispatch",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-v2-continuation-",
+          });
+          const registry = makeHarnessProviderRegistry([
+            {
+              profileId: codexAppServerExecutionSelection.harnessProfileId,
+              provider: acceptanceProvider,
+            },
+          ]);
+          const accepted = yield* acceptFactoryRun(
+            {
+              execution: codexAppServerExecutionSelection,
+              workflow: "issueDelivery",
+              workItem: {
+                description: readFileSync(
+                  `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+                  "utf8"
+                ),
+                kind: "issue",
+                title: "Preserve accepted V2 verification",
+              },
+            },
+            { harnessProviderRegistry: registry, rootDirectory: cwd }
+          );
+
+          yield* Effect.flip(
+            continueServerRun(accepted.runId, {
+              harnessProviderRegistry: registry,
+              reviewer: blockingReviewer(),
+              rootDirectory: cwd,
+            })
+          );
+          const events = (yield* readLocalRunEvents(accepted.runId, {
+            rootDirectory: cwd,
+          })).events;
+          const contractEvent = events.find(
+            ({ type }) => type === "RUN_CONTRACT_RECORDED"
+          );
+          assert.ok(contractEvent);
+          assert.strictEqual(
+            parseAnyRunContract(contractEvent.payload["contract"]).version,
+            2
+          );
+          assert.strictEqual(events.at(-1)?.payload["code"], "ReviewBlocked");
+        })
+    );
   });
 });
+
+function postPublicationOnlyV2Spec() {
+  const outcome =
+    "The audited continuation remains bound to its accepted V2 contract.";
+  const claim = "Paired local reviewer approves the published exact head.";
+  return [
+    "---",
+    "title: Audited V2 continuation",
+    "verification:",
+    "  version: 2",
+    "  outcomes:",
+    "    - key: audited-continuation",
+    `      statement: ${outcome}`,
+    `      sourceItemDigest: ${deriveExplicitSpecItemDigest({
+      section: "acceptanceCriteria",
+      statement: outcome,
+    })}`,
+    "      prePublicationRequiredClaims: []",
+    "      postPublicationRequiredClaims: [paired-review]",
+    "      conditionalClaims: []",
+    "  claims:",
+    "    - key: paired-review",
+    `      statement: ${claim}`,
+    `      sourceItemDigest: ${deriveExplicitSpecItemDigest({
+      section: "verificationChecks",
+      statement: claim,
+    })}`,
+    "      phase: postPublication",
+    "      kind: human-judgment",
+    "      selector:",
+    "        source: localOperatorPairedReview",
+    "        decision: approved",
+    "---",
+    "",
+    "## Acceptance Criteria",
+    "",
+    `- ${outcome}`,
+    "",
+    "## Verification",
+    "",
+    `- ${claim}`,
+    "",
+  ].join("\n");
+}
 
 const acceptanceCapabilities = HarnessCapabilities.make({
   approvals: [],

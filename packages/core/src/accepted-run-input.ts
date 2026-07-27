@@ -5,6 +5,7 @@ import { Schema } from "effect";
 import type { RunEvent } from "./events.js";
 import { canonicalV1 } from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
+import { VerificationSourceV2 } from "./spec.js";
 
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
 const LowerSha256Schema = Schema.String.pipe(
@@ -38,6 +39,7 @@ export class AcceptedRunInputSpecV1 extends Schema.Class<AcceptedRunInputSpecV1>
       )
     ),
     title: Schema.NonEmptyString.pipe(Schema.check(Schema.isMaxLength(1_024))),
+    verification: Schema.optionalKey(VerificationSourceV2),
   },
   strict
 ) {}

@@ -1,11 +1,20 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, layer } from "@effect/vitest";
-import { makeAcceptedRunInputCheckpointV1, parseRunId } from "@gaia/core";
+import {
+  makeAcceptedRunInputCheckpointV1,
+  parseMarkdownSpec,
+  parseRunId,
+} from "@gaia/core";
 import { Effect, FileSystem } from "effect";
 
 import {
   commitAcceptedRunInputCheckpointNoReplace,
+  encodeAcceptedRunInputCheckpointBody,
   loadAcceptedRunInputCheckpoint,
+  reconstructAcceptedRunSpec,
 } from "./accepted-run-input.js";
 import { GaiaRuntimeError } from "./errors.js";
 import { makeRunPaths } from "./paths.js";
@@ -35,6 +44,44 @@ describe("accepted run input persistence", () => {
           );
         })
     );
+
+    it("reconstructs the exact accepted V2 RunSpec from the checkpoint", () => {
+      const accepted = parseMarkdownSpec(
+        readFileSync(
+          new URL(
+            "../../../examples/specs/claim-verification-v2.md",
+            import.meta.url
+          ),
+          "utf8"
+        ),
+        "fallback"
+      );
+
+      assert.deepEqual(
+        reconstructAcceptedRunSpec(makeCheckpoint(accepted)),
+        accepted
+      );
+    });
+
+    it("keeps the fixed accepted checkpoint body bound", () => {
+      const checkpoint = makeAcceptedRunInputCheckpointV1({
+        ...makeCheckpoint().payload,
+        acceptedSemantics: {
+          padding: "x".repeat(131_072),
+          profile: { name: "default" },
+        },
+      });
+
+      let error: unknown;
+      try {
+        encodeAcceptedRunInputCheckpointBody(checkpoint);
+      } catch (cause) {
+        error = cause;
+      }
+      assert.instanceOf(error, GaiaRuntimeError);
+      if (error instanceof GaiaRuntimeError)
+        assert.strictEqual(error.code, "AcceptedRunInputCheckpointTooLarge");
+    });
 
     it.effect(
       "never replaces an occupied final file, directory, or symlink",
@@ -95,18 +142,22 @@ describe("accepted run input persistence", () => {
   });
 });
 
-function makeCheckpoint() {
-  const body = "Implement the accepted slice.";
+function makeCheckpoint(
+  spec = parseMarkdownSpec("Implement the accepted slice.", "Accepted slice")
+) {
+  const { body } = spec;
   return makeAcceptedRunInputCheckpointV1({
     acceptanceKind: "server",
     acceptedSemantics: { profile: { name: "default" } },
     runId,
     spec: {
       body,
-      bodyDigest:
-        "2219cd63710b19dd3d1266b727f3dfb3bbbc5c6e7860a4874a6b6864e52985a4",
-      byteLength: 29,
-      title: "Accepted slice",
+      bodyDigest: createHash("sha256").update(body).digest("hex"),
+      byteLength: Buffer.byteLength(body, "utf8"),
+      title: spec.title,
+      ...(spec.verification === undefined
+        ? {}
+        : { verification: spec.verification }),
     },
     version: 1,
   });
