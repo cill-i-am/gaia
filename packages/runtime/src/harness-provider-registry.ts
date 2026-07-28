@@ -17,7 +17,10 @@ import {
   HarnessUnavailableError,
   type HarnessProvider,
 } from "./harness-session.js";
-import type { HarnessLaunchObservationService } from "./worker-runtime-environment.js";
+import {
+  WorkerRuntimeEnvironmentError,
+  type HarnessLaunchObservationService,
+} from "./worker-runtime-environment.js";
 
 /** Capabilities required by the issue-delivery worker role in this slice. */
 export const issueDeliveryWorkerHarnessCapabilities = [
@@ -56,6 +59,14 @@ export type HarnessProviderRegistration = {
 export class HarnessEnvironmentAssignmentError extends Schema.TaggedErrorClass<HarnessEnvironmentAssignmentError>()(
   "HarnessEnvironmentAssignmentError",
   {
+    code: Schema.Literals([
+      "commandFailed",
+      "dirtySource",
+      "repositoryMismatch",
+      "revisionUnavailable",
+      "topLevelMismatch",
+      "unclassified",
+    ] as const),
     message: Schema.Literal(
       "Production harness environment assignment is unavailable."
     ),
@@ -107,16 +118,32 @@ export function makeHarnessProviderRegistry(
             const environmentAssignment =
               registration.environmentAssignment === undefined
                 ? undefined
-                : yield* registration.environmentAssignment({
-                    capabilities: detection.capabilities,
-                    provider: provider.descriptor,
-                    version: detection.version,
-                  });
+                : yield* registration
+                    .environmentAssignment({
+                      capabilities: detection.capabilities,
+                      provider: provider.descriptor,
+                      version: detection.version,
+                    })
+                    .pipe(
+                      Effect.catch((error) =>
+                        Effect.fail(
+                          new HarnessEnvironmentAssignmentError({
+                            code:
+                              error instanceof WorkerRuntimeEnvironmentError
+                                ? error.code
+                                : "unclassified",
+                            message:
+                              "Production harness environment assignment is unavailable.",
+                          })
+                        )
+                      )
+                    );
             if (
               provider.descriptor.providerId === "codex-app-server" &&
               environmentAssignment === undefined
             )
               return yield* new HarnessEnvironmentAssignmentError({
+                code: "unclassified",
                 message:
                   "Production harness environment assignment is unavailable.",
               });

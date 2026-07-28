@@ -22,6 +22,7 @@ import {
   HarnessUnavailableError,
   type HarnessProvider,
 } from "./harness-session.js";
+import { WorkerRuntimeEnvironmentError } from "./worker-runtime-environment.js";
 
 const capabilities = HarnessCapabilities.make({
   approvals: [],
@@ -106,6 +107,76 @@ describe("HarnessProvider registry", () => {
         );
 
         assert.isTrue(error instanceof HarnessEnvironmentAssignmentError);
+        assert.deepInclude(error, {
+          code: "unclassified",
+          message: "Production harness environment assignment is unavailable.",
+        });
+      })
+  );
+
+  it.effect(
+    "classifies source-owned environment-assignment failures without creating a session or retaining raw details",
+    () =>
+      Effect.gen(function* () {
+        const selection = HarnessExecutionSelection.make({
+          harnessProfileId: parseHarnessProfileId("codexAppServer"),
+        });
+        const sourceCodes = [
+          "commandFailed",
+          "dirtySource",
+          "repositoryMismatch",
+          "revisionUnavailable",
+          "topLevelMismatch",
+        ] as const;
+        const rawSentinel = "raw environment failure must not escape";
+
+        for (const sourceCode of sourceCodes) {
+          const sessionCalls = { create: 0, resume: 0 };
+          const provider = productionCodexProvider(sessionCalls);
+          const error = yield* Effect.flip(
+            makeHarnessProviderRegistry([
+              {
+                environmentAssignment: () =>
+                  Effect.fail(
+                    new WorkerRuntimeEnvironmentError({
+                      code: sourceCode,
+                      message: rawSentinel,
+                    })
+                  ),
+                profileId: selection.harnessProfileId,
+                provider,
+              },
+            ]).resolve(selection, issueDeliveryWorkerHarnessCapabilities)
+          );
+
+          assert.isTrue(error instanceof HarnessEnvironmentAssignmentError);
+          assert.deepInclude(error, {
+            code: sourceCode,
+            message:
+              "Production harness environment assignment is unavailable.",
+          });
+          assert.notInclude(JSON.stringify(error), rawSentinel);
+          assert.deepEqual(sessionCalls, { create: 0, resume: 0 });
+        }
+
+        const sessionCalls = { create: 0, resume: 0 };
+        const error = yield* Effect.flip(
+          makeHarnessProviderRegistry([
+            {
+              environmentAssignment: () => Effect.fail({ detail: rawSentinel }),
+              profileId: selection.harnessProfileId,
+              provider: productionCodexProvider(sessionCalls),
+            },
+          ]).resolve(selection, issueDeliveryWorkerHarnessCapabilities)
+        );
+
+        assert.isTrue(error instanceof HarnessEnvironmentAssignmentError);
+        assert.deepInclude(error, {
+          code: "unclassified",
+          message: "Production harness environment assignment is unavailable.",
+        });
+        assert.notInclude(JSON.stringify(error), rawSentinel);
+        assert.deepEqual(sessionCalls, { create: 0, resume: 0 });
       })
   );
 
@@ -198,4 +269,31 @@ function syntheticProvider(detection: HarnessDetection): HarnessProvider {
     detect: Effect.succeed(detection),
     resumeSession: () => Effect.die("not used by registry test"),
   };
+}
+
+function productionCodexProvider(sessionCalls: {
+  create: number;
+  resume: number;
+}): HarnessProvider {
+  return {
+    ...syntheticProvider({
+      auth: { state: "authenticated" },
+      capabilities,
+      state: "available",
+      version: "0.144.5",
+    }),
+    createSession: () => {
+      sessionCalls.create += 1;
+      return Effect.die("not used by registry test");
+    },
+    descriptor: HarnessProviderDescriptor.make({
+      displayName: "Codex App Server",
+      executionModes: ["local"],
+      providerId: parseHarnessProviderId("codex-app-server"),
+    }),
+    resumeSession: () => {
+      sessionCalls.resume += 1;
+      return Effect.die("not used by registry test");
+    },
+  } satisfies HarnessProvider;
 }
