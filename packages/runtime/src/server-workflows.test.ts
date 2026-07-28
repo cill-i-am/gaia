@@ -4427,6 +4427,309 @@ describe("server workflows", () => {
     );
 
     it.effect(
+      "records the prepared worker episode before committing strict-V2 launch evidence",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const rootDirectory = yield* fs.makeTempDirectory({
+            prefix: "gaia-strict-v2-prepared-environment-",
+          });
+          const launchObservation = yield* HarnessLaunchObservationService;
+          const observation = HarnessLaunchObservationV1.make({
+            approvalPolicy: "on-request",
+            cwdMatchesWorkspaceBinding: true,
+            model: "gpt-5.6-codex",
+            modelProvider: "openai",
+            reasoningEffort: "high",
+            sandbox: "workspace-write",
+            source: "threadRuntimeResult",
+          });
+          let providerDispatches = 0;
+          const profile = yield* readVerificationExecutionProfile(
+            parseRuntimePath(
+              `${process.cwd()}/../../profiles/claim-verification.json`
+            )
+          );
+          const verificationServices = {
+            executor: {
+              execute: (invocation) =>
+                Effect.gen(function* () {
+                  const sandboxUuid = "123e4567-e89b-12d3-a456-426614174001";
+                  yield* invocation.onSandboxCreated({
+                    sandboxName: invocation.sandboxName,
+                    sandboxUuid,
+                  });
+                  yield* fs.writeFileString(
+                    invocation.stdoutPath,
+                    "gaia-claim-ok\n"
+                  );
+                  yield* fs.writeFileString(invocation.stderrPath, "");
+                  const observed = yield* observeWorkspaceStructuralDigest(
+                    invocation.workspace
+                  );
+                  return Schema.decodeUnknownSync(
+                    StagedDockerSandboxVerificationReceiptSchema
+                  )({
+                    cleanup: {
+                      finalAbsenceConfirmed: true,
+                      removedSandboxUuid: sandboxUuid,
+                      stoppedSandboxUuid: sandboxUuid,
+                    },
+                    durationMs: 1,
+                    exitCode: 0,
+                    observedProviderExitCode: 0,
+                    observedExecutionIdentity: {
+                      imageDigest: profile.imageDigest,
+                      providerBuild: profile.provider.build,
+                      providerVersion: profile.provider.version,
+                      templateReference: profile.templateReference,
+                    },
+                    sandboxUuid,
+                    status: "succeeded",
+                    stderr: {
+                      artifactPath: invocation.stderrArtifactPath,
+                      contentDigest:
+                        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                      observedByteCount: 0,
+                      retainedByteCount: 0,
+                      truncated: false,
+                    },
+                    stdout: {
+                      artifactPath: invocation.stdoutArtifactPath,
+                      contentDigest:
+                        "c67d2c0ac3e5ea53ed76dadc9aab773e884efedcaac2be11aaa4b096576f5849",
+                      observedByteCount: 14,
+                      retainedByteCount: 14,
+                      truncated: false,
+                    },
+                    workspaceObservation: observed,
+                  });
+                }).pipe(Effect.orDie),
+              reconcile: () => Effect.die("must not reconcile"),
+            },
+            profile,
+          } satisfies VerificationServices;
+          const recordMarker = (request: {
+            readonly sessionId: string;
+            readonly workspacePath: string;
+          }) =>
+            Effect.sync(() => {
+              const workspace = join(rootDirectory, request.workspacePath);
+              mkdirSync(workspace, { recursive: true });
+              writeFileSync(
+                join(workspace, "output.txt"),
+                `${request.sessionId.slice("session-".length)}\n`
+              );
+            });
+          const startSession = (
+            request: Parameters<HarnessProvider["createSession"]>[0]
+          ) =>
+            Effect.sync(() => {
+              providerDispatches += 1;
+            }).pipe(
+              Effect.andThen(
+                launchObservation
+                  .complete(request.sessionId, observation)
+                  .pipe(Effect.orDie)
+              ),
+              Effect.andThen(recordMarker(request)),
+              Effect.andThen(testHarnessProvider.createSession(request))
+            );
+          const provider: HarnessProvider = {
+            ...testHarnessProvider,
+            createSession: startSession,
+            resumeSession: (request) =>
+              Effect.sync(() => {
+                providerDispatches += 1;
+              }).pipe(
+                Effect.andThen(
+                  launchObservation
+                    .complete(request.sessionId, observation)
+                    .pipe(Effect.orDie)
+                ),
+                Effect.andThen(recordMarker(request)),
+                Effect.andThen(testHarnessProvider.resumeSession(request))
+              ),
+          };
+          const options = {
+            harnessProviderRegistry: makeHarnessProviderRegistry([
+              {
+                environmentAssignment: () =>
+                  Effect.succeed(workerEnvironmentAssignment()),
+                launchObservation,
+                profileId: codexAppServerExecutionSelection.harnessProfileId,
+                provider,
+              },
+            ]),
+            rootDirectory,
+            verificationServices,
+          };
+          const accepted = yield* acceptPreparedFactoryRun(
+            yield* prepareFactoryRunAcceptance(
+              {
+                execution: codexAppServerExecutionSelection,
+                workflow: "issueDelivery",
+                workItem: {
+                  description: readFileSync(
+                    `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+                    "utf8"
+                  ),
+                  kind: "issue",
+                  title: "Commit strict V2 launch evidence",
+                },
+              },
+              options
+            ),
+            options
+          );
+          yield* prepareStrictV2HarnessRun(
+            accepted.runId,
+            strictV2BaselineRequest("runtimeRevision", "environment"),
+            options
+          );
+
+          yield* continuePreparedStrictV2HarnessRun(accepted.runId, options);
+
+          const paths = yield* makeRunPaths(accepted.runId, options);
+          const events = yield* readEvents(paths);
+          const workerStart = events.find(
+            ({ type }) => type === "WORKER_STARTED"
+          );
+          assert.strictEqual(
+            workerStart?.payload["modelInvocationEpisode"],
+            undefined
+          );
+          const completion = [...events]
+            .reverse()
+            .find(({ type }) => type === "WORKER_COMPLETED");
+          assert.isDefined(completion?.payload["harnessEnvironmentReceipt"]);
+          assert.strictEqual(providerDispatches, 1);
+
+          const missing = yield* acceptPreparedFactoryRun(
+            yield* prepareFactoryRunAcceptance(
+              {
+                execution: codexAppServerExecutionSelection,
+                workflow: "issueDelivery",
+                workItem: {
+                  description: readFileSync(
+                    `${process.cwd()}/../../examples/specs/claim-verification-v2.md`,
+                    "utf8"
+                  ),
+                  kind: "issue",
+                  title: "Reject a missing strict V2 invocation episode",
+                },
+              },
+              options
+            ),
+            options
+          );
+          yield* prepareStrictV2HarnessRun(
+            missing.runId,
+            strictV2BaselineRequest("runtimeRevision", "missing-episode"),
+            options
+          );
+          const missingPaths = yield* makeRunPaths(missing.runId, options);
+          const originalMissingLines = (yield* fs.readFileString(
+            missingPaths.events
+          ))
+            .trimEnd()
+            .split("\n");
+          const writeMissingEvents = (
+            transform: (event: {
+              readonly payload: Record<string, unknown>;
+              readonly sequence: number;
+              readonly type: string;
+            }) => {
+              readonly payload: Record<string, unknown>;
+              readonly sequence: number;
+              readonly type: string;
+            }
+          ) =>
+            fs.writeFileString(
+              missingPaths.events,
+              `${originalMissingLines
+                .map((line) => {
+                  const event = JSON.parse(line) as {
+                    payload: Record<string, unknown>;
+                    sequence: number;
+                    type: string;
+                  };
+                  return JSON.stringify(transform(event));
+                })
+                .join("\n")}\n`
+            );
+          yield* writeMissingEvents((event) => {
+            if (event.type !== "HARNESS_PREPARED_RUN_RECORDED") return event;
+            const payload = { ...event.payload };
+            delete payload["modelInvocationEpisode"];
+            return { ...event, payload };
+          });
+          const beforeMissingEpisode = providerDispatches;
+          yield* Effect.flip(
+            continuePreparedStrictV2HarnessRun(missing.runId, options)
+          );
+          assert.strictEqual(providerDispatches, beforeMissingEpisode);
+
+          const duplicateEvents = originalMissingLines.map(
+            (line) =>
+              JSON.parse(line) as {
+                payload: Record<string, unknown>;
+                sequence: number;
+                type: string;
+              }
+          );
+          const preparedEvent = duplicateEvents.find(
+            ({ type }) => type === "HARNESS_PREPARED_RUN_RECORDED"
+          );
+          const finalEvent = duplicateEvents.at(-1);
+          if (preparedEvent === undefined || finalEvent === undefined)
+            return yield* Effect.die(
+              "prepared strict-V2 event was not recorded"
+            );
+          yield* fs.writeFileString(
+            missingPaths.events,
+            `${[
+              ...duplicateEvents,
+              { ...preparedEvent, sequence: finalEvent.sequence + 1 },
+            ]
+              .map((event) => JSON.stringify(event))
+              .join("\n")}\n`
+          );
+          const beforeDuplicateEpisode = providerDispatches;
+          yield* Effect.flip(
+            continuePreparedStrictV2HarnessRun(missing.runId, options)
+          );
+          assert.strictEqual(providerDispatches, beforeDuplicateEpisode);
+
+          yield* writeMissingEvents((event) => {
+            if (event.type !== "HARNESS_PREPARED_RUN_RECORDED") return event;
+            const preparedReceipt = event.payload["harnessPreparedRunReceipt"];
+            if (
+              preparedReceipt === null ||
+              typeof preparedReceipt !== "object" ||
+              Array.isArray(preparedReceipt)
+            )
+              return event;
+            return {
+              ...event,
+              payload: {
+                ...event.payload,
+                harnessPreparedRunReceipt: {
+                  ...preparedReceipt,
+                  runId: accepted.runId,
+                },
+              },
+            };
+          });
+          const beforeMismatchedReceipt = providerDispatches;
+          yield* Effect.flip(
+            continuePreparedStrictV2HarnessRun(missing.runId, options)
+          );
+          assert.strictEqual(providerDispatches, beforeMismatchedReceipt);
+        }).pipe(Effect.provide(HarnessLaunchObservationLive))
+    );
+
+    it.effect(
       "resumes one partial strict-V2 baseline receipt without replaying Phase A",
       () =>
         Effect.gen(function* () {
