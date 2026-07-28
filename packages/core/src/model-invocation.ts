@@ -1193,6 +1193,11 @@ function artifactIdFor(
 
 function requiredEpisodeKey(event: RunEvent) {
   if (event.type === "WORKER_STARTED") return "workerInitial";
+  if (
+    event.type === "HARNESS_PREPARED_RUN_RECORDED" &&
+    event.payload["modelInvocationEpisode"] !== undefined
+  )
+    return "workerInitial";
   if (event.type === "REVIEW_STARTED") {
     const phase = event.payload["phase"];
     if (phase === "plan") return "planReview";
@@ -1344,7 +1349,12 @@ export function resolveModelInvocationEpisodes(
     const rawStart = event.payload["modelInvocationEpisode"];
     if (required === null && rawStart !== undefined)
       throw new Error("This operator action forbids a model invocation pair.");
-    if (required !== undefined && required !== null && rawStart === undefined)
+    if (
+      required !== undefined &&
+      required !== null &&
+      rawStart === undefined &&
+      !(event.type === "WORKER_STARTED" && episodes.has(required))
+    )
       throw new Error(
         `Model invocation episode '${required}' is required by its owner event.`
       );

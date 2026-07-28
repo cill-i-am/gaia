@@ -39,9 +39,11 @@ import { Deferred, Effect, Fiber, FileSystem, Schema } from "effect";
 const execFileAsync = promisify(execFile);
 
 type ProductionHarnessServiceKey =
+  | "continuePreparedStrictV2HarnessRun"
   | "dispatchCorrelationFollowUp"
   | "dispatchDesktopOriginCorrelationFollowUp"
   | "preflightConfiguredModelCatalog"
+  | "prepareStrictV2HarnessRun"
   | "reconcileCorrelation"
   | "reconcileDesktopOriginCorrelation"
   | "recover"

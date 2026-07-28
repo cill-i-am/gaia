@@ -22,8 +22,9 @@ import {
   commitModelInvocationPair,
   loadModelInvocationPair,
   prepareSpecRunAcceptance,
+  recoverCommittedWorkerInitialModelInvocationPair,
 } from "./model-invocation.js";
-import { makeRunPaths } from "./paths.js";
+import { makeRunPaths, type RunPaths } from "./paths.js";
 import { localRunProfileSource } from "./run-profile.js";
 import { runSpecFile } from "./workflows.js";
 
@@ -385,6 +386,202 @@ describe("model invocation acceptance preparation", () => {
               `${symlinkEpisodeDirectory}/invocation-manifest.json`
             )
           );
+        })
+    );
+
+    it.effect(
+      "recovers only the exact committed pre-owner workerInitial pair without rewriting it",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-pair-recover-",
+          });
+          const runId = parseRunId("run-1234567891");
+          const paths = yield* makeRunPaths(runId, { rootDirectory: root });
+          yield* fs.makeDirectory(paths.root, { recursive: true });
+          const committed = yield* commitModelInvocationPair({
+            ...makePair(runId, "workerInitial"),
+            episodeKey: "workerInitial",
+            paths,
+          });
+          const contextPath = `${paths.root}/${committed.contextRef.path}`;
+          const invocationPath = `${paths.root}/${committed.invocationRef.path}`;
+          const before = {
+            context: yield* fs.readFileString(contextPath),
+            contextMtime: (yield* fs.stat(contextPath)).mtime,
+            invocation: yield* fs.readFileString(invocationPath),
+            invocationMtime: (yield* fs.stat(invocationPath)).mtime,
+          };
+
+          const recovered =
+            yield* recoverCommittedWorkerInitialModelInvocationPair(paths);
+
+          assert.deepEqual(recovered, committed);
+          assert.strictEqual(
+            yield* fs.readFileString(contextPath),
+            before.context
+          );
+          assert.strictEqual(
+            yield* fs.readFileString(invocationPath),
+            before.invocation
+          );
+          assert.deepEqual(
+            (yield* fs.stat(contextPath)).mtime,
+            before.contextMtime
+          );
+          assert.deepEqual(
+            (yield* fs.stat(invocationPath)).mtime,
+            before.invocationMtime
+          );
+        })
+    );
+
+    it.effect(
+      "fails closed when deterministic pre-owner workerInitial recovery is incomplete or rebound",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-pair-recovery-reject-",
+          });
+          const assertRejected = (paths: RunPaths) =>
+            recoverCommittedWorkerInitialModelInvocationPair(paths).pipe(
+              Effect.flip,
+              Effect.tap((error) =>
+                Effect.sync(() =>
+                  assert.strictEqual(error.code, "ModelInvocationPairConflict")
+                )
+              ),
+              Effect.asVoid
+            );
+
+          const missingRunId = parseRunId("run-1234567892");
+          const missingPaths = yield* makeRunPaths(missingRunId, {
+            rootDirectory: root,
+          });
+          yield* fs.makeDirectory(missingPaths.root, { recursive: true });
+          yield* assertRejected(missingPaths);
+
+          const reservationRunId = parseRunId("run-1234567897");
+          const reservationPaths = yield* makeRunPaths(reservationRunId, {
+            rootDirectory: root,
+          });
+          const reservationEpisodeId = `episode1_${createHash("sha256")
+            .update(`${reservationRunId}\0workerInitial`)
+            .digest("hex")}`;
+          yield* fs.makeDirectory(
+            `${reservationPaths.modelInvocations}/${reservationEpisodeId}`,
+            { recursive: true }
+          );
+          yield* fs.writeFileString(
+            `${reservationPaths.modelInvocations}/.${reservationEpisodeId}.reservation.json`,
+            `${JSON.stringify({
+              episodeId: reservationEpisodeId,
+              episodeKey: "workerInitial",
+              runId: reservationRunId,
+              version: 1,
+            })}\n`
+          );
+          yield* assertRejected(reservationPaths);
+
+          const singleRunId = parseRunId("run-1234567893");
+          const singlePaths = yield* makeRunPaths(singleRunId, {
+            rootDirectory: root,
+          });
+          yield* fs.makeDirectory(singlePaths.root, { recursive: true });
+          const single = yield* commitModelInvocationPair({
+            ...makePair(singleRunId, "workerInitial"),
+            episodeKey: "workerInitial",
+            paths: singlePaths,
+          });
+          yield* fs.remove(`${singlePaths.root}/${single.invocationRef.path}`);
+          yield* assertRejected(singlePaths);
+
+          const extraRunId = parseRunId("run-1234567899");
+          const extraPaths = yield* makeRunPaths(extraRunId, {
+            rootDirectory: root,
+          });
+          yield* fs.makeDirectory(extraPaths.root, { recursive: true });
+          const extra = yield* commitModelInvocationPair({
+            ...makePair(extraRunId, "workerInitial"),
+            episodeKey: "workerInitial",
+            paths: extraPaths,
+          });
+          yield* fs.writeFileString(
+            `${extraPaths.root}/${extra.contextRef.path.replace(
+              "context-manifest.json",
+              "unexpected.json"
+            )}`,
+            "{}\n"
+          );
+          yield* assertRejected(extraPaths);
+
+          const tamperedRunId = parseRunId("run-1234567894");
+          const tamperedPaths = yield* makeRunPaths(tamperedRunId, {
+            rootDirectory: root,
+          });
+          yield* fs.makeDirectory(tamperedPaths.root, { recursive: true });
+          const tampered = yield* commitModelInvocationPair({
+            ...makePair(tamperedRunId, "workerInitial"),
+            episodeKey: "workerInitial",
+            paths: tamperedPaths,
+          });
+          yield* fs.writeFileString(
+            `${tamperedPaths.root}/${tampered.contextRef.path}`,
+            `${yield* fs.readFileString(
+              `${tamperedPaths.root}/${tampered.contextRef.path}`
+            )}\n`
+          );
+          yield* assertRejected(tamperedPaths);
+
+          const symlinkRunId = parseRunId("run-1234567898");
+          const symlinkPaths = yield* makeRunPaths(symlinkRunId, {
+            rootDirectory: root,
+          });
+          yield* fs.makeDirectory(symlinkPaths.root, { recursive: true });
+          const symlink = yield* commitModelInvocationPair({
+            ...makePair(symlinkRunId, "workerInitial"),
+            episodeKey: "workerInitial",
+            paths: symlinkPaths,
+          });
+          const symlinkContextPath = `${symlinkPaths.root}/${symlink.contextRef.path}`;
+          const outsideContextPath = `${root}/outside-context.json`;
+          yield* fs.writeFileString(
+            outsideContextPath,
+            yield* fs.readFileString(symlinkContextPath)
+          );
+          yield* fs.remove(symlinkContextPath);
+          yield* fs.symlink(outsideContextPath, symlinkContextPath);
+          yield* assertRejected(symlinkPaths);
+
+          const sourceRunId = parseRunId("run-1234567895");
+          const sourcePaths = yield* makeRunPaths(sourceRunId, {
+            rootDirectory: root,
+          });
+          yield* fs.makeDirectory(sourcePaths.root, { recursive: true });
+          const source = yield* commitModelInvocationPair({
+            ...makePair(sourceRunId, "workerInitial"),
+            episodeKey: "workerInitial",
+            paths: sourcePaths,
+          });
+          const reboundRunId = parseRunId("run-1234567896");
+          const reboundPaths = yield* makeRunPaths(reboundRunId, {
+            rootDirectory: root,
+          });
+          yield* fs.makeDirectory(reboundPaths.root, { recursive: true });
+          const rebound = yield* commitModelInvocationPair({
+            ...makePair(reboundRunId, "workerInitial"),
+            episodeKey: "workerInitial",
+            paths: reboundPaths,
+          });
+          yield* fs.writeFileString(
+            `${reboundPaths.root}/${rebound.contextRef.path}`,
+            yield* fs.readFileString(
+              `${sourcePaths.root}/${source.contextRef.path}`
+            )
+          );
+          yield* assertRejected(reboundPaths);
         })
     );
 

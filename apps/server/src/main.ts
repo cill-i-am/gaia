@@ -90,7 +90,10 @@ import {
   VerificationProviderFailure,
 } from "@gaia/runtime";
 import {
+  continuePreparedStrictV2HarnessRun,
+  prepareStrictV2HarnessRun,
   reconcileInterruptedServerRuns,
+  type StrictV2HarnessPreparationRequest,
   type WorkerDesktopOriginCorrelationInput,
   type WorkerCorrelationReconciliationInput,
 } from "@gaia/runtime/server-workflows";
@@ -798,10 +801,26 @@ export function makeProductionHarnessServices(
       );
     const verificationServices =
       yield* makeProductionVerificationServices(rootDirectory);
+    const prepareStrictV2HarnessRunForProduction = (
+      runId: RunId,
+      request: StrictV2HarnessPreparationRequest
+    ) =>
+      prepareStrictV2HarnessRun(runId, request, {
+        rootDirectory,
+      });
+    const continuePreparedStrictV2HarnessRunForProduction = (runId: RunId) =>
+      continuePreparedStrictV2HarnessRun(runId, {
+        harnessProviderRegistry: registry,
+        rootDirectory,
+        verificationServices,
+      });
     return {
+      continuePreparedStrictV2HarnessRun:
+        continuePreparedStrictV2HarnessRunForProduction,
       dispatchCorrelationFollowUp,
       dispatchDesktopOriginCorrelationFollowUp,
       preflightConfiguredModelCatalog,
+      prepareStrictV2HarnessRun: prepareStrictV2HarnessRunForProduction,
       recover,
       reconcileCorrelation,
       reconcileDesktopOriginCorrelation,

@@ -77,7 +77,12 @@ import { writeFactoryRetro } from "./factory-retro.js";
 import { writeFactoryScorecard } from "./factory-scorecard.js";
 import { continueFailureRepairWithinLease } from "./failure-repair-coordinator.js";
 import type { DeliveryProvenance } from "./git-delivery.js";
-import { preflightHarnessRun } from "./harness-evaluation.js";
+import {
+  preflightHarnessRun,
+  prepareStrictV2HarnessRun,
+  readStrictV2HarnessPreparedRun,
+  type StrictV2HarnessPreparationRequest,
+} from "./harness-evaluation.js";
 import {
   completedModelTransportObservation,
   HarnessRunRequest,
@@ -109,6 +114,7 @@ import {
   deriveModelWorkspaceBinding,
   loadModelInvocationPair,
   prepareSpecRunAcceptance,
+  recoverCommittedWorkerInitialModelInvocationPair,
   type PreparedSpecRunAcceptanceV1,
 } from "./model-invocation.js";
 import {
@@ -402,6 +408,8 @@ export const parseCommandSummary =
 
 export const WorkerContinuationStateSchema = Schema.Literals([
   "start",
+  "preparing",
+  "prepared",
   "resume",
   "terminal",
   "completed",
@@ -428,6 +436,10 @@ export type WorkflowOptions = RunStorageOptions &
     readonly workerContinuationState?: WorkerContinuationState;
     readonly verificationServices?: VerificationServices;
     readonly harnessPreparationBinding?: HarnessRunPreparationBinding;
+    /** Internal two-phase continuation guard; never reaches worker dispatch. */
+    readonly stopAfterHarnessPreparation?: boolean;
+    /** Stable selectors only; Runtime derives event-owned strict-V2 bindings. */
+    readonly strictV2HarnessPreparation?: StrictV2HarnessPreparationRequest;
   };
 
 export type BrowserEvidenceCollectionOptions = RunStorageOptions & {
@@ -604,11 +616,12 @@ export function continueAcceptedRun(
             options.browserEvidenceTargetUrl
           ));
 
-    yield* writeRunProfile({ paths, profile: runProfile }).pipe(
-      Effect.catchTag("GaiaRuntimeError", (error) =>
-        recordRunFailure(runId, paths, "creating", error)
-      )
-    );
+    if (options.workerContinuationState !== "preparing")
+      yield* writeRunProfile({ paths, profile: runProfile }).pipe(
+        Effect.catchTag("GaiaRuntimeError", (error) =>
+          recordRunFailure(runId, paths, "creating", error)
+        )
+      );
 
     return yield* executeAcceptedRun({
       browserEvidenceRequirement,
@@ -620,6 +633,76 @@ export function continueAcceptedRun(
       runProfile,
       spec,
     });
+  });
+}
+
+function reconstructPreparedFactoryLessonSelection(input: {
+  readonly context:
+    | ReturnType<typeof makeModelContextContentV1>["payload"]
+    | undefined;
+  readonly expectedContextDigest: string;
+  readonly expectedSelectionDigest: string | undefined;
+  readonly options: WorkflowOptions;
+  readonly runId: RunId;
+  readonly timestamp: string | undefined;
+}) {
+  return Effect.gen(function* () {
+    const context = input.context;
+    if (
+      context === undefined ||
+      input.expectedSelectionDigest === undefined ||
+      input.timestamp === undefined
+    )
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "HarnessPromotedControlSelectionMissing",
+          message:
+            "The prepared promoted-control run has no event-owned selection authority.",
+          recoverable: false,
+        })
+      );
+    const selectedRefs = context.contentRefs.filter(
+      (ref) => ref.kind === "factoryLesson/v1"
+    );
+    if (selectedRefs.length !== 1 || context.planningFacts.length < 1)
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "HarnessPromotedControlSelectionMissing",
+          message:
+            "The prepared promoted-control context has no exact selected lesson.",
+          recoverable: false,
+        })
+      );
+    const baseContent = makeModelContextContentV1({
+      ...context,
+      contentRefs: context.contentRefs.filter(
+        (ref) => ref.kind !== "factoryLesson/v1"
+      ),
+      planningFacts: context.planningFacts.slice(0, -selectedRefs.length),
+    });
+    const projection = yield* readFactoryLessons(input.options);
+    const reconstructed = selectFactoryLessonsForWorkerInitial({
+      available: projection.active,
+      baseContent,
+      target: {
+        createdAt: input.timestamp,
+        runId: input.runId,
+      },
+    });
+    if (
+      reconstructed.content.contextContentDigest !==
+        input.expectedContextDigest ||
+      reconstructed.selection.selectionDigest !== input.expectedSelectionDigest
+    )
+      return yield* Effect.fail(
+        makeRuntimeError({
+          code: "HarnessPromotedControlSelectionMissing",
+          message:
+            "The prepared promoted-control selection no longer matches its event-owned receipt.",
+          recoverable: false,
+        })
+      );
+    return reconstructed.selection;
   });
 }
 
@@ -649,6 +732,37 @@ function executeAcceptedRun(input: {
       spec,
     } = input;
     const workerContinuationState = options.workerContinuationState ?? "start";
+    if (workerContinuationState === "preparing") {
+      const strictPreparation = options.strictV2HarnessPreparation;
+      if (
+        strictPreparation === undefined ||
+        options.stopAfterHarnessPreparation !== true
+      )
+        return yield* Effect.fail(
+          makeRuntimeError({
+            code: "HarnessPreparedRunResumeInvalid",
+            message:
+              "Strict-V2 preparation resume requires its original selectors and stop boundary.",
+            recoverable: false,
+          })
+        );
+      const modelInvocationEpisode =
+        yield* recoverCommittedWorkerInitialModelInvocationPair(paths);
+      yield* prepareStrictV2HarnessRun(
+        runId,
+        strictPreparation,
+        modelInvocationEpisode,
+        options
+      );
+      const state = snapshotFromReplay((yield* loadRun(paths)).events).state;
+      return parseCommandSummary({
+        reportPath: undefined,
+        runDirectory: paths.root,
+        runId,
+        state,
+        status: statusFromState(state),
+      });
+    }
     if (workerContinuationState === "start") {
       const workspace = yield* prepareWorkspace(
         paths,
@@ -778,6 +892,7 @@ function executeAcceptedRun(input: {
               ...(factoryLessonContextSelection === undefined
                 ? {}
                 : { factoryLessonContextSelection }),
+              modelContextContent: pair.context.payload.content,
               modelInvocationEpisode: existing.start,
               modelRenderedInput: pair.rendered,
               modelWorkspaceBinding: pair.workspaceBinding,
@@ -918,16 +1033,44 @@ function executeAcceptedRun(input: {
           });
           return {
             factoryLessonContextSelection: selectedFactoryLessons.selection,
+            modelContextContent: content.payload,
             modelInvocationEpisode,
             modelRenderedInput,
             modelWorkspaceBinding,
           };
         })
       : undefined;
-    if (workerContinuationState === "start") {
-      const harnessPreparationBinding = options.harnessPreparationBinding;
+    if (
+      workerContinuationState === "start" ||
+      workerContinuationState === "prepared"
+    ) {
+      const strictPreparedRun =
+        workerContinuationState === "prepared"
+          ? yield* readStrictV2HarnessPreparedRun(runId, options)
+          : undefined;
+      const harnessPreparationBinding =
+        strictPreparedRun?.receipt.preparationBinding ??
+        options.harnessPreparationBinding;
+      const factoryLessonContextSelection =
+        strictPreparedRun?.receipt.preparationBinding.role === "treatment" &&
+        strictPreparedRun.receipt.preparationBinding.intervention.kind ===
+          "promotedControl" &&
+        modelProjection?.factoryLessonContextSelection === undefined
+          ? yield* reconstructPreparedFactoryLessonSelection({
+              context: modelProjection?.modelContextContent,
+              expectedContextDigest:
+                strictPreparedRun.receipt.preparedInputs.contextDigest,
+              expectedSelectionDigest:
+                strictPreparedRun.receipt.lessonSelectionDigest,
+              options,
+              runId,
+              timestamp: modelHistory[0]?.timestamp,
+            })
+          : modelProjection?.factoryLessonContextSelection;
+      const strictPreparation = options.strictV2HarnessPreparation;
       const harnessPreparedRunReceiptRef =
-        harnessPreparationBinding === undefined
+        harnessPreparationBinding === undefined &&
+        strictPreparation === undefined
           ? undefined
           : modelProjection === undefined
             ? yield* Effect.fail(
@@ -938,13 +1081,40 @@ function executeAcceptedRun(input: {
                   recoverable: false,
                 })
               )
-            : (yield* preflightHarnessRun(
-                runId,
-                harnessPreparationBinding,
-                modelProjection.modelInvocationEpisode,
-                options,
-                modelProjection.factoryLessonContextSelection
-              )).receiptRef;
+            : strictPreparation === undefined
+              ? (yield* preflightHarnessRun(
+                  runId,
+                  harnessPreparationBinding!,
+                  modelProjection.modelInvocationEpisode,
+                  options,
+                  factoryLessonContextSelection
+                )).receiptRef
+              : (yield* prepareStrictV2HarnessRun(
+                  runId,
+                  strictPreparation,
+                  modelProjection.modelInvocationEpisode,
+                  options,
+                  factoryLessonContextSelection
+                )).receiptRef;
+      if (options.stopAfterHarnessPreparation === true) {
+        if (harnessPreparedRunReceiptRef === undefined)
+          return yield* Effect.fail(
+            makeRuntimeError({
+              code: "HarnessPreparedRunReceiptMissing",
+              message:
+                "Two-phase continuation requires an event-owned prepared-run receipt.",
+              recoverable: false,
+            })
+          );
+        const state = snapshotFromReplay((yield* loadRun(paths)).events).state;
+        return parseCommandSummary({
+          reportPath: undefined,
+          runDirectory: paths.root,
+          runId,
+          state,
+          status: statusFromState(state),
+        });
+      }
       yield* runReviewPhase(
         runId,
         paths,
@@ -971,15 +1141,19 @@ function executeAcceptedRun(input: {
           ...(modelProjection === undefined
             ? {}
             : {
-                modelInvocationEpisode: Schema.encodeSync(
-                  ModelInvocationEpisodeStartV1
-                )(modelProjection.modelInvocationEpisode),
-                ...(modelProjection.factoryLessonContextSelection === undefined
+                ...(workerContinuationState === "prepared"
+                  ? {}
+                  : {
+                      modelInvocationEpisode: Schema.encodeSync(
+                        ModelInvocationEpisodeStartV1
+                      )(modelProjection.modelInvocationEpisode),
+                    }),
+                ...(factoryLessonContextSelection === undefined
                   ? {}
                   : {
                       factoryLessonContextSelection: Schema.encodeSync(
                         FactoryLessonContextSelectionV1
-                      )(modelProjection.factoryLessonContextSelection),
+                      )(factoryLessonContextSelection),
                     }),
               }),
           ...(harnessName === codexHarnessName
